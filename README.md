@@ -24,6 +24,11 @@ CRUD/роутеров/тестов) импортирован из
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.x (sync), Alembic, psycopg3;
   PostgreSQL 16 + pgvector. Без брокеров: длинные операции — `BackgroundTasks`
   + таблица `import_jobs`.
+- **Парсер смет:** openpyxl + spaCy с моделью `ru_core_news_sm` (лемматизация
+  наименований работ). Обе версии закреплены точно и ставятся обычным
+  `uv sync` — отдельного `spacy download` не нужно. Их смена меняет результат
+  нормализации, а значит требует миграции каталога и кэша матчинга
+  (AGENTS.md §11).
 - **Frontend:** React + TS, Vite, shadcn/ui, Tailwind, TanStack Query,
   TanStack Table, Recharts.
 - Task runner — [`just`](https://github.com/casey/just); Python-окружение — `uv`.
@@ -70,8 +75,11 @@ Integration-тесты требуют `TEST_DATABASE_URL` (см. `.env.test.exam
       и открытые риски — [docs/phase0-input-data.md](docs/phase0-input-data.md);
       **дополнительные образцы нужны до пилотной приёмки парсера**.
 - [x] Фаза 1 — инициализация, перенос boilerplate, чистка (LLM/PDF/MinIO/организации/УПД-домен)
-- [ ] Фаза 2 — схема БД (contracts, estimates, каталог, нормативы, VIEW отклонений)
-- [ ] Фаза 3 — парсер XLSX
+- [x] Фаза 2 — схема БД (contracts, estimates, каталог, нормативы, VIEW отклонений).
+      Отступления от исходников — [docs/phase2-schema.md](docs/phase2-schema.md)
+- [x] Фаза 3 — парсер XLSX (`backend/parser/`). Отступления от исходника, замеры
+      и открытые риски — [docs/phase3-parser.md](docs/phase3-parser.md).
+      Проверено на одном реальном образце — см. оговорку фазы 0
 - [ ] Фаза 4 — импорт + матчинг
 - [ ] Фаза 5 — CRUD и Review
 - [ ] Фаза 6 — аналитика (паспорт, матрица, отчёты)
