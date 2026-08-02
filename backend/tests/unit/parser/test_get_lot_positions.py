@@ -1,0 +1,227 @@
+"""Тесты чтения позиций в границах лота.
+
+Перенос `app/tests/excel_parser/test_get_lot_positions.py` из
+`parser_tender_xlsx@0e178c0`.
+
+Изменения при переносе:
+
+* убран тест на несуществующий `app/tests/test_data/sample_tender.xlsx`
+  (в исходнике он всегда пропускался); реальный файл проверяется отдельно —
+  `test_estimate.py`;
+* добавлен тест `test_starts_exactly_at_lot_start_row`: исходник брал
+  `max(START_INDEXING_POSITION_ROW=13, lot_start_row)` и на смете ГП, где лот
+  начинается со строки 11, молча терял две первые строки.
+"""
+from __future__ import annotations
+
+import pytest
+from openpyxl import Workbook
+
+from parser.constants import (
+    JSON_KEY_JOB_TITLE,
+    JSON_KEY_JOB_TITLE_NORMALIZED,
+    JSON_KEY_NUMBER,
+    JSON_KEY_QUANTITY,
+    JSON_KEY_UNIT,
+)
+from parser.get_lot_positions import get_lot_positions
+
+CONTRACTOR = {"column_start": 9, "merged_shape": {"colspan": 8}}
+
+
+@pytest.fixture
+def sample_worksheet():
+    """Лист с тремя позициями в строках 13–15."""
+    ws = Workbook().active
+
+    headers = [
+        "№ п/п",
+        "Глава",
+        "Артикул СМР",
+        "Наименование видов работ",
+        "Пропуск",
+        "Комментарий",
+        "Ед. изм.",
+        "Кол-во",
+        "Подрядчик 1 - Цена",
+        "Подрядчик 1 - Стоимость",
+    ]
+    for col, header in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=header)
+
+    test_data = [
+        ["1", "01", "01-01-003", "Земляные работы", "", "Основные работы", "м³", 100, 500, 50000],
+        ["2", "02", "02-01-015", "Кирпичная кладка", "", "Каменные работы", "м³", 50, 1200, 60000],
+        ["3", "03", "03-02-008", "Штукатурные работы", "", "Отделочные работы", "м²", 200, 300, 60000],
+    ]
+    for row_idx, row_data in enumerate(test_data, 13):
+        for col_idx, value in enumerate(row_data, 1):
+            ws.cell(row=row_idx, column=col_idx, value=value)
+
+    return ws
+
+
+class TestGetLotPositionsBehavior:
+    """Основное поведение."""
+
+    def test_extracts_positions_from_sample_data(self, sample_worksheet):
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15)
+
+        assert len(result) == 3
+
+        for position_key in ("1", "2", "3"):
+            position = result[position_key]
+            for field in (JSON_KEY_NUMBER, JSON_KEY_JOB_TITLE, JSON_KEY_UNIT, JSON_KEY_QUANTITY):
+                assert field in position, field
+            if position.get(JSON_KEY_JOB_TITLE):
+                assert JSON_KEY_JOB_TITLE_NORMALIZED in position
+
+    def test_handles_empty_range_gracefully(self, sample_worksheet):
+        """lot_start_row > lot_end_row — пустой результат, не падение."""
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=20, lot_end_row=15)
+
+        assert result == {}
+
+    def test_handles_empty_rows_correctly(self, sample_worksheet):
+        """Пустые строки после данных пропускаются, а не обрывают обход."""
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=30)
+
+        assert sorted(result) == ["1", "2", "3"]
+
+    def test_respects_lot_boundaries(self, sample_worksheet):
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=14)
+
+        assert sorted(result) == ["1", "2"]
+
+        first_position = result["1"]
+        assert first_position[JSON_KEY_JOB_TITLE] == "Земляные работы"
+        assert first_position[JSON_KEY_UNIT] == "м³"
+        assert first_position[JSON_KEY_QUANTITY] == 100
+
+    def test_starts_exactly_at_lot_start_row(self):
+        """Обход начинается с границы лота, без жёсткого нижнего порога.
+
+        В смете ГП лот начинается со строки 11. Исходная константа
+        START_INDEXING_POSITION_ROW = 13 съедала строки 11 и 12 — на реальном
+        файле это были строка-раздел лота и первый раздел сметы.
+        """
+        ws = Workbook().active
+        ws.cell(row=11, column=1, value="1")
+        ws.cell(row=11, column=4, value="Лот №1 - Тестовый объект")
+        ws.cell(row=12, column=1, value="1")
+        ws.cell(row=12, column=4, value="Подготовительные работы")
+        ws.cell(row=13, column=1, value="2")
+        ws.cell(row=13, column=4, value="Обеспечение финансовых условий")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=11, lot_end_row=13)
+
+        assert len(result) == 3
+        assert result["1"][JSON_KEY_JOB_TITLE] == "Лот №1 - Тестовый объект"
+        assert result["2"][JSON_KEY_JOB_TITLE] == "Подготовительные работы"
+        assert result["3"][JSON_KEY_JOB_TITLE] == "Обеспечение финансовых условий"
+
+    def test_processes_contractor_data_correctly(self, sample_worksheet):
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13)
+
+        position = result["1"]
+        assert isinstance(position, dict)
+        assert len(position) > 4  # больше, чем только общие поля
+
+    def test_normalizes_job_titles(self, sample_worksheet):
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15)
+
+        for position in result.values():
+            if position.get(JSON_KEY_JOB_TITLE):
+                assert isinstance(position[JSON_KEY_JOB_TITLE_NORMALIZED], str)
+
+
+class TestGetLotPositionsEdgeCases:
+    """Граничные случаи."""
+
+    def test_invalid_contractor_structure(self, sample_worksheet):
+        """Без column_start разбор строки подрядчика обязан упасть, а не молчать."""
+        invalid_contractor = {"merged_shape": {"colspan": 8}}
+
+        with pytest.raises((KeyError, AttributeError, TypeError)):
+            get_lot_positions(sample_worksheet, invalid_contractor, lot_start_row=13, lot_end_row=15)
+
+    def test_extreme_row_ranges(self, sample_worksheet):
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=5000)
+
+        assert len(result) == 3
+
+
+class TestGetLotPositionsDataIntegrity:
+    """Качество извлекаемых данных."""
+
+    def test_preserves_data_types(self, sample_worksheet):
+        position = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13)["1"]
+
+        assert isinstance(position[JSON_KEY_QUANTITY], int | float)
+        assert isinstance(position[JSON_KEY_JOB_TITLE], str)
+        assert isinstance(position[JSON_KEY_UNIT], str)
+
+    def test_handles_missing_data_gracefully(self, sample_worksheet):
+        ws = sample_worksheet
+        ws.cell(row=16, column=1, value="4")
+        ws.cell(row=16, column=4, value="Тест работа")
+        # остальные ячейки строки пустые
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=16, lot_end_row=16)
+
+        assert result["1"][JSON_KEY_JOB_TITLE] == "Тест работа"
+        assert result["1"][JSON_KEY_UNIT] is None
+
+    def test_stops_at_merged_cell_in_first_column(self, sample_worksheet):
+        """Объединённая ячейка в колонке A — конец блока позиций.
+
+        AGENTS.md §11: досрочный выход по merged-ячейке ломать нельзя. Без него
+        парсер поехал бы в блок итогов и дополнительной информации, где в
+        колонке подрядчика лежит текст, а не числа.
+        """
+        ws = sample_worksheet
+
+        ws.cell(row=17, column=1, value="5")
+        ws.cell(row=17, column=4, value="Обычная позиция")
+
+        ws.merge_cells("A18:A19")
+        ws.cell(row=18, column=1, value="ИТОГО")
+
+        ws.cell(row=20, column=1, value="6")
+        ws.cell(row=20, column=4, value="Не должна обрабатываться")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=17, lot_end_row=21)
+
+        assert len(result) == 1
+        assert result["1"][JSON_KEY_JOB_TITLE] == "Обычная позиция"
+
+    def test_skips_completely_empty_rows(self, sample_worksheet):
+        ws = sample_worksheet
+
+        ws.cell(row=22, column=1, value="7")
+        ws.cell(row=22, column=4, value="Первая позиция")
+        # строка 23 пустая
+        ws.cell(row=24, column=1, value="8")
+        ws.cell(row=24, column=4, value="Вторая позиция")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=22, lot_end_row=24)
+
+        assert len(result) == 2
+        assert result["1"][JSON_KEY_JOB_TITLE] == "Первая позиция"
+        assert result["2"][JSON_KEY_JOB_TITLE] == "Вторая позиция"
+
+    def test_row_with_data_only_right_of_contractor_block_counts_as_empty(self):
+        """Проверка пустоты ограничена блоком подрядчика.
+
+        Это цена отказа от разворачивания `ws[row]` до `ws.max_column`: строка,
+        где данные лежат правее блока подрядчика, считается пустой. Для сметы
+        это верно — читать там нечего.
+        """
+        ws = Workbook().active
+        ws.cell(row=13, column=1, value="1")
+        ws.cell(row=13, column=4, value="Позиция")
+        ws.cell(row=14, column=40, value="что-то далеко справа")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=14)
+
+        assert len(result) == 1
