@@ -1,0 +1,5 @@
+{
+  "id": "gen-test-wrong-shape",
+  "choices": [{"message": {"role": "assistant", "content": "[1, 2]"}}],
+  "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60, "cost": 0.0021}
+}

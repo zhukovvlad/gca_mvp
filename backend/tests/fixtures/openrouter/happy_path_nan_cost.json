@@ -1,0 +1,14 @@
+{
+  "id": "gen-test-nan-cost",
+  "model": "anthropic/claude-sonnet-4.6",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "{\"doc_type\": \"invoice\", \"invoices\": [{\"number\": \"СФ-101\", \"date\": \"2026-04-15\", \"supplier_name\": \"ООО Поставщик\", \"supplier_inn\": \"0000000000\", \"vat_rate\": 20, \"doc_total_without_vat\": 56000.0, \"doc_total_with_vat\": 67200.0, \"confidence\": 0.95, \"confidence_reason\": \"все поля читаются чётко\", \"items\": [{\"raw_name\": \"Бетонная смесь БСТ В25\", \"item_type\": \"material\", \"material_class\": \"В25\", \"material_type\": \"concrete\", \"quantity\": 7.0, \"unit\": \"м3\", \"unit_price\": 8000.0, \"amount\": 56000.0, \"vat_amount\": 9333.33, \"confidence\": 0.95}]}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300, "cost": "NaN"}
+}

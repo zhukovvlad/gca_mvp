@@ -1,0 +1,44 @@
+name: frontend-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend-tests:
+    runs-on: ubuntu-latest
+    # Vitest уже ловил сценарий бесконечного зависания (MSW blob-перехват под node 20);
+    # ограничиваем job, чтобы регресс не жёг 6ч GitHub-дефолта.
+    timeout-minutes: 20
+
+    # Все шаги — из frontend/ (пакет живёт там; зеркалит `cd frontend && ...` из justfile).
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Единый источник версии node — frontend/.nvmrc (engines.node в package.json
+          # держит тот же baseline; README — «Node.js 24+»). На node 20 перехват blob-
+          # ответа в MSW (axios responseType:"blob" через jsdom XHR) зависает — это
+          # несовместимость ТЕСТ-инфры, не баг приложения (в браузере XHR blob работает).
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Typecheck (tsc)
+        run: npx tsc -b --noEmit
+
+      - name: Run frontend tests (vitest)
+        # `npm test` = `vitest --run` (одноразовый прогон, не watch).
+        run: npm test

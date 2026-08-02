@@ -1,0 +1,336 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource/cormorant-garamond/400.css";
+@import "@fontsource/cormorant-garamond/500.css";
+@import "@fontsource-variable/geist";
+
+/* ============================================================================
+   UDP — Design Tokens
+   Источник: kpi-tenders-react. Спокойный, плотный язык продукта.
+   Иерархия — через бордеры и подложки, не через тени. Цвет несёт смысл.
+============================================================================ */
+
+@custom-variant dark (&:is([data-theme="dark"] *));
+
+:root,
+[data-theme="light"] {
+  --bg-page:           #F4F2EC;
+  --bg-surface:        #FFFFFF;
+  --bg-surface-sunken: #F7F6F2;
+  --bg-surface-hover:  #FAFAF7;
+  --bg-section-header: #FAFAF7;
+
+  --text-primary:      #1F2128;
+  --text-secondary:    #5A5D66;
+  --text-tertiary:     #8E8B82;
+  --text-muted:        #B5B2A8;
+
+  --border-subtle:     rgba(0, 0, 0, 0.08);
+  --border-default:    rgba(0, 0, 0, 0.14);
+  --border-strong:     rgba(0, 0, 0, 0.22);
+
+  --accent-primary:        #5F8568;
+  --accent-primary-hover:  #4F7256;
+  --accent-primary-soft:   #E8F0EA;
+  --accent-primary-border: #C9D9CD;
+  --accent-primary-text:   #3D5443;
+
+  --action-primary:        #2D3A30;
+  --action-primary-hover:  #1F2A23;
+  --action-primary-text:   #F7F6F2;
+
+  --warning:               #B5642E;
+  --warning-strong:        #A33D1F;
+  --warning-soft:          #FAF1E1;
+  --warning-border:        #E8C8A8;
+  --warning-text:          #6B3915;
+
+  --neutral-soft:          #EFEEE6;
+  --neutral-border:        #D8D4C8;
+  --neutral-text:          #5F5E5A;
+  --neutral-dot:           #888780;
+
+  --danger:                #C44545;
+  --danger-soft:           #F9E7E7;
+  --danger-border:         #E8C8C8;
+  --danger-text:           #7A2424;
+
+  --info:                  #4A7290;
+  --info-soft:             #E5EEF4;
+  --info-border:           #C5D7E2;
+  --info-text:             #2C4A60;
+}
+
+[data-theme="dark"] {
+  --bg-page:           #1A1D24;
+  --bg-surface:        #232730;
+  --bg-surface-sunken: #1F232B;
+  --bg-surface-hover:  #262B35;
+  --bg-section-header: #1C1F26;
+
+  --text-primary:      #EDEAE0;
+  --text-secondary:    #B5B2A8;
+  --text-tertiary:     #8E8B82;
+  --text-muted:        #6E6B65;
+
+  --border-subtle:     #2D323D;
+  --border-default:    #3A4148;
+  --border-strong:     #4A525C;
+
+  --accent-primary:        #8FAB91;
+  --accent-primary-hover:  #A0BCA2;
+  --accent-primary-soft:   #2A352D;
+  --accent-primary-border: #3A4A3D;
+  --accent-primary-text:   #B8C4BB;
+
+  --action-primary:        #B8C4BB;
+  --action-primary-hover:  #C9D4CC;
+  --action-primary-text:   #1A1D24;
+
+  --warning:               #D49A6E;
+  --warning-strong:        #E8B080;
+  --warning-soft:          #353027;
+  --warning-border:        #4A3D2E;
+  --warning-text:          #D49A6E;
+
+  --neutral-soft:          #2A2D33;
+  --neutral-border:        #353944;
+  --neutral-text:          #B5B2A8;
+  --neutral-dot:           #8E8B82;
+
+  --danger:                #E07878;
+  --danger-soft:           #3A2929;
+  --danger-border:         #4A3434;
+  --danger-text:           #E8A0A0;
+
+  --info:                  #7AA0BE;
+  --info-soft:             #2A323D;
+  --info-border:           #3A4854;
+  --info-text:             #A5C0D6;
+}
+
+:root {
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-full: 9999px;
+
+  --font-sans:  "Inter", "Manrope", "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Cormorant Garamond", "Source Serif Pro", Georgia, serif;
+  --font-mono:  "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --shadow-popover: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-modal:   0 12px 32px rgba(0, 0, 0, 0.16);
+  --shadow-focus:   0 0 0 3px rgba(95, 133, 104, 0.25);
+}
+
+@theme inline {
+  --color-page:            var(--bg-page);
+  --color-surface:         var(--bg-surface);
+  --color-surface-sunken:  var(--bg-surface-sunken);
+  --color-surface-hover:   var(--bg-surface-hover);
+  --color-section-header:  var(--bg-section-header);
+
+  --color-fg:              var(--text-primary);
+  --color-fg-secondary:    var(--text-secondary);
+  --color-fg-tertiary:     var(--text-tertiary);
+  --color-fg-muted:        var(--text-muted);
+
+  --color-border-subtle:   var(--border-subtle);
+  --color-border-default:  var(--border-default);
+  --color-border-strong:   var(--border-strong);
+
+  --color-accent:          var(--accent-primary);
+  --color-accent-hover:    var(--accent-primary-hover);
+  --color-accent-soft:     var(--accent-primary-soft);
+  --color-accent-border:   var(--accent-primary-border);
+  --color-accent-text:     var(--accent-primary-text);
+
+  --color-action:          var(--action-primary);
+  --color-action-hover:    var(--action-primary-hover);
+  --color-action-text:     var(--action-primary-text);
+
+  --color-warning:         var(--warning);
+  --color-warning-strong:  var(--warning-strong);
+  --color-warning-soft:    var(--warning-soft);
+  --color-warning-border:  var(--warning-border);
+  --color-warning-text:    var(--warning-text);
+
+  --color-neutral-soft:    var(--neutral-soft);
+  --color-neutral-border:  var(--neutral-border);
+  --color-neutral-text:    var(--neutral-text);
+  --color-neutral-dot:     var(--neutral-dot);
+
+  --color-danger:          var(--danger);
+  --color-danger-soft:     var(--danger-soft);
+  --color-danger-border:   var(--danger-border);
+  --color-danger-text:     var(--danger-text);
+
+  --color-info:            var(--info);
+  --color-info-soft:       var(--info-soft);
+  --color-info-border:     var(--info-border);
+  --color-info-text:       var(--info-text);
+
+  /* shadcn-совместимые алиасы — поддержать готовые примитивы из ui/ */
+  --color-background:           var(--bg-page);
+  --color-foreground:           var(--text-primary);
+  --color-card:                 var(--bg-surface);
+  --color-card-foreground:      var(--text-primary);
+  --color-popover:              var(--bg-surface);
+  --color-popover-foreground:   var(--text-primary);
+  --color-primary:              var(--action-primary);
+  --color-primary-foreground:   var(--action-primary-text);
+  --color-secondary:            var(--bg-surface-sunken);
+  --color-secondary-foreground: var(--text-secondary);
+  --color-muted:                var(--bg-surface-sunken);
+  --color-muted-foreground:     var(--text-tertiary);
+  --color-accent-foreground:    var(--accent-primary-text);
+  --color-destructive:          var(--danger);
+  --color-destructive-foreground: var(--danger-text);
+  --color-border:               var(--border-default);
+  --color-input:                var(--border-default);
+  --color-ring:                 var(--accent-primary);
+  --color-sidebar:              var(--bg-surface);
+  --color-sidebar-foreground:   var(--text-primary);
+  --color-sidebar-primary:      var(--action-primary);
+  --color-sidebar-primary-foreground: var(--action-primary-text);
+  --color-sidebar-accent:       var(--bg-surface-hover);
+  --color-sidebar-accent-foreground: var(--text-primary);
+  --color-sidebar-border:       var(--border-subtle);
+  --color-sidebar-ring:         var(--accent-primary);
+
+  --font-sans:    var(--font-sans);
+  --font-serif:   var(--font-serif);
+  --font-mono:    var(--font-mono);
+  --font-heading: var(--font-serif);
+
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.4;
+  --text-xs:  12px;
+  --text-xs--line-height: 1.4;
+  --text-sm:  13px;
+  --text-sm--line-height: 1.5;
+  --text-base: 14px;
+  --text-base--line-height: 1.6;
+  --text-md:  15px;
+  --text-md--line-height: 1.5;
+  --text-lg:  18px;
+  --text-lg--line-height: 1.4;
+  --text-xl:  22px;
+  --text-xl--line-height: 1.3;
+  --text-2xl: 26px;
+  --text-2xl--line-height: 1.2;
+  --text-3xl: 28px;
+  --text-3xl--line-height: 1.2;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-full: 9999px;
+
+  --shadow-popover: var(--shadow-popover);
+  --shadow-modal:   var(--shadow-modal);
+  --shadow-focus:   var(--shadow-focus);
+}
+
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%) scaleX(1); }
+  40%  { transform: translateX(0%)    scaleX(1.5); }
+  100% { transform: translateX(200%) scaleX(1); }
+}
+
+@utility animate-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+@layer base {
+  *, ::before, ::after {
+    border-color: var(--color-border-subtle);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :root,
+  [data-theme="light"] {
+    color-scheme: light;
+  }
+
+  [data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-page);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    font-weight: 400;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--color-fg);
+  }
+
+  ::selection {
+    background-color: var(--color-accent-soft);
+    color: var(--color-accent-text);
+  }
+
+  /* Hairline 0.5px по умолчанию */
+  .border, .border-t, .border-r, .border-b, .border-l, .border-x, .border-y {
+    border-style: solid;
+    border-width: 0.5px;
+  }
+  .border-t { border-top-width: 0.5px; }
+  .border-r { border-right-width: 0.5px; }
+  .border-b { border-bottom-width: 0.5px; }
+  .border-l { border-left-width: 0.5px; }
+
+  .border-2 { border-width: 2px !important; }
+  .border-0 { border-width: 0 !important; }
+
+  input, textarea, select, button {
+    font-family: inherit;
+  }
+}
+
+@utility container-page {
+  margin-inline: auto;
+  max-width: 1400px;
+  padding-inline: 24px;
+}
+
+@utility hairline {
+  border-width: 0.5px;
+  border-style: solid;
+  border-color: var(--color-border-subtle);
+}
+
+@utility hairline-strong {
+  border-width: 0.5px;
+  border-style: solid;
+  border-color: var(--color-border-default);
+}
+
+@utility hairline-dashed {
+  border-width: 0.5px;
+  border-style: dashed;
+  border-color: var(--color-border-default);
+}
+
+@utility focus-ring {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: var(--shadow-focus);
+}

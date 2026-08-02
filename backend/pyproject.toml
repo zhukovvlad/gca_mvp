@@ -1,0 +1,100 @@
+[project]
+name = "udp-backend"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.139.2",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy>=2.0.35",
+    "python-multipart>=0.0.31",
+    "python-dotenv>=1.2.2",
+    "httpx>=0.27.0",
+    "openpyxl>=3.1.5",
+    "boto3>=1.35.0",
+    "psycopg[binary]>=3.2.13",
+    "alembic>=1.14.1",
+    "pgvector>=0.4.2",
+    "pyjwt>=2.13.0",
+    "pwdlib[argon2]>=0.3.0",
+    "pydantic-settings>=2.14.2",
+    "pydantic[email]>=2.13.4",
+    "click>=8.3.3",
+    "pypdfium2>=5.10.1",
+    "pikepdf>=10.8.0",
+    "pillow>=12.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.6.1",
+    "pytest-dotenv>=0.5.2",
+    "respx>=0.21.1",
+    "factory-boy>=3.3.1",
+    "faker>=30.10.0",
+    "freezegun>=1.5.1",
+    "ruff>=0.7.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers --tb=short"
+markers = [
+    "integration: tests that hit a real Postgres (need TEST_DATABASE_URL)",
+]
+env_files = [".env.test"]
+
+[tool.coverage.run]
+source = ["."]
+branch = true
+omit = [
+    "tests/*",
+    "alembic/*",
+    "scripts/*",
+    "logging_config.py",
+]
+
+[tool.coverage.report]
+# Целевой порог для зрелого test-suite (см. spec §12.1).
+# Сейчас тесты только наращиваются, поэтому fail_under=0 и `just coverage-backend`
+# не валится, но печатает текущее покрытие. Поднимаем по этапам.
+fail_under = 0
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",   # длинные строки прощаем (длинные SQL и docstrings)
+    "B008",   # FastAPI Depends() в аргументах функций — стандартный идиом FastAPI
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # import-order в тестах не критичен
+"alembic/versions/*" = ["E402", "F401", "UP007", "UP035"]
+"scripts/*" = ["E402", "F401", "F541"]  # скрипты — не строгий production-код
+"main.py" = ["E402", "F401"]  # load_dotenv() должен запуститься до локальных импортов
+# Существующие prod-файлы с накопленными нарушениями — фиксим инкрементально
+# (F401 unused imports, B904 raise from, SIM* стилистика). Чтобы новые файлы
+# линтились строго, ignore только на конкретные файлы:
+"crud.py" = ["SIM108"]
+"routers/dashboard.py" = ["F401"]
+"routers/export.py" = ["F401"]
+"routers/invoices.py" = ["F401", "B904", "SIM105"]
