@@ -39,6 +39,25 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# Индексы, которые создаются raw SQL в миграциях (AGENTS.md §11), потому что
+# декларативный слой SQLAlchemy их не выражает: индекс по выражению
+# COALESCE(...), частичный уникальный индекс и UNIQUE NULLS NOT DISTINCT (PG16).
+# В Base.metadata их нет, поэтому autogenerate и `alembic check` без этого
+# фильтра предлагали бы их удалить как «лишние» на каждом прогоне.
+#
+# Плата за фильтр — их отсутствие в БД тоже не будет замечено `alembic check`,
+# поэтому и наличие, и поведение каждого из них закреплены интеграционными
+# тестами (tests/integration/test_schema_constraints.py).
+RAW_SQL_INDEXES = {
+    "uq_catalog_positions_norm_unit",   # UNIQUE (normalized_job_title, COALESCE(unit_id, -1))
+    "uq_estimates_contract_amendment",  # UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)
+    "uq_import_jobs_active_pair",       # UNIQUE (contract_id, COALESCE(amendment_no,-1)) WHERE ...
+}
+
+
+def include_object(obj, name, type_, reflected, compare_to) -> bool:
+    return not (type_ == "index" and name in RAW_SQL_INDEXES)
+
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
@@ -47,6 +66,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -59,7 +79,11 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            include_object=include_object,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

@@ -1,14 +1,22 @@
 import enum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
+    Computed,
+    Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy import (
     Enum as SqlEnum,
@@ -16,9 +24,23 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sa_text,
 )
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import relationship
 
 from database import Base
+
+
+def _created_at() -> Column:
+    return Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+def _updated_at() -> Column:
+    return Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa_text("now()"),
+        onupdate=sa_text("now()"),
+    )
 
 # ---------------------------------------------------------------------------
 #  Enums
@@ -130,3 +152,564 @@ class UnitAlias(Base):
     )
 
     unit = relationship("UnitOfMeasure")
+
+
+# ---------------------------------------------------------------------------
+#  Доменные перечисления
+#
+#  Значения хранятся в БД строками (varchar/text) + CHECK-констрейнт, а не
+#  PG ENUM: добавление значения не требует ALTER TYPE и блокировки таблицы.
+#  Python-энумы здесь — для кода (сравнения, литералы), к типу колонки они
+#  НЕ привязаны: колонка объявлена как Text/String, чтобы отражение схемы
+#  совпадало с миграцией байт-в-байт (alembic check).
+# ---------------------------------------------------------------------------
+
+class CatalogKind(str, enum.Enum):
+    """Классификация каталожной строки (AGENTS.md §4).
+
+    POSITION    — работа, участвует в матчинге, нормативах и матрице;
+    HEADER      — заголовок раздела внутри сметы;
+    LOT_HEADER  — заголовок лота;
+    TRASH       — мусорная строка (не работа);
+    TO_REVIEW   — создана автоматически при промахе матчинга, ждёт решения оператора.
+    """
+    POSITION = "POSITION"
+    HEADER = "HEADER"
+    LOT_HEADER = "LOT_HEADER"
+    TRASH = "TRASH"
+    TO_REVIEW = "TO_REVIEW"
+
+
+class CatalogStatus(str, enum.Enum):
+    """Жизненный цикл каталожной строки (перенос из tenders-go)."""
+    pending_indexing = "pending_indexing"
+    active = "active"
+    deprecated = "deprecated"
+    archived = "archived"
+    na = "na"
+
+
+class MatchSource(str, enum.Enum):
+    """Происхождение записи matching_cache (AGENTS.md §4).
+
+    auto   — поставлена автоматикой, TTL 30 дней, продлевается при hit;
+    manual — решение оператора из Review, expires_at = NULL, не истекает.
+    """
+    auto = "auto"
+    manual = "manual"
+
+
+class ImportJobStatus(str, enum.Enum):
+    """Статусы задания импорта (AGENTS.md §4, §5)."""
+    pending = "pending"
+    parsing = "parsing"
+    importing = "importing"
+    matching = "matching"
+    done = "done"
+    error = "error"
+
+
+#: Терминальные статусы: только они снимают лок на пару (contract_id, amendment_no)
+#: и только они не подлежат startup-recovery (§5). Значение продублировано в
+#: частичном уникальном индексе uq_import_jobs_active_pair — менять синхронно.
+TERMINAL_IMPORT_JOB_STATUSES = (ImportJobStatus.done, ImportJobStatus.error)
+
+#: Незавершённые статусы — те, что startup-recovery переводит в error (§5).
+ACTIVE_IMPORT_JOB_STATUSES = tuple(
+    s for s in ImportJobStatus if s not in TERMINAL_IMPORT_JOB_STATUSES
+)
+
+
+def _sql_str_list(values) -> str:
+    """('a', 'b') — литерал списка для CHECK/WHERE в миграциях и __table_args__."""
+    return ", ".join(f"'{v.value if isinstance(v, enum.Enum) else v}'" for v in values)
+
+
+# ---------------------------------------------------------------------------
+#  Справочники объектов и подрядчиков (перенос из tenders-go)
+# ---------------------------------------------------------------------------
+
+class RateClass(Base):
+    """Класс объекта: единица группировки нормативов расценок (AGENTS.md §1.3, §4)."""
+    __tablename__ = "rate_classes"
+
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (UniqueConstraint("title", name="uq_rate_classes_title"),)
+
+
+class ObjectModel(Base):
+    """Строительный объект. Класс здесь — значение ПО УМОЛЧАНИЮ для новых договоров;
+    авторитетен снимок в contracts.rate_class_id (§4)."""
+    __tablename__ = "objects"
+
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    rate_class_id = Column(
+        BigInteger, ForeignKey("rate_classes.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    rate_class = relationship("RateClass")
+
+    __table_args__ = (
+        UniqueConstraint("title", name="uq_objects_title"),
+        Index("ix_objects_rate_class_id", "rate_class_id"),
+    )
+
+
+class Contractor(Base):
+    """Подрядчик. Перенос из tenders-go без изменений."""
+    __tablename__ = "contractors"
+
+    id = Column(BigInteger, primary_key=True)
+    title = Column(String, nullable=False)
+    inn = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    accreditation = Column(String, nullable=False)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (UniqueConstraint("inn", name="uq_contractors_inn"),)
+
+
+# ---------------------------------------------------------------------------
+#  Договор и сметы
+# ---------------------------------------------------------------------------
+
+class Contract(Base):
+    """Договор генподряда — карточка, которая является источником истины при
+    импорте (§3): объект, подрядчик и реквизиты НЕ апсертятся из XLSX."""
+    __tablename__ = "contracts"
+
+    id = Column(BigInteger, primary_key=True)
+    object_id = Column(BigInteger, ForeignKey("objects.id"), nullable=False)
+    contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=False)
+    # СНИМОК класса на момент создания договора: переклассификация объекта
+    # не меняет отклонения прошлых смет (§4).
+    rate_class_id = Column(BigInteger, ForeignKey("rate_classes.id"), nullable=False)
+
+    contract_number = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    signer = Column(String, nullable=True)
+    # NOT NULL: фолбэк даты сравнения с нормативом, если у сметы нет
+    # data_prepared_on_date (§4). Обе даты не могут быть NULL одновременно.
+    signed_date = Column(Date, nullable=False)
+    total_amount = Column(Numeric, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    object = relationship("ObjectModel")
+    contractor = relationship("Contractor")
+    rate_class = relationship("RateClass")
+
+    __table_args__ = (
+        UniqueConstraint("contract_number", name="uq_contracts_contract_number"),
+        CheckConstraint(
+            "total_amount IS NULL OR total_amount >= 0",
+            name="ck_contracts_total_amount_non_negative",
+        ),
+        Index("ix_contracts_object_id", "object_id"),
+        Index("ix_contracts_contractor_id", "contractor_id"),
+        Index("ix_contracts_rate_class_id", "rate_class_id"),
+    )
+
+
+class ImportJob(Base):
+    """Задание импорта сметы (§4, §5). Записи не удаляются — это аудит."""
+    __tablename__ = "import_jobs"
+
+    id = Column(BigInteger, primary_key=True)
+    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=False)
+    amendment_no = Column(Integer, nullable=True)
+
+    filename = Column(Text, nullable=False)   # оригинальное имя, только в БД (§8)
+    file_key = Column(Text, nullable=False)   # непрозрачный ключ на диске (uuid)
+    file_sha256 = Column(Text, nullable=False)
+
+    status = Column(Text, nullable=False, server_default=ImportJobStatus.pending.value)
+    error_text = Column(Text, nullable=True)
+    warnings = Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb"))
+
+    positions_total = Column(Integer, nullable=False, server_default=sa_text("0"))
+    matched_cache = Column(Integer, nullable=False, server_default=sa_text("0"))
+    matched_exact = Column(Integer, nullable=False, server_default=sa_text("0"))
+    matched_nonposition = Column(Integer, nullable=False, server_default=sa_text("0"))
+    to_review = Column(Integer, nullable=False, server_default=sa_text("0"))
+
+    created_at = _created_at()
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    contract = relationship("Contract")
+
+    __table_args__ = (
+        UniqueConstraint("file_key", name="uq_import_jobs_file_key"),
+        CheckConstraint(
+            f"status IN ({_sql_str_list(ImportJobStatus)})", name="ck_import_jobs_status"
+        ),
+        # -1 — сентинел в COALESCE(amendment_no, -1) частичного уникального
+        # индекса; допсоглашения нумеруются с 1.
+        CheckConstraint(
+            "amendment_no IS NULL OR amendment_no > 0", name="ck_import_jobs_amendment_no"
+        ),
+        Index("ix_import_jobs_contract_id", "contract_id", "amendment_no"),
+        # Очередь startup-recovery (§5): все незавершённые задания.
+        Index(
+            "ix_import_jobs_active",
+            "id",
+            postgresql_where=sa_text(f"status NOT IN ({_sql_str_list(TERMINAL_IMPORT_JOB_STATUSES)})"),
+        ),
+        # uq_import_jobs_active_pair — частичный уникальный индекс по
+        # (contract_id, COALESCE(amendment_no,-1)); выражение Alembic не
+        # выражает декларативно, создаётся raw SQL в миграции 0002.
+    )
+
+
+class Estimate(Base):
+    """Смета к договору (бывш. tenders). 1 договор : N смет, различаются
+    номером допсоглашения; NULL = исходная смета (§4)."""
+    __tablename__ = "estimates"
+
+    id = Column(BigInteger, primary_key=True)
+    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=False)
+    amendment_no = Column(Integer, nullable=True)
+    title = Column(String, nullable=True)
+    data_prepared_on_date = Column(Date, nullable=True)
+    import_job_id = Column(
+        BigInteger, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    contract = relationship("Contract")
+    import_job = relationship("ImportJob")
+    raw_data = relationship(
+        "EstimateRawData", back_populates="estimate", uselist=False, cascade="all, delete-orphan"
+    )
+    lots = relationship("Lot", back_populates="estimate", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint(
+            "amendment_no IS NULL OR amendment_no > 0", name="ck_estimates_amendment_no"
+        ),
+        Index("ix_estimates_contract_id", "contract_id"),
+        Index("ix_estimates_import_job_id", "import_job_id"),
+        # uq_estimates_contract_amendment — UNIQUE NULLS NOT DISTINCT
+        # (contract_id, amendment_no), синтаксис PG16; создаётся raw SQL
+        # в миграции 0002. Обычный UNIQUE не годится: NULL-ы в нём различны,
+        # и исходную смету можно было бы загрузить дважды.
+    )
+
+
+class EstimateRawData(Base):
+    """Полный JSON парсера — источник истины по содержимому файла (§4)."""
+    __tablename__ = "estimate_raw_data"
+
+    estimate_id = Column(
+        BigInteger, ForeignKey("estimates.id", ondelete="CASCADE"), primary_key=True
+    )
+    raw_data = Column(JSONB, nullable=False)
+    parser_version = Column(Text, nullable=False)
+    created_at = _created_at()
+
+    estimate = relationship("Estimate", back_populates="raw_data")
+
+
+class Lot(Base):
+    """Лот сметы. Перенос из tenders-go; FK на estimates — ON DELETE CASCADE,
+    этого требует replace-флоу (§5), в отличие от оригинала."""
+    __tablename__ = "lots"
+
+    id = Column(BigInteger, primary_key=True)
+    estimate_id = Column(
+        BigInteger, ForeignKey("estimates.id", ondelete="CASCADE"), nullable=False
+    )
+    lot_key = Column(String, nullable=False)
+    lot_title = Column(String, nullable=False)
+    lot_key_parameters = Column(JSONB, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    estimate = relationship("Estimate", back_populates="lots")
+    proposal = relationship(
+        "Proposal", back_populates="lot", uselist=False, cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("estimate_id", "lot_key", name="uq_lots_estimate_lot_key"),
+        Index("idx_gin_lots_key_parameters", "lot_key_parameters", postgresql_using="gin"),
+    )
+
+
+class Proposal(Base):
+    """Предложение подрядчика по лоту. В сметах ГП — РОВНО ОДНО на лот (§4);
+    инвариант закреплён уникальным индексом по lot_id."""
+    __tablename__ = "proposals"
+
+    id = Column(BigInteger, primary_key=True)
+    lot_id = Column(BigInteger, ForeignKey("lots.id", ondelete="CASCADE"), nullable=False)
+    contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=False)
+    # В сметах ГП baseline-колонки нет — поле сохранено для 1:1 переноса JSON
+    # парсера и задела на возврат тендеров (§4).
+    is_baseline = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    contractor_coordinate = Column(String(255), nullable=True)
+    contractor_width = Column(Integer, nullable=True)
+    contractor_height = Column(Integer, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    lot = relationship("Lot", back_populates="proposal")
+    contractor = relationship("Contractor")
+    position_items = relationship(
+        "PositionItem", back_populates="proposal", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("lot_id", name="uq_proposals_lot_id"),
+        Index("ix_proposals_contractor_id", "contractor_id"),
+    )
+
+
+class ProposalAdditionalInfo(Base):
+    __tablename__ = "proposal_additional_info"
+
+    id = Column(BigInteger, primary_key=True)
+    proposal_id = Column(
+        BigInteger, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False
+    )
+    info_key = Column(Text, nullable=False)
+    info_value = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "info_key", name="uq_proposal_additional_info_key"),
+    )
+
+
+class ProposalSummaryLine(Base):
+    """Итоговые строки предложения («Итого по смете» и т.п.)."""
+    __tablename__ = "proposal_summary_lines"
+
+    id = Column(BigInteger, primary_key=True)
+    proposal_id = Column(
+        BigInteger, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False
+    )
+    summary_key = Column(Text, nullable=False)
+    job_title = Column(Text, nullable=False)
+    materials_cost = Column(Numeric, nullable=True)
+    works_cost = Column(Numeric, nullable=True)
+    indirect_costs_cost = Column(Numeric, nullable=True)
+    total_cost = Column(Numeric, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "summary_key", name="uq_proposal_summary_lines_key"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Каталожный контур
+# ---------------------------------------------------------------------------
+
+class CatalogPosition(Base):
+    """Каталожная строка. Единица идентичности работы — нормализованное
+    название + единица измерения (§3, §4); уникальность именно по этой паре."""
+    __tablename__ = "catalog_positions"
+
+    id = Column(BigInteger, primary_key=True)
+    standard_job_title = Column(Text, nullable=False)   # отображаемое название
+    # normalize(standard_job_title); вычисляется в Python при insert/update.
+    # Та же нормализация, что у matcher и cache_key — вторых представлений
+    # строки в системе нет (§4).
+    normalized_job_title = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    embedding = Column(Vector(768), nullable=True)      # векторный матчинг — вне MVP (§5)
+    kind = Column(Text, nullable=False, server_default=CatalogKind.TO_REVIEW.value)
+    status = Column(String(50), nullable=False, server_default=CatalogStatus.na.value)
+    unit_id = Column(
+        Integer, ForeignKey("units_of_measure.id", ondelete="SET NULL"), nullable=True
+    )
+    fts_vector = Column(
+        TSVECTOR,
+        Computed("to_tsvector('simple'::regconfig, COALESCE(standard_job_title, ''::text))",
+                 persisted=True),
+        nullable=True,
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    unit = relationship("UnitOfMeasure")
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_sql_str_list(CatalogKind)})", name="ck_catalog_positions_kind"),
+        CheckConstraint(
+            f"status IN ({_sql_str_list(CatalogStatus)})", name="ck_catalog_positions_status"
+        ),
+        # Обычный (не уникальный) индекс — поиск по названию в UI (§4).
+        Index("ix_catalog_positions_standard_job_title", "standard_job_title"),
+        Index("idx_catalog_positions_kind", "kind"),
+        Index("idx_cp_status", "status"),
+        Index("idx_cp_kind_review", "id", postgresql_where=sa_text("kind = 'TO_REVIEW'")),
+        Index("idx_cp_status_pending", "id", postgresql_where=sa_text("status = 'pending_indexing'")),
+        Index("idx_catalog_positions_fts", "fts_vector", postgresql_using="gin"),
+        Index(
+            "idx_cp_kind_pos_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_where=sa_text("kind = 'POSITION'"),
+        ),
+        # uq_catalog_positions_norm_unit — UNIQUE (normalized_job_title,
+        # COALESCE(unit_id,-1)); выражение, создаётся raw SQL в миграции 0002.
+        # На него же опирается ON CONFLICT в get-or-create матчинга (§5.4.3).
+    )
+
+
+class MatchingCache(Base):
+    """Кэш матчинга «нормализованная пара → каталожная строка» (§4).
+
+    Инвариант (§5): записи кэша НИКОГДА не указывают на строки kind='TO_REVIEW' —
+    это условие безопасности DELETE при слиянии в Review.
+    """
+    __tablename__ = "matching_cache"
+
+    # sha256(norm_version || '|' || normalized_title || '|' || unit_norm)
+    cache_key = Column(Text, primary_key=True)
+    norm_version = Column(SmallInteger, nullable=False)
+    job_title_text = Column(Text, nullable=False)  # исходники — для перевыпуска ключей
+    unit_text = Column(Text, nullable=True)
+    catalog_position_id = Column(
+        BigInteger, ForeignKey("catalog_positions.id", ondelete="CASCADE"), nullable=False
+    )
+    source = Column(Text, nullable=False)
+    # source='auto'   → now() + 30 дней, продлевается при hit;
+    # source='manual' → NULL, не истекает.
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    catalog_position = relationship("CatalogPosition")
+
+    __table_args__ = (
+        CheckConstraint(f"source IN ({_sql_str_list(MatchSource)})", name="ck_matching_cache_source"),
+        CheckConstraint(
+            f"source <> '{MatchSource.manual.value}' OR expires_at IS NULL",
+            name="ck_matching_cache_manual_never_expires",
+        ),
+        Index("idx_matching_cache_catalog_id", "catalog_position_id"),
+        Index("idx_matching_cache_expires_at", "expires_at"),
+    )
+
+
+class PositionItem(Base):
+    """Строка сметы. Перенос из tenders-go.
+
+    deviation_from_baseline_cost остаётся NULL: в сметах ГП baseline нет (§4).
+    """
+    __tablename__ = "position_items"
+
+    id = Column(BigInteger, primary_key=True)
+    proposal_id = Column(
+        BigInteger, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False
+    )
+    # NULL, пока строка не прошла матчинг. FK без CASCADE: каталожную строку
+    # нельзя удалить, пока на неё ссылаются позиции (условие DELETE в Review, §5).
+    catalog_position_id = Column(
+        BigInteger, ForeignKey("catalog_positions.id"), nullable=True
+    )
+
+    position_key_in_proposal = Column(String(255), nullable=False)
+    # Орфография ключа — как в JSON парсера (constants.JSON_KEY_COMMENT_ORGANIZER);
+    # в tenders-go колонка называлась comment_organazier (опечатка), исправлено.
+    comment_organizer = Column(Text, nullable=True)
+    comment_contractor = Column(Text, nullable=True)
+    item_number_in_proposal = Column(String(50), nullable=True)
+    chapter_number_in_proposal = Column(String(50), nullable=True)
+    job_title_in_proposal = Column(Text, nullable=False)
+    unit_id = Column(Integer, ForeignKey("units_of_measure.id"), nullable=True)
+
+    quantity = Column(Numeric, nullable=True)            # «Общее кол-во» — объём заказчика
+    suggested_quantity = Column(Numeric, nullable=True)  # «Предлагаемое количество» (§4)
+    total_cost_for_organizer_quantity = Column(Numeric, nullable=True)
+
+    unit_cost_materials = Column(Numeric, nullable=True)
+    unit_cost_works = Column(Numeric, nullable=True)
+    unit_cost_indirect_costs = Column(Numeric, nullable=True)
+    unit_cost_total = Column(Numeric, nullable=True)
+    total_cost_materials = Column(Numeric, nullable=True)
+    total_cost_works = Column(Numeric, nullable=True)
+    total_cost_indirect_costs = Column(Numeric, nullable=True)
+    total_cost_total = Column(Numeric, nullable=True)
+    deviation_from_baseline_cost = Column(Numeric, nullable=True)
+
+    is_chapter = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    chapter_ref_in_proposal = Column(String(50), nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    proposal = relationship("Proposal", back_populates="position_items")
+    catalog_position = relationship("CatalogPosition")
+    unit = relationship("UnitOfMeasure")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id", "position_key_in_proposal", name="uq_position_items_proposal_id_key"
+        ),
+        Index("idx_position_items_proposal_id", "proposal_id"),
+        Index("idx_position_items_catalog_id", "catalog_position_id"),
+        Index("idx_position_items_unit_id", "unit_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Нормативы расценок
+# ---------------------------------------------------------------------------
+
+class RateStandard(Base):
+    """Норматив ставки для (каталожная позиция × класс объекта) на период
+    [valid_from, valid_to). Переутверждение = UPDATE valid_to старой строки +
+    INSERT новой; историю не мутировать (§4)."""
+    __tablename__ = "rate_standards"
+
+    id = Column(BigInteger, primary_key=True)
+    catalog_position_id = Column(
+        BigInteger, ForeignKey("catalog_positions.id"), nullable=False
+    )
+    rate_class_id = Column(BigInteger, ForeignKey("rate_classes.id"), nullable=False)
+    standard_unit_rate = Column(Numeric, nullable=False)
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date, nullable=True)   # NULL = бесконечность
+    inflation_index = Column(Numeric, nullable=True)
+    approved_by = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    catalog_position = relationship("CatalogPosition")
+    rate_class = relationship("RateClass")
+
+    __table_args__ = (
+        CheckConstraint("standard_unit_rate > 0", name="ck_rate_standards_rate_positive"),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from", name="ck_rate_standards_period"
+        ),
+        CheckConstraint(
+            "inflation_index IS NULL OR inflation_index > 0",
+            name="ck_rate_standards_inflation_index",
+        ),
+        Index("ix_rate_standards_class", "rate_class_id"),
+        # ex_rate_standards_no_overlap — EXCLUDE USING gist, запрет пересечения
+        # периодов для одной пары (позиция, класс); создаётся raw SQL в 0002.
+        # Он же даёт gist-индекс по (catalog_position_id, rate_class_id, период).
+    )
