@@ -18,6 +18,13 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "pydantic[email]>=2.13.4",
     "click>=8.3.3",
+    # Лемматизация наименований работ (backend/parser). Версии закреплены ТОЧНО,
+    # а не диапазоном: их смена меняет результат нормализации, а он — идентичность
+    # позиции в каталоге и ключ matching_cache. Апгрейд = миграция перевыпуска
+    # ключей source='manual' и пересчёт normalized_job_title (AGENTS.md §11),
+    # то есть отдельная задача, а не обновление зависимости.
+    "spacy==3.8.14",
+    "ru-core-news-sm==3.8.0",
 ]
 
 [dependency-groups]
@@ -35,6 +42,12 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+# Модели spaCy не публикуются в PyPI — только релизными колёсами на GitHub.
+# Ставится обычной зависимостью, а не командой `spacy download`, чтобы версия
+# модели попадала в uv.lock и была одинаковой у всех и в CI.
+ru-core-news-sm = { url = "https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.8.0/ru_core_news_sm-3.8.0-py3-none-any.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
