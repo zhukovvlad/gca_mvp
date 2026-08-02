@@ -47,14 +47,14 @@ class TestPasswordHashing:
 
 class TestAccessToken:
     def _sample_payload(self) -> dict:
-        return {"sub": "42", "org_id": 1, "is_superuser": False, "org_role": "admin"}
+        return {"sub": "42", "role": "admin"}
 
     def test_encode_decode_roundtrip(self):
         payload = self._sample_payload()
         token = create_access_token(payload)
         decoded = decode_access_token(token)
         assert decoded["sub"] == "42"
-        assert decoded["org_id"] == 1
+        assert decoded["role"] == "admin"
         assert decoded["type"] == "access"
 
     def test_expired_token_raises(self, monkeypatch):

@@ -38,7 +38,7 @@ def create_access_token(payload: dict) -> str:
     """Создать подписанный JWT access-токен.
 
     Args:
-        payload: dict с полями: sub (user_id str), org_id, is_superuser, org_role.
+        payload: dict с полями: sub (user_id str), role.
 
     Returns:
         Подписанный JWT (алгоритм HS256, срок из settings.ACCESS_TOKEN_EXPIRE_MINUTES).

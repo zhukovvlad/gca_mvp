@@ -1,7 +1,6 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard, BookOpen, Building2, Users, Layers, FileSpreadsheet,
-  Settings, LogOut, Search, Bell, ShieldCheck, type LucideIcon,
+  Home, Users, LogOut, Search, Bell, type LucideIcon,
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
@@ -12,14 +11,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 
-const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; superuserOnly?: boolean }[] = [
-  { to: "/dashboard", icon: LayoutDashboard, label: "Дашборд", end: true },
-  { to: "/projects",  icon: Building2,       label: "Объекты" },
-  { to: "/suppliers", icon: Users,           label: "Поставщики" },
-  { to: "/materials", icon: Layers,          label: "Номенклатура" },
-  { to: "/reports",   icon: FileSpreadsheet, label: "Отчёты" },
-  { to: "/handbook", icon: BookOpen,         label: "Справочник" },
-  { to: "/admin",     icon: ShieldCheck,     label: "Админ", superuserOnly: true },
+// Экраны договоров, Review, нормативов, матрицы и отчётов появятся в фазах 5–6 (AGENTS.md §9)
+const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOnly?: boolean }[] = [
+  { to: "/",            icon: Home,  label: "Главная", end: true },
+  { to: "/admin/users", icon: Users, label: "Пользователи", adminOnly: true },
 ];
 
 function getInitials(email: string): string {
@@ -33,12 +28,11 @@ function getInitials(email: string): string {
 }
 
 export function TopNav() {
-  const navigate = useNavigate();
   const { data: user } = useCurrentUser();
   const logout = useLogout();
 
   const initials = user ? getInitials(user.email) : "…";
-  const navItems = NAV.filter((item) => !item.superuserOnly || user?.is_superuser);
+  const navItems = NAV.filter((item) => !item.adminOnly || user?.role === "admin");
 
   return (
     <header className="sticky top-0 z-40 h-14 border-b border-border-subtle bg-surface/95 backdrop-blur">
@@ -81,30 +75,17 @@ export function TopNav() {
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/20 text-xs font-semibold text-accent">
                 {initials}
               </span>
-              {user?.organization && (
-                <span className="hidden max-w-32 truncate text-xs font-medium text-fg-secondary sm:block">
-                  {user.organization.name}
-                </span>
-              )}
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-48">
               {user && (
                 <>
                   <div className="px-2 py-1.5">
                     <p className="text-sm font-medium text-fg truncate">{user.email}</p>
-                    {user.organization && (
-                      <p className="text-xs text-fg-secondary truncate">{user.organization.name}</p>
-                    )}
+                    <p className="text-xs text-fg-secondary truncate">{user.role}</p>
                   </div>
                   <DropdownMenuSeparator />
                 </>
               )}
-              <DropdownMenuItem
-                className="flex items-center gap-2"
-                onClick={() => navigate("/settings")}
-              >
-                <Settings size={14} /> Настройки
-              </DropdownMenuItem>
               <DropdownMenuItem
                 className="flex items-center gap-2 text-fg-secondary"
                 onClick={() => logout.mutate()}

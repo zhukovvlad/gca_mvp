@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import MaterialType, UnitAlias, UnitOfMeasure
+from models import UnitAlias, UnitOfMeasure
 
 router = APIRouter()
 
@@ -34,23 +34,3 @@ def list_unit_aliases(unit_id: int, db: Session = Depends(get_db)):
         .all()
     )
     return [{"id": a.id, "raw_text": a.raw_text, "unit_id": a.unit_id} for a in aliases]
-
-
-material_types_router = APIRouter()
-
-
-@material_types_router.get("")
-def list_material_types(db: Session = Depends(get_db)):
-    types = db.query(MaterialType).order_by(MaterialType.code).all()
-    return [
-        {
-            "id": mt.id,
-            "code": mt.code,
-            "name": mt.name,
-            "default_unit": (
-                {"id": mt.default_unit.id, "code": mt.default_unit.code, "symbol": mt.default_unit.symbol}
-                if mt.default_unit else None
-            ),
-        }
-        for mt in types
-    ]

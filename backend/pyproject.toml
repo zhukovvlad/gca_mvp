@@ -1,5 +1,5 @@
 [project]
-name = "udp-backend"
+name = "gca-backend"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "httpx>=0.27.0",
     "openpyxl>=3.1.5",
-    "boto3>=1.35.0",
     "psycopg[binary]>=3.2.13",
     "alembic>=1.14.1",
     "pgvector>=0.4.2",
@@ -19,9 +18,6 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "pydantic[email]>=2.13.4",
     "click>=8.3.3",
-    "pypdfium2>=5.10.1",
-    "pikepdf>=10.8.0",
-    "pillow>=12.3.0",
 ]
 
 [dependency-groups]
@@ -31,7 +27,6 @@ dev = [
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.6.1",
     "pytest-dotenv>=0.5.2",
-    "respx>=0.21.1",
     "factory-boy>=3.3.1",
     "faker>=30.10.0",
     "freezegun>=1.5.1",
@@ -88,13 +83,5 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]  # import-order в тестах не критичен
-"alembic/versions/*" = ["E402", "F401", "UP007", "UP035"]
-"scripts/*" = ["E402", "F401", "F541"]  # скрипты — не строгий production-код
-"main.py" = ["E402", "F401"]  # load_dotenv() должен запуститься до локальных импортов
-# Существующие prod-файлы с накопленными нарушениями — фиксим инкрементально
-# (F401 unused imports, B904 raise from, SIM* стилистика). Чтобы новые файлы
-# линтились строго, ignore только на конкретные файлы:
-"crud.py" = ["SIM108"]
-"routers/dashboard.py" = ["F401"]
-"routers/export.py" = ["F401"]
-"routers/invoices.py" = ["F401", "B904", "SIM105"]
+"alembic/versions/*" = ["E402", "F401", "I001", "UP007", "UP035"]
+"main.py" = ["E402", "F401"]  # setup_logging() должен запуститься до локальных импортов

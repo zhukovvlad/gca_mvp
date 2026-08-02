@@ -16,14 +16,11 @@ export function createTestQueryClient(): QueryClient {
   });
 }
 
-/** Дефолтный пользователь для тестов — org admin. */
+/** Дефолтный пользователь для тестов — admin. */
 const DEFAULT_TEST_USER: User = {
   id: 1,
   email: "test@example.com",
-  org_id: 1,
-  org_role: "admin",
-  is_superuser: false,
-  organization: { id: 1, name: "Тест Орг", inn: null, kind: "customer" },
+  role: "admin",
 };
 
 interface WrapperProps {

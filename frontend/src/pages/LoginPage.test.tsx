@@ -10,11 +10,11 @@ import LoginPage from "./LoginPage";
 // MSW default: POST /api/auth/login → 200 { status: "ok" }
 
 function renderLogin() {
-  // Рендерим внутри Routes: /login → LoginPage, /dashboard → заглушка
+  // Рендерим внутри Routes: /login → LoginPage, / → заглушка главной
   return renderWithProviders(
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/dashboard" element={<div>dashboard-page</div>} />
+      <Route path="/" element={<div>home-page</div>} />
     </Routes>,
     { initialRoute: "/login", initialUser: null }
   );
@@ -28,7 +28,7 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "Войти" })).toBeInTheDocument();
   });
 
-  it("при успешном логине переходит на /dashboard", async () => {
+  it("при успешном логине переходит на главную", async () => {
     const user = userEvent.setup();
     renderLogin();
 
@@ -37,7 +37,7 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Войти" }));
 
     await waitFor(() => {
-      expect(screen.getByText("dashboard-page")).toBeInTheDocument();
+      expect(screen.getByText("home-page")).toBeInTheDocument();
     });
   });
 

@@ -104,9 +104,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
 
     access = create_access_token({
         "sub": str(user.id),
-        "org_id": user.org_id,
-        "is_superuser": user.is_superuser,
-        "org_role": user.org_role.value if user.org_role else None,
+        "role": user.role.value,
     })
     refresh_raw, refresh_hashed = generate_refresh_token()
     db.add(RefreshToken(
@@ -165,9 +163,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
 
     access = create_access_token({
         "sub": str(user.id),
-        "org_id": user.org_id,
-        "is_superuser": user.is_superuser,
-        "org_role": user.org_role.value if user.org_role else None,
+        "role": user.role.value,
     })
     csrf = generate_csrf_token()
     _set_auth_cookies(response, access, new_raw, csrf)
@@ -191,20 +187,9 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(current_user: User = Depends(get_current_user)):
-    """Вернуть профиль текущего пользователя.
-
-    Возвращает базовые данные пользователя + информацию об организации.
-    """
+    """Вернуть профиль текущего пользователя."""
     return {
         "id": current_user.id,
         "email": current_user.email,
-        "org_id": current_user.org_id,
-        "org_role": current_user.org_role.value if current_user.org_role else None,
-        "is_superuser": current_user.is_superuser,
-        "organization": {
-            "id": current_user.organization.id,
-            "name": current_user.organization.name,
-            "inn": current_user.organization.inn,
-            "kind": current_user.organization.kind.value,
-        } if current_user.organization else None,
+        "role": current_user.role.value,
     }

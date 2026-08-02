@@ -3,7 +3,7 @@ class TestUnitsApi:
         resp = client.get("/api/units")
         assert resp.status_code == 200
         codes = {u["code"] for u in resp.json()}
-        assert {"TON", "KG", "M3", "L", "M", "PCS"} <= codes
+        assert {"TON", "KG", "M3", "L", "M2", "M", "PCS", "SET", "MON"} <= codes
         ton = next(u for u in resp.json() if u["code"] == "TON")
         assert ton["dimension"] == "mass"
         assert ton["symbol"] == "т"
@@ -16,10 +16,15 @@ class TestUnitsApi:
         raw = {a["raw_text"] for a in resp.json()}
         assert "т" in raw and "тонн" in raw
 
-    def test_list_material_types(self, client):
-        resp = client.get("/api/material-types")
+    def test_m2_aliases_present(self, client):
+        """Алиасы «м2»/«кв.м»/«м²» обязательны (AGENTS.md §4)."""
+        units = client.get("/api/units").json()
+        m2_id = next(u["id"] for u in units if u["code"] == "M2")
+        resp = client.get(f"/api/units/{m2_id}/aliases")
         assert resp.status_code == 200
-        by_code = {m["code"]: m for m in resp.json()}
-        assert set(by_code) == {"concrete", "rebar", "other"}
-        assert by_code["concrete"]["default_unit"]["code"] == "M3"
-        assert by_code["other"]["default_unit"] is None
+        raw = {a["raw_text"] for a in resp.json()}
+        # м² NFKC-нормализуется в м2 — обе формы ведут к одному ключу
+        assert "м2" in raw and "кв.м" in raw
+
+    def test_unknown_unit_404(self, client):
+        assert client.get("/api/units/999999/aliases").status_code == 404

@@ -18,7 +18,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: udp_test
+          POSTGRES_DB: gca_test
         ports:
           - 5432:5432
         options: >-
@@ -31,14 +31,10 @@ jobs:
       # The app constructs its engine from DATABASE_URL at import time, so it must be set.
       # Tests use TEST_DATABASE_URL. The two MUST differ: conftest skips integration when
       # TEST_DATABASE_URL == DATABASE_URL (a DROP SCHEMA safety guard). DATABASE_URL points
-      # at the always-present `postgres` db; tests run against the `udp_test` db.
+      # at the always-present `postgres` db; tests run against the `gca_test` db.
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
-      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/udp_test
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/gca_test
       SECRET_KEY: ci-only-secret-key-not-for-production-min-32-chars
-      # The PDF parser returns an error if OPENROUTER_API_KEY is empty (checked before the
-      # HTTP call). Upload tests mock the HTTP response via respx, so any non-empty value
-      # works — it only needs to pass the "is the key configured?" guard.
-      OPENROUTER_API_KEY: ci-dummy-key-respx-mocks-the-call
 
     steps:
       - uses: actions/checkout@v4

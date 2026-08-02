@@ -7,7 +7,7 @@ import { Button } from "@/components/ui-domain/Button";
 
 /**
  * Страница входа в систему.
- * После успешного логина перенаправляет на /dashboard.
+ * После успешного логина перенаправляет на главную.
  */
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -20,7 +20,7 @@ export default function LoginPage() {
     e.preventDefault();
     try {
       await login.mutateAsync({ email, password });
-      navigate("/dashboard", { replace: true });
+      navigate("/", { replace: true });
     } catch {
       // ошибка отображается через login.isError ниже
     }
@@ -30,7 +30,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-[var(--color-bg)] p-4">
       <div className="w-full max-w-sm rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 shadow-sm">
         <h1 className="mb-1 text-2xl font-semibold text-[var(--color-fg)]">
-          УПД Трекер цен
+          База расценок ГП
         </h1>
         <p className="mb-6 text-sm text-[var(--color-muted)]">
           Войдите в систему

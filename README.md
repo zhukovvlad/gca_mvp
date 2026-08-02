@@ -1,203 +1,72 @@
-# УПД Трекер цен
+# База расценок генподряда (GCA MVP)
 
-B2B веб-приложение для тендерных менеджеров строительных компаний. Загружаете PDF-накладные (УПД / счёт-фактура) — ИИ извлекает поставщика, материал, цену и объём. Приложение накапливает историю цен, строит аналитику и позволяет выгружать отчёты-обоснования в Excel.
+Внутренний инструмент одной компании: единая база расценок договоров генподряда
+2024–2027 со сквозным сравнением работ между объектами и годами, нормативами по
+классам объектов, паспортом объекта и выгрузками в Excel.
 
----
+Полная инструкция проекта — **[AGENTS.md](AGENTS.md)** (единственный источник
+истины по архитектуре и порядку работ). `CLAUDE.md` — указатель на него.
 
-## Что делает приложение
+## Происхождение кода
 
-- **Загрузка УПД** — drag-and-drop PDF прямо из карточки объекта, автоматический парсинг через LLM
-- **Проверка** — PDF-просмотрщик + форма редактирования для документов с низкой уверенностью ИИ
-- **Дашборд** — графики средней цены по месяцам, KPI-карточки по объекту
-- **Объекты** — список проектов, базовые (эталонные) цены, исключение нерепрезентативных поставщиков из расчётов
-- **Поставщики** — реестр с оборотом, объёмами, отклонениями в разрезе объектов; дедупликация по ИНН; слияние дублей
-- **Номенклатура** — справочник классов материалов (бетон, арматура и др.) и базовые цены по объектам
-- **Отчёты** — выгрузка в Excel: средние цены по периодам, отклонения от базовых, разбивка по поставщикам (16 колонок, формулы)
-- **Мультиарендность** — организации, роли (superadmin / admin / member), изоляция доступа
-
----
+Boilerplate (структура backend/frontend, auth, единицы измерения, паттерны
+CRUD/роутеров/тестов) импортирован из
+[zhukovvlad/udp-tenders](https://github.com/zhukovvlad/udp-tenders) @ `98fb67667c44`
+одним коммитом без переноса git-истории (LICENSE в источнике на этой ревизии
+отсутствует; все исходные репозитории принадлежат автору проекта). Схема БД
+переносится из [zhukovvlad/tenders-go](https://github.com/zhukovvlad/tenders-go)
+@ `121718bf45df`, парсер XLSX — из
+[zhukovvlad/parser_tender_xlsx](https://github.com/zhukovvlad/parser_tender_xlsx)
+@ `0e178c097d80` (см. AGENTS.md §2).
 
 ## Стек
 
-| Слой | Технология |
-|------|-----------|
-| Бэкенд | Python 3.12, FastAPI, SQLAlchemy (sync), Alembic, pydantic-settings |
-| Аутентификация | pyjwt (HS256), pwdlib[argon2] — httpOnly cookies, double-submit CSRF, ротация refresh-токенов |
-| База данных | PostgreSQL (`postgresql+psycopg://` DSN) — локальный кластер, Docker или managed-хостинг вроде Neon |
-| Хранилище PDF | MinIO (S3-совместимое), локальный бинарь `minio.exe` |
-| PDF-парсинг | OpenRouter API — Mistral OCR / Claude Vision |
-| Фронтенд | React 19, TypeScript, Vite, shadcn/ui, Tailwind CSS v4, Recharts |
-| State / данные | TanStack Query v5, axios |
-| Тесты (BE) | pytest 9, respx, factory_boy |
-| Тесты (FE) | Vitest + Testing Library + MSW v2 |
-| Task runner | `just` |
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.x (sync), Alembic, psycopg3;
+  PostgreSQL 16 + pgvector. Без брокеров: длинные операции — `BackgroundTasks`
+  + таблица `import_jobs`.
+- **Frontend:** React + TS, Vite, shadcn/ui, Tailwind, TanStack Query,
+  TanStack Table, Recharts.
+- Task runner — [`just`](https://github.com/casey/just); Python-окружение — `uv`.
 
----
+## ВАЖНО: один worker
 
-## Запуск
+MVP запускается **строго с одним worker-процессом uvicorn** — это условие
+корректности startup-recovery загрузок (`import_jobs`, AGENTS.md §3, §6).
+`just dev-backend` уже настроен правильно; никаких `--workers N`.
 
-### Требования
-
-- Python 3.12 и Node.js 24+
-- [just](https://just.systems/) — установить по инструкции на сайте или `winget install Casey.Just`
-- [uv](https://docs.astral.sh/uv/) — менеджер зависимостей/окружений Python (`winget install astral-sh.uv` или см. сайт)
-- MinIO — скачать `minio.exe` со [страницы загрузки](https://min.io/download)
-- Postgres 16 — локальный кластер, Docker или managed-хостинг вроде [Neon](https://neon.tech) (бесплатный tier)
-- Аккаунт на [OpenRouter](https://openrouter.ai)
-
-### 1. Настройка переменных окружения
+## Быстрый старт
 
 ```bash
-cp backend/.env.example backend/.env
+just install          # backend (uv sync) + frontend (npm ci)
+cp backend/.env.example backend/.env   # заполнить SECRET_KEY (openssl rand -hex 32)
+cp .env.test.example .env.test         # для локальных тестов
+just db-dev-init      # создать gca_dev на локальном кластере + миграции
+just create-user admin@example.com admin   # первый пользователь
+just dev-backend      # http://localhost:8259 (один worker!)
+just dev-frontend     # http://localhost:5173
 ```
 
-Обязательные переменные в `backend/.env`:
+Локальная БД — портативный PostgreSQL 16 + pgvector на порту `5459`
+(кластер общий для проектов на машине, GCA живёт в базах `gca_dev` / `gca_test`).
 
-| Переменная | Описание |
-|------------|---------|
-| `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| `DATABASE_URL` | DSN Postgres (`postgresql+psycopg://...`). Локальный кластер, Docker или managed-хостинг вроде Neon — на выбор |
-| `APP_ENV` | `dev` (дефолт) или `prod`. В `dev` guard разрешает мутировать только loopback-цели и `DB_EXTRA_TARGETS`; в `prod` — любые. См. [docs/testing.md](docs/testing.md) |
-| `SECRET_KEY` | Сгенерировать: `openssl rand -hex 32` |
-| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Настройки MinIO (по умолчанию `http://localhost:9259` / `minioadmin`) |
-| `ALLOWED_ORIGINS` | JSON-массив origin'ов фронтенда, например `["http://localhost:5173"]` |
-
-Если для `DATABASE_URL` выбран Neon (один из вариантов, не обязательный): [docs/setup/neon-setup.md](docs/setup/neon-setup.md).
-
-### 2. Установка зависимостей
+## Тесты и линт
 
 ```bash
-just install
+just test             # backend (pytest) + frontend (vitest)
+just lint             # ruff + eslint
+just typecheck-frontend
 ```
 
-### 3. Запуск MinIO
+Integration-тесты требуют `TEST_DATABASE_URL` (см. `.env.test.example`); имя
+тестовой БД обязано оканчиваться на `_test` — conftest делает `DROP SCHEMA`
+перед прогоном.
 
-```bash
-minio.exe server ./minio-data --address ":9259" --console-address ":9260"
-```
+## Статус (фазы AGENTS.md §9)
 
-MinIO API: `http://localhost:9259`, веб-консоль: `http://localhost:9260`.
-
-### 4. Локальный Postgres и миграция базы данных
-
-`DATABASE_URL` из `.env.example` по умолчанию указывает на локальный кластер —
-он не устанавливается автоматически. Разовая установка без админ-прав описана в
-[docs/testing.md](docs/testing.md), раздел «Локальный тестовый Postgres»
-(«Установка с нуля»).
-
-```bash
-just db-dev-init   # создаёт локальную БД udp_dev (если её ещё нет) и сразу накатывает миграции
-```
-
-Для последующих миграций локальной `udp_dev` — `just db-migrate`.
-Подробнее про `db-dev-init` и переключатель `db_target` — [docs/testing.md](docs/testing.md), раздел «Локальная dev-БД».
-
-**Если для `DATABASE_URL` выбран managed-хостинг (Neon и пр.)** — база уже
-существует, шаг с локальным кластером не нужен. Все рецепты по умолчанию
-работают с локальной `udp_dev` (`db_target=local`); чтобы вместо неё
-использовать DSN из `.env`, добавляйте `db_target=env`:
-
-```bash
-just db_target=env db-migrate
-```
-
-Managed-БД — не loopback, поэтому при `APP_ENV=dev` guard откажет мутировать
-её, пока нормализованная цель (`host:port/dbname`) не добавлена в
-`DB_EXTRA_TARGETS` в `backend/.env`; сообщение об ошибке печатает эту тройку
-ровно в том виде, который принимает переменная. Продакшн-базу мигрируют
-отдельной осознанной командой — `APP_ENV=prod just db_target=env db-migrate` —
-и **никогда** не добавляют в `DB_EXTRA_TARGETS`: это список для
-долгоживущих dev-целей, а не постоянная индульгенция для прода.
-
-### 5. Создание первого пользователя и организации
-
-```bash
-just create-org "Моя компания"
-just create-superuser admin@example.com
-```
-
-### 6. Запуск сервисов
-
-В двух отдельных терминалах:
-
-```bash
-just dev-backend   # http://localhost:8259  (Swagger: /docs)
-just dev-frontend  # http://localhost:5173
-```
-
----
-
-## Разработка
-
-```bash
-just test                    # backend + frontend тесты
-just test-backend-unit       # только unit-тесты, без БД (~1 с)
-just test-backend-integration  # integration-тесты (нужен TEST_DATABASE_URL)
-just test-frontend           # vitest
-just lint                    # ruff + eslint
-just typecheck-frontend      # tsc --noEmit
-just coverage-backend        # HTML-отчёт → backend/htmlcov/index.html
-```
-
-Полный список команд: `just` (без аргументов).
-
----
-
-## Структура проекта
-
-```
-UDP/
-├── backend/
-│   ├── main.py              — FastAPI: CORS, CSRF middleware, роутеры
-│   ├── models.py            — ORM: Project, Document, Invoice, InvoiceItem,
-│   │                          MaterialClass, ReferencePrice, Supplier,
-│   │                          Organization, User, RefreshToken, ...
-│   ├── crud/                — операции с БД (6 модулей):
-│   │   ├── projects.py      — Project + ReferencePrice
-│   │   ├── materials.py     — MaterialClass
-│   │   ├── documents.py     — Document + Invoice
-│   │   ├── calculations.py  — avg_price, deviation, export-строки
-│   │   ├── suppliers.py     — Supplier + аналитика
-│   │   ├── supplier_exclusions.py — исключения поставщиков из расчётов
-│   │   └── admin.py         — суперпользовательский CRUD: орги, пользователи, матрица ролей
-│   ├── security.py          — JWT, хэширование паролей, CSRF
-│   ├── auth.py              — FastAPI-зависимости: get_current_user, роли
-│   ├── pdf_parser.py        — парсинг УПД через OpenRouter API
-│   ├── s3.py                — работа с MinIO
-│   ├── cli.py               — CLI: create-superuser, create-org
-│   ├── routers/             — REST API:
-│   │   ├── auth.py          — login, logout, refresh, me
-│   │   ├── projects.py      — объекты, исключения поставщиков
-│   │   ├── invoices.py      — загрузка и редактирование УПД
-│   │   ├── dashboard.py     — расчётная аналитика
-│   │   ├── export.py        — Excel-выгрузка
-│   │   ├── suppliers.py     — реестр поставщиков, слияние
-│   │   ├── material_classes.py — номенклатура
-│   │   ├── reference_prices.py — базовые цены
-│   │   ├── orgs.py          — организации
-│   │   ├── admin.py         — административные операции
-│   │   └── settings.py      — настройки
-│   ├── alembic/             — миграции БД
-│   └── tests/               — unit/ + integration/ + fixtures/
-├── frontend/src/
-│   ├── pages/               — Dashboard, Projects, ProjectPage,
-│   │                          Suppliers, SupplierPage,
-│   │                          Materials, MaterialPage,
-│   │                          Reports, Review, Settings, LoginPage,
-│   │                          admin/ (AdminOrganizations, AdminOrgDetail,
-│   │                            AdminOrgCreate, AdminUsers, AdminUserCreate),
-│   │                          handbook/ (Handbook, HandbookArticle,
-│   │                            ConcreteAveragePrice, articles.ts)
-│   ├── components/          — ui/, ui-domain/, layout/,
-│   │                          dashboard/, projects/, invoices/, review/,
-│   │                          admin/, handbook/
-│   ├── services/            — API-клиент (axios), TanStack Query, queryKeys
-│   ├── lib/                 — format, constants, utils, useDebounce, password
-│   └── types/               — TypeScript-типы по доменам
-├── docs/
-│   ├── TECH_DEBT.md         — отслеживаемый технический долг
-│   ├── testing.md           — архитектура тестов, гайд по добавлению
-│   ├── ui/routes-architecture.md — дизайн маршрутов и навигации
-│   └── setup/neon-setup.md  — инструкция по настройке БД
-└── justfile                 — команды разработки
-```
+- [x] Фаза 0 — входные данные, сверка семантики quantity/suggested_quantity, обезличенный fixture
+- [x] Фаза 1 — инициализация, перенос boilerplate, чистка (LLM/PDF/MinIO/организации/УПД-домен)
+- [ ] Фаза 2 — схема БД (contracts, estimates, каталог, нормативы, VIEW отклонений)
+- [ ] Фаза 3 — парсер XLSX
+- [ ] Фаза 4 — импорт + матчинг
+- [ ] Фаза 5 — CRUD и Review
+- [ ] Фаза 6 — аналитика (паспорт, матрица, отчёты)

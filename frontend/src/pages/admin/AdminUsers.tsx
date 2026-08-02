@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, UserPlus } from "lucide-react";
 
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Button } from "@/components/ui-domain/Button";
-import { OrgRoleBadge } from "@/components/admin/RoleBadges";
+import { RoleBadge } from "@/components/admin/RoleBadges";
 import {
   Table,
   TableBody,
@@ -44,13 +44,18 @@ export default function AdminUsers() {
       <PageHeader
         serif
         title="Пользователи"
-        subtitle={data ? `Всего: ${data.total}` : "Все пользователи платформы"}
+        subtitle={data ? `Всего: ${data.total}` : "Все пользователи системы"}
+        actions={
+          <Button leftIcon={<UserPlus size={14} />} onClick={() => navigate("/admin/users/new")}>
+            Новый пользователь
+          </Button>
+        }
       />
 
       <div className="mt-6">
         <InputGroup className="flex-1 max-w-xs">
           <InputGroupInput
-            placeholder="Поиск по email или организации"
+            placeholder="Поиск по email"
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
           />
@@ -81,37 +86,16 @@ export default function AdminUsers() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Email</TableHead>
-                    <TableHead>Организация</TableHead>
                     <TableHead>Роль</TableHead>
                     <TableHead>Статус</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.items.map((u) => (
-                    <TableRow
-                      key={u.id}
-                      role={u.org_id ? "button" : undefined}
-                      tabIndex={u.org_id ? 0 : undefined}
-                      className={u.org_id ? "cursor-pointer hover:bg-surface-hover" : undefined}
-                      onClick={() => u.org_id && navigate(`/admin/organizations/${u.org_id}`)}
-                      onKeyDown={(e) => {
-                        if (u.org_id && (e.key === "Enter" || e.key === " ")) {
-                          e.preventDefault();
-                          navigate(`/admin/organizations/${u.org_id}`);
-                        }
-                      }}
-                    >
-                      <TableCell className="font-medium text-fg">
-                        {u.email}
-                        {u.is_superuser && (
-                          <span className="ml-2 rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-accent">
-                            суперюзер
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-fg-secondary">{u.org_name ?? "—"}</TableCell>
+                    <TableRow key={u.id}>
+                      <TableCell className="font-medium text-fg">{u.email}</TableCell>
                       <TableCell>
-                        <OrgRoleBadge role={u.org_role} />
+                        <RoleBadge role={u.role} />
                       </TableCell>
                       <TableCell>
                         {u.is_active ? (

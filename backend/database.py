@@ -10,9 +10,9 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
-    pool_recycle=300,  # Neon serverless drops idle connections after ~5 min
+    pool_recycle=300,
     connect_args={
-        "application_name": "udp_backend",
+        "application_name": "gca_backend",
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,

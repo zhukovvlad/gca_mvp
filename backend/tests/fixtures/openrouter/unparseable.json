@@ -1,5 +1,0 @@
-{
-  "id": "gen-test-2",
-  "choices": [{"message": {"role": "assistant", "content": "{\"doc_type\": \"unknown\"}"}}],
-  "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60, "cost": 0.0021}
-}

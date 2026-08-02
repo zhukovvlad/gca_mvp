@@ -57,9 +57,7 @@ def no_db_session(monkeypatch):
 @pytest.mark.parametrize(
     ("command", "args"),
     [
-        ("create-superuser", ["--email", "a@b.c", "--password", "pw"]),
-        ("create-org", ["--name", "Орг"]),
-        ("create-user", ["--email", "a@b.c", "--org-id", "1", "--password", "pw"]),
+        ("create-user", ["--email", "a@b.c", "--password", "pw"]),
     ],
 )
 def test_cli_commands_refuse_unlisted_target(command, args, no_db_session):
@@ -73,9 +71,7 @@ def test_cli_commands_refuse_unlisted_target(command, args, no_db_session):
 @pytest.mark.parametrize(
     ("command", "args"),
     [
-        ("create-superuser", ["--email", "a@b.c", "--password", "pw"]),
-        ("create-org", ["--name", "Орг"]),
-        ("create-user", ["--email", "a@b.c", "--org-id", "1", "--password", "pw"]),
+        ("create-user", ["--email", "a@b.c", "--password", "pw"]),
     ],
 )
 def test_cli_commands_pass_guard_when_prod(command, args, monkeypatch):
@@ -93,40 +89,6 @@ def test_cli_commands_pass_guard_when_prod(command, args, monkeypatch):
     monkeypatch.setattr(cli, "SessionLocal", _record)
     CliRunner().invoke(cli.cli, [command, *args])
     assert reached, "guard не пустил дальше, хотя запись разрешена"
-
-
-def test_startup_sweep_refuses_unlisted_target(monkeypatch):
-    """Sweep на старте не идёт в неразрешённую цель."""
-    monkeypatch.setenv("APP_ENV", "dev")
-    monkeypatch.setenv("DB_EXTRA_TARGETS", "")
-    monkeypatch.setattr(main.settings, "DATABASE_URL", REMOTE_URL, raising=False)
-    with pytest.raises(RuntimeError, match="startup-sweep"):
-        main._sweep_stuck_documents()
-
-
-def test_startup_sweep_skips_guard_for_injected_factory():
-    """С инжектированной фабрикой guard не при чём — цель заведомо тестовая.
-
-    Иначе интеграционные тесты (они подменяют фабрику) требовали бы
-    APP_ENV=prod только из-за незнакомого хоста в backend/.env.
-    """
-    class _Result:
-        rowcount = 0
-
-    class _Session:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def execute(self, *_args):
-            return _Result()
-
-        def commit(self):
-            pass
-
-    assert main._sweep_stuck_documents(session_factory=_Session) == 0
 
 
 def test_alembic_env_guards_before_engine():
