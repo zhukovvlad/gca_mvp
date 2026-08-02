@@ -35,7 +35,12 @@ config.set_main_option("sqlalchemy.url", _db_url)
 ensure_mutation_allowed(_db_url, "alembic")
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False обязателен. По умолчанию fileConfig гасит
+    # все логгеры, созданные до его вызова и не перечисленные в alembic.ini, —
+    # то есть все логгеры приложения. Когда Alembic запускается в том же
+    # процессе (conftest накатывает миграции на сессию тестов, §9 фазы 1),
+    # после этого вызова backend замолкает до конца процесса.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
