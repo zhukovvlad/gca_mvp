@@ -47,7 +47,7 @@ interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
   queryClient?: QueryClient;
   /**
    * Предзаполнить кэш `currentUser`.
-   * - По умолчанию: DEFAULT_TEST_USER (org admin).
+   * - По умолчанию: DEFAULT_TEST_USER (admin).
    * - null — кэш остаётся пустым, `useCurrentUser()` сделает запрос `/api/auth/me`.
    *   MSW-хендлер по умолчанию возвращает валидного пользователя, поэтому редиректа
    *   НЕ будет. Чтобы протестировать неавторизованный сценарий, переопределите

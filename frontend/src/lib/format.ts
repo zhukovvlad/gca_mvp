@@ -46,21 +46,6 @@ export function formatRelative(iso: string | null | undefined): string {
   return formatDate(iso);
 }
 
-/** Инфра-затраты OpenRouter в USD. Мелкие суммы (< 1¢) показываем до 4 знаков
- *  без хвостовых нулей, чтобы дешёвые разборы (~$0.002) не сливались в «$0.00». */
-export function formatUsd(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  if (value === 0) return "$0.00";
-  // Guard: суммы < $0.0001 округлились бы toFixed(4) до "0.0000" → трим дал бы "$0".
-  // На практике OpenRouter такого не возвращает, но держим формат герметичным.
-  if (value < 0.0001) return "<$0.0001";
-  if (value < 0.01) {
-    const trimmed = value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
-    return `$${trimmed}`;
-  }
-  return `$${value.toFixed(2)}`;
-}
-
 /** Русские окончания для слова с числом (поставщик, объект и т.п.).
  *  Возвращает суффикс: "" / "а" / "ов". */
 export function pluralRu(n: number): string {
