@@ -230,7 +230,9 @@ def upgrade() -> None:
             "amendment_no IS NULL OR amendment_no > 0", name="ck_estimates_amendment_no"
         ),
     )
-    op.create_index("ix_estimates_contract_id", "estimates", ["contract_id"])
+    # Индекс по contract_id не создаётся: uq_estimates_contract_amendment
+    # (см. raw SQL ниже) — полный индекс с ведущей contract_id, дубль по
+    # ведущей колонке дал бы только write-амплификацию.
     op.create_index("ix_estimates_import_job_id", "estimates", ["import_job_id"])
 
     op.create_table(

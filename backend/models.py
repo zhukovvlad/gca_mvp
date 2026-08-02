@@ -400,7 +400,9 @@ class Estimate(Base):
         CheckConstraint(
             "amendment_no IS NULL OR amendment_no > 0", name="ck_estimates_amendment_no"
         ),
-        Index("ix_estimates_contract_id", "contract_id"),
+        # Отдельного индекса по contract_id нет намеренно: выборки по договору
+        # обслуживает uq_estimates_contract_amendment — полный уникальный индекс
+        # с ведущей колонкой contract_id (создаётся raw SQL в миграции 0002).
         Index("ix_estimates_import_job_id", "import_job_id"),
         # uq_estimates_contract_amendment — UNIQUE NULLS NOT DISTINCT
         # (contract_id, amendment_no), синтаксис PG16; создаётся raw SQL
