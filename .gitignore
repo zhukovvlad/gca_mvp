@@ -1,0 +1,48 @@
+# Реальные сметы — не коммитить (см. AGENTS.md §9, фаза 0)
+/samples
+
+# Локальная копия брифа (единственный источник истины — AGENTS.md)
+/GP_RATES_MVP_BRIEF.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+backend/logs/
+/backend/.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Локальное файловое хранилище (LocalStorage, см. AGENTS.md §8)
+/storage
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# env-файлы: игнорируем и .env*, и *.env (обе формы имени), кроме шаблонов .example
+.env*
+*.env
+!.env*.example
+
+# Тестовые артефакты
+backend/htmlcov/
+backend/coverage.xml
+backend/.coverage
+backend/.pytest_cache/
+.ruff_cache/
+frontend/coverage/
+playwright-report/
+test-results/
+
+# Всякое локальное
+/tasks
+/temp
+.superpowers/
