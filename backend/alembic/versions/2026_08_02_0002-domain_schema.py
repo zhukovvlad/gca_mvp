@@ -398,10 +398,12 @@ def upgrade() -> None:
         _created_at(),
         _updated_at(),
         sa.CheckConstraint("source IN ('auto', 'manual')", name="ck_matching_cache_source"),
-        # Ручное решение из Review не истекает (AGENTS.md §4).
+        # Правило TTL целиком (AGENTS.md §4): автоматическая запись обязана
+        # иметь срок, ручное решение из Review — обязано не иметь.
         sa.CheckConstraint(
-            "source <> 'manual' OR expires_at IS NULL",
-            name="ck_matching_cache_manual_never_expires",
+            "(source = 'manual' AND expires_at IS NULL)"
+            " OR (source = 'auto' AND expires_at IS NOT NULL)",
+            name="ck_matching_cache_ttl_by_source",
         ),
     )
     op.create_index("idx_matching_cache_catalog_id", "matching_cache", ["catalog_position_id"])

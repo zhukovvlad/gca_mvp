@@ -265,6 +265,10 @@ class TestCatalogIdentity:
 # ---------------------------------------------------------------------------
 
 class TestMatchingCache:
+    """Правило TTL (§4): 'auto' обязан иметь срок, 'manual' обязан не иметь."""
+
+    AUTO_TTL = dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+
     def _cache_row(self, position, **kwargs):
         payload = {
             "cache_key": "k" * 64,
@@ -273,16 +277,37 @@ class TestMatchingCache:
             "unit_text": "м2",
             "catalog_position_id": position.id,
             "source": MatchSource.auto.value,
-            "expires_at": None,
+            "expires_at": self.AUTO_TTL,
         }
         payload.update(kwargs)
         return MatchingCache(**payload)
 
-    def test_manual_entry_cannot_expire(self, db_session, factories):
-        """Ручное решение из Review не истекает (§4) — закреплено CHECK-ом."""
+    def test_both_valid_combinations_accepted(self, db_session, factories):
         position = factories.CatalogPositionFactory.create()
         db_session.flush()
-        with rejected(db_session, contains="ck_matching_cache_manual_never_expires"):
+        db_session.add(self._cache_row(position, cache_key="a" * 64))
+        db_session.add(
+            self._cache_row(
+                position, cache_key="b" * 64, source=MatchSource.manual.value, expires_at=None
+            )
+        )
+        db_session.flush()
+
+    def test_auto_entry_must_have_ttl(self, db_session, factories):
+        """Без срока автоматическая запись стала бы бессрочной и подменила бы
+        собой ручное решение — вечный кэш промаха матчинга."""
+        position = factories.CatalogPositionFactory.create()
+        db_session.flush()
+        with rejected(db_session, contains="ck_matching_cache_ttl_by_source"):
+            db_session.add(
+                self._cache_row(position, source=MatchSource.auto.value, expires_at=None)
+            )
+
+    def test_manual_entry_cannot_expire(self, db_session, factories):
+        """Ручное решение из Review не истекает (§4, DoD «переживает 30 дней»)."""
+        position = factories.CatalogPositionFactory.create()
+        db_session.flush()
+        with rejected(db_session, contains="ck_matching_cache_ttl_by_source"):
             db_session.add(
                 self._cache_row(
                     position,
@@ -292,14 +317,24 @@ class TestMatchingCache:
             )
 
     def test_unknown_source_rejected(self, db_session, factories):
+        # Неизвестный source нарушает оба CHECK-а сразу (ни одна ветка правила
+        # TTL к нему не подходит), а порядок их проверки PostgreSQL не
+        # гарантирует — поэтому имя конкретного констрейнта здесь не фиксируем.
         position = factories.CatalogPositionFactory.create()
         db_session.flush()
-        with rejected(db_session, contains="ck_matching_cache_source"):
+        with rejected(db_session, contains="matching_cache"):
             db_session.add(self._cache_row(position, source="guess"))
 
-    def test_cache_dies_with_its_catalog_position(self, db_session, factories):
-        """DELETE строки TO_REVIEW при слиянии не оставляет висящих ключей (§5)."""
-        position = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+    def test_cache_rows_die_with_their_catalog_position(self, db_session, factories):
+        """FK ON DELETE CASCADE: удаление каталожной строки не оставляет
+        висящих ключей кэша.
+
+        Проверяется именно каскад. Инвариант «кэш никогда не ссылается на
+        строку kind='TO_REVIEW'» (§5) обеспечивается кодом матчинга, а не
+        схемой, и закрепляется тестами фазы 4 — поэтому здесь взята обычная
+        POSITION, а не запрещённая связка.
+        """
+        position = factories.CatalogPositionFactory.create(kind=CatalogKind.POSITION.value)
         db_session.flush()
         db_session.add(self._cache_row(position))
         db_session.flush()

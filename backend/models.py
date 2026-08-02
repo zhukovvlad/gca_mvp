@@ -602,9 +602,13 @@ class MatchingCache(Base):
 
     __table_args__ = (
         CheckConstraint(f"source IN ({_sql_str_list(MatchSource)})", name="ck_matching_cache_source"),
+        # Правило TTL (§4) целиком, обе ветки: у 'auto' срок ОБЯЗАН быть
+        # (иначе автоматическая запись становится бессрочной и подменяет собой
+        # ручное решение), у 'manual' его обязано не быть.
         CheckConstraint(
-            f"source <> '{MatchSource.manual.value}' OR expires_at IS NULL",
-            name="ck_matching_cache_manual_never_expires",
+            f"(source = '{MatchSource.manual.value}' AND expires_at IS NULL)"
+            f" OR (source = '{MatchSource.auto.value}' AND expires_at IS NOT NULL)",
+            name="ck_matching_cache_ttl_by_source",
         ),
         Index("idx_matching_cache_catalog_id", "catalog_position_id"),
         Index("idx_matching_cache_expires_at", "expires_at"),

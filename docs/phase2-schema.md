@@ -72,8 +72,11 @@
 6. **Добавленные CHECK-и, которых не было в источниках** (ослаблений нет, §2):
    `contracts.total_amount >= 0`; `amendment_no > 0` на `estimates` и
    `import_jobs` (`-1` занят сентинелом в `COALESCE`);
-   `inflation_index > 0`; `matching_cache`: `source='manual' ⇒ expires_at IS NULL`
-   — правило TTL из §4 теперь невозможно нарушить в обход кода.
+   `inflation_index > 0`; `matching_cache.ck_matching_cache_ttl_by_source` —
+   правило TTL из §4 целиком, обе ветки:
+   `(source='manual' AND expires_at IS NULL) OR (source='auto' AND expires_at IS NOT NULL)`.
+   Односторонняя проверка (только для `manual`) пропускала бы бессрочную
+   автоматическую запись, а такая запись подменяет собой ручное решение.
 7. **Nullability новых колонок** — по букве §4: `NOT NULL` только там, где бриф
    это написал (FK договора, `signed_date`), остальное (`title`, `signer`,
    `total_amount`, `notes`) — nullable. Поля, пришедшие из tenders-go, сохранили
@@ -110,3 +113,9 @@ VIEW) и `tests/integration/test_deviations_view.py`. Доменные фабр�
   векторные подсказки — вне MVP (§5).
 - Значение `norm_version` (константа в cache_key) вводится вместе с матчингом в
   фазе 4; колонка `matching_cache.norm_version` уже есть.
+- Инвариант «записи `matching_cache` никогда не указывают на строки
+  `kind='TO_REVIEW'`» (§5) схемой не выражается: это свойство каскада матчинга
+  (кэш пишется только в ветках 2 / HEADER / TRASH и при ручных решениях).
+  Закрепить тестом в фазе 4 — он и есть условие безопасности `DELETE`
+  TO_REVIEW-строки при слиянии в Review. В фазе 2 проверяется только каскад
+  `ON DELETE CASCADE` на самом FK.
