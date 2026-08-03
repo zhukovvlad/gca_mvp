@@ -241,6 +241,62 @@ class TestReuploadRules:
 
         assert response.status_code == 202
 
+    def test_concurrent_upload_of_the_same_pair_is_409_not_500(
+        self,
+        committing_client,
+        committing_db,
+        committing_session_factory,
+        contract,
+        stub_parser,
+        tmp_storage,
+        monkeypatch,
+    ):
+        """Гонка между проверкой активного задания и INSERT.
+
+        Проверка и вставка — не одна операция, поэтому два одновременных запроса
+        могут оба пройти проверку; второго остановит частичный уникальный индекс
+        `uq_import_jobs_active_pair`. Данные защищены, но клиенту это ровно та же
+        ситуация, что и синхронная проверка, — значит и ответ обязан быть 409.
+
+        Гонка воспроизводится детерминированно: соперник создаётся из независимой
+        сессии в момент сохранения файла, то есть после проверки и до вставки.
+        """
+        from storage import new_key
+
+        stub_parser(payload_for(contract))
+        original_save = tmp_storage.save
+        raced = []
+
+        def racing_save(payload: bytes) -> str:
+            if not raced:
+                raced.append(True)
+                with committing_session_factory() as rival:
+                    rival.add(
+                        ImportJob(
+                            contract_id=contract.id,
+                            amendment_no=None,
+                            filename="rival.xlsx",
+                            file_key=new_key(),
+                            file_sha256="0" * 64,
+                            status=ImportJobStatus.pending.value,
+                        )
+                    )
+                    rival.commit()
+            return original_save(payload)
+
+        monkeypatch.setattr(tmp_storage, "save", racing_save)
+
+        response = upload(committing_client, content=xlsx_bytes(), contract_id=contract.id)
+
+        assert response.status_code == 409
+        assert "параллельным запросом" in response.json()["detail"]
+        # Проигравший не оставил ни задания, ни файла (§5).
+        committing_db.expire_all()
+        assert (
+            committing_db.execute(sa.select(sa.func.count()).select_from(ImportJob)).scalar_one() == 1
+        )
+        assert list(tmp_storage.root.iterdir()) == []
+
     def test_no_file_is_left_behind_on_409(
         self, committing_client, committing_db, contract, stub_parser, tmp_storage
     ):

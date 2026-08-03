@@ -28,6 +28,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
@@ -56,6 +57,11 @@ ZIP_MAGIC = b"PK\x03\x04"
 ALLOWED_SUFFIXES = (".xlsx", ".xlsm")
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+#: Частичный уникальный индекс, держащий лок пары (contract_id, amendment_no).
+#: Создан raw SQL в миграции 0002; имя нужно, чтобы отличить его нарушение от
+#: любого другого и ответить 409, а не 500.
+ACTIVE_PAIR_INDEX = "uq_import_jobs_active_pair"
 
 
 def job_response(db: Session, job: ImportJob) -> dict:
@@ -236,8 +242,27 @@ def upload_estimate(
         db.add(job)
         db.commit()
         db.refresh(job)
-    except Exception:
+    except IntegrityError as exc:
         # Файл остаётся только у реально созданного задания (§5).
+        db.rollback()
+        storage.delete(file_key)
+        if ACTIVE_PAIR_INDEX in str(exc.orig):
+            # Гонка: между проверкой активного задания и INSERT такое же задание
+            # успел создать параллельный запрос. Данные защищены индексом, но
+            # клиенту это та же ситуация, что и синхронная проверка выше, —
+            # значит и ответ обязан быть тем же 409, а не 500.
+            log.info(
+                "Гонка загрузок пары (contract_id=%s, amendment_no=%s): проиграли лок",
+                contract_id,
+                amendment_no,
+            )
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Импорт этой сметы уже запущен параллельным запросом. Дождитесь его "
+                "завершения и проверьте результат.",
+            ) from exc
+        raise
+    except Exception:
         db.rollback()
         storage.delete(file_key)
         raise

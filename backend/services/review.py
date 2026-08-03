@@ -42,10 +42,42 @@ class ReviewError(Exception):
     """Решение оператора неприменимо. Текст показывается человеку."""
 
 
-def _require_kind(db: Session, catalog_position_id: int, expected: str) -> CatalogPosition:
-    row = db.get(CatalogPosition, catalog_position_id)
+def _lock_rows(db: Session, ids: list[int]) -> dict[int, CatalogPosition]:
+    """Блокирует каталожные строки `FOR UPDATE` и возвращает их по id.
+
+    Решения оператора обязаны быть сериализованы: без блокировки два оператора
+    сливают одну и ту же TO_REVIEW-строку с разными целями, ссылки уходят к
+    первой цели, а ручную запись кэша перетирает вторая — то есть очередь и кэш
+    расходятся молча.
+
+    Строки блокируются ОДНИМ запросом с `ORDER BY id`: единый порядок захвата
+    исключает взаимную блокировку двух решений, работающих с той же парой строк
+    в обратном порядке.
+
+    Проверка состояния идёт ПОСЛЕ захвата — в этом и смысл: проигравший ждёт
+    коммита победителя и затем видит настоящее состояние (строки уже нет либо у
+    неё другой `kind`), а не то, что было до его ожидания.
+    """
+    rows = (
+        db.execute(
+            sa.select(CatalogPosition)
+            .where(CatalogPosition.id.in_(ids))
+            .order_by(CatalogPosition.id)
+            .with_for_update()
+        )
+        .scalars()
+        .all()
+    )
+    return {row.id: row for row in rows}
+
+
+def _require_kind(rows: dict[int, CatalogPosition], catalog_position_id: int, expected: str) -> CatalogPosition:
+    row = rows.get(catalog_position_id)
     if row is None:
-        raise ReviewError(f"Каталожная строка {catalog_position_id} не найдена.")
+        raise ReviewError(
+            f"Каталожная строка {catalog_position_id} не найдена — возможно, её уже "
+            "обработал другой оператор."
+        )
     if row.kind != expected:
         raise ReviewError(
             f"Каталожная строка {catalog_position_id} имеет kind={row.kind}, "
@@ -120,16 +152,19 @@ def merge_into_position(
         to_review_id: строка очереди Review.
         target_id: каталожная POSITION, с которой сливаем.
         resolver: готовый резолвер единиц; передаётся при пакетной обработке
-            очереди, чтобы не перечитывать справочник алиасов на каждое решение.
+            очереди, чтобы не перечитывать справочник на каждое решение.
 
     Raises:
         ReviewError: не тот `kind` у источника или цели, либо слияние с собой.
+            Проигравший гонку получает именно её: пока он ждал блокировку,
+            строка была слита и удалена.
     """
     if to_review_id == target_id:
         raise ReviewError("Нельзя слить строку с собой.")
 
-    source = _require_kind(db, to_review_id, CatalogKind.TO_REVIEW.value)
-    _require_kind(db, target_id, CatalogKind.POSITION.value)
+    locked = _lock_rows(db, [to_review_id, target_id])
+    source = _require_kind(locked, to_review_id, CatalogKind.TO_REVIEW.value)
+    _require_kind(locked, target_id, CatalogKind.POSITION.value)
     resolver = resolver or UnitResolver(db)
 
     moved = db.execute(
@@ -141,7 +176,16 @@ def merge_into_position(
 
     _write_manual_cache(db, source, target_id, resolver)
 
-    db.execute(sa.delete(CatalogPosition).where(CatalogPosition.id == to_review_id))
+    deleted = db.execute(
+        sa.delete(CatalogPosition).where(CatalogPosition.id == to_review_id)
+    ).rowcount
+    if deleted != 1:
+        # Строка была под нашим FOR UPDATE, так что исчезнуть она не могла. Если
+        # всё же исчезла — решение применено не к тому, что мы прочитали, и
+        # коммитить его нельзя.
+        raise ReviewError(
+            f"Каталожная строка {to_review_id} исчезла во время слияния; решение отменено."
+        )
     db.expire_all()
 
     log.info(
@@ -168,7 +212,9 @@ def set_kind(
         allowed = ", ".join(MANUAL_KINDS)
         raise ReviewError(f"Недопустимый kind «{kind}»; оператор может ставить: {allowed}.")
 
-    row = _require_kind(db, to_review_id, CatalogKind.TO_REVIEW.value)
+    row = _require_kind(
+        _lock_rows(db, [to_review_id]), to_review_id, CatalogKind.TO_REVIEW.value
+    )
     resolver = resolver or UnitResolver(db)
 
     row.kind = kind

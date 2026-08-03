@@ -50,26 +50,27 @@ async def lifespan(_: FastAPI):
     uvicorn. Второй worker при подъёме перевёл бы в `error` задания, которые
     первый в этот момент выполняет.
 
+    **Исключение НЕ подавляется.** Recovery — обязательное условие работы, а не
+    удобство: без него незавершённые задания продолжают держать лок пары
+    `uq_import_jobs_active_pair`, и повторная загрузка вечно отвечает 409. Если
+    recovery не выполнился, приложение не должно подняться. Ошибку ретенции
+    гасит сам `run_startup_maintenance` — она на работоспособность не влияет.
+
     Отключается настройкой `RUN_STARTUP_MAINTENANCE=false` — так тесты не дают
     `TestClient` мутировать БД приложения: lifespan работает на реальном engine,
-    мимо транзакционной фикстуры.
+    мимо транзакционной фикстуры. В проде не выключать.
     """
     if settings.RUN_STARTUP_MAINTENANCE:
-        try:
-            recovered, purged = run_startup_maintenance(
-                SessionLocal,
-                get_storage(),
-                retention_days=settings.ERROR_JOB_FILE_RETENTION_DAYS,
-            )
-            logger.info(
-                "Обслуживание при старте: заданий восстановлено %d, файлов удалено %d",
-                recovered,
-                purged,
-            )
-        except Exception:
-            # Приложение обязано подняться даже при недоступной БД: иначе
-            # починить конфигурацию через тот же процесс станет невозможно.
-            logger.exception("Обслуживание при старте не выполнено")
+        recovered, purged = run_startup_maintenance(
+            SessionLocal,
+            get_storage(),
+            retention_days=settings.ERROR_JOB_FILE_RETENTION_DAYS,
+        )
+        logger.info(
+            "Обслуживание при старте: заданий восстановлено %d, файлов удалено %d",
+            recovered,
+            purged,
+        )
     yield
 
 

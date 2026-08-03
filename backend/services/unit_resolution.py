@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 
 from crud.units import normalize_unit_key
 from models import UnitAlias, UnitOfMeasure
+
+log = logging.getLogger(__name__)
 
 #: Значение `unit_norm`, когда единицы нет. Зафиксировано §4: «'' если единицы нет».
 NO_UNIT_NORM = ""
@@ -50,10 +53,21 @@ _ABSENT = ResolvedUnit(raw_text=None, unit_id=None, unit_norm=NO_UNIT_NORM, stat
 
 
 class UnitResolver:
-    """Разрешает текст единицы в `(unit_id, unit_norm)` по таблице алиасов.
+    """Разрешает текст единицы в `(unit_id, unit_norm)` по справочнику единиц.
 
-    Карта алиасов читается один раз на импорт: справочник маленький, а обращений —
-    по числу позиций.
+    Распознаются **канонические формы каждой единицы** (`code`, `name`, `symbol`)
+    и **алиасы** из `unit_aliases`. Порядок наложения важен: сначала канонические
+    формы, затем алиасы поверх — алиас курируется человеком и потому авторитетнее
+    совпадения по названию.
+
+    Только алиасов недостаточно, хотя обещание «ни среди канонических, ни среди
+    алиасов» стоит в тексте предупреждения: у засеянного справочника коды `SET` и
+    `MON` и названия «Метр», «Кв. метр», «Куб. метр», «Штука», «Килограмм»,
+    «Литр» алиасов не имеют, и без канонических форм такая единица считалась бы
+    неизвестной — то есть валидная единица молча теряла бы `unit_id`.
+
+    Карта читается один раз на импорт: справочник маленький, а обращений — по
+    числу позиций.
 
     **Решение фазы 4 по неизвестной единице** (`docs/phase4-import.md` §2.3):
     неизвестная единица даёт `unit_id = NULL` и `unit_norm = ''`, то есть
@@ -66,18 +80,53 @@ class UnitResolver:
     """
 
     def __init__(self, db: Session) -> None:
-        rows = db.execute(
-            select(UnitAlias.raw_text, UnitAlias.unit_id, UnitOfMeasure.code).join(
-                UnitOfMeasure, UnitOfMeasure.id == UnitAlias.unit_id
-            )
-        ).all()
-        self._by_key: dict[str, tuple[int, str]] = {
-            normalize_unit_key(raw_text): (unit_id, code) for raw_text, unit_id, code in rows
-        }
-        self._norm_by_unit_id: dict[int, str] = {
-            unit_id: code for _raw, unit_id, code in rows
-        }
+        self._by_key: dict[str, tuple[int, str]] = {}
+        #: unit_id → каноническое имя. Строится по САМОМУ справочнику, а не по
+        #: алиасам: единица без алиасов иначе давала бы unit_norm = '' и схлопывала
+        #: бы разные каталожные пары в одну.
+        self._norm_by_unit_id: dict[int, str] = {}
         self.unknown_counts: Counter[str] = Counter()
+
+        units = db.execute(
+            select(UnitOfMeasure.id, UnitOfMeasure.code, UnitOfMeasure.name, UnitOfMeasure.symbol)
+            .order_by(UnitOfMeasure.id)
+        ).all()
+        for unit_id, code, name, symbol in units:
+            self._norm_by_unit_id[unit_id] = code
+            for form in (code, name, symbol):
+                self._register(normalize_unit_key(form), unit_id, code, source="справочник")
+
+        aliases = db.execute(
+            select(UnitAlias.raw_text, UnitAlias.unit_id, UnitOfMeasure.code)
+            .join(UnitOfMeasure, UnitOfMeasure.id == UnitAlias.unit_id)
+            .order_by(UnitAlias.id)
+        ).all()
+        for raw_text, unit_id, code in aliases:
+            # Алиас перекрывает каноническую форму: он заведён человеком осознанно.
+            self._by_key[normalize_unit_key(raw_text)] = (unit_id, code)
+
+    def _register(self, key: str, unit_id: int, code: str, *, source: str) -> None:
+        """Заносит каноническую форму, не затирая чужую и не молча.
+
+        Столкновение канонических форм разных единиц — дефект справочника
+        (например, одинаковое название у двух строк). Тихо выбрать одну значило бы
+        привязывать позиции к произвольной единице, поэтому побеждает первая по
+        `id`, а расхождение попадает в лог.
+        """
+        if not key:
+            return
+        claimed = self._by_key.get(key)
+        if claimed is not None and claimed[0] != unit_id:
+            log.warning(
+                "Форма единицы «%s» (%s) уже занята единицей %s; строка %s не будет "
+                "распознаваться по этой форме — проверьте справочник единиц.",
+                key,
+                source,
+                claimed[1],
+                code,
+            )
+            return
+        self._by_key[key] = (unit_id, code)
 
     def resolve(self, raw: object) -> ResolvedUnit:
         """Разрешает значение ячейки «единица измерения».
@@ -114,7 +163,9 @@ class UnitResolver:
         """Обратное отображение: `unit_id` → `unit_norm`.
 
         Нужно там, где исходного текста единицы уже нет, а есть только строка БД
-        (повторный матчинг, ручные решения Review).
+        (повторный матчинг, ручные решения Review). Отвечает по справочнику
+        единиц, а не по алиасам: у единицы может не быть ни одного алиаса, и
+        `''` для неё означал бы «единицы нет» — то есть чужую идентичность.
         """
         if unit_id is None:
             return NO_UNIT_NORM

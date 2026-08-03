@@ -106,13 +106,37 @@ def purge_expired_error_job_files(db: Session, storage: Storage, *, retention_da
 
 
 def run_startup_maintenance(session_factory, storage: Storage, *, retention_days: int) -> tuple[int, int]:
-    """Выполняет обе задачи в одной короткой транзакции.
+    """Выполняет обе задачи — каждую своей транзакцией.
+
+    Транзакции РАЗДЕЛЕНЫ, и это не косметика: задачи имеют разную обязательность.
+
+    * **recovery обязателен.** Не выполнившийся recovery оставляет незавершённые
+      задания активными, а они держат `uq_import_jobs_active_pair` — повторная
+      загрузка той же пары будет получать 409 до следующего перезапуска. Это
+      прямое нарушение инварианта §5, поэтому исключение уходит наружу и роняет
+      старт приложения: громкий отказ честнее полурабочего сервиса, который
+      вечно отвечает «импорт уже идёт»;
+    * **ретенция — best-effort.** Недоступное хранилище не мешает работать, и
+      файл, не удалённый сегодня, удалится при следующем запуске (§8 обещает
+      «проверку при старте», а не срок). Её ошибка только логируется — и,
+      благодаря отдельной транзакции, НЕ откатывает recovery.
 
     Returns:
         Кортеж (переведено в error, удалено файлов).
+
+    Raises:
+        Exception: любая ошибка recovery — она обязана остановить старт.
     """
     with session_factory() as db:
         recovered = recover_interrupted_jobs(db)
-        purged = purge_expired_error_job_files(db, storage, retention_days=retention_days)
         db.commit()
+
+    purged = 0
+    try:
+        with session_factory() as db:
+            purged = purge_expired_error_job_files(db, storage, retention_days=retention_days)
+            db.commit()
+    except Exception:
+        log.exception("Ретенция файлов error-заданий не выполнена; recovery это не отменяет")
+
     return recovered, purged
