@@ -1,8 +1,69 @@
 import { http, HttpResponse } from "msw";
-import { sampleAdminUsers } from "./fixtures";
+
+import {
+  sampleAdminUsers,
+  sampleContractCard,
+  sampleContractors,
+  sampleContracts,
+  sampleImportJobs,
+  sampleObjects,
+  sampleRateClasses,
+  sampleRateStandards,
+  sampleReviewQueue,
+} from "./fixtures";
+import type { ImportJobStatus } from "@/types/domain";
+
+/**
+ * Мутируемое состояние обработчиков. Сбрасывается между тестами через
+ * `resetHandlerState()` (вызов — в `setup.ts`), иначе загрузка из одного теста
+ * влияла бы на статус задания в другом.
+ */
+interface HandlerState {
+  /** Последовательность статусов, которую отдаёт поллинг задания. */
+  jobStatuses: ImportJobStatus[];
+  /** Сколько раз опросили статус — по нему выбирается следующий статус. */
+  jobPolls: number;
+  /** Ответ следующей загрузки: 202 (обычно), 200 (идемпотентно) либо 409. */
+  uploadOutcome: "created" | "idempotent" | "conflict";
+  /** Была ли последняя загрузка с `replace=true`. */
+  lastUploadReplace: boolean;
+  /** Пакетные решения Review: что пришло последним. */
+  lastBatch: { ids: number[]; kind: string } | null;
+  /** Пропустить ли одну строку в пакете — проверка ветки `skipped`. */
+  batchSkipsFirst: boolean;
+}
+
+export const handlerState: HandlerState = {
+  jobStatuses: ["done"],
+  jobPolls: 0,
+  uploadOutcome: "created",
+  lastUploadReplace: false,
+  lastBatch: null,
+  batchSkipsFirst: false,
+};
 
 export function resetHandlerState() {
-  // Мутируемого состояния пока нет; функция сохранена для симметрии setup.ts
+  handlerState.jobStatuses = ["done"];
+  handlerState.jobPolls = 0;
+  handlerState.uploadOutcome = "created";
+  handlerState.lastUploadReplace = false;
+  handlerState.lastBatch = null;
+  handlerState.batchSkipsFirst = false;
+}
+
+function page<T>(items: T[]) {
+  return { items, total: items.length, page: 1, page_size: 20 };
+}
+
+function jobPayload(status: ImportJobStatus) {
+  return {
+    ...sampleImportJobs[0],
+    status,
+    // Счётчики и смета появляются только у завершённого задания: до `done`
+    // смета в БД ещё не лежит (§5).
+    estimate_id: status === "done" ? 500 : null,
+    error_text: status === "error" ? "Не удалось разобрать файл." : null,
+  };
 }
 
 export const handlers = [
@@ -29,16 +90,16 @@ export const handlers = [
   http.get("/api/admin/users", ({ request }) => {
     const url = new URL(request.url);
     const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    const page = Number(url.searchParams.get("page") ?? 1) || 1;
+    const pageNo = Number(url.searchParams.get("page") ?? 1) || 1;
     const page_size = Number(url.searchParams.get("page_size") ?? 20) || 20;
     const filtered = q
       ? sampleAdminUsers.filter((u) => u.email.toLowerCase().includes(q))
       : sampleAdminUsers;
-    const start = (page - 1) * page_size;
+    const start = (pageNo - 1) * page_size;
     return HttpResponse.json({
       items: filtered.slice(start, start + page_size),
       total: filtered.length,
-      page,
+      page: pageNo,
       page_size,
     });
   }),
@@ -72,4 +133,255 @@ export const handlers = [
   http.post("/api/admin/users/:id/reset-password", ({ params }) =>
     HttpResponse.json({ id: Number(params.id), email: "a.petrov@example.com", password: "Xk7m-Pq9L-vf2Z" })
   ),
+
+  // --- Справочники (фаза 5) ---
+  http.get("/api/v1/rate-classes", () => HttpResponse.json(sampleRateClasses)),
+  http.post("/api/v1/rate-classes", async ({ request }) => {
+    const body = (await request.json()) as { title: string; description?: string | null };
+    if (sampleRateClasses.some((c) => c.title === body.title)) {
+      return HttpResponse.json(
+        { detail: "Класс объектов с таким названием уже есть." },
+        { status: 409 }
+      );
+    }
+    return HttpResponse.json(
+      {
+        id: 3,
+        title: body.title,
+        description: body.description ?? null,
+        contracts_count: 0,
+        objects_count: 0,
+        standards_count: 0,
+        created_at: null,
+        updated_at: null,
+      },
+      { status: 201 }
+    );
+  }),
+  http.delete("/api/v1/rate-classes/:id", ({ params }) => {
+    const rateClass = sampleRateClasses.find((c) => c.id === Number(params.id));
+    if (rateClass && (rateClass.contracts_count > 0 || rateClass.standards_count > 0)) {
+      return HttpResponse.json(
+        {
+          detail: `Класс «${rateClass.title}» удалить нельзя: на него ссылаются договоры (${rateClass.contracts_count}) и нормативы (${rateClass.standards_count}).`,
+        },
+        { status: 409 }
+      );
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.get("/api/v1/objects", () => HttpResponse.json(page(sampleObjects))),
+  http.post("/api/v1/objects", async ({ request }) => {
+    const body = (await request.json()) as { title: string };
+    return HttpResponse.json(
+      {
+        id: 11,
+        title: body.title,
+        address: "",
+        rate_class_id: null,
+        rate_class_title: null,
+        contracts_count: 0,
+        created_at: null,
+        updated_at: null,
+      },
+      { status: 201 }
+    );
+  }),
+
+  http.get("/api/v1/contractors", () => HttpResponse.json(page(sampleContractors))),
+  http.post("/api/v1/contractors", async ({ request }) => {
+    const body = (await request.json()) as { title: string; inn: string };
+    return HttpResponse.json(
+      {
+        id: 21,
+        title: body.title,
+        inn: body.inn,
+        address: "",
+        accreditation: "",
+        contracts_count: 0,
+        created_at: null,
+        updated_at: null,
+      },
+      { status: 201 }
+    );
+  }),
+
+  // --- Договоры ---
+  http.get("/api/v1/contracts", ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const rateClassId = url.searchParams.get("rate_class_id");
+    let items = sampleContracts;
+    if (q) {
+      items = items.filter((c) =>
+        [c.contract_number, c.title ?? "", c.object_title, c.contractor_title]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
+      );
+    }
+    if (rateClassId) {
+      items = items.filter((c) => c.rate_class_id === Number(rateClassId));
+    }
+    return HttpResponse.json(page(items));
+  }),
+  http.get("/api/v1/contracts/:id/import-jobs", () => HttpResponse.json(sampleImportJobs)),
+  http.get("/api/v1/contracts/:id", ({ params }) => {
+    if (Number(params.id) !== sampleContractCard.id) {
+      return HttpResponse.json({ detail: "Договор не найден." }, { status: 404 });
+    }
+    return HttpResponse.json(sampleContractCard);
+  }),
+  http.post("/api/v1/contracts", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json(
+      { ...sampleContractCard, id: 102, contract_number: body.contract_number },
+      { status: 201 }
+    );
+  }),
+  http.patch("/api/v1/contracts/:id", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({ ...sampleContractCard, ...body });
+  }),
+
+  // --- Загрузка сметы и поллинг ---
+  http.post("/api/v1/estimates/upload", async ({ request }) => {
+    // `request.formData()` здесь неприменим: под jsdom `File` не тот, который
+    // признаёт undici внутри msw, и парсер multipart падает на ассерте
+    // (`webidl.is.File`). Тело читается текстом, а нужное поле — по имени: это
+    // дефект окружения, и обходить его в обработчике правильнее, чем менять
+    // боевой транспорт под тест.
+    const body = await request.text();
+    handlerState.lastUploadReplace = /name="replace"[\s\S]*?\btrue\b/.test(body);
+
+    if (handlerState.uploadOutcome === "conflict" && !handlerState.lastUploadReplace) {
+      return HttpResponse.json(
+        {
+          detail:
+            "Смета уже загружена (estimate_id=500); для замены повторите запрос с replace=true.",
+        },
+        { status: 409 }
+      );
+    }
+    if (handlerState.uploadOutcome === "idempotent") {
+      // 200, а не 202: ничего не создано и ничего не запущено (§5, правило 1).
+      return HttpResponse.json(jobPayload("done"), { status: 200 });
+    }
+    return HttpResponse.json(jobPayload(handlerState.jobStatuses[0] ?? "pending"), {
+      status: 202,
+    });
+  }),
+  http.get("/api/v1/import-jobs/:id", () => {
+    const index = Math.min(handlerState.jobPolls, handlerState.jobStatuses.length - 1);
+    handlerState.jobPolls += 1;
+    return HttpResponse.json(jobPayload(handlerState.jobStatuses[index]));
+  }),
+
+  // --- Каталог и Review ---
+  http.get("/api/v1/catalog-positions", () =>
+    HttpResponse.json([
+      { id: 800, standard_job_title: "Кладка кирпичная", unit_id: 3, unit_code: "M3", unit_name: "Куб. метр" },
+    ])
+  ),
+  http.get("/api/v1/review/queue", ({ request }) => {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const withoutUnit = url.searchParams.get("without_unit") === "true";
+    const sort = url.searchParams.get("sort") ?? "positions";
+
+    let items = [...sampleReviewQueue];
+    if (q) items = items.filter((i) => i.standard_job_title.toLowerCase().includes(q));
+    if (withoutUnit) items = items.filter((i) => i.unit_id === null);
+    items.sort((a, b) =>
+      sort === "title"
+        ? a.standard_job_title.localeCompare(b.standard_job_title)
+        : b.position_count - a.position_count
+    );
+    return HttpResponse.json({ items, total: items.length, page: 1, page_size: 50 });
+  }),
+  http.get("/api/v1/review/targets", () =>
+    HttpResponse.json([
+      { id: 801, standard_job_title: "Стяжка цементная", unit_id: 5, unit_code: "M2", unit_name: "Кв. метр" },
+    ])
+  ),
+  http.post("/api/v1/review/:id/merge", async ({ params, request }) => {
+    const body = (await request.json()) as { target_id: number };
+    return HttpResponse.json({
+      to_review_id: Number(params.id),
+      target: {
+        id: body.target_id,
+        standard_job_title: "Стяжка цементная",
+        normalized_job_title: "стяжка цементный",
+        kind: "POSITION",
+        unit_id: 5,
+        unit_code: "M2",
+        unit_name: "Кв. метр",
+      },
+      moved_positions: 42,
+    });
+  }),
+  http.post("/api/v1/review/:id/kind", async ({ params, request }) => {
+    const body = (await request.json()) as { kind: string };
+    return HttpResponse.json({
+      id: Number(params.id),
+      standard_job_title: "Стяжка неведомая",
+      normalized_job_title: "стяжка неведомый",
+      kind: body.kind,
+      unit_id: 5,
+      unit_code: "M2",
+      unit_name: "Кв. метр",
+    });
+  }),
+  http.post("/api/v1/review/batch-kind", async ({ request }) => {
+    const body = (await request.json()) as { ids: number[]; kind: string };
+    handlerState.lastBatch = body;
+    const ids = [...body.ids].sort((a, b) => a - b);
+    if (handlerState.batchSkipsFirst && ids.length > 0) {
+      return HttpResponse.json({
+        kind: body.kind,
+        applied: ids.slice(1),
+        skipped: [
+          {
+            id: ids[0],
+            reason: `Каталожная строка ${ids[0]} имеет kind=POSITION, а операция применима к TO_REVIEW.`,
+          },
+        ],
+      });
+    }
+    return HttpResponse.json({ kind: body.kind, applied: ids, skipped: [] });
+  }),
+
+  // --- Нормативы ---
+  http.get("/api/v1/rate-standards", ({ request }) => {
+    const url = new URL(request.url);
+    const onDate = url.searchParams.get("on_date");
+    let items = sampleRateStandards;
+    if (onDate) {
+      // Тот же полуинтервал [valid_from, valid_to), что у EXCLUDE и VIEW.
+      items = items.filter(
+        (s) => s.valid_from <= onDate && (s.valid_to === null || s.valid_to > onDate)
+      );
+    }
+    return HttpResponse.json(page(items));
+  }),
+  http.post("/api/v1/rate-standards", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({ ...sampleRateStandards[0], id: 302, ...body }, { status: 201 });
+  }),
+  http.post("/api/v1/rate-standards/:id/reapprove", async ({ params, request }) => {
+    const body = (await request.json()) as { valid_from: string; standard_unit_rate?: string };
+    const previous = sampleRateStandards.find((s) => s.id === Number(params.id));
+    return HttpResponse.json({
+      previous: { ...previous, valid_to: body.valid_from },
+      current: {
+        ...previous,
+        id: 303,
+        standard_unit_rate: body.standard_unit_rate ?? "1075.35475",
+        valid_from: body.valid_from,
+        valid_to: null,
+      },
+    });
+  }),
+  http.delete("/api/v1/rate-standards/:id", () => new HttpResponse(null, { status: 204 })),
 ];

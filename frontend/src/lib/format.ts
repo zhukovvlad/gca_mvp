@@ -3,6 +3,50 @@ export function formatMoney(value: number | null | undefined, currency = "₽"):
   return `${value.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ${currency}`;
 }
 
+/** Неразрывный пробел — им `ru-RU` группирует разряды. */
+const NBSP = " ";
+
+/** Десятичное число в виде строки: `-?цифры[.цифры]`. */
+const DECIMAL_RE = /^(-?)(\d+)(?:\.(\d+))?$/;
+
+/**
+ * Форматирует денежную строку, НЕ переводя её в число.
+ *
+ * Деньги приходят из API строками — это требование AGENTS.md §3 («numeric в БД ↔
+ * Decimal в Python ↔ строки в JSON»), и `Number(value)` свёл бы его на нет на
+ * последнем шаге: double несёт ~15–16 значащих цифр, а суммы по договорам ГП
+ * вполне доходят до десятка цифр до запятой плюс копейки. Ошибка была бы
+ * невидимой — в последнем разряде.
+ *
+ * Дробная часть НЕ округляется и не обрезается: показать «1 075,35» вместо
+ * утверждённой ставки 1 075,35475 значило бы соврать о цифре, по которой идёт
+ * торг. Меньше двух знаков — дополняется нулями по денежной привычке.
+ *
+ * @param value десятичная строка либо число (число приводится через String, без
+ *   промежуточного форматирования), либо `null`.
+ * @param currency знак валюты; пустая строка — без него.
+ */
+export function formatDecimalMoney(
+  value: string | number | null | undefined,
+  currency = "₽"
+): string {
+  if (value === null || value === undefined) return "—";
+
+  const raw = String(value).trim();
+  if (!raw) return "—";
+
+  const parsed = DECIMAL_RE.exec(raw);
+  // Неожиданный формат отдаём как есть: молча превратить его в «—» значило бы
+  // спрятать данные, которые пришли с сервера.
+  if (!parsed) return currency ? `${raw}${NBSP}${currency}` : raw;
+
+  const [, sign, whole, fraction = ""] = parsed;
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP);
+  const decimals = fraction.length >= 2 ? fraction : fraction.padEnd(2, "0");
+  const amount = `${sign}${grouped},${decimals}`;
+  return currency ? `${amount}${NBSP}${currency}` : amount;
+}
+
 export function formatPercent(value: number | null | undefined, withSign = false): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   const sign = withSign && value > 0 ? "+" : "";

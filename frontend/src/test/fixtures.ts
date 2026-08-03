@@ -1,6 +1,232 @@
 import type { AdminUser } from "@/types/admin";
+import type {
+  ContractCard,
+  ContractImportJob,
+  ContractRow,
+  Contractor,
+  ObjectItem,
+  RateClass,
+  RateStandard,
+  ReviewQueueItem,
+} from "@/types/domain";
 
 export const sampleAdminUsers: AdminUser[] = [
   { id: 1, email: "a.petrov@example.com", role: "admin", is_active: true, created_at: "2026-08-01T10:00:00Z" },
   { id: 2, email: "i.orlova@example.com", role: "member", is_active: true, created_at: "2026-08-01T11:00:00Z" },
+];
+
+// ---------------------------------------------------------------------------
+//  Домен фазы 5. Данные синтетические: реальные сметы из samples/ никуда не
+//  выносятся, включая суммы (политика docs/phase0-input-data.md).
+// ---------------------------------------------------------------------------
+
+export const sampleRateClasses: RateClass[] = [
+  {
+    id: 1,
+    title: "Жилые дома",
+    description: "Многоквартирные жилые дома",
+    contracts_count: 2,
+    objects_count: 1,
+    standards_count: 1,
+    created_at: "2026-01-10T09:00:00Z",
+    updated_at: "2026-01-10T09:00:00Z",
+  },
+  {
+    id: 2,
+    title: "Промышленные",
+    description: null,
+    contracts_count: 0,
+    objects_count: 0,
+    standards_count: 0,
+    created_at: "2026-01-11T09:00:00Z",
+    updated_at: "2026-01-11T09:00:00Z",
+  },
+];
+
+export const sampleObjects: ObjectItem[] = [
+  {
+    id: 10,
+    title: "ЖК Северный",
+    address: "ул. Полярная, 1",
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    contracts_count: 1,
+    created_at: null,
+    updated_at: null,
+  },
+];
+
+export const sampleContractors: Contractor[] = [
+  {
+    id: 20,
+    title: "ООО СтройПодряд",
+    inn: "123456789012",
+    address: "г. Тест, ул. Подрядная, 1",
+    accreditation: "да",
+    contracts_count: 1,
+    created_at: null,
+    updated_at: null,
+  },
+];
+
+export const sampleContracts: ContractRow[] = [
+  {
+    id: 100,
+    contract_number: "ГП-2026-001",
+    title: "Генподряд на ЖК Северный",
+    object_id: 10,
+    object_title: "ЖК Северный",
+    contractor_id: 20,
+    contractor_title: "ООО СтройПодряд",
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    signer: "Иванов И.И.",
+    signed_date: "2026-03-01",
+    total_amount: "1234567890.12",
+    estimates_count: 1,
+    created_at: "2026-03-01T10:00:00Z",
+    updated_at: "2026-03-01T10:00:00Z",
+  },
+  {
+    id: 101,
+    contract_number: "ГП-2026-002",
+    title: null,
+    object_id: 11,
+    object_title: "ЖК Южный",
+    contractor_id: 21,
+    contractor_title: "ТОО Монолит",
+    rate_class_id: 2,
+    rate_class_title: "Промышленные",
+    signer: null,
+    signed_date: "2026-02-01",
+    total_amount: null,
+    estimates_count: 0,
+    created_at: "2026-02-01T10:00:00Z",
+    updated_at: "2026-02-01T10:00:00Z",
+  },
+];
+
+export const sampleContractCard: ContractCard = {
+  ...sampleContracts[0],
+  notes: "Проверить индексацию в 2027",
+  estimates: [
+    {
+      id: 500,
+      amendment_no: null,
+      title: "Смета к договору",
+      data_prepared_on_date: "2026-03-10",
+      import_job_id: 900,
+      positions_count: 1830,
+      created_at: "2026-03-11T08:00:00Z",
+    },
+  ],
+};
+
+export const sampleImportJobs: ContractImportJob[] = [
+  {
+    id: 900,
+    contract_id: 100,
+    amendment_no: null,
+    filename: "смета-актуальная.xlsx",
+    file_sha256: "a".repeat(64),
+    status: "done",
+    error_text: null,
+    warnings: ["Единица измерения «пог.м» не найдена (позиций: 3)."],
+    counters: {
+      positions_total: 1830,
+      matched_cache: 400,
+      matched_exact: 330,
+      matched_nonposition: 100,
+      to_review: 1000,
+    },
+    estimate_id: 500,
+    is_current: true,
+    created_at: "2026-03-11T08:00:00Z",
+    started_at: "2026-03-11T08:00:01Z",
+    finished_at: "2026-03-11T08:00:18Z",
+  },
+  {
+    id: 899,
+    contract_id: 100,
+    amendment_no: null,
+    filename: "смета-вытесненная.xlsx",
+    file_sha256: "b".repeat(64),
+    status: "done",
+    error_text: null,
+    warnings: [],
+    counters: {
+      positions_total: 1800,
+      matched_cache: 0,
+      matched_exact: 0,
+      matched_nonposition: 0,
+      to_review: 1800,
+    },
+    estimate_id: null,
+    is_current: false,
+    created_at: "2026-03-05T08:00:00Z",
+    started_at: "2026-03-05T08:00:01Z",
+    finished_at: "2026-03-05T08:00:20Z",
+  },
+];
+
+export const sampleReviewQueue: ReviewQueueItem[] = [
+  {
+    id: 700,
+    standard_job_title: "Стяжка неведомая",
+    normalized_job_title: "стяжка неведомый",
+    unit_id: 5,
+    unit_code: "M2",
+    unit_name: "Кв. метр",
+    position_count: 42,
+    sample_titles: ["Стяжка пола 50мм", "Стяжка пола 50 мм"],
+    created_at: "2026-03-11T08:00:10Z",
+  },
+  {
+    id: 701,
+    standard_job_title: "Кладка непонятная",
+    normalized_job_title: "кладка непонятный",
+    unit_id: null,
+    unit_code: null,
+    unit_name: null,
+    position_count: 3,
+    sample_titles: ["Кладка стен"],
+    created_at: "2026-03-11T08:00:11Z",
+  },
+];
+
+export const sampleRateStandards: RateStandard[] = [
+  {
+    id: 300,
+    catalog_position_id: 800,
+    catalog_position_title: "Кладка кирпичная",
+    unit_code: "M3",
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    standard_unit_rate: "1000.33",
+    valid_from: "2025-01-01",
+    valid_to: null,
+    inflation_index: null,
+    approved_by: "Совет директоров",
+    approved_at: null,
+    note: null,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    id: 301,
+    catalog_position_id: 801,
+    catalog_position_title: "Стяжка цементная",
+    unit_code: "M2",
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    standard_unit_rate: "550.00",
+    valid_from: "2024-01-01",
+    valid_to: "2025-01-01",
+    inflation_index: null,
+    approved_by: null,
+    approved_at: null,
+    note: null,
+    created_at: null,
+    updated_at: null,
+  },
 ];

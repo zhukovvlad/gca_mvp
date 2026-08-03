@@ -10,6 +10,10 @@ import Home from "@/pages/Home";
 import LoginPage from "@/pages/LoginPage";
 import AdminUserCreate from "@/pages/admin/AdminUserCreate";
 import AdminUsers from "@/pages/admin/AdminUsers";
+import ContractCardPage from "@/pages/contracts/ContractCardPage";
+import ContractsPage from "@/pages/contracts/ContractsPage";
+import ReviewPage from "@/pages/review/ReviewPage";
+import StandardsPage from "@/pages/standards/StandardsPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,7 +61,18 @@ export default function App() {
             <Route element={<ProtectedLayout />}>
               <Route element={<AppShell />}>
                 <Route path="/" element={<Home />} />
+                {/*
+                  Договоры и ручной матчинг доступны и `member` (§3): он читает
+                  карточки, грузит сметы и разбирает очередь. Право `admin` на
+                  заведение карточек проверяет сервер, а экран лишь не рисует
+                  кнопок, которых у member нет (решение §6.2).
+                */}
+                <Route path="/contracts" element={<ContractsPage />} />
+                <Route path="/contracts/:contractId" element={<ContractCardPage />} />
+                <Route path="/review" element={<ReviewPage />} />
                 <Route element={<RequireAdmin />}>
+                  {/* Нормативы — право `admin` по букве §3. */}
+                  <Route path="/standards" element={<StandardsPage />} />
                   <Route path="/admin/users" element={<AdminUsers />} />
                   <Route path="/admin/users/new" element={<AdminUserCreate />} />
                 </Route>

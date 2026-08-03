@@ -3,6 +3,7 @@ import { render, type RenderOptions } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
+import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CURRENT_USER_QUERY_KEY } from "@/hooks/useAuth";
 import type { User } from "@/types/auth";
@@ -36,6 +37,13 @@ export function AllProviders({ children, queryClient, initialRoute = "/" }: Wrap
       <TooltipProvider>
         <QueryClientProvider client={client}>
           <MemoryRouter initialEntries={[initialRoute]}>{children}</MemoryRouter>
+          {/*
+            Toaster есть и в App.tsx. В тестах он нужен потому, что тост — это
+            единственный канал, которым экран сообщает об отказе сервера
+            (`toastApiError`) и о частично применённом пакете Review: без него
+            такие сообщения нельзя проверить, они просто не попадают в DOM.
+          */}
+          <Toaster />
         </QueryClientProvider>
       </TooltipProvider>
     </ThemeProvider>

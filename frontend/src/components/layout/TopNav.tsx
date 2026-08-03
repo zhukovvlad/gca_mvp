@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home, Users, LogOut, Search, Bell, type LucideIcon,
+  Home, Users, LogOut, Search, Bell, FileText, ListChecks, Ruler, type LucideIcon,
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
@@ -11,10 +11,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 
-// Экраны договоров, Review, нормативов, матрицы и отчётов появятся в фазах 5–6 (AGENTS.md §9)
+// Паспорт объекта, сквозная матрица и отчёты — фаза 6 (AGENTS.md §7.4–§7.6, §9.6)
 const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOnly?: boolean }[] = [
-  { to: "/",            icon: Home,  label: "Главная", end: true },
-  { to: "/admin/users", icon: Users, label: "Пользователи", adminOnly: true },
+  { to: "/",            icon: Home,       label: "Главная", end: true },
+  { to: "/contracts",   icon: FileText,   label: "Договоры" },
+  { to: "/review",      icon: ListChecks, label: "Ручной матчинг" },
+  { to: "/standards",   icon: Ruler,      label: "Нормативы", adminOnly: true },
+  { to: "/admin/users", icon: Users,      label: "Пользователи", adminOnly: true },
 ];
 
 function getInitials(email: string): string {
