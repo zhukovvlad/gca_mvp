@@ -21,6 +21,7 @@ from routers import contracts as contracts_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
 from routers import references as references_router
+from routers import review as review_router
 from routers import units
 from services.maintenance import run_startup_maintenance
 from storage import get_storage
@@ -142,6 +143,8 @@ app.include_router(import_jobs_router.router, dependencies=_auth_dep)
 # аутентифицированному, изменение — под require_admin внутри роутера (§6.2).
 app.include_router(references_router.router, dependencies=_auth_dep)
 app.include_router(contracts_router.router, dependencies=_auth_dep)
+# Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
+app.include_router(review_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")
