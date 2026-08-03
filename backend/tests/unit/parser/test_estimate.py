@@ -54,10 +54,16 @@ MONEY_PATHS = (
 
 
 def _real_sample_path() -> Path | None:
-    """Путь к реальному образцу или None, если каталога samples/ нет."""
+    """Путь к реальной оферте, с которой снят fixture, или None.
+
+    Задача этих тестов — сверить fixture с его первоисточником, поэтому
+    берётся именно оферта («Оферта_*»), а не первый попавшийся файл:
+    в `samples/` лежат и сметы других форматов (укрупнённая смета к договору),
+    которые парсер текущей фазы намеренно отвергает.
+    """
     if not SAMPLES_DIR.is_dir():
         return None
-    candidates = sorted(SAMPLES_DIR.glob("*.xlsx"))
+    candidates = sorted(SAMPLES_DIR.glob("Оферта*.xlsx"))
     return candidates[0] if candidates else None
 
 
