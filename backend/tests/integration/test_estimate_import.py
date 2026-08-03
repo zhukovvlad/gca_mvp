@@ -1,0 +1,665 @@
+"""Сервис импорта сметы (AGENTS.md §5, шаг 3; порт ImportFullTender)."""
+from __future__ import annotations
+
+import datetime as dt
+from decimal import Decimal
+
+import pytest
+import sqlalchemy as sa
+
+from models import (
+    Estimate,
+    EstimateRawData,
+    Lot,
+    PositionItem,
+    Proposal,
+    ProposalAdditionalInfo,
+    ProposalSummaryLine,
+)
+from services.estimate_import import (
+    EstimateImportError,
+    compare_header_with_contract,
+    import_estimate,
+)
+from services.unit_resolution import UnitResolver
+from tests.payloads import estimate_payload, payload_for, position, proposal, summary_line
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def resolver(db_session):
+    return UnitResolver(db_session)
+
+
+def run_import(db_session, resolver, contract, data, *, amendment_no=None, replace=False, job=None):
+    return import_estimate(
+        db_session,
+        contract=contract,
+        amendment_no=amendment_no,
+        data=data,
+        parser_version="1.0.0",
+        import_job_id=job.id if job is not None else None,
+        replace=replace,
+        unit_resolver=resolver,
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Обход тендер → лоты → предложение → позиции/итоги → raw JSON
+# ---------------------------------------------------------------------------
+
+class TestFullWalk:
+    def test_creates_the_whole_tree(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        job = factories.ImportJobFactory.create(contract=contract)
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(job_title="Раздел 1", is_chapter=True, chapter_number="1"),
+                position(
+                    job_title="Устройство стяжки",
+                    unit="м2",
+                    quantity=1,
+                    suggested_quantity=12.5,
+                    unit_cost_total="100.50",
+                    total_cost_total="1256.25",
+                    chapter_ref="1",
+                    number="2",
+                ),
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data, job=job)
+
+        estimate = db_session.get(Estimate, outcome.estimate_id)
+        assert estimate.contract_id == contract.id
+        assert estimate.amendment_no is None
+        assert estimate.import_job_id == job.id
+        assert estimate.title == "Смета к договору генподряда"
+
+        raw = db_session.get(EstimateRawData, outcome.estimate_id)
+        assert raw.parser_version == "1.0.0"
+        assert raw.raw_data["tender_id"] == "001-ГП"
+
+        lot = db_session.execute(
+            sa.select(Lot).where(Lot.estimate_id == estimate.id)
+        ).scalar_one()
+        assert (lot.lot_key, lot.lot_title) == ("lot_1", "Лот №1 - Тестовый")
+
+        proposal_row = db_session.execute(
+            sa.select(Proposal).where(Proposal.lot_id == lot.id)
+        ).scalar_one()
+        # Подрядчик — из карточки договора, не из файла (§3).
+        assert proposal_row.contractor_id == contract.contractor_id
+        assert proposal_row.is_baseline is False
+        assert (proposal_row.contractor_coordinate, proposal_row.contractor_width) == ("J6", 11)
+
+        items = db_session.execute(
+            sa.select(PositionItem)
+            .where(PositionItem.proposal_id == proposal_row.id)
+            .order_by(PositionItem.position_key_in_proposal)
+        ).scalars().all()
+        assert len(items) == 2
+        chapter, work = items
+        assert chapter.is_chapter is True
+        assert work.is_chapter is False
+        assert work.chapter_ref_in_proposal == "1"
+        assert work.job_title_in_proposal == "Устройство стяжки"
+        assert work.deviation_from_baseline_cost is None
+
+        assert outcome.positions_total == 2
+        # К каскаду допущена одна строка: раздел исключён (§5, шаг 4).
+        assert [p.job_title for p in outcome.positions_to_match] == ["Устройство стяжки"]
+
+    def test_summary_and_additional_info(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract)
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        proposal_id = db_session.execute(
+            sa.select(Proposal.id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == outcome.estimate_id)
+        ).scalar_one()
+        lines = {
+            line.summary_key: line
+            for line in db_session.execute(
+                sa.select(ProposalSummaryLine).where(
+                    ProposalSummaryLine.proposal_id == proposal_id
+                )
+            ).scalars()
+        }
+        assert set(lines) == {"total_cost_with_vat", "vat"}
+        assert lines["total_cost_with_vat"].total_cost == Decimal("1200.00")
+
+        info = {
+            row.info_key: row.info_value
+            for row in db_session.execute(
+                sa.select(ProposalAdditionalInfo).where(
+                    ProposalAdditionalInfo.proposal_id == proposal_id
+                )
+            ).scalars()
+        }
+        assert info == {"Условия оплаты": "Аванс 30%", "Гарантия": None}
+
+    def test_several_lots_are_imported(self, db_session, factories, resolver):
+        """Слой лотов сохранён (§4); ровно одно предложение требуется в КАЖДОМ лоте."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract)
+        data["lots"]["lot_2"] = {
+            "lot_title": "Лот №2 - Второй",
+            "proposals": {"contractor_1": proposal([position(job_title="Работа 2")])},
+            "baseline_proposal": {"title": "Расчетная стоимость отсутствует"},
+        }
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        keys = db_session.execute(
+            sa.select(Lot.lot_key).where(Lot.estimate_id == outcome.estimate_id).order_by(Lot.lot_key)
+        ).scalars().all()
+        assert keys == ["lot_1", "lot_2"]
+
+
+# ---------------------------------------------------------------------------
+#  Деньги и количества
+# ---------------------------------------------------------------------------
+
+class TestMoneyAndQuantities:
+    def test_money_strings_become_exact_decimals(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(
+                    job_title="Работа",
+                    unit="шт",
+                    unit_cost={
+                        "materials": "1.01",
+                        "works": "2.02",
+                        "indirect_costs": "3.03",
+                        "total": "6.06",
+                    },
+                    total_cost={
+                        "materials": "10.10",
+                        "works": "20.20",
+                        "indirect_costs": "30.30",
+                        "total": "14998746.74",
+                    },
+                    organizer_total="99.99",
+                )
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        assert item.unit_cost_total == Decimal("6.06")
+        assert item.total_cost_total == Decimal("14998746.74")
+        assert item.total_cost_for_organizer_quantity == Decimal("99.99")
+
+    def test_float_quantity_has_no_binary_tail(self, db_session, factories, resolver):
+        """Количества приходят числами; Decimal(float) дал бы двоичный хвост (§3)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract, [position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=0.1)]
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        assert item.suggested_quantity == Decimal("0.1")
+        assert item.quantity == Decimal("1")
+
+    def test_empty_cost_is_null_not_zero(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, [position(job_title="Раздел", is_chapter=True, chapter_number="1")])
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        assert item.unit_cost_total is None
+        assert item.quantity is None
+
+    def test_garbage_in_money_column_becomes_null_with_warning(
+        self, db_session, factories, resolver
+    ):
+        """Одна нечитаемая ячейка не роняет импорт 2,5-тысячной сметы."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="уточняется", total_cost_total="10")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        assert item.unit_cost_total is None
+        assert item.total_cost_total == Decimal("10")
+        assert any("уточняется" in w for w in outcome.warnings)
+
+    def test_value_warnings_are_squashed(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title=f"Работа {i}", unit="шт", unit_cost_total="мусор") for i in range(30)],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("и ещё" in w for w in outcome.warnings)
+        assert sum("мусор" in w for w in outcome.warnings) == 10
+
+
+# ---------------------------------------------------------------------------
+#  Единицы измерения (решение фазы 4 §2.3)
+# ---------------------------------------------------------------------------
+
+class TestUnits:
+    def test_alias_is_resolved(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, [position(job_title="Работа", unit="кв.м")])
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        code = db_session.execute(
+            sa.text("SELECT code FROM units_of_measure WHERE id = :id"), {"id": item.unit_id}
+        ).scalar_one()
+        assert code == "M2"
+        assert outcome.positions_to_match[0].unit.unit_norm == "M2"
+
+    def test_unknown_unit_gives_null_and_warning(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(job_title="Работа A", unit="тонно-километр"),
+                position(job_title="Работа Б", unit="тонно-километр"),
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        items = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalars().all()
+        assert all(item.unit_id is None for item in items)
+        # Одно предупреждение на уникальный текст, с числом позиций.
+        unit_warnings = [w for w in outcome.warnings if "тонно-километр" in w]
+        assert len(unit_warnings) == 1
+        assert "позиций: 2" in unit_warnings[0]
+
+    def test_unknown_unit_does_not_create_a_unit(self, db_session, factories, resolver):
+        """§4: units_of_measure — курируемый справочник, импорт его не пополняет."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        before = db_session.execute(sa.text("SELECT count(*) FROM units_of_measure")).scalar_one()
+
+        run_import(
+            db_session, resolver, contract, payload_for(contract, [position(job_title="Р", unit="фунт")])
+        )
+
+        after = db_session.execute(sa.text("SELECT count(*) FROM units_of_measure")).scalar_one()
+        assert after == before
+
+
+# ---------------------------------------------------------------------------
+#  Сверка шапки с карточкой (§3)
+# ---------------------------------------------------------------------------
+
+class TestHeaderComparison:
+    def test_matching_header_gives_no_warnings(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        outcome = run_import(db_session, resolver, contract, payload_for(contract))
+
+        assert outcome.warnings == []
+
+    def test_object_mismatch_warns_but_imports(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, tender_object="Совершенно другой объект")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert outcome.estimate_id is not None
+        assert any(w.startswith("Объект в файле") for w in outcome.warnings)
+
+    def test_inn_mismatch_warns(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, inn="9999999999")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("ИНН подрядчика" in w for w in outcome.warnings)
+
+    def test_punctuation_only_difference_is_not_a_mismatch(self, db_session, factories):
+        contract = factories.ContractFactory.create()
+        contract.object.title = "ЖК «Северный», корп. 2"
+        contract.object.address = "г. Тест, ул. Ленина, д. 5"
+        db_session.flush()
+        data = estimate_payload(
+            tender_object="ЖК Северный корп 2",
+            tender_address="г Тест ул Ленина д 5",
+            title=contract.contractor.title,
+            inn=contract.contractor.inn,
+        )
+
+        warnings = compare_header_with_contract(
+            data, contract, data["lots"]["lot_1"]["proposals"]["contractor_1"]
+        )
+        assert warnings == []
+
+    def test_contractor_details_from_file_are_not_persisted(self, db_session, factories, resolver):
+        """Адрес и аккредитация из файла не апсертятся в карточку подрядчика (§3)."""
+        contract = factories.ContractFactory.create()
+        original_address = contract.contractor.address
+        db_session.flush()
+        data = payload_for(contract)
+        data["lots"]["lot_1"]["proposals"]["contractor_1"]["address"] = "другой адрес из файла"
+
+        run_import(db_session, resolver, contract, data)
+
+        db_session.refresh(contract.contractor)
+        assert contract.contractor.address == original_address
+
+
+# ---------------------------------------------------------------------------
+#  Отказы (решение фазы 4 §2.1)
+# ---------------------------------------------------------------------------
+
+class TestRejections:
+    def test_two_contractors_are_rejected(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            proposals={
+                "contractor_1": proposal([position(job_title="Работа")], title="ООО Первый"),
+                "contractor_2": proposal([position(job_title="Работа")], title="ООО Второй"),
+            },
+        )
+
+        with pytest.raises(EstimateImportError, match="нескольким|несколькими"):
+            run_import(db_session, resolver, contract, data)
+
+    def test_two_contractors_message_names_them(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            proposals={
+                "contractor_1": proposal([position(job_title="Работа")], title="ООО Первый"),
+                "contractor_2": proposal([position(job_title="Работа")], title="ООО Второй"),
+            },
+        )
+
+        with pytest.raises(EstimateImportError) as exc:
+            run_import(db_session, resolver, contract, data)
+        assert "ООО Первый" in str(exc.value) and "ООО Второй" in str(exc.value)
+
+    def test_no_proposal_is_rejected(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, proposals={})
+
+        with pytest.raises(EstimateImportError, match="нет предложения"):
+            run_import(db_session, resolver, contract, data)
+
+    def test_no_lots_is_rejected(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, lots={})
+
+        with pytest.raises(EstimateImportError, match="ни одного лота"):
+            run_import(db_session, resolver, contract, data)
+
+    def test_rejection_leaves_nothing_behind(self, db_session, factories, resolver):
+        """Отказ происходит ДО первой вставки — половины сметы не остаётся."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            proposals={
+                "contractor_1": proposal([position(job_title="Работа")], title="А"),
+                "contractor_2": proposal([position(job_title="Работа")], title="Б"),
+            },
+        )
+
+        with pytest.raises(EstimateImportError):
+            run_import(db_session, resolver, contract, data)
+
+        count = db_session.execute(
+            sa.select(sa.func.count()).select_from(Estimate).where(Estimate.contract_id == contract.id)
+        ).scalar_one()
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+#  Предупреждения-эвристики (решения фазы 4 §2.2, §3.4)
+# ---------------------------------------------------------------------------
+
+class TestHeuristicWarnings:
+    def test_all_money_null_warns_about_formulas(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа 1", unit="м2"), position(job_title="Работа 2", unit="шт")],
+            summary={},
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("пересчёта формул" in w for w in outcome.warnings)
+
+    def test_priced_estimate_has_no_formula_warning(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract, [position(job_title="Работа", unit="м2", unit_cost_total="10.00")]
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert not any("пересчёта формул" in w for w in outcome.warnings)
+
+    def test_unexpected_baseline_warns(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, baseline_title="Расчетная стоимость")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("расчётной стоимости" in w for w in outcome.warnings)
+        # Baseline не импортируется — предложение в лоте ровно одно.
+        proposals = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(Proposal)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == outcome.estimate_id)
+        ).scalar_one()
+        assert proposals == 1
+
+    def test_untitled_position_is_stored_but_not_matched(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title=None, unit="шт", unit_cost_total="1"), position(job_title="Работа")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert outcome.positions_total == 2
+        assert [p.job_title for p in outcome.positions_to_match] == ["Работа"]
+        assert any("без наименования" in w for w in outcome.warnings)
+
+    def test_unparsable_prepared_date_warns(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, executor_date="как-нибудь потом")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert db_session.get(Estimate, outcome.estimate_id).data_prepared_on_date is None
+        assert any("Дата составления" in w for w in outcome.warnings)
+
+    def test_iso_prepared_date_is_stored(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, executor_date="2026-05-14")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert db_session.get(Estimate, outcome.estimate_id).data_prepared_on_date == dt.date(
+            2026, 5, 14
+        )
+
+
+# ---------------------------------------------------------------------------
+#  replace-флоу (§5, правило 3)
+# ---------------------------------------------------------------------------
+
+class TestReplace:
+    def test_replace_deletes_the_old_estimate_and_its_tree(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        first = run_import(db_session, resolver, contract, payload_for(contract))
+        old_id = first.estimate_id
+
+        second = run_import(
+            db_session, resolver, contract, payload_for(contract), replace=True
+        )
+
+        assert second.replaced_estimate_id == old_id
+        assert db_session.get(Estimate, old_id) is None
+        assert db_session.get(EstimateRawData, old_id) is None
+        assert (
+            db_session.execute(
+                sa.select(sa.func.count()).select_from(Lot).where(Lot.estimate_id == old_id)
+            ).scalar_one()
+            == 0
+        )
+        assert any(f"estimate_id={old_id}" in w for w in second.warnings)
+
+    def test_replace_keeps_old_import_jobs(self, db_session, factories, resolver):
+        """Старые задания и их файлы — аудит, они не удаляются (§5)."""
+        contract = factories.ContractFactory.create()
+        old_job = factories.ImportJobFactory.create(contract=contract, status="done")
+        db_session.flush()
+        run_import(db_session, resolver, contract, payload_for(contract), job=old_job)
+
+        run_import(db_session, resolver, contract, payload_for(contract), replace=True)
+
+        assert db_session.get(type(old_job), old_job.id) is not None
+
+    def test_replace_without_existing_estimate_is_a_noop(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        outcome = run_import(db_session, resolver, contract, payload_for(contract), replace=True)
+
+        assert outcome.replaced_estimate_id is None
+
+    def test_replace_targets_only_its_own_amendment(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        base = run_import(db_session, resolver, contract, payload_for(contract))
+        amendment = run_import(
+            db_session, resolver, contract, payload_for(contract), amendment_no=1
+        )
+
+        run_import(
+            db_session, resolver, contract, payload_for(contract), amendment_no=1, replace=True
+        )
+
+        assert db_session.get(Estimate, base.estimate_id) is not None
+        assert db_session.get(Estimate, amendment.estimate_id) is None
+
+    def test_second_import_of_the_same_pair_without_replace_hits_the_unique_index(
+        self, db_session, factories, resolver
+    ):
+        """UNIQUE NULLS NOT DISTINCT: исходную смету нельзя загрузить дважды."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        run_import(db_session, resolver, contract, payload_for(contract))
+
+        with pytest.raises(sa.exc.IntegrityError):
+            run_import(db_session, resolver, contract, payload_for(contract))
+            db_session.flush()
+
+
+# ---------------------------------------------------------------------------
+#  Summary/итоги без своих строк — только с текстом
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+    def test_summary_without_totals_is_stored(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, summary={"merged_99": summary_line("Странная строка")})
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        line = db_session.execute(
+            sa.select(ProposalSummaryLine)
+            .join(Proposal, Proposal.id == ProposalSummaryLine.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == outcome.estimate_id)
+        ).scalar_one()
+        assert (line.summary_key, line.job_title, line.total_cost) == (
+            "merged_99",
+            "Странная строка",
+            None,
+        )
+
+    def test_raw_data_is_stored_verbatim(self, db_session, factories, resolver):
+        """raw_data — архив содержимого файла, включая поля без своих колонок."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, [position(job_title="Работа", article_smr="СМР-42")])
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        stored = db_session.get(EstimateRawData, outcome.estimate_id).raw_data
+        positions = stored["lots"]["lot_1"]["proposals"]["contractor_1"]["contractor_items"][
+            "positions"
+        ]
+        assert positions["1"]["article_smr"] == "СМР-42"
