@@ -230,43 +230,42 @@ def run_import_job(
         status.set_status(ImportJobStatus.importing)
 
         # --- Этапы 3–4 и финал: ОДНА транзакция сессии B ---
-        with session_factory() as db:
-            with db.begin():
-                contract = db.get(Contract, context.contract_id)
-                if contract is None:
-                    raise EstimateImportError(
-                        f"Договор {context.contract_id} не найден — импортировать смету не к чему."
-                    )
-
-                resolver = UnitResolver(db)
-                outcome = import_estimate(
-                    db,
-                    contract=contract,
-                    amendment_no=context.amendment_no,
-                    data=parse_result.data,
-                    parser_version=parse_result.parser_version,
-                    import_job_id=job_id,
-                    replace=replace,
-                    unit_resolver=resolver,
+        with session_factory() as db, db.begin():
+            contract = db.get(Contract, context.contract_id)
+            if contract is None:
+                raise EstimateImportError(
+                    f"Договор {context.contract_id} не найден — импортировать смету не к чему."
                 )
-                deadline.check("импорт")
 
-                # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:
-                # вставка сметы взяла на строке job FOR KEY SHARE (это FK-ссылка),
-                # а UPDATE неключевых колонок берёт FOR NO KEY UPDATE — эти режимы
-                # в PostgreSQL совместимы.
-                status.set_status(ImportJobStatus.matching)
+            resolver = UnitResolver(db)
+            outcome = import_estimate(
+                db,
+                contract=contract,
+                amendment_no=context.amendment_no,
+                data=parse_result.data,
+                parser_version=parse_result.parser_version,
+                import_job_id=job_id,
+                replace=replace,
+                unit_resolver=resolver,
+            )
+            deadline.check("импорт")
 
-                match = match_positions(db, outcome.positions_to_match)
-                deadline.check("матчинг")
+            # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:
+            # вставка сметы взяла на строке job FOR KEY SHARE (это FK-ссылка),
+            # а UPDATE неключевых колонок берёт FOR NO KEY UPDATE — эти режимы
+            # в PostgreSQL совместимы.
+            status.set_status(ImportJobStatus.matching)
 
-                finalize_done(
-                    db,
-                    job_id,
-                    counters=match.counters,
-                    warnings=outcome.warnings + match.warnings,
-                    now=utcnow_aware(),
-                )
+            match = match_positions(db, outcome.positions_to_match)
+            deadline.check("матчинг")
+
+            finalize_done(
+                db,
+                job_id,
+                counters=match.counters,
+                warnings=outcome.warnings + match.warnings,
+                now=utcnow_aware(),
+            )
 
         log.info(
             "Импорт задания %d завершён: estimate_id=%d, счётчики=%s",
