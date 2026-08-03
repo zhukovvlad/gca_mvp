@@ -21,6 +21,7 @@ from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
+from routers import references as references_router
 from routers import units
 from services.maintenance import run_startup_maintenance
 from storage import get_storage
@@ -153,6 +154,10 @@ app.include_router(units.router, prefix="/api/units", tags=["units"], dependenci
 # у этих двух роутеров он есть, а у более раннего /api/units — нет.
 app.include_router(estimates_router.router, dependencies=_auth_dep)
 app.include_router(import_jobs_router.router, dependencies=_auth_dep)
+
+# CRUD фазы 5 (§7, §9.5). Тот же префикс /api/v1: чтение — любому
+# аутентифицированному, изменение — под require_admin внутри роутера (§6.2).
+app.include_router(references_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

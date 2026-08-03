@@ -146,6 +146,10 @@ def client(db_session) -> Iterator:
     - get_current_user заменяется на мок admin-пользователя (auth-флоу тестируется отдельно).
     - CSRF-токен: клиент отправляет test-значение и в куки, и в заголовок,
       чтобы csrf_middleware пропускал все запросы.
+
+    `client.auth_state["role"] = UserRole.member` переключает роль текущего
+    пользователя — так проверяются 403 у CRUD фазы 5 (право `admin` на заведение
+    карточек, §6.2 отчёта фазы 5). Тот же приём, что у `committing_client`.
     """
     from unittest.mock import MagicMock
 
@@ -156,6 +160,8 @@ def client(db_session) -> Iterator:
     from main import app
     from models import UserRole
 
+    auth_state = {"role": UserRole.admin}
+
     def override_get_db():
         try:
             yield db_session
@@ -163,10 +169,10 @@ def client(db_session) -> Iterator:
             pass  # cleanup в db_session фикстуре
 
     def override_get_current_user():
-        """Возвращает мок admin-пользователя — пропускает всю логику JWT/cookie."""
+        """Возвращает мок пользователя — пропускает всю логику JWT/cookie."""
         user = MagicMock()
         user.id = 1
-        user.role = UserRole.admin
+        user.role = auth_state["role"]
         user.is_active = True
         return user
 
@@ -177,6 +183,7 @@ def client(db_session) -> Iterator:
     app.dependency_overrides[get_current_user] = override_get_current_user
     with TestClient(app, headers={"X-CSRF-Token": _csrf_token}) as c:
         c.cookies.set("csrf_token", _csrf_token)
+        c.auth_state = auth_state
         yield c
     app.dependency_overrides.clear()
 
