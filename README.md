@@ -94,5 +94,6 @@ Integration-тесты требуют `TEST_DATABASE_URL` (см. `.env.test.exam
       идемпотентность/409/replace, эндпоинты загрузки и поллинга).
       Решения фазы, отступления и открытые вопросы —
       [docs/phase4-import.md](docs/phase4-import.md)
-- [ ] Фаза 5 — CRUD и Review
+- [ ] Фаза 5 — CRUD и Review. Брифинг на старт —
+      [docs/phase5-start.md](docs/phase5-start.md)
 - [ ] Фаза 6 — аналитика (паспорт, матрица, отчёты)
