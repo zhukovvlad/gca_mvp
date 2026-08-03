@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     IMPORT_SOFT_TIMEOUT_MINUTES: int = 10
     # Ретенция файлов error-jobs, дней (AGENTS.md §8)
     ERROR_JOB_FILE_RETENTION_DAYS: int = 30
+    # Выполнять обслуживание при старте приложения: startup-recovery зависших
+    # import_jobs (AGENTS.md §5) и ретенцию файлов error-jobs (§8).
+    # False только в тестах: lifespan запускается на реальном engine приложения,
+    # мимо транзакционной фикстуры, — иначе TestClient мутировал бы dev-БД.
+    RUN_STARTUP_MAINTENANCE: bool = True
 
     # Логирование
     LOG_LEVEL: str = "INFO"

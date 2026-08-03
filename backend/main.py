@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 
@@ -15,9 +16,12 @@ from logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
+from database import SessionLocal
 from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import units
+from services.maintenance import run_startup_maintenance
+from storage import get_storage
 
 
 def _decimal_encoder(obj: Any) -> Any:
@@ -36,10 +40,42 @@ class DecimalJSONResponse(JSONResponse):
         ).encode("utf-8")
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Обслуживание при старте: recovery зависших джобов + ретенция файлов.
+
+    ИНВАРИАНТ (AGENTS.md §3, §5): корректно ровно при ОДНОМ worker-процессе
+    uvicorn. Второй worker при подъёме перевёл бы в `error` задания, которые
+    первый в этот момент выполняет.
+
+    Отключается настройкой `RUN_STARTUP_MAINTENANCE=false` — так тесты не дают
+    `TestClient` мутировать БД приложения: lifespan работает на реальном engine,
+    мимо транзакционной фикстуры.
+    """
+    if settings.RUN_STARTUP_MAINTENANCE:
+        try:
+            recovered, purged = run_startup_maintenance(
+                SessionLocal,
+                get_storage(),
+                retention_days=settings.ERROR_JOB_FILE_RETENTION_DAYS,
+            )
+            logger.info(
+                "Обслуживание при старте: заданий восстановлено %d, файлов удалено %d",
+                recovered,
+                purged,
+            )
+        except Exception:
+            # Приложение обязано подняться даже при недоступной БД: иначе
+            # починить конфигурацию через тот же процесс станет невозможно.
+            logger.exception("Обслуживание при старте не выполнено")
+    yield
+
+
 app = FastAPI(
     title="База расценок генподряда",
     version="0.1.0",
     default_response_class=DecimalJSONResponse,
+    lifespan=lifespan,
 )
 
 app.add_middleware(

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 # Делаем импорты "from database import ..." и "import crud" работающими
 # из тестов, не привязываясь к sys.path в IDE
@@ -27,6 +27,13 @@ sys.path.insert(0, str(BACKEND_ROOT))
 # В CI и при локальных unit-тестах .env может отсутствовать — этот setdefault
 # подставляет тестовое значение, не перетирая реальный SECRET_KEY из .env.
 os.environ.setdefault("SECRET_KEY", "test-only-secret-key-not-for-production-32ch!!")
+
+# Обслуживание при старте (recovery зависших import_jobs + ретенция файлов,
+# AGENTS.md §5, §8) работает на РЕАЛЬНОМ engine приложения — мимо транзакционной
+# фикстуры. В тестах `TestClient(app)` поднимает lifespan, поэтому по умолчанию
+# оно выключено: сами эти функции тестируются напрямую, на тестовой сессии.
+# setdefault, а не присваивание: локальный прогон может включить его осознанно.
+os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 
 
 @pytest.fixture(scope="session")
@@ -172,6 +179,86 @@ def client(db_session) -> Iterator:
         c.cookies.set("csrf_token", _csrf_token)
         yield c
     app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+#  Фикстуры для пайплайна импорта (AGENTS.md §5): настоящие commit-ы
+# ---------------------------------------------------------------------------
+
+#: Доменные таблицы, которые чистятся вокруг тестов с настоящими commit-ами.
+#: Справочники, засеянные миграцией (units_of_measure, unit_aliases), и users
+#: НЕ трогаем — их пересоздаёт только миграция, один раз на сессию тестов.
+_DOMAIN_TABLES = (
+    "matching_cache",
+    "rate_standards",
+    "position_items",
+    "proposal_summary_lines",
+    "proposal_additional_info",
+    "proposals",
+    "lots",
+    "estimate_raw_data",
+    "estimates",
+    "import_jobs",
+    "catalog_positions",
+    "contracts",
+    "objects",
+    "contractors",
+    "rate_classes",
+)
+
+
+def _truncate_domain_tables(engine) -> None:
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            f"TRUNCATE {', '.join(_DOMAIN_TABLES)} RESTART IDENTITY CASCADE"
+        )
+
+
+@pytest.fixture
+def committing_session_factory(db_engine):
+    """Фабрика сессий с настоящими commit-ами.
+
+    Пайплайн импорта работает на двух независимых сессиях (AGENTS.md §5), и
+    смысл теста именно в том, что сессия A видит коммиты сессии B и наоборот —
+    транзакционная фикстура `db_session` этого воспроизвести не может. Цена:
+    данные реально ложатся в БД, поэтому доменные таблицы чистятся до и после
+    теста.
+    """
+    factory = sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
+    _truncate_domain_tables(db_engine)
+    try:
+        yield factory
+    finally:
+        _truncate_domain_tables(db_engine)
+
+
+@pytest.fixture
+def committing_db(committing_session_factory) -> Iterator[Session]:
+    """Одна сессия с настоящими commit-ами (и её фабрика — в `.info`)."""
+    db = committing_session_factory()
+    try:
+        yield db
+    finally:
+        db.rollback()
+        db.close()
+
+
+@pytest.fixture
+def tmp_storage(tmp_path):
+    """Файловое хранилище (§8) в tmp-директории теста."""
+    from storage import LocalStorage
+
+    return LocalStorage(tmp_path / "storage")
+
+
+@pytest.fixture
+def committing_factories(committing_db):
+    """Фабрики, привязанные к сессии с настоящими commit-ами."""
+    from tests import factories as f
+
+    f._register_session(committing_db)
+    yield f
+    f._register_session(None)
 
 
 @pytest.fixture

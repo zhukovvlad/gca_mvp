@@ -15,6 +15,21 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def utcnow_aware() -> datetime:
+    """Текущее время в UTC как aware datetime.
+
+    Для timestamptz-колонок доменной схемы (фаза 2: import_jobs, matching_cache
+    и т.д.) — они, в отличие от таблиц фазы 1, объявлены с timezone=True
+    (docs/phase2-schema.md §3.8).
+
+    Время считается в Python, а не через SQL `now()`, намеренно: TTL кэша
+    матчинга (§4) проверяется и продлевается тем же источником времени, который
+    подменяет freezegun в тестах «ручное решение переживает истечение auto-TTL»
+    (AGENTS.md §10).
+    """
+    return datetime.now(UTC)
+
+
 def get_client_ip(request: Request) -> str | None:
     """Возвращает реальный IP клиента с учётом reverse-proxy.
 
