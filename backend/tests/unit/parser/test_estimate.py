@@ -4,13 +4,16 @@
 
 * `fixtures/gp_estimate_fixture.xlsx` — обезличенная копия реального образца
   (фаза 0). Коммитится, работает в CI, на нём держатся основные проверки.
-* `samples/` — сам реальный образец. В репозиторий не попадает (AGENTS.md §9),
-  тесты на нём пропускаются, если каталога нет. Их задача — подтвердить, что
-  обезличивание не изменило поведения парсера.
+* `samples/` — реальные оферты (может лежать несколько). В репозиторий не
+  попадают (AGENTS.md §9), тесты на них пропускаются, если каталога нет.
+  Проверяются инварианты формата и семантика §6 на КАЖДОЙ оферте, плюс
+  присутствие первоисточника fixture — что обезличивание не изменило
+  поведения парсера.
 
 Числа в ожиданиях — не «что получилось», а замеры фазы 0
 (`docs/phase0-input-data.md`): 2576 строк позиций, 1828 расценённых строк с
-заполненным «Предлагаемым количеством».
+заполненным «Предлагаемым количеством». Они принадлежат первоисточнику
+fixture, а не любому образцу.
 """
 from __future__ import annotations
 
@@ -53,18 +56,9 @@ MONEY_PATHS = (
 )
 
 
-def _real_sample_path() -> Path | None:
-    """Путь к реальной оферте, с которой снят fixture, или None.
-
-    Задача этих тестов — сверить fixture с его первоисточником, поэтому
-    берётся именно оферта («Оферта_*»), а не первый попавшийся файл:
-    в `samples/` лежат и сметы других форматов (укрупнённая смета к договору),
-    которые парсер текущей фазы намеренно отвергает.
-    """
-    if not SAMPLES_DIR.is_dir():
-        return None
-    candidates = sorted(SAMPLES_DIR.glob("Оферта*.xlsx"))
-    return candidates[0] if candidates else None
+# Все локальные оферты. Берутся только «Оферта_*»: в samples/ могут лежать и
+# файлы других форматов, которые парсер текущей фазы намеренно отвергает.
+SAMPLE_PATHS = sorted(SAMPLES_DIR.glob("Оферта*.xlsx")) if SAMPLES_DIR.is_dir() else []
 
 
 @pytest.fixture(scope="module")
@@ -76,12 +70,16 @@ def fixture_result():
 
 
 @pytest.fixture(scope="module")
-def real_sample_result():
-    """Разбор реального образца; пропуск, если его нет локально."""
-    path = _real_sample_path()
-    if path is None:
-        pytest.skip("Каталог samples/ отсутствует — реальный образец не коммитится (AGENTS.md §9)")
-    return parse_estimate(str(path))
+def sample_results():
+    """Разбор всех локальных оферт; пропуск, если их нет.
+
+    В сообщениях тестов образцы именуются по номеру, не по имени файла:
+    в именах файлов фигурируют контрагенты, а вывод тестов может попасть
+    в логи (AGENTS.md §9).
+    """
+    if not SAMPLE_PATHS:
+        pytest.skip("Каталог samples/ пуст или отсутствует — реальные оферты не коммитятся (AGENTS.md §9)")
+    return [(f"образец №{i}", parse_estimate(str(path))) for i, path in enumerate(SAMPLE_PATHS, start=1)]
 
 
 class TestParseEstimateOnFixture:
@@ -246,40 +244,101 @@ class TestParseEstimateOnFixture:
                 assert position["job_title_normalized"], position["job_title"]
 
 
-class TestParseEstimateOnRealSample:
-    """Те же проверки на реальном образце — сверка обезличивания."""
+class TestParseEstimateOnRealSamples:
+    """Инварианты формата на каждой локальной оферте + сверка первоисточника.
 
-    def test_parses_without_warnings(self, real_sample_result):
-        assert real_sample_result.warnings == []
+    Точные числа (2576/1828) принадлежат первоисточнику fixture; остальные
+    оферты проверяются на инварианты формата и семантику §6 — так каждый новый
+    образец в samples/ автоматически становится проверкой парсера.
+    """
 
-    def test_counts_match_the_fixture(self, real_sample_result, fixture_result):
-        """Обезличивание не изменило структуру: те же числа, что у fixture."""
-        real_positions = _positions(real_sample_result)
+    def test_every_sample_parses_without_warnings(self, sample_results):
+        for name, result in sample_results:
+            assert result.warnings == [], name
+
+    def test_every_sample_has_gp_layout(self, sample_results):
+        """J6, 11 колонок — раскладка, на которой держится смысл стоимостей."""
+        for name, result in sample_results:
+            proposal = _proposal(result)
+
+            assert proposal["contractor_width"] == 11, name
+            assert proposal["contractor_coordinate"] == "J6", name
+
+    def test_every_sample_extracts_header_identifier(self, sample_results):
+        """На реальных файлах исходный парсер оставлял оба поля пустыми."""
+        for name, result in sample_results:
+            assert result.data["tender_id"], name
+            assert result.data["tender_title"], name
+
+    def test_every_sample_has_no_baseline(self, sample_results):
+        for name, result in sample_results:
+            lot = result.data["lots"]["lot_1"]
+
+            assert lot["baseline_proposal"]["title"] == BASELINE_MISSING_TITLE, name
+
+    def test_weight_is_suggested_quantity_on_every_sample(self, sample_results):
+        """`Стоимость всего = цена × Предлагаемое количество` (AGENTS.md §6).
+
+        Фаза 0 доказала это на одном образце (1828/1828); каждая новая оферта
+        в samples/ перепроверяет вывод. На втором образце (2026-08-03,
+        экспорт из системы-источника): 1193/1193.
+        """
+        for name, result in sample_results:
+            checked = 0
+            for position in _positions(result).values():
+                unit_total = _money(position["unit_cost"]["total"])
+                row_total = _money(position["total_cost"]["total"])
+                weight = _amount(position.get("suggested_quantity"))
+
+                if unit_total is None or row_total is None or not weight:
+                    continue
+
+                _assert_close(row_total, unit_total * weight, f"{name}: {position['job_title']}")
+                checked += 1
+
+            assert checked > 500, f"{name}: проверено слишком мало строк: {checked}"
+
+    def test_coalesce_weight_fallback_is_safe_on_every_sample(self, sample_results):
+        """Нет строк, где `quantity` осмыслен (≠1) и отличается от suggested.
+
+        Это условие, при котором `w = COALESCE(suggested_quantity, quantity)`
+        из §6 не может подменить вес чужим числом (фаза 0, п. «Чем доказано»).
+        """
+        for name, result in sample_results:
+            for position in _positions(result).values():
+                quantity = _amount(position.get("quantity"))
+                suggested = _amount(position.get("suggested_quantity"))
+
+                if quantity is None or suggested is None or quantity == 1:
+                    continue
+
+                assert quantity == suggested, (
+                    f"{name}: «{position['job_title']}»: quantity={quantity}, suggested={suggested}"
+                )
+
+    def test_fixture_source_is_among_samples(self, sample_results, fixture_result):
+        """Первоисточник fixture лежит в samples/ и совпадает с ним по числам.
+
+        Если ни один образец не дал числа fixture — либо первоисточник убрали
+        из каталога, либо парсер разошёлся с fixture на реальном файле. И то
+        и другое должно быть громким.
+        """
         fixture_positions = _positions(fixture_result)
-
-        assert len(real_positions) == len(fixture_positions) == EXPECTED_POSITIONS
 
         def priced(positions):
             return sum(1 for p in positions.values() if p.get("suggested_quantity") is not None)
 
-        assert priced(real_positions) == priced(fixture_positions) == EXPECTED_PRICED_ROWS
+        matches = [
+            name
+            for name, result in sample_results
+            if len(_positions(result)) == len(fixture_positions) == EXPECTED_POSITIONS
+            and priced(_positions(result)) == priced(fixture_positions) == EXPECTED_PRICED_ROWS
+        ]
 
-    def test_layout_matches_the_fixture(self, real_sample_result, fixture_result):
-        real_proposal = _proposal(real_sample_result)
-        fixture_proposal = _proposal(fixture_result)
-
-        assert real_proposal["contractor_width"] == fixture_proposal["contractor_width"] == 11
-        assert real_proposal["contractor_coordinate"] == fixture_proposal["contractor_coordinate"] == "J6"
-
-    def test_header_identifier_is_extracted(self, real_sample_result):
-        """На реальном файле исходный парсер оставлял оба поля пустыми."""
-        assert real_sample_result.data["tender_id"]
-        assert real_sample_result.data["tender_title"]
-
-    def test_baseline_is_absent(self, real_sample_result):
-        lot = real_sample_result.data["lots"]["lot_1"]
-
-        assert lot["baseline_proposal"]["title"] == BASELINE_MISSING_TITLE
+        assert matches, (
+            f"ни один из {len(sample_results)} образцов не совпал с fixture "
+            f"({EXPECTED_POSITIONS} позиций / {EXPECTED_PRICED_ROWS} расценённых)"
+        )
 
 
 class TestMoneyContract:
