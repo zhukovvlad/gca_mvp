@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import json
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pytest
@@ -31,9 +33,24 @@ EXPECTED_PRICED_ROWS = 1828
 
 # Стоимости в файле округлены до копеек, поэтому произведение
 # «цена за единицу × количество» сходится с точностью до копейки, а не побитово.
-# Допуск нужен именно такой: перепутанные колонки дали бы расхождение на порядки,
-# и абсолютная копейка их не спрячет.
-KOPECK = 0.01
+# На крупных суммах округление самих сомножителей даёт больше копейки, поэтому
+# рядом стоит относительный допуск. Оба заведомо меньше, чем расхождение от
+# перепутанных колонок: оно было бы на порядки.
+KOPECK = Decimal("0.01")
+RELATIVE_TOLERANCE = Decimal("1e-6")
+
+# Денежные поля позиции — те, что AGENTS.md §3 требует держать строками.
+MONEY_PATHS = (
+    ("unit_cost", "materials"),
+    ("unit_cost", "works"),
+    ("unit_cost", "indirect_costs"),
+    ("unit_cost", "total"),
+    ("total_cost", "materials"),
+    ("total_cost", "works"),
+    ("total_cost", "indirect_costs"),
+    ("total_cost", "total"),
+    ("total_cost_for_organizer_quantity",),
+)
 
 
 def _real_sample_path() -> Path | None:
@@ -145,16 +162,14 @@ class TestParseEstimateOnFixture:
 
         checked = 0
         for position in positions.values():
-            unit_total = position["unit_cost"]["total"]
-            row_total = position["total_cost"]["total"]
-            weight = position.get("suggested_quantity")
+            unit_total = _money(position["unit_cost"]["total"])
+            row_total = _money(position["total_cost"]["total"])
+            weight = _amount(position.get("suggested_quantity"))
 
-            if not isinstance(unit_total, int | float) or not isinstance(row_total, int | float):
-                continue
-            if not isinstance(weight, int | float) or weight == 0:
+            if unit_total is None or row_total is None or not weight:
                 continue
 
-            assert row_total == pytest.approx(unit_total * weight, rel=1e-6, abs=KOPECK), position["job_title"]
+            _assert_close(row_total, unit_total * weight, position["job_title"])
             checked += 1
 
         assert checked > 1500, f"проверено слишком мало строк: {checked}"
@@ -168,18 +183,14 @@ class TestParseEstimateOnFixture:
 
         checked = 0
         for position in positions.values():
-            unit_total = position["unit_cost"]["total"]
-            organizer_total = position.get("total_cost_for_organizer_quantity")
-            quantity = position.get("quantity")
+            unit_total = _money(position["unit_cost"]["total"])
+            organizer_total = _money(position.get("total_cost_for_organizer_quantity"))
+            quantity = _amount(position.get("quantity"))
 
-            if not isinstance(unit_total, int | float) or not isinstance(organizer_total, int | float):
-                continue
-            if not isinstance(quantity, int | float) or quantity == 0:
+            if unit_total is None or organizer_total is None or not quantity:
                 continue
 
-            assert organizer_total == pytest.approx(
-                unit_total * quantity, rel=1e-6, abs=KOPECK
-            ), position["job_title"]
+            _assert_close(organizer_total, unit_total * quantity, position["job_title"])
             checked += 1
 
         assert checked > 1500, f"проверено слишком мало строк: {checked}"
@@ -265,6 +276,59 @@ class TestParseEstimateOnRealSample:
         assert lot["baseline_proposal"]["title"] == BASELINE_MISSING_TITLE
 
 
+class TestMoneyContract:
+    """Деньги в `raw_data` — десятичные строки, ни одного `float` (AGENTS.md §3, §11)."""
+
+    def test_position_money_fields_are_decimal_strings(self, fixture_result):
+        """Каждое денежное поле позиции — строка либо None (пустая стоимость → NULL)."""
+        for position in _positions(fixture_result).values():
+            for path in MONEY_PATHS:
+                value = _dig(position, path)
+                assert value is None or isinstance(value, str), (
+                    f"{'.'.join(path)} = {value!r} ({type(value).__name__}) у «{position.get('job_title')}»"
+                )
+
+    def test_summary_money_fields_are_decimal_strings(self, fixture_result):
+        """Итоги идут через тот же `parse_contractor_row` — контракт тот же."""
+        summary = _proposal(fixture_result)["contractor_items"]["summary"]
+
+        assert summary, "блок итогов пуст — проверять нечего"
+        for key, line in summary.items():
+            for path in MONEY_PATHS:
+                value = _dig(line, path)
+                assert value is None or isinstance(value, str), f"{key}.{'.'.join(path)} = {value!r}"
+
+    def test_money_strings_parse_back_to_decimal(self, fixture_result):
+        """Фаза 4 делает `Decimal(value)` — значит, строка обязана им приниматься."""
+        checked = 0
+        for position in _positions(fixture_result).values():
+            for path in MONEY_PATHS:
+                value = _dig(position, path)
+                if value is None:
+                    continue
+                Decimal(value)  # InvalidOperation здесь и есть провал теста
+                checked += 1
+
+        assert checked > 1500, f"проверено слишком мало значений: {checked}"
+
+    def test_data_survives_json_round_trip_without_encoder(self, fixture_result):
+        """`ParseResult.data` кладётся в jsonb как есть — без своего энкодера.
+
+        И обратно: после round-trip'а деньги остаются теми же строками, то есть
+        сериализация ничего не переводит в число.
+        """
+        restored = json.loads(json.dumps(fixture_result.data, ensure_ascii=False))
+
+        assert _find_money_floats(restored) == []
+        assert restored["lots"] == fixture_result.data["lots"]
+
+    def test_totals_are_not_floats_anywhere_in_data(self, fixture_result):
+        """Сквозная проверка: под денежными ключами `float` не встречается нигде."""
+        floats = _find_money_floats(fixture_result.data)
+
+        assert floats == [], f"float в денежных полях: {floats[:5]}"
+
+
 class TestParseEstimateFailures:
     """Структурно непригодные файлы отвергаются с внятной причиной."""
 
@@ -296,8 +360,59 @@ class TestParseEstimateFailures:
         with pytest.raises(EstimateParseError, match="Лот №"):
             parse_worksheet(ws)
 
+    def test_raises_on_unsupported_contractor_colspan(self):
+        """Неизвестная ширина блока — отказ, а не предупреждение и не ValueError.
+
+        Смысл колонок задаётся их числом; при colspan 12 раскладки нет, и разбор
+        был бы выдумкой. Раньше сюда прилетал необработанный `ValueError` из
+        `parse_contractor_row`, и предупреждение `check_estimate_layout` не
+        доезжало до `import_jobs.warnings` — `ParseResult` просто не создавался.
+        """
+        ws = _minimal_sheet(contractor_colspan=12)
+
+        with pytest.raises(EstimateParseError, match="12 колонок"):
+            parse_worksheet(ws)
+
+    def test_raises_when_contractor_header_is_not_merged(self):
+        """Необъединённый заголовок раньше давал `KeyError` по `merged_shape`."""
+        ws = _minimal_sheet(contractor_colspan=None)
+
+        with pytest.raises(EstimateParseError, match="не объединён"):
+            parse_worksheet(ws)
+
+    def test_supported_but_non_gp_colspan_is_a_warning_not_an_error(self):
+        """Ширина 8 разбирается: раскладка известна, просто это не смета ГП.
+
+        Здесь предупреждение обещает импорт — и импорт действительно возможен.
+        """
+        ws = _minimal_sheet(contractor_colspan=8)
+
+        result = parse_worksheet(ws)
+
+        assert any("8 колонок" in w for w in result.warnings)
+
 
 # --- вспомогательное ---
+
+
+def _minimal_sheet(contractor_colspan: int | None):
+    """Лист с шапкой контрагентов и маркером лота, но без строк позиций.
+
+    Args:
+        contractor_colspan: ширина объединённого блока подрядчика; None —
+            заголовок вообще не объединён.
+    """
+    from openpyxl import Workbook
+
+    ws = Workbook().active
+    ws["G6"] = "Наименование контрагента"
+    ws["J6"] = 'ООО "Тест"'
+    ws["D11"] = "Лот №1 Тестовый"
+
+    if contractor_colspan is not None:
+        ws.merge_cells(start_row=6, start_column=10, end_row=6, end_column=9 + contractor_colspan)
+
+    return ws
 
 
 def _proposal(result):
@@ -306,3 +421,56 @@ def _proposal(result):
 
 def _positions(result):
     return _proposal(result)["contractor_items"]["positions"]
+
+
+def _dig(container, path):
+    """Достаёт значение по пути ключей; None, если по дороге нет словаря."""
+    value = container
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _money(value):
+    """Денежное значение из raw_data → Decimal; None, если это не число-строка."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return Decimal(value)
+    except InvalidOperation:
+        return None
+
+
+def _amount(value):
+    """Количество (оно осталось числом) → Decimal; None, если это не число."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return Decimal(str(value))
+
+
+def _assert_close(actual: Decimal, expected: Decimal, label) -> None:
+    """Сравнение денег в Decimal: копейка округления либо относительный допуск."""
+    tolerance = max(KOPECK, abs(expected) * RELATIVE_TOLERANCE)
+
+    assert abs(actual - expected) <= tolerance, f"{label}: {actual} != {expected} (допуск {tolerance})"
+
+
+def _find_money_floats(node, path=()):
+    """Возвращает пути до `float`, лежащих под денежными ключами."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found.extend(_find_money_floats(value, (*path, str(key))))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_find_money_floats(value, (*path, str(index))))
+    elif isinstance(node, float) and _is_money_path(path):
+        found.append(".".join(path))
+    return found
+
+
+def _is_money_path(path) -> bool:
+    """Оканчивается ли путь одним из денежных полей."""
+    return any(path[-len(money_path) :] == money_path for money_path in MONEY_PATHS)

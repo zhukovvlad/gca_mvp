@@ -56,8 +56,9 @@ def get_items_dict(contractor_colspan: int) -> dict[str, Any]:
 
     Returns:
         Словарь-шаблон. При неподдерживаемом `colspan` — общие поля плюс ключ
-        "error" с описанием (позиция всё равно попадёт в raw_data, а импорт
-        фазы 4 увидит явный маркер проблемы).
+        "error" с описанием. Поведение исходника; в штатном пайплайне эта ветка
+        недостижима — файлы с неизвестной шириной блока отвергает
+        `estimate._validate_contractor_blocks` ещё до разбора позиций.
     """
     item: dict[str, Any] = {
         JSON_KEY_NUMBER: None,

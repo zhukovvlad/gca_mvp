@@ -126,6 +126,7 @@ AttributeError. Шаги разбора берутся полным путём:
 | `read_contractors` | ширина скана ограничена `MAX_HEADER_SCAN_COLUMN = 256` вместо `ws.max_column` | §1.3 |
 | `build_merged_shape_map` | карта строится по границам диапазонов, без обхода `ws[coord]` | не материализует ячейки |
 | `sanitize_text` | ленивая загрузка модели, отказ вместо тихого фолбэка | §2.4 |
+| `parse_contractor_row` | денежные колонки отдаются десятичными строками, не `float` | §2.6 |
 | `read_executer_block` | без изменений | §4.1 |
 
 **Расширение диапазона шапки безопасно для тендерных таблиц.** При дублировании
@@ -196,11 +197,72 @@ GitHub-релиза), а не командой `spacy download`, — чтобы 
 Константа заголовка написана по реальному тексту файла — «**Предлагаемое**
 количество», не «Предполагаемое» (AGENTS.md §4).
 
-### 2.6. Оркестратор и контракт с фазой 4
+**Где проходит граница между предупреждением и отказом.** Предупреждение
+обещает импорт, поэтому его нельзя выдавать там, где импорта не будет. Смысл
+колонок задаётся шириной блока, и раскладка известна только для ширин 8, 9, 10
+и 11 (`parse_contractor_row.SUPPORTED_CONTRACTOR_COLSPANS`):
+
+* ширина известна, но не 11 — файл разбирается, расхождение уходит
+  предупреждением. Например, при colspan 8/9 колонки «Предлагаемое количество»
+  нет вовсе, и весом позиции станет `quantity` через `COALESCE` (AGENTS.md §6);
+* ширина неизвестна (или заголовок подрядчика вообще не объединён с колонками
+  своего блока) — `EstimateParseError` из `estimate._validate_contractor_blocks`,
+  до начала разбора. Разбирать блок неизвестной ширины нечем: стоимости молча
+  легли бы не в те поля.
+
+Раньше второй случай кончался необработанным `ValueError` из
+`parse_contractor_row` (а необъединённый заголовок — `KeyError` по
+`merged_shape`): `ParseResult` не создавался, и сформированное
+`check_estimate_layout` предупреждение до `import_jobs.warnings` не доезжало.
+Закреплено тестами `test_raises_on_unsupported_contractor_colspan`,
+`test_raises_when_contractor_header_is_not_merged` и
+`test_supported_but_non_gp_colspan_is_a_warning_not_an_error`.
+
+### 2.6. Деньги: десятичные строки, ни одного `float`
+
+`openpyxl` отдаёт числовую ячейку как `float`, а AGENTS.md §3 и §11 требуют
+`numeric` в БД ↔ `Decimal` в Python ↔ **строки в JSON**, без `float`. Результат
+парсера — не промежуточное представление: это JSON, который ложится в
+`estimate_raw_data.raw_data`. Поэтому конвертация делается на границе чтения
+файла, в `parse_contractor_row.money_to_json`.
+
+Дело не только в букве контракта. Получив `float`, импорт фазы 4 естественным
+образом сделал бы `Decimal(14998746.74)` — а это
+`Decimal("14998746.74000000022351741790771484375")`. Преобразование через
+`str()` берёт кратчайшее представление double, которое round-trip'ится точно.
+
+| | значение |
+|---|---|
+| в ячейке | `14998746.74` (`float`) |
+| в `raw_data` | `"14998746.74"` |
+| в фазе 4 | `Decimal("14998746.74")` — простым `Decimal(value)` |
+
+Границы правила:
+
+* строками отдаются только деньги — `unit_cost.*`, `total_cost.*`,
+  `total_cost_for_organizer_quantity` (набор зафиксирован в
+  `parse_contractor_row.MONEY_KEYS`); блок итогов идёт через ту же функцию;
+* **количества остаются числами** — `quantity` и `suggested_quantity`
+  под требование §3 не подпадают;
+* пустая ячейка → `null`, не `0` (AGENTS.md §3); `nan`/`inf` тоже `null`;
+* нечисловые значения проходят как есть — строки ошибок Excel разбирает
+  `postprocess.replace_div0_with_null`.
+
+`ParseResult.data` при этом остаётся напрямую сериализуемым в `jsonb`: своего
+энкодера фазе 4 не нужно. Обратная сторона — SQL-анализ по `raw_data` требует
+`::numeric`; для архивного слоя это приемлемо, доменные суммы живут в
+`position_items`.
+
+Тесты денежного контракта — `test_parse_contractor_row.py::TestMoneyToJson` и
+`test_estimate.py::TestMoneyContract`; сравнения стоимостей в тестах ведутся в
+`Decimal`, без `pytest.approx` (AGENTS.md §11).
+
+### 2.7. Оркестратор и контракт с фазой 4
 
 `parse_estimate(source) -> ParseResult` возвращает:
 
-* `data` — полная JSON-структура для `estimate_raw_data.raw_data`;
+* `data` — полная JSON-структура для `estimate_raw_data.raw_data`, деньги в ней
+  десятичными строками (§2.6);
 * `parser_version` — для `estimate_raw_data.parser_version` (сейчас `"1.0.0"`);
 * `warnings` — список строк для `import_jobs.warnings`.
 

@@ -21,6 +21,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .constants import JSON_KEY_EXECUTOR, JSON_KEY_LOTS
 from .layout import check_estimate_layout
+from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS
 from .postprocess import normalize_lots_json_structure, replace_div0_with_null
 from .read_contractors import read_contractors
 from .read_executer_block import read_executer_block
@@ -74,6 +75,52 @@ def _select_worksheet(wb: openpyxl.Workbook, warnings: list[str]) -> Worksheet:
     return wb[wb.sheetnames[0]]
 
 
+def _validate_contractor_blocks(contractors: list[dict[str, Any]]) -> None:
+    """Отвергает файлы, в которых смысл колонок подрядчика неизвестен.
+
+    Парсер определяет смысл колонок по ширине объединённого блока подрядчика
+    (`parse_contractor_row.get_column_keys`). Для ширин из
+    `SUPPORTED_CONTRACTOR_COLSPANS` раскладка известна, и файл разбирается —
+    несовпадение с ожидаемой для сметы ГП шириной 11 уходит предупреждением
+    (`layout.check_estimate_layout`). Для любой другой ширины раскладки нет, и
+    разбор был бы выдумкой: стоимости легли бы не в те поля молча.
+
+    Это граница между «читается с оговорками» и «структурно непригодно»:
+    предупреждение обещает импорт, поэтому его нельзя выдавать там, где импорт
+    невозможен.
+
+    Args:
+        contractors: результат `read_contractors` целиком (нулевой элемент —
+            ячейка-маркер, дальше подрядчики).
+
+    Raises:
+        EstimateParseError: заголовок подрядчика не объединён с колонками блока
+            либо ширина блока не поддерживается.
+    """
+    expected = ", ".join(str(value) for value in SUPPORTED_CONTRACTOR_COLSPANS)
+
+    for contractor in contractors[1:]:
+        title = contractor.get("value")
+        coordinate = contractor.get("coordinate")
+        merged_shape = contractor.get("merged_shape")
+
+        if not merged_shape:
+            raise EstimateParseError(
+                f"Заголовок подрядчика «{title}» ({coordinate}) не объединён с колонками "
+                "своего блока, поэтому неизвестно, сколько их и что в них лежит. "
+                "Смысл колонок подрядчика задаётся шириной объединённого блока."
+            )
+
+        colspan = merged_shape.get("colspan")
+        if colspan not in SUPPORTED_CONTRACTOR_COLSPANS:
+            raise EstimateParseError(
+                f"Блок подрядчика «{title}» ({coordinate}) занимает {colspan} колонок; "
+                f"парсер знает раскладку только для {expected}. Смысл колонок определяется "
+                "их числом, поэтому блок неизвестной ширины разобрать нельзя — стоимости "
+                "попали бы не в те поля."
+            )
+
+
 def parse_worksheet(ws: Worksheet) -> ParseResult:
     """Разбирает уже открытый лист.
 
@@ -88,7 +135,8 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
 
     Raises:
         EstimateParseError: не найдена строка заголовков контрагентов, нет
-            подрядчиков или нет маркера лота.
+            подрядчиков, нет маркера лота либо ширина блока подрядчика такова,
+            что смысл его колонок неизвестен (`_validate_contractor_blocks`).
     """
     warnings: list[str] = []
 
@@ -111,6 +159,8 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
             "Не найден маркер лота: в колонке D нет ячейки, начинающейся с «Лот №». "
             "Без него не определить границы блока позиций."
         )
+
+    _validate_contractor_blocks(contractors)
 
     warnings.extend(check_estimate_layout(ws, contractors, lot_starts))
 
