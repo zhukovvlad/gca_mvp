@@ -429,6 +429,48 @@ class TestJobEndpoints:
         # Кириллическое имя — только через RFC 5987.
         assert "filename*=UTF-8''" in response.headers["content-disposition"]
 
+    def test_download_closes_the_storage_handle(
+        self, committing_client, contract, stub_parser, tmp_storage, monkeypatch
+    ):
+        """Хендл хранилища закрывается детерминированно, а не сборщиком мусора.
+
+        На Windows открытый хендл блокирует удаление файла — незакрытая выдача
+        мешала бы ретенции §8 в этом же процессе. Проверяется вызов close(), а
+        не удаляемость файла: refcounting CPython закрывает брошенный хендл
+        «обычно достаточно быстро», и тест на удаление не отличал бы починку от
+        везения.
+        """
+        stub_parser(payload_for(contract))
+        job_id = upload(committing_client, content=xlsx_bytes(), contract_id=contract.id).json()["id"]
+
+        spies = []
+        original_get = tmp_storage.get
+
+        class SpyHandle:
+            def __init__(self, inner):
+                self._inner = inner
+                self.closed = False
+
+            def read(self, *args):
+                return self._inner.read(*args)
+
+            def close(self):
+                self.closed = True
+                self._inner.close()
+
+        def spying_get(key):
+            spy = SpyHandle(original_get(key))
+            spies.append(spy)
+            return spy
+
+        monkeypatch.setattr(tmp_storage, "get", spying_get)
+
+        response = committing_client.get(f"/api/v1/import-jobs/{job_id}/file")
+
+        assert response.status_code == 200
+        assert len(spies) == 1
+        assert spies[0].closed, "хендл хранилища не закрыт после выдачи файла"
+
     def test_purged_file_is_410_not_404(
         self, committing_client, committing_db, committing_factories, tmp_storage
     ):

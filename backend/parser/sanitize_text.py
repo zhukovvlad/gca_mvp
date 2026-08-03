@@ -36,6 +36,17 @@ SPACY_MODEL_NAME = "ru_core_news_sm"
 _nlp = None
 _nlp_lock = threading.Lock()
 
+# Вызовы nlp() сериализуются: spaCy НЕ документирует потокобезопасность
+# Language-объекта (общие Vocab/StringStore мутируют на новых строках), а фаза 4
+# выполняет параллельные импорты разных допсоглашений в потоках BackgroundTasks
+# (AGENTS.md §4 это разрешает). Стресс 8 потоков × 320 уникальных фраз
+# расхождений НЕ показал — это защита недокументированного контракта, а не
+# исправление воспроизведённого дефекта. Цена нулевая: лемматизация держит GIL,
+# так что реального параллелизма замок не отнимает, а lru_cache ниже оставляет
+# попадания вообще без замка. Ставка в случае ошибки — детерминизм
+# normalized_job_title, то есть идентичность каталога (§11).
+_nlp_call_lock = threading.Lock()
+
 
 class NormalizationUnavailableError(RuntimeError):
     """spaCy или модель лемматизации недоступны.
@@ -148,7 +159,8 @@ def _lemmatize(cleaned_text: str) -> str:
     прогрет. Смысл кэша чисто экономический: в смете наименования сильно
     повторяются — на реальном образце 2576 позиций дают 1070 уникальных строк.
     """
-    doc = get_nlp()(cleaned_text)
+    with _nlp_call_lock:
+        doc = get_nlp()(cleaned_text)
     lemmatized_words = [
         token.lemma_ for token in doc if not token.is_punct and not token.is_space and token.lemma_
     ]

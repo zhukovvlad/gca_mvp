@@ -115,6 +115,31 @@ class TestRetention:
         assert purge_expired_error_job_files(db_session, tmp_storage, retention_days=0) == 0
         assert tmp_storage.exists(key) is True
 
+    def test_one_bad_job_does_not_abort_the_rest(self, db_session, factories, tmp_storage):
+        """Ошибки ретенции изолируются по заданиям.
+
+        Испорченный file_key (StorageKeyError из exists) у одного задания не
+        должен обрывать цикл — иначе один дефектный ряд копил бы файлы всех
+        остальных до ручного вмешательства. Задание с плохим ключом идёт по id
+        ПЕРВЫМ, чтобы тест ловил именно обрыв цикла.
+        """
+        broken = factories.ImportJobFactory.create(
+            status=ImportJobStatus.error.value,
+            error_text="боль",
+            file_key="не-uuid-вовсе",
+        )
+        db_session.flush()
+        moment = utcnow_aware() - timedelta(days=99)
+        broken.created_at = broken.finished_at = moment
+        good, good_key = self._aged_error_job(db_session, factories, tmp_storage, days_ago=99)
+        assert broken.id < good.id
+
+        assert purge_expired_error_job_files(db_session, tmp_storage, retention_days=30) == 1
+
+        assert tmp_storage.exists(good_key) is False
+        assert any("ретенции" in w for w in good.warnings)
+        assert not broken.warnings  # плохое задание пропущено, а не «обработано»
+
 
 class TestMaintenanceObligations:
     """Recovery обязателен, ретенция — best-effort, и они не мешают друг другу."""

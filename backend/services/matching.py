@@ -388,6 +388,11 @@ def _get_or_create_catalog_rows(
     TO_REVIEW-строку: они попали в одну группу, а на группу приходится одна
     вставка.
     """
+    # Сортировка по паре — канонический порядок захвата замков. §4 разрешает
+    # параллельный импорт разных допсоглашений (BackgroundTasks выполняет их в
+    # потоках), и две executemany-партии, вставляющие пересекающиеся пары в
+    # разном порядке, могли бы взаимно заблокироваться на ON CONFLICT. Единый
+    # порядок делает это невозможным по построению.
     db.execute(
         catalog_get_or_create_statement(),
         [
@@ -399,7 +404,7 @@ def _get_or_create_catalog_rows(
                 # Статус про векторную индексацию (вне MVP, §5) — 'na'.
                 "status": CatalogStatus.na.value,
             }
-            for g in groups
+            for g in sorted(groups, key=lambda g: _pair_key(g.normalized_title, g.unit_id))
         ],
     )
 
@@ -439,9 +444,16 @@ def _write_cache(db: Session, rows: list[dict]) -> None:
     auto-запись (её ветка 1 не увидела) — её надо освежить. Ручные записи
     (`source='manual'`) сюда не попадают: они дают hit в ветке 1 и никогда не
     истекают, поэтому переписать их автоматике невозможно.
+
+    Партия отсортирована по ключу — канонический порядок захвата замков между
+    параллельными импортами разных допсоглашений (§4), как в get-or-create.
+    Одиночному UPDATE в `_extend_auto_ttl` порядок так не навяжешь (его выбирает
+    планировщик), но и цена дедлока там — abort одной транзакции и job в
+    `error`, повторная загрузка законна; порчи данных нет.
     """
     if not rows:
         return
+    rows = sorted(rows, key=lambda row: row["cache_key"])
     stmt = pg_insert(MatchingCache)
     stmt = stmt.on_conflict_do_update(
         index_elements=[MatchingCache.cache_key],

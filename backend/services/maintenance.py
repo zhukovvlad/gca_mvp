@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from models import ACTIVE_IMPORT_JOB_STATUSES, ImportJob, ImportJobStatus
-from storage import Storage
+from storage import Storage, StorageKeyError
 from utils import utcnow_aware
 
 log = logging.getLogger(__name__)
@@ -88,11 +88,22 @@ def purge_expired_error_job_files(db: Session, storage: Storage, *, retention_da
 
     purged = 0
     for job in stale:
-        # exists() до delete(): пропускаем уже вычищенные задания, иначе warning
-        # дописывался бы при каждом старте приложения.
-        if not storage.exists(job.file_key):
+        # Ошибки изолируются ПО ЗАДАНИЯМ: испорченный file_key (StorageKeyError)
+        # или занятый файл (OSError) не должны обрывать ретенцию остальных —
+        # иначе один дефектный ряд копил бы файлы до ручного вмешательства.
+        try:
+            # exists() до delete(): пропускаем уже вычищенные задания, иначе
+            # warning дописывался бы при каждом старте приложения.
+            if not storage.exists(job.file_key):
+                continue
+            storage.delete(job.file_key)
+        except (StorageKeyError, OSError):
+            log.exception(
+                "Ретенция §8: файл задания %d (file_key=%r) не удалён — пропущен",
+                job.id,
+                job.file_key,
+            )
             continue
-        storage.delete(job.file_key)
         job.warnings = [
             *(job.warnings or []),
             f"Исходный файл удалён по ретенции ({retention_days} дн.) "

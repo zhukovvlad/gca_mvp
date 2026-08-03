@@ -25,6 +25,25 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/import-jobs", tags=["import-jobs"])
 
+#: Размер чтения при отдаче файла. XLSX — двоичный ZIP: отдай мы StreamingResponse
+#: сам файловый объект, Starlette итерировал бы его ПОСТРОЧНО (файл — итератор по
+#: строкам), нарезая ответ по случайным байтам 0x0A, и никогда не закрыл бы хендл.
+_DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+
+def _stream_and_close(handle, chunk_size: int = _DOWNLOAD_CHUNK_SIZE):
+    """Отдаёт файл кусками и гарантированно закрывает хендл.
+
+    Закрытие в `finally` — детерминированное, а не «когда-нибудь сборщиком
+    мусора»: на Windows открытый хендл блокирует удаление файла, то есть
+    незакрытая выдача мешала бы ретенции §8 в этом же процессе.
+    """
+    try:
+        while chunk := handle.read(chunk_size):
+            yield chunk
+    finally:
+        handle.close()
+
 
 def _get_job(db: Session, job_id: int) -> ImportJob:
     job = db.get(ImportJob, job_id)
@@ -74,7 +93,7 @@ def download_import_job_file(
         f"filename*=UTF-8''{quote(job.filename, safe='')}"
     )
     return StreamingResponse(
-        handle,
+        _stream_and_close(handle),
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": disposition},
     )
