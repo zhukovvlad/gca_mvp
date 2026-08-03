@@ -17,9 +17,11 @@ logger = logging.getLogger(__name__)
 from database import SessionLocal
 from routers import admin as admin_router
 from routers import auth as auth_router
+from routers import catalog as catalog_router
 from routers import contracts as contracts_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
+from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import review as review_router
 from routers import units
@@ -143,6 +145,9 @@ app.include_router(import_jobs_router.router, dependencies=_auth_dep)
 # аутентифицированному, изменение — под require_admin внутри роутера (§6.2).
 app.include_router(references_router.router, dependencies=_auth_dep)
 app.include_router(contracts_router.router, dependencies=_auth_dep)
+app.include_router(catalog_router.router, dependencies=_auth_dep)
+# Нормативы — изменение под admin по букве §3, не по решению фазы 5.
+app.include_router(rate_standards_router.router, dependencies=_auth_dep)
 # Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
 app.include_router(review_router.router, dependencies=_auth_dep)
 

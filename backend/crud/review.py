@@ -12,13 +12,9 @@ TO_REVIEW-строка остаётся. Решать по ней нечего �
 импорт той же работы переиспользует её штатным get-or-create (§5.4.3), то есть
 она вернётся в очередь сама, уже со ссылками.
 
-**Решение фазы 5 §6.4: поиск цели — ILIKE, а не FTS.** `catalog_positions.fts_vector`
-это `to_tsvector('simple', standard_job_title)`, то есть вектор **словоформ**, а
-`prepare_for_fts_query` отдаёт **леммы** — такой запрос не находит ничего
-(замер в `docs/phase5-crud-review.md` §1.4). Ищем по двум колонкам: по
-`standard_job_title` — тем, что оператор видит, и по `normalized_job_title` —
-леммами его запроса, чтобы «кабеля» находило «кабелей». Цена — seq scan; она
-осознанна при масштабе каталога MVP (единицы тысяч строк).
+Поиск цели слияния (решение §6.4 — ILIKE, а не FTS) живёт в `crud/catalog.py`:
+тот же поиск нужен экрану нормативов, и второе его написание разъехалось бы с
+этим. Здесь остались обёртки с именами, которые понятны на экране Review.
 """
 from __future__ import annotations
 
@@ -27,9 +23,9 @@ import logging
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from crud import catalog as crud_catalog
 from crud.common import DomainError, clamp_page, iso
 from models import CatalogKind, CatalogPosition, PositionItem, UnitOfMeasure
-from parser.sanitize_text import normalize_job_title_with_lemmatization
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +33,6 @@ log = logging.getLogger(__name__)
 #: понять, что за работа скрыта за каталожной строкой; трёх примеров хватает,
 #: а полный список на 200 позиций сделал бы таблицу нечитаемой.
 SAMPLE_TITLES_LIMIT = 3
-
-#: Потолок выдачи поиска цели: оператор выбирает глазами, а не листает.
-TARGET_SEARCH_LIMIT = 50
 
 #: Сортировки очереди. По умолчанию — самые «тяжёлые» работы первыми: их разбор
 #: даёт наибольший прирост метрики §10 (решение §6.5).
@@ -175,88 +168,16 @@ def list_review_queue(
 
 
 def search_merge_targets(
-    db: Session, *, q: str, unit_id: int | None = None, limit: int = TARGET_SEARCH_LIMIT
+    db: Session, *, q: str, unit_id: int | None = None
 ) -> list[dict]:
-    """Каталожные POSITION-строки, подходящие как цель слияния (§6.4).
+    """Цели слияния: каталожные POSITION-строки по фрагменту названия (§5).
 
-    Args:
-        q: то, что напечатал оператор, — человеческое название или его фрагмент.
-        unit_id: подсказка «сначала та же единица». НЕ фильтр: слияние в другую
-            единицу оператор вправе сделать осознанно (например, каталожная строка
-            в м², а смета посчитана в м), и спрятать такую цель значило бы решить
-            за него.
-        limit: потолок выдачи.
-
-    Returns:
-        Список целей; совпадения с начала названия — первыми, затем короткие.
+    Тонкая обёртка над `crud.catalog.search_positions`: тот же поиск нужен экрану
+    нормативов, и второе его написание разъехалось бы с этим.
     """
-    text = (q or "").strip()
-    if not text:
-        return []
-
-    pattern = f"%{text}%"
-    conditions = [CatalogPosition.standard_job_title.ilike(pattern)]
-
-    # Леммы запроса — против уже лемматизированной колонки каталога. Это и даёт
-    # морфологию: «кабеля» находит «кабелей», чего ILIKE по сырому тексту не
-    # умеет, а FTS в текущей обвязке не умеет тем более (§6.4).
-    normalized = normalize_job_title_with_lemmatization(text)
-    if normalized:
-        conditions.append(CatalogPosition.normalized_job_title.ilike(f"%{normalized}%"))
-
-    starts_with = sa.case(
-        (CatalogPosition.standard_job_title.ilike(f"{text}%"), 0), else_=1
-    )
-    same_unit = (
-        sa.case((CatalogPosition.unit_id == unit_id, 0), else_=1)
-        if unit_id is not None
-        else sa.literal(0)
-    )
-
-    rows = db.execute(
-        sa.select(CatalogPosition, UnitOfMeasure.code, UnitOfMeasure.name)
-        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == CatalogPosition.unit_id)
-        .where(
-            CatalogPosition.kind == CatalogKind.POSITION.value,
-            sa.or_(*conditions),
-        )
-        .order_by(
-            same_unit,
-            starts_with,
-            sa.func.length(CatalogPosition.standard_job_title),
-            CatalogPosition.id,
-        )
-        .limit(limit)
-    ).all()
-
-    return [
-        {
-            "id": position.id,
-            "standard_job_title": position.standard_job_title,
-            "unit_id": position.unit_id,
-            "unit_code": unit_code,
-            "unit_name": unit_name,
-        }
-        for position, unit_code, unit_name in rows
-    ]
+    return crud_catalog.search_positions(db, q=q, unit_id=unit_id)
 
 
 def catalog_position_dict(db: Session, catalog_position_id: int) -> dict:
-    """Каталожная строка с единицей — ответ на решение оператора."""
-    row = db.execute(
-        sa.select(CatalogPosition, UnitOfMeasure.code, UnitOfMeasure.name)
-        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == CatalogPosition.unit_id)
-        .where(CatalogPosition.id == catalog_position_id)
-    ).first()
-    if row is None:
-        raise DomainError(404, f"Каталожная строка {catalog_position_id} не найдена.")
-    position, unit_code, unit_name = row
-    return {
-        "id": position.id,
-        "standard_job_title": position.standard_job_title,
-        "normalized_job_title": position.normalized_job_title,
-        "kind": position.kind,
-        "unit_id": position.unit_id,
-        "unit_code": unit_code,
-        "unit_name": unit_name,
-    }
+    """Каталожная строка — ответ на решение оператора."""
+    return crud_catalog.position_dict(db, catalog_position_id)
