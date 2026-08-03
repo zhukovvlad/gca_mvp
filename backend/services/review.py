@@ -98,7 +98,9 @@ def _write_manual_cache(
     return key
 
 
-def merge_into_position(db: Session, *, to_review_id: int, target_id: int) -> int:
+def merge_into_position(
+    db: Session, *, to_review_id: int, target_id: int, resolver: UnitResolver | None = None
+) -> int:
     """Сливает TO_REVIEW-строку с существующей POSITION. Возвращает число позиций.
 
     Порядок операций — из §5 и он существен:
@@ -117,6 +119,8 @@ def merge_into_position(db: Session, *, to_review_id: int, target_id: int) -> in
         db: сессия; транзакцией управляет вызывающий.
         to_review_id: строка очереди Review.
         target_id: каталожная POSITION, с которой сливаем.
+        resolver: готовый резолвер единиц; передаётся при пакетной обработке
+            очереди, чтобы не перечитывать справочник алиасов на каждое решение.
 
     Raises:
         ReviewError: не тот `kind` у источника или цели, либо слияние с собой.
@@ -126,7 +130,7 @@ def merge_into_position(db: Session, *, to_review_id: int, target_id: int) -> in
 
     source = _require_kind(db, to_review_id, CatalogKind.TO_REVIEW.value)
     _require_kind(db, target_id, CatalogKind.POSITION.value)
-    resolver = UnitResolver(db)
+    resolver = resolver or UnitResolver(db)
 
     moved = db.execute(
         sa.update(PositionItem)
@@ -149,7 +153,9 @@ def merge_into_position(db: Session, *, to_review_id: int, target_id: int) -> in
     return moved or 0
 
 
-def set_kind(db: Session, *, to_review_id: int, kind: str) -> CatalogPosition:
+def set_kind(
+    db: Session, *, to_review_id: int, kind: str, resolver: UnitResolver | None = None
+) -> CatalogPosition:
     """Утверждает TO_REVIEW-строку как POSITION либо помечает HEADER/TRASH.
 
     Строка не удаляется: её нормализованная пара остаётся за ней, и следующий
@@ -163,7 +169,7 @@ def set_kind(db: Session, *, to_review_id: int, kind: str) -> CatalogPosition:
         raise ReviewError(f"Недопустимый kind «{kind}»; оператор может ставить: {allowed}.")
 
     row = _require_kind(db, to_review_id, CatalogKind.TO_REVIEW.value)
-    resolver = UnitResolver(db)
+    resolver = resolver or UnitResolver(db)
 
     row.kind = kind
     db.flush()

@@ -362,6 +362,32 @@ class TestGetOrCreateBranch:
         item = db_session.execute(sa.select(PositionItem)).scalar_one()
         assert item.catalog_position_id == existing.id
 
+    def test_batch_larger_than_the_prepare_threshold(self, db_session, factories, resolver):
+        """Регрессия: арбитр ON CONFLICT должен быть литералом, а не параметром.
+
+        psycopg3 готовит повторяющийся запрос после `prepare_threshold = 5`, и у
+        подготовленного плана параметризованный `coalesce(unit_id, $N)` перестаёт
+        совпадать с выражением индекса. Партия из 12 промахов проходит этот порог;
+        на партии из 1–5 ошибка НЕ воспроизводится, поэтому размер здесь
+        существенный.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        rows = [
+            position(job_title=f"Небывалая работа номер {i}", unit="м2", number=str(i))
+            for i in range(12)
+        ]
+
+        _o, match = import_and_match(db_session, resolver, contract, rows)
+
+        assert match.counters.to_review == 12
+        created = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(CatalogPosition)
+            .where(CatalogPosition.kind == CatalogKind.TO_REVIEW.value)
+        ).scalar_one()
+        assert created == 12
+
     def test_trash_row_is_bound_as_nonposition(self, db_session, factories, resolver):
         contract = factories.ContractFactory.create()
         trash = factories.CatalogPositionFactory.create(

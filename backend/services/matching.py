@@ -63,6 +63,39 @@ AUTO_CACHE_TTL_DAYS = 30
 #: сравнения с нормативами: строка каталога уже размечена человеком как не-работа.
 _NON_POSITION_KINDS = (CatalogKind.HEADER.value, CatalogKind.LOT_HEADER.value, CatalogKind.TRASH.value)
 
+#: Сентинел «единицы нет» в уникальном индексе `uq_catalog_positions_norm_unit`.
+NO_UNIT_SENTINEL = -1
+
+#: Выражение-арбитр `ON CONFLICT` и ключ выборок по каталогу.
+#:
+#: `literal_column`, а НЕ обычный `-1`: литерал SQLAlchemy отрендерил бы
+#: СВЯЗАННЫЙ ПАРАМЕТР — `coalesce(unit_id, %(coalesce_1)s)`. Пока запрос
+#: исполняется без подготовки, PostgreSQL сворачивает параметр в константу и
+#: индекс находится; но psycopg3 готовит повторяющийся запрос после
+#: `prepare_threshold=5`, а у подготовленного плана параметр остаётся параметром
+#: и совпасть с выражением индекса уже не может: «there is no unique or exclusion
+#: constraint matching the ON CONFLICT specification». То есть баг проявлялся бы
+#: не на маленькой смете, а на настоящей — ровно там, где хуже всего.
+#: Индекс `uq_catalog_positions_norm_unit` создан raw SQL в миграции 0002 с
+#: литералом -1, поэтому и здесь нужен литерал.
+_UNIT_ARBITER = sa.func.coalesce(CatalogPosition.unit_id, sa.literal_column(str(NO_UNIT_SENTINEL)))
+
+
+def _pair_key(normalized_title: str, unit_id: int | None) -> tuple[str, int]:
+    """Пара в том виде, в котором её видит `uq_catalog_positions_norm_unit`."""
+    return (normalized_title, NO_UNIT_SENTINEL if unit_id is None else unit_id)
+
+
+def catalog_get_or_create_statement():
+    """INSERT ... ON CONFLICT DO NOTHING для get-or-create каталожной строки.
+
+    Вынесено из `_get_or_create_catalog_rows`, чтобы тест мог проверить сам
+    отрендеренный SQL: арбитр обязан быть литеральным выражением индекса.
+    """
+    return pg_insert(CatalogPosition).on_conflict_do_nothing(
+        index_elements=[CatalogPosition.normalized_job_title, _UNIT_ARBITER]
+    )
+
 
 def cache_key(normalized_title: str, unit_norm: str, norm_version: int = NORM_VERSION) -> str:
     """Ключ кэша матчинга (§4).
@@ -332,10 +365,9 @@ def _fetch_exact_positions(
             CatalogPosition.normalized_job_title, CatalogPosition.unit_id, CatalogPosition.id
         ).where(
             CatalogPosition.kind == CatalogKind.POSITION.value,
-            sa.tuple_(
-                CatalogPosition.normalized_job_title,
-                sa.func.coalesce(CatalogPosition.unit_id, -1),
-            ).in_([(title, -1 if unit_id is None else unit_id) for title, unit_id in pairs]),
+            sa.tuple_(CatalogPosition.normalized_job_title, _UNIT_ARBITER).in_(
+                [_pair_key(title, unit_id) for title, unit_id in pairs]
+            ),
         )
     ).all()
     return {(title, unit_id): row_id for title, unit_id, row_id in rows}
@@ -356,14 +388,8 @@ def _get_or_create_catalog_rows(
     TO_REVIEW-строку: они попали в одну группу, а на группу приходится одна
     вставка.
     """
-    insert_stmt = pg_insert(CatalogPosition).on_conflict_do_nothing(
-        index_elements=[
-            CatalogPosition.normalized_job_title,
-            sa.func.coalesce(CatalogPosition.unit_id, -1),
-        ]
-    )
     db.execute(
-        insert_stmt,
+        catalog_get_or_create_statement(),
         [
             {
                 "standard_job_title": g.display_title,
@@ -385,10 +411,9 @@ def _get_or_create_catalog_rows(
             CatalogPosition.id,
             CatalogPosition.kind,
         ).where(
-            sa.tuple_(
-                CatalogPosition.normalized_job_title,
-                sa.func.coalesce(CatalogPosition.unit_id, -1),
-            ).in_([(title, -1 if unit_id is None else unit_id) for title, unit_id in pairs])
+            sa.tuple_(CatalogPosition.normalized_job_title, _UNIT_ARBITER).in_(
+                [_pair_key(title, unit_id) for title, unit_id in pairs]
+            )
         )
     ).all()
     return {(title, unit_id): (row_id, kind) for title, unit_id, row_id, kind in rows}
