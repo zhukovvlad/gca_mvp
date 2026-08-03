@@ -252,6 +252,56 @@ def tmp_storage(tmp_path):
 
 
 @pytest.fixture
+def committing_client(committing_session_factory, tmp_storage) -> Iterator:
+    """TestClient, у которого запросы РЕАЛЬНО коммитят.
+
+    Нужен эндпоинту загрузки: он создаёт задание в одной транзакции, а
+    `BackgroundTasks` продолжает работу на своих сессиях (AGENTS.md §5) — они
+    обязаны видеть закоммиченное задание. Транзакционный `client` этого не даёт.
+
+    `client.auth_state["role"]` переключает роль текущего пользователя: право
+    `replace=true` принадлежит только admin (§3).
+    """
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+
+    from auth import get_current_user
+    from database import get_db, get_session_factory
+    from main import app
+    from models import UserRole
+    from storage import get_storage
+
+    auth_state = {"role": UserRole.admin}
+
+    def override_get_db():
+        db = committing_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def override_get_current_user():
+        user = MagicMock()
+        user.id = 1
+        user.role = auth_state["role"]
+        user.is_active = True
+        return user
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_session_factory] = lambda: committing_session_factory
+    app.dependency_overrides[get_storage] = lambda: tmp_storage
+
+    _csrf_token = "test-csrf-token"
+    with TestClient(app, headers={"X-CSRF-Token": _csrf_token}) as client:
+        client.cookies.set("csrf_token", _csrf_token)
+        client.auth_state = auth_state
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
 def committing_factories(committing_db):
     """Фабрики, привязанные к сессии с настоящими commit-ами."""
     from tests import factories as f

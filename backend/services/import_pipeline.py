@@ -192,7 +192,7 @@ def run_import_job(
     storage: Storage,
     replace: bool = False,
     soft_timeout_minutes: int | None = None,
-    parse: Callable = parse_estimate,
+    parse: Callable | None = None,
 ) -> None:
     """Выполняет задание импорта целиком. Исключения наружу не выпускает.
 
@@ -206,7 +206,10 @@ def run_import_job(
         replace: замена существующей сметы (§5, правило 3).
         soft_timeout_minutes: мягкий таймаут; по умолчанию из настроек.
         parse: точка внедрения парсера (тесты подают готовый `ParseResult`).
+            Разрешается при вызове, а не в значении по умолчанию, — иначе
+            `monkeypatch` модульного `parse_estimate` не имел бы силы.
     """
+    parse = parse or parse_estimate
     minutes = (
         settings.IMPORT_SOFT_TIMEOUT_MINUTES
         if soft_timeout_minutes is None
