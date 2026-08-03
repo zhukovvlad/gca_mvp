@@ -22,7 +22,11 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .constants import JSON_KEY_EXECUTOR, JSON_KEY_LOTS
 from .layout import check_estimate_layout
 from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS
-from .postprocess import normalize_lots_json_structure, replace_div0_with_null
+from .postprocess import (
+    normalize_lots_json_structure,
+    replace_excel_errors_with_null,
+    stringify_temporal_values,
+)
 from .read_contractors import read_contractors
 from .read_executer_block import read_executer_block
 from .read_headers import read_headers
@@ -170,7 +174,8 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
         JSON_KEY_LOTS: read_lots_and_boundaries(ws),
     }
     data = normalize_lots_json_structure(data)
-    data = replace_div0_with_null(data)
+    data = replace_excel_errors_with_null(data)
+    data = stringify_temporal_values(data)
 
     return ParseResult(data=data, warnings=warnings)
 

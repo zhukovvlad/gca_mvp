@@ -86,9 +86,12 @@ def check_estimate_layout(
 
     contractor_headers = contractors[1:]
     if len(contractor_headers) != 1:
+        # Не обещать здесь судьбу импорта: парсер разберёт каждый блок, но
+        # AGENTS.md §4 фиксирует «одно proposal на лот» — что делать с
+        # contractor_2, решает фаза 4 (docs/phase3-parser.md §4).
         warnings.append(
-            f"В смете ожидается один подрядчик, найдено {len(contractor_headers)}. "
-            "Импортирован будет каждый найденный блок — проверьте файл."
+            f"В смете ГП ожидается один подрядчик, найдено {len(contractor_headers)}. "
+            "Разобраны все найденные блоки — проверьте файл."
         )
 
     if len(lot_starts) != 1:

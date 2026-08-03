@@ -53,8 +53,13 @@ class TestMoneyToJson:
         assert money_to_json(float("nan")) is None
         assert money_to_json(float("inf")) is None
 
+    def test_bool_becomes_none(self):
+        """`True` в денежной ячейке — не сумма: `Decimal(True)` дал бы 1 тихо."""
+        assert money_to_json(True) is None
+        assert money_to_json(False) is None
+
     def test_text_passes_through(self):
-        """Строку ошибки Excel разбирает `postprocess.replace_div0_with_null`."""
+        """Строку ошибки Excel гасит `postprocess.replace_excel_errors_with_null`."""
         assert money_to_json("#DIV/0!") == "#DIV/0!"
 
     def test_result_is_always_accepted_by_decimal(self):

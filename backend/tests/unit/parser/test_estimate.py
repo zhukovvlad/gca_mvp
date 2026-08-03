@@ -328,6 +328,30 @@ class TestMoneyContract:
 
         assert floats == [], f"float в денежных полях: {floats[:5]}"
 
+    def test_temporal_and_error_cells_become_json_safe(self):
+        """Дата в ячейке и ошибка Excel не ломают контракт «data → jsonb как есть».
+
+        openpyxl отдаёт date-форматированную ячейку объектом `datetime` —
+        на fixture таких нет, поэтому проверка на синтетическом листе:
+        дата → ISO-строка, `#N/A` → None, соседняя сумма не задета.
+        """
+        import datetime as dt
+
+        ws = _minimal_sheet(contractor_colspan=11)
+        ws.cell(row=12, column=4, value="Работа с датой в комментарии")
+        ws.cell(row=12, column=11, value="#N/A")  # unit_cost.materials
+        ws.cell(row=12, column=14, value=60.5)  # unit_cost.total
+        ws.cell(row=12, column=20, value=dt.datetime(2025, 2, 1))  # comment_contractor
+
+        result = parse_worksheet(ws)
+
+        json.dumps(result.data, ensure_ascii=False)  # TypeError здесь — провал теста
+
+        position = _positions(result)["2"]
+        assert position["comment_contractor"] == "2025-02-01T00:00:00"
+        assert position["unit_cost"]["materials"] is None
+        assert position["unit_cost"]["total"] == "60.5"
+
 
 class TestParseEstimateFailures:
     """Структурно непригодные файлы отвергаются с внятной причиной."""

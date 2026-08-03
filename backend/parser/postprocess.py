@@ -1,7 +1,18 @@
 """Постобработка распарсенной структуры.
 
-Перенос `app/excel_parser/postprocess.py` из `parser_tender_xlsx@0e178c0`
-без изменений логики.
+Перенос `app/excel_parser/postprocess.py` из `parser_tender_xlsx@0e178c0`.
+
+Два отступления от исходника, оба — про пригодность результата как JSON
+(`estimate_raw_data.raw_data`, AGENTS.md §4):
+
+* `replace_excel_errors_with_null` (бывш. `replace_div0_with_null`) гасит все
+  литералы ошибок Excel, а не только деление на ноль: `#N/A` или `#REF!` в
+  денежной колонке — такое же «значения нет», как `#DIV/0!`, и не должны
+  доезжать до фазы 4 строкой, неотличимой по смыслу от суммы;
+* `stringify_temporal_values` переводит `datetime`/`date`/`time`/`timedelta`
+  в ISO-строки: openpyxl отдаёт date-форматированные ячейки объектами, а
+  `json.dumps` их не сериализует — контракт «data кладётся в jsonb как есть»
+  иначе держался бы на удаче входных данных.
 
 Здесь же закрывается половина требования «адаптация без baseline» (AGENTS.md
 §5.2): в смете ГП предложения «Расчетная стоимость» нет, и
@@ -14,6 +25,7 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import logging
 from typing import Any
 
@@ -37,7 +49,25 @@ from .constants import (
 
 log = logging.getLogger(__name__)
 
-DIV_ZERO_ERROR_STRINGS = {"div/0", "#div/0!", "деление на 0"}
+# Литералы ошибок Excel (кэшированные значения при data_only=True) плюс два
+# исторических варианта деления на ноль из исходника. Сравнение — по
+# strip().lower().
+EXCEL_ERROR_STRINGS = {
+    # деление на ноль — набор исходника
+    "div/0",
+    "#div/0!",
+    "деление на 0",
+    # остальные ошибки Excel
+    "#n/a",
+    "#name?",
+    "#null!",
+    "#num!",
+    "#ref!",
+    "#value!",
+    "#spill!",
+    "#calc!",
+    "#getting_data",
+}
 
 BASELINE_MISSING_TITLE = "Расчетная стоимость отсутствует"
 
@@ -157,14 +187,39 @@ def normalize_lots_json_structure(data: dict[str, Any]) -> dict[str, Any]:
     return processed_data
 
 
-def replace_div0_with_null(data: Any) -> Any:
-    """Рекурсивно заменяет строки ошибок деления на ноль на None."""
+def replace_excel_errors_with_null(data: Any) -> Any:
+    """Рекурсивно заменяет строки ошибок Excel на None.
+
+    Ошибка в ячейке — «значения нет», а не значение: в денежном поле строка
+    вида `#N/A` была бы неотличима по типу от суммы (деньги в raw_data — тоже
+    строки), и фаза 4 узнала бы о ней только на `Decimal(value)`.
+    """
     if isinstance(data, dict):
-        return {k: replace_div0_with_null(v) for k, v in data.items()}
+        return {k: replace_excel_errors_with_null(v) for k, v in data.items()}
     if isinstance(data, list):
-        return [replace_div0_with_null(item) for item in data]
-    if isinstance(data, str) and data.strip().lower() in DIV_ZERO_ERROR_STRINGS:
+        return [replace_excel_errors_with_null(item) for item in data]
+    if isinstance(data, str) and data.strip().lower() in EXCEL_ERROR_STRINGS:
         return None
+    return data
+
+
+def stringify_temporal_values(data: Any) -> Any:
+    """Рекурсивно переводит значения дат и времени в ISO-строки.
+
+    openpyxl отдаёт date-форматированные ячейки объектами `datetime`/`date`/
+    `time` (длительности вида `[h]:mm` — `timedelta`), а `json.dumps` их не
+    сериализует. Без этой замены контракт «`ParseResult.data` кладётся в jsonb
+    без своего энкодера» держался бы на том, что дат во входном файле пока не
+    встречалось.
+    """
+    if isinstance(data, dict):
+        return {k: stringify_temporal_values(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [stringify_temporal_values(item) for item in data]
+    if isinstance(data, dt.datetime | dt.date | dt.time):
+        return data.isoformat()
+    if isinstance(data, dt.timedelta):
+        return str(data)
     return data
 
 

@@ -38,7 +38,8 @@ from parser.postprocess import (
     _is_value_zero,
     annotate_structure_fields,
     normalize_lots_json_structure,
-    replace_div0_with_null,
+    replace_excel_errors_with_null,
+    stringify_temporal_values,
 )
 
 
@@ -63,11 +64,12 @@ def _captured_warnings(logger: logging.Logger) -> Iterator[list[str]]:
 
 
 # =================================================================
-# 1. replace_div0_with_null
+# 1. replace_excel_errors_with_null
 # =================================================================
 
 
-def test_replace_div0_with_null_replaces_all_error_types():
+def test_replace_excel_errors_replaces_div0_variants():
+    """Набор исходника: обе записи деления на ноль и русский вариант."""
     input_data = {
         "err1": "#DIV/0!",
         "err2": "  div/0  ",
@@ -76,13 +78,63 @@ def test_replace_div0_with_null_replaces_all_error_types():
     }
     expected = {"err1": None, "err2": None, "err3": None, "items": [{"value": None}]}
 
-    assert replace_div0_with_null(input_data) == expected
+    assert replace_excel_errors_with_null(input_data) == expected
 
 
-def test_replace_div0_with_null_does_not_change_valid_data():
+def test_replace_excel_errors_replaces_every_excel_error_literal():
+    """Отступление от исходника: `#N/A` в денежном поле — такое же «нет значения».
+
+    После перевода денег в строки (§2.6 отчёта) фаза 4 не отличила бы `#REF!`
+    от суммы по типу — узнала бы только на `Decimal(value)`.
+    """
+    literals = ["#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!", "#SPILL!", "#CALC!"]
+
+    assert replace_excel_errors_with_null({"errs": literals}) == {"errs": [None] * len(literals)}
+    # регистр и крайние пробелы не мешают
+    assert replace_excel_errors_with_null(" #n/a ") is None
+
+
+def test_replace_excel_errors_does_not_change_valid_data():
     input_data = {"value": "Some string", "cost": 100.5, "items": [1, 2]}
 
-    assert replace_div0_with_null(input_data) == input_data
+    assert replace_excel_errors_with_null(input_data) == input_data
+
+
+# =================================================================
+# 1a. stringify_temporal_values
+# =================================================================
+
+
+def test_stringify_temporal_values_converts_all_temporal_types():
+    """openpyxl отдаёт date-форматированные ячейки объектами — jsonb их не примет."""
+    import datetime as dt
+
+    input_data = {
+        "a": dt.datetime(2025, 2, 1, 12, 30),
+        "b": dt.date(2025, 2, 1),
+        "items": [dt.time(12, 30), dt.timedelta(hours=26)],
+        "text": "как есть",
+        "num": 1.5,
+    }
+
+    result = stringify_temporal_values(input_data)
+
+    assert result == {
+        "a": "2025-02-01T12:30:00",
+        "b": "2025-02-01",
+        "items": ["12:30:00", "1 day, 2:00:00"],
+        "text": "как есть",
+        "num": 1.5,
+    }
+
+
+def test_stringify_temporal_values_makes_data_json_serializable():
+    import datetime as dt
+    import json
+
+    data = {"nested": {"deep": [dt.datetime(2025, 2, 1)]}}
+
+    json.dumps(stringify_temporal_values(data))  # TypeError здесь — провал теста
 
 
 # =================================================================

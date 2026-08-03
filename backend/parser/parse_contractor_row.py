@@ -66,13 +66,17 @@ def money_to_json(value: Any) -> Any:
         value: значение ячейки.
 
     Returns:
-        Десятичную строку для чисел, `None` для пустой ячейки и для нечисловых
-        `nan`/`inf` (пустая стоимость → NULL, а не 0 — AGENTS.md §3). Нечисловые
-        значения (например, строка ошибки Excel) возвращаются как есть — их
-        разбирает `postprocess.replace_div0_with_null`.
+        Десятичную строку для чисел; `None` для пустой ячейки, `bool` и
+        нечисловых `nan`/`inf` — всё это «стоимости нет», а пустая стоимость →
+        NULL, не 0 (AGENTS.md §3). Прочие нечисловые значения возвращаются как
+        есть — строки ошибок Excel гасит
+        `postprocess.replace_excel_errors_with_null`, даты переводит в строки
+        `postprocess.stringify_temporal_values`.
     """
     if value is None or isinstance(value, bool):
-        return value
+        # bool — не сумма: True в денежной ячейке дал бы Decimal(True) == 1
+        # в фазе 4, тихо. Та же судьба, что у nan/inf.
+        return None
     if isinstance(value, int):
         return str(Decimal(value))
     if isinstance(value, float):
