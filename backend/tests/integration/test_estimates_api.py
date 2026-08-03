@@ -471,6 +471,27 @@ class TestJobEndpoints:
         assert len(spies) == 1
         assert spies[0].closed, "хендл хранилища не закрыт после выдачи файла"
 
+    def test_endpoint_returns_the_closing_response_bound_to_the_handle(
+        self, db_session, factories, tmp_storage
+    ):
+        """Эндпоинт обязан отдавать именно ClosingStreamingResponse.
+
+        Гарантию закрытия при разрыве соединения несёт класс
+        (tests/unit/test_download_response.py); этот тест привязывает к нему
+        эндпоинт — иначе возврат к голому StreamingResponse прошёл бы
+        незамеченным: тест полного скачивания закрытие всё равно увидел бы.
+        """
+        from routers.import_jobs import ClosingStreamingResponse, download_import_job_file
+
+        key = tmp_storage.save(xlsx_bytes())
+        job = factories.ImportJobFactory.create(file_key=key, status=ImportJobStatus.done.value)
+        db_session.flush()
+
+        response = download_import_job_file(job.id, db=db_session, storage=tmp_storage)
+
+        assert isinstance(response, ClosingStreamingResponse)
+        response._handle.close()
+
     def test_purged_file_is_410_not_404(
         self, committing_client, committing_db, committing_factories, tmp_storage
     ):

@@ -31,18 +31,37 @@ router = APIRouter(prefix="/api/v1/import-jobs", tags=["import-jobs"])
 _DOWNLOAD_CHUNK_SIZE = 64 * 1024
 
 
-def _stream_and_close(handle, chunk_size: int = _DOWNLOAD_CHUNK_SIZE):
-    """Отдаёт файл кусками и гарантированно закрывает хендл.
+def _stream_chunks(handle, chunk_size: int = _DOWNLOAD_CHUNK_SIZE):
+    """Читает файл кусками. Закрытием хендла владеет `ClosingStreamingResponse`."""
+    while chunk := handle.read(chunk_size):
+        yield chunk
 
-    Закрытие в `finally` — детерминированное, а не «когда-нибудь сборщиком
-    мусора»: на Windows открытый хендл блокирует удаление файла, то есть
-    незакрытая выдача мешала бы ретенции §8 в этом же процессе.
+
+class ClosingStreamingResponse(StreamingResponse):
+    """StreamingResponse, детерминированно закрывающий хендл хранилища.
+
+    `finally` внутри генератора закрывал хендл только при ПОЛНОМ прочтении: при
+    разрыве соединения `send()` падает, Starlette перестаёт потреблять генератор
+    и хранит его в `body_iterator` — `finally` не выполняется, пока жив сам
+    объект ответа, то есть закрытие снова доставалось сборщику мусора
+    (воспроизведено прямым ASGI-вызовом с падающим send; дефект второго
+    внутреннего круга ревью). Поэтому закрытие поднято на уровень
+    `Response.__call__`: его `finally` выполняется при любом исходе — полное
+    чтение, разрыв, отмена. `close()` файла идемпотентен.
+
+    Детерминизм здесь не эстетика: на Windows открытый хендл блокирует удаление
+    файла, то есть незакрытая выдача мешала бы ретенции §8 в этом же процессе.
     """
-    try:
-        while chunk := handle.read(chunk_size):
-            yield chunk
-    finally:
-        handle.close()
+
+    def __init__(self, handle, **kwargs) -> None:
+        self._handle = handle
+        super().__init__(_stream_chunks(handle), **kwargs)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._handle.close()
 
 
 def _get_job(db: Session, job_id: int) -> ImportJob:
@@ -92,8 +111,8 @@ def download_import_job_file(
         f"attachment; filename=\"{ascii_fallback}\"; "
         f"filename*=UTF-8''{quote(job.filename, safe='')}"
     )
-    return StreamingResponse(
-        _stream_and_close(handle),
+    return ClosingStreamingResponse(
+        handle,
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": disposition},
     )
