@@ -273,6 +273,7 @@ def _empty_totals() -> dict:
         "without_standard": 0,
         "over_standard": 0,
         "positions_pending_review": 0,
+        "positions_non_work": 0,
     }
 
 
@@ -290,28 +291,72 @@ def _pending_review_condition():
     причину. Ни один тест этого не поймал: в фикстурах каталожные строки создаются
     сразу `POSITION`. Тот же класс, что находка §2.2 брифинга — путь от пустой базы.
 
-    `cp.id IS NULL` — позиция вовсе не сматчена (например, импорт прерван между
-    импортом и матчингом); для человека это тот же случай.
+    Считаются ровно два состояния, и оба означают «человеку есть что разобрать»:
+
+    * `kind = 'TO_REVIEW'` — строка в очереди ручного матчинга (§5);
+    * `cp.id IS NULL` — позиция вовсе не сматчена (импорт прерван между импортом и
+      матчингом, §5); для человека это тот же случай.
+
+    **`HEADER`, `TRASH` и `LOT_HEADER` сюда НЕ входят** — замечание внешнего ревью,
+    подтверждённое тестом до правки. Первая редакция брала всё, что `kind !=
+    'POSITION'`, но это неверно: §5.4.3 описывает `HEADER`/`TRASH` как строку, которая
+    «уже вручную размечена как не-работа», и в очередь Review она не попадает. То есть
+    экран советовал бы «разобрать очередь», в которой этих строк нет, — человек открыл
+    бы Review и не нашёл там ничего. Ошибка тем и опасна, что подсказка выглядит
+    осмысленной.
     """
     return sa.and_(
         PositionItem.is_chapter.is_(False),
         PositionItem.unit_cost_total.isnot(None),
         sa.or_(
             CatalogPosition.id.is_(None),
-            CatalogPosition.kind != CatalogKind.POSITION.value,
+            CatalogPosition.kind == CatalogKind.TO_REVIEW.value,
         ),
     )
 
 
-def _pending_review_select():
-    """Заготовка счётчика «ждут ручного матчинга»: позиции + их каталожные строки."""
+def _non_work_condition():
+    """Позиция расценена, но её каталожная строка помечена как НЕ-работа.
+
+    `HEADER`, `TRASH`, `LOT_HEADER` — уже разобранные строки (§5.4.3), и разбирать в
+    них нечего. Но в VIEW отклонений они тоже не попадают (§4), то есть остаются
+    третьей причиной пустого паспорта — и она не равна ни «ждут матчинга», ни «нет
+    цены».
+
+    Счётчик появился как следствие правки по замечанию ревью: как только `HEADER`
+    перестал считаться «ожидающим матчинга», паспорт для сметы из одних таких строк
+    начал утверждать «у позиций не заполнена цена за единицу» — неправду, потому что
+    цена как раз заполнена. Экран не должен называть причину, которой не знает.
+    """
+    return sa.and_(
+        PositionItem.is_chapter.is_(False),
+        PositionItem.unit_cost_total.isnot(None),
+        CatalogPosition.kind.in_(
+            [
+                CatalogKind.HEADER.value,
+                CatalogKind.TRASH.value,
+                CatalogKind.LOT_HEADER.value,
+            ]
+        ),
+    )
+
+
+def _unmatched_counts_select():
+    """Оба счётчика непопадания в VIEW — ОДНИМ запросом.
+
+    `FILTER` вместо двух запросов: обе выборки идут по одной и той же цепочке
+    позиция → предложение → лот → каталожная строка, и второй проход был бы платой
+    только за форму кода.
+    """
     return (
-        sa.select(sa.func.count())
+        sa.select(
+            sa.func.count().filter(_pending_review_condition()).label("pending_review"),
+            sa.func.count().filter(_non_work_condition()).label("non_work"),
+        )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)
         .outerjoin(CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id)
-        .where(_pending_review_condition())
     )
 
 
@@ -334,9 +379,9 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
         .join(PositionItem, PositionItem.id == DEVIATIONS.c.position_item_id)
         .where(DEVIATIONS.c.estimate_id == estimate_id)
     ).one()
-    pending = db.execute(
-        _pending_review_select().where(Lot.estimate_id == estimate_id)
-    ).scalar_one()
+    counts = db.execute(
+        _unmatched_counts_select().where(Lot.estimate_id == estimate_id)
+    ).one()
     return {
         "positions_priced": row.positions_priced,
         # Перезаписывается вызывающим на длину топа (см. `get_passport`).
@@ -345,8 +390,10 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
         "with_standard": row.with_standard,
         "without_standard": row.positions_priced - row.with_standard,
         "over_standard": row.over_standard,
-        # Почему топ может быть пуст при непустой смете (см. `_pending_review_condition`).
-        "positions_pending_review": pending,
+        # Две причины пустого топа при непустой смете, и они РАЗНЫЕ: первую человек
+        # исправляет в очереди Review, вторую исправлять не нужно вовсе (§5.4.3).
+        "positions_pending_review": counts.pending_review,
+        "positions_non_work": counts.non_work,
     }
 
 
@@ -612,27 +659,31 @@ def get_matrix(
         # Почему матрица может быть пуста при непустых сметах. Считается по договорам
         # выборки, а не по всей базе: иначе подсказка говорила бы о работах, которых
         # человек на этом экране всё равно не видит.
-        "positions_pending_review": _pending_review_in_scope(
+        **_unmatched_in_scope(
             db, rate_class_id=rate_class_id, date_from=date_from, date_to=date_to
         ),
     }
 
 
-def _pending_review_in_scope(
+def _unmatched_in_scope(
     db: Session,
     *,
     rate_class_id: int | None,
     date_from: dt.date | None,
     date_to: dt.date | None,
-) -> int:
-    """Сколько расценённых позиций выборки ещё ждут ручного матчинга.
+) -> dict:
+    """Два счётчика непопадания в матрицу по договорам ВЫБОРКИ.
 
     Выборка та же, что у колонок (последние сметы договоров плюс фильтры класса и
-    периода), поэтому счётчик отвечает именно про то, что человек смотрит.
+    периода), поэтому счётчики отвечают именно про то, что человек смотрит. Считать по
+    всей базе значило бы говорить о работах, которых на этом экране всё равно нет.
+
+    Возвращает `dict` под распаковку в ответ: имена ключей — часть контракта API, и
+    держать их в одном месте надёжнее, чем повторять на стороне вызова.
     """
     latest = latest_estimates()
-    return db.execute(
-        _pending_review_select()
+    row = db.execute(
+        _unmatched_counts_select()
         .join(latest, latest.c.estimate_id == Lot.estimate_id)
         .join(Contract, Contract.id == latest.c.contract_id)
         .where(
@@ -643,7 +694,11 @@ def _pending_review_in_scope(
                 latest=latest,
             )
         )
-    ).scalar_one()
+    ).one()
+    return {
+        "positions_pending_review": row.pending_review,
+        "positions_non_work": row.non_work,
+    }
 
 
 def _shape_matrix_rows(rows) -> list[dict]:

@@ -714,6 +714,85 @@ class TestPendingReviewIsExplained:
         assert body["totals"]["positions_pending_review"] == 0
         assert len(body["key_rates"]) == 1
 
+    @pytest.mark.parametrize(
+        "kind",
+        [CatalogKind.HEADER.value, CatalogKind.TRASH.value, CatalogKind.LOT_HEADER.value],
+    )
+    def test_already_marked_rows_are_not_pending_review(self, client, factories, kind):
+        """`HEADER`/`TRASH`/`LOT_HEADER` — РАЗОБРАННЫЕ строки, их нет в очереди Review.
+
+        Очередь ручного матчинга — это позиции, привязанные к `kind='TO_REVIEW'`
+        (§5); `HEADER` и `TRASH` §5.4.3 описывает как строку, которая «уже вручную
+        размечена как не-работа», и в очередь она не попадает. Значит считать их
+        «ожидающими матчинга» — значит советовать разобрать очередь, в которой их
+        нет: человек откроет Review и не найдёт там ничего.
+
+        Замечание внешнего ревью; подтверждено этим тестом до правки.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=kind)
+        _position(factories, proposal, position, unit_cost="100", weight="10")
+
+        # В VIEW такой строки нет (§4), поэтому топ пуст...
+        body = _passport(client, contract.id)
+        assert body["key_rates"] == []
+        # ...но это НЕ «ждёт матчинга»: разбирать нечего.
+        assert body["totals"]["positions_pending_review"] == 0
+        assert _matrix(client)["positions_pending_review"] == 0
+
+    @pytest.mark.parametrize(
+        "kind",
+        [CatalogKind.HEADER.value, CatalogKind.TRASH.value, CatalogKind.LOT_HEADER.value],
+    )
+    def test_marked_rows_are_counted_as_non_work(self, client, factories, kind):
+        """Разобранные не-работы учтены СВОИМ счётчиком, а не смешаны с очередью.
+
+        Появился как следствие правки по замечанию ревью: как только `HEADER` перестал
+        считаться «ожидающим матчинга», паспорт начал утверждать «не заполнена цена» —
+        неправду. Отдельный счётчик даёт экрану назвать третью причину как она есть.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=kind)
+        _position(factories, proposal, position, unit_cost="100", weight="10")
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_pending_review"] == 0
+        assert totals["positions_non_work"] == 1
+        assert _matrix(client)["positions_non_work"] == 1
+
+    def test_counters_do_not_overlap(self, client, factories):
+        """Один и тот же набор позиций не должен попадать в оба счётчика.
+
+        Иначе экран мог бы одновременно звать в очередь и сообщать, что правки не
+        требуется, — а человек не поймёт, что делать.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        waiting = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        marked = factories.CatalogPositionFactory.create(kind=CatalogKind.TRASH.value)
+        _position(factories, proposal, waiting, unit_cost="100", weight="10")
+        _position(factories, proposal, marked, unit_cost="200", weight="10")
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_pending_review"] == 1
+        assert totals["positions_non_work"] == 1
+
+    def test_unmatched_position_is_pending_review(self, client, factories):
+        """Позиция вовсе без каталожной строки — тоже ждёт разбора.
+
+        Такое состояние возможно, если импорт прервался между импортом и матчингом
+        (§5): для человека это тот же случай, что `TO_REVIEW`.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=None,
+            unit_cost_total=Decimal("100"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("1000"),
+        )
+
+        assert _passport(client, contract.id)["totals"]["positions_pending_review"] == 1
+
     def test_pending_counter_is_scoped_to_the_selection(self, client, factories):
         """Счётчик матрицы считает по договорам ВЫБОРКИ, а не по всей базе.
 

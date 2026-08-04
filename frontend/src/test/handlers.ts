@@ -49,6 +49,12 @@ interface HandlerState {
   passportWithoutEstimate: boolean;
   /** Отдать пустую матрицу — и различить «нет договоров» от «нет работ». */
   matrixOutcome: "rows" | "no-rows" | "no-columns" | "pending-review";
+  /**
+   * Сколько расценённых позиций ждут ручного матчинга. Отдельно от `matrixOutcome`:
+   * пустой результат ПОИСКА может сосуществовать с непустой очередью, и именно на
+   * этом сочетании экран раньше называл неверную причину.
+   */
+  positionsPendingReview: number;
   /** Последний запрос выгрузки: по нему тест проверяет, что фильтры доехали. */
   lastReportRequest: { report: string; params: Record<string, string> } | null;
 }
@@ -64,6 +70,7 @@ export const handlerState: HandlerState = {
   passportTopN: sampleAppSettings.passport_top_n,
   passportWithoutEstimate: false,
   matrixOutcome: "rows",
+  positionsPendingReview: 0,
   lastReportRequest: null,
 };
 
@@ -78,6 +85,7 @@ export function resetHandlerState() {
   handlerState.passportTopN = sampleAppSettings.passport_top_n;
   handlerState.passportWithoutEstimate = false;
   handlerState.matrixOutcome = "rows";
+  handlerState.positionsPendingReview = 0;
   handlerState.lastReportRequest = null;
 }
 
@@ -489,6 +497,7 @@ export const handlers = [
           without_standard: 0,
           over_standard: 0,
           positions_pending_review: 0,
+          positions_non_work: 0,
         },
       });
     }
@@ -529,6 +538,8 @@ export const handlers = [
       rows,
       total: rows.length,
       page: Number(url.searchParams.get("page") ?? 1),
+      // Счётчик очереди НЕ зависит от `q`: он про выборку, а не про поиск.
+      positions_pending_review: handlerState.positionsPendingReview,
     });
   }),
 

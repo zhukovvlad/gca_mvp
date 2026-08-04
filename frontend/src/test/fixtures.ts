@@ -384,6 +384,7 @@ export const samplePassport: Passport = {
     without_standard: 1098,
     over_standard: 1,
     positions_pending_review: 0,
+    positions_non_work: 0,
   },
 };
 
@@ -476,6 +477,7 @@ export const sampleMatrix: Matrix = {
   page: 1,
   page_size: 50,
   positions_pending_review: 0,
+  positions_non_work: 0,
 };
 
 export const sampleMatrixCellDetail: MatrixCellDetail = {

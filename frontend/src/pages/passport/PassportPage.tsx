@@ -110,6 +110,7 @@ export default function PassportPage() {
             <KeyRatesTable
               rates={keyRates}
               pendingReview={totals.positions_pending_review}
+              nonWork={totals.positions_non_work}
             />
             {keyRates.length > 0 && (
               <p className="mt-2 text-xs text-fg-tertiary">
@@ -241,9 +242,11 @@ function PassportSummary({ passport }: { passport: Passport }) {
 function KeyRatesTable({
   rates,
   pendingReview,
+  nonWork,
 }: {
   rates: PassportKeyRate[];
   pendingReview: number;
+  nonWork: number;
 }) {
   if (rates.length === 0) {
     /*
@@ -267,6 +270,22 @@ function KeyRatesTable({
             render={<Link to="/review">Разобрать очередь ручного матчинга</Link>}
           />
         </div>
+      );
+    }
+    if (nonWork > 0) {
+      /*
+        Третья причина, вскрытая правкой по замечанию ревью. Пока HEADER/TRASH
+        ошибочно считались «ожидающими матчинга», этот случай был не виден; как только
+        счётчик стал верным, фолбэк начал утверждать «не заполнена цена» — неправду,
+        потому что цена как раз заполнена. Такие строки уже разобраны (§5.4.3), и
+        делать с ними ничего не надо: сказать об этом честнее, чем звать в очередь.
+      */
+      return (
+        <p className="mt-5 text-sm text-fg-secondary">
+          Расценок нет: все {nonWork} расценённых позиций сметы отнесены к строкам,
+          помеченным как не-работа (раздел, заголовок лота или мусор). Такие строки с
+          нормативами не сравниваются — это нормально и правки не требует.
+        </p>
       );
     }
     return (

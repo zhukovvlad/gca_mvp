@@ -389,6 +389,15 @@ export interface PassportTotals {
    * причину («не заполнена цена»), отправляя искать проблему не там.
    */
   positions_pending_review: number;
+  /**
+   * Расценённые позиции, чья каталожная строка помечена как НЕ-работа
+   * (`HEADER`/`TRASH`/`LOT_HEADER`).
+   *
+   * Третья причина пустого паспорта, и она не равна ни «ждут матчинга», ни «нет
+   * цены»: такие строки уже разобраны (§5.4.3), исправлять их не нужно. Появилась
+   * после правки по замечанию ревью — до неё они ошибочно попадали в «ждут матчинга».
+   */
+  positions_non_work: number;
 }
 
 export interface Passport {
@@ -440,6 +449,8 @@ export interface Matrix {
   page_size: number;
   /** См. `PassportTotals.positions_pending_review`; здесь — по договорам выборки. */
   positions_pending_review: number;
+  /** См. `PassportTotals.positions_non_work`; здесь — по договорам выборки. */
+  positions_non_work: number;
 }
 
 export interface MatrixParams {

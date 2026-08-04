@@ -205,6 +205,35 @@ describe("Паспорт объекта", () => {
     expect(screen.queryByText(/не заполнена цена за единицу/)).not.toBeInTheDocument();
   });
 
+  it("разобранные не-работы не выдаются за отсутствие цены", async () => {
+    /*
+      Третья причина пустого топа, вскрытая правкой по замечанию ревью: позиции
+      расценены, но их каталожные строки помечены как не-работа (§5.4.3). Звать в
+      очередь тут нельзя — там их нет; говорить «не заполнена цена» — неправда.
+    */
+    server.use(
+      http.get("/api/v1/analytics/passport/:contractId", () =>
+        HttpResponse.json({
+          ...samplePassport,
+          key_rates: [],
+          totals: {
+            ...samplePassport.totals,
+            positions_priced: 0,
+            positions_shown: 0,
+            positions_pending_review: 0,
+            positions_non_work: 42,
+          },
+        })
+      )
+    );
+    renderPassport();
+
+    expect(await screen.findByText(/42 расценённых позиций сметы отнесены к строкам/)).toBeInTheDocument();
+    expect(screen.queryByText(/не заполнена цена за единицу/)).not.toBeInTheDocument();
+    // И в очередь не зовём: разбирать нечего.
+    expect(screen.queryByRole("link", { name: /Разобрать очередь/ })).not.toBeInTheDocument();
+  });
+
   it("смета без расценённых работ объясняет причину пустого топа", async () => {
     server.use(
       http.get("/api/v1/analytics/passport/:contractId", () =>
@@ -215,8 +244,10 @@ describe("Паспорт объекта", () => {
             ...samplePassport.totals,
             positions_priced: 0,
             positions_shown: 0,
-            // Ноль здесь существен: причина именно в отсутствии цен, а не в очереди.
+            // Нули здесь существенны: причина именно в отсутствии цен, а не в
+            // очереди и не в разобранных не-работах.
             positions_pending_review: 0,
+            positions_non_work: 0,
           },
         })
       )
