@@ -108,8 +108,19 @@ export default function ReviewPage() {
 
   async function applyBatch(kind: ManualKind) {
     if (selected.size === 0 || batchTooLarge) return;
-    await batchKind.mutateAsync({ ids: [...selected], kind });
-    // Разобранные строки уходят из очереди — выделение больше ни к чему не
+    try {
+      await batchKind.mutateAsync({ ids: [...selected], kind });
+    } catch {
+      // Причина уже в тосте (`toastApiError`). Выделение НЕ снимаем: пакет не
+      // применился, и человеку нужно повторить его — возможно, сняв часть строк.
+      //
+      // `try/catch` здесь обязателен, а не для красоты: вызов идёт как
+      // `void applyBatch(...)`, и без перехвата отказ `mutateAsync` становился
+      // необработанным отклонением промиса. Vitest на такое ругается прямо
+      // («might cause false positive tests»), а в браузере это шум в консоли.
+      return;
+    }
+    // Разобранные строки ушли из очереди — выделение больше ни к чему не
     // относится, и оставить его значило бы применить следующее действие к
     // строкам, которых на экране уже нет.
     setSelected(new Set());

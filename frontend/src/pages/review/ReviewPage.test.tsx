@@ -199,8 +199,8 @@ describe("Найдено собственным ревью: потолок па�
       await user.click(screen.getByLabelText("Выбрать все строки на странице"));
       expect(screen.getByText(`Выбрано строк: ${MAX_REVIEW_BATCH + 1}`)).toBeInTheDocument();
 
-      // Иначе сервер отвечает 422 от Pydantic — по-английски и уже после того, как
-      // человек потерял выделение.
+      // Иначе сервер отвечает 422 от Pydantic текстом «List should have at most
+      // 200 items» — по-английски и без подсказки, что делать.
       expect(screen.getByRole("alert")).toHaveTextContent(
         `не больше ${MAX_REVIEW_BATCH} строк`
       );
@@ -216,4 +216,36 @@ describe("Найдено собственным ревью: потолок па�
   // одного рендера 200 строк (~6 с), а границу и так держат две вещи — строгое
   // сравнение `>` в экране и `max_length=200` на сервере, который проверен
   // тестом бэкенда `test_batch_kind_rejects_empty_and_oversized_batches`.
+});
+
+describe("Отказ пакета: выделение сохраняется, отклонение не улетает мимо", () => {
+  it("после ошибки сервера выделение остаётся, чтобы повторить пакет", async () => {
+    /*
+     * Уточнение от внешнего ревью: в отчёте было сказано, что при 422 выделение
+     * «уже потеряно» — это неверно. `setSelected` стоит ПОСЛЕ `await
+     * mutateAsync`, поэтому отказ его не трогает, и повторить пакет можно.
+     *
+     * Тест закрепляет именно это. Он же ловит необработанное отклонение промиса:
+     * вызов идёт как `void applyBatch(...)`, и без `try/catch` vitest сообщает об
+     * unhandled rejection («might cause false positive tests»).
+     */
+    server.use(
+      http.post("/api/v1/review/batch-kind", () =>
+        HttpResponse.json({ detail: "Пакет не применён: сбой сервера." }, { status: 500 })
+      )
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<ReviewPage />);
+    await screen.findByText("Стяжка неведомая");
+
+    await user.click(screen.getByLabelText("Выбрать все строки на странице"));
+    expect(screen.getByText("Выбрано строк: 2")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "В мусор" }));
+
+    expect(await screen.findByText("Пакет не применён: сбой сервера.")).toBeInTheDocument();
+    expect(screen.getByText("Выбрано строк: 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "В мусор" })).toBeEnabled();
+  });
 });
