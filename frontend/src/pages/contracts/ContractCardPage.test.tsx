@@ -54,14 +54,18 @@ describe("Карточка договора (§7.1)", () => {
     expect(within(replaced as HTMLElement).getByText("вытеснена заменой")).toBeInTheDocument();
   });
 
-  it("даёт скачать исходник авторизованной ссылкой (§8)", async () => {
+  it("даёт скачать исходник каждого задания", async () => {
     const user = userEvent.setup();
     renderCard();
     await screen.findByRole("heading", { name: "ГП-2026-001" });
     await user.click(screen.getByRole("tab", { name: /История загрузок/ }));
 
-    const links = await screen.findAllByRole("link", { name: /скачать/ });
-    expect(links[0]).toHaveAttribute("href", "/api/v1/import-jobs/900/file");
+    // Кнопка, а не ссылка: разбор статуса (404 против 410) обязан делать экран,
+    // а не браузер — см. describe «Скачивание исходника» ниже. Прежний тест здесь
+    // проверял `href` и тем закреплял как раз то поведение, которое ревью и
+    // признало недостаточным.
+    const buttons = await screen.findAllByRole("button", { name: /скачать/ });
+    expect(buttons).toHaveLength(4);
   });
 
   it("показывает предупреждения задания", async () => {
@@ -168,5 +172,98 @@ describe("Права на карточке (§6.2)", () => {
     expect(screen.queryByRole("button", { name: /Правка/ })).not.toBeInTheDocument();
     // Загрузка смет — право member по §3, вкладка остаётся.
     expect(screen.getByRole("tab", { name: "Загрузка" })).toBeInTheDocument();
+  });
+});
+
+describe("История загрузок: аудит не должен врать (разбор внешнего ревью)", () => {
+  async function openHistory(user: ReturnType<typeof userEvent.setup>) {
+    renderCard();
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+    await user.click(screen.getByRole("tab", { name: /История загрузок/ }));
+    await screen.findByText("смета-актуальная.xlsx");
+  }
+
+  it("«вытеснена заменой» стоит только у задания, которое смету создавало", async () => {
+    const user = userEvent.setup();
+    await openHistory(user);
+
+    const replaced = screen.getByText("смета-вытесненная.xlsx").closest("tr") as HTMLElement;
+    const failed = screen.getByText("смета-битая.xlsx").closest("tr") as HTMLElement;
+    const running = screen.getByText("смета-в-работе.xlsx").closest("tr") as HTMLElement;
+
+    expect(within(replaced).getByText("вытеснена заменой")).toBeInTheDocument();
+    // Упавшее и незавершённое задания смету не создавали никогда — подпись про
+    // замену была бы прямой ложью об аудите.
+    expect(within(failed).queryByText("вытеснена заменой")).toBeNull();
+    expect(within(failed).getByText("смета не создана")).toBeInTheDocument();
+    expect(within(running).queryByText("вытеснена заменой")).toBeNull();
+    expect(within(running).getByText("загрузка не завершена")).toBeInTheDocument();
+  });
+
+  it("показывает ТЕКСТЫ предупреждений, а не только их число (DoD)", async () => {
+    const user = userEvent.setup();
+    await openHistory(user);
+
+    // Данные лежат в БД, и после перезагрузки страницы панель загрузки пуста —
+    // без текстов в истории DoD «в карточке видны предупреждения» не выполняется.
+    expect(
+      screen.getByText("Единица измерения «пог.м» не найдена (позиций: 3).")
+    ).toBeInTheDocument();
+  });
+
+  it("показывает счётчики матчинга завершённого задания (DoD)", async () => {
+    const user = userEvent.setup();
+    await openHistory(user);
+
+    const current = screen.getByText("смета-актуальная.xlsx").closest("tr") as HTMLElement;
+    expect(current).toHaveTextContent("всего 1830");
+    expect(current).toHaveTextContent("на разбор 1000");
+  });
+
+  it("показывает текст ошибки упавшего задания", async () => {
+    const user = userEvent.setup();
+    await openHistory(user);
+    expect(
+      screen.getByText("Не удалось разобрать файл: не найдена шапка сметы.")
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Скачивание исходника: 404 и 410 различимы (§5)", () => {
+  async function clickDownload(user: ReturnType<typeof userEvent.setup>) {
+    renderCard();
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+    await user.click(screen.getByRole("tab", { name: /История загрузок/ }));
+    const buttons = await screen.findAllByRole("button", { name: /скачать/ });
+    await user.click(buttons[0]);
+  }
+
+  it("410 — объясняет, что файл удалён ретенцией, а запись аудита жива", async () => {
+    handlerState.fileOutcome = "purged";
+    const user = userEvent.setup();
+    await clickDownload(user);
+
+    expect(await screen.findByText(/удалён при очистке хранилища/)).toBeInTheDocument();
+    // И это не путается с «задания нет».
+    expect(screen.queryByText("Задание импорта не найдено.")).not.toBeInTheDocument();
+  });
+
+  it("404 — говорит именно про отсутствующее задание", async () => {
+    handlerState.fileOutcome = "missing";
+    const user = userEvent.setup();
+    await clickDownload(user);
+
+    expect(await screen.findByText("Задание импорта не найдено.")).toBeInTheDocument();
+    expect(screen.queryByText(/удалён при очистке хранилища/)).not.toBeInTheDocument();
+  });
+
+  it("успех не показывает никакого отказа", async () => {
+    const user = userEvent.setup();
+    await clickDownload(user);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/удалён при очистке/)).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("Задание импорта не найдено.")).not.toBeInTheDocument();
   });
 });

@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import RateStandard, UserRole
+from models import CatalogKind, RateStandard, UserRole
 
 pytestmark = pytest.mark.integration
 
@@ -326,19 +326,95 @@ def test_reapprove_not_after_old_start_gives_422(client, pair):
     assert "должен начинаться позже" in response.json()["detail"]
 
 
-def test_reapprove_of_already_closed_standard_gives_422(client, pair):
+@pytest.mark.parametrize(
+    ("new_from", "case"),
+    [
+        ("2026-01-01", "после окончания периода"),
+        # Дата ВНУТРИ закрытого периода — дефект, найденный внешним ревью: прежняя
+        # проверка (valid_from >= old.valid_to) её пропускала, период укорачивался,
+        # и отклонения смет марта–июня молча считались по новой ставке.
+        ("2025-03-01", "внутри закрытого периода"),
+        ("2025-07-01", "ровно в дату окончания"),
+    ],
+)
+def test_reapprove_of_a_closed_standard_is_refused(client, pair, db_session, new_from, case):
+    """Закрытый период — история; переутверждают только действующую ставку (§4)."""
     position, rate_class = pair
     old_id = client.post(
         "/api/v1/rate-standards",
-        json=_payload(position, rate_class, valid_to="2025-07-01"),
+        json=_payload(position, rate_class, valid_from="2025-01-01", valid_to="2025-07-01"),
     ).json()["id"]
 
     response = client.post(
         f"/api/v1/rate-standards/{old_id}/reapprove",
-        json={"valid_from": "2026-01-01", "standard_unit_rate": "1"},
+        json={"valid_from": new_from, "standard_unit_rate": "200.00"},
     )
-    assert response.status_code == 422
-    assert "уже закрыт" in response.json()["detail"]
+    assert response.status_code == 422, f"{case}: получили {response.status_code}"
+    assert "закрыт" in response.json()["detail"]
+
+    # История не тронута: период тот же, второй строки не появилось.
+    rows = db_session.execute(
+        sa.select(RateStandard.valid_from, RateStandard.valid_to)
+        .where(RateStandard.catalog_position_id == position.id)
+    ).all()
+    assert [(str(a), str(b)) for a, b in rows] == [("2025-01-01", "2025-07-01")]
+
+
+def test_standard_cannot_be_assigned_to_a_non_position_row(client, factories):
+    """Норматив назначается только строке POSITION.
+
+    Дефект, найденный внешним ревью: проверялось лишь существование строки.
+    Последствия были двойные — ставка на не-POSITION никогда не участвует в
+    отклонениях (VIEW её не берёт), а ставка на TO_REVIEW вдобавок делает строку
+    неудаляемой и роняет её последующее слияние.
+    """
+    rate_class = factories.RateClassFactory.create()
+    for kind in (CatalogKind.TO_REVIEW, CatalogKind.HEADER, CatalogKind.TRASH,
+                 CatalogKind.LOT_HEADER):
+        row = factories.CatalogPositionFactory.create(
+            standard_job_title=f"Строка {kind.value}", kind=kind.value
+        )
+        response = client.post(
+            "/api/v1/rate-standards",
+            json={
+                "catalog_position_id": row.id,
+                "rate_class_id": rate_class.id,
+                "standard_unit_rate": "100.00",
+                "valid_from": "2025-01-01",
+            },
+        )
+        assert response.status_code == 422, f"kind={kind.value}: {response.status_code}"
+        assert f"kind={kind.value}" in response.json()["detail"]
+
+
+def test_merge_still_works_when_a_standard_exists_on_the_target(client, factories):
+    """Норматив на ЦЕЛИ слияния помехой быть не должен — удаляется источник.
+
+    Обратная сторона предыдущего теста: запрет касается только не-POSITION строк,
+    и законный норматив на POSITION-цели слияние не ломает.
+    """
+    source = factories.CatalogPositionFactory.create(
+        standard_job_title="Источник неразобранный", kind=CatalogKind.TO_REVIEW.value
+    )
+    target = factories.CatalogPositionFactory.create(
+        standard_job_title="Цель со ставкой", kind=CatalogKind.POSITION.value
+    )
+    factories.PositionItemFactory.create(
+        proposal=factories.ProposalFactory.create(), catalog_position=source
+    )
+    rate_class = factories.RateClassFactory.create()
+    assert client.post(
+        "/api/v1/rate-standards",
+        json={
+            "catalog_position_id": target.id,
+            "rate_class_id": rate_class.id,
+            "standard_unit_rate": "100.00",
+            "valid_from": "2025-01-01",
+        },
+    ).status_code == 201
+
+    response = client.post(f"/api/v1/review/{source.id}/merge", json={"target_id": target.id})
+    assert response.status_code == 200, response.text
 
 
 def test_reapprove_from_index_only_creates_exactly_two_rows(client, pair, db_session):

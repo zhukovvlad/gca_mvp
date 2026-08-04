@@ -19,6 +19,28 @@ Object.defineProperty(window, "matchMedia", {
   })),
 });
 
+// jsdom не реализует ResizeObserver, а cmdk (основа shadcn `Command`, то есть и
+// комбобокса «выбрать или создать») подписывается на него при монтировании.
+// Заглушка no-op: измерения в тестах не проверяются, важно лишь чтобы компонент
+// смонтировался.
+if (!("ResizeObserver" in globalThis)) {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    writable: true,
+    value: ResizeObserverStub,
+  });
+}
+
+// jsdom не реализует scrollIntoView — cmdk зовёт его, подсвечивая активный пункт
+// списка. Тоже no-op: прокрутка в тестах не наблюдаема.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {};
+}
+
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 beforeEach(() => resetHandlerState());
 afterEach(() => server.resetHandlers());

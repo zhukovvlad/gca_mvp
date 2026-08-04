@@ -286,6 +286,48 @@ export function useUploadEstimate() {
 }
 
 /**
+ * Скачивание исходного XLSX задания с разбором статуса (§5, §8).
+ *
+ * Два отказа обязаны звучать по-разному, и это не косметика: 404 значит «такого
+ * задания нет», а 410 — «задание есть, это аудит, но файл уже удалён ретенцией».
+ * Второе — нормальный ход событий, а не поломка, и человек должен это понять.
+ */
+export function useDownloadJobFile() {
+  return useMutation({
+    mutationFn: async ({ jobId, filename }: { jobId: number; filename: string }) => {
+      const blob = await estimatesApi.downloadFile(jobId);
+      // Клик по временной ссылке — единственный способ отдать blob на диск из
+      // браузера. В jsdom createObjectURL отсутствует, поэтому шаг необязательный:
+      // тесты проверяют разбор статусов, а не работу файлового диалога.
+      if (typeof URL.createObjectURL === "function") {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+      return blob;
+    },
+    onError: (error) => {
+      const status = apiErrorStatus(error);
+      if (status === 410) {
+        toast.error(
+          "Файл удалён при очистке хранилища: запись о загрузке сохранена как аудит, " +
+            "но исходник уже недоступен."
+        );
+        return;
+      }
+      if (status === 404) {
+        toast.error("Задание импорта не найдено.");
+        return;
+      }
+      toastApiError(error);
+    },
+  });
+}
+
+/**
  * Поллинг задания импорта. Прекращается на `done`/`error`.
  *
  * `contractId` — чтобы при завершении обновить карточку: смета появляется в БД

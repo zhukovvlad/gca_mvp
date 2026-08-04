@@ -5,7 +5,9 @@ import {
   sampleContractCard,
   sampleContractors,
   sampleContracts,
+  sampleFailedJob,
   sampleImportJobs,
+  sampleRunningJob,
   sampleObjects,
   sampleRateClasses,
   sampleRateStandards,
@@ -31,6 +33,8 @@ interface HandlerState {
   lastBatch: { ids: number[]; kind: string } | null;
   /** Пропустить ли одну строку в пакете — проверка ветки `skipped`. */
   batchSkipsFirst: boolean;
+  /** Исход скачивания исходника: файл на месте, задания нет (404), удалён (410). */
+  fileOutcome: "ok" | "missing" | "purged";
 }
 
 export const handlerState: HandlerState = {
@@ -40,6 +44,7 @@ export const handlerState: HandlerState = {
   lastUploadReplace: false,
   lastBatch: null,
   batchSkipsFirst: false,
+  fileOutcome: "ok",
 };
 
 export function resetHandlerState() {
@@ -49,6 +54,7 @@ export function resetHandlerState() {
   handlerState.lastUploadReplace = false;
   handlerState.lastBatch = null;
   handlerState.batchSkipsFirst = false;
+  handlerState.fileOutcome = "ok";
 }
 
 function page<T>(items: T[]) {
@@ -171,7 +177,15 @@ export const handlers = [
     return new HttpResponse(null, { status: 204 });
   }),
 
-  http.get("/api/v1/objects", () => HttpResponse.json(page(sampleObjects))),
+  http.get("/api/v1/objects", ({ request }) => {
+    const q = (new URL(request.url).searchParams.get("q") ?? "").trim().toLowerCase();
+    const items = q
+      ? sampleObjects.filter((o) =>
+          `${o.title} ${o.address}`.toLowerCase().includes(q)
+        )
+      : sampleObjects;
+    return HttpResponse.json(page(items));
+  }),
   http.post("/api/v1/objects", async ({ request }) => {
     const body = (await request.json()) as { title: string };
     return HttpResponse.json(
@@ -189,7 +203,13 @@ export const handlers = [
     );
   }),
 
-  http.get("/api/v1/contractors", () => HttpResponse.json(page(sampleContractors))),
+  http.get("/api/v1/contractors", ({ request }) => {
+    const q = (new URL(request.url).searchParams.get("q") ?? "").trim().toLowerCase();
+    const items = q
+      ? sampleContractors.filter((c) => `${c.title} ${c.inn}`.toLowerCase().includes(q))
+      : sampleContractors;
+    return HttpResponse.json(page(items));
+  }),
   http.post("/api/v1/contractors", async ({ request }) => {
     const body = (await request.json()) as { title: string; inn: string };
     return HttpResponse.json(
@@ -226,7 +246,9 @@ export const handlers = [
     }
     return HttpResponse.json(page(items));
   }),
-  http.get("/api/v1/contracts/:id/import-jobs", () => HttpResponse.json(sampleImportJobs)),
+  http.get("/api/v1/contracts/:id/import-jobs", () =>
+    HttpResponse.json([...sampleImportJobs, sampleFailedJob, sampleRunningJob])
+  ),
   http.get("/api/v1/contracts/:id", ({ params }) => {
     if (Number(params.id) !== sampleContractCard.id) {
       return HttpResponse.json({ detail: "Договор не найден." }, { status: 404 });
@@ -270,6 +292,21 @@ export const handlers = [
     }
     return HttpResponse.json(jobPayload(handlerState.jobStatuses[0] ?? "pending"), {
       status: 202,
+    });
+  }),
+  http.get("/api/v1/import-jobs/:id/file", () => {
+    if (handlerState.fileOutcome === "missing") {
+      return HttpResponse.json({ detail: "Задание импорта не найдено." }, { status: 404 });
+    }
+    if (handlerState.fileOutcome === "purged") {
+      // 410: запись задания жива (это аудит), а файл удалён ретенцией (§8).
+      return HttpResponse.json(
+        { detail: "Файл задания удалён при очистке хранилища." },
+        { status: 410 }
+      );
+    }
+    return new HttpResponse("PK-fake-xlsx", {
+      headers: { "Content-Type": "application/octet-stream" },
     });
   }),
   http.get("/api/v1/import-jobs/:id", () => {

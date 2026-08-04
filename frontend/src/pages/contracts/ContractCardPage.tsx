@@ -24,8 +24,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
-import { estimatesApi } from "@/services/api/domain";
-import { useContract, useContractImportJobs } from "@/services/queries";
+import { useContract, useContractImportJobs, useDownloadJobFile } from "@/services/queries";
 import type { ContractImportJob } from "@/types/domain";
 
 /**
@@ -181,6 +180,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/**
+ * Что стало со сметой этого задания.
+ *
+ * «Вытеснена заменой» вправе стоять только у задания, которое смету **создавало**:
+ * до исправления так подписывалось любое задание с `is_current=false`, включая
+ * незавершённые и упавшие — а они смету не создавали никогда, и подпись про них
+ * прямо врала об аудите.
+ */
+function estimateFate(job: ContractImportJob): string | null {
+  if (job.is_current) return null;
+  if (job.status === "done") return "вытеснена заменой";
+  if (job.status === "error") return "смета не создана";
+  return "загрузка не завершена";
+}
+
 function ImportHistory({
   jobs,
   loading,
@@ -188,6 +202,8 @@ function ImportHistory({
   jobs: ContractImportJob[] | undefined;
   loading: boolean;
 }) {
+  const download = useDownloadJobFile();
+
   if (loading) return <Skeleton className="h-32 w-full" />;
   if (!jobs || jobs.length === 0) {
     return <EmptyState title="Загрузок не было" description="История появится после первой загрузки." />;
@@ -202,57 +218,93 @@ function ImportHistory({
             <TableHead>Файл</TableHead>
             <TableHead>Смета</TableHead>
             <TableHead>Статус</TableHead>
+            <TableHead>Счётчики матчинга</TableHead>
             <TableHead>Создано</TableHead>
             <TableHead>Исходник</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {jobs.map((job) => (
-            <TableRow key={job.id}>
-              <TableCell className="tabular-nums">{job.id}</TableCell>
-              <TableCell>
-                <div className="max-w-xs truncate">{job.filename}</div>
-                {job.warnings.length > 0 && (
-                  <span className="mt-0.5 flex items-center gap-1 text-2xs text-warning-text">
-                    <AlertTriangle className="size-3" />
-                    предупреждений: {job.warnings.length}
-                  </span>
-                )}
-              </TableCell>
-              <TableCell>
-                {job.amendment_no === null ? "исходная" : `доп. №${job.amendment_no}`}
-                {job.is_current ? (
-                  <Badge className="ml-2" variant="secondary">
-                    актуальная
-                  </Badge>
-                ) : (
-                  <span className="ml-2 text-2xs text-fg-tertiary">вытеснена заменой</span>
-                )}
-              </TableCell>
-              <TableCell>
-                <StatusPill
-                  tone={
-                    job.status === "done" ? "success" : job.status === "error" ? "danger" : "info"
-                  }
-                  label={job.status}
-                />
-              </TableCell>
-              <TableCell className="tabular-nums">{formatDate(job.created_at)}</TableCell>
-              <TableCell>
-                {/*
-                  Обычная ссылка, а не fetch: выдача авторизована куками (§8), и
-                  браузер сам покажет диалог сохранения. 410 (файл удалён
-                  ретенцией) отдаёт сервер — экран его не изобретает.
-                */}
-                <a
-                  href={estimatesApi.fileUrl(job.id)}
-                  className="inline-flex items-center gap-1 text-sm text-accent-text hover:underline"
-                >
-                  <Download className="size-3.5" /> скачать
-                </a>
-              </TableCell>
-            </TableRow>
-          ))}
+          {jobs.map((job) => {
+            const fate = estimateFate(job);
+            return (
+              <TableRow key={job.id}>
+                <TableCell className="tabular-nums">{job.id}</TableCell>
+                <TableCell>
+                  <div className="max-w-xs truncate">{job.filename}</div>
+                  {/*
+                    Тексты предупреждений, а не только их число: панель загрузки
+                    живёт до перезагрузки страницы, и без этого DoD «в карточке
+                    видны счётчики и предупреждения» не выполняется — данные
+                    существуют в БД, но человеку недоступны.
+                  */}
+                  {job.warnings.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="flex cursor-pointer items-center gap-1 text-2xs text-warning-text">
+                        <AlertTriangle className="size-3" />
+                        предупреждений: {job.warnings.length}
+                      </summary>
+                      <ul className="mt-1 grid gap-0.5 text-2xs text-fg-secondary">
+                        {job.warnings.map((warning, index) => (
+                          <li key={index}>{warning}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {job.status === "error" && job.error_text && (
+                    <p className="mt-1 text-2xs text-danger-text">{job.error_text}</p>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {job.amendment_no === null ? "исходная" : `доп. №${job.amendment_no}`}
+                  {job.is_current ? (
+                    <Badge className="ml-2" variant="secondary">
+                      актуальная
+                    </Badge>
+                  ) : (
+                    <span className="ml-2 text-2xs text-fg-tertiary">{fate}</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <StatusPill
+                    tone={
+                      job.status === "done" ? "success" : job.status === "error" ? "danger" : "info"
+                    }
+                    label={job.status}
+                  />
+                </TableCell>
+                <TableCell className="whitespace-nowrap font-mono text-2xs tabular-nums text-fg-secondary">
+                  {job.status === "done" ? (
+                    <>
+                      всего {job.counters.positions_total} · кэш {job.counters.matched_cache} ·
+                      точно {job.counters.matched_exact} · не работы{" "}
+                      {job.counters.matched_nonposition} · на разбор {job.counters.to_review}
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+                <TableCell className="tabular-nums">{formatDate(job.created_at)}</TableCell>
+                <TableCell>
+                  {/*
+                    Кнопка, а не `<a href>`: экран обязан различать 404 («задания
+                    нет») и 410 («аудит есть, файл удалён ретенцией», §8) — со
+                    ссылкой разбор статуса ушёл бы браузеру и человек увидел бы
+                    сырой JSON. Тексты обоих отказов — в `useDownloadJobFile`.
+                  */}
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={download.isPending}
+                    onClick={() =>
+                      download.mutate({ jobId: job.id, filename: job.filename })
+                    }
+                  >
+                    <Download className="size-3.5" /> скачать
+                  </Button>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </Surface>

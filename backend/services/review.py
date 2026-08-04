@@ -57,6 +57,16 @@ def _lock_rows(db: Session, ids: list[int]) -> dict[int, CatalogPosition]:
     Проверка состояния идёт ПОСЛЕ захвата — в этом и смысл: проигравший ждёт
     коммита победителя и затем видит настоящее состояние (строки уже нет либо у
     неё другой `kind`), а не то, что было до его ожидания.
+
+    **`populate_existing=True` здесь обязателен, и это не перестраховка.** Если
+    строка уже загружена в эту сессию (так делал HTTP-слой фазы 5, проверяя
+    существование через `db.get`), SQLAlchemy вернёт объект из identity map, НЕ
+    обновляя его атрибуты, — и `FOR UPDATE` окажется бесполезен: сам SELECT
+    прочитает свежие данные, а `_require_kind` проверит устаревший `kind` из
+    кэша. Замер (фаза 5, разбор внешнего ревью): после коммита `TO_REVIEW →
+    POSITION` другой сессией повторный `SELECT ... FOR UPDATE` без этой опции
+    вернул `kind=TO_REVIEW`, с ней — `POSITION`; в БД лежал `POSITION`. То есть
+    два оператора перезаписывали решения друг друга ВОПРЕКИ блокировке.
     """
     rows = (
         db.execute(
@@ -64,6 +74,7 @@ def _lock_rows(db: Session, ids: list[int]) -> dict[int, CatalogPosition]:
             .where(CatalogPosition.id.in_(ids))
             .order_by(CatalogPosition.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()

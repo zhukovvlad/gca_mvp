@@ -29,6 +29,7 @@ import {
   useRateClasses,
   useUpdateContract,
 } from "@/services/queries";
+import { useDebounce } from "@/lib/useDebounce";
 import type { ContractCard, ContractInput } from "@/types/domain";
 
 interface ContractFormDialogProps {
@@ -137,8 +138,25 @@ function ContractForm({
     null
   );
 
-  const objectsQ = useObjects({ page_size: 100 });
-  const contractorsQ = useContractors({ page_size: 100 });
+  // Запросы поиска уходят на сервер как `q`: клиентской фильтрации мало, потому
+  // что записи за пределами страницы выдачи иначе недостижимы (дефект, найденный
+  // внешним ревью).
+  const [objectQuery, setObjectQuery] = useState("");
+  const [contractorQuery, setContractorQuery] = useState("");
+  const objectSearch = useDebounce(objectQuery, 300);
+  const contractorSearch = useDebounce(contractorQuery, 300);
+
+  /**
+   * Подписи выбранных записей запоминаются отдельно от выдачи: после нового
+   * запроса выбранная запись из списка пропадает, и подпись на кнопке иначе
+   * подменилась бы плейсхолдером. В режиме правки начальные подписи берутся из
+   * карточки — там есть названия объекта и подрядчика.
+   */
+  const [objectLabel, setObjectLabel] = useState(contract?.object_title ?? "");
+  const [contractorLabel, setContractorLabel] = useState(contract?.contractor_title ?? "");
+
+  const objectsQ = useObjects({ q: objectSearch || undefined, page_size: 20 });
+  const contractorsQ = useContractors({ q: contractorSearch || undefined, page_size: 20 });
   const classesQ = useRateClasses();
 
   const createObject = useCreateObject();
@@ -153,8 +171,13 @@ function ContractForm({
   async function handleCreateObject(query: string) {
     const title = query.trim();
     if (!title) return;
-    const created = await createObject.mutateAsync({ title });
-    patch({ object_id: created.id });
+    try {
+      const created = await createObject.mutateAsync({ title });
+      setObjectLabel(created.title);
+      patch({ object_id: created.id });
+    } catch {
+      // Причина уже в тосте — как правило, название занято.
+    }
   }
 
   async function handleSaveContractorDraft() {
@@ -164,6 +187,7 @@ function ContractForm({
     if (!title || !inn) return;
     try {
       const created = await createContractor.mutateAsync({ title, inn });
+      setContractorLabel(created.title);
       patch({ contractor_id: created.id });
       setContractorDraft(null);
     } catch {
@@ -226,12 +250,18 @@ function ContractForm({
             id="contract-object"
             items={objectsQ.data?.items ?? []}
             value={form.object_id}
-            onChange={(id) => patch({ object_id: id })}
+            onChange={(item) => {
+              setObjectLabel(item?.title ?? "");
+              patch({ object_id: item?.id ?? null });
+            }}
             getLabel={(item) => item.title}
             getHint={(item) => item.rate_class_title ?? undefined}
             placeholder="Выберите объект"
-            searchPlaceholder="Название объекта"
+            searchPlaceholder="Название или адрес объекта"
             emptyText="Объект не найден — его можно создать"
+            onQueryChange={setObjectQuery}
+            selectedLabel={objectLabel}
+            loading={objectsQ.isFetching}
             onCreateRequest={handleCreateObject}
             createLabel="Создать объект"
             disabled={createObject.isPending}
@@ -244,12 +274,18 @@ function ContractForm({
             id="contract-contractor"
             items={contractorsQ.data?.items ?? []}
             value={form.contractor_id}
-            onChange={(id) => patch({ contractor_id: id })}
+            onChange={(item) => {
+              setContractorLabel(item?.title ?? "");
+              patch({ contractor_id: item?.id ?? null });
+            }}
             getLabel={(item) => item.title}
             getHint={(item) => item.inn}
             placeholder="Выберите подрядчика"
             searchPlaceholder="Название или БИН/ИНН"
             emptyText="Подрядчик не найден — его можно создать"
+            onQueryChange={setContractorQuery}
+            selectedLabel={contractorLabel}
+            loading={contractorsQ.isFetching}
             onCreateRequest={(query) =>
               setContractorDraft({ title: query.trim(), inn: "" })
             }

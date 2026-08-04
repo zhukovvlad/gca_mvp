@@ -132,8 +132,18 @@ export const estimatesApi = {
   getJob: (jobId: number): Promise<ImportJob> =>
     api.get<ImportJob>(`/v1/import-jobs/${jobId}`).then((r) => r.data),
 
-  /** Ссылка на скачивание исходника. Выдача только авторизованная (§8). */
-  fileUrl: (jobId: number): string => `/api/v1/import-jobs/${jobId}/file`,
+  /**
+   * Скачивание исходника — **через API-клиент, а не ссылкой** `<a href>`.
+   *
+   * Экран обязан различать 404 («задания нет») и 410 («запись аудита есть, файл
+   * удалён ретенцией §8») — это требование §5. Обычная ссылка отдала бы разбор
+   * статуса браузеру, и человек увидел бы сырой JSON вместо объяснения, какой из
+   * двух случаев произошёл.
+   */
+  downloadFile: (jobId: number): Promise<Blob> =>
+    api
+      .get<Blob>(`/v1/import-jobs/${jobId}/file`, { responseType: "blob" })
+      .then((r) => r.data),
 };
 
 // ---------------------------------------------------------------------------

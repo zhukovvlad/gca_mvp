@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -66,15 +67,31 @@ def _raise(err: DomainError):
     raise HTTPException(err.status_code, err.detail)
 
 
-def _require_exists(db: Session, catalog_position_id: int) -> CatalogPosition:
+def _exists(db: Session, catalog_position_id: int) -> bool:
+    """Есть ли такая строка — **не загружая её в сессию**.
+
+    Здесь выбирается один столбец, а не сущность, и это принципиально: `db.get`
+    положил бы объект в identity map, а тогда `SELECT ... FOR UPDATE` внутри
+    сервиса вернул бы его же с УСТАРЕВШИМИ атрибутами и проверка `kind` пошла бы
+    по данным до блокировки. Именно так фаза 5 обходила собственную блокировку
+    (см. `services/review._lock_rows`); там опция `populate_existing` закрывает
+    это со стороны сервиса, а здесь проблема не создаётся вовсе.
+    """
+    return (
+        db.execute(
+            sa.select(CatalogPosition.id).where(CatalogPosition.id == catalog_position_id)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _require_exists(db: Session, catalog_position_id: int) -> None:
     """404 на заведомо отсутствующую строку — чтобы её не путать с 409-гонкой."""
-    row = db.get(CatalogPosition, catalog_position_id)
-    if row is None:
+    if not _exists(db, catalog_position_id):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             f"Каталожная строка {catalog_position_id} не найдена.",
         )
-    return row
 
 
 @router.get("/queue")
@@ -203,7 +220,9 @@ def batch_set_kind(
 
     try:
         for catalog_id in sorted(set(body.ids)):
-            if db.get(CatalogPosition, catalog_id) is None:
+            # `_exists`, а не `db.get`: загруженная сущность обошла бы FOR UPDATE
+            # внутри сервиса (см. комментарий у `_exists`).
+            if not _exists(db, catalog_id):
                 skipped.append(
                     {"id": catalog_id, "reason": f"Каталожная строка {catalog_id} не найдена."}
                 )

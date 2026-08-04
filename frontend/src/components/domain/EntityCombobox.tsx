@@ -16,18 +16,32 @@ import { cn } from "@/lib/utils";
 interface EntityComboboxProps<T extends { id: number }> {
   items: T[];
   value: number | null;
-  onChange: (id: number | null) => void;
+  onChange: (item: T | null) => void;
   getLabel: (item: T) => string;
   getHint?: (item: T) => string | undefined;
   placeholder: string;
   searchPlaceholder: string;
   emptyText: string;
-  /** Текст поиска наружу — форма создания подставляет его в название. */
-  onQueryChange?: (query: string) => void;
+  /**
+   * Текст поиска наружу. **Обязателен, если список приходит с сервера:**
+   * встроенная фильтрация `Command` отключена (`shouldFilter={false}`), потому что
+   * фильтровать первую страницу выдачи бессмысленно — за её пределами записи
+   * всё равно не найдутся. Родитель обязан передать запрос в API как `q`.
+   */
+  onQueryChange: (query: string) => void;
+  /**
+   * Подпись выбранной записи, когда её нет в текущей выдаче. Нужна из-за
+   * серверного поиска: после нового запроса выбранный объект из списка пропадает,
+   * и без этого подпись на кнопке подменилась бы плейсхолдером — человек решил бы,
+   * что выбор сбросился. Строка, а не сущность: комбобоксу нужна только подпись,
+   * и требовать целый объект значило бы вынуждать вызывающего его подделывать.
+   */
+  selectedLabel?: string | null;
   /** Не задан — кнопки «создать» нет (у пользователя нет права, §6.2). */
   onCreateRequest?: (query: string) => void;
   createLabel?: string;
   disabled?: boolean;
+  loading?: boolean;
   id?: string;
 }
 
@@ -40,6 +54,13 @@ interface EntityComboboxProps<T extends { id: number }> {
  *
  * Собран из shadcn `Command` + `Popover` — это штатный способ сделать комбобокс;
  * своей реализации выпадающего списка с поиском не пишем.
+ *
+ * **Поиск серверный.** Внешнее ревью нашло здесь дефект: `shouldFilter={false}`
+ * выключал встроенную фильтрацию `Command`, а запрос никуда не уходил — список
+ * оставался неизменным, то есть поле поиска выглядело работающим и не работало.
+ * Клиентская фильтрация была бы лишь полумерой: форма получает страницу выдачи, и
+ * записи за её пределами так и остались бы недостижимыми. Поэтому запрос
+ * поднимается наружу (`onQueryChange`), а родитель передаёт его в API.
  */
 export function EntityCombobox<T extends { id: number }>({
   items,
@@ -51,18 +72,22 @@ export function EntityCombobox<T extends { id: number }>({
   searchPlaceholder,
   emptyText,
   onQueryChange,
+  selectedLabel,
   onCreateRequest,
   createLabel = "Создать",
   disabled,
+  loading,
   id,
 }: EntityComboboxProps<T>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selected = items.find((item) => item.id === value);
+  const label =
+    selected ? getLabel(selected) : value !== null ? (selectedLabel ?? null) : null;
 
   function handleQuery(next: string) {
     setQuery(next);
-    onQueryChange?.(next);
+    onQueryChange(next);
   }
 
   return (
@@ -78,8 +103,8 @@ export function EntityCombobox<T extends { id: number }>({
             disabled={disabled}
             className="w-full justify-between font-normal"
           >
-            <span className={cn("truncate", !selected && "text-muted-foreground")}>
-              {selected ? getLabel(selected) : placeholder}
+            <span className={cn("truncate", !label && "text-muted-foreground")}>
+              {label ?? placeholder}
             </span>
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
           </Button>
@@ -93,14 +118,14 @@ export function EntityCombobox<T extends { id: number }>({
             onValueChange={handleQuery}
           />
           <CommandList>
-            <CommandEmpty>{emptyText}</CommandEmpty>
+            <CommandEmpty>{loading ? "Поиск…" : emptyText}</CommandEmpty>
             <CommandGroup>
               {items.map((item) => (
                 <CommandItem
                   key={item.id}
                   value={String(item.id)}
                   onSelect={() => {
-                    onChange(item.id);
+                    onChange(item);
                     setOpen(false);
                   }}
                 >

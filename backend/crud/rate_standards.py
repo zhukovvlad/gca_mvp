@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from crud.common import DomainError, clamp_page, iso, paginated
-from models import CatalogPosition, RateClass, RateStandard, UnitOfMeasure
+from models import CatalogKind, CatalogPosition, RateClass, RateStandard, UnitOfMeasure
 
 log = logging.getLogger(__name__)
 
@@ -147,11 +147,30 @@ def get_rate_standard_dict(db: Session, standard_id: int) -> dict:
     return _standard_dict(*row)
 
 
-def _require_refs(db: Session, catalog_position_id: int, rate_class_id: int) -> tuple[str, str]:
-    """Проверяет существование работы и класса; возвращает их названия для текстов."""
+def _require_refs(
+    db: Session, catalog_position_id: int, rate_class_id: int, *, require_position_kind: bool = False
+) -> tuple[str, str]:
+    """Проверяет работу и класс; возвращает их названия для текстов сообщений.
+
+    Args:
+        require_position_kind: требовать `kind='POSITION'`. Включается при
+            **создании** норматива и выключено при правке существующего: пара
+            (работа, класс) в правке не меняется, а `kind` строки правкой
+            норматива не управляется.
+    """
     position = db.get(CatalogPosition, catalog_position_id)
     if position is None:
         raise DomainError(404, f"Каталожная строка {catalog_position_id} не найдена.")
+    if require_position_kind and position.kind != CatalogKind.POSITION.value:
+        raise DomainError(
+            422,
+            f"Работа «{position.standard_job_title}» имеет kind={position.kind}, а норматив "
+            "назначается только строке POSITION. Причин две, и обе жёсткие: VIEW отклонений "
+            "берёт только POSITION, поэтому такая ставка не участвовала бы в расчёте вовсе; "
+            "а норматив на строке TO_REVIEW сделал бы её неудаляемой и сорвал бы её "
+            "последующее слияние в ручном матчинге. "
+            "Разберите строку в очереди ручного матчинга, затем назначайте ставку.",
+        )
     rate_class = db.get(RateClass, rate_class_id)
     if rate_class is None:
         raise DomainError(404, f"Класс объектов {rate_class_id} не найден.")
@@ -188,8 +207,14 @@ def create_rate_standard(
     approved_at: dt.datetime | None = None,
     note: str | None = None,
 ) -> dict:
-    """Создать норматив. 400 — пересечение периодов, 422 — ставка или период."""
-    catalog_title, rate_class_title = _require_refs(db, catalog_position_id, rate_class_id)
+    """Создать норматив.
+
+    422 — работа не `POSITION`, ставка неположительна или период вывернут;
+    400 — пересечение периодов (EXCLUDE).
+    """
+    catalog_title, rate_class_title = _require_refs(
+        db, catalog_position_id, rate_class_id, require_position_kind=True
+    )
     _validate_rate(standard_unit_rate)
     _validate_period(valid_from, valid_to)
     if inflation_index is not None and inflation_index <= 0:
@@ -322,11 +347,20 @@ def reapprove_rate_standard(
             f"Новый период должен начинаться позже {old.valid_from.isoformat()} — "
             "иначе прежний период стал бы пустым, а его история потерялась бы.",
         )
-    if old.valid_to is not None and valid_from >= old.valid_to:
+    # Закрытый период не переутверждается ВООБЩЕ, независимо от новой даты.
+    # Прежняя проверка (`valid_from >= old.valid_to`) была неполной и пропускала
+    # дату ВНУТРИ закрытого периода: [2025-01-01, 2025-07-01) + valid_from
+    # 2025-03-01 давало «успех», прежний период укорачивался до 2025-03-01, а
+    # новый становился бессрочным. То есть у смет, датированных мартом–июнем,
+    # отклонения молча пересчитывались по новой ставке — ровно то, что запрещает
+    # §4 и DoD «переутверждение не меняет отклонения старых смет».
+    if old.valid_to is not None:
         raise DomainError(
             422,
-            f"Прежний норматив уже закрыт {old.valid_to.isoformat()}; переутверждать "
-            "нужно действующий. Для отдельного периода создайте новый норматив.",
+            f"Норматив закрыт {old.valid_to.isoformat()} и переутверждению не подлежит: "
+            "переутверждают действующую ставку, а закрытый период — уже история, и "
+            "менять его значило бы задним числом изменить отклонения смет того времени. "
+            "Если нужна ставка на другой период — создайте отдельный норматив.",
         )
 
     if standard_unit_rate is None:

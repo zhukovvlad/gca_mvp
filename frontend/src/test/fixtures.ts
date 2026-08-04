@@ -54,6 +54,16 @@ export const sampleObjects: ObjectItem[] = [
     created_at: null,
     updated_at: null,
   },
+  {
+    id: 11,
+    title: "ЖК Южный",
+    address: "ул. Солнечная, 7",
+    rate_class_id: 2,
+    rate_class_title: "Промышленные",
+    contracts_count: 0,
+    created_at: null,
+    updated_at: null,
+  },
 ];
 
 export const sampleContractors: Contractor[] = [
@@ -64,6 +74,16 @@ export const sampleContractors: Contractor[] = [
     address: "г. Тест, ул. Подрядная, 1",
     accreditation: "да",
     contracts_count: 1,
+    created_at: null,
+    updated_at: null,
+  },
+  {
+    id: 21,
+    title: "ТОО Монолит",
+    inn: "987654321098",
+    address: "г. Тест, ул. Бетонная, 4",
+    accreditation: "нет",
+    contracts_count: 0,
     created_at: null,
     updated_at: null,
   },
@@ -168,6 +188,41 @@ export const sampleImportJobs: ContractImportJob[] = [
     finished_at: "2026-03-05T08:00:20Z",
   },
 ];
+
+/** Задание, упавшее с ошибкой: сметы не создавало никогда. */
+export const sampleFailedJob: ContractImportJob = {
+  id: 898,
+  contract_id: 100,
+  amendment_no: null,
+  filename: "смета-битая.xlsx",
+  file_sha256: "c".repeat(64),
+  status: "error",
+  error_text: "Не удалось разобрать файл: не найдена шапка сметы.",
+  warnings: [],
+  counters: {
+    positions_total: 0,
+    matched_cache: 0,
+    matched_exact: 0,
+    matched_nonposition: 0,
+    to_review: 0,
+  },
+  estimate_id: null,
+  is_current: false,
+  created_at: "2026-03-04T08:00:00Z",
+  started_at: "2026-03-04T08:00:01Z",
+  finished_at: "2026-03-04T08:00:03Z",
+};
+
+/** Задание в работе: сметы ещё нет, но и «вытеснено заменой» о нём — ложь. */
+export const sampleRunningJob: ContractImportJob = {
+  ...sampleFailedJob,
+  id: 897,
+  filename: "смета-в-работе.xlsx",
+  status: "matching",
+  error_text: null,
+  created_at: "2026-03-03T08:00:00Z",
+  finished_at: null,
+};
 
 export const sampleReviewQueue: ReviewQueueItem[] = [
   {
