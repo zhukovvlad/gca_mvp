@@ -8,6 +8,12 @@ on:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    # Прогон занимает ~3 минуты. Ограничение нужно потому, что в наборе есть тесты,
+    # берущие настоящие блокировки (`FOR UPDATE` в ручном матчинге, пакетная
+    # разметка в одной транзакции) и тесты с настоящей конкуренцией потоков:
+    # взаимная блокировка повесила бы job на дефолтные 6 часов GitHub. Тот же приём
+    # уже применён в frontend-tests.yml.
+    timeout-minutes: 20
 
     # Postgres + pgvector on the runner itself → localhost queries (~0.1ms) instead
     # of remote Neon round-trips. The official pgvector image ships the `vector`

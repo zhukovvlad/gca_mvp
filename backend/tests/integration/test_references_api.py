@@ -13,6 +13,10 @@ import pytest
 
 from models import UserRole
 
+# Тестам нужен настоящий Postgres. Без маркера выборка `pytest -m integration`
+# молча их не собирала бы — а это ложная уверенность при точечном прогоне.
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def member(client):

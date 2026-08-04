@@ -9,6 +9,36 @@ import { server } from "@/test/server";
 import { MAX_REVIEW_BATCH } from "@/types/domain";
 import { renderWithProviders } from "@/test/utils";
 
+/**
+ * Типизированный доступ к `process` из теста, живущего в `src`.
+ *
+ * `tsconfig.app.json` намеренно даёт только `types: ["vite/client"]` — браузерному
+ * коду node-API не положены, и добавлять их в область приложения ради теста
+ * неправильно (тогда production-код смог бы случайно позвать `fs`). Поэтому
+ * доступ идёт приведением `globalThis`, а не через `@types/node`.
+ *
+ * Почему именно `process`, а не DOM-событие: замер показал, что под jsdom
+ * `window`-событие `unhandledrejection` НЕ срабатывает (0 вызовов), а
+ * `process.on("unhandledRejection")` срабатывает (1). Первая редакция теста
+ * обращалась к `process` напрямую — `tsc` этого не принял, и CI упал бы на
+ * отдельном шаге типизации.
+ */
+function nodeProcess(): {
+  on: (event: "unhandledRejection", cb: (reason: unknown) => void) => void;
+  off: (event: "unhandledRejection", cb: (reason: unknown) => void) => void;
+} {
+  const proc = (
+    globalThis as {
+      process?: {
+        on: (event: "unhandledRejection", cb: (reason: unknown) => void) => void;
+        off: (event: "unhandledRejection", cb: (reason: unknown) => void) => void;
+      };
+    }
+  ).process;
+  if (!proc) throw new Error("process недоступен — проверка отклонений невозможна");
+  return proc;
+}
+
 describe("Экран «Ручной матчинг» (§7.2)", () => {
   it("показывает очередь с весом работы и примерами наименований", async () => {
     renderWithProviders(<ReviewPage />);
@@ -208,8 +238,18 @@ describe("Найдено собственным ревью: потолок па�
       expect(screen.getByRole("button", { name: "Утвердить как работы" })).toBeDisabled();
       expect(handlerState.lastBatch).toBeNull();
     },
-    // Рендер 200+ строк в jsdom дорог; дефолтных 5 с не хватает.
-    30_000
+    /*
+     * Замер: тест идёт ~6,5 с, тогда как все остальные в файле 91–446 мс. Стоимость
+     * неизбежна — потолок в 200 строк иначе через интерфейс не достать, а каждая
+     * строка очереди несёт чекбокс и четыре кнопки действий. Дешевле не выходит и
+     * через несколько страниц: суммарное число смонтированных строк то же.
+     *
+     * Отсюда таймаут: 60 с — это ~9× локального времени. Прежние 30 с давали 4,6×,
+     * а раннер GitHub Actions (2–4 vCPU) на CPU-связанной работе в jsdom медленнее
+     * машины разработчика в разы — запас был на грани. Щедрый таймаут не стоит
+     * ничего, пока тест проходит быстро, и снимает флаки на медленном раннере.
+     */
+    60_000
   );
 
   // Отдельного теста «ровно потолок разрешён» нет намеренно: он стоил бы ещё
@@ -247,5 +287,42 @@ describe("Отказ пакета: выделение сохраняется, о
     expect(await screen.findByText("Пакет не применён: сбой сервера.")).toBeInTheDocument();
     expect(screen.getByText("Выбрано строк: 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "В мусор" })).toBeEnabled();
+  });
+
+  it("отказ пакета не оставляет необработанного отклонения промиса", async () => {
+    /*
+     * Проверка сформулирована УТВЕРЖДЕНИЕМ, а не «команда выйдет с кодом 1».
+     * Первая редакция полагалась на то, что vitest сам заметит необработанное
+     * отклонение и завалит прогон. Это работало, но держалось на поведении
+     * раннера: детект асинхронный, зависит от версии и настроек, а в CI условия
+     * другие. Проверка, которая может не сработать на чужом раннере, — не
+     * проверка. Здесь отклонения ловятся своим слушателем и сравниваются явно.
+     */
+    server.use(
+      http.post("/api/v1/review/batch-kind", () =>
+        HttpResponse.json({ detail: "Сбой." }, { status: 500 })
+      )
+    );
+
+    const rejections: unknown[] = [];
+    const capture = (reason: unknown) => rejections.push(reason);
+    nodeProcess().on("unhandledRejection", capture);
+
+    try {
+      const user = userEvent.setup();
+      renderWithProviders(<ReviewPage />);
+      await screen.findByText("Стяжка неведомая");
+      await user.click(screen.getByLabelText("Выбрать все строки на странице"));
+      await user.click(screen.getByRole("button", { name: "В мусор" }));
+      await screen.findByText("Сбой.");
+
+      // Node сообщает об отклонении на следующем такте после того, как оно
+      // осталось необработанным, — даём этому такту случиться.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(rejections).toEqual([]);
+    } finally {
+      nodeProcess().off("unhandledRejection", capture);
+    }
   });
 });
