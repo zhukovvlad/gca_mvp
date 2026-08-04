@@ -85,7 +85,16 @@ export function MatrixCellDialog({
               <TableBody>
                 {detail.items.map((item) => (
                   <TableRow key={item.position_item_id}>
-                    <TableCell title={item.job_title}>{item.job_title}</TableCell>
+                    {/*
+                      Тот же зажим, что в матрице: наименование в смете бывает на
+                      килобайты, и без него одна строка распирала бы диалог, вытесняя
+                      остальные позиции за пределы окна.
+                    */}
+                    <TableCell>
+                      <span className="line-clamp-3 max-w-[26rem]" title={item.job_title}>
+                        {item.job_title}
+                      </span>
+                    </TableCell>
                     <TableCell className="text-fg-secondary">{item.unit_code ?? "—"}</TableCell>
                     <TableCell className="text-right">
                       <MoneyCell value={item.weight} currency="" />

@@ -48,7 +48,7 @@ interface HandlerState {
   /** Отдать паспорт договора без сметы: `estimate: null`, пустой топ. */
   passportWithoutEstimate: boolean;
   /** Отдать пустую матрицу — и различить «нет договоров» от «нет работ». */
-  matrixOutcome: "rows" | "no-rows" | "no-columns";
+  matrixOutcome: "rows" | "no-rows" | "no-columns" | "pending-review";
 }
 
 export const handlerState: HandlerState = {
@@ -484,6 +484,7 @@ export const handlers = [
           with_standard: 0,
           without_standard: 0,
           over_standard: 0,
+          positions_pending_review: 0,
         },
       });
     }
@@ -504,6 +505,16 @@ export const handlers = [
     }
     if (handlerState.matrixOutcome === "no-rows") {
       return HttpResponse.json({ ...sampleMatrix, rows: [], total: 0 });
+    }
+    if (handlerState.matrixOutcome === "pending-review") {
+      // Сметы загружены и расценены, но каталог ещё не разобран — состояние,
+      // которое нашёл прогон стенда фазы 6.
+      return HttpResponse.json({
+        ...sampleMatrix,
+        rows: [],
+        total: 0,
+        positions_pending_review: 1830,
+      });
     }
     const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     const rows = q

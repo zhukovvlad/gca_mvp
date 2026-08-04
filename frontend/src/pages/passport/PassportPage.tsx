@@ -107,13 +107,20 @@ export default function PassportPage() {
         ) : (
           <>
             <PassportSummary passport={passport} />
-            <KeyRatesTable rates={keyRates} />
-            <p className="mt-2 text-xs text-fg-tertiary">
-              Показаны {totals.positions_shown} из {totals.positions_priced} расценённых работ
-              сметы — работы с наибольшей стоимостью. Отклонение считается от норматива класса
-              «{contract.rate_class_title}» на дату сметы; у {totals.without_standard} работ
-              норматива на эту дату нет, и они не сравниваются.
-            </p>
+            <KeyRatesTable
+              rates={keyRates}
+              pendingReview={totals.positions_pending_review}
+            />
+            {keyRates.length > 0 && (
+              <p className="mt-2 text-xs text-fg-tertiary">
+                Показаны {totals.positions_shown} из {totals.positions_priced} расценённых работ
+                сметы — работы с наибольшей стоимостью. Отклонение считается от норматива класса
+                «{contract.rate_class_title}» на дату сметы; у {totals.without_standard} работ
+                норматива на эту дату нет, и они не сравниваются.
+                {totals.positions_pending_review > 0 &&
+                  ` Ещё ${totals.positions_pending_review} позиций ждут ручного матчинга и в расчёт не вошли.`}
+              </p>
+            )}
           </>
         )}
 
@@ -169,34 +176,99 @@ function PassportHeader({ passport }: { passport: Passport }) {
   );
 }
 
-/** Сводка: сколько работ, на какую сумму, сколько превышает норматив. */
+/**
+ * Сводка: сколько работ, на какую сумму, сколько превышает норматив.
+ *
+ * **Два вида, экранный и печатный.** KPI-карточки с крупным кеглем и отбивкой `p-5`
+ * съедали на листе около 25 мм — по замеру стенда именно они были главной причиной,
+ * по которой паспорт не сходился на одну А4 (284 мм против 277 доступных при
+ * значении N по умолчанию). На бумаге те же три числа умещаются в одну строку.
+ *
+ * Печатный вид — не урезанный: в нём те же данные, включая раздельные счётчики
+ * «превышают» и «без норматива», которых требует §10.
+ */
 function PassportSummary({ passport }: { passport: Passport }) {
   const { totals } = passport;
   return (
-    <div className="mt-5 grid grid-cols-3 gap-3">
-      <KpiCard label="Расценённых работ" value={String(totals.positions_priced)} />
-      <KpiCard
-        label="Стоимость расценённых работ"
-        value={formatDecimalMoney(totals.priced_amount)}
-      />
-      <KpiCard
-        label="Превышают норматив"
-        value={String(totals.over_standard)}
-        caption={
-          /*
-            «Нет норматива» показано ОТДЕЛЬНО от превышений — этого требует §10:
-            слей их в один счётчик, и работа без норматива читалась бы как
-            уложившаяся в него.
-          */
-          `из ${totals.with_standard} сравнимых; без норматива ${totals.without_standard}`
-        }
-      />
-    </div>
+    <>
+      <div data-print="hide" className="mt-5 grid grid-cols-3 gap-3">
+        <KpiCard label="Расценённых работ" value={String(totals.positions_priced)} />
+        <KpiCard
+          label="Стоимость расценённых работ"
+          value={formatDecimalMoney(totals.priced_amount)}
+        />
+        <KpiCard
+          label="Превышают норматив"
+          value={String(totals.over_standard)}
+          caption={
+            /*
+              «Нет норматива» показано ОТДЕЛЬНО от превышений — этого требует §10:
+              слей их в один счётчик, и работа без норматива читалась бы как
+              уложившаяся в него.
+            */
+            `из ${totals.with_standard} сравнимых; без норматива ${totals.without_standard}`
+          }
+        />
+      </div>
+
+      <dl
+        data-print="only"
+        className="flex flex-wrap gap-x-6 gap-y-1 border-y border-border-default py-1 text-xs"
+      >
+        <div className="flex gap-1">
+          <dt className="text-fg-tertiary">Расценённых работ:</dt>
+          <dd className="font-mono">{totals.positions_priced}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-fg-tertiary">Стоимость:</dt>
+          <dd className="font-mono">{formatDecimalMoney(totals.priced_amount)}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-fg-tertiary">Превышают норматив:</dt>
+          <dd className="font-mono">
+            {totals.over_standard} из {totals.with_standard}
+          </dd>
+        </div>
+        <div className="flex gap-1">
+          <dt className="text-fg-tertiary">Без норматива:</dt>
+          <dd className="font-mono">{totals.without_standard}</dd>
+        </div>
+      </dl>
+    </>
   );
 }
 
-function KeyRatesTable({ rates }: { rates: PassportKeyRate[] }) {
+function KeyRatesTable({
+  rates,
+  pendingReview,
+}: {
+  rates: PassportKeyRate[];
+  pendingReview: number;
+}) {
   if (rates.length === 0) {
+    /*
+      Причины пустого топа две, и путать их нельзя. **Найдено прогоном стенда:**
+      на живой базе все позиции реальной сметы имели цену, но каталог целиком
+      состоял из TO_REVIEW, и паспорт сообщал «не заполнена цена за единицу» — то
+      есть указывал на несуществующую проблему и отправлял искать её не там.
+    */
+    if (pendingReview > 0) {
+      return (
+        <div className="mt-5 rounded-md border border-warning-border bg-warning-soft px-4 py-3 text-sm">
+          <p className="text-fg">
+            Расценок пока нет, хотя цены в смете заполнены: {pendingReview} позиций ждут ручного
+            матчинга. Пока работа не утверждена в каталоге, она не сравнивается с нормативами
+            (AGENTS.md §4) и в паспорт не попадает.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-3"
+            data-print="hide"
+            render={<Link to="/review">Разобрать очередь ручного матчинга</Link>}
+          />
+        </div>
+      );
+    }
     return (
       <p className="mt-5 text-sm text-fg-secondary">
         В смете нет расценённых работ: у позиций не заполнена цена за единицу.

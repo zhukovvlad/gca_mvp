@@ -639,3 +639,98 @@ def test_default_top_n_matches_the_agreed_value(client, factories):
     """§7.4 называет 15 прямо — значение по умолчанию не должно уехать незамеченным."""
     contract = factories.ContractFactory.create()
     assert _passport(client, contract.id)["top_n"] == PASSPORT_TOP_N_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+#  Пустой результат при непустой смете (найдено прогоном стенда фазы 6)
+# ---------------------------------------------------------------------------
+
+class TestPendingReviewIsExplained:
+    """Почему паспорт и матрица пусты, хотя смета загружена и расценена.
+
+    **Нашёл прогон стенда, а не тест.** На живой базе все 1830 позиций реальной
+    сметы имели цену, но каталог целиком состоял из `TO_REVIEW` — и VIEW отклонений
+    их не берёт (§4: только `kind='POSITION'`). Паспорт при этом сообщал «у позиций
+    не заполнена цена за единицу», то есть называл неверную причину и отправлял
+    искать проблему не там.
+
+    Тесты этого не поймали потому, что фикстуры создают каталожные строки сразу
+    `POSITION`. Здесь состояние воспроизводится намеренно.
+    """
+
+    def _priced_but_unreviewed(self, factories, *, kind=CatalogKind.TO_REVIEW.value):
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=kind)
+        _position(factories, proposal, position, unit_cost="100", weight="10")
+        return contract
+
+    def test_passport_reports_positions_waiting_for_review(self, client, factories):
+        contract = self._priced_but_unreviewed(factories)
+        body = _passport(client, contract.id)
+
+        assert body["key_rates"] == []
+        # Совокупность VIEW пуста — и это правильно...
+        assert body["totals"]["positions_priced"] == 0
+        # ...но причина названа, а не оставлена на догадки.
+        assert body["totals"]["positions_pending_review"] == 1
+
+    def test_matrix_reports_positions_waiting_for_review(self, client, factories):
+        self._priced_but_unreviewed(factories)
+        body = _matrix(client)
+
+        assert body["rows"] == []
+        # Договор в выборке есть (смета загружена), а работ нет — счётчик объясняет.
+        assert len(body["columns"]) == 1
+        assert body["positions_pending_review"] == 1
+
+    def test_unpriced_position_is_not_counted_as_pending_review(self, client, factories):
+        """Без цены — другая причина, и смешивать их нельзя.
+
+        У позиции без цены сравнивать нечего независимо от каталога, поэтому она не
+        должна попадать в счётчик «ждут матчинга»: иначе подсказка отправила бы
+        человека в очередь Review, где он ничего не исправит.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=position,
+            unit_cost_total=None,
+            suggested_quantity=Decimal("10"),
+            total_cost_total=None,
+        )
+
+        assert _passport(client, contract.id)["totals"]["positions_pending_review"] == 0
+
+    def test_reviewed_position_leaves_the_pending_counter(self, client, factories):
+        """Разобранная работа уходит из счётчика и появляется в топе.
+
+        Проверяется переход, а не два состояния по отдельности: именно он показывает,
+        что счётчик считает то, что нужно.
+        """
+        contract = self._priced_but_unreviewed(factories, kind=CatalogKind.POSITION.value)
+        body = _passport(client, contract.id)
+
+        assert body["totals"]["positions_pending_review"] == 0
+        assert len(body["key_rates"]) == 1
+
+    def test_pending_counter_is_scoped_to_the_selection(self, client, factories):
+        """Счётчик матрицы считает по договорам ВЫБОРКИ, а не по всей базе.
+
+        Иначе подсказка говорила бы о работах, которых человек на этом экране всё
+        равно не видит, — и «разберите очередь» не изменило бы для него ничего.
+        """
+        kept_class = factories.RateClassFactory.create(title="Класс выборки")
+        kept = factories.ContractFactory.create(rate_class=kept_class)
+        _c1, _e1, kept_proposal = _estimate_with(factories, contract=kept)
+        reviewed = factories.CatalogPositionFactory.create(kind=CatalogKind.POSITION.value)
+        _position(factories, kept_proposal, reviewed, unit_cost="100", weight="10")
+
+        other = factories.ContractFactory.create()
+        _c2, _e2, other_proposal = _estimate_with(factories, contract=other)
+        unreviewed = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        _position(factories, other_proposal, unreviewed, unit_cost="100", weight="10")
+
+        # Вне выборки неразобранная позиция есть, внутри — нет.
+        assert _matrix(client)["positions_pending_review"] == 1
+        assert _matrix(client, rate_class_id=kept_class.id)["positions_pending_review"] == 0

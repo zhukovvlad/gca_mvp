@@ -30,12 +30,15 @@ from sqlalchemy.orm import Session
 from crud.common import DomainError, iso
 from crud.settings import get_passport_top_n
 from models import (
+    CatalogKind,
     CatalogPosition,
     Contract,
     Contractor,
     Estimate,
+    Lot,
     ObjectModel,
     PositionItem,
+    Proposal,
     RateClass,
     UnitOfMeasure,
 )
@@ -269,7 +272,47 @@ def _empty_totals() -> dict:
         "with_standard": 0,
         "without_standard": 0,
         "over_standard": 0,
+        "positions_pending_review": 0,
     }
+
+
+def _pending_review_condition():
+    """Позиция расценена, но её работа ещё не утверждена в каталоге.
+
+    Такая позиция **не попадает** в VIEW отклонений: он берёт только каталожные
+    строки `kind='POSITION'` (§4), а свежая загрузка кладёт незнакомые работы в
+    `TO_REVIEW`. Значит паспорт и матрица по свежезагруженной смете пусты — и это
+    правильно, но объяснить это обязан экран.
+
+    **Найдено прогоном стенда, а не тестом.** На живой базе все 1830 позиций
+    реальной сметы имели цену, но каталог целиком состоял из `TO_REVIEW`, и паспорт
+    сообщал «у позиций не заполнена цена за единицу» — то есть называл неверную
+    причину. Ни один тест этого не поймал: в фикстурах каталожные строки создаются
+    сразу `POSITION`. Тот же класс, что находка §2.2 брифинга — путь от пустой базы.
+
+    `cp.id IS NULL` — позиция вовсе не сматчена (например, импорт прерван между
+    импортом и матчингом); для человека это тот же случай.
+    """
+    return sa.and_(
+        PositionItem.is_chapter.is_(False),
+        PositionItem.unit_cost_total.isnot(None),
+        sa.or_(
+            CatalogPosition.id.is_(None),
+            CatalogPosition.kind != CatalogKind.POSITION.value,
+        ),
+    )
+
+
+def _pending_review_select():
+    """Заготовка счётчика «ждут ручного матчинга»: позиции + их каталожные строки."""
+    return (
+        sa.select(sa.func.count())
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .outerjoin(CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id)
+        .where(_pending_review_condition())
+    )
 
 
 def _passport_totals(db: Session, estimate_id: int) -> dict:
@@ -291,6 +334,9 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
         .join(PositionItem, PositionItem.id == DEVIATIONS.c.position_item_id)
         .where(DEVIATIONS.c.estimate_id == estimate_id)
     ).one()
+    pending = db.execute(
+        _pending_review_select().where(Lot.estimate_id == estimate_id)
+    ).scalar_one()
     return {
         "positions_priced": row.positions_priced,
         # Перезаписывается вызывающим на длину топа (см. `get_passport`).
@@ -299,6 +345,8 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
         "with_standard": row.with_standard,
         "without_standard": row.positions_priced - row.with_standard,
         "over_standard": row.over_standard,
+        # Почему топ может быть пуст при непустой смете (см. `_pending_review_condition`).
+        "positions_pending_review": pending,
     }
 
 
@@ -561,7 +609,41 @@ def get_matrix(
         "total": total,
         "page": page,
         "page_size": page_size,
+        # Почему матрица может быть пуста при непустых сметах. Считается по договорам
+        # выборки, а не по всей базе: иначе подсказка говорила бы о работах, которых
+        # человек на этом экране всё равно не видит.
+        "positions_pending_review": _pending_review_in_scope(
+            db, rate_class_id=rate_class_id, date_from=date_from, date_to=date_to
+        ),
     }
+
+
+def _pending_review_in_scope(
+    db: Session,
+    *,
+    rate_class_id: int | None,
+    date_from: dt.date | None,
+    date_to: dt.date | None,
+) -> int:
+    """Сколько расценённых позиций выборки ещё ждут ручного матчинга.
+
+    Выборка та же, что у колонок (последние сметы договоров плюс фильтры класса и
+    периода), поэтому счётчик отвечает именно про то, что человек смотрит.
+    """
+    latest = latest_estimates()
+    return db.execute(
+        _pending_review_select()
+        .join(latest, latest.c.estimate_id == Lot.estimate_id)
+        .join(Contract, Contract.id == latest.c.contract_id)
+        .where(
+            *_column_scope_filters(
+                rate_class_id=rate_class_id,
+                date_from=date_from,
+                date_to=date_to,
+                latest=latest,
+            )
+        )
+    ).scalar_one()
 
 
 def _shape_matrix_rows(rows) -> list[dict]:

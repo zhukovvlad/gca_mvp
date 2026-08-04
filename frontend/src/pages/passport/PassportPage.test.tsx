@@ -172,13 +172,52 @@ describe("Паспорт объекта", () => {
     expect(screen.getByText(/Показаны 1 из 1100/)).toBeInTheDocument();
   });
 
+  it("неразобранная очередь названа настоящей причиной пустого топа", async () => {
+    /*
+      **Найдено прогоном стенда фазы 6.** На живой базе все позиции реальной сметы
+      имели цену, но каталог целиком состоял из TO_REVIEW, и паспорт сообщал «не
+      заполнена цена за единицу» — то есть указывал на несуществующую проблему.
+      Тесты этого не поймали: в фикстурах каталожные строки сразу POSITION.
+    */
+    server.use(
+      http.get("/api/v1/analytics/passport/:contractId", () =>
+        HttpResponse.json({
+          ...samplePassport,
+          key_rates: [],
+          totals: {
+            ...samplePassport.totals,
+            positions_priced: 0,
+            positions_shown: 0,
+            positions_pending_review: 1830,
+          },
+        })
+      )
+    );
+    renderPassport();
+
+    expect(await screen.findByText(/1830 позиций ждут ручного матчинга/)).toBeInTheDocument();
+    // И есть куда пойти: подсказка без действия оставляет человека там же.
+    expect(screen.getByRole("link", { name: /Разобрать очередь ручного матчинга/ })).toHaveAttribute(
+      "href",
+      "/review"
+    );
+    // Неверная причина больше не показывается.
+    expect(screen.queryByText(/не заполнена цена за единицу/)).not.toBeInTheDocument();
+  });
+
   it("смета без расценённых работ объясняет причину пустого топа", async () => {
     server.use(
       http.get("/api/v1/analytics/passport/:contractId", () =>
         HttpResponse.json({
           ...samplePassport,
           key_rates: [],
-          totals: { ...samplePassport.totals, positions_priced: 0, positions_shown: 0 },
+          totals: {
+            ...samplePassport.totals,
+            positions_priced: 0,
+            positions_shown: 0,
+            // Ноль здесь существен: причина именно в отсутствии цен, а не в очереди.
+            positions_pending_review: 0,
+          },
         })
       )
     );

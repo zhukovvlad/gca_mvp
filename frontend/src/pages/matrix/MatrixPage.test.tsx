@@ -135,6 +135,26 @@ describe("Сквозная матрица", () => {
     expect(screen.getByTitle(longJobTitle)).toBeInTheDocument();
   });
 
+  it("наименование зажато по высоте, иначе одна работа вытесняет страницу", async () => {
+    renderMatrix();
+    await screen.findByText("Кладка кирпичная");
+
+    /*
+      **Найдено прогоном стенда, а не тестом.** У реальной работы с наименованием на
+      5077 символов ячейка выросла до 1323 px — одна строка выше листа А4, остальные
+      строки уезжали за экран. После зажима стало 95 px (замер в Chrome).
+
+      Проверка структурная: высоты в jsdom нет вовсе, раскладка не считается. Зато
+      она опровергаема — уберите зажим, и тест краснеет. Настоящую высоту меряет
+      прогон стенда, и это записано в отчёте фазы.
+    */
+    const title = screen.getByTitle(longJobTitle);
+    expect(title.className).toContain("line-clamp-3");
+    // `block` рядом с зажимом ставит display:block и отменяет -webkit-box, без
+    // которого -webkit-line-clamp не работает: так и было в первой редакции.
+    expect(title.className.split(/\s+/)).not.toContain("block");
+  });
+
   it("текстовый фильтр сужает строки", async () => {
     const user = userEvent.setup();
     renderMatrix();
@@ -158,6 +178,25 @@ describe("Сквозная матрица", () => {
     handlerState.matrixOutcome = "no-rows";
     renderMatrix();
     expect(await screen.findByText(/Ни одна работа не подошла под фильтры/)).toBeInTheDocument();
+  });
+
+  it("неразобранная очередь названа причиной пустой матрицы", async () => {
+    /*
+      Третья причина пустоты, найденная прогоном стенда: договоры в выборке есть,
+      цены заполнены, но каталог не разобран. Прежний текст предлагал «попробовать
+      другой текст поиска» — совет, который ничего не исправил бы.
+    */
+    handlerState.matrixOutcome = "pending-review";
+    renderMatrix();
+
+    expect(
+      await screen.findByText(/1830 расценённых позиций ждут ручного матчинга/)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Разобрать очередь" })).toHaveAttribute(
+      "href",
+      "/review"
+    );
+    expect(screen.queryByText(/Попробуйте другой текст поиска/)).not.toBeInTheDocument();
   });
 
   it("объясняет порядок строк — иначе он читается как случайный", async () => {

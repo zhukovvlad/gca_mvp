@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { Search } from "lucide-react";
 
@@ -10,6 +11,7 @@ import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
+import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -188,13 +190,27 @@ export default function MatrixPage() {
       {matrixQ.isPending ? (
         <Skeleton className="mt-6 h-64 w-full" />
       ) : matrix === undefined || matrix.rows.length === 0 ? (
+        /*
+          Три разные причины пустоты — три разные подсказки. **Третью нашёл прогон
+          стенда:** на живой базе сметы загружены и цены заполнены, но каталог
+          целиком состоял из TO_REVIEW, и матрица предлагала «попробовать другой
+          текст поиска» — то есть отправляла человека искать несуществующую
+          проблему, вместо того чтобы сказать про очередь ручного матчинга.
+        */
         <EmptyState
           className="mt-6"
           title="Нечего сравнивать"
           description={
             matrix !== undefined && matrix.columns.length === 0
               ? "В выборку не попал ни один договор с загруженной сметой. Ослабьте фильтры класса и периода."
-              : "Ни одна работа не подошла под фильтры. Попробуйте другой текст поиска."
+              : matrix !== undefined && matrix.positions_pending_review > 0
+                ? `Сметы загружены, но ${matrix.positions_pending_review} расценённых позиций ждут ручного матчинга: пока работа не утверждена в каталоге, она не попадает ни в матрицу, ни в нормативы (AGENTS.md §4).`
+                : "Ни одна работа не подошла под фильтры. Попробуйте другой текст поиска."
+          }
+          action={
+            matrix !== undefined && matrix.positions_pending_review > 0 ? (
+              <Button variant="outline" render={<Link to="/review">Разобрать очередь</Link>} />
+            ) : undefined
           }
         />
       ) : (
@@ -286,9 +302,21 @@ function buildColumns(
   const jobColumn = helper.display({
     id: "job",
     header: "Работа",
+    /*
+      Наименование зажато по ширине и высоте, полный текст — в `title`.
+
+      **Найдено прогоном стенда, не тестом.** В реальном каталоге есть работа с
+      наименованием на 5077 символов (§11 AGENTS.md), и без зажима её ячейка выросла
+      до 1323 px — одна строка выше листа А4, а остальные строки страницы уезжали
+      за экран. В jsdom этого не видно: там нет раскладки, и высота всегда нулевая.
+
+      `max-w-*` на самой `td` не работает — табличная раскладка её игнорирует
+      (замер: ячейка при `max-w-80` выросла до 595 px), поэтому ограничение стоит на
+      вложенном блоке.
+    */
     cell: ({ row }) => (
-      <div>
-        <span className="block text-fg" title={row.original.job_title}>
+      <div className="max-w-[22rem]">
+        <span className="line-clamp-3 text-fg" title={row.original.job_title}>
           {row.original.job_title}
         </span>
         {row.original.unit_code && (

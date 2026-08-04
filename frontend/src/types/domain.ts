@@ -381,6 +381,14 @@ export interface PassportTotals {
   without_standard: number;
   /** Только превышение: ровно по нормативу — не превышение (§10). */
   over_standard: number;
+  /**
+   * Расценённые позиции, чья работа ещё не утверждена в каталоге (TO_REVIEW).
+   *
+   * Объясняет пустой топ при непустой смете: VIEW отклонений берёт только
+   * `kind='POSITION'` (§4). Найдено прогоном стенда — экран называл неверную
+   * причину («не заполнена цена»), отправляя искать проблему не там.
+   */
+  positions_pending_review: number;
 }
 
 export interface Passport {
@@ -430,6 +438,8 @@ export interface Matrix {
   total: number;
   page: number;
   page_size: number;
+  /** См. `PassportTotals.positions_pending_review`; здесь — по договорам выборки. */
+  positions_pending_review: number;
 }
 
 export interface MatrixParams {

@@ -352,6 +352,11 @@
    этой раскладке; расчёт — `docs/phase6-analytics.md` §1.5.
 --------------------------------------------------------------------------- */
 
+/* Существует только на бумаге; на экране скрыт (см. блок @media print ниже). */
+[data-print="only"] {
+  display: none;
+}
+
 @media print {
   @page {
     size: A4 portrait;
@@ -369,6 +374,13 @@
     display: none !important;
   }
 
+  /* Блок, который существует ТОЛЬКО на бумаге: компактная замена экранным
+     KPI-карточкам. Карточки с крупным кеглем и отбивкой p-5 съедали около 25 мм —
+     это и была основная причина, по которой лист не сходился (замер стенда). */
+  [data-print="only"] {
+    display: block !important;
+  }
+
   /* Документ занимает лист целиком, без экранных отступов контейнера. */
   [data-print="sheet"] {
     margin: 0 !important;
@@ -381,10 +393,46 @@
     line-height: 1.25;
   }
 
+  /* На экране таблица живёт в контейнере с горизонтальной прокруткой. На бумаге
+     прокрутки нет, и такой контейнер просто ОБРЕЗАЛ бы правые колонки — замер
+     стенда показал выход за правый край листа больше чем на 1100 px. */
+  [data-print="sheet"] [data-slot="table-container"] {
+    overflow: visible !important;
+  }
+
   [data-print="sheet"] table {
     /* Таблица не должна разрываться внутри строки: половина расценки на одной
        странице, половина на другой — это уже не печатная форма. */
     page-break-inside: auto;
+    /* `fixed` плюс ширины в процентах: экранные ширины заданы в rem (w-24, w-28…) и
+       в сумме превышают печатную область (190 мм ≈ 718 px). Проценты приводят
+       таблицу к ширине листа, какой бы та ни была. */
+    table-layout: fixed;
+    width: 100%;
+    font-size: 8pt;
+  }
+
+  [data-print="sheet"] th,
+  [data-print="sheet"] td {
+    padding: 0.8mm 1.2mm !important;
+    height: auto !important;
+    /* Числа не переносим — перенос суммы по разрядам читается как две суммы. */
+    overflow-wrap: break-word;
+  }
+
+  /* Ширины колонок таблицы расценок паспорта. Правило узкое (только внутри листа),
+     поэтому на другие таблицы не влияет. Наименование получает всё, что осталось. */
+  [data-print="sheet"] th:nth-child(1) { width: auto; }
+  [data-print="sheet"] th:nth-child(2) { width: 7%; }
+  [data-print="sheet"] th:nth-child(3) { width: 11%; }
+  [data-print="sheet"] th:nth-child(4) { width: 13%; }
+  [data-print="sheet"] th:nth-child(5) { width: 13%; }
+  [data-print="sheet"] th:nth-child(6) { width: 10%; }
+  [data-print="sheet"] th:nth-child(7) { width: 15%; }
+
+  /* Отбивки блоков листа: экранные mt-5/mt-6 на бумаге избыточны. */
+  [data-print="sheet"] > * + * {
+    margin-top: 3mm !important;
   }
 
   [data-print="sheet"] tr,
