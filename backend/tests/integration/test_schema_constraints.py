@@ -189,7 +189,7 @@ class TestCatalogIdentity:
         factories.CatalogPositionFactory.create(
             standard_job_title="Кладка кирпича", normalized_job_title="кладка кирпич", unit_id=None
         )
-        with rejected(db_session, contains="uq_catalog_positions_norm_unit"):
+        with rejected(db_session, contains="uq_catalog_positions_norm_hash_unit"):
             # Другое отображаемое название, но та же нормализованная пара —
             # это одна и та же работа.
             factories.CatalogPositionFactory.create(
@@ -213,9 +213,10 @@ class TestCatalogIdentity:
     def test_get_or_create_on_conflict_uses_the_same_index(self, db_session, factories):
         """Ветка 3 каскада матчинга (§5): INSERT ... ON CONFLICT DO NOTHING.
 
-        Арбитром конфликта служит выражение COALESCE(unit_id,-1) — если индекса
-        нет или он объявлен иначе, PG ответит «no unique or exclusion constraint
-        matching the ON CONFLICT specification».
+        Арбитр — выражение индекса 0003: `sha256` нормализованного названия (с
+        удвоением обратных слэшей перед приведением к `bytea`) и COALESCE(unit_id,-1).
+        Если индекса нет или он объявлен иначе, PG ответит «no unique or exclusion
+        constraint matching the ON CONFLICT specification».
         """
         factories.CatalogPositionFactory.create(
             standard_job_title="Монтаж",
@@ -226,10 +227,11 @@ class TestCatalogIdentity:
         db_session.flush()
 
         insert_sql = sa.text(
-            """
+            r"""
             INSERT INTO catalog_positions (standard_job_title, normalized_job_title, unit_id, kind)
             VALUES (:title, :norm, NULL, 'TO_REVIEW')
-            ON CONFLICT (normalized_job_title, COALESCE(unit_id, -1)) DO NOTHING
+            ON CONFLICT (sha256(replace(normalized_job_title, '\', '\\')::bytea),
+                         COALESCE(unit_id, -1)) DO NOTHING
             """
         )
         db_session.execute(insert_sql, {"title": "монтаж", "norm": "монтаж"})
@@ -240,6 +242,37 @@ class TestCatalogIdentity:
             .where(CatalogPosition.normalized_job_title == "монтаж")
         ).scalar_one()
         assert count == 1
+
+    def test_dead_title_index_is_gone(self, db_session):
+        """`ix_catalog_positions_standard_job_title` удалён осознанно (0003).
+
+        Поиск по каталогу — ILIKE '%…%', обычный btree его не обслуживает, зато
+        ронял импорт длинных наименований. Проверка нужна потому, что пропажу
+        индекса `alembic check` не заметит: этот раньше был в metadata, а теперь
+        его нет ни там, ни в БД — тест фиксирует, что это решение, а не дрейф.
+        """
+        exists = db_session.execute(
+            sa.text(
+                "SELECT 1 FROM pg_indexes WHERE tablename = 'catalog_positions' "
+                "AND indexname = 'ix_catalog_positions_standard_job_title'"
+            )
+        ).first()
+        assert exists is None
+
+    def test_long_normalized_title_is_accepted(self, db_session, factories):
+        """Идентичность работы выдерживает название длиннее предела btree (0003)."""
+        long_title = "щ" * 5000
+        factories.CatalogPositionFactory.create(
+            standard_job_title=long_title, normalized_job_title=long_title, unit_id=None
+        )
+        db_session.flush()
+
+        with rejected(db_session, contains="uq_catalog_positions_norm_hash_unit"):
+            factories.CatalogPositionFactory.create(
+                standard_job_title=long_title + " копия",
+                normalized_job_title=long_title,
+                unit_id=None,
+            )
 
     def test_unknown_kind_rejected(self, db_session, factories):
         with rejected(db_session, contains="ck_catalog_positions_kind"):

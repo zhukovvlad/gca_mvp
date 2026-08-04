@@ -12,19 +12,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useCurrentUser } from "@/hooks/useAuth";
 import {
   useContractors,
   useCreateContract,
   useCreateContractor,
   useCreateObject,
+  useCreateRateClass,
   useObjects,
   useRateClasses,
   useUpdateContract,
@@ -82,10 +77,17 @@ function fromContract(contract: ContractCard): FormState {
 /**
  * Форма договора (§7.1).
  *
- * Объект и подрядчик выбираются или **создаются по месту** — решение §6.1.
+ * Объект, подрядчик и класс выбираются или **создаются по месту** — решение §6.1.
  * Класс договора можно не указывать: сервер подставит класс объекта, потому что
  * это снимок на момент создания (§4), а `objects.rate_class_id` для того и
  * существует. Подсказка об этом стоит рядом с полем.
+ *
+ * **Класс заводится здесь же, а не только на экране «Нормативы».** Найденный в
+ * работе тупик: на чистой базе классов нет ни одного, у объекта класса тоже нет —
+ * и выбирать было нечего. Список открывался пустым, кнопка отправки оставалась
+ * активной, а отказ приходил с сервера (§4: колонка NOT NULL, `NULL` недопустим)
+ * уже после заполнения всей формы. Поэтому: создание класса по месту (право
+ * `admin` — §3), явное предупреждение вместо пустого списка и проверка на клиенте.
  *
  * Сумма — текстовое поле, и уходит на сервер **строкой**: §3 запрещает float, а
  * `<input type="number">` отдал бы именно его.
@@ -155,13 +157,34 @@ function ContractForm({
    */
   const [objectLabel, setObjectLabel] = useState(contract?.object_title ?? "");
   const [contractorLabel, setContractorLabel] = useState(contract?.contractor_title ?? "");
+  const [classLabel, setClassLabel] = useState(contract?.rate_class_title ?? "");
+
+  /**
+   * Класс выбранного объекта — то самое значение по умолчанию, которое подставит
+   * сервер. Форма держит его у себя, чтобы знать, определён ли класс договора,
+   * **не отправляя запрос**: иначе единственным способом это выяснить остаётся
+   * отказ 422. В режиме правки не нужен — там класс уже зафиксирован снимком.
+   */
+  const [objectClass, setObjectClass] = useState<{ id: number; title: string } | null>(null);
+
+  /**
+   * Классы приходят одним списком, без пагинации (`GET /v1/rate-classes`), поэтому
+   * поиск фильтрует локально: серверный `q`, которого требует `EntityCombobox`,
+   * нужен лишь пагинированной выдаче — там записи за пределами страницы иначе
+   * недостижимы, а здесь страницы нет.
+   */
+  const [classQuery, setClassQuery] = useState("");
 
   const objectsQ = useObjects({ q: objectSearch || undefined, page_size: 20 });
   const contractorsQ = useContractors({ q: contractorSearch || undefined, page_size: 20 });
   const classesQ = useRateClasses();
 
+  const { data: user } = useCurrentUser();
+  const isAdmin = user?.role === "admin";
+
   const createObject = useCreateObject();
   const createContractor = useCreateContractor();
+  const createRateClass = useCreateRateClass();
   const createContract = useCreateContract();
   const updateContract = useUpdateContract();
 
@@ -175,7 +198,22 @@ function ContractForm({
     try {
       const created = await createObject.mutateAsync({ title });
       setObjectLabel(created.title);
+      // У нового объекта класса нет — его дефолт задаётся отдельно, а класс
+      // договора придётся выбрать здесь.
+      setObjectClass(null);
       patch({ object_id: created.id });
+    } catch {
+      // Причина уже в тосте — как правило, название занято.
+    }
+  }
+
+  async function handleCreateRateClass(query: string) {
+    const title = query.trim();
+    if (!title) return;
+    try {
+      const created = await createRateClass.mutateAsync({ title, description: null });
+      setClassLabel(created.title);
+      patch({ rate_class_id: created.id });
     } catch {
       // Причина уже в тосте — как правило, название занято.
     }
@@ -196,11 +234,23 @@ function ContractForm({
     }
   }
 
+  const classNeedle = classQuery.trim().toLowerCase();
+  const visibleClasses = (classesQ.data ?? []).filter(
+    (rateClass) => !classNeedle || rateClass.title.toLowerCase().includes(classNeedle)
+  );
+
+  /**
+   * Класс договора определён: либо выбран здесь, либо его даст объект. Пустой
+   * класс сервер отвергает (§4), и знать это до отправки — работа формы.
+   */
+  const classResolved = form.rate_class_id !== null || objectClass !== null;
+
   const canSubmit =
     form.object_id !== null &&
     form.contractor_id !== null &&
     form.contract_number.trim().length > 0 &&
-    form.signed_date.length > 0;
+    form.signed_date.length > 0 &&
+    classResolved;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -253,6 +303,11 @@ function ContractForm({
             value={form.object_id}
             onChange={(item) => {
               setObjectLabel(item?.title ?? "");
+              setObjectClass(
+                item?.rate_class_id != null && item.rate_class_title != null
+                  ? { id: item.rate_class_id, title: item.rate_class_title }
+                  : null
+              );
               patch({ object_id: item?.id ?? null });
             }}
             getLabel={(item) => item.title}
@@ -365,30 +420,43 @@ function ContractForm({
 
         <div className="grid gap-2">
           <Label htmlFor="contract-rate-class">Класс объектов</Label>
-          <Select
-            value={form.rate_class_id === null ? "" : String(form.rate_class_id)}
-            onValueChange={(value: string | null) =>
-              patch({ rate_class_id: value ? Number(value) : null })
+          <EntityCombobox
+            id="contract-rate-class"
+            items={visibleClasses}
+            value={form.rate_class_id}
+            onChange={(item) => {
+              setClassLabel(item?.title ?? "");
+              patch({ rate_class_id: item?.id ?? null });
+            }}
+            getLabel={(item) => item.title}
+            getHint={(item) => item.description ?? undefined}
+            placeholder={
+              objectClass ? `Как у объекта: ${objectClass.title}` : "Как у объекта"
             }
-          >
-            <SelectTrigger id="contract-rate-class">
-              <SelectValue placeholder="Как у объекта">
-                {(raw) =>
-                  raw
-                    ? (classesQ.data?.find((c) => String(c.id) === raw)?.title ??
-                      "Как у объекта")
-                    : "Как у объекта"
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {(classesQ.data ?? []).map((rateClass) => (
-                <SelectItem key={rateClass.id} value={String(rateClass.id)}>
-                  {rateClass.title}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            searchPlaceholder="Название класса"
+            emptyText={
+              isAdmin
+                ? "Класс не найден — его можно создать"
+                : "Класс не найден. Классы заводит администратор на экране «Нормативы»."
+            }
+            onQueryChange={setClassQuery}
+            selectedLabel={classLabel}
+            loading={classesQ.isFetching}
+            // Классы — право `admin` (§3), у member кнопки создания нет вовсе:
+            // сервер всё равно ответит 403, и предлагать действие бессмысленно.
+            onCreateRequest={isAdmin ? handleCreateRateClass : undefined}
+            createLabel="Создать класс"
+            disabled={createRateClass.isPending}
+          />
+          {form.object_id !== null && !classResolved && (
+            <p role="alert" className="text-xs text-danger-text">
+              У объекта «{objectLabel}» класс не задан, а класс договора обязателен:
+              он фиксируется снимком и по нему сравниваются нормативы.{" "}
+              {isAdmin
+                ? "Выберите класс выше или создайте его здесь же."
+                : "Класс заводит администратор на экране «Нормативы»."}
+            </p>
+          )}
           <p className="text-xs text-fg-tertiary">
             Не выбран — возьмётся класс объекта. Класс договора фиксируется снимком:
             позже переклассификация объекта не изменит отклонения этой сметы.

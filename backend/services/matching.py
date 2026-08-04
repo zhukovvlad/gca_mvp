@@ -7,8 +7,8 @@
 2. точное совпадение `(normalized_job_title, unit_id)` среди `kind='POSITION'` →
    привязать + записать кэш (`source='auto'`);
 3. промах: атомарный get-or-create `TO_REVIEW` через
-   `INSERT ... ON CONFLICT (normalized_job_title, COALESCE(unit_id,-1)) DO NOTHING`
-   + повторный SELECT; дальше — по `kind` найденной строки.
+   `INSERT ... ON CONFLICT (sha256(нормализованное название), COALESCE(unit_id,-1))
+   DO NOTHING` + повторный SELECT; дальше — по `kind` найденной строки.
 
 **Инвариант (§5):** записи `matching_cache` НИКОГДА не указывают на строки
 `kind='TO_REVIEW'`. Кэш пишется только в ветке 2, в не-POSITION ветках шага 3 и
@@ -20,6 +20,15 @@
 точное совпадение и `cache_key` считаются одной и той же функцией
 `sanitize_text.normalize_job_title_with_lemmatization` и одним и тем же
 `unit_norm` (`services.unit_resolution`).
+
+**Хэш в индексе — техника, а не идентичность** (миграция 0003). btree не
+индексирует значения длиннее 2704 байт, а в наименование сметы попадают
+спецификации на несколько килобайт, поэтому `uq_catalog_positions_norm_hash_unit`
+уникален по `(sha256(нормализованное название), COALESCE(unit_id,-1))`. Сравнение
+работ по-прежнему идёт по ПОЛНОМУ тексту: каждая выборка по хэшу дополнена
+проверкой самой пары, а строка, чей хэш совпал при разном тексте, не принимается —
+такой случай поднимает явную ошибку (`_collision_error`), а не склеивает две
+работы в одну расценку.
 
 **Отступление от Go-референса** (`entities/manager.go`): в tenders-go ключ кэша
 был `sha256(StandardJobTitle)` без единицы, а промах записывал новую каталожную
@@ -39,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import BYTEA
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -63,7 +73,7 @@ AUTO_CACHE_TTL_DAYS = 30
 #: сравнения с нормативами: строка каталога уже размечена человеком как не-работа.
 _NON_POSITION_KINDS = (CatalogKind.HEADER.value, CatalogKind.LOT_HEADER.value, CatalogKind.TRASH.value)
 
-#: Сентинел «единицы нет» в уникальном индексе `uq_catalog_positions_norm_unit`.
+#: Сентинел «единицы нет» в уникальном индексе `uq_catalog_positions_norm_hash_unit`.
 NO_UNIT_SENTINEL = -1
 
 #: Выражение-арбитр `ON CONFLICT` и ключ выборок по каталогу.
@@ -76,14 +86,75 @@ NO_UNIT_SENTINEL = -1
 #: и совпасть с выражением индекса уже не может: «there is no unique or exclusion
 #: constraint matching the ON CONFLICT specification». То есть баг проявлялся бы
 #: не на маленькой смете, а на настоящей — ровно там, где хуже всего.
-#: Индекс `uq_catalog_positions_norm_unit` создан raw SQL в миграции 0002 с
-#: литералом -1, поэтому и здесь нужен литерал.
+#: Индекс `uq_catalog_positions_norm_hash_unit` создан raw SQL в миграции 0003 с
+#: литералом -1, поэтому и здесь нужен литерал. То же требование — к аргументам
+#: `replace()` в `norm_hash`.
 _UNIT_ARBITER = sa.func.coalesce(CatalogPosition.unit_id, sa.literal_column(str(NO_UNIT_SENTINEL)))
+
+#: Аргументы `replace()` перед приведением к `bytea` — тоже литералами, по той же
+#: причине, что и сентинел единицы: выражение обязано совпасть с индексным.
+#: Escape-строки (`E'…'`), а не обычные литералы: обычный `'\'` означает один
+#: символ только при `standard_conforming_strings=on`, при `off` это
+#: синтаксическая ошибка. `E'…'` не зависит от настройки и даёт то же дерево
+#: выражения, поэтому индекс сопоставляется в любом случае (миграция 0003).
+_BACKSLASH = sa.literal_column(r"E'\\'")
+_BACKSLASH_DOUBLED = sa.literal_column(r"E'\\\\'")
+
+
+def norm_hash(value):
+    """`sha256` нормализованного названия — выражение индекса 0003.
+
+    Обратные слэши удваиваются ПЕРЕД приведением: `text::bytea` разбирает вход как
+    escape-формат bytea, поэтому «C:\\temp» приводится с ошибкой
+    `invalid input syntax for type bytea`, а «\\x41» и «\\101» молча дают тот же
+    байт, что и «A», — то есть три разные работы получили бы один хэш. После
+    удвоения приведение побайтово равно UTF-8-представлению строки; это
+    закреплено тестом `test_matching.py::TestNormHash`.
+
+    `convert_to(x,'UTF8')` вместо приведения не годится: она объявлена `stable`, а
+    выражение индекса обязано быть `immutable`.
+    """
+    escaped = sa.func.replace(value, _BACKSLASH, _BACKSLASH_DOUBLED)
+    return sa.func.sha256(sa.cast(escaped, BYTEA))
+
+
+#: Выражение-арбитр `ON CONFLICT` и ключ выборок по каталогу (см. `norm_hash`).
+_NORM_HASH = norm_hash(CatalogPosition.normalized_job_title)
 
 
 def _pair_key(normalized_title: str, unit_id: int | None) -> tuple[str, int]:
-    """Пара в том виде, в котором её видит `uq_catalog_positions_norm_unit`."""
+    """Пара в том виде, в котором её сравнивает идентичность работы (§4)."""
     return (normalized_title, NO_UNIT_SENTINEL if unit_id is None else unit_id)
+
+
+def _hash_pair(normalized_title: str, unit_id: int | None):
+    """Та же пара для индекса: хэш названия считает СЕРВЕР, не Python.
+
+    Одинаковость `hashlib.sha256` и серверного `sha256` проверена тестом, но
+    полагаться на неё в рабочем коде незачем: обе стороны сравнения вычисляет
+    PostgreSQL, и вопрос кодировок в продукте просто не возникает.
+    """
+    return sa.tuple_(
+        norm_hash(sa.literal(normalized_title)),
+        sa.literal(NO_UNIT_SENTINEL if unit_id is None else unit_id),
+    )
+
+
+def _catalog_pair_filter(pairs: set[tuple[str, int | None]]):
+    """Условие «пара есть в списке»: по индексу (хэш) И по полному тексту.
+
+    Первое условие даёт Index Scan по `uq_catalog_positions_norm_hash_unit`,
+    второе делает совпадение точным: идентичность работы — полная пара, а не её
+    хэш. Без второго условия коллизия sha256 склеила бы две разные работы.
+    """
+    return sa.and_(
+        sa.tuple_(_NORM_HASH, _UNIT_ARBITER).in_(
+            [_hash_pair(title, unit_id) for title, unit_id in pairs]
+        ),
+        sa.tuple_(CatalogPosition.normalized_job_title, _UNIT_ARBITER).in_(
+            [_pair_key(title, unit_id) for title, unit_id in pairs]
+        ),
+    )
 
 
 def catalog_get_or_create_statement():
@@ -93,7 +164,7 @@ def catalog_get_or_create_statement():
     отрендеренный SQL: арбитр обязан быть литеральным выражением индекса.
     """
     return pg_insert(CatalogPosition).on_conflict_do_nothing(
-        index_elements=[CatalogPosition.normalized_job_title, _UNIT_ARBITER]
+        index_elements=[_NORM_HASH, _UNIT_ARBITER]
     )
 
 
@@ -229,11 +300,8 @@ def match_positions(
         created = _get_or_create_catalog_rows(db, pending)
         for group in pending:
             row = created.get((group.normalized_title, group.unit_id))
-            if row is None:  # недостижимо: после ON CONFLICT + SELECT строка есть
-                raise RuntimeError(
-                    f"get-or-create каталожной строки не вернул строку для пары "
-                    f"({group.normalized_title!r}, unit_id={group.unit_id})"
-                )
+            if row is None:
+                raise _collision_error(group)
             catalog_id, kind = row
             resolved[group.key] = catalog_id
             if kind == CatalogKind.TO_REVIEW.value:
@@ -365,9 +433,7 @@ def _fetch_exact_positions(
             CatalogPosition.normalized_job_title, CatalogPosition.unit_id, CatalogPosition.id
         ).where(
             CatalogPosition.kind == CatalogKind.POSITION.value,
-            sa.tuple_(CatalogPosition.normalized_job_title, _UNIT_ARBITER).in_(
-                [_pair_key(title, unit_id) for title, unit_id in pairs]
-            ),
+            _catalog_pair_filter(pairs),
         )
     ).all()
     return {(title, unit_id): row_id for title, unit_id, row_id in rows}
@@ -378,11 +444,12 @@ def _get_or_create_catalog_rows(
 ) -> dict[tuple[str, int | None], tuple[int, str]]:
     """Атомарный get-or-create каталожных строк (§5, ветка 3).
 
-    `ON CONFLICT (normalized_job_title, COALESCE(unit_id, -1)) DO NOTHING` целится
-    ровно в `uq_catalog_positions_norm_unit` — индекс по выражению, созданный raw
-    SQL в миграции 0002. Повторный SELECT нужен именно из-за `DO NOTHING`: при
+    `ON CONFLICT (sha256(...), COALESCE(unit_id, -1)) DO NOTHING` целится ровно в
+    `uq_catalog_positions_norm_hash_unit` — индекс по выражению, созданный raw SQL
+    в миграции 0003. Повторный SELECT нужен именно из-за `DO NOTHING`: при
     конфликте INSERT не возвращает строку, а нам нужна существующая — с её
-    настоящим `kind`.
+    настоящим `kind`. Он же отличает настоящий конфликт от коллизии хэша: строка
+    ищется по паре целиком (`_catalog_pair_filter`).
 
     Два промаха с одинаковой нормализованной парой в одном файле дают ОДНУ
     TO_REVIEW-строку: они попали в одну группу, а на группу приходится одна
@@ -415,13 +482,26 @@ def _get_or_create_catalog_rows(
             CatalogPosition.unit_id,
             CatalogPosition.id,
             CatalogPosition.kind,
-        ).where(
-            sa.tuple_(CatalogPosition.normalized_job_title, _UNIT_ARBITER).in_(
-                [_pair_key(title, unit_id) for title, unit_id in pairs]
-            )
-        )
+        ).where(_catalog_pair_filter(pairs))
     ).all()
     return {(title, unit_id): (row_id, kind) for title, unit_id, row_id, kind in rows}
+
+
+def _collision_error(group: _Group) -> RuntimeError:
+    """Хэш названия занят строкой с ДРУГИМ текстом (миграция 0003).
+
+    После `ON CONFLICT DO NOTHING` строка обязана найтись повторным SELECT-ом. Не
+    нашлась — значит вставку отбил уникальный индекс по `sha256`, а сравнение по
+    полному тексту эту строку не приняло: коллизия sha256. Вероятность
+    практически нулевая, но ответ на неё — громкий отказ, а не привязка позиции к
+    чужой работе: смета откатится (§5, сессия B), job уйдёт в `error`.
+    """
+    return RuntimeError(
+        "Коллизия sha256 в каталоге работ: хэш нормализованного названия уже занят "
+        "строкой с другим текстом, поэтому идентичность работы определить нельзя. "
+        f"Пара: ({group.normalized_title[:200]!r}…, unit_id={group.unit_id}). "
+        "Смета не сохранена; сообщите об этом — случай требует разбора."
+    )
 
 
 def _cache_row(group: _Group, catalog_position_id: int, now: datetime) -> dict:

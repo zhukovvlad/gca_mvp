@@ -91,6 +91,19 @@ log = logging.getLogger(__name__)
 #: остальные предупреждения.
 MAX_VALUE_WARNINGS = 10
 
+#: Длина наименования, после которой это, скорее всего, спецификация целиком, а не
+#: название работы: в реальном файле фазы 0 в поле оказалось 5077 символов. Импорт
+#: не блокируется — работа могла быть описана и так, — но человеку об этом стоит
+#: сказать: дальше такая строка либо станет отдельной работой в каталоге, либо
+#: совпадёт с существующей, и оба исхода стоит проверить глазами.
+LONG_JOB_TITLE_CHARS = 1000
+
+#: Сколько примеров длинных наименований показать в предупреждении и сколько
+#: символов от каждого. Полный текст в `warnings` не пишется: это несколько
+#: килобайт на позицию, история загрузок превратилась бы в свалку.
+MAX_LONG_TITLE_EXAMPLES = 10
+LONG_TITLE_PREVIEW_CHARS = 200
+
 
 class EstimateImportError(Exception):
     """Файл разобран парсером, но импортировать его нельзя.
@@ -98,6 +111,24 @@ class EstimateImportError(Exception):
     Текст попадает в `import_jobs.error_text` и показывается человеку, поэтому
     обязан объяснять причину, а не называть исключение.
     """
+
+
+@dataclass(frozen=True)
+class LongTitle:
+    """Позиция со слишком длинным наименованием — для предупреждения (§5).
+
+    `lot_key` нужен именно для поиска: нумерация позиций начинается заново в каждом
+    лоте, поэтому в смете из нескольких лотов «№1» без лота неоднозначен. В
+    предупреждении лот показывается, когда лотов в СМЕТЕ больше одного, — не когда
+    длинные названия нашлись в нескольких (см. `_long_title_warning`).
+
+    Превью, а не полный текст: наименований по несколько килобайт может быть много.
+    """
+
+    lot_key: str
+    number: str
+    length: int
+    preview: str
 
 
 @dataclass(frozen=True)
@@ -340,6 +371,9 @@ def import_estimate(
 
     warnings: list[str] = []
     value_problems: list[str] = []
+    # Длинные наименования собираются по всем лотам и дают ОДНО предупреждение
+    # на смету (см. `_long_title_warning`).
+    long_titles: list[LongTitle] = []
 
     replaced_id = _replace_existing(db, contract.id, amendment_no, replace, warnings)
 
@@ -364,8 +398,10 @@ def import_estimate(
     positions_to_match: list[PositionToMatch] = []
     positions_total = 0
     priced_seen = False
+    lots_imported = 0
 
     for lot_key, lot_content in (data.get(JSON_KEY_LOTS) or {}).items():
+        lots_imported += 1
         lot = Lot(
             estimate_id=estimate.id,
             lot_key=str(lot_key),
@@ -402,6 +438,8 @@ def import_estimate(
             unit_resolver=unit_resolver,
             value_problems=value_problems,
             warnings=warnings,
+            long_titles=long_titles,
+            lot_key=str(lot_key),
         )
         positions_total += lot_positions
         positions_to_match.extend(lot_to_match)
@@ -409,6 +447,11 @@ def import_estimate(
 
     warnings.extend(unit_resolver.unknown_warnings())
     warnings.extend(_squash(value_problems))
+    if long_titles:
+        # Лот показывается по фактической многолотовости СМЕТЫ, а не по числу
+        # лотов с длинными названиями: если длинная позиция одна, а лотов три,
+        # искать «№1» всё равно придётся во всех трёх.
+        warnings.append(_long_title_warning(long_titles, with_lot=lots_imported > 1))
 
     # Эвристика «формулы без кэша» (решение фазы 4, §2.2 отчёта): файл, сохранённый
     # без пересчёта, при data_only=True даёт сплошные NULL-стоимости и НОЛЬ
@@ -581,8 +624,16 @@ def _import_positions(
     unit_resolver: UnitResolver,
     value_problems: list[str],
     warnings: list[str],
+    long_titles: list[LongTitle],
+    lot_key: str,
 ) -> tuple[int, list[PositionToMatch], bool]:
-    """Строки сметы. Возвращает (сколько строк, что матчить, есть ли деньги)."""
+    """Строки сметы. Возвращает (сколько строк, что матчить, есть ли деньги).
+
+    `long_titles` — аккумулятор на ВСЮ смету, а не на лот: функция вызывается по
+    одному разу на лот, и складывай предупреждение внутри — файл с тремя лотами
+    получил бы три почти одинаковых предупреждения и до десяти примеров в каждом.
+    Собирается так же, как `value_problems`.
+    """
     items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
     positions = items.get(JSON_KEY_CONTRACTOR_POSITIONS) or {}
     if not isinstance(positions, dict):
@@ -642,6 +693,20 @@ def _import_positions(
         )
         rows.append(item)
 
+        # Считаем по всем строкам с наименованием, включая разделы: подозрительна
+        # сама длина поля, а не то, попадёт ли строка в каскад матчинга. В
+        # аккумулятор кладём уже превью, а не текст: полных наименований по
+        # несколько килобайт может быть много, а в предупреждение попадёт начало.
+        if job_title is not None and len(job_title) > LONG_JOB_TITLE_CHARS:
+            long_titles.append(
+                LongTitle(
+                    lot_key=lot_key,
+                    number=item.item_number_in_proposal or str(position_key),
+                    length=len(job_title),
+                    preview=_preview(job_title),
+                )
+            )
+
         if any(
             value is not None
             for value in (
@@ -676,11 +741,52 @@ def _import_positions(
             "нечего."
         )
 
+
     to_match = [
         PositionToMatch(position_item_id=item.id, job_title=title, unit=unit)
         for item, title, unit in to_match_source
     ]
     return len(rows), to_match, priced_seen
+
+
+def _long_title_warning(found: list[LongTitle], *, with_lot: bool) -> str:
+    """Одно агрегированное предупреждение о слишком длинных наименованиях.
+
+    Одна строка на всю смету, а не поток и не по одной на лот: такие позиции идут
+    пачками (спецификация растянута на несколько строк), и по предупреждению на
+    каждую история загрузок стала бы нечитаемой. В предупреждении — сколько их,
+    номера, длины и начало текста; полное наименование остаётся в смете.
+
+    Про Review не обещаем ничего: в очередь попадут только позиции, чья каталожная
+    строка получила `kind='TO_REVIEW'`, — раздел (`is_chapter`) туда не попадёт
+    вовсе, а совпавшая с существующей POSITION строка уйдёт в матч.
+
+    Лот в примерах показывается только у многолотовой сметы (`with_lot` решает
+    вызывающий): нумерация позиций начинается заново в каждом лоте, и без лота два
+    «№1» не различить, — а у единственного лота это просто шум. Считать лоты по
+    самим примерам нельзя: одна длинная позиция в смете из трёх лотов дала бы
+    «один лот», хотя искать её пришлось бы во всех трёх.
+    """
+    examples = "; ".join(
+        (f"лот {item.lot_key}, " if with_lot else "")
+        + f"№{item.number} — {item.length} симв.: «{item.preview}»"
+        for item in found[:MAX_LONG_TITLE_EXAMPLES]
+    )
+    hidden = len(found) - MAX_LONG_TITLE_EXAMPLES
+    tail = f"; …и ещё {hidden}" if hidden > 0 else ""
+    return (
+        f"Наименование работы длиннее {LONG_JOB_TITLE_CHARS} символов — таких "
+        f"позиций: {len(found)}; возможно, в поле попала спецификация. Импорт "
+        f"продолжен; проверьте указанные позиции. Примеры: {examples}{tail}."
+    )
+
+
+def _preview(title: str) -> str:
+    """Начало наименования одной строкой: переносы и табуляции — в пробел."""
+    flat = " ".join(title.split())
+    if len(flat) <= LONG_TITLE_PREVIEW_CHARS:
+        return flat
+    return flat[:LONG_TITLE_PREVIEW_CHARS].rstrip() + "…"
 
 
 def _squash(problems: list[str]) -> list[str]:

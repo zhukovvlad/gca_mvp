@@ -1,9 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { ContractFormDialog } from "./ContractFormDialog";
 import { sampleContractCard } from "@/test/fixtures";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 
 /**
@@ -154,6 +156,105 @@ describe("Форма договора: класс как снимок (§4)", ()
 
     await user.type(screen.getByLabelText("Дата подписания"), "2026-05-01");
     await waitFor(() => expect(submit).toBeEnabled());
+  });
+});
+
+/**
+ * Тупик, найденный в работе: справочник классов пуст, у объекта класса нет — и
+ * форма молчала. Выпадающий список открывался пустым, кнопка «Создать договор»
+ * была активна, а отказ приходил с сервера (`_resolve_snapshot_rate_class`, 422)
+ * уже после заполнения всей формы. Класс договора обязателен (§4), поэтому он
+ * заводится там же, где объект и подрядчик, — по месту.
+ */
+describe("Форма договора: класса ещё нет в системе", () => {
+  const objectWithoutClass = {
+    id: 12,
+    title: "МИРА",
+    address: "",
+    rate_class_id: null,
+    rate_class_title: null,
+    contracts_count: 0,
+    created_at: null,
+    updated_at: null,
+  };
+
+  function noClassesAtAll() {
+    server.use(
+      http.get("/api/v1/rate-classes", () => HttpResponse.json([])),
+      http.get("/api/v1/objects", () =>
+        HttpResponse.json({ items: [objectWithoutClass], total: 1, page: 1, page_size: 20 })
+      )
+    );
+  }
+
+  async function selectObjectWithoutClass(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    await user.click(await screen.findByText("МИРА"));
+  }
+
+  it("класс заводится по месту, когда справочник пуст", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.type(await screen.findByPlaceholderText("Название класса"), "Административные");
+    await user.click(await screen.findByText(/Создать класс/));
+
+    // Список так и остался пустым (сервер отдаёт []), поэтому подпись держится
+    // отдельно от выдачи — как у объекта и подрядчика.
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /Класс объектов/ })).toHaveTextContent(
+        "Административные"
+      );
+    });
+  });
+
+  it("без класса — ни в форме, ни у объекта — договор не отправляется", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await selectObjectWithoutClass(user);
+    await user.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
+    await user.click(await screen.findByText("ООО СтройПодряд"));
+    await user.type(screen.getByLabelText("Номер договора"), "ПМ-1-СМР");
+    await user.type(screen.getByLabelText("Дата подписания"), "2025-02-20");
+
+    // Всё заполнено, но класс взять негде — форма говорит об этом сама, а не
+    // отправляет запрос ради 422.
+    const submit = screen.getByRole("button", { name: "Создать договор" });
+    expect(submit).toBeDisabled();
+    expect(screen.getByText(/У объекта «МИРА» класс не задан/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: /Класс объектов/ }));
+    await user.type(await screen.findByPlaceholderText("Название класса"), "Административные");
+    await user.click(await screen.findByText(/Создать класс/));
+
+    await waitFor(() => expect(submit).toBeEnabled());
+  });
+
+  it("класс объекта подставляется сам — предупреждения нет", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    await user.click(await screen.findByText("ЖК Северный"));
+
+    // У «ЖК Северного» класс есть — договор берёт его по умолчанию (§4).
+    expect(screen.queryByText(/класс не задан/)).not.toBeInTheDocument();
+  });
+
+  it("у member кнопки создания класса нет: классы — право admin", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />, {
+      initialUser: { id: 2, email: "member@example.com", role: "member" },
+    });
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await screen.findByPlaceholderText("Название класса");
+    expect(screen.queryByText(/Создать класс/)).not.toBeInTheDocument();
   });
 });
 

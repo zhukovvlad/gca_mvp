@@ -557,8 +557,9 @@ class CatalogPosition(Base):
         CheckConstraint(
             f"status IN ({_sql_str_list(CatalogStatus)})", name="ck_catalog_positions_status"
         ),
-        # Обычный (не уникальный) индекс — поиск по названию в UI (§4).
-        Index("ix_catalog_positions_standard_job_title", "standard_job_title"),
+        # Индекса по standard_job_title НЕТ намеренно (миграция 0003): поиск по
+        # каталогу — ILIKE '%…%', обычный btree его не обслуживает, зато ронял
+        # импорт названий длиннее 2704 байт (`ProgramLimitExceeded`).
         Index("idx_catalog_positions_kind", "kind"),
         Index("idx_cp_status", "status"),
         Index("idx_cp_kind_review", "id", postgresql_where=sa_text("kind = 'TO_REVIEW'")),
@@ -571,9 +572,16 @@ class CatalogPosition(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_where=sa_text("kind = 'POSITION'"),
         ),
-        # uq_catalog_positions_norm_unit — UNIQUE (normalized_job_title,
-        # COALESCE(unit_id,-1)); выражение, создаётся raw SQL в миграции 0002.
+        # uq_catalog_positions_norm_hash_unit — UNIQUE по выражению, создаётся raw
+        # SQL в миграции 0003:
+        #   sha256(replace(normalized_job_title, E'\\', E'\\\\')::bytea), COALESCE(unit_id,-1)
+        # Удвоение обратных слэшей обязательно: `text::bytea` разбирает вход как
+        # escape-формат bytea (см. `services.matching.norm_hash`).
         # На него же опирается ON CONFLICT в get-or-create матчинга (§5.4.3).
+        # Идентичность работы — полная пара (normalized_job_title, unit_id); хэш
+        # нужен потому, что btree не индексирует значения длиннее 2704 байт, а в
+        # наименование сметы попадают спецификации на несколько килобайт.
+        # Совпадение подтверждается сравнением полного текста в matching.py.
     )
 
 

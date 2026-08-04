@@ -28,7 +28,7 @@
 
 | Объект | Почему не декларативно |
 |---|---|
-| `uq_catalog_positions_norm_unit` | индекс по выражению `COALESCE(unit_id,-1)`; он же арбитр `ON CONFLICT` в get-or-create матчинга (§5, шаг 4.3) |
+| `uq_catalog_positions_norm_unit` | индекс по выражению `COALESCE(unit_id,-1)`; он же арбитр `ON CONFLICT` в get-or-create матчинга (§5, шаг 4.3). **Заменён миграцией 0003** на `uq_catalog_positions_norm_hash_unit` — уникальность по `sha256` нормализованного названия: btree не индексирует значения длиннее 2704 байт (AGENTS.md §11) |
 | `uq_estimates_contract_amendment` | `UNIQUE NULLS NOT DISTINCT` — синтаксис PG16 |
 | `uq_import_jobs_active_pair` | частичный уникальный индекс с `COALESCE` и `WHERE status NOT IN (...)` |
 | `ex_rate_standards_no_overlap` | `EXCLUDE USING gist (... daterange(...) WITH &&)` |

@@ -531,6 +531,133 @@ class TestHeuristicWarnings:
         assert [p.job_title for p in outcome.positions_to_match] == ["Работа"]
         assert any("без наименования" in w for w in outcome.warnings)
 
+    def test_long_job_title_warns_without_quoting_it_whole(
+        self, db_session, factories, resolver
+    ):
+        """Наименование на килобайты — сигнал к ручной проверке, а не отказ.
+
+        В реальном файле в это поле попала спецификация на 5077 символов. Импорт
+        такое принимает (работа могла быть описана и так), но предупреждение
+        обязано быть агрегированным: полный текст в `warnings` превратил бы
+        историю загрузок в свалку.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        spec = "Наружные блоки кондиционирования, " + "детали спецификации; " * 200
+        data = payload_for(
+            contract,
+            [
+                position(job_title=spec, unit="шт", number="12.3"),
+                position(job_title="Обычная работа", unit="м2", number="13"),
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        found = [w for w in outcome.warnings if "длиннее" in w and "спецификация" in w]
+        assert len(found) == 1, outcome.warnings
+        warning = found[0]
+        assert "позиций: 1" in warning
+        assert "12.3" in warning                    # номер позиции
+        assert str(len(spec.strip())) in warning     # длина (наименование хранится обрезанным)
+        assert spec not in warning                   # но не сам текст
+        assert "лот" not in warning                  # лот единственный — не шумим
+        assert len(warning) < 700
+
+    def test_long_job_title_warning_is_one_per_estimate_not_per_lot(
+        self, db_session, factories, resolver
+    ):
+        """Предупреждение агрегируется по всей смете, а не по каждому лоту.
+
+        `_import_positions` вызывается по разу на лот, поэтому аккумулятор длинных
+        наименований живёт уровнем выше: иначе файл с тремя лотами дал бы три почти
+        одинаковых предупреждения, каждое со своими десятью примерами.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        spec = "спецификация подробная " * 60
+        data = payload_for(contract, [position(job_title=spec + " один", number="1")])
+        data["lots"]["lot_2"] = {
+            "lot_title": "Лот №2",
+            "proposals": {
+                "contractor_1": proposal([position(job_title=spec + " два", number="2")])
+            },
+            "baseline_proposal": {"title": "Расчетная стоимость отсутствует"},
+        }
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        found = [w for w in outcome.warnings if "длиннее" in w and "спецификация" in w]
+        assert len(found) == 1, outcome.warnings
+        assert "позиций: 2" in found[0]
+        # Номера позиций начинаются заново в каждом лоте, поэтому у многолотовой
+        # сметы в примере обязан быть лот — иначе два «№1» не различить.
+        assert "лот lot_1, №1" in found[0]
+        assert "лот lot_2, №2" in found[0]
+
+    def test_long_job_title_warning_shows_lot_even_if_only_one_lot_has_them(
+        self, db_session, factories, resolver
+    ):
+        """Лот показывается по многолотовости сметы, а не примеров.
+
+        Считать лоты по самим примерам — ошибка: одна длинная позиция в смете из
+        нескольких лотов дала бы «лотов один», хотя искать «№1» пришлось бы во
+        всех.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        spec = "спецификация подробная " * 60
+        data = payload_for(contract, [position(job_title=spec, number="1")])
+        data["lots"]["lot_2"] = {
+            "lot_title": "Лот №2",
+            "proposals": {"contractor_1": proposal([position(job_title="Короткая", number="1")])},
+            "baseline_proposal": {"title": "Расчетная стоимость отсутствует"},
+        }
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        warning = next(w for w in outcome.warnings if "длиннее" in w)
+        assert "позиций: 1" in warning
+        assert "лот lot_1, №1" in warning
+
+    def test_long_job_title_warning_promises_nothing_about_review(
+        self, db_session, factories, resolver
+    ):
+        """Раздел в Review не попадает — обещать его нельзя.
+
+        Длина учитывается и у разделов (подозрительна сама длина поля), но
+        `is_chapter` к матчингу не допускается, то есть в очередь ручного матчинга
+        такая строка не придёт.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        spec = "раздел с описанием на много символов " * 40
+        data = payload_for(contract, [position(job_title=spec, is_chapter=True, number="7")])
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        warning = next(w for w in outcome.warnings if "длиннее" in w)
+        assert "Review" not in warning
+        assert "проверьте указанные позиции" in warning
+        assert outcome.positions_to_match == []
+
+    def test_long_job_title_warning_caps_examples(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(job_title=f"{i} " + "спецификация " * 100, unit="шт", number=str(i))
+                for i in range(15)
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        warning = next(w for w in outcome.warnings if "спецификация" in w and "длиннее" in w)
+        assert "позиций: 15" in warning
+        assert "и ещё 5" in warning
+
     def test_unparsable_prepared_date_warns(self, db_session, factories, resolver):
         contract = factories.ContractFactory.create()
         db_session.flush()

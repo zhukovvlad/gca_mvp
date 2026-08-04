@@ -54,7 +54,9 @@ target_metadata = Base.metadata
 # поэтому и наличие, и поведение каждого из них закреплены интеграционными
 # тестами (tests/integration/test_schema_constraints.py).
 RAW_SQL_INDEXES = {
-    "uq_catalog_positions_norm_unit",   # UNIQUE (normalized_job_title, COALESCE(unit_id, -1))
+    # UNIQUE (sha256(replace(normalized_job_title,'\','\\')::bytea), COALESCE(unit_id,-1)),
+    # миграция 0003: btree не индексирует названия длиннее 2704 байт.
+    "uq_catalog_positions_norm_hash_unit",
     "uq_estimates_contract_amendment",  # UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)
     "uq_import_jobs_active_pair",       # UNIQUE (contract_id, COALESCE(amendment_no,-1)) WHERE ...
 }

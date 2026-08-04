@@ -1,11 +1,15 @@
 """Каскад матчинга (AGENTS.md §5, шаг 4) и ручные решения Review."""
 from __future__ import annotations
 
+import hashlib
+import random
 from datetime import timedelta
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 from freezegun import freeze_time
+from sqlalchemy.dialects import postgresql
 
 from models import CatalogKind, CatalogPosition, MatchingCache, MatchSource, PositionItem
 from parser.sanitize_text import normalize_job_title_with_lemmatization
@@ -15,6 +19,7 @@ from services.matching import (
     NORM_VERSION,
     cache_key,
     match_positions,
+    norm_hash,
 )
 from services.review import ReviewError, merge_into_position, set_kind
 from services.unit_resolution import UnitResolver
@@ -37,6 +42,33 @@ def unit_id(db_session, code: str) -> int:
 
 def norm(title: str) -> str:
     return normalize_job_title_with_lemmatization(title)
+
+
+#: Обратный слэш отдельной константой: в исходнике теста он иначе тонет в
+#: собственном экранировании, а именно на нём ломалось наивное `text::bytea`.
+BACKSLASH = chr(92)
+
+
+def _long_title() -> str:
+    """Наименование, которое не влезает в btree ни в каком виде.
+
+    Длины мало: индексный кортеж перед проверкой предела **сжимается** pglz, и
+    название из повторяющейся фразы (даже на 9 КБ) укладывается в 2704 байта —
+    такая фикстура молча перестала бы воспроизводить дефект. Поэтому текст
+    псевдослучайный (фиксированное зерно — нормализация обязана быть
+    детерминированной, §11), а сама предпосылка закреплена отдельным тестом
+    `test_a_plain_btree_index_rejects_this_title`.
+
+    Порядок величины взят с реального файла фазы 0: 5077 символов, 9260 байт,
+    3424 байта после сжатия.
+    """
+    rnd = random.Random(20260804)
+    letters = "абвгдежзийклмнопрстуфхцчшщыэюя"
+    words = ["".join(rnd.choice(letters) for _ in range(rnd.randint(4, 12))) for _ in range(900)]
+    return " ".join(words)
+
+
+LONG_TITLE = _long_title()
 
 
 def import_and_match(db_session, resolver, contract, positions, *, now=None, amendment_no=None):
@@ -76,6 +108,122 @@ class TestCacheKey:
     def test_key_is_sha256_hex(self):
         key = cache_key("кладка", "M2")
         assert len(key) == 64 and all(c in "0123456789abcdef" for c in key)
+
+
+# ---------------------------------------------------------------------------
+#  Хэш названия в уникальном индексе (миграция 0003)
+# ---------------------------------------------------------------------------
+
+class TestNormHash:
+    """`norm_hash` обязан быть верным представлением ПОЛНОГО названия.
+
+    Хэш стоит в уникальном индексе, то есть решает, одна это работа или две.
+    Ошибка тут не падает, а склеивает расценки, поэтому проверяется отдельно от
+    каскада.
+    """
+
+    #: Входы, на которых наивное `text::bytea` ведёт себя неверно: одни падают
+    #: `invalid input syntax for type bytea`, другие молча дают байты чужой
+    #: строки («\\x41» и «\\101» — тот же байт, что «A»).
+    NASTY = [
+        "простая работа",
+        "a" + BACKSLASH + "b",
+        BACKSLASH + "x41",
+        BACKSLASH + "101",
+        "A",
+        "перегородка " + BACKSLASH + " стена",
+        "C:" + BACKSLASH + "temp" + BACKSLASH + "x",
+        BACKSLASH,
+        BACKSLASH + BACKSLASH,
+        "конец" + BACKSLASH,
+        "кладка м2 — «дом»\n перенос\tтабуляция",
+        "".join(chr(i) for i in range(1, 128)),
+        LONG_TITLE + BACKSLASH,
+    ]
+
+    def test_hash_equals_sha256_of_utf8_bytes(self, db_session):
+        """Серверное выражение = `hashlib.sha256(title.encode('utf-8'))`.
+
+        Рабочий код на это равенство не опирается (обе стороны сравнения считает
+        сервер), но именно оно доказывает, что хэш берётся от самой строки, а не от
+        разобранных escape-последовательностей.
+        """
+        for title in self.NASTY:
+            got = db_session.execute(sa.select(norm_hash(sa.literal(title)))).scalar_one()
+            assert bytes(got) == hashlib.sha256(title.encode("utf-8")).digest(), repr(title[:40])
+
+    def test_different_titles_give_different_hashes(self, db_session):
+        hashes = {
+            bytes(db_session.execute(sa.select(norm_hash(sa.literal(t)))).scalar_one())
+            for t in self.NASTY
+        }
+        assert len(hashes) == len(self.NASTY)
+
+    def test_expression_does_not_depend_on_standard_conforming_strings(
+        self, db_session, factories, resolver
+    ):
+        """Слэши записаны escape-строками, поэтому настройка сессии не важна.
+
+        Обычный литерал `'\\'` означает один символ только при
+        `standard_conforming_strings=on`. При `off` тот же арбитр `ON CONFLICT` —
+        синтаксическая ошибка (замер на PG 16.14), то есть матчинг сломался бы на
+        БД, где настройку выставили явно. `E'…'` разбирает escape-последовательности
+        при любом значении и даёт то же дерево выражения, так что индекс
+        сопоставляется по-прежнему.
+        """
+        db_session.execute(sa.text("SET LOCAL standard_conforming_strings = off"))
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        _o, match = import_and_match(
+            db_session,
+            resolver,
+            contract,
+            [position(job_title="Работа при выключенной настройке", unit="м2")],
+        )
+
+        assert match.counters.to_review == 1
+        row = db_session.execute(
+            sa.select(CatalogPosition).where(CatalogPosition.kind == CatalogKind.TO_REVIEW.value)
+        ).scalar_one()
+        assert row.standard_job_title == "Работа при выключенной настройке"
+
+    def test_index_expression_matches_the_migration(self, db_session, factories):
+        """Выражение в коде и в миграции 0003 — одно и то же.
+
+        Проверка функциональная, а не текстовая: если выражения разойдутся,
+        PostgreSQL не сможет применить индекс к запросу по `norm_hash` (и, что
+        важнее, перестанет выводить его как арбитр `ON CONFLICT`).
+
+        Смотреть только на имя индекса в плане нельзя: при `enable_seqscan=off`
+        PostgreSQL всё равно возьмёт его, но условие уйдёт в `Filter` вместо
+        `Index Cond` — то есть тест проходил бы и на разошедшихся выражениях.
+        """
+        factories.CatalogPositionFactory.create(
+            standard_job_title="Работа", normalized_job_title=norm("Работа"), unit_id=None
+        )
+        db_session.flush()
+        db_session.execute(sa.text("SET LOCAL enable_seqscan = off"))
+
+        plan = "\n".join(
+            row[0]
+            for row in db_session.execute(
+                sa.text(
+                    "EXPLAIN SELECT id FROM catalog_positions "
+                    "WHERE "
+                    + str(
+                        norm_hash(CatalogPosition.normalized_job_title).compile(
+                            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+                        )
+                    )
+                    + " = :h AND COALESCE(unit_id, -1) = -1"
+                ),
+                {"h": hashlib.sha256(norm("Работа").encode("utf-8")).digest()},
+            ).all()
+        )
+        assert "uq_catalog_positions_norm_hash_unit" in plan
+        index_cond = next((line for line in plan.splitlines() if "Index Cond" in line), "")
+        assert "sha256" in index_cond, plan
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +535,130 @@ class TestGetOrCreateBranch:
             .where(CatalogPosition.kind == CatalogKind.TO_REVIEW.value)
         ).scalar_one()
         assert created == 12
+
+    def test_a_plain_btree_index_rejects_this_title(self, db_session):
+        """Предпосылка остальных тестов: значение действительно не индексируется.
+
+        Проверка держит фикстуру честной: если `LONG_TITLE` когда-нибудь станет
+        сжимаемым или коротким, упадёт этот тест, а не молча обесценятся три
+        следующих. Ровно такой индекс — `ix_catalog_positions_standard_job_title`
+        из миграции 0002 — и ронял импорт.
+        """
+        with pytest.raises(sa.exc.OperationalError) as excinfo, db_session.begin_nested():
+            db_session.execute(sa.text("CREATE TEMP TABLE t_btree_limit (x text)"))
+            db_session.execute(sa.text("CREATE INDEX ON t_btree_limit (x)"))
+            db_session.execute(
+                sa.text("INSERT INTO t_btree_limit (x) VALUES (:x)"), {"x": LONG_TITLE}
+            )
+        # Текст сообщения зависит от того, помогло ли сжатие индексного кортежа:
+        # «index row size … exceeds btree version 4 maximum 2704» либо «index row
+        # requires … bytes, maximum size is 8191». Класс ошибки один и тот же.
+        assert isinstance(excinfo.value.orig, psycopg.errors.ProgramLimitExceeded)
+
+    def test_long_title_beyond_the_btree_limit_is_matched(self, db_session, factories, resolver):
+        """Регрессия: название длиннее предела btree не должно ронять импорт.
+
+        В реальном файле фазы 0 нашлось наименование на 5077 символов (9260 байт):
+        в ячейку попала целая спецификация. Обычный btree индексирует значения не
+        длиннее 2704 байт, поэтому `INSERT` в каталог падал
+        `ProgramLimitExceeded`, и смета не сохранялась целиком. Идентичность
+        работы осталась полной парой (нормализованное название, единица) — в
+        индексе от названия лежит `sha256`, поэтому длина ему безразлична.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        title = LONG_TITLE
+        assert len(title.encode("utf-8")) > 9000, "название должно превышать предел btree"
+
+        _o, match = import_and_match(
+            db_session, resolver, contract, [position(job_title=title, unit="м2")]
+        )
+
+        assert match.counters.to_review == 1
+        row = db_session.execute(
+            sa.select(CatalogPosition).where(CatalogPosition.kind == CatalogKind.TO_REVIEW.value)
+        ).scalar_one()
+        # Ни название, ни его нормализованная форма не обрезаются.
+        assert row.standard_job_title == title
+        assert row.normalized_job_title == norm(title)
+
+    def test_repeated_long_title_reuses_the_same_row(self, db_session, factories, resolver):
+        """Повторный get-or-create длинного названия даёт ту же строку, не вторую.
+
+        Счётчик остаётся `to_review`: кэш на TO_REVIEW не пишется (инвариант §5), а
+        ветка 2 ищет только среди `POSITION`, поэтому вторая загрузка снова идёт
+        ветвью 3 — и обязана найти существующую строку, а не создать вторую.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        _o1, first = import_and_match(
+            db_session, resolver, contract, [position(job_title=LONG_TITLE, unit="м2")]
+        )
+        created = db_session.execute(sa.select(CatalogPosition)).scalar_one()
+
+        _o2, second = import_and_match(
+            db_session,
+            resolver,
+            contract,
+            [position(job_title=LONG_TITLE, unit="м2")],
+            amendment_no=1,
+        )
+
+        assert first.counters.to_review == 1
+        assert second.counters.to_review == 1
+        rows = db_session.execute(sa.select(CatalogPosition)).scalars().all()
+        assert [row.id for row in rows] == [created.id]
+        items = db_session.execute(sa.select(PositionItem)).scalars().all()
+        assert {item.catalog_position_id for item in items} == {created.id}
+
+    def test_long_titles_differing_only_at_the_end_are_two_rows(
+        self, db_session, factories, resolver
+    ):
+        """Хэш считается по ВСЕЙ строке, а не по префиксу.
+
+        Обрезка нормализованного названия склеила бы две разные спецификации с
+        одинаковым началом в одну каталожную строку — то есть в одну расценку.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        import_and_match(
+            db_session,
+            resolver,
+            contract,
+            [
+                position(job_title=LONG_TITLE + " вариант первый", unit="м2", number="1"),
+                position(job_title=LONG_TITLE + " вариант второй", unit="м2", number="2"),
+            ],
+        )
+
+        rows = db_session.execute(sa.select(CatalogPosition)).scalars().all()
+        assert len(rows) == 2
+
+    def test_long_title_with_different_units_gives_two_rows(
+        self, db_session, factories, resolver
+    ):
+        """Единица входит в идентичность и на длинных названиях тоже (§4)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        import_and_match(
+            db_session,
+            resolver,
+            contract,
+            [
+                position(job_title=LONG_TITLE, unit="м2", number="1"),
+                position(job_title=LONG_TITLE, unit="м3", number="2"),
+            ],
+        )
+
+        rows = db_session.execute(sa.select(CatalogPosition)).scalars().all()
+        assert len(rows) == 2
+        assert {row.unit_id for row in rows} == {
+            unit_id(db_session, "M2"),
+            unit_id(db_session, "M3"),
+        }
 
     def test_trash_row_is_bound_as_nonposition(self, db_session, factories, resolver):
         contract = factories.ContractFactory.create()
