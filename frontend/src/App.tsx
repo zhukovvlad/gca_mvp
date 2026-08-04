@@ -12,7 +12,10 @@ import AdminUserCreate from "@/pages/admin/AdminUserCreate";
 import AdminUsers from "@/pages/admin/AdminUsers";
 import ContractCardPage from "@/pages/contracts/ContractCardPage";
 import ContractsPage from "@/pages/contracts/ContractsPage";
+import MatrixPage from "@/pages/matrix/MatrixPage";
+import PassportPage from "@/pages/passport/PassportPage";
 import ReviewPage from "@/pages/review/ReviewPage";
+import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
 
 const queryClient = new QueryClient({
@@ -70,9 +73,17 @@ export default function App() {
                 <Route path="/contracts" element={<ContractsPage />} />
                 <Route path="/contracts/:contractId" element={<ContractCardPage />} />
                 <Route path="/review" element={<ReviewPage />} />
+                {/*
+                  Аналитика фазы 6 — чтение, поэтому доступна и `member` (§3):
+                  паспорт печатают и без прав на правку справочников.
+                */}
+                <Route path="/contracts/:contractId/passport" element={<PassportPage />} />
+                <Route path="/matrix" element={<MatrixPage />} />
                 <Route element={<RequireAdmin />}>
                   {/* Нормативы — право `admin` по букве §3. */}
                   <Route path="/standards" element={<StandardsPage />} />
+                  {/* Настройки печатной формы — того же рода, что классы и нормативы (§3). */}
+                  <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/admin/users" element={<AdminUsers />} />
                   <Route path="/admin/users/new" element={<AdminUserCreate />} />
                 </Route>

@@ -12,6 +12,10 @@ import {
   sampleRateClasses,
   sampleRateStandards,
   sampleReviewQueue,
+  sampleAppSettings,
+  sampleMatrix,
+  sampleMatrixCellDetail,
+  samplePassport,
 } from "./fixtures";
 import type { ImportJobStatus } from "@/types/domain";
 
@@ -35,6 +39,16 @@ interface HandlerState {
   batchSkipsFirst: boolean;
   /** Исход скачивания исходника: файл на месте, задания нет (404), удалён (410). */
   fileOutcome: "ok" | "missing" | "purged";
+  /**
+   * Текущее значение `passport_top_n`. Мутируется PATCH-ем настроек, чтобы тест мог
+   * проверить, что смена N перерисовывает паспорт: без общего состояния GET отдавал
+   * бы прежнее число и проверка ничего не значила бы.
+   */
+  passportTopN: number;
+  /** Отдать паспорт договора без сметы: `estimate: null`, пустой топ. */
+  passportWithoutEstimate: boolean;
+  /** Отдать пустую матрицу — и различить «нет договоров» от «нет работ». */
+  matrixOutcome: "rows" | "no-rows" | "no-columns";
 }
 
 export const handlerState: HandlerState = {
@@ -45,6 +59,9 @@ export const handlerState: HandlerState = {
   lastBatch: null,
   batchSkipsFirst: false,
   fileOutcome: "ok",
+  passportTopN: sampleAppSettings.passport_top_n,
+  passportWithoutEstimate: false,
+  matrixOutcome: "rows",
 };
 
 export function resetHandlerState() {
@@ -55,6 +72,9 @@ export function resetHandlerState() {
   handlerState.lastBatch = null;
   handlerState.batchSkipsFirst = false;
   handlerState.fileOutcome = "ok";
+  handlerState.passportTopN = sampleAppSettings.passport_top_n;
+  handlerState.passportWithoutEstimate = false;
+  handlerState.matrixOutcome = "rows";
 }
 
 function page<T>(items: T[]) {
@@ -421,4 +441,81 @@ export const handlers = [
     });
   }),
   http.delete("/api/v1/rate-standards/:id", () => new HttpResponse(null, { status: 204 })),
+
+  // --- Настройки (фаза 6, §7.4) ---
+  http.get("/api/v1/settings", () =>
+    HttpResponse.json({ ...sampleAppSettings, passport_top_n: handlerState.passportTopN })
+  ),
+  http.patch("/api/v1/settings", async ({ request }) => {
+    const body = (await request.json()) as { passport_top_n: number };
+    // Диапазон проверяет сервер, и его отказ объясняет причину (одна страница А4).
+    // Обработчик воспроизводит именно это поведение, а не «принимает всё».
+    if (
+      !Number.isInteger(body.passport_top_n) ||
+      body.passport_top_n < sampleAppSettings.passport_top_n_min ||
+      body.passport_top_n > sampleAppSettings.passport_top_n_max
+    ) {
+      return HttpResponse.json(
+        {
+          detail:
+            `Число ключевых расценок должно быть от ${sampleAppSettings.passport_top_n_min} до ` +
+            `${sampleAppSettings.passport_top_n_max}. Верхняя граница — не прихоть: паспорт ` +
+            "обязан печататься на одну страницу А4.",
+        },
+        { status: 422 }
+      );
+    }
+    handlerState.passportTopN = body.passport_top_n;
+    return HttpResponse.json({ ...sampleAppSettings, passport_top_n: body.passport_top_n });
+  }),
+
+  // --- Аналитика (фаза 6, §6, §7.4–§7.5) ---
+  http.get("/api/v1/analytics/passport/:contractId", () => {
+    if (handlerState.passportWithoutEstimate) {
+      return HttpResponse.json({
+        ...samplePassport,
+        estimate: null,
+        key_rates: [],
+        top_n: handlerState.passportTopN,
+        totals: {
+          positions_priced: 0,
+          positions_shown: 0,
+          priced_amount: null,
+          with_standard: 0,
+          without_standard: 0,
+          over_standard: 0,
+        },
+      });
+    }
+    // Топ режется до текущего N — так же, как это делает сервер (LIMIT).
+    const keyRates = samplePassport.key_rates.slice(0, handlerState.passportTopN);
+    return HttpResponse.json({
+      ...samplePassport,
+      top_n: handlerState.passportTopN,
+      key_rates: keyRates,
+      totals: { ...samplePassport.totals, positions_shown: keyRates.length },
+    });
+  }),
+
+  http.get("/api/v1/analytics/matrix", ({ request }) => {
+    const url = new URL(request.url);
+    if (handlerState.matrixOutcome === "no-columns") {
+      return HttpResponse.json({ ...sampleMatrix, columns: [], rows: [], total: 0 });
+    }
+    if (handlerState.matrixOutcome === "no-rows") {
+      return HttpResponse.json({ ...sampleMatrix, rows: [], total: 0 });
+    }
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const rows = q
+      ? sampleMatrix.rows.filter((r) => r.job_title.toLowerCase().includes(q))
+      : sampleMatrix.rows;
+    return HttpResponse.json({
+      ...sampleMatrix,
+      rows,
+      total: rows.length,
+      page: Number(url.searchParams.get("page") ?? 1),
+    });
+  }),
+
+  http.get("/api/v1/analytics/matrix/cell", () => HttpResponse.json(sampleMatrixCellDetail)),
 ];

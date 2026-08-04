@@ -53,6 +53,71 @@ export function formatPercent(value: number | null | undefined, withSign = false
   return `${sign}${value.toFixed(1)}%`;
 }
 
+/** Округлённое отклонение: текст для показа и знак ПОСЛЕ округления. */
+export interface RoundedPercent {
+  text: string;
+  /** Знак округлённого значения: по нему выбирается цвет, а не по исходному. */
+  sign: -1 | 0 | 1;
+}
+
+/**
+ * Округляет отклонение до `digits` знаков **целочисленной арифметикой**, без float.
+ *
+ * `deviation_pct` — это `numeric` из VIEW, и §4 требует «точный Decimal, округление
+ * до 0.1 п.п. только на слое представления». Поэтому значение приезжает строкой, и
+ * `Number(value)` свёл бы требование на нет ровно на последнем шаге — так же, как
+ * `Number()` для денег, на чём фаза 5 уже обожглась (`formatDecimalMoney`).
+ *
+ * Возражение «у процентов мало значащих цифр, double справится» верно по величине
+ * и неверно по существу: `(ставка / норматив - 1) * 100` на `numeric` даёт больше
+ * пятнадцати знаков, и у значения на границе округления (`x.x5`) двоичное
+ * представление решает исход в произвольную сторону. Цена целочисленного пути —
+ * пятнадцать строк; цена float — «система округляет не туда» в разговоре с
+ * подрядчиком, где как раз и смотрят на десятую долю процента.
+ *
+ * Знак возвращается **после** округления: у отклонения +0,04 % текст «0,0 %», и
+ * покрасить его как превышение значило бы противоречить показанной цифре.
+ *
+ * @returns `null`, если значения нет; для неразбираемого входа — сам вход со знаком 0
+ *   (молча превратить его в «—» значило бы спрятать пришедшее с сервера).
+ */
+export function roundDecimalPercent(
+  value: string | number | null | undefined,
+  digits = 1
+): RoundedPercent | null {
+  if (value === null || value === undefined) return null;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const parsed = DECIMAL_RE.exec(raw);
+  if (!parsed) return { text: raw, sign: 0 };
+
+  const [, sign, whole, fraction = ""] = parsed;
+
+  // Масштабируем величину до digits+1 знаков и округляем целыми: половина — вверх
+  // по модулю (знак вынесен отдельно), то есть привычное «от нуля».
+  const scale = digits + 1;
+  const padded = (fraction + "0".repeat(scale)).slice(0, scale);
+  const rounded = (BigInt(`${whole}${padded}`) + 5n) / 10n;
+
+  const unit = 10n ** BigInt(digits);
+  const intPart = rounded / unit;
+  const fracPart = rounded % unit;
+  const magnitude = digits > 0
+    ? `${intPart},${fracPart.toString().padStart(digits, "0")}`
+    : `${intPart}`;
+
+  // Ноль не бывает ни отрицательным, ни «со знаком плюс»: «-0,0 %» — артефакт.
+  if (rounded === 0n) return { text: `0${digits > 0 ? `,${"0".repeat(digits)}` : ""}%`, sign: 0 };
+
+  const negative = sign === "-";
+  return {
+    text: `${negative ? "-" : "+"}${magnitude}%`,
+    sign: negative ? -1 : 1,
+  };
+}
+
 export function formatNumber(value: number | null | undefined, fractionDigits?: number): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   if (fractionDigits !== undefined) {

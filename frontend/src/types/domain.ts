@@ -312,3 +312,151 @@ export interface Unit {
   dimension: string;
   base_unit_id: number | null;
 }
+
+// ---------------------------------------------------------------------------
+//  Аналитика фазы 6: настройки, паспорт, матрица (AGENTS.md §6, §7.4, §7.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Настройки приложения. Границы `passport_top_n` приходят **с сервера**, а не
+ * зашиты здесь: они выражают `CHECK` в БД (миграция 0004), и вторая их копия во
+ * фронтенде разъехалась бы с первой при первом же изменении.
+ */
+export interface AppSettings {
+  passport_top_n: number;
+  passport_top_n_min: number;
+  passport_top_n_max: number;
+  updated_at: string | null;
+}
+
+/** Реквизиты договора для паспорта (§1 пункт 2). */
+export interface PassportContract {
+  id: number;
+  contract_number: string;
+  title: string | null;
+  object_id: number;
+  object_title: string;
+  contractor_id: number;
+  contractor_title: string;
+  rate_class_id: number;
+  rate_class_title: string;
+  signer: string | null;
+  signed_date: string;
+  total_amount: Decimal | null;
+  notes: string | null;
+}
+
+export interface PassportEstimate {
+  id: number;
+  /** `null` — исходная смета (§4). */
+  amendment_no: number | null;
+  title: string | null;
+  data_prepared_on_date: string | null;
+}
+
+/** Строка «ключевых расценок»: позиция последней сметы (§7.4). */
+export interface PassportKeyRate {
+  position_item_id: number;
+  catalog_position_id: number;
+  /** Формулировка ИЗ СМЕТЫ — паспорт документ по конкретному договору. */
+  job_title: string;
+  /** Каталожное название: по нему подобран норматив. */
+  catalog_job_title: string;
+  unit_code: string | null;
+  weight: Decimal | null;
+  unit_cost_total: Decimal;
+  total_cost_total: Decimal | null;
+  /** `null` — норматива на дату сметы нет (§4); это НЕ ноль. */
+  standard_unit_rate: Decimal | null;
+  deviation_pct: Decimal | null;
+}
+
+export interface PassportTotals {
+  /** Всего расценённых работ в смете — совокупность, из которой взят топ. */
+  positions_priced: number;
+  /** Сколько строк показано: длина топа, не обязательно равна `top_n`. */
+  positions_shown: number;
+  priced_amount: Decimal | null;
+  with_standard: number;
+  without_standard: number;
+  /** Только превышение: ровно по нормативу — не превышение (§10). */
+  over_standard: number;
+}
+
+export interface Passport {
+  contract: PassportContract;
+  /** `null` — смета ещё не загружена; паспорт печатается по реквизитам. */
+  estimate: PassportEstimate | null;
+  top_n: number;
+  key_rates: PassportKeyRate[];
+  totals: PassportTotals;
+}
+
+/** Колонка матрицы — договор выборки (§6, группировка по объекту). */
+export interface MatrixColumn {
+  contract_id: number;
+  contract_number: string;
+  object_id: number;
+  object_title: string;
+  contractor_title: string;
+  rate_class_id: number;
+  rate_class_title: string;
+  estimate_id: number;
+  amendment_no: number | null;
+  comparison_date: string | null;
+}
+
+/** Ячейка: средневзвешенная ставка работы по договору (§6). */
+export interface MatrixCell {
+  contract_id: number;
+  rate: Decimal;
+  standard_unit_rate: Decimal | null;
+  deviation_pct: Decimal | null;
+}
+
+export interface MatrixRow {
+  catalog_position_id: number;
+  job_title: string;
+  unit_code: string | null;
+  /** Вес строки в деньгах — по нему строки упорядочены (§6.4 отчёта фазы 6). */
+  row_amount: Decimal | null;
+  /** Ячейки только тех договоров, где работа встречается: список, не объект. */
+  cells: MatrixCell[];
+}
+
+export interface Matrix {
+  columns: MatrixColumn[];
+  rows: MatrixRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface MatrixParams {
+  rate_class_id?: number;
+  date_from?: string;
+  date_to?: string;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** Drill-down по ячейке: позиции, сложившиеся в средневзвешенную ставку (§6). */
+export interface MatrixCellItem {
+  position_item_id: number;
+  job_title: string;
+  unit_code: string | null;
+  weight: Decimal | null;
+  unit_cost_total: Decimal;
+  total_cost_total: Decimal | null;
+  standard_unit_rate: Decimal | null;
+  deviation_pct: Decimal | null;
+}
+
+export interface MatrixCellDetail {
+  contract_id: number;
+  catalog_position_id: number;
+  estimate_id: number;
+  amendment_no: number | null;
+  items: MatrixCellItem[];
+}

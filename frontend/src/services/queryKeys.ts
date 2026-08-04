@@ -1,5 +1,5 @@
 import type { ContractListParams } from "./api/domain";
-import type { RateStandardParams, ReviewQueueParams } from "@/types/domain";
+import type { MatrixParams, RateStandardParams, ReviewQueueParams } from "@/types/domain";
 
 /**
  * Ключи TanStack Query — централизованно, чтобы инвалидация не гадала.
@@ -62,5 +62,29 @@ export const qk = {
 
   units: {
     all: ["units"] as const,
+  },
+
+  // Аналитика фазы 6 (§6, §7.4–§7.5)
+  settings: {
+    all: ["settings"] as const,
+  },
+
+  passport: {
+    all: ["passport"] as const,
+    /**
+     * Ключ — только договор. `topN` в него НЕ входит, и это проверено: перерисовку
+     * при смене настройки обеспечивает инвалидация `passport.all` в
+     * `useUpdateAppSettings`, а ключ с `topN` был бы лишней деталью, которая лишь
+     * выглядит защитой. Первая редакция утверждала обратное; снятие `topN` из ключа
+     * не уронило ни одного теста, а снятие инвалидации — уронило.
+     */
+    one: (contractId: number) => ["passport", contractId] as const,
+  },
+
+  matrix: {
+    all: ["matrix"] as const,
+    list: (params?: MatrixParams) => ["matrix", "list", params ?? {}] as const,
+    cell: (contractId: number, catalogPositionId: number) =>
+      ["matrix", "cell", contractId, catalogPositionId] as const,
   },
 };

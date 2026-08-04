@@ -1,5 +1,6 @@
 import type { AdminUser } from "@/types/admin";
 import type {
+  AppSettings,
   ContractCard,
   ContractImportJob,
   ContractRow,
@@ -7,6 +8,11 @@ import type {
   ObjectItem,
   RateClass,
   RateStandard,
+  Matrix,
+  MatrixCellDetail,
+  MatrixColumn,
+  MatrixRow,
+  Passport,
   ReviewQueueItem,
 } from "@/types/domain";
 
@@ -285,3 +291,208 @@ export const sampleRateStandards: RateStandard[] = [
     updated_at: null,
   },
 ];
+
+// ---------------------------------------------------------------------------
+//  Аналитика фазы 6. Данные синтетические — реальные сметы из samples/ никуда
+//  не выносятся, включая суммы (политика docs/phase0-input-data.md).
+//
+//  Числа подобраны так, чтобы каждый случай §10 был представлен и различим:
+//  превышение норматива, ровно по нормативу (0 %) и ОТСУТСТВИЕ норматива. Без
+//  третьего случая тесты не отличили бы «нет норматива» от «0 %».
+// ---------------------------------------------------------------------------
+
+export const sampleAppSettings: AppSettings = {
+  passport_top_n: 15,
+  passport_top_n_min: 1,
+  passport_top_n_max: 20,
+  updated_at: "2026-08-04T09:00:00Z",
+};
+
+/** Наименование на килобайты — то, на чём фаза 5 обожглась (§11 AGENTS.md). */
+export const longJobTitle =
+  "Устройство монолитных конструкций с полной спецификацией: " +
+  Array.from({ length: 40 }, (_, i) => `позиция ${i + 1} по ведомости ГОСТ ${20000 + i}`).join("; ");
+
+export const samplePassport: Passport = {
+  contract: {
+    id: 10,
+    contract_number: "ГП-0114",
+    title: "Генеральный подряд",
+    object_id: 1,
+    object_title: "ЖК Северный",
+    contractor_id: 1,
+    contractor_title: 'ООО "Подрядчик"',
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    signer: "Петров П.П.",
+    signed_date: "2025-03-01",
+    total_amount: "1234567890.12",
+    notes: null,
+  },
+  estimate: {
+    id: 500,
+    amendment_no: 1,
+    title: "Смета с ДС 1",
+    data_prepared_on_date: "2025-04-01",
+  },
+  top_n: 15,
+  key_rates: [
+    {
+      position_item_id: 9001,
+      catalog_position_id: 701,
+      job_title: "Кладка кирпичная наружных стен",
+      catalog_job_title: "кладка кирпичная",
+      unit_code: "M3",
+      weight: "1200",
+      unit_cost_total: "12000.50",
+      total_cost_total: "14400600.00",
+      standard_unit_rate: "10000.00",
+      deviation_pct: "20.005000000000000000",
+    },
+    {
+      position_item_id: 9002,
+      catalog_position_id: 702,
+      job_title: "Стяжка пола цементная",
+      catalog_job_title: "стяжка пола",
+      unit_code: "M2",
+      weight: "8400",
+      unit_cost_total: "900.00",
+      total_cost_total: "7560000.00",
+      // Ровно по нормативу — это НОЛЬ, и он обязан быть отличим от «нет норматива».
+      standard_unit_rate: "900.00",
+      deviation_pct: "0.000000000000000000",
+    },
+    {
+      position_item_id: 9003,
+      catalog_position_id: 703,
+      job_title: longJobTitle,
+      catalog_job_title: longJobTitle,
+      unit_code: "M2",
+      weight: "300",
+      unit_cost_total: "640.00",
+      total_cost_total: "192000.00",
+      // Норматива нет: §4 требует NULL, а не 0.
+      standard_unit_rate: null,
+      deviation_pct: null,
+    },
+  ],
+  totals: {
+    positions_priced: 1100,
+    positions_shown: 3,
+    priced_amount: "22152600.00",
+    with_standard: 2,
+    without_standard: 1098,
+    over_standard: 1,
+  },
+};
+
+export const sampleMatrixColumns: MatrixColumn[] = [
+  {
+    contract_id: 10,
+    contract_number: "ГП-0114",
+    object_id: 1,
+    object_title: "ЖК Северный",
+    contractor_title: 'ООО "Подрядчик"',
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    estimate_id: 500,
+    amendment_no: 1,
+    comparison_date: "2025-04-01",
+  },
+  {
+    contract_id: 11,
+    contract_number: "ГП-0131",
+    object_id: 1,
+    object_title: "ЖК Северный",
+    contractor_title: 'ООО "Второй"',
+    rate_class_id: 1,
+    rate_class_title: "Жилые дома",
+    estimate_id: 501,
+    amendment_no: null,
+    comparison_date: "2026-01-15",
+  },
+  {
+    contract_id: 12,
+    contract_number: "ГП-0140",
+    object_id: 2,
+    object_title: "БЦ Восточный",
+    contractor_title: 'ООО "Третий"',
+    rate_class_id: 2,
+    rate_class_title: "Административные",
+    estimate_id: 502,
+    amendment_no: null,
+    comparison_date: "2026-05-01",
+  },
+];
+
+export const sampleMatrixRows: MatrixRow[] = [
+  {
+    catalog_position_id: 701,
+    job_title: "Кладка кирпичная",
+    unit_code: "M3",
+    row_amount: "18000000.00",
+    cells: [
+      {
+        contract_id: 10,
+        rate: "12000.50",
+        standard_unit_rate: "10000.00",
+        deviation_pct: "20.005000000000000000",
+      },
+      // Второй договор дешевле норматива — знак отклонения обязан быть виден.
+      {
+        contract_id: 11,
+        rate: "9500.00",
+        standard_unit_rate: "10000.00",
+        deviation_pct: "-5.000000000000000000",
+      },
+      // У третьего работы в смете нет вовсе: ячейки не будет — и это НЕ «нет
+      // норматива». §10 требует различать эти случаи.
+    ],
+  },
+  {
+    catalog_position_id: 703,
+    job_title: longJobTitle,
+    unit_code: "M2",
+    row_amount: "192000.00",
+    cells: [
+      { contract_id: 12, rate: "640.00", standard_unit_rate: null, deviation_pct: null },
+    ],
+  },
+];
+
+export const sampleMatrix: Matrix = {
+  columns: sampleMatrixColumns,
+  rows: sampleMatrixRows,
+  total: 2,
+  page: 1,
+  page_size: 50,
+};
+
+export const sampleMatrixCellDetail: MatrixCellDetail = {
+  contract_id: 10,
+  catalog_position_id: 701,
+  estimate_id: 500,
+  amendment_no: 1,
+  items: [
+    {
+      position_item_id: 9001,
+      job_title: "Кладка кирпичная наружных стен",
+      unit_code: "M3",
+      weight: "30",
+      unit_cost_total: "100.00",
+      total_cost_total: "3000.00",
+      standard_unit_rate: "100.00",
+      deviation_pct: "0.000000000000000000",
+    },
+    {
+      position_item_id: 9002,
+      job_title: "Кладка кирпичная внутренних стен",
+      unit_code: "M3",
+      weight: "20",
+      unit_cost_total: "200.00",
+      total_cost_total: "4000.00",
+      standard_unit_rate: "100.00",
+      deviation_pct: "100.000000000000000000",
+    },
+  ],
+};

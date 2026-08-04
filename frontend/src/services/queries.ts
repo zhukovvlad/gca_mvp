@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { AxiosError } from "axios";
 
 import { adminApi } from "./api/admin";
+import { analyticsApi, settingsApi } from "./api/analytics";
 import {
   catalogApi,
   contractsApi,
@@ -26,6 +27,7 @@ import type {
   RateStandardInput,
   RateStandardParams,
   ReapproveInput,
+  MatrixParams,
   ReviewQueueParams,
 } from "@/types/domain";
 
@@ -518,5 +520,67 @@ export function useDeleteRateStandard() {
       toast.success("Норматив удалён");
     },
     onError: toastApiError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Аналитика фазы 6: настройки, паспорт, матрица (§6, §7.4–§7.5)
+// ---------------------------------------------------------------------------
+
+export function useAppSettings() {
+  return useQuery({
+    queryKey: qk.settings.all,
+    queryFn: () => settingsApi.get(),
+  });
+}
+
+export function useUpdateAppSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (passportTopN: number) => settingsApi.update(passportTopN),
+    onSuccess: (settings) => {
+      qc.invalidateQueries({ queryKey: qk.settings.all });
+      // Паспорт зависит от N — без этой инвалидации уже открытый паспорт остался
+      // бы с прежним числом строк, и настройка выглядела бы неработающей.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
+      toast.success(`Ключевых расценок в паспорте: ${settings.passport_top_n}`);
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Паспорт объекта (§7.4).
+ *
+ * N берёт сервер из БД, поэтому здесь его нет ни в аргументах, ни в ключе:
+ * перерисовку при смене настройки делает инвалидация `passport.all` в
+ * `useUpdateAppSettings` (см. комментарий у `qk.passport.one`).
+ */
+export function usePassport(contractId: number | undefined) {
+  return useQuery({
+    queryKey: qk.passport.one(contractId ?? 0),
+    queryFn: () => analyticsApi.passport(contractId as number),
+    enabled: contractId !== undefined,
+  });
+}
+
+export function useMatrix(params: MatrixParams) {
+  return useQuery({
+    queryKey: qk.matrix.list(params),
+    queryFn: () => analyticsApi.matrix(params),
+    // Матрица тяжелее списков: держим предыдущую страницу на экране, пока едет
+    // следующая, — иначе таблица мигает пустотой на каждом шаге пагинации.
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useMatrixCell(
+  contractId: number | undefined,
+  catalogPositionId: number | undefined
+) {
+  return useQuery({
+    queryKey: qk.matrix.cell(contractId ?? 0, catalogPositionId ?? 0),
+    queryFn: () => analyticsApi.matrixCell(contractId as number, catalogPositionId as number),
+    enabled: contractId !== undefined && catalogPositionId !== undefined,
   });
 }

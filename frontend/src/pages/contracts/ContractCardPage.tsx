@@ -84,11 +84,22 @@ export default function ContractCardPage() {
           title={contract.contract_number}
           subtitle={`${contract.object_title} · ${contract.contractor_title}`}
           actions={
-            isAdmin && (
-              <Button variant="outline" onClick={() => setEditOpen(true)}>
-                <Pencil className="size-4" /> Правка
-              </Button>
-            )
+            <>
+              {/*
+                Вход в паспорт — здесь, а не в главном меню: паспорт строится по
+                договору, и пункт меню без выбранного договора вёл бы в никуда (§7.4).
+                Доступен и `member`: это чтение и печать (§3).
+              */}
+              <Button
+                variant="outline"
+                render={<Link to={`/contracts/${contract.id}/passport`}>Паспорт объекта</Link>}
+              />
+              {isAdmin && (
+                <Button variant="outline" onClick={() => setEditOpen(true)}>
+                  <Pencil className="size-4" /> Правка
+                </Button>
+              )}
+            </>
           }
         />
       </div>
