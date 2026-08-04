@@ -251,6 +251,10 @@ def _write_excluded_counters(ws, row_num: int, totals: dict) -> int:
     такого файла была бы ложью.
     """
     for note in (
+        # Первая строка делает разбиение проверяемым: строка отчёта агрегирует
+        # работу, и по числу видимых строк позиции не сосчитать (замечание ревью).
+        f"Сравнимых позиций (в расчёте отклонения): "
+        f"{totals['comparable_positions']}",
         f"Позиций с объёмом, но без норматива (в отклонение не вошли): "
         f"{totals['positions_without_standard']}",
         f"Позиций с ценой, но без объёма (в расчёт не вошли): "
@@ -270,6 +274,18 @@ def _write_footnote(ws, row_num: int, totals: dict) -> int:
     число, даёт другое значение.
     """
     row_num = _write_excluded_counters(ws, row_num, totals)
+    # Общий счёт посчитан независимо (count(*) по VIEW): совпадение с суммой трёх
+    # счётчиков выше — проверяемый инвариант файла, а не тавтология.
+    total_note = ws.cell(
+        row=row_num,
+        column=1,
+        value=(
+            f"Всего расценённых позиций: {totals['positions_priced']} "
+            "(равно сумме трёх счётчиков выше)"
+        ),
+    )
+    total_note.font = font(size=9, bold=True)
+    row_num += 1
     cell = ws.cell(
         row=row_num,
         column=1,

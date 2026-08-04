@@ -25,7 +25,12 @@
 блокирующая причина, норматив без объёма не помог бы). Уточнение по замечанию
 ревью: прежняя подпись «без норматива» для позиции без объёма И без норматива
 давала ложный ноль. Разбиение выбрано вместо пересекающихся счётчиков, чтобы
-суммы сходились: строки + два счётчика = все расценённые позиции.
+суммы сходились — и сходились **по файлу**: строка отчёта агрегирует работу
+(несколько позиций → одна строка), поэтому по числу строк равенство не проверить
+(третье замечание ревью). В итогах печатается счётчик сравнимых позиций, а в
+сноске — независимо посчитанное «Всего расценённых позиций»: сравнимые + два
+счётчика исключённого = всего, и это настоящий инвариант, а не тавтология —
+общий счёт берётся отдельным `count(*)` по VIEW, не суммой напечатанного.
 
 **Строки отчёта «для банка» — только работы, у которых норматив есть.** Так прямо
 попросил пользователь: «позиции без норматива в расчёт отклонения не входят и
@@ -146,6 +151,14 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         sa.select(sa.func.count())
         .select_from(DEVIATIONS)
         .where(DEVIATIONS.c.estimate_id == estimate.id, _NO_VOLUME)
+    ).scalar_one()
+    # Общий счёт — НЕЗАВИСИМЫМ count(*) по VIEW, без фильтра объёма: равенство
+    # «сравнимые + без норматива + без объёма = всего» становится проверяемым
+    # инвариантом файла, а не суммой напечатанных чисел (замечание ревью).
+    totals["positions_priced"] = db.execute(
+        sa.select(sa.func.count())
+        .select_from(DEVIATIONS)
+        .where(DEVIATIONS.c.estimate_id == estimate.id)
     ).scalar_one()
     return {"header": header, "rows": rows, "totals": totals}
 
@@ -291,6 +304,8 @@ def bank_comparison(
         ).all()
     )
 
+    latest_for_total = latest_estimates()
+
     rows_by_class: dict[int, list[dict]] = {}
     for row in grouped:
         rows_by_class.setdefault(row.rate_class_id, []).append(_bank_row(row))
@@ -325,6 +340,15 @@ def bank_comparison(
             "positions_without_volume": sum(
                 s["totals"]["positions_without_volume"] for s in sections
             ),
+            # Независимый общий счёт (см. свод): проверяемость разбиения по файлу.
+            "positions_priced": db.execute(
+                sa.select(sa.func.count()).select_from(
+                    DEVIATIONS.join(
+                        latest_for_total,
+                        latest_for_total.c.estimate_id == DEVIATIONS.c.estimate_id,
+                    )
+                ).where(*scope)
+            ).scalar_one(),
         },
     }
 
@@ -415,8 +439,10 @@ def _empty_report_totals() -> dict:
         "deviation_pct": None,
         "works": 0,
         "positions": 0,
+        "comparable_positions": 0,
         "positions_without_standard": 0,
         "positions_without_volume": 0,
+        "positions_priced": 0,
     }
 
 
@@ -441,6 +467,12 @@ def _totals_of(rows: list[dict]) -> dict:
     comparable_exists = standard != 0
     return {
         "volume": None,  # объёмы работ в разных единицах — суммировать их нельзя
+        # Позиции, реально вошедшие в расчёт отклонения. Считается по строкам, а не
+        # отдельным запросом: у отброшенных работ (без единого норматива) сравнимых
+        # позиций нет по построению, поэтому сумма по переданным строкам полна.
+        "comparable_positions": sum(
+            r["positions"] - r["positions_without_standard"] for r in rows
+        ),
         "amount": amount,
         "standard_amount": standard if comparable_exists else None,
         "deviation_money": (comparable - standard) if comparable_exists else None,

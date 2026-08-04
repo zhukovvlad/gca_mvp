@@ -495,6 +495,9 @@ class TestBankComparison:
         # Подпись точная, и ноль в ней — правда: позиций С ОБЪЁМОМ без норматива нет.
         assert "с объёмом, но без норматива (в отклонение не вошли): 0" in text
         assert "но без объёма (в расчёт не вошли): 1" in text
+        # Разбиение сходится и здесь: 1 сравнимая + 0 + 1 без объёма = 2.
+        assert "Сравнимых позиций (в расчёте отклонения): 1" in text
+        assert "Всего расценённых позиций: 2" in text
         # Старой двусмысленной подписи больше нет. Проверка ищет подпись БЕЗ
         # уточнения «с объёмом» как отдельную строку файла: новая подпись содержит
         # старую как подстроку, поэтому сравниваются целые строки, а не вхождение.
@@ -502,6 +505,57 @@ class TestBankComparison:
         assert not any(
             line.split(" | ")[0].startswith("Позиций без норматива") for line in lines
         )
+
+    def test_partition_is_checkable_from_the_file(self, client, factories):
+        """Разбиение позиций обязано проверяться сложением ЧИСЕЛ ИЗ ФАЙЛА.
+
+        **Замечание внешнего ревью (третий круг).** Строка отчёта агрегирована по
+        каталожной работе: две сравнимые позиции одной работы дают одну видимую
+        строку, оба счётчика исключённого — нули, и обещанное «строки + два счётчика
+        = все позиции» по файлу не сходилось. Само разбиение в backend было верным;
+        ложным было обещание его проверяемости.
+
+        Теперь в итогах печатается счётчик сравнимых позиций, а в сноске —
+        независимо посчитанное «Всего расценённых позиций»: равенство проверяется
+        сложением трёх напечатанных чисел.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс арифметики")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract)
+
+        # Работа с ДВУМЯ сравнимыми позициями — пример из замечания: одна строка в файле.
+        twice = factories.CatalogPositionFactory.create(standard_job_title="Дважды сравнимая")
+        _position(factories, proposal, twice, unit_cost="100", weight="30")
+        _position(factories, proposal, twice, unit_cost="200", weight="20")
+        _standard(factories, twice, rate_class, "100")
+
+        # Позиция с объёмом, но без норматива.
+        no_std = factories.CatalogPositionFactory.create(standard_job_title="Без норматива")
+        _position(factories, proposal, no_std, unit_cost="50", weight="5")
+
+        # Позиция без объёма вовсе.
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Призрак")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("999"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        # Видимая строка данных одна, но позиций за ней две — и это напечатано.
+        assert "Сравнимых позиций (в расчёте отклонения): 2" in text
+        assert "с объёмом, но без норматива (в отклонение не вошли): 1" in text
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        # Общий счёт посчитан НЕЗАВИСИМО (count по VIEW, не сумма счётчиков):
+        # равенство 2 + 1 + 1 = 4 — проверяемый инвариант, а не тавтология.
+        assert "Всего расценённых позиций: 4" in text
 
     def test_bank_counts_priced_positions_without_volume(self, client, factories):
         """Счётчик «без объёма» работает и в отчёте «для банка», по выборке."""
