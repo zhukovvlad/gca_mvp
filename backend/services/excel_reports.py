@@ -225,7 +225,9 @@ def build_bank_comparison(data: dict, *, generated_at: dt.date) -> bytes:
             section["totals"],
             bg=C_CLASS_TOTAL_BG,
         )
-        row = _write_without_standard_note(ws, row, section["totals"])
+        # Оба счётчика per-класс: у секции теперь есть свой счётчик объёма
+        # (замечание ревью — общий скаляр терял классы целиком).
+        row = _write_excluded_counters(ws, row, section["totals"])
         row += 1
 
     row = _write_totals(ws, row, "ВСЕГО ПО ВЫБОРКЕ", data["totals"], bg=C_TOTAL_BG)
@@ -236,22 +238,28 @@ def build_bank_comparison(data: dict, *, generated_at: dt.date) -> bytes:
     return workbook_bytes(wb)
 
 
-def _write_without_standard_note(ws, row_num: int, totals: dict) -> int:
-    """Счётчик позиций без норматива — требование согласованного макета §6.1.
+def _write_excluded_counters(ws, row_num: int, totals: dict) -> int:
+    """Оба счётчика исключённого — под каждым итогом (макет §6.1).
 
-    Печатается всегда, даже нулём: отсутствие строки читалось бы как «таких позиций
+    Печатаются всегда, даже нулём: отсутствие строки читалось бы как «таких позиций
     не проверяли», а ноль говорит «проверили, их нет».
+
+    Подписи образуют **разбиение** (см. `crud/reports.py`): строки таблицы + эти два
+    счётчика = все расценённые позиции выборки, без пересечений. «С объёмом, но без
+    норматива» — уточнение по замечанию ревью: позиция без объёма и без норматива
+    считается один раз, в счётчике объёма, и прежняя подпись «без норматива: 0» для
+    такого файла была бы ложью.
     """
-    cell = ws.cell(
-        row=row_num,
-        column=1,
-        value=(
-            f"Позиций без норматива (в отклонение не вошли): "
-            f"{totals['positions_without_standard']}"
-        ),
-    )
-    cell.font = font(size=9)
-    return row_num + 1
+    for note in (
+        f"Позиций с объёмом, но без норматива (в отклонение не вошли): "
+        f"{totals['positions_without_standard']}",
+        f"Позиций с ценой, но без объёма (в расчёт не вошли): "
+        f"{totals['positions_without_volume']}",
+    ):
+        cell = ws.cell(row=row_num, column=1, value=note)
+        cell.font = font(size=9)
+        row_num += 1
+    return row_num
 
 
 def _write_footnote(ws, row_num: int, totals: dict) -> int:
@@ -261,19 +269,7 @@ def _write_footnote(ws, row_num: int, totals: dict) -> int:
     отклонение выглядит расхождением: сумма процентов по строкам, поделённая на их
     число, даёт другое значение.
     """
-    row_num = _write_without_standard_note(ws, row_num, totals)
-    # Что отбросил фильтр `weight > 0`. Печатается и нулём — по той же причине, что
-    # счётчик нормативов: отсутствие строки читалось бы как «не проверяли».
-    volume_note = ws.cell(
-        row=row_num,
-        column=1,
-        value=(
-            f"Позиций с ценой, но без объёма (в расчёт не вошли): "
-            f"{totals['positions_without_volume']}"
-        ),
-    )
-    volume_note.font = font(size=9)
-    row_num += 1
+    row_num = _write_excluded_counters(ws, row_num, totals)
     cell = ws.cell(
         row=row_num,
         column=1,

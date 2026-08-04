@@ -376,7 +376,7 @@ class TestBankComparison:
         # Строки нет — сравнивать её не с чем...
         assert "Без норматива вовсе" not in text
         # ...но счётчик о ней говорит, и он не нулевой.
-        assert "Позиций без норматива (в отклонение не вошли): 1" in text
+        assert "Позиций с объёмом, но без норматива (в отклонение не вошли): 1" in text
         # Отклонение итога не разбавлено этой работой: сравнимая часть ровно 0 %.
         row_index, _row = _find_row(ws, lambda r: r[0] == "ИТОГО ПО КЛАССУ «Класс со счётчиком»")
         assert Decimal(str(ws.cell(row=row_index, column=7).value)) == 0
@@ -408,7 +408,7 @@ class TestBankComparison:
         assert ws.cell(row=row_index, column=8).value == "нет норматива"
         assert ws.cell(row=row_index, column=8).value != 0
         # Счётчик при этом говорит, сколько позиций выпало.
-        assert "Позиций без норматива (в отклонение не вошли): 1" in _text_of(ws)
+        assert "Позиций с объёмом, но без норматива (в отклонение не вошли): 1" in _text_of(ws)
 
     def test_counter_is_printed_even_when_zero(self, client, factories):
         """Ноль печатается: отсутствие строки читалось бы как «не проверяли»."""
@@ -417,9 +417,91 @@ class TestBankComparison:
             client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": first_class.id})
         )
         text = _text_of(ws)
-        assert "Позиций без норматива (в отклонение не вошли): 0" in text
+        assert "Позиций с объёмом, но без норматива (в отклонение не вошли): 0" in text
         # Тот же принцип для позиций без объёма (находка собственного ревью).
         assert "но без объёма (в расчёт не вошли): 0" in text
+
+    def test_class_with_only_volume_less_positions_still_has_a_section(self, client, factories):
+        """Класс, где все расценённые позиции без объёма, не исчезает из отчёта.
+
+        **Замечание внешнего ревью на код собственного ревью.** Секции строились
+        только из строк, прошедших `weight > 0`, а счётчик «без объёма» был одним
+        общим числом. В итоге шапка говорила «Классов: 1», а секции этого класса не
+        было вовсе — класс исчезал молча, нарушая согласованный макет «итоги по
+        каждому классу и общий».
+        """
+        ghost_class = factories.RateClassFactory.create(title="Класс из призраков")
+        contract = factories.ContractFactory.create(rate_class=ghost_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract)
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Только без объёма")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("500"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": ghost_class.id})
+        )
+        text = _text_of(ws)
+
+        # Шапка считает класс — значит и секция обязана быть.
+        assert "Классов: 1" in text
+        assert "КЛАСС: Класс из призраков" in text
+        assert "ИТОГО ПО КЛАССУ «Класс из призраков»" in text
+        # Счётчик «без объёма» — по классу, а не только общим числом.
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        # И итог не утверждает «отклонение 0» там, где сравнивать нечего.
+        row_index, _row = _find_row(
+            ws, lambda r: r[0] == "ИТОГО ПО КЛАССУ «Класс из призраков»"
+        )
+        assert ws.cell(row=row_index, column=8).value != 0
+
+    def test_both_missing_position_is_counted_once_and_honestly(self, client, factories):
+        """Позиция без объёма И без норматива не даёт ложного «без норматива: 0».
+
+        **Замечание внешнего ревью.** Прежняя подпись «Позиций без норматива: 0» для
+        файла, где есть позиция без норматива (но и без объёма), была ложью: счётчик
+        считался после фильтра `weight > 0`. Решение — не пересечение счётчиков, а
+        разбиение с точной подписью: «с объёмом, но без норматива». Позиция без
+        объёма считается один раз, в счётчике объёма, — это блокирующая причина,
+        норматив ей не помог бы.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс разбиения")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract)
+        compared = factories.CatalogPositionFactory.create(standard_job_title="Сравнимая")
+        _position(factories, proposal, compared, unit_cost="100", weight="10")
+        _standard(factories, compared, rate_class, "100")
+
+        both_missing = factories.CatalogPositionFactory.create(standard_job_title="Без всего")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=both_missing,
+            unit_cost_total=Decimal("999"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        # Подпись точная, и ноль в ней — правда: позиций С ОБЪЁМОМ без норматива нет.
+        assert "с объёмом, но без норматива (в отклонение не вошли): 0" in text
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        # Старой двусмысленной подписи больше нет. Проверка ищет подпись БЕЗ
+        # уточнения «с объёмом» как отдельную строку файла: новая подпись содержит
+        # старую как подстроку, поэтому сравниваются целые строки, а не вхождение.
+        lines = text.split("\n")
+        assert not any(
+            line.split(" | ")[0].startswith("Позиций без норматива") for line in lines
+        )
 
     def test_bank_counts_priced_positions_without_volume(self, client, factories):
         """Счётчик «без объёма» работает и в отчёте «для банка», по выборке."""

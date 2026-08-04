@@ -19,6 +19,14 @@
 переплата — около +5 %. Банку показывают вторую цифру. Поэтому итог считается как
 `(факт − норматив) / норматив` по суммам, а не усреднением процентов.
 
+**Счётчики исключённого — разбиение, а не пересечение.** Каждая расценённая
+позиция выборки попадает ровно в одну из трёх групп: сравнимые (в строках отчёта),
+«с объёмом, но без норматива», «без объёма» (независимо от норматива — это
+блокирующая причина, норматив без объёма не помог бы). Уточнение по замечанию
+ревью: прежняя подпись «без норматива» для позиции без объёма И без норматива
+давала ложный ноль. Разбиение выбрано вместо пересекающихся счётчиков, чтобы
+суммы сходились: строки + два счётчика = все расценённые позиции.
+
 **Строки отчёта «для банка» — только работы, у которых норматив есть.** Так прямо
 попросил пользователь: «позиции без норматива в расчёт отклонения не входят и
 показываются отдельным счётчиком». Иначе они разбавили бы средневзвешенное
@@ -243,40 +251,68 @@ def bank_comparison(
         .order_by(RateClass.title.asc(), sa.desc("fact_amount"))
     ).all()
 
-    sections: list[dict] = []
-    by_class: dict[int, dict] = {}
-    for row in grouped:
-        section = by_class.get(row.rate_class_id)
-        if section is None:
-            section = {
-                "rate_class_id": row.rate_class_id,
-                "rate_class_title": row.rate_class_title,
-                "rows": [],
-            }
-            by_class[row.rate_class_id] = section
-            sections.append(section)
-        section["rows"].append(_bank_row(row))
-
-    for section in sections:
-        # Строки без норматива в отчёт не попадают, но их счётчик обязан дожить до
-        # итогов: этого требует согласованный макет (§6.1).
-        excluded = sum(r["positions_without_standard"] for r in section["rows"])
-        section["rows"] = [r for r in section["rows"] if r["volume"] is not None]
-        section["totals"] = _totals_of(section["rows"])
-        section["totals"]["positions_without_standard"] = excluded
-
-    # Тот же счётчик, что в своде, но по выборке: отдельный подзапрос latest, потому
-    # что подзапрос основного запроса уже связан с ним.
-    latest_for_count = latest_estimates()
-    no_volume = db.execute(
-        sa.select(sa.func.count())
+    # Классы выборки — из ДОГОВОРОВ с последней сметой, а не из строк, прошедших
+    # `weight > 0`. Иначе класс, все расценённые позиции которого без объёма,
+    # исчезал из отчёта молча: шапка говорила «Классов: N», а секции не было —
+    # нарушение согласованного макета «итоги по каждому классу». Замечание
+    # внешнего ревью, подтверждено тестом до правки.
+    latest_for_classes = latest_estimates()
+    scope_classes = db.execute(
+        sa.select(RateClass.id, RateClass.title)
         .select_from(
-            DEVIATIONS.join(
-                latest_for_count, latest_for_count.c.estimate_id == DEVIATIONS.c.estimate_id
+            sa.join(latest_for_classes, Contract, Contract.id == latest_for_classes.c.contract_id)
+            .join(RateClass, RateClass.id == Contract.rate_class_id)
+        )
+        .where(
+            *column_scope_filters(
+                rate_class_id=rate_class_id,
+                date_from=date_from,
+                date_to=date_to,
+                latest=latest_for_classes,
             )
         )
-        .where(_NO_VOLUME, *scope)
-    ).scalar_one()
+        .group_by(RateClass.id, RateClass.title)
+        .order_by(RateClass.title.asc())
+    ).all()
+
+    # Счётчик «без объёма» — ПО КЛАССАМ, по той же причине: общий скаляр не мог
+    # сказать, какому классу принадлежат отброшенные позиции.
+    latest_for_volume = latest_estimates()
+    no_volume_by_class = dict(
+        db.execute(
+            sa.select(DEVIATIONS.c.rate_class_id, sa.func.count())
+            .select_from(
+                DEVIATIONS.join(
+                    latest_for_volume, latest_for_volume.c.estimate_id == DEVIATIONS.c.estimate_id
+                )
+            )
+            .where(_NO_VOLUME, *scope)
+            .group_by(DEVIATIONS.c.rate_class_id)
+        ).all()
+    )
+
+    rows_by_class: dict[int, list[dict]] = {}
+    for row in grouped:
+        rows_by_class.setdefault(row.rate_class_id, []).append(_bank_row(row))
+
+    sections: list[dict] = []
+    for class_id, class_title in scope_classes:
+        bucket = rows_by_class.get(class_id, [])
+        # Строки без норматива в отчёт не попадают, но их счётчик обязан дожить до
+        # итогов: этого требует согласованный макет (§6.1).
+        excluded = sum(r["positions_without_standard"] for r in bucket)
+        kept = [r for r in bucket if r["volume"] is not None]
+        totals = _totals_of(kept)
+        totals["positions_without_standard"] = excluded
+        totals["positions_without_volume"] = no_volume_by_class.get(class_id, 0)
+        sections.append(
+            {
+                "rate_class_id": class_id,
+                "rate_class_title": class_title,
+                "rows": kept,
+                "totals": totals,
+            }
+        )
 
     return {
         "header": _bank_header(db, latest, date_from, date_to, rate_class_id),
@@ -286,7 +322,9 @@ def bank_comparison(
             "positions_without_standard": sum(
                 s["totals"]["positions_without_standard"] for s in sections
             ),
-            "positions_without_volume": no_volume,
+            "positions_without_volume": sum(
+                s["totals"]["positions_without_volume"] for s in sections
+            ),
         },
     }
 
