@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { normalizeDecimalInput } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/lib/useDebounce";
 import { useCatalogSearch, useCreateRateStandard, useRateClasses } from "@/services/queries";
@@ -82,7 +83,7 @@ function RateStandardForm({ onOpenChange }: { onOpenChange: (open: boolean) => v
       await create.mutateAsync({
         catalog_position_id: positionId as number,
         rate_class_id: Number(rateClassId),
-        standard_unit_rate: rate.trim(),
+        standard_unit_rate: normalizeDecimalInput(rate),
         valid_from: validFrom,
         valid_to: validTo || null,
         approved_by: approvedBy.trim() || null,

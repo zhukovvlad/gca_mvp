@@ -522,6 +522,28 @@ def test_patch_fixes_a_typo_without_touching_the_pair(client, pair):
     assert body["rate_class_id"] == rate_class.id
 
 
+def test_patch_into_an_inverted_period_gives_422(client, pair):
+    """Правка тоже обязана проверять период, а не только создание.
+
+    Пробел, найденный собственным ревью: проверка `_validate_period` в правке
+    вызывается ПОСЛЕ присваивания полей (иначе нельзя проверить их сочетание), и
+    тестом это не было закрыто вовсе.
+    """
+    position, rate_class = pair
+    standard_id = client.post(
+        "/api/v1/rate-standards", json=_payload(position, rate_class, valid_from="2025-01-01")
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/v1/rate-standards/{standard_id}", json={"valid_to": "2024-01-01"}
+    )
+    assert response.status_code == 422
+    assert "строго позже" in response.json()["detail"]
+
+    # И в БД период остался прежним.
+    assert client.get(f"/api/v1/rate-standards/{standard_id}").json()["valid_to"] is None
+
+
 def test_patch_into_overlapping_period_gives_400(client, pair):
     position, rate_class = pair
     first = client.post(

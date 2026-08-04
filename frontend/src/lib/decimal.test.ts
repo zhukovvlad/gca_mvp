@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { multiplyDecimalStrings } from "./decimal";
+import { multiplyDecimalStrings, normalizeDecimalInput } from "./decimal";
 import { formatDecimalMoney } from "./format";
 
 /** Неразрывный пробел: им `formatDecimalMoney` группирует разряды, как ru-RU. */
@@ -77,5 +77,29 @@ describe("formatDecimalMoney", () => {
 
   it("добавляет знак валюты неразрывным пробелом", () => {
     expect(formatDecimalMoney("1000")).toBe(`1${NBSP}000,00${NBSP}₽`);
+  });
+});
+
+describe("normalizeDecimalInput", () => {
+  it("принимает запятую как десятичный разделитель", () => {
+    // Русская раскладка даёт «1234,56» естественнее, чем «1234.56». Без этого
+    // сервер отвечал бы ошибкой валидации Pydantic — по-английски и не о том.
+    expect(normalizeDecimalInput("1234,56")).toBe("1234.56");
+  });
+
+  it("убирает пробелы, включая неразрывный", () => {
+    expect(normalizeDecimalInput("1 234 567,89")).toBe("1234567.89");
+    expect(normalizeDecimalInput(`1${NBSP}234${NBSP}567.89`)).toBe("1234567.89");
+  });
+
+  it("не трогает строку, где запятая — разделитель разрядов", () => {
+    // «1,234.56» слепая замена превратила бы в «1.234.56», то есть в мусор.
+    // Отдаём как есть: пусть отказывает сервер, а не мы молча искажаем ввод.
+    expect(normalizeDecimalInput("1,234.56")).toBe("1,234.56");
+  });
+
+  it("оставляет уже правильную строку без изменений", () => {
+    expect(normalizeDecimalInput("1075.35475")).toBe("1075.35475");
+    expect(normalizeDecimalInput("")).toBe("");
   });
 });

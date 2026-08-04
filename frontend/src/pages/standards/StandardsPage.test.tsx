@@ -1,8 +1,10 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import StandardsPage from "./StandardsPage";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 
 describe("Экран «Нормативы» (§7.3)", () => {
@@ -149,5 +151,79 @@ describe("Вкладка «Классы объектов» (решение §6.1
 
     expect(await screen.findByText(/договоров — 2, нормативов — 1/)).toBeInTheDocument();
     expect(screen.getByText(/снимок, который держит историю отклонений/)).toBeInTheDocument();
+  });
+});
+
+describe("Найдено собственным ревью: подтверждение и текст отказа", () => {
+  it("удаление норматива спрашивает подтверждение и объясняет последствие", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<StandardsPage />);
+    await screen.findByText("Кладка кирпичная");
+
+    await user.click(
+      screen.getByRole("button", { name: "Удалить норматив Кладка кирпичная" })
+    );
+
+    // Один клик по корзине не должен уничтожать утверждённую ставку.
+    expect(await screen.findByText("Удалить норматив?")).toBeInTheDocument();
+    expect(screen.getByText(/«нет норматива» и «ноль процентов» это разные вещи/))
+      .toBeInTheDocument();
+    expect(screen.getByText(/нужно переутверждение, а не удаление/)).toBeInTheDocument();
+  });
+
+  it("отмена подтверждения оставляет норматив на месте", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<StandardsPage />);
+    await screen.findByText("Кладка кирпичная");
+
+    await user.click(
+      screen.getByRole("button", { name: "Удалить норматив Кладка кирпичная" })
+    );
+    await user.click(await screen.findByRole("button", { name: "Отмена" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Удалить норматив?")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Кладка кирпичная")).toBeInTheDocument();
+    expect(screen.queryByText("Норматив удалён")).not.toBeInTheDocument();
+  });
+
+  it("сообщение валидации Pydantic доходит до человека, а не «status code 422»", async () => {
+    server.use(
+      http.post("/api/v1/rate-standards", () =>
+        HttpResponse.json(
+          {
+            detail: [
+              {
+                type: "value_error",
+                loc: ["body", "standard_unit_rate"],
+                msg: "Value error, Передавайте значение строкой, а не числом с плавающей точкой.",
+              },
+            ],
+          },
+          { status: 422 }
+        )
+      )
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<StandardsPage />);
+    await user.click(await screen.findByRole("button", { name: /Новый норматив/ }));
+
+    // Всё внутри диалога: «Класс объектов» есть и в фильтре списка за ним.
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Работа из каталога"), "Кладка");
+    await user.click(await within(dialog).findByText("Кладка кирпичная"));
+    await user.click(within(dialog).getByLabelText("Класс объектов"));
+    await user.click(await screen.findByRole("option", { name: "Жилые дома" }));
+    await user.type(within(dialog).getByLabelText("Ставка за единицу"), "100");
+    await user.type(within(dialog).getByLabelText("Действует с"), "2027-01-01");
+    await user.click(within(dialog).getByRole("button", { name: "Создать норматив" }));
+
+    expect(
+      await screen.findByText(
+        "Передавайте значение строкой, а не числом с плавающей точкой."
+      )
+    ).toBeInTheDocument();
   });
 });

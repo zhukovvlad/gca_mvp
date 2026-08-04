@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { multiplyDecimalStrings } from "@/lib/decimal";
+import { multiplyDecimalStrings, normalizeDecimalInput } from "@/lib/decimal";
 import { useReapproveRateStandard } from "@/services/queries";
 import type { RateStandard } from "@/types/domain";
 
@@ -70,7 +70,10 @@ function ReapproveForm({
     // перестаёт работать, как только человек правил ставку сам: перетирать
     // введённое значило бы отменять его решение.
     if (!rateTouched && value.trim()) {
-      const computed = multiplyDecimalStrings(standard.standard_unit_rate, value);
+      const computed = multiplyDecimalStrings(
+        standard.standard_unit_rate,
+        normalizeDecimalInput(value)
+      );
       if (computed !== null) setRate(computed);
     }
   }
@@ -83,8 +86,8 @@ function ReapproveForm({
         id: standard.id,
         input: {
           valid_from: validFrom,
-          standard_unit_rate: rate.trim() || null,
-          inflation_index: index.trim() || null,
+          standard_unit_rate: normalizeDecimalInput(rate) || null,
+          inflation_index: normalizeDecimalInput(index) || null,
           approved_by: approvedBy.trim() || null,
           note: note.trim() || null,
         },

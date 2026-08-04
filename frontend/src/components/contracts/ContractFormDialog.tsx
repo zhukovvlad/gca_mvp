@@ -29,6 +29,7 @@ import {
   useRateClasses,
   useUpdateContract,
 } from "@/services/queries";
+import { normalizeDecimalInput } from "@/lib/decimal";
 import { useDebounce } from "@/lib/useDebounce";
 import type { ContractCard, ContractInput } from "@/types/domain";
 
@@ -213,7 +214,7 @@ function ContractForm({
       rate_class_id: form.rate_class_id,
       title: form.title.trim() || null,
       signer: form.signer.trim() || null,
-      total_amount: form.total_amount.trim() || null,
+      total_amount: normalizeDecimalInput(form.total_amount) || null,
       notes: form.notes.trim() || null,
     };
 

@@ -358,3 +358,37 @@ def test_member_can_read_contracts_and_history(member, factories):
     assert member.get("/api/v1/contracts").status_code == 200
     assert member.get(f"/api/v1/contracts/{contract.id}").status_code == 200
     assert member.get(f"/api/v1/contracts/{contract.id}/import-jobs").status_code == 200
+
+
+def test_rejected_contract_patch_leaves_nothing_behind(client):
+    """Отвергнутая правка договора не видна и в той же сессии (собственное ревью).
+
+    Всё создаётся через API: фабрика не коммитит, а откат снял бы её данные вместе
+    с правкой.
+    """
+    rate_class_id = client.post("/api/v1/rate-classes", json={"title": "Класс для правки"}).json()["id"]
+    object_id = client.post(
+        "/api/v1/objects", json={"title": "Объект исходный", "rate_class_id": rate_class_id}
+    ).json()["id"]
+    other_object_id = client.post(
+        "/api/v1/objects", json={"title": "Объект другой", "rate_class_id": rate_class_id}
+    ).json()["id"]
+    contractor_id = client.post(
+        "/api/v1/contractors", json={"title": "Подрядчик", "inn": "222000222000"}
+    ).json()["id"]
+    contract_id = client.post(
+        "/api/v1/contracts",
+        json=_payload(object_id, contractor_id, signer="Иванов И.И."),
+    ).json()["id"]
+
+    # Объект существует и будет присвоен, а номер договора пустой — отказ приходит
+    # уже после мутации.
+    response = client.patch(
+        f"/api/v1/contracts/{contract_id}",
+        json={"object_id": other_object_id, "contract_number": "   "},
+    )
+    assert response.status_code == 422
+
+    body = client.get(f"/api/v1/contracts/{contract_id}").json()
+    assert body["object_id"] == object_id
+    assert body["signer"] == "Иванов И.И."

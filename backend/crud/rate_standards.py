@@ -24,7 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from crud.common import DomainError, clamp_page, iso, paginated
+from crud.common import DomainError, clamp_page, iso, paginated, rollback_on_domain_error
 from models import CatalogKind, CatalogPosition, RateClass, RateStandard, UnitOfMeasure
 
 log = logging.getLogger(__name__)
@@ -273,24 +273,27 @@ def update_rate_standard(
         db, standard.catalog_position_id, standard.rate_class_id
     )
 
-    if standard_unit_rate is not UNSET:
-        _validate_rate(standard_unit_rate)
-        standard.standard_unit_rate = standard_unit_rate
-    if valid_from is not UNSET:
-        standard.valid_from = valid_from
-    if valid_to is not UNSET:
-        standard.valid_to = valid_to
-    _validate_period(standard.valid_from, standard.valid_to)
-    if inflation_index is not UNSET:
-        if inflation_index is not None and inflation_index <= 0:
-            raise DomainError(422, "Коэффициент инфляции должен быть больше нуля.")
-        standard.inflation_index = inflation_index
-    if approved_by is not UNSET:
-        standard.approved_by = (approved_by or "").strip() or None
-    if approved_at is not UNSET:
-        standard.approved_at = approved_at
-    if note is not UNSET:
-        standard.note = (note or "").strip() or None
+    with rollback_on_domain_error(db):
+        if standard_unit_rate is not UNSET:
+            _validate_rate(standard_unit_rate)
+            standard.standard_unit_rate = standard_unit_rate
+        if valid_from is not UNSET:
+            standard.valid_from = valid_from
+        if valid_to is not UNSET:
+            standard.valid_to = valid_to
+        # Проверка сочетания дат возможна только после присваивания — поэтому
+        # отказ здесь застаёт объект уже изменённым, и его надо откатить.
+        _validate_period(standard.valid_from, standard.valid_to)
+        if inflation_index is not UNSET:
+            if inflation_index is not None and inflation_index <= 0:
+                raise DomainError(422, "Коэффициент инфляции должен быть больше нуля.")
+            standard.inflation_index = inflation_index
+        if approved_by is not UNSET:
+            standard.approved_by = (approved_by or "").strip() or None
+        if approved_at is not UNSET:
+            standard.approved_at = approved_at
+        if note is not UNSET:
+            standard.note = (note or "").strip() or None
 
     try:
         db.commit()

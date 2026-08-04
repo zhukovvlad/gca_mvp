@@ -1,9 +1,12 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import ReviewPage from "./ReviewPage";
 import { handlerState } from "@/test/handlers";
+import { server } from "@/test/server";
+import { MAX_REVIEW_BATCH } from "@/types/domain";
 import { renderWithProviders } from "@/test/utils";
 
 describe("Экран «Ручной матчинг» (§7.2)", () => {
@@ -162,4 +165,55 @@ describe("Права (§3): очередь принадлежит и member", ()
     expect(within(row).getByRole("button", { name: "Слить" })).toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "Это работа" })).toBeInTheDocument();
   });
+});
+
+describe("Найдено собственным ревью: потолок пакета", () => {
+  /** Очередь из N строк на одной странице — чтобы «выбрать все» дало >200. */
+  function queueOf(count: number) {
+    const items = Array.from({ length: count }, (_, index) => ({
+      id: 1000 + index,
+      standard_job_title: `Работа очереди ${index}`,
+      normalized_job_title: `работа очередь ${index}`,
+      unit_id: null,
+      unit_code: null,
+      unit_name: null,
+      position_count: 1,
+      sample_titles: [],
+      created_at: null,
+    }));
+    server.use(
+      http.get("/api/v1/review/queue", () =>
+        HttpResponse.json({ items, total: items.length, page: 1, page_size: items.length })
+      )
+    );
+  }
+
+  it(
+    "выделение больше потолка объясняется и блокирует пакет",
+    async () => {
+      queueOf(MAX_REVIEW_BATCH + 1);
+      const user = userEvent.setup();
+      renderWithProviders(<ReviewPage />);
+      await screen.findByText("Работа очереди 0");
+
+      await user.click(screen.getByLabelText("Выбрать все строки на странице"));
+      expect(screen.getByText(`Выбрано строк: ${MAX_REVIEW_BATCH + 1}`)).toBeInTheDocument();
+
+      // Иначе сервер отвечает 422 от Pydantic — по-английски и уже после того, как
+      // человек потерял выделение.
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        `не больше ${MAX_REVIEW_BATCH} строк`
+      );
+      expect(screen.getByRole("button", { name: "В мусор" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Утвердить как работы" })).toBeDisabled();
+      expect(handlerState.lastBatch).toBeNull();
+    },
+    // Рендер 200+ строк в jsdom дорог; дефолтных 5 с не хватает.
+    30_000
+  );
+
+  // Отдельного теста «ровно потолок разрешён» нет намеренно: он стоил бы ещё
+  // одного рендера 200 строк (~6 с), а границу и так держат две вещи — строгое
+  // сравнение `>` в экране и `max_length=200` на сервере, который проверен
+  // тестом бэкенда `test_batch_kind_rejects_empty_and_oversized_batches`.
 });

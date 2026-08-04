@@ -33,7 +33,7 @@ import {
   useSetReviewKind,
   useUnits,
 } from "@/services/queries";
-import type { ManualKind, ReviewQueueItem, ReviewSort } from "@/types/domain";
+import { MAX_REVIEW_BATCH, type ManualKind, type ReviewQueueItem, type ReviewSort } from "@/types/domain";
 
 const PAGE_SIZE = 50;
 const ALL_UNITS = "all";
@@ -102,8 +102,12 @@ export default function ReviewPage() {
     });
   }
 
+  // Выделение живёт поверх страниц (оператор может набрать мусор с нескольких),
+  // поэтому упереться в серверный потолок реально — и объяснить это надо здесь.
+  const batchTooLarge = selected.size > MAX_REVIEW_BATCH;
+
   async function applyBatch(kind: ManualKind) {
-    if (selected.size === 0) return;
+    if (selected.size === 0 || batchTooLarge) return;
     await batchKind.mutateAsync({ ids: [...selected], kind });
     // Разобранные строки уходят из очереди — выделение больше ни к чему не
     // относится, и оставить его значило бы применить следующее действие к
@@ -194,14 +198,35 @@ export default function ReviewPage() {
       {selected.size > 0 && (
         <Surface className="mt-4 flex flex-wrap items-center gap-3" tone="sunken">
           <span className="text-sm text-fg">Выбрано строк: {selected.size}</span>
+          {batchTooLarge && (
+            <span role="alert" className="text-sm text-warning-text">
+              За один раз можно разметить не больше {MAX_REVIEW_BATCH} строк — пакет
+              держит их заблокированными до конца транзакции. Снимите лишние.
+            </span>
+          )}
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={() => void applyBatch("POSITION")} disabled={batchKind.isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void applyBatch("POSITION")}
+              disabled={batchKind.isPending || batchTooLarge}
+            >
               Утвердить как работы
             </Button>
-            <Button size="sm" variant="outline" onClick={() => void applyBatch("HEADER")} disabled={batchKind.isPending}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void applyBatch("HEADER")}
+              disabled={batchKind.isPending || batchTooLarge}
+            >
               Пометить заголовками
             </Button>
-            <Button size="sm" variant="destructive" onClick={() => void applyBatch("TRASH")} disabled={batchKind.isPending}>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void applyBatch("TRASH")}
+              disabled={batchKind.isPending || batchTooLarge}
+            >
               В мусор
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

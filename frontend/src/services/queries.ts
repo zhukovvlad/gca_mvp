@@ -29,10 +29,37 @@ import type {
   ReviewQueueParams,
 } from "@/types/domain";
 
-/** Достаёт `detail` из ответа FastAPI — там лежит человекочитаемая причина. */
+/** Элемент `detail` при ошибке валидации Pydantic. */
+interface ValidationIssue {
+  msg?: string;
+  loc?: (string | number)[];
+}
+
+/**
+ * Достаёт человекочитаемую причину отказа из ответа FastAPI.
+ *
+ * `detail` бывает **двух видов**, и это не мелочь. Доменные отказы
+ * (`HTTPException`) кладут туда строку. А ошибки валидации Pydantic — **список**
+ * объектов, и сообщение лежит в `msg` каждого, с приставкой «Value error, ».
+ *
+ * Пока разбиралась только строка, все тексты, написанные в валидаторах, до
+ * человека не доходили: он видел «Request failed with status code 422». А это
+ * ровно те подсказки, которые нужны в момент ошибки — «сумму передавайте
+ * строкой», «поле не может быть null», «в пакете не больше 200 строк».
+ */
 export function apiErrorDetail(err: unknown): string | undefined {
-  const detail = (err as AxiosError<{ detail?: string }>)?.response?.data?.detail;
-  return typeof detail === "string" ? detail : undefined;
+  const detail = (err as AxiosError<{ detail?: string | ValidationIssue[] }>)?.response?.data
+    ?.detail;
+
+  if (typeof detail === "string") return detail;
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((issue) => (issue?.msg ?? "").replace(/^Value error,\s*/, "").trim())
+      .filter(Boolean);
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return undefined;
 }
 
 export function apiErrorStatus(err: unknown): number | undefined {

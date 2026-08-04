@@ -30,6 +30,7 @@ from crud.common import (
     iso,
     paginated,
     require_text,
+    rollback_on_domain_error,
     translating_integrity,
 )
 from models import Contract, Contractor, ObjectModel, Proposal, RateClass, RateStandard
@@ -243,12 +244,16 @@ def update_object(
     obj = db.get(ObjectModel, object_id)
     if obj is None:
         raise DomainError(404, f"Объект {object_id} не найден.")
-    if title is not UNSET:
-        obj.title = require_text(title, "Название")
-    if address is not UNSET:
-        obj.address = (address or "").strip()
-    if rate_class_id is not UNSET:
-        obj.rate_class_id = _resolve_rate_class(db, rate_class_id)
+    # Откат обязателен: `_resolve_rate_class` отвергает неизвестный класс уже
+    # после того, как название и адрес присвоены, и без отката следующее чтение в
+    # этой же сессии увидело бы отвергнутую правку.
+    with rollback_on_domain_error(db):
+        if title is not UNSET:
+            obj.title = require_text(title, "Название")
+        if address is not UNSET:
+            obj.address = (address or "").strip()
+        if rate_class_id is not UNSET:
+            obj.rate_class_id = _resolve_rate_class(db, rate_class_id)
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
     log.info("object_updated id=%s", object_id)
@@ -362,14 +367,16 @@ def update_contractor(
     contractor = db.get(Contractor, contractor_id)
     if contractor is None:
         raise DomainError(404, f"Подрядчик {contractor_id} не найден.")
-    if title is not UNSET:
-        contractor.title = require_text(title, "Название")
-    if inn is not UNSET:
-        contractor.inn = require_text(inn, "БИН/ИНН")
-    if address is not UNSET:
-        contractor.address = (address or "").strip()
-    if accreditation is not UNSET:
-        contractor.accreditation = (accreditation or "").strip()
+    # Пустой БИН/ИНН отвергается после того, как название уже присвоено.
+    with rollback_on_domain_error(db):
+        if title is not UNSET:
+            contractor.title = require_text(title, "Название")
+        if inn is not UNSET:
+            contractor.inn = require_text(inn, "БИН/ИНН")
+        if address is not UNSET:
+            contractor.address = (address or "").strip()
+        if accreditation is not UNSET:
+            contractor.accreditation = (accreditation or "").strip()
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
     log.info("contractor_updated id=%s", contractor_id)

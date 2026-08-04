@@ -30,6 +30,7 @@ from crud.common import (
     iso,
     paginated,
     require_text,
+    rollback_on_domain_error,
     translating_integrity,
 )
 from models import (
@@ -336,30 +337,34 @@ def update_contract(
     """
     contract = get_contract(db, contract_id)
 
-    if object_id is not UNSET:
-        if db.get(ObjectModel, object_id) is None:
-            raise DomainError(404, f"Объект {object_id} не найден.")
-        contract.object_id = object_id
-    if contractor_id is not UNSET:
-        if db.get(Contractor, contractor_id) is None:
-            raise DomainError(404, f"Подрядчик {contractor_id} не найден.")
-        contract.contractor_id = contractor_id
-    if rate_class_id is not UNSET:
-        if db.get(RateClass, rate_class_id) is None:
-            raise DomainError(404, f"Класс объектов {rate_class_id} не найден.")
-        contract.rate_class_id = rate_class_id
-    if contract_number is not UNSET:
-        contract.contract_number = require_text(contract_number, "Номер договора")
-    if title is not UNSET:
-        contract.title = (title or "").strip() or None
-    if signer is not UNSET:
-        contract.signer = (signer or "").strip() or None
-    if signed_date is not UNSET:
-        contract.signed_date = signed_date
-    if total_amount is not UNSET:
-        contract.total_amount = total_amount
-    if notes is not UNSET:
-        contract.notes = (notes or "").strip() or None
+    # Поля применяются по одному, а отказать может любое из последующих —
+    # например пустой номер договора после уже присвоенного объекта. Без откага
+    # отвергнутая правка оставалась бы видимой в этой сессии.
+    with rollback_on_domain_error(db):
+        if object_id is not UNSET:
+            if db.get(ObjectModel, object_id) is None:
+                raise DomainError(404, f"Объект {object_id} не найден.")
+            contract.object_id = object_id
+        if contractor_id is not UNSET:
+            if db.get(Contractor, contractor_id) is None:
+                raise DomainError(404, f"Подрядчик {contractor_id} не найден.")
+            contract.contractor_id = contractor_id
+        if rate_class_id is not UNSET:
+            if db.get(RateClass, rate_class_id) is None:
+                raise DomainError(404, f"Класс объектов {rate_class_id} не найден.")
+            contract.rate_class_id = rate_class_id
+        if contract_number is not UNSET:
+            contract.contract_number = require_text(contract_number, "Номер договора")
+        if title is not UNSET:
+            contract.title = (title or "").strip() or None
+        if signer is not UNSET:
+            contract.signer = (signer or "").strip() or None
+        if signed_date is not UNSET:
+            contract.signed_date = signed_date
+        if total_amount is not UNSET:
+            contract.total_amount = total_amount
+        if notes is not UNSET:
+            contract.notes = (notes or "").strip() or None
 
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()

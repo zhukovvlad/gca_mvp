@@ -191,6 +191,15 @@ export interface CatalogPositionRow {
 
 export type ManualKind = "POSITION" | "HEADER" | "TRASH";
 
+/**
+ * Потолок пакетной разметки — зеркало `MAX_BATCH_SIZE` из `routers/review.py`.
+ *
+ * Нужен на клиенте, чтобы объяснить ограничение до отправки. Иначе сервер
+ * отвечает 422 от Pydantic, и человек видит сообщение про «List should have at
+ * most 200 items» — на английском и в момент, когда выделение уже потеряно.
+ */
+export const MAX_REVIEW_BATCH = 200;
+
 export interface ReviewQueueItem {
   id: number;
   standard_job_title: string;

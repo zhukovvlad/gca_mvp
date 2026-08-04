@@ -72,6 +72,30 @@ def paginated(db: Session, stmt: Select, *, order_by, page: int, page_size: int)
 
 
 @contextmanager
+def rollback_on_domain_error(db: Session) -> Iterator[None]:
+    """Откатывает сессию, если доменная проверка отвергла уже начатую правку.
+
+    Функции правки применяют поля по одному, а часть проверок возможна только
+    ПОСЛЕ присваивания — период норматива проверяется по сочетанию `valid_from` и
+    `valid_to`, и до присваивания сочетания ещё нет. Значит между первой мутацией
+    и отказом объект уже изменён.
+
+    В проде это не приводило к записи мусора: сессия живёт один запрос, и
+    `get_db` её закрывает. Но **корректность держалась на времени жизни сессии, а
+    не на коде** — ровно та же хрупкость, из-за которой ORM-кэш обходил
+    `FOR UPDATE` (`docs/phase5-crud-review.md` §10.1). Пока откат не делался явно,
+    любое последующее чтение в той же сессии видело отвергнутое значение: тест
+    `test_patch_into_an_inverted_period_gives_422` показывал это прямо —
+    `GET` после отклонённого `PATCH` возвращал невалидную дату.
+    """
+    try:
+        yield
+    except DomainError:
+        db.rollback()
+        raise
+
+
+@contextmanager
 def translating_integrity(db: Session, messages: dict[str, str]) -> Iterator[None]:
     """Переводит нарушение известного констрейнта в `DomainError`, чужое — пропускает.
 

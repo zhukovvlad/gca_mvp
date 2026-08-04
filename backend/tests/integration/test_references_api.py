@@ -247,3 +247,93 @@ def test_member_cannot_change_references(member, method, path, payload):
 )
 def test_member_can_read_references(member, path):
     assert member.get(path).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+#  Счётчики использования: подзапросы обязаны быть коррелированными
+# ---------------------------------------------------------------------------
+
+def test_object_counters_are_per_row_not_global(client, factories):
+    """Счётчик договоров считается ДЛЯ КАЖДОГО объекта отдельно.
+
+    Прежние тесты этого не доказывали: они проверяли счётчики там, где
+    коррелированный и некоррелированный подзапрос дают одно и то же (ноль при
+    отсутствии договоров вовсе). Потеряй подзапрос корреляцию — каждый объект
+    показывал бы ОБЩЕЕ число договоров в базе, и заметить это было бы нечем.
+    """
+    with_contract = factories.ObjectFactory.create(title="Объект с договором")
+    without_contract = factories.ObjectFactory.create(title="Объект без договора")
+    factories.ContractFactory.create(object=with_contract)
+    factories.ContractFactory.create(object=with_contract)
+
+    items = {item["title"]: item for item in client.get("/api/v1/objects").json()["items"]}
+    assert items["Объект с договором"]["contracts_count"] == 2
+    assert items[without_contract.title]["contracts_count"] == 0
+
+
+def test_contractor_counters_are_per_row_not_global(client, factories):
+    busy = factories.ContractorFactory.create(title="Подрядчик занятый")
+    idle = factories.ContractorFactory.create(title="Подрядчик свободный")
+    factories.ContractFactory.create(contractor=busy)
+
+    items = {item["title"]: item for item in client.get("/api/v1/contractors").json()["items"]}
+    assert items["Подрядчик занятый"]["contracts_count"] == 1
+    assert items[idle.title]["contracts_count"] == 0
+
+
+def test_rate_class_counters_are_per_row_not_global(client, factories):
+    """Три счётчика класса — договоры, объекты, нормативы — каждый по своей строке."""
+    used = factories.RateClassFactory.create(title="Класс используемый")
+    unused = factories.RateClassFactory.create(title="Класс свободный")
+    factories.ObjectFactory.create(rate_class=used)
+    factories.ContractFactory.create(rate_class=used)
+    factories.RateStandardFactory.create(rate_class=used)
+
+    items = {item["title"]: item for item in client.get("/api/v1/rate-classes").json()}
+    assert items["Класс используемый"]["contracts_count"] == 1
+    assert items["Класс используемый"]["objects_count"] == 1
+    assert items["Класс используемый"]["standards_count"] == 1
+    assert items[unused.title]["contracts_count"] == 0
+    assert items[unused.title]["objects_count"] == 0
+    assert items[unused.title]["standards_count"] == 0
+
+
+def test_rejected_object_patch_leaves_nothing_behind(client):
+    """Отвергнутая правка не должна быть видна даже в той же сессии.
+
+    Найдено собственным ревью. Поля применяются по одному, а `_resolve_rate_class`
+    отвергает неизвестный класс уже после присваивания названия — без явного
+    отката объект оставался «грязным», и следующее чтение в этой же сессии
+    показывало отвергнутое название. В проде это не приводило к записи (сессия
+    живёт один запрос), но корректность держалась на времени её жизни, а не на коде.
+
+    Объект создаётся **через API**, а не фабрикой: фабрика не коммитит, а откат в
+    транзакционной фикстуре снял бы вместе с правкой и её данные — тест перестал
+    бы проверять то, ради чего написан.
+    """
+    object_id = client.post("/api/v1/objects", json={"title": "Название исходное"}).json()["id"]
+
+    response = client.patch(
+        f"/api/v1/objects/{object_id}",
+        json={"title": "Название отвергнутое", "rate_class_id": 999_999},
+    )
+    assert response.status_code == 404
+
+    assert client.get(f"/api/v1/objects/{object_id}").json()["title"] == "Название исходное"
+
+
+def test_rejected_contractor_patch_leaves_nothing_behind(client):
+    """То же для подрядчика: пустой БИН/ИНН отвергается после присваивания названия."""
+    contractor_id = client.post(
+        "/api/v1/contractors", json={"title": "Подрядчик исходный", "inn": "111000111000"}
+    ).json()["id"]
+
+    response = client.patch(
+        f"/api/v1/contractors/{contractor_id}",
+        json={"title": "Подрядчик отвергнутый", "inn": "   "},
+    )
+    assert response.status_code == 422
+
+    body = client.get(f"/api/v1/contractors/{contractor_id}").json()
+    assert body["title"] == "Подрядчик исходный"
+    assert body["inn"] == "111000111000"

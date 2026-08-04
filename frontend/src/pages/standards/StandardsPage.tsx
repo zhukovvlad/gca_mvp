@@ -10,6 +10,16 @@ import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -64,6 +74,12 @@ export default function StandardsPage() {
   const [page, setPage] = useState(1);
   const [formOpen, setFormOpen] = useState(false);
   const [reapproving, setReapproving] = useState<RateStandard | null>(null);
+  /**
+   * Удаление норматива необратимо и стирает утверждённую ставку вместе с её
+   * периодом, поэтому спрашивается подтверждение — как у классов объектов. Без
+   * него один промах мышью убирал ставку, по которой считаются отклонения.
+   */
+  const [toDelete, setToDelete] = useState<RateStandard | null>(null);
 
   const search = useDebounce(searchInput, 300);
   const classesQ = useRateClasses();
@@ -239,7 +255,7 @@ export default function StandardsPage() {
                                 variant="ghost"
                                 aria-label={`Удалить норматив ${standard.catalog_position_title}`}
                                 disabled={remove.isPending}
-                                onClick={() => remove.mutate(standard.id)}
+                                onClick={() => setToDelete(standard)}
                               >
                                 <Trash2 className="size-4" />
                               </Button>
@@ -266,6 +282,41 @@ export default function StandardsPage() {
           <RateClassesTab />
         </TabsContent>
       </Tabs>
+
+      <AlertDialog open={toDelete !== null} onOpenChange={(open) => !open && setToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить норматив?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {toDelete && (
+                <>
+                  «{toDelete.catalog_position_title}» · {toDelete.rate_class_title} ·{" "}
+                  {toDelete.standard_unit_rate} с {toDelete.valid_from}. Удаление
+                  необратимо: отклонения смет за этот период перестанут считаться вовсе —
+                  «нет норматива» и «ноль процентов» это разные вещи (§10). Если ставка
+                  просто изменилась, нужно переутверждение, а не удаление.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
+            <AlertDialogAction
+              render={
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    if (toDelete) remove.mutate(toDelete.id);
+                    setToDelete(null);
+                  }}
+                >
+                  Удалить
+                </Button>
+              }
+            />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <RateStandardFormDialog open={formOpen} onOpenChange={setFormOpen} />
       <ReapproveDialog
