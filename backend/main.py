@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from database import SessionLocal
 from routers import admin as admin_router
+from routers import analytics as analytics_router
 from routers import auth as auth_router
 from routers import catalog as catalog_router
 from routers import contracts as contracts_router
@@ -155,6 +156,8 @@ app.include_router(review_router.router, dependencies=_auth_dep)
 # Аналитика фазы 6 (§7.4–§7.6, §9.6). Настройки: чтение всем — `passport_top_n`
 # нужен паспорту, а паспорт доступен и `member`; изменение — admin внутри роутера.
 app.include_router(settings_router.router, dependencies=_auth_dep)
+# Паспорт и матрица — чтение, поэтому доступны и `member` (§3).
+app.include_router(analytics_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")
