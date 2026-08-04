@@ -24,6 +24,7 @@ from routers import import_jobs as import_jobs_router
 from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import review as review_router
+from routers import settings as settings_router
 from routers import units
 from services.maintenance import run_startup_maintenance
 from storage import get_storage
@@ -150,6 +151,10 @@ app.include_router(catalog_router.router, dependencies=_auth_dep)
 app.include_router(rate_standards_router.router, dependencies=_auth_dep)
 # Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
 app.include_router(review_router.router, dependencies=_auth_dep)
+
+# Аналитика фазы 6 (§7.4–§7.6, §9.6). Настройки: чтение всем — `passport_top_n`
+# нужен паспорту, а паспорт доступен и `member`; изменение — admin внутри роутера.
+app.include_router(settings_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

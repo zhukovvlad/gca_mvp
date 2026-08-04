@@ -15,6 +15,10 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from models import (
+    PASSPORT_TOP_N_DEFAULT,
+    PASSPORT_TOP_N_MAX,
+    PASSPORT_TOP_N_MIN,
+    AppSettings,
     CatalogKind,
     CatalogPosition,
     EstimateRawData,
@@ -427,6 +431,72 @@ class TestCascades:
             db_session.execute(
                 sa.delete(CatalogPosition).where(CatalogPosition.id == position.id)
             )
+
+
+# ---------------------------------------------------------------------------
+#  app_settings: singleton и диапазон топ-N (миграция 0004, решение §6.2 фазы 6)
+# ---------------------------------------------------------------------------
+
+class TestAppSettings:
+    """Ограничения таблицы настроек.
+
+    Смысл решения §6.2 в том, что негодное значение **непредставимо в БД**, а не
+    «проверяется в Python». Значит проверять надо именно отказ БД: если эти
+    констрейнты исчезнут, вариант «ключ→значение», от которого §6.2 отказался,
+    вернётся молча.
+    """
+
+    def test_migration_seeded_the_singleton_row(self, db_session):
+        rows = db_session.execute(sa.select(AppSettings.id, AppSettings.passport_top_n)).all()
+        assert rows == [(1, PASSPORT_TOP_N_DEFAULT)]
+
+    def test_second_settings_row_rejected(self, db_session):
+        """CHECK (id = 1): вторая строка настроек непредставима."""
+        with rejected(db_session, contains="ck_app_settings_singleton"):
+            db_session.execute(
+                sa.insert(AppSettings).values(id=2, passport_top_n=PASSPORT_TOP_N_DEFAULT)
+            )
+
+    @pytest.mark.parametrize(
+        "value", [PASSPORT_TOP_N_MIN - 1, PASSPORT_TOP_N_MAX + 1, 0, -5, 1000]
+    )
+    def test_out_of_range_top_n_rejected(self, db_session, value):
+        """Диапазон держит БД — включая правку мимо приложения, прямо в psql."""
+        with rejected(db_session, contains="ck_app_settings_passport_top_n"):
+            db_session.execute(
+                sa.update(AppSettings).where(AppSettings.id == 1).values(passport_top_n=value)
+            )
+
+    @pytest.mark.parametrize("value", [PASSPORT_TOP_N_MIN, PASSPORT_TOP_N_MAX])
+    def test_range_boundaries_accepted(self, db_session, value):
+        """Границы включительно: BETWEEN, а не строгое сравнение.
+
+        Без этой пары предыдущий тест прошёл бы и на констрейнте, который
+        запрещает вообще всё.
+        """
+        db_session.execute(
+            sa.update(AppSettings).where(AppSettings.id == 1).values(passport_top_n=value)
+        )
+        db_session.flush()
+        assert db_session.execute(sa.select(AppSettings.passport_top_n)).scalar_one() == value
+
+    def test_migration_literals_match_model_constants(self):
+        """Миграция 0004 обязана быть неизменной во времени, поэтому числа в ней —
+        литералы, а не импорт из `models`. Цена — возможность разъехаться; этот тест
+        её и закрывает."""
+        import importlib.util
+        from pathlib import Path
+
+        path = next(
+            Path(__file__).resolve().parents[2].glob("alembic/versions/*0004-app_settings.py")
+        )
+        spec = importlib.util.spec_from_file_location("_migration_0004", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        assert module.PASSPORT_TOP_N_DEFAULT == PASSPORT_TOP_N_DEFAULT
+        assert module.PASSPORT_TOP_N_MIN == PASSPORT_TOP_N_MIN
+        assert module.PASSPORT_TOP_N_MAX == PASSPORT_TOP_N_MAX
 
 
 # ---------------------------------------------------------------------------

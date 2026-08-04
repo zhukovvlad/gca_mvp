@@ -727,3 +727,53 @@ class RateStandard(Base):
         # периодов для одной пары (позиция, класс); создаётся raw SQL в 0002.
         # Он же даёт gist-индекс по (catalog_position_id, rate_class_id, период).
     )
+
+
+# ---------------------------------------------------------------------------
+#  Настройки приложения (фаза 6)
+# ---------------------------------------------------------------------------
+
+#: Границы «топ-N ключевых расценок» паспорта (AGENTS.md §7.4).
+#:
+#: Верхняя граница — требование DoD §10 «паспорт печатается на одну страницу А4»,
+#: а не произвольное ограничение: ключевые расценки по §7.4 и есть топ-N, поэтому
+#: страница полна, когда на ней топ-N, и держать это по построению правильнее, чем
+#: обрезать список при печати. Обоснование числа — `docs/phase6-analytics.md` §1.5.
+#:
+#: Значения продублированы литералами в миграции 0004 (она обязана быть неизменной
+#: во времени); расхождение ловит `test_schema_constraints.py::TestAppSettings`.
+PASSPORT_TOP_N_DEFAULT = 15
+PASSPORT_TOP_N_MIN = 1
+PASSPORT_TOP_N_MAX = 20
+
+
+class AppSettings(Base):
+    """Настройки приложения — ОДНА строка с типизированными колонками (решение §6.2).
+
+    Не «ключ→значение»: в такой таблице БД хранила бы `passport_top_n = 'абв'`, и
+    ошибка всплыла бы при отрисовке паспорта. Здесь диапазон держит `CHECK`, то есть
+    БД, — тот же принцип, что у `ck_rate_standards_rate_positive`.
+
+    `id` — singleton через `CHECK (id = 1)`: вторая строка непредставима, поэтому
+    читающий код не выбирает между строками.
+
+    **Правка только через ORM.** `updated_at` обновляется `onupdate` на стороне
+    SQLAlchemy, и raw-SQL `UPDATE` метку не тронет (соглашение
+    `docs/phase2-schema.md`).
+    """
+    __tablename__ = "app_settings"
+
+    id = Column(SmallInteger, primary_key=True, server_default=sa_text("1"))
+    passport_top_n = Column(
+        Integer, nullable=False, server_default=sa_text(str(PASSPORT_TOP_N_DEFAULT))
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_app_settings_singleton"),
+        CheckConstraint(
+            f"passport_top_n BETWEEN {PASSPORT_TOP_N_MIN} AND {PASSPORT_TOP_N_MAX}",
+            name="ck_app_settings_passport_top_n",
+        ),
+    )
