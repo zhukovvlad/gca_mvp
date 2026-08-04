@@ -207,6 +207,39 @@ class TestContractSummary:
         assert "ГП-12-2025" in disposition  # слэш заменён, путь не сломан
         assert "/" not in disposition.split("''")[-1]
 
+    def test_priced_position_without_volume_is_counted_not_silently_dropped(self, client, factories):
+        """Позиция с ценой, но без обоих количеств, не должна исчезать молча.
+
+        **Находка собственного ревью фазы.** Свод заявляет «все расценённые работы»,
+        но фильтр `weight > 0` (он нужен: взвешивать без объёма нечем, §6) выбрасывал
+        такие позиции без следа. В матрице это законно — §6 прямо говорит «ячейка
+        пустая», — а в документе, который показывает предмет торга целиком, молчаливая
+        потеря строки с ценой означает, что читатель о ней не узнает вовсе.
+
+        Строки в таблице нет — это правильно; но счётчик обязан сказать, что она была.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
+        _position(factories, proposal, normal, unit_cost="100", weight="10")
+
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Позиция без объёма")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("500"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+        )
+        text = _text_of(ws)
+
+        assert "Позиция без объёма" not in text  # в строках её нет — взвесить нечем
+        assert "но без объёма (в расчёт не вошли): 1" in text
+
     def test_contract_without_estimate_still_produces_a_file(self, client, factories):
         """Смета не загружена — файл всё равно отдаётся, с реквизитами и пустой таблицей.
 
@@ -383,7 +416,36 @@ class TestBankComparison:
         ws = _sheet(
             client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": first_class.id})
         )
-        assert "Позиций без норматива (в отклонение не вошли): 0" in _text_of(ws)
+        text = _text_of(ws)
+        assert "Позиций без норматива (в отклонение не вошли): 0" in text
+        # Тот же принцип для позиций без объёма (находка собственного ревью).
+        assert "но без объёма (в расчёт не вошли): 0" in text
+
+    def test_bank_counts_priced_positions_without_volume(self, client, factories):
+        """Счётчик «без объёма» работает и в отчёте «для банка», по выборке."""
+        rate_class = factories.RateClassFactory.create(title="Класс с призраком")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract)
+        normal = factories.CatalogPositionFactory.create(standard_job_title="Нормальная работа")
+        _position(factories, proposal, normal, unit_cost="100", weight="10")
+        _standard(factories, normal, rate_class, "100")
+
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Призрак без объёма")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("500"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+        assert "Призрак без объёма" not in text
+        assert "но без объёма (в расчёт не вошли): 1" in text
 
     def test_only_latest_estimate_participates(self, client, factories):
         """§6 и в файле: исходная смета вытесняется допсоглашением."""

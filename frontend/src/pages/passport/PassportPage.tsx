@@ -114,10 +114,10 @@ export default function PassportPage() {
             />
             {keyRates.length > 0 && (
               <p className="mt-2 text-xs text-fg-tertiary">
-                Показаны {totals.positions_shown} из {totals.positions_priced} расценённых работ
-                сметы — работы с наибольшей стоимостью. Отклонение считается от норматива класса
-                «{contract.rate_class_title}» на дату сметы; у {totals.without_standard} работ
-                норматива на эту дату нет, и они не сравниваются.
+                Показаны {totals.positions_shown} из {totals.positions_priced} расценённых
+                позиций сметы — позиции с наибольшей стоимостью. Отклонение считается от норматива
+                класса «{contract.rate_class_title}» на дату сметы; у {totals.without_standard}{" "}
+                позиций норматива на эту дату нет, и они не сравниваются.
                 {totals.positions_pending_review > 0 &&
                   ` Ещё ${totals.positions_pending_review} позиций ждут ручного матчинга и в расчёт не вошли.`}
               </p>
@@ -183,7 +183,8 @@ function PassportHeader({ passport }: { passport: Passport }) {
  * **Два вида, экранный и печатный.** KPI-карточки с крупным кеглем и отбивкой `p-5`
  * съедали на листе около 25 мм — по замеру стенда именно они были главной причиной,
  * по которой паспорт не сходился на одну А4 (284 мм против 277 доступных при
- * значении N по умолчанию). На бумаге те же три числа умещаются в одну строку.
+ * значении N по умолчанию). На бумаге те же числа умещаются во флекс-строку
+ * (~12 мм с переносом против ~25 мм карточек — замер собственного ревью).
  *
  * Печатный вид — не урезанный: в нём те же данные, включая раздельные счётчики
  * «превышают» и «без норматива», которых требует §10.
@@ -193,9 +194,15 @@ function PassportSummary({ passport }: { passport: Passport }) {
   return (
     <>
       <div data-print="hide" className="mt-5 grid grid-cols-3 gap-3">
-        <KpiCard label="Расценённых работ" value={String(totals.positions_priced)} />
+        {/*
+        «Позиций», не «работ»: totals считает строки сметы (position_items), а
+        «работа» в домене — каталожная строка (§4). Работа, встречающаяся в смете
+        дважды, даёт две позиции, и называть их работами значило бы завышать счёт.
+        Находка собственного ревью.
+      */}
+      <KpiCard label="Расценённых позиций" value={String(totals.positions_priced)} />
         <KpiCard
-          label="Стоимость расценённых работ"
+          label="Стоимость расценённых позиций"
           value={formatDecimalMoney(totals.priced_amount)}
         />
         <KpiCard
@@ -207,7 +214,7 @@ function PassportSummary({ passport }: { passport: Passport }) {
               слей их в один счётчик, и работа без норматива читалась бы как
               уложившаяся в него.
             */
-            `из ${totals.with_standard} сравнимых; без норматива ${totals.without_standard}`
+            `из ${totals.with_standard} сравнимых позиций; без норматива ${totals.without_standard}`
           }
         />
       </div>
@@ -217,7 +224,7 @@ function PassportSummary({ passport }: { passport: Passport }) {
         className="flex flex-wrap gap-x-6 gap-y-1 border-y border-border-default py-1 text-xs"
       >
         <div className="flex gap-1">
-          <dt className="text-fg-tertiary">Расценённых работ:</dt>
+          <dt className="text-fg-tertiary">Расценённых позиций:</dt>
           <dd className="font-mono">{totals.positions_priced}</dd>
         </div>
         <div className="flex gap-1">

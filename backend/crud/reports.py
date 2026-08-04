@@ -59,6 +59,10 @@ from models import (
 #: Ноль как Decimal — чтобы суммирование не начиналось с int и не давало float.
 ZERO = Decimal(0)
 
+#: Позиция расценена, но взвесить её нечем: оба количества пусты либо объём ≤ 0.
+#: Дополнение к фильтру `weight > 0` — то, что он отбрасывает.
+_NO_VOLUME = sa.or_(DEVIATIONS.c.weight.is_(None), DEVIATIONS.c.weight <= 0)
+
 
 def _weighted(amount: Decimal | None, volume: Decimal | None) -> Decimal | None:
     """Средневзвешенная величина; `None`, если веса нет (§6: ячейка пустая)."""
@@ -125,7 +129,17 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     ).all()
 
     rows = [_summary_row(r) for r in grouped]
-    return {"header": header, "rows": rows, "totals": _totals_of(rows)}
+    totals = _totals_of(rows)
+    # Что отбросил фильтр `weight > 0` — счётчиком, не молчанием. Свод показывает
+    # предмет торга целиком, и позиция с ценой, но без объёма, обязана быть хотя бы
+    # упомянута: в строку ей нельзя (взвешивать нечем, §6), но исчезнуть без следа
+    # ей тоже нельзя. Находка собственного ревью фазы.
+    totals["positions_without_volume"] = db.execute(
+        sa.select(sa.func.count())
+        .select_from(DEVIATIONS)
+        .where(DEVIATIONS.c.estimate_id == estimate.id, _NO_VOLUME)
+    ).scalar_one()
+    return {"header": header, "rows": rows, "totals": totals}
 
 
 def _work_aggregate_select():
@@ -251,6 +265,19 @@ def bank_comparison(
         section["totals"] = _totals_of(section["rows"])
         section["totals"]["positions_without_standard"] = excluded
 
+    # Тот же счётчик, что в своде, но по выборке: отдельный подзапрос latest, потому
+    # что подзапрос основного запроса уже связан с ним.
+    latest_for_count = latest_estimates()
+    no_volume = db.execute(
+        sa.select(sa.func.count())
+        .select_from(
+            DEVIATIONS.join(
+                latest_for_count, latest_for_count.c.estimate_id == DEVIATIONS.c.estimate_id
+            )
+        )
+        .where(_NO_VOLUME, *scope)
+    ).scalar_one()
+
     return {
         "header": _bank_header(db, latest, date_from, date_to, rate_class_id),
         "sections": sections,
@@ -258,7 +285,8 @@ def bank_comparison(
         | {
             "positions_without_standard": sum(
                 s["totals"]["positions_without_standard"] for s in sections
-            )
+            ),
+            "positions_without_volume": no_volume,
         },
     }
 
@@ -350,6 +378,7 @@ def _empty_report_totals() -> dict:
         "works": 0,
         "positions": 0,
         "positions_without_standard": 0,
+        "positions_without_volume": 0,
     }
 
 

@@ -262,6 +262,18 @@ def _write_footnote(ws, row_num: int, totals: dict) -> int:
     число, даёт другое значение.
     """
     row_num = _write_without_standard_note(ws, row_num, totals)
+    # Что отбросил фильтр `weight > 0`. Печатается и нулём — по той же причине, что
+    # счётчик нормативов: отсутствие строки читалось бы как «не проверяли».
+    volume_note = ws.cell(
+        row=row_num,
+        column=1,
+        value=(
+            f"Позиций с ценой, но без объёма (в расчёт не вошли): "
+            f"{totals['positions_without_volume']}"
+        ),
+    )
+    volume_note.font = font(size=9)
+    row_num += 1
     cell = ws.cell(
         row=row_num,
         column=1,

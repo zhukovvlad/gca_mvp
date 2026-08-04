@@ -259,7 +259,7 @@ export default function MatrixPage() {
       ) : matrix === undefined || matrix.rows.length === 0 ? (
         <EmptyState
           className="mt-6"
-          title="Нечего сравнивать"
+          title={matrix === undefined ? "Матрица не загрузилась" : "Нечего сравнивать"}
           description={emptyReason(matrix, q)}
           action={
             matrix !== undefined && matrix.positions_pending_review > 0 ? (

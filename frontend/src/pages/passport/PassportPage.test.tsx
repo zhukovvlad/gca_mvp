@@ -92,8 +92,8 @@ describe("Паспорт объекта", () => {
     await screen.findByText("Ключевые расценки");
 
     // 3 из 1100 — иначе сумму топа легко прочитать как сумму сметы.
-    expect(screen.getByText(/Показаны 3 из 1100 расценённых работ/)).toBeInTheDocument();
-    expect(screen.getByText(/у 1098 работ норматива на эту дату нет/)).toBeInTheDocument();
+    expect(screen.getByText(/Показаны 3 из 1100 расценённых\s+позиций/)).toBeInTheDocument();
+    expect(screen.getByText(/у 1098 позиций норматива на эту дату нет/)).toBeInTheDocument();
   });
 
   it("превышения и «без норматива» показаны разными счётчиками", async () => {
@@ -103,7 +103,7 @@ describe("Паспорт объекта", () => {
     // §10: слей их в один счётчик — и работа без норматива читалась бы как
     // уложившаяся в него.
     expect(screen.getByText("Превышают норматив")).toBeInTheDocument();
-    expect(screen.getByText(/из 2 сравнимых; без норматива 1098/)).toBeInTheDocument();
+    expect(screen.getByText(/из 2 сравнимых позиций; без норматива 1098/)).toBeInTheDocument();
   });
 
   it("многокилобайтовое наименование не режется в данных, только в показе", async () => {
