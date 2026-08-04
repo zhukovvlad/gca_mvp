@@ -18,33 +18,77 @@ const DECIMAL_RE = /^(-?)(\d+)(?:\.(\d+))?$/;
  * вполне доходят до десятка цифр до запятой плюс копейки. Ошибка была бы
  * невидимой — в последнем разряде.
  *
- * Дробная часть НЕ округляется и не обрезается: показать «1 075,35» вместо
- * утверждённой ставки 1 075,35475 значило бы соврать о цифре, по которой идёт
- * торг. Меньше двух знаков — дополняется нулями по денежной привычке.
+ * Значащие цифры НЕ округляются: показать «1 075,35» вместо утверждённой ставки
+ * 1 075,35475 значило бы соврать о цифре, по которой идёт торг. Меньше двух знаков
+ * — дополняется нулями по денежной привычке.
+ *
+ * **Хвостовые нули за пределами копеек отбрасываются.** Это не округление и ничего
+ * не теряет: `32 263 577,210000000000` и `32 263 577,21` — одно и то же число.
+ * Нужно потому, что деление `numeric` в PostgreSQL доводит результат до своей
+ * шкалы, и средневзвешенная ставка §6 приезжает с десятком нулей на конце. На
+ * стенде матрица из-за этого читалась как набор случайных цифр.
  *
  * @param value десятичная строка либо число (число приводится через String, без
  *   промежуточного форматирования), либо `null`.
  * @param currency знак валюты; пустая строка — без него.
+ * @param maxFractionDigits если задано — значение округляется до этого числа знаков
+ *   целочисленной арифметикой. Задавать **только для вычисленных** величин
+ *   (средневзвешенная ставка), где лишние знаки — артефакт деления, а не данные.
+ *   Для хранимых ставок и сумм не задавать.
  */
 export function formatDecimalMoney(
   value: string | number | null | undefined,
-  currency = "₽"
+  currency = "₽",
+  maxFractionDigits?: number
 ): string {
   if (value === null || value === undefined) return "—";
 
   const raw = String(value).trim();
   if (!raw) return "—";
 
-  const parsed = DECIMAL_RE.exec(raw);
+  const source = maxFractionDigits === undefined ? raw : roundDecimal(raw, maxFractionDigits);
+
+  const parsed = DECIMAL_RE.exec(source);
   // Неожиданный формат отдаём как есть: молча превратить его в «—» значило бы
   // спрятать данные, которые пришли с сервера.
-  if (!parsed) return currency ? `${raw}${NBSP}${currency}` : raw;
+  if (!parsed) return currency ? `${source}${NBSP}${currency}` : source;
 
   const [, sign, whole, fraction = ""] = parsed;
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP);
-  const decimals = fraction.length >= 2 ? fraction : fraction.padEnd(2, "0");
+  // Копейки показываем всегда; всё, что дальше них, — только если это не нули.
+  const trimmed = fraction.length > 2 ? fraction.replace(/0+$/, "") : fraction;
+  const decimals = trimmed.length >= 2 ? trimmed : trimmed.padEnd(2, "0");
   const amount = `${sign}${grouped},${decimals}`;
   return currency ? `${amount}${NBSP}${currency}` : amount;
+}
+
+/**
+ * Округляет десятичную строку до `digits` знаков **целочисленной арифметикой**.
+ *
+ * Тот же приём и та же причина, что у `roundDecimalPercent`: `Number()` для денег
+ * запрещён §3, и обходить запрет «только для показа» нельзя — двоичное
+ * представление решало бы исход на границе округления.
+ *
+ * Неразбираемый вход возвращается как есть: решение о том, показывать ли его,
+ * принимает вызывающий, а не эта функция.
+ */
+export function roundDecimal(value: string, digits: number): string {
+  const parsed = DECIMAL_RE.exec(value);
+  if (!parsed) return value;
+
+  const [, sign, whole, fraction = ""] = parsed;
+  if (fraction.length <= digits) return value;
+
+  const scale = digits + 1;
+  const padded = (fraction + "0".repeat(scale)).slice(0, scale);
+  const rounded = (BigInt(`${whole}${padded}`) + 5n) / 10n;
+
+  const unit = 10n ** BigInt(digits);
+  const intPart = (rounded / unit).toString();
+  const fracPart = digits > 0 ? (rounded % unit).toString().padStart(digits, "0") : "";
+  // Знак минуса у нуля не бывает: «-0,00» — артефакт округления.
+  const negative = sign === "-" && rounded !== 0n;
+  return fracPart ? `${negative ? "-" : ""}${intPart}.${fracPart}` : `${negative ? "-" : ""}${intPart}`;
 }
 
 export function formatPercent(value: number | null | undefined, withSign = false): string {

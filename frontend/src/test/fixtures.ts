@@ -456,7 +456,15 @@ export const sampleMatrixRows: MatrixRow[] = [
     unit_code: "M2",
     row_amount: "192000.00",
     cells: [
-      { contract_id: 12, rate: "640.00", standard_unit_rate: null, deviation_pct: null },
+      {
+        contract_id: 12,
+        // Длинная дробь — не украшение: ровно в таком виде приезжает
+        // средневзвешенная ставка (деление `numeric` доводит результат до своей
+        // шкалы). Без неё в фикстуре тест округления показа ничего не проверял бы.
+        rate: "640.503222935929",
+        standard_unit_rate: null,
+        deviation_pct: null,
+      },
     ],
   },
 ];

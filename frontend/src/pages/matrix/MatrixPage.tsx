@@ -348,7 +348,12 @@ function buildColumns(
                 onClick={() => onCellClick(column.contract_id, row.original)}
                 title="Показать позиции сметы, из которых сложилась ставка"
               >
-                <MoneyCell value={cell.rate} currency="" className="block" />
+                <MoneyCell
+                  value={cell.rate}
+                  currency=""
+                  maxFractionDigits={2}
+                  className="block"
+                />
                 <DeviationCell value={cell.deviation_pct} variant="compact" className="block text-xs" />
               </button>
             );
