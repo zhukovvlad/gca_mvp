@@ -470,3 +470,16 @@ export interface MatrixCellDetail {
   amendment_no: number | null;
   items: MatrixCellItem[];
 }
+
+/**
+ * Параметры отчёта «для банка» (§7.6).
+ *
+ * Те же, что у матрицы, и это намеренно: экран и файл обязаны показывать одно и то
+ * же, иначе расхождение цифр придётся объяснять банку. Текстового поиска по работе
+ * здесь нет — отчёт по подстроке названия банку не нужен.
+ */
+export interface BankComparisonParams {
+  date_from?: string;
+  date_to?: string;
+  rate_class_id?: number;
+}

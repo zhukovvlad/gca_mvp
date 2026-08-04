@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home, Users, LogOut, Search, Bell, FileText, ListChecks, Ruler, Grid3x3, Settings2,
+  Home, Users, LogOut, Search, Bell, FileText, ListChecks, Ruler, Grid3x3, Settings2, FileDown,
   type LucideIcon,
 } from "lucide-react";
 import { Logo } from "./Logo";
@@ -19,6 +19,7 @@ const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOn
   { to: "/",            icon: Home,       label: "Главная", end: true },
   { to: "/contracts",   icon: FileText,   label: "Договоры" },
   { to: "/matrix",      icon: Grid3x3,    label: "Матрица" },
+  { to: "/reports",     icon: FileDown,   label: "Отчёты" },
   { to: "/review",      icon: ListChecks, label: "Ручной матчинг" },
   { to: "/standards",   icon: Ruler,      label: "Нормативы", adminOnly: true },
   { to: "/settings",    icon: Settings2,  label: "Настройки", adminOnly: true },

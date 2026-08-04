@@ -24,6 +24,7 @@ from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
 from routers import rate_standards as rate_standards_router
 from routers import references as references_router
+from routers import reports as reports_router
 from routers import review as review_router
 from routers import settings as settings_router
 from routers import units
@@ -158,6 +159,8 @@ app.include_router(review_router.router, dependencies=_auth_dep)
 app.include_router(settings_router.router, dependencies=_auth_dep)
 # Паспорт и матрица — чтение, поэтому доступны и `member` (§3).
 app.include_router(analytics_router.router, dependencies=_auth_dep)
+# Excel-выгрузки §7.6 — тоже чтение; макет «для банка» согласован (§6.1 фазы 6).
+app.include_router(reports_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

@@ -15,6 +15,14 @@ interface EntitySelectProps<T extends { id: number | string }> {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  /**
+   * id триггера — чтобы `<Label htmlFor>` действительно указывал на элемент.
+   *
+   * Без него подпись не связана с полем: скринридер не прочитает её при фокусе, а
+   * `getByLabelText` в тестах не найдёт поле вовсе. Найдено при написании тестов
+   * экрана отчётов — до этого метки над `EntitySelect` были декоративными.
+   */
+  id?: string;
 }
 
 /**
@@ -30,6 +38,7 @@ export function EntitySelect<T extends { id: number | string }>({
   placeholder = "—",
   className,
   disabled,
+  id,
 }: EntitySelectProps<T>) {
   const list = items ?? [];
 
@@ -49,7 +58,7 @@ export function EntitySelect<T extends { id: number | string }>({
       }}
       disabled={disabled}
     >
-      <SelectTrigger className={cn("w-full", className)}>
+      <SelectTrigger id={id} className={cn("w-full", className)}>
         <SelectValue placeholder={placeholder}>
           {(raw) => {
             if (!raw) return placeholder;

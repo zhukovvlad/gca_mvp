@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import type { AxiosError } from "axios";
 
 import { adminApi } from "./api/admin";
-import { analyticsApi, settingsApi } from "./api/analytics";
+import { analyticsApi, reportsApi, settingsApi } from "./api/analytics";
 import {
   catalogApi,
   contractsApi,
@@ -19,6 +19,7 @@ import { qk } from "./queryKeys";
 import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
+  BankComparisonParams,
   ContractInput,
   ContractorInput,
   ManualKind,
@@ -582,5 +583,75 @@ export function useMatrixCell(
     queryKey: qk.matrix.cell(contractId ?? 0, catalogPositionId ?? 0),
     queryFn: () => analyticsApi.matrixCell(contractId as number, catalogPositionId as number),
     enabled: contractId !== undefined && catalogPositionId !== undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Выгрузки §7.6
+// ---------------------------------------------------------------------------
+
+/**
+ * Сохранение blob на диск.
+ *
+ * Вынесено из `useDownloadJobFile`, потому что выгрузок стало три и повторять этот
+ * танец с временной ссылкой в каждой — верный способ разойтись в деталях.
+ * `createObjectURL` в jsdom отсутствует, поэтому шаг необязательный: тесты проверяют
+ * запрос и разбор отказов, а не работу файлового диалога.
+ */
+function saveBlob(blob: Blob, filename: string): void {
+  if (typeof URL.createObjectURL !== "function") return;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Причина отказа выгрузки — из блоба.
+ *
+ * `responseType: "blob"` меняет форму тела: при отказе `axios` отдаёт JSON сервера
+ * тоже блобом, и `apiErrorDetail` из него ничего не достаёт. Без разбора человек
+ * видел бы «Request failed with status code 500» — по-английски и не о том, тогда как
+ * сервер объяснил причину (например «Договор 10 не найден»).
+ */
+async function reportErrorMessage(err: unknown): Promise<string> {
+  const data = (err as AxiosError)?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text());
+      const detail = (parsed as { detail?: unknown })?.detail;
+      if (typeof detail === "string" && detail) return detail;
+    } catch {
+      // Тело не JSON — значит объяснения нет, идём к общему сообщению ниже.
+    }
+  }
+  return apiErrorDetail(err) ?? "Не удалось построить файл отчёта.";
+}
+
+function toastReportError(err: unknown): void {
+  void reportErrorMessage(err).then((message) => toast.error(message));
+}
+
+export function useContractSummaryReport() {
+  return useMutation({
+    mutationFn: async ({ contractId, filename }: { contractId: number; filename: string }) => {
+      const blob = await reportsApi.contractSummary(contractId);
+      saveBlob(blob, filename);
+      return blob;
+    },
+    onError: toastReportError,
+  });
+}
+
+export function useBankComparisonReport() {
+  return useMutation({
+    mutationFn: async (params: BankComparisonParams) => {
+      const blob = await reportsApi.bankComparison(params);
+      saveBlob(blob, "Сравнение с нормативами.xlsx");
+      return blob;
+    },
+    onError: toastReportError,
   });
 }

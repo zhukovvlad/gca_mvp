@@ -49,6 +49,8 @@ interface HandlerState {
   passportWithoutEstimate: boolean;
   /** Отдать пустую матрицу — и различить «нет договоров» от «нет работ». */
   matrixOutcome: "rows" | "no-rows" | "no-columns" | "pending-review";
+  /** Последний запрос выгрузки: по нему тест проверяет, что фильтры доехали. */
+  lastReportRequest: { report: string; params: Record<string, string> } | null;
 }
 
 export const handlerState: HandlerState = {
@@ -62,6 +64,7 @@ export const handlerState: HandlerState = {
   passportTopN: sampleAppSettings.passport_top_n,
   passportWithoutEstimate: false,
   matrixOutcome: "rows",
+  lastReportRequest: null,
 };
 
 export function resetHandlerState() {
@@ -75,6 +78,7 @@ export function resetHandlerState() {
   handlerState.passportTopN = sampleAppSettings.passport_top_n;
   handlerState.passportWithoutEstimate = false;
   handlerState.matrixOutcome = "rows";
+  handlerState.lastReportRequest = null;
 }
 
 function page<T>(items: T[]) {
@@ -529,4 +533,37 @@ export const handlers = [
   }),
 
   http.get("/api/v1/analytics/matrix/cell", () => HttpResponse.json(sampleMatrixCellDetail)),
+
+  // --- Выгрузки §7.6 ---
+  //
+  // Отдаём непустой blob с настоящим media type: экран не разбирает содержимое, но
+  // разбирает отказы, а `responseType: "blob"` меняет форму ответа axios — на
+  // JSON-заглушке этого пути было бы не видно. Параметры запроса сохраняются в
+  // состоянии, чтобы тест мог проверить, что фильтры доехали до сервера.
+  http.get("/api/v1/reports/contract-summary", ({ request }) => {
+    const url = new URL(request.url);
+    handlerState.lastReportRequest = {
+      report: "contract-summary",
+      params: Object.fromEntries(url.searchParams),
+    };
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    });
+  }),
+  http.get("/api/v1/reports/bank-comparison", ({ request }) => {
+    const url = new URL(request.url);
+    handlerState.lastReportRequest = {
+      report: "bank-comparison",
+      params: Object.fromEntries(url.searchParams),
+    };
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    });
+  }),
 ];

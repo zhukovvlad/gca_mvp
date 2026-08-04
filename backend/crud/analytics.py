@@ -361,7 +361,7 @@ MATRIX_PAGE_SIZE_DEFAULT = 50
 MATRIX_PAGE_SIZE_MAX = 200
 
 
-def _scope_filters(
+def scope_filters(
     *,
     rate_class_id: int | None,
     date_from: dt.date | None,
@@ -461,7 +461,7 @@ def matrix_columns(
             .join(RateClass, RateClass.id == Contract.rate_class_id)
         )
         .where(
-            *_column_scope_filters(
+            *column_scope_filters(
                 rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
             )
         )
@@ -485,7 +485,7 @@ def matrix_columns(
     ]
 
 
-def _column_scope_filters(*, rate_class_id, date_from, date_to, latest) -> list:
+def column_scope_filters(*, rate_class_id, date_from, date_to, latest) -> list:
     """Тот же фильтр выборки, выраженный через `contracts`/`latest`, а не через VIEW.
 
     Отдельная функция, потому что колонки строятся **не** по VIEW: договор с
@@ -530,7 +530,7 @@ def get_matrix(
         db, rate_class_id=rate_class_id, date_from=date_from, date_to=date_to
     )
 
-    filters = _scope_filters(
+    filters = scope_filters(
         rate_class_id=rate_class_id, date_from=date_from, date_to=date_to
     )
     cells = _cells_cte(filters)
@@ -636,7 +636,7 @@ def _pending_review_in_scope(
         .join(latest, latest.c.estimate_id == Lot.estimate_id)
         .join(Contract, Contract.id == latest.c.contract_id)
         .where(
-            *_column_scope_filters(
+            *column_scope_filters(
                 rate_class_id=rate_class_id,
                 date_from=date_from,
                 date_to=date_to,

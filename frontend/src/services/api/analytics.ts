@@ -11,6 +11,7 @@
 import api from "@/lib/api";
 import type {
   AppSettings,
+  BankComparisonParams,
   Matrix,
   MatrixCellDetail,
   MatrixParams,
@@ -36,5 +37,28 @@ export const analyticsApi = {
       .get<MatrixCellDetail>("/v1/analytics/matrix/cell", {
         params: { contract_id, catalog_position_id },
       })
+      .then((r) => r.data),
+};
+
+/**
+ * Выгрузки §7.6. Ответ — `blob`: это файл, а не JSON.
+ *
+ * Имя файла сервер присылает в `Content-Disposition` (`filename*=UTF-8''…`), но
+ * прочитать его из ответа `axios` можно только если сервер разрешил заголовок
+ * браузеру. Проще и надёжнее собрать имя на клиенте — оно и так известно из
+ * параметров, а расхождение с серверным именем ни на что не влияет.
+ */
+export const reportsApi = {
+  contractSummary: (contractId: number): Promise<Blob> =>
+    api
+      .get<Blob>("/v1/reports/contract-summary", {
+        params: { contract_id: contractId },
+        responseType: "blob",
+      })
+      .then((r) => r.data),
+
+  bankComparison: (params: BankComparisonParams): Promise<Blob> =>
+    api
+      .get<Blob>("/v1/reports/bank-comparison", { params, responseType: "blob" })
       .then((r) => r.data),
 };

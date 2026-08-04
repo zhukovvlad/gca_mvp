@@ -14,6 +14,7 @@ import ContractCardPage from "@/pages/contracts/ContractCardPage";
 import ContractsPage from "@/pages/contracts/ContractsPage";
 import MatrixPage from "@/pages/matrix/MatrixPage";
 import PassportPage from "@/pages/passport/PassportPage";
+import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
@@ -79,6 +80,7 @@ export default function App() {
                 */}
                 <Route path="/contracts/:contractId/passport" element={<PassportPage />} />
                 <Route path="/matrix" element={<MatrixPage />} />
+                <Route path="/reports" element={<ReportsPage />} />
                 <Route element={<RequireAdmin />}>
                   {/* Нормативы — право `admin` по букве §3. */}
                   <Route path="/standards" element={<StandardsPage />} />
