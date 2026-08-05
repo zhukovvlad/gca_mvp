@@ -111,7 +111,7 @@ class TestWorkCategoriesSchema:
                     "insert into work_categories (code, title, sort_order) "
                     "values ('901', :title, 999002)"
                 ),
-                {"title": "​"},
+                {"title": "\u200b"},  # именно escape, а не невидимый символ в исходнике
             )
 
     def test_is_bucket_cannot_be_written(self, db_session):
@@ -325,7 +325,15 @@ Run: `just db-test-migrate`
 Expected: `Running upgrade 0004 -> 0005`.
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_schema_constraints.py -k WorkCategories -q`
-Expected: часть тестов PASS; **четыре теста, которым нужен сид, падают** — `test_is_bucket_cannot_be_updated`, `test_duplicate_code_rejected`, `test_row_cannot_be_its_own_parent`, `test_parent_with_children_cannot_be_deleted` (все опираются на статью с кодом `1`). Это ожидаемо: сид приезжает в Task 2.
+Expected: большинство тестов PASS; **ровно три падают** — те, которым нужна статья с кодом `1`, а она приезжает в Task 2:
+
+| Тест | Почему падает на пустой таблице |
+|---|---|
+| `test_row_cannot_be_its_own_parent` | `scalar_one()` по `code = '1'` → `NoResultFound` |
+| `test_duplicate_code_rejected` | вставка `'1'` в пустую таблицу проходит, ошибки уникальности нет |
+| `test_parent_with_children_cannot_be_deleted` | `DELETE` по нулю строк FK не нарушает |
+
+`test_is_bucket_cannot_be_updated` **проходит и на пустой таблице** — замерено: PostgreSQL отвергает UPDATE генерируемой колонки на этапе rewrite, до сопоставления строк (`column "is_bucket" can only be updated to DEFAULT`), поэтому `WHERE code = '1'` не важен. Если этот тест упал — дефект в миграции, а не ожидаемое состояние.
 
 - [ ] **Step 6: Проверить отсутствие дрейфа ORM/БД**
 
@@ -353,14 +361,16 @@ git commit -m "feat(db): таблица work_categories с непредстав�
 
 - [ ] **Step 1: Сгенерировать литерал из шаблона**
 
-Одноразовый скрипт печатает готовые к вставке строки. Запускать из корня репозитория:
+Одноразовый скрипт печатает готовые к вставке строки. Живёт в scratchpad-каталоге сессии (в репозиторий не попадает), путь к шаблону принимает аргументом — чтобы не зависеть от текущего каталога:
 
 ```python
-# scratchpad/gen_seed.py
+# gen_seed.py — запускается один раз, в репозиторий не коммитится
 import re
+import sys
+
 from openpyxl import load_workbook
 
-ws = load_workbook("samples/Шаблон.xlsx", data_only=True, read_only=True)["Лист1"]
+ws = load_workbook(sys.argv[1], data_only=True, read_only=True)["Лист1"]
 rows = []
 for row in ws.iter_rows(values_only=True):
     raw = str(row[0]).strip()
@@ -377,8 +387,12 @@ for code, title in rows:
     print(f'    ({code!r}, {title!r}),')
 ```
 
-Run: `backend/.venv/Scripts/python.exe scratchpad/gen_seed.py > scratchpad/seed_rows.txt && wc -l scratchpad/seed_rows.txt`
-Expected: 362 строки.
+Run (через `uv run` из `backend/`, как требует Global Constraints; `$SCRATCH` — scratchpad-каталог сессии):
+```bash
+cd backend && uv run python "$SCRATCH/gen_seed.py" ../samples/Шаблон.xlsx > "$SCRATCH/seed_rows.txt"
+wc -l "$SCRATCH/seed_rows.txt"
+```
+Expected: 362 строки; если `assert` про 362 упал — шаблон обновился, и число в снапшоте надо пересмотреть осознанно (спека §6).
 
 - [ ] **Step 2: Написать падающие тесты данных**
 
