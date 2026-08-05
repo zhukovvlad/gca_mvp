@@ -750,6 +750,17 @@ class TestWorkCategoriesSeed:
         ).scalars().all()
         assert orders == [(i + 1) * 10 for i in range(362)]
 
+        # Список выше сверяет мультимножество значений sort_order, а не их привязку
+        # к конкретным строкам: перевёрнутая формула (от конца шаблона к началу)
+        # даёт то же самое мультимножество и не будет замечена. Поэтому дополнительно
+        # закрепляем края шаблона по коду: первая строка ('1') и последняя ('99').
+        edge_orders = dict(
+            db_session.execute(
+                sa.text("select code, sort_order from work_categories where code in ('1', '99')")
+            ).all()
+        )
+        assert edge_orders == {"1": 10, "99": 3620}
+
     def test_titles_come_from_the_template_as_is(self, db_session):
         title = db_session.execute(
             sa.text("select title from work_categories where code = '1'")
