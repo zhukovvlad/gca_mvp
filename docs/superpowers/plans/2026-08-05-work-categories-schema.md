@@ -73,19 +73,42 @@ class TestWorkCategoriesSchema:
                     {"code": bad},
                 )
 
-    def test_code_check_has_no_backslash_escaping(self, db_session):
-        """Канарейка против возврата экранирования (спека §2.1.1).
+    # Замеренные определения из PostgreSQL. Собирать их по памяти нельзя: функция
+    # переформатирует выражение — добавляет `::text`, свои скобки и печатает LIKE
+    # как оператор `~~`.
+    DB_CHECKS = {
+        "ck_work_categories_code": "CHECK ((code ~ '^[0-9]+([.][0-9]+)*$'::text))",
+        "ck_work_categories_not_self_parent": "CHECK (((parent_id IS NULL) OR (parent_id <> id)))",
+        "ck_work_categories_title_not_blank": (
+            "CHECK ((btrim(title, ((((' '::text || chr(9)) || chr(10)) || chr(13)) || chr(160)))"
+            " <> ''::text))"
+        ),
+    }
+    DB_IS_BUCKET = "((code = '99'::text) OR (code ~~ '%.99'::text))"
 
-        Ожидание — замеренная строка, а не собранная по памяти:
-        pg_get_constraintdef переформатирует выражение (::text и скобки).
+    def test_database_holds_the_declared_expressions(self, db_session):
+        """Что реально легло в БД: все три CHECK и generated-выражение.
+
+        Сравнение словарём целиком, а не по одному ключу: так видно и подмену
+        выражения, и появление лишнего CHECK, и исчезновение нужного. Канарейка
+        против возврата экранирования (§2.1.1) — первая строка этого словаря.
         """
-        definition = db_session.execute(
+        rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select conname, pg_get_constraintdef(oid) from pg_constraint "
+                    "where conrelid = 'work_categories'::regclass and contype = 'c'"
+                )
+            ).all()
+        )
+        assert rows == self.DB_CHECKS
+        generated = db_session.execute(
             sa.text(
-                "select pg_get_constraintdef(oid) from pg_constraint "
-                "where conname = 'ck_work_categories_code'"
+                "select generation_expression from information_schema.columns "
+                "where table_name = 'work_categories' and column_name = 'is_bucket'"
             )
         ).scalar_one()
-        assert definition == "CHECK ((code ~ '^[0-9]+([.][0-9]+)*$'::text))"
+        assert generated == self.DB_IS_BUCKET
 
     def test_blank_title_rejected_the_same_way_on_any_locale(self, db_session):
         """Набор символов задан кодовыми точками, поэтому не зависит от LC_CTYPE."""
@@ -172,14 +195,14 @@ class TestWorkCategoriesSchema:
                 sa.text("delete from work_categories where id = :id"), {"id": parent_id}
             )
 
-    def test_orm_expressions_match_the_migration(self, db_session):
-        """Единственная защита от расхождения models.py и миграции.
+    def test_orm_declares_the_same_expressions(self):
+        """Вторая сторона парности: что объявлено в models.py.
 
         Замерено: `alembic check` расхождение CHECK- и Computed-выражений НЕ ловит —
         autogenerate их не сравнивает (на Computed выдаёт лишь UserWarning
-        «cannot be modified», а предупреждение прогон не роняет). Поэтому ожидаемые
-        выражения зафиксированы здесь; парный тест выше сторожит то, что реально
-        легло в БД.
+        «cannot be modified», а предупреждение прогон не роняет). Поэтому ORM
+        сверяется здесь, а БД — тестом выше; вместе они закрывают оба направления:
+        правка в миграции ломает первый, правка в модели — второй.
         """
         checks = {
             c.name: str(c.sqltext)
@@ -397,11 +420,11 @@ git commit -m "feat(db): таблица work_categories с непредстав�
 
 **Interfaces:**
 - Consumes: таблицу из Task 1.
-- Produces: 362 статьи с деревом; на них опираются тесты Task 1, требующие статью `1`.
+- Produces: 362 статьи с деревом. Тесты Task 1 от них **не зависят** (создают свои строки), так что эта задача добавляет только новый класс тестов.
 
 - [ ] **Step 1: Сгенерировать литерал из шаблона**
 
-Одноразовый скрипт печатает готовые к вставке строки. Живёт в scratchpad-каталоге сессии (в репозиторий не попадает), путь к шаблону принимает аргументом — чтобы не зависеть от текущего каталога:
+Одноразовый скрипт печатает готовые к вставке строки. Путь **фиксированный и вне репозитория** — `/c/tmp/gca-f1/` (в Git Bash это `C:\tmp\gca-f1`): переменные оболочки между вызовами не сохраняются, а Step 4 обязан прочитать тот же файл. Создать скрипт **инструментом записи файлов** (`Write` / `apply_patch`), а не heredoc-ом. Путь к шаблону принимает аргументом, чтобы не зависеть от текущего каталога:
 
 ```python
 # gen_seed.py — запускается один раз, в репозиторий не коммитится
@@ -427,16 +450,12 @@ for code, title in rows:
     print(f'    ({code!r}, {title!r}),')
 ```
 
-Run (через `uv run` из `backend/`, как требует Global Constraints). Каталог задаётся явно в той же сессии оболочки, иначе пустая переменная превратит путь в `/gen_seed.py`:
+Файл записать по пути `/c/tmp/gca-f1/gen_seed.py`. Затем (через `uv run` из `backend/`, как требует Global Constraints):
 ```bash
-SCRATCH="$(mktemp -d)"                       # каталог вне репозитория
-cat > "$SCRATCH/gen_seed.py" <<'PY'
-# ← сюда содержимое скрипта выше
-PY
-cd backend && uv run python "$SCRATCH/gen_seed.py" ../samples/Шаблон.xlsx > "$SCRATCH/seed_rows.txt"
-wc -l "$SCRATCH/seed_rows.txt"
+mkdir -p /c/tmp/gca-f1
+cd backend && uv run python /c/tmp/gca-f1/gen_seed.py ../samples/Шаблон.xlsx > /c/tmp/gca-f1/seed_rows.txt
+wc -l /c/tmp/gca-f1/seed_rows.txt
 ```
-После Step 4 каталог удалить: `rm -rf "$SCRATCH"`.
 Expected: 362 строки; если `assert` про 362 упал — шаблон обновился, и число в снапшоте надо пересмотреть осознанно (спека §6).
 
 - [ ] **Step 2: Написать падающие тесты данных**
@@ -510,14 +529,14 @@ Expected: FAIL, `assert 0 == 362`.
 
 - [ ] **Step 4: Вписать сид в миграцию**
 
-Модульная константа после `TITLE_BLANK_CHARS` — вставить содержимое `scratchpad/seed_rows.txt`:
+Модульная константа после `TITLE_BLANK_CHARS` — вставить содержимое `/c/tmp/gca-f1/seed_rows.txt`:
 
 ```python
 # 362 статьи корпоративного шаблона в его порядке. Литералом, а не импортом:
 # миграция обязана быть неизменной во времени, а справочник уедет в админку.
 WORK_CATEGORIES_SEED: tuple[tuple[str, str], ...] = (
     ("1", "Подготовительные работы, содержание площадки"),
-    # … 361 строка из scratchpad/seed_rows.txt …
+    # … 361 строка из /c/tmp/gca-f1/seed_rows.txt …
 )
 ```
 
@@ -573,6 +592,8 @@ cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_tes
 cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run alembic upgrade head
 ```
 Expected: `0004 -> 0005` без ошибок.
+
+Литерал перенесён — временный каталог больше не нужен: `rm -rf /c/tmp/gca-f1`.
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_schema_constraints.py -k WorkCategories -q`
 Expected: PASS все — и схемные (они самодостаточны с Task 1), и новые тесты сида.
@@ -679,7 +700,7 @@ EOF
 
 **Покрытие спеки:** §2.1 схема → Task 1 Step 3–4; §2.1.1 `[.]` → Task 1 Step 3 (константа `CODE_REGEX`) + тест-канарейка Step 1; §2.1.2 непустое название → Task 1 Step 3 (`TITLE_BLANK_CHARS`) + два теста (отказ и граница U+200B); §2.2 сид и вывод родителя → Task 2 Step 4; отказы → Task 2 Step 4 и проверка снятием защиты Step 6; §2.3 ORM-модель → Task 1 Step 4; §4 тесты → Task 1 Step 1 и Task 2 Step 2 (все пункты списка спеки представлены); §5 границы → по построению (ни API, ни колонок `position_items`); §6 генератор → Task 2 Step 1; §8 следствия → Task 3 Step 2 (`alembic check` руками).
 
-**Пробел, найденный при сверке:** спека требует тест «дубль `sort_order` отвергается», а в первой редакции плана его не было — добавлен (`test_duplicate_sort_order_rejected`, опирается на `sort_order = 10` из сида).
+**Пробел, найденный при сверке:** спека требует тест «дубль `sort_order` отвергается», а в первой редакции плана его не было — добавлен (`test_duplicate_sort_order_rejected`; как и остальные схемные тесты, создаёт свою строку с `sort_order = 999013`, от сида не зависит).
 
 **Согласованность имён:** константы `CODE_REGEX` / `IS_BUCKET_EXPRESSION` / `TITLE_BLANK_CHARS` в миграции и их зеркала `WORK_CATEGORY_*` в `models.py` — разные имена намеренно (миграция не импортирует модели), но **выражения** должны совпадать посимвольно. Сторожит это `test_orm_expressions_match_the_migration`, а **не** `alembic check`: замерено, что при подмене CHECK- и Computed-выражений autogenerate возвращает пустой diff. Имена констрейнтов одинаковы в миграции, модели и тестах; `WorkCategory` — единственное имя ORM-класса.
 
