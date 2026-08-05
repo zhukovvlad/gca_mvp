@@ -2,8 +2,8 @@
 
 **Дата:** 2026-08-05
 **Статус:** дизайн согласован; спека уточнена по двум кругам внешнего ревью
-(бэкслэши — `E'…'` в raw-строках, §2.1.1), шесть фактов схемы замерены на
-PG 16.14 (§7)
+(бэкслэши — `E'…'` в raw-строках, §2.1.1); восемь фактов схемы замерены на
+PG 16.14 (§7). Ожидает гейта 2 — ревью пользователя
 **Ветка:** `feat/work-categories-schema`
 **Фаза:** 7, фича 1 из 6 — [phase7-frame.md](../../phase7-frame.md)
 
@@ -203,7 +203,9 @@ UPDATE work_categories c SET parent_id = p.id FROM work_categories p
   эту строку целиком, либо проверять вхождение экранированной точки как
   минимальный инвариант — но не собирать ожидаемый формат по памяти;
 - **попытка записать `is_bucket` отвергается PostgreSQL** (generated column) —
-  проверяется явным INSERT со значением;
+  проверяется и INSERT со значением, и UPDATE. Класс ошибки — `ProgrammingError`
+  (sqlstate `428C9`), **не** `IntegrityError`, поэтому project-хелпер
+  `rejected()` из `test_schema_constraints.py` здесь не годится (замер, §7 факт 7);
 - дубль `code` отвергается; дубль `sort_order` отвергается;
 - `DELETE` статьи, у которой есть дети, упирается в `RESTRICT`;
 - строка не может быть своим родителем.
@@ -250,8 +252,9 @@ assert len(out) == 362 and len({c for c, _ in out}) == 362  # 362 — снапш
 
 ## 7. Замеры схемы (проведены, PG 16.14)
 
-Шесть фактов, на которых держится дизайн, проверены пробниками до написания
-миграции (`scratchpad/f1_probe.py`, `f1_probe_pylayer.py`), а не приняты на веру:
+Восемь фактов, на которых держится дизайн, проверены пробниками до написания
+миграции (`scratchpad/f1_probe.py`, `f1_probe_pylayer.py`, `f1_probe_exc.py`,
+`f1_probe_ddl.py`), а не приняты на веру:
 
 1. **Регулярка кода** отвергает `abc`, `1..2`, `1.`, `''`, `6.6 `, `.1`, `1x2`,
    `1,2` — принято ноль из восьми.
@@ -272,6 +275,19 @@ assert len(out) == 362 and len({c for c, _ in out}) == 362  # 362 — снапш
    питоновская строка даёт в БД `'^[0-9]+(.[0-9]+)*$'` и принимает `1x2`,
    raw-строка даёт `'^[0-9]+(\.[0-9]+)*$'` и отвергает. Отсюда же взято точное
    ожидание для теста на `pg_get_constraintdef`.
+7. **Класс ошибки на запись в generated column** —
+   `sqlalchemy.exc.ProgrammingError`, sqlstate `428C9`
+   (`psycopg.errors.GeneratedAlways`), тексты различаются:
+   INSERT — «cannot insert a non-DEFAULT value into column "is_bucket"»,
+   UPDATE — «column "is_bucket" can only be updated to DEFAULT». Это **не**
+   `IntegrityError`, на который рассчитан хелпер `rejected()`.
+8. **DDL от SQLAlchemy принят PG16.** `sa.Computed(expr, persisted=True)` вместе
+   с `nullable=False` компилируется в
+   `is_bucket BOOLEAN GENERATED ALWAYS AS (...) STORED NOT NULL`, таблица
+   создаётся, `information_schema` показывает `is_generated = ALWAYS`,
+   `is_nullable = NO`. То есть объявлять колонку `nullable=True` (как
+   `fts_vector` в 0002) не требуется. Замеренный текст CHECK —
+   `CHECK ((code ~ '^[0-9]+(\.[0-9]+)*$'::text))`, он же ожидание теста §4.
 
 ## 8. Следствия за пределами Ф1
 
