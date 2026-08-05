@@ -696,3 +696,62 @@ class TestWorkCategoriesSchema:
         computed = WorkCategory.__table__.c.is_bucket.computed
         assert str(computed.sqltext) == "code = '99' OR code LIKE '%.99'"
         assert computed.persisted is True
+
+
+class TestWorkCategoriesSeed:
+    """Сид классификатора: 362 статьи шаблона и дерево, выведенное из кодов."""
+
+    def test_whole_template_is_seeded(self, db_session):
+        count = db_session.execute(sa.select(sa.func.count()).select_from(WorkCategory)).scalar_one()
+        assert count == 362
+
+    def test_roots_are_exactly_the_codes_without_a_dot(self, db_session):
+        roots = db_session.execute(
+            sa.text("select code from work_categories where parent_id is null")
+        ).scalars().all()
+        assert len(roots) == 21
+        assert [c for c in roots if "." in c] == []
+
+    def test_every_dotted_code_has_its_prefix_as_parent(self, db_session):
+        """Страховка substring-выражения: искажение ломает свойство на 341 строке."""
+        rows = db_session.execute(
+            sa.text(
+                "select c.code, p.code from work_categories c "
+                "left join work_categories p on p.id = c.parent_id "
+                "where c.code like '%.%'"
+            )
+        ).all()
+        assert len(rows) == 341
+        assert [(child, parent) for child, parent in rows if child.rsplit(".", 1)[0] != parent] == []
+
+    def test_buckets_are_derived_from_the_code(self, db_session):
+        buckets = db_session.execute(
+            sa.text("select code from work_categories where is_bucket")
+        ).scalars().all()
+        assert len(buckets) == 22
+        assert "99" in buckets
+        assert [c for c in buckets if not (c == "99" or c.endswith(".99"))] == []
+
+    def test_child_of_a_bucket_is_not_a_bucket(self, db_session):
+        """11.99.2 — реальная работа под корзиной 11.99, а не корзина."""
+        rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select code, is_bucket from work_categories "
+                    "where code in ('11.99', '11.99.2')"
+                )
+            ).all()
+        )
+        assert rows == {"11.99": True, "11.99.2": False}
+
+    def test_sort_order_follows_the_template(self, db_session):
+        orders = db_session.execute(
+            sa.text("select sort_order from work_categories order by sort_order")
+        ).scalars().all()
+        assert orders == [(i + 1) * 10 for i in range(362)]
+
+    def test_titles_come_from_the_template_as_is(self, db_session):
+        title = db_session.execute(
+            sa.text("select title from work_categories where code = '1'")
+        ).scalar_one()
+        assert title == "Подготовительные работы, содержание площадки"
