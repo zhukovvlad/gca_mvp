@@ -56,6 +56,26 @@ def _make_category(session, code: str, sort_order: int, parent_id: int | None = 
     ).scalar_one()
 
 
+def _load_work_categories_seed() -> tuple[tuple[str, str], ...]:
+    """Читает `WORK_CATEGORIES_SEED` из файла миграции 0005, а не копирует его сюда:
+
+    вторая копия шаблона на 362 строки в тестах неизбежно разошлась бы с первой,
+    а проверять нужно именно порядок настоящего литерала. Имя файла миграции не
+    является питоновским идентификатором, поэтому обычный `import` не работает —
+    модуль грузится по пути через `importlib.util`.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = next(
+        Path(__file__).resolve().parents[2].glob("alembic/versions/*0005-work_categories.py")
+    )
+    spec = importlib.util.spec_from_file_location("_migration_0005_work_categories", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.WORK_CATEGORIES_SEED
+
+
 # ---------------------------------------------------------------------------
 #  rate_standards: EXCLUDE USING gist — периоды действия не пересекаются
 # ---------------------------------------------------------------------------
@@ -565,6 +585,15 @@ class TestWorkCategoriesSchema:
     }
     DB_IS_BUCKET = "((code = '99'::text) OR (code ~~ '%.99'::text))"
 
+    # Симметрично DB_CHECKS выше: та же тройка выражений, но со стороны ORM.
+    ORM_CHECKS = {
+        "ck_work_categories_code": "code ~ '^[0-9]+([.][0-9]+)*$'",
+        "ck_work_categories_not_self_parent": "parent_id IS NULL OR parent_id <> id",
+        "ck_work_categories_title_not_blank": (
+            "btrim(title, ' ' || chr(9) || chr(10) || chr(13) || chr(160)) <> ''"
+        ),
+    }
+
     def test_database_holds_the_declared_expressions(self, db_session):
         """Что реально легло в БД: все три CHECK и generated-выражение.
 
@@ -682,17 +711,17 @@ class TestWorkCategoriesSchema:
         «cannot be modified», а предупреждение прогон не роняет). Поэтому ORM
         сверяется здесь, а БД — тестом выше; вместе они закрывают оба направления:
         правка в миграции ломает первый, правка в модели — второй.
+
+        Сравнение словарём целиком (как DB_CHECKS/rows выше), а не по трём
+        выбранным ключам: иначе лишний CHECK, объявленный только в модели, остался
+        бы незамеченным.
         """
         checks = {
             c.name: str(c.sqltext)
             for c in WorkCategory.__table__.constraints
             if isinstance(c, CheckConstraint)
         }
-        assert checks["ck_work_categories_code"] == "code ~ '^[0-9]+([.][0-9]+)*$'"
-        assert checks["ck_work_categories_not_self_parent"] == "parent_id IS NULL OR parent_id <> id"
-        assert checks["ck_work_categories_title_not_blank"] == (
-            "btrim(title, ' ' || chr(9) || chr(10) || chr(13) || chr(160)) <> ''"
-        )
+        assert checks == self.ORM_CHECKS
         computed = WorkCategory.__table__.c.is_bucket.computed
         assert str(computed.sqltext) == "code = '99' OR code LIKE '%.99'"
         assert computed.persisted is True
@@ -745,21 +774,61 @@ class TestWorkCategoriesSeed:
         assert rows == {"11.99": True, "11.99.2": False}
 
     def test_sort_order_follows_the_template(self, db_session):
+        """Полный порядок кодов, а не только мультимножество значений и края.
+
+        Сверка одних лишь значений sort_order (или только кодов '1'/'99' на
+        краях) не ловит перестановку внутренних строк литерала: у переставленной
+        пары получаются другие sort_order, но набор {10, 20, ..., 3620} и края
+        шаблона остаются прежними. Здесь список кодов, упорядоченный по
+        sort_order в БД, сравнивается с порядком самого литерала.
+        """
+        seed = _load_work_categories_seed()
+
+        codes_by_sort_order = db_session.execute(
+            sa.text("select code from work_categories order by sort_order")
+        ).scalars().all()
+        assert codes_by_sort_order == [code for code, _ in seed]
+
         orders = db_session.execute(
             sa.text("select sort_order from work_categories order by sort_order")
         ).scalars().all()
         assert orders == [(i + 1) * 10 for i in range(362)]
 
-        # Список выше сверяет мультимножество значений sort_order, а не их привязку
-        # к конкретным строкам: перевёрнутая формула (от конца шаблона к началу)
-        # даёт то же самое мультимножество и не будет замечена. Поэтому дополнительно
-        # закрепляем края шаблона по коду: первая строка ('1') и последняя ('99').
-        edge_orders = dict(
-            db_session.execute(
-                sa.text("select code, sort_order from work_categories where code in ('1', '99')")
-            ).all()
-        )
-        assert edge_orders == {"1": 10, "99": 3620}
+    def test_parent_always_precedes_child_and_roots_ascend_by_number(self, db_session):
+        """Два свойства порядка, проверяемых без литерала и без шаблона.
+
+        `test_sort_order_follows_the_template` выше сверяет порядок из БД с
+        порядком самого литерала `WORK_CATEGORIES_SEED`: литерал там одновременно
+        и эталон, и предмет проверки, поэтому перестановка строк внутри него
+        двигает обе стороны сравнения и остаётся незамеченной. Здесь те же два
+        свойства утверждаются независимо от литерала и от шаблона `Шаблон.xlsx`
+        (который не коммитится) — читаем только содержимое `work_categories`.
+
+        1. Топологичность (спека §1: «родитель всегда встречается раньше
+           ребёнка»): для каждого кода с точкой позиция родителя (префикс до
+           последней точки) в списке, упорядоченном по sort_order, должна быть
+           меньше позиции самого кода. Ожидание — пустой список нарушителей.
+        2. Корни (коды без точки, включая '99') идут по возрастанию номера.
+
+        Остаточный предел: эти два инварианта не ловят перестановку двух
+        сиблингов внутри одного уровня — в самом шаблоне такие инверсии есть
+        (замерено: 10.2.6 идёт раньше 10.2.5, а 10.7.5 раньше 10.7.4), поэтому
+        требовать от порядка шаблона полной числовой сортировки нельзя.
+        """
+        codes = db_session.execute(
+            sa.text("select code from work_categories order by sort_order")
+        ).scalars().all()
+        position = {code: i for i, code in enumerate(codes)}
+
+        violators = [
+            code
+            for code in codes
+            if "." in code and position[code.rsplit(".", 1)[0]] >= position[code]
+        ]
+        assert violators == []
+
+        roots = [code for code in codes if "." not in code]
+        assert roots == sorted(roots, key=int)
 
     def test_titles_come_from_the_template_as_is(self, db_session):
         title = db_session.execute(
