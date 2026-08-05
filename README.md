@@ -70,6 +70,7 @@ just dev-frontend     # http://localhost:5173
 just test             # backend (pytest) + frontend (vitest)
 just lint             # ruff + eslint
 just typecheck-frontend
+just ci               # всё в форме CI (ruff + pytest + eslint + tsc + vitest) — перед пушем
 ```
 
 Integration-тесты требуют `TEST_DATABASE_URL` (см. `.env.test.example`); имя
