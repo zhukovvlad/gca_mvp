@@ -129,31 +129,35 @@ class TestWorkCategoriesSchema:
             )
 
     def test_is_bucket_cannot_be_updated(self, db_session):
+        row_id = _make_category(db_session, "910", 999010)
         with pytest.raises(ProgrammingError, match="can only be updated to DEFAULT"), db_session.begin_nested():
-            db_session.execute(sa.text("update work_categories set is_bucket = true where code = '1'"))
+            db_session.execute(
+                sa.text("update work_categories set is_bucket = true where id = :id"),
+                {"id": row_id},
+            )
 
     def test_duplicate_code_rejected(self, db_session):
+        _make_category(db_session, "911", 999011)
         with rejected(db_session, contains="uq_work_categories_code"):
             db_session.execute(
                 sa.text(
                     "insert into work_categories (code, title, sort_order) "
-                    "values ('1', 'дубль', 999004)"
+                    "values ('911', 'дубль', 999012)"
                 )
             )
 
     def test_duplicate_sort_order_rejected(self, db_session):
+        _make_category(db_session, "912", 999013)
         with rejected(db_session, contains="uq_work_categories_sort_order"):
             db_session.execute(
                 sa.text(
                     "insert into work_categories (code, title, sort_order) "
-                    "values ('903', 'x', 10)"
+                    "values ('913', 'x', 999013)"
                 )
             )
 
     def test_row_cannot_be_its_own_parent(self, db_session):
-        row_id = db_session.execute(
-            sa.text("select id from work_categories where code = '1'")
-        ).scalar_one()
+        row_id = _make_category(db_session, "914", 999014)
         with rejected(db_session, contains="ck_work_categories_not_self_parent"):
             db_session.execute(
                 sa.text("update work_categories set parent_id = :id where id = :id"),
@@ -161,14 +165,58 @@ class TestWorkCategoriesSchema:
             )
 
     def test_parent_with_children_cannot_be_deleted(self, db_session):
+        parent_id = _make_category(db_session, "915", 999015)
+        _make_category(db_session, "915.1", 999016, parent_id=parent_id)
         with rejected(db_session, contains="work_categories_parent_id_fkey"):
-            db_session.execute(sa.text("delete from work_categories where code = '1'"))
+            db_session.execute(
+                sa.text("delete from work_categories where id = :id"), {"id": parent_id}
+            )
+
+    def test_orm_expressions_match_the_migration(self, db_session):
+        """Единственная защита от расхождения models.py и миграции.
+
+        Замерено: `alembic check` расхождение CHECK- и Computed-выражений НЕ ловит —
+        autogenerate их не сравнивает (на Computed выдаёт лишь UserWarning
+        «cannot be modified», а предупреждение прогон не роняет). Поэтому ожидаемые
+        выражения зафиксированы здесь; парный тест выше сторожит то, что реально
+        легло в БД.
+        """
+        checks = {
+            c.name: str(c.sqltext)
+            for c in WorkCategory.__table__.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        assert checks["ck_work_categories_code"] == "code ~ '^[0-9]+([.][0-9]+)*$'"
+        assert checks["ck_work_categories_not_self_parent"] == "parent_id IS NULL OR parent_id <> id"
+        assert checks["ck_work_categories_title_not_blank"] == (
+            "btrim(title, ' ' || chr(9) || chr(10) || chr(13) || chr(160)) <> ''"
+        )
+        computed = WorkCategory.__table__.c.is_bucket.computed
+        assert str(computed.sqltext) == "code = '99' OR code LIKE '%.99'"
+        assert computed.persisted is True
 ```
 
-В начало файла добавить импорт (рядом с существующими):
+Хелпер рядом с `rejected()` в начале файла — схемные тесты **не должны опираться на сид**, иначе Task 1 нельзя принять отдельно от Task 2:
 
 ```python
+def _make_category(session, code: str, sort_order: int, parent_id: int | None = None) -> int:
+    """Создаёт статью и возвращает её id. Коды 9xx заведомо вне шаблона."""
+    return session.execute(
+        sa.text(
+            "insert into work_categories (code, title, sort_order, parent_id) "
+            "values (:code, 'Тестовая статья', :sort_order, :parent_id) returning id"
+        ),
+        {"code": code, "sort_order": sort_order, "parent_id": parent_id},
+    ).scalar_one()
+```
+
+В начало файла добавить импорты (рядом с существующими):
+
+```python
+from sqlalchemy import CheckConstraint
 from sqlalchemy.exc import IntegrityError, ProgrammingError
+
+from models import WorkCategory
 ```
 
 - [ ] **Step 2: Прогнать — убедиться, что падают по причине «нет таблицы»**
@@ -275,7 +323,7 @@ def downgrade() -> None:
 
 - [ ] **Step 4: Добавить ORM-модель**
 
-В `backend/models.py`, рядом с прочими доменными сущностями. Выражения повторяют миграцию — расхождение ловит тест из Step 1.
+В `backend/models.py`, рядом с прочими доменными сущностями. Выражения повторяют миграцию посимвольно; расхождение ловит **только** `test_orm_expressions_match_the_migration` из Step 1 — `alembic check` для CHECK и `Computed` бесполезен (замерено).
 
 ```python
 WORK_CATEGORY_CODE_REGEX = "^[0-9]+([.][0-9]+)*$"
@@ -325,20 +373,12 @@ Run: `just db-test-migrate`
 Expected: `Running upgrade 0004 -> 0005`.
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_schema_constraints.py -k WorkCategories -q`
-Expected: большинство тестов PASS; **ровно три падают** — те, которым нужна статья с кодом `1`, а она приезжает в Task 2:
-
-| Тест | Почему падает на пустой таблице |
-|---|---|
-| `test_row_cannot_be_its_own_parent` | `scalar_one()` по `code = '1'` → `NoResultFound` |
-| `test_duplicate_code_rejected` | вставка `'1'` в пустую таблицу проходит, ошибки уникальности нет |
-| `test_parent_with_children_cannot_be_deleted` | `DELETE` по нулю строк FK не нарушает |
-
-`test_is_bucket_cannot_be_updated` **проходит и на пустой таблице** — замерено: PostgreSQL отвергает UPDATE генерируемой колонки на этапе rewrite, до сопоставления строк (`column "is_bucket" can only be updated to DEFAULT`), поэтому `WHERE code = '1'` не важен. Если этот тест упал — дефект в миграции, а не ожидаемое состояние.
+Expected: **все тесты класса PASS**. Схемные тесты создают свои строки через `_make_category` (коды `9xx` заведомо вне шаблона), поэтому от сида не зависят и Task 1 принимается отдельно от Task 2 — красных тестов в коммите не остаётся.
 
 - [ ] **Step 6: Проверить отсутствие дрейфа ORM/БД**
 
 Run: `just db-test-check`
-Expected: `alembic check` без изменений. Если ругается на `is_bucket` — расходятся выражения `Computed` в миграции и модели.
+Expected: `alembic check` без изменений — он сторожит **состав** колонок, типы и индексы. **Расхождение CHECK/Computed он не увидит** (замер: при подмене обоих выражений autogenerate вернул пустой diff, ограничившись `UserWarning` про Computed) — за это отвечает `test_orm_expressions_match_the_migration`. Допустимо увидеть здесь тот же UserWarning; это не отказ.
 
 - [ ] **Step 7: Коммит**
 
@@ -387,11 +427,16 @@ for code, title in rows:
     print(f'    ({code!r}, {title!r}),')
 ```
 
-Run (через `uv run` из `backend/`, как требует Global Constraints; `$SCRATCH` — scratchpad-каталог сессии):
+Run (через `uv run` из `backend/`, как требует Global Constraints). Каталог задаётся явно в той же сессии оболочки, иначе пустая переменная превратит путь в `/gen_seed.py`:
 ```bash
+SCRATCH="$(mktemp -d)"                       # каталог вне репозитория
+cat > "$SCRATCH/gen_seed.py" <<'PY'
+# ← сюда содержимое скрипта выше
+PY
 cd backend && uv run python "$SCRATCH/gen_seed.py" ../samples/Шаблон.xlsx > "$SCRATCH/seed_rows.txt"
 wc -l "$SCRATCH/seed_rows.txt"
 ```
+После Step 4 каталог удалить: `rm -rf "$SCRATCH"`.
 Expected: 362 строки; если `assert` про 362 упал — шаблон обновился, и число в снапшоте надо пересмотреть осознанно (спека §6).
 
 - [ ] **Step 2: Написать падающие тесты данных**
@@ -530,7 +575,7 @@ cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_tes
 Expected: `0004 -> 0005` без ошибок.
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_schema_constraints.py -k WorkCategories -q`
-Expected: PASS все, включая четыре теста из Task 1, которым нужна статья `1`.
+Expected: PASS все — и схемные (они самодостаточны с Task 1), и новые тесты сида.
 
 - [ ] **Step 6: Проверить снятием защиты, что отказ на сиротах реально срабатывает**
 
@@ -545,7 +590,7 @@ cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_tes
 ```
 Expected: миграция падает `RuntimeError: у статей нет прямого предка в справочнике: 11.99.2, 11.99.3, 11.99.4`. Таблицы после отката нет — проверить: `select to_regclass('work_categories')` → `NULL`.
 
-**Граница второго отказа — зафиксировать, а не проверять.** Счётчик строк сравнивает вставленное с длиной **самого литерала**, поэтому удаление строки из литерала он не заметит: он ловит частично провалившуюся вставку, а не редактирование. Полноту литерала сторожит тест `test_whole_template_is_seeded` (362). Записать это разделение обязанностей в devlog — иначе следующий читатель решит, что счётчик защищает от неполного шаблона.
+**Граница второго отказа — зафиксировать, а не проверять.** Счётчик строк **не защищает почти ни от чего**, и это надо назвать прямо: `INSERT` без `ON CONFLICT` либо проходит целиком, либо бросает исключение до `SELECT count(*)`, так что «частично провалившейся вставки» в этом сценарии не существует. Он остаётся как предписанная спекой sanity-проверка: сработает, если таблица окажется непустой к моменту вставки или если кто-то позже сделает вставку условной (`ON CONFLICT DO NOTHING`). Полноту литерала и соответствие шаблону сторожит тест `test_whole_template_is_seeded` (362), а дерево — `test_every_dotted_code_has_its_prefix_as_parent`. Записать это разделение обязанностей в devlog, иначе следующий читатель припишет счётчику защиту, которой у него нет.
 
 Восстановить удалённую строку `("11.99", …)`, перекатить миграцию (`downgrade 0004` → `upgrade head`), повторить прогон тестов — PASS.
 
@@ -636,6 +681,6 @@ EOF
 
 **Пробел, найденный при сверке:** спека требует тест «дубль `sort_order` отвергается», а в первой редакции плана его не было — добавлен (`test_duplicate_sort_order_rejected`, опирается на `sort_order = 10` из сида).
 
-**Согласованность имён:** константы `CODE_REGEX` / `IS_BUCKET_EXPRESSION` / `TITLE_BLANK_CHARS` в миграции и их зеркала `WORK_CATEGORY_*` в `models.py` — разные имена намеренно (миграция не импортирует модели), но **выражения** должны совпадать посимвольно, иначе `alembic check` покажет дрейф; имена констрейнтов одинаковы в миграции, модели и тестах; `WorkCategory` — единственное имя ORM-класса, используется в Task 2 Step 2.
+**Согласованность имён:** константы `CODE_REGEX` / `IS_BUCKET_EXPRESSION` / `TITLE_BLANK_CHARS` в миграции и их зеркала `WORK_CATEGORY_*` в `models.py` — разные имена намеренно (миграция не импортирует модели), но **выражения** должны совпадать посимвольно. Сторожит это `test_orm_expressions_match_the_migration`, а **не** `alembic check`: замерено, что при подмене CHECK- и Computed-выражений autogenerate возвращает пустой diff. Имена констрейнтов одинаковы в миграции, модели и тестах; `WorkCategory` — единственное имя ORM-класса.
 
-**Замеченная зависимость между задачами:** четыре теста Task 1 опираются на статью с кодом `1`, которая появляется только в Task 2. Это указано прямо в ожидании Task 1 Step 5, чтобы исполнитель не принял их падение за дефект.
+**Задачи независимы.** Схемные тесты Task 1 создают свои строки (`_make_category`, коды `9xx` вне шаблона) и не опираются на сид, поэтому Task 1 коммитится полностью зелёным, а Task 2 добавляет только тесты содержимого. Первая редакция плана оставляла Task 1 красным и объявляла это ожидаемым — так делать нельзя: красный коммит нельзя принять, и он маскирует настоящие поломки.
