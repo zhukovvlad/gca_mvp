@@ -730,6 +730,51 @@ class RateStandard(Base):
 
 
 # ---------------------------------------------------------------------------
+#  Классификатор видов работ (фаза 7, спека Ф1)
+# ---------------------------------------------------------------------------
+
+WORK_CATEGORY_CODE_REGEX = "^[0-9]+([.][0-9]+)*$"
+WORK_CATEGORY_IS_BUCKET_EXPRESSION = "code = '99' OR code LIKE '%.99'"
+WORK_CATEGORY_TITLE_BLANK_CHARS = "' ' || chr(9) || chr(10) || chr(13) || chr(160)"
+
+
+class WorkCategory(Base):
+    """Статья классификатора видов работ компании (фаза 7, спека Ф1).
+
+    Дерево держится на `parent_id`; `is_bucket` — производное от кода, писать в него
+    нельзя (generated column). Уровень статьи не хранится: он выводится из дерева.
+    """
+
+    __tablename__ = "work_categories"
+
+    id = Column(BigInteger, primary_key=True)
+    code = Column(Text, nullable=False)
+    title = Column(Text, nullable=False)
+    parent_id = Column(
+        BigInteger, ForeignKey("work_categories.id", ondelete="RESTRICT"), nullable=True
+    )
+    is_bucket = Column(
+        Boolean, Computed(WORK_CATEGORY_IS_BUCKET_EXPRESSION, persisted=True), nullable=False
+    )
+    sort_order = Column(Integer, nullable=False)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_work_categories_code"),
+        UniqueConstraint("sort_order", name="uq_work_categories_sort_order"),
+        CheckConstraint(f"code ~ '{WORK_CATEGORY_CODE_REGEX}'", name="ck_work_categories_code"),
+        CheckConstraint(
+            "parent_id IS NULL OR parent_id <> id", name="ck_work_categories_not_self_parent"
+        ),
+        CheckConstraint(
+            f"btrim(title, {WORK_CATEGORY_TITLE_BLANK_CHARS}) <> ''",
+            name="ck_work_categories_title_not_blank",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 #  Настройки приложения (фаза 6)
 # ---------------------------------------------------------------------------
 

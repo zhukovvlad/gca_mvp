@@ -12,7 +12,8 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import CheckConstraint
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from models import (
     PASSPORT_TOP_N_DEFAULT,
@@ -28,6 +29,7 @@ from models import (
     MatchSource,
     PositionItem,
     Proposal,
+    WorkCategory,
 )
 
 pytestmark = pytest.mark.integration
@@ -41,6 +43,17 @@ def rejected(session, contains: str | None = None):
         session.flush()
     if contains is not None:
         assert contains in str(exc.value)
+
+
+def _make_category(session, code: str, sort_order: int, parent_id: int | None = None) -> int:
+    """Создаёт статью и возвращает её id. Коды 9xx заведомо вне шаблона."""
+    return session.execute(
+        sa.text(
+            "insert into work_categories (code, title, sort_order, parent_id) "
+            "values (:code, 'Тестовая статья', :sort_order, :parent_id) returning id"
+        ),
+        {"code": code, "sort_order": sort_order, "parent_id": parent_id},
+    ).scalar_one()
 
 
 # ---------------------------------------------------------------------------
@@ -515,3 +528,171 @@ def test_money_round_trips_as_decimal(db_session, factories):
     assert isinstance(item.unit_cost_total, Decimal)
     assert item.unit_cost_total == Decimal("1234567.891234")
     assert item.total_cost_total == Decimal("0.01")
+
+
+# ---------------------------------------------------------------------------
+#  work_categories: справочник статей классификатора работ (фаза 7, спека Ф1)
+# ---------------------------------------------------------------------------
+
+class TestWorkCategoriesSchema:
+    """Инварианты справочника статей (спека Ф1 §2.1).
+
+    Смысл — в непредставимости негодного состояния: справочник курируется людьми
+    и будет правиться через админку, поэтому запрет живёт в БД, а не в Python.
+    """
+
+    def test_code_must_look_like_a_dotted_number(self, db_session):
+        for bad in ("abc", "1..2", "1.", "", "6.6 ", ".1", "1x2", "1,2"):
+            with rejected(db_session, contains="ck_work_categories_code"):
+                db_session.execute(
+                    sa.text(
+                        "insert into work_categories (code, title, sort_order) "
+                        "values (:code, 'x', 999000)"
+                    ),
+                    {"code": bad},
+                )
+
+    # Замеренные определения из PostgreSQL. Собирать их по памяти нельзя: функция
+    # переформатирует выражение — добавляет `::text`, свои скобки и печатает LIKE
+    # как оператор `~~`.
+    DB_CHECKS = {
+        "ck_work_categories_code": "CHECK ((code ~ '^[0-9]+([.][0-9]+)*$'::text))",
+        "ck_work_categories_not_self_parent": "CHECK (((parent_id IS NULL) OR (parent_id <> id)))",
+        "ck_work_categories_title_not_blank": (
+            "CHECK ((btrim(title, ((((' '::text || chr(9)) || chr(10)) || chr(13)) || chr(160)))"
+            " <> ''::text))"
+        ),
+    }
+    DB_IS_BUCKET = "((code = '99'::text) OR (code ~~ '%.99'::text))"
+
+    def test_database_holds_the_declared_expressions(self, db_session):
+        """Что реально легло в БД: все три CHECK и generated-выражение.
+
+        Сравнение словарём целиком, а не по одному ключу: так видно и подмену
+        выражения, и появление лишнего CHECK, и исчезновение нужного. Канарейка
+        против возврата экранирования (§2.1.1) — первая строка этого словаря.
+        """
+        rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select conname, pg_get_constraintdef(oid) from pg_constraint "
+                    "where conrelid = 'work_categories'::regclass and contype = 'c'"
+                )
+            ).all()
+        )
+        assert rows == self.DB_CHECKS
+        generated = db_session.execute(
+            sa.text(
+                "select generation_expression from information_schema.columns "
+                "where table_name = 'work_categories' and column_name = 'is_bucket'"
+            )
+        ).scalar_one()
+        assert generated == self.DB_IS_BUCKET
+
+    def test_blank_title_rejected_the_same_way_on_any_locale(self, db_session):
+        """Набор символов задан кодовыми точками, поэтому не зависит от LC_CTYPE."""
+        for blank in ("", " ", "\t", "\n", "\r", "\xa0", " \t\xa0 "):
+            with rejected(db_session, contains="ck_work_categories_title_not_blank"):
+                db_session.execute(
+                    sa.text(
+                        "insert into work_categories (code, title, sort_order) "
+                        "values ('900', :title, 999001)"
+                    ),
+                    {"title": blank},
+                )
+
+    def test_zero_width_space_title_is_an_accepted_boundary(self, db_session):
+        """U+200B в набор не входит — граница явная и детерминированная (§2.1.2).
+
+        Тест сторожит саму границу: если её решат закрыть, он покажет, что
+        поведение изменилось осознанно.
+        """
+        with db_session.begin_nested():
+            db_session.execute(
+                sa.text(
+                    "insert into work_categories (code, title, sort_order) "
+                    "values ('901', :title, 999002)"
+                ),
+                {"title": "\u200b"},  # именно escape, а не невидимый символ в исходнике
+            )
+
+    def test_is_bucket_cannot_be_written(self, db_session):
+        """generated column: ложь не отвергается, а невозможна.
+
+        Класс ошибки — ProgrammingError (sqlstate 428C9), не IntegrityError,
+        поэтому хелпер rejected() здесь не годится (спека §7 факт 7).
+        """
+        with pytest.raises(ProgrammingError, match="non-DEFAULT value"), db_session.begin_nested():
+            db_session.execute(
+                sa.text(
+                    "insert into work_categories (code, title, sort_order, is_bucket) "
+                    "values ('902', 'x', 999003, true)"
+                )
+            )
+
+    def test_is_bucket_cannot_be_updated(self, db_session):
+        row_id = _make_category(db_session, "910", 999010)
+        with pytest.raises(ProgrammingError, match="can only be updated to DEFAULT"), db_session.begin_nested():
+            db_session.execute(
+                sa.text("update work_categories set is_bucket = true where id = :id"),
+                {"id": row_id},
+            )
+
+    def test_duplicate_code_rejected(self, db_session):
+        _make_category(db_session, "911", 999011)
+        with rejected(db_session, contains="uq_work_categories_code"):
+            db_session.execute(
+                sa.text(
+                    "insert into work_categories (code, title, sort_order) "
+                    "values ('911', 'дубль', 999012)"
+                )
+            )
+
+    def test_duplicate_sort_order_rejected(self, db_session):
+        _make_category(db_session, "912", 999013)
+        with rejected(db_session, contains="uq_work_categories_sort_order"):
+            db_session.execute(
+                sa.text(
+                    "insert into work_categories (code, title, sort_order) "
+                    "values ('913', 'x', 999013)"
+                )
+            )
+
+    def test_row_cannot_be_its_own_parent(self, db_session):
+        row_id = _make_category(db_session, "914", 999014)
+        with rejected(db_session, contains="ck_work_categories_not_self_parent"):
+            db_session.execute(
+                sa.text("update work_categories set parent_id = :id where id = :id"),
+                {"id": row_id},
+            )
+
+    def test_parent_with_children_cannot_be_deleted(self, db_session):
+        parent_id = _make_category(db_session, "915", 999015)
+        _make_category(db_session, "915.1", 999016, parent_id=parent_id)
+        with rejected(db_session, contains="work_categories_parent_id_fkey"):
+            db_session.execute(
+                sa.text("delete from work_categories where id = :id"), {"id": parent_id}
+            )
+
+    def test_orm_declares_the_same_expressions(self):
+        """Вторая сторона парности: что объявлено в models.py.
+
+        Замерено: `alembic check` расхождение CHECK- и Computed-выражений НЕ ловит —
+        autogenerate их не сравнивает (на Computed выдаёт лишь UserWarning
+        «cannot be modified», а предупреждение прогон не роняет). Поэтому ORM
+        сверяется здесь, а БД — тестом выше; вместе они закрывают оба направления:
+        правка в миграции ломает первый, правка в модели — второй.
+        """
+        checks = {
+            c.name: str(c.sqltext)
+            for c in WorkCategory.__table__.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        assert checks["ck_work_categories_code"] == "code ~ '^[0-9]+([.][0-9]+)*$'"
+        assert checks["ck_work_categories_not_self_parent"] == "parent_id IS NULL OR parent_id <> id"
+        assert checks["ck_work_categories_title_not_blank"] == (
+            "btrim(title, ' ' || chr(9) || chr(10) || chr(13) || chr(160)) <> ''"
+        )
+        computed = WorkCategory.__table__.c.is_bucket.computed
+        assert str(computed.sqltext) == "code = '99' OR code LIKE '%.99'"
+        assert computed.persisted is True
