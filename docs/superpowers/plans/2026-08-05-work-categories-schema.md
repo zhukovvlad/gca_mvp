@@ -346,7 +346,7 @@ def downgrade() -> None:
 
 - [ ] **Step 4: Добавить ORM-модель**
 
-В `backend/models.py`, рядом с прочими доменными сущностями. Выражения повторяют миграцию посимвольно; расхождение ловит **только** `test_orm_expressions_match_the_migration` из Step 1 — `alembic check` для CHECK и `Computed` бесполезен (замерено).
+В `backend/models.py`, рядом с прочими доменными сущностями. Выражения повторяют миграцию посимвольно; расхождение ловит **только** `test_orm_declares_the_same_expressions` из Step 1 — `alembic check` для CHECK и `Computed` бесполезен (замерено).
 
 ```python
 WORK_CATEGORY_CODE_REGEX = "^[0-9]+([.][0-9]+)*$"
@@ -401,7 +401,7 @@ Expected: **все тесты класса PASS**. Схемные тесты с�
 - [ ] **Step 6: Проверить отсутствие дрейфа ORM/БД**
 
 Run: `just db-test-check`
-Expected: `alembic check` без изменений — он сторожит **состав** колонок, типы и индексы. **Расхождение CHECK/Computed он не увидит** (замер: при подмене обоих выражений autogenerate вернул пустой diff, ограничившись `UserWarning` про Computed) — за это отвечает `test_orm_expressions_match_the_migration`. Допустимо увидеть здесь тот же UserWarning; это не отказ.
+Expected: `alembic check` без изменений — он сторожит **состав** колонок, типы и индексы. **Расхождение CHECK/Computed он не увидит** (замер: при подмене обоих выражений autogenerate вернул пустой diff, ограничившись `UserWarning` про Computed) — за это отвечает `test_orm_declares_the_same_expressions`. Допустимо увидеть здесь тот же UserWarning; это не отказ.
 
 - [ ] **Step 7: Коммит**
 
@@ -424,7 +424,16 @@ git commit -m "feat(db): таблица work_categories с непредстав�
 
 - [ ] **Step 1: Сгенерировать литерал из шаблона**
 
-Одноразовый скрипт печатает готовые к вставке строки. Путь **фиксированный и вне репозитория** — `/c/tmp/gca-f1/` (в Git Bash это `C:\tmp\gca-f1`): переменные оболочки между вызовами не сохраняются, а Step 4 обязан прочитать тот же файл. Создать скрипт **инструментом записи файлов** (`Write` / `apply_patch`), а не heredoc-ом. Путь к шаблону принимает аргументом, чтобы не зависеть от текущего каталога:
+Одноразовый скрипт печатает готовые к вставке строки. Путь **фиксированный и вне репозитория** — `/c/tmp/gca-f1/` (в Git Bash это `C:\tmp\gca-f1`): переменные оболочки между вызовами не сохраняются, а Step 4 обязан прочитать тот же файл.
+
+**Сначала preflight и создание каталога, только потом запись файла.** Фиксированный путь может остаться от другой сессии, а перезаписывать чужое и потом сносить рекурсивно нельзя:
+
+```bash
+test ! -e /c/tmp/gca-f1 || { echo "/c/tmp/gca-f1 уже существует — разобраться вручную, не перезаписывать"; exit 1; }
+mkdir -p /c/tmp/gca-f1
+```
+
+Дальше записать скрипт в `/c/tmp/gca-f1/gen_seed.py` **инструментом записи файлов** (`Write` / `apply_patch`), а не heredoc-ом. Путь к шаблону принимает аргументом, чтобы не зависеть от текущего каталога:
 
 ```python
 # gen_seed.py — запускается один раз, в репозиторий не коммитится
@@ -450,9 +459,8 @@ for code, title in rows:
     print(f'    ({code!r}, {title!r}),')
 ```
 
-Файл записать по пути `/c/tmp/gca-f1/gen_seed.py`. Затем (через `uv run` из `backend/`, как требует Global Constraints):
+Запуск — через `uv run` из `backend/`, как требует Global Constraints:
 ```bash
-mkdir -p /c/tmp/gca-f1
 cd backend && uv run python /c/tmp/gca-f1/gen_seed.py ../samples/Шаблон.xlsx > /c/tmp/gca-f1/seed_rows.txt
 wc -l /c/tmp/gca-f1/seed_rows.txt
 ```
@@ -593,7 +601,11 @@ cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_tes
 ```
 Expected: `0004 -> 0005` без ошибок.
 
-Литерал перенесён — временный каталог больше не нужен: `rm -rf /c/tmp/gca-f1`.
+Литерал перенесён — убрать временные файлы **поимённо**, каталог снять нерекурсивно (если в нём осталось что-то ещё, `rmdir` откажет, и это правильный сигнал):
+```bash
+rm -f /c/tmp/gca-f1/gen_seed.py /c/tmp/gca-f1/seed_rows.txt
+rmdir /c/tmp/gca-f1
+```
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_schema_constraints.py -k WorkCategories -q`
 Expected: PASS все — и схемные (они самодостаточны с Task 1), и новые тесты сида.
@@ -702,6 +714,6 @@ EOF
 
 **Пробел, найденный при сверке:** спека требует тест «дубль `sort_order` отвергается», а в первой редакции плана его не было — добавлен (`test_duplicate_sort_order_rejected`; как и остальные схемные тесты, создаёт свою строку с `sort_order = 999013`, от сида не зависит).
 
-**Согласованность имён:** константы `CODE_REGEX` / `IS_BUCKET_EXPRESSION` / `TITLE_BLANK_CHARS` в миграции и их зеркала `WORK_CATEGORY_*` в `models.py` — разные имена намеренно (миграция не импортирует модели), но **выражения** должны совпадать посимвольно. Сторожит это `test_orm_expressions_match_the_migration`, а **не** `alembic check`: замерено, что при подмене CHECK- и Computed-выражений autogenerate возвращает пустой diff. Имена констрейнтов одинаковы в миграции, модели и тестах; `WorkCategory` — единственное имя ORM-класса.
+**Согласованность имён:** константы `CODE_REGEX` / `IS_BUCKET_EXPRESSION` / `TITLE_BLANK_CHARS` в миграции и их зеркала `WORK_CATEGORY_*` в `models.py` — разные имена намеренно (миграция не импортирует модели), но **выражения** должны совпадать посимвольно. Сторожит это `test_orm_declares_the_same_expressions`, а **не** `alembic check`: замерено, что при подмене CHECK- и Computed-выражений autogenerate возвращает пустой diff. Имена констрейнтов одинаковы в миграции, модели и тестах; `WorkCategory` — единственное имя ORM-класса.
 
 **Задачи независимы.** Схемные тесты Task 1 создают свои строки (`_make_category`, коды `9xx` вне шаблона) и не опираются на сид, поэтому Task 1 коммитится полностью зелёным, а Task 2 добавляет только тесты содержимого. Первая редакция плана оставляла Task 1 красным и объявляла это ожидаемым — так делать нельзя: красный коммит нельзя принять, и он маскирует настоящие поломки.
