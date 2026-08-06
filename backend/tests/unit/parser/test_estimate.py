@@ -676,8 +676,18 @@ class TestColumnHeaderGuard:
         ws = _minimal_sheet(11)
         ws.cell(row=9, column=1, value="Порядковый номер")
 
-        with pytest.raises(EstimateParseError, match="№ п/п"):
+        with pytest.raises(EstimateParseError) as exc:
             parse_worksheet(ws)
+
+        message = str(exc.value)
+        assert "№ п/п" in message
+        # Диапазон: строка заголовка контрагентов у `_minimal_sheet` — 6, маркер
+        # лота — 11, значит просмотрены строки 7–10.
+        assert "7–10" in message, message
+        # Ключевое утверждение docstring'а: фактического значения в сообщении нет.
+        # Без этой строки тест был бы зелёным и у реализации, которая его называет
+        # (найдено финальным ревью, проверено снятием защиты).
+        assert "Порядковый номер" not in message, message
 
     def test_header_row_is_found_not_hardcoded(self):
         """Шапка сдвинута на строку — файл валиден и должен разбираться.
