@@ -40,7 +40,7 @@
 - `backend/parser/estimate.py` — **правится**: `_find_column_header_row`, `_validate_column_headers`, вызов в `parse_worksheet`, `PARSER_VERSION`, импорт исключения из `errors`.
 - `backend/parser/get_lot_positions.py` — **правится**: dataclass `LotRows`, распознавание агрегатной строки в существующем цикле.
 - `backend/parser/get_proposals.py` — **правится**: разложить `LotRows` в `contractor_items`.
-- `backend/parser/__init__.py` — **правится**: экспорт `LotRows`, если он там нужен по образцу соседей.
+- `backend/parser/__init__.py` — **не трогается**: `LotRows` наружу не выводим. Модуль прямо объявляет, что внутренние шаги разбора не реэкспортируются (иначе имя затирает атрибут-модуль); в `__all__` только точка входа, `ParseResult`, `EstimateParseError`, `PARSER_VERSION` и контракт нормализации. Публичное имя `EstimateParseError` после переезда в `errors.py` сохраняется — за этим следит тест в Task 2 Step 0.
 - `backend/tests/unit/parser/test_estimate.py` — **правится**: шапка в `_minimal_sheet`, новый класс тестов guard'а.
 - `backend/tests/unit/parser/test_get_lot_positions.py` — **правится**: 14 вызовов получают `.positions`, новые тесты агрегатной строки.
 - `backend/tests/unit/parser/test_performance.py` — **правится**: в синтетический лист добавляются B9, C9, D9.
@@ -203,6 +203,15 @@ Expected: FAIL. Тесты с чужим заголовком падают с `D
     for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
         ws.cell(row=9, column=column, value=title)
 ```
+
+**И там же — номер с разделом в саму строку лота:**
+
+```python
+    ws["A11"] = 1
+    ws["B11"] = 1
+```
+
+Это не косметика, а обязательное условие Task 2, и лучше внести его сразу. Замерено: `read_lots_and_boundaries:85` передаёт `start_row` в `get_lot_positions` без сдвига, а цикл идёт `range(lot_start_row, lot_end_row + 1)` — **строка лота входит в обход позиций**. Сейчас в хелпере заполнена только `D11`, поэтому после Task 2 строка лота стала бы «кандидатом с пустыми A и B» и файл отвергался бы с названием «Лот №1 Тестовый». Реальные файлы и `test_performance.py` несут в этой строке `A=1, B=1` — хелпер приводится к фактической форме.
 
 В `backend/tests/unit/parser/test_performance.py`, где уже стоит `ws["A9"] = "№ п/п"` — дополнить тремя соседями:
 
@@ -503,6 +512,20 @@ class TestAdditionalWorksRow:
         with pytest.raises(EstimateParseError, match="16"):
             get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=17)
 
+    def test_title_is_compared_normalized(self, sample_worksheet):
+        """Регистр и лишние пробелы в названии не мешают распознаванию.
+
+        Без этого теста реализация с простым `==` тоже была бы зелёной, а спека
+        §2.2 требует сверки нормализованного названия.
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="  ДОПОЛНИТЕЛЬНЫЕ   РАБОТЫ ")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        assert result.additional_works is not None
+        assert result.additional_works["job_title"] == "  ДОПОЛНИТЕЛЬНЫЕ   РАБОТЫ "
+
     def test_blank_is_by_text_not_by_none(self, sample_worksheet):
         """Пробел и неразрывный пробел в A/B — тоже пустота (спека §2.2)."""
         ws = sample_worksheet
@@ -762,6 +785,11 @@ PR со ссылками на рамку фазы, спеку и devlog. В оп
 3. Циклический импорт — **не развилка, а установленный факт** (`estimate.py:33` → `read_lots_and_boundaries.py:24` → `get_proposals.py:35` → `get_lot_positions`, при этом класс объявлен в `estimate.py:46`). План прямо предписывает `parser/errors.py` и тест на публичное имя.
 4. **Не было теста итоговой JSON-формы** — `LotRows` не доказывает, что `get_proposals` положил поле в `contractor_items`. Добавлен класс `TestAdditionalWorksInJson` на полный путь через `parse_worksheet`, с проверкой и наличия, и `None`.
 
+**Ещё два, найденные вторым кругом ревью** (проявились именно после появления полнопроходного теста):
+
+5. **`_minimal_sheet` стал бы невалидным.** Строка лота входит в обход позиций (замерено: `read_lots_and_boundaries:85` не сдвигает `start_row`), а в хелпере у неё заполнена только `D11` — после Task 2 она была бы принята за кандидата с пустыми A/B и файл отвергался бы. В Task 1 Step 5 хелпер приводится к фактической форме реальных файлов: `A11 = 1`, `B11 = 1`.
+6. **Не было теста нормализации названия** агрегатной строки: все проверки использовали точную строку, поэтому реализация с простым `==` тоже была бы зелёной. Добавлен `test_title_is_compared_normalized` с `"  ДОПОЛНИТЕЛЬНЫЕ   РАБОТЫ "`.
+
 **Согласованность имён:** `normalized_cell_text` / `cell_text_is_blank` (Task 1) используются в Task 2 под теми же именами; `LotRows.positions` / `LotRows.additional_works` — в Task 2 Step 4, 5, 6; `JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS` — в константах и `get_proposals`.
 
 ---
@@ -782,6 +810,7 @@ PR со ссылками на рамку фазы, спеку и devlog. В оп
 
 - `layout.py` — **только предупреждения**; структурные отказы живут в `estimate.py`. Не смешивать.
 - Три теста в `TestParseEstimateFailures` собирают листы вручную и падают **до** нового guard'а — их править не нужно.
+- **Строка лота входит в обход позиций** (`read_lots_and_boundaries:85` отдаёт `start_row` без сдвига). Поэтому у неё обязаны быть заполнены A и B, иначе правило Task 2 примет её за кандидата. В реальных файлах и в `test_performance.py` там `A=1, B=1`; в `_minimal_sheet` это добавляется в Task 1 Step 5.
 - В `test_performance.py` шапка частично есть (`A9`), а `A9:A10` объединена вертикально — добавлять B9/C9/D9, объединение не трогать.
 - `get_lot_positions` имеет **14** вызовов в своих тестах; смена возврата на `LotRows` требует `.positions` в каждом. Это механика, ожидания при этом не меняются.
 - **Цикл импортов реален** (`estimate` → `read_lots_and_boundaries` → `get_proposals` → `get_lot_positions`), поэтому Task 2 начинается с переезда `EstimateParseError` в `parser/errors.py`. Публичное имя `parser.EstimateParseError` менять нельзя: на него завязан `services/import_pipeline.py:39`.
