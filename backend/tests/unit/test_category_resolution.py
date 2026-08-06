@@ -6,6 +6,7 @@ import pytest
 from services.category_resolution import (
     CATEGORY_SOURCE_FILE,
     CategoryRef,
+    CategoryResolutionContractError,
     CategoryResolver,
     RowKind,
 )
@@ -262,3 +263,166 @@ class TestKeyOrder:
         ordered = rows(chapter("1", article="1. Подготовительные работы"), work(), work(number="2"))
         shuffled = {k: ordered[k] for k in ("3", "1", "2")}
         assert resolver.resolve_proposal(shuffled).rows == resolver.resolve_proposal(ordered).rows
+
+
+class TestStructureDisabled:
+    """D: неразбираемая структура гасит привязку по ВСЕМУ предложению (спека §2.4)."""
+
+    def test_unparsable_chapter_number_disables_the_whole_proposal(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="1. Подготовительные работы"),
+                work(),
+                chapter("прим.", article="4.1. Ж/Б конструкции", title="Примечание"),
+                work(number="2"),
+            )
+        )
+        assert result.structure_disabled is True
+        for row in result.rows.values():
+            assert row.parent_position_key is None
+            assert row.work_category_id is None
+            assert row.category_source is None
+        # Аудит сохранён: сырое значение на разделах остаётся.
+        assert result.rows["1"].smr_article_raw == "1. Подготовительные работы"
+        assert result.rows["3"].smr_article_raw == "4.1. Ж/Б конструкции"
+        assert result.rows["2"].smr_article_raw is None
+
+    def test_disabled_structure_reports_the_reason_with_raw_values(self, resolver):
+        """Проверяется ПРИЧИНА D, а не просто наличие текста.
+
+        Без первых двух утверждений тест был зелёным ещё до валидатора: на том же
+        входе выдавалось предупреждение «Разделов без статьи», и «прим.» с
+        «Примечание» попадали в него из общего `_place` — то есть подстроки
+        находились, а деградации не было вовсе (замерено красным прогоном Task 3
+        Step 2, инсайт verifying-guards слой 7).
+        """
+        result = resolver.resolve_proposal(
+            rows(chapter("1", article="1. Подготовительные работы"),
+                 chapter("прим.", title="Примечание"))
+        )
+        assert result.structure_disabled is True
+        assert "не определена" in result.warnings[0]
+        assert len(result.warnings) == 1
+        assert "прим." in result.warnings[0]
+        assert "Примечание" in result.warnings[0]
+
+    def test_both_causes_are_named_separately(self, resolver):
+        """Спека §2.9: причины D перечисляются по отдельности, со своими счётчиками.
+
+        Без этого деградация на числовом `0` была бы верной, а объяснение — неверным:
+        предупреждение говорило бы только про неразбираемый номер.
+        """
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("прим.", title="Примечание"),                       # причина 1
+                position(job_title="Работа", number="2", chapter_number=0,
+                         is_chapter=False),                                  # причина 2
+            )
+        )
+        assert len(result.warnings) == 1
+        message = result.warnings[0]
+        assert "номер раздела не разбирается (1)" in message
+        assert "структурный конфликт (1)" in message
+        # A, B и is_chapter — по отдельности у КАЖДОГО примера: причина отказа именно
+        # в расхождении между ними, и одного «номера» для разбора не хватает.
+        assert 'B=«прим.»' in message and "is_chapter=True" in message
+        assert 'A=«2»' in message and 'B=«0»' in message and "is_chapter=False" in message
+        assert "Примечание" in message
+
+    def test_resolution_warnings_are_suppressed_when_structure_is_disabled(self, resolver):
+        """Они описывали бы резолв, которого не было (спека §2.9)."""
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="99.5. Неизвестная"),          # неизвестный код
+                chapter("2", article="Прочее по смете"),            # нечитаемый префикс
+                chapter("3", article="7.2. Внутреняя отделка"),     # расхождение названия
+                chapter("прим.", title="Примечание"),               # причина D
+            )
+        )
+        assert result.structure_disabled is True
+        assert len(result.warnings) == 1
+        assert "99.5" not in result.warnings[0]
+        assert "Внутреняя" not in result.warnings[0]
+        assert result.counters.chapters_unassigned == 0
+
+    def test_independent_warnings_survive_disabled_structure(self, resolver):
+        """Строка вне структуры и статья на не-разделе — не следствия резолва."""
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("прим.", title="Примечание"),
+                work(article="4.1. Ж/Б конструкции"),
+                position(job_title="Дополнительные работы", number=None,
+                         chapter_number=None, is_chapter=False),
+            )
+        )
+        assert result.structure_disabled is True
+        assert len(result.warnings) == 3
+        assert any("прим." in w for w in result.warnings)
+        assert any("вне структуры" in w or "без номера" in w for w in result.warnings)
+        assert any("не раздел" in w for w in result.warnings)
+
+
+class TestStructuralConflicts:
+    """Расхождение is_chapter с номером — тоже D (спека §2.3)."""
+
+    def test_blank_a_and_b_with_chapter_flag_disables_structure(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="1. Подготовительные работы"),
+                position(job_title="Дополнительные работы", number=None,
+                         chapter_number=None, is_chapter=True),
+            )
+        )
+        assert result.structure_disabled is True
+        assert "is_chapter" in result.warnings[0]
+
+    def test_numeric_zero_in_the_chapter_number_disables_structure(self, resolver):
+        """bool(0) ложно, а _norm(0) = «0» непусто — расхождение предикатов."""
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="1. Подготовительные работы"),
+                position(job_title="Работа", number="2", chapter_number=0, is_chapter=False),
+            )
+        )
+        assert result.structure_disabled is True
+
+    def test_chapter_flag_without_a_number_disables_structure(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="1. Подготовительные работы"),
+                position(job_title="Раздел без номера", number="2",
+                         chapter_number="   ", is_chapter=True),
+            )
+        )
+        assert result.structure_disabled is True
+
+    def test_real_aggregate_row_is_consistent_and_does_not_disable(self, resolver):
+        """A и B пусты, is_chapter=false — так и приходит настоящая агрегатная строка."""
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="1. Подготовительные работы"),
+                position(job_title="Дополнительные работы", number=None,
+                         chapter_number=None, is_chapter=False),
+            )
+        )
+        assert result.structure_disabled is False
+
+
+class TestKeyContract:
+    def test_non_canonical_keys_are_rejected(self, resolver):
+        with pytest.raises(CategoryResolutionContractError, match="1..N"):
+            resolver.resolve_proposal({"01": work(), "2": work()})
+
+    def test_a_gap_in_the_keys_is_rejected(self, resolver):
+        with pytest.raises(CategoryResolutionContractError):
+            resolver.resolve_proposal({"1": work(), "3": work()})
+
+    def test_a_non_dict_row_is_rejected(self, resolver):
+        with pytest.raises(CategoryResolutionContractError, match="не является словарём"):
+            resolver.resolve_proposal({"1": "не словарь"})
+
+    def test_empty_proposal_is_valid(self, resolver):
+        result = resolver.resolve_proposal({})
+        assert result.rows == {}
+        assert result.warnings == []
+        assert result.structure_disabled is False

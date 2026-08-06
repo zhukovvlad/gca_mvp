@@ -210,6 +210,68 @@ def _place(key: str, row: Mapping[str, Any], *, raw: str | None = None) -> str:
     return f"позиция {key} (№ раздела «{number}», «{title}»{tail})"
 
 
+#: Причины структурного конфликта. Текст попадает в предупреждение, поэтому он
+#: описывает расхождение, а не «ошибку формата».
+_CONFLICT_BLANK_BUT_CHAPTER = "нет ни номера позиции, ни номера раздела, но is_chapter=true"
+_CONFLICT_NUMBER_WITHOUT_FLAG = "номер раздела заполнен, но is_chapter=false"
+_CONFLICT_FLAG_WITHOUT_NUMBER = "is_chapter=true, но номер раздела пуст"
+
+
+def _structural_place(key: str, row: Mapping[str, Any]) -> str:
+    """Где искать строку и что в ней не сошлось.
+
+    A, B и `is_chapter` печатаются ПО ОТДЕЛЬНОСТИ, а не одним «номером»: причина
+    отказа — именно расхождение между ними, и по общему `_place`, который выбирает
+    одно из двух значений, разобрать случай нельзя (спека §2.9).
+    """
+    title = _norm(row.get(JSON_KEY_JOB_TITLE))[:60] or "без названия"
+    return (
+        f"позиция {key} (A=«{_norm(row.get(JSON_KEY_NUMBER))}», "
+        f"B=«{_norm(row.get(JSON_KEY_CHAPTER_NUMBER))}», "
+        f"is_chapter={bool(row.get(JSON_KEY_IS_CHAPTER))}, «{title}»)"
+    )
+
+
+def _structural_conflicts(
+    positions: Mapping[str, Any], keys: list[str]
+) -> list[tuple[str, str]]:
+    """Расхождения между `is_chapter` парсера и номером раздела.
+
+    Парсер считает `is_chapter = bool(сырое значение)`, а пустоту мы определяем
+    нормализацией: предикаты расходятся на числовом `0` (bool ложен, норма непуста) и
+    на пробельной строке (bool истинен, норма пуста). Если резолвер сочтёт разделом
+    строку, у которой в БД `is_chapter = false`, запись полей статьи уронит импорт о
+    ck_position_items_article_only_on_chapters — поэтому расхождение гасит структуру,
+    а не разрешается порядком условий.
+    """
+    found: list[tuple[str, str]] = []
+    for key in keys:
+        row = positions[key]
+        flag = bool(row.get(JSON_KEY_IS_CHAPTER))
+        number_blank = _norm(row.get(JSON_KEY_NUMBER)) == ""
+        chapter_blank = _norm(row.get(JSON_KEY_CHAPTER_NUMBER)) == ""
+        if flag and chapter_blank:
+            found.append(
+                (key, _CONFLICT_BLANK_BUT_CHAPTER if number_blank else _CONFLICT_FLAG_WITHOUT_NUMBER)
+            )
+        elif not flag and not chapter_blank:
+            found.append((key, _CONFLICT_NUMBER_WITHOUT_FLAG))
+    return found
+
+
+def _unparsable_numbers(positions: Mapping[str, Any], keys: list[str]) -> list[str]:
+    """Разделы, у которых номер не разбирается в глубину."""
+    bad: list[str] = []
+    for key in keys:
+        row = positions[key]
+        if not bool(row.get(JSON_KEY_IS_CHAPTER)):
+            continue
+        number = _norm(row.get(JSON_KEY_CHAPTER_NUMBER))
+        if number and not _CODE_RE.match(number):
+            bad.append(key)
+    return bad
+
+
 def _ordered_keys(positions: Mapping[str, Any]) -> list[str]:
     """Ключи в порядке файла. Контракт парсера — строго «1..N» без пропусков.
 
@@ -254,6 +316,10 @@ class CategoryResolver:
 
     def resolve_proposal(self, positions: Mapping[str, Any]) -> ProposalResolution:
         keys = _ordered_keys(positions)
+        conflicts = _structural_conflicts(positions, keys)
+        bad_numbers = _unparsable_numbers(positions, keys)
+        if conflicts or bad_numbers:
+            return _disabled(positions, keys, conflicts, bad_numbers)
         return self._resolve_stack(positions, keys)
 
     def _resolve_stack(
@@ -363,3 +429,74 @@ class CategoryResolver:
         if in_file and in_file.casefold() != _norm(ref.title).casefold():
             warnings.title_mismatch.setdefault(code, (in_file, ref.title))
         return ref, "own"
+
+
+def _disabled(
+    positions: Mapping[str, Any],
+    keys: list[str],
+    conflicts: list[tuple[str, str]],
+    bad_numbers: list[str],
+) -> ProposalResolution:
+    """Структура не определена — привязки нет ни у одной строки предложения.
+
+    Частичной структуры не бывает: половина сметы с привязкой и половина без дала бы
+    паспорт, правдоподобный ровно настолько, насколько неверный. Строки при этом
+    сохраняются все, и `smr_article_raw` на разделах остаётся как аудит.
+    """
+    rows: dict[str, RowResolution] = {}
+    warnings = _Warnings()
+    outside = 0
+
+    for key in keys:
+        row = positions[key]
+        kind = _row_kind(row)
+        rows[key] = RowResolution(
+            position_key=key,
+            kind=kind,
+            parent_position_key=None,
+            # Гейт по kind тождествен гейту по is_chapter (см. _row_kind), поэтому
+            # CHECK не нарушается даже на конфликтующем входе.
+            smr_article_raw=_trimmed(row.get(JSON_KEY_ARTICLE_SMR))
+            if kind is RowKind.CHAPTER
+            else None,
+        )
+        if kind is RowKind.OUTSIDE_STRUCTURE:
+            warnings.outside_structure.append(_place(key, row))
+            outside += 1
+        elif kind is RowKind.POSITION:
+            raw = _norm(row.get(JSON_KEY_ARTICLE_SMR))
+            if raw:
+                warnings.article_on_non_chapter.append(_place(key, row, raw=raw))
+
+    # Предупреждения категорийного резолва не выдаются: резолва не было. Счётчики
+    # нераспределённых по той же причине нулевые.
+    counters = ResolutionCounters(rows_outside_structure=outside)
+    messages = [_disabled_message(positions, conflicts, bad_numbers)]
+    messages.extend(warnings.messages(counters))
+    return ProposalResolution(
+        rows=rows, warnings=messages, structure_disabled=True, counters=counters
+    )
+
+
+def _disabled_message(
+    positions: Mapping[str, Any],
+    conflicts: list[tuple[str, str]],
+    bad_numbers: list[str],
+) -> str:
+    """Одно предупреждение, называющее ОБЕ причины по отдельности (спека §2.9)."""
+    parts: list[str] = []
+    if bad_numbers:
+        places = [_structural_place(key, positions[key]) for key in bad_numbers]
+        parts.append(f"номер раздела не разбирается ({len(bad_numbers)}): {_examples(places)}")
+    if conflicts:
+        places = [
+            f"{_structural_place(key, positions[key])}: {reason}"
+            for key, reason in conflicts
+        ]
+        parts.append(f"структурный конфликт ({len(conflicts)}): {_examples(places)}")
+    return (
+        "Структура разделов файла не определена, поэтому статьи не привязаны ни к одной "
+        f"строке этого предложения. Причины — {'; '.join(parts)}. Смета загружена целиком, "
+        "деньги на месте; чтобы получить разбивку по статьям, исправьте нумерацию разделов "
+        "и загрузите файл повторно."
+    )
