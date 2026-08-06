@@ -18,11 +18,13 @@ import pytest
 from openpyxl import Workbook
 
 from parser.constants import (
+    JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW,
     JSON_KEY_JOB_TITLE,
     JSON_KEY_JOB_TITLE_NORMALIZED,
     JSON_KEY_NUMBER,
     JSON_KEY_QUANTITY,
     JSON_KEY_UNIT,
+    TABLE_PARSE_ADDITIONAL_WORKS_TITLE,
 )
 from parser.errors import EstimateParseError
 from parser.get_lot_positions import get_lot_positions
@@ -288,14 +290,33 @@ class TestAdditionalWorksRow:
         исчезнут из аналитики до выхода Ф4. Исключение делает Ф4 — атомарно с
         записью в `estimate_additional_works`. Тест обязан упасть, если кто-то
         «доделает» исключение раньше.
+
+        Спека §4 требует не только «строка осталась», но и «её значения совпадают
+        с копией в `additional_works`»: остаться могла бы и строка, собранная из
+        другого источника. Поэтому сверяется каждое поле копии, а не одно
+        название (пробел найден внешним ревью после реализации).
         """
         ws = sample_worksheet
-        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=16, column=4, value=TABLE_PARSE_ADDITIONAL_WORKS_TITLE)
+        # Деньги обязательны: без них сверка ниже сравнивала бы None с None и
+        # проходила бы при любой реализации — вакуозный тест.
+        ws.cell(row=16, column=10, value=12675964.53)
 
         result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
 
-        titles = [item["job_title"] for item in result.positions.values()]
-        assert "Дополнительные работы" in titles
+        copies = [
+            item
+            for item in result.positions.values()
+            if item[JSON_KEY_JOB_TITLE] == TABLE_PARSE_ADDITIONAL_WORKS_TITLE
+        ]
+        assert len(copies) == 1, "агрегатная строка обязана остаться позицией ровно один раз"
+        in_positions = copies[0]
+
+        assert in_positions["unit_cost"]["works"] is not None, "сверка вакуозна: в строке нет денег"
+        for key, value in result.additional_works.items():
+            if key == JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW:
+                continue  # служебное поле копии, в позиции его нет
+            assert in_positions[key] == value, key
 
     def test_absent_row_is_valid(self, sample_worksheet):
         """42-ТУ и 449-ТУ: строки нет вовсе, это не ошибка и не warning."""
