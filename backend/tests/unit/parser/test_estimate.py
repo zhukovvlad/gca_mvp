@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from parser import PARSER_VERSION, EstimateParseError, parse_estimate, parse_worksheet
+from parser.constants import TABLE_PARSE_POSITION_COLUMN_HEADERS
 from parser.postprocess import BASELINE_MISSING_TITLE
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -498,6 +499,12 @@ def _minimal_sheet(contractor_colspan: int | None):
     ws["J6"] = 'ООО "Тест"'
     ws["D11"] = "Лот №1 Тестовый"
 
+    for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+        ws.cell(row=9, column=column, value=title)
+
+    ws["A11"] = 1
+    ws["B11"] = 1
+
     if contractor_colspan is not None:
         ws.merge_cells(start_row=6, start_column=10, end_row=6, end_column=9 + contractor_colspan)
 
@@ -563,3 +570,76 @@ def _find_money_floats(node, path=()):
 def _is_money_path(path) -> bool:
     """Оканчивается ли путь одним из денежных полей."""
     return any(path[-len(money_path) :] == money_path for money_path in MONEY_PATHS)
+
+
+class TestColumnHeaderGuard:
+    """Чужая раскладка колонок A–D — структурный отказ (спека Ф2 §2.1).
+
+    Не предупреждение: колонки A, B, C, D читаются по фиксированным позициям,
+    поэтому при чужой шапке недостоверен весь позиционный разбор, а не только
+    колонка статьи. Та же граница, что у `_validate_contractor_blocks`.
+    """
+
+    def test_correct_headers_parse(self):
+        ws = _minimal_sheet(11)
+        result = parse_worksheet(ws)
+        assert result.data is not None
+
+    @pytest.mark.parametrize(
+        ("column", "letter", "wrong_value"),
+        [
+            (2, "B", "Глава"),
+            (3, "C", "Артикул СМР"),
+            (4, "D", "Наименование видов работ"),
+        ],
+    )
+    def test_wrong_header_in_any_column_is_rejected(self, column, letter, wrong_value):
+        """Колонка A сюда НЕ входит намеренно.
+
+        Строка шапки ищется именно по маркеру в A, поэтому испорченный A даёт не
+        «чужой заголовок», а «строка не найдена» — и то сообщение фактическое
+        значение не называет (спека §2.1, пункт 4). Этот случай покрывает
+        `test_missing_header_row_is_rejected_without_naming_a_row`.
+        """
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=column, value=wrong_value)
+
+        with pytest.raises(EstimateParseError) as exc:
+            parse_worksheet(ws)
+
+        message = str(exc.value)
+        assert letter in message
+        assert wrong_value in message
+
+    def test_missing_header_row_is_rejected_without_naming_a_row(self):
+        """Маркер «№ п/п» испорчен — «ту самую» строку определить нельзя.
+
+        Поэтому сообщение называет ожидаемый маркер и просмотренный диапазон,
+        но НЕ фактическое значение: назвать его было бы выдумкой.
+        """
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=1, value="Порядковый номер")
+
+        with pytest.raises(EstimateParseError, match="№ п/п"):
+            parse_worksheet(ws)
+
+    def test_header_row_is_found_not_hardcoded(self):
+        """Шапка сдвинута на строку — файл валиден и должен разбираться.
+
+        Ради этого строка ищется по маркеру, а не берётся константой 9.
+        """
+        ws = _minimal_sheet(11)
+        for column in TABLE_PARSE_POSITION_COLUMN_HEADERS:
+            ws.cell(row=9, column=column, value=None)
+        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+            ws.cell(row=8, column=column, value=title)
+
+        result = parse_worksheet(ws)
+        assert result.data is not None
+
+    def test_headers_are_compared_ignoring_case_and_extra_spaces(self):
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=3, value="  статья  смр  ")
+
+        result = parse_worksheet(ws)
+        assert result.data is not None

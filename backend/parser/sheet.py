@@ -49,3 +49,26 @@ def row_is_empty(ws: Worksheet, row: int, max_col: int) -> bool:
     for row_cells in ws.iter_rows(min_row=row, max_row=row, max_col=max_col):
         return all(cell.value is None for cell in row_cells)
     return True
+
+
+def normalized_cell_text(value: Any) -> str:
+    """Текст ячейки в форме, пригодной для сверки с ожидаемым.
+
+    Схлопывает любые пробельные последовательности (включая переносы строк и
+    неразрывный пробел) в один пробел и обрезает края. `None` даёт пустую строку.
+    Регистр НЕ трогает — за это отвечает вызывающий, чтобы не мешать сверку и
+    показ значения человеку.
+    """
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def cell_text_is_blank(value: Any) -> bool:
+    """Пуста ли ячейка по тексту.
+
+    Пустотой считаются `None`, пустая строка, пробелы, табуляции, переносы и
+    неразрывный пробел (все они схлопываются `normalized_cell_text`). Ноль
+    пустотой НЕ считается: `0` — это значение.
+    """
+    return normalized_cell_text(value) == ""

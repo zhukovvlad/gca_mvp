@@ -17,9 +17,10 @@ from dataclasses import dataclass, field
 from typing import IO, Any
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .constants import JSON_KEY_EXECUTOR, JSON_KEY_LOTS
+from .constants import CONTRACTOR_SCAN_ROW_START, JSON_KEY_EXECUTOR, JSON_KEY_LOTS, TABLE_PARSE_POSITION_COLUMN_HEADERS
 from .layout import check_estimate_layout
 from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS
 from .postprocess import (
@@ -31,6 +32,7 @@ from .read_contractors import read_contractors
 from .read_executer_block import read_executer_block
 from .read_headers import read_headers
 from .read_lots_and_boundaries import find_lot_starts, read_lots_and_boundaries
+from .sheet import normalized_cell_text
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +127,81 @@ def _validate_contractor_blocks(contractors: list[dict[str, Any]]) -> None:
             )
 
 
+def _find_column_header_row(ws: Worksheet, search_start_row: int, search_end_row: int) -> int | None:
+    """Ищет строку шапки таблицы позиций по маркеру в колонке A.
+
+    Область поиска — строго между строкой заголовка контрагентов и первой
+    строкой данных (маркером лота). Весь лист не сканируется: обе границы к
+    моменту вызова уже известны, а за ними шапки заведомо нет.
+
+    Строка 9 не зашита константой намеренно: файл со сдвинутой на строку шапкой
+    имеет верную раскладку и обязан разбираться.
+
+    Args:
+        ws: лист Excel.
+        search_start_row: строка заголовка контрагентов (не включается).
+        search_end_row: первая строка данных (не включается).
+
+    Returns:
+        Номер строки шапки либо None, если маркер не найден.
+    """
+    expected = normalized_cell_text(TABLE_PARSE_POSITION_COLUMN_HEADERS[1]).casefold()
+    for row in range(search_start_row + 1, search_end_row):
+        if normalized_cell_text(ws.cell(row=row, column=1).value).casefold() == expected:
+            return row
+    return None
+
+
+def _validate_column_headers(
+    ws: Worksheet,
+    contractors: list[dict[str, Any]],
+    lot_starts: list[dict[str, Any]],
+) -> None:
+    """Отвергает файлы, у которых шапка общих колонок не та.
+
+    Колонки A, B, C, D читаются по ФИКСИРОВАННЫМ позициям
+    (`get_lot_positions`), поэтому чужая шапка означает, что недостоверен весь
+    позиционный разбор: номер, раздел, статья и наименование могли бы прийти не
+    из тех ячеек. Это отказ, а не предупреждение, — та же граница, что у
+    `_validate_contractor_blocks`: предупреждение обещает импорт, а импортировать
+    здесь нечего.
+
+    Args:
+        ws: лист Excel.
+        contractors: результат `read_contractors` целиком.
+        lot_starts: результат `find_lot_starts`.
+
+    Raises:
+        EstimateParseError: строка шапки не найдена либо хотя бы один заголовок
+            не совпал с ожидаемым.
+    """
+    header_marker_row = contractors[0].get("row_start")
+    first_lot_row = lot_starts[0]["start_row"]
+    if header_marker_row is None:
+        header_marker_row = CONTRACTOR_SCAN_ROW_START - 1
+
+    header_row = _find_column_header_row(ws, header_marker_row, first_lot_row)
+    if header_row is None:
+        raise EstimateParseError(
+            f"Не найдена шапка таблицы позиций: в колонке A строк "
+            f"{header_marker_row + 1}–{first_lot_row - 1} нет ячейки «"
+            f"{TABLE_PARSE_POSITION_COLUMN_HEADERS[1]}». Колонки A–D читаются по "
+            "фиксированным позициям, и без шапки нечем подтвердить, что раскладка "
+            "та самая."
+        )
+
+    for column, expected_title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+        actual = normalized_cell_text(ws.cell(row=header_row, column=column).value)
+        if actual.casefold() != normalized_cell_text(expected_title).casefold():
+            letter = get_column_letter(column)
+            raise EstimateParseError(
+                f"Колонка {letter} шапки (строка {header_row}) озаглавлена "
+                f"«{actual}», ожидалось «{expected_title}». Колонки A–D читаются "
+                "по фиксированным позициям, поэтому при другой раскладке номер, "
+                "раздел, статья и наименование пришли бы не из тех ячеек."
+            )
+
+
 def parse_worksheet(ws: Worksheet) -> ParseResult:
     """Разбирает уже открытый лист.
 
@@ -140,7 +217,9 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
     Raises:
         EstimateParseError: не найдена строка заголовков контрагентов, нет
             подрядчиков, нет маркера лота либо ширина блока подрядчика такова,
-            что смысл его колонок неизвестен (`_validate_contractor_blocks`).
+            что смысл его колонок неизвестен (`_validate_contractor_blocks`),
+            либо шапка общих колонок A–D не совпала с ожидаемой
+            (`_validate_column_headers`).
     """
     warnings: list[str] = []
 
@@ -165,6 +244,7 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
         )
 
     _validate_contractor_blocks(contractors)
+    _validate_column_headers(ws, contractors, lot_starts)
 
     warnings.extend(check_estimate_layout(ws, contractors, lot_starts))
 
