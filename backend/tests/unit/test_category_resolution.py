@@ -250,12 +250,40 @@ class TestUnassignedWarning:
 
 class TestArticleOnNonChapter:
     def test_article_on_a_position_is_not_stored_and_warns(self, resolver):
+        """Деградация здесь ЛОКАЛЬНАЯ, а не D (спека §2.7).
+
+        Без утверждения о `structure_disabled` тест не различал бы два исхода:
+        при D остальные три утверждения тоже держатся — поля пусты по всему
+        предложению, а предупреждение «не раздел» независимое и переживает D.
+        То есть «лишняя ячейка C гасит всю смету» прошло бы незамеченным.
+        """
         result = resolver.resolve_proposal(
             rows(chapter("1", article="1. Подготовительные работы"), work(article="4.1. Ж/Б конструкции"))
         )
+        assert result.structure_disabled is False
+        assert result.rows["2"].parent_position_key == "1"
         assert result.rows["2"].smr_article_raw is None
         assert result.rows["2"].work_category_id is None
         assert any("не раздел" in w for w in result.warnings)
+
+
+class TestInstanceIsStateless:
+    """Спека §2.2: предупреждения и счётчики возвращаются результатом, а не копятся."""
+
+    def test_one_instance_serves_two_proposals_without_leaking(self, resolver):
+        """Импорт создаёт РОВНО ОДИН резолвер на всю смету и зовёт его по лоту.
+
+        Копись предупреждения в состоянии объекта — второй лот получил бы чужие,
+        и найти это на однолотовой fixture было бы нечем.
+        """
+        first = resolver.resolve_proposal(rows(chapter("1", title="Лот №1 - Тестовый"), work()))
+        second = resolver.resolve_proposal(
+            rows(chapter("4", article="4. Возведение конструкций"), work())
+        )
+        assert len(first.warnings) == 1          # свой раздел без статьи
+        assert second.warnings == []             # чужое не протекло
+        assert second.counters.chapters_unassigned == 0
+        assert second.counters.chapters_own == 1
 
 
 class TestKeyOrder:
