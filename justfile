@@ -136,10 +136,17 @@ test:
 ci-lock-backend:
     cd backend && uv lock --check
 
-# Полный прогон в форме CI: ruff → pytest → eslint → tsc → vitest.
+# Полный прогон в форме CI: ruff → alembic check → pytest → eslint → tsc → vitest.
 # Шаги — отдельными рецептами, а не одной строкой с &&: составная команда в фазе 5
 # уже скрыла падение типизации (AGENTS.md §11). Обязателен перед пушем (§9.3).
-ci: ci-lock-backend lint-backend test-backend-local lint-frontend typecheck-frontend test-frontend
+#
+# db-test-check стоит ДО тестов: дрейф ловится за секунды, а backend-набор идёт
+# ~2,5 минуты. Он же готовит gca_test, которая тестам всё равно нужна.
+# ГРАНИЦА: `alembic check` сторожит состав колонок, типы и индексы, но НЕ сравнивает
+# CHECK- и Computed-выражения — замерено на Ф1: при подмене обоих autogenerate
+# возвращает пустой diff и лишь UserWarning. За выражения отвечают parity-тесты
+# (test_schema_constraints.py), а не этот шаг.
+ci: ci-lock-backend lint-backend db-test-check test-backend-local lint-frontend typecheck-frontend test-frontend
     @echo "OK: все проверки прошли"
 
 # === Coverage ===

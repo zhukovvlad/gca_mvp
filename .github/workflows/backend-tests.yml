@@ -59,6 +59,24 @@ jobs:
         run: uv run --locked ruff check .
         working-directory: backend
 
+      - name: Check ORM/DB drift (alembic check)
+        # Гоняется против gca_test (TEST_DATABASE_URL), а НЕ против `postgres`:
+        # ту базу workflow намеренно держит немигрированной — на этом стоит
+        # защита conftest, сравнивающая две цели. Накат на gca_test безвреден,
+        # conftest делает то же самое перед тестами.
+        #
+        # ГРАНИЦА: шаг сторожит состав колонок, типы и индексы. CHECK- и
+        # Computed-выражения он НЕ сравнивает — замерено на Ф1: при подмене обоих
+        # autogenerate возвращает пустой diff и лишь UserWarning про Computed
+        # (сам UserWarning не роняет прогон). За выражения отвечают parity-тесты
+        # в test_schema_constraints.py.
+        run: |
+          uv run --locked alembic upgrade head
+          uv run --locked alembic check
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/gca_test
+
       - name: Run backend tests (unit + integration)
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
         # pgvector image makes CREATE EXTENSION vector succeed.
