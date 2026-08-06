@@ -3,7 +3,9 @@
 Парсер `2.0.0` больше не кладёт агрегатную строку допработ в `positions` — её
 сумма живёт расшитой по строкам текста из блока «Дополнительная информация».
 Модуль разбирает эти строки, резолвит ссылку на раздел в статью классификатора
-и (в Task 4) строит записи `estimate_additional_works`.
+и строит записи `estimate_additional_works`: `decide_owner` решает, какому
+предложению сметы принадлежит расшивка (спека §2.2), а `build_rows` применяет
+матрицу состояний одного предложения (спека §2.6).
 
 Модуль чистый, по образцу `category_resolution.py`: ни `Session`, ни ORM-
 объектов на входе, ни записи в БД. Вход — уже готовый JSON парсера и уже
@@ -32,7 +34,17 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from parser.constants import JSON_KEY_CHAPTER_NUMBER
+from parser.constants import (
+    JSON_KEY_CHAPTER_NUMBER,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_INFO,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS,
+    JSON_KEY_CONTRACTOR_ITEMS,
+    JSON_KEY_JOB_TITLE,
+    JSON_KEY_LOTS,
+    JSON_KEY_PROPOSALS,
+    JSON_KEY_TOTAL,
+    JSON_KEY_TOTAL_COST,
+)
 from services.category_resolution import ProposalResolution, RowKind, _examples
 
 #: Ключ блока «Дополнительная информация», в котором лежит расшивка. Замерен
@@ -72,8 +84,8 @@ class ParsedLine:
 class AdditionalWorkRow:
     """Будущая строка `estimate_additional_works` (спека §2.3, миграция 0007).
 
-    Собирается матрицей состояний в Task 4 (`build_rows`) — здесь только форма
-    данных, чтобы интерфейс модуля был виден целиком уже сейчас.
+    Собирается матрицей состояний (`build_rows`, спека §2.6) — здесь только
+    форма данных, которую строка получит перед записью в БД (Task 5).
     """
 
     ordinal: int
@@ -86,7 +98,9 @@ class AdditionalWorkRow:
 
 @dataclass(frozen=True)
 class ProposalAdditionalWorks:
-    """Итог допработ одного предложения: строки плюс предупреждения (Task 4)."""
+    """Итог допработ одного предложения: строки плюс предупреждения (`build_rows`,
+    спека §2.6). Предупреждения здесь — ТОЛЬКО уровня предложения; предупреждения
+    уровня сметы (владелец, «Сведения без строки») возвращает `decide_owner`."""
 
     rows: tuple[AdditionalWorkRow, ...]
     warnings: tuple[str, ...]
@@ -254,3 +268,299 @@ def resolve_ref(
     if len(candidates) > 1:
         return None, "статьи различаются"
     return next(iter(candidates)), None
+
+
+@dataclass(frozen=True)
+class OwnerDecision:
+    """Кто из предложений сметы владеет текстом «Сведений» (спека §2.2).
+
+    Текст «Сведений» — факт УРОВНЯ ЛИСТА, а не предложения (спека §1.5 факт 2):
+    `get_additional_info` ищет первый маркер «Дополнительная информация» по
+    всему листу и зовётся один раз на лот, поэтому у сметы с несколькими лотами
+    ВСЕ предложения получают побайтово ОДИН И ТОТ ЖЕ текст. Расшить его в каждом
+    предложении по отдельности значило бы задвоить (или растроить...) деньги
+    между предложениями — тот же дефект двойного счёта, ради снятия которого
+    феча и написана, только с другой стороны. Поэтому владелец решается ПО ВСЕЙ
+    СМЕТЕ, ДО того, как какое-либо предложение начнёт строить записи.
+
+    В проекте ровно одно предложение на лот (`AGENTS.md` §4), поэтому решение
+    называет ключ ЛОТА, а не предложения, — это одно и то же в этом инварианте.
+
+    Здесь НЕ решается: разбор текста на строки (`parse_lines`), резолв ссылки в
+    статью (`resolve_ref` / `categories_by_chapter_number`) и сама запись строк
+    `estimate_additional_works` (`build_rows`) — только то, чьему предложению
+    разрешено применить расшивку к своему `T`.
+    """
+
+    owner_lot_key: str | None
+    """Ключ лота-владельца, либо `None` — однозначного владельца нет (ни одной
+    агрегатной строки в смете, или их несколько)."""
+
+    lot_keys_with_row: tuple[str, ...]
+    """Ключи лотов, чьё единственное предложение (`AGENTS.md` §4) несёт
+    агрегатную строку допработ. Длина 0, 1 или больше — все три отличимы от
+    «владелец есть», и вызывающий код обязан их различать сам."""
+
+    warnings: tuple[str, ...]
+    """Предупреждения УРОВНЯ СМЕТЫ (спека §2.9: «одно на смету»): похожий-но-не-
+    точный ключ «Сведений» (не больше одного, хотя ключ одинаков у каждого
+    предложения — дедуплицируется здесь), «„Сведения“ есть, агрегатной строки
+    нет» и «владелец неоднозначен». Предупреждения УРОВНЯ ПРЕДЛОЖЕНИЯ (резолв
+    ссылки, остаток, `P > T`, «допработы не расшиты») сюда не попадают — их
+    возвращает `build_rows`.
+    """
+
+
+def _extract_total(additional_works: Mapping[str, Any]) -> Decimal | None:
+    """`T` агрегатной строки как `Decimal`, либо `None` — суммы нет или её
+    нельзя прочитать.
+
+    Вход — десятичная СТРОКА (или `None`) в `total_cost.total` (`AGENTS.md` §3:
+    деньги — `Decimal` end-to-end, `float` не участвует нигде). Если строка есть,
+    но `Decimal` бросает `InvalidOperation`, исключение НЕ уходит наружу — такое
+    значение сливается с состоянием «`T` пусто» матрицы §2.6: агрегатная строка
+    с нечитаемой суммой ведёт себя как строка без суммы вовсе, а не роняет импорт.
+    """
+    raw = additional_works[JSON_KEY_TOTAL_COST][JSON_KEY_TOTAL]
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw))
+    except InvalidOperation:
+        return None
+
+
+def decide_owner(data: Mapping[str, Any]) -> OwnerDecision:
+    """Владелец «Сведений» — по всей смете, четыре строки таблицы (спека §2.2).
+
+    Текст «Сведений» читается ОДИН РАЗ — с первого лота сметы, потому что он
+    байтово идентичен у всех (спека §1.5 факт 2) — и используется только для
+    двух вещей: (а) похожий-но-не-точный ключ даёт предупреждение `svedeniya_text`
+    РОВНО ОДИН раз на смету, а не по разу на предложение (иначе одинаковый
+    неточный ключ дал бы N одинаковых предупреждений); (б) при нуле владельцев —
+    сказать, что непустой текст называет деньги, которых нет в таблице позиций.
+
+    Не проверяет и не резолвит ничего внутри строк «Сведений» — это `build_rows`.
+    Не читает `positions`/`resolution` вовсе: решение владельца зависит только от
+    того, у скольких предложений сметы ЕСТЬ агрегатная строка, и от текста
+    «Сведений» — не от содержимого позиций.
+    """
+    lots = data[JSON_KEY_LOTS]
+    lot_keys_with_row: list[str] = []
+    rows_by_lot: dict[str, Mapping[str, Any]] = {}
+    additional_info: Mapping[str, Any] | None = None
+
+    for lot_key, one_lot in lots.items():
+        # Ровно одно предложение на лот (AGENTS.md §4) — лот и предложение с
+        # агрегатной строкой здесь одно и то же понятие.
+        proposal_data = next(iter(one_lot[JSON_KEY_PROPOSALS].values()))
+        if additional_info is None:
+            additional_info = proposal_data[JSON_KEY_CONTRACTOR_ADDITIONAL_INFO]
+        aggregate_row = proposal_data[JSON_KEY_CONTRACTOR_ITEMS][JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS]
+        if aggregate_row is not None:
+            lot_keys_with_row.append(lot_key)
+            rows_by_lot[lot_key] = aggregate_row
+
+    text, key_warning = svedeniya_text(additional_info if additional_info is not None else {})
+    warnings: list[str] = [key_warning] if key_warning else []
+
+    if len(lot_keys_with_row) == 1:
+        return OwnerDecision(
+            owner_lot_key=lot_keys_with_row[0],
+            lot_keys_with_row=tuple(lot_keys_with_row),
+            warnings=tuple(warnings),
+        )
+
+    if not lot_keys_with_row:
+        if text:
+            # Пустые строки текста, как и в parse_lines, не считаются: считаем
+            # только непустые после обрезки, чтобы число в предупреждении
+            # совпадало с тем, что реально попробует разобрать build_rows,
+            # будь у этой сметы владелец.
+            line_count = sum(1 for raw_line in text.splitlines() if raw_line.strip())
+            warnings.append(
+                f"«{SVEDENIYA_KEY}» заполнены ({line_count} стр.), но агрегатной строки "
+                "допработ нет ни у одного предложения этой сметы: текст называет деньги, "
+                "которых нет в таблице позиций, поэтому расшивка не создаёт ни одной записи."
+            )
+        # «Сведения» пусты (или ключа нет) и владельца нет — прежнее валидное
+        # состояние (спека §1.1): молчим, это НЕ повод предупреждать.
+        return OwnerDecision(owner_lot_key=None, lot_keys_with_row=(), warnings=tuple(warnings))
+
+    # Два и более предложения с агрегатной строкой: неоднозначна ТОЛЬКО
+    # аналитическая разбивка — какому из них применить общий текст. Сама сумма
+    # каждого предложения принадлежит ему однозначно, границами его лота (спека
+    # §2.2), поэтому отказа нет — только громкое предупреждение.
+    with_total: list[tuple[str, Decimal]] = []
+    without_total: list[str] = []
+    for lot_key in lot_keys_with_row:
+        total = _extract_total(rows_by_lot[lot_key])
+        if total is None:
+            without_total.append(lot_key)
+        else:
+            with_total.append((lot_key, total))
+
+    totals_part = "; ".join(f"«{key}»: T={total}" for key, total in with_total)
+    without_part = (
+        f" Без суммы (T пусто, для них запись не создаётся): {_examples(without_total)}."
+        if without_total
+        else ""
+    )
+    warnings.append(
+        f"Владелец «{SVEDENIYA_KEY}» неоднозначен: агрегатная строка допработ есть у "
+        f"{len(lot_keys_with_row)} предложений этой сметы ({totals_part}). Агрегатные "
+        "суммы учтены полностью, каждое предложение получит нераспределённую запись "
+        "на свой T; расшивка не применена из-за неоднозначного владельца общего "
+        "текста." + without_part
+    )
+    return OwnerDecision(owner_lot_key=None, lot_keys_with_row=tuple(lot_keys_with_row), warnings=tuple(warnings))
+
+
+def build_rows(
+    *,
+    additional_works: Mapping[str, Any] | None,
+    svedeniya: str | None,
+    resolution: ProposalResolution,
+    positions: Mapping[str, Any],
+    is_owner: bool,
+) -> ProposalAdditionalWorks:
+    """Матрица состояний одного предложения (спека §2.6), владелец уже известен
+    (`decide_owner`, спека §2.2).
+
+    `is_owner=False` — предложение оказалось ОДНИМ ИЗ НЕСКОЛЬКИХ владельцев в
+    неоднозначном случае §2.2: общий текст «Сведений» этому предложению не
+    принадлежит, и он трактуется как ОТСУТСТВУЮЩИЙ вне зависимости от того, что в
+    нём на самом деле написано (даже если непуст). Предупреждение «допработы не
+    расшиты» при этом НЕ выдаётся: причину уже назвал `decide_owner` ОДНИМ
+    предупреждением на смету — N предупреждений по числу предложений повторяли
+    бы один и тот же факт, а спека прямо требует «одно на смету» (§2.9).
+
+    Инвариант, ради которого написана вся функция: `sum(row.total_amount for row
+    in result.rows) == T`, либо записей нет вовсе. Он не проверяется здесь кодом
+    отдельной строкой — он ВЫПОЛНЯЕТСЯ построением: `T` читается один раз, и на
+    каждой ветке сумма возвращаемых записей равна ровно ему (или записей нет).
+
+    Не резолвит «Сведения без строки» (это `decide_owner`, sheet-level) и не
+    решает, какое предложение — владелец (это тоже `decide_owner`) — только то,
+    какие записи получит ЭТО ОДНО предложение при уже известном `is_owner`.
+    """
+    if additional_works is None:
+        # Строки нет вовсе: предупреждение «„Сведения“ есть, строки нет»
+        # принадлежит смете (decide_owner), не предложению (спека §2.2, §2.6) —
+        # здесь тишина в обоих случаях: и пустые «Сведения», и непустые.
+        return ProposalAdditionalWorks(rows=(), warnings=())
+
+    job_title = additional_works[JSON_KEY_JOB_TITLE]
+    total = _extract_total(additional_works)
+    if total is None:
+        return ProposalAdditionalWorks(
+            rows=(),
+            warnings=(
+                f"Агрегатная строка «{job_title}» не несёт суммы (total_cost.total пусто "
+                "либо не читается как число): это предложение не получит ни одной записи "
+                "допработ.",
+            ),
+        )
+
+    effective_text = svedeniya if is_owner else None
+    if not effective_text:
+        row = AdditionalWorkRow(
+            ordinal=1,
+            chapter_ref_raw=None,
+            title=job_title,
+            total_amount=total,
+            work_category_id=None,
+            raw_line=None,
+        )
+        if is_owner:
+            warnings: tuple[str, ...] = (
+                f"«{SVEDENIYA_KEY}» пусты, а агрегатная строка «{job_title}» есть: вся "
+                f"сумма {total} осталась нераспределённой, расшивка не применена.",
+            )
+        else:
+            warnings = ()
+        return ProposalAdditionalWorks(rows=(row,), warnings=warnings)
+
+    parsed, unreadable = parse_lines(effective_text)
+    parsed_sum = sum((line.amount for line in parsed), Decimal("0"))
+
+    if parsed_sum > total:
+        # Расшивка противоречит контрольной сумме — доверяем агрегатной строке:
+        # она авторитетна и входит в ИТОГО файла, разобранные строки НЕ
+        # сохраняются (спека §2.6; отвергнутая альтернатива §3 — хранить остаток
+        # отрицательным потребовала бы снять CHECK total_amount >= 0).
+        row = AdditionalWorkRow(
+            ordinal=1,
+            chapter_ref_raw=None,
+            title=job_title,
+            total_amount=total,
+            work_category_id=None,
+            raw_line=None,
+        )
+        warning = (
+            f"Разобранные строки «{SVEDENIYA_KEY}» дают {parsed_sum}, что БОЛЬШЕ суммы "
+            f"агрегатной строки {total}. Расшивка противоречит контрольной сумме — "
+            f"записана сумма агрегатной строки {total}, разобранные строки не сохранены."
+        )
+        return ProposalAdditionalWorks(rows=(row,), warnings=(warning,))
+
+    by_number = categories_by_chapter_number(positions, resolution)
+    rows: list[AdditionalWorkRow] = []
+    no_ref_lines: list[ParsedLine] = []
+    unresolved: list[tuple[str, str, str]] = []
+    for line in parsed:
+        category_id: int | None = None
+        if line.ref is None:
+            no_ref_lines.append(line)
+        else:
+            category_id, reason = resolve_ref(line.ref, by_number)
+            if reason is not None:
+                unresolved.append((line.ref, line.title, reason))
+        rows.append(
+            AdditionalWorkRow(
+                ordinal=line.ordinal,
+                chapter_ref_raw=line.ref,
+                title=line.title,
+                total_amount=line.amount,
+                work_category_id=category_id,
+                raw_line=line.raw_line,
+            )
+        )
+
+    warnings_list: list[str] = []
+    if unreadable:
+        warnings_list.append(
+            f"Нечитаемых строк «{SVEDENIYA_KEY}» ({len(unreadable)}): {_examples(unreadable)}. "
+            "Их деньги не потеряны — они войдут в нераспределённый остаток по разности."
+        )
+    if no_ref_lines:
+        warnings_list.append(
+            f"Строк без ссылки на раздел ({len(no_ref_lines)}): "
+            f"{_examples([line.raw_line for line in no_ref_lines])}. Статья не резолвится "
+            "без ссылки; сумма строки при этом сохранена, но без привязки."
+        )
+    if unresolved:
+        places = [f"«{ref}» («{title[:60]}»): {reason}" for ref, title, reason in unresolved]
+        warnings_list.append(f"Ссылка не разрешилась в статью ({len(unresolved)}): {_examples(places)}.")
+
+    remainder = total - parsed_sum
+    if remainder > 0:
+        # N+1, либо 1, если разобранных строк не было вовсе (спека §2.6): весь
+        # текст был нечитаем, но деньги агрегатной строки всё равно не теряются.
+        last_ordinal = parsed[-1].ordinal + 1 if parsed else 1
+        rows.append(
+            AdditionalWorkRow(
+                ordinal=last_ordinal,
+                chapter_ref_raw=None,
+                title=job_title,
+                total_amount=remainder,
+                work_category_id=None,
+                raw_line=None,
+            )
+        )
+        warnings_list.append(
+            f"Нераспределённый остаток {remainder} = {total} (агрегатная строка) − "
+            f"{parsed_sum} (сумма разобранных строк «{SVEDENIYA_KEY}»)."
+        )
+
+    return ProposalAdditionalWorks(rows=tuple(rows), warnings=tuple(warnings_list))

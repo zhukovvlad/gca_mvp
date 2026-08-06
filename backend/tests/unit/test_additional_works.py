@@ -1,4 +1,5 @@
-"""Разбор строк «Сведений» и правило единогласия — без БД и без xlsx (спека Ф4 §4.2).
+"""Разбор строк «Сведений», правило единогласия, владелец и матрица состояний —
+без БД и без xlsx (спека Ф4 §4.2).
 
 Суммы всюду синтетические и круглые (политика `samples/`, спека §6): ни одна
 цифра здесь не взята из реального файла.
@@ -6,19 +7,32 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
+from parser.constants import (
+    JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS,
+    JSON_KEY_CONTRACTOR_ITEMS,
+    JSON_KEY_JOB_TITLE,
+    JSON_KEY_LOTS,
+    JSON_KEY_PROPOSALS,
+    JSON_KEY_TOTAL,
+    JSON_KEY_TOTAL_COST,
+)
 from services.additional_works import (
     LINE_RE,
     SVEDENIYA_KEY,
+    build_rows,
     categories_by_chapter_number,
+    decide_owner,
     parse_lines,
     resolve_ref,
     svedeniya_text,
 )
 from services.category_resolution import CategoryRef, CategoryResolver
-from tests.payloads import position
+from tests.payloads import position, proposal
 
 #: Карта справочника: только коды, нужные тестам этого файла (образец —
 #: `test_category_resolution.py`). «1» повторяет реальный случай корпуса
@@ -50,6 +64,43 @@ def chapter(number, *, article=None, title="Раздел", key_number="1"):
 
 def work(title="Работа", *, number="1", article=None, **extra):
     return position(job_title=title, number=number, article_smr=article, is_chapter=False, **extra)
+
+
+def aggregate_row(total: str | None, *, job_title: str = "Дополнительные работы") -> dict[str, Any]:
+    """Агрегатная строка допработ в форме парсера (`get_lot_positions.py:153-157`):
+    только то, что читают `decide_owner`/`build_rows` — `job_title`, служебный
+    номер строки листа и денежный блок с `total_cost.total`. Остальные поля
+    денежного блока (материалы/СМР/косвенные) модулю не нужны и здесь не
+    строятся — это не полная форма `parse_contractor_row`, а её проекция на то,
+    что читает эта фича."""
+    return {
+        JSON_KEY_JOB_TITLE: job_title,
+        JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW: 999,
+        JSON_KEY_TOTAL_COST: {JSON_KEY_TOTAL: total},
+    }
+
+
+def proposal_with_row(additional_works: dict[str, Any] | None, **kwargs: Any) -> dict[str, Any]:
+    """`payloads.proposal()` ключа `additional_works` не создаёт вовсе (замер §1.5
+    факт 7 спеки Ф4: хелпер Task 5 добавит его в конструктор). До Task 5 ключ
+    проставляется вручную, ровно в форме `get_proposals.py:92`, где он лежит
+    внутри `contractor_items`, рядом с `positions` и `summary`."""
+    data = proposal([], **kwargs)
+    data[JSON_KEY_CONTRACTOR_ITEMS][JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS] = additional_works
+    return data
+
+
+def lot(proposal_data: dict[str, Any]) -> dict[str, Any]:
+    """Лот с ровно одним предложением (инвариант `AGENTS.md` §4) — только то, что
+    читает `decide_owner`: ключ `proposals` с единственной записью. `lot_title` и
+    `baseline_proposal` опущены — `decide_owner` их не читает, а строить полную
+    форму лота ради них было бы шумом, не проверяющим ничего."""
+    return {JSON_KEY_PROPOSALS: {"contractor_1": proposal_data}}
+
+
+def estimate_data(**lots: dict[str, Any]) -> dict[str, Any]:
+    """`data` в форме, которую потребляет `decide_owner`: только `JSON_KEY_LOTS`."""
+    return {JSON_KEY_LOTS: lots}
 
 
 class TestParseLines:
@@ -286,3 +337,258 @@ class TestResolveRef:
         result_id, reason = resolve_ref("1", by_number)
         assert result_id is None
         assert reason == "кандидат без статьи"
+
+
+class TestBuildRowsMatrix:
+    """Матрица состояний одного предложения, семь строк (спека §2.6), владелец
+    уже известен — все тесты этого класса зовут `build_rows` с `is_owner=True`
+    (правило владельца проверяется отдельно, в `TestDecideOwner`).
+
+    В КАЖДОМ тесте, помимо состава записей, проверяется ИНВАРИАНТ «сумма записей
+    предложения равна T, либо записей нет вовсе» — ради него написана вся
+    функция (спека §2.6): он делает осмысленной сверку с независимым ИТОГО файла
+    (Task 6), а здесь проверяется на каждом входе матрицы отдельно.
+    """
+
+    def test_no_row_and_empty_svedeniya_gives_nothing(self, resolver):
+        """Строки нет, «Сведения» пусты (или ключа нет — то же состояние,
+        спека §1.1): ноль записей, ноль предупреждений."""
+        result = build_rows(
+            additional_works=None,
+            svedeniya=None,
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        assert result.rows == ()
+        assert result.warnings == ()
+
+    def test_no_row_and_non_empty_svedeniya_gives_nothing_here(self, resolver):
+        """Строки нет, «Сведения» непусты: ноль записей И ноль предупреждений
+        НА ЭТОМ УРОВНЕ — предупреждение «текст называет деньги, которых нет в
+        таблице» принадлежит смете (`decide_owner`), не предложению (спека §2.2,
+        §2.6: «sheet-level, not here»). Проверено отдельно в `TestDecideOwner`."""
+        result = build_rows(
+            additional_works=None,
+            svedeniya="5.1 Кровля - 100 руб.",
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        assert result.rows == ()
+        assert result.warnings == ()
+
+    def test_row_present_and_empty_svedeniya_gives_one_unallocated_record(self, resolver):
+        """Строка есть, «Сведения» пусты: 1 нераспределённая запись на весь T,
+        `chapter_ref_raw` и `raw_line` — NULL, заголовок — `job_title` строки,
+        `ordinal = 1`; предупреждение «допработы не расшиты»."""
+        result = build_rows(
+            additional_works=aggregate_row("200"),
+            svedeniya=None,
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.ordinal == 1
+        assert row.chapter_ref_raw is None
+        assert row.raw_line is None
+        assert row.title == "Дополнительные работы"
+        assert row.total_amount == Decimal("200")
+        assert row.work_category_id is None
+        assert len(result.warnings) == 1
+        assert "200" in result.warnings[0]
+        assert sum(r.total_amount for r in result.rows) == Decimal("200")
+
+    def test_row_present_and_parsed_sum_equals_total_gives_one_record_per_line(self, resolver):
+        """`P = T`: по одной записи на разобранную строку, нераспределённой
+        нет; предупреждение — ТОЛЬКО по резолву ссылки (вторая строка ссылается
+        на номер «9.9», которого нет в справочнике этого предложения)."""
+        positions = rows(chapter("5.1", article="5.1. Кровля"), work())
+        resolution = resolver.resolve_proposal(positions)
+        text = "5.1 Кровля - 100 руб.\n9.9 Прочее - 50 руб."
+        result = build_rows(
+            additional_works=aggregate_row("150"),
+            svedeniya=text,
+            resolution=resolution,
+            positions=positions,
+            is_owner=True,
+        )
+        assert len(result.rows) == 2
+        first, second = result.rows
+        assert first.ordinal == 1
+        assert first.chapter_ref_raw == "5.1"
+        assert first.total_amount == Decimal("100")
+        assert first.work_category_id == 151
+        assert second.ordinal == 2
+        assert second.chapter_ref_raw == "9.9"
+        assert second.total_amount == Decimal("50")
+        assert second.work_category_id is None
+        assert len(result.warnings) == 1
+        assert "9.9" in result.warnings[0]
+        assert "нет кандидатов" in result.warnings[0]
+        assert sum(r.total_amount for r in result.rows) == Decimal("150")
+
+    def test_row_present_and_parsed_sum_below_total_gives_remainder_record(self, resolver):
+        """`P < T`: разобранная строка + 1 нераспределённая на остаток `T − P`
+        с ПОСЛЕДНИМ ordinal; предупреждения — остаток (оба слагаемых) и
+        нечитаемая строка (с сырьём)."""
+        positions = rows(chapter("5.1", article="5.1. Кровля"), work())
+        resolution = resolver.resolve_proposal(positions)
+        text = "5.1 Кровля - 100 руб.\nПрочие -  руб."
+        result = build_rows(
+            additional_works=aggregate_row("130"),
+            svedeniya=text,
+            resolution=resolution,
+            positions=positions,
+            is_owner=True,
+        )
+        assert len(result.rows) == 2
+        parsed_row, unallocated = result.rows
+        assert parsed_row.ordinal == 1
+        assert parsed_row.total_amount == Decimal("100")
+        assert unallocated.ordinal == 2
+        assert unallocated.chapter_ref_raw is None
+        assert unallocated.raw_line is None
+        assert unallocated.title == "Дополнительные работы"
+        assert unallocated.total_amount == Decimal("30")
+        assert unallocated.work_category_id is None
+        assert len(result.warnings) == 2
+        joined = " ".join(result.warnings)
+        assert "30" in joined and "130" in joined and "100" in joined
+        assert "Прочие -  руб." in joined
+        assert sum(r.total_amount for r in result.rows) == Decimal("130")
+
+    def test_row_present_and_parsed_sum_above_total_discards_the_breakdown(self, resolver):
+        """`P > T`: РОВНО 1 нераспределённая запись на `T`, разобранные строки
+        НЕ сохраняются; предупреждение называет ОБА числа."""
+        positions = rows(chapter("5.1", article="5.1. Кровля"), work())
+        resolution = resolver.resolve_proposal(positions)
+        text = "5.1 Кровля - 100 руб.\nПрочее - 80 руб."
+        result = build_rows(
+            additional_works=aggregate_row("150"),
+            svedeniya=text,
+            resolution=resolution,
+            positions=positions,
+            is_owner=True,
+        )
+        assert len(result.rows) == 1
+        row = result.rows[0]
+        assert row.ordinal == 1
+        assert row.chapter_ref_raw is None
+        assert row.raw_line is None
+        assert row.total_amount == Decimal("150")
+        assert len(result.warnings) == 1
+        assert "180" in result.warnings[0]
+        assert "150" in result.warnings[0]
+        assert sum(r.total_amount for r in result.rows) == Decimal("150")
+
+    def test_row_present_and_total_is_empty_gives_nothing(self, resolver):
+        """Строка есть, денег в ней нет (`T` пусто): ноль записей, одно
+        предупреждение «агрегатная строка без суммы»."""
+        result = build_rows(
+            additional_works=aggregate_row(None),
+            svedeniya="неважно что здесь написано",
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        assert result.rows == ()
+        assert len(result.warnings) == 1
+        assert "Дополнительные работы" in result.warnings[0]
+
+
+class TestDecideOwner:
+    """Правило владельца «Сведений» — по смете, четыре строки таблицы (спека §2.2)."""
+
+    def test_exactly_one_proposal_with_the_row_is_the_owner(self):
+        data = estimate_data(
+            lot_1=lot(proposal_with_row(None)),
+            lot_2=lot(proposal_with_row(aggregate_row("500"))),
+        )
+        result = decide_owner(data)
+        assert result.owner_lot_key == "lot_2"
+        assert result.lot_keys_with_row == ("lot_2",)
+        assert result.warnings == ()
+
+    def test_no_owner_with_non_empty_svedeniya_gives_one_warning_per_estimate(self):
+        info = {SVEDENIYA_KEY: "5.1 Кровля - 100 руб."}
+        data = estimate_data(
+            lot_1=lot(proposal_with_row(None, additional_info=info)),
+            lot_2=lot(proposal_with_row(None, additional_info=info)),
+        )
+        result = decide_owner(data)
+        assert result.owner_lot_key is None
+        assert result.lot_keys_with_row == ()
+        assert len(result.warnings) == 1
+
+    def test_no_owner_with_empty_svedeniya_gives_zero_warnings(self):
+        """Редакционная точность гейта 2 спеки: прежнее валидное состояние
+        («Сведения» пусты, строки нет ни у кого) обязано остаться МОЛЧАЛИВЫМ."""
+        info = {SVEDENIYA_KEY: ""}
+        data = estimate_data(
+            lot_1=lot(proposal_with_row(None, additional_info=info)),
+            lot_2=lot(proposal_with_row(None, additional_info=info)),
+        )
+        result = decide_owner(data)
+        assert result.owner_lot_key is None
+        assert result.lot_keys_with_row == ()
+        assert result.warnings == ()
+
+    def test_two_or_more_owners_give_one_warning_naming_keys_and_totals(self):
+        data = estimate_data(
+            lot_1=lot(proposal_with_row(aggregate_row("500"))),
+            lot_2=lot(proposal_with_row(aggregate_row(None))),
+        )
+        result = decide_owner(data)
+        assert result.owner_lot_key is None
+        assert result.lot_keys_with_row == ("lot_1", "lot_2")
+        assert len(result.warnings) == 1
+        warning = result.warnings[0]
+        assert "2" in warning
+        assert "lot_1" in warning
+        assert "lot_2" in warning
+        assert "500" in warning
+
+
+class TestNoStateInModule:
+    """Спека §4.2 / Task 4 Step 3, по образцу `TestInstanceIsStateless` Ф3
+    (`test_category_resolution.py`): модуль — не класс, но опасность та же.
+    Если бы предупреждения или записи копились где-то между вызовами (модульная
+    переменная, мутируемое значение по умолчанию), второй вызов на другом
+    предложении/смете унаследовал бы чужие данные, и найти это можно только
+    позвав функции ДВАЖДЫ с разными входами и сверив, что второй результат не
+    видит первого."""
+
+    def test_one_instance_serves_two_proposals_without_leaking(self, resolver):
+        first = build_rows(
+            additional_works=aggregate_row("200"),
+            svedeniya=None,
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        second = build_rows(
+            additional_works=None,
+            svedeniya=None,
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+        )
+        assert len(first.warnings) == 1
+        assert first.rows != ()
+        assert second.warnings == ()
+        assert second.rows == ()
+
+        owner_a = decide_owner(estimate_data(lot_1=lot(proposal_with_row(aggregate_row("500")))))
+        owner_b = decide_owner(
+            estimate_data(
+                lot_1=lot(proposal_with_row(None)),
+                lot_2=lot(proposal_with_row(aggregate_row("300"))),
+            )
+        )
+        assert owner_a.owner_lot_key == "lot_1"
+        assert owner_a.warnings == ()
+        assert owner_b.owner_lot_key == "lot_2"
+        assert owner_b.warnings == ()
