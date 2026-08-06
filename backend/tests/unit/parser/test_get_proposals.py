@@ -30,6 +30,7 @@ from parser.constants import (
     JSON_KEY_CONTRACTOR_TITLE,
     JSON_KEY_CONTRACTOR_WIDTH,
 )
+from parser.get_lot_positions import LotRows
 from parser.get_proposals import get_proposals
 
 MODULE = "parser.get_proposals"
@@ -87,7 +88,7 @@ def _patch_collaborators(positions=None, summary=None, additional=None, contract
     """Контекст с подменёнными соседями get_proposals."""
     return (
         patch(f"{MODULE}.read_contractors", return_value=contractors),
-        patch(f"{MODULE}.get_lot_positions", return_value={} if positions is None else positions),
+        patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={} if positions is None else positions)),
         patch(f"{MODULE}.get_summary", return_value={} if summary is None else summary),
         patch(f"{MODULE}.get_additional_info", return_value={} if additional is None else additional),
     )
@@ -178,7 +179,7 @@ class TestGetProposalsModuleIntegration:
     def test_calls_get_lot_positions_with_correct_parameters(self, empty_worksheet, sample_contractors_data):
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}) as mock_positions,
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})) as mock_positions,
             patch(f"{MODULE}.get_summary", return_value={}),
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
@@ -195,7 +196,7 @@ class TestGetProposalsModuleIntegration:
     def test_calls_get_summary_for_each_contractor(self, empty_worksheet, sample_contractors_data):
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}),
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
             patch(f"{MODULE}.get_summary", return_value={}) as mock_summary,
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
@@ -210,7 +211,7 @@ class TestGetProposalsModuleIntegration:
     def test_calls_get_additional_info_for_each_contractor(self, empty_worksheet, sample_contractors_data):
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}),
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
             patch(f"{MODULE}.get_summary", return_value={}),
             patch(f"{MODULE}.get_additional_info", return_value={}) as mock_additional,
         ):
@@ -402,7 +403,7 @@ class TestGetProposalsLotBoundaries:
     def test_passes_lot_boundaries_to_positions_function(self, empty_worksheet, sample_contractors_data):
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}) as mock_positions,
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})) as mock_positions,
             patch(f"{MODULE}.get_summary", return_value={}),
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
@@ -420,7 +421,7 @@ class TestGetProposalsLotBoundaries:
         """
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}),
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
             patch(f"{MODULE}.get_summary", return_value={}) as mock_summary,
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
@@ -432,7 +433,7 @@ class TestGetProposalsLotBoundaries:
     def test_additional_info_does_not_depend_on_lot_boundaries(self, empty_worksheet, sample_contractors_data):
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
-            patch(f"{MODULE}.get_lot_positions", return_value={}),
+            patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
             patch(f"{MODULE}.get_summary", return_value={}),
             patch(f"{MODULE}.get_additional_info", return_value={}) as mock_additional,
         ):

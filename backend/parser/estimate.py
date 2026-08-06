@@ -21,6 +21,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .constants import CONTRACTOR_SCAN_ROW_START, JSON_KEY_EXECUTOR, JSON_KEY_LOTS, TABLE_PARSE_POSITION_COLUMN_HEADERS
+from .errors import EstimateParseError
 from .layout import check_estimate_layout
 from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS
 from .postprocess import (
@@ -42,15 +43,12 @@ log = logging.getLogger(__name__)
 # Это НЕ `norm_version` из §4: версия нормализации наименований живёт отдельно и
 # вводится в фазе 4 вместе с матчингом, потому что её инкремент требует миграции
 # перевыпуска ключей `matching_cache` (AGENTS.md §11).
-PARSER_VERSION = "1.0.0"
-
-
-class EstimateParseError(Exception):
-    """Файл не разбирается как смета ГП.
-
-    Поднимается только на структурно непригодных файлах. Всё, что можно
-    прочитать с оговорками, читается и попадает в `ParseResult.warnings`.
-    """
+#
+# 1.1.0 (Ф2): в contractor_items появился ключ `additional_works`. Версия
+# минорная — структура только дополнена, из `positions` ничего не убрано, поэтому
+# существующий импортёр не ломается. Исключение агрегатной строки из `positions`
+# (Ф4) будет ломающим и потребует следующего подъёма.
+PARSER_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)

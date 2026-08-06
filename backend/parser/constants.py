@@ -73,6 +73,10 @@ TABLE_PARSE_POSITION_COLUMN_HEADERS: dict[int, str] = {
     4: "Наименование работ",
 }
 
+#: Название агрегатной строки допработ в колонке D. Замер: 159-ТУ строка 1523;
+#: в 42-ТУ и 449-ТУ такой строки нет вовсе — это валидное состояние.
+TABLE_PARSE_ADDITIONAL_WORKS_TITLE = "Дополнительные работы"
+
 
 # ==============================================================================
 # === Ключи для формирования результирующей JSON-структуры ===
@@ -136,6 +140,8 @@ JSON_KEY_CONTRACTOR_ITEMS = "contractor_items"  # Позиции и итоги �
 JSON_KEY_CONTRACTOR_POSITIONS = "positions"
 JSON_KEY_CONTRACTOR_SUMMARY = "summary"
 JSON_KEY_CONTRACTOR_ADDITIONAL_INFO = "additional_info"
+JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS = "additional_works"  # Агрегатная строка допработ
+JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW = "source_row"  # Номер строки листа, откуда она взята
 
 # -- Выделенное базовое ("расчетное") предложение в рамках лота --
 JSON_KEY_BASELINE_PROPOSAL = "baseline_proposal"

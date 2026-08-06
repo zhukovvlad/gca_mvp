@@ -24,6 +24,7 @@ from parser.constants import (
     JSON_KEY_QUANTITY,
     JSON_KEY_UNIT,
 )
+from parser.errors import EstimateParseError
 from parser.get_lot_positions import get_lot_positions
 
 CONTRACTOR = {"column_start": 9, "merged_shape": {"colspan": 8}}
@@ -65,7 +66,7 @@ class TestGetLotPositionsBehavior:
     """Основное поведение."""
 
     def test_extracts_positions_from_sample_data(self, sample_worksheet):
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15).positions
 
         assert len(result) == 3
 
@@ -78,18 +79,18 @@ class TestGetLotPositionsBehavior:
 
     def test_handles_empty_range_gracefully(self, sample_worksheet):
         """lot_start_row > lot_end_row — пустой результат, не падение."""
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=20, lot_end_row=15)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=20, lot_end_row=15).positions
 
         assert result == {}
 
     def test_handles_empty_rows_correctly(self, sample_worksheet):
         """Пустые строки после данных пропускаются, а не обрывают обход."""
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=30)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=30).positions
 
         assert sorted(result) == ["1", "2", "3"]
 
     def test_respects_lot_boundaries(self, sample_worksheet):
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=14)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=14).positions
 
         assert sorted(result) == ["1", "2"]
 
@@ -113,7 +114,7 @@ class TestGetLotPositionsBehavior:
         ws.cell(row=13, column=1, value="2")
         ws.cell(row=13, column=4, value="Обеспечение финансовых условий")
 
-        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=11, lot_end_row=13)
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=11, lot_end_row=13).positions
 
         assert len(result) == 3
         assert result["1"][JSON_KEY_JOB_TITLE] == "Лот №1 - Тестовый объект"
@@ -121,14 +122,14 @@ class TestGetLotPositionsBehavior:
         assert result["3"][JSON_KEY_JOB_TITLE] == "Обеспечение финансовых условий"
 
     def test_processes_contractor_data_correctly(self, sample_worksheet):
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13).positions
 
         position = result["1"]
         assert isinstance(position, dict)
         assert len(position) > 4  # больше, чем только общие поля
 
     def test_normalizes_job_titles(self, sample_worksheet):
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15).positions
 
         for position in result.values():
             if position.get(JSON_KEY_JOB_TITLE):
@@ -146,7 +147,7 @@ class TestGetLotPositionsEdgeCases:
             get_lot_positions(sample_worksheet, invalid_contractor, lot_start_row=13, lot_end_row=15)
 
     def test_extreme_row_ranges(self, sample_worksheet):
-        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=5000)
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=5000).positions
 
         assert len(result) == 3
 
@@ -155,7 +156,7 @@ class TestGetLotPositionsDataIntegrity:
     """Качество извлекаемых данных."""
 
     def test_preserves_data_types(self, sample_worksheet):
-        position = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13)["1"]
+        position = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=13).positions["1"]
 
         assert isinstance(position[JSON_KEY_QUANTITY], int | float)
         assert isinstance(position[JSON_KEY_JOB_TITLE], str)
@@ -167,7 +168,7 @@ class TestGetLotPositionsDataIntegrity:
         ws.cell(row=16, column=4, value="Тест работа")
         # остальные ячейки строки пустые
 
-        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=16, lot_end_row=16)
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=16, lot_end_row=16).positions
 
         assert result["1"][JSON_KEY_JOB_TITLE] == "Тест работа"
         assert result["1"][JSON_KEY_UNIT] is None
@@ -190,7 +191,7 @@ class TestGetLotPositionsDataIntegrity:
         ws.cell(row=20, column=1, value="6")
         ws.cell(row=20, column=4, value="Не должна обрабатываться")
 
-        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=17, lot_end_row=21)
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=17, lot_end_row=21).positions
 
         assert len(result) == 1
         assert result["1"][JSON_KEY_JOB_TITLE] == "Обычная позиция"
@@ -204,7 +205,7 @@ class TestGetLotPositionsDataIntegrity:
         ws.cell(row=24, column=1, value="8")
         ws.cell(row=24, column=4, value="Вторая позиция")
 
-        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=22, lot_end_row=24)
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=22, lot_end_row=24).positions
 
         assert len(result) == 2
         assert result["1"][JSON_KEY_JOB_TITLE] == "Первая позиция"
@@ -222,6 +223,123 @@ class TestGetLotPositionsDataIntegrity:
         ws.cell(row=13, column=4, value="Позиция")
         ws.cell(row=14, column=40, value="что-то далеко справа")
 
-        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=14)
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=14).positions
 
         assert len(result) == 1
+
+
+def _floats_anywhere(value, path=""):
+    """Пути до всех float внутри вложенной структуры. Пусто — значит их нет."""
+    if isinstance(value, float):
+        return [path or "<root>"]
+    if isinstance(value, dict):
+        found = []
+        for key, nested in value.items():
+            found.extend(_floats_anywhere(nested, f"{path}.{key}" if path else str(key)))
+        return found
+    return []
+
+
+class TestAdditionalWorksRow:
+    """Агрегатная строка «Дополнительные работы» (спека Ф2 §2.2).
+
+    Признак — пустые A и B плюс точное название в D. Замер: строк с пустыми
+    A и B во всех трёх реальных офертах ровно одна, ложных нет; наивное
+    «D содержит „дополнительн“» дало бы 3–5 попаданий на файл, почти все —
+    настоящие позиции.
+    """
+
+    def test_recognized_row_goes_to_additional_works(self, sample_worksheet):
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=16, column=10, value=12675964.53)
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        assert result.additional_works is not None
+        assert result.additional_works["job_title"] == "Дополнительные работы"
+        assert result.additional_works["source_row"] == 16
+
+    def test_money_is_a_decimal_string_not_float(self, sample_worksheet):
+        """Деньги идут через parse_contractor_row: строка, не float (AGENTS.md §3).
+
+        Проверка адресная, а не «нет float среди values()»: деньги лежат ВЛОЖЕННО
+        в `unit_cost` и `total_cost`, поэтому обход верхнего уровня их не видит и
+        прошёл бы даже при float внутри. Раскладка замерена: у `CONTRACTOR`
+        `column_start = 9` и `colspan = 8`, а ключи colspan-8 начинаются с
+        `unit_cost.materials`, значит колонка 10 — это `unit_cost.works`.
+        `money_to_json(12675964.53)` даёт ровно `"12675964.53"` (замерено).
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=16, column=10, value=12675964.53)
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        value = result.additional_works["unit_cost"]["works"]
+        assert value == "12675964.53"
+        assert isinstance(value, str)
+        assert _floats_anywhere(result.additional_works) == []
+
+    def test_row_also_stays_in_positions(self, sample_worksheet):
+        """ПЕРЕХОДНОЕ решение Ф2 (спека §2.2): строка остаётся позицией.
+
+        Импортёр читает только `positions`; если убрать её здесь, деньги
+        исчезнут из аналитики до выхода Ф4. Исключение делает Ф4 — атомарно с
+        записью в `estimate_additional_works`. Тест обязан упасть, если кто-то
+        «доделает» исключение раньше.
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        titles = [item["job_title"] for item in result.positions.values()]
+        assert "Дополнительные работы" in titles
+
+    def test_absent_row_is_valid(self, sample_worksheet):
+        """42-ТУ и 449-ТУ: строки нет вовсе, это не ошибка и не warning."""
+        result = get_lot_positions(sample_worksheet, CONTRACTOR, lot_start_row=13, lot_end_row=15)
+
+        assert result.additional_works is None
+        assert result.positions != {}
+
+    def test_candidate_with_other_title_is_rejected(self, sample_worksheet):
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Прочие затраты")
+
+        with pytest.raises(EstimateParseError, match="Прочие затраты"):
+            get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+    def test_second_candidate_is_rejected(self, sample_worksheet):
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=17, column=4, value="Дополнительные работы")
+
+        with pytest.raises(EstimateParseError, match="16"):
+            get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=17)
+
+    def test_title_is_compared_normalized(self, sample_worksheet):
+        """Регистр и лишние пробелы в названии не мешают распознаванию.
+
+        Без этого теста реализация с простым `==` тоже была бы зелёной, а спека
+        §2.2 требует сверки нормализованного названия.
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="  ДОПОЛНИТЕЛЬНЫЕ   РАБОТЫ ")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        assert result.additional_works is not None
+        assert result.additional_works["job_title"] == "  ДОПОЛНИТЕЛЬНЫЕ   РАБОТЫ "
+
+    def test_blank_is_by_text_not_by_none(self, sample_worksheet):
+        """Пробел и неразрывный пробел в A/B — тоже пустота (спека §2.2)."""
+        ws = sample_worksheet
+        ws.cell(row=16, column=1, value=" ")
+        ws.cell(row=16, column=2, value=" ")
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        assert result.additional_works is not None

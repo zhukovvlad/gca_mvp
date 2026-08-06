@@ -404,6 +404,11 @@ class TestMoneyContract:
         import datetime as dt
 
         ws = _minimal_sheet(contractor_colspan=11)
+        # A и B заполнены не для красоты: строка без номера и без раздела —
+        # кандидат в агрегатную строку допработ, и лист был бы отвергнут
+        # (спека Ф2 §2.2). Реальные файлы несут здесь номер и раздел.
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
         ws.cell(row=12, column=4, value="Работа с датой в комментарии")
         ws.cell(row=12, column=11, value="#N/A")  # unit_cost.materials
         ws.cell(row=12, column=14, value=60.5)  # unit_cost.total
@@ -417,6 +422,43 @@ class TestMoneyContract:
         assert position["comment_contractor"] == "2025-02-01T00:00:00"
         assert position["unit_cost"]["materials"] is None
         assert position["unit_cost"]["total"] == "60.5"
+
+
+class TestAdditionalWorksInJson:
+    """Поле доезжает до итоговой структуры рядом с positions и summary."""
+
+    def test_additional_works_lands_next_to_positions(self):
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+        ws.cell(row=13, column=4, value="Дополнительные работы")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert set(items) >= {"positions", "summary", "additional_works"}
+        assert items["additional_works"]["job_title"] == "Дополнительные работы"
+        assert items["additional_works"]["source_row"] == 13
+
+    def test_additional_works_is_none_when_row_absent(self):
+        """42-ТУ и 449-ТУ: ключ есть, значение None — это валидное состояние."""
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert items["additional_works"] is None
+
+
+def test_parser_version_is_bumped_for_the_new_key():
+    """1.1.0: в contractor_items появился `additional_works` (спека Ф2 §2.4).
+
+    Версия — часть контракта: она ложится в `estimate_raw_data.parser_version`,
+    и по ней потом отличают, каким кодом разобран сохранённый JSON.
+    """
+    assert PARSER_VERSION == "1.1.0"
 
 
 class TestParseEstimateFailures:
@@ -570,6 +612,20 @@ def _find_money_floats(node, path=()):
 def _is_money_path(path) -> bool:
     """Оканчивается ли путь одним из денежных полей."""
     return any(path[-len(money_path) :] == money_path for money_path in MONEY_PATHS)
+
+
+def test_parse_error_is_importable_from_the_package_root():
+    """Публичный контракт: `from parser import EstimateParseError`.
+
+    Класс переехал в `parser.errors` ради разрыва цикла импортов, но снаружи
+    имя прежнее — на него завязан `services/import_pipeline`. Сверяется
+    идентичность объекта, а не только импортируемость: два разных класса с одним
+    именем ловились бы `except` мимо.
+    """
+    import parser as parser_package
+    from parser.errors import EstimateParseError as FromErrors
+
+    assert parser_package.EstimateParseError is FromErrors
 
 
 class TestColumnHeaderGuard:
