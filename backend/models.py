@@ -43,6 +43,13 @@ def _updated_at() -> Column:
         onupdate=sa_text("now()"),
     )
 
+
+#: Набор "пробельных" символов для CHECK на непустое название (btrim по явным
+#: кодовым точкам, включая неразрывный пробел chr(160) — locale-независимо).
+#: Общая идиома для `work_categories` (Ф1) и `estimate_additional_works` (Ф4):
+#: один набор символов, а не два места, которые могли бы молча разойтись.
+TITLE_BLANK_CHARS_SQL = "' ' || chr(9) || chr(10) || chr(13) || chr(160)"
+
 # ---------------------------------------------------------------------------
 #  Enums
 # ---------------------------------------------------------------------------
@@ -520,6 +527,78 @@ class ProposalSummaryLine(Base):
     )
 
 
+class EstimateAdditionalWork(Base):
+    """Расшивка агрегатной строки «Дополнительные работы» по строкам «Сведений
+    по дополнительным работам» (фаза 7, спека Ф4, миграция 0007).
+
+    Висит на `proposal_id`, а не на `estimate_id` (отступление от брифа, спека
+    §2.3): деньги агрегатной строки принадлежат конкретному предложению, и
+    резолв ссылки в статью определён В ЕГО ПРЕДЕЛАХ, а не в пределах сметы
+    (спека §2.5) — номера разделов между лотами могут повторяться.
+    """
+    __tablename__ = "estimate_additional_works"
+
+    id = Column(BigInteger, primary_key=True)
+    proposal_id = Column(
+        BigInteger,
+        ForeignKey(
+            "proposals.id", ondelete="CASCADE", name="fk_estimate_additional_works_proposal_id"
+        ),
+        nullable=False,
+    )
+    # Порядок строк «Сведений»; нераспределённая запись (остаток или полная
+    # сумма при пустых «Сведениях») получает последний ordinal.
+    ordinal = Column(Integer, nullable=False)
+    # «3.2.2» как в тексте; NULL у нераспределённой записи.
+    chapter_ref_raw = Column(Text, nullable=True)
+    title = Column(Text, nullable=False)
+    total_amount = Column(Numeric, nullable=False)
+    # Единственный источник статьи в v1 — ссылка (ck_..._unresolved_ref);
+    # category_source не заводится — второй правды об одном факте не нужно
+    # (спека §2.3): "привязана/нет" уже выводится из этой колонки.
+    work_category_id = Column(
+        BigInteger,
+        ForeignKey(
+            "work_categories.id",
+            ondelete="RESTRICT",
+            name="fk_estimate_additional_works_work_category_id",
+        ),
+        nullable=True,
+    )
+    # Исходная строка «Сведений»; NULL у нераспределённой записи.
+    raw_line = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id", "ordinal", name="uq_estimate_additional_works_proposal_ordinal"
+        ),
+        CheckConstraint("total_amount >= 0", name="ck_estimate_additional_works_total_amount"),
+        CheckConstraint("ordinal > 0", name="ck_estimate_additional_works_ordinal"),
+        CheckConstraint(
+            f"btrim(title, {TITLE_BLANK_CHARS_SQL}) <> ''",
+            name="ck_estimate_additional_works_title_not_blank",
+        ),
+        CheckConstraint(
+            "chapter_ref_raw IS NOT NULL OR work_category_id IS NULL",
+            name="ck_estimate_additional_works_unresolved_ref",
+        ),
+        CheckConstraint(
+            "raw_line IS NOT NULL OR (chapter_ref_raw IS NULL AND work_category_id IS NULL)",
+            name="ck_estimate_additional_works_raw_line_pairs",
+        ),
+        # Отдельного индекса по proposal_id нет намеренно — его обслуживает
+        # левый префикс uq_estimate_additional_works_proposal_ordinal (тот же
+        # приём, что заменил idx_position_items_proposal_id в миграции 0006).
+        Index(
+            "idx_estimate_additional_works_work_category_id",
+            "work_category_id",
+            postgresql_where=sa_text("work_category_id IS NOT NULL"),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 #  Каталожный контур
 # ---------------------------------------------------------------------------
@@ -783,7 +862,6 @@ class RateStandard(Base):
 
 WORK_CATEGORY_CODE_REGEX = "^[0-9]+([.][0-9]+)*$"
 WORK_CATEGORY_IS_BUCKET_EXPRESSION = "code = '99' OR code LIKE '%.99'"
-WORK_CATEGORY_TITLE_BLANK_CHARS = "' ' || chr(9) || chr(10) || chr(13) || chr(160)"
 
 
 class WorkCategory(Base):
@@ -816,7 +894,7 @@ class WorkCategory(Base):
             "parent_id IS NULL OR parent_id <> id", name="ck_work_categories_not_self_parent"
         ),
         CheckConstraint(
-            f"btrim(title, {WORK_CATEGORY_TITLE_BLANK_CHARS}) <> ''",
+            f"btrim(title, {TITLE_BLANK_CHARS_SQL}) <> ''",
             name="ck_work_categories_title_not_blank",
         ),
     )

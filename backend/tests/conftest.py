@@ -199,6 +199,7 @@ _DOMAIN_TABLES = (
     "matching_cache",
     "rate_standards",
     "position_items",
+    "estimate_additional_works",
     "proposal_summary_lines",
     "proposal_additional_info",
     "proposals",
