@@ -218,6 +218,25 @@ class TestFileAssertionBeatsInheritance:
         assert result.rows["2"].work_category_id is None
         assert any("Прочее по смете" in w for w in result.warnings)
 
+    def test_the_same_unknown_code_is_aggregated_into_one_warning(self, resolver):
+        """Спека §2.9: агрегируется по уникальному КОДУ, а не по строке.
+
+        В смете на 2,5 тыс. строк построчные предупреждения утопили бы всё
+        остальное, поэтому «одно предупреждение на код» — требование, а не
+        оптимизация. Найдено финальным ревью: поведение было, исполнителя не было.
+        """
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", article="99.5. Неизвестная"),
+                chapter("2", article="99.5. Неизвестная"),
+                chapter("3", article="88.1. Тоже неизвестная"),
+            )
+        )
+        unknown = [w for w in result.warnings if "не найден в классификаторе" in w]
+        assert len(unknown) == 2                 # два кода, а не три строки
+        assert "строк: 2" in next(w for w in unknown if "99.5" in w)
+        assert "строк: 1" in next(w for w in unknown if "88.1" in w)
+
     def test_a_valid_child_code_restarts_a_resolved_subtree(self, resolver):
         result = resolver.resolve_proposal(
             rows(
@@ -374,20 +393,34 @@ class TestStructureDisabled:
         assert result.counters.chapters_unassigned == 0
 
     def test_independent_warnings_survive_disabled_structure(self, resolver):
-        """Строка вне структуры и статья на не-разделе — не следствия резолва."""
+        """Строка вне структуры и статья на не-разделе — не следствия резолва.
+
+        Здесь же закреплён гейт `smr_article_raw` в пути D: на не-разделе значение
+        не материализуется. Без этого утверждения гейт не стерёг никто — снятие
+        оставляло весь набор зелёным, а импорт такого предложения падал бы о
+        `ck_position_items_article_only_on_chapters` и терял смету целиком
+        (найдено финальным ревью, спека §2.3).
+        """
         result = resolver.resolve_proposal(
             rows(
                 chapter("прим.", title="Примечание"),
                 work(article="4.1. Ж/Б конструкции"),
                 position(job_title="Дополнительные работы", number=None,
-                         chapter_number=None, is_chapter=False),
+                         chapter_number=None, is_chapter=False,
+                         article_smr="7.2. Внутренняя отделка"),
             )
         )
         assert result.structure_disabled is True
+        # Гейт: сырое значение живёт ТОЛЬКО на разделе, даже когда структура снята.
+        assert result.rows["1"].smr_article_raw is None      # раздел без своей статьи
+        assert result.rows["2"].smr_article_raw is None      # позиция
+        assert result.rows["3"].smr_article_raw is None      # строка вне структуры
         assert len(result.warnings) == 3
         assert any("прим." in w for w in result.warnings)
         assert any("вне структуры" in w or "без номера" in w for w in result.warnings)
-        assert any("не раздел" in w for w in result.warnings)
+        # Обе не-разделовые строки названы одним агрегированным предупреждением.
+        not_a_chapter = next(w for w in result.warnings if "не раздел" in w)
+        assert "строк: 2" in not_a_chapter
 
 
 class TestStructuralConflicts:

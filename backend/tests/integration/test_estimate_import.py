@@ -900,7 +900,12 @@ class TestCategoryMaterialization:
             [
                 position(job_title="1 Подготовительные работы", number="1", chapter_number="1",
                          article_smr="1. Подготовительные работы", is_chapter=True),
-                position(job_title="Расчистка", number="2", total_cost_total="500.00"),
+                # Статья на НЕ-разделе внутри деградации D: если резолвер её
+                # материализует, импорт падает о ck_position_items_article_only_on_chapters
+                # и теряет смету целиком. Пока строка не несла статью, гейт не стерёг
+                # никто (найдено финальным ревью).
+                position(job_title="Расчистка", number="2", total_cost_total="500.00",
+                         article_smr="4.1. Ж/Б конструкции"),
                 position(job_title="Примечание", number="3", chapter_number="прим.",
                          is_chapter=True),
             ],
@@ -909,6 +914,8 @@ class TestCategoryMaterialization:
         items = _items_by_key(db_session, outcome.estimate_id)
         assert len(items) == 3
         assert items["1"].smr_article_raw == "1. Подготовительные работы"
+        assert items["2"].smr_article_raw is None
+        assert any("не раздел" in w for w in outcome.warnings)
         assert all(i.work_category_id is None for i in items.values())
         assert all(i.category_source is None for i in items.values())
         assert all(i.chapter_item_id is None for i in items.values())

@@ -202,6 +202,19 @@ def _examples(places: list[str]) -> str:
     return f"{shown}{f'; …и ещё {hidden}' if hidden > 0 else ''}"
 
 
+def _warn_article_on_non_chapter(warnings: _Warnings, key: str, row: Mapping[str, Any]) -> None:
+    """§2.7 для ЛЮБОЙ строки-не-раздела: и позиции, и строки вне структуры.
+
+    Оба вида строк одинаково не могут нести статью — `smr_article_raw` живёт
+    только при `is_chapter = true` (`ck_position_items_article_only_on_chapters`).
+    Значит и молчать о несохранённой ячейке C одинаково нельзя: аудит остаётся в
+    `raw_data`, но искать там нечего, если импорт не сказал, что искать.
+    """
+    raw = _norm(row.get(JSON_KEY_ARTICLE_SMR))
+    if raw:
+        warnings.article_on_non_chapter.append(_place(key, row, raw=raw))
+
+
 def _place(key: str, row: Mapping[str, Any], *, raw: str | None = None) -> str:
     """Где искать строку в файле. Номера строки листа импорт не знает (спека §2.9)."""
     number = _norm(row.get(JSON_KEY_CHAPTER_NUMBER)) or _norm(row.get(JSON_KEY_NUMBER)) or "—"
@@ -338,6 +351,10 @@ class CategoryResolver:
                 rows[key] = RowResolution(position_key=key, kind=kind)
                 warnings.outside_structure.append(_place(key, row))
                 outside += 1
+                # Строка вне структуры — тоже НЕ раздел, поэтому §2.7 к ней
+                # применяется целиком: значение не сохраняется и о нём говорится
+                # вслух. Иначе про несохранённую ячейку C не сказал бы никто.
+                _warn_article_on_non_chapter(warnings, key, row)
                 continue
 
             if kind is RowKind.POSITION:
@@ -349,9 +366,7 @@ class CategoryResolver:
                 )
                 if parent is None or parent.category is None:
                     positions_unassigned += 1
-                raw = _norm(row.get(JSON_KEY_ARTICLE_SMR))
-                if raw:
-                    warnings.article_on_non_chapter.append(_place(key, row, raw=raw))
+                _warn_article_on_non_chapter(warnings, key, row)
                 continue
 
             number = _norm(row.get(JSON_KEY_CHAPTER_NUMBER))
@@ -463,10 +478,8 @@ def _disabled(
         if kind is RowKind.OUTSIDE_STRUCTURE:
             warnings.outside_structure.append(_place(key, row))
             outside += 1
-        elif kind is RowKind.POSITION:
-            raw = _norm(row.get(JSON_KEY_ARTICLE_SMR))
-            if raw:
-                warnings.article_on_non_chapter.append(_place(key, row, raw=raw))
+        if kind is not RowKind.CHAPTER:
+            _warn_article_on_non_chapter(warnings, key, row)
 
     # Предупреждения категорийного резолва не выдаются: резолва не было. Счётчики
     # нераспределённых по той же причине нулевые.
