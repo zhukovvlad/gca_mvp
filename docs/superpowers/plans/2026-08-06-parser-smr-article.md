@@ -36,7 +36,8 @@
 
 - `backend/parser/constants.py` — **правится**: заголовки колонок A–D, название агрегатной строки, JSON-ключи.
 - `backend/parser/sheet.py` — **правится**: `normalized_cell_text` и `cell_text_is_blank` (утилиты уровня ячейки, рядом с `row_is_empty`).
-- `backend/parser/estimate.py` — **правится**: `_find_column_header_row`, `_validate_column_headers`, вызов в `parse_worksheet`, `PARSER_VERSION`.
+- `backend/parser/errors.py` — **создаётся** в Task 2 Step 0: `EstimateParseError` переезжает сюда, чтобы `get_lot_positions` мог его поднимать без цикла импортов.
+- `backend/parser/estimate.py` — **правится**: `_find_column_header_row`, `_validate_column_headers`, вызов в `parse_worksheet`, `PARSER_VERSION`, импорт исключения из `errors`.
 - `backend/parser/get_lot_positions.py` — **правится**: dataclass `LotRows`, распознавание агрегатной строки в существующем цикле.
 - `backend/parser/get_proposals.py` — **правится**: разложить `LotRows` в `contractor_items`.
 - `backend/parser/__init__.py` — **правится**: экспорт `LotRows`, если он там нужен по образцу соседей.
@@ -126,13 +127,19 @@ class TestColumnHeaderGuard:
     @pytest.mark.parametrize(
         ("column", "letter", "wrong_value"),
         [
-            (1, "A", "Номер"),
             (2, "B", "Глава"),
             (3, "C", "Артикул СМР"),
             (4, "D", "Наименование видов работ"),
         ],
     )
     def test_wrong_header_in_any_column_is_rejected(self, column, letter, wrong_value):
+        """Колонка A сюда НЕ входит намеренно.
+
+        Строка шапки ищется именно по маркеру в A, поэтому испорченный A даёт не
+        «чужой заголовок», а «строка не найдена» — и то сообщение фактическое
+        значение не называет (спека §2.1, пункт 4). Этот случай покрывает
+        `test_missing_header_row_is_rejected_without_naming_a_row`.
+        """
         ws = _minimal_sheet(11)
         ws.cell(row=9, column=column, value=wrong_value)
 
@@ -337,6 +344,68 @@ Expected: `All checks passed!`
 - Consumes: `sheet.normalized_cell_text`, `sheet.cell_text_is_blank` из Task 1.
 - Produces: `get_lot_positions(...) -> LotRows`, где `LotRows.positions: dict[str, Any]` и `LotRows.additional_works: dict[str, Any] | None`; ключ `contractor_items["additional_works"]`.
 
+- [ ] **Step 0: Вынести `EstimateParseError` в отдельный модуль**
+
+Это не развилка, а установленный факт: цепочка импортов `estimate.py:33` →
+`read_lots_and_boundaries.py:24` → `get_proposals.py:35` → `get_lot_positions.py`
+замкнётся, если `get_lot_positions` импортирует из `.estimate`; вдобавок
+`EstimateParseError` объявлен в `estimate.py:46`, то есть **после** его импортов.
+
+Создать `backend/parser/errors.py`:
+
+```python
+"""Исключения парсера.
+
+Вынесено из `estimate.py` отдельным модулем, потому что `get_lot_positions`
+тоже отвергает структурно непригодные файлы, а импорт из `estimate` замкнул бы
+цикл: `estimate` → `read_lots_and_boundaries` → `get_proposals` →
+`get_lot_positions`. Модуль намеренно ничего не импортирует из пакета — он
+нижний слой.
+"""
+
+from __future__ import annotations
+
+
+class EstimateParseError(Exception):
+    """Файл не разбирается как смета ГП.
+
+    Поднимается только на структурно непригодных файлах. Всё, что можно
+    прочитать с оговорками, читается и попадает в `ParseResult.warnings`.
+    """
+```
+
+В `backend/parser/estimate.py` удалить объявление класса (строки 46–51) и
+импортировать его:
+
+```python
+from .errors import EstimateParseError
+```
+
+**Публичное имя менять нельзя:** на `from parser import EstimateParseError`
+завязаны `services/import_pipeline.py:39` и тесты. Проверить, что
+`backend/parser/__init__.py` по-прежнему экспортирует его (при необходимости
+поправить путь импорта внутри `__init__.py`, оставив имя в `__all__`).
+
+Тест — в `backend/tests/unit/parser/test_estimate.py`:
+
+```python
+def test_parse_error_is_importable_from_the_package_root():
+    """Публичный контракт: `from parser import EstimateParseError`.
+
+    Класс переехал в `parser.errors` ради разрыва цикла импортов, но снаружи
+    имя прежнее — на него завязан `services/import_pipeline`. Сверяется
+    идентичность объекта, а не только импортируемость: два разных класса с одним
+    именем ловились бы `except` мимо.
+    """
+    import parser as parser_package
+    from parser.errors import EstimateParseError as FromErrors
+
+    assert parser_package.EstimateParseError is FromErrors
+```
+
+Run: `cd backend && uv run pytest tests/unit/parser/ -q`
+Expected: PASS — переезд исключения ничего не меняет по поведению.
+
 - [ ] **Step 1: Добавить константы**
 
 В `backend/parser/constants.py`:
@@ -376,15 +445,25 @@ class TestAdditionalWorksRow:
         assert result.additional_works["source_row"] == 16
 
     def test_money_is_a_decimal_string_not_float(self, sample_worksheet):
-        """Деньги идут через parse_contractor_row: строка, не float (AGENTS.md §3)."""
+        """Деньги идут через parse_contractor_row: строка, не float (AGENTS.md §3).
+
+        Проверка адресная, а не «нет float среди values()»: деньги лежат ВЛОЖЕННО
+        в `unit_cost` и `total_cost`, поэтому обход верхнего уровня их не видит и
+        прошёл бы даже при float внутри. Раскладка замерена: у `CONTRACTOR`
+        `column_start = 9` и `colspan = 8`, а ключи colspan-8 начинаются с
+        `unit_cost.materials`, значит колонка 10 — это `unit_cost.works`.
+        `money_to_json(12675964.53)` даёт ровно `"12675964.53"` (замерено).
+        """
         ws = sample_worksheet
         ws.cell(row=16, column=4, value="Дополнительные работы")
         ws.cell(row=16, column=10, value=12675964.53)
 
         result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
 
-        values = [v for v in result.additional_works.values() if isinstance(v, float)]
-        assert values == []
+        value = result.additional_works["unit_cost"]["works"]
+        assert value == "12675964.53"
+        assert isinstance(value, str)
+        assert _floats_anywhere(result.additional_works) == []
 
     def test_row_also_stays_in_positions(self, sample_worksheet):
         """ПЕРЕХОДНОЕ решение Ф2 (спека §2.2): строка остаётся позицией.
@@ -436,7 +515,55 @@ class TestAdditionalWorksRow:
         assert result.additional_works is not None
 ```
 
-`CONTRACTOR` — тот же словарь подрядчика, что уже используют существующие тесты этого файла; взять его оттуда, не выдумывать новый. Импорт `EstimateParseError` добавить к существующим импортам файла.
+Рекурсивный хелпер — рядом с тестами этого файла:
+
+```python
+def _floats_anywhere(value, path=""):
+    """Пути до всех float внутри вложенной структуры. Пусто — значит их нет."""
+    if isinstance(value, float):
+        return [path or "<root>"]
+    if isinstance(value, dict):
+        found = []
+        for key, nested in value.items():
+            found.extend(_floats_anywhere(nested, f"{path}.{key}" if path else str(key)))
+        return found
+    return []
+```
+
+`CONTRACTOR` — тот же словарь подрядчика, что уже используют существующие тесты этого файла (`{"column_start": 9, "merged_shape": {"colspan": 8}}`); взять его оттуда, не выдумывать новый. Импорт `EstimateParseError` — из `parser.errors` (Step 0).
+
+**Тесты итоговой JSON-формы** — в `backend/tests/unit/parser/test_estimate.py`. Тесты `LotRows` выше доказывают только работу `get_lot_positions`; что `get_proposals` действительно положил поле рядом с `positions` и `summary`, они не проверяют, и разовый скрипт это не защитит:
+
+```python
+class TestAdditionalWorksInJson:
+    """Поле доезжает до итоговой структуры рядом с positions и summary."""
+
+    def test_additional_works_lands_next_to_positions(self):
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+        ws.cell(row=13, column=4, value="Дополнительные работы")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert set(items) >= {"positions", "summary", "additional_works"}
+        assert items["additional_works"]["job_title"] == "Дополнительные работы"
+        assert items["additional_works"]["source_row"] == 13
+
+    def test_additional_works_is_none_when_row_absent(self):
+        """42-ТУ и 449-ТУ: ключ есть, значение None — это валидное состояние."""
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert items["additional_works"] is None
+```
+
+`_proposal` — существующий хелпер этого файла (`test_estimate.py:507`).
 
 Плюс тест версии — в `backend/tests/unit/parser/test_estimate.py`, к остальным:
 
@@ -471,7 +598,7 @@ from .constants import (
 from .sheet import cell_text_is_blank, contractor_last_column, normalized_cell_text
 ```
 
-`EstimateParseError` импортировать из `.estimate` нельзя — вышел бы циклический импорт (`estimate` тянет `read_lots_and_boundaries` → `get_proposals` → `get_lot_positions`). Проверьте фактическую цепочку импортов перед правкой; если цикл подтверждается, поднимите `EstimateParseError` в отдельный модуль `backend/parser/errors.py` и переэкспортируйте из `estimate.py`, сохранив публичное имя `parser.EstimateParseError` (на него завязаны `import_pipeline` и тесты). **Это единственное место плана, где решение зависит от факта — проверьте и сообщите оркестратору, что получилось.**
+`EstimateParseError` берётся из `parser.errors` (создан в Step 0), а не из `.estimate`.
 
 Результат функции:
 
@@ -628,7 +755,12 @@ PR со ссылками на рамку фазы, спеку и devlog. В оп
 
 **Пробел, найденный при сверке и закрытый в плане:** спека требует тест «`PARSER_VERSION` равен 1.1.0», а первая редакция плана меняла только константу. Тест `test_parser_version_is_bumped_for_the_new_key` добавлен в Task 2 Step 2.
 
-**Риск, вынесенный явно:** циклический импорт `EstimateParseError` в `get_lot_positions` (Task 2 Step 4). Это единственное место, где план не даёт готового ответа, — исполнитель обязан проверить факт и сообщить.
+**Четыре дефекта, найденные внешним ревью и закрытые в плане** (каждый проверен фактом до правки):
+
+1. Тест чужого заголовка в колонке A был **неисполним**: строка шапки ищется именно по маркеру в A, поэтому испорченный A даёт «строка не найдена», а это сообщение фактическое значение не называет. Параметризация оставлена на B–D, случай A покрыт отдельным тестом.
+2. Тест денежного типа был **ложно-зелёным**: обход `values()` не видит деньги, вложенные в `unit_cost` / `total_cost`. Заменён адресной сверкой `unit_cost.works == "12675964.53"` (раскладка и строка замерены) плюс рекурсивный запрет `float`.
+3. Циклический импорт — **не развилка, а установленный факт** (`estimate.py:33` → `read_lots_and_boundaries.py:24` → `get_proposals.py:35` → `get_lot_positions`, при этом класс объявлен в `estimate.py:46`). План прямо предписывает `parser/errors.py` и тест на публичное имя.
+4. **Не было теста итоговой JSON-формы** — `LotRows` не доказывает, что `get_proposals` положил поле в `contractor_items`. Добавлен класс `TestAdditionalWorksInJson` на полный путь через `parse_worksheet`, с проверкой и наличия, и `None`.
 
 **Согласованность имён:** `normalized_cell_text` / `cell_text_is_blank` (Task 1) используются в Task 2 под теми же именами; `LotRows.positions` / `LotRows.additional_works` — в Task 2 Step 4, 5, 6; `JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS` — в константах и `get_proposals`.
 
@@ -652,4 +784,6 @@ PR со ссылками на рамку фазы, спеку и devlog. В оп
 - Три теста в `TestParseEstimateFailures` собирают листы вручную и падают **до** нового guard'а — их править не нужно.
 - В `test_performance.py` шапка частично есть (`A9`), а `A9:A10` объединена вертикально — добавлять B9/C9/D9, объединение не трогать.
 - `get_lot_positions` имеет **14** вызовов в своих тестах; смена возврата на `LotRows` требует `.positions` в каждом. Это механика, ожидания при этом не меняются.
+- **Цикл импортов реален** (`estimate` → `read_lots_and_boundaries` → `get_proposals` → `get_lot_positions`), поэтому Task 2 начинается с переезда `EstimateParseError` в `parser/errors.py`. Публичное имя `parser.EstimateParseError` менять нельзя: на него завязан `services/import_pipeline.py:39`.
+- Деньги в результате лежат **вложенно** (`unit_cost.works`, а не плоским ключом) — проверять адресно, обход верхнего уровня их не увидит.
 - Прогон `pytest tests/` требует `TEST_DATABASE_URL` и снятого `DATABASE_URL`, иначе integration молча пропускаются.
