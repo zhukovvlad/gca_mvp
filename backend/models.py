@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -668,6 +669,22 @@ class PositionItem(Base):
 
     is_chapter = Column(Boolean, nullable=False, server_default=sa_text("false"))
     chapter_ref_in_proposal = Column(String(50), nullable=True)
+
+    # Фаза 7, миграция 0006: привязка к статье классификатора.
+    # Поля статьи живут ТОЛЬКО на строках-разделах (ck_..._article_only_on_chapters);
+    # у позиции статья выводится через chapter_item_id -> её строка-раздел.
+    smr_article_raw = Column(Text, nullable=True)
+    work_category_id = Column(
+        BigInteger,
+        ForeignKey("work_categories.id", ondelete="RESTRICT",
+                   name="fk_position_items_work_category_id"),
+        nullable=True,
+    )
+    category_source = Column(Text, nullable=True)
+    # Одиночного FK на position_items.id НЕТ: цель задаёт составной FK в
+    # __table_args__ — он проверяет и существование строки, и совпадение proposal.
+    chapter_item_id = Column(BigInteger, nullable=True)
+
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -679,9 +696,40 @@ class PositionItem(Base):
         UniqueConstraint(
             "proposal_id", "position_key_in_proposal", name="uq_position_items_proposal_id_key"
         ),
-        Index("idx_position_items_proposal_id", "proposal_id"),
+        # Цель составного self-FK. ЗАМЕНЯЕТ idx_position_items_proposal_id:
+        # proposal_id — левый префикс, поиск по нему по-прежнему идёт индексом.
+        UniqueConstraint("proposal_id", "id", name="uq_position_items_proposal_id_id"),
+        ForeignKeyConstraint(
+            ["proposal_id", "chapter_item_id"],
+            ["position_items.proposal_id", "position_items.id"],
+            ondelete="RESTRICT",
+            name="fk_position_items_chapter",
+        ),
+        CheckConstraint(
+            "is_chapter OR (smr_article_raw IS NULL AND work_category_id IS NULL "
+            "AND category_source IS NULL)",
+            name="ck_position_items_article_only_on_chapters",
+        ),
+        CheckConstraint(
+            "(work_category_id IS NULL) = (category_source IS NULL)",
+            name="ck_position_items_category_source_pairs",
+        ),
+        CheckConstraint(
+            "category_source IS NULL OR category_source = 'file'",
+            name="ck_position_items_category_source",
+        ),
         Index("idx_position_items_catalog_id", "catalog_position_id"),
         Index("idx_position_items_unit_id", "unit_id"),
+        Index(
+            "idx_position_items_work_category_id",
+            "work_category_id",
+            postgresql_where=sa_text("work_category_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_position_items_chapter_item_id",
+            "chapter_item_id",
+            postgresql_where=sa_text("chapter_item_id IS NOT NULL"),
+        ),
     )
 
 

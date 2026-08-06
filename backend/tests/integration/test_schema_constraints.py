@@ -835,3 +835,168 @@ class TestWorkCategoriesSeed:
             sa.text("select title from work_categories where code = '1'")
         ).scalar_one()
         assert title == "Подготовительные работы, содержание площадки"
+
+
+# ---------------------------------------------------------------------------
+#  position_items: поля статьи и составной self-FK (фаза 7, спека Ф3, миграция 0006)
+# ---------------------------------------------------------------------------
+
+class TestPositionItemCategoryColumns:
+    """Миграция 0006: поля статьи и составной self-FK (спека Ф3 §2.1)."""
+
+    @staticmethod
+    def _row(db_session, factories, proposal, *, is_chapter: bool):
+        item = factories.PositionItemFactory.create(proposal=proposal, is_chapter=is_chapter)
+        db_session.flush()
+        return item
+
+    @staticmethod
+    def _any_category_id(db_session) -> int:
+        """Любая статья справочника, но обязательно ЛИСТ дерева.
+
+        Первая по `sort_order` — корень «1», и у него есть дети: его удаление
+        упирается в `work_categories_parent_id_fkey` из Ф1 РАНЬШЕ, чем дойдёт до
+        `fk_position_items_work_category_id`. Тест удаления получил бы отказ не от
+        того констрейнта, который проверяет, — поймало это только сравнение по
+        имени констрейнта, «просто IntegrityError» прошёл бы зелёным.
+        """
+        used_as_parent = sa.select(WorkCategory.parent_id).where(
+            WorkCategory.parent_id.is_not(None)
+        )
+        return db_session.execute(
+            sa.select(WorkCategory.id)
+            .where(WorkCategory.id.not_in(used_as_parent))
+            .order_by(WorkCategory.sort_order)
+            .limit(1)
+        ).scalar_one()
+
+    @pytest.mark.parametrize("field_set", ["raw_only", "category_and_source"])
+    def test_article_fields_are_rejected_on_a_non_chapter_row(
+        self, db_session, factories, field_set
+    ):
+        """Оба способа заполнить статью у не-раздела, а не только сырое значение.
+
+        `alembic check` CHECK-выражения не сравнивает вовсе (замерено на Ф1: при
+        подмене autogenerate отдаёт пустой diff — комментарий к `db-test-check` в
+        justfile), поэтому смысл констрейнта держат только эти parity-тесты.
+        """
+        proposal = factories.ProposalFactory.create()
+        item = self._row(db_session, factories, proposal, is_chapter=False)
+        values = (
+            {"smr_article_raw": "4.1. Ж/Б конструкции"}
+            if field_set == "raw_only"
+            else {
+                "work_category_id": self._any_category_id(db_session),
+                "category_source": "file",
+            }
+        )
+        with rejected(db_session, contains="ck_position_items_article_only_on_chapters"):
+            db_session.execute(
+                sa.update(PositionItem).where(PositionItem.id == item.id).values(**values)
+            )
+
+    @pytest.mark.parametrize("missing", ["source", "category"])
+    def test_category_and_source_come_only_together(self, db_session, factories, missing):
+        """Парность в ОБЕ стороны: и категория без источника, и источник без категории."""
+        proposal = factories.ProposalFactory.create()
+        item = self._row(db_session, factories, proposal, is_chapter=True)
+        values = (
+            {"work_category_id": self._any_category_id(db_session)}
+            if missing == "source"
+            else {"category_source": "file"}
+        )
+        with rejected(db_session, contains="ck_position_items_category_source_pairs"):
+            db_session.execute(
+                sa.update(PositionItem).where(PositionItem.id == item.id).values(**values)
+            )
+
+    def test_source_other_than_file_is_rejected(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        item = self._row(db_session, factories, proposal, is_chapter=True)
+        with rejected(db_session, contains="ck_position_items_category_source"):
+            db_session.execute(
+                sa.update(PositionItem)
+                .where(PositionItem.id == item.id)
+                .values(
+                    work_category_id=self._any_category_id(db_session),
+                    category_source="manual",
+                )
+            )
+
+    def test_cross_proposal_reference_is_rejected_by_the_composite_fk(self, db_session, factories):
+        """Прямая попытка записи, а не результат импорта.
+
+        Импортёр такую ссылку не построит и при СНЯТОМ констрейнте (карта
+        key -> PositionItem живёт один вызов на один proposal), поэтому проверка
+        через импорт стерегла бы построение, а не FK (спека §4.2).
+        """
+        chapter = self._row(
+            db_session, factories, factories.ProposalFactory.create(), is_chapter=True
+        )
+        alien = self._row(
+            db_session, factories, factories.ProposalFactory.create(), is_chapter=False
+        )
+        with rejected(db_session, contains="fk_position_items_chapter"):
+            db_session.execute(
+                sa.update(PositionItem)
+                .where(PositionItem.id == alien.id)
+                .values(chapter_item_id=chapter.id)
+            )
+
+    def test_reference_inside_the_same_proposal_is_accepted(self, db_session, factories):
+        """Значение читается ИЗ БД, а не через identity map.
+
+        `db_session.get()` здесь вернул бы `None` при верно записанной строке:
+        синхронизация bulk-UPDATE в сессию патчит только те атрибуты, которые уже
+        лежат в `__dict__` объекта, а `chapter_item_id` фабрика не заполняет — и
+        объект не истёк, поэтому в БД повторного запроса не будет. Тест сравнивал
+        бы питоновский `None` с самим собой (замерено пробником: в БД лежит id
+        раздела, `get()` отдаёт `None`).
+        """
+        proposal = factories.ProposalFactory.create()
+        chapter = self._row(db_session, factories, proposal, is_chapter=True)
+        child = self._row(db_session, factories, proposal, is_chapter=False)
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id == child.id)
+            .values(chapter_item_id=chapter.id)
+        )
+        db_session.flush()
+        stored = db_session.execute(
+            sa.select(PositionItem.chapter_item_id).where(PositionItem.id == child.id)
+        ).scalar_one()
+        assert stored == chapter.id
+
+    def test_null_parent_is_allowed(self, db_session, factories):
+        """MATCH SIMPLE: NULL во второй колонке пропускает проверку FK (спека §1.3 факт 8)."""
+        item = self._row(
+            db_session, factories, factories.ProposalFactory.create(), is_chapter=True
+        )
+        assert db_session.get(PositionItem, item.id).chapter_item_id is None
+
+    def test_deleting_a_referenced_chapter_row_hits_restrict(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        chapter = self._row(db_session, factories, proposal, is_chapter=True)
+        child = self._row(db_session, factories, proposal, is_chapter=False)
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id == child.id)
+            .values(chapter_item_id=chapter.id)
+        )
+        db_session.flush()
+        with rejected(db_session, contains="fk_position_items_chapter"):
+            db_session.execute(sa.delete(PositionItem).where(PositionItem.id == chapter.id))
+
+    def test_deleting_a_used_work_category_hits_restrict(self, db_session, factories):
+        item = self._row(
+            db_session, factories, factories.ProposalFactory.create(), is_chapter=True
+        )
+        category_id = self._any_category_id(db_session)
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id == item.id)
+            .values(work_category_id=category_id, category_source="file")
+        )
+        db_session.flush()
+        with rejected(db_session, contains="fk_position_items_work_category_id"):
+            db_session.execute(sa.delete(WorkCategory).where(WorkCategory.id == category_id))
