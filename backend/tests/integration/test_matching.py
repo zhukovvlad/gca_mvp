@@ -13,6 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 from models import CatalogKind, CatalogPosition, MatchingCache, MatchSource, PositionItem
 from parser.sanitize_text import normalize_job_title_with_lemmatization
+from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
 from services.matching import (
     AUTO_CACHE_TTL_DAYS,
@@ -82,6 +83,7 @@ def import_and_match(db_session, resolver, contract, positions, *, now=None, ame
         import_job_id=None,
         replace=False,
         unit_resolver=resolver,
+        category_resolver=CategoryResolver.from_db(db_session),
     )
     match = match_positions(db_session, outcome.positions_to_match, now=now)
     return outcome, match

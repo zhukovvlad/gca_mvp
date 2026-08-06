@@ -27,6 +27,7 @@ from sqlalchemy.exc import OperationalError
 
 from models import CatalogKind, CatalogPosition, MatchingCache, MatchSource, PositionItem
 from parser.sanitize_text import normalize_job_title_with_lemmatization
+from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
 from services.matching import cache_key, match_positions
 from services.review import ReviewError, merge_into_position, set_kind
@@ -53,6 +54,7 @@ def queue(committing_db, committing_factories, committing_session_factory):
         import_job_id=None,
         replace=False,
         unit_resolver=resolver,
+        category_resolver=CategoryResolver.from_db(committing_db),
     )
     match_positions(committing_db, outcome.positions_to_match)
 
