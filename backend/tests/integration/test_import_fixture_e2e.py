@@ -37,6 +37,24 @@ FIXTURE_POSITIONS = 2576
 FIXTURE_CHAPTERS = 746
 FIXTURE_WORK_ROWS = FIXTURE_POSITIONS - FIXTURE_CHAPTERS
 
+# Замер спеки Ф3 §1.1 на этом файле. Сумма сходится с FIXTURE_CHAPTERS: 222+485+39=746.
+FIXTURE_CHAPTERS_OWN = 222
+FIXTURE_CHAPTERS_INHERITED = 485
+FIXTURE_CHAPTERS_UNASSIGNED = 39
+FIXTURE_POSITIONS_UNASSIGNED = 38
+#: Разделов глубины 1 — единственные строки без родителя (строк вне структуры в этом
+#: файле нет). Из гистограммы глубин пробника гейта 1: {1: 16, 2: 56, 3: 130, 4: 196,
+#: 5: 337, 6: 11}; сумма 746 = FIXTURE_CHAPTERS.
+FIXTURE_CHAPTERS_TOP_LEVEL = 16
+
+
+def test_measured_counts_add_up_to_the_chapter_total():
+    """Арифметика замера — до всякой БД: три класса разделов покрывают все разделы."""
+    assert (
+        FIXTURE_CHAPTERS_OWN + FIXTURE_CHAPTERS_INHERITED + FIXTURE_CHAPTERS_UNASSIGNED
+        == FIXTURE_CHAPTERS
+    )
+
 
 @pytest.fixture(scope="module")
 def parsed_fixture():
@@ -72,6 +90,18 @@ def xlsx_stub(marker: str) -> bytes:
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("xl/workbook.xml", marker)
     return buffer.getvalue()
+
+
+@pytest.fixture
+def imported_fixture_estimate(
+    committing_client, committing_db, committing_factories, stub_with_fixture
+) -> int:
+    """Загруженная fixture-смета; отдаёт `estimate_id`."""
+    contract = committing_factories.ContractFactory.create()
+    committing_db.commit()
+    job = upload(committing_client, contract.id, xlsx_stub("categories"))
+    assert job["status"] == ImportJobStatus.done.value, job["error_text"]
+    return job["estimate_id"]
 
 
 class TestFullPipelineOnFixture:
@@ -209,3 +239,98 @@ class TestMatchingMetric:
         # Ручные решения дают hit ветки 1, а не повторный точный поиск.
         assert counters["matched_cache"] == counters["positions_total"]
         assert counters["to_review"] == 0
+
+
+class TestCategoryResolutionOnFixture:
+    """Ф3 на закоммиченном файле: числа берутся из БД (спека §4.2)."""
+
+    #: Общий хвост: только строки этой сметы.
+    _SCOPE = (
+        "from position_items p "
+        "join proposals pr on pr.id = p.proposal_id "
+        "join lots l on l.id = pr.lot_id "
+        "where l.estimate_id = :eid"
+    )
+
+    def test_chapters_are_split_as_measured(self, committing_db, imported_fixture_estimate):
+        counts = committing_db.execute(
+            sa.text(
+                "select "
+                " count(*) filter (where p.is_chapter and p.smr_article_raw is not null "
+                "                  and p.work_category_id is not null) as own, "
+                " count(*) filter (where p.is_chapter and p.smr_article_raw is null "
+                "                  and p.work_category_id is not null) as inherited, "
+                " count(*) filter (where p.is_chapter "
+                "                  and p.work_category_id is null) as unassigned, "
+                " count(*) filter (where p.is_chapter and p.smr_article_raw is not null "
+                "                  and p.work_category_id is null) as unreadable "
+                + self._SCOPE
+            ),
+            {"eid": imported_fixture_estimate},
+        ).one()
+        assert counts.own == FIXTURE_CHAPTERS_OWN
+        assert counts.inherited == FIXTURE_CHAPTERS_INHERITED
+        assert counts.unassigned == FIXTURE_CHAPTERS_UNASSIGNED
+        # Неизвестных кодов в файле нет — все 222 кода нашлись в справочнике.
+        assert counts.unreadable == 0
+
+    def test_every_work_row_is_attached_to_a_chapter(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """Строк вне структуры в этом файле нет, значит родитель есть у каждой позиции."""
+        orphans = committing_db.execute(
+            sa.text(
+                "select count(*) " + self._SCOPE
+                + " and not p.is_chapter and p.chapter_item_id is null"
+            ),
+            {"eid": imported_fixture_estimate},
+        ).scalar_one()
+        assert orphans == 0
+
+    def test_unassigned_positions_match_the_measurement(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """Настоящий пробел: «14 SHELL & CORE» и «15 Рабочая документация» (спека §1.2)."""
+        unassigned = committing_db.execute(
+            sa.text(
+                "select count(*) from position_items p "
+                "join position_items c on c.id = p.chapter_item_id "
+                "join proposals pr on pr.id = p.proposal_id "
+                "join lots l on l.id = pr.lot_id "
+                "where l.estimate_id = :eid and not p.is_chapter "
+                "and c.work_category_id is null"
+            ),
+            {"eid": imported_fixture_estimate},
+        ).scalar_one()
+        assert unassigned == FIXTURE_POSITIONS_UNASSIGNED
+
+    def test_parent_is_a_chapter_of_the_same_proposal_standing_earlier_in_the_file(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """Независимая проверка: эталон — порядок ключей файла, а не вывод резолвера.
+
+        Слой 5 инсайта verifying-guards: если ожидание выводится из того же места,
+        которое ломает контрпример, тест сравнивает величину с самой собой. Здесь
+        ожидание берётся из `position_key_in_proposal` — его пишет импорт из ключей
+        парсера, а не резолвер.
+        """
+        broken = committing_db.execute(
+            sa.text(
+                "select count(*) from position_items p "
+                "join position_items c on c.id = p.chapter_item_id "
+                "join proposals pr on pr.id = p.proposal_id "
+                "join lots l on l.id = pr.lot_id "
+                "where l.estimate_id = :eid and ("
+                "  not c.is_chapter "
+                "  or c.proposal_id <> p.proposal_id "
+                "  or (c.position_key_in_proposal)::int >= (p.position_key_in_proposal)::int)"
+            ),
+            {"eid": imported_fixture_estimate},
+        ).scalar_one()
+        assert broken == 0
+        # Ноль не должен быть вакуозным: ссылки в смете действительно есть.
+        attached = committing_db.execute(
+            sa.text("select count(*) " + self._SCOPE + " and p.chapter_item_id is not null"),
+            {"eid": imported_fixture_estimate},
+        ).scalar_one()
+        assert attached == FIXTURE_POSITIONS - FIXTURE_CHAPTERS_TOP_LEVEL

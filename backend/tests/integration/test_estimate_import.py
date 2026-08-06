@@ -16,6 +16,17 @@ from models import (
     ProposalAdditionalInfo,
     ProposalSummaryLine,
 )
+from parser.constants import (
+    JSON_KEY_BASELINE_PROPOSAL,
+    JSON_KEY_CONTRACTOR_ITEMS,
+    JSON_KEY_CONTRACTOR_POSITIONS,
+    JSON_KEY_CONTRACTOR_TITLE,
+    JSON_KEY_LOT_TITLE,
+    JSON_KEY_LOTS,
+    JSON_KEY_PROPOSALS,
+)
+from parser.postprocess import BASELINE_MISSING_TITLE
+from services.category_resolution import CategoryResolver
 from services.estimate_import import (
     EstimateImportError,
     compare_header_with_contract,
@@ -42,6 +53,7 @@ def run_import(db_session, resolver, contract, data, *, amendment_no=None, repla
         import_job_id=job.id if job is not None else None,
         replace=replace,
         unit_resolver=resolver,
+        category_resolver=CategoryResolver.from_db(db_session),
     )
 
 
@@ -632,7 +644,10 @@ class TestHeuristicWarnings:
         contract = factories.ContractFactory.create()
         db_session.flush()
         spec = "раздел с описанием на много символов " * 40
-        data = payload_for(contract, [position(job_title=spec, is_chapter=True, number="7")])
+        data = payload_for(
+            contract,
+            [position(job_title=spec, is_chapter=True, number="7", chapter_number="7")],
+        )
 
         outcome = run_import(db_session, resolver, contract, data)
 
@@ -790,3 +805,185 @@ class TestEdgeCases:
             "positions"
         ]
         assert positions["1"]["article_smr"] == "СМР-42"
+
+
+# ---------------------------------------------------------------------------
+#  Материализация резолва статьи в position_items (Ф3)
+# ---------------------------------------------------------------------------
+
+class TestCategoryMaterialization:
+    """Ф3: план резолвера доезжает до строк сметы (спека Ф3 §2.8)."""
+
+    @pytest.fixture
+    def contract(self, factories):
+        return factories.ContractFactory.create()
+
+    def test_positions_point_at_their_chapter_row(self, db_session, resolver, contract):
+        payload = payload_for(
+            contract,
+            [
+                position(job_title="1 Подготовительные работы", number="1",
+                         chapter_number="1", article_smr="1. Подготовительные работы",
+                         is_chapter=True),
+                position(job_title="Расчистка", number="2", unit="м2",
+                         suggested_quantity=10, unit_cost_total="100.00"),
+            ],
+        )
+        outcome = run_import(db_session, resolver, contract, payload)
+        items = _items_by_key(db_session, outcome.estimate_id)
+        chapter, work = items["1"], items["2"]
+        assert chapter.is_chapter is True
+        assert chapter.work_category_id is not None
+        assert chapter.category_source == "file"
+        assert chapter.smr_article_raw == "1. Подготовительные работы"
+        assert work.chapter_item_id == chapter.id
+        assert work.work_category_id is None
+
+    def test_row_outside_structure_is_not_attached(self, db_session, resolver, contract):
+        """Агрегатная строка допработ: chapter_item_id остаётся NULL (спека §2.6)."""
+        payload = payload_for(
+            contract,
+            [
+                position(job_title="1 Подготовительные работы", number="1",
+                         chapter_number="1", article_smr="1. Подготовительные работы",
+                         is_chapter=True),
+                position(job_title="Расчистка", number="2", total_cost_total="500.00"),
+                position(job_title="Дополнительные работы", number=None,
+                         chapter_number=None, total_cost_total="700.00"),
+            ],
+        )
+        outcome = run_import(db_session, resolver, contract, payload)
+        items = _items_by_key(db_session, outcome.estimate_id)
+        assert items["3"].chapter_item_id is None
+        assert items["2"].chapter_item_id == items["1"].id
+        assert any("вне структуры" in w or "без номера" in w for w in outcome.warnings)
+
+    def test_chapter_item_id_never_crosses_a_proposal(self, db_session, resolver, contract):
+        """Два лота по одному предложению — поперечных ссылок нет (спека §4.2)."""
+        first = proposal([
+            position(job_title="1 Подготовительные работы", number="1", chapter_number="1",
+                     article_smr="1. Подготовительные работы", is_chapter=True),
+            position(job_title="Расчистка", number="2"),
+        ])
+        second = proposal([
+            position(job_title="4 Возведение конструкций", number="1", chapter_number="4",
+                     article_smr="4. Возведение конструкций", is_chapter=True),
+            position(job_title="Монолит", number="2"),
+        ])
+        payload = payload_for(contract)
+        payload[JSON_KEY_LOTS] = {
+            "lot_1": {JSON_KEY_LOT_TITLE: "Лот №1", JSON_KEY_PROPOSALS: {"contractor_1": first},
+                      JSON_KEY_BASELINE_PROPOSAL: {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE}},
+            "lot_2": {JSON_KEY_LOT_TITLE: "Лот №2", JSON_KEY_PROPOSALS: {"contractor_1": second},
+                      JSON_KEY_BASELINE_PROPOSAL: {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE}},
+        }
+        run_import(db_session, resolver, contract, payload)
+        crossing = db_session.execute(
+            sa.text(
+                "select count(*) from position_items child "
+                "join position_items parent on parent.id = child.chapter_item_id "
+                "where child.proposal_id <> parent.proposal_id"
+            )
+        ).scalar_one()
+        assert crossing == 0
+        # И привязка при этом есть — иначе ноль был бы вакуозным.
+        attached = db_session.execute(
+            sa.text("select count(*) from position_items where chapter_item_id is not null")
+        ).scalar_one()
+        assert attached == 2
+
+    def test_disabled_structure_keeps_rows_and_raw_but_no_links(
+        self, db_session, resolver, contract
+    ):
+        payload = payload_for(
+            contract,
+            [
+                position(job_title="1 Подготовительные работы", number="1", chapter_number="1",
+                         article_smr="1. Подготовительные работы", is_chapter=True),
+                # Статья на НЕ-разделе внутри деградации D: если резолвер её
+                # материализует, импорт падает о ck_position_items_article_only_on_chapters
+                # и теряет смету целиком. Пока строка не несла статью, гейт не стерёг
+                # никто (найдено финальным ревью).
+                position(job_title="Расчистка", number="2", total_cost_total="500.00",
+                         article_smr="4.1. Ж/Б конструкции"),
+                position(job_title="Примечание", number="3", chapter_number="прим.",
+                         is_chapter=True),
+            ],
+        )
+        outcome = run_import(db_session, resolver, contract, payload)
+        items = _items_by_key(db_session, outcome.estimate_id)
+        assert len(items) == 3
+        assert items["1"].smr_article_raw == "1. Подготовительные работы"
+        assert items["2"].smr_article_raw is None
+        assert any("не раздел" in w for w in outcome.warnings)
+        assert all(i.work_category_id is None for i in items.values())
+        assert all(i.category_source is None for i in items.values())
+        assert all(i.chapter_item_id is None for i in items.values())
+        assert any("не определена" in w for w in outcome.warnings)
+
+    def test_non_canonical_position_keys_fail_the_import_with_an_explanation(
+        self, db_session, resolver, contract
+    ):
+        payload = payload_for(contract, [position(job_title="Расчистка", number="1")])
+        positions = payload[JSON_KEY_LOTS]["lot_1"][JSON_KEY_PROPOSALS]["contractor_1"][
+            JSON_KEY_CONTRACTOR_ITEMS
+        ][JSON_KEY_CONTRACTOR_POSITIONS]
+        positions["07"] = positions.pop("1")
+        with pytest.raises(EstimateImportError, match="1..N"):
+            run_import(db_session, resolver, contract, payload)
+
+    def test_a_non_dict_row_fails_the_import_instead_of_being_dropped(
+        self, db_session, resolver, contract
+    ):
+        """Осознанное изменение поведения на пути, который не покрывал никто.
+
+        Раньше `_import_positions` молча пропускал не-словарь (строка терялась без
+        следа); теперь импорт отказывает с объяснением. Парсер такого не отдаёт —
+        `postprocess.annotate` падает раньше, — но тихая потеря строки сметы
+        недопустима, а неохваченное поведение не значит «правильное».
+        """
+        payload = payload_for(contract, [position(job_title="Расчистка", number="1")])
+        positions = payload[JSON_KEY_LOTS]["lot_1"][JSON_KEY_PROPOSALS]["contractor_1"][
+            JSON_KEY_CONTRACTOR_ITEMS
+        ][JSON_KEY_CONTRACTOR_POSITIONS]
+        positions["2"] = "не словарь"
+        with pytest.raises(EstimateImportError, match="не является словарём"):
+            run_import(db_session, resolver, contract, payload)
+
+    def test_replace_removes_an_estimate_with_filled_chapter_links(
+        self, db_session, resolver, contract
+    ):
+        """RESTRICT на составном self-FK каскаду не мешает (спека §1.3 факт 8).
+
+        Замер на scratch-таблицах это показал; здесь то же свойство проверяется на
+        настоящей схеме и настоящем replace-флоу.
+        """
+        rows_with_links = [
+            position(job_title="1 Подготовительные работы", number="1", chapter_number="1",
+                     article_smr="1. Подготовительные работы", is_chapter=True),
+            position(job_title="1.1 Расчистка", number="2", chapter_number="1.1",
+                     is_chapter=True),
+            position(job_title="Вывоз грунта", number="3", total_cost_total="500.00"),
+        ]
+        first = run_import(db_session, resolver, contract, payload_for(contract, rows_with_links))
+        filled = db_session.execute(
+            sa.text("select count(*) from position_items where chapter_item_id is not null")
+        ).scalar_one()
+        assert filled == 2            # иначе замена ничего не доказывает
+
+        second = run_import(
+            db_session, resolver, contract, payload_for(contract, rows_with_links), replace=True
+        )
+        assert second.replaced_estimate_id == first.estimate_id
+        assert db_session.get(Estimate, first.estimate_id) is None
+        assert len(_items_by_key(db_session, second.estimate_id)) == 3
+
+
+def _items_by_key(db_session, estimate_id: int) -> dict[str, PositionItem]:
+    rows = db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+    ).scalars().all()
+    return {item.position_key_in_proposal: item for item in rows}

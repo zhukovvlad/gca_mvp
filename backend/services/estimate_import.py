@@ -82,6 +82,11 @@ from parser.constants import (
     JSON_KEY_WORKS,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
+from services.category_resolution import (
+    CategoryResolutionContractError,
+    CategoryResolver,
+    ProposalResolution,
+)
 from services.unit_resolution import ResolvedUnit, UnitResolver
 
 log = logging.getLogger(__name__)
@@ -345,6 +350,7 @@ def import_estimate(
     import_job_id: int | None,
     replace: bool,
     unit_resolver: UnitResolver,
+    category_resolver: CategoryResolver,
 ) -> ImportOutcome:
     """Переносит разобранную смету в БД. Транзакцией управляет вызывающий.
 
@@ -360,6 +366,7 @@ def import_estimate(
         import_job_id: задание, которым загружена смета.
         replace: удалить существующую смету этой пары перед импортом (§5, правило 3).
         unit_resolver: разрешение единиц (общее с матчингом).
+        category_resolver: резолв статьи по структуре файла (§Ф3).
 
     Returns:
         `ImportOutcome` с id сметы, списком позиций для матчинга и warnings.
@@ -436,6 +443,7 @@ def import_estimate(
             proposal_id=proposal.id,
             proposal_data=proposal_data,
             unit_resolver=unit_resolver,
+            category_resolver=category_resolver,
             value_problems=value_problems,
             warnings=warnings,
             long_titles=long_titles,
@@ -622,6 +630,7 @@ def _import_positions(
     proposal_id: int,
     proposal_data: dict[str, Any],
     unit_resolver: UnitResolver,
+    category_resolver: CategoryResolver,
     value_problems: list[str],
     warnings: list[str],
     long_titles: list[LongTitle],
@@ -639,6 +648,16 @@ def _import_positions(
     if not isinstance(positions, dict):
         return 0, [], False
 
+    # План строится ДО единой записи в БД: тогда решение «структура не определена»
+    # атомарно по всему предложению, а не оставляет половину сметы привязанной.
+    try:
+        resolution: ProposalResolution = category_resolver.resolve_proposal(positions)
+    except CategoryResolutionContractError as exc:
+        raise EstimateImportError(
+            f"Смету нельзя импортировать: {exc}"
+        ) from exc
+    warnings.extend(resolution.warnings)
+
     rows: list[PositionItem] = []
     to_match_source: list[tuple[PositionItem, str, ResolvedUnit]] = []
     priced_seen = False
@@ -654,6 +673,7 @@ def _import_positions(
         unit = unit_resolver.resolve(raw_position.get(JSON_KEY_UNIT))
         is_chapter = bool(raw_position.get(JSON_KEY_IS_CHAPTER))
         job_title = _text(raw_position.get(JSON_KEY_JOB_TITLE))
+        decision = resolution.rows[str(position_key)]
 
         item = PositionItem(
             proposal_id=proposal_id,
@@ -690,6 +710,9 @@ def _import_positions(
             deviation_from_baseline_cost=None,
             is_chapter=is_chapter,
             chapter_ref_in_proposal=_text(raw_position.get(JSON_KEY_CHAPTER_REF)),
+            smr_article_raw=decision.smr_article_raw,
+            work_category_id=decision.work_category_id,
+            category_source=decision.category_source,
         )
         rows.append(item)
 
@@ -732,6 +755,17 @@ def _import_positions(
         to_match_source.append((item, job_title, unit))
 
     db.add_all(rows)
+    db.flush()
+
+    # Второй проход: self-FK можно проставить только когда id уже есть. Поля статьи
+    # здесь НЕ переписываются — они проставлены при создании строк. UPDATE затрагивает
+    # chapter_item_id и updated_at, но updated_at берёт now() = время начала
+    # транзакции, поэтому наблюдаемого временного следа после commit не остаётся.
+    by_key = {item.position_key_in_proposal: item for item in rows}
+    for item in rows:
+        parent_key = resolution.rows[item.position_key_in_proposal].parent_position_key
+        if parent_key is not None:
+            item.chapter_item_id = by_key[parent_key].id
     db.flush()
 
     if untitled:
