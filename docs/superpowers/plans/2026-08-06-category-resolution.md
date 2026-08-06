@@ -39,6 +39,7 @@
 - `tests/integration/test_import_fixture_e2e.py` уже несёт `FIXTURE_POSITIONS = 2576` и `FIXTURE_CHAPTERS = 746` — **совпадает с замером спеки §1.1**, то есть числа новых констант проверяются ещё и арифметикой: `222 + 485 + 39 = 746`.
 - Хелпер `rejected(session, contains=...)` (`tests/integration/test_schema_constraints.py:38`) ждёт `IntegrityError` внутри savepoint. Для `ProgrammingError` он не годится — но в Ф3 все отказы схемы это `IntegrityError` (CHECK и FK).
 - База отсчёта тестов: **965 passed / 6 skipped** backend на `c980274`, 175 vitest.
+- **Ожидаемый прирост — 56 собранных тестов**, посчитанный по этому плану, а не оценкой: Task 1 — 10 (восемь функций, две из них параметризованы по два случая), Task 2 — 21, Task 3 — 13, Task 4 — 7, Task 5 — 5. Это ожидание для сверки в Task 5 Step 3; авторитетен там всё равно замер `--collect-only`, а расхождение с 56 означает, что план и реализация разошлись, и разбираться надо до PR.
 
 ## File Structure
 
@@ -87,24 +88,44 @@ class TestPositionItemCategoryColumns:
             sa.select(WorkCategory.id).order_by(WorkCategory.sort_order).limit(1)
         ).scalar_one()
 
-    def test_article_fields_are_rejected_on_a_non_chapter_row(self, db_session, factories):
+    @pytest.mark.parametrize("field_set", ["raw_only", "category_and_source"])
+    def test_article_fields_are_rejected_on_a_non_chapter_row(
+        self, db_session, factories, field_set
+    ):
+        """Оба способа заполнить статью у не-раздела, а не только сырое значение.
+
+        `alembic check` CHECK-выражения не сравнивает вовсе (замерено на Ф1: при
+        подмене autogenerate отдаёт пустой diff — комментарий к `db-test-check` в
+        justfile), поэтому смысл констрейнта держат только эти parity-тесты.
+        """
         proposal = factories.ProposalFactory.create()
         item = self._row(db_session, factories, proposal, is_chapter=False)
+        values = (
+            {"smr_article_raw": "4.1. Ж/Б конструкции"}
+            if field_set == "raw_only"
+            else {
+                "work_category_id": self._any_category_id(db_session),
+                "category_source": "file",
+            }
+        )
         with rejected(db_session, contains="ck_position_items_article_only_on_chapters"):
             db_session.execute(
-                sa.update(PositionItem)
-                .where(PositionItem.id == item.id)
-                .values(smr_article_raw="4.1. Ж/Б конструкции")
+                sa.update(PositionItem).where(PositionItem.id == item.id).values(**values)
             )
 
-    def test_category_without_source_is_rejected(self, db_session, factories):
+    @pytest.mark.parametrize("missing", ["source", "category"])
+    def test_category_and_source_come_only_together(self, db_session, factories, missing):
+        """Парность в ОБЕ стороны: и категория без источника, и источник без категории."""
         proposal = factories.ProposalFactory.create()
         item = self._row(db_session, factories, proposal, is_chapter=True)
+        values = (
+            {"work_category_id": self._any_category_id(db_session)}
+            if missing == "source"
+            else {"category_source": "file"}
+        )
         with rejected(db_session, contains="ck_position_items_category_source_pairs"):
             db_session.execute(
-                sa.update(PositionItem)
-                .where(PositionItem.id == item.id)
-                .values(work_category_id=self._any_category_id(db_session))
+                sa.update(PositionItem).where(PositionItem.id == item.id).values(**values)
             )
 
     def test_source_other_than_file_is_rejected(self, db_session, factories):
@@ -194,7 +215,7 @@ cd backend && env -u DATABASE_URL TEST_DATABASE_URL="postgresql+psycopg://postgr
   uv run pytest tests/integration/test_schema_constraints.py -k CategoryColumns -v
 ```
 
-Ожидание: **8 failed** (не errors в collection) с сообщениями про неизвестный атрибут `smr_article_raw` / отсутствующую колонку. Красный на этом шаге обязателен: если тесты зелёные до миграции — пробник неисправен ([verifying-guards.md](../../insights/verifying-guards.md), слой 3).
+Ожидание: **10 failed** (восемь тестов, два из них параметризованы по два случая; не errors в collection) с сообщениями про неизвестный атрибут `smr_article_raw` / отсутствующую колонку. Красный на этом шаге обязателен: если тесты зелёные до миграции — пробник неисправен ([verifying-guards.md](../../insights/verifying-guards.md), слой 3).
 
 - [ ] **Step 3: Написать миграцию 0006**
 
@@ -396,7 +417,7 @@ cd backend && env -u DATABASE_URL TEST_DATABASE_URL="postgresql+psycopg://postgr
   uv run pytest tests/integration/test_schema_constraints.py -k CategoryColumns -v
 ```
 
-Ожидание: **8 passed**, `0 skipped`. `skipped` здесь — сигнал, что `TEST_DATABASE_URL` не подхватился.
+Ожидание: **10 passed**, `0 skipped`. `skipped` здесь — сигнал, что `TEST_DATABASE_URL` не подхватился.
 
 - [ ] **Step 6: Проверить дрейф и круговой рейс**
 
@@ -679,6 +700,24 @@ class TestFileAssertionBeatsInheritance:
         assert result.rows["2"].work_category_id == 141
 
 
+class TestUnassignedWarning:
+    def test_unassigned_chapters_are_counted_and_shown_with_examples(self, resolver):
+        """Спека §2.9 требует не только счётчики, но и примеры."""
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("1", title="Лот №1 - Тестовый"),                 # без статьи
+                chapter("2", title="Корпус 1"),                          # без статьи
+                work(number="1", total_cost_total="500.00"),
+            )
+        )
+        message = next(w for w in result.warnings if "Разделов без статьи" in w)
+        assert "Разделов без статьи: 2" in message
+        assert "позиций под ними: 1" in message
+        assert "Корпус 1" in message                 # пример назван, а не только счётчик
+        assert result.counters.chapters_unassigned == 2
+        assert result.counters.positions_unassigned == 1
+
+
 class TestArticleOnNonChapter:
     def test_article_on_a_position_is_not_stored_and_warns(self, resolver):
         result = resolver.resolve_proposal(
@@ -855,6 +894,10 @@ class _Warnings:
     unreadable_prefix: list[str] = field(default_factory=list)
     outside_structure: list[str] = field(default_factory=list)
     article_on_non_chapter: list[str] = field(default_factory=list)
+    #: Разделы, оставшиеся без статьи, — по любой причине. Раздел с нечитаемым кодом
+    #: попадёт и сюда, и в своё предупреждение: то называет причину, это — следствие,
+    #: и счётчик обязан сходиться с тем, что легло в БД.
+    unassigned_chapters: list[str] = field(default_factory=list)
 
     def messages(self, counters: ResolutionCounters) -> list[str]:
         out: list[str] = []
@@ -896,8 +939,9 @@ class _Warnings:
         if counters.chapters_unassigned:
             out.append(
                 f"Разделов без статьи: {counters.chapters_unassigned}; позиций под ними: "
-                f"{counters.positions_unassigned}. Их деньги попадут в «Нераспределённое» — "
-                "это не ошибка импорта, если в файле статья действительно не проставлена."
+                f"{counters.positions_unassigned}: {_examples(self.unassigned_chapters)}. "
+                "Их деньги попадут в «Нераспределённое» — это не ошибка импорта, если в "
+                "файле статья действительно не проставлена."
             )
         return out
 
@@ -1008,6 +1052,7 @@ class CategoryResolver:
                 inherited += 1
             else:
                 unassigned += 1
+                warnings.unassigned_chapters.append(_place(key, row))
 
             rows[key] = RowResolution(
                 position_key=key,
@@ -1076,7 +1121,7 @@ class CategoryResolver:
 cd backend && uv run pytest tests/unit/test_category_resolution.py -q
 ```
 
-Ожидание: **все зелёные** (24 теста Task 2). Если падает `test_shuffled_mapping_gives_the_same_result` — значит обход пошёл по порядку словаря, а не по `_ordered_keys`.
+Ожидание: **все зелёные, 21 собранный тест** (8 + 6 + 4 + 1 + 1 + 1 по классам). Если падает `test_shuffled_mapping_gives_the_same_result` — значит обход пошёл по порядку словаря, а не по `_ordered_keys`.
 
 - [ ] **Step 5: Линт и коммит**
 
@@ -1151,8 +1196,11 @@ class TestStructureDisabled:
         message = result.warnings[0]
         assert "номер раздела не разбирается (1)" in message
         assert "структурный конфликт (1)" in message
-        assert "прим." in message
-        assert "is_chapter=False" in message
+        # A, B и is_chapter — по отдельности у КАЖДОГО примера: причина отказа именно
+        # в расхождении между ними, и одного «номера» для разбора не хватает.
+        assert 'B=«прим.»' in message and "is_chapter=True" in message
+        assert 'A=«2»' in message and 'B=«0»' in message and "is_chapter=False" in message
+        assert "Примечание" in message
 
     def test_resolution_warnings_are_suppressed_when_structure_is_disabled(self, resolver):
         """Они описывали бы резолв, которого не было (спека §2.9)."""
@@ -1275,6 +1323,21 @@ _CONFLICT_NUMBER_WITHOUT_FLAG = "номер раздела заполнен, н�
 _CONFLICT_FLAG_WITHOUT_NUMBER = "is_chapter=true, но номер раздела пуст"
 
 
+def _structural_place(key: str, row: Mapping[str, Any]) -> str:
+    """Где искать строку и что в ней не сошлось.
+
+    A, B и `is_chapter` печатаются ПО ОТДЕЛЬНОСТИ, а не одним «номером»: причина
+    отказа — именно расхождение между ними, и по общему `_place`, который выбирает
+    одно из двух значений, разобрать случай нельзя (спека §2.9).
+    """
+    title = _norm(row.get(JSON_KEY_JOB_TITLE))[:60] or "без названия"
+    return (
+        f"позиция {key} (A=«{_norm(row.get(JSON_KEY_NUMBER))}», "
+        f"B=«{_norm(row.get(JSON_KEY_CHAPTER_NUMBER))}», "
+        f"is_chapter={bool(row.get(JSON_KEY_IS_CHAPTER))}, «{title}»)"
+    )
+
+
 def _structural_conflicts(
     positions: Mapping[str, Any], keys: list[str]
 ) -> list[tuple[str, str]]:
@@ -1385,15 +1448,11 @@ def _disabled_message(
     """Одно предупреждение, называющее ОБЕ причины по отдельности (спека §2.9)."""
     parts: list[str] = []
     if bad_numbers:
-        places = [
-            _place(key, positions[key], raw=_norm(positions[key].get(JSON_KEY_CHAPTER_NUMBER)))
-            for key in bad_numbers
-        ]
+        places = [_structural_place(key, positions[key]) for key in bad_numbers]
         parts.append(f"номер раздела не разбирается ({len(bad_numbers)}): {_examples(places)}")
     if conflicts:
         places = [
-            f"{_place(key, positions[key])}: {reason}, "
-            f"is_chapter={bool(positions[key].get(JSON_KEY_IS_CHAPTER))}"
+            f"{_structural_place(key, positions[key])}: {reason}"
             for key, reason in conflicts
         ]
         parts.append(f"структурный конфликт ({len(conflicts)}): {_examples(places)}")
@@ -1411,7 +1470,7 @@ def _disabled_message(
 cd backend && uv run pytest tests/unit/test_category_resolution.py -q
 ```
 
-Ожидание: **все зелёные** (24 из Task 2 + 12 новых = 36). Проверить отдельно, что `test_real_aggregate_row_is_consistent_and_does_not_disable` зелёный — иначе новое правило конфликтов начало судить настоящую агрегатную строку, и Task 5 на fixture упадёт.
+Ожидание: **все зелёные, 34 собранных теста** (21 из Task 2 + 13 новых: 5 + 4 + 4). Проверить отдельно, что `test_real_aggregate_row_is_consistent_and_does_not_disable` зелёный — иначе новое правило конфликтов начало судить настоящую агрегатную строку, и Task 5 на fixture упадёт.
 
 - [ ] **Step 5: Линт и коммит**
 
@@ -1550,6 +1609,24 @@ class TestCategoryMaterialization:
         with pytest.raises(EstimateImportError, match="1..N"):
             run_import(db_session, resolver, contract, payload)
 
+    def test_a_non_dict_row_fails_the_import_instead_of_being_dropped(
+        self, db_session, resolver, contract
+    ):
+        """Осознанное изменение поведения на пути, который не покрывал никто.
+
+        Раньше `_import_positions` молча пропускал не-словарь (строка терялась без
+        следа); теперь импорт отказывает с объяснением. Парсер такого не отдаёт —
+        `postprocess.annotate` падает раньше, — но тихая потеря строки сметы
+        недопустима, а неохваченное поведение не значит «правильное».
+        """
+        payload = payload_for(contract, [position(job_title="Расчистка", number="1")])
+        positions = payload[JSON_KEY_LOTS]["lot_1"][JSON_KEY_PROPOSALS]["contractor_1"][
+            JSON_KEY_CONTRACTOR_ITEMS
+        ][JSON_KEY_CONTRACTOR_POSITIONS]
+        positions["2"] = "не словарь"
+        with pytest.raises(EstimateImportError, match="не является словарём"):
+            run_import(db_session, resolver, contract, payload)
+
     def test_replace_removes_an_estimate_with_filled_chapter_links(
         self, db_session, resolver, contract
     ):
@@ -1607,7 +1684,7 @@ cd backend && env -u DATABASE_URL TEST_DATABASE_URL="postgresql+psycopg://postgr
   uv run pytest tests/integration/test_estimate_import.py -k CategoryMaterialization -v
 ```
 
-Ожидание: **6 failed** — на этом шаге `run_import` ещё не передаёт `category_resolver`, поэтому падение будет по отсутствию новых значений (`chapter_item_id is None` там, где ожидается ссылка), а не по неизвестному аргументу. Красный обязателен: зелёный до реализации означает, что тесты ничего не проверяют.
+Ожидание: **7 failed** — на этом шаге `run_import` ещё не передаёт `category_resolver`, поэтому падение будет по отсутствию новых значений (`chapter_item_id is None` там, где ожидается ссылка) и по неподнятому `EstimateImportError`, а не по неизвестному аргументу. Красный обязателен: зелёный до реализации означает, что тесты ничего не проверяют.
 
 - [ ] **Step 3: Провести резолвер в импорт**
 
@@ -1736,7 +1813,7 @@ cd backend && env -u DATABASE_URL TEST_DATABASE_URL="postgresql+psycopg://postgr
   uv run pytest -q
 ```
 
-Ожидание: сначала **6 passed** (пять тестов материализации плюс replace), затем весь набор зелёный при `6 skipped`. Итоговое число тестов **не выводить арифметикой** — оно замеряется в Task 5 Step 3 по `--collect-only` до и после фичи.
+Ожидание: сначала **7 passed** (пять тестов материализации, replace и не-словарь), затем весь набор зелёный при `6 skipped`. Итоговое число тестов **не выводить арифметикой** — оно замеряется в Task 5 Step 3 по `--collect-only` до и после фичи.
 
 - [ ] **Step 8: Коммит**
 
@@ -1918,7 +1995,7 @@ cd backend && uv run pytest --collect-only -q | tail -3
 cd backend && env -u DATABASE_URL TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest -q
 ```
 
-Прирост числа собранных тестов **замерить, а не вывести арифметикой**: `pytest --collect-only -q` на `c980274` и на HEAD, разница обязана совпасть с числом фактически добавленных тестов (посчитать их по диффу). `6 skipped` — те же публичные endpoint'ы `test_auth_coverage.py`, к фиче отношения не имеют; любой седьмой `skipped` разбирать.
+Прирост числа собранных тестов **замерить, а не вывести арифметикой**: `pytest --collect-only -q` на `c980274` и на HEAD. Ожидание — **+56** (разбивка по задачам в разделе «Состояние на момент написания плана»); расхождение означает, что план и реализация разошлись, и разбираться надо до PR, а не подгонять число в devlog. `6 skipped` — те же публичные endpoint'ы `test_auth_coverage.py`, к фиче отношения не имеют; любой седьмой `skipped` разбирать.
 
 - [ ] **Step 4: Коммит**
 
