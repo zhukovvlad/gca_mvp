@@ -20,6 +20,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .constants import (
     JSON_KEY_CONTRACTOR_ACCREDITATION,
     JSON_KEY_CONTRACTOR_ADDITIONAL_INFO,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS,
     JSON_KEY_CONTRACTOR_ADDRESS,
     JSON_KEY_CONTRACTOR_COORDINATE,
     JSON_KEY_CONTRACTOR_HEIGHT,
@@ -82,12 +83,13 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> dict[str, dict
             address_val = ws.cell(row=contractor_row_start + 2, column=contractor_col_start).value
             accreditation_val = ws.cell(row=contractor_row_start + 3, column=contractor_col_start).value
 
-        positions_data = get_lot_positions(ws, contractor_details, lot_start_row=start_row, lot_end_row=end_row)
+        lot_rows = get_lot_positions(ws, contractor_details, lot_start_row=start_row, lot_end_row=end_row)
         summary_data = get_summary(ws, contractor_details, search_start_row=start_row)
 
         contractor_items_data = {
-            JSON_KEY_CONTRACTOR_POSITIONS: positions_data,
+            JSON_KEY_CONTRACTOR_POSITIONS: lot_rows.positions,
             JSON_KEY_CONTRACTOR_SUMMARY: summary_data,
+            JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS: lot_rows.additional_works,
         }
 
         contractor_additional_info_data = get_additional_info(ws, contractor_details)

@@ -61,6 +61,22 @@ TABLE_PARSE_INITIAL_COST = "первоначальная стоимость"
 # явно — см. layout.check_estimate_layout.
 TABLE_PARSE_SUGGESTED_QUANTITY = "Предлагаемое количество"
 
+#: Заголовки общих колонок таблицы позиций. Замерены на трёх реальных офертах
+#: (спека Ф2 §1): строка 9, A «№ п/п», B «№ раздела», C «Статья СМР»,
+#: D «Наименование работ». Сверяются ВСЕ ЧЕТЫРЕ: колонки читаются по фиксированным
+#: позициям, поэтому чужая шапка делает недостоверным весь позиционный разбор,
+#: а не одну колонку статьи.
+TABLE_PARSE_POSITION_COLUMN_HEADERS: dict[int, str] = {
+    1: "№ п/п",
+    2: "№ раздела",
+    3: "Статья СМР",
+    4: "Наименование работ",
+}
+
+#: Название агрегатной строки допработ в колонке D. Замер: 159-ТУ строка 1523;
+#: в 42-ТУ и 449-ТУ такой строки нет вовсе — это валидное состояние.
+TABLE_PARSE_ADDITIONAL_WORKS_TITLE = "Дополнительные работы"
+
 
 # ==============================================================================
 # === Ключи для формирования результирующей JSON-структуры ===
@@ -124,6 +140,8 @@ JSON_KEY_CONTRACTOR_ITEMS = "contractor_items"  # Позиции и итоги �
 JSON_KEY_CONTRACTOR_POSITIONS = "positions"
 JSON_KEY_CONTRACTOR_SUMMARY = "summary"
 JSON_KEY_CONTRACTOR_ADDITIONAL_INFO = "additional_info"
+JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS = "additional_works"  # Агрегатная строка допработ
+JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW = "source_row"  # Номер строки листа, откуда она взята
 
 # -- Выделенное базовое ("расчетное") предложение в рамках лота --
 JSON_KEY_BASELINE_PROPOSAL = "baseline_proposal"

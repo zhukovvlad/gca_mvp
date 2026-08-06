@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from parser import PARSER_VERSION, EstimateParseError, parse_estimate, parse_worksheet
+from parser.constants import TABLE_PARSE_POSITION_COLUMN_HEADERS
 from parser.postprocess import BASELINE_MISSING_TITLE
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -403,6 +404,11 @@ class TestMoneyContract:
         import datetime as dt
 
         ws = _minimal_sheet(contractor_colspan=11)
+        # A и B заполнены не для красоты: строка без номера и без раздела —
+        # кандидат в агрегатную строку допработ, и лист был бы отвергнут
+        # (спека Ф2 §2.2). Реальные файлы несут здесь номер и раздел.
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
         ws.cell(row=12, column=4, value="Работа с датой в комментарии")
         ws.cell(row=12, column=11, value="#N/A")  # unit_cost.materials
         ws.cell(row=12, column=14, value=60.5)  # unit_cost.total
@@ -416,6 +422,43 @@ class TestMoneyContract:
         assert position["comment_contractor"] == "2025-02-01T00:00:00"
         assert position["unit_cost"]["materials"] is None
         assert position["unit_cost"]["total"] == "60.5"
+
+
+class TestAdditionalWorksInJson:
+    """Поле доезжает до итоговой структуры рядом с positions и summary."""
+
+    def test_additional_works_lands_next_to_positions(self):
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+        ws.cell(row=13, column=4, value="Дополнительные работы")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert set(items) >= {"positions", "summary", "additional_works"}
+        assert items["additional_works"]["job_title"] == "Дополнительные работы"
+        assert items["additional_works"]["source_row"] == 13
+
+    def test_additional_works_is_none_when_row_absent(self):
+        """42-ТУ и 449-ТУ: ключ есть, значение None — это валидное состояние."""
+        ws = _minimal_sheet(11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+
+        items = _proposal(parse_worksheet(ws))["contractor_items"]
+
+        assert items["additional_works"] is None
+
+
+def test_parser_version_is_bumped_for_the_new_key():
+    """1.1.0: в contractor_items появился `additional_works` (спека Ф2 §2.4).
+
+    Версия — часть контракта: она ложится в `estimate_raw_data.parser_version`,
+    и по ней потом отличают, каким кодом разобран сохранённый JSON.
+    """
+    assert PARSER_VERSION == "1.1.0"
 
 
 class TestParseEstimateFailures:
@@ -498,6 +541,12 @@ def _minimal_sheet(contractor_colspan: int | None):
     ws["J6"] = 'ООО "Тест"'
     ws["D11"] = "Лот №1 Тестовый"
 
+    for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+        ws.cell(row=9, column=column, value=title)
+
+    ws["A11"] = 1
+    ws["B11"] = 1
+
     if contractor_colspan is not None:
         ws.merge_cells(start_row=6, start_column=10, end_row=6, end_column=9 + contractor_colspan)
 
@@ -563,3 +612,100 @@ def _find_money_floats(node, path=()):
 def _is_money_path(path) -> bool:
     """Оканчивается ли путь одним из денежных полей."""
     return any(path[-len(money_path) :] == money_path for money_path in MONEY_PATHS)
+
+
+def test_parse_error_is_importable_from_the_package_root():
+    """Публичный контракт: `from parser import EstimateParseError`.
+
+    Класс переехал в `parser.errors` ради разрыва цикла импортов, но снаружи
+    имя прежнее — на него завязан `services/import_pipeline`. Сверяется
+    идентичность объекта, а не только импортируемость: два разных класса с одним
+    именем ловились бы `except` мимо.
+    """
+    import parser as parser_package
+    from parser.errors import EstimateParseError as FromErrors
+
+    assert parser_package.EstimateParseError is FromErrors
+
+
+class TestColumnHeaderGuard:
+    """Чужая раскладка колонок A–D — структурный отказ (спека Ф2 §2.1).
+
+    Не предупреждение: колонки A, B, C, D читаются по фиксированным позициям,
+    поэтому при чужой шапке недостоверен весь позиционный разбор, а не только
+    колонка статьи. Та же граница, что у `_validate_contractor_blocks`.
+    """
+
+    def test_correct_headers_parse(self):
+        ws = _minimal_sheet(11)
+        result = parse_worksheet(ws)
+        assert result.data is not None
+
+    @pytest.mark.parametrize(
+        ("column", "letter", "wrong_value"),
+        [
+            (2, "B", "Глава"),
+            (3, "C", "Артикул СМР"),
+            (4, "D", "Наименование видов работ"),
+        ],
+    )
+    def test_wrong_header_in_any_column_is_rejected(self, column, letter, wrong_value):
+        """Колонка A сюда НЕ входит намеренно.
+
+        Строка шапки ищется именно по маркеру в A, поэтому испорченный A даёт не
+        «чужой заголовок», а «строка не найдена» — и то сообщение фактическое
+        значение не называет (спека §2.1, пункт 4). Этот случай покрывает
+        `test_missing_header_row_is_rejected_without_naming_a_row`.
+        """
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=column, value=wrong_value)
+
+        with pytest.raises(EstimateParseError) as exc:
+            parse_worksheet(ws)
+
+        message = str(exc.value)
+        assert letter in message
+        assert wrong_value in message
+
+    def test_missing_header_row_is_rejected_without_naming_a_row(self):
+        """Маркер «№ п/п» испорчен — «ту самую» строку определить нельзя.
+
+        Поэтому сообщение называет ожидаемый маркер и просмотренный диапазон,
+        но НЕ фактическое значение: назвать его было бы выдумкой.
+        """
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=1, value="Порядковый номер")
+
+        with pytest.raises(EstimateParseError) as exc:
+            parse_worksheet(ws)
+
+        message = str(exc.value)
+        assert "№ п/п" in message
+        # Диапазон: строка заголовка контрагентов у `_minimal_sheet` — 6, маркер
+        # лота — 11, значит просмотрены строки 7–10.
+        assert "7–10" in message, message
+        # Ключевое утверждение docstring'а: фактического значения в сообщении нет.
+        # Без этой строки тест был бы зелёным и у реализации, которая его называет
+        # (найдено финальным ревью, проверено снятием защиты).
+        assert "Порядковый номер" not in message, message
+
+    def test_header_row_is_found_not_hardcoded(self):
+        """Шапка сдвинута на строку — файл валиден и должен разбираться.
+
+        Ради этого строка ищется по маркеру, а не берётся константой 9.
+        """
+        ws = _minimal_sheet(11)
+        for column in TABLE_PARSE_POSITION_COLUMN_HEADERS:
+            ws.cell(row=9, column=column, value=None)
+        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+            ws.cell(row=8, column=column, value=title)
+
+        result = parse_worksheet(ws)
+        assert result.data is not None
+
+    def test_headers_are_compared_ignoring_case_and_extra_spaces(self):
+        ws = _minimal_sheet(11)
+        ws.cell(row=9, column=3, value="  статья  смр  ")
+
+        result = parse_worksheet(ws)
+        assert result.data is not None
