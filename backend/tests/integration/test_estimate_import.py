@@ -9,6 +9,7 @@ import sqlalchemy as sa
 
 from models import (
     Estimate,
+    EstimateAdditionalWork,
     EstimateRawData,
     Lot,
     PositionItem,
@@ -33,7 +34,15 @@ from services.estimate_import import (
     import_estimate,
 )
 from services.unit_resolution import UnitResolver
-from tests.payloads import estimate_payload, payload_for, position, proposal, summary_line
+from tests.payloads import (
+    additional_works_row,
+    estimate_payload,
+    payload_for,
+    position,
+    proposal,
+    summary_line,
+    svedeniya_info,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -977,6 +986,221 @@ class TestCategoryMaterialization:
         assert second.replaced_estimate_id == first.estimate_id
         assert db_session.get(Estimate, first.estimate_id) is None
         assert len(_items_by_key(db_session, second.estimate_id)) == 3
+
+
+# ---------------------------------------------------------------------------
+#  Допработы: расшивка «Сведений», estimate_additional_works (Ф4, спека §2.7-§2.9)
+# ---------------------------------------------------------------------------
+
+def _additional_works_of(db_session, estimate_id: int) -> list[EstimateAdditionalWork]:
+    return db_session.execute(
+        sa.select(EstimateAdditionalWork)
+        .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+        .order_by(Proposal.id, EstimateAdditionalWork.ordinal)
+    ).scalars().all()
+
+
+class TestAdditionalWorks:
+    """Ф4: расшивка агрегатной строки допработ по строкам «Сведений»."""
+
+    @pytest.fixture
+    def contract(self, factories):
+        return factories.ContractFactory.create()
+
+    def test_additional_works_rows_are_created(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info(
+                "Работа А - 100 руб.",
+                "Работа Б - 150 руб.",
+                "Работа В - 50 руб.",
+            ),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        rows = _additional_works_of(db_session, outcome.estimate_id)
+        assert [r.ordinal for r in rows] == [1, 2, 3]
+        assert [r.title for r in rows] == ["Работа А", "Работа Б", "Работа В"]
+        assert [r.total_amount for r in rows] == [Decimal("100"), Decimal("150"), Decimal("50")]
+        assert all(isinstance(r.total_amount, Decimal) for r in rows)
+
+    def test_aggregate_row_does_not_become_a_position(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        titles = db_session.execute(
+            sa.select(PositionItem.job_title_in_proposal)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == outcome.estimate_id)
+        ).scalars().all()
+        assert "Дополнительные работы" not in titles
+        assert outcome.positions_total == 1
+
+    def test_stale_1_1_0_shape_is_rejected(self, db_session, resolver, contract):
+        """Копия агрегатной строки в `positions` — форма парсера 1.1.0 (спека §2.7)."""
+        stale_copy = position(
+            job_title="Дополнительные работы",
+            number=None,
+            chapter_number=None,
+            total_cost_total="300.00",
+        )
+        data = payload_for(
+            contract,
+            [
+                position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00"),
+                stale_copy,
+            ],
+            additional_works=additional_works_row(total="300.00"),
+        )
+
+        with pytest.raises(EstimateImportError, match="1.1.0"):
+            run_import(db_session, resolver, contract, data)
+        # `import_estimate` не управляет транзакцией сама (§5): в проде откат
+        # делает `with db.begin():` вокруг вызова (`import_pipeline.py`), здесь —
+        # явный rollback, воспроизводящий то же самое для "сырого" `db_session`.
+        db_session.rollback()
+
+        estimate_count = db_session.execute(
+            sa.select(sa.func.count()).select_from(Estimate).where(Estimate.contract_id == contract.id)
+        ).scalar_one()
+        assert estimate_count == 0
+        work_count = db_session.execute(
+            sa.select(sa.func.count()).select_from(EstimateAdditionalWork)
+        ).scalar_one()
+        assert work_count == 0
+
+    def test_same_title_with_other_money_is_not_the_stale_shape(self, db_session, resolver, contract):
+        """Тот же заголовок, ДРУГИЕ деньги — обычная строка «вне структуры» Ф3."""
+        outside_row = position(
+            job_title="Дополнительные работы",
+            number=None,
+            chapter_number=None,
+            total_cost_total="700.00",
+        )
+        data = payload_for(
+            contract,
+            [
+                position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00"),
+                outside_row,
+            ],
+            additional_works=additional_works_row(total="300.00"),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        items = _items_by_key(db_session, outcome.estimate_id)
+        assert items["2"].job_title_in_proposal == "Дополнительные работы"
+        assert any("вне структуры" in w or "без номера" in w for w in outcome.warnings)
+
+    def test_owner_is_ambiguous_across_two_lots(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа 1", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+        )
+        data[JSON_KEY_LOTS]["lot_2"] = {
+            JSON_KEY_LOT_TITLE: "Лот №2",
+            JSON_KEY_PROPOSALS: {
+                "contractor_1": proposal(
+                    [position(job_title="Обычная работа 2", unit="м2", total_cost_total="2000.00")],
+                    additional_works=additional_works_row(total="500.00"),
+                )
+            },
+            JSON_KEY_BASELINE_PROPOSAL: {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE},
+        }
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("неоднозначен" in w for w in outcome.warnings)
+        rows = _additional_works_of(db_session, outcome.estimate_id)
+        assert sorted(r.total_amount for r in rows) == [Decimal("300.00"), Decimal("500.00")]
+        # Ни одна из двух записей не расшита — общий текст не применён никому.
+        assert all(r.chapter_ref_raw is None and r.raw_line is None for r in rows)
+
+    def test_only_the_owner_gets_the_breakdown(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа 1", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info("Работа А - 300 руб."),
+        )
+        data[JSON_KEY_LOTS]["lot_2"] = {
+            JSON_KEY_LOT_TITLE: "Лот №2",
+            JSON_KEY_PROPOSALS: {
+                "contractor_1": proposal(
+                    [position(job_title="Обычная работа 2", unit="м2", total_cost_total="2000.00")]
+                )
+            },
+            JSON_KEY_BASELINE_PROPOSAL: {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE},
+        }
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        rows = _additional_works_of(db_session, outcome.estimate_id)
+        assert len(rows) == 1
+        assert (rows[0].title, rows[0].total_amount) == ("Работа А", Decimal("300"))
+
+    def test_replace_over_an_estimate_with_additional_works(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+        )
+        first = run_import(db_session, resolver, contract, data)
+        assert len(_additional_works_of(db_session, first.estimate_id)) == 1
+
+        second = run_import(db_session, resolver, contract, data, replace=True)
+
+        assert second.replaced_estimate_id == first.estimate_id
+        assert _additional_works_of(db_session, first.estimate_id) == []
+        assert len(_additional_works_of(db_session, second.estimate_id)) == 1
+
+    def test_unallocated_remainder_warns_with_both_amounts(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info("Работа А - 100 руб."),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("Нераспределённый остаток" in w for w in outcome.warnings)
+
+    def test_unreadable_line_warns_with_count_and_raw_text(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info("Строка без суммы и единиц измерения"),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("Нечитаемых строк" in w for w in outcome.warnings)
+
+    def test_unresolved_reference_warns_with_the_ref_and_reason(self, db_session, resolver, contract):
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info("99 Несуществующий раздел - 300 руб."),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("Ссылка не разрешилась" in w for w in outcome.warnings)
 
 
 def _items_by_key(db_session, estimate_id: int) -> dict[str, PositionItem]:
