@@ -126,6 +126,21 @@ class TestParseLines:
         assert len(parsed) == 1
         assert parsed[0].amount == Decimal("0")
 
+    @pytest.mark.parametrize("dash", ["-", "–", "—"])
+    def test_all_three_dash_forms_are_accepted(self, dash):
+        """Спека §2.4 допускает дефис, en-dash и em-dash.
+
+        Замер даёт в корпусе только дефис, но различие невидимо глазом, и
+        строка с длинным тире молча стала бы нечитаемой — её деньги ушли бы в
+        остаток без всякого признака, что дело в одном символе. Формы заданы
+        escape-последовательностями, а не невидимыми символами в исходнике:
+        иначе тест не отличить от копии предыдущего.
+        """
+        parsed, unreadable = parse_lines(f"Прочие работы {dash} 100 руб.")
+        assert unreadable == []
+        assert len(parsed) == 1
+        assert parsed[0].amount == Decimal("100")
+
     def test_line_without_a_leading_number_has_no_ref(self):
         line = "Прочие работы - 100 руб."
         parsed, unreadable = parse_lines(line)
@@ -497,6 +512,34 @@ class TestBuildRowsMatrix:
         assert result.rows == ()
         assert len(result.warnings) == 1
         assert "Дополнительные работы" in result.warnings[0]
+
+    def test_lines_without_a_reference_are_reported_separately(self, resolver):
+        """Строка без ссылки — отдельное предупреждение таблицы §2.9.
+
+        Оно не то же самое, что «ссылка не разрешилась»: там резолв был и
+        отказал, здесь резолва не было вовсе (спека §2.5, последняя строка
+        таблицы: «ссылки в строке нет — NULL, попытки резолва нет»). Сумма
+        строки при этом сохраняется, поэтому молчать нельзя: запись без
+        привязки выглядит в паспорте так же, как неразрешённая, а причины у
+        них разные. Требование получило исполнителя на финале фичи
+        ([replaying-new-rules.md](../../../docs/insights/replaying-new-rules.md),
+        слой 3).
+        """
+        positions = rows(chapter("5.1", article="5.1. Кровля"), work())
+        resolution = resolver.resolve_proposal(positions)
+        result = build_rows(
+            additional_works=aggregate_row("100"),
+            svedeniya="Прочие работы без номера раздела - 100 руб.",
+            resolution=resolution,
+            positions=positions,
+            is_owner=True,
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0].chapter_ref_raw is None
+        assert result.rows[0].raw_line is not None  # сырьё есть: строка разобрана
+        assert len(result.warnings) == 1
+        assert "без ссылки" in result.warnings[0]
+        assert "Прочие работы без номера раздела" in result.warnings[0]
 
 
 class TestDecideOwner:

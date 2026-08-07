@@ -1224,6 +1224,31 @@ class TestAdditionalWorks:
         # Инвариант §2.6, доведённый до БД: сумма записей равна контрольной сумме.
         assert sum((r.total_amount for r in rows), Decimal("0")) == Decimal("300.00")
 
+    def test_f3_warning_appears_exactly_once_per_proposal(self, db_session, resolver, contract):
+        """План резолва Ф3 строится РОВНО ОДИН раз на предложение (спека §2.8 п.1).
+
+        Ф4 подняла вызов `resolve_proposal` из `_import_positions` в
+        `import_estimate`, чтобы его результат достался обоим потребителям —
+        позициям и допработам. Второй независимый вызов задвоил бы ВСЕ
+        предупреждения Ф3, а не только категорийные (спека §1.5 факт 3), и
+        поймать это можно только счётом: `any(...)` прошёл бы и при двух
+        копиях. Поэтому здесь `== 1`, а не «есть такое предупреждение».
+        """
+        data = payload_for(
+            contract,
+            [
+                position(job_title="1 Раздел без статьи", number="1", chapter_number="1",
+                         is_chapter=True),
+                position(job_title="Работа", number="2", total_cost_total="500.00"),
+            ],
+            additional_works=additional_works_row(total="300.00"),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        unassigned = [w for w in outcome.warnings if "Разделов без статьи" in w]
+        assert len(unassigned) == 1, outcome.warnings
+
     def test_unreadable_line_warns_with_count_and_raw_text(self, db_session, resolver, contract):
         data = payload_for(
             contract,
