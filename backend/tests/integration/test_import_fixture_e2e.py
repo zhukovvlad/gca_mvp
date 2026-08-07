@@ -8,22 +8,28 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from openpyxl import load_workbook
 
 from models import (
     CatalogKind,
     CatalogPosition,
     Estimate,
+    EstimateAdditionalWork,
     EstimateRawData,
     ImportJobStatus,
     Lot,
     PositionItem,
     Proposal,
+    WorkCategory,
 )
 from parser import parse_estimate
+from parser.constants import TABLE_PARSE_ADDITIONAL_WORKS_TITLE
+from parser.parse_contractor_row import parse_contractor_row
 from services import import_pipeline
 from services.review import set_kind
 from services.unit_resolution import UnitResolver
@@ -334,3 +340,264 @@ class TestCategoryResolutionOnFixture:
             {"eid": imported_fixture_estimate},
         ).scalar_one()
         assert attached == FIXTURE_POSITIONS - FIXTURE_CHAPTERS_TOP_LEVEL
+
+
+# ---------------------------------------------------------------------------
+# Ф4 (Task 6): агрегатная строка допработ, вписанная в fixture правкой этой
+# задачи (docs/superpowers/specs/2026-08-07-additional-works-design.md §2.10).
+# Скрипт правки в репозиторий не попадает (жил в scratchpad) — здесь только
+# его наблюдаемый результат: контрольная сумма `T`, три строки "Сведений" и
+# то, во что они обязаны резолвиться. Суммы синтетические и круглые.
+# ---------------------------------------------------------------------------
+
+#: Контрольная сумма агрегатной строки `T`; три строки "Сведений" в сумме дают
+#: ровно её (полная расшивка, `P == T`, спека §2.6).
+FIXTURE_ADDITIONAL_WORKS_TOTAL = Decimal("1500.00")
+
+#: Строка 1: номер раздела, встречающийся среди строк-разделов РОВНО ОДИН РАЗ
+#: и резолвящийся в единственную непустую статью (код "1.1").
+FIXTURE_SVEDENIYA_REF_RESOLVED = "1.1"
+FIXTURE_SVEDENIYA_REF_RESOLVED_AMOUNT = Decimal("1000.00")
+FIXTURE_SVEDENIYA_REF_RESOLVED_TITLE = "Работы по разделу 1.1"
+FIXTURE_SVEDENIYA_CATEGORY_CODE = "1.1"
+
+#: Строка 2: номер "1" — в fixture он есть и у строки лота (без статьи), и у
+#: первого настоящего раздела → кандидат без статьи → NULL + предупреждение.
+#: Сумма строки — ноль (валидное состояние, спека §2.4).
+FIXTURE_SVEDENIYA_REF_AMBIGUOUS = "1"
+FIXTURE_SVEDENIYA_REF_AMBIGUOUS_AMOUNT = Decimal("0")
+
+#: Строка 3: номер, которого в файле нет вовсе → ноль кандидатов → NULL +
+#: предупреждение.
+FIXTURE_SVEDENIYA_REF_ABSENT = "999.999"
+FIXTURE_SVEDENIYA_REF_ABSENT_AMOUNT = Decimal("500.00")
+
+#: Раскладка блока подрядчика fixture (J6, ширина 11) — тот же факт, что
+#: проверяет `test_contractor_block_is_eleven_columns` в test_estimate.py:
+#: column_start=10 (колонка J), colspan=11.
+FIXTURE_CONTRACTOR = {"column_start": 10, "merged_shape": {"colspan": 11}}
+
+#: Точная метка строки ИТОГО (с учётом НДС) в колонке A листа fixture.
+FIXTURE_TOTAL_WITH_VAT_LABEL = "ИТОГО, руб. с учетом НДС"
+
+
+@pytest.fixture(scope="module")
+def fixture_worksheet():
+    """Лист fixture, открытый НАПРЯМУЮ через openpyxl — в обход парсера,
+    `get_summary` и `proposal_summary_lines`. Нужен для независимых проверок
+    §4.3 п.1 (агрегатная строка реально есть во входном листе) и п.8
+    (независимое ИТОГО файла)."""
+    if not FIXTURE.is_file():
+        pytest.skip(f"Нет {FIXTURE}")
+    wb = load_workbook(str(FIXTURE), data_only=True)
+    try:
+        yield wb.worksheets[0]
+    finally:
+        wb.close()
+
+
+def _contractor_items(parsed) -> dict:
+    return parsed.data["lots"]["lot_1"]["proposals"]["contractor_1"]["contractor_items"]
+
+
+def _independent_total_with_vat(ws, contractor: dict) -> Decimal:
+    """ИТОГО (с учётом НДС), прочитанное НАПРЯМУЮ из листа по точной метке в
+    колонке A — в обход `get_summary`/`proposal_summary_lines`.
+
+    Спека Ф4 §1.4: `get_summary` присваивает ключ словаря по метке
+    (`"итого" in label and "ндс" in label`), и в трёхстрочной форме итогов
+    "без учета НДС" молча перезаписывает "с учетом НДС" — три строки файла
+    дают два ключа в JSON. Эталон п.8 обязан быть НЕЗАВИСИМ от этого кода:
+    иначе проверка не отличила бы исправную сумму от дефекта (оба варианта
+    сравнивались бы с одним и тем же испорченным числом).
+
+    Денежный блок строки читается `parse_contractor_row` — той же функцией,
+    что читает любую другую денежную строку листа, а не словарным поиском по
+    ключу. Неизвестная метка — ГРОМКИЙ `pytest.fail`, а не молчаливый
+    фолбэк: ноль совпадений означает, что эталона для сверки нет вовсе.
+    """
+    matches = [
+        row
+        for row in range(1, ws.max_row + 1)
+        if str(ws.cell(row=row, column=1).value or "").strip() == FIXTURE_TOTAL_WITH_VAT_LABEL
+    ]
+    if not matches:
+        pytest.fail(
+            f"Метка ИТОГО «{FIXTURE_TOTAL_WITH_VAT_LABEL}» не найдена в колонке A листа "
+            "fixture — независимый эталон для сверки недоступен."
+        )
+    if len(matches) > 1:
+        pytest.fail(
+            f"Метка ИТОГО «{FIXTURE_TOTAL_WITH_VAT_LABEL}» встретилась {len(matches)} раза "
+            "в колонке A — неоднозначно, какую строку считать ИТОГО."
+        )
+    data = parse_contractor_row(ws, matches[0], contractor)
+    value = data["total_cost"]["total"]
+    if value is None:
+        pytest.fail("Строка ИТОГО найдена, но total_cost.total пуст — сверка невозможна.")
+    return Decimal(value)
+
+
+class TestAggregateRowInSourceFile:
+    """Спека §4.3, п.1-3: три факта о входе, каждый проверяется НЕЗАВИСИМО и
+    ДО всякого импорта — п.1 читает workbook напрямую (не через парсер),
+    п.2-3 читают уже разобранный JSON, но саму сумму/структуру не через БД."""
+
+    def test_aggregate_row_is_present_in_the_input_sheet(self, fixture_worksheet):
+        """П.1: строка реально есть в листе — чтение workbook, не парсера."""
+        ws = fixture_worksheet
+        matches = [
+            row
+            for row in range(11, ws.max_row + 1)
+            if ws.cell(row=row, column=1).value is None
+            and ws.cell(row=row, column=2).value is None
+            and str(ws.cell(row=row, column=4).value or "").strip() == TABLE_PARSE_ADDITIONAL_WORKS_TITLE
+        ]
+        assert len(matches) == 1, f"ожидалась ровно одна агрегатная строка, найдено: {matches}"
+
+    def test_aggregate_row_is_present_in_raw_additional_works(self, parsed_fixture):
+        """П.2: строка присутствует в raw `additional_works`."""
+        aggregate = _contractor_items(parsed_fixture)["additional_works"]
+        assert aggregate is not None
+        assert aggregate["job_title"] == TABLE_PARSE_ADDITIONAL_WORKS_TITLE
+        assert Decimal(aggregate["total_cost"]["total"]) == FIXTURE_ADDITIONAL_WORKS_TOTAL
+
+    def test_aggregate_row_is_not_in_raw_positions(self, parsed_fixture):
+        """П.3: строки нет в raw `positions` — она не позиция (парсер 2.0.0, спека §2.1)."""
+        positions = _contractor_items(parsed_fixture)["positions"]
+        titles = {str(p.get("job_title")) for p in positions.values()}
+        assert TABLE_PARSE_ADDITIONAL_WORKS_TITLE not in titles
+        # Число позиций не выросло из-за агрегатной строки — она не заняла ключ.
+        assert len(positions) == FIXTURE_POSITIONS
+
+
+class TestAdditionalWorksInDatabase:
+    """Спека §4.3, п.4-8: доменные записи после импорта. Каждый пункт — свой
+    тест, читающий БД через `sa.select(Model.column)` (не `db_session.get()`
+    после Core-операции — урок Ф3)."""
+
+    def test_no_position_item_exists_for_the_aggregate_row(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """П.4: соответствующего `position_item` в БД нет."""
+        count = committing_db.execute(
+            sa.select(sa.func.count())
+            .select_from(PositionItem)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(
+                Lot.estimate_id == imported_fixture_estimate,
+                PositionItem.job_title_in_proposal == TABLE_PARSE_ADDITIONAL_WORKS_TITLE,
+            )
+        ).scalar_one()
+        assert count == 0
+
+    def test_three_additional_work_records_are_created(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """П.5: три записи `estimate_additional_works` (полная расшивка, P == T)."""
+        ids = (
+            committing_db.execute(
+                sa.select(EstimateAdditionalWork.id)
+                .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == imported_fixture_estimate)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(ids) == 3
+
+    def test_additional_work_amounts_and_categories_match_the_three_lines(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """П.6: суммы и статьи ожидаемы — включая нулевую сумму и обе
+        нераспределённые строки (кандидат без статьи; ноль кандидатов)."""
+        rows = committing_db.execute(
+            sa.select(
+                EstimateAdditionalWork.ordinal,
+                EstimateAdditionalWork.chapter_ref_raw,
+                EstimateAdditionalWork.total_amount,
+                EstimateAdditionalWork.work_category_id,
+                EstimateAdditionalWork.title,
+            )
+            .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == imported_fixture_estimate)
+            .order_by(EstimateAdditionalWork.ordinal)
+        ).all()
+        assert [r.ordinal for r in rows] == [1, 2, 3]
+        resolved, ambiguous, absent = rows
+
+        assert resolved.chapter_ref_raw == FIXTURE_SVEDENIYA_REF_RESOLVED
+        assert resolved.total_amount == FIXTURE_SVEDENIYA_REF_RESOLVED_AMOUNT
+        assert resolved.title == FIXTURE_SVEDENIYA_REF_RESOLVED_TITLE
+        assert resolved.work_category_id is not None
+        category_code = committing_db.execute(
+            sa.select(WorkCategory.code).where(WorkCategory.id == resolved.work_category_id)
+        ).scalar_one()
+        assert category_code == FIXTURE_SVEDENIYA_CATEGORY_CODE
+
+        assert ambiguous.chapter_ref_raw == FIXTURE_SVEDENIYA_REF_AMBIGUOUS
+        assert ambiguous.total_amount == FIXTURE_SVEDENIYA_REF_AMBIGUOUS_AMOUNT  # ноль — валидная сумма
+        assert ambiguous.work_category_id is None  # кандидат без статьи (лот + первый раздел)
+
+        assert absent.chapter_ref_raw == FIXTURE_SVEDENIYA_REF_ABSENT
+        assert absent.total_amount == FIXTURE_SVEDENIYA_REF_ABSENT_AMOUNT
+        assert absent.work_category_id is None  # ноль кандидатов
+
+    def test_records_sum_equals_the_aggregate_row_control_total(
+        self, committing_db, imported_fixture_estimate
+    ):
+        """П.7: сумма расшивки равна контрольной сумме агрегатной строки `T`."""
+        total = committing_db.execute(
+            sa.select(sa.func.coalesce(sa.func.sum(EstimateAdditionalWork.total_amount), 0))
+            .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == imported_fixture_estimate)
+        ).scalar_one()
+        assert Decimal(total) == FIXTURE_ADDITIONAL_WORKS_TOTAL
+
+    def test_domain_total_matches_the_independent_grand_total_of_the_file(
+        self, committing_db, imported_fixture_estimate, fixture_worksheet
+    ):
+        """П.8: `position_items` + допработы == независимое ИТОГО файла.
+
+        Ради этого теста написана вся фича: инвариант "паспорт = позиции +
+        допработы" (Ф4 §2.6) не ловит двойной счёт — обе стороны выросли бы
+        одинаково. Ловит только сверка с ИТОГО, взятым НЕ из уже посчитанного
+        паспорта, а прямо с листа (`_independent_total_with_vat`, минуя
+        `get_summary`, спека §1.4).
+
+        `is_chapter.is_(False)` в фильтре — не случайность и не вкусовщина: строки
+        разделов в этом файле несут СВОЙ subtotal в `total_cost_total`
+        (сумму своих детей), и суммирование ВСЕХ строк без фильтра считало бы
+        каждый рубль по несколько раз — по разу на каждом уровне вложенности.
+        Тот же фильтр использует паспорт (`crud/analytics.py:_passport_totals`)
+        и каскад матчинга (`services/matching.py`).
+
+        **Чего этот тест не ловит.** ИТОГО листа увеличено на `T` тем же
+        скриптом правки, которым добавлена агрегатная строка (спека §2.10),
+        поэтому неверное `T`, согласованно записанное в оба места, здесь
+        прошло бы. А вот двойной счёт — то, ради чего тест написан, — так
+        пройти не может: он дал бы `сумма + T + T`. Случай «`T` неверно с обеих сторон»
+        закрывает сверка на настоящей оферте, где ИТОГО никто не правил
+        (DoD спеки §6).
+        """
+        positions_total = committing_db.execute(
+            sa.select(sa.func.coalesce(sa.func.sum(PositionItem.total_cost_total), 0))
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == imported_fixture_estimate, PositionItem.is_chapter.is_(False))
+        ).scalar_one()
+        additional_works_total = committing_db.execute(
+            sa.select(sa.func.coalesce(sa.func.sum(EstimateAdditionalWork.total_amount), 0))
+            .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == imported_fixture_estimate)
+        ).scalar_one()
+
+        domain_total = Decimal(positions_total) + Decimal(additional_works_total)
+        independent_total = _independent_total_with_vat(fixture_worksheet, FIXTURE_CONTRACTOR)
+
+        assert domain_total == independent_total
