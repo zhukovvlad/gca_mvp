@@ -326,6 +326,18 @@ class TestWarnings:
         assert INCLUDING not in block.lines
         assert _warned(block, "Валовое ИТОГО отсутствует")
 
+    def test_present_labels_are_truncated_in_the_gross_missing_warning(self):
+        """Усечение перечня — требование ко ВСЕМ агрегированным предупреждениям.
+
+        Это единственное место, где перечень растёт по числу строк блока, а не
+        по числу отклонений, поэтому без усечения текст ничем не ограничен.
+        """
+        rows = [_summary_row(10 + index, f"Чужая метка {index}") for index in range(7)]
+        block = build_summary_block(rows, search_start_row=5)
+        found = _warned(block, "Валовое ИТОГО отсутствует")
+        assert len(found) == 1
+        assert "…и ещё 2" in found[0]
+
     def test_broken_arithmetic_warns(self):
         block = build_summary_block(_full_triple_rows(net="99"), search_start_row=5)
         assert _warned(block, "не сходится")
@@ -334,6 +346,35 @@ class TestWarnings:
         block = build_summary_block(_full_triple_rows(vat="NaN"), search_start_row=5)
         assert _warned(block, "не проверена")
         assert not _warned(block, "не сходится")
+
+    def test_broken_and_unverified_are_two_separate_warnings(self):
+        """Спека §2.6: это ДВА предупреждения, а не одно с переменным текстом.
+
+        Ни один другой тест этого не требует: каждый из них включает лишь одну
+        ветку, и реализация, склеивающая оба смысла в одну строку с условными
+        фрагментами, прошла бы их все. Здесь обе ветки срабатывают на одном
+        блоке — «materials» противоречит себе, «works» сверить нечем, — и
+        сообщений обязано быть два, причём ни одно не содержит маркер другого.
+        """
+        lines = {
+            INCLUDING: _line(materials="120", works="120", indirect_costs="120", total="120"),
+            VAT: _line(materials="20", works=None, indirect_costs="20", total="20"),
+            EXCLUDING: _line(materials="99", works="100", indirect_costs="100", total="100"),
+        }
+        rows = [
+            _summary_row(10, "ИТОГО, руб. с учетом НДС", **lines[INCLUDING]["total_cost"]),
+            _summary_row(11, "В том числе НДС", **lines[VAT]["total_cost"]),
+            _summary_row(12, "ИТОГО, руб. без учета НДС", **lines[EXCLUDING]["total_cost"]),
+        ]
+        block = build_summary_block(rows, search_start_row=5)
+
+        broken = _warned(block, "не сходится")
+        unverified = _warned(block, "не проверена")
+        assert len(broken) == 1
+        assert len(unverified) == 1
+        assert broken[0] is not unverified[0]
+        assert "не проверена" not in broken[0]
+        assert "не сходится" not in unverified[0]
 
     def test_full_correct_block_is_completely_silent(self):
         """Форма fixture после Task 1: ни одного предупреждения."""

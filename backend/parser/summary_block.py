@@ -296,7 +296,10 @@ def build_summary_block(rows: Sequence[SummaryRow], *, search_start_row: int) ->
         )
 
     if JSON_KEY_TOTAL_COST_INCLUDING_VAT not in lines:
-        present = ", ".join(f"«{normalized_cell_text(item.label)}»" for item in rows)
+        # Перечень усекается, как и во всех прочих предупреждениях блока: список
+        # растёт по числу строк блока, и без усечения это единственное место, где
+        # текст предупреждения ничем не ограничен.
+        present = _examples([f"«{normalized_cell_text(item.label)}»" for item in rows])
         warnings.append(
             f"Валовое ИТОГО отсутствует: строки «{TABLE_PARSE_SUMMARY_INCLUDING_VAT}» в блоке нет. "
             f"В блоке есть: {present}. Сумма не восстанавливалась сложением — "
