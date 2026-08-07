@@ -1493,31 +1493,46 @@ def test_no_merged_row_means_block_not_found():
 Дописать в `backend/tests/unit/parser/test_estimate.py`:
 
 ```python
-def _two_lot_sheet_with_summary(summary_label: str, *, money: dict[int, object] | None = None):
-    """Два лота и ОДИН общий блок итогов под ними.
+# Раскладка колонок замерена: 15..18 — total_cost.{materials,works,
+# indirect_costs,total}. Тождество ниже сходится ТОЧНО: 120 = 100 + 20.
+SUMMARY_TRIPLE = (
+    ("ИТОГО, руб. с учетом НДС", {15: 120.0, 16: 120.0, 17: 120.0, 18: 120.0}),
+    ("В том числе НДС", {15: 20.0, 16: 20.0, 17: 20.0, 18: 20.0}),
+    ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+)
+
+
+def _sheet_with_summary_rows(summary_rows, *, second_lot: bool = False):
+    """Лист с блоком итогов под позициями; при `second_lot` — два лота, один блок.
 
     Блок итогов — факт уровня листа, а `get_summary` зовётся на каждое
-    предложение каждого лота, поэтому один и тот же блок читается дважды.
-    Раскладка колонок замерена: 15..18 — `total_cost.{mat,wrk,ind,total}`.
+    предложение каждого лота, поэтому при двух лотах один и тот же блок
+    читается дважды. Строка сразу под блоком остаётся пустой — она терминатор,
+    без неё обход прочитает то, что ниже, как ещё одну итоговую строку.
+
+    Args:
+        summary_rows: последовательность (метка колонки A, {номер колонки: значение}).
+        second_lot: добавить второй маркер лота над блоком.
     """
     ws = _minimal_sheet(contractor_colspan=11)          # лот №1 в D11
     ws.cell(row=12, column=1, value=1)
     ws.cell(row=12, column=2, value="1")
     ws.cell(row=12, column=4, value="Работа первого лота")
 
-    ws.cell(row=13, column=1, value=2)
-    ws.cell(row=13, column=2, value="2")
-    ws.cell(row=13, column=4, value="Лот №2 Второй")
+    if second_lot:
+        ws.cell(row=13, column=1, value=2)
+        ws.cell(row=13, column=2, value="2")
+        ws.cell(row=13, column=4, value="Лот №2 Второй")
+        ws.cell(row=14, column=1, value=3)
+        ws.cell(row=14, column=2, value="3")
+        ws.cell(row=14, column=4, value="Работа второго лота")
 
-    ws.cell(row=14, column=1, value=3)
-    ws.cell(row=14, column=2, value="3")
-    ws.cell(row=14, column=4, value="Работа второго лота")
-
-    ws.cell(row=15, column=1, value=summary_label)
-    ws.merge_cells(start_row=15, start_column=1, end_row=15, end_column=5)
-    for column, value in (money or {}).items():
-        ws.cell(row=15, column=column, value=value)
-    # Строка 16 остаётся пустой — она терминатор блока.
+    for offset, (label, money) in enumerate(summary_rows):
+        row = 15 + offset
+        ws.cell(row=row, column=1, value=label)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        for column, value in money.items():
+            ws.cell(row=row, column=column, value=value)
     return ws
 
 
@@ -1531,12 +1546,7 @@ class TestSummaryWarningsReachTheTop:
         read_lots_and_boundaries остался бы невидимым: тесты ядра зовут его
         напрямую.
         """
-        ws = _minimal_sheet(contractor_colspan=11)
-        ws.cell(row=12, column=1, value=1)
-        ws.cell(row=12, column=2, value="1")
-        ws.cell(row=12, column=4, value="Обычная работа")
-        ws.cell(row=13, column=1, value="Совершенно чужая метка")
-        ws.merge_cells(start_row=13, start_column=1, end_row=13, end_column=5)
+        ws = _sheet_with_summary_rows([("Совершенно чужая метка", {})])
 
         result = parse_worksheet(ws)
 
@@ -1545,7 +1555,7 @@ class TestSummaryWarningsReachTheTop:
 
     def test_the_same_warning_is_not_doubled_on_a_two_lot_sheet(self):
         """Два лота — один блок; наверху остаётся ОДИН экземпляр (спека §2.8)."""
-        ws = _two_lot_sheet_with_summary("Совершенно чужая метка")
+        ws = _sheet_with_summary_rows([("Совершенно чужая метка", {})], second_lot=True)
 
         result = parse_worksheet(ws)
 
@@ -1559,19 +1569,33 @@ class TestSummaryWarningsReachTheTop:
         на её месте `None` — штатная `replace_excel_errors_with_null`
         отрабатывает ПОСЛЕ разбора блока. Оба утверждения в одном тесте:
         порознь они выглядели бы противоречием.
+
+        Блок ОБЯЗАН быть трёхстрочным: `check_arithmetic` выходит сразу, если
+        нет хотя бы одной из трёх налоговых строк, — на однострочном блоке
+        ветка с негодным значением не исполнилась бы вовсе, и тест краснел бы
+        по чужой причине.
         """
-        ws = _two_lot_sheet_with_summary(
-            "ИТОГО, руб. с учетом НДС",
-            money={15: 100.0, 16: 100.0, 17: 100.0, 18: "#REF!"},
-        )
+        gross_label, gross_money = SUMMARY_TRIPLE[0]
+        rows = [
+            (gross_label, {**gross_money, 18: "#REF!"}),
+            SUMMARY_TRIPLE[1],
+            SUMMARY_TRIPLE[2],
+        ]
+        ws = _sheet_with_summary_rows(rows)
 
         result = parse_worksheet(ws)
 
-        assert any("#REF!" in w for w in result.warnings), "негодное значение обязано быть названо"
+        named = [w for w in result.warnings if "#REF!" in w]
+        assert len(named) == 1, "негодное значение обязано быть названо ровно одним предупреждением"
+        assert "не проверена" in named[0]
+        assert not any("не сходится" in w for w in result.warnings), (
+            "в трёх годных колонках тождество сходится точно — «не сходится» здесь быть не должно"
+        )
 
         summary = _proposal(result)["contractor_items"]["summary"]
-        assert summary["total_cost_including_vat"]["total_cost"]["total"] is None
-        assert summary["total_cost_including_vat"]["total_cost"]["materials"] == "100.0"
+        total_cost = summary["total_cost_including_vat"]["total_cost"]
+        assert total_cost["total"] is None, "#REF! обязан стать null штатной постобработкой"
+        assert total_cost["materials"] == "120.0", "соседняя годная сумма не задета"
 ```
 
 Предпосылка `test_..._nulled_in_json` — что `#REF!` вообще попадает в набор
@@ -1695,7 +1719,11 @@ def test_identity_holds_on_the_stored_records(db, imported_fixture, field):
     including = getattr(lines["total_cost_including_vat"], field)
     excluding = getattr(lines["total_cost_excluding_vat"], field)
     vat = getattr(lines["vat_amount"], field)
-    assert including is not None, f"{field}: колонка пуста — сверять нечего, тест был бы вакуозен"
+    # Каждое слагаемое проверяется ДО сложения: пустой компонент иначе даст
+    # `TypeError: unsupported operand type(s)` вместо объясняющего падения, и
+    # причина «в БД нет значения» осталась бы нечитаемой.
+    for name, value in (("с НДС", including), ("без НДС", excluding), ("НДС", vat)):
+        assert value is not None, f"{field}: значение «{name}» пусто — сверять нечего, тест был бы вакуозен"
     assert including == excluding + vat
 
 
