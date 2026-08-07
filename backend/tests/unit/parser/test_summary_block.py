@@ -122,3 +122,108 @@ class TestInjectivity:
         keys = assign_summary_keys(rows).keys
         assert len(keys) == len(rows)
         assert len(set(keys)) == len(rows)
+
+
+from decimal import Decimal
+
+from parser.summary_block import check_arithmetic, to_decimal
+
+MONEY_COLUMNS = ("materials", "works", "indirect_costs", "total")
+
+
+def _line(**amounts) -> dict:
+    """Строка итогов в форме, в которой её отдаёт parse_contractor_row."""
+    return {"total_cost": {name: amounts.get(name) for name in MONEY_COLUMNS}}
+
+
+def _triple(gross, vat, net) -> dict:
+    """Блок из трёх налоговых строк; одно и то же значение во все колонки."""
+    return {
+        INCLUDING: _line(**{name: gross for name in MONEY_COLUMNS}),
+        VAT: _line(**{name: vat for name in MONEY_COLUMNS}),
+        EXCLUDING: _line(**{name: net for name in MONEY_COLUMNS}),
+    }
+
+
+class TestToDecimal:
+    def test_decimal_string_is_converted(self):
+        assert to_decimal("120.50") == (Decimal("120.50"), None)
+
+    def test_int_and_float_are_converted_through_str(self):
+        assert to_decimal(7) == (Decimal("7"), None)
+        assert to_decimal(0.1) == (Decimal("0.1"), None)
+
+    def test_none_is_blank(self):
+        assert to_decimal(None) == (None, None)
+
+    @pytest.mark.parametrize("value", ["", "   ", "\xa0", "\n"])
+    def test_blank_string_is_blank_not_unusable(self, value):
+        """`money_to_json` пропускает '' как есть; косметически пустая ячейка
+        не должна выглядеть негодным значением (спека §2.6)."""
+        assert to_decimal(value) == (None, None)
+
+    @pytest.mark.parametrize("value", ["n/a", "1 234,56", "#REF!"])
+    def test_arbitrary_text_is_unusable_and_keeps_the_raw_value(self, value):
+        assert to_decimal(value) == (None, value)
+
+    @pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+    def test_non_finite_is_unusable(self, value):
+        """is_finite() — единственный фильтр, закрывающий все три случая."""
+        assert to_decimal(value) == (None, value)
+
+
+class TestArithmetic:
+    def test_exact_identity_is_silent(self):
+        report = check_arithmetic(_triple("120", "20", "100"))
+        assert report.broken == []
+        assert report.unverified == []
+
+    def test_broken_identity_names_the_column_and_all_three_numbers(self):
+        # Числа подобраны так, чтобы ни одно не было подстрокой другого:
+        # с «120/20/99» утверждение прошло бы вакуозно — «20» лежит внутри «120».
+        report = check_arithmetic(_triple("500", "77", "400"))
+        assert len(report.broken) == len(MONEY_COLUMNS)
+        assert "materials" in report.broken[0]
+        for number in ("500", "77", "400"):
+            assert number in report.broken[0]
+        assert report.unverified == []
+
+    def test_all_three_blank_in_a_column_is_silent(self):
+        report = check_arithmetic(_triple(None, None, None))
+        assert report.broken == []
+        assert report.unverified == []
+
+    def test_partial_triple_is_unverified(self):
+        lines = _triple("120", None, "100")
+        report = check_arithmetic(lines)
+        assert len(report.unverified) == len(MONEY_COLUMNS)
+        assert report.broken == []
+
+    @pytest.mark.parametrize("bad", ["n/a", "#REF!", "NaN", "sNaN"])
+    def test_unusable_value_is_unverified_and_named(self, bad):
+        report = check_arithmetic(_triple("120", bad, "100"))
+        assert report.broken == []
+        assert len(report.unverified) == len(MONEY_COLUMNS)
+        assert bad in report.unverified[0]
+
+    def test_infinity_does_not_pass_as_agreement(self):
+        """Главная дыра: Infinity == Infinity + 100 истинно, и без фильтра
+        противоречивый файл выглядел бы сошедшимся."""
+        report = check_arithmetic(_triple("Infinity", "100", "Infinity"))
+        assert report.broken == []
+        assert len(report.unverified) == len(MONEY_COLUMNS)
+
+    def test_opposite_infinities_do_not_raise(self):
+        """`-Infinity + Infinity` бросает InvalidOperation на СЛОЖЕНИИ —
+        фильтр обязан отработать раньше."""
+        report = check_arithmetic(_triple("100", "Infinity", "-Infinity"))
+        assert report.broken == []
+        assert len(report.unverified) == len(MONEY_COLUMNS)
+
+    def test_missing_tax_line_means_no_check_at_all(self):
+        """Сверка идёт, только если присутствуют все три налоговые строки."""
+        lines = _triple("120", "20", "100")
+        del lines[EXCLUDING]
+        report = check_arithmetic(lines)
+        assert report.broken == []
+        assert report.unverified == []

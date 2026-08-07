@@ -9,16 +9,22 @@
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .constants import (
     JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
+    JSON_KEY_INDIRECT_COSTS,
     JSON_KEY_INITIAL_COST,
+    JSON_KEY_MATERIALS,
+    JSON_KEY_TOTAL,
+    JSON_KEY_TOTAL_COST,
     JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
     JSON_KEY_TOTAL_COST_INCLUDING_VAT,
     JSON_KEY_VAT_AMOUNT,
+    JSON_KEY_WORKS,
     TABLE_PARSE_DEVIATION_FROM_CALCULATED_COST,
     TABLE_PARSE_INITIAL_COST,
     TABLE_PARSE_SUMMARY_EXCLUDING_VAT,
@@ -132,3 +138,96 @@ def _examples(items: list[str]) -> str:
     shown = "; ".join(items[:MAX_SUMMARY_WARNING_EXAMPLES])
     hidden = len(items) - MAX_SUMMARY_WARNING_EXAMPLES
     return f"{shown}{f'; …и ещё {hidden}' if hidden > 0 else ''}"
+
+
+#: Денежные колонки блока `total_cost`, по которым идёт сверка.
+_MONEY_COLUMNS: tuple[str, ...] = (
+    JSON_KEY_MATERIALS,
+    JSON_KEY_WORKS,
+    JSON_KEY_INDIRECT_COSTS,
+    JSON_KEY_TOTAL,
+)
+
+
+@dataclass(frozen=True)
+class ArithmeticReport:
+    """Результат сверки `including = excluding + vat_amount` по колонкам."""
+
+    broken: list[str]
+    """Колонки, где равенство не выполнилось; текст несёт все три числа."""
+
+    unverified: list[str]
+    """Колонки, где сверить было нечем: неполная тройка либо негодное значение."""
+
+
+def to_decimal(value: Any) -> tuple[Decimal | None, str | None]:
+    """Безопасная конверсия денежного значения парсера.
+
+    `money_to_json` отдаёт деньги десятичными СТРОКАМИ, а нечисловой текст
+    ячейки пропускает как есть, поэтому сложение без явной конверсии не
+    определено (спека §2.6).
+
+    Returns:
+        `(Decimal, None)` — годное значение;
+        `(None, None)` — пусто (`None` либо строка, пустая после нормализации);
+        `(None, сырьё)` — негодное: не конвертируется либо не `is_finite()`.
+        Негодным считается и `Infinity`: `Infinity == Infinity + 100` истинно,
+        то есть без этого фильтра противоречивый файл выглядел бы сошедшимся.
+    """
+    if value is None:
+        return None, None
+    shown = normalized_cell_text(value)
+    if shown == "":
+        return None, None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None, shown
+    if not number.is_finite():
+        return None, shown
+    return number, None
+
+
+def check_arithmetic(lines: Mapping[str, Any]) -> ArithmeticReport:
+    """Сверяет `including = excluding + vat_amount` по четырём колонкам.
+
+    Сверка выполняется, только если в блоке присутствуют все три налоговые
+    строки. Конверсия и проверка годности идут ДО сложения и сравнения:
+    `-Infinity + Infinity` бросает `InvalidOperation` уже на сложении, а `sNaN` —
+    на сравнении, поэтому «обернуть сверку в try» фильтр не заменяет.
+    """
+    broken: list[str] = []
+    unverified: list[str] = []
+
+    needed = (JSON_KEY_TOTAL_COST_INCLUDING_VAT, JSON_KEY_VAT_AMOUNT, JSON_KEY_TOTAL_COST_EXCLUDING_VAT)
+    if not all(key in lines for key in needed):
+        return ArithmeticReport(broken=broken, unverified=unverified)
+
+    blocks = [(lines[key].get(JSON_KEY_TOTAL_COST) or {}) for key in needed]
+
+    for column in _MONEY_COLUMNS:
+        raw = [block.get(column) for block in blocks]
+        converted = [to_decimal(value) for value in raw]
+
+        bad = [problem for _, problem in converted if problem is not None]
+        if bad:
+            unverified.append(f"«{column}»: негодное значение {', '.join(repr(item) for item in bad)}")
+            continue
+
+        numbers = [number for number, _ in converted]
+        if all(number is None for number in numbers):
+            continue
+        if any(number is None for number in numbers):
+            missing = [
+                name
+                for name, number in zip(("с НДС", "НДС", "без НДС"), numbers, strict=True)
+                if number is None
+            ]
+            unverified.append(f"«{column}»: нет значений — {', '.join(missing)}")
+            continue
+
+        including, vat, excluding = numbers
+        if including != excluding + vat:
+            broken.append(f"«{column}»: с НДС {including}, НДС {vat}, без НДС {excluding}")
+
+    return ArithmeticReport(broken=broken, unverified=unverified)
