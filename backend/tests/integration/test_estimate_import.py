@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from decimal import Decimal
 
 import pytest
@@ -1064,7 +1065,7 @@ class TestAdditionalWorks:
             additional_works=additional_works_row(total="300.00"),
         )
 
-        with pytest.raises(EstimateImportError, match="1.1.0"):
+        with pytest.raises(EstimateImportError, match=re.escape("1.1.0")):
             run_import(db_session, resolver, contract, data)
         # `import_estimate` не управляет транзакцией сама (§5): в проде откат
         # делает `with db.begin():` вокруг вызова (`import_pipeline.py`), здесь —
@@ -1079,6 +1080,37 @@ class TestAdditionalWorks:
             sa.select(sa.func.count()).select_from(EstimateAdditionalWork)
         ).scalar_one()
         assert work_count == 0
+
+    def test_stale_shape_with_inner_whitespace_in_the_title_is_also_rejected(
+        self, db_session, resolver, contract
+    ):
+        """Гейт нормализует название ТОЙ ЖЕ функцией, что и парсер.
+
+        Парсер 1.1.0 распознавал агрегатную строку через `normalized_cell_text`
+        (схлопывает ВНУТРЕННИЕ пробельные последовательности) и клал в оба места
+        СЫРОЕ название. Гейт, обрезающий только края, такую копию пропустил бы —
+        и двойной счёт прошёл бы ровно через защиту, которая от него поставлена.
+        Найдено финальным ревью; спека §2.7 говорит «нормализованное название»,
+        а нормализатор в проекте один.
+        """
+        stale_copy = position(
+            job_title="Дополнительные  работы",  # два пробела внутри — как в файле
+            number=None,
+            chapter_number=None,
+            total_cost_total="300.00",
+        )
+        data = payload_for(
+            contract,
+            [
+                position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00"),
+                stale_copy,
+            ],
+            additional_works=additional_works_row(total="300.00"),
+        )
+
+        with pytest.raises(EstimateImportError, match=re.escape("1.1.0")):
+            run_import(db_session, resolver, contract, data)
+        db_session.rollback()
 
     def test_same_title_with_other_money_is_not_the_stale_shape(self, db_session, resolver, contract):
         """Тот же заголовок, ДРУГИЕ деньги — обычная строка «вне структуры» Ф3."""
@@ -1136,7 +1168,12 @@ class TestAdditionalWorks:
 
         outcome = run_import(db_session, resolver, contract, data)
 
-        assert any("неоднозначен" in w for w in outcome.warnings)
+        # СЧЁТОМ, а не any(...): спека §2.2 требует РОВНО одно предупреждение на
+        # смету, и «есть такое» прошло бы и при двух копиях по числу предложений.
+        assert len([w for w in outcome.warnings if "неоднозначен" in w]) == 1
+        # И ни одного per-proposal «не расшиты»: причину уже назвало то самое
+        # одно предупреждение (снятие этого молчания раньше не роняло ничего).
+        assert [w for w in outcome.warnings if "не расшиты" in w or "осталась нераспределённой" in w] == []
         rows = _additional_works_of(db_session, outcome.estimate_id)
         assert sorted(r.total_amount for r in rows) == [Decimal("300.00"), Decimal("500.00")]
         # Ни одна из двух записей не расшита — общий текст не применён никому.

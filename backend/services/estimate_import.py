@@ -86,6 +86,7 @@ from parser.constants import (
     TABLE_PARSE_ADDITIONAL_WORKS_TITLE,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
+from parser.sheet import normalized_cell_text
 from services.additional_works import build_rows, decide_owner, svedeniya_text
 from services.category_resolution import (
     CategoryResolutionContractError,
@@ -499,6 +500,7 @@ def import_estimate(
             positions=positions,
             resolution=resolution,
             is_owner=lot_key == owner.owner_lot_key,
+            lot_key=str(lot_key),
             warnings=warnings,
         )
 
@@ -733,7 +735,16 @@ def _reject_stale_1_1_0_shape(
         decision = resolution.rows.get(str(position_key))
         if decision is None or decision.kind is not RowKind.OUTSIDE_STRUCTURE:
             continue
-        title = _text(raw_position.get(JSON_KEY_JOB_TITLE)) or ""
+        # Нормализация — ТА ЖЕ, которой строку распознал парсер
+        # (`get_lot_positions`: `normalized_cell_text` + `casefold`), а не
+        # `_text`, который только обрезает края. Разница не косметическая:
+        # `normalized_cell_text` схлопывает ВНУТРЕННИЕ пробельные
+        # последовательности, поэтому название с двойным пробелом между словами
+        # парсер 1.1.0 распознал бы и положил в оба места, а гейт с `_text` такую
+        # копию пропустил бы — то есть двойной счёт прошёл бы ровно через ту
+        # защиту, которая от него поставлена (спека §2.7: «нормализованное
+        # название», нормализатор в проекте один).
+        title = normalized_cell_text(raw_position.get(JSON_KEY_JOB_TITLE))
         if title.casefold() != expected_title:
             continue
         if all(raw_position.get(key) == aggregate_row.get(key) for key in money_keys):
@@ -753,6 +764,7 @@ def _import_additional_works(
     positions: dict[str, Any],
     resolution: ProposalResolution,
     is_owner: bool,
+    lot_key: str,
     warnings: list[str],
 ) -> None:
     """Материализует `estimate_additional_works` предложения (спека Ф4 §2.8 п.4).
@@ -780,6 +792,7 @@ def _import_additional_works(
         resolution=resolution,
         positions=positions,
         is_owner=is_owner,
+        lot_key=lot_key,
     )
     warnings.extend(result.warnings)
     # `db.flush()` обязателен: это последняя запись в БД на предложение (после

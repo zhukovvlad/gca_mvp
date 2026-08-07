@@ -374,6 +374,7 @@ class TestBuildRowsMatrix:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         assert result.rows == ()
         assert result.warnings == ()
@@ -389,6 +390,7 @@ class TestBuildRowsMatrix:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         assert result.rows == ()
         assert result.warnings == ()
@@ -403,6 +405,7 @@ class TestBuildRowsMatrix:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(result.rows) == 1
         row = result.rows[0]
@@ -429,6 +432,7 @@ class TestBuildRowsMatrix:
             resolution=resolution,
             positions=positions,
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(result.rows) == 2
         first, second = result.rows
@@ -458,6 +462,7 @@ class TestBuildRowsMatrix:
             resolution=resolution,
             positions=positions,
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(result.rows) == 2
         parsed_row, unallocated = result.rows
@@ -487,6 +492,7 @@ class TestBuildRowsMatrix:
             resolution=resolution,
             positions=positions,
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(result.rows) == 1
         row = result.rows[0]
@@ -508,10 +514,65 @@ class TestBuildRowsMatrix:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         assert result.rows == ()
         assert len(result.warnings) == 1
         assert "Дополнительные работы" in result.warnings[0]
+        # Спека §2.9 требует, чтобы это предупреждение называло предложение:
+        # в смете с двумя лотами предупреждения лежат одним плоским списком.
+        assert "lot_1" in result.warnings[0]
+
+    @pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_total_is_treated_as_no_sum(self, resolver, raw):
+        """`Decimal("NaN")` конструируется БЕЗ исключения — и это тихий путь.
+
+        `money_to_json` пропускает нечисловой ТЕКСТ ячейки как есть, поэтому в
+        `total_cost.total` может оказаться литерал «NaN». Один
+        `except InvalidOperation` его не ловит, а дальше расходятся два молчания,
+        оба замерены: при пустых «Сведениях» запись доходит до БД, потому что
+        PostgreSQL считает `'NaN'::numeric >= 0` ИСТИНОЙ — `ck_..._total_amount`
+        такую строку пропускает, и каждая последующая `SUM` по таблице
+        становится `NaN`; при непустых — сравнение `parsed_sum > total` бросает
+        `InvalidOperation` уже наружу, мимо `EstimateImportError`.
+
+        Найдено финальным ревью. Отрицательное `T` — граница другого рода: оно
+        упирается в CHECK ГРОМКО, а нечисловое проходило бы тихо.
+        """
+        result = build_rows(
+            additional_works=aggregate_row(raw),
+            svedeniya="5.1 Кровля - 100 руб.",
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=True,
+            lot_key="lot_1",
+        )
+        assert result.rows == ()
+        assert len(result.warnings) == 1
+
+    def test_non_owner_gets_the_record_but_stays_silent(self, resolver):
+        """`is_owner=False`: запись на свой `T` есть, предупреждения — НЕТ.
+
+        Причину уже назвал `decide_owner` ОДНИМ предупреждением на смету
+        (спека §2.2, §2.9), и N повторов по числу предложений противоречили бы
+        этому «одно». До финального ревью правило не стерегло ничего: снятие
+        молчания оставляло весь набор зелёным — ни один тест матрицы не подавал
+        `is_owner=False`, а интеграционный проверял наличие предупреждения
+        подстрокой, а не счётом ([verifying-guards.md](../../../docs/insights/verifying-guards.md),
+        слой 7).
+        """
+        result = build_rows(
+            additional_works=aggregate_row("300"),
+            svedeniya="5.1 Кровля - 300 руб.",
+            resolution=resolver.resolve_proposal({}),
+            positions={},
+            is_owner=False,
+            lot_key="lot_2",
+        )
+        assert len(result.rows) == 1
+        assert result.rows[0].total_amount == Decimal("300")
+        assert result.rows[0].chapter_ref_raw is None  # общий текст не применён
+        assert result.warnings == ()
 
     def test_lines_without_a_reference_are_reported_separately(self, resolver):
         """Строка без ссылки — отдельное предупреждение таблицы §2.9.
@@ -533,6 +594,7 @@ class TestBuildRowsMatrix:
             resolution=resolution,
             positions=positions,
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(result.rows) == 1
         assert result.rows[0].chapter_ref_raw is None
@@ -611,6 +673,7 @@ class TestNoStateInModule:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         second = build_rows(
             additional_works=None,
@@ -618,6 +681,7 @@ class TestNoStateInModule:
             resolution=resolver.resolve_proposal({}),
             positions={},
             is_owner=True,
+            lot_key="lot_1",
         )
         assert len(first.warnings) == 1
         assert first.rows != ()

@@ -320,14 +320,27 @@ def _extract_total(additional_works: Mapping[str, Any]) -> Decimal | None:
     но `Decimal` бросает `InvalidOperation`, исключение НЕ уходит наружу — такое
     значение сливается с состоянием «`T` пусто» матрицы §2.6: агрегатная строка
     с нечитаемой суммой ведёт себя как строка без суммы вовсе, а не роняет импорт.
+
+    **Нечисловые `Decimal` отсекаются отдельной проверкой, а не `except`.**
+    `Decimal("NaN")` и `Decimal("Infinity")` конструируются БЕЗ исключения, то
+    есть один `except InvalidOperation` этот случай не ловит, а `money_to_json`
+    пропускает нечисловой ТЕКСТ ячейки как есть (`parse_contractor_row.py`:
+    `float`-ветка гасит `nan`/`inf`, строковая — нет). Дальше расходятся два
+    молчаливых пути, и оба замерены: при пустых «Сведениях» запись с `NaN`
+    доходит до БД — PostgreSQL считает `'NaN'::numeric >= 0` ИСТИНОЙ, поэтому
+    `ck_..._total_amount` её пропускает, и каждая последующая `SUM` по таблице
+    становится `NaN`; при непустых — сравнение `parsed_sum > total` бросает
+    `InvalidOperation` уже наружу. Отрицательное `T` — граница другого рода: оно
+    упирается в CHECK громко (devlog, граница 5), а нечисловое проходило бы тихо.
     """
     raw = additional_works[JSON_KEY_TOTAL_COST][JSON_KEY_TOTAL]
     if raw is None:
         return None
     try:
-        return Decimal(str(raw))
+        total = Decimal(str(raw))
     except InvalidOperation:
         return None
+    return total if total.is_finite() else None
 
 
 def decide_owner(data: Mapping[str, Any]) -> OwnerDecision:
@@ -423,6 +436,7 @@ def build_rows(
     resolution: ProposalResolution,
     positions: Mapping[str, Any],
     is_owner: bool,
+    lot_key: str,
 ) -> ProposalAdditionalWorks:
     """Матрица состояний одного предложения (спека §2.6), владелец уже известен
     (`decide_owner`, спека §2.2).
@@ -443,6 +457,13 @@ def build_rows(
     Не резолвит «Сведения без строки» (это `decide_owner`, sheet-level) и не
     решает, какое предложение — владелец (это тоже `decide_owner`) — только то,
     какие записи получит ЭТО ОДНО предложение при уже известном `is_owner`.
+
+    `lot_key` нужен ровно одному предупреждению — «агрегатная строка без суммы»:
+    спека §2.9 требует, чтобы оно называло предложение. В смете с двумя лотами
+    предупреждения лежат одним плоским списком, и без ключа непонятно, о чьей
+    строке речь. Параметр обязателен, а не «по умолчанию None»: предупреждение,
+    которое иногда называет предложение, а иногда нет, — это два разных
+    сообщения под одним именем.
     """
     if additional_works is None:
         # Строки нет вовсе: предупреждение «„Сведения“ есть, строки нет»
@@ -456,9 +477,9 @@ def build_rows(
         return ProposalAdditionalWorks(
             rows=(),
             warnings=(
-                f"Агрегатная строка «{job_title}» не несёт суммы (total_cost.total пусто "
-                "либо не читается как число): это предложение не получит ни одной записи "
-                "допработ.",
+                f"Агрегатная строка «{job_title}» предложения «{lot_key}» не несёт "
+                "суммы (total_cost.total пусто либо не читается как число): это "
+                "предложение не получит ни одной записи допработ.",
             ),
         )
 
