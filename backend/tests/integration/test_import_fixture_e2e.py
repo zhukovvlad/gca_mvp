@@ -438,6 +438,42 @@ def _independent_total_with_vat(ws, contractor: dict) -> Decimal:
     return Decimal(value)
 
 
+SUMMARY_BLOCK_LABELS = (
+    "ИТОГО, руб. с учетом НДС",
+    "В том числе НДС",
+    "ИТОГО, руб. без учета НДС",
+)
+
+
+def test_fixture_summary_block_has_three_filled_rows(fixture_worksheet):
+    """Форма самого входа, прочитанная с листа, — не через парсер.
+
+    Стережёт правку fixture: если блок снова станет двухстрочным, главный путь
+    Ф4a останется без закоммиченного входа, и это должно быть видно сразу.
+    """
+    ws = fixture_worksheet
+    rows = [2588, 2589, 2590]
+    labels = [str(ws.cell(row=row, column=1).value or "").strip() for row in rows]
+    assert labels == list(SUMMARY_BLOCK_LABELS)
+
+    money = {
+        row: [ws.cell(row=row, column=col).value for col in range(15, 19)]
+        for row in rows
+    }
+    for row, values in money.items():
+        assert all(value is not None for value in values), f"строка {row} заполнена не полностью"
+
+    assert all(ws.cell(row=2591, column=col).value is None for col in range(1, 21)), (
+        "строка 2591 обязана остаться пустой: она терминатор блока итогов"
+    )
+
+    for index in range(4):
+        gross = Decimal(str(money[2588][index]))
+        vat = Decimal(str(money[2589][index]))
+        net = Decimal(str(money[2590][index]))
+        assert gross == net + vat, f"колонка {15 + index}: тождество не сошлось"
+
+
 class TestAggregateRowInSourceFile:
     """Спека §4.3, п.1-3: три факта о входе, каждый проверяется НЕЗАВИСИМО и
     ДО всякого импорта — п.1 читает workbook напрямую (не через парсер),
