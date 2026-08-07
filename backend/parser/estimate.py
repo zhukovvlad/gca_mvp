@@ -57,7 +57,15 @@ log = logging.getLogger(__name__)
 # нового, и на нём стоит операционная проверка стенда (спека §2.11): смета,
 # уже загруженная парсером 1.1.0, получает новую модель допработ только после
 # `replace` (backfill сознательно не делается, спека §2.11).
-PARSER_VERSION = "2.0.0"
+#
+# 3.0.0 (Ф4a): блок итогов отдаёт три независимых ключа —
+# `total_cost_including_vat`, `vat_amount`, `total_cost_excluding_vat`. Прежние
+# `total_cost_with_vat` и `vat` ИСЧЕЗЛИ. Это мажор не потому, что появились
+# ключи, а потому, что два ключа пропали: смена ИМЕНИ вместо смены смысла
+# выбрана намеренно — `raw_data` неизменяем, backfill невозможен, и одно имя с
+# двумя значениями у старых и новых смет различалось бы только по этой самой
+# версии (спека Ф4a §2.1).
+PARSER_VERSION = "3.0.0"
 
 
 @dataclass(frozen=True)
@@ -255,10 +263,18 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
 
     warnings.extend(check_estimate_layout(ws, contractors, lot_starts))
 
+    lots = read_lots_and_boundaries(ws)
+
+    # Блок итогов — факт уровня ЛИСТА, а `get_summary` зовётся на каждое
+    # предложение каждого лота (спека §1.5 факт 5). В смете ГП лот и подрядчик
+    # одни, но на двухлотовом входе одни и те же предупреждения пришли бы
+    # дважды. `dict.fromkeys` снимает дубли и сохраняет порядок.
+    warnings.extend(dict.fromkeys(lots.warnings))
+
     data: dict[str, Any] = {
         **read_headers(ws),
         JSON_KEY_EXECUTOR: read_executer_block(ws),
-        JSON_KEY_LOTS: read_lots_and_boundaries(ws),
+        JSON_KEY_LOTS: lots.lots,
     }
     data = normalize_lots_json_structure(data)
     data = replace_excel_errors_with_null(data)

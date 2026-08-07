@@ -83,18 +83,14 @@ TABLE_PARSE_ADDITIONAL_WORKS_TITLE = "Дополнительные работы"
 # ==============================================================================
 
 # -- Общие ключи для итоговых сумм тендера/лота и специфических полей --
-# Ф4a: три независимых ключа вместо одного двусмысленного. Старые
-# `JSON_KEY_TOTAL_COST_VAT`/`JSON_KEY_VAT` пока остаются ниже и используются
-# `get_summary.py` — они исчезнут только в Ф4a/Task 5, когда `get_summary.py`
-# переключится на новые ключи в одном атомарном изменении: `raw_data`
+# Ф4a: три независимых ключа вместо одного двусмысленного. Прежние
+# `total_cost_with_vat` и `vat` удалены, а не переосмыслены: `raw_data`
 # неизменяем и backfill невозможен, поэтому одно имя с двумя значениями у
 # старых и новых смет различалось бы только по `parser_version`
 # (спека Ф4a §2.1).
 JSON_KEY_TOTAL_COST_INCLUDING_VAT = "total_cost_including_vat"  # валовое ИТОГО
 JSON_KEY_VAT_AMOUNT = "vat_amount"  # СУММА НДС; ставка — Ф4б, имя `vat_rate` за ней
 JSON_KEY_TOTAL_COST_EXCLUDING_VAT = "total_cost_excluding_vat"  # ИТОГО без НДС
-JSON_KEY_TOTAL_COST_VAT = "total_cost_with_vat"  # Общая стоимость с учетом НДС
-JSON_KEY_VAT = "vat"  # Сумма НДС
 JSON_KEY_INITIAL_COST = "initial_cost"  # Первоначальная стоимость
 # Отклонение предложения подрядчика от базовой (расчетной) стоимости.
 JSON_KEY_DEVIATION_FROM_CALCULATED_COST = "deviation_from_baseline_cost"

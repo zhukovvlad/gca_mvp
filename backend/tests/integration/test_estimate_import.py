@@ -155,8 +155,9 @@ class TestFullWalk:
                 )
             ).scalars()
         }
-        assert set(lines) == {"total_cost_with_vat", "vat"}
-        assert lines["total_cost_with_vat"].total_cost == Decimal("1200.00")
+        assert set(lines) == {"total_cost_including_vat", "vat_amount", "total_cost_excluding_vat"}
+        assert lines["total_cost_including_vat"].total_cost == Decimal("1200.00")
+        assert lines["total_cost_excluding_vat"].total_cost == Decimal("1000.00")
 
         info = {
             row.info_key: row.info_value

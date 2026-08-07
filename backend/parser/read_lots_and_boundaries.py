@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from openpyxl.worksheet.worksheet import Worksheet
@@ -53,7 +54,15 @@ def find_lot_starts(ws: Worksheet) -> list[dict[str, Any]]:
     return lot_starts
 
 
-def read_lots_and_boundaries(ws: Worksheet) -> dict[str, dict[str, Any]]:
+@dataclass(frozen=True)
+class LotsResult:
+    """Лоты и предупреждения, собранные при их разборе."""
+
+    lots: dict[str, dict[str, Any]]
+    warnings: list[str]
+
+
+def read_lots_and_boundaries(ws: Worksheet) -> LotsResult:
     """Находит лоты, вычисляет их границы и собирает данные по каждому.
 
     Шаг 1 — `find_lot_starts`. Шаг 2 — для каждого лота конечной строкой служит
@@ -64,16 +73,18 @@ def read_lots_and_boundaries(ws: Worksheet) -> dict[str, dict[str, Any]]:
         ws: лист Excel.
 
     Returns:
-        Словарь `{"lot_1": {"lot_title": str, "proposals": {...}}}`.
-        Пустой, если маркеров лотов нет.
+        `LotsResult`: словарь `{"lot_1": {"lot_title": str, "proposals": {...}}}`
+        (пустой, если маркеров лотов нет) и предупреждения, собранные при
+        разборе предложений каждого лота.
     """
     max_sheet_row = ws.max_row
     lot_starts = find_lot_starts(ws)
 
     if not lot_starts:
-        return {}
+        return LotsResult(lots={}, warnings=[])
 
     found_lots_data: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
 
     for i, lot_info in enumerate(lot_starts):
         start_row = lot_info["start_row"]
@@ -82,12 +93,13 @@ def read_lots_and_boundaries(ws: Worksheet) -> dict[str, dict[str, Any]]:
         # Лот кончается перед началом следующего; последний — на конце листа.
         end_row = lot_starts[i + 1]["start_row"] - 1 if i + 1 < len(lot_starts) else max_sheet_row
 
-        proposals = get_proposals(ws, start_row=start_row, end_row=end_row)
+        lot = get_proposals(ws, start_row=start_row, end_row=end_row)
+        warnings.extend(lot.warnings)
 
         lot_key = f"{JSON_KEY_LOT_INDEX}{i + 1}"
         found_lots_data[lot_key] = {
             JSON_KEY_LOT_TITLE: lot_title,
-            JSON_KEY_PROPOSALS: proposals,
+            JSON_KEY_PROPOSALS: lot.proposals,
         }
 
-    return found_lots_data
+    return LotsResult(lots=found_lots_data, warnings=warnings)
