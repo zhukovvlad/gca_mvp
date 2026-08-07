@@ -148,6 +148,33 @@ class TestParseLines:
         assert len(parsed) == 1
         assert parsed[0].ref is None
 
+    def test_line_of_bare_ref_and_amount_keeps_the_number_as_the_title(self):
+        """Явно принятая ГРАНИЦА: «3.2.2 - 100 руб.», без названия.
+
+        `title` не может быть пустым, поэтому `LINE_RE` откатывает необязательную
+        группу ссылки внутрь названия: получается `ref = None`, `title = "3.2.2"`.
+        Правило спеки §2.4 «пустое название → нечитаемая» при этом НЕ нарушено —
+        название непусто (сравните с `test_blank_title_after_trim_is_unreadable`,
+        где оно действительно пусто и строка нечитаема). Теряются не деньги и не
+        правило, а атрибуция: строка становится записью без привязки к статье.
+
+        Поведение не меняется намеренно. В корпусе все строки несут название
+        (замер §1.2), а альтернатива — объявить такую строку нечитаемой — увела
+        бы сумму в нераспределённый остаток и потеряла бы заодно метку «3.2.2»,
+        по которой человек хотя бы узнаёт строку в паспорте.
+
+        Тест сторожит саму границу: если её решат закрыть, он покажет, что
+        поведение изменилось ОСОЗНАННО (тот же приём, что у
+        `test_zero_width_space_title_is_an_accepted_boundary` в Ф1). Найдено
+        внешним кругом ревью.
+        """
+        parsed, unreadable = parse_lines("3.2.2 - 100 руб.")
+        assert unreadable == []
+        assert len(parsed) == 1
+        assert parsed[0].ref is None
+        assert parsed[0].title == "3.2.2"
+        assert parsed[0].amount == Decimal("100")
+
     def test_trailing_dot_in_the_ref_is_stripped(self):
         line = "3.2.2. Прочие работы - 100 руб."
         parsed, unreadable = parse_lines(line)
