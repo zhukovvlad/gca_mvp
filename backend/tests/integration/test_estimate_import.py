@@ -1104,10 +1104,23 @@ class TestAdditionalWorks:
         assert any("вне структуры" in w or "без номера" in w for w in outcome.warnings)
 
     def test_owner_is_ambiguous_across_two_lots(self, db_session, resolver, contract):
+        """Текст «Сведений» здесь НЕПУСТ, и это не декорация.
+
+        С пустым текстом тест был бы вакуозен: расшивать было бы нечего, и
+        снятие правила владельца («расшить каждому» либо «расшить первый лот»)
+        не изменило бы ни одной записи — обе ветки дали бы одну
+        нераспределённую запись на свой `T`. Пробел найден негативной проверкой
+        Task 7 ([verifying-guards.md](../../../docs/insights/verifying-guards.md),
+        слой 7: снятие, которое ничего не валит, означает, что защиты нет).
+        Текст в обоих предложениях один и тот же — он факт уровня листа
+        (спека §1.5 факт 2).
+        """
+        shared_text = svedeniya_info("1 Работа по разделу - 300 руб.")
         data = payload_for(
             contract,
             [position(job_title="Обычная работа 1", unit="м2", total_cost_total="1000.00")],
             additional_works=additional_works_row(total="300.00"),
+            additional_info=shared_text,
         )
         data[JSON_KEY_LOTS]["lot_2"] = {
             JSON_KEY_LOT_TITLE: "Лот №2",
@@ -1115,6 +1128,7 @@ class TestAdditionalWorks:
                 "contractor_1": proposal(
                     [position(job_title="Обычная работа 2", unit="м2", total_cost_total="2000.00")],
                     additional_works=additional_works_row(total="500.00"),
+                    additional_info=shared_text,
                 )
             },
             JSON_KEY_BASELINE_PROPOSAL: {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE},
@@ -1177,6 +1191,38 @@ class TestAdditionalWorks:
         outcome = run_import(db_session, resolver, contract, data)
 
         assert any("Нераспределённый остаток" in w for w in outcome.warnings)
+
+    def test_unallocated_remainder_is_materialized_as_the_last_record(
+        self, db_session, resolver, contract
+    ):
+        """Остаток — не только предупреждение, но и ЗАПИСЬ в БД (спека §2.6).
+
+        Пробел найден негативной проверкой Task 7: снятие записи остатка (при
+        сохранённом предупреждении) роняло юнит-тест матрицы и не роняло ни
+        одного интеграционного — то есть инвариант «сумма записей предложения
+        равна `T`» до БД никем не доводился. Здесь `P < T`, и проверяется
+        именно доведённый до БД результат: остаток отдельной записью, с
+        последним `ordinal`, без ссылки и без сырья
+        ([verifying-guards.md](../../../docs/insights/verifying-guards.md), слой 7).
+        """
+        data = payload_for(
+            contract,
+            [position(job_title="Обычная работа", unit="м2", total_cost_total="1000.00")],
+            additional_works=additional_works_row(total="300.00"),
+            additional_info=svedeniya_info("Работа А - 100 руб."),
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        rows = _additional_works_of(db_session, outcome.estimate_id)
+        assert [r.ordinal for r in rows] == [1, 2]
+        assert [r.total_amount for r in rows] == [Decimal("100"), Decimal("200")]
+        remainder = rows[-1]
+        assert remainder.title == "Дополнительные работы"
+        assert remainder.chapter_ref_raw is None
+        assert remainder.raw_line is None
+        # Инвариант §2.6, доведённый до БД: сумма записей равна контрольной сумме.
+        assert sum((r.total_amount for r in rows), Decimal("0")) == Decimal("300.00")
 
     def test_unreadable_line_warns_with_count_and_raw_text(self, db_session, resolver, contract):
         data = payload_for(
