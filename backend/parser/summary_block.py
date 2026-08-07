@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, Inexact, InvalidOperation, Overflow, Rounded, localcontext
 from typing import Any
 
 from .constants import (
@@ -141,6 +141,18 @@ def _examples(items: list[str]) -> str:
     return f"{shown}{f'; …и ещё {hidden}' if hidden > 0 else ''}"
 
 
+#: Точность локального контекста, в котором выполняется сверка.
+#:
+#: Это НЕ обещание поддерживать числа любой математической длины, а предел, за
+#: которым парсер честно говорит «не проверено» вместо округлённого решения.
+#: Глобальный контекст `Decimal` даёт 28 знаков и трапит `Overflow`, поэтому
+#: сложение в нём и округляет молча, и умеет бросать: замерены три исхода —
+#: ложное «сходится» (`1e28` против `1e28 + 0.01`), ложное «нарушено»
+#: (математически точное равенство на 31 знаке) и `Overflow` на `1e999999999`,
+#: уносивший разбор всей сметы. Сотни знаков хватает с большим запасом против
+#: точности самого xlsx (§11 `AGENTS.md`: формат хранит ~15 значащих цифр).
+ARITHMETIC_PRECISION = 100
+
 #: Денежные колонки блока `total_cost`, по которым идёт сверка.
 _MONEY_COLUMNS: tuple[str, ...] = (
     JSON_KEY_MATERIALS,
@@ -228,7 +240,27 @@ def check_arithmetic(lines: Mapping[str, Any]) -> ArithmeticReport:
             continue
 
         including, vat, excluding = numbers
-        if including != excluding + vat:
+        # Годность каждого слагаемого НЕ гарантирует выполнимость их точного
+        # сложения: арифметика `Decimal` идёт в контексте, а `is_finite()` про
+        # контекст ничего не знает. Поэтому и сложение, и сравнение выполняются
+        # в ЛОКАЛЬНОМ контексте с запасом точности и трапами на любую потерю
+        # точности: округление не имеет права дать вердикт, который нечем
+        # подкрепить. Глобальный контекст приложения при этом не меняется.
+        try:
+            with localcontext() as context:
+                context.prec = ARITHMETIC_PRECISION
+                context.traps[Inexact] = True
+                context.traps[Rounded] = True
+                context.traps[Overflow] = True
+                agrees = including == excluding + vat
+        except DecimalException:
+            unverified.append(
+                f"«{column}»: точное сложение невозможно — "
+                f"с НДС {including}, НДС {vat}, без НДС {excluding}"
+            )
+            continue
+
+        if not agrees:
             broken.append(f"«{column}»: с НДС {including}, НДС {vat}, без НДС {excluding}")
 
     return ArithmeticReport(broken=broken, unverified=unverified)
@@ -313,11 +345,12 @@ def build_summary_block(rows: Sequence[SummaryRow], *, search_start_row: int) ->
             f"{_examples(report.broken)}. Числа взяты из файла и не исправлялись."
         )
     if report.unverified:
-        # «неполных ИЛИ негодных»: сюда же попадают `n/a`, `NaN`, `Infinity` —
-        # текст обязан покрывать оба входа ветки, иначе он уже собственного
-        # условия (та же ошибка, что «НДС не заявлен» в §2.7).
+        # Входов у ветки ТРИ: неполная тройка, негодное значение (`n/a`, `NaN`,
+        # `Infinity`) и годные значения, точное сложение которых невыполнимо.
+        # Текст обязан покрывать все три, иначе он уже собственного условия —
+        # та же ошибка, что «НДС не заявлен» в §2.7.
         warnings.append(
-            f"Арифметика НДС не проверена из-за неполных или негодных данных: "
+            f"Арифметика НДС не проверена из-за неполных, негодных или несравнимых точно данных: "
             f"{len(report.unverified)} — {_examples(report.unverified)}."
         )
 

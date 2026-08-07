@@ -124,7 +124,7 @@ class TestInjectivity:
         assert len(set(keys)) == len(rows)
 
 
-from decimal import Decimal
+from decimal import Decimal, getcontext
 
 from parser.summary_block import check_arithmetic, to_decimal
 
@@ -219,6 +219,58 @@ class TestArithmetic:
         report = check_arithmetic(_triple("100", "Infinity", "-Infinity"))
         assert report.broken == []
         assert len(report.unverified) == len(MONEY_COLUMNS)
+
+    def test_huge_operands_that_would_round_do_not_pass_as_agreement(self):
+        """Ложное «сошлось» из глобального контекста (28 знаков).
+
+        `1e28` и `1e28 + 0.01` различаются, но в контексте на 28 знаков сумма
+        округляется обратно до `1e28`, и без запаса точности колонка молча
+        объявлялась бы сошедшейся — ровно тот исход, против которого заведён
+        фильтр `is_finite()`, и который он не ловит.
+        """
+        huge = "10000000000000000000000000000"
+        report = check_arithmetic(_triple(huge, "0.01", huge))
+        assert len(report.broken) == len(MONEY_COLUMNS)
+        assert report.unverified == []
+
+    def test_exact_identity_beyond_the_global_precision_is_not_a_violation(self):
+        """Ложное «нарушено» из того же источника.
+
+        Тождество здесь точное, но требует 31 знака: в контексте на 28 сумма
+        округлилась бы и парсер сообщил бы о противоречии, которого в файле нет.
+        """
+        report = check_arithmetic(
+            _triple("10000000000000000000000000000.02", "0.01", "10000000000000000000000000000.01")
+        )
+        assert report.broken == []
+        assert report.unverified == []
+
+    def test_overflowing_exponent_is_unverified_and_does_not_raise(self):
+        """Годность слагаемых не гарантирует выполнимость их сложения.
+
+        `Decimal('1e999999999')` конечен, поэтому `is_finite()` его пропускает,
+        а сложение бросает `Overflow` — раньше это исключение уходило наверх и
+        роняло разбор всей сметы из-за одной ячейки блока итогов.
+        """
+        report = check_arithmetic(_triple("1", "1", "1e999999999"))
+        assert report.broken == []
+        assert len(report.unverified) == len(MONEY_COLUMNS)
+        assert "1E+999999999" in report.unverified[0] or "1e999999999" in report.unverified[0]
+
+    def test_global_decimal_context_is_left_untouched(self):
+        """Сверка чинится локальным контекстом, а не правкой глобального.
+
+        Деньги проекта — `Decimal` сквозным образом (`AGENTS.md` §3), и парсер
+        не имеет права менять среду вычислений для всего приложения.
+        """
+        before_prec = getcontext().prec
+        before_traps = dict(getcontext().traps)
+
+        check_arithmetic(_triple("120", "20", "100"))
+        check_arithmetic(_triple("1", "1", "1e999999999"))
+
+        assert getcontext().prec == before_prec
+        assert dict(getcontext().traps) == before_traps
 
     def test_missing_tax_line_means_no_check_at_all(self):
         """Сверка идёт, только если присутствуют все три налоговые строки."""
