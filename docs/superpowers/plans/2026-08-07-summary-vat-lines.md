@@ -1138,9 +1138,12 @@ def build_summary_block(rows: Sequence[SummaryRow], *, search_start_row: int) ->
             f"{_examples(report.broken)}. Числа взяты из файла и не исправлялись."
         )
     if report.unverified:
+        # «неполных ИЛИ негодных»: сюда же попадают `n/a`, `NaN`, `Infinity` —
+        # текст обязан покрывать оба входа ветки, иначе он уже собственного
+        # условия (та же ошибка, что «НДС не заявлен» в §2.7).
         warnings.append(
-            f"Арифметика НДС не проверена из-за неполных данных: {len(report.unverified)} — "
-            f"{_examples(report.unverified)}."
+            f"Арифметика НДС не проверена из-за неполных или негодных данных: "
+            f"{len(report.unverified)} — {_examples(report.unverified)}."
         )
 
     return SummaryBlock(lines=lines, warnings=warnings)
@@ -1413,6 +1416,14 @@ from parser.get_summary import get_summary
 CONTRACTOR = {"column_start": 10, "merged_shape": {"colspan": 11}}
 
 
+# Блок подрядчика J..T (colspan 11) раскладывается так — замерено вызовом
+# parse_contractor_row на листе, где в каждой ячейке лежит её номер колонки:
+#   10 suggested_quantity | 11..14 unit_cost.{mat,wrk,ind,total}
+#   15..18 total_cost.{mat,wrk,ind,total} | 19 организатор | 20 комментарий
+# Итоговая стоимость — колонка 18, НЕ 17 (17 это indirect_costs).
+TOTAL_COST_TOTAL_COLUMN = 18
+
+
 def _sheet_with_summary(rows: list[tuple[str, str | None]]):
     """Лист, где с 20-й строки идёт блок итогов, а ниже — «Дополнительная информация».
 
@@ -1427,9 +1438,22 @@ def _sheet_with_summary(rows: list[tuple[str, str | None]]):
         ws.cell(row=row, column=1, value=label)
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
         if total is not None:
-            ws.cell(row=row, column=17, value=float(total))
+            ws.cell(row=row, column=TOTAL_COST_TOTAL_COLUMN, value=float(total))
     ws.cell(row=20 + len(rows) + 1, column=1, value="Дополнительная информация:")
     return ws
+
+
+def test_total_is_read_from_the_column_the_helper_writes():
+    """Предпосылка самого хелпера: колонка 18 — это `total_cost.total`.
+
+    Проверяется внутри теста, а не «известна»: перепутанная колонка оставила бы
+    все тесты блока зелёными, сверяя пустоту с пустотой
+    (false-test-premises.md).
+    """
+    ws = _sheet_with_summary([("ИТОГО, руб. с учетом НДС", "120")])
+    block = get_summary(ws, CONTRACTOR, search_start_row=11)
+    line = block.lines["total_cost_including_vat"]
+    assert line["total_cost"]["total"] == "120.0"
 
 
 def test_walks_from_the_first_merged_row_to_the_first_empty_one():
@@ -1459,7 +1483,103 @@ def test_no_merged_row_means_block_not_found():
     assert any("не найден" in text for text in block.warnings)
 ```
 
-- [ ] **Шаг 9: прогнать всё**
+- [ ] **Шаг 9: тесты полного пути — проводка, дедупликация, постобработка**
+
+Все положительные тесты предупреждений из Task 4 зовут **ядро напрямую**. Значит
+обрыв проводки в `get_proposals` или `read_lots_and_boundaries` не уронил бы
+ничего: предупреждение молча не доехало бы до `ParseResult.warnings`, а набор
+остался бы зелёным. Три теста ниже закрывают именно путь, а не правило.
+
+Дописать в `backend/tests/unit/parser/test_estimate.py`:
+
+```python
+def _two_lot_sheet_with_summary(summary_label: str, *, money: dict[int, object] | None = None):
+    """Два лота и ОДИН общий блок итогов под ними.
+
+    Блок итогов — факт уровня листа, а `get_summary` зовётся на каждое
+    предложение каждого лота, поэтому один и тот же блок читается дважды.
+    Раскладка колонок замерена: 15..18 — `total_cost.{mat,wrk,ind,total}`.
+    """
+    ws = _minimal_sheet(contractor_colspan=11)          # лот №1 в D11
+    ws.cell(row=12, column=1, value=1)
+    ws.cell(row=12, column=2, value="1")
+    ws.cell(row=12, column=4, value="Работа первого лота")
+
+    ws.cell(row=13, column=1, value=2)
+    ws.cell(row=13, column=2, value="2")
+    ws.cell(row=13, column=4, value="Лот №2 Второй")
+
+    ws.cell(row=14, column=1, value=3)
+    ws.cell(row=14, column=2, value="3")
+    ws.cell(row=14, column=4, value="Работа второго лота")
+
+    ws.cell(row=15, column=1, value=summary_label)
+    ws.merge_cells(start_row=15, start_column=1, end_row=15, end_column=5)
+    for column, value in (money or {}).items():
+        ws.cell(row=15, column=column, value=value)
+    # Строка 16 остаётся пустой — она терминатор блока.
+    return ws
+
+
+class TestSummaryWarningsReachTheTop:
+    """Проводка предупреждений блока итогов наверх, а не только правило."""
+
+    def test_warning_from_the_core_reaches_parse_result(self):
+        """Один лот: предупреждение обязано доехать до ParseResult.warnings.
+
+        Без этого теста обрыв проводки в get_proposals или
+        read_lots_and_boundaries остался бы невидимым: тесты ядра зовут его
+        напрямую.
+        """
+        ws = _minimal_sheet(contractor_colspan=11)
+        ws.cell(row=12, column=1, value=1)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Обычная работа")
+        ws.cell(row=13, column=1, value="Совершенно чужая метка")
+        ws.merge_cells(start_row=13, start_column=1, end_row=13, end_column=5)
+
+        result = parse_worksheet(ws)
+
+        matching = [w for w in result.warnings if "Совершенно чужая метка" in w]
+        assert len(matching) == 1
+
+    def test_the_same_warning_is_not_doubled_on_a_two_lot_sheet(self):
+        """Два лота — один блок; наверху остаётся ОДИН экземпляр (спека §2.8)."""
+        ws = _two_lot_sheet_with_summary("Совершенно чужая метка")
+
+        result = parse_worksheet(ws)
+
+        matching = [w for w in result.warnings if "Совершенно чужая метка" in w]
+        assert len(matching) == 1, f"ожидался один экземпляр, получено {len(matching)}"
+
+    def test_excel_error_in_a_summary_cell_is_named_in_the_warning_and_nulled_in_json(self):
+        """Пара, которую спека §2.6 обязалась назвать вслух.
+
+        Предупреждение говорит о том, ЧТО СТОЯЛО В ЯЧЕЙКЕ (`#REF!`), а в JSON
+        на её месте `None` — штатная `replace_excel_errors_with_null`
+        отрабатывает ПОСЛЕ разбора блока. Оба утверждения в одном тесте:
+        порознь они выглядели бы противоречием.
+        """
+        ws = _two_lot_sheet_with_summary(
+            "ИТОГО, руб. с учетом НДС",
+            money={15: 100.0, 16: 100.0, 17: 100.0, 18: "#REF!"},
+        )
+
+        result = parse_worksheet(ws)
+
+        assert any("#REF!" in w for w in result.warnings), "негодное значение обязано быть названо"
+
+        summary = _proposal(result)["contractor_items"]["summary"]
+        assert summary["total_cost_including_vat"]["total_cost"]["total"] is None
+        assert summary["total_cost_including_vat"]["total_cost"]["materials"] == "100.0"
+```
+
+Предпосылка `test_..._nulled_in_json` — что `#REF!` вообще попадает в набор
+литералов постобработки — уже закреплена соседним тестом
+`test_temporal_and_error_cells_become_json_safe` (он делает то же с `#N/A` в
+позиции). Если набор изменится, покраснеют оба.
+
+- [ ] **Шаг 10: прогнать всё**
 
 ```bash
 cd backend && uv run pytest tests/unit -q
@@ -1471,7 +1591,7 @@ cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gc
 `skipped` больше — разбираться, а не считать фоном
 ([silent-test-runs.md](../../insights/silent-test-runs.md)).
 
-- [ ] **Шаг 10: коммит**
+- [ ] **Шаг 11: коммит**
 
 ```bash
 git add backend/parser backend/tests
@@ -1553,7 +1673,17 @@ def test_gross_total_matches_the_reference_read_from_the_sheet(
     assert stored.total_cost == expected
 
 
-def test_identity_holds_on_the_stored_records(db, imported_fixture):
+@pytest.mark.parametrize(
+    "field",
+    ["materials_cost", "works_cost", "indirect_costs_cost", "total_cost"],
+)
+def test_identity_holds_on_the_stored_records(db, imported_fixture, field):
+    """Все ЧЕТЫРЕ денежные колонки, а не только итоговая (спека §2.6).
+
+    Сверка одной колонки прошла бы и при разъехавшейся разбивке: три остальные
+    поля доезжают до БД тем же путём и тем же `_money`, но проверялись бы
+    ничем.
+    """
     lines = {
         line.summary_key: line
         for line in db.scalars(
@@ -1562,9 +1692,11 @@ def test_identity_holds_on_the_stored_records(db, imported_fixture):
             )
         )
     }
-    assert lines["total_cost_including_vat"].total_cost == (
-        lines["total_cost_excluding_vat"].total_cost + lines["vat_amount"].total_cost
-    )
+    including = getattr(lines["total_cost_including_vat"], field)
+    excluding = getattr(lines["total_cost_excluding_vat"], field)
+    vat = getattr(lines["vat_amount"], field)
+    assert including is not None, f"{field}: колонка пуста — сверять нечего, тест был бы вакуозен"
+    assert including == excluding + vat
 
 
 SUMMARY_WARNING_MARKERS = (
@@ -1574,7 +1706,7 @@ SUMMARY_WARNING_MARKERS = (
     "суммы не указаны",
     "Валовое ИТОГО отсутствует",
     "Арифметика НДС не сходится",
-    "Арифметика НДС не проверена",
+    "Арифметика НДС не проверена из-за неполных или негодных данных",
 )
 
 
@@ -1656,7 +1788,7 @@ cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gc
 доказанную защиту ([verifying-guards.md](../../insights/verifying-guards.md),
 слой 3).
 
-- [ ] **Шаг 2: провести десять снятий**
+- [ ] **Шаг 2: провести двенадцать снятий**
 
 По каждому: побайтовая копия файла → `assert old in text` перед заменой → печать
 sha256 до и после → прогон → запись, **сколько именно** упало → восстановление из
@@ -1674,6 +1806,8 @@ sha256 до и после → прогон → запись, **сколько и
 | 8 | ветку `broken` в `check_arithmetic` | падает тест несходящейся арифметики |
 | 9 | ветку «неполная тройка» в `check_arithmetic` | падает `test_partial_triple_is_unverified` |
 | 10 | **фильтр `is_finite()`** в `to_decimal` | `test_infinity_does_not_pass_as_agreement` краснеет: `Infinity` начинает давать ложное «сошлось» |
+| 11 | `warnings.extend(lot.warnings)` в `read_lots_and_boundaries` (проводка) | `test_warning_from_the_core_reaches_parse_result` краснеет; тесты ядра остаются зелёными — это и есть доказательство, что они путь не стерегли |
+| 12 | `dict.fromkeys` в `parse_worksheet` (дедупликация) | `test_the_same_warning_is_not_doubled_on_a_two_lot_sheet` краснеет: два экземпляра вместо одного |
 
 Снятие, не валящее ничего, означает **отсутствие защиты**, а не плохой тест
 (слой 7). Такой случай записывается в devlog и закрывается тестом.
@@ -1727,7 +1861,9 @@ PR со ссылками на рамку, спеку и план.
 **Покрытие спеки.** §2.1 — Task 2 (константы) и Task 5 (версия, потребители);
 §2.2 — Task 2; §2.3 — инвариант утверждается в Task 2, 4 и 6; §2.4 — Task 4
 (матрица форм) и Task 5 (обход); §2.5 — Task 4, тест «ничего не
-восстанавливается»; §2.6 — Task 3; §2.7 — Task 4; §2.8 — Task 5 шаги 3–5;
+восстанавливается»; §2.6 — Task 3 (правило) и Task 5 шаг 9 (`#REF!` через
+постобработку); §2.7 — Task 4; §2.8 — Task 5 шаги 3–5 (код) и шаг 9 (проводка и
+дедупликация тестами полного пути);
 §2.9 — миграции нет, проверяется `alembic check` в Task 7; §2.10 — Task 1;
 §2.11 — Task 7 шаг 3 (`replace`), кода не требует; §2.12 — гейта нет, кода не
 требует. §4.4 — Task 7 шаг 2; §4.5 — Task 7 шаг 4; §6 DoD — Task 7 целиком.
