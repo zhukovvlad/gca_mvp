@@ -283,24 +283,76 @@ class TestAdditionalWorksRow:
         assert isinstance(value, str)
         assert _floats_anywhere(result.additional_works) == []
 
-    def test_row_also_stays_in_positions(self, sample_worksheet):
-        """ПЕРЕХОДНОЕ решение Ф2 (спека §2.2): строка остаётся позицией.
+    def test_aggregate_row_is_not_a_position(self, sample_worksheet):
+        """Ф4 (спека §2.1): строка не появляется ни под одним ключом `positions`.
 
-        Импортёр читает только `positions`; если убрать её здесь, деньги
-        исчезнут из аналитики до выхода Ф4. Исключение делает Ф4 — атомарно с
-        записью в `estimate_additional_works`. Тест обязан упасть, если кто-то
-        «доделает» исключение раньше.
+        Дубль не снимается удалением — он не создаётся вовсе: `continue` стоит
+        перед записью в `positions`, а `additional_works` собирается раньше и не
+        затрагивается.
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=16, column=10, value=12675964.53)
 
-        Спека §4 требует не только «строка осталась», но и «её значения совпадают
-        с копией в `additional_works`»: остаться могла бы и строка, собранная из
-        другого источника. Поэтому сверяется каждое поле копии, а не одно
-        название (пробел найден внешним ревью после реализации).
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
+
+        titles = [item[JSON_KEY_JOB_TITLE] for item in result.positions.values()]
+        assert "Дополнительные работы" not in titles
+        assert result.additional_works is not None
+
+    def test_aggregate_row_in_the_middle_keeps_keys_contiguous(self, sample_worksheet):
+        """Главный тест задачи (спека §2.1): ключи `positions` остаются `1..N`.
+
+        В реальном файле агрегатная строка последняя, поэтому её ключ равен
+        `len(positions)` и о непрерывности не говорит ничего. Здесь синтетический
+        лист: после агрегатной строки идут ещё две обычные позиции. Резолвер Ф3
+        отвергает неканоничный набор ключей — дыра в нумерации уронила бы весь
+        импорт, а не испортила бы одну строку, поэтому свойство проверяется явно,
+        а не выводится из механизма (`item_index` инкрементируется только вместе
+        с записью в словарь, и это делает тест наблюдением за поведением, а не
+        пересказом кода).
+        """
+        ws = sample_worksheet
+        ws.cell(row=16, column=4, value="Дополнительные работы")
+        ws.cell(row=16, column=10, value=12675964.53)
+        ws.cell(row=17, column=1, value="4")
+        ws.cell(row=17, column=4, value="Позиция сразу после агрегатной строки")
+        ws.cell(row=18, column=1, value="5")
+        ws.cell(row=18, column=4, value="Ещё одна позиция")
+
+        result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=18).positions
+
+        n = len(result)
+        assert set(result) == {str(i) for i in range(1, n + 1)}
+        # Если бы агрегатная строка осталась в positions (Ф2), эта позиция
+        # получила бы ключ "5"; без неё — ключом на единицу меньше, "4".
+        assert result["4"][JSON_KEY_JOB_TITLE] == "Позиция сразу после агрегатной строки"
+
+    def test_aggregate_row_lives_only_in_additional_works(self, sample_worksheet):
+        """Контракт Ф4 (спека §2.1): строка живёт только в `additional_works`.
+
+        Тест Ф2 `test_row_also_stays_in_positions` охранял переходное решение —
+        строка ВРЕМЕННО остаётся ещё и в `positions` — и спека Ф2 §2.4 прямо
+        поручила Ф4 перевернуть его на обратный контракт, когда исключение будет
+        сделано.
+
+        Усиление Ф2 не теряется, а меняет сторону сравнения. Тогда сверялось
+        КАЖДОЕ поле копии в `positions` с копией в `additional_works`: обе
+        стороны приходили из одного вызова `parse_contractor_row`, то есть
+        сверка держалась на том, что копия не собрана из чужой строки. Копии
+        больше нет — сверять не с чем, поэтому эталон здесь **независимый**: все
+        восемь денежных колонок блока подрядчика заполнены РАЗНЫМИ значениями, и
+        ожидание выписано литералом. Перепутанные местами колонки, потерянное
+        поле и лишнее поле дают красный по отдельности, а не сливаются в одно
+        «что-то не так».
         """
         ws = sample_worksheet
         ws.cell(row=16, column=4, value=TABLE_PARSE_ADDITIONAL_WORKS_TITLE)
-        # Деньги обязательны: без них сверка ниже сравнивала бы None с None и
-        # проходила бы при любой реализации — вакуозный тест.
-        ws.cell(row=16, column=10, value=12675964.53)
+        # Колонки 9–16 — весь блок подрядчика при colspan 8 (порядок задан
+        # `parse_contractor_row.get_column_keys`). Значения различны: одинаковые
+        # пропустили бы перестановку колонок молча.
+        for column, value in enumerate([11.11, 22.22, 33.33, 44.44, 55.55, 66.66, 77.77, 88.88], 9):
+            ws.cell(row=16, column=column, value=value)
 
         result = get_lot_positions(ws, CONTRACTOR, lot_start_row=13, lot_end_row=16)
 
@@ -309,14 +361,32 @@ class TestAdditionalWorksRow:
             for item in result.positions.values()
             if item[JSON_KEY_JOB_TITLE] == TABLE_PARSE_ADDITIONAL_WORKS_TITLE
         ]
-        assert len(copies) == 1, "агрегатная строка обязана остаться позицией ровно один раз"
-        in_positions = copies[0]
+        assert copies == [], "агрегатная строка не должна попадать в positions ни разу"
 
-        assert in_positions["unit_cost"]["works"] is not None, "сверка вакуозна: в строке нет денег"
-        for key, value in result.additional_works.items():
-            if key == JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW:
-                continue  # служебное поле копии, в позиции его нет
-            assert in_positions[key] == value, key
+        work = result.additional_works
+        # Состав ключей целиком: пропажа поля и лишнее поле видны так же, как
+        # неверное значение (тот же довод, что у DB_CHECKS/ORM_CHECKS в схеме).
+        assert set(work) == {
+            JSON_KEY_JOB_TITLE,
+            JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW,
+            "unit_cost",
+            "total_cost",
+        }
+        assert work[JSON_KEY_JOB_TITLE] == TABLE_PARSE_ADDITIONAL_WORKS_TITLE
+        assert work[JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW] == 16
+        assert work["unit_cost"] == {
+            "materials": "11.11",
+            "works": "22.22",
+            "indirect_costs": "33.33",
+            "total": "44.44",
+        }
+        assert work["total_cost"] == {
+            "materials": "55.55",
+            "works": "66.66",
+            "indirect_costs": "77.77",
+            "total": "88.88",
+        }
+        assert _floats_anywhere(work) == [], "деньги обязаны остаться Decimal-строкой (AGENTS.md §3)"
 
     def test_absent_row_is_valid(self, sample_worksheet):
         """42-ТУ и 449-ТУ: строки нет вовсе, это не ошибка и не warning."""

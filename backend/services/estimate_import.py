@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from models import (
     Contract,
     Estimate,
+    EstimateAdditionalWork,
     EstimateRawData,
     Lot,
     PositionItem,
@@ -43,6 +44,7 @@ from models import (
     ProposalSummaryLine,
 )
 from parser.constants import (
+    JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW,
     JSON_KEY_BASELINE_PROPOSAL,
     JSON_KEY_CHAPTER_NUMBER,
     JSON_KEY_CHAPTER_REF,
@@ -50,6 +52,7 @@ from parser.constants import (
     JSON_KEY_COMMENT_ORGANIZER,
     JSON_KEY_CONTRACTOR_ACCREDITATION,
     JSON_KEY_CONTRACTOR_ADDITIONAL_INFO,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS,
     JSON_KEY_CONTRACTOR_ADDRESS,
     JSON_KEY_CONTRACTOR_COORDINATE,
     JSON_KEY_CONTRACTOR_HEIGHT,
@@ -80,12 +83,16 @@ from parser.constants import (
     JSON_KEY_UNIT,
     JSON_KEY_UNIT_COST,
     JSON_KEY_WORKS,
+    TABLE_PARSE_ADDITIONAL_WORKS_TITLE,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
+from parser.sheet import normalized_cell_text
+from services.additional_works import build_rows, decide_owner, svedeniya_text
 from services.category_resolution import (
     CategoryResolutionContractError,
     CategoryResolver,
     ProposalResolution,
+    RowKind,
 )
 from services.unit_resolution import ResolvedUnit, UnitResolver
 
@@ -382,6 +389,15 @@ def import_estimate(
     # на смету (см. `_long_title_warning`).
     long_titles: list[LongTitle] = []
 
+    # Владелец «Сведений по дополнительным работам» — предпасс ПО ВСЕЙ СМЕТЕ,
+    # ДО цикла по лотам (спека Ф4 §2.2, §2.8 п.4): текст побайтово одинаков у
+    # всех предложений сметы (спека §1.5 факт 2), поэтому решение «чьи это
+    # деньги» обязано быть фактом уровня сметы, а не предложения — иначе
+    # расшивка задвоилась бы между предложениями. Предупреждения владельца
+    # уходят в аккумулятор ОДИН раз, здесь же.
+    owner = decide_owner(data)
+    warnings.extend(owner.warnings)
+
     replaced_id = _replace_existing(db, contract.id, amendment_no, replace, warnings)
 
     estimate = Estimate(
@@ -438,12 +454,33 @@ def import_estimate(
         _import_additional_info(db, proposal.id, proposal_data)
         _import_summary(db, proposal.id, proposal_data, value_problems)
 
+        # План резолва Ф3 строится и резолвится РОВНО ОДИН РАЗ на предложение
+        # (Global Constraint плана; спека §1.5 факт 3, §2.8 п.1) и передаётся
+        # обоим потребителям — материализации позиций и допработ. Второй
+        # независимый вызов задвоил бы ВСЕ предупреждения Ф3, а не только
+        # категорийные. `_extract_positions` — единственный предикат «это не
+        # словарь» (раньше он дублировался и здесь, и внутри `_import_positions`).
+        positions = _extract_positions(proposal_data)
+        try:
+            resolution: ProposalResolution = category_resolver.resolve_proposal(positions)
+        except CategoryResolutionContractError as exc:
+            raise EstimateImportError(f"Смету нельзя импортировать: {exc}") from exc
+        warnings.extend(resolution.warnings)
+
+        # Гейт формы 1.1.0 (спека §2.7) — сразу после плана, ДО `add_all`
+        # позиций (спека §2.8 п.2): план уже несёт классификацию «вне
+        # структуры», то есть всё нужное для гейта уже известно. Проверка ДО
+        # вставки — решение о цене (не вставлять полторы-две тысячи строк,
+        # которые всё равно уедут в откат), а не о корректности: транзакция
+        # одна, и порядок на неё не влияет.
+        _reject_stale_1_1_0_shape(positions, resolution, proposal_data)
+
         lot_positions, lot_to_match, lot_priced = _import_positions(
             db,
             proposal_id=proposal.id,
-            proposal_data=proposal_data,
+            positions=positions,
+            resolution=resolution,
             unit_resolver=unit_resolver,
-            category_resolver=category_resolver,
             value_problems=value_problems,
             warnings=warnings,
             long_titles=long_titles,
@@ -452,6 +489,20 @@ def import_estimate(
         positions_total += lot_positions
         positions_to_match.extend(lot_to_match)
         priced_seen = priced_seen or lot_priced
+
+        # Допработы — ПОСЛЕ позиций, в той же транзакции сессии B (спека §2.8
+        # п.4): владелец уже решён предпассом выше, план резолва и позиции уже
+        # готовы для резолва ссылки на раздел (спека §2.5).
+        _import_additional_works(
+            db,
+            proposal_id=proposal.id,
+            proposal_data=proposal_data,
+            positions=positions,
+            resolution=resolution,
+            is_owner=lot_key == owner.owner_lot_key,
+            lot_key=str(lot_key),
+            warnings=warnings,
+        )
 
     warnings.extend(unit_resolver.unknown_warnings())
     warnings.extend(_squash(value_problems))
@@ -624,13 +675,153 @@ def _import_summary(
         )
 
 
-def _import_positions(
+def _extract_positions(proposal_data: dict[str, Any]) -> dict[str, Any]:
+    """`contractor_items.positions`, либо `{}` — единственный предикат «это не
+    вывод парсера» (Global Constraint плана Task 5: ни одного второго предиката
+    для уже выраженного понятия). Раньше эта же проверка дублировалась внутри
+    `_import_positions`, ДО вызова резолвера; теперь план резолва и материализация
+    позиций потребляют один и тот же результат этой функции.
+    """
+    items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
+    positions = items.get(JSON_KEY_CONTRACTOR_POSITIONS) or {}
+    return positions if isinstance(positions, dict) else {}
+
+
+def _reject_stale_1_1_0_shape(
+    positions: dict[str, Any],
+    resolution: ProposalResolution,
+    proposal_data: dict[str, Any],
+) -> None:
+    """Гейт против формы парсера 1.1.0 (спека Ф4 §2.7).
+
+    Парсер `1.1.0` держал агрегатную строку допработ И в `positions`, И в
+    `additional_works` — такой payload, попав в импорт Ф4, дал бы двойной счёт
+    (`raw_data` неизменяем, поэтому уже загруженные старые сметы этот путь не
+    проходят, спека §2.11; здесь — защита от повторной загрузки такого файла
+    через новый импорт).
+
+    Ищет строку-КОПИЮ, все четыре условия обязательны разом:
+      - `RowKind.OUTSIDE_STRUCTURE` — готовый предикат Ф3 «пустые A и B»; второй
+        предикат пустоты здесь НЕ заводится (Global Constraint плана), и
+        `is_chapter=false` этим `kind` уже подразумевается;
+      - нормализованное название равно `TABLE_PARSE_ADDITIONAL_WORKS_TITLE`;
+      - денежный блок строки побайтово равен `additional_works` (все его ключи,
+        кроме `JSON_KEY_JOB_TITLE` и `JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW`).
+
+    Строка с тем же названием, но ДРУГИМИ деньгами, — не копия: она уходит
+    штатным путём Ф3 «вне структуры» со своим предупреждением, отвергать смету
+    из-за неё было бы ложным отказом (спека §3).
+
+    Ветвления по `parser_version` нет: гейт смотрит на форму данных, версия
+    остаётся аудитом (спека §2.7). Проверка ДО вставки позиций — решение о
+    цене (не тратить вставку полутора-двух тысяч строк, которые всё равно
+    уедут в откат), не о корректности: транзакция одна.
+    """
+    items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
+    aggregate_row = items.get(JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS)
+    if not isinstance(aggregate_row, dict):
+        return
+
+    money_keys = [
+        key
+        for key in aggregate_row
+        if key not in (JSON_KEY_JOB_TITLE, JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW)
+    ]
+    expected_title = TABLE_PARSE_ADDITIONAL_WORKS_TITLE.casefold()
+
+    for position_key, raw_position in positions.items():
+        if not isinstance(raw_position, dict):
+            continue
+        decision = resolution.rows.get(str(position_key))
+        if decision is None or decision.kind is not RowKind.OUTSIDE_STRUCTURE:
+            continue
+        # Нормализация — ТА ЖЕ, которой строку распознал парсер
+        # (`get_lot_positions`: `normalized_cell_text` + `casefold`), а не
+        # `_text`, который только обрезает края. Разница не косметическая:
+        # `normalized_cell_text` схлопывает ВНУТРЕННИЕ пробельные
+        # последовательности, поэтому название с двойным пробелом между словами
+        # парсер 1.1.0 распознал бы и положил в оба места, а гейт с `_text` такую
+        # копию пропустил бы — то есть двойной счёт прошёл бы ровно через ту
+        # защиту, которая от него поставлена (спека §2.7: «нормализованное
+        # название», нормализатор в проекте один).
+        title = normalized_cell_text(raw_position.get(JSON_KEY_JOB_TITLE))
+        if title.casefold() != expected_title:
+            continue
+        if all(raw_position.get(key) == aggregate_row.get(key) for key in money_keys):
+            raise EstimateImportError(
+                f"Позиция «{position_key}» имеет форму парсера 1.1.0: агрегатная "
+                "строка допработ сохранена и среди позиций, и в additional_works "
+                "с теми же деньгами — так смета была бы посчитана дважды. Смету "
+                "нужно разобрать заново текущим парсером — загрузите файл повторно."
+            )
+
+
+def _import_additional_works(
     db: Session,
     *,
     proposal_id: int,
     proposal_data: dict[str, Any],
+    positions: dict[str, Any],
+    resolution: ProposalResolution,
+    is_owner: bool,
+    lot_key: str,
+    warnings: list[str],
+) -> None:
+    """Материализует `estimate_additional_works` предложения (спека Ф4 §2.8 п.4).
+
+    Вызывается ПОСЛЕ материализации позиций, в той же транзакции сессии B: план
+    резолва и позиции уже готовы, `build_rows` резолвит ссылку на раздел по ним
+    (спека §2.5). Владелец (`is_owner`) уже решён предпассом `decide_owner` по
+    всей смете (спека §2.2), до цикла по лотам.
+
+    Текст «Сведений» перечитывается через `svedeniya_text` для ЭТОГО предложения;
+    предупреждение о похожем-но-не-точном ключе (второй элемент кортежа) здесь
+    НЕ добавляется повторно — оно уже выдано РОВНО один раз на смету через
+    `decide_owner` (спека §2.9; §1.5 факт 2: текст побайтово одинаков у всех
+    предложений сметы, поэтому повторный вызов даёт тот же текст, но не должен
+    давать второе предупреждение).
+    """
+    items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
+    aggregate_row = items.get(JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS)
+    additional_info = proposal_data.get(JSON_KEY_CONTRACTOR_ADDITIONAL_INFO)
+    text, _key_warning = svedeniya_text(additional_info if isinstance(additional_info, dict) else {})
+
+    result = build_rows(
+        additional_works=aggregate_row if isinstance(aggregate_row, dict) else None,
+        svedeniya=text,
+        resolution=resolution,
+        positions=positions,
+        is_owner=is_owner,
+        lot_key=lot_key,
+    )
+    warnings.extend(result.warnings)
+    # `db.flush()` обязателен: это последняя запись в БД на предложение (после
+    # неё в цикле начинается либо следующий лот, либо возврат из
+    # `import_estimate`), а тестовая сессия сконфигурирована с `autoflush=False`
+    # (`tests/conftest.py`) — без явного flush строки остались бы в identity
+    # map и были бы не видны последующему `SELECT` в той же транзакции.
+    db.add_all(
+        EstimateAdditionalWork(
+            proposal_id=proposal_id,
+            ordinal=row.ordinal,
+            chapter_ref_raw=row.chapter_ref_raw,
+            title=row.title,
+            total_amount=row.total_amount,
+            work_category_id=row.work_category_id,
+            raw_line=row.raw_line,
+        )
+        for row in result.rows
+    )
+    db.flush()
+
+
+def _import_positions(
+    db: Session,
+    *,
+    proposal_id: int,
+    positions: dict[str, Any],
+    resolution: ProposalResolution,
     unit_resolver: UnitResolver,
-    category_resolver: CategoryResolver,
     value_problems: list[str],
     warnings: list[str],
     long_titles: list[LongTitle],
@@ -638,26 +829,17 @@ def _import_positions(
 ) -> tuple[int, list[PositionToMatch], bool]:
     """Строки сметы. Возвращает (сколько строк, что матчить, есть ли деньги).
 
+    `positions` и `resolution` — уже готовы (план резолва строится и резолвится
+    РОВНО ОДИН РАЗ в `import_estimate`, а не здесь: второй независимый вызов
+    задвоил бы ВСЕ предупреждения Ф3, спека §1.5 факт 3). Guard «не словарь» для
+    `positions` тоже больше не дублируется здесь — единственный предикат об этом
+    теперь `_extract_positions`.
+
     `long_titles` — аккумулятор на ВСЮ смету, а не на лот: функция вызывается по
     одному разу на лот, и складывай предупреждение внутри — файл с тремя лотами
     получил бы три почти одинаковых предупреждения и до десяти примеров в каждом.
     Собирается так же, как `value_problems`.
     """
-    items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
-    positions = items.get(JSON_KEY_CONTRACTOR_POSITIONS) or {}
-    if not isinstance(positions, dict):
-        return 0, [], False
-
-    # План строится ДО единой записи в БД: тогда решение «структура не определена»
-    # атомарно по всему предложению, а не оставляет половину сметы привязанной.
-    try:
-        resolution: ProposalResolution = category_resolver.resolve_proposal(positions)
-    except CategoryResolutionContractError as exc:
-        raise EstimateImportError(
-            f"Смету нельзя импортировать: {exc}"
-        ) from exc
-    warnings.extend(resolution.warnings)
-
     rows: list[PositionItem] = []
     to_match_source: list[tuple[PositionItem, str, ResolvedUnit]] = []
     priced_seen = False

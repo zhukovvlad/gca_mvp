@@ -452,13 +452,17 @@ class TestAdditionalWorksInJson:
         assert items["additional_works"] is None
 
 
-def test_parser_version_is_bumped_for_the_new_key():
-    """1.1.0: в contractor_items появился `additional_works` (спека Ф2 §2.4).
+def test_parser_version_is_major_because_the_row_left_positions():
+    """2.0.0: мажор из-за того, что строка ИСЧЕЗЛА из `positions` (спека Ф4 §2.1).
 
-    Версия — часть контракта: она ложится в `estimate_raw_data.parser_version`,
-    и по ней потом отличают, каким кодом разобран сохранённый JSON.
+    Не появление ключа — оно уже случилось в 1.1.0 и было минором (структура
+    только дополнялась). Здесь агрегатная строка допработ перестаёт быть
+    позицией — контракт `positions` меняется в обратную сторону, что ломает
+    любого потребителя, который считал её строкой. Версия — часть контракта:
+    потребителя в коде у неё нет, но именно по ней отличают старый разбор от
+    нового в операционной проверке стенда (спека §2.11).
     """
-    assert PARSER_VERSION == "1.1.0"
+    assert PARSER_VERSION == "2.0.0"
 
 
 class TestParseEstimateFailures:

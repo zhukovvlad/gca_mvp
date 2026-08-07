@@ -22,6 +22,7 @@ from models import (
     AppSettings,
     CatalogKind,
     CatalogPosition,
+    EstimateAdditionalWork,
     EstimateRawData,
     ImportJobStatus,
     Lot,
@@ -1000,3 +1001,241 @@ class TestPositionItemCategoryColumns:
         db_session.flush()
         with rejected(db_session, contains="fk_position_items_work_category_id"):
             db_session.execute(sa.delete(WorkCategory).where(WorkCategory.id == category_id))
+
+
+# ---------------------------------------------------------------------------
+#  estimate_additional_works: расшивка «Сведений по дополнительным работам» по
+#  статьям (фаза 7, спека Ф4, миграция 0007)
+# ---------------------------------------------------------------------------
+
+class TestAdditionalWorksSchema:
+    """Пять CHECK, два именованных FK, UNIQUE и частичный индекс (спека Ф4 §2.3).
+
+    Таблица висит на `proposal_id`, а не на `estimate_id` (отступление от брифа,
+    спека §2.3): агрегатная строка принадлежит предложению, и резолв ссылки в
+    статью определён в его же пределах (§2.5). Отдельного индекса по
+    `proposal_id` нет намеренно — его обслуживает левый префикс
+    `uq_estimate_additional_works_proposal_ordinal`.
+    """
+
+    @staticmethod
+    def _any_category_id(db_session) -> int:
+        """Любая статья справочника, но обязательно ЛИСТ дерева.
+
+        Первая по `sort_order` — корень «1», и у него есть дети: его удаление
+        упирается в `work_categories_parent_id_fkey` РАНЬШЕ, чем дойдёт до
+        `fk_estimate_additional_works_work_category_id` (тот же урок Ф3, что и у
+        `TestPositionItemCategoryColumns._any_category_id`).
+        """
+        used_as_parent = sa.select(WorkCategory.parent_id).where(
+            WorkCategory.parent_id.is_not(None)
+        )
+        return db_session.execute(
+            sa.select(WorkCategory.id)
+            .where(WorkCategory.id.not_in(used_as_parent))
+            .order_by(WorkCategory.sort_order)
+            .limit(1)
+        ).scalar_one()
+
+    @staticmethod
+    def _insert_row(
+        db_session,
+        proposal_id: int,
+        *,
+        ordinal: int = 1,
+        chapter_ref_raw: str | None = None,
+        title: str = "Допработа",
+        total_amount: Decimal = Decimal("100"),
+        work_category_id: int | None = None,
+        raw_line: str | None = None,
+    ) -> int:
+        """INSERT сырым SQL, именованные параметры — модель ORM в шаге 1 ещё не
+        существует, и красный прогон обязан упасть на отсутствующем отношении,
+        а не на ImportError."""
+        return db_session.execute(
+            sa.text(
+                "insert into estimate_additional_works "
+                "(proposal_id, ordinal, chapter_ref_raw, title, total_amount, "
+                " work_category_id, raw_line) "
+                "values (:proposal_id, :ordinal, :chapter_ref_raw, :title, :total_amount, "
+                "        :work_category_id, :raw_line) "
+                "returning id"
+            ),
+            {
+                "proposal_id": proposal_id,
+                "ordinal": ordinal,
+                "chapter_ref_raw": chapter_ref_raw,
+                "title": title,
+                "total_amount": total_amount,
+                "work_category_id": work_category_id,
+                "raw_line": raw_line,
+            },
+        ).scalar_one()
+
+    def test_negative_amount_is_rejected(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        with rejected(db_session, contains="ck_estimate_additional_works_total_amount"):
+            self._insert_row(db_session, proposal.id, total_amount=Decimal("-1"))
+
+    def test_zero_amount_is_accepted(self, db_session, factories):
+        """Реальный файл несёт такую строку (спека §1.2) — `>= 0` обязан её пропускать."""
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        self._insert_row(db_session, proposal.id, total_amount=Decimal("0"))
+        db_session.flush()
+
+    @pytest.mark.parametrize("ordinal", [0, -1])
+    def test_zero_and_negative_ordinal_are_rejected(self, db_session, factories, ordinal):
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        with rejected(db_session, contains="ck_estimate_additional_works_ordinal"):
+            self._insert_row(db_session, proposal.id, ordinal=ordinal)
+
+    @pytest.mark.parametrize("title", ["", "   ", "\u00a0"])
+    def test_blank_title_is_rejected(self, db_session, factories, title):
+        """Третий случай — U+00A0 как escape (не невидимый литерал в исходнике):
+        именно его закрывает `chr(160)` в наборе символов CHECK'а."""
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        with rejected(db_session, contains="ck_estimate_additional_works_title_not_blank"):
+            self._insert_row(db_session, proposal.id, title=title)
+
+    def test_category_without_ref_is_rejected(self, db_session, factories):
+        """Статья без ссылки, из которой она получена, — ложь о происхождении:
+        единственный источник статьи в v1 — ссылка (спека §2.3)."""
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        category_id = self._any_category_id(db_session)
+        with rejected(db_session, contains="ck_estimate_additional_works_unresolved_ref"):
+            self._insert_row(
+                db_session,
+                proposal.id,
+                chapter_ref_raw=None,
+                work_category_id=category_id,
+                raw_line="3.2.2 Работа — 100 руб.",
+            )
+
+    @pytest.mark.parametrize("with_category", [True, False])
+    def test_ref_without_raw_line_is_rejected(self, db_session, factories, with_category):
+        """Ссылка (со статьёй или без) без исходной строки текста — привязка,
+        происхождение которой нечем проверить (спека §2.3). Оба случая упираются
+        в один и тот же CHECK."""
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        work_category_id = self._any_category_id(db_session) if with_category else None
+        with rejected(db_session, contains="ck_estimate_additional_works_raw_line_pairs"):
+            self._insert_row(
+                db_session,
+                proposal.id,
+                chapter_ref_raw="3.2.2",
+                work_category_id=work_category_id,
+                raw_line=None,
+            )
+
+    def test_duplicate_ordinal_in_one_proposal_is_rejected(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        self._insert_row(db_session, proposal.id, ordinal=1)
+        db_session.flush()
+        with rejected(db_session, contains="uq_estimate_additional_works_proposal_ordinal"):
+            self._insert_row(db_session, proposal.id, ordinal=1)
+
+    def test_same_ordinal_in_another_proposal_is_allowed(self, db_session, factories):
+        proposal_a = factories.ProposalFactory.create()
+        proposal_b = factories.ProposalFactory.create()
+        db_session.flush()
+        self._insert_row(db_session, proposal_a.id, ordinal=1)
+        self._insert_row(db_session, proposal_b.id, ordinal=1)
+        db_session.flush()
+
+    def test_deleting_a_used_category_hits_restrict(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        category_id = self._any_category_id(db_session)
+        self._insert_row(
+            db_session,
+            proposal.id,
+            chapter_ref_raw="3.2.2",
+            work_category_id=category_id,
+            raw_line="3.2.2 Работа — 100 руб.",
+        )
+        db_session.flush()
+        with rejected(db_session, contains="fk_estimate_additional_works_work_category_id"):
+            db_session.execute(sa.delete(WorkCategory).where(WorkCategory.id == category_id))
+
+    def test_deleting_the_proposal_cascades_records(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        db_session.flush()
+        self._insert_row(db_session, proposal.id, ordinal=1)
+        db_session.flush()
+
+        db_session.execute(sa.delete(Proposal).where(Proposal.id == proposal.id))
+        remaining = db_session.execute(
+            sa.text("select count(*) from estimate_additional_works where proposal_id = :id"),
+            {"id": proposal.id},
+        ).scalar_one()
+        assert remaining == 0
+
+    # Замеренные определения из PostgreSQL (см. TestWorkCategoriesSchema выше —
+    # тот же довод: собирать их по памяти нельзя, функция переформатирует
+    # выражение и добавляет свои `::text`/скобки).
+    DB_CHECKS = {
+        "ck_estimate_additional_works_ordinal": "CHECK ((ordinal > 0))",
+        "ck_estimate_additional_works_raw_line_pairs": (
+            "CHECK (((raw_line IS NOT NULL) OR ((chapter_ref_raw IS NULL)"
+            " AND (work_category_id IS NULL))))"
+        ),
+        "ck_estimate_additional_works_title_not_blank": (
+            "CHECK ((btrim(title, ((((' '::text || chr(9)) || chr(10)) || chr(13)) || chr(160)))"
+            " <> ''::text))"
+        ),
+        "ck_estimate_additional_works_total_amount": "CHECK ((total_amount >= (0)::numeric))",
+        "ck_estimate_additional_works_unresolved_ref": (
+            "CHECK (((chapter_ref_raw IS NOT NULL) OR (work_category_id IS NULL)))"
+        ),
+    }
+
+    # Симметрично DB_CHECKS выше: та же пятёрка выражений, но со стороны ORM.
+    ORM_CHECKS = {
+        "ck_estimate_additional_works_total_amount": "total_amount >= 0",
+        "ck_estimate_additional_works_ordinal": "ordinal > 0",
+        "ck_estimate_additional_works_title_not_blank": (
+            "btrim(title, ' ' || chr(9) || chr(10) || chr(13) || chr(160)) <> ''"
+        ),
+        "ck_estimate_additional_works_unresolved_ref": (
+            "chapter_ref_raw IS NOT NULL OR work_category_id IS NULL"
+        ),
+        "ck_estimate_additional_works_raw_line_pairs": (
+            "raw_line IS NOT NULL OR (chapter_ref_raw IS NULL AND work_category_id IS NULL)"
+        ),
+    }
+
+    def test_database_holds_the_declared_expressions(self, db_session):
+        """Что реально легло в БД: все пять CHECK, сравнение словарём целиком —
+        так видно и подмену выражения, и появление лишнего CHECK, и исчезновение
+        нужного (см. TestWorkCategoriesSchema.test_database_holds_the_declared_expressions;
+        `alembic check` CHECK-выражения не сравнивает вовсе — замерено на Ф1)."""
+        rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select conname, pg_get_constraintdef(oid) from pg_constraint "
+                    "where conrelid = 'estimate_additional_works'::regclass and contype = 'c'"
+                )
+            ).all()
+        )
+        assert rows == self.DB_CHECKS
+
+    def test_orm_declares_the_same_expressions(self):
+        """Вторая сторона парности: что объявлено в models.py.
+
+        Гейт против дрейфа между миграцией 0007 и ORM: `alembic check` этого не
+        ловит (замер Ф1), поэтому расхождение обязана поймать эта пара тестов —
+        один по БД (выше), один по declarative-модели (здесь).
+        """
+        checks = {
+            c.name: str(c.sqltext)
+            for c in EstimateAdditionalWork.__table__.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        assert checks == self.ORM_CHECKS

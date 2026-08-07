@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from parser.constants import (
+    JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW,
     JSON_KEY_ARTICLE_SMR,
     JSON_KEY_BASELINE_PROPOSAL,
     JSON_KEY_CHAPTER_NUMBER,
@@ -20,6 +21,7 @@ from parser.constants import (
     JSON_KEY_COMMENT_ORGANIZER,
     JSON_KEY_CONTRACTOR_ACCREDITATION,
     JSON_KEY_CONTRACTOR_ADDITIONAL_INFO,
+    JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS,
     JSON_KEY_CONTRACTOR_ADDRESS,
     JSON_KEY_CONTRACTOR_COORDINATE,
     JSON_KEY_CONTRACTOR_HEIGHT,
@@ -58,6 +60,7 @@ from parser.constants import (
     JSON_KEY_WORKS,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
+from services.additional_works import SVEDENIYA_KEY
 
 DEFAULT_OBJECT = "Объект 0"
 DEFAULT_ADDRESS = "ул. Тестовая, 0"
@@ -125,6 +128,46 @@ def summary_line(job_title: str, total: str | None = None) -> dict[str, Any]:
     }
 
 
+def additional_works_row(
+    *,
+    total: str | None = None,
+    job_title: str = "Дополнительные работы",
+    source_row: int = 999,
+    suggested_quantity: int | float | None = None,
+    unit_cost: dict[str, Any] | None = None,
+    total_cost: dict[str, Any] | None = None,
+    organizer_total: str | None = None,
+    comment_contractor: str | None = None,
+) -> dict[str, Any]:
+    """Агрегатная строка допработ в форме, которую строит парсер (Ф4, спека
+    §2.1): `job_title` и номер строки листа, плюс денежный блок подрядчика —
+    те же пять ключей, что отдаёт `parse_contractor_row` для `colspan=11`
+    (`get_lot_positions.py:153-157`) и что использует `summary_line`. `total`
+    ложится в `total_cost.total` — контрольная сумма расшивки (спека §2.4,
+    §2.6). Гейт формы 1.1.0 (спека §2.7) сравнивает ИМЕННО эти пять ключей
+    строки-позиции с этими же ключами здесь, поэтому форма обязана быть
+    побайтово той же, что у `position()`.
+    """
+    return {
+        JSON_KEY_JOB_TITLE: job_title,
+        JSON_KEY_ADDITIONAL_WORKS_SOURCE_ROW: source_row,
+        JSON_KEY_SUGGESTED_QUANTITY: suggested_quantity,
+        JSON_KEY_UNIT_COST: unit_cost or _cost(),
+        JSON_KEY_TOTAL_COST: total_cost or _cost(total=total),
+        JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST: organizer_total,
+        JSON_KEY_COMMENT_CONTRACTOR: comment_contractor,
+    }
+
+
+def svedeniya_info(*lines: str) -> dict[str, str]:
+    """`additional_info` с ключом «Сведения по дополнительным работам» (спека
+    §2.4): значение — переданные строки, склеенные `\\n`, как их отдаёт
+    `get_additional_info`. Ключ берётся из `services.additional_works.SVEDENIYA_KEY`,
+    чтобы тестовый ключ не мог разойтись с продакшен-константой.
+    """
+    return {SVEDENIYA_KEY: "\n".join(lines)}
+
+
 def proposal(
     positions: list[dict[str, Any]],
     *,
@@ -132,6 +175,7 @@ def proposal(
     inn: str = DEFAULT_INN,
     summary: dict[str, Any] | None = None,
     additional_info: dict[str, str] | None = None,
+    additional_works: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         JSON_KEY_CONTRACTOR_TITLE: title,
@@ -151,6 +195,10 @@ def proposal(
                 JSON_KEY_TOTAL_COST_VAT: summary_line("Итого, руб. с учётом НДС", "1200.00"),
                 JSON_KEY_VAT: summary_line("В том числе НДС", "200.00"),
             },
+            # Ключ создаётся ВСЕГДА, как это делает парсер (`get_proposals.py:92`):
+            # `contractor_items` у него всегда несёт `additional_works`, значение —
+            # `None`, если агрегатной строки в файле нет (спека §1.5 факт 7).
+            JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS: additional_works,
         },
         JSON_KEY_CONTRACTOR_ADDITIONAL_INFO: additional_info
         if additional_info is not None
