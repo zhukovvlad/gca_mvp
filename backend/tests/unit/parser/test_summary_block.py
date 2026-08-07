@@ -227,3 +227,114 @@ class TestArithmetic:
         report = check_arithmetic(lines)
         assert report.broken == []
         assert report.unverified == []
+
+
+from parser.summary_block import SummaryBlock, build_summary_block
+
+
+def _summary_row(row: int, label, **amounts) -> SummaryRow:
+    return SummaryRow(row=row, label=label, values=_line(**amounts))
+
+
+def _full_triple_rows(gross="120", vat="20", net="100") -> list[SummaryRow]:
+    return [
+        _summary_row(10, "ИТОГО, руб. с учетом НДС", **{c: gross for c in MONEY_COLUMNS}),
+        _summary_row(11, "В том числе НДС", **{c: vat for c in MONEY_COLUMNS}),
+        _summary_row(12, "ИТОГО, руб. без учета НДС", **{c: net for c in MONEY_COLUMNS}),
+    ]
+
+
+def _warned(block: SummaryBlock, fragment: str) -> list[str]:
+    return [text for text in block.warnings if fragment in text]
+
+
+class TestBuildSummaryBlock:
+    def test_three_rows_give_three_keys_and_no_warnings(self):
+        block = build_summary_block(_full_triple_rows(), search_start_row=5)
+        assert sorted(block.lines) == sorted([INCLUDING, VAT, EXCLUDING])
+        assert block.warnings == []
+
+    def test_job_title_keeps_the_raw_cell_value(self):
+        block = build_summary_block(_full_triple_rows(), search_start_row=5)
+        assert block.lines[INCLUDING]["job_title"] == "ИТОГО, руб. с учетом НДС"
+
+    def test_values_are_carried_through_untouched(self):
+        block = build_summary_block(_full_triple_rows(), search_start_row=5)
+        assert block.lines[VAT]["total_cost"]["total"] == "20"
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            _full_triple_rows(),
+            [_summary_row(10, "ИТОГО, руб. с учетом НДС"), _summary_row(11, "В том числе НДС")],
+            [_summary_row(10, "Незнакомая"), _summary_row(11, "Незнакомая")],
+        ],
+    )
+    def test_invariant_rows_equal_keys(self, rows):
+        """Инвариант §2.3 — на каждом входе."""
+        block = build_summary_block(rows, search_start_row=5)
+        assert len(block.lines) == len(rows)
+
+
+class TestWarnings:
+    def test_block_not_found_names_the_search_start(self):
+        block = build_summary_block([], search_start_row=11)
+        assert block.lines == {}
+        assert _warned(block, "Блок итогов не найден")
+        assert "11" in _warned(block, "Блок итогов не найден")[0]
+
+    def test_unrecognized_labels_are_one_aggregated_warning_with_the_actual_text(self):
+        rows = [_summary_row(10, "Первое чужое"), _summary_row(11, "Второе чужое")]
+        block = build_summary_block(rows, search_start_row=5)
+        found = _warned(block, "не распознан")
+        assert len(found) == 1
+        assert "Первое чужое" in found[0] and "Второе чужое" in found[0]
+
+    def test_examples_are_truncated_with_a_tail(self):
+        rows = [_summary_row(10 + i, f"Чужая метка {i}") for i in range(7)]
+        block = build_summary_block(rows, search_start_row=5)
+        found = _warned(block, "не распознан")
+        assert len(found) == 1
+        assert "…и ещё 2" in found[0]
+
+    def test_duplicate_label_is_its_own_warning(self):
+        rows = [
+            _summary_row(10, "ИТОГО, руб. с учетом НДС"),
+            _summary_row(11, "ИТОГО, руб. с учетом НДС"),
+        ]
+        block = build_summary_block(rows, search_start_row=5)
+        found = _warned(block, "встретилась дважды")
+        assert len(found) == 1
+        assert "merged_11" in found[0]
+
+    def test_empty_vat_row_warns_without_claiming_anything_about_the_header(self):
+        rows = [
+            _summary_row(10, "ИТОГО, руб. с учетом НДС", **{c: "120" for c in MONEY_COLUMNS}),
+            _summary_row(11, "В том числе НДС"),
+        ]
+        block = build_summary_block(rows, search_start_row=5)
+        found = _warned(block, "суммы не указаны")
+        assert len(found) == 1
+        assert "не заявлен" not in found[0], "предупреждение не имеет права судить о шапке файла"
+
+    def test_missing_gross_row_warns_and_nothing_is_reconstructed(self):
+        rows = [
+            _summary_row(10, "В том числе НДС", **{c: "20" for c in MONEY_COLUMNS}),
+            _summary_row(11, "ИТОГО, руб. без учета НДС", **{c: "100" for c in MONEY_COLUMNS}),
+        ]
+        block = build_summary_block(rows, search_start_row=5)
+        assert INCLUDING not in block.lines
+        assert _warned(block, "Валовое ИТОГО отсутствует")
+
+    def test_broken_arithmetic_warns(self):
+        block = build_summary_block(_full_triple_rows(net="99"), search_start_row=5)
+        assert _warned(block, "не сходится")
+
+    def test_unverified_arithmetic_is_a_different_warning(self):
+        block = build_summary_block(_full_triple_rows(vat="NaN"), search_start_row=5)
+        assert _warned(block, "не проверена")
+        assert not _warned(block, "не сходится")
+
+    def test_full_correct_block_is_completely_silent(self):
+        """Форма fixture после Task 1: ни одного предупреждения."""
+        assert build_summary_block(_full_triple_rows(), search_start_row=5).warnings == []

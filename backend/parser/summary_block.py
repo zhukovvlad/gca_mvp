@@ -18,6 +18,7 @@ from .constants import (
     JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     JSON_KEY_INDIRECT_COSTS,
     JSON_KEY_INITIAL_COST,
+    JSON_KEY_JOB_TITLE,
     JSON_KEY_MATERIALS,
     JSON_KEY_TOTAL,
     JSON_KEY_TOTAL_COST,
@@ -231,3 +232,96 @@ def check_arithmetic(lines: Mapping[str, Any]) -> ArithmeticReport:
             broken.append(f"«{column}»: с НДС {including}, НДС {vat}, без НДС {excluding}")
 
     return ArithmeticReport(broken=broken, unverified=unverified)
+
+
+@dataclass(frozen=True)
+class SummaryBlock:
+    """Разобранный блок итогов и всё, что о нём надо сказать человеку."""
+
+    lines: dict[str, Any]
+    """Ключ → строка блока; форма та же, что у прежнего `get_summary`."""
+
+    warnings: list[str]
+    """Parser warnings (сессия A): каждое описывает ФАЙЛ, а не домен."""
+
+
+def build_summary_block(rows: Sequence[SummaryRow], *, search_start_row: int) -> SummaryBlock:
+    """Собирает блок итогов из физических строк и объясняет отклонения.
+
+    Инвариант: `len(lines) == len(rows)` при любом входе (спека §2.3). Пустой
+    `rows` означает ровно одно — блок не найден: найденный блок начинается со
+    строки с меткой в колонке A, то есть непустой.
+    """
+    if not rows:
+        return SummaryBlock(
+            lines={},
+            warnings=[
+                f"Блок итогов не найден: от строки {search_start_row} до конца листа "
+                "нет ни одной строки с объединённой ячейкой в колонке A. "
+                "Итоговых сумм у сметы не будет."
+            ],
+        )
+
+    assignment = assign_summary_keys(rows)
+    lines: dict[str, Any] = {}
+    for key, item in zip(assignment.keys, rows, strict=True):
+        lines[key] = {JSON_KEY_JOB_TITLE: item.label, **item.values}
+
+    warnings: list[str] = []
+
+    if assignment.unrecognized:
+        places = [f"строка {row}: «{label}»" for row, label in assignment.unrecognized]
+        warnings.append(
+            f"В блоке итогов не распознано меток: {len(places)} — {_examples(places)}. "
+            "Значения сохранены под техническими ключами `merged_<строка>`; "
+            "проверьте форму файла."
+        )
+
+    if assignment.duplicated:
+        places = [
+            f"строка {row}: «{label}» уже была в строке {first} — записана как `merged_{row}`"
+            for row, label, first in assignment.duplicated
+        ]
+        warnings.append(
+            f"В блоке итогов метка встретилась дважды: {len(places)} — {_examples(places)}. "
+            "Вторая строка не перезаписала первую."
+        )
+
+    vat_line = lines.get(JSON_KEY_VAT_AMOUNT)
+    if vat_line is not None and _has_no_money(vat_line):
+        row = next(item.row for key, item in zip(assignment.keys, rows, strict=True) if key == JSON_KEY_VAT_AMOUNT)
+        warnings.append(
+            f"В строке «{TABLE_PARSE_SUMMARY_VAT}» (строка {row}) суммы не указаны. "
+            "Сумма НДС по этой смете неизвестна."
+        )
+
+    if JSON_KEY_TOTAL_COST_INCLUDING_VAT not in lines:
+        present = ", ".join(f"«{normalized_cell_text(item.label)}»" for item in rows)
+        warnings.append(
+            f"Валовое ИТОГО отсутствует: строки «{TABLE_PARSE_SUMMARY_INCLUDING_VAT}» в блоке нет. "
+            f"В блоке есть: {present}. Сумма не восстанавливалась сложением — "
+            "парсер отдаёт только то, что есть в файле."
+        )
+
+    report = check_arithmetic(lines)
+    if report.broken:
+        warnings.append(
+            f"Арифметика НДС не сходится в колонках: {len(report.broken)} — "
+            f"{_examples(report.broken)}. Числа взяты из файла и не исправлялись."
+        )
+    if report.unverified:
+        # «неполных ИЛИ негодных»: сюда же попадают `n/a`, `NaN`, `Infinity` —
+        # текст обязан покрывать оба входа ветки, иначе он уже собственного
+        # условия (та же ошибка, что «НДС не заявлен» в §2.7).
+        warnings.append(
+            f"Арифметика НДС не проверена из-за неполных или негодных данных: "
+            f"{len(report.unverified)} — {_examples(report.unverified)}."
+        )
+
+    return SummaryBlock(lines=lines, warnings=warnings)
+
+
+def _has_no_money(line: Mapping[str, Any]) -> bool:
+    """Ни одной годной или хотя бы непустой суммы в строке."""
+    block = line.get(JSON_KEY_TOTAL_COST) or {}
+    return all(to_decimal(block.get(column)) == (None, None) for column in _MONEY_COLUMNS)
