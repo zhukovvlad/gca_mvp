@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from decimal import Decimal, getcontext
+from decimal import Decimal, Inexact, Rounded, getcontext
 
 import pytest
 
@@ -302,6 +302,38 @@ class TestCheckRateAgainstSummary:
         # факт «не проверено»: без них читателю нечем понять, что случилось.
         # Проверка добавлена по находке финального ревью ветки.
         assert "1E+999999999" in report.unverified[0]
+
+    @pytest.mark.parametrize("signal", [Inexact, Rounded])
+    def test_inexact_division_survives_globally_enabled_traps(self, signal):
+        """Округление разрешено КОДОМ, а не совпадением с умолчаниями Python.
+
+        Найдено внешним ревью (Codex) и воспроизведено замером до согласия:
+        `localcontext()` без аргумента копирует текущий контекст **вместе с его
+        трапами**, поэтому включённый где-то `Inexact` или `Rounded` превращал
+        штатное деление в «сверка не проведена» — `1 / 3` давало четыре колонки
+        «деление невозможно». По умолчанию оба трапа выключены, и дефект был
+        латентным: соседний тест стережёт лишь отсутствие мутации глобального
+        контекста и этого поймать не мог.
+
+        Здесь трапы включаются НАМЕРЕННО и до вызова: тест проверяет не «мы не
+        трогаем глобальный контекст», а «нам всё равно, каков он».
+
+        `1 / 3 * 100 = 33.333…` — частное, не представимое конечной десятичной
+        дробью, то есть ровно тот случай, ради которого спека §2.4 округление
+        разрешает. Заявленная ставка `33.33` отличается от него на `0.0033…`,
+        то есть внутри допуска: сверка обязана пройти тишиной.
+        """
+        lines = _pair("1", "3")
+        saved = getcontext().traps[signal]
+        try:
+            getcontext().traps[signal] = True
+
+            report = check_rate_against_summary(Decimal("33.33"), lines)
+
+            assert report.unverified == []
+            assert report.mismatched == []
+        finally:
+            getcontext().traps[signal] = saved
 
     def test_global_decimal_context_is_left_untouched(self):
         """Сверка идёт в локальном контексте — глобальный контекст приложения не трогается."""

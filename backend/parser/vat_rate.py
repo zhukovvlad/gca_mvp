@@ -18,7 +18,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, DecimalException, DivisionByZero, InvalidOperation, Overflow, localcontext
+from decimal import (
+    Context,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from typing import Any
 
 from .constants import JSON_KEY_TOTAL_COST, JSON_KEY_TOTAL_COST_EXCLUDING_VAT, JSON_KEY_VAT_AMOUNT
@@ -40,6 +48,27 @@ VAT_RATE_MAX = Decimal(100)
 #: известный класс ошибки от известного шума, а не ловит сколь угодно тонкое
 #: расхождение (спека §2.5).
 VAT_RATE_TOLERANCE = Decimal("0.01")
+
+#: Контекст, в котором выполняется деление при сверке ставки.
+#:
+#: Строится ЯВНО и не наследует глобальный: `localcontext()` без аргумента
+#: копирует текущий контекст ВМЕСТЕ С ЕГО ТРАПАМИ, поэтому включённый где-то
+#: `Inexact` или `Rounded` превращал бы штатное деление в «сверка не проведена»
+#: — замерено: `1/3` при глобальном трапе на `Inexact` даёт четыре колонки
+#: «деление невозможно». Спека §2.4 округление здесь **разрешает** (частное
+#: почти никогда не представимо конечной десятичной дробью), и это требование
+#: обязано держаться кодом, а не совпадением с умолчаниями интерпретатора.
+#:
+#: Список `traps` задаёт набор ПОЛНОСТЬЮ: три сигнала включены, все прочие
+#: выключены. Зеркально Ф4a, где проверялось сложение и трапы на неточность,
+#: наоборот, были обязательны.
+#:
+#: Объект модуль-уровневый и не мутируется: `localcontext(ctx)` работает с
+#: копией переданного контекста.
+_DIVISION_CONTEXT = Context(
+    prec=ARITHMETIC_PRECISION,
+    traps=[Overflow, DivisionByZero, InvalidOperation],
+)
 
 #: Человекочитаемые названия двух групп колонок ценового блока. Используются
 #: только в текстах предупреждений — чтобы «шапки заявляют разные ставки» и
@@ -194,11 +223,12 @@ def check_rate_against_summary(rate: Decimal, lines: Mapping[str, Any]) -> RateC
 
     Годность каждого значения определяется ТЕМ ЖЕ `to_decimal`, что у Ф4a —
     одна правда о годности на весь блок итогов. Деление выполняется в
-    локальном контексте `Decimal`: точность `ARITHMETIC_PRECISION`, трапы на
-    `Overflow`, `DivisionByZero` и `InvalidOperation`; трапов на `Inexact` и
-    `Rounded` НЕТ — частное почти никогда не представимо конечной десятичной
-    дробью, и деление неточно по своей природе (спека §2.4). Глобальный
-    контекст приложения не меняется.
+    `_DIVISION_CONTEXT` — контексте, заданном явно, а не унаследованном от
+    глобального: точность `ARITHMETIC_PRECISION`, трапы ровно на `Overflow`,
+    `DivisionByZero` и `InvalidOperation`, всё остальное выключено. Трапов на
+    `Inexact` и `Rounded` нет намеренно — частное почти никогда не представимо
+    конечной десятичной дробью, и деление неточно по своей природе (спека §2.4).
+    Глобальный контекст приложения при этом не меняется.
     """
     mismatched: list[str] = []
     unverified: list[str] = []
@@ -239,11 +269,7 @@ def check_rate_against_summary(rate: Decimal, lines: Mapping[str, Any]) -> RateC
             continue
 
         try:
-            with localcontext() as context:
-                context.prec = ARITHMETIC_PRECISION
-                context.traps[Overflow] = True
-                context.traps[DivisionByZero] = True
-                context.traps[InvalidOperation] = True
+            with localcontext(_DIVISION_CONTEXT):
                 derived = vat_number / excluding_number * 100
                 difference = abs(derived - rate)
         except DecimalException:
