@@ -62,7 +62,7 @@ class LotsResult:
     warnings: list[str]
 
 
-def read_lots_and_boundaries(ws: Worksheet) -> LotsResult:
+def read_lots_and_boundaries(ws: Worksheet, *, header_row: int) -> LotsResult:
     """Находит лоты, вычисляет их границы и собирает данные по каждому.
 
     Шаг 1 — `find_lot_starts`. Шаг 2 — для каждого лота конечной строкой служит
@@ -71,6 +71,9 @@ def read_lots_and_boundaries(ws: Worksheet) -> LotsResult:
 
     Args:
         ws: лист Excel.
+        header_row: номер строки шапки таблицы позиций, уже найденный вызывающей
+            стороной (`estimate._validate_column_headers`); прокидывается в
+            `get_proposals` без изменений.
 
     Returns:
         `LotsResult`: словарь `{"lot_1": {"lot_title": str, "proposals": {...}}}`
@@ -93,7 +96,7 @@ def read_lots_and_boundaries(ws: Worksheet) -> LotsResult:
         # Лот кончается перед началом следующего; последний — на конце листа.
         end_row = lot_starts[i + 1]["start_row"] - 1 if i + 1 < len(lot_starts) else max_sheet_row
 
-        lot = get_proposals(ws, start_row=start_row, end_row=end_row)
+        lot = get_proposals(ws, start_row=start_row, end_row=end_row, header_row=header_row)
         warnings.extend(lot.warnings)
 
         lot_key = f"{JSON_KEY_LOT_INDEX}{i + 1}"

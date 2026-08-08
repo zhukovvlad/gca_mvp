@@ -473,6 +473,12 @@ class Proposal(Base):
     contractor_coordinate = Column(String(255), nullable=True)
     contractor_width = Column(Integer, nullable=True)
     contractor_height = Column(Integer, nullable=True)
+    # Ставка НДС, заявленная в шапке ценового блока (фаза 7, спека Ф4б §2.9) —
+    # факт файла, а не наш вывод: деление по блоку итогов служит только
+    # перекрёстной проверкой при разборе, поэтому колонки `vat_rate_source`
+    # здесь нет — источник у сохранённого значения ровно один. Хранится в
+    # процентных пунктах (`20`, не `0.20`).
+    vat_rate = Column(Numeric, nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -485,6 +491,13 @@ class Proposal(Base):
     __table_args__ = (
         UniqueConstraint("lot_id", name="uq_proposals_lot_id"),
         Index("ix_proposals_contractor_id", "contractor_id"),
+        # Запрет непредставимого состояния, а не основной фильтр (спека §2.9):
+        # защитная конверсия при импорте отсеивает NaN/Infinity и диапазон ДО
+        # вставки строки — CHECK стережёт правку мимо приложения.
+        CheckConstraint(
+            "vat_rate IS NULL OR (vat_rate >= 0 AND vat_rate <= 100)",
+            name="ck_proposals_vat_rate",
+        ),
     )
 
 

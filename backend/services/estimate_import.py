@@ -82,6 +82,7 @@ from parser.constants import (
     JSON_KEY_TOTAL_COST,
     JSON_KEY_UNIT,
     JSON_KEY_UNIT_COST,
+    JSON_KEY_VAT_RATE,
     JSON_KEY_WORKS,
     TABLE_PARSE_ADDITIONAL_WORKS_TITLE,
 )
@@ -213,6 +214,35 @@ def _quantity(value: Any, problems: list[str], where: str) -> Decimal | None:
     except (InvalidOperation, ValueError):
         problems.append(f"{where}: значение «{value}» не число, записано NULL")
         return None
+
+
+def _vat_rate(value: Any, problems: list[str], where: str) -> Decimal | None:
+    """Ставка НДС парсера → `Decimal` в диапазоне 0..100 (спека Ф4б §2.9).
+
+    `_money` здесь НЕ годится: он ловит только `InvalidOperation`/`ValueError`,
+    а `Decimal("NaN")` и `Decimal("Infinity")` конструируются БЕЗ исключения.
+    `'NaN'::numeric` в PostgreSQL больше любого числа, поэтому `CHECK`
+    (`ck_proposals_vat_rate`) дал бы `IntegrityError` на `<= 100` и уронил бы
+    весь импорт вместо записи `NULL`. Здесь годность проверяется явно —
+    `is_finite()` ДО сравнения диапазона, — а не try/except вокруг `Decimal(...)`.
+
+    `CHECK` в схеме при этом остаётся — как запрет непредставимого состояния,
+    а не как основной фильтр.
+    """
+    if value is None:
+        return None
+    try:
+        rate = Decimal(str(value))
+    except InvalidOperation:
+        problems.append(f"{where}: значение «{value}» не число, записано NULL")
+        return None
+    if not rate.is_finite():
+        problems.append(f"{where}: значение «{value}» не конечное число, записано NULL")
+        return None
+    if rate < 0 or rate > 100:
+        problems.append(f"{where}: значение «{value}» вне диапазона 0..100, записано NULL")
+        return None
+    return rate
 
 
 def _text(value: Any) -> str | None:
@@ -447,6 +477,12 @@ def import_estimate(
             contractor_coordinate=_text(proposal_data.get(JSON_KEY_CONTRACTOR_COORDINATE)),
             contractor_width=_int_or_none(proposal_data.get(JSON_KEY_CONTRACTOR_WIDTH)),
             contractor_height=_int_or_none(proposal_data.get(JSON_KEY_CONTRACTOR_HEIGHT)),
+            # Payload без ключа `vat_rate` (разбор парсером ≤ 3.0.0) даёт `None`
+            # тем же `.get()` без гейта по версии — гейта по версии проект себе
+            # запретил (спека §2.9, Ф4 §2.7, Ф4a §2.12).
+            vat_rate=_vat_rate(
+                proposal_data.get(JSON_KEY_VAT_RATE), value_problems, f"лот «{lot_key}», ставка НДС"
+            ),
         )
         db.add(proposal)
         db.flush()

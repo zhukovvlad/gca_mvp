@@ -779,3 +779,139 @@ def test_fixture_parses_without_any_summary_warning(imported_fixture):
         if marker in text
     ]
     assert found == []
+
+
+# ---------------------------------------------------------------------------
+# Ф4б (Task 2): ставка НДС заявлена суффиксом групповых шапок ценового блока.
+# Правка вернула fixture в форму реальных файлов, где шапка и блок итогов
+# согласованы (граница 2 Ф4a, спека Ф4б §2.10). Здесь — только форма ВХОДА;
+# путь «лист → JSON → колонка БД» проверяется отдельно (Task 7).
+# ---------------------------------------------------------------------------
+
+#: Строка шапки колонок листа и якоря объединённых групповых шапок K9:N9 и O9:R9.
+#: Номера замерены (спека §1.1) и одинаковы у всех четырёх известных файлов, но
+#: продакшен их не зашивает: строку шапки он ищет `_validate_column_headers`.
+FIXTURE_COLUMN_HEADER_ROW = 9
+FIXTURE_UNIT_COST_HEADER_COLUMN = 11
+FIXTURE_TOTAL_COST_HEADER_COLUMN = 15
+FIXTURE_MONEY_GROUP_MERGES = ("K9:N9", "O9:R9")
+
+#: Тексты обеих групповых шапок после правки Task 2. Это заголовки колонок, а не
+#: коммерческие данные, — политика `samples/` их коммитить не запрещает.
+FIXTURE_UNIT_COST_HEADER = "Цена за ед. изм., RUB, ОСН, с учетом НДС 20%"
+FIXTURE_TOTAL_COST_HEADER = "Стоимость всего, RUB, ОСН, с учетом НДС 20%"
+
+
+def test_fixture_column_headers_declare_the_vat_rate(fixture_worksheet):
+    """Форма самого входа, прочитанная с листа, — не через парсер.
+
+    Стережёт правку fixture ровно так же, как это делает
+    `test_fixture_summary_block_has_three_filled_rows` для блока итогов: если
+    суффикс из шапки пропадёт, главный положительный путь Ф4б останется без
+    закоммиченного входа, и это должно быть видно сразу, а не через
+    «предупреждений стало на одно больше».
+
+    Целость объединений проверяется здесь же и не для красоты: ставка заявлена
+    НАД группой из четырёх колонок, и снятое объединение оставило бы текст на
+    месте при сломанной раскладке — то есть тест на один текст прошёл бы.
+    """
+    ws = fixture_worksheet
+    unit_cost = ws.cell(
+        row=FIXTURE_COLUMN_HEADER_ROW, column=FIXTURE_UNIT_COST_HEADER_COLUMN
+    ).value
+    total_cost = ws.cell(
+        row=FIXTURE_COLUMN_HEADER_ROW, column=FIXTURE_TOTAL_COST_HEADER_COLUMN
+    ).value
+    assert unit_cost == FIXTURE_UNIT_COST_HEADER
+    assert total_cost == FIXTURE_TOTAL_COST_HEADER
+
+    merged = {str(rng) for rng in ws.merged_cells.ranges}
+    for group in FIXTURE_MONEY_GROUP_MERGES:
+        assert group in merged, f"объединение {group} потеряно"
+
+
+# ---------------------------------------------------------------------------
+# Ф4б (Task 7): ставка НДС от листа fixture до колонки `proposals.vat_rate`
+# (спека §4.4, п.3-6). Пункты 1, 2, 7 и 8 закрыты существующими тестами этого
+# файла (`test_fixture_column_headers_declare_the_vat_rate`, счётчики Ф3,
+# `TestAdditionalWorksInDatabase`/`test_identity_holds_on_the_stored_records`
+# для Ф4a) и здесь не дублируются. Утверждения ниже независимы друг от друга.
+# ---------------------------------------------------------------------------
+
+#: Тексты четырёх предупреждений Ф4б — подстроки взяты буквально из
+#: `backend/parser/vat_rate.py` (`_rate_not_obtained_warning`,
+#: `_rates_disagree_warning`, `build_vat_rate`). Перечислены поимённо, а не
+#: одним словом «ставк»: такой фильтр не заметил бы, если тексты разойдутся.
+VAT_RATE_WARNING_MARKERS = (
+    "Ставка НДС не получена из шапки",
+    "заявляют разные ставки НДС",
+    "расходится с блоком итогов",
+    "Сверка ставки НДС с блоком итогов не проведена",
+)
+
+
+def test_fixture_raw_vat_rate_is_a_decimal_string_on_the_contractor_level(imported_fixture):
+    """П.3: в сыром JSON `vat_rate == "20"` — строка, не `Decimal` и не число.
+
+    Ключ лежит на уровне подрядчика, рядом с `contractor_width` (спека §2.1),
+    а не внутри `contractor_items` — второе утверждение проверяется здесь же,
+    чтобы отличить «значения нет вовсе» от «значение лежит не там».
+    """
+    contractor = imported_fixture.raw["lots"]["lot_1"]["proposals"]["contractor_1"]
+    assert contractor["vat_rate"] == "20"
+    assert isinstance(contractor["vat_rate"], str)
+    assert "contractor_width" in contractor  # соседство, на которое опирается решение §2.1
+    assert "vat_rate" not in contractor["contractor_items"]
+
+
+def test_fixture_database_vat_rate_is_a_decimal_twenty(committing_db, imported_fixture):
+    """П.4: `proposals.vat_rate == Decimal("20")` — сравнение `Decimal` с `Decimal`."""
+    stored = committing_db.execute(
+        sa.select(Proposal.vat_rate).where(Proposal.id == imported_fixture.proposal_id)
+    ).scalar_one()
+    assert stored == Decimal("20")
+
+
+@pytest.mark.parametrize(
+    "column_index",
+    [0, 1, 2, 3],
+    ids=["materials", "works", "indirect_costs", "total"],
+)
+def test_fixture_summary_block_vat_ratio_is_within_tolerance(fixture_worksheet, column_index):
+    """П.5: четыре отношения блока итогов проходят допуск.
+
+    Эталон считается ЗДЕСЬ, из значений листа (строки 2589 «В том числе НДС» и
+    2590 «ИТОГО без учета НДС», денежные колонки 15-18 — те же, что читает
+    `test_fixture_summary_block_has_three_filled_rows`), а не берётся у
+    парсера и не импортируется из
+    `parser.vat_rate.VAT_RATE_TOLERANCE`: если эталон брать у проверяемого
+    кода, обе стороны сравнения поедут вместе при поломке
+    (docs/insights/verifying-guards.md, слой 5). Параметризация по всем
+    четырём колонкам — чтобы разъехавшаяся разбивка была видна поколоночно, а
+    не только по итогу.
+    """
+    ws = fixture_worksheet
+    column = 15 + column_index
+    vat = Decimal(str(ws.cell(row=2589, column=column).value))
+    net = Decimal(str(ws.cell(row=2590, column=column).value))
+
+    ratio = vat / net * 100
+    tolerance = Decimal("0.01")  # литерал, не VAT_RATE_TOLERANCE — та же причина, что у эталона выше
+    assert abs(ratio - Decimal("20")) <= tolerance
+
+
+def test_fixture_parses_without_any_vat_rate_warning(imported_fixture):
+    """П.6: предупреждений о ставке у fixture ноль.
+
+    Форма — как у `test_fixture_parses_without_any_summary_warning`: маркеры
+    перечислены поимённо (`VAT_RATE_WARNING_MARKERS`), а не отфильтрованы
+    одной подстрокой вроде «ставк» — такой фильтр был бы вакуозен, если тексты
+    предупреждений разойдутся.
+    """
+    found = [
+        text
+        for text in imported_fixture.warnings
+        for marker in VAT_RATE_WARNING_MARKERS
+        if marker in text
+    ]
+    assert found == []

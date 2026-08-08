@@ -65,7 +65,13 @@ log = logging.getLogger(__name__)
 # выбрана намеренно — `raw_data` неизменяем, backfill невозможен, и одно имя с
 # двумя значениями у старых и новых смет различалось бы только по этой самой
 # версии (спека Ф4a §2.1).
-PARSER_VERSION = "3.0.0"
+#
+# 3.1.0 (Ф4б): у каждого подрядчика появляется ключ `vat_rate` — ставка НДС,
+# заявленная в шапке ценового блока (`null`, если файл её не заявил). Версия
+# минорная: из контракта ничего не исчезает, структура только дополняется —
+# тот же случай, что 1.1.0 (Ф2). Мажора здесь нет, потому что нет причины
+# мажора: не пропал ни один ключ (спека Ф4б §2.1).
+PARSER_VERSION = "3.1.0"
 
 
 @dataclass(frozen=True)
@@ -171,7 +177,7 @@ def _validate_column_headers(
     ws: Worksheet,
     contractors: list[dict[str, Any]],
     lot_starts: list[dict[str, Any]],
-) -> None:
+) -> int:
     """Отвергает файлы, у которых шапка общих колонок не та.
 
     Колонки A, B, C, D читаются по ФИКСИРОВАННЫМ позициям
@@ -181,10 +187,17 @@ def _validate_column_headers(
     `_validate_contractor_blocks`: предупреждение обещает импорт, а импортировать
     здесь нечего.
 
+    Номер строки шапки возвращается, а не отбрасывается: он уже вычислен здесь
+    (`_find_column_header_row`), и искать его повторно ниже по стеку значило бы
+    завести вторую правду о том, где шапка.
+
     Args:
         ws: лист Excel.
         contractors: результат `read_contractors` целиком.
         lot_starts: результат `find_lot_starts`.
+
+    Returns:
+        Номер строки шапки таблицы позиций.
 
     Raises:
         EstimateParseError: строка шапки не найдена либо хотя бы один заголовок
@@ -215,6 +228,8 @@ def _validate_column_headers(
                 "по фиксированным позициям, поэтому при другой раскладке номер, "
                 "раздел, статья и наименование пришли бы не из тех ячеек."
             )
+
+    return header_row
 
 
 def parse_worksheet(ws: Worksheet) -> ParseResult:
@@ -259,11 +274,11 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
         )
 
     _validate_contractor_blocks(contractors)
-    _validate_column_headers(ws, contractors, lot_starts)
+    header_row = _validate_column_headers(ws, contractors, lot_starts)
 
     warnings.extend(check_estimate_layout(ws, contractors, lot_starts))
 
-    lots = read_lots_and_boundaries(ws)
+    lots = read_lots_and_boundaries(ws, header_row=header_row)
 
     # Блок итогов — факт уровня ЛИСТА, а `get_summary` зовётся на каждое
     # предложение каждого лота (спека §1.5 факт 5). В смете ГП лот и подрядчик

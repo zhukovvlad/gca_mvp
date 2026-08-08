@@ -15,6 +15,7 @@ from openpyxl import Workbook
 from parser.parse_contractor_row import (
     MONEY_KEYS,
     SUPPORTED_CONTRACTOR_COLSPANS,
+    money_group_offsets,
     money_to_json,
     parse_contractor_row,
 )
@@ -125,3 +126,74 @@ class TestParseContractorRow:
 
         with pytest.raises(ValueError, match="Неподдерживаемый colspan"):
             parse_contractor_row(ws, 2, contractor)
+
+    @pytest.mark.parametrize(
+        ("colspan", "expected"),
+        [
+            (
+                8,
+                {
+                    "unit_cost": {"materials": "10", "works": "11", "indirect_costs": "12", "total": "13"},
+                    "total_cost": {"materials": "14", "works": "15", "indirect_costs": "16", "total": "17"},
+                },
+            ),
+            (
+                9,
+                {
+                    "unit_cost": {"materials": "10", "works": "11", "indirect_costs": "12", "total": "13"},
+                    "total_cost": {"materials": "14", "works": "15", "indirect_costs": "16", "total": "17"},
+                    "comment_contractor": 18,
+                },
+            ),
+            (
+                10,
+                {
+                    "suggested_quantity": 10,
+                    "unit_cost": {"materials": "11", "works": "12", "indirect_costs": "13", "total": "14"},
+                    "total_cost": {"materials": "15", "works": "16", "indirect_costs": "17", "total": "18"},
+                    "total_cost_for_organizer_quantity": "19",
+                },
+            ),
+            (
+                11,
+                {
+                    "suggested_quantity": 10,
+                    "unit_cost": {"materials": "11", "works": "12", "indirect_costs": "13", "total": "14"},
+                    "total_cost": {"materials": "15", "works": "16", "indirect_costs": "17", "total": "18"},
+                    "total_cost_for_organizer_quantity": "19",
+                    "comment_contractor": 20,
+                },
+            ),
+        ],
+    )
+    def test_column_lift_keeps_the_positional_layout(self, colspan, expected):
+        """Регрессия на подъём `get_column_keys` из тела `parse_contractor_row`.
+
+        Подъём меняет область видимости функции, а не раскладку колонок:
+        молчаливая поломка тут задела бы весь позиционный разбор. В каждую
+        ячейку блока кладётся её физический номер колонки (блок начинается с
+        колонки 10), результат сверяется поколоночно; эталон записан
+        литералами намеренно — не выводится из `get_column_keys`, иначе обе
+        стороны сравнения поехали бы вместе при поломке.
+        """
+        ws, contractor = self._sheet_with_row(list(range(10, 10 + colspan)))
+
+        result = parse_contractor_row(ws, 2, contractor)
+
+        assert result == expected
+
+
+class TestMoneyGroupOffsets:
+    """Смещения якорей `unit_cost`/`total_cost` относительно `column_start`."""
+
+    @pytest.mark.parametrize(
+        ("colspan", "expected"),
+        [(8, (0, 4)), (9, (0, 4)), (10, (1, 5)), (11, (1, 5))],
+    )
+    def test_money_group_offsets_match_measured_layout(self, colspan, expected):
+        """Смещения замерены на всех поддерживаемых ширинах; числа записаны литералами намеренно."""
+        assert money_group_offsets(colspan) == expected
+
+    def test_money_group_offsets_rejects_unsupported_colspan(self):
+        with pytest.raises(ValueError, match="colspan"):
+            money_group_offsets(7)

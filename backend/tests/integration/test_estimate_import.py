@@ -26,6 +26,7 @@ from parser.constants import (
     JSON_KEY_LOT_TITLE,
     JSON_KEY_LOTS,
     JSON_KEY_PROPOSALS,
+    JSON_KEY_VAT_RATE,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
 from services.category_resolution import CategoryResolver
@@ -297,6 +298,124 @@ class TestMoneyAndQuantities:
 
         assert any("и ещё" in w for w in outcome.warnings)
         assert sum("мусор" in w for w in outcome.warnings) == 10
+
+
+# ---------------------------------------------------------------------------
+#  Ставка НДС из шапки ценового блока (фаза 7, спека Ф4б §2.9, §4.3)
+# ---------------------------------------------------------------------------
+
+def _proposal_of(db_session, estimate_id: int) -> Proposal:
+    return db_session.execute(
+        sa.select(Proposal).join(Lot, Lot.id == Proposal.lot_id).where(Lot.estimate_id == estimate_id)
+    ).scalar_one()
+
+
+class TestVatRate:
+    """Ставка доезжает от payload до `proposals.vat_rate`; негодные значения дают
+    `NULL`, а не падение импорта (спека §2.9 — прямой тест против `_money`)."""
+
+    def test_declared_rate_becomes_a_decimal_column(self, db_session, factories, resolver):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="20")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate == Decimal("20")
+
+    def test_declared_null_rate_stays_null(self, db_session, factories, resolver):
+        """Ключ есть, значение `null` — шапка ставку не заявила (спека §2.1)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate=None)
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+
+    def test_payload_without_the_key_imports_with_null_and_no_gate(
+        self, db_session, factories, resolver
+    ):
+        """Форма парсера ≤ 3.0.0 (ключа `vat_rate` нет вовсе): гейта по версии нет
+        (спека §2.9) — импорт идёт как обычно, колонка получает `NULL`."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract)
+        del data[JSON_KEY_LOTS]["lot_1"][JSON_KEY_PROPOSALS]["contractor_1"][JSON_KEY_VAT_RATE]
+
+        outcome = run_import(db_session, resolver, contract, data)  # не падает
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+
+    def test_nan_rate_becomes_null_with_a_value_problem_not_an_integrity_error(
+        self, db_session, factories, resolver
+    ):
+        """`_money` принял бы `Decimal("NaN")` без исключения, и `'NaN'::numeric`
+        уронил бы `IntegrityError` на `ck_proposals_vat_rate`, потеряв всю смету.
+        Своя проверка (`is_finite()`) отсеивает значение до вставки строки: импорт
+        продолжается, ставка становится `NULL` плюс запись в `value_problems`."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="NaN")
+
+        outcome = run_import(db_session, resolver, contract, data)  # не IntegrityError
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+        assert any("NaN" in w for w in outcome.warnings)
+
+    def test_out_of_range_rate_becomes_null_with_a_value_problem(
+        self, db_session, factories, resolver
+    ):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="120")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+        assert any("120" in w for w in outcome.warnings)
+
+    def test_declared_zero_rate_is_stored_as_zero_not_as_null(
+        self, db_session, factories, resolver
+    ):
+        """Заявленный ноль доезжает до колонки нулём, а не `NULL`.
+
+        Найдено финальным ревью ветки. Ноль — единственный законный способ
+        получить в колонке `0` (спека §2.2), но до этого теста весь путь от
+        payload до колонки держался на том, что конверсия сверяет `is None`, а
+        не truthiness: `if not value` в `_vat_rate` прошёл бы набор зелёным, и
+        «заявлено 0 %» стало бы неотличимо от «файл ставку не заявил».
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="0")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        stored = _proposal_of(db_session, outcome.estimate_id).vat_rate
+        assert stored == Decimal("0")
+        assert stored is not None  # ноль и отсутствие — разные состояния колонки
+
+    def test_negative_rate_becomes_null_with_a_value_problem(
+        self, db_session, factories, resolver
+    ):
+        """Нижняя граница диапазона — пара к тесту `120` выше.
+
+        Парсер отрицательного значения породить не может (`\\d+` его не берёт),
+        но конверсия при импорте — последний рубеж перед `CHECK`, и без арма
+        `rate < 0` отрицательное значение дошло бы до вставки и уронило бы
+        `IntegrityError` **всю смету** — тот же класс, против которого написан
+        тест `NaN`. Проверялась только верхняя граница, и это нашло финальное
+        ревью ветки.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="-5")
+
+        outcome = run_import(db_session, resolver, contract, data)  # не IntegrityError
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+        assert any("-5" in w for w in outcome.warnings)
 
 
 # ---------------------------------------------------------------------------

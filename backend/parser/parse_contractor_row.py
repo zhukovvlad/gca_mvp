@@ -86,6 +86,90 @@ def money_to_json(value: Any) -> Any:
     return value
 
 
+def get_column_keys(colspan: int) -> list[str]:
+    """Порядок ключей колонок подрядчика для заданной ширины блока.
+
+    Порядок соответствует физическому порядку колонок на листе. Для сметы
+    ГП (colspan 11) это J..T.
+
+    Raises:
+        ValueError: при неподдерживаемом `colspan`.
+    """
+    uc_mat = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"
+    uc_wrk = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_WORKS}"
+    uc_ind = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_INDIRECT_COSTS}"
+    uc_tot = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_TOTAL}"
+
+    tc_mat = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"
+    tc_wrk = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_WORKS}"
+    tc_ind = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_INDIRECT_COSTS}"
+    tc_tot = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_TOTAL}"
+
+    if colspan == 11:
+        return [
+            JSON_KEY_SUGGESTED_QUANTITY,
+            uc_mat,
+            uc_wrk,
+            uc_ind,
+            uc_tot,
+            tc_mat,
+            tc_wrk,
+            tc_ind,
+            tc_tot,
+            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
+            JSON_KEY_COMMENT_CONTRACTOR,
+        ]
+    elif colspan == 10:
+        return [
+            JSON_KEY_SUGGESTED_QUANTITY,
+            uc_mat,
+            uc_wrk,
+            uc_ind,
+            uc_tot,
+            tc_mat,
+            tc_wrk,
+            tc_ind,
+            tc_tot,
+            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
+        ]
+    elif colspan == 9:
+        return [
+            uc_mat,
+            uc_wrk,
+            uc_ind,
+            uc_tot,
+            tc_mat,
+            tc_wrk,
+            tc_ind,
+            tc_tot,
+            JSON_KEY_COMMENT_CONTRACTOR,
+        ]
+    elif colspan == 8:
+        return [uc_mat, uc_wrk, uc_ind, uc_tot, tc_mat, tc_wrk, tc_ind, tc_tot]
+    else:
+        expected = ", ".join(str(value) for value in SUPPORTED_CONTRACTOR_COLSPANS)
+        raise ValueError(f"Неподдерживаемый colspan подрядчика: {colspan}. Ожидались значения {expected}.")
+
+
+def money_group_offsets(colspan: int) -> tuple[int, int]:
+    """Смещения якорей `unit_cost` и `total_cost` относительно `column_start`.
+
+    Смещения ВЫВОДЯТСЯ из того же перечня ключей, по которому строятся сами
+    колонки, а не задаются второй таблицей: две согласованные таблицы
+    разъезжаются молча. При ширинах 8 и 9 в блоке нет колонки предлагаемого
+    количества, и обе группы сдвинуты влево на одну колонку.
+
+    Raises:
+        ValueError: при неподдерживаемом `colspan` — тем же сообщением, что и
+            `get_column_keys`.
+    """
+    keys = get_column_keys(colspan)
+    return (
+        keys.index(f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"),
+        keys.index(f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"),
+    )
+
+
 def parse_contractor_row(ws: Worksheet, row_index: int, contractor: dict[str, Any]) -> dict[str, Any]:
     """Извлекает значения колонок подрядчика из одной строки.
 
@@ -107,70 +191,6 @@ def parse_contractor_row(ws: Worksheet, row_index: int, contractor: dict[str, An
             В штатном пайплайне сюда не доходит: такие файлы отвергает
             `estimate._validate_contractor_blocks`.
     """
-
-    def get_column_keys(colspan: int) -> list[str]:
-        """Порядок ключей колонок подрядчика для заданной ширины блока.
-
-        Порядок соответствует физическому порядку колонок на листе. Для сметы
-        ГП (colspan 11) это J..T.
-
-        Raises:
-            ValueError: при неподдерживаемом `colspan`.
-        """
-        uc_mat = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"
-        uc_wrk = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_WORKS}"
-        uc_ind = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_INDIRECT_COSTS}"
-        uc_tot = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_TOTAL}"
-
-        tc_mat = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"
-        tc_wrk = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_WORKS}"
-        tc_ind = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_INDIRECT_COSTS}"
-        tc_tot = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_TOTAL}"
-
-        if colspan == 11:
-            return [
-                JSON_KEY_SUGGESTED_QUANTITY,
-                uc_mat,
-                uc_wrk,
-                uc_ind,
-                uc_tot,
-                tc_mat,
-                tc_wrk,
-                tc_ind,
-                tc_tot,
-                JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
-                JSON_KEY_COMMENT_CONTRACTOR,
-            ]
-        elif colspan == 10:
-            return [
-                JSON_KEY_SUGGESTED_QUANTITY,
-                uc_mat,
-                uc_wrk,
-                uc_ind,
-                uc_tot,
-                tc_mat,
-                tc_wrk,
-                tc_ind,
-                tc_tot,
-                JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
-            ]
-        elif colspan == 9:
-            return [
-                uc_mat,
-                uc_wrk,
-                uc_ind,
-                uc_tot,
-                tc_mat,
-                tc_wrk,
-                tc_ind,
-                tc_tot,
-                JSON_KEY_COMMENT_CONTRACTOR,
-            ]
-        elif colspan == 8:
-            return [uc_mat, uc_wrk, uc_ind, uc_tot, tc_mat, tc_wrk, tc_ind, tc_tot]
-        else:
-            expected = ", ".join(str(value) for value in SUPPORTED_CONTRACTOR_COLSPANS)
-            raise ValueError(f"Неподдерживаемый colspan подрядчика: {colspan}. Ожидались значения {expected}.")
 
     def map_to_nested_dict(cells: list[Cell], keys: list[str]) -> dict[str, Any]:
         """Раскладывает значения ячеек по ключам, разворачивая точки во вложенность."""

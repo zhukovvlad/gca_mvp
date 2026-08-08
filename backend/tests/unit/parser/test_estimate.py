@@ -256,35 +256,46 @@ class TestParseEstimateOnRealSamples:
     """
 
     def test_every_sample_has_only_expected_warnings(self, sample_results):
-        """На каждой оферте либо предупреждений нет вовсе, либо ровно одно —
-        про пустую строку «В том числе НДС».
+        """На каждой оферте либо предупреждений нет вовсе, либо ровно два —
+        про пустую строку «В том числе НДС» (Ф4a) и про ненайденную ставку
+        НДС в шапке ценового блока (Ф4б).
 
-        Один реальный образец несёт блок итогов, где строка «В том числе НДС»
-        физически присутствует, но все четыре её денежные ячейки пусты.
-        Парсер обязан назвать это предупреждением (спека Ф4a §2.7) — поэтому
-        тест больше не требует пустого списка предупреждений на каждой
-        оферте: такое требование было бы противоречием самой фиче.
+        Один реальный образец (449-ТУ) несёт блок итогов, где строка «В том
+        числе НДС» физически присутствует, но все четыре её денежные ячейки
+        пусты (Ф4a, спека §2.7), И групповые шапки его ценового блока не
+        несут суффикса ставки НДС (Ф4б, спека §2.3) — те же два факта файла,
+        что и раньше, только теперь их источников два, а не один. 449-ТУ
+        прикрыт веткой некаскадирования дважды (спека Ф4б §2.7): у него нет
+        ни заявленной ставки, ни ключа `total_cost_excluding_vat` в блоке
+        итогов, поэтому сверка с блоком итогов не запускается вовсе и
+        «сверка не проведена» здесь не добавляется третьим предупреждением —
+        доказательством некаскадирования сам этот замер не служит, для этого
+        есть синтетическая проверка (Task 8, спека §4.5 п.11).
 
-        Утверждение — не «пусто ИЛИ любое одно предупреждение»: второе
-        предупреждение на любой оферте, как и единственное предупреждение без
-        ОБОИХ смысловых фрагментов ниже, обязаны покрасить тест. Проверяются
-        именно фрагменты, а не текст целиком — он несёт номер строки, который
-        меняется при обновлении файла оферты и является диагностической
-        деталью, а не частью проверяемого смысла.
+        Утверждение — не «пусто ИЛИ любое число предупреждений»: другое их
+        число на любой оферте, как и наличие предупреждения без ОБОИХ
+        смысловых фрагментов ниже, обязаны покрасить тест. Проверяются именно
+        фрагменты, а не текст целиком — он несёт номер строки и фактические
+        метки шапки, которые меняются при обновлении файла оферты и являются
+        диагностической деталью, а не частью проверяемого смысла.
 
-        Предупреждение не означает «НДС отсутствует», «НДС не заявлен» или
-        «смета без НДС»: парсер установил только то, что строка СУЩЕСТВУЕТ и
-        что её денежные ячейки пусты. Вывод о смысле этой пустоты потребовал
-        бы прочитать остальную часть файла, включая заголовок колонки, — а
-        эта фича намеренно этого не делает.
+        Предупреждение о блоке итогов не означает «НДС отсутствует», «НДС не
+        заявлен» или «смета без НДС»: парсер установил только то, что строка
+        СУЩЕСТВУЕТ и что её денежные ячейки пусты. Предупреждение о ставке не
+        означает «в файле нет НДС»: оно означает только то, что шапка ценового
+        блока не заявила ставку суффиксом известного вида.
         """
         for name, result in sample_results:
             if not result.warnings:
                 continue
-            assert len(result.warnings) == 1, (name, result.warnings)
-            warning = result.warnings[0]
-            assert "В том числе НДС" in warning, name
-            assert "суммы не указаны" in warning, name
+            assert len(result.warnings) == 2, (name, result.warnings)
+
+            summary_warnings = [w for w in result.warnings if "В том числе НДС" in w]
+            assert len(summary_warnings) == 1, (name, result.warnings)
+            assert "суммы не указаны" in summary_warnings[0], name
+
+            vat_rate_warnings = [w for w in result.warnings if "Ставка НДС не получена из шапки" in w]
+            assert len(vat_rate_warnings) == 1, (name, result.warnings)
 
     def test_every_sample_has_gp_layout(self, sample_results):
         """J6, 11 колонок — раскладка, на которой держится смысл стоимостей."""
@@ -481,16 +492,16 @@ class TestAdditionalWorksInJson:
         assert items["additional_works"] is None
 
 
-def test_parser_version_is_major_because_two_summary_keys_disappeared():
-    """3.0.0: мажор из-за того, что два ключа ИСЧЕЗЛИ из `summary` (спека Ф4a §2.1).
+def test_parser_version_is_minor_because_a_key_was_added_and_nothing_disappeared():
+    """3.1.0: минор из-за того, что в контракт ДОБАВИЛСЯ ключ `vat_rate` (спека Ф4б §2.1).
 
-    Ключи total_cost_with_vat и vat исчезли. На их место пришли три ключа:
-    total_cost_including_vat, vat_amount, total_cost_excluding_vat. Это смена
-    ИМЕНИ вместо смены смысла выбрана намеренно — raw_data неизменяем, backfill
-    невозможен, и одно имя с двумя значениями у старых и новых смет различалось
-    бы только по этой самой версии.
+    В отличие от 3.0.0 (два ключа `summary` ИСЧЕЗЛИ — оплачено мажором), здесь
+    структура только дополняется: у каждого подрядчика появляется `vat_rate`
+    (ставка НДС, заявленная в шапке ценового блока; `null`, если файл её не
+    заявил). Ни один существующий ключ не исчез и не сменил смысла, поэтому
+    инкремент минорный — тот же случай, что 1.1.0 (Ф2).
     """
-    assert PARSER_VERSION == "3.0.0"
+    assert PARSER_VERSION == "3.1.0"
 
 
 class TestParseEstimateFailures:
@@ -651,6 +662,15 @@ def _is_money_path(path) -> bool:
 SUMMARY_TRIPLE = (
     ("ИТОГО, руб. с учетом НДС", {15: 120.0, 16: 120.0, 17: 120.0, 18: 120.0}),
     ("В том числе НДС", {15: 20.0, 16: 20.0, 17: 20.0, 18: 20.0}),
+    ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+)
+
+# Тот же блок с НУЛЕВЫМ налогом: тождество сходится (100 = 100 + 0), а
+# отношение даёт ровно 0 — то есть сверка (§2.4) подтверждает заявленный ноль,
+# а не мешает ему. Нужен тесту сквозного пути нулевой ставки.
+SUMMARY_TRIPLE_ZERO_VAT = (
+    ("ИТОГО, руб. с учетом НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+    ("В том числе НДС", {15: 0.0, 16: 0.0, 17: 0.0, 18: 0.0}),
     ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
 )
 
@@ -857,3 +877,149 @@ class TestColumnHeaderGuard:
 
         result = parse_worksheet(ws)
         assert result.data is not None
+
+
+class TestVatRateFullPath:
+    """Полный путь Ф4б: XLSX → `ParseResult` (спека §4.2).
+
+    Ядро (`vat_rate.py`) и раскладка (`money_group_offsets`) проверены без
+    файла в `test_vat_rate.py` и `test_parse_contractor_row.py`; здесь —
+    только проводка: что лист со ставкой в шапке даёт `vat_rate` в
+    `ParseResult.data`, а лист без неё — предупреждение в
+    `ParseResult.warnings`, и что оба не путают лоты и строки шапки.
+    """
+
+    def test_vat_rate_reaches_parse_result_data_with_no_warnings(self):
+        """Суффикс в обеих групповых шапках + сходящийся блок итогов
+        (`SUMMARY_TRIPLE`) → ставка в `ParseResult.data`, предупреждений НЕТ
+        ВООБЩЕ — не только о ставке: блок итогов у этого листа полный и
+        годный, поэтому и сверка (§2.4) проходит тишиной, как на реальном
+        fixture (`test_parses_without_warnings`).
+        """
+        ws = _sheet_with_summary_rows(SUMMARY_TRIPLE)
+        # Заголовок первой колонки блока (`check_estimate_layout`) — иначе лист
+        # не пройдёт как раскладка сметы ГП и добавит СВОЁ предупреждение,
+        # не связанное со ставкой, и утверждение «предупреждений нет вовсе»
+        # оказалось бы недостижимо по чужой причине.
+        ws.cell(row=9, column=10, value="Предлагаемое количество")
+        ws.cell(row=9, column=11, value="Цена за единицу, с учетом НДС 20%")
+        ws.cell(row=9, column=15, value="Стоимость всего, с учетом НДС 20%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] == "20"
+        assert result.warnings == []
+
+    def test_declared_zero_rate_reaches_parse_result_as_zero_not_as_absence(self):
+        """Заявленный `0%` доезжает до `ParseResult.data` нулём, а не `None`.
+
+        Найдено финальным ревью ветки: ноль проверялся только на самом
+        внутреннем слое (`read_label_rate`), и весь путь наверх держался на том,
+        что и ядро, и `get_proposals` сверяют `is None`, а не truthiness. Регресс
+        вида `if not declared.rate` или `if not vat_rate_result.rate` прошёл бы
+        весь набор зелёным, молча превратив единственный законный ноль в `NULL` —
+        то самое неразличение «ноль» и «не заявлено», от которого спека §2.2
+        отказалась явно.
+
+        Блок итогов взят с нулевым НДС при ненулевой базе: `0 / 100 * 100 = 0`,
+        то есть сверка не только не мешает, но и подтверждает ставку.
+        """
+        ws = _sheet_with_summary_rows(SUMMARY_TRIPLE_ZERO_VAT)
+        ws.cell(row=9, column=10, value="Предлагаемое количество")
+        ws.cell(row=9, column=11, value="Цена за единицу, с учетом НДС 0%")
+        ws.cell(row=9, column=15, value="Стоимость всего, с учетом НДС 0%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] == "0"
+        assert result.warnings == []
+
+    def test_vat_rate_warning_reaches_parse_result_warnings(self):
+        """Предупреждение ядра доезжает наверх проводкой `get_proposals` →
+        `read_lots_and_boundaries` → `parse_worksheet`, а не гасится по дороге.
+
+        Обе групповые шапки пусты (`_minimal_sheet` не заполняет колонки 11 и
+        15 в строке 9), значит `resolve_declared_rate` не получает ставку.
+        """
+        ws = _minimal_sheet(contractor_colspan=11)
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] is None
+        assert any("Ставка НДС не получена из шапки" in w for w in result.warnings)
+
+    def test_vat_rate_warning_is_not_doubled_on_a_two_lot_sheet(self):
+        """Два лота — один блок подрядчика и одна шапка колонок; `dict.fromkeys`
+        в `estimate.py` схлопывает повтор так же, как у предупреждений Ф4a
+        (спека §2.8): тексты §2.7 не несут ничего, что различается между лотами.
+        """
+        ws = _sheet_with_summary_rows(SUMMARY_TRIPLE, second_lot=True)
+
+        result = parse_worksheet(ws)
+
+        matching = [w for w in result.warnings if "Ставка НДС не получена из шапки" in w]
+        assert len(matching) == 1, f"ожидался один экземпляр, получено {len(matching)}"
+
+    def test_vat_rate_survives_a_header_row_shift(self):
+        """Шапка сдвинута на строку выше 9-й — ставка всё равно найдена.
+
+        `header_row` приходит из `_validate_column_headers`
+        (`_find_column_header_row`), а не константы 9 (та же гарантия, что у
+        `test_header_row_is_found_not_hardcoded`); суффикс кладётся в СДВИНУТУЮ
+        строку (8), а не в 9-ю — иначе тест не отличил бы «читает сдвинутую
+        строку» от «всегда читает строку 9».
+        """
+        ws = _minimal_sheet(11)
+        for column in TABLE_PARSE_POSITION_COLUMN_HEADERS:
+            ws.cell(row=9, column=column, value=None)
+        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+            ws.cell(row=8, column=column, value=title)
+        ws.cell(row=8, column=11, value="Цена за единицу, с учетом НДС 20%")
+        ws.cell(row=8, column=15, value="Стоимость всего, с учетом НДС 20%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] == "20"
+
+    @pytest.mark.parametrize(
+        ("colspan", "unit_offset", "total_offset"),
+        [(8, 0, 4), (9, 0, 4), (10, 1, 5), (11, 1, 5)],
+    )
+    def test_vat_rate_found_at_measured_offsets_for_every_supported_width(self, colspan, unit_offset, total_offset):
+        """Суффикс в ячейках-якорях, вычисленных `money_group_offsets`, даёт
+        ставку на всех четырёх поддерживаемых ширинах блока (спека §2.3, §4.2).
+
+        Смещения записаны ЛИТЕРАЛАМИ — они замерены прогоном продакшен-кода в
+        Task 1 (`test_money_group_offsets_match_measured_layout`): 8 и 9 → (0,
+        4); 10 и 11 → (1, 5). Если бы этот тест сам звал `money_group_offsets`
+        для расстановки суффикса, проверка сравнивала бы вычисление с собой
+        (verifying-guards.md, слой 5).
+        """
+        contractor_col_start = 10  # J — начало блока подрядчика в _minimal_sheet
+        ws = _minimal_sheet(contractor_colspan=colspan)
+        ws.cell(row=9, column=contractor_col_start + unit_offset, value="Цена за единицу, с учетом НДС 20%")
+        ws.cell(row=9, column=contractor_col_start + total_offset, value="Стоимость всего, с учетом НДС 20%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] == "20"
+
+    @pytest.mark.parametrize("colspan", [8, 9])
+    def test_vat_rate_not_found_when_suffix_uses_wrong_offset_formula(self, colspan):
+        """Обратная проверка: смещения `+1`/`+5` верны только для ширин 10 и 11
+        (спека §2.3). На ширинах 8 и 9 суффикс, положенный по этой формуле,
+        попадает не в ячейки-якоря групп, а в соседние колонки блока (пустые в
+        этом синтетическом листе), и ставка остаётся неизвестной. Это и есть
+        доказательство, что смещение ВЫЧИСЛЯЕТСЯ `money_group_offsets`, а не
+        угадывается захардкоженной константой — при угаданной формуле этот
+        тест был бы красным по построению.
+        """
+        contractor_col_start = 10  # J
+        ws = _minimal_sheet(contractor_colspan=colspan)
+        ws.cell(row=9, column=contractor_col_start + 1, value="Цена за единицу, с учетом НДС 20%")
+        ws.cell(row=9, column=contractor_col_start + 5, value="Стоимость всего, с учетом НДС 20%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] is None
+        assert any("Ставка НДС не получена из шапки" in w for w in result.warnings)
