@@ -11,7 +11,11 @@ from decimal import Decimal, getcontext
 
 import pytest
 
-from parser.constants import JSON_KEY_TOTAL_COST_EXCLUDING_VAT, JSON_KEY_VAT_AMOUNT
+from parser.constants import (
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+    JSON_KEY_VAT_AMOUNT,
+)
 from parser.sheet import normalized_cell_text
 from parser.vat_rate import (
     build_vat_rate,
@@ -42,6 +46,20 @@ def _pair(vat, excluding) -> dict:
     return {
         JSON_KEY_VAT_AMOUNT: _cost_line(**{name: vat for name in MONEY_COLUMNS}),
         JSON_KEY_TOTAL_COST_EXCLUDING_VAT: _cost_line(**{name: excluding for name in MONEY_COLUMNS}),
+    }
+
+
+def _full_block(including, vat, excluding) -> dict:
+    """Полный ТРЁХСТРОЧНЫЙ блок итогов — форма, наблюдаемая у 159-ТУ и 42-ТУ.
+
+    Сверке ставки нужны только две строки из трёх, но проверка некаскадирования
+    обязана бить именно по полному и годному блоку: смысл требования §2.7 в
+    том, что сверка не запускается, **хотя запуститься могла бы**. На паре это
+    условие тоже выполняется, но на тройке оно ещё и очевидно.
+    """
+    return {
+        JSON_KEY_TOTAL_COST_INCLUDING_VAT: _cost_line(**{name: including for name in MONEY_COLUMNS}),
+        **_pair(vat, excluding),
     }
 
 
@@ -355,7 +373,7 @@ class TestBuildVatRate:
         до правки §2.10, проверяемая здесь синтетически."""
         silent_unit_label = "Цена за ед. изм., RUB, ОСН"
         silent_total_label = "Стоимость всего, RUB, ОСН"
-        result = build_vat_rate(silent_unit_label, silent_total_label, _pair("20", "100"))
+        result = build_vat_rate(silent_unit_label, silent_total_label, _full_block("120", "20", "100"))
         assert result.rate is None
         assert len(result.warnings) == 1
         assert "не получена" in result.warnings[0]
