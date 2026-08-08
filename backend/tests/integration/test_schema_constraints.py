@@ -237,6 +237,33 @@ class TestProposalVatRate:
                 sa.update(Proposal).where(Proposal.id == proposal.id).values(vat_rate=Decimal("101"))
             )
 
+    def test_value_below_the_range_is_rejected_past_the_import(self, db_session, factories):
+        """Пара к тесту выше: у выражения `CHECK` два арма, и проверка одного
+        оставила бы второй без исполнителя — `>= 0` можно было бы выкинуть, не
+        уронив ни одного теста. Найдено финальным ревью ветки."""
+        proposal = factories.ProposalFactory.create()
+        with rejected(db_session, contains="ck_proposals_vat_rate"):
+            db_session.execute(
+                sa.update(Proposal).where(Proposal.id == proposal.id).values(vat_rate=Decimal("-1"))
+            )
+
+    def test_declared_zero_is_a_representable_state(self, db_session, factories):
+        """Ноль — законное значение колонки, а не «непредставимое состояние».
+
+        `CHECK`, записанный как `> 0` вместо `>= 0`, отверг бы единственный
+        способ сохранить заявленную нулевую ставку, и оба теста-запрета выше
+        этого бы не заметили: они бьют по значениям ВНЕ диапазона.
+        """
+        proposal = factories.ProposalFactory.create()
+        db_session.execute(
+            sa.update(Proposal).where(Proposal.id == proposal.id).values(vat_rate=Decimal("0"))
+        )
+        db_session.flush()
+        stored = db_session.execute(
+            sa.select(Proposal.vat_rate).where(Proposal.id == proposal.id)
+        ).scalar_one()
+        assert stored == Decimal("0")
+
 
 # ---------------------------------------------------------------------------
 #  catalog_positions: идентичность = нормализованное название + единица

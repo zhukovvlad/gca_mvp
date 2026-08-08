@@ -665,6 +665,15 @@ SUMMARY_TRIPLE = (
     ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
 )
 
+# Тот же блок с НУЛЕВЫМ налогом: тождество сходится (100 = 100 + 0), а
+# отношение даёт ровно 0 — то есть сверка (§2.4) подтверждает заявленный ноль,
+# а не мешает ему. Нужен тесту сквозного пути нулевой ставки.
+SUMMARY_TRIPLE_ZERO_VAT = (
+    ("ИТОГО, руб. с учетом НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+    ("В том числе НДС", {15: 0.0, 16: 0.0, 17: 0.0, 18: 0.0}),
+    ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+)
+
 
 def _sheet_with_summary_rows(summary_rows, *, second_lot: bool = False):
     """Лист с блоком итогов под позициями; при `second_lot` — два лота, один блок.
@@ -899,6 +908,30 @@ class TestVatRateFullPath:
         result = parse_worksheet(ws)
 
         assert _proposal(result)["vat_rate"] == "20"
+        assert result.warnings == []
+
+    def test_declared_zero_rate_reaches_parse_result_as_zero_not_as_absence(self):
+        """Заявленный `0%` доезжает до `ParseResult.data` нулём, а не `None`.
+
+        Найдено финальным ревью ветки: ноль проверялся только на самом
+        внутреннем слое (`read_label_rate`), и весь путь наверх держался на том,
+        что и ядро, и `get_proposals` сверяют `is None`, а не truthiness. Регресс
+        вида `if not declared.rate` или `if not vat_rate_result.rate` прошёл бы
+        весь набор зелёным, молча превратив единственный законный ноль в `NULL` —
+        то самое неразличение «ноль» и «не заявлено», от которого спека §2.2
+        отказалась явно.
+
+        Блок итогов взят с нулевым НДС при ненулевой базе: `0 / 100 * 100 = 0`,
+        то есть сверка не только не мешает, но и подтверждает ставку.
+        """
+        ws = _sheet_with_summary_rows(SUMMARY_TRIPLE_ZERO_VAT)
+        ws.cell(row=9, column=10, value="Предлагаемое количество")
+        ws.cell(row=9, column=11, value="Цена за единицу, с учетом НДС 0%")
+        ws.cell(row=9, column=15, value="Стоимость всего, с учетом НДС 0%")
+
+        result = parse_worksheet(ws)
+
+        assert _proposal(result)["vat_rate"] == "0"
         assert result.warnings == []
 
     def test_vat_rate_warning_reaches_parse_result_warnings(self):

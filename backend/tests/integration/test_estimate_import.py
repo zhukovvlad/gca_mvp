@@ -375,6 +375,48 @@ class TestVatRate:
         assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
         assert any("120" in w for w in outcome.warnings)
 
+    def test_declared_zero_rate_is_stored_as_zero_not_as_null(
+        self, db_session, factories, resolver
+    ):
+        """Заявленный ноль доезжает до колонки нулём, а не `NULL`.
+
+        Найдено финальным ревью ветки. Ноль — единственный законный способ
+        получить в колонке `0` (спека §2.2), но до этого теста весь путь от
+        payload до колонки держался на том, что конверсия сверяет `is None`, а
+        не truthiness: `if not value` в `_vat_rate` прошёл бы набор зелёным, и
+        «заявлено 0 %» стало бы неотличимо от «файл ставку не заявил».
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="0")
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        stored = _proposal_of(db_session, outcome.estimate_id).vat_rate
+        assert stored == Decimal("0")
+        assert stored is not None  # ноль и отсутствие — разные состояния колонки
+
+    def test_negative_rate_becomes_null_with_a_value_problem(
+        self, db_session, factories, resolver
+    ):
+        """Нижняя граница диапазона — пара к тесту `120` выше.
+
+        Парсер отрицательного значения породить не может (`\\d+` его не берёт),
+        но конверсия при импорте — последний рубеж перед `CHECK`, и без арма
+        `rate < 0` отрицательное значение дошло бы до вставки и уронило бы
+        `IntegrityError` **всю смету** — тот же класс, против которого написан
+        тест `NaN`. Проверялась только верхняя граница, и это нашло финальное
+        ревью ветки.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, vat_rate="-5")
+
+        outcome = run_import(db_session, resolver, contract, data)  # не IntegrityError
+
+        assert _proposal_of(db_session, outcome.estimate_id).vat_rate is None
+        assert any("-5" in w for w in outcome.warnings)
+
 
 # ---------------------------------------------------------------------------
 #  Единицы измерения (решение фазы 4 §2.3)

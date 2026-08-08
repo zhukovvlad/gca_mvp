@@ -298,6 +298,10 @@ class TestCheckRateAgainstSummary:
         report = check_rate_against_summary(Decimal("20"), _pair("1E+999999999", "1"))
         assert report.mismatched == []
         assert len(report.unverified) == len(MONEY_COLUMNS)
+        # Спека §2.6 требует в этой ветке ФАКТИЧЕСКИЕ значения, а не только
+        # факт «не проверено»: без них читателю нечем понять, что случилось.
+        # Проверка добавлена по находке финального ревью ветки.
+        assert "1E+999999999" in report.unverified[0]
 
     def test_global_decimal_context_is_left_untouched(self):
         """Сверка идёт в локальном контексте — глобальный контекст приложения не трогается."""
@@ -378,6 +382,29 @@ class TestBuildVatRate:
         assert len(result.warnings) == 1
         assert "не получена" in result.warnings[0]
         assert "не проведена" not in result.warnings[0]
+
+    def test_declared_zero_survives_agreement_and_check(self):
+        """Заявленный ноль проходит согласие шапок и сверку как ЗНАЧЕНИЕ.
+
+        Найдено финальным ревью ветки: ноль проверялся только в
+        `read_label_rate`, а дальше весь путь держался на том, что сборка
+        сверяет `is None`, а не truthiness. `if not declared.rate` прошёл бы
+        набор зелёным и вернул бы `None` вместо нуля — то есть «заявлено 0 %»
+        стало бы неотличимо от «не заявлено», ровно то различие, ради которого
+        §2.2 отказалась подставлять ноль на «без НДС».
+
+        Блок итогов с нулевым налогом при ненулевой базе: `0 / 100 * 100 = 0`,
+        сверка подтверждает ставку, а не молчит из-за нехватки данных.
+        """
+        result = build_vat_rate(
+            "Цена за ед. изм., RUB, ОСН, с учетом НДС 0%",
+            "Стоимость всего, RUB, ОСН, с учетом НДС 0%",
+            _pair("0", "100"),
+        )
+
+        assert result.rate == Decimal(0)
+        assert result.rate is not None
+        assert result.warnings == []
 
     def test_two_row_summary_block_declares_a_rate_but_gives_no_warning_at_all(self):
         """Ключа `total_cost_excluding_vat` нет вовсе (форма 449-ТУ до Ф4a), ставка
