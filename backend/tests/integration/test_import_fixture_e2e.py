@@ -779,3 +779,52 @@ def test_fixture_parses_without_any_summary_warning(imported_fixture):
         if marker in text
     ]
     assert found == []
+
+
+# ---------------------------------------------------------------------------
+# Ф4б (Task 2): ставка НДС заявлена суффиксом групповых шапок ценового блока.
+# Правка вернула fixture в форму реальных файлов, где шапка и блок итогов
+# согласованы (граница 2 Ф4a, спека Ф4б §2.10). Здесь — только форма ВХОДА;
+# путь «лист → JSON → колонка БД» проверяется отдельно (Task 7).
+# ---------------------------------------------------------------------------
+
+#: Строка шапки колонок листа и якоря объединённых групповых шапок K9:N9 и O9:R9.
+#: Номера замерены (спека §1.1) и одинаковы у всех четырёх известных файлов, но
+#: продакшен их не зашивает: строку шапки он ищет `_validate_column_headers`.
+FIXTURE_COLUMN_HEADER_ROW = 9
+FIXTURE_UNIT_COST_HEADER_COLUMN = 11
+FIXTURE_TOTAL_COST_HEADER_COLUMN = 15
+FIXTURE_MONEY_GROUP_MERGES = ("K9:N9", "O9:R9")
+
+#: Тексты обеих групповых шапок после правки Task 2. Это заголовки колонок, а не
+#: коммерческие данные, — политика `samples/` их коммитить не запрещает.
+FIXTURE_UNIT_COST_HEADER = "Цена за ед. изм., RUB, ОСН, с учетом НДС 20%"
+FIXTURE_TOTAL_COST_HEADER = "Стоимость всего, RUB, ОСН, с учетом НДС 20%"
+
+
+def test_fixture_column_headers_declare_the_vat_rate(fixture_worksheet):
+    """Форма самого входа, прочитанная с листа, — не через парсер.
+
+    Стережёт правку fixture ровно так же, как это делает
+    `test_fixture_summary_block_has_three_filled_rows` для блока итогов: если
+    суффикс из шапки пропадёт, главный положительный путь Ф4б останется без
+    закоммиченного входа, и это должно быть видно сразу, а не через
+    «предупреждений стало на одно больше».
+
+    Целость объединений проверяется здесь же и не для красоты: ставка заявлена
+    НАД группой из четырёх колонок, и снятое объединение оставило бы текст на
+    месте при сломанной раскладке — то есть тест на один текст прошёл бы.
+    """
+    ws = fixture_worksheet
+    unit_cost = ws.cell(
+        row=FIXTURE_COLUMN_HEADER_ROW, column=FIXTURE_UNIT_COST_HEADER_COLUMN
+    ).value
+    total_cost = ws.cell(
+        row=FIXTURE_COLUMN_HEADER_ROW, column=FIXTURE_TOTAL_COST_HEADER_COLUMN
+    ).value
+    assert unit_cost == FIXTURE_UNIT_COST_HEADER
+    assert total_cost == FIXTURE_TOTAL_COST_HEADER
+
+    merged = {str(rng) for rng in ws.merged_cells.ranges}
+    for group in FIXTURE_MONEY_GROUP_MERGES:
+        assert group in merged, f"объединение {group} потеряно"
