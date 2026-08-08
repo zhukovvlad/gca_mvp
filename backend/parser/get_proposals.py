@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from openpyxl.worksheet.worksheet import Worksheet
@@ -38,7 +39,15 @@ from .get_summary import get_summary
 from .read_contractors import read_contractors
 
 
-def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> dict[str, dict[str, Any]]:
+@dataclass(frozen=True)
+class LotProposals:
+    """Предложения лота и предупреждения, собранные при их разборе."""
+
+    proposals: dict[str, dict[str, Any]]
+    warnings: list[str]
+
+
+def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> LotProposals:
     """Собирает предложения всех подрядчиков для одного лота.
 
     Позиции берутся строго в границах лота, итоги и дополнительная информация —
@@ -53,13 +62,16 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> dict[str, dict
         end_row: последняя строка лота.
 
     Returns:
-        Словарь `{"contractor_1": {...}, ...}`. Пустой, если подрядчики не найдены.
+        `LotProposals`: словарь `{"contractor_1": {...}, ...}` (пустой, если
+        подрядчики не найдены) и предупреждения, собранные при разборе блоков
+        итогов подрядчиков.
     """
     contractors_list: list[dict[str, Any]] | None = read_contractors(ws)
     proposals: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
 
     if not contractors_list:
-        return proposals
+        return LotProposals(proposals={}, warnings=[])
 
     # Индекс 0 — ячейка-маркер "Наименование контрагента", подрядчики идут за ней.
     for i in range(1, len(contractors_list)):
@@ -84,11 +96,12 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> dict[str, dict
             accreditation_val = ws.cell(row=contractor_row_start + 3, column=contractor_col_start).value
 
         lot_rows = get_lot_positions(ws, contractor_details, lot_start_row=start_row, lot_end_row=end_row)
-        summary_data = get_summary(ws, contractor_details, search_start_row=start_row)
+        summary = get_summary(ws, contractor_details, search_start_row=start_row)
+        warnings.extend(summary.warnings)
 
         contractor_items_data = {
             JSON_KEY_CONTRACTOR_POSITIONS: lot_rows.positions,
-            JSON_KEY_CONTRACTOR_SUMMARY: summary_data,
+            JSON_KEY_CONTRACTOR_SUMMARY: summary.lines,
             JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS: lot_rows.additional_works,
         }
 
@@ -107,4 +120,4 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int) -> dict[str, dict
             JSON_KEY_CONTRACTOR_ADDITIONAL_INFO: contractor_additional_info_data,
         }
 
-    return proposals
+    return LotProposals(proposals=proposals, warnings=warnings)

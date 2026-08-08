@@ -53,10 +53,11 @@ from parser.constants import (
     JSON_KEY_TENDER_TITLE,
     JSON_KEY_TOTAL,
     JSON_KEY_TOTAL_COST,
-    JSON_KEY_TOTAL_COST_VAT,
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
     JSON_KEY_UNIT,
     JSON_KEY_UNIT_COST,
-    JSON_KEY_VAT,
+    JSON_KEY_VAT_AMOUNT,
     JSON_KEY_WORKS,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
@@ -192,8 +193,9 @@ def proposal(
             JSON_KEY_CONTRACTOR_SUMMARY: summary
             if summary is not None
             else {
-                JSON_KEY_TOTAL_COST_VAT: summary_line("Итого, руб. с учётом НДС", "1200.00"),
-                JSON_KEY_VAT: summary_line("В том числе НДС", "200.00"),
+                JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", "1200.00"),
+                JSON_KEY_VAT_AMOUNT: summary_line("В том числе НДС", "200.00"),
+                JSON_KEY_TOTAL_COST_EXCLUDING_VAT: summary_line("ИТОГО, руб. без учета НДС", "1000.00"),
             },
             # Ключ создаётся ВСЕГДА, как это делает парсер (`get_proposals.py:92`):
             # `contractor_items` у него всегда несёт `additional_works`, значение —

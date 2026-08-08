@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
@@ -21,10 +22,12 @@ from models import (
     Estimate,
     EstimateAdditionalWork,
     EstimateRawData,
+    ImportJob,
     ImportJobStatus,
     Lot,
     PositionItem,
     Proposal,
+    ProposalSummaryLine,
     WorkCategory,
 )
 from parser import parse_estimate
@@ -108,6 +111,33 @@ def imported_fixture_estimate(
     job = upload(committing_client, contract.id, xlsx_stub("categories"))
     assert job["status"] == ImportJobStatus.done.value, job["error_text"]
     return job["estimate_id"]
+
+
+@dataclass
+class ImportedFixture:
+    """То немногое из результата импорта, что нужно сквозным тестам Ф4a."""
+
+    raw: dict
+    proposal_id: int
+    warnings: list[str]
+
+
+@pytest.fixture
+def imported_fixture(committing_db, imported_fixture_estimate) -> ImportedFixture:
+    """`imported_fixture_estimate`, обёрнутый в сырой JSON, id единственного
+    предложения и предупреждения задания — всё из БД, без повторного импорта."""
+    estimate_id = imported_fixture_estimate
+    raw = committing_db.get(EstimateRawData, estimate_id)
+    proposal_id = committing_db.execute(
+        sa.select(Proposal.id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+    ).scalar_one()
+    estimate = committing_db.get(Estimate, estimate_id)
+    job = committing_db.get(ImportJob, estimate.import_job_id)
+    return ImportedFixture(
+        raw=raw.raw_data, proposal_id=proposal_id, warnings=list(job.warnings)
+    )
 
 
 class TestFullPipelineOnFixture:
@@ -438,6 +468,42 @@ def _independent_total_with_vat(ws, contractor: dict) -> Decimal:
     return Decimal(value)
 
 
+SUMMARY_BLOCK_LABELS = (
+    "ИТОГО, руб. с учетом НДС",
+    "В том числе НДС",
+    "ИТОГО, руб. без учета НДС",
+)
+
+
+def test_fixture_summary_block_has_three_filled_rows(fixture_worksheet):
+    """Форма самого входа, прочитанная с листа, — не через парсер.
+
+    Стережёт правку fixture: если блок снова станет двухстрочным, главный путь
+    Ф4a останется без закоммиченного входа, и это должно быть видно сразу.
+    """
+    ws = fixture_worksheet
+    rows = [2588, 2589, 2590]
+    labels = [str(ws.cell(row=row, column=1).value or "").strip() for row in rows]
+    assert labels == list(SUMMARY_BLOCK_LABELS)
+
+    money = {
+        row: [ws.cell(row=row, column=col).value for col in range(15, 19)]
+        for row in rows
+    }
+    for row, values in money.items():
+        assert all(value is not None for value in values), f"строка {row} заполнена не полностью"
+
+    assert all(ws.cell(row=2591, column=col).value is None for col in range(1, 21)), (
+        "строка 2591 обязана остаться пустой: она терминатор блока итогов"
+    )
+
+    for index in range(4):
+        gross = Decimal(str(money[2588][index]))
+        vat = Decimal(str(money[2589][index]))
+        net = Decimal(str(money[2590][index]))
+        assert gross == net + vat, f"колонка {15 + index}: тождество не сошлось"
+
+
 class TestAggregateRowInSourceFile:
     """Спека §4.3, п.1-3: три факта о входе, каждый проверяется НЕЗАВИСИМО и
     ДО всякого импорта — п.1 читает workbook напрямую (не через парсер),
@@ -601,3 +667,115 @@ class TestAdditionalWorksInDatabase:
         independent_total = _independent_total_with_vat(fixture_worksheet, FIXTURE_CONTRACTOR)
 
         assert domain_total == independent_total
+
+
+# ---------------------------------------------------------------------------
+# Ф4a (Task 6): три строки файла доходят до трёх записей в БД. Дефект,
+# которым эта фича доказывается: старый `get_summary` присваивал ключ по
+# перекрывающимся подстрокам ("итого" и "ндс" есть и в "с учетом", и в "без
+# учета") — три строки листа схлопывались в два ключа JSON, и уцелевшим
+# оказывался НЕТТО, записанный под именем БРУТТО. Пять тестов ниже —
+# независимые друг от друга проверки того, что теперь ключей и записей три,
+# а брутто равен независимому эталону, прочитанному прямо с листа.
+# ---------------------------------------------------------------------------
+
+
+def test_three_sheet_rows_give_three_summary_keys_in_raw(imported_fixture):
+    """Счёт, которым дефект был доказан: было три строки и два ключа."""
+    summary = imported_fixture.raw["lots"]["lot_1"]["proposals"]["contractor_1"][
+        "contractor_items"
+    ]["summary"]
+    assert len(summary) == 3
+    assert sorted(summary) == [
+        "total_cost_excluding_vat",
+        "total_cost_including_vat",
+        "vat_amount",
+    ]
+
+
+def test_three_summary_records_reach_the_database(committing_db, imported_fixture):
+    lines = {
+        line.summary_key: line
+        for line in committing_db.scalars(
+            sa.select(ProposalSummaryLine).where(
+                ProposalSummaryLine.proposal_id == imported_fixture.proposal_id
+            )
+        )
+    }
+    assert sorted(lines) == [
+        "total_cost_excluding_vat",
+        "total_cost_including_vat",
+        "vat_amount",
+    ]
+    assert lines["total_cost_including_vat"].job_title == "ИТОГО, руб. с учетом НДС"
+
+
+def test_gross_total_matches_the_reference_read_from_the_sheet(
+    committing_db, imported_fixture, fixture_worksheet
+):
+    """Главное доказательство починки: поле совпадает с эталоном, прочитанным
+    с листа помимо парсера. До Ф4a в этом поле лежала сумма БЕЗ НДС."""
+    expected = _independent_total_with_vat(fixture_worksheet, FIXTURE_CONTRACTOR)
+    stored = committing_db.scalars(
+        sa.select(ProposalSummaryLine).where(
+            ProposalSummaryLine.proposal_id == imported_fixture.proposal_id,
+            ProposalSummaryLine.summary_key == "total_cost_including_vat",
+        )
+    ).one()
+    assert stored.total_cost == expected
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["materials_cost", "works_cost", "indirect_costs_cost", "total_cost"],
+)
+def test_identity_holds_on_the_stored_records(committing_db, imported_fixture, field):
+    """Все ЧЕТЫРЕ денежные колонки, а не только итоговая (спека §2.6).
+
+    Сверка одной колонки прошла бы и при разъехавшейся разбивке: три остальные
+    поля доезжают до БД тем же путём и тем же `_money`, но проверялись бы
+    ничем.
+    """
+    lines = {
+        line.summary_key: line
+        for line in committing_db.scalars(
+            sa.select(ProposalSummaryLine).where(
+                ProposalSummaryLine.proposal_id == imported_fixture.proposal_id
+            )
+        )
+    }
+    including = getattr(lines["total_cost_including_vat"], field)
+    excluding = getattr(lines["total_cost_excluding_vat"], field)
+    vat = getattr(lines["vat_amount"], field)
+    # Каждое слагаемое проверяется ДО сложения: пустой компонент иначе даст
+    # `TypeError: unsupported operand type(s)` вместо объясняющего падения, и
+    # причина «в БД нет значения» осталась бы нечитаемой.
+    for name, value in (("с НДС", including), ("без НДС", excluding), ("НДС", vat)):
+        assert value is not None, f"{field}: значение «{name}» пусто — сверять нечего, тест был бы вакуозен"
+    assert including == excluding + vat
+
+
+SUMMARY_WARNING_MARKERS = (
+    "Блок итогов не найден",
+    "не распознано меток",
+    "встретилась дважды",
+    "суммы не указаны",
+    "Валовое ИТОГО отсутствует",
+    "Арифметика НДС не сходится",
+    "Арифметика НДС не проверена из-за неполных, негодных или несравнимых точно данных",
+)
+
+
+def test_fixture_parses_without_any_summary_warning(imported_fixture):
+    """Форма fixture полная и непротиворечивая — блок итогов молчит.
+
+    Маркеры перечислены поимённо, а не отфильтрованы подстрокой «итог»: тексты
+    про арифметику этого слова не содержат вовсе, и фильтр был бы вакуозен.
+    """
+    found = [
+        text
+        for text in imported_fixture.warnings
+        for marker in SUMMARY_WARNING_MARKERS
+        if marker in text
+    ]
+    assert found == []

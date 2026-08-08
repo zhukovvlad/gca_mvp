@@ -200,11 +200,13 @@ class TestParseEstimateOnFixture:
 
         assert checked > 1500, f"проверено слишком мало строк: {checked}"
 
-    def test_summary_block_parsed(self, fixture_result):
-        """Итоги распознаны семантически, а не как merged_<строка>."""
+    def test_summary_block_gives_one_key_per_row(self, fixture_result):
+        """Три строки блока в файле → три ключа. Прежде их было два: метки
+        «с учетом НДС» и «без учета НДС» обе содержали «итого» и «ндс»."""
         summary = _proposal(fixture_result)["contractor_items"]["summary"]
-
-        assert sorted(summary) == ["total_cost_with_vat", "vat"]
+        assert sorted(summary) == ["total_cost_excluding_vat", "total_cost_including_vat", "vat_amount"]
+        assert summary["total_cost_including_vat"]["job_title"] == "ИТОГО, руб. с учетом НДС"
+        assert summary["total_cost_excluding_vat"]["job_title"] == "ИТОГО, руб. без учета НДС"
 
     def test_additional_info_parsed(self, fixture_result):
         """Блок дополнительной информации — шесть пунктов."""
@@ -253,9 +255,36 @@ class TestParseEstimateOnRealSamples:
     образец в samples/ автоматически становится проверкой парсера.
     """
 
-    def test_every_sample_parses_without_warnings(self, sample_results):
+    def test_every_sample_has_only_expected_warnings(self, sample_results):
+        """На каждой оферте либо предупреждений нет вовсе, либо ровно одно —
+        про пустую строку «В том числе НДС».
+
+        Один реальный образец несёт блок итогов, где строка «В том числе НДС»
+        физически присутствует, но все четыре её денежные ячейки пусты.
+        Парсер обязан назвать это предупреждением (спека Ф4a §2.7) — поэтому
+        тест больше не требует пустого списка предупреждений на каждой
+        оферте: такое требование было бы противоречием самой фиче.
+
+        Утверждение — не «пусто ИЛИ любое одно предупреждение»: второе
+        предупреждение на любой оферте, как и единственное предупреждение без
+        ОБОИХ смысловых фрагментов ниже, обязаны покрасить тест. Проверяются
+        именно фрагменты, а не текст целиком — он несёт номер строки, который
+        меняется при обновлении файла оферты и является диагностической
+        деталью, а не частью проверяемого смысла.
+
+        Предупреждение не означает «НДС отсутствует», «НДС не заявлен» или
+        «смета без НДС»: парсер установил только то, что строка СУЩЕСТВУЕТ и
+        что её денежные ячейки пусты. Вывод о смысле этой пустоты потребовал
+        бы прочитать остальную часть файла, включая заголовок колонки, — а
+        эта фича намеренно этого не делает.
+        """
         for name, result in sample_results:
-            assert result.warnings == [], name
+            if not result.warnings:
+                continue
+            assert len(result.warnings) == 1, (name, result.warnings)
+            warning = result.warnings[0]
+            assert "В том числе НДС" in warning, name
+            assert "суммы не указаны" in warning, name
 
     def test_every_sample_has_gp_layout(self, sample_results):
         """J6, 11 колонок — раскладка, на которой держится смысл стоимостей."""
@@ -452,17 +481,16 @@ class TestAdditionalWorksInJson:
         assert items["additional_works"] is None
 
 
-def test_parser_version_is_major_because_the_row_left_positions():
-    """2.0.0: мажор из-за того, что строка ИСЧЕЗЛА из `positions` (спека Ф4 §2.1).
+def test_parser_version_is_major_because_two_summary_keys_disappeared():
+    """3.0.0: мажор из-за того, что два ключа ИСЧЕЗЛИ из `summary` (спека Ф4a §2.1).
 
-    Не появление ключа — оно уже случилось в 1.1.0 и было минором (структура
-    только дополнялась). Здесь агрегатная строка допработ перестаёт быть
-    позицией — контракт `positions` меняется в обратную сторону, что ломает
-    любого потребителя, который считал её строкой. Версия — часть контракта:
-    потребителя в коде у неё нет, но именно по ней отличают старый разбор от
-    нового в операционной проверке стенда (спека §2.11).
+    Ключи total_cost_with_vat и vat исчезли. На их место пришли три ключа:
+    total_cost_including_vat, vat_amount, total_cost_excluding_vat. Это смена
+    ИМЕНИ вместо смены смысла выбрана намеренно — raw_data неизменяем, backfill
+    невозможен, и одно имя с двумя значениями у старых и новых смет различалось
+    бы только по этой самой версии.
     """
-    assert PARSER_VERSION == "2.0.0"
+    assert PARSER_VERSION == "3.0.0"
 
 
 class TestParseEstimateFailures:
@@ -616,6 +644,122 @@ def _find_money_floats(node, path=()):
 def _is_money_path(path) -> bool:
     """Оканчивается ли путь одним из денежных полей."""
     return any(path[-len(money_path) :] == money_path for money_path in MONEY_PATHS)
+
+
+# Раскладка колонок замерена: 15..18 — total_cost.{materials,works,
+# indirect_costs,total}. Тождество ниже сходится ТОЧНО: 120 = 100 + 20.
+SUMMARY_TRIPLE = (
+    ("ИТОГО, руб. с учетом НДС", {15: 120.0, 16: 120.0, 17: 120.0, 18: 120.0}),
+    ("В том числе НДС", {15: 20.0, 16: 20.0, 17: 20.0, 18: 20.0}),
+    ("ИТОГО, руб. без учета НДС", {15: 100.0, 16: 100.0, 17: 100.0, 18: 100.0}),
+)
+
+
+def _sheet_with_summary_rows(summary_rows, *, second_lot: bool = False):
+    """Лист с блоком итогов под позициями; при `second_lot` — два лота, один блок.
+
+    Блок итогов — факт уровня листа, а `get_summary` зовётся на каждое
+    предложение каждого лота, поэтому при двух лотах один и тот же блок
+    читается дважды. Строка сразу под блоком остаётся пустой — она терминатор,
+    без неё обход прочитает то, что ниже, как ещё одну итоговую строку.
+
+    Args:
+        summary_rows: последовательность (метка колонки A, {номер колонки: значение}).
+        second_lot: добавить второй маркер лота над блоком.
+    """
+    ws = _minimal_sheet(contractor_colspan=11)          # лот №1 в D11
+    ws.cell(row=12, column=1, value=1)
+    ws.cell(row=12, column=2, value="1")
+    ws.cell(row=12, column=4, value="Работа первого лота")
+
+    if second_lot:
+        ws.cell(row=13, column=1, value=2)
+        ws.cell(row=13, column=2, value="2")
+        ws.cell(row=13, column=4, value="Лот №2 Второй")
+        ws.cell(row=14, column=1, value=3)
+        ws.cell(row=14, column=2, value="3")
+        ws.cell(row=14, column=4, value="Работа второго лота")
+
+    for offset, (label, money) in enumerate(summary_rows):
+        row = 15 + offset
+        ws.cell(row=row, column=1, value=label)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        for column, value in money.items():
+            ws.cell(row=row, column=column, value=value)
+    return ws
+
+
+class TestSummaryWarningsReachTheTop:
+    """Проводка предупреждений блока итогов наверх, а не только правило."""
+
+    def test_warning_from_the_core_reaches_parse_result(self):
+        """Один лот: предупреждение обязано доехать до ParseResult.warnings.
+
+        Без этого теста обрыв проводки в get_proposals или
+        read_lots_and_boundaries остался бы невидимым: тесты ядра зовут его
+        напрямую.
+
+        Блок — полная тройка плюс лишняя строка с меткой: если оставить
+        ТОЛЬКО лишнюю строку, отсутствие валового ИТОГО даёт СВОЁ отдельное
+        предупреждение («Валовое ИТОГО отсутствует»), и оно попутно
+        перечисляет присутствующие метки — в такой урезанной сборке единственная
+        присутствующая метка совпадает с лишней, и подстрока находит два разных
+        предупреждения вместо одного, хотя дублирования нет ни на йоту. Полная
+        тройка эту метку из перечня убирает, и подстрока остаётся однозначным
+        следом только одного, проверяемого здесь предупреждения.
+        """
+        rows = [*SUMMARY_TRIPLE, ("Совершенно чужая метка", {})]
+        ws = _sheet_with_summary_rows(rows)
+
+        result = parse_worksheet(ws)
+
+        matching = [w for w in result.warnings if "Совершенно чужая метка" in w]
+        assert len(matching) == 1
+
+    def test_the_same_warning_is_not_doubled_on_a_two_lot_sheet(self):
+        """Два лота — один блок; наверху остаётся ОДИН экземпляр (спека §2.8)."""
+        rows = [*SUMMARY_TRIPLE, ("Совершенно чужая метка", {})]
+        ws = _sheet_with_summary_rows(rows, second_lot=True)
+
+        result = parse_worksheet(ws)
+
+        matching = [w for w in result.warnings if "Совершенно чужая метка" in w]
+        assert len(matching) == 1, f"ожидался один экземпляр, получено {len(matching)}"
+
+    def test_excel_error_in_a_summary_cell_is_named_in_the_warning_and_nulled_in_json(self):
+        """Пара, которую спека §2.6 обязалась назвать вслух.
+
+        Предупреждение говорит о том, ЧТО СТОЯЛО В ЯЧЕЙКЕ (`#REF!`), а в JSON
+        на её месте `None` — штатная `replace_excel_errors_with_null`
+        отрабатывает ПОСЛЕ разбора блока. Оба утверждения в одном тесте:
+        порознь они выглядели бы противоречием.
+
+        Блок ОБЯЗАН быть трёхстрочным: `check_arithmetic` выходит сразу, если
+        нет хотя бы одной из трёх налоговых строк, — на однострочном блоке
+        ветка с негодным значением не исполнилась бы вовсе, и тест краснел бы
+        по чужой причине.
+        """
+        gross_label, gross_money = SUMMARY_TRIPLE[0]
+        rows = [
+            (gross_label, {**gross_money, 18: "#REF!"}),
+            SUMMARY_TRIPLE[1],
+            SUMMARY_TRIPLE[2],
+        ]
+        ws = _sheet_with_summary_rows(rows)
+
+        result = parse_worksheet(ws)
+
+        named = [w for w in result.warnings if "#REF!" in w]
+        assert len(named) == 1, "негодное значение обязано быть названо ровно одним предупреждением"
+        assert "не проверена" in named[0]
+        assert not any("не сходится" in w for w in result.warnings), (
+            "в трёх годных колонках тождество сходится точно — «не сходится» здесь быть не должно"
+        )
+
+        summary = _proposal(result)["contractor_items"]["summary"]
+        total_cost = summary["total_cost_including_vat"]["total_cost"]
+        assert total_cost["total"] is None, "#REF! обязан стать null штатной постобработкой"
+        assert total_cost["materials"] == "120.0", "соседняя годная сумма не задета"
 
 
 def test_parse_error_is_importable_from_the_package_root():

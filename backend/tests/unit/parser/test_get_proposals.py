@@ -32,6 +32,7 @@ from parser.constants import (
 )
 from parser.get_lot_positions import LotRows
 from parser.get_proposals import get_proposals
+from parser.summary_block import SummaryBlock
 
 MODULE = "parser.get_proposals"
 
@@ -86,10 +87,11 @@ def sample_additional_info():
 
 def _patch_collaborators(positions=None, summary=None, additional=None, contractors=None):
     """Контекст с подменёнными соседями get_proposals."""
+    summary_block = SummaryBlock(lines={} if summary is None else summary, warnings=[])
     return (
         patch(f"{MODULE}.read_contractors", return_value=contractors),
         patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={} if positions is None else positions)),
-        patch(f"{MODULE}.get_summary", return_value={} if summary is None else summary),
+        patch(f"{MODULE}.get_summary", return_value=summary_block),
         patch(f"{MODULE}.get_additional_info", return_value={} if additional is None else additional),
     )
 
@@ -99,17 +101,17 @@ class TestGetProposalsBasicBehavior:
 
     def test_returns_empty_dict_when_no_contractors(self, empty_worksheet):
         with patch(f"{MODULE}.read_contractors", return_value=None):
-            assert get_proposals(empty_worksheet, 10, 20) == {}
+            assert get_proposals(empty_worksheet, 10, 20).proposals == {}
 
     def test_returns_empty_dict_when_empty_contractors_list(self, empty_worksheet):
         with patch(f"{MODULE}.read_contractors", return_value=[]):
-            assert get_proposals(empty_worksheet, 10, 20) == {}
+            assert get_proposals(empty_worksheet, 10, 20).proposals == {}
 
     def test_skips_first_contractor_entry(self, empty_worksheet, sample_contractors_data):
         """Нулевой элемент — ячейка-маркер, а не подрядчик."""
         p1, p2, p3, p4 = _patch_collaborators(contractors=sample_contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         assert sorted(result) == ["contractor_1", "contractor_2"]
 
@@ -124,7 +126,7 @@ class TestGetProposalsDataExtraction:
 
         p1, p2, p3, p4 = _patch_collaborators(contractors=sample_contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         assert contractor_1[JSON_KEY_CONTRACTOR_TITLE] == "ООО Строитель"
@@ -135,7 +137,7 @@ class TestGetProposalsDataExtraction:
     def test_extracts_coordinate_and_dimensions(self, empty_worksheet, sample_contractors_data):
         p1, p2, p3, p4 = _patch_collaborators(contractors=sample_contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         assert contractor_1[JSON_KEY_CONTRACTOR_COORDINATE] == "B2"
@@ -163,7 +165,7 @@ class TestGetProposalsDataExtraction:
 
         p1, p2, p3, p4 = _patch_collaborators(contractors=contractors_with_merged)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         assert contractor_1[JSON_KEY_CONTRACTOR_WIDTH] == 3
@@ -180,7 +182,7 @@ class TestGetProposalsModuleIntegration:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})) as mock_positions,
-            patch(f"{MODULE}.get_summary", return_value={}),
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])),
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
             get_proposals(empty_worksheet, 15, 25)
@@ -197,7 +199,7 @@ class TestGetProposalsModuleIntegration:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
-            patch(f"{MODULE}.get_summary", return_value={}) as mock_summary,
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])) as mock_summary,
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
             get_proposals(empty_worksheet, 10, 20)
@@ -212,7 +214,7 @@ class TestGetProposalsModuleIntegration:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
-            patch(f"{MODULE}.get_summary", return_value={}),
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])),
             patch(f"{MODULE}.get_additional_info", return_value={}) as mock_additional,
         ):
             get_proposals(empty_worksheet, 10, 20)
@@ -232,7 +234,7 @@ class TestGetProposalsDataAggregation:
             summary=sample_summary_data,
         )
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         items = result["contractor_1"][JSON_KEY_CONTRACTOR_ITEMS]
         assert items[JSON_KEY_CONTRACTOR_POSITIONS] == sample_positions_data
@@ -245,7 +247,7 @@ class TestGetProposalsDataAggregation:
             contractors=sample_contractors_data, additional=sample_additional_info
         )
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         assert result["contractor_1"][JSON_KEY_CONTRACTOR_ADDITIONAL_INFO] == sample_additional_info
 
@@ -268,7 +270,7 @@ class TestGetProposalsDataAggregation:
             additional=sample_additional_info,
         )
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         for field in (
@@ -295,7 +297,7 @@ class TestGetProposalsMultipleContractors:
     def test_processes_multiple_contractors(self, empty_worksheet, sample_contractors_data):
         p1, p2, p3, p4 = _patch_collaborators(contractors=sample_contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         assert result["contractor_1"][JSON_KEY_CONTRACTOR_TITLE] == "ООО Строитель"
         assert result["contractor_2"][JSON_KEY_CONTRACTOR_TITLE] == "АО Подрядчик"
@@ -314,7 +316,7 @@ class TestGetProposalsMultipleContractors:
 
         p1, p2, p3, p4 = _patch_collaborators(contractors=contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         assert sorted(result) == ["contractor_1", "contractor_2", "contractor_3"]
 
@@ -344,7 +346,7 @@ class TestGetProposalsMultipleContractors:
 
         p1, p2, p3, p4 = _patch_collaborators(contractors=contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 11, 2600)
+            result = get_proposals(empty_worksheet, 11, 2600).proposals
 
         assert list(result) == ["contractor_1"]
         assert result["contractor_1"][JSON_KEY_CONTRACTOR_WIDTH] == 11
@@ -367,7 +369,7 @@ class TestGetProposalsEdgeCases:
 
         p1, p2, p3, p4 = _patch_collaborators(contractors=incomplete_contractors)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         assert contractor_1[JSON_KEY_CONTRACTOR_TITLE] == "Неполные данные"
@@ -378,7 +380,7 @@ class TestGetProposalsEdgeCases:
     def test_handles_none_values_in_cells(self, empty_worksheet, sample_contractors_data):
         p1, p2, p3, p4 = _patch_collaborators(contractors=sample_contractors_data)
         with p1, p2, p3, p4:
-            result = get_proposals(empty_worksheet, 10, 20)
+            result = get_proposals(empty_worksheet, 10, 20).proposals
 
         contractor_1 = result["contractor_1"]
         assert contractor_1[JSON_KEY_CONTRACTOR_INN] is None
@@ -390,7 +392,7 @@ class TestGetProposalsEdgeCases:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", side_effect=RuntimeError("Ошибка позиций")),
-            patch(f"{MODULE}.get_summary", return_value={}),
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])),
             patch(f"{MODULE}.get_additional_info", return_value={}),
             pytest.raises(RuntimeError, match="Ошибка позиций"),
         ):
@@ -404,7 +406,7 @@ class TestGetProposalsLotBoundaries:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})) as mock_positions,
-            patch(f"{MODULE}.get_summary", return_value={}),
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])),
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
             get_proposals(empty_worksheet, 100, 200)
@@ -422,7 +424,7 @@ class TestGetProposalsLotBoundaries:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
-            patch(f"{MODULE}.get_summary", return_value={}) as mock_summary,
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])) as mock_summary,
             patch(f"{MODULE}.get_additional_info", return_value={}),
         ):
             get_proposals(empty_worksheet, 100, 200)
@@ -434,7 +436,7 @@ class TestGetProposalsLotBoundaries:
         with (
             patch(f"{MODULE}.read_contractors", return_value=sample_contractors_data),
             patch(f"{MODULE}.get_lot_positions", return_value=LotRows(positions={})),
-            patch(f"{MODULE}.get_summary", return_value={}),
+            patch(f"{MODULE}.get_summary", return_value=SummaryBlock(lines={}, warnings=[])),
             patch(f"{MODULE}.get_additional_info", return_value={}) as mock_additional,
         ):
             get_proposals(empty_worksheet, 100, 200)
