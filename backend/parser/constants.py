@@ -90,6 +90,7 @@ TABLE_PARSE_ADDITIONAL_WORKS_TITLE = "Дополнительные работы"
 # (спека Ф4a §2.1).
 JSON_KEY_TOTAL_COST_INCLUDING_VAT = "total_cost_including_vat"  # валовое ИТОГО
 JSON_KEY_VAT_AMOUNT = "vat_amount"  # СУММА НДС; ставка — Ф4б, имя `vat_rate` за ней
+JSON_KEY_VAT_RATE = "vat_rate"  # ставка НДС, заявленная в шапке ценового блока
 JSON_KEY_TOTAL_COST_EXCLUDING_VAT = "total_cost_excluding_vat"  # ИТОГО без НДС
 JSON_KEY_INITIAL_COST = "initial_cost"  # Первоначальная стоимость
 # Отклонение предложения подрядчика от базовой (расчетной) стоимости.
