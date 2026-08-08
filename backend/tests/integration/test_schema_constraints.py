@@ -219,6 +219,26 @@ class TestEstimatesUniqueness:
 
 
 # ---------------------------------------------------------------------------
+#  proposals.vat_rate: ставка НДС из шапки ценового блока (фаза 7, спека Ф4б §2.9)
+# ---------------------------------------------------------------------------
+
+class TestProposalVatRate:
+    """`CHECK` — запрет непредставимого состояния, а не основной фильтр (§2.9):
+
+    импорт отсеивает негодные значения своей конверсией ДО вставки строки
+    (`services.estimate_import._vat_rate`), а `CHECK` стережёт то, что прошло бы
+    мимо импорта — прямую правку в psql.
+    """
+
+    def test_value_over_the_range_is_rejected_past_the_import(self, db_session, factories):
+        proposal = factories.ProposalFactory.create()
+        with rejected(db_session, contains="ck_proposals_vat_rate"):
+            db_session.execute(
+                sa.update(Proposal).where(Proposal.id == proposal.id).values(vat_rate=Decimal("101"))
+            )
+
+
+# ---------------------------------------------------------------------------
 #  catalog_positions: идентичность = нормализованное название + единица
 # ---------------------------------------------------------------------------
 

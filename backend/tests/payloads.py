@@ -58,6 +58,7 @@ from parser.constants import (
     JSON_KEY_UNIT,
     JSON_KEY_UNIT_COST,
     JSON_KEY_VAT_AMOUNT,
+    JSON_KEY_VAT_RATE,
     JSON_KEY_WORKS,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
@@ -177,6 +178,7 @@ def proposal(
     summary: dict[str, Any] | None = None,
     additional_info: dict[str, str] | None = None,
     additional_works: dict[str, Any] | None = None,
+    vat_rate: str | None = None,
 ) -> dict[str, Any]:
     return {
         JSON_KEY_CONTRACTOR_TITLE: title,
@@ -186,6 +188,13 @@ def proposal(
         JSON_KEY_CONTRACTOR_COORDINATE: "J6",
         JSON_KEY_CONTRACTOR_WIDTH: 11,
         JSON_KEY_CONTRACTOR_HEIGHT: 1,
+        # Ключ парсера ≥ 3.1.0, присутствует ВСЕГДА (значением может быть
+        # `None`, спека Ф4б §2.1); по умолчанию `None` — шапка ставку не
+        # заявила, тот же легитимный случай, что у 449-ТУ. Payload формы
+        # ≤ 3.0.0 (ключа нет вовсе) конструируется тестом отдельно —
+        # `.pop(JSON_KEY_VAT_RATE)` из готового payload, а не отдельным
+        # параметром здесь: сборщик отдаёт форму ТЕКУЩЕГО контракта.
+        JSON_KEY_VAT_RATE: vat_rate,
         JSON_KEY_CONTRACTOR_ITEMS: {
             JSON_KEY_CONTRACTOR_POSITIONS: {
                 str(i): pos for i, pos in enumerate(positions, start=1)
