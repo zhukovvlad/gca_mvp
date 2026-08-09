@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from models import UserRole
@@ -24,6 +26,33 @@ def member(client):
     client.auth_state["role"] = UserRole.member
     yield client
     client.auth_state["role"] = UserRole.admin
+
+
+@pytest.fixture
+def object_with_areas(client, factories):
+    """Обе площади заполнены: 62399.70 + 13341.30 = 75741.00 (спека Ф5 §4.2)."""
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("62399.70"),
+        area_underground_sp=Decimal("13341.30"),
+    )
+    return obj.id
+
+
+@pytest.fixture
+def object_with_zero_underground(client, factories):
+    """Подземная часть заполнена нулём — NOT NULL, а не «не равная нулю» (§2.4)."""
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("1000.00"),
+        area_underground_sp=Decimal("0"),
+    )
+    return obj.id
+
+
+@pytest.fixture
+def object_without_areas(client, factories):
+    """`ObjectFactory` не задаёт площади вовсе — законное состояние NULL/NULL."""
+    obj = factories.ObjectFactory.create()
+    return obj.id
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +205,160 @@ def test_delete_object_refused_while_contract_references_it(client, factories):
     response = client.delete(f"/api/v1/objects/{contract.object_id}")
     assert response.status_code == 409
     assert "договоры (1)" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+#  ТЭП объекта: площади, двойная валидация (фаза 5, спека §2.3-2.4, §2.6-2.7)
+# ---------------------------------------------------------------------------
+
+def test_post_with_only_one_area_is_422(client):
+    r = client.post(
+        "/api/v1/objects", json={"title": "О1", "area_aboveground_sp": "100"}
+    )
+    assert r.status_code == 422
+
+
+def test_post_with_negative_area_is_422_not_500(client):
+    r = client.post(
+        "/api/v1/objects",
+        json={"title": "О2", "area_aboveground_sp": "-1", "area_underground_sp": "0"},
+    )
+    assert r.status_code == 422
+
+
+def test_post_with_both_zero_is_422_and_names_the_total(client):
+    """Части нулю равны законно — отказ обязан говорить про ОБЩУЮ площадь."""
+    r = client.post(
+        "/api/v1/objects",
+        json={"title": "О3", "area_aboveground_sp": "0", "area_underground_sp": "0"},
+    )
+    assert r.status_code == 422
+    assert "общая" in r.text.lower()
+
+
+def test_patch_one_filled_area_alone_is_allowed(client, object_with_areas):
+    """Обе заполнены — правка одной разрешена (спека §2.4)."""
+    r = client.patch(
+        f"/api/v1/objects/{object_with_areas}", json={"area_aboveground_sp": "70000.00"}
+    )
+    assert r.status_code == 200
+
+
+def test_patch_zero_part_alone_is_allowed(client, object_with_zero_underground):
+    """«Уже заполненная» — это NOT NULL, а не «не равная нулю»."""
+    r = client.patch(
+        f"/api/v1/objects/{object_with_zero_underground}",
+        json={"area_underground_sp": "500.00"},
+    )
+    assert r.status_code == 200
+
+
+def test_patch_from_empty_to_one_area_is_422(client, object_without_areas):
+    r = client.patch(
+        f"/api/v1/objects/{object_without_areas}", json={"area_aboveground_sp": "100"}
+    )
+    assert r.status_code == 422
+
+
+def test_patch_null_for_both_clears_them(client, object_with_areas):
+    r = client.patch(
+        f"/api/v1/objects/{object_with_areas}",
+        json={"area_aboveground_sp": None, "area_underground_sp": None},
+    )
+    assert r.status_code == 200
+    assert r.json()["area_total_sp"] is None
+
+
+def test_patch_null_for_one_only_is_422(client, object_with_areas):
+    r = client.patch(
+        f"/api/v1/objects/{object_with_areas}", json={"area_underground_sp": None}
+    )
+    assert r.status_code == 422
+
+
+def test_patch_negative_area_is_422_not_500(client, object_with_areas):
+    r = client.patch(
+        f"/api/v1/objects/{object_with_areas}", json={"area_aboveground_sp": "-1"}
+    )
+    assert r.status_code == 422
+
+
+def test_patch_resulting_in_both_zero_is_422(client, object_with_zero_underground):
+    """Итоговая пара 0/0 запрещена и на PATCH: общая обнулилась бы."""
+    r = client.patch(
+        f"/api/v1/objects/{object_with_zero_underground}",
+        json={"area_aboveground_sp": "0"},
+    )
+    assert r.status_code == 422
+    assert "общая" in r.text.lower()
+
+
+@pytest.mark.parametrize("field", ["area_aboveground_sp", "area_underground_sp"])
+def test_float_area_is_rejected(client, field):
+    r = client.post(
+        "/api/v1/objects",
+        json={
+            "title": f"О4-{field}",
+            "area_aboveground_sp": "100",
+            "area_underground_sp": "100",
+            field: 62399.7,
+        },
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["list", "one", "post", "patch"])
+def test_areas_reach_json_as_strings_on_every_object_endpoint(
+    client, object_with_areas, endpoint
+):
+    """Decimal строкой во всех четырёх объектных ответах (спека §4.2).
+
+    Смотрим на СЫРОЕ тело: после `json.loads` строка и `float` неразличимы, а
+    забытый `decimal_json` даёт ровно `float`.
+    """
+    if endpoint == "list":
+        raw = client.get("/api/v1/objects").text
+    elif endpoint == "one":
+        raw = client.get(f"/api/v1/objects/{object_with_areas}").text
+    elif endpoint == "post":
+        raw = client.post(
+            "/api/v1/objects",
+            json={
+                "title": "О-json",
+                "area_aboveground_sp": "62399.70",
+                "area_underground_sp": "13341.30",
+            },
+        ).text
+    else:
+        raw = client.patch(
+            f"/api/v1/objects/{object_with_areas}",
+            json={"area_aboveground_sp": "62399.70"},
+        ).text
+
+    compact = raw.replace(" ", "")
+    assert '"area_total_sp":"75741.00"' in compact
+    # Негативная половина обязательна: без неё тест прошёл бы и на числе,
+    # если бы строка совпала подстрокой где-то ещё в теле.
+    assert '"area_total_sp":75741' not in compact
+
+
+def test_post_objects_still_answers_201(client):
+    """Регресс: Response несёт свой статус мимо status_code декоратора."""
+    r = client.post("/api/v1/objects", json={"title": "О5"})
+    assert r.status_code == 201
+
+
+@pytest.mark.parametrize("method", ["post", "patch"])
+def test_member_cannot_edit_areas(member, object_with_areas, method):
+    body = {"title": "О6", "area_aboveground_sp": "100", "area_underground_sp": "0"}
+    r = (
+        member.post("/api/v1/objects", json=body)
+        if method == "post"
+        else member.patch(
+            f"/api/v1/objects/{object_with_areas}", json={"area_aboveground_sp": "100"}
+        )
+    )
+    assert r.status_code == 403
 
 
 # ---------------------------------------------------------------------------
