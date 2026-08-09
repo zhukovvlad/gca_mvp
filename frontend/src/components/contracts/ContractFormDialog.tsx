@@ -1,7 +1,13 @@
 import { useState } from "react";
+import { ChevronDownIcon } from "lucide-react";
 
 import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -46,6 +52,17 @@ interface FormState {
   signer: string;
   total_amount: string;
   notes: string;
+  /**
+   * Коммерческие условия (спека §2.5): три пары «процент + оговорка». Проценты —
+   * текстом, тем же приёмом, что `total_amount`: `<input type="number">` отдал бы
+   * float, а сервер его отвергает явно (§3).
+   */
+  advance_pct: string;
+  advance_note: string;
+  bank_guarantee_pct: string;
+  bank_guarantee_note: string;
+  retention_pct: string;
+  retention_note: string;
 }
 
 const EMPTY: FormState = {
@@ -58,6 +75,12 @@ const EMPTY: FormState = {
   signer: "",
   total_amount: "",
   notes: "",
+  advance_pct: "",
+  advance_note: "",
+  bank_guarantee_pct: "",
+  bank_guarantee_note: "",
+  retention_pct: "",
+  retention_note: "",
 };
 
 function fromContract(contract: ContractCard): FormState {
@@ -71,6 +94,12 @@ function fromContract(contract: ContractCard): FormState {
     signer: contract.signer ?? "",
     total_amount: contract.total_amount ?? "",
     notes: contract.notes ?? "",
+    advance_pct: contract.advance_pct ?? "",
+    advance_note: contract.advance_note ?? "",
+    bank_guarantee_pct: contract.bank_guarantee_pct ?? "",
+    bank_guarantee_note: contract.bank_guarantee_note ?? "",
+    retention_pct: contract.retention_pct ?? "",
+    retention_note: contract.retention_note ?? "",
   };
 }
 
@@ -234,6 +263,14 @@ function ContractForm({
     }
   }
 
+  /**
+   * Секция условий свёрнута по умолчанию (спека §2.9) — и в создании, и в правке:
+   * на момент заведения карточки условия обычно ещё не согласованы, а в правке
+   * лишний раскрытый блок утяжелял бы форму без причины. Пользователь раскрывает
+   * её сам, когда условия нужно посмотреть или изменить.
+   */
+  const [termsOpen, setTermsOpen] = useState(false);
+
   const classNeedle = classQuery.trim().toLowerCase();
   const visibleClasses = (classesQ.data ?? []).filter(
     (rateClass) => !classNeedle || rateClass.title.toLowerCase().includes(classNeedle)
@@ -266,6 +303,15 @@ function ContractForm({
       signer: form.signer.trim() || null,
       total_amount: normalizeDecimalInput(form.total_amount) || null,
       notes: form.notes.trim() || null,
+      // Проценты — тем же приёмом, что сумма; пустой комментарий обязан уйти как
+      // `null`, а не пустой строкой (спека §2.5): иначе паспорт напечатал бы
+      // пустую оговорку как заведённый факт.
+      advance_pct: normalizeDecimalInput(form.advance_pct) || null,
+      advance_note: form.advance_note.trim() || null,
+      bank_guarantee_pct: normalizeDecimalInput(form.bank_guarantee_pct) || null,
+      bank_guarantee_note: form.bank_guarantee_note.trim() || null,
+      retention_pct: normalizeDecimalInput(form.retention_pct) || null,
+      retention_note: form.retention_note.trim() || null,
     };
 
     try {
@@ -502,6 +548,97 @@ function ContractForm({
             onChange={(e) => patch({ notes: e.target.value })}
           />
         </div>
+
+        {/*
+          Коммерческие условия (спека §2.5, §2.9): свёрнутая секция, не входящая в
+          `canSubmit`. Условия на момент заведения карточки обычно ещё не известны,
+          и форма не вправе требовать их для создания договора.
+        */}
+        <Collapsible open={termsOpen} onOpenChange={setTermsOpen}>
+          <CollapsibleTrigger
+            render={
+              <Button type="button" variant="outline" size="sm" className="w-full justify-between">
+                <span>Коммерческие условия</span>
+                <ChevronDownIcon className="size-4 transition-transform group-aria-expanded/button:rotate-180" />
+              </Button>
+            }
+          />
+          <CollapsibleContent className="grid gap-4 pt-4">
+            <p className="text-xs text-fg-tertiary">
+              Комментарий без процента законен — условие есть, но одним числом не
+              выражается (например, аванс траншами). Ноль в проценте отличается от
+              пустого поля: «условия нет» против «не заполнено».
+            </p>
+
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr] sm:items-start">
+              <div className="grid gap-2">
+                <Label htmlFor="contract-advance-pct">Аванс, %</Label>
+                <Input
+                  id="contract-advance-pct"
+                  inputMode="decimal"
+                  placeholder="30"
+                  value={form.advance_pct}
+                  onChange={(e) => patch({ advance_pct: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-advance-note">Оговорка к авансу</Label>
+                <Textarea
+                  id="contract-advance-note"
+                  rows={2}
+                  value={form.advance_note}
+                  onChange={(e) => patch({ advance_note: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr] sm:items-start">
+              <div className="grid gap-2">
+                <Label htmlFor="contract-bank-guarantee-pct">Банк. гарантия, %</Label>
+                <Input
+                  id="contract-bank-guarantee-pct"
+                  inputMode="decimal"
+                  placeholder="10"
+                  value={form.bank_guarantee_pct}
+                  onChange={(e) => patch({ bank_guarantee_pct: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-bank-guarantee-note">
+                  Оговорка к банковской гарантии
+                </Label>
+                <Textarea
+                  id="contract-bank-guarantee-note"
+                  rows={2}
+                  value={form.bank_guarantee_note}
+                  onChange={(e) => patch({ bank_guarantee_note: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr] sm:items-start">
+              <div className="grid gap-2">
+                <Label htmlFor="contract-retention-pct">Удержание, %</Label>
+                <Input
+                  id="contract-retention-pct"
+                  inputMode="decimal"
+                  placeholder="5"
+                  value={form.retention_pct}
+                  onChange={(e) => patch({ retention_pct: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-retention-note">Оговорка к удержанию</Label>
+                <Textarea
+                  id="contract-retention-note"
+                  rows={2}
+                  value={form.retention_note}
+                  onChange={(e) => patch({ retention_note: e.target.value })}
+                />
+              </div>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

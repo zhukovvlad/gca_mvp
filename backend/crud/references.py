@@ -20,6 +20,7 @@ FK объявлены без каскада — БД и сама не пусти
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -170,6 +171,9 @@ def _object_dict(obj: ObjectModel, contracts: int, rate_class_title: str | None)
         "address": obj.address,
         "rate_class_id": obj.rate_class_id,
         "rate_class_title": rate_class_title,
+        "area_aboveground_sp": obj.area_aboveground_sp,
+        "area_underground_sp": obj.area_underground_sp,
+        "area_total_sp": obj.area_total_sp,
         "contracts_count": contracts,
         "created_at": iso(obj.created_at),
         "updated_at": iso(obj.updated_at),
@@ -219,17 +223,57 @@ def _resolve_rate_class(db: Session, rate_class_id: int | None) -> int | None:
     return rate_class_id
 
 
+def validate_area_pair(above: Decimal | None, under: Decimal | None) -> None:
+    """Судит ИТОГОВОЕ состояние пары площадей, а не переданную дельту (§2.4).
+
+    Вызывается и из `create_object`, и из `update_object`: у создания «итоговое
+    состояние» — это просто вход. Одна функция на оба пути, иначе правило жило
+    бы в двух местах и разъехалось бы при первой правке.
+
+    `CHECK` в схеме говорит то же самое и остаётся последним рубежом; здесь
+    отказ человекочитаемый, потому что `translating_integrity` переводит только
+    нарушения уникальности и только в 409.
+    """
+    if (above is None) != (under is None):
+        raise DomainError(
+            422,
+            "Площади задаются парой: укажите наземную и подземную вместе либо "
+            "не указывайте ни одной.",
+        )
+    if above is None:
+        return
+    if above + under <= 0:
+        raise DomainError(
+            422,
+            "Общая площадь получилась нулевой, а по ней считается руб/м². "
+            "Хотя бы одна из частей должна быть больше нуля.",
+        )
+
+
 def create_object(
-    db: Session, *, title: str, address: str | None = None, rate_class_id: int | None = None
+    db: Session,
+    *,
+    title: str,
+    address: str | None = None,
+    rate_class_id: int | None = None,
+    area_aboveground_sp: Decimal | None = None,
+    area_underground_sp: Decimal | None = None,
 ) -> dict:
     title = require_text(title, "Название")
+    validate_area_pair(area_aboveground_sp, area_underground_sp)
     rate_class_id = _resolve_rate_class(db, rate_class_id)
     if db.query(ObjectModel).filter(ObjectModel.title == title).first():
         raise DomainError(409, _UNIQUE_MESSAGES["uq_objects_title"])
 
     # address NOT NULL без дефолта в схеме; пустая строка допустима — адрес
     # уточняют позже, а объект нужен уже сейчас, чтобы завести договор.
-    obj = ObjectModel(title=title, address=(address or "").strip(), rate_class_id=rate_class_id)
+    obj = ObjectModel(
+        title=title,
+        address=(address or "").strip(),
+        rate_class_id=rate_class_id,
+        area_aboveground_sp=area_aboveground_sp,
+        area_underground_sp=area_underground_sp,
+    )
     db.add(obj)
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
@@ -239,14 +283,22 @@ def create_object(
 
 
 def update_object(
-    db: Session, object_id: int, *, title=UNSET, address=UNSET, rate_class_id=UNSET
+    db: Session,
+    object_id: int,
+    *,
+    title=UNSET,
+    address=UNSET,
+    rate_class_id=UNSET,
+    area_aboveground_sp=UNSET,
+    area_underground_sp=UNSET,
 ) -> dict:
     obj = db.get(ObjectModel, object_id)
     if obj is None:
         raise DomainError(404, f"Объект {object_id} не найден.")
     # Откат обязателен: `_resolve_rate_class` отвергает неизвестный класс уже
     # после того, как название и адрес присвоены, и без отката следующее чтение в
-    # этой же сессии увидело бы отвергнутую правку.
+    # этой же сессии увидело бы отвергнутую правку. Проверка пары площадей живёт
+    # в этом же блоке и по той же причине: она судит СЛИТОЕ состояние `obj`.
     with rollback_on_domain_error(db):
         if title is not UNSET:
             obj.title = require_text(title, "Название")
@@ -254,6 +306,11 @@ def update_object(
             obj.address = (address or "").strip()
         if rate_class_id is not UNSET:
             obj.rate_class_id = _resolve_rate_class(db, rate_class_id)
+        if area_aboveground_sp is not UNSET:
+            obj.area_aboveground_sp = area_aboveground_sp
+        if area_underground_sp is not UNSET:
+            obj.area_underground_sp = area_underground_sp
+        validate_area_pair(obj.area_aboveground_sp, obj.area_underground_sp)
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
     log.info("object_updated id=%s", object_id)

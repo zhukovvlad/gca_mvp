@@ -174,6 +174,25 @@ export function useObjects(params?: { q?: string; page?: number; page_size?: num
   });
 }
 
+/**
+ * Один объект (спека §2.9) — отдельным запросом, а не полями, подмешанными в
+ * карточку договора: в карточке уже есть `rate_class_id` (снимок договора), и
+ * класс объекта рядом с ним дал бы два поля с одним именем и разным смыслом.
+ *
+ * `id` необязателен, и `enabled` обязателен вместе с ним: вызывающая сторона
+ * узнаёт идентификатор объекта только из загруженной карточки договора, а хуки
+ * вызываются до ранних `return`. Без `enabled` запрос уходил бы по подставному
+ * `0` при каждом открытии карточки и штатно получал `404` — лишний ошибочный
+ * запрос и мусор в журналах. Форма та же, что у `useContract` ниже.
+ */
+export function useObject(id: number | undefined) {
+  return useQuery({
+    queryKey: qk.objects.one(id ?? 0),
+    queryFn: () => referencesApi.getObject(id as number),
+    enabled: id !== undefined,
+  });
+}
+
 export function useCreateObject() {
   const qc = useQueryClient();
   return useMutation({
@@ -195,6 +214,12 @@ export function useUpdateObject() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Название объекта денормализовано в договоры, паспорт и колонки матрицы
+      // (спека §2.11). Корень, а не карточка: у объекта может быть несколько
+      // договоров, и название лежит в каждом.
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.passport.all });
+      qc.invalidateQueries({ queryKey: qk.matrix.all });
     },
     onError: toastApiError,
   });

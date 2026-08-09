@@ -13,8 +13,10 @@ CSRF на POST/PATCH/DELETE обеспечивает middleware из main.py —
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import require_admin
@@ -22,6 +24,7 @@ from crud import references as crud_refs
 from crud.common import DomainError
 from database import get_db
 from models import User
+from responses import decimal_json
 
 router = APIRouter(prefix="/api/v1", tags=["references"])
 
@@ -50,16 +53,44 @@ class RateClassUpdate(BaseModel):
     description: str | None = None
 
 
-class ObjectCreate(BaseModel):
+class _AreaMixin(BaseModel):
+    """Площади: не `float` и не отрицательные (спека §2.4, §2.6)."""
+
+    @field_validator(
+        "area_aboveground_sp", "area_underground_sp", mode="before", check_fields=False
+    )
+    @classmethod
+    def _reject_float(cls, value):
+        if isinstance(value, float):
+            raise ValueError(
+                "Площадь передавайте строкой (например \"62399.70\"), а не числом "
+                "с плавающей точкой: float внесёт двоичный хвост в знаменатель "
+                "руб/м²."
+            )
+        return value
+
+    @field_validator("area_aboveground_sp", "area_underground_sp", check_fields=False)
+    @classmethod
+    def _non_negative(cls, value: Decimal | None):
+        if value is not None and value < 0:
+            raise ValueError("Площадь не может быть отрицательной.")
+        return value
+
+
+class ObjectCreate(_AreaMixin):
     title: str
     address: str | None = None
     rate_class_id: int | None = None
+    area_aboveground_sp: Decimal | None = None
+    area_underground_sp: Decimal | None = None
 
 
-class ObjectUpdate(BaseModel):
+class ObjectUpdate(_AreaMixin):
     title: str | None = None
     address: str | None = None
     rate_class_id: int | None = None
+    area_aboveground_sp: Decimal | None = None
+    area_underground_sp: Decimal | None = None
 
 
 class ContractorCreate(BaseModel):
@@ -164,14 +195,17 @@ def list_objects(
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """Объекты с пагинацией; `q` — подстрока названия или адреса."""
-    return crud_refs.list_objects(db, q=q, page=page, page_size=page_size)
+    """Объекты с пагинацией; `q` — подстрока названия или адреса.
+
+    `decimal_json` обязателен: в ответе есть площади (Decimal), § 2.7.
+    """
+    return decimal_json(crud_refs.list_objects(db, q=q, page=page, page_size=page_size))
 
 
 @router.get("/objects/{object_id}")
 def get_object(object_id: int, db: Session = Depends(get_db)):
     try:
-        return crud_refs.get_object_dict(db, object_id)
+        return decimal_json(crud_refs.get_object_dict(db, object_id))
     except DomainError as e:
         _raise(e)
 
@@ -182,12 +216,21 @@ def create_object(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    """`decimal_json(..., 201)` передаёт статус явно: `Response` несёт свой
+    статус мимо `status_code` декоратора, без этого эндпоинт молча
+    деградировал бы до 200 (спека §1.5 п. 2, §2.7)."""
     try:
-        return crud_refs.create_object(
-            db, title=body.title, address=body.address, rate_class_id=body.rate_class_id
+        body_out = crud_refs.create_object(
+            db,
+            title=body.title,
+            address=body.address,
+            rate_class_id=body.rate_class_id,
+            area_aboveground_sp=body.area_aboveground_sp,
+            area_underground_sp=body.area_underground_sp,
         )
     except DomainError as e:
         _raise(e)
+    return decimal_json(body_out, status.HTTP_201_CREATED)
 
 
 @router.patch("/objects/{object_id}")
@@ -199,15 +242,18 @@ def update_object(
 ):
     fields = _patch_fields(body, non_nullable=("title",))
     try:
-        return crud_refs.update_object(
+        body_out = crud_refs.update_object(
             db,
             object_id,
             title=_unset(fields, "title"),
             address=_unset(fields, "address"),
             rate_class_id=_unset(fields, "rate_class_id"),
+            area_aboveground_sp=_unset(fields, "area_aboveground_sp"),
+            area_underground_sp=_unset(fields, "area_underground_sp"),
         )
     except DomainError as e:
         _raise(e)
+    return decimal_json(body_out)
 
 
 @router.delete("/objects/{object_id}", status_code=status.HTTP_204_NO_CONTENT)

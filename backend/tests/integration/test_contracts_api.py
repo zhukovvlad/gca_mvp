@@ -21,6 +21,17 @@ from models import Contract, ImportJobStatus, UserRole
 # молча их не собирала бы — а это ложная уверенность при точечном прогоне.
 pytestmark = pytest.mark.integration
 
+#: Все шесть полей, а не выборка: неполный payload оставил бы часть колонок
+#: без единого исполняющего теста при верной схеме.
+TERMS = {
+    "advance_pct": "30",
+    "advance_note": "двумя траншами",
+    "bank_guarantee_pct": "10",
+    "bank_guarantee_note": "возврат аванса и исполнение",
+    "retention_pct": "5",
+    "retention_note": "возврат после подписания акта",
+}
+
 
 @pytest.fixture
 def member(client):
@@ -38,6 +49,35 @@ def _payload(obj_id: int, contractor_id: int, **extra) -> dict:
     }
     body.update(extra)
     return body
+
+
+@pytest.fixture
+def contract_payload(factories) -> dict:
+    """Валидное минимальное тело создания договора (§2.5, коммерческие условия)."""
+    obj = factories.ObjectFactory.create(rate_class=factories.RateClassFactory.create())
+    contractor = factories.ContractorFactory.create()
+    return _payload(obj.id, contractor.id)
+
+
+@pytest.fixture
+def contract_with_terms(factories) -> int:
+    """Договор со всеми шестью коммерческими условиями, для правки/паритета.
+
+    Заводится напрямую фабрикой (не через `client.post`): фикстура нужна и в
+    тестах на права (`member`), а `member` переключает роль **того же** `client`
+    — заведение через API рисковало бы попасть под уже переключённую роль в
+    зависимости от порядка резолвинга фикстур. Тот же приём, что у
+    `object_with_areas` в `test_references_api.py`.
+    """
+    contract = factories.ContractFactory.create(
+        advance_pct=Decimal(TERMS["advance_pct"]),
+        advance_note=TERMS["advance_note"],
+        bank_guarantee_pct=Decimal(TERMS["bank_guarantee_pct"]),
+        bank_guarantee_note=TERMS["bank_guarantee_note"],
+        retention_pct=Decimal(TERMS["retention_pct"]),
+        retention_note=TERMS["retention_note"],
+    )
+    return contract.id
 
 
 # ---------------------------------------------------------------------------
@@ -396,3 +436,85 @@ def test_rejected_contract_patch_leaves_nothing_behind(client):
     body = client.get(f"/api/v1/contracts/{contract_id}").json()
     assert body["object_id"] == object_id
     assert body["signer"] == "Иванов И.И."
+
+
+# ---------------------------------------------------------------------------
+#  Коммерческие условия: три пары «процент + комментарий» (спека §2.5)
+# ---------------------------------------------------------------------------
+
+def test_commercial_terms_round_trip(client, contract_payload):
+    created = client.post("/api/v1/contracts", json={**contract_payload, **TERMS})
+    assert created.status_code == 201
+    card = client.get(f"/api/v1/contracts/{created.json()['id']}").json()
+    for field, expected in TERMS.items():
+        assert card[field] == expected, field
+
+
+def test_patch_touches_one_field_only(client, contract_with_terms):
+    client.patch(f"/api/v1/contracts/{contract_with_terms}", json={"retention_pct": "7"})
+    card = client.get(f"/api/v1/contracts/{contract_with_terms}").json()
+    assert card["retention_pct"] == "7"
+    assert card["advance_pct"] == "30"          # не поехало
+    assert card["advance_note"] == "двумя траншами"
+
+
+def test_null_clears_a_single_condition(client, contract_with_terms):
+    client.patch(f"/api/v1/contracts/{contract_with_terms}", json={"advance_pct": None})
+    card = client.get(f"/api/v1/contracts/{contract_with_terms}").json()
+    assert card["advance_pct"] is None
+    assert card["advance_note"] == "двумя траншами"   # парности нет
+
+
+def test_note_without_percent_is_accepted(client, contract_payload):
+    r = client.post(
+        "/api/v1/contracts",
+        json={**contract_payload, "advance_note": "аванс не предусмотрен"},
+    )
+    assert r.status_code == 201
+    assert r.json()["advance_pct"] is None
+
+
+def test_empty_note_becomes_null_not_empty_string(client, contract_payload):
+    """Пустая строка означала бы «условие заведено», хотя заведено ничего не было."""
+    r = client.post("/api/v1/contracts", json={**contract_payload, "advance_note": "   "})
+    assert r.json()["advance_note"] is None
+
+
+@pytest.mark.parametrize("field", ["advance_pct", "bank_guarantee_pct", "retention_pct"])
+@pytest.mark.parametrize("value", ["-1", "101"])
+@pytest.mark.parametrize("method", ["post", "patch"])
+def test_percent_outside_range_is_422_not_500(
+    client, contract_payload, contract_with_terms, field, value, method
+):
+    """Обе границы, все три условия, оба метода — спека §2.4 требует PATCH тоже."""
+    r = (
+        client.post("/api/v1/contracts", json={**contract_payload, field: value})
+        if method == "post"
+        else client.patch(f"/api/v1/contracts/{contract_with_terms}", json={field: value})
+    )
+    assert r.status_code == 422
+
+
+def test_terms_are_absent_from_the_list_response(client, contract_with_terms):
+    """Список — это выбор, а не карточка (спека §2.5).
+
+    Проверяется всё множество из шести полей: утверждение про одно поле прошло
+    бы, если бы в `_contract_row_dict` случайно дописали пять остальных.
+    """
+    item = client.get("/api/v1/contracts").json()["items"][0]
+    assert set(TERMS) & set(item) == set()
+
+
+def test_percent_reaches_json_as_string(client, contract_with_terms):
+    r = client.get(f"/api/v1/contracts/{contract_with_terms}")
+    assert '"advance_pct":"30"' in r.text.replace(" ", "")
+
+
+def test_float_percent_is_rejected(client, contract_payload):
+    r = client.post("/api/v1/contracts", json={**contract_payload, "advance_pct": 30.5})
+    assert r.status_code == 422
+
+
+def test_member_cannot_edit_commercial_terms(member, contract_with_terms):
+    r = member.patch(f"/api/v1/contracts/{contract_with_terms}", json={"advance_pct": "50"})
+    assert r.status_code == 403

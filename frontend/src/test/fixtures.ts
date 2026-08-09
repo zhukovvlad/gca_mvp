@@ -56,6 +56,10 @@ export const sampleObjects: ObjectItem[] = [
     address: "ул. Полярная, 1",
     rate_class_id: 1,
     rate_class_title: "Жилые дома",
+    // ТЭП заведены — на этой записи стоят тесты живой суммы (спека §2.10).
+    area_aboveground_sp: "62399.70",
+    area_underground_sp: "13341.30",
+    area_total_sp: "75741.00",
     contracts_count: 1,
     created_at: null,
     updated_at: null,
@@ -66,6 +70,11 @@ export const sampleObjects: ObjectItem[] = [
     address: "ул. Солнечная, 7",
     rate_class_id: 2,
     rate_class_title: "Промышленные",
+    // ТЭП не заведены — законное состояние NULL/NULL (спека §2.3); на ней стоит
+    // тест пустого состояния.
+    area_aboveground_sp: null,
+    area_underground_sp: null,
+    area_total_sp: null,
     contracts_count: 0,
     created_at: null,
     updated_at: null,
@@ -135,6 +144,14 @@ export const sampleContracts: ContractRow[] = [
 export const sampleContractCard: ContractCard = {
   ...sampleContracts[0],
   notes: "Проверить индексацию в 2027",
+  // Коммерческие условия (спека §2.5): аванс с комментарием, БГ без процента
+  // (условие в виде свободного текста), удержание не заведено вовсе.
+  advance_pct: "30",
+  advance_note: "30% в течение 10 банковских дней с даты подписания",
+  bank_guarantee_pct: null,
+  bank_guarantee_note: "траншами по графику поставки",
+  retention_pct: "5",
+  retention_note: null,
   estimates: [
     {
       id: 500,

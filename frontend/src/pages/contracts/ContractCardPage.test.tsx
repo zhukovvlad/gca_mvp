@@ -1,19 +1,87 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { delay, http, HttpResponse } from "msw";
 import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import ContractCardPage from "./ContractCardPage";
 import { JOB_POLL_INTERVAL_MS } from "@/services/jobPolling";
+import { sampleContractCard, sampleObjects } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
+import type { ContractCard } from "@/types/domain";
 
-function renderCard(options?: Parameters<typeof renderWithProviders>[1]) {
+/**
+ * `renderCard` — единственный хелпер файла, настраивающий MSW-ответ карточки,
+ * объекта и текущего пользователя (спека §2.9, задача 8). Расширен тремя
+ * необязательными полями поверх исходных опций `renderWithProviders`:
+ *
+ * - `objectAreas` — подменяет площади объекта карточки (id объекта — 10, тот же,
+ *   что у ГП-2026-001): тест пустого состояния «ТЭП не заведены» и тест трёх
+ *   величин не могут делить один и тот же ответ сервера.
+ * - `terms` — подменяет любую из шести коммерческих условий поверх
+ *   `sampleContractCard`.
+ * - `role` — короткая запись для `initialUser`, не ломающая существующие
+ *   вызовы, которые передают `initialUser` напрямую.
+ */
+function renderCard(
+  options?: Parameters<typeof renderWithProviders>[1] & {
+    objectAreas?: { above: string | null; under: string | null; total: string | null };
+    terms?: Partial<
+      Pick<
+        ContractCard,
+        | "advance_pct"
+        | "advance_note"
+        | "bank_guarantee_pct"
+        | "bank_guarantee_note"
+        | "retention_pct"
+        | "retention_note"
+      >
+    >;
+    role?: "admin" | "member";
+  }
+) {
+  const { objectAreas, terms, role, ...renderOptions } = options ?? {};
+
+  if (objectAreas) {
+    server.use(
+      http.get("/api/v1/objects/:id", () =>
+        HttpResponse.json({
+          ...sampleObjects[0],
+          area_aboveground_sp: objectAreas.above,
+          area_underground_sp: objectAreas.under,
+          area_total_sp: objectAreas.total,
+        })
+      )
+    );
+  }
+
+  if (terms) {
+    server.use(
+      http.get("/api/v1/contracts/:id", () =>
+        HttpResponse.json({ ...sampleContractCard, ...terms })
+      )
+    );
+  }
+
   return renderWithProviders(
     <Routes>
       <Route path="/contracts/:contractId" element={<ContractCardPage />} />
     </Routes>,
-    { initialRoute: "/contracts/100", ...options }
+    {
+      initialRoute: "/contracts/100",
+      ...(role
+        ? {
+            initialUser: {
+              id: role === "admin" ? 1 : 2,
+              email: role === "admin" ? "admin@example.com" : "member@example.com",
+              role,
+            },
+          }
+        : {}),
+      ...renderOptions,
+    }
   );
 }
 
@@ -181,6 +249,104 @@ describe("Права на карточке (§6.2)", () => {
     expect(screen.queryByRole("button", { name: /Правка/ })).not.toBeInTheDocument();
     // Загрузка смет — право member по §3, вкладка остаётся.
     expect(screen.getByRole("tab", { name: "Загрузка" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * ТЭП объекта и коммерческие условия — оба блока на чтение (спека §2.9, §2.5).
+ *
+ * ТЭП берутся `useObject(contract.object_id)` — ОТДЕЛЬНЫМ запросом, не из
+ * карточки договора: `rate_class_id` в карточке — снимок договора, и класс
+ * объекта рядом с ним дал бы два поля с одним именем и разным смыслом. Без
+ * пустого состояния «ТЭП не заведены» Ф5 давала бы формы для данных, которых
+ * нигде не видно до Ф6 (AGENTS.md §9.1).
+ */
+describe("Карточка договора: ТЭП объекта и коммерческие условия (§2.9, §2.5)", () => {
+  it("показывает ТЭП объекта тремя величинами", async () => {
+    renderCard({ objectAreas: { above: "62399.70", under: "13341.30", total: "75741.00" } });
+    expect(await screen.findByText("62 399,70")).toBeInTheDocument();
+    expect(screen.getByText("13 341,30")).toBeInTheDocument();
+    expect(screen.getByText("75 741,00")).toBeInTheDocument();
+  });
+
+  it("показывает «ТЭП не заведены», когда площадей нет", async () => {
+    renderCard({ objectAreas: { above: null, under: null, total: null } });
+    expect(await screen.findByText(/тэп не заведены/i)).toBeInTheDocument();
+  });
+
+  it("показывает отказ, когда объект не загрузился", async () => {
+    /* Регресс на молчаливое исчезновение блока: прежняя редакция рисовала ТЭП
+       только при `objectQ.data`, поэтому на отказе запроса объекта карточка
+       теряла обязательный блок целиком — без площадей, без пустого состояния и
+       без причины. Пустое состояние здесь читалось бы как «ТЭП не заведены»,
+       то есть как факт о данных, которого мы не знаем. */
+    server.use(
+      http.get("/api/v1/objects/:id", () => new HttpResponse(null, { status: 500 }))
+    );
+    renderCard();
+    expect(await screen.findByText(/не удалось загрузить тэп объекта/i)).toBeInTheDocument();
+    expect(screen.queryByText(/тэп не заведены/i)).not.toBeInTheDocument();
+  });
+
+  it("показывает загрузку, пока ТЭП объекта не пришли", async () => {
+    server.use(
+      http.get("/api/v1/objects/:id", async () => {
+        await delay(50);
+        return HttpResponse.json(sampleObjects[0]);
+      })
+    );
+    renderCard();
+    expect(await screen.findByText("Загрузка…")).toBeInTheDocument();
+    expect(await screen.findByText("75 741,00")).toBeInTheDocument();
+  });
+
+  it("не запрашивает объект по подставному id, пока договор не загружен", async () => {
+    /* Хук ТЭП вызывается до ранних `return`, то есть при первом рендере
+       идентификатора объекта ещё нет. Пока он подставлялся нулём, каждое
+       открытие карточки давало лишний `GET /objects/0` со штатным 404. */
+    const requested: string[] = [];
+    server.use(
+      http.get("/api/v1/objects/:id", ({ params }) => {
+        requested.push(String(params.id));
+        return HttpResponse.json(sampleObjects[0]);
+      })
+    );
+    renderCard();
+    await waitFor(() => expect(requested).toContain(String(sampleObjects[0].id)));
+    /* Множество, а не «нет нуля»: подставным значением может стать и `0`, и
+       `undefined` — смотря где снята защита, в вызове или в самом хуке.
+       Утверждение «запрошен ровно этот идентификатор и никакой другой» ловит
+       обе мутации, а «нет нуля» пропустило бы вторую. Дубли терпим: их дало бы
+       безобидное повторное чтение того же объекта. */
+    expect(new Set(requested)).toEqual(new Set([String(sampleObjects[0].id)]));
+  });
+
+  it("показывает процент условия вместе с его оговоркой", async () => {
+    renderCard({ terms: { advance_pct: "30", advance_note: "двумя траншами" } });
+    const advance = await screen.findByTestId("term-advance");
+    expect(advance).toHaveTextContent("30");
+    expect(advance).toHaveTextContent("двумя траншами");
+  });
+
+  it("показывает оговорку и тогда, когда процента нет", async () => {
+    renderCard({ terms: { advance_pct: null, advance_note: "аванс не предусмотрен" } });
+    expect(await screen.findByTestId("term-advance")).toHaveTextContent("аванс не предусмотрен");
+  });
+
+  it("кнопка правки ТЭП открывает диалог объекта", async () => {
+    renderCard({ role: "admin" });
+    await userEvent.click(await screen.findByRole("button", { name: /тэп объекта/i }));
+    expect(await screen.findByLabelText(/наземная/i)).toBeInTheDocument();
+  });
+
+  it("кнопки правки ТЭП нет у member", async () => {
+    renderCard({ role: "member" });
+    // Дожидаемся загрузки карточки тем же способом, что и остальные тесты файла
+    // (`findByText(/договор/i)` из плана неоднозначен: карточка уже несёт и
+    // хлебную крошку «Договоры», и подпись «Сумма договора» — `findByText`
+    // требует единственного совпадения и падает на самой этой строке).
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+    expect(screen.queryByRole("button", { name: /тэп объекта/i })).not.toBeInTheDocument();
   });
 });
 

@@ -41,6 +41,49 @@ export function normalizeDecimalInput(raw: string): string {
  *
  * @returns произведение строкой либо `null`, если аргумент не десятичное число.
  */
+/**
+ * Складывает две десятичные строки **точно**, без числа с плавающей точкой.
+ *
+ * Нужно форме ТЭП: под полями наземной и подземной площадей показывается
+ * вычисленная общая, и она же на бумаге станет знаменателем руб/м². `Number`
+ * внёс бы в неё двоичный хвост.
+ *
+ * Промах float **выборочный**, и на реалистичной паре площадей его нет вовсе:
+ * замерено, что `Number("62399.7") + Number("13341.3")` даёт ровно `75741`,
+ * тогда как `Number("0.1") + Number("0.2")` — `0.30000000000000004`. Точная
+ * функция нужна не из-за конкретных чисел, а потому что заранее неизвестно,
+ * какие введут; тем промах и опасен, что проявляется не на каждой паре.
+ *
+ * Масштабы выравниваются по большему, дальше складываются целые в `BigInt`.
+ *
+ * @returns сумму строкой либо `null`, если аргумент не десятичное число.
+ */
+export function addDecimalStrings(left: string, right: string): string | null {
+  const a = DECIMAL_RE.exec(left.trim());
+  const b = DECIMAL_RE.exec(right.trim());
+  if (!a || !b) return null;
+
+  const scaleA = a[3]?.length ?? 0;
+  const scaleB = b[3]?.length ?? 0;
+  const scale = Math.max(scaleA, scaleB);
+
+  const scaled = (m: RegExpExecArray, own: number) => {
+    const digits = BigInt(`${m[2]}${m[3] ?? ""}`) * 10n ** BigInt(scale - own);
+    return m[1] === "-" ? -digits : digits;
+  };
+
+  const sum = scaled(a, scaleA) + scaled(b, scaleB);
+  const sign = sum < 0n ? "-" : "";
+  const abs = (sum < 0n ? -sum : sum).toString();
+
+  if (scale === 0) return `${sign}${abs}`;
+
+  const padded = abs.padStart(scale + 1, "0");
+  const whole = padded.slice(0, padded.length - scale);
+  const fraction = padded.slice(padded.length - scale).replace(/0+$/, "");
+  return fraction ? `${sign}${whole}.${fraction}` : `${sign}${whole}`;
+}
+
 export function multiplyDecimalStrings(left: string, right: string): string | null {
   const a = DECIMAL_RE.exec(left.trim());
   const b = DECIMAL_RE.exec(right.trim());

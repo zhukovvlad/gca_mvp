@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { multiplyDecimalStrings, normalizeDecimalInput } from "./decimal";
+import { addDecimalStrings, multiplyDecimalStrings, normalizeDecimalInput } from "./decimal";
 import { formatDecimalMoney, roundDecimal } from "./format";
 
 /** Неразрывный пробел: им `formatDecimalMoney` группирует разряды, как ru-RU. */
@@ -37,6 +37,41 @@ describe("multiplyDecimalStrings", () => {
     expect(multiplyDecimalStrings("", "2")).toBeNull();
     expect(multiplyDecimalStrings("1,5", "2")).toBeNull();
     expect(multiplyDecimalStrings("1e3", "2")).toBeNull();
+  });
+});
+
+describe("addDecimalStrings", () => {
+  it("складывает точно там, где Number промахивается", () => {
+    // Предпосылка проверяется ВНУТРИ теста: промах float выборочный, и её слом
+    // должен быть виден как падение, а не как молчание (false-test-premises).
+    expect(Number("0.1") + Number("0.2")).not.toBe(0.3);
+    expect(addDecimalStrings("0.1", "0.2")).toBe("0.3");
+  });
+
+  it("выравнивает разные масштабы", () => {
+    /*
+      Реалистичная пара площадей. Замерено: `Number("62399.7") + Number("13341.3")`
+      даёт РОВНО 75741 — то есть именно на ней float не промахивается, и
+      утверждать здесь `not.toBe` нельзя, тест покраснел бы на верной реализации.
+      Записано, чтобы пару «поближе к домену» не перенесли в тест предпосылки
+      выше: точная функция нужна не из-за этих чисел, а из-за класса чисел.
+    */
+    expect(Number("62399.7") + Number("13341.3")).toBe(75741);
+    expect(addDecimalStrings("62399.7", "13341.30")).toBe("75741");
+  });
+
+  it("складывает целые", () => {
+    expect(addDecimalStrings("100", "23")).toBe("123");
+  });
+
+  it("ноль слагаемым не мешает", () => {
+    expect(addDecimalStrings("100.50", "0")).toBe("100.5");
+  });
+
+  it("возвращает null на не-числе", () => {
+    expect(addDecimalStrings("сто", "1")).toBeNull();
+    expect(addDecimalStrings("", "1")).toBeNull();
+    expect(addDecimalStrings("1,5", "1")).toBeNull();
   });
 });
 

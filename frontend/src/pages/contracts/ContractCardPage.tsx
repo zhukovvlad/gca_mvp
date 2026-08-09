@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Download, Pencil } from "lucide-react";
+import { AlertTriangle, Download, Pencil, Ruler } from "lucide-react";
 
 import { ContractFormDialog } from "@/components/contracts/ContractFormDialog";
 import { EstimateUploadPanel } from "@/components/contracts/EstimateUploadPanel";
+import { ObjectFormDialog } from "@/components/objects/ObjectFormDialog";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
@@ -24,7 +25,12 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
-import { useContract, useContractImportJobs, useDownloadJobFile } from "@/services/queries";
+import {
+  useContract,
+  useContractImportJobs,
+  useDownloadJobFile,
+  useObject,
+} from "@/services/queries";
 import type { ContractImportJob } from "@/types/domain";
 
 /**
@@ -41,10 +47,23 @@ export default function ContractCardPage() {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
   const [editOpen, setEditOpen] = useState(false);
+  const [objectEditOpen, setObjectEditOpen] = useState(false);
 
   const contractQ = useContract(id);
   const jobsQ = useContractImportJobs(id);
   const contract = contractQ.data;
+  /**
+   * ТЭП объекта — ОТДЕЛЬНЫМ запросом (спека §2.9), не полями, подмешанными в
+   * карточку договора: `rate_class_id` в карточке — снимок договора, и класс
+   * объекта рядом с ним дал бы два поля с одним именем и разным смыслом.
+   *
+   * Идентификатор передаётся КАК ЕСТЬ, включая `undefined`: хук вызывается до
+   * ранних `return`, и пока карточка договора не загружена, объекта ещё нет.
+   * `useObject` в этом случае запрос не отправляет. Прежняя редакция подставляла
+   * `0` и объясняла уходящий в `404` запрос допустимым — это был лишний
+   * ошибочный запрос при каждом открытии карточки.
+   */
+  const objectQ = useObject(contract?.object_id);
 
   if (contractQ.isPending) {
     return (
@@ -99,6 +118,17 @@ export default function ContractCardPage() {
                   <Pencil className="size-4" /> Правка
                 </Button>
               )}
+              {/*
+                ТЭП — атрибут ОБЪЕКТА, а не договора (спека §2.9), поэтому правка
+                открывает диалог объекта, а не текущий `ContractFormDialog`. Право —
+                то же `admin`, что и у остальных правок объектов и договоров; нового
+                решения по правам фича не принимает.
+              */}
+              {isAdmin && (
+                <Button variant="outline" onClick={() => setObjectEditOpen(true)}>
+                  <Ruler className="size-4" /> ТЭП объекта
+                </Button>
+              )}
             </>
           }
         />
@@ -116,6 +146,69 @@ export default function ContractCardPage() {
           </Field>
           {contract.title && <Field label="Название">{contract.title}</Field>}
           {contract.notes && <Field label="Примечания">{contract.notes}</Field>}
+
+          {/*
+            ТЭП объекта — ОТДЕЛЬНЫЙ запрос `useObject` (спека §2.9), а не поля
+            карточки договора. Пустое состояние обязательно (§2.9): без него Ф5
+            давала бы формы для данных, которых до Ф6 нигде не видно.
+
+            Состояния перечислены ВСЕ ЧЕТЫРЕ, и это не полнота ради полноты.
+            Прежняя редакция рисовала блок только при `objectQ.data`, поэтому на
+            отказе запроса объекта — 404, 500, обрыв сети — обязательный блок
+            карточки исчезал молча: ни площадей, ни «ТЭП не заведены», ни
+            причины. Здесь договор уже загружен (выше стоят ранние `return`),
+            значит запрос включён, и `isPending` означает настоящую загрузку, а
+            не выключенный хук.
+          */}
+          {objectQ.isPending && <Field label="ТЭП объекта">Загрузка…</Field>}
+          {objectQ.isError && (
+            <Field label="ТЭП объекта">Не удалось загрузить ТЭП объекта</Field>
+          )}
+          {objectQ.data && objectQ.data.area_total_sp === null && (
+            <Field label="ТЭП объекта">ТЭП не заведены</Field>
+          )}
+          {objectQ.data && objectQ.data.area_total_sp !== null && (
+            <>
+              <Field label="Наземная площадь, м²">
+                <MoneyCell value={objectQ.data.area_aboveground_sp} currency="" />
+              </Field>
+              <Field label="Подземная площадь, м²">
+                <MoneyCell value={objectQ.data.area_underground_sp} currency="" />
+              </Field>
+              <Field label="Общая площадь, м²">
+                <MoneyCell value={objectQ.data.area_total_sp} currency="" />
+              </Field>
+            </>
+          )}
+        </dl>
+      </Surface>
+
+      {/*
+        Коммерческие условия (спека §2.5): три пары «процент + оговорка», на
+        чтение. Процент и оговорка стоят В ОДНОМ узле (`data-testid="term-*"`) —
+        иначе тест прошёл бы и при оговорке, съехавшей к соседнему условию.
+      */}
+      <Surface className="mt-6">
+        <h2 className="text-sm font-medium text-fg-secondary">Коммерческие условия</h2>
+        <dl className="mt-4 grid gap-4 sm:grid-cols-3">
+          <ContractTerm
+            testId="term-advance"
+            label="Аванс"
+            pct={contract.advance_pct}
+            note={contract.advance_note}
+          />
+          <ContractTerm
+            testId="term-bank-guarantee"
+            label="Банковская гарантия"
+            pct={contract.bank_guarantee_pct}
+            note={contract.bank_guarantee_note}
+          />
+          <ContractTerm
+            testId="term-retention"
+            label="Удержание"
+            pct={contract.retention_pct}
+            note={contract.retention_note}
+          />
         </dl>
       </Surface>
 
@@ -178,6 +271,11 @@ export default function ContractCardPage() {
       </Tabs>
 
       <ContractFormDialog open={editOpen} onOpenChange={setEditOpen} contract={contract} />
+      <ObjectFormDialog
+        open={objectEditOpen}
+        onOpenChange={setObjectEditOpen}
+        objectId={contract.object_id}
+      />
     </div>
   );
 }
@@ -187,6 +285,47 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <dt className="text-xs text-fg-tertiary">{label}</dt>
       <dd className="mt-0.5 text-sm text-fg">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Одна пара «процент + оговорка» коммерческих условий (спека §2.5).
+ *
+ * Комментарий без процента законен (условие есть, но одним числом не
+ * выражается — аванс траншами, гарантия с потолком в деньгах), и оговорка
+ * обязана показываться даже тогда. Процент и оговорка стоят в ОДНОМ узле —
+ * `data-testid={testId}` на внешнем `<div>`, а не по отдельности на каждом:
+ * иначе тест прошёл бы и при оговорке, съехавшей к соседнему условию.
+ */
+function ContractTerm({
+  testId,
+  label,
+  pct,
+  note,
+}: {
+  testId: string;
+  label: string;
+  pct: string | null;
+  note: string | null;
+}) {
+  return (
+    <div data-testid={testId}>
+      <dt className="text-xs text-fg-tertiary">{label}</dt>
+      <dd className="mt-0.5 text-sm text-fg">
+        {pct === null && note === null ? (
+          "—"
+        ) : (
+          <>
+            {pct !== null && <span className="font-medium tabular-nums">{pct}%</span>}
+            {note && (
+              <p className={pct !== null ? "mt-1 text-xs text-fg-secondary" : undefined}>
+                {note}
+              </p>
+            )}
+          </>
+        )}
+      </dd>
     </div>
   );
 }

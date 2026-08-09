@@ -45,6 +45,11 @@ export interface ObjectItem {
   address: string;
   rate_class_id: number | null;
   rate_class_title: string | null;
+  /** ТЭП объекта (спека §2.2, §2.3): две вводимые площади, третья вычисляемая. */
+  area_aboveground_sp: Decimal | null;
+  area_underground_sp: Decimal | null;
+  /** `null` — «ТЭП не заведены»; вычисляется в БД, напрямую не задаётся. */
+  area_total_sp: Decimal | null;
   contracts_count: number;
   created_at: string | null;
   updated_at: string | null;
@@ -54,6 +59,8 @@ export interface ObjectInput {
   title: string;
   address?: string | null;
   rate_class_id?: number | null;
+  area_aboveground_sp?: Decimal | null;
+  area_underground_sp?: Decimal | null;
 }
 
 export interface Contractor {
@@ -108,9 +115,21 @@ export interface EstimateRow {
   created_at: string | null;
 }
 
+/**
+ * Коммерческие условия договора: три пары «процент + комментарий» (спека §2.5).
+ *
+ * Живут только в карточке, не в списке ({@link ContractRow}) — список это
+ * выбор, а не карточка, и нести туда шесть ключей ради него незачем.
+ */
 export interface ContractCard extends ContractRow {
   notes: string | null;
   estimates: EstimateRow[];
+  advance_pct: Decimal | null;
+  advance_note: string | null;
+  bank_guarantee_pct: Decimal | null;
+  bank_guarantee_note: string | null;
+  retention_pct: Decimal | null;
+  retention_note: string | null;
 }
 
 export interface ContractInput {
@@ -123,6 +142,12 @@ export interface ContractInput {
   signer?: string | null;
   total_amount?: Decimal | null;
   notes?: string | null;
+  advance_pct?: Decimal | null;
+  advance_note?: string | null;
+  bank_guarantee_pct?: Decimal | null;
+  bank_guarantee_note?: string | null;
+  retention_pct?: Decimal | null;
+  retention_note?: string | null;
 }
 
 // ---------------------------------------------------------------------------
