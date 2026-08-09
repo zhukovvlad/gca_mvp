@@ -93,9 +93,59 @@ PostgreSQL 16; React + TS, Vite, shadcn/ui, TanStack Query, vitest + MSW.
   одиночных снятий и 4 комбинированных; если реализация разделит общую защиту
   (например, заведёт несколько независимых вызовов `decimal_json`) или сольёт
   две — список пересобирается по факту, а расхождение объясняется в devlog.
-- **Круговой рейс `alembic downgrade base && upgrade head` — только на тестовой
-  базе.** На стенде `gca_dev` откат ниже `0003` упрётся в
-  `ProgramLimitExceeded` (`AGENTS.md` §11).
+**Цель команд Alembic — задавать явно. Это блокирующее правило, не пожелание.**
+
+Замерено по коду: `alembic/env.py:16` делает `load_dotenv(ROOT / ".env")`, а
+`backend/.env:2` несёт `DATABASE_URL=postgresql+psycopg://postgres@localhost:5459/gca_dev`
+— **стенд**. `alembic.ini:66` объявляет `sqlalchemy.url` пустым, поэтому
+`env.py:23` берёт значение из окружения, а при его отсутствии — из `.env`.
+Значит **голая** команда `uv run alembic downgrade base` из `backend/` уходит по
+**стенду**, а не по тестовой базе.
+
+`db_guard` от этого не спасает и не должен: его ось — роль окружения, а не имя
+базы. `ensure_mutation_allowed` пропускает **любую** базу на loopback
+([db_guard.py:294-295](../../../backend/db_guard.py#L294-L295)), а `gca_dev`
+живёт на `localhost:5459`. Отказа не будет.
+
+Цена ошибки — не «команда пойдёт не туда», а **разрушенный стенд**: `downgrade
+base` снесёт схему до `0003` и только там упрётся в `ProgramLimitExceeded`
+(`AGENTS.md` §11), то есть остановится, уже уничтожив данные.
+
+Поэтому **любая** команда Alembic в этом плане идёт по контуру:
+
+```powershell
+$saved = $env:DATABASE_URL
+try {
+    # Источник — .env.test, чтобы DSN не жил в плане второй копией.
+    $line = (Get-Content "c:\Users\zhukov_v\Projects\GCA_MVP\.env.test" |
+             Where-Object { $_ -like "TEST_DATABASE_URL=*" })
+    $env:DATABASE_URL = $line -replace '^TEST_DATABASE_URL=', ''
+    if ($env:DATABASE_URL -notmatch '_test$') {
+        throw "refusing: alembic target is not a _test database: $env:DATABASE_URL"
+    }
+    uv run alembic <команда>
+    if ($LASTEXITCODE -ne 0) { throw "alembic <команда> failed: $LASTEXITCODE" }
+}
+finally {
+    if ($null -eq $saved) { Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue }
+    else { $env:DATABASE_URL = $saved }
+}
+```
+
+Проверка `_test$` — не украшение: она единственная ловит случай, когда `.env.test`
+подменили или переменная не подхватилась. `try/finally` возвращает окружение, а
+`if ($LASTEXITCODE -ne 0) { throw }` обязателен **после каждой** нативной
+команды внутри `try` — иначе падение маскируется.
+
+Для обычных `upgrade`/`check` есть готовый рецепт `just db-test-check`
+([justfile:194-196](../../../justfile#L194-L196)) — он уже задаёт
+`DATABASE_URL` явно. Для `downgrade` готового рецепта **нет**, и контур выше
+обязателен.
+
+**Единственное место, где целью законно является стенд, — задача 9, шаг 6**
+(`upgrade head` на `gca_dev` перед демонстрацией). Там URL тоже задаётся явно, и
+`downgrade` не выполняется никогда.
+
 - **Стенд не чистить и не пересоздавать.**
 
 ---
@@ -238,13 +288,32 @@ class TestObjectAreas:
         assert row.area_total_sp == Decimal("75741.00")
 
     def test_total_cannot_be_written_directly(self, db_session):
-        """Вычисляемая колонка не принимает значение — иначе она хранимая."""
-        with pytest.raises(Exception):
+        """Вычисляемая колонка не принимает значение — иначе она хранимая.
+
+        Тип и SQLSTATE названы точно: `pytest.raises(Exception)` прошёл бы и от
+        опечатки в SQL, и от уже отравленной сессии — то есть доказывал бы не то.
+
+        Savepoint обязателен и своим хелпером: существующий `rejected`
+        ([test_schema_constraints.py:40-46](../../../backend/tests/integration/test_schema_constraints.py#L40-L46))
+        ловит только `IntegrityError`, а здесь PostgreSQL отвечает
+        `ProgrammingError`, и без `begin_nested` сессия осталась бы непригодной
+        для остальных тестов файла.
+        """
+        object_id = _make_object(db_session, above="1", under="1")
+        with pytest.raises(ProgrammingError) as exc, db_session.begin_nested():
             db_session.execute(
                 sa.text("update objects set area_total_sp = 1 where id = :id"),
-                {"id": _make_object(db_session, above="1", under="1")},
+                {"id": object_id},
             )
+        # 428C9 = ERRCODE_GENERATED_ALWAYS. Значение ПОДТВЕРЖДАЕТСЯ пробником
+        # шага 6, а не берётся из памяти; если фактический SQLSTATE окажется
+        # иным — исправить константу здесь, а не расширять проверку обратно до
+        # «любой ошибки».
+        assert exc.value.orig.sqlstate == "428C9"
 ```
+
+`ProgrammingError` импортируется из `sqlalchemy.exc`; `.orig` — исключение
+psycopg3, у него есть `.sqlstate`.
 
 Проценты — отдельным классом, **каждый арм отдельно** (нижнюю границу забывают —
 находка финального ревью Ф4б):
@@ -397,34 +466,78 @@ OBJECT_AREA_TOTAL_EXPRESSION = "area_aboveground_sp + area_underground_sp"
 Ожидание «PostgreSQL откажется снимать слагаемое при живой вычисляемой» —
 именно ожидание. Проверить пробником на **тестовой** базе:
 
+Пробник заодно снимает **второй** факт, на который опирается тест шага 2:
+SQLSTATE попытки записи в вычисляемую колонку.
+
 ```sql
--- $env:TEMP\gca-tep\probe_drop_order.sql
-create table t_probe (a numeric, b numeric,
-                      c numeric generated always as (a + b) stored);
-alter table t_probe drop column a;   -- ожидаем ошибку зависимости
+-- $env:TEMP\gca-tep\probe_generated.sql
+\set VERBOSITY verbose
+create temp table t_probe (a numeric, b numeric,
+                           c numeric generated always as (a + b) stored);
+insert into t_probe (a, b) values (1, 2);
+
+-- Факт 1: можно ли писать в вычисляемую колонку и с каким SQLSTATE отказ.
+update t_probe set c = 99;
+
+-- Факт 2: отвергнет ли PostgreSQL снятие слагаемого при живой вычисляемой.
+alter table t_probe drop column a;
 ```
 
-Записать фактический текст ошибки (или её отсутствие) в отчёт задачи. Если
-отказа **нет** — комментарий в `downgrade` исправить на фактический, а не
-оставить неверное объяснение верного порядка.
+Гонять по **тестовой** базе, контуром из Global Constraints (`psql` тоже должен
+идти по `gca_test`, а не по стенду). `\set VERBOSITY verbose` заставляет psql
+печатать `SQLSTATE`, иначе придётся угадывать.
 
-- [ ] **Шаг 7: применить и прогнать**
+Записать в отчёт задачи оба фактических результата. Если отказа на `drop column`
+**нет** — комментарий в `downgrade` исправить на фактический, а не оставить
+неверное объяснение верного порядка. Если SQLSTATE отличается от `428C9` —
+поправить константу в тесте шага 2.
+
+- [ ] **Шаг 7: применить на тестовой базе и прогнать**
+
+`upgrade` — через готовый рецепт, который уже задаёт цель явно:
 
 ```
-Set-Location backend; uv run alembic upgrade head
-uv run pytest tests/integration/test_schema_constraints.py -q
+just db-test-check
+```
+Он делает `upgrade head` и `alembic check` по `gca_test`
+([justfile:194-196](../../../justfile#L194-L196)). **Голую `uv run alembic
+upgrade head` не запускать** — уйдёт по стенду (Global Constraints).
+
+```
+Set-Location backend; uv run pytest tests/integration/test_schema_constraints.py -q
 ```
 Ожидание: зелёные. Прочитать **число прошедших**, а не код возврата.
 
-- [ ] **Шаг 8: круговой рейс**
+- [ ] **Шаг 8: круговой рейс — по контуру из Global Constraints**
 
+Готового рецепта для `downgrade` нет, поэтому целиком явным контуром:
+
+```powershell
+$saved = $env:DATABASE_URL
+try {
+    $line = (Get-Content "c:\Users\zhukov_v\Projects\GCA_MVP\.env.test" |
+             Where-Object { $_ -like "TEST_DATABASE_URL=*" })
+    $env:DATABASE_URL = $line -replace '^TEST_DATABASE_URL=', ''
+    if ($env:DATABASE_URL -notmatch '_test$') {
+        throw "refusing: alembic target is not a _test database: $env:DATABASE_URL"
+    }
+    Set-Location "c:\Users\zhukov_v\Projects\GCA_MVP\backend"
+    uv run alembic downgrade base
+    if ($LASTEXITCODE -ne 0) { throw "downgrade failed: $LASTEXITCODE" }
+    uv run alembic upgrade head
+    if ($LASTEXITCODE -ne 0) { throw "upgrade failed: $LASTEXITCODE" }
+    uv run alembic check
+    if ($LASTEXITCODE -ne 0) { throw "check failed: $LASTEXITCODE" }
+}
+finally {
+    if ($null -eq $saved) { Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue }
+    else { $env:DATABASE_URL = $saved }
+}
 ```
-uv run alembic downgrade base
-uv run alembic upgrade head
-uv run alembic check
-```
-Ожидание: обе команды без ошибок, `alembic check` — «No new upgrade operations
-detected». **Помнить: для `Computed` и `CHECK` этот вердикт ничего не
+
+**Перед запуском напечатать `$env:DATABASE_URL` и глазами убедиться, что там
+`gca_test`.** Ожидание: обе команды без ошибок, `alembic check` — «No new upgrade
+operations detected». **Помнить: для `Computed` и `CHECK` этот вердикт ничего не
 доказывает** — согласованность держат parity-тесты шага 2.
 
 - [ ] **Шаг 9: замерить и закоммитить**
@@ -511,28 +624,73 @@ def test_patch_null_for_one_only_is_422(admin_client, object_with_areas):
                            json={"area_underground_sp": None})
     assert r.status_code == 422
 
-def test_float_area_is_rejected(admin_client):
+def test_patch_negative_area_is_422_not_500(admin_client, object_with_areas):
+    r = admin_client.patch(f"/api/v1/objects/{object_with_areas}",
+                           json={"area_aboveground_sp": "-1"})
+    assert r.status_code == 422
+
+def test_patch_resulting_in_both_zero_is_422(admin_client, object_with_zero_underground):
+    """Итоговая пара 0/0 запрещена и на PATCH: общая обнулилась бы."""
+    r = admin_client.patch(f"/api/v1/objects/{object_with_zero_underground}",
+                           json={"area_aboveground_sp": "0"})
+    assert r.status_code == 422
+    assert "общая" in r.text.lower()
+
+@pytest.mark.parametrize("field", ["area_aboveground_sp", "area_underground_sp"])
+def test_float_area_is_rejected(admin_client, field):
     r = admin_client.post("/api/v1/objects",
-                          json={"title": "О4",
-                                "area_aboveground_sp": 62399.7,
-                                "area_underground_sp": 13341.3})
+                          json={"title": f"О4-{field}",
+                                "area_aboveground_sp": "100",
+                                "area_underground_sp": "100",
+                                field: 62399.7})
     assert r.status_code == 422
 ```
 
-Деньги в сыром теле — смотреть на **текст ответа**, не на разобранный JSON:
+Decimal строкой — **во всех четырёх** объектных ответах (спека §4.2), и смотреть
+надо на **сырое тело**: после `json.loads` строка и `float` на глаз
+неразличимы, а забытый `decimal_json` даёт ровно `float`.
 
 ```python
-def test_areas_reach_json_as_strings(admin_client, object_with_areas):
-    r = admin_client.get(f"/api/v1/objects/{object_with_areas}")
-    assert '"area_total_sp":"75741.00"' in r.text.replace(" ", "")
+@pytest.mark.parametrize("endpoint", ["list", "one", "post", "patch"])
+def test_areas_reach_json_as_strings_on_every_object_endpoint(
+    admin_client, object_with_areas, endpoint
+):
+    if endpoint == "list":
+        raw = admin_client.get("/api/v1/objects").text
+    elif endpoint == "one":
+        raw = admin_client.get(f"/api/v1/objects/{object_with_areas}").text
+    elif endpoint == "post":
+        raw = admin_client.post(
+            "/api/v1/objects",
+            json={"title": "О-json",
+                  "area_aboveground_sp": "62399.70",
+                  "area_underground_sp": "13341.30"},
+        ).text
+    else:
+        raw = admin_client.patch(
+            f"/api/v1/objects/{object_with_areas}",
+            json={"area_aboveground_sp": "62399.70"},
+        ).text
+
+    compact = raw.replace(" ", "")
+    assert '"area_total_sp":"75741.00"' in compact
+    # Негативная половина обязательна: без неё тест прошёл бы и на числе,
+    # если бы строка совпала подстрокой где-то ещё в теле.
+    assert '"area_total_sp":75741' not in compact
 
 def test_post_objects_still_answers_201(admin_client):
     """Регресс: Response несёт свой статус мимо status_code декоратора."""
     r = admin_client.post("/api/v1/objects", json={"title": "О5"})
     assert r.status_code == 201
-```
 
-Плюс `member` получает `403` на `POST` и `PATCH` с площадями.
+@pytest.mark.parametrize("method", ["post", "patch"])
+def test_member_cannot_edit_areas(member_client, object_with_areas, method):
+    body = {"title": "О6", "area_aboveground_sp": "100", "area_underground_sp": "0"}
+    r = (member_client.post("/api/v1/objects", json=body) if method == "post"
+         else member_client.patch(f"/api/v1/objects/{object_with_areas}",
+                                  json={"area_aboveground_sp": "100"}))
+    assert r.status_code == 403
+```
 
 - [ ] **Шаг 2: прогнать, увидеть красное**
 
@@ -637,16 +795,23 @@ uv run pytest --collect-only -q
 - [ ] **Шаг 1: написать падающие тесты**
 
 ```python
+#: Все шесть полей, а не выборка: неполный payload оставил бы часть колонок
+#: без единого исполняющего теста при верной схеме.
+TERMS = {
+    "advance_pct": "30",
+    "advance_note": "двумя траншами",
+    "bank_guarantee_pct": "10",
+    "bank_guarantee_note": "возврат аванса и исполнение",
+    "retention_pct": "5",
+    "retention_note": "возврат после подписания акта",
+}
+
 def test_commercial_terms_round_trip(admin_client, contract_payload):
-    payload = {**contract_payload,
-               "advance_pct": "30", "advance_note": "двумя траншами",
-               "bank_guarantee_pct": "10", "retention_pct": "5"}
-    created = admin_client.post("/api/v1/contracts", json=payload)
+    created = admin_client.post("/api/v1/contracts", json={**contract_payload, **TERMS})
     assert created.status_code == 201
     card = admin_client.get(f"/api/v1/contracts/{created.json()['id']}").json()
-    assert card["advance_pct"] == "30"
-    assert card["advance_note"] == "двумя траншами"
-    assert card["retention_pct"] == "5"
+    for field, expected in TERMS.items():
+        assert card[field] == expected, field
 
 def test_patch_touches_one_field_only(admin_client, contract_with_terms):
     admin_client.patch(f"/api/v1/contracts/{contract_with_terms}",
@@ -678,14 +843,26 @@ def test_empty_note_becomes_null_not_empty_string(admin_client, contract_payload
 
 @pytest.mark.parametrize("field", ["advance_pct", "bank_guarantee_pct", "retention_pct"])
 @pytest.mark.parametrize("value", ["-1", "101"])
-def test_percent_outside_range_is_422_not_500(admin_client, contract_payload, field, value):
-    r = admin_client.post("/api/v1/contracts", json={**contract_payload, field: value})
+@pytest.mark.parametrize("method", ["post", "patch"])
+def test_percent_outside_range_is_422_not_500(
+    admin_client, contract_payload, contract_with_terms, field, value, method
+):
+    """Обе границы, все три условия, оба метода — спека §2.4 требует PATCH тоже."""
+    r = (admin_client.post("/api/v1/contracts",
+                           json={**contract_payload, field: value})
+         if method == "post"
+         else admin_client.patch(f"/api/v1/contracts/{contract_with_terms}",
+                                 json={field: value}))
     assert r.status_code == 422
 
 def test_terms_are_absent_from_the_list_response(admin_client, contract_with_terms):
-    """Список — это выбор, а не карточка (спека §2.5)."""
+    """Список — это выбор, а не карточка (спека §2.5).
+
+    Проверяется всё множество из шести полей: утверждение про одно поле прошло
+    бы, если бы в `_contract_row_dict` случайно дописали пять остальных.
+    """
     item = admin_client.get("/api/v1/contracts").json()["items"][0]
-    assert "advance_pct" not in item
+    assert set(TERMS) & set(item) == set()
 
 def test_percent_reaches_json_as_string(admin_client, contract_with_terms):
     r = admin_client.get(f"/api/v1/contracts/{contract_with_terms}")
@@ -927,8 +1104,14 @@ export function useObject(id: number) {
 
 - [ ] **Шаг 5: MSW-хендлеры**
 
-`sampleObjects` получают три поля; добавить `http.get("/api/v1/objects/:id")` и
-`http.patch("/api/v1/objects/:id")`.
+`sampleObjects` получают три поля площадей **и непустой `rate_class_title`** —
+на нём стоит тест диалога «показывает название, адрес и класс». Хотя бы у одной
+записи площади должны быть заполнены, хотя бы у одной — `null`: на них стоят
+тесты живой суммы и пустого состояния карточки.
+
+Добавить `http.get("/api/v1/objects/:id")` (отдаёт запись из `sampleObjects` по
+`params.id`, `404` на неизвестный) и `http.patch("/api/v1/objects/:id")`.
+Импортировать `delay` из `msw` — он нужен тесту состояния загрузки в задаче 6.
 
 - [ ] **Шаг 6: прогнать, замерить, закоммитить**
 
@@ -947,9 +1130,13 @@ npx tsc -b --noEmit
 - Create: `frontend/src/components/objects/ObjectFormDialog.test.tsx`
 
 **Interfaces:**
-- Consumes: `useObject`, `useUpdateObject`, `addDecimalStrings`,
-  `normalizeDecimalInput`.
+- Consumes: `useObject`, `useUpdateObject`, `useRateClasses`,
+  `addDecimalStrings`, `normalizeDecimalInput`.
 - Produces: `<ObjectFormDialog open onOpenChange objectId />`.
+
+**Диалог правит объект целиком, а не только ТЭП.** Поля: **название** (обязательное),
+**адрес**, **класс объекта**, **наземная площадь**, **подземная площадь**. Спека §2.9
+называет все пять; ТЭП — повод завести поверхность, а не весь её состав.
 
 - [ ] **Шаг 1: написать падающие тесты**
 
@@ -1030,6 +1217,70 @@ it("показывает отказ сервера человеку", async () =
   await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
   expect(await screen.findByText(/площади задаются парой/i)).toBeInTheDocument();
 });
+
+// --- Остальные поля объекта: диалог правит объект целиком, а не только ТЭП ---
+
+it("показывает название, адрес и класс объекта", async () => {
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  expect(await screen.findByLabelText(/название/i)).toHaveValue(sampleObjects[0].title);
+  expect(screen.getByLabelText(/адрес/i)).toHaveValue(sampleObjects[0].address);
+  expect(screen.getByText(sampleObjects[0].rate_class_title!)).toBeInTheDocument();
+});
+
+it("правит название, не трогая площади", async () => {
+  let body: Record<string, unknown> | undefined;
+  server.use(
+    http.patch("/api/v1/objects/:id", async ({ request }) => {
+      body = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    })
+  );
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  await userEvent.clear(await screen.findByLabelText(/название/i));
+  await userEvent.type(screen.getByLabelText(/название/i), "Новое имя");
+  await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+  await waitFor(() => expect(body).toBeDefined());
+  expect(body!.title).toBe("Новое имя");
+});
+
+it("пустое название не даёт сохранить", async () => {
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  await userEvent.clear(await screen.findByLabelText(/название/i));
+  expect(screen.getByRole("button", { name: /сохранить/i })).toBeDisabled();
+});
+
+// --- Асинхронная загрузка: тело формы не должно монтироваться до данных ---
+
+it("показывает загрузку, пока объект не пришёл", async () => {
+  server.use(
+    http.get("/api/v1/objects/:id", async () => {
+      await delay(50);
+      return HttpResponse.json(sampleObjects[0]);
+    })
+  );
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  expect(screen.queryByLabelText(/название/i)).not.toBeInTheDocument();
+  expect(await screen.findByLabelText(/название/i)).toBeInTheDocument();
+});
+
+it("поля заполнены значениями объекта сразу после загрузки", async () => {
+  /* Регресс на инициализацию: тело, смонтированное ДО ответа, увидело бы
+     undefined в useState и осталось бы пустым навсегда — эффекта, который
+     дозаполнил бы поля, в этой конструкции нет. */
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  expect(await screen.findByLabelText(/наземная/i))
+    .toHaveValue(sampleObjects[0].area_aboveground_sp);
+});
+
+it("показывает ошибку, если объект не загрузился", async () => {
+  server.use(
+    http.get("/api/v1/objects/:id", () => new HttpResponse(null, { status: 500 }))
+  );
+  render(<ObjectFormDialog open objectId={1} onOpenChange={() => {}} />);
+  expect(await screen.findByText(/не удалось загрузить объект/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /сохранить/i })).not.toBeInTheDocument();
+});
 ```
 
 `area-total-preview` — `data-testid` живой общей: искать её по тексту значения
@@ -1039,12 +1290,46 @@ it("показывает отказ сервера человеку", async () =
 
 - [ ] **Шаг 3: реализация**
 
-Диалог на существующем `Dialog`; тело — отдельный компонент, монтируемый только
-при `open`, начальные значения через `useState` без эффекта — тот же приём, что
-в `ContractFormDialog` ([ContractFormDialog.tsx:104-109](../../../frontend/src/components/contracts/ContractFormDialog.tsx#L104-L109)).
-Поля площадей — **текстовые**, не `type="number"`; ввод проходит через
-`normalizeDecimalInput`, живая сумма — через `addDecimalStrings`, и показывается
-только когда **оба** поля дают валидное число.
+Структура — два компонента, и разделение обязательное, а не стилистическое:
+
+```tsx
+export function ObjectFormDialog({ open, onOpenChange, objectId }: Props) {
+  const objectQ = useObject(objectId);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        {objectQ.isPending && <div role="status">Загрузка объекта…</div>}
+        {objectQ.isError && <div>Не удалось загрузить объект.</div>}
+        {/*
+          Тело монтируется ТОЛЬКО когда данные пришли. Приём из
+          ContractFormDialog (начальные значения через useState без эффекта)
+          верен лишь потому, что там `contract` приходит готовым пропом;
+          здесь источник асинхронный, и тело, смонтированное до ответа,
+          навсегда осталось бы с пустыми полями — дозаполнить их нечем.
+          `key` заставляет пересоздать состояние, если объект сменился.
+        */}
+        {objectQ.data && (
+          <ObjectForm key={objectQ.data.id} object={objectQ.data}
+                      onOpenChange={onOpenChange} />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+```
+
+`ObjectForm` держит `FormState` из пяти полей: `title`, `address`,
+`rate_class_id`, `area_aboveground_sp`, `area_underground_sp`. Класс выбирается
+существующим `EntityCombobox` поверх `useRateClasses` — так же, как в форме
+договора; **создание класса по месту здесь не нужно** (объект уже существует, а
+класс договора — его снимок).
+
+Площади и адрес — **текстовые** поля, не `type="number"`: последний отдал бы
+`float`, а площадь идёт в знаменатель руб/м². Ввод проходит
+`normalizeDecimalInput`, живая сумма — `addDecimalStrings`, и показывается
+только когда **оба** поля дают валидное десятичное число. Пустое название
+блокирует отправку на клиенте (сервер отвечает `422`, но узнавать об этом после
+заполнения формы — та же яма, что закрывали в форме договора).
 
 - [ ] **Шаг 4: прогнать до зелёного и закоммитить**
 
@@ -1248,10 +1533,24 @@ devlog. **Реестр побеждает число 23.**
 
 Спросить у пользователя разрешение на операции с `gca_dev` **до** действий
 (в Ф4б это потребовало отдельного разрешения). Замерить состояние **до**:
-объектов, договоров, смет, каталожных строк, `import_jobs`. Затем
-`alembic upgrade head` (**только upgrade**, рейса на стенде нет), завести через
-**интерфейс** площади и условия на одном договоре, прочитать из БД, сверить
-счётчики «до и после». Стенд не чистить.
+объектов, договоров, смет, каталожных строк, `import_jobs`.
+
+Миграция стенда — **готовым рецептом**, который задаёт цель явно:
+
+```
+just db-dev-init
+```
+([justfile:199-203](../../../justfile#L199-L203) — идемпотентен, делает
+`DATABASE_URL="{{dev_db_local}}" uv run alembic upgrade head`.) Это
+**единственное** место плана, где целью законно является стенд. Голую
+`uv run alembic upgrade head` не запускать даже здесь: она пойдёт по стенду
+по совпадению, а не по объявленному намерению, и та же привычка в следующей
+команде уведёт `downgrade` туда же.
+
+**`downgrade` на стенде не выполняется никогда** (`AGENTS.md` §11).
+
+Дальше: завести через **интерфейс** площади и условия на одном договоре,
+прочитать из БД, сверить счётчики «до и после». Стенд не чистить.
 
 - [ ] **Шаг 7: devlog и рамка**
 
