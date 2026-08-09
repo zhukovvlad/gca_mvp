@@ -258,6 +258,70 @@ describe("Форма договора: класса ещё нет в систе�
   });
 });
 
+/**
+ * Секция коммерческих условий (спека §2.5, §2.9): свёрнута по умолчанию, не
+ * блокирует создание договора без условий, проценты уходят строками, а пустой
+ * комментарий — как `null`, не пустой строкой.
+ *
+ * `fillRequiredContractFields` — тот же порядок действий, что уже стоит в
+ * describe «класс как снимок» (объект → подрядчик → номер → дата), вынесенный
+ * сюда как хелпер: он нужен всем четырём тестам этого блока.
+ */
+describe("Форма договора: коммерческие условия (§2.5, §2.9)", () => {
+  async function fillRequiredContractFields() {
+    await userEvent.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    await userEvent.click(await screen.findByText("ЖК Северный"));
+    await userEvent.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
+    await userEvent.click(await screen.findByText("ООО СтройПодряд"));
+    await userEvent.type(screen.getByLabelText("Номер договора"), "ГП-2026-003");
+    await userEvent.type(screen.getByLabelText("Дата подписания"), "2026-05-01");
+  }
+
+  it("секция условий свёрнута по умолчанию", async () => {
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    expect(screen.queryByLabelText(/аванс, %/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /коммерческие условия/i })).toBeInTheDocument();
+  });
+
+  it("создание договора без условий не блокируется", async () => {
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await fillRequiredContractFields();
+    expect(screen.getByRole("button", { name: /создать/i })).toBeEnabled();
+  });
+
+  it("отправляет проценты строками, а пустой комментарий — как null", async () => {
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.post("/api/v1/contracts", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 7 }, { status: 201 });
+      })
+    );
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await fillRequiredContractFields();
+    await userEvent.click(screen.getByRole("button", { name: /коммерческие условия/i }));
+    await userEvent.type(screen.getByLabelText(/аванс, %/i), "30");
+    await userEvent.type(screen.getByLabelText(/оговорка к авансу/i), "   ");
+    await userEvent.click(screen.getByRole("button", { name: /создать/i }));
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.advance_pct).toBe("30");
+    expect(body!.advance_note).toBeNull();
+  });
+
+  it("в режиме правки показывает уже заведённые условия", async () => {
+    renderWithProviders(
+      <ContractFormDialog
+        open
+        onOpenChange={() => {}}
+        contract={{ ...sampleContractCard, advance_pct: "30", advance_note: "траншами" }}
+      />
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /коммерческие условия/i }));
+    expect(screen.getByLabelText(/аванс, %/i)).toHaveValue("30");
+    expect(screen.getByLabelText(/оговорка к авансу/i)).toHaveValue("траншами");
+  });
+});
+
 describe("Комбобокс: подсказки", () => {
   it("показывает класс объекта и БИН подрядчика как подсказку", async () => {
     const user = userEvent.setup();
