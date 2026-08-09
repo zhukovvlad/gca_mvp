@@ -199,6 +199,15 @@ def get_contract_dict(db: Session, contract_id: int) -> dict:
         raise DomainError(404, f"Договор {contract_id} не найден.")
     body = _contract_row_dict(*row)
     body["notes"] = row[0].notes
+    #: Коммерческие условия — в карточке, не в списке (спека §2.5): список это
+    #: выбор, а не карточка, поэтому эти шесть ключей нет смысла нести в
+    #: `_contract_row_dict`.
+    body["advance_pct"] = row[0].advance_pct
+    body["advance_note"] = row[0].advance_note
+    body["bank_guarantee_pct"] = row[0].bank_guarantee_pct
+    body["bank_guarantee_note"] = row[0].bank_guarantee_note
+    body["retention_pct"] = row[0].retention_pct
+    body["retention_note"] = row[0].retention_note
     body["estimates"] = _estimates_of(db, contract_id)
     return body
 
@@ -277,6 +286,12 @@ def create_contract(
     signer: str | None = None,
     total_amount: Decimal | None = None,
     notes: str | None = None,
+    advance_pct: Decimal | None = None,
+    advance_note: str | None = None,
+    bank_guarantee_pct: Decimal | None = None,
+    bank_guarantee_note: str | None = None,
+    retention_pct: Decimal | None = None,
+    retention_note: str | None = None,
 ) -> dict:
     """Создать договор. `rate_class_id` по умолчанию — класс объекта (§4)."""
     contract_number = require_text(contract_number, "Номер договора")
@@ -301,6 +316,12 @@ def create_contract(
         signed_date=signed_date,
         total_amount=total_amount,
         notes=(notes or "").strip() or None,
+        advance_pct=advance_pct,
+        advance_note=(advance_note or "").strip() or None,
+        bank_guarantee_pct=bank_guarantee_pct,
+        bank_guarantee_note=(bank_guarantee_note or "").strip() or None,
+        retention_pct=retention_pct,
+        retention_note=(retention_note or "").strip() or None,
     )
     db.add(contract)
     with translating_integrity(db, _UNIQUE_MESSAGES):
@@ -329,6 +350,12 @@ def update_contract(
     signed_date=UNSET,
     total_amount=UNSET,
     notes=UNSET,
+    advance_pct=UNSET,
+    advance_note=UNSET,
+    bank_guarantee_pct=UNSET,
+    bank_guarantee_note=UNSET,
+    retention_pct=UNSET,
+    retention_note=UNSET,
 ) -> dict:
     """Правка карточки. Все поля опциональны; непереданные не меняются.
 
@@ -365,6 +392,21 @@ def update_contract(
             contract.total_amount = total_amount
         if notes is not UNSET:
             contract.notes = (notes or "").strip() or None
+        # Коммерческие условия: каждое из шести полей правится независимо, без
+        # парности между процентом и комментарием (спека §2.5) — `null` сбрасывает
+        # ровно то одно условие, которое передано.
+        if advance_pct is not UNSET:
+            contract.advance_pct = advance_pct
+        if advance_note is not UNSET:
+            contract.advance_note = (advance_note or "").strip() or None
+        if bank_guarantee_pct is not UNSET:
+            contract.bank_guarantee_pct = bank_guarantee_pct
+        if bank_guarantee_note is not UNSET:
+            contract.bank_guarantee_note = (bank_guarantee_note or "").strip() or None
+        if retention_pct is not UNSET:
+            contract.retention_pct = retention_pct
+        if retention_note is not UNSET:
+            contract.retention_note = (retention_note or "").strip() or None
 
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
