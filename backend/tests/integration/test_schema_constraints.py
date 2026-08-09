@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 from contextlib import contextmanager
 from decimal import Decimal
 
@@ -22,12 +23,14 @@ from models import (
     AppSettings,
     CatalogKind,
     CatalogPosition,
+    Contract,
     EstimateAdditionalWork,
     EstimateRawData,
     ImportJobStatus,
     Lot,
     MatchingCache,
     MatchSource,
+    ObjectModel,
     PositionItem,
     Proposal,
     WorkCategory,
@@ -1286,3 +1289,396 @@ class TestAdditionalWorksSchema:
             if isinstance(c, CheckConstraint)
         }
         assert checks == self.ORM_CHECKS
+
+
+# ---------------------------------------------------------------------------
+#  objects.area_*_sp, contracts.*_pct/*_note: ТЭП объекта и коммерческие
+#  условия договора (фаза 7, спека Ф5, миграция 0009)
+# ---------------------------------------------------------------------------
+
+#: Общий счётчик для уникальных title/contract_number/inn ниже — тот же приём,
+#: что у `factory.Sequence` в tests/factories.py, но без регистрации сессии в
+#: фабриках: тесты этого раздела получают только `db_session`, как в
+#: буквальном коде плана, а не `factories`.
+_tep_seq = itertools.count()
+
+
+def _make_object(
+    session,
+    *,
+    title: str | None = None,
+    address: str = "Test St, 1",
+    above: str | None = None,
+    under: str | None = None,
+) -> int:
+    """INSERT сырым SQL, как `_make_category`: на шаге 2 плана колонки площадей
+    проверяются раньше, чем модель их объявит (шаг 5).
+
+    Title/address — ASCII нарочно (не как в остальном файле): CHECK-нарушение
+    печатает в DETAIL всю строку целиком, и без этого кириллица утекала бы в
+    терминал через `IntegrityError` (запрет на печать кириллицы в терминал).
+    """
+    return session.execute(
+        sa.text(
+            "insert into objects (title, address, area_aboveground_sp, area_underground_sp) "
+            "values (:title, :address, :above, :under) returning id"
+        ),
+        {
+            "title": title or f"TEP object {next(_tep_seq)}",
+            "address": address,
+            "above": Decimal(above) if above is not None else None,
+            "under": Decimal(under) if under is not None else None,
+        },
+    ).scalar_one()
+
+
+def _make_object_and_read(session, **kwargs):
+    """Как `_make_object`, но сразу читает обратно три поля площадей."""
+    object_id = _make_object(session, **kwargs)
+    return session.execute(
+        sa.text(
+            "select area_aboveground_sp, area_underground_sp, area_total_sp "
+            "from objects where id = :id"
+        ),
+        {"id": object_id},
+    ).one()
+
+
+def _make_rate_class_id(session) -> int:
+    """ASCII нарочно — см. довод в докстринге `_make_object`."""
+    return session.execute(
+        sa.text("insert into rate_classes (title) values (:title) returning id"),
+        {"title": f"TEP class {next(_tep_seq)}"},
+    ).scalar_one()
+
+
+def _make_contractor_id(session) -> int:
+    """Реквизиты — тот же приём, что у `ContractorFactory` (tests/factories.py);
+    ASCII нарочно — см. довод в докстринге `_make_object`."""
+    return session.execute(
+        sa.text(
+            "insert into contractors (title, inn, address, accreditation) "
+            "values (:title, :inn, 'Test city, Contractor St, 1', 'yes') returning id"
+        ),
+        {
+            "title": f"TEP contractor {next(_tep_seq)}",
+            "inn": f"77{next(_tep_seq):010d}",
+        },
+    ).scalar_one()
+
+
+def _make_contract(
+    session,
+    *,
+    advance_pct: str | None = None,
+    advance_note: str | None = None,
+    bank_guarantee_pct: str | None = None,
+    bank_guarantee_note: str | None = None,
+    retention_pct: str | None = None,
+    retention_note: str | None = None,
+) -> int:
+    """INSERT сырым SQL, как `_make_object`: колонки условий проверяются раньше,
+    чем модель их объявит. Объект/подрядчик/класс — минимальные строки без ТЭП,
+    реквизиты — тот же приём, что у `ContractFactory`. `contract_number` — ASCII
+    нарочно, тот же довод, что у `_make_object`; `*_note` остаются кириллицей
+    буквально по плану (домен — комментарий человеком, не служебный идентификатор,
+    и участвует только в путях без ожидаемого отказа БД)."""
+    object_id = _make_object(session)
+    contractor_id = _make_contractor_id(session)
+    rate_class_id = _make_rate_class_id(session)
+    return session.execute(
+        sa.text(
+            "insert into contracts "
+            "(object_id, contractor_id, rate_class_id, contract_number, signed_date, "
+            " advance_pct, advance_note, bank_guarantee_pct, bank_guarantee_note, "
+            " retention_pct, retention_note) "
+            "values (:object_id, :contractor_id, :rate_class_id, :contract_number, :signed_date, "
+            "        :advance_pct, :advance_note, :bank_guarantee_pct, :bank_guarantee_note, "
+            "        :retention_pct, :retention_note) "
+            "returning id"
+        ),
+        {
+            "object_id": object_id,
+            "contractor_id": contractor_id,
+            "rate_class_id": rate_class_id,
+            "contract_number": f"TEP-GP-{next(_tep_seq):06d}",
+            "signed_date": dt.date(2025, 3, 1),
+            "advance_pct": Decimal(advance_pct) if advance_pct is not None else None,
+            "advance_note": advance_note,
+            "bank_guarantee_pct": (
+                Decimal(bank_guarantee_pct) if bank_guarantee_pct is not None else None
+            ),
+            "bank_guarantee_note": bank_guarantee_note,
+            "retention_pct": Decimal(retention_pct) if retention_pct is not None else None,
+            "retention_note": retention_note,
+        },
+    ).scalar_one()
+
+
+def _make_contract_and_read(session, **kwargs):
+    """Как `_make_contract`, но сразу читает обратно шесть полей условий."""
+    contract_id = _make_contract(session, **kwargs)
+    return session.execute(
+        sa.text(
+            "select advance_pct, advance_note, bank_guarantee_pct, bank_guarantee_note, "
+            "       retention_pct, retention_note "
+            "from contracts where id = :id"
+        ),
+        {"id": contract_id},
+    ).one()
+
+
+class TestObjectAreas:
+    """ТЭП объекта: две вводимые площади, третья вычисляемая (спека §2.2, §2.3)."""
+
+    def test_negative_aboveground_is_rejected(self, db_session):
+        """Партнёр — `10`, а НЕ `0`: вход обязан нарушать ровно один CHECK.
+
+        Замерено (пробник задачи 1): пара `(-1, 0)` даёт общую `-1` и нарушает
+        сразу и этот арм, и `ck_objects_area_total_sp_positive`; PostgreSQL
+        называет один констрейнт из нескольких нарушенных, выбирая по имени.
+        Тогда `total_sp_positive` **маскировал** бы этот арм — снятие арма не
+        пустило бы значение в таблицу, и негативная проверка №1 реестра §4.4
+        доказывала бы не то ([verifying-guards](../../../docs/insights/verifying-guards.md),
+        слой 8). При общей `9` нарушение остаётся одно, и снятие даёт честный
+        третий исход — значение ложится в таблицу.
+        """
+        with rejected(db_session, contains="ck_objects_area_aboveground_sp_non_negative"):
+            _make_object(db_session, above="-1", under="10")
+
+    def test_negative_underground_is_rejected(self, db_session):
+        """Партнёр — `10`, а НЕ `0`, по тому же доводу, что у наземной выше.
+
+        Здесь маскировка не гипотетическая: на паре `(0, -1)` PostgreSQL
+        называет `ck_objects_area_total_sp_positive`, и тест с ожиданием
+        подземного арма падал бы всегда.
+        """
+        with rejected(db_session, contains="ck_objects_area_underground_sp_non_negative"):
+            _make_object(db_session, above="10", under="-1")
+
+    def test_both_zero_is_rejected_because_total_would_be_zero(self, db_session):
+        """Ноль в частях законен, ноль в общей — нет: она знаменатель."""
+        with rejected(db_session, contains="ck_objects_area_total_sp_positive"):
+            _make_object(db_session, above="0", under="0")
+
+    def test_only_aboveground_is_rejected(self, db_session):
+        with rejected(db_session, contains="ck_objects_areas_both_or_neither"):
+            _make_object(db_session, above="100", under=None)
+
+    def test_only_underground_is_rejected(self, db_session):
+        with rejected(db_session, contains="ck_objects_areas_both_or_neither"):
+            _make_object(db_session, above=None, under="100")
+
+    def test_zero_part_is_a_representable_state(self, db_session):
+        """Объект без подземной части: ноль, а не NULL."""
+        row = _make_object_and_read(db_session, above="100.50", under="0")
+        assert row.area_underground_sp == Decimal("0")
+        assert row.area_underground_sp is not None
+
+    def test_no_areas_at_all_is_a_representable_state(self, db_session):
+        row = _make_object_and_read(db_session, above=None, under=None)
+        assert row.area_total_sp is None
+
+    def test_total_is_computed_from_the_parts(self, db_session):
+        row = _make_object_and_read(db_session, above="62399.70", under="13341.30")
+        assert row.area_total_sp == Decimal("75741.00")
+
+    def test_total_cannot_be_written_directly(self, db_session):
+        """Вычисляемая колонка не принимает значение — иначе она хранимая.
+
+        Тип и SQLSTATE названы точно: `pytest.raises(Exception)` прошёл бы и от
+        опечатки в SQL, и от уже отравленной сессии — то есть доказывал бы не то.
+
+        Savepoint обязателен и своим хелпером: существующий `rejected` ловит
+        только `IntegrityError`, а здесь PostgreSQL отвечает `ProgrammingError`,
+        и без `begin_nested` сессия осталась бы непригодной для остальных
+        тестов файла.
+        """
+        object_id = _make_object(db_session, above="1", under="1")
+        with pytest.raises(ProgrammingError) as exc, db_session.begin_nested():
+            db_session.execute(
+                sa.text("update objects set area_total_sp = 1 where id = :id"),
+                {"id": object_id},
+            )
+        # 428C9 = ERRCODE_GENERATED_ALWAYS. Значение ПОДТВЕРЖДЕНО пробником шага 6
+        # плана (orchestrator, на gca_test): попытка записи в GENERATED ALWAYS ...
+        # STORED отвергается именно этим SQLSTATE. Если фактический SQLSTATE
+        # окажется иным — исправить константу здесь, а не расширять проверку
+        # обратно до «любой ошибки».
+        assert exc.value.orig.sqlstate == "428C9"
+
+
+class TestContractCommercialTerms:
+    """Коммерческие условия договора: три пары «процент + комментарий» (спека §2.5)."""
+
+    @pytest.mark.parametrize(
+        "field", ["advance_pct", "bank_guarantee_pct", "retention_pct"]
+    )
+    @pytest.mark.parametrize("value", ["-1", "101"])
+    def test_percent_outside_the_range_is_rejected(self, db_session, field, value):
+        with rejected(db_session, contains=f"ck_contracts_{field}_range"):
+            _make_contract(db_session, **{field: value})
+
+    @pytest.mark.parametrize(
+        "field", ["advance_pct", "bank_guarantee_pct", "retention_pct"]
+    )
+    def test_declared_zero_percent_is_representable(self, db_session, field):
+        row = _make_contract_and_read(db_session, **{field: "0"})
+        assert getattr(row, field) == Decimal("0")
+
+    def test_note_without_percent_is_allowed(self, db_session):
+        """Условие есть, но одним процентом не выражается (спека §2.5 п. 1)."""
+        row = _make_contract_and_read(db_session, advance_note="траншами по графику")
+        assert row.advance_pct is None
+        assert row.advance_note is not None
+
+
+class TestAreasAndTermsParity:
+    """Парность объявлений задачи 1 миграции 0009 (спека §2.2, §2.3, §2.5, §2.8):
+    миграция дублирует models.py намеренно, и `alembic check` расхождение CHECK-
+    и Computed-выражений не ловит (спека §1.5 п. 4, §5 п. 6). Держат его эти два
+    теста — тот же паттерн, что у `TestWorkCategoriesSchema` выше: один сверяет
+    БД, другой — declarative-модель.
+
+    Замеренные определения из PostgreSQL (DB_OBJECT_CHECKS,
+    DB_OBJECT_AREA_TOTAL_GENERATED, DB_CONTRACT_CHECKS) — собраны запросом ниже
+    на gca_test СРАЗУ после наката миграции 0009 (`db_engine` в conftest.py
+    гоняет `command.upgrade(cfg, "head")` перед первым тестом сессии), а не по
+    памяти: PostgreSQL переформатирует выражение — добавляет `::numeric`, свои
+    скобки (см. тот же довод у `TestWorkCategoriesSchema.DB_CHECKS` выше).
+
+        select conname, pg_get_constraintdef(oid) from pg_constraint
+        where conrelid = 'objects'::regclass and contype = 'c';
+
+        select generation_expression from information_schema.columns
+        where table_name = 'objects' and column_name = 'area_total_sp';
+
+        select conname, pg_get_constraintdef(oid) from pg_constraint
+        where conrelid = 'contracts'::regclass and contype = 'c';
+
+    Значения ORM-стороны (`ORM_OBJECT_CHECKS`, `ORM_CONTRACT_CHECKS`) — не
+    измеренные, а буквально то, что записано в models.py: PostgreSQL их не
+    трогает.
+    """
+
+    # --- БД: замерено на gca_test после наката 0009 (см. докстринг класса) ---
+    DB_OBJECT_CHECKS = {
+        "ck_objects_area_aboveground_sp_non_negative": (
+            "CHECK (((area_aboveground_sp IS NULL) OR (area_aboveground_sp >= (0)::numeric)))"
+        ),
+        "ck_objects_area_underground_sp_non_negative": (
+            "CHECK (((area_underground_sp IS NULL) OR (area_underground_sp >= (0)::numeric)))"
+        ),
+        "ck_objects_area_total_sp_positive": (
+            "CHECK (((area_total_sp IS NULL) OR (area_total_sp > (0)::numeric)))"
+        ),
+        "ck_objects_areas_both_or_neither": (
+            "CHECK (((area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)))"
+        ),
+    }
+    DB_OBJECT_AREA_TOTAL_GENERATED = "(area_aboveground_sp + area_underground_sp)"
+
+    # Внимание: словарь целиком, поэтому существующий ck_contracts_total_amount_
+    # non_negative (миграция 0002) обязан присутствовать — иначе сравнение
+    # словарём целиком не пройдёт даже на верной миграции 0009.
+    DB_CONTRACT_CHECKS = {
+        "ck_contracts_total_amount_non_negative": (
+            "CHECK (((total_amount IS NULL) OR (total_amount >= (0)::numeric)))"
+        ),
+        "ck_contracts_advance_pct_range": (
+            "CHECK (((advance_pct IS NULL) OR ((advance_pct >= (0)::numeric)"
+            " AND (advance_pct <= (100)::numeric))))"
+        ),
+        "ck_contracts_bank_guarantee_pct_range": (
+            "CHECK (((bank_guarantee_pct IS NULL) OR ((bank_guarantee_pct >= (0)::numeric)"
+            " AND (bank_guarantee_pct <= (100)::numeric))))"
+        ),
+        "ck_contracts_retention_pct_range": (
+            "CHECK (((retention_pct IS NULL) OR ((retention_pct >= (0)::numeric)"
+            " AND (retention_pct <= (100)::numeric))))"
+        ),
+    }
+
+    # --- ORM: буквально то, что в models.py, сравнение по памяти корректно ---
+    ORM_OBJECT_CHECKS = {
+        "ck_objects_area_aboveground_sp_non_negative": (
+            "area_aboveground_sp IS NULL OR area_aboveground_sp >= 0"
+        ),
+        "ck_objects_area_underground_sp_non_negative": (
+            "area_underground_sp IS NULL OR area_underground_sp >= 0"
+        ),
+        "ck_objects_area_total_sp_positive": "area_total_sp IS NULL OR area_total_sp > 0",
+        "ck_objects_areas_both_or_neither": (
+            "(area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)"
+        ),
+    }
+    ORM_OBJECT_AREA_TOTAL_EXPRESSION = "area_aboveground_sp + area_underground_sp"
+
+    ORM_CONTRACT_CHECKS = {
+        "ck_contracts_total_amount_non_negative": "total_amount IS NULL OR total_amount >= 0",
+        "ck_contracts_advance_pct_range": (
+            "advance_pct IS NULL OR (advance_pct >= 0 AND advance_pct <= 100)"
+        ),
+        "ck_contracts_bank_guarantee_pct_range": (
+            "bank_guarantee_pct IS NULL OR (bank_guarantee_pct >= 0 AND bank_guarantee_pct <= 100)"
+        ),
+        "ck_contracts_retention_pct_range": (
+            "retention_pct IS NULL OR (retention_pct >= 0 AND retention_pct <= 100)"
+        ),
+    }
+
+    def test_database_holds_the_declared_expressions(self, db_session):
+        """Что реально легло в БД: все CHECK на обеих таблицах и generated-
+        выражение `area_total_sp`. Сравнение словарём целиком — как у
+        `TestWorkCategoriesSchema` выше — ловит и подмену выражения, и лишний
+        CHECK, и пропажу существующего (`ck_contracts_total_amount_non_negative`).
+        """
+        object_rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select conname, pg_get_constraintdef(oid) from pg_constraint "
+                    "where conrelid = 'objects'::regclass and contype = 'c'"
+                )
+            ).all()
+        )
+        assert object_rows == self.DB_OBJECT_CHECKS
+
+        generated = db_session.execute(
+            sa.text(
+                "select generation_expression from information_schema.columns "
+                "where table_name = 'objects' and column_name = 'area_total_sp'"
+            )
+        ).scalar_one()
+        assert generated == self.DB_OBJECT_AREA_TOTAL_GENERATED
+
+        contract_rows = dict(
+            db_session.execute(
+                sa.text(
+                    "select conname, pg_get_constraintdef(oid) from pg_constraint "
+                    "where conrelid = 'contracts'::regclass and contype = 'c'"
+                )
+            ).all()
+        )
+        assert contract_rows == self.DB_CONTRACT_CHECKS
+
+    def test_orm_declares_the_same_expressions(self):
+        """Вторая сторона парности: что объявлено в models.py — ObjectModel и
+        Contract. Сравнение словарём целиком, а не по выбранным ключам: иначе
+        лишний CHECK, объявленный только в модели, остался бы незамеченным.
+        """
+        object_checks = {
+            c.name: str(c.sqltext)
+            for c in ObjectModel.__table__.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        assert object_checks == self.ORM_OBJECT_CHECKS
+        computed = ObjectModel.__table__.c.area_total_sp.computed
+        assert str(computed.sqltext) == self.ORM_OBJECT_AREA_TOTAL_EXPRESSION
+        assert computed.persisted is True
+
+        contract_checks = {
+            c.name: str(c.sqltext)
+            for c in Contract.__table__.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        assert contract_checks == self.ORM_CONTRACT_CHECKS

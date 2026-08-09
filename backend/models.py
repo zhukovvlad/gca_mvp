@@ -233,6 +233,12 @@ def _sql_str_list(values) -> str:
     return ", ".join(f"'{v.value if isinstance(v, enum.Enum) else v}'" for v in values)
 
 
+#: Дублирует миграцию 0009 намеренно; расхождение ловят parity-тесты
+#: test_schema_constraints.py — `alembic check` для Computed и CHECK бесполезен
+#: (спека Ф5 §1.5 п. 4).
+OBJECT_AREA_TOTAL_EXPRESSION = "area_aboveground_sp + area_underground_sp"
+
+
 # ---------------------------------------------------------------------------
 #  Справочники объектов и подрядчиков (перенос из tenders-go)
 # ---------------------------------------------------------------------------
@@ -261,6 +267,16 @@ class ObjectModel(Base):
     rate_class_id = Column(
         BigInteger, ForeignKey("rate_classes.id", ondelete="SET NULL"), nullable=True
     )
+    # ТЭП объекта (спека Ф5 §2.2): две вводимые площади, третья — вычисляемая.
+    # Обе или ни одной (§2.3 п. 3); ноль в части законен и отличим от NULL
+    # (§2.3 п. 1); ноль в общей непредставим — она знаменатель руб/м² (§2.3 п. 2).
+    area_aboveground_sp = Column(Numeric, nullable=True)
+    area_underground_sp = Column(Numeric, nullable=True)
+    area_total_sp = Column(
+        Numeric,
+        Computed(OBJECT_AREA_TOTAL_EXPRESSION, persisted=True),
+        nullable=True,
+    )
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -269,6 +285,22 @@ class ObjectModel(Base):
     __table_args__ = (
         UniqueConstraint("title", name="uq_objects_title"),
         Index("ix_objects_rate_class_id", "rate_class_id"),
+        CheckConstraint(
+            "area_aboveground_sp IS NULL OR area_aboveground_sp >= 0",
+            name="ck_objects_area_aboveground_sp_non_negative",
+        ),
+        CheckConstraint(
+            "area_underground_sp IS NULL OR area_underground_sp >= 0",
+            name="ck_objects_area_underground_sp_non_negative",
+        ),
+        CheckConstraint(
+            "area_total_sp IS NULL OR area_total_sp > 0",
+            name="ck_objects_area_total_sp_positive",
+        ),
+        CheckConstraint(
+            "(area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)",
+            name="ck_objects_areas_both_or_neither",
+        ),
     )
 
 
@@ -311,6 +343,16 @@ class Contract(Base):
     signed_date = Column(Date, nullable=False)
     total_amount = Column(Numeric, nullable=True)
     notes = Column(Text, nullable=True)
+    # Коммерческие условия (спека Ф5 §2.5): три пары «процент + комментарий».
+    # Парного CHECK между процентом и комментарием нет — комментарий без
+    # процента законен и означает «условие есть, но одним процентом не
+    # выражается» (§2.5 п. 1). Ноль в проценте законен и отличим от NULL.
+    advance_pct = Column(Numeric, nullable=True)
+    advance_note = Column(Text, nullable=True)
+    bank_guarantee_pct = Column(Numeric, nullable=True)
+    bank_guarantee_note = Column(Text, nullable=True)
+    retention_pct = Column(Numeric, nullable=True)
+    retention_note = Column(Text, nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -323,6 +365,18 @@ class Contract(Base):
         CheckConstraint(
             "total_amount IS NULL OR total_amount >= 0",
             name="ck_contracts_total_amount_non_negative",
+        ),
+        CheckConstraint(
+            "advance_pct IS NULL OR (advance_pct >= 0 AND advance_pct <= 100)",
+            name="ck_contracts_advance_pct_range",
+        ),
+        CheckConstraint(
+            "bank_guarantee_pct IS NULL OR (bank_guarantee_pct >= 0 AND bank_guarantee_pct <= 100)",
+            name="ck_contracts_bank_guarantee_pct_range",
+        ),
+        CheckConstraint(
+            "retention_pct IS NULL OR (retention_pct >= 0 AND retention_pct <= 100)",
+            name="ck_contracts_retention_pct_range",
         ),
         Index("ix_contracts_object_id", "object_id"),
         Index("ix_contracts_contractor_id", "contractor_id"),
