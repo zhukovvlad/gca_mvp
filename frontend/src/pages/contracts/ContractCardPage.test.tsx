@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
@@ -272,6 +272,53 @@ describe("Карточка договора: ТЭП объекта и комме
   it("показывает «ТЭП не заведены», когда площадей нет", async () => {
     renderCard({ objectAreas: { above: null, under: null, total: null } });
     expect(await screen.findByText(/тэп не заведены/i)).toBeInTheDocument();
+  });
+
+  it("показывает отказ, когда объект не загрузился", async () => {
+    /* Регресс на молчаливое исчезновение блока: прежняя редакция рисовала ТЭП
+       только при `objectQ.data`, поэтому на отказе запроса объекта карточка
+       теряла обязательный блок целиком — без площадей, без пустого состояния и
+       без причины. Пустое состояние здесь читалось бы как «ТЭП не заведены»,
+       то есть как факт о данных, которого мы не знаем. */
+    server.use(
+      http.get("/api/v1/objects/:id", () => new HttpResponse(null, { status: 500 }))
+    );
+    renderCard();
+    expect(await screen.findByText(/не удалось загрузить тэп объекта/i)).toBeInTheDocument();
+    expect(screen.queryByText(/тэп не заведены/i)).not.toBeInTheDocument();
+  });
+
+  it("показывает загрузку, пока ТЭП объекта не пришли", async () => {
+    server.use(
+      http.get("/api/v1/objects/:id", async () => {
+        await delay(50);
+        return HttpResponse.json(sampleObjects[0]);
+      })
+    );
+    renderCard();
+    expect(await screen.findByText("Загрузка…")).toBeInTheDocument();
+    expect(await screen.findByText("75 741,00")).toBeInTheDocument();
+  });
+
+  it("не запрашивает объект по подставному id, пока договор не загружен", async () => {
+    /* Хук ТЭП вызывается до ранних `return`, то есть при первом рендере
+       идентификатора объекта ещё нет. Пока он подставлялся нулём, каждое
+       открытие карточки давало лишний `GET /objects/0` со штатным 404. */
+    const requested: string[] = [];
+    server.use(
+      http.get("/api/v1/objects/:id", ({ params }) => {
+        requested.push(String(params.id));
+        return HttpResponse.json(sampleObjects[0]);
+      })
+    );
+    renderCard();
+    await waitFor(() => expect(requested).toContain(String(sampleObjects[0].id)));
+    /* Множество, а не «нет нуля»: подставным значением может стать и `0`, и
+       `undefined` — смотря где снята защита, в вызове или в самом хуке.
+       Утверждение «запрошен ровно этот идентификатор и никакой другой» ловит
+       обе мутации, а «нет нуля» пропустило бы вторую. Дубли терпим: их дало бы
+       безобидное повторное чтение того же объекта. */
+    expect(new Set(requested)).toEqual(new Set([String(sampleObjects[0].id)]));
   });
 
   it("показывает процент условия вместе с его оговоркой", async () => {
