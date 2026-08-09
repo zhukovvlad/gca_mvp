@@ -24,6 +24,7 @@ export const qk = {
     all: ["objects"] as const,
     list: (params?: { q?: string; page?: number; page_size?: number }) =>
       ["objects", "list", params ?? {}] as const,
+    one: (id: number) => ["objects", "one", id] as const,
   },
 
   contractors: {

@@ -174,6 +174,18 @@ export function useObjects(params?: { q?: string; page?: number; page_size?: num
   });
 }
 
+/**
+ * Один объект (спека §2.9) — отдельным запросом, а не полями, подмешанными в
+ * карточку договора: в карточке уже есть `rate_class_id` (снимок договора), и
+ * класс объекта рядом с ним дал бы два поля с одним именем и разным смыслом.
+ */
+export function useObject(id: number) {
+  return useQuery({
+    queryKey: qk.objects.one(id),
+    queryFn: () => referencesApi.getObject(id),
+  });
+}
+
 export function useCreateObject() {
   const qc = useQueryClient();
   return useMutation({
@@ -195,6 +207,12 @@ export function useUpdateObject() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Название объекта денормализовано в договоры, паспорт и колонки матрицы
+      // (спека §2.11). Корень, а не карточка: у объекта может быть несколько
+      // договоров, и название лежит в каждом.
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.passport.all });
+      qc.invalidateQueries({ queryKey: qk.matrix.all });
     },
     onError: toastApiError,
   });

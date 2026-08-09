@@ -218,6 +218,13 @@ export const handlers = [
       : sampleObjects;
     return HttpResponse.json(page(items));
   }),
+  http.get("/api/v1/objects/:id", ({ params }) => {
+    const found = sampleObjects.find((o) => o.id === Number(params.id));
+    if (!found) {
+      return HttpResponse.json({ detail: `Объект ${params.id} не найден.` }, { status: 404 });
+    }
+    return HttpResponse.json(found);
+  }),
   http.post("/api/v1/objects", async ({ request }) => {
     const body = (await request.json()) as { title: string };
     return HttpResponse.json(
@@ -227,12 +234,20 @@ export const handlers = [
         address: "",
         rate_class_id: null,
         rate_class_title: null,
+        area_aboveground_sp: null,
+        area_underground_sp: null,
+        area_total_sp: null,
         contracts_count: 0,
         created_at: null,
         updated_at: null,
       },
       { status: 201 }
     );
+  }),
+  http.patch("/api/v1/objects/:id", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const found = sampleObjects.find((o) => o.id === Number(params.id));
+    return HttpResponse.json({ ...(found ?? sampleObjects[0]), ...body, id: Number(params.id) });
   }),
 
   http.get("/api/v1/contractors", ({ request }) => {

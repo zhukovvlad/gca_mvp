@@ -54,6 +54,9 @@ export const referencesApi = {
   listObjects: (params?: { q?: string; page?: number; page_size?: number }): Promise<Paginated<ObjectItem>> =>
     api.get<Paginated<ObjectItem>>("/v1/objects", { params }).then((r) => r.data),
 
+  getObject: (id: number): Promise<ObjectItem> =>
+    api.get<ObjectItem>(`/v1/objects/${id}`).then((r) => r.data),
+
   createObject: (input: ObjectInput): Promise<ObjectItem> =>
     api.post<ObjectItem>("/v1/objects", input).then((r) => r.data),
 
