@@ -9,11 +9,17 @@
 Python обязана давать один и тот же результат — гарантировать это проще одним
 местом, читающим только простые числа.
 
-Модуль чистый: ни `Session`, ни ORM, ни SQL здесь нет — только `CategoryRef` /
-`DirectTotals` на входе и `CategoryNode` на выходе. Единственный импорт с
-привкусом SQLAlchemy — два имени источника из `crud.project_passport`: они
-обязаны быть одним источником истины со строками, зашитыми в SQL VIEW
-(миграция 0010), а не второй копией тех же литералов.
+Модуль чистый: ни `Session`, ни ORM, ни SQL, ни импортов из `crud` — только
+`CategoryRef` / `DirectTotals` на входе и `CategoryNode` на выходе.
+
+Имена источников живут ЗДЕСЬ, а не в `crud/project_passport.py`, хотя описывают
+колонку `source` того VIEW. Причина замерена, а не вкусовая: `build_tree` — их
+единственный содержательный потребитель (он и различает две ветки), и обратный
+импорт замыкал бы модули в цикл, а заодно тянул бы в «чистый» модуль `models`,
+`Session` и `crud.common` — то есть ровно то, чего первый абзац этой докстроки
+обещает не делать. Единственный источник истины при этом сохранён: `crud`
+импортирует эти имена отсюда, а строки в SQL — литералы миграции 0010, которая
+обязана быть неизменной во времени.
 """
 from __future__ import annotations
 
@@ -22,7 +28,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from crud.project_passport import SOURCE_ADDITIONAL_WORKS, SOURCE_POSITIONS
+#: Значения колонки `source` VIEW `v_category_totals` (миграция 0010).
+SOURCE_POSITIONS = "positions"
+SOURCE_ADDITIONAL_WORKS = "additional_works"
 
 __all__ = [
     "SOURCE_ADDITIONAL_WORKS",
