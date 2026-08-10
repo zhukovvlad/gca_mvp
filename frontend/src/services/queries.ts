@@ -590,6 +590,27 @@ export function usePassport(contractId: number | undefined) {
   });
 }
 
+/**
+ * Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6, задача 6).
+ *
+ * Форма та же, что у `useContract`/`useObject` выше: `contractId` необязателен
+ * (карточка договора грузится первой), `enabled` держит запрос под замком до
+ * появления идентификатора — без него ушёл бы `GET /project-passport/0` при
+ * каждом первом рендере со штатным 404 (тот же класс дефекта, что P3 у F5).
+ *
+ * Ключ — `qk.passport.project`, под тем же корнем `qk.passport.all`, что и
+ * старый `usePassport` (см. комментарий у `qk.passport.project`): инвалидация
+ * `useUpdateObject`/`useUpdateAppSettings` уже накрывает паспорт проекта, без
+ * правки списка инвалидации.
+ */
+export function useProjectPassport(contractId: number | undefined) {
+  return useQuery({
+    queryKey: qk.passport.project(contractId ?? 0),
+    queryFn: () => analyticsApi.projectPassport(contractId as number),
+    enabled: contractId !== undefined,
+  });
+}
+
 export function useMatrix(params: MatrixParams) {
   return useQuery({
     queryKey: qk.matrix.list(params),
