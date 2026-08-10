@@ -170,6 +170,17 @@ function ContractForm({
     null
   );
   /**
+   * Черновик нового объекта. Тот же дефект, что был у класса, и найден он тоже
+   * пользователем на стенде (§2.2 спеки, решение гейта 1 переиграно): прежний
+   * обработчик брал название из поля поиска и при пустом поле **выходил молча**, а
+   * список закрывался вместе с полем, в которое надо было вводить название.
+   * Черновик даёт и то, чего не было вовсе: адрес — сегодня уходит только `title`,
+   * потому что взять адрес неоткуда.
+   */
+  const [objectDraft, setObjectDraft] = useState<{ title: string; address: string } | null>(
+    null
+  );
+  /**
    * Черновик нового класса — тем же приёмом, что подрядчик, и по той же причине:
    * одним нажатием класс не заводится. Прежний обработчик брал название из поля
    * поиска, а при пустом поле **выходил молча** — и вместе со списком исчезало
@@ -231,18 +242,27 @@ function ContractForm({
     setForm((prev) => ({ ...prev, ...fields }));
   }
 
-  async function handleCreateObject(query: string) {
-    const title = query.trim();
+  async function handleSaveObjectDraft() {
+    if (!objectDraft) return;
+    const title = objectDraft.title.trim();
     if (!title) return;
     try {
-      const created = await createObject.mutateAsync({ title });
+      const created = await createObject.mutateAsync({
+        title,
+        // Края режет фронт — так уже шлёт `ObjectFormDialog`, и второй конвенции
+        // на то же поле быть не должно. `objects.address` — NOT NULL, сервер
+        // симметрично делает `(address or "").strip()` на обоих путях, поэтому
+        // `null` ложится пустой строкой (спека §2.2).
+        address: objectDraft.address.trim() || null,
+      });
       setObjectLabel(created.title);
       // У нового объекта класса нет — его дефолт задаётся отдельно, а класс
       // договора придётся выбрать здесь.
       setObjectClass(null);
       patch({ object_id: created.id });
+      setObjectDraft(null);
     } catch {
-      // Причина уже в тосте — как правило, название занято.
+      // Причина уже в тосте (чаще всего — название занято); черновик оставляем.
     }
   }
 
@@ -383,10 +403,66 @@ function ContractForm({
             onQueryChange={setObjectQuery}
             selectedLabel={objectLabel}
             loading={objectsQ.isFetching}
-            onCreateRequest={handleCreateObject}
+            onCreateRequest={(query) => setObjectDraft({ title: query.trim(), address: "" })}
             createLabel="Создать объект"
             disabled={createObject.isPending}
           />
+          {objectDraft && (
+            <div className="grid gap-2 rounded-md border border-border-subtle p-3">
+              <p className="text-xs text-fg-secondary">
+                Новый объект. Адрес можно не заполнять — его уточняют позже, а
+                объект нужен уже сейчас, чтобы завести договор.
+              </p>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-object-draft-title">
+                  Название объекта (обязательно)
+                </Label>
+                <Input
+                  id="contract-object-draft-title"
+                  value={objectDraft.title}
+                  onChange={(e) => setObjectDraft({ ...objectDraft, title: e.target.value })}
+                  required
+                  aria-describedby="contract-object-draft-title-hint"
+                />
+                {/*
+                  Условие названо у ПОЛЯ, а не у кнопки, — тот же механизм, что у
+                  класса и у `passport-top-n` в `SettingsPage`. Второй конвенции на
+                  то же правило в проекте быть не должно.
+                */}
+                <p id="contract-object-draft-title-hint" className="text-xs text-fg-tertiary">
+                  Например: ЖК Северный. Без названия объект не добавить
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-object-draft-address">Адрес объекта</Label>
+                <Input
+                  id="contract-object-draft-address"
+                  value={objectDraft.address}
+                  onChange={(e) => setObjectDraft({ ...objectDraft, address: e.target.value })}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveObjectDraft}
+                  // `isPending` не украшение: второй клик отправил бы второй POST
+                  // на то же название и получил 409 вместо объекта.
+                  disabled={!objectDraft.title.trim() || createObject.isPending}
+                >
+                  Сохранить объект
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setObjectDraft(null)}
+                >
+                  Отмена
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-2">

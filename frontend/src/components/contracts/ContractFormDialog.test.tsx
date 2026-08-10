@@ -124,6 +124,193 @@ describe("Форма договора: поиск объекта и подряд
   });
 });
 
+/**
+ * Черновик объекта (§2.2 спеки, решение гейта 1 переиграно 2026-08-11).
+ *
+ * Тот же дефект, что был у класса, и найден он тоже пользователем на стенде:
+ * пункт «Создать объект» при пустом поле поиска не делал **ничего** — обработчик
+ * выходил на `query.trim()`, а список закрывался вместе с полем ввода. Замер
+ * пробником в jsdom дал одинаковые значения на этой ветке и на версии из `main`,
+ * то есть правка класса к дефекту отношения не имела.
+ */
+describe("Форма договора: объект заводится черновиком (§2.2)", () => {
+  function captureObjectPosts() {
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post("/api/v1/objects", async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        bodies.push(body);
+        return HttpResponse.json(
+          {
+            id: 99,
+            title: body.title,
+            address: body.address ?? "",
+            rate_class_id: null,
+            rate_class_title: null,
+            contracts_count: 0,
+            created_at: null,
+            updated_at: null,
+          },
+          { status: 201 }
+        );
+      })
+    );
+    return bodies;
+  }
+
+  /**
+   * Запрос поиска непустой намеренно — та же единственность якоря, что у класса:
+   * иначе снятие 12 (возврат отказа на пустом входе) валило бы все тесты сразу.
+   * Название набирается заново после `clear()`, чтобы тест не зависел ещё и от
+   * предзаполнения (снятие 13).
+   */
+  async function openObjectDraft(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    await user.type(
+      await screen.findByPlaceholderText("Название или адрес объекта"),
+      "черновик"
+    );
+    await user.click(await screen.findByText(/Создать объект/));
+    return screen.findByLabelText("Название объекта (обязательно)");
+  }
+
+  it("пункт «Создать объект» с пустым поиском открывает черновик, а не молчит", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    // Точное совпадение подписи и есть утверждение «запрос пуст».
+    await user.click(await screen.findByText("Создать объект"));
+
+    expect(await screen.findByLabelText("Название объекта (обязательно)")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Сохранить объект" })).toBeInTheDocument();
+  });
+
+  it("название из поиска предзаполняет черновик объекта", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
+    await user.type(
+      await screen.findByPlaceholderText("Название или адрес объекта"),
+      "  ЖК Западный  "
+    );
+    await user.click(await screen.findByText(/Создать объект/));
+
+    expect(await screen.findByLabelText("Название объекта (обязательно)")).toHaveValue(
+      "ЖК Западный"
+    );
+  });
+
+  it("условие названо у поля объекта: required и связь с подсказкой", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    const field = await openObjectDraft(user);
+    expect(field).toBeRequired();
+    expect(field).not.toHaveAttribute("placeholder");
+
+    const hintId = field.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    expect(document.getElementById(hintId as string)).toHaveTextContent(
+      "Без названия объект не добавить"
+    );
+  });
+
+  it("пустое название сохранить нельзя, непустое — создаёт объект и подписывает его", async () => {
+    captureObjectPosts();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    const field = await openObjectDraft(user);
+    await user.clear(field);
+
+    const save = screen.getByRole("button", { name: "Сохранить объект" });
+    expect(save).toBeDisabled();
+
+    await user.type(field, "ЖК Западный");
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    // Объект создан, выбран в форме и подписан — подпись держится вне выдачи.
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /Объект/ })).toHaveTextContent("ЖК Западный");
+    });
+  });
+
+  it("на время запроса кнопка черновика объекта неактивна: второго POST не будет", async () => {
+    let posts = 0;
+    let release: (() => void) | undefined;
+    const pendingRequest = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post("/api/v1/objects", async () => {
+        posts += 1;
+        await pendingRequest;
+        return HttpResponse.json(
+          {
+            id: 99,
+            title: "ЖК Западный",
+            address: "",
+            rate_class_id: null,
+            rate_class_title: null,
+            contracts_count: 0,
+            created_at: null,
+            updated_at: null,
+          },
+          { status: 201 }
+        );
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    const field = await openObjectDraft(user);
+    await user.clear(field);
+    await user.type(field, "ЖК Западный");
+
+    const save = screen.getByRole("button", { name: "Сохранить объект" });
+    await user.click(save);
+
+    await waitFor(() => expect(save).toBeDisabled());
+    await user.click(save);
+    expect(posts).toBe(1);
+
+    // Ждём закрытия черновика, а не подписи: подпись стережёт свой тест (17/18).
+    release?.();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Сохранить объект" })).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Тело запроса, а не «форма закрылась». `objects.address` — `NOT NULL`, сервер
+   * симметрично делает `(address or "").strip()` на обоих путях, и `null` ложится
+   * пустой строкой; края режет фронт — ровно как уже делает `ObjectFormDialog`.
+   */
+  const addressCases: Array<[string, string, string | null]> = [
+    ["пробельный адрес уходит null, а не строкой", "   ", null],
+    ["края непустого адреса обрезаются", "  ул. Полевая, 1  ", "ул. Полевая, 1"],
+  ];
+
+  it.each(addressCases)("%s", async (_name, typed, expected) => {
+    const bodies = captureObjectPosts();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    const field = await openObjectDraft(user);
+    await user.clear(field);
+    await user.type(field, "  ЖК Западный  ");
+    await user.type(screen.getByLabelText("Адрес объекта"), typed);
+    await user.click(screen.getByRole("button", { name: "Сохранить объект" }));
+
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0].title).toBe("ЖК Западный");
+    expect(bodies[0].address).toBe(expected);
+  });
+});
+
 describe("Форма договора: класс как снимок (§4)", () => {
   it("объясняет, что класс возьмётся у объекта, если не выбран", async () => {
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
