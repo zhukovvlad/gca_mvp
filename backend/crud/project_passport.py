@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
@@ -20,9 +22,11 @@ from models import (
     ObjectModel,
     PositionItem,
     Proposal,
+    ProposalSummaryLine,
     RateClass,
     WorkCategory,
 )
+from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -139,6 +143,72 @@ def _unallocated_breakdown(db: Session, estimate_id: int) -> tuple[int, int]:
     ).scalar_one()
 
     return chapters, rows_outside_structure
+
+
+# ---------------------------------------------------------------------------
+#  Валовое ИТОГО сметы и ставка НДС (спека §2.5, правила 1-2, 5-6)
+# ---------------------------------------------------------------------------
+
+def _file_total_including_vat(db: Session, estimate_id: int) -> Decimal | None:
+    """Сумма `total_cost_including_vat` по ВСЕМ предложениям ВСЕХ лотов сметы
+    (спека §2.5, правило 1) — либо `None`, если нарушено хотя бы одно из условий
+    правила 2: предложений нет вовсе, хотя бы одно не несёт строки с этим
+    ключом, либо хотя бы одно значение пусто (`NULL`) или не `is_finite()`.
+
+    Проверка `is_finite()` — не перестраховка, а тот же открытый хвост Ф4, что
+    у `v_category_totals` (спека §1.11): `_money` пропускает `NaN`/`Infinity` в
+    `numeric` при импорте, а `SUM` по такой колонке молча вернул бы `NaN`.
+    Чтение паспорта не должно падать на таком мусоре — оно обязано честно
+    ответить «неизвестно».
+    """
+    proposal_ids = db.execute(
+        sa.select(Proposal.id)
+        .select_from(Proposal)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+    ).scalars().all()
+    if not proposal_ids:
+        return None
+
+    totals = db.execute(
+        sa.select(ProposalSummaryLine.total_cost).where(
+            ProposalSummaryLine.proposal_id.in_(proposal_ids),
+            ProposalSummaryLine.summary_key == JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+        )
+    ).scalars().all()
+    if len(totals) != len(proposal_ids):
+        return None  # хотя бы одно предложение не несёт этой строки вовсе
+    if any(value is None or not value.is_finite() for value in totals):
+        return None
+
+    return sum(totals)
+
+
+def _vat_rate(db: Session, estimate_id: int) -> Decimal | None:
+    """Ставка НДС сметы — правило единогласия (спека §2.5, правило 5): значение
+    возвращается, только если ВСЕ предложения сметы заявили ОДНУ И ТУ ЖЕ
+    ставку; `None` — при разногласии, при хотя бы одном `NULL`, и когда
+    предложений нет вовсе.
+
+    Сравнения здесь — только `is None`/`is not None`/`==`, никогда
+    истинностные (`if rate`, `or None`): заявленный ноль (`Decimal('0')`) ложен
+    в Python, но это число, а не отсутствие ставки (спека §2.5, правило 6 — та
+    же ловушка, что четырежды стоила Ф4б доказательств снятием защиты).
+    """
+    rates = db.execute(
+        sa.select(Proposal.vat_rate)
+        .select_from(Proposal)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+    ).scalars().all()
+    if not rates:
+        return None
+    if any(rate is None for rate in rates):
+        return None
+    first_rate = rates[0]
+    if all(rate == first_rate for rate in rates):
+        return first_rate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -262,10 +332,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     """Паспорт проекта по статьям классификатора (спека Ф6 §2.6).
 
     Форма ответа — решённый контракт (§2.6), ключи и вложенность менять нельзя.
-    Часть полей НАМЕРЕННО отсутствует и появится в задачах 4-5:
-    `estimate.vat_rate`, `totals.file_total_including_vat`,
-    `totals.delta_to_file_total`, `categories[].extras`,
-    `categories[].own_sections`, `unallocated.extras`.
+    Часть полей НАМЕРЕННО отсутствует и появится в задаче 5:
+    `categories[].extras`, `categories[].own_sections`, `unallocated.extras`.
 
     Правила, реализованные здесь (§2.6, не смягчать):
 
@@ -288,6 +356,15 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
        Несуществующий договор — `DomainError(404, ...)`.
     9. `parser_version` — из `estimate_raw_data`, может законно отсутствовать.
     10. VIEW читается через объявленное отражение `CATEGORY_TOTALS`, `select()`-ом.
+    11. `estimate.vat_rate` — правило единогласия предложений сметы (спека
+        §2.5, правило 5): `_vat_rate`. Заявленный ноль — число, не отсутствие
+        (правило 6) — сравнения там только `is None`/`is not None`/`==`.
+    12. `totals.file_total_including_vat` — сумма файлового «Итого включая
+        НДС» по всем предложениям сметы (спека §2.5, правила 1-2): `_file_
+        total_including_vat`. `totals.delta_to_file_total` требует ДВА
+        известных операнда (`totals.amount` и файловый итог) — `None`, если
+        хотя бы один неизвестен, а не только когда неизвестен файловый итог
+        (правило 3); иначе точная `Decimal`-разница (правило 4).
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -358,6 +435,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
                 "positions_rows_priced": 0,
                 "positions_rows_not_finite": 0,
                 "additional_works_rows": 0,
+                "file_total_including_vat": None,
+                "delta_to_file_total": None,
             },
             "categories": categories,
             "unallocated": {
@@ -382,6 +461,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "title": estimate.title,
         "data_prepared_on_date": iso(estimate.data_prepared_on_date),
         "parser_version": parser_version,
+        "vat_rate": _vat_rate(db, estimate.id),
     }
 
     direct = _direct_totals(db, estimate.id)
@@ -411,6 +491,16 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     grand_total = _sum_known(*(node.total for node in roots), unallocated_amount)
     area_total = obj.area_total_sp
 
+    file_total_including_vat = _file_total_including_vat(db, estimate.id)
+    # Сверка требует ДВА известных операнда (спека §2.5, правило 3): проверка
+    # `is not None` на ОБОИХ, не только на файловом итоге — табличная сумма
+    # законно неизвестна сама по себе (например, все позиции без цены), и
+    # `None - Decimal` тут же уронил бы вычитание.
+    if grand_total is not None and file_total_including_vat is not None:
+        delta_to_file_total = grand_total - file_total_including_vat
+    else:
+        delta_to_file_total = None
+
     totals = {
         "amount": grand_total,
         "per_sqm": _per_sqm(grand_total, area_total),
@@ -418,6 +508,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "positions_rows_priced": positions_rows_priced,
         "positions_rows_not_finite": positions_rows_not_finite,
         "additional_works_rows": additional_works_rows,
+        "file_total_including_vat": file_total_including_vat,
+        "delta_to_file_total": delta_to_file_total,
     }
 
     unallocated_dict = {

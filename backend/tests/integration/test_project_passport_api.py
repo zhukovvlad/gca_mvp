@@ -18,7 +18,8 @@ import sqlalchemy as sa
 
 from crud.common import DomainError
 from crud.project_passport import get_project_passport
-from models import EstimateAdditionalWork, WorkCategory
+from models import EstimateAdditionalWork, ProposalSummaryLine, WorkCategory
+from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
 
 pytestmark = pytest.mark.integration
 
@@ -80,6 +81,18 @@ def _additional_work(session, proposal, *, ordinal=1, category_id=None, amount=D
     session.add(work)
     session.flush()
     return work
+
+
+def _summary_line(session, proposal, *, key: str, total, job_title: str = "Итого по смете"):
+    """Строка блока «Итого» предложения (`proposal_summary_lines`), без фабрики
+    — та же причина, что у `_additional_work`: строка сугубо служебная для
+    этого файла, заводить постоянную фабрику под неё незачем."""
+    line = ProposalSummaryLine(
+        proposal_id=proposal.id, summary_key=key, job_title=job_title, total_cost=total,
+    )
+    session.add(line)
+    session.flush()
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -438,3 +451,224 @@ def test_object_contracts_count_reflects_the_object(db_session, factories):
     assert result_1["contract"]["object_contracts_count"] == 2
     assert result_2["contract"]["object_contracts_count"] == 2
     assert result_lone["contract"]["object_contracts_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+#  13. Валовое ИТОГО сметы — сумма по ВСЕМ предложениям ВСЕХ лотов (спека §2.5)
+# ---------------------------------------------------------------------------
+
+def test_file_total_sums_over_every_proposal_of_the_source_estimate(db_session, factories):
+    """Смета с ДВУМЯ лотами несёт два предложения, каждое — свою строку
+    «Итого включая НДС» (спека §2.5, правило 1): файловый итог — их сумма, а
+    не итог одного лота. Второй лот+предложение заведены на ТУ ЖЕ смету."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2)
+
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1000.00"))
+    _summary_line(db_session, proposal_2, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("2500.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, estimate.contract_id)
+
+    assert result["totals"]["file_total_including_vat"] == Decimal("3500.00")
+
+
+def test_missing_key_in_one_proposal_makes_the_file_total_unknown(db_session, factories):
+    """Одно из двух предложений не несёт строки «Итого включая НДС» вовсе ->
+    файловый итог целиком `None` (спека §2.5, правило 2б). Частичная сумма,
+    прочитанная как полная, была бы правдоподобным занижением без всякого
+    признака ошибки."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    factories.ProposalFactory.create(lot=lot_2)  # второе предложение сметы — без строки ниже
+
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, estimate.contract_id)
+
+    assert result["totals"]["file_total_including_vat"] is None
+
+
+def test_estimate_without_proposals_makes_the_file_total_unknown(db_session, factories):
+    """Смета вовсе без предложений -> файловый итог `None`, а не ноль (спека
+    §2.5, правило 2а)."""
+    contract = factories.ContractFactory.create()
+    factories.EstimateFactory.create(contract=contract, amendment_no=None)
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+
+    assert result["totals"]["file_total_including_vat"] is None
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_value_makes_the_file_total_unknown_without_raising(db_session, factories, bad):
+    """`NaN`/`Infinity`/`-Infinity` в `total_cost` — открытый хвост Ф4 (`_money`
+    их не отсекает, `numeric` их принимает) — не должны уронить чтение
+    паспорта: файловый итог просто становится `None` (спека §2.5, правило 2в).
+    Сам факт того, что вызов ниже отрабатывает без исключения, — часть
+    проверки наравне с итоговым значением."""
+    proposal = _proposal(factories)
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal(bad))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    assert result["totals"]["file_total_including_vat"] is None
+
+
+# ---------------------------------------------------------------------------
+#  14. Сверка delta_to_file_total требует ДВА известных операнда (спека §2.5)
+# ---------------------------------------------------------------------------
+
+def test_delta_is_null_when_the_table_sum_is_unknown_and_the_file_total_is_known(db_session, factories):
+    """Второй операнд сверки (спека §2.5, правило 3): табличная сумма
+    неизвестна (единственная позиция без цены), а файловый итог известен ->
+    `delta_to_file_total` обязана быть `None`, а не «`None` минус число». Без
+    этого теста правило было бы доказано только с одной стороны — гейтинг
+    только по файловому итогу оставил бы этот путь открытым."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=None)
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    assert result["totals"]["amount"] is None
+    assert isinstance(result["totals"]["file_total_including_vat"], Decimal)
+    assert result["totals"]["delta_to_file_total"] is None
+
+
+def test_delta_is_null_when_both_operands_are_unknown(db_session, factories):
+    """Договор вовсе без сметы -> оба операнда сверки неизвестны, `delta_to_
+    file_total` тоже `None` (спека §2.5, правила 3 и 7)."""
+    contract = factories.ContractFactory.create()
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+
+    assert result["totals"]["amount"] is None
+    assert result["totals"]["file_total_including_vat"] is None
+    assert result["totals"]["delta_to_file_total"] is None
+
+
+def test_delta_is_zero_when_the_paths_agree(db_session, factories):
+    """Табличный путь (позиции + допработы) и файловый блок «Итого» сходятся
+    -> `delta_to_file_total == Decimal('0.00')` — ЧИСЛО, а не ложно-пустое
+    значение (спека §2.5, правило 4)."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("700.00"))
+    _additional_work(db_session, proposal, category_id=category.id, amount=Decimal("300.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    assert result["totals"]["amount"] == Decimal("1000.00")
+    assert result["totals"]["file_total_including_vat"] == Decimal("1000.00")
+    delta = result["totals"]["delta_to_file_total"]
+    assert delta is not None
+    assert delta == Decimal("0.00")
+
+
+def test_delta_is_reported_when_the_paths_disagree(db_session, factories):
+    """Пути расходятся -> `delta_to_file_total` — точный ЗНАКОВЫЙ `Decimal`
+    (табличная сумма минус файловый итог, спека §2.5, правило 4): знак
+    закреплён явно, а не только модуль расхождения."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    assert result["totals"]["amount"] == Decimal("1200.00")
+    assert result["totals"]["file_total_including_vat"] == Decimal("1000.00")
+    assert result["totals"]["delta_to_file_total"] == Decimal("200.00")
+
+
+# ---------------------------------------------------------------------------
+#  15. Ставка НДС сметы — правило единогласия (спека §2.5, правило 5)
+# ---------------------------------------------------------------------------
+
+def test_vat_rate_is_taken_when_every_proposal_declares_the_same(db_session, factories):
+    """Единогласие предложений сметы по ставке НДС -> она и есть ответ (спека
+    §2.5, правило 5)."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2)
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("20")
+    db_session.flush()
+
+    result = get_project_passport(db_session, estimate.contract_id)
+
+    assert result["estimate"]["vat_rate"] == Decimal("20")
+
+
+def test_vat_rate_is_null_when_proposals_disagree(db_session, factories):
+    """Ставки предложений одной сметы РАЗНЫЕ -> `estimate.vat_rate` — `None`,
+    экран пишет «не заявлена в файле», а не первую попавшуюся ставку (спека
+    §2.5, правило 5)."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2)
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("18")
+    db_session.flush()
+
+    result = get_project_passport(db_session, estimate.contract_id)
+
+    assert result["estimate"]["vat_rate"] is None
+
+
+def test_vat_rate_is_null_when_one_proposal_has_none(db_session, factories):
+    """Одно предложение сметы вовсе не заявило ставку -> `estimate.vat_rate` —
+    `None` (спека §2.5, правило 5): единогласия не может быть, если у части
+    предложений мнения вовсе нет."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2)
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = None
+    db_session.flush()
+
+    result = get_project_passport(db_session, estimate.contract_id)
+
+    assert result["estimate"]["vat_rate"] is None
+
+
+def test_declared_zero_vat_is_distinguishable_from_absence(db_session, factories):
+    """ЗАЯВЛЕННЫЙ НОЛЬ — не то же самое, что отсутствие ставки (спека §2.5,
+    правило 6): `Decimal('0')` ложен в Python, поэтому весь путь обязан
+    сравнивать через `is None`/`is not None`, никогда истинностно. Регрессионный
+    щит именно этой ловушки, стоившей Ф4б четырёх отдельных доказательств
+    снятием защиты. Два договора в одном тесте — чтобы ноль и отсутствие были
+    видны рядом, а не порознь."""
+    zero_proposal = _proposal(factories)
+    zero_proposal.vat_rate = Decimal("0")
+    db_session.flush()
+
+    absent_proposal = _proposal(factories)
+    absent_proposal.vat_rate = None
+    db_session.flush()
+
+    zero_result = get_project_passport(db_session, zero_proposal.lot.estimate.contract_id)
+    absent_result = get_project_passport(db_session, absent_proposal.lot.estimate.contract_id)
+
+    assert zero_result["estimate"]["vat_rate"] == Decimal("0")
+    assert zero_result["estimate"]["vat_rate"] is not None
+    assert absent_result["estimate"]["vat_rate"] is None
