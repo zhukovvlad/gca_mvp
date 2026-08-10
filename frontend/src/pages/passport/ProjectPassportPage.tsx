@@ -67,7 +67,10 @@ export default function ProjectPassportPage() {
   }
 
   return (
-    <div className="container-page py-8">
+    // data-print="sheet" — документ целиком (задача 10, спека §2.11): шапка,
+    // кольцо структуры и таблица по статьям печатаются как один лист/свод, а
+    // не по отдельности. Ровно один узел во всём дереве несёт эту метку.
+    <div className="container-page py-8" data-print="sheet">
       <PassportHeader passport={passport} />
       <div className="mt-6">
         <StructureRing passport={passport} />

@@ -675,3 +675,67 @@ describe("Паспорт проекта: кольцо структуры", () =>
     expect(within(legend).getByText("Остальные статьи (1)")).toBeInTheDocument();
   });
 });
+
+/**
+ * Печать (задача 10, спека §2.11): разметка `data-print`, которую читает
+ * `@media print` в `frontend/src/index.css`.
+ *
+ * ГРАНИЦА НАБЛЮДАЕМОСТИ, честно: jsdom не применяет `@media print` вовсе —
+ * эти тесты проверяют ТОЛЬКО разметку (атрибуты и классы), а не саму печатную
+ * раскладку — не ширины колонок, не повтор шапки таблицы на каждом листе, не
+ * уменьшенное кольцо. Раскладку проверяет замер в браузере (план, задача 12).
+ * Четыре зелёных теста здесь означают «разметка на месте», а не «печать
+ * доказана».
+ */
+describe("Паспорт проекта: печать", () => {
+  // Тест 1.
+  it('лист документа помечен data-print="sheet"', async () => {
+    const { container } = renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const sheets = container.querySelectorAll('[data-print="sheet"]');
+    expect(sheets).toHaveLength(1);
+
+    // Обёртывает документ целиком — несёт и шапку, и таблицу по статьям, а не
+    // только один из блоков.
+    const sheet = sheets[0] as HTMLElement;
+    expect(within(sheet).getByText("ГП-0212")).toBeInTheDocument();
+    expect(within(sheet).getByRole("table")).toBeInTheDocument();
+  });
+
+  // Тест 2 (2 собрано): обе служебные метки — переключатель и кнопка печати —
+  // документом не являются и обязаны нести data-print="hide".
+  it.each([
+    {
+      name: "переключатель нулевых подстатей",
+      find: () => screen.getByRole("switch", { name: /показывать нулевые подстатьи/i }),
+    },
+    {
+      name: "кнопка печати",
+      find: () => screen.getByRole("button", { name: /печать/i }),
+    },
+  ])('служебные элементы помечены data-print="hide": $name', async ({ find }) => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const el = find();
+    expect(el.closest('[data-print="hide"]')).not.toBeNull();
+  });
+
+  // Тест 3.
+  it("зажатые по высоте узлы внутри листа не несут класса block", async () => {
+    const { container } = renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // Область поиска — ВНУТРИ листа: печатные правила действуют на то, что
+    // находится внутри `[data-print="sheet"]`, а не на страницу целиком —
+    // зажатый узел снаружи листа ими бы не управлялся.
+    const clamped = container.querySelectorAll('[data-print="sheet"] [data-print="clamp"]');
+    expect(clamped.length).toBeGreaterThan(0);
+    clamped.forEach((node) => {
+      const classes = Array.from(node.classList);
+      expect(classes.some((c) => /^line-clamp-\d+$/.test(c))).toBe(true);
+      expect(classes).not.toContain("block");
+    });
+  });
+});

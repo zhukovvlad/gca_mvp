@@ -187,7 +187,11 @@ function CategoryRow({
 
   return (
     <>
-      <TableRow data-testid={`row-cat-${node.code}`} className={depth === 0 ? "border-t border-border-subtle" : undefined}>
+      <TableRow
+        data-testid={`row-cat-${node.code}`}
+        data-print="row"
+        className={depth === 0 ? "border-t border-border-subtle" : undefined}
+      >
         <TableCell className="font-mono text-xs text-fg-secondary">{node.code}</TableCell>
         <TableCell>
           <div className="flex min-w-0 items-start gap-2" style={{ paddingLeft: indent }}>
@@ -245,7 +249,7 @@ function CategoryRow({
           })}
 
           {node.extras.map((extra) => (
-            <TableRow key={extra.id} data-testid={`row-extra-${node.code}-${extra.id}`}>
+            <TableRow key={extra.id} data-testid={`row-extra-${node.code}-${extra.id}`} data-print="row">
               <TableCell className="font-mono text-xs text-fg-tertiary">·</TableCell>
               <TableCell>
                 <div className="flex items-baseline gap-2" style={{ paddingLeft: indent + 20 }}>
@@ -265,7 +269,7 @@ function CategoryRow({
           ))}
 
           {ownRowVisible && (
-            <TableRow data-testid={`row-own-${node.code}`}>
+            <TableRow data-testid={`row-own-${node.code}`} data-print="row">
               <TableCell className="font-mono text-xs text-fg-tertiary">·</TableCell>
               <TableCell>
                 <div className="flex items-baseline gap-2" style={{ paddingLeft: indent + 20 }}>
@@ -324,7 +328,9 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
   }
 
   return (
-    <section className="border border-border-subtle bg-surface" data-print="sheet">
+    // data-print="sheet" НЕ здесь: он на корне документа (ProjectPassportPage,
+    // задача 10) — таблица лишь часть листа, а не лист целиком.
+    <section className="border border-border-subtle bg-surface">
       <div className="flex items-center justify-end gap-2 border-b border-border-subtle px-6 py-2.5">
         <Label htmlFor={zeroToggleId} className="text-xs font-normal text-fg-secondary">
           показывать нулевые подстатьи
@@ -359,7 +365,11 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             />
           ))}
 
-          <TableRow data-testid="row-unallocated" className="border-y border-warning-border bg-warning-soft">
+          <TableRow
+            data-testid="row-unallocated"
+            data-print="row"
+            className="border-y border-warning-border bg-warning-soft"
+          >
             <TableCell className="text-warning-text">⚠</TableCell>
             <TableCell>
               <p className="font-semibold text-warning-text">Нераспределённое</p>
@@ -378,7 +388,7 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             </TableCell>
           </TableRow>
 
-          <TableRow data-testid="row-grand-total" className="border-t-2 border-fg">
+          <TableRow data-testid="row-grand-total" data-print="row" className="border-t-2 border-fg">
             <TableCell />
             <TableCell className="font-serif text-base font-semibold text-fg">
               Итого по договору
