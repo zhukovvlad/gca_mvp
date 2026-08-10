@@ -149,6 +149,8 @@ export function useUpdateRateClass() {
       referencesApi.updateRateClass(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Название класса денормализовано в шапку паспорта (`rate_class_title`).
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Класс объектов обновлён");
     },
     onError: toastApiError,
@@ -250,6 +252,8 @@ export function useUpdateContractor() {
       referencesApi.updateContractor(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.contractors.all });
+      // Название подрядчика денормализовано в шапку паспорта (`contractor_title`).
+      qc.invalidateQueries({ queryKey: qk.passport.all });
     },
     onError: toastApiError,
   });
@@ -302,6 +306,12 @@ export function useUpdateContract() {
       contractsApi.update(id, input),
     onSuccess: (contract) => {
       qc.invalidateQueries({ queryKey: qk.contracts.all });
+      // Шапка паспорта проекта денормализует реквизиты договора целиком —
+      // номер, подписанта, дату, класс и три коммерческих условия (спека Ф6
+      // §2.6). При `staleTime: 60_000` без этой инвалидации правка реквизитов
+      // не доезжала бы до уже открытого паспорта целую минуту, и он был бы
+      // «свежим» по мнению React Query и устаревшим по факту.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success(`Договор ${contract.contract_number} обновлён`);
     },
     onError: toastApiError,
@@ -399,6 +409,11 @@ export function useImportJob(jobId: number | undefined, contractId?: number) {
         qc.invalidateQueries({ queryKey: qk.contracts.card(contractId) });
         qc.invalidateQueries({ queryKey: qk.contracts.importJobs(contractId) });
         qc.invalidateQueries({ queryKey: qk.review.all });
+        // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
+        // или заменяется, а с ней все суммы по статьям. Без этой инвалидации
+        // паспорт, открытый до загрузки, ещё минуту показывал бы «смета не
+        // загружена» либо суммы прежней сметы (спека Ф6 §2.4).
+        qc.invalidateQueries({ queryKey: qk.passport.all });
       }
       return job;
     },

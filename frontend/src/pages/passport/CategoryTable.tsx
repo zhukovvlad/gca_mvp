@@ -142,6 +142,10 @@ function ExpandToggle({
   return (
     <button
       type="button"
+      // Кнопка раскрытия — управление, а не часть документа: на бумаге шеврон
+      // ничего не значит, потому что раскрыть там нечего (спека §2.11
+      // «служебные элементы уходят»). CSS скрывает ровно то, что помечено.
+      data-print="hide"
       aria-expanded={expanded}
       aria-label={`${expanded ? "Свернуть" : "Развернуть"} статью ${code}`}
       onClick={onToggle}
@@ -331,16 +335,21 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
     // data-print="sheet" НЕ здесь: он на корне документа (ProjectPassportPage,
     // задача 10) — таблица лишь часть листа, а не лист целиком.
     <section className="border border-border-subtle bg-surface">
-      <div className="flex items-center justify-end gap-2 border-b border-border-subtle px-6 py-2.5">
+      {/*
+        Метка стоит на ВСЕЙ полосе, а не на одном переключателе: пометив только
+        сам `Switch`, мы бы убрали с бумаги орган управления и оставили висеть
+        его осиротевшую подпись «показывать нулевые подстатьи» вместе с
+        разделительной чертой — то есть напечатали бы половину служебного
+        элемента.
+      */}
+      <div
+        data-print="hide"
+        className="flex items-center justify-end gap-2 border-b border-border-subtle px-6 py-2.5"
+      >
         <Label htmlFor={zeroToggleId} className="text-xs font-normal text-fg-secondary">
           показывать нулевые подстатьи
         </Label>
-        <Switch
-          id={zeroToggleId}
-          data-print="hide"
-          checked={showZero}
-          onCheckedChange={setShowZero}
-        />
+        <Switch id={zeroToggleId} checked={showZero} onCheckedChange={setShowZero} />
       </div>
 
       <Table>

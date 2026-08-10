@@ -3,9 +3,16 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
-import { useProjectPassport, useUpdateObject } from "./queries";
+import {
+  useImportJob,
+  useProjectPassport,
+  useUpdateContract,
+  useUpdateContractor,
+  useUpdateObject,
+  useUpdateRateClass,
+} from "./queries";
 import { qk } from "./queryKeys";
-import { sampleProjectPassport } from "@/test/fixtures";
+import { sampleImportJobs, sampleProjectPassport } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 
@@ -55,6 +62,101 @@ describe("useUpdateObject: инвалидация после правки объ
  * `qk.passport.project(...)`: смена корня внутри хука обязана уронить именно
  * этот тест.
  */
+/**
+ * Заведено по находке внешнего круга. Корень `qk.passport` переиспользован, но
+ * инвалидировал его только `useUpdateObject`. Паспорт проекта денормализует
+ * реквизиты договора, названия подрядчика и класса, а его суммы целиком зависят
+ * от сметы — значит при `staleTime: 60_000` правка любого из этих источников
+ * оставляла бы уже открытый паспорт «свежим» по мнению React Query и устаревшим
+ * по факту целую минуту. Ключи проверяются ПО ОТДЕЛЬНОСТИ и по каждой мутации
+ * своим прогоном: утверждение «вызвано N раз» прошло бы и при N одинаковых.
+ */
+describe("инвалидация паспорта проекта источниками его данных", () => {
+  it.each([
+    {
+      name: "правка договора",
+      run: async (queryClient: ReturnType<typeof createTestQueryClient>) => {
+        const { result } = renderHook(() => useUpdateContract(), {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          ),
+        });
+        await act(async () => {
+          await result.current.mutateAsync({ id: 1, input: { title: "Новое" } });
+        });
+      },
+    },
+    {
+      name: "правка подрядчика",
+      run: async (queryClient: ReturnType<typeof createTestQueryClient>) => {
+        // Общих хендлеров на PATCH справочников в MSW нет — подменяем точечно.
+        server.use(
+          http.patch("/api/v1/contractors/:id", () =>
+            HttpResponse.json({ id: 1, title: "Новый", inn: "7700000000" })
+          )
+        );
+        const { result } = renderHook(() => useUpdateContractor(), {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          ),
+        });
+        await act(async () => {
+          await result.current.mutateAsync({ id: 1, input: { title: "Новый" } });
+        });
+      },
+    },
+    {
+      name: "правка класса объектов",
+      run: async (queryClient: ReturnType<typeof createTestQueryClient>) => {
+        server.use(
+          http.patch("/api/v1/rate-classes/:id", () =>
+            HttpResponse.json({ id: 1, title: "Новый", objects_count: 0 })
+          )
+        );
+        const { result } = renderHook(() => useUpdateRateClass(), {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          ),
+        });
+        await act(async () => {
+          await result.current.mutateAsync({ id: 1, input: { title: "Новый" } });
+        });
+      },
+    },
+  ])("$name инвалидирует корень паспорта", async ({ run }) => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await run(queryClient);
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.passport.all));
+  });
+
+  it("завершённый импорт инвалидирует корень паспорта", async () => {
+    // Самый весомый случай: успешный импорт МЕНЯЕТ содержимое паспорта целиком —
+    // смета появляется или заменяется вместе со всеми суммами по статьям.
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    server.use(
+      http.get("/api/v1/estimates/jobs/:jobId", () =>
+        HttpResponse.json({ ...sampleImportJobs[0], id: 77, status: "done" })
+      )
+    );
+
+    renderHook(() => useImportJob(77, 12), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.passport.all));
+    });
+  });
+});
+
 describe("useProjectPassport: переиспользование корня паспорта (Ф6)", () => {
   it("корень паспорта переиспользован новым хуком", async () => {
     const queryClient = createTestQueryClient();

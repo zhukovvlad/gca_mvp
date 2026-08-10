@@ -37,7 +37,7 @@ const PROJECT_PASSPORT_URL = "/api/v1/analytics/project-passport/:contractId";
 
 /** Собственный текст пустого состояния — проверяется его ОТСУТСТВИЕ на отказе
  *  (иначе отказ и пустота были бы неразличимы, урок Ф5 §4a). */
-const EMPTY_TEXT = /Данных нет: паспорт по статьям классификатора появится/;
+const EMPTY_TEXT = /Свод по статьям классификатора появится после первой загрузки сметы/;
 
 function withPassport(overrides: (base: ProjectPassport) => ProjectPassport) {
   server.use(
@@ -218,6 +218,25 @@ describe("Паспорт проекта: шапка документа", () => {
       expect(classes.some((c) => /^line-clamp-\d+$/.test(c))).toBe(true);
       expect(classes).not.toContain("block");
     });
+  });
+
+  /**
+   * Заведён по находке внешнего круга. Пустое состояние уходило ранним
+   * возвратом ДО шапки и при этом писало «реквизиты договора заведены и не
+   * пострадали», не показывая ни одного из них: текст утверждал ровно то, что
+   * экран скрывал. Спека §2.4 объясняет ответ `200` без сметы именно тем, что
+   * «реквизиты уже есть что показать», — значит пустым состоянием заменяются
+   * только блоки, зависящие от сметы.
+   */
+  it("реквизиты договора видны и тогда, когда смета не загружена", async () => {
+    handlerState.projectPassportOutcome = "no-estimate";
+    renderPassport();
+
+    expect(await screen.findByText(EMPTY_TEXT)).toBeInTheDocument();
+    expect(screen.getByText("ГП-0212")).toBeInTheDocument();
+    expect(screen.getByText(/ЖК Заречный/)).toBeInTheDocument();
+    expect(screen.getByText(/СтройГарант/)).toBeInTheDocument();
+    expect(screen.getByText(/Смирнов А\.В\./)).toBeInTheDocument();
   });
 
   /**
@@ -764,6 +783,22 @@ describe("Паспорт проекта: печать", () => {
     {
       name: "кнопка печати",
       find: () => screen.getByRole("button", { name: /печать/i }),
+    },
+    /*
+      Два случая ниже заведены по находке внешнего круга. Метка стояла на самом
+      `Switch`, а не на его полосе, поэтому на бумагу уезжала осиротевшая
+      подпись «показывать нулевые подстатьи» с разделительной чертой; у кнопок
+      раскрытия дерева метки не было вовсе, и шевроны печатались, хотя на
+      бумаге раскрывать нечего. §2.11 требует, чтобы служебные элементы
+      уходили, а CSS скрывает ровно то, что помечено.
+    */
+    {
+      name: "подпись переключателя нулевых подстатей",
+      find: () => screen.getByText(/показывать нулевые подстатьи/i),
+    },
+    {
+      name: "кнопка раскрытия статьи",
+      find: () => screen.getAllByRole("button", { name: /Развернуть статью/i })[0],
     },
   ])('служебные элементы помечены data-print="hide": $name', async ({ find }) => {
     renderPassport();
