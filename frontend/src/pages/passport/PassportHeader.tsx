@@ -49,15 +49,21 @@ function Metric({
   label,
   value,
   caption,
+  testId,
 }: {
   label: string;
   value: ReactNode;
   caption: ReactNode;
+  /** Якорь для утверждений о САМОМ значении показателя. Без него проверка шла бы
+   *  по тексту всей линейки `passport-metrics`, где рядом стоят другие числа. */
+  testId?: string;
 }) {
   return (
     <div className="px-6 py-3">
       <dt className="text-2xs tracking-wider text-fg-tertiary uppercase">{label}</dt>
-      <dd className="mt-1 font-mono text-lg font-semibold tabular-nums text-fg">{value}</dd>
+      <dd data-testid={testId} className="mt-1 font-mono text-lg font-semibold tabular-nums text-fg">
+        {value}
+      </dd>
       <p className="mt-0.5 text-xs text-fg-secondary">{caption}</p>
     </div>
   );
@@ -189,11 +195,14 @@ export function PassportHeader({ passport }: { passport: ProjectPassport }) {
 
         <Metric
           label="Стоимость за м²"
+          testId="metric-per-sqm"
           value={
             noTep ? (
               <span className="font-sans text-sm font-semibold text-warning-text">нет ТЭП</span>
             ) : (
-              <MoneyCell value={totals.per_sqm} />
+              // Вычисленная величина — округляется на слое показа, точное
+              // значение уходит в `title` (та же причина, что в `CategoryTable`).
+              <MoneyCell value={totals.per_sqm} maxFractionDigits={2} />
             )
           }
           caption={noTep ? "удельные показатели не считаются" : "по общей площади"}

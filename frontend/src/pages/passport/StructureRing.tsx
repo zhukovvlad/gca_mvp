@@ -3,7 +3,7 @@ import { Cell, Pie, PieChart } from "recharts";
 
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { addDecimalStrings } from "@/lib/decimal";
-import { roundDecimal } from "@/lib/format";
+import { formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ProjectPassport, ProjectPassportCategory } from "@/types/domain";
 
@@ -109,16 +109,17 @@ function isZeroDecimal(value: string): boolean {
 }
 
 /**
- * Доля в процентах с точностью 0,01 — той же целочисленной арифметикой
- * (`roundDecimal`), что и `CategoryTable.formatSharePct`. В отличие от неё,
- * `null` здесь означает «процент не показываем вовсе», а не печатаем прочерк:
- * легенде кольца нечего противопоставить плейсхолдеру (правило 5 §2.10 прямо
- * разрешает опустить процент, если его сумма неудобна, — но не получить его
- * через `Number()`).
+ * Доля в легенде. Формат — тот же общий `formatSharePercent`, что и у таблицы
+ * (спека Ф6a §2.3): два экземпляра одного правила разошлись ровно тогда, когда
+ * правили один, и пробел в легенде создала сама дубликация.
+ *
+ * Отличие остаётся ровно одно, и оно осмысленное: `null` здесь означает «процент
+ * не показываем вовсе», а не прочерк — легенде кольца нечего противопоставить
+ * плейсхолдеру (правило 5 §2.10 прямо разрешает опустить процент, если его сумма
+ * неизвестна, — но не получить его через `Number()`).
  */
 function formatShareText(value: string | null): string | null {
-  if (value === null) return null;
-  return `${roundDecimal(value, 2).replace(".", ",")} %`;
+  return value === null ? null : formatSharePercent(value);
 }
 
 function hasKnownTotal(
@@ -327,7 +328,10 @@ export function StructureRing({ passport }: { passport: ProjectPassport }) {
                 {slice.title}
               </span>
               {slice.shareText && (
-                <span className="ml-auto font-mono text-fg-secondary tabular-nums">
+                <span
+                  data-testid={`legend-share-${slice.key}`}
+                  className="ml-auto font-mono text-fg-secondary tabular-nums"
+                >
                   {slice.shareText}
                 </span>
               )}

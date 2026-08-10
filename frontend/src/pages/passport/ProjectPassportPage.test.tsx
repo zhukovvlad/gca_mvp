@@ -662,6 +662,128 @@ describe("Паспорт проекта: таблица по статьям", ()
     expect(grand).not.toHaveTextContent("100,00 %");
     expect(grand).toHaveTextContent("—");
   });
+
+  /**
+   * Ф6a, задача 2: доля печатается РОВНО двумя знаками (`minimumFractionDigits:
+   * 2` макета гейта 1).
+   *
+   * До этой фичи колонку «Доля» не стерёг НИ ОДИН тест — у ячейки не было даже
+   * `data-testid` (замер плана §1.1), и оба дефекта показа поэтому пережили 52
+   * снятия защиты Ф6. Сравнение — ТОЧНОЕ, а не подстрокой: «11,10 %» содержит
+   * «1,10 %» подстрокой, и `toHaveTextContent` спутал бы одну долю с другой.
+   */
+  it.each([
+    {
+      name: "ноль — «0,00 %», а не «0 %»",
+      // Форма стенда после правки §2.1: ноль от деления приезжает "0".
+      code: "09",
+      share: "0",
+      expected: "0,00 %",
+    },
+    {
+      name: "хвостовой ноль второго знака добивается",
+      code: "01",
+      share: "1.1",
+      expected: "1,10 %",
+    },
+    {
+      // Этот случай зелен и ДО правки: округление длинной дроби `roundDecimal`
+      // делал и раньше. Он стоит здесь как граница — чтобы «ровно два знака» не
+      // оказалось реализовано обрезанием или, наоборот, показом всех знаков.
+      name: "длинная дробь округляется до двух знаков",
+      code: "05",
+      share: "19.14893617021276595744680851",
+      expected: "19,15 %",
+    },
+  ])("доля в таблице — ровно два знака: $name", async ({ code, share, expected }) => {
+    withPassport((base) => ({
+      ...base,
+      // Меняется ТОЛЬКО доля: сумма остаётся прежней, поэтому строка видна и
+      // вход нарушает ровно одно (GC 22 — иначе фильтр нулевых скрыл бы строку,
+      // и тест измерял бы фильтр, а не формат).
+      categories: base.categories.map((c) => (c.code === code ? { ...c, share_pct: share } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId(`share-cat-${code}`);
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(expected);
+  });
+
+  /**
+   * Ф6a, задача 3: ₽/м² округляется до двух знаков во всех местах показа.
+   *
+   * `_per_sqm` делит `Decimal` на `Decimal`, и контекст Python даёт 28 значащих
+   * цифр: на стенде в ячейку уезжало 22 знака после запятой. `MoneyCell` вызван
+   * без `maxFractionDigits`, а `formatDecimalMoney` без него значащие цифры не
+   * округляет намеренно (утверждённую ставку округлять нельзя). Правило «только
+   * для вычисленных величин» записано в докстроке самого `MoneyCell` — оно не
+   * новое, просто не было прогнано по новым точкам вызова.
+   *
+   * Фикстура несёт ФОРМУ СТЕНДА (26-28 знаков), а не короткую десятичную —
+   * иначе тест судил бы не о том (план §1.2).
+   */
+  it.each([
+    { name: "строка статьи", testid: "per-sqm-cat-01", expected: "10,64 ₽" },
+    { name: "«Нераспределённое»", testid: "per-sqm-unallocated", expected: "2,66 ₽" },
+    { name: "«Итого по договору»", testid: "per-sqm-grand-total", expected: "123,46 ₽" },
+  ])("₽/м² — два знака: $name", async ({ testid, expected }) => {
+    withPassport((base) => ({
+      ...base,
+      // Итог фикстуры делится на площадь БЕЗ остатка (4 700 000 / 47 000 = 100),
+      // поэтому у строки итога длинной дроби нет вовсе — округлять было бы
+      // нечего, и случай оказался бы вакуозным. Здесь подставлена форма стенда.
+      totals: { ...base.totals, per_sqm: "123.4567890123456789012345679" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId(testid);
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(expected);
+  });
+
+  // Ф6a, задача 3: показатель шапки — четвёртая точка показа ₽/м² (спека §2.2).
+  it("₽/м² в шапке — два знака", async () => {
+    withPassport((base) => ({
+      ...base,
+      totals: { ...base.totals, per_sqm: "123.4567890123456789012345679" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const metric = await screen.findByTestId("metric-per-sqm");
+    expect((metric.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("123,46 ₽");
+  });
+
+  /**
+   * Ф6a, задача 3, вторая половина DoD: округление на слое показа НЕ теряет
+   * точную величину — `MoneyCell` кладёт её в `title` сам, и только когда
+   * округление действительно что-то изменило. Сервер продолжает отдавать точное
+   * значение (§3 спеки: на сервере не квантуем).
+   */
+  it("точное значение ₽/м² остаётся доступным в подсказке", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId("per-sqm-cat-01");
+    const exact = within(cell).getByTitle(/Точное значение/);
+    // Все 26 знаков фикстуры, а не округлённые два: подсказка, повторяющая
+    // видимое, ничего не сохраняла бы.
+    expect(exact.getAttribute("title")).toContain("10,63829787234042553191489362");
+  });
+
+  // Ф6a, задача 2: у «Нераспределённого» своя ячейка доли и свой testid.
+  it("доля «Нераспределённого» — ровно два знака", async () => {
+    withPassport((base) => ({
+      ...base,
+      unallocated: { ...base.unallocated, share_pct: "0" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId("share-unallocated");
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
 });
 
 /**
@@ -750,6 +872,127 @@ describe("Паспорт проекта: кольцо структуры", () =>
       screen.queryByText(/структура не строится: сумма по смете не определена/)
     ).not.toBeInTheDocument();
     expect(screen.queryByTestId("structure-ring-legend")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Ф6a, задача 2: проценты ЛЕГЕНДЫ — ровно два знака.
+   *
+   * Легенда — второй показ доли, и до Ф6a у неё был СВОЙ форматтер с тем же
+   * телом (`formatShareText`). Пробел нашло внешнее ревью, а породила его сама
+   * дубликация: добивание до двух знаков появилось бы только в таблице (спека
+   * §1.3). Замер Ф6 проценты легенды не смотрел вовсе — поэтому живой дефект и
+   * доехал до стенда.
+   */
+  it("процент статьи в легенде — ровно два знака", async () => {
+    const facade = sampleProjectPassport.categories.find((c) => c.code === "05")!;
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) => (c.code === "05" ? { ...c, share_pct: "0" } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const share = await screen.findByTestId(`legend-share-cat-${facade.id}`);
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
+
+  it("процент «Остальных статей» в легенде — ровно два знака", async () => {
+    /*
+      Третий путь §1.3 спеки, живой БЕЗ всяких правок: долю «Остальных» кольцо
+      считает суммой через `addDecimalStrings`, а тот срезает хвостовые нули —
+      1,10 приезжает строкой "1.1" и печаталось «1,1 %» рядом с «12,72 %».
+      «Инженерные сети» (04) — единственная свёрнутая статья фикстуры.
+    */
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) => (c.code === "04" ? { ...c, share_pct: "1.10" } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const share = await screen.findByTestId("legend-share-rest");
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("1,10 %");
+  });
+
+  /**
+   * Ф6a, задача 4: живой дефект §1.4 спеки — процент «Остальных статей» гаснет
+   * ЦЕЛИКОМ.
+   *
+   * `addDecimalStrings` не разбирает `"0E+2"` и возвращает `null`, а свёртка в
+   * `buildSlices` по первому же `null` гасит всю сумму — легенда опускает
+   * процент. На стенде его не было показано прямо сейчас, до всяких правок.
+   *
+   * **Дефект живёт НА СТЫКЕ, и одним тестом не закрывается** (граница, названная
+   * в плане, а не недоделка): сервер отдавал форму, которой фронт не разбирает.
+   * Закрывают двое — этот и критерии задачи 1 на бэкенде; ни один не заменяет
+   * другого. Пара тестов ниже показывает обе стороны стыка.
+   */
+  function withZeroRootInTheRest(base: ProjectPassport, zeroShare: string): ProjectPassport {
+    return {
+      ...base,
+      categories: [
+        ...base.categories,
+        {
+          // Корень с суммой РОВНО ноль — состояние стенда (§1.2 плана: три
+          // корневые статьи с нулевой суммой). Доля согласована с суммой:
+          // 0 / 4 700 000 = 0. По сумме статья уходит за топ-8, то есть попадает
+          // в «Остальные» — рядом с «Инженерными сетями».
+          id: 90,
+          code: "11",
+          title: "Демонтажные работы",
+          parent_id: null,
+          is_bucket: false,
+          sort_order: 110,
+          total: "0.00",
+          rows: 3,
+          rows_priced: 3,
+          rows_not_finite: 0,
+          // Меняется РОВНО одно — форма нулевой доли (GC 22).
+          share_pct: zeroShare,
+          per_sqm: "0",
+          own: "0.00",
+          own_rows: 3,
+          own_rows_priced: 3,
+          own_rows_not_finite: 0,
+          extras: [],
+          own_sections: [],
+        },
+      ],
+    };
+  }
+
+  it("нулевая доля в «Остальных» не гасит их процент", async () => {
+    withPassport((base) => withZeroRootInTheRest(base, "0"));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    // Нулевая статья действительно ВНУТРИ «Остальных» — иначе тест был бы зелен
+    // ни о чём: ноль отличается от неизвестной суммы, которую правило 2 §2.10 в
+    // «Остальные» не пускает (тест 6 ниже — про неизвестную).
+    expect(within(legend).getByText("Остальные статьи (2)")).toBeInTheDocument();
+
+    const share = await screen.findByTestId("legend-share-rest");
+    // Доля «Инженерных сетей» (3,7234…) плюс ноль — процент есть и он верен.
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("3,72 %");
+  });
+
+  it("форму, которую фронт не разбирает, легенда не выдумывает — она молчит", async () => {
+    /*
+      ВТОРАЯ сторона стыка, и этот тест зелен и ДО правки — он фиксирует границу,
+      а не защиту. Прежняя форма сервера ("0E+2") здесь подана во ВХОД: фронт её
+      не разбирает и по сознательному правилу 5 §2.10 не показывает выдуманной
+      суммы. Отсюда следует, что дефект §1.4 чинится на бэкенде (правка §2.1), а
+      фронтовый тест выше без неё был бы бессилен.
+    */
+    withPassport((base) => withZeroRootInTheRest(base, "0E+2"));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    expect(within(legend).getByText("Остальные статьи (2)")).toBeInTheDocument();
+    // Строка есть, процента у неё нет — ровно то, что видно на стенде сегодня.
+    expect(screen.queryByTestId("legend-share-rest")).not.toBeInTheDocument();
   });
 
   // Тест 6.

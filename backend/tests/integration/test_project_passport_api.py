@@ -11,6 +11,7 @@ get_project_passport` напрямую. Помощники — локальны�
 """
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 import pytest
@@ -22,8 +23,15 @@ from crud.common import DomainError
 from crud.project_passport import get_project_passport
 from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
 from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
+from responses import _decimal_encoder
 
 pytestmark = pytest.mark.integration
+
+# Контракт данных бэкенда: `-?цифры[.цифры]` — тот же литерал, что `DECIMAL_RE` в
+# `frontend/src/lib/format.ts` и в `tests/unit/test_responses.py`. Копия здесь
+# своя намеренно: наборы разных слоёв друг у друга помощников не импортируют
+# (докстрока файла), а сам критерий обязан жить рядом с утверждением.
+_CONTRACT_RE = re.compile(r"-?\d+(\.\d+)?")
 
 
 # ---------------------------------------------------------------------------
@@ -965,3 +973,97 @@ def test_member_can_read_the_endpoint(client, factories):
     response = client.get(f"/api/v1/analytics/project-passport/{contract.id}")
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+#  28. Парный критерий Ф6a: эндпоинт отдаёт РОВНО то, что вернул энкодер
+# ---------------------------------------------------------------------------
+
+def _decimal_paths(node, path=()):
+    """Все `Decimal`-листья структуры вместе с путём (кортеж ключей и индексов).
+
+    Обход по ТИПУ, а не перечисление полей (спека Ф6a §4): латинская `E` законна
+    в наименованиях статей и смет, поэтому текстовый признак красил бы честные
+    данные, а перечень полей устаревал бы при добавлении нового.
+    """
+    if isinstance(node, Decimal):
+        yield path, node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield from _decimal_paths(value, (*path, key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _decimal_paths(value, (*path, index))
+
+
+def _dig(node, path):
+    for step in path:
+        node = node[step]
+    return node
+
+
+def test_every_decimal_path_reaches_json_as_the_encoder_rendered_it(
+    client, db_session, factories
+):
+    """Парный критерий спеки Ф6a §4 — **ответ настоящего эндпоинта**.
+
+    Юнит `tests/unit/test_responses.py` доказывает, что энкодер верен, но не то,
+    что эндпоинт им пользуется; этот тест закрывает второе. По каждому
+    `Decimal`-пути исходного словаря утверждаются ТРИ вещи: значение в JSON —
+    `str`; оно равно `_decimal_encoder(исходного)`; в нём нет E-нотации.
+
+    **Пункт 1 не украшение** (замер спеки §4): при обходе `decimal_json` FastAPI
+    приводит `Decimal` к `int`/`float` (ноль от деления — даже к `int`), и
+    E-нотации там нет ни в одном случае — критерий «нет E» остался бы зелёным,
+    хотя §3 `AGENTS.md` нарушен целиком.
+
+    Здесь JSON **разобран**, а не взят сырым телом (в отличие от теста 26 выше)
+    — именно потому, что проверяется ТИП значения: `json.loads` отдаёт `str` для
+    строки и `int`/`float` для числа, то есть парсинг здесь не скрывает дефект,
+    а служит признаком.
+
+    Данные подобраны так, чтобы экспоненциальная форма ВОЗНИКЛА: у нулевой
+    статьи сумма приходит из `SUM` по единственной строке со шкалой 0
+    (`Decimal('0')`), а знаменатели — площадь и грандтотал — со шкалой 2, и
+    экспонента частного положительна. Непустота этого условия проверяется внутри
+    теста: без неё критерий был бы зелен и до правки §2.1.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("40000.00"),
+        area_underground_sp=Decimal("7000.00"),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    zero_category = _category(db_session, "1")
+    paid_category = _category(db_session, "2")
+    proposal = _proposal(factories, contract=contract)
+
+    zero_chapter = _chapter(
+        factories, proposal, category_id=zero_category.id, chapter_number="1"
+    )
+    # Шкала 0, а не "0.00": ровно она и даёт `0E+2` после деления (замер §1.2).
+    _position(factories, proposal, chapter=zero_chapter, total_cost_total=Decimal("0"))
+    paid_chapter = _chapter(
+        factories, proposal, category_id=paid_category.id, chapter_number="2"
+    )
+    _position(factories, proposal, chapter=paid_chapter, total_cost_total=Decimal("3500.00"))
+    db_session.flush()
+
+    source = get_project_passport(db_session, contract.id)
+    paths = list(_decimal_paths(source))
+    assert paths, "в паспорте не нашлось ни одного Decimal — критерий вакуозен"
+    exponential = [(p, v) for p, v in paths if "E" in str(v)]
+    assert exponential, (
+        "ни одно значение не пришло в экспоненциальной форме — данные теста не "
+        f"воспроизводят дефект, и критерий зелен по совпадению: {paths}"
+    )
+
+    response = client.get(f"/api/v1/analytics/project-passport/{contract.id}")
+    assert response.status_code == 200
+    body = response.json()
+
+    for path, value in paths:
+        where = ".".join(str(step) for step in path)
+        shown = _dig(body, path)
+        assert isinstance(shown, str), f"{where}: {shown!r} — {type(shown).__name__}, не str"
+        assert shown == _decimal_encoder(value), f"{where}: JSON расходится с энкодером"
+        assert _CONTRACT_RE.fullmatch(shown), f"{where}: {shown!r} — не строка контракта"
