@@ -556,8 +556,12 @@ export const sampleProjectPassport: ProjectPassport = {
       rows: 1,
       rows_priced: 1,
       rows_not_finite: 0,
-      share_pct: "0.000000000000000000",
-      per_sqm: "0.000000",
+      // ФОРМА СТЕНДА, а не аккуратная короткая десятичная (замер плана Ф6a §1.2):
+      // ноль от деления сервер отдаёт как "0" — `Decimal('0E+2')` через
+      // `format(·, 'f')`. Прежняя запись "0.000000000000000000" уже сама несла
+      // два знака и потому была зелена там, где стенд красен.
+      share_pct: "0",
+      per_sqm: "0",
       own: "0.00",
       own_rows: 1,
       own_rows_priced: 1,

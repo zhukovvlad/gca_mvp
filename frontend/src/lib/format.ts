@@ -91,6 +91,40 @@ export function roundDecimal(value: string, digits: number): string {
   return fracPart ? `${negative ? "-" : ""}${intPart}.${fracPart}` : `${negative ? "-" : ""}${intPart}`;
 }
 
+/**
+ * Доля статьи: decimal-строка → «N,NN %», **ровно два знака** после запятой.
+ *
+ * Один помощник на оба места показа доли в паспорте — таблицу по статьям и
+ * легенду кольца. В проекте есть сознательное правило держать трёхстрочные копии
+ * по месту использования (`isZeroDecimal` живёт тремя экземплярами), и здесь оно
+ * отменено не вкусом, а замером: копий было две, и правка одной их развела —
+ * добивание до двух знаков появилось в таблице, а в легенде пробел нашло внешнее
+ * ревью (спека Ф6a §1.3, §2.3).
+ *
+ * Добивание нужно потому, что `roundDecimal` его не делает: его контракт — «не
+ * БОЛЬШЕ `digits` знаков», и вход короче возвращается как есть. Живой путь —
+ * сумма долей «Остальных статей»: `addDecimalStrings` срезает хвостовые нули, и
+ * 1,10 приезжает строкой «1.1», то есть печаталось «1,1 %» рядом с «12,72 %».
+ *
+ * Разряды не группируются: доля лежит в 0…100, группировать нечего.
+ *
+ * Обработка `null` **остаётся на месте вызова** и сюда не втягивается: у таблицы
+ * это прочерк в колонке, у легенды — опустить процент вовсе (правило 5 §2.10
+ * спеки Ф6). Общим стало ровно то, что у них общее.
+ */
+export function formatSharePercent(value: string): string {
+  const rounded = roundDecimal(value.trim(), 2);
+
+  const parsed = DECIMAL_RE.exec(rounded);
+  // Неожиданный формат отдаём как есть — то же правило, что у
+  // `formatDecimalMoney`: молча превратить пришедшее с сервера в «0,00 %»
+  // значило бы соврать о нуле.
+  if (!parsed) return `${rounded} %`;
+
+  const [, sign, whole, fraction = ""] = parsed;
+  return `${sign}${whole},${fraction.padEnd(2, "0")} %`;
+}
+
 export function formatPercent(value: number | null | undefined, withSign = false): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   const sign = withSign && value > 0 ? "+" : "";

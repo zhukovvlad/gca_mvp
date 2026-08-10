@@ -662,6 +662,66 @@ describe("Паспорт проекта: таблица по статьям", ()
     expect(grand).not.toHaveTextContent("100,00 %");
     expect(grand).toHaveTextContent("—");
   });
+
+  /**
+   * Ф6a, задача 2: доля печатается РОВНО двумя знаками (`minimumFractionDigits:
+   * 2` макета гейта 1).
+   *
+   * До этой фичи колонку «Доля» не стерёг НИ ОДИН тест — у ячейки не было даже
+   * `data-testid` (замер плана §1.1), и оба дефекта показа поэтому пережили 52
+   * снятия защиты Ф6. Сравнение — ТОЧНОЕ, а не подстрокой: «11,10 %» содержит
+   * «1,10 %» подстрокой, и `toHaveTextContent` спутал бы одну долю с другой.
+   */
+  it.each([
+    {
+      name: "ноль — «0,00 %», а не «0 %»",
+      // Форма стенда после правки §2.1: ноль от деления приезжает "0".
+      code: "09",
+      share: "0",
+      expected: "0,00 %",
+    },
+    {
+      name: "хвостовой ноль второго знака добивается",
+      code: "01",
+      share: "1.1",
+      expected: "1,10 %",
+    },
+    {
+      // Этот случай зелен и ДО правки: округление длинной дроби `roundDecimal`
+      // делал и раньше. Он стоит здесь как граница — чтобы «ровно два знака» не
+      // оказалось реализовано обрезанием или, наоборот, показом всех знаков.
+      name: "длинная дробь округляется до двух знаков",
+      code: "05",
+      share: "19.14893617021276595744680851",
+      expected: "19,15 %",
+    },
+  ])("доля в таблице — ровно два знака: $name", async ({ code, share, expected }) => {
+    withPassport((base) => ({
+      ...base,
+      // Меняется ТОЛЬКО доля: сумма остаётся прежней, поэтому строка видна и
+      // вход нарушает ровно одно (GC 22 — иначе фильтр нулевых скрыл бы строку,
+      // и тест измерял бы фильтр, а не формат).
+      categories: base.categories.map((c) => (c.code === code ? { ...c, share_pct: share } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId(`share-cat-${code}`);
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(expected);
+  });
+
+  // Ф6a, задача 2: у «Нераспределённого» своя ячейка доли и свой testid.
+  it("доля «Нераспределённого» — ровно два знака", async () => {
+    withPassport((base) => ({
+      ...base,
+      unallocated: { ...base.unallocated, share_pct: "0" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId("share-unallocated");
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
 });
 
 /**
@@ -750,6 +810,46 @@ describe("Паспорт проекта: кольцо структуры", () =>
       screen.queryByText(/структура не строится: сумма по смете не определена/)
     ).not.toBeInTheDocument();
     expect(screen.queryByTestId("structure-ring-legend")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Ф6a, задача 2: проценты ЛЕГЕНДЫ — ровно два знака.
+   *
+   * Легенда — второй показ доли, и до Ф6a у неё был СВОЙ форматтер с тем же
+   * телом (`formatShareText`). Пробел нашло внешнее ревью, а породила его сама
+   * дубликация: добивание до двух знаков появилось бы только в таблице (спека
+   * §1.3). Замер Ф6 проценты легенды не смотрел вовсе — поэтому живой дефект и
+   * доехал до стенда.
+   */
+  it("процент статьи в легенде — ровно два знака", async () => {
+    const facade = sampleProjectPassport.categories.find((c) => c.code === "05")!;
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) => (c.code === "05" ? { ...c, share_pct: "0" } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const share = await screen.findByTestId(`legend-share-cat-${facade.id}`);
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
+
+  it("процент «Остальных статей» в легенде — ровно два знака", async () => {
+    /*
+      Третий путь §1.3 спеки, живой БЕЗ всяких правок: долю «Остальных» кольцо
+      считает суммой через `addDecimalStrings`, а тот срезает хвостовые нули —
+      1,10 приезжает строкой "1.1" и печаталось «1,1 %» рядом с «12,72 %».
+      «Инженерные сети» (04) — единственная свёрнутая статья фикстуры.
+    */
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) => (c.code === "04" ? { ...c, share_pct: "1.10" } : c)),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const share = await screen.findByTestId("legend-share-rest");
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("1,10 %");
   });
 
   // Тест 6.

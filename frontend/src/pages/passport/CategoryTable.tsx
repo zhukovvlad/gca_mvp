@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
-import { roundDecimal } from "@/lib/format";
+import { formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
   ProjectPassport,
@@ -67,11 +67,16 @@ function isZeroDecimal(value: string): boolean {
   return /^-?0+(\.0+)?$/.test(value.trim());
 }
 
-/** Доля в процентах с точностью 0,01, той же арифметикой (`roundDecimal`), что и
- *  деньги: без `Number()` — знаменатель `totals.amount` считает сервер (§2.6). */
+/**
+ * Доля в колонке таблицы. Формат — общий `formatSharePercent` (спека Ф6a §2.3):
+ * РОВНО два знака, целочисленной арифметикой, без `Number()`.
+ *
+ * Здесь остаётся только обработка `null` — она у двух экранов **разная и должна
+ * такой остаться**: колонке нужен прочерк, легенде — опустить процент вовсе
+ * (правило 5 §2.10 спеки Ф6). Общим стало ровно то, что у них общее.
+ */
 function formatSharePct(value: string | null): string {
-  if (value === null) return "—";
-  return `${roundDecimal(value, 2).replace(".", ",")} %`;
+  return value === null ? "—" : formatSharePercent(value);
 }
 
 /** Одна подпись раздела: «6.5 «Прочее»». Заголовок, уже несущий кавычки
@@ -226,7 +231,10 @@ function CategoryRow({
         <TableCell data-testid={`amount-cat-${node.code}`} className="text-right">
           <MoneyCell value={node.total} className={depth === 0 ? "font-semibold" : undefined} />
         </TableCell>
-        <TableCell className="text-right text-xs text-fg-secondary">
+        <TableCell
+          data-testid={`share-cat-${node.code}`}
+          className="text-right text-xs text-fg-secondary"
+        >
           {formatSharePct(node.share_pct)}
         </TableCell>
         <TableCell className="text-right">
@@ -389,7 +397,10 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             <TableCell className="text-right">
               <MoneyCell value={unallocated.amount} className="text-warning-text" />
             </TableCell>
-            <TableCell className="text-right text-xs text-warning-text">
+            <TableCell
+              data-testid="share-unallocated"
+              className="text-right text-xs text-warning-text"
+            >
               {formatSharePct(unallocated.share_pct)}
             </TableCell>
             <TableCell className="text-right">
