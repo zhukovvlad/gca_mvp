@@ -914,6 +914,87 @@ describe("Паспорт проекта: кольцо структуры", () =>
     expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("1,10 %");
   });
 
+  /**
+   * Ф6a, задача 4: живой дефект §1.4 спеки — процент «Остальных статей» гаснет
+   * ЦЕЛИКОМ.
+   *
+   * `addDecimalStrings` не разбирает `"0E+2"` и возвращает `null`, а свёртка в
+   * `buildSlices` по первому же `null` гасит всю сумму — легенда опускает
+   * процент. На стенде его не было показано прямо сейчас, до всяких правок.
+   *
+   * **Дефект живёт НА СТЫКЕ, и одним тестом не закрывается** (граница, названная
+   * в плане, а не недоделка): сервер отдавал форму, которой фронт не разбирает.
+   * Закрывают двое — этот и критерии задачи 1 на бэкенде; ни один не заменяет
+   * другого. Пара тестов ниже показывает обе стороны стыка.
+   */
+  function withZeroRootInTheRest(base: ProjectPassport, zeroShare: string): ProjectPassport {
+    return {
+      ...base,
+      categories: [
+        ...base.categories,
+        {
+          // Корень с суммой РОВНО ноль — состояние стенда (§1.2 плана: три
+          // корневые статьи с нулевой суммой). Доля согласована с суммой:
+          // 0 / 4 700 000 = 0. По сумме статья уходит за топ-8, то есть попадает
+          // в «Остальные» — рядом с «Инженерными сетями».
+          id: 90,
+          code: "11",
+          title: "Демонтажные работы",
+          parent_id: null,
+          is_bucket: false,
+          sort_order: 110,
+          total: "0.00",
+          rows: 3,
+          rows_priced: 3,
+          rows_not_finite: 0,
+          // Меняется РОВНО одно — форма нулевой доли (GC 22).
+          share_pct: zeroShare,
+          per_sqm: "0",
+          own: "0.00",
+          own_rows: 3,
+          own_rows_priced: 3,
+          own_rows_not_finite: 0,
+          extras: [],
+          own_sections: [],
+        },
+      ],
+    };
+  }
+
+  it("нулевая доля в «Остальных» не гасит их процент", async () => {
+    withPassport((base) => withZeroRootInTheRest(base, "0"));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    // Нулевая статья действительно ВНУТРИ «Остальных» — иначе тест был бы зелен
+    // ни о чём: ноль отличается от неизвестной суммы, которую правило 2 §2.10 в
+    // «Остальные» не пускает (тест 6 ниже — про неизвестную).
+    expect(within(legend).getByText("Остальные статьи (2)")).toBeInTheDocument();
+
+    const share = await screen.findByTestId("legend-share-rest");
+    // Доля «Инженерных сетей» (3,7234…) плюс ноль — процент есть и он верен.
+    expect((share.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("3,72 %");
+  });
+
+  it("форму, которую фронт не разбирает, легенда не выдумывает — она молчит", async () => {
+    /*
+      ВТОРАЯ сторона стыка, и этот тест зелен и ДО правки — он фиксирует границу,
+      а не защиту. Прежняя форма сервера ("0E+2") здесь подана во ВХОД: фронт её
+      не разбирает и по сознательному правилу 5 §2.10 не показывает выдуманной
+      суммы. Отсюда следует, что дефект §1.4 чинится на бэкенде (правка §2.1), а
+      фронтовый тест выше без неё был бы бессилен.
+    */
+    withPassport((base) => withZeroRootInTheRest(base, "0E+2"));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    expect(within(legend).getByText("Остальные статьи (2)")).toBeInTheDocument();
+    // Строка есть, процента у неё нет — ровно то, что видно на стенде сегодня.
+    expect(screen.queryByTestId("legend-share-rest")).not.toBeInTheDocument();
+  });
+
   // Тест 6.
   it("статья с неизвестной суммой не входит в «Остальные»", async () => {
     renderPassport();
