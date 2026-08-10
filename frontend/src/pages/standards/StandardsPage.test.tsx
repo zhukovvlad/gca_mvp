@@ -122,7 +122,10 @@ describe("Вкладка «Классы объектов» (решение §6.1
     renderWithProviders(<StandardsPage />);
     await user.click(screen.getByRole("tab", { name: "Классы объектов" }));
 
-    await user.type(await screen.findByLabelText("Название класса"), "Социальные объекты");
+    await user.type(
+      await screen.findByLabelText("Название класса (обязательно)"),
+      "Социальные объекты"
+    );
     await user.click(screen.getByRole("button", { name: /Добавить класс/ }));
 
     expect(await screen.findByText("Класс объектов создан")).toBeInTheDocument();
@@ -133,11 +136,52 @@ describe("Вкладка «Классы объектов» (решение §6.1
     renderWithProviders(<StandardsPage />);
     await user.click(screen.getByRole("tab", { name: "Классы объектов" }));
 
-    await user.type(await screen.findByLabelText("Название класса"), "Жилые дома");
+    await user.type(await screen.findByLabelText("Название класса (обязательно)"), "Жилые дома");
     await user.click(screen.getByRole("button", { name: /Добавить класс/ }));
 
     expect(
       await screen.findByText("Класс объектов с таким названием уже есть.")
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * Кнопка «Добавить класс» гасится условием `!title.trim()`, и до этой правки
+   * условие не было названо нигде — ни подписью, ни сообщением. Пользователь
+   * прочитал форму как сломанную (спека §1.1: технической поломки нет, поле
+   * принимает ввод, кнопка переключается).
+   *
+   * Объяснение висит на ПОЛЕ, а не на кнопке: нативный `disabled` убирает кнопку
+   * из tab-порядка, и её `aria-describedby` клавиатурный пользователь не получил
+   * бы вовсе. Механизм — тот же, что у `passport-top-n` в `SettingsPage`.
+   */
+  it("обязательность названия названа у поля, а не только гашением кнопки", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<StandardsPage />);
+    await user.click(screen.getByRole("tab", { name: "Классы объектов" }));
+
+    const field = await screen.findByLabelText("Название класса (обязательно)");
+    expect(field).toBeRequired();
+
+    // Утверждение о СВЯЗИ, а не о наличии атрибута: подпись, на которую никто не
+    // ссылается, условия не называет.
+    const hintId = field.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    expect(document.getElementById(hintId as string)).toHaveTextContent(
+      "Например: Жилые дома. Без названия класс не добавить"
+    );
+  });
+
+  it("пустое поле названия выглядит пустым: placeholder нет, пример живёт в подписи", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<StandardsPage />);
+    await user.click(screen.getByRole("tab", { name: "Классы объектов" }));
+
+    const field = await screen.findByLabelText("Название класса (обязательно)");
+    expect(field).toHaveValue("");
+    // `placeholder="Жилые дома"` читался как уже введённое значение.
+    expect(field).not.toHaveAttribute("placeholder");
+    expect(
+      screen.getByText("Например: Жилые дома. Без названия класс не добавить")
     ).toBeInTheDocument();
   });
 

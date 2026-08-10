@@ -433,6 +433,31 @@ describe("Форма договора: класса ещё нет в систе�
   });
 
   /**
+   * Второе место того же показа (спека §2.0): условие названо у поля и в
+   * черновике, тем же механизмом, что на вкладке «Классы объектов» и у
+   * `passport-top-n` в `SettingsPage`. Кнопка остаётся нативно `disabled`, и на
+   * ней ничего не висит — из tab-порядка она исключена.
+   */
+  it("в черновике условие названо у поля: required и связь с подсказкой", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByText("Создать класс"));
+
+    const field = await screen.findByLabelText("Название класса (обязательно)");
+    expect(field).toBeRequired();
+    expect(field).not.toHaveAttribute("placeholder");
+
+    const hintId = field.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    expect(document.getElementById(hintId as string)).toHaveTextContent(
+      "Например: Жилые дома. Без названия класс не добавить"
+    );
+  });
+
+  /**
    * Регрессионный щит права, а не тест нового поведения: пункта создания у
    * `member` нет уже сегодня, поэтому нет и черновика — тест зелен и до правки.
    * Доказывается он снятием `isAdmin` (план §4, снятие 8), а не красным прогоном.

@@ -66,12 +66,13 @@ export function RateClassesTab() {
       <Surface>
         <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-3">
           <div className="grid gap-2">
-            <Label htmlFor="rate-class-title">Название класса</Label>
+            <Label htmlFor="rate-class-title">Название класса (обязательно)</Label>
             <Input
               id="rate-class-title"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Жилые дома"
+              required
+              aria-describedby="rate-class-title-hint"
             />
           </div>
           <div className="grid flex-1 gap-2">
@@ -85,6 +86,16 @@ export function RateClassesTab() {
           <Button type="submit" disabled={!title.trim() || create.isPending}>
             <Plus className="size-4" /> Добавить класс
           </Button>
+          {/*
+            Подсказка — отдельной строкой (`basis-full`), а не внутри колонки
+            названия: строка выровнена по низу (`items-end`), и вложенная подпись
+            опустила бы соседний Input и кнопку на свою высоту, то есть изменила
+            бы раскладку полей — а её спека (§2.0) оставила как есть. Связь с
+            полем держит `aria-describedby`, а не соседство в DOM.
+          */}
+          <p id="rate-class-title-hint" className="basis-full text-xs text-fg-tertiary">
+            Например: Жилые дома. Без названия класс не добавить
+          </p>
         </form>
       </Surface>
 

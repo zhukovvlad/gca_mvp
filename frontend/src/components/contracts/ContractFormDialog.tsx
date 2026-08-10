@@ -531,7 +531,24 @@ function ContractForm({
                   id="contract-rate-class-draft-title"
                   value={classDraft.title}
                   onChange={(e) => setClassDraft({ ...classDraft, title: e.target.value })}
+                  required
+                  aria-describedby="contract-rate-class-draft-title-hint"
                 />
+                {/*
+                  Условие названо у ПОЛЯ, а не у кнопки: `disabled` у кнопки
+                  нативный, он убирает её из tab-порядка, и `aria-describedby` на
+                  ней клавиатурный пользователь не получил бы вовсе. Механизм тот
+                  же, что у `passport-top-n` в `SettingsPage`, — второй конвенции
+                  на то же правило в проекте быть не должно. Подпись статичная:
+                  появляющийся текст пришлось бы делать живой областью, а сказать
+                  он должен то же самое.
+                */}
+                <p
+                  id="contract-rate-class-draft-title-hint"
+                  className="text-xs text-fg-tertiary"
+                >
+                  Например: Жилые дома. Без названия класс не добавить
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="contract-rate-class-draft-description">Описание класса</Label>
