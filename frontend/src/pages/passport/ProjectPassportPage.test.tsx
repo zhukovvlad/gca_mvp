@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { delay, http, HttpResponse } from "msw";
 
@@ -217,5 +218,351 @@ describe("Паспорт проекта: шапка документа", () => {
       expect(classes.some((c) => /^line-clamp-\d+$/.test(c))).toBe(true);
       expect(classes).not.toContain("block");
     });
+  });
+});
+
+/**
+ * Таблица по статьям классификатора (задача 8, спека §2.9 пп. 5-9, 12, 15).
+ *
+ * `sampleProjectPassport.categories` — плоский список, глубина обхода (правило 2
+ * §2.6). Корни (`parent_id: null`): 01 Земляные работы, 99 Кровельные работы
+ * (корзина), 03 Отделочные работы (отсутствует — `total: null`), 04 Инженерные
+ * сети (свои деньги + два раздела в `own_sections`), 05 Фасадные, 06 Устройство
+ * кровли, 07 Электромонтажные, 08 Слаботочные системы, 09 Благоустройство,
+ * 10 Прочие работы. У 01 — дети 01.01 (Разработка грунта, деньги) и 01.02
+ * (Водопонижение, `total: "0.00"`). У 04 — дети 04.01 (свои деньги, лист) и
+ * 04.02 (лист без своих денег, но со строкой допработ). «Нераспределённое»:
+ * `chapters: 2`, `rows_outside_structure: 1` — обе причины ненулевые сразу.
+ */
+describe("Паспорт проекта: таблица по статьям", () => {
+  // Тест 1.
+  it("по умолчанию видны только корни, «Нераспределённое» и итог", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const rootTitles = sampleProjectPassport.categories
+      .filter((c) => c.parent_id === null)
+      .map((c) => c.title);
+    for (const title of rootTitles) {
+      expect(screen.getByText(title)).toBeInTheDocument();
+    }
+    expect(screen.getByText("Нераспределённое")).toBeInTheDocument();
+    expect(screen.getByText("Итого по договору")).toBeInTheDocument();
+
+    // Известный дочерний узел («Разработка грунта», ребёнок «Земляных работ»)
+    // не показан, пока родитель свёрнут.
+    expect(screen.queryByText("Разработка грунта")).not.toBeInTheDocument();
+  });
+
+  // Тест 2.
+  it("раскрытие показывает подстатьи", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 01" }));
+
+    expect(await screen.findByText("Разработка грунта")).toBeInTheDocument();
+  });
+
+  // Тест 3 (3 собрано): прочерк, «цена не заполнена» и ноль — три разных вида.
+  // Каждый кейс утверждает ОТСУТСТВИЕ двух других видов — иначе они были бы
+  // взаимозаменимы (спека §2.3, правило 1).
+  it.each([
+    {
+      name: "прочерк — статьи нет в смете (total: null, rows: 0)",
+      code: "03",
+      override: (base: ProjectPassport) => base,
+      expect: "dash" as const,
+    },
+    {
+      name: "«без цены: N» — сумма частична (rows_priced < rows)",
+      code: "01",
+      override: (base: ProjectPassport) => ({
+        ...base,
+        categories: base.categories.map((c) =>
+          c.code === "01"
+            ? { ...c, total: "300000.00", rows: 51, rows_priced: 41, rows_not_finite: 0 }
+            : c
+        ),
+      }),
+      expect: "incomplete" as const,
+    },
+    {
+      name: "0,00 как число — сумма ровно ноль, но позиции есть",
+      code: "09",
+      override: (base: ProjectPassport) => ({
+        ...base,
+        categories: base.categories.map((c) =>
+          c.code === "09"
+            ? { ...c, total: "0.00", rows: 40, rows_priced: 40, rows_not_finite: 0 }
+            : c
+        ),
+      }),
+      expect: "zero" as const,
+    },
+  ])("прочерк, «цена не заполнена» и ноль — три разных вида: $name", async (testCase) => {
+    withPassport(testCase.override);
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const amountCell = screen.getByTestId(`amount-cat-${testCase.code}`);
+    // Точное сравнение текста, а не подстрокой: "300 000,00 ₽" тоже содержит
+    // "0,00" как подстроку, и regex-поиск спутал бы частичную сумму с нулевой.
+    const amountText = (amountCell.textContent ?? "").replace(/\u00A0/g, " ").trim();
+    const hasDash = amountText === "—";
+    const hasZero = amountText === "0,00 ₽";
+    const incompleteness = screen.queryByTestId(`incompleteness-cat-${testCase.code}`);
+
+    if (testCase.expect === "dash") {
+      expect(hasDash).toBe(true);
+      expect(hasZero).toBe(false);
+      expect(incompleteness).not.toBeInTheDocument();
+    } else if (testCase.expect === "zero") {
+      expect(hasZero).toBe(true);
+      expect(hasDash).toBe(false);
+      expect(incompleteness).not.toBeInTheDocument();
+    } else {
+      expect(hasDash).toBe(false);
+      expect(hasZero).toBe(false);
+      expect(incompleteness).toHaveTextContent("без цены: 10");
+    }
+  });
+
+  // Тест 4.
+  it("«Без подстатьи» есть, когда у статьи есть дети и свои деньги", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // 04 «Инженерные сети»: есть дети (04.01, 04.02) и own: "100000.00" > 0.
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    expect(await screen.findByText("Без подстатьи")).toBeInTheDocument();
+  });
+
+  // Тест 5.
+  it("«Без подстатьи» отсутствует при own_rows = 0", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // 04.02 «Пусконаладочные работы»: own_rows: 0 — раскрытие даёт только
+    // строку допработ, никакой служебной строки собственных денег. Проверяем
+    // ОТСУТСТВИЕ именно строки own-04.02: у 04 своя служебная строка есть
+    // (own_rows: 10 > 0), и глобальный поиск текста спутал бы их.
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+    await user.click(await screen.findByRole("button", { name: "Развернуть статью 04.02" }));
+
+    expect(screen.queryByTestId("row-own-04.02")).not.toBeInTheDocument();
+  });
+
+  // Тест 6.
+  it("у листа с допработами служебная строка называется «Позиции сметы»", async () => {
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "04.02"
+          ? { ...c, own: "5000.00", own_rows: 1, own_rows_priced: 1, own_rows_not_finite: 0 }
+          : c
+      ),
+    }));
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // 04.02 — лист (детей нет), раскрытие вызвано own И extras одновременно;
+    // без детей название обязано быть «Позиции сметы», а не «Без подстатьи».
+    // Проверка — внутри СВОЕЙ строки own-04.02: у родителя 04 своя строка
+    // «Без подстатьи» есть и законно видна рядом (own_rows: 10 > 0).
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+    await user.click(await screen.findByRole("button", { name: "Развернуть статью 04.02" }));
+
+    const ownRow = await screen.findByTestId("row-own-04.02");
+    expect(within(ownRow).getByText("Позиции сметы")).toBeInTheDocument();
+    expect(within(ownRow).queryByText("Без подстатьи")).not.toBeInTheDocument();
+  });
+
+  // Тест 7.
+  it("подпись служебной строки называет раздел сметы", async () => {
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "04" ? { ...c, own_sections: [{ id: 1, number: "6.5", title: "Прочее" }] } : c
+      ),
+    }));
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    expect(await screen.findByText(/раздел сметы 6\.5 «Прочее»/)).toBeInTheDocument();
+    // Подпись не выведена из кода статьи (04) — файловая нумерация и коды
+    // классификатора разные оси (§1.5 спеки).
+    expect(screen.queryByText(/раздел сметы 04\b/)).not.toBeInTheDocument();
+  });
+
+  // Тест 8.
+  it("подпись называет оба раздела, когда их два", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // Фикстура: 04 несёт own_sections из ДВУХ разделов (4.1 и 4.2) как есть.
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    const caption = await screen.findByTestId("own-caption-04");
+    expect(caption).toHaveTextContent("4.1");
+    expect(caption).toHaveTextContent("4.2");
+  });
+
+  // Тест 9.
+  it("строка допработ с бейджем внутри своей статьи", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+    await user.click(await screen.findByRole("button", { name: "Развернуть статью 04.02" }));
+
+    expect(
+      await screen.findByText("Пусконаладочные работы по инженерным сетям (доп. соглашение к смете)")
+    ).toBeInTheDocument();
+    expect(screen.getByText("доп. работы")).toBeInTheDocument();
+  });
+
+  // Тест 10.
+  it("«Нераспределённое» видимо и названо", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.getByText("Нераспределённое")).toBeInTheDocument();
+    expect(screen.getByText(/2 раздела сметы без статьи классификатора/)).toBeInTheDocument();
+  });
+
+  // Тест 11.
+  it("строки вне структуры названы отдельной причиной", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // Фикстура: chapters: 2, rows_outside_structure: 1 — оба счётчика
+    // одновременно ненулевые и различны; ни один не подменяет другой.
+    const caption = screen.getByTestId("unallocated-caption");
+    expect(caption).toHaveTextContent(/2 раздела сметы без статьи классификатора/);
+    expect(caption).toHaveTextContent(/1 позиция вне структуры сметы/);
+  });
+
+  // Тест 12.
+  it("корзина показана с бейджем", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // 99 «Кровельные работы» — is_bucket: true, корень, виден по умолчанию.
+    const row = screen.getByTestId("row-cat-99");
+    expect(within(row).getByText("корзина")).toBeInTheDocument();
+  });
+
+  // Тест 13.
+  it("переключатель нулевых по умолчанию выключен", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const toggle = screen.getByRole("switch", { name: /показывать нулевые подстатьи/i });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    // 01.02 «Водопонижение»: total "0.00", глубина > 0 — скрыт, пока
+    // переключатель выключен, даже после раскрытия родителя.
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 01" }));
+    expect(screen.queryByText("Водопонижение")).not.toBeInTheDocument();
+  });
+
+  // Тест 14.
+  it("включение переключателя показывает нулевые подстатьи", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 01" }));
+    await user.click(screen.getByRole("switch", { name: /показывать нулевые подстатьи/i }));
+
+    expect(await screen.findByText("Водопонижение")).toBeInTheDocument();
+  });
+
+  // Тест 15.
+  it("подпись неполноты на смешанном узле", async () => {
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "07" ? { ...c, rows: 10, rows_priced: 9, rows_not_finite: 0 } : c
+      ),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(await screen.findByTestId("incompleteness-cat-07")).toHaveTextContent("без цены: 1");
+  });
+
+  // Тест 16.
+  it("подпись называет обе причины, когда обе есть", async () => {
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "08" ? { ...c, rows: 10, rows_priced: 7, rows_not_finite: 2 } : c
+      ),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const caption = await screen.findByTestId("incompleteness-cat-08");
+    // Обе причины — разными числами, не одна вместо другой (урок Ф4a).
+    expect(caption).toHaveTextContent("без цены: 1");
+    expect(caption).toHaveTextContent("с ошибкой: 2");
+  });
+
+  // Тест 17.
+  it("наименование статьи зажато по высоте и не несёт класса block", async () => {
+    const { container } = renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const clamped = container.querySelectorAll('[data-print="clamp"]');
+    // 3 из шапки (аванс/гарантия/удержание) + хотя бы один заголовок статьи.
+    expect(clamped.length).toBeGreaterThan(3);
+    clamped.forEach((node) => {
+      const classes = Array.from(node.classList);
+      expect(classes.some((c) => /^line-clamp-\d+$/.test(c))).toBe(true);
+      expect(classes).not.toContain("block");
+    });
+  });
+
+  /**
+   * Сверх списка задачи 8, решением оркестратора. Спека §2.3 последним абзацем
+   * распространяет все три правила на СОБСТВЕННЫЕ деньги статьи — по `own_rows`,
+   * `own_rows_priced` и `own_rows_not_finite`, — а список тестов плана этого не
+   * закрывал: служебная строка показывала частичную сумму числом и без единого
+   * признака неполноты, то есть ровно то, что §2.3 объявляет недопустимым для
+   * узла. Требование спеки без исполнителя либо получает тест, либо объявляется
+   * границей; здесь выбран тест.
+   */
+  it("подпись неполноты стоит и на служебной строке собственных денег", async () => {
+    const user = userEvent.setup();
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "04"
+          ? { ...c, own_rows: 10, own_rows_priced: 7, own_rows_not_finite: 2 }
+          : c
+      ),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    const caption = await screen.findByTestId("own-incompleteness-04");
+    // Обе причины разными числами — не одна вместо другой (урок Ф4a).
+    expect(caption).toHaveTextContent("без цены: 1");
+    expect(caption).toHaveTextContent("с ошибкой: 2");
   });
 });

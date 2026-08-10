@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { useProjectPassport } from "@/services/queries";
 
+import { CategoryTable } from "./CategoryTable";
 import { PassportHeader } from "./PassportHeader";
 
 /**
@@ -67,6 +68,9 @@ export default function ProjectPassportPage() {
   return (
     <div className="container-page py-8">
       <PassportHeader passport={passport} />
+      <div className="mt-6">
+        <CategoryTable passport={passport} />
+      </div>
     </div>
   );
 }
