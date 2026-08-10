@@ -238,6 +238,50 @@ describe("Форма договора: объект заводится черн�
     });
   });
 
+  /**
+   * Подпись доказывает **показ**, а не доменную привязку, и это замер, а не
+   * рассуждение: снятие, подставляющее в форму ненулевой, но **чужой** id
+   * (`object_id: 1` вместо `created.id`), оставляло весь набор зелёным. Причина —
+   * `EntityCombobox` показывает запомненную подпись при любом непустом `value`.
+   * Поэтому привязку стережёт тело запроса договора: `99` вернул mock создания
+   * объекта, и никакой другой id туда попасть не может.
+   */
+  it("созданный объект уходит в договор именно своим id, а не любым ненулевым", async () => {
+    captureObjectPosts();
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.post("/api/v1/contracts", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 7 }, { status: 201 });
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    const field = await openObjectDraft(user);
+    await user.clear(field);
+    await user.type(field, "ЖК Западный");
+    await user.click(screen.getByRole("button", { name: "Сохранить объект" }));
+    // Ждём закрытия черновика, а не подписи: подпись стережёт свой тест (снятие
+    // 17), и утверждение о ней здесь сделало бы его якорь неединственным.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Сохранить объект" })).not.toBeInTheDocument();
+    });
+
+    // У нового объекта класса нет — договору класс нужен явно, иначе отправка
+    // заблокирована (§4: класс обязателен, это снимок).
+    await user.click(screen.getByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByRole("option", { name: /Промышленные/ }));
+    await user.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
+    await user.click(await screen.findByText("ООО СтройПодряд"));
+    await user.type(screen.getByLabelText("Номер договора"), "ГП-2026-777");
+    await user.type(screen.getByLabelText("Дата подписания"), "2026-05-01");
+    await user.click(screen.getByRole("button", { name: "Создать договор" }));
+
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.object_id).toBe(99);
+  });
+
   it("на время запроса кнопка черновика объекта неактивна: второго POST не будет", async () => {
     let posts = 0;
     let release: (() => void) | undefined;
@@ -450,6 +494,40 @@ describe("Форма договора: класса ещё нет в систе�
     await createClassViaDraft(user, "Административные");
 
     await waitFor(() => expect(submit).toBeEnabled());
+  });
+
+  /**
+   * Тот же пробел, что у объекта, и найден он тем же снятием: подстановка
+   * ненулевого, но **чужого** `rate_class_id` оставляла набор зелёным, потому что
+   * и подпись, и разрешение отправки довольствуются любым непустым значением.
+   * Привязку стережёт тело запроса: `3` вернул mock создания класса.
+   */
+  it("созданный класс уходит в договор именно своим id, а не любым ненулевым", async () => {
+    noClassesAtAll();
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.post("/api/v1/contracts", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 7 }, { status: 201 });
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await selectObjectWithoutClass(user);
+    await user.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
+    await user.click(await screen.findByText("ООО СтройПодряд"));
+    await user.type(screen.getByLabelText("Номер договора"), "ПМ-2-СМР");
+    await user.type(screen.getByLabelText("Дата подписания"), "2025-02-20");
+
+    await createClassViaDraft(user, "Административные");
+
+    const submit = screen.getByRole("button", { name: "Создать договор" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.rate_class_id).toBe(3);
   });
 
   it("класс объекта подставляется сам — предупреждения нет", async () => {
