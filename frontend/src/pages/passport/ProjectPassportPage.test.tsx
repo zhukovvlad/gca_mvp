@@ -710,6 +710,68 @@ describe("Паспорт проекта: таблица по статьям", ()
     expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(expected);
   });
 
+  /**
+   * Ф6a, задача 3: ₽/м² округляется до двух знаков во всех местах показа.
+   *
+   * `_per_sqm` делит `Decimal` на `Decimal`, и контекст Python даёт 28 значащих
+   * цифр: на стенде в ячейку уезжало 22 знака после запятой. `MoneyCell` вызван
+   * без `maxFractionDigits`, а `formatDecimalMoney` без него значащие цифры не
+   * округляет намеренно (утверждённую ставку округлять нельзя). Правило «только
+   * для вычисленных величин» записано в докстроке самого `MoneyCell` — оно не
+   * новое, просто не было прогнано по новым точкам вызова.
+   *
+   * Фикстура несёт ФОРМУ СТЕНДА (26-28 знаков), а не короткую десятичную —
+   * иначе тест судил бы не о том (план §1.2).
+   */
+  it.each([
+    { name: "строка статьи", testid: "per-sqm-cat-01", expected: "10,64 ₽" },
+    { name: "«Нераспределённое»", testid: "per-sqm-unallocated", expected: "2,66 ₽" },
+    { name: "«Итого по договору»", testid: "per-sqm-grand-total", expected: "123,46 ₽" },
+  ])("₽/м² — два знака: $name", async ({ testid, expected }) => {
+    withPassport((base) => ({
+      ...base,
+      // Итог фикстуры делится на площадь БЕЗ остатка (4 700 000 / 47 000 = 100),
+      // поэтому у строки итога длинной дроби нет вовсе — округлять было бы
+      // нечего, и случай оказался бы вакуозным. Здесь подставлена форма стенда.
+      totals: { ...base.totals, per_sqm: "123.4567890123456789012345679" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId(testid);
+    expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe(expected);
+  });
+
+  // Ф6a, задача 3: показатель шапки — четвёртая точка показа ₽/м² (спека §2.2).
+  it("₽/м² в шапке — два знака", async () => {
+    withPassport((base) => ({
+      ...base,
+      totals: { ...base.totals, per_sqm: "123.4567890123456789012345679" },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const metric = await screen.findByTestId("metric-per-sqm");
+    expect((metric.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("123,46 ₽");
+  });
+
+  /**
+   * Ф6a, задача 3, вторая половина DoD: округление на слое показа НЕ теряет
+   * точную величину — `MoneyCell` кладёт её в `title` сам, и только когда
+   * округление действительно что-то изменило. Сервер продолжает отдавать точное
+   * значение (§3 спеки: на сервере не квантуем).
+   */
+  it("точное значение ₽/м² остаётся доступным в подсказке", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const cell = await screen.findByTestId("per-sqm-cat-01");
+    const exact = within(cell).getByTitle(/Точное значение/);
+    // Все 26 знаков фикстуры, а не округлённые два: подсказка, повторяющая
+    // видимое, ничего не сохраняла бы.
+    expect(exact.getAttribute("title")).toContain("10,63829787234042553191489362");
+  });
+
   // Ф6a, задача 2: у «Нераспределённого» своя ячейка доли и свой testid.
   it("доля «Нераспределённого» — ровно два знака", async () => {
     withPassport((base) => ({

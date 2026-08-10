@@ -237,8 +237,16 @@ function CategoryRow({
         >
           {formatSharePct(node.share_pct)}
         </TableCell>
-        <TableCell className="text-right">
-          <MoneyCell value={node.per_sqm} />
+        {/*
+          ₽/м² — ВЫЧИСЛЕННАЯ величина: деление `Decimal` на `Decimal` даёт 28
+          значащих цифр, и лишние знаки — артефакт деления, а не данные. Ровно
+          тот случай, для которого `maxFractionDigits` у `MoneyCell` и заведён
+          (его докстрока: «только для вычисленных величин»); точное значение
+          уходит в `title`. Округление стоит на слое показа, а не в CRUD — то же
+          правило, что §4 AGENTS.md держит для `deviation_pct`.
+        */}
+        <TableCell data-testid={`per-sqm-cat-${node.code}`} className="text-right">
+          <MoneyCell value={node.per_sqm} maxFractionDigits={2} />
         </TableCell>
       </TableRow>
 
@@ -403,8 +411,12 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             >
               {formatSharePct(unallocated.share_pct)}
             </TableCell>
-            <TableCell className="text-right">
-              <MoneyCell value={unallocated.per_sqm} className="text-warning-text" />
+            <TableCell data-testid="per-sqm-unallocated" className="text-right">
+              <MoneyCell
+                value={unallocated.per_sqm}
+                maxFractionDigits={2}
+                className="text-warning-text"
+              />
             </TableCell>
           </TableRow>
 
@@ -428,8 +440,12 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             <TableCell className="text-right text-sm font-semibold text-fg">
               {totals.amount === null || isZeroDecimal(totals.amount) ? "—" : "100,00 %"}
             </TableCell>
-            <TableCell className="text-right">
-              <MoneyCell value={totals.per_sqm} className="font-semibold" />
+            <TableCell data-testid="per-sqm-grand-total" className="text-right">
+              <MoneyCell
+                value={totals.per_sqm}
+                maxFractionDigits={2}
+                className="font-semibold"
+              />
             </TableCell>
           </TableRow>
         </TableBody>
