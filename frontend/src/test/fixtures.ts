@@ -12,7 +12,6 @@ import type {
   MatrixCellDetail,
   MatrixColumn,
   MatrixRow,
-  Passport,
   ProjectPassport,
   ReviewQueueItem,
 } from "@/types/domain";
@@ -330,81 +329,6 @@ export const sampleAppSettings: AppSettings = {
 export const longJobTitle =
   "Устройство монолитных конструкций с полной спецификацией: " +
   Array.from({ length: 40 }, (_, i) => `позиция ${i + 1} по ведомости ГОСТ ${20000 + i}`).join("; ");
-
-export const samplePassport: Passport = {
-  contract: {
-    id: 10,
-    contract_number: "ГП-0114",
-    title: "Генеральный подряд",
-    object_id: 1,
-    object_title: "ЖК Северный",
-    contractor_id: 1,
-    contractor_title: 'ООО "Подрядчик"',
-    rate_class_id: 1,
-    rate_class_title: "Жилые дома",
-    signer: "Петров П.П.",
-    signed_date: "2025-03-01",
-    total_amount: "1234567890.12",
-    notes: null,
-  },
-  estimate: {
-    id: 500,
-    amendment_no: 1,
-    title: "Смета с ДС 1",
-    data_prepared_on_date: "2025-04-01",
-  },
-  top_n: 15,
-  key_rates: [
-    {
-      position_item_id: 9001,
-      catalog_position_id: 701,
-      job_title: "Кладка кирпичная наружных стен",
-      catalog_job_title: "кладка кирпичная",
-      unit_code: "M3",
-      weight: "1200",
-      unit_cost_total: "12000.50",
-      total_cost_total: "14400600.00",
-      standard_unit_rate: "10000.00",
-      deviation_pct: "20.005000000000000000",
-    },
-    {
-      position_item_id: 9002,
-      catalog_position_id: 702,
-      job_title: "Стяжка пола цементная",
-      catalog_job_title: "стяжка пола",
-      unit_code: "M2",
-      weight: "8400",
-      unit_cost_total: "900.00",
-      total_cost_total: "7560000.00",
-      // Ровно по нормативу — это НОЛЬ, и он обязан быть отличим от «нет норматива».
-      standard_unit_rate: "900.00",
-      deviation_pct: "0.000000000000000000",
-    },
-    {
-      position_item_id: 9003,
-      catalog_position_id: 703,
-      job_title: longJobTitle,
-      catalog_job_title: longJobTitle,
-      unit_code: "M2",
-      weight: "300",
-      unit_cost_total: "640.00",
-      total_cost_total: "192000.00",
-      // Норматива нет: §4 требует NULL, а не 0.
-      standard_unit_rate: null,
-      deviation_pct: null,
-    },
-  ],
-  totals: {
-    positions_priced: 1100,
-    positions_shown: 3,
-    priced_amount: "22152600.00",
-    with_standard: 2,
-    without_standard: 1098,
-    over_standard: 1,
-    positions_pending_review: 0,
-    positions_non_work: 0,
-  },
-};
 
 export const sampleMatrixColumns: MatrixColumn[] = [
   {

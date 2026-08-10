@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home, Users, LogOut, Search, Bell, FileText, ListChecks, Ruler, Grid3x3, Settings2, FileDown,
+  Home, Users, LogOut, Search, Bell, FileText, ListChecks, Ruler,
   type LucideIcon,
 } from "lucide-react";
 import { Logo } from "./Logo";
@@ -12,17 +12,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 
-// Паспорт объекта в навигацию не попадает намеренно: он строится ПО ДОГОВОРУ, и
-// пункт меню без выбранного договора вёл бы в никуда. Вход в паспорт — из карточки
-// договора. Матрица и настройки — экраны сами по себе (§7.4, §7.5).
+// Матрица, отчёты и настройки НЕ попадают в навигацию (Ф6 фазы 7, задача 11):
+// маршруты, компоненты экранов и backend-эндпоинты живы — вернутся drill-down'ом
+// из статьи паспорта проекта, а не отдельными пунктами верхнего меню. Паспорт
+// объекта в навигацию не попадает по той же причине, что и раньше: он строится
+// ПО ДОГОВОРУ, и пункт меню без выбранного договора вёл бы в никуда — вход в
+// паспорт остаётся из карточки договора.
 const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOnly?: boolean }[] = [
   { to: "/",            icon: Home,       label: "Главная", end: true },
   { to: "/contracts",   icon: FileText,   label: "Договоры" },
-  { to: "/matrix",      icon: Grid3x3,    label: "Матрица" },
-  { to: "/reports",     icon: FileDown,   label: "Отчёты" },
   { to: "/review",      icon: ListChecks, label: "Ручной матчинг" },
   { to: "/standards",   icon: Ruler,      label: "Нормативы", adminOnly: true },
-  { to: "/settings",    icon: Settings2,  label: "Настройки", adminOnly: true },
   { to: "/admin/users", icon: Users,      label: "Пользователи", adminOnly: true },
 ];
 

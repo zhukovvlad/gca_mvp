@@ -354,86 +354,6 @@ export interface AppSettings {
   updated_at: string | null;
 }
 
-/** Реквизиты договора для паспорта (§1 пункт 2). */
-export interface PassportContract {
-  id: number;
-  contract_number: string;
-  title: string | null;
-  object_id: number;
-  object_title: string;
-  contractor_id: number;
-  contractor_title: string;
-  rate_class_id: number;
-  rate_class_title: string;
-  signer: string | null;
-  signed_date: string;
-  total_amount: Decimal | null;
-  notes: string | null;
-}
-
-export interface PassportEstimate {
-  id: number;
-  /** `null` — исходная смета (§4). */
-  amendment_no: number | null;
-  title: string | null;
-  data_prepared_on_date: string | null;
-}
-
-/** Строка «ключевых расценок»: позиция последней сметы (§7.4). */
-export interface PassportKeyRate {
-  position_item_id: number;
-  catalog_position_id: number;
-  /** Формулировка ИЗ СМЕТЫ — паспорт документ по конкретному договору. */
-  job_title: string;
-  /** Каталожное название: по нему подобран норматив. */
-  catalog_job_title: string;
-  unit_code: string | null;
-  weight: Decimal | null;
-  unit_cost_total: Decimal;
-  total_cost_total: Decimal | null;
-  /** `null` — норматива на дату сметы нет (§4); это НЕ ноль. */
-  standard_unit_rate: Decimal | null;
-  deviation_pct: Decimal | null;
-}
-
-export interface PassportTotals {
-  /** Всего расценённых работ в смете — совокупность, из которой взят топ. */
-  positions_priced: number;
-  /** Сколько строк показано: длина топа, не обязательно равна `top_n`. */
-  positions_shown: number;
-  priced_amount: Decimal | null;
-  with_standard: number;
-  without_standard: number;
-  /** Только превышение: ровно по нормативу — не превышение (§10). */
-  over_standard: number;
-  /**
-   * Расценённые позиции, чья работа ещё не утверждена в каталоге (TO_REVIEW).
-   *
-   * Объясняет пустой топ при непустой смете: VIEW отклонений берёт только
-   * `kind='POSITION'` (§4). Найдено прогоном стенда — экран называл неверную
-   * причину («не заполнена цена»), отправляя искать проблему не там.
-   */
-  positions_pending_review: number;
-  /**
-   * Расценённые позиции, чья каталожная строка помечена как НЕ-работа
-   * (`HEADER`/`TRASH`/`LOT_HEADER`).
-   *
-   * Третья причина пустого паспорта, и она не равна ни «ждут матчинга», ни «нет
-   * цены»: такие строки уже разобраны (§5.4.3), исправлять их не нужно. Появилась
-   * после правки по замечанию ревью — до неё они ошибочно попадали в «ждут матчинга».
-   */
-  positions_non_work: number;
-}
-
-export interface Passport {
-  contract: PassportContract;
-  /** `null` — смета ещё не загружена; паспорт печатается по реквизитам. */
-  estimate: PassportEstimate | null;
-  top_n: number;
-  key_rates: PassportKeyRate[];
-  totals: PassportTotals;
-}
-
 /** Колонка матрицы — договор выборки (§6, группировка по объекту). */
 export interface MatrixColumn {
   contract_id: number;
@@ -472,9 +392,9 @@ export interface Matrix {
   total: number;
   page: number;
   page_size: number;
-  /** См. `PassportTotals.positions_pending_review`; здесь — по договорам выборки. */
+  /** Расценённые позиции, чья работа ещё не утверждена в каталоге (TO_REVIEW) — по договорам выборки. */
   positions_pending_review: number;
-  /** См. `PassportTotals.positions_non_work`; здесь — по договорам выборки. */
+  /** Расценённые позиции, чья каталожная строка помечена как НЕ-работа (`HEADER`/`TRASH`/`LOT_HEADER`) — по договорам выборки. */
   positions_non_work: number;
 }
 
@@ -526,8 +446,8 @@ export interface BankComparisonParams {
 //
 //  Форма — зеркало `backend/crud/project_passport.py::get_project_passport`,
 //  ключ в ключ: там сказано «форма ответа — решённый контракт, ключи и
-//  вложенность менять нельзя». Старые `Passport*` (фаза 6) НЕ трогаются —
-//  задача 11 их удалит, когда экран паспорта объекта переедет на новый тип.
+//  вложенность менять нельзя». Старые `Passport*` (фаза 6) удалены задачей 11:
+//  экран паспорта объекта переехал на этот тип.
 //
 //  Деньги — decimal-СТРОКИ (`Decimal`), а не `number`, и это касается КАЖДОГО
 //  поля ниже, отмеченного этим типом: `share_pct`, `per_sqm`, `total`, `own`,

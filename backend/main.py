@@ -154,8 +154,8 @@ app.include_router(rate_standards_router.router, dependencies=_auth_dep)
 # Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
 app.include_router(review_router.router, dependencies=_auth_dep)
 
-# Аналитика фазы 6 (§7.4–§7.6, §9.6). Настройки: чтение всем — `passport_top_n`
-# нужен паспорту, а паспорт доступен и `member`; изменение — admin внутри роутера.
+# Легаси-аналитика фазы 6 (§7.4–§7.6, §9.6). Настройки: чтение всем — чтение
+# настроек не admin-операция; изменение — admin внутри роутера.
 app.include_router(settings_router.router, dependencies=_auth_dep)
 # Паспорт и матрица — чтение, поэтому доступны и `member` (§3).
 app.include_router(analytics_router.router, dependencies=_auth_dep)

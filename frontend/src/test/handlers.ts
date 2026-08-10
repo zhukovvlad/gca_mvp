@@ -15,7 +15,6 @@ import {
   sampleAppSettings,
   sampleMatrix,
   sampleMatrixCellDetail,
-  samplePassport,
   sampleProjectPassport,
 } from "./fixtures";
 import type { ImportJobStatus, ProjectPassport } from "@/types/domain";
@@ -41,19 +40,15 @@ interface HandlerState {
   /** Исход скачивания исходника: файл на месте, задания нет (404), удалён (410). */
   fileOutcome: "ok" | "missing" | "purged";
   /**
-   * Текущее значение `passport_top_n`. Мутируется PATCH-ем настроек, чтобы тест мог
-   * проверить, что смена N перерисовывает паспорт: без общего состояния GET отдавал
-   * бы прежнее число и проверка ничего не значила бы.
+   * Текущее значение `passport_top_n`. Мутируется PATCH-ем настроек. Паспорт
+   * проекта (Ф6 фазы 7) от него не зависит — поле осталось ради самих
+   * настроек: экран Settings и его тесты по-прежнему читают/пишут это число.
    */
   passportTopN: number;
-  /** Отдать паспорт договора без сметы: `estimate: null`, пустой топ. */
-  passportWithoutEstimate: boolean;
   /**
-   * Исход паспорта ПРОЕКТА (Ф6 фазы 7, задача 6) — отдельно от
-   * `passportWithoutEstimate` выше: то поле про старый паспорт объекта (фаза
-   * 6), это — про новый паспорт по статьям классификатора, у него свой набор
-   * граничных случаев (спека §2.6, §2.9): не только «нет сметы», но и «нет
-   * ТЭП», «сумма неизвестна», «сумма ровно ноль», «данные повреждены».
+   * Исход паспорта ПРОЕКТА (Ф6 фазы 7, задача 6) — граничные случаи спеки
+   * §2.6, §2.9: не только «нет сметы», но и «нет ТЭП», «сумма неизвестна»,
+   * «сумма ровно ноль», «данные повреждены».
    */
   projectPassportOutcome:
     | "full"
@@ -84,7 +79,6 @@ export const handlerState: HandlerState = {
   batchSkipsFirst: false,
   fileOutcome: "ok",
   passportTopN: sampleAppSettings.passport_top_n,
-  passportWithoutEstimate: false,
   projectPassportOutcome: "full",
   matrixOutcome: "rows",
   positionsPendingReview: 0,
@@ -100,7 +94,6 @@ export function resetHandlerState() {
   handlerState.batchSkipsFirst = false;
   handlerState.fileOutcome = "ok";
   handlerState.passportTopN = sampleAppSettings.passport_top_n;
-  handlerState.passportWithoutEstimate = false;
   handlerState.projectPassportOutcome = "full";
   handlerState.matrixOutcome = "rows";
   handlerState.positionsPendingReview = 0;
@@ -612,8 +605,9 @@ export const handlers = [
   ),
   http.patch("/api/v1/settings", async ({ request }) => {
     const body = (await request.json()) as { passport_top_n: number };
-    // Диапазон проверяет сервер, и его отказ объясняет причину (одна страница А4).
-    // Обработчик воспроизводит именно это поведение, а не «принимает всё».
+    // Диапазон проверяет сервер, и его отказ объясняет причину (раскладка экрана
+    // паспорта фазы 6). Обработчик воспроизводит именно это поведение, а не
+    // «принимает всё».
     if (
       !Number.isInteger(body.passport_top_n) ||
       body.passport_top_n < sampleAppSettings.passport_top_n_min ||
@@ -623,8 +617,8 @@ export const handlers = [
         {
           detail:
             `Число ключевых расценок должно быть от ${sampleAppSettings.passport_top_n_min} до ` +
-            `${sampleAppSettings.passport_top_n_max}. Верхняя граница — не прихоть: паспорт ` +
-            "обязан печататься на одну страницу А4.",
+            `${sampleAppSettings.passport_top_n_max}. Верхняя граница — не прихоть: она ` +
+            "подобрана под раскладку экрана паспорта фазы 6, а не взята произвольно.",
         },
         { status: 422 }
       );
@@ -634,35 +628,6 @@ export const handlers = [
   }),
 
   // --- Аналитика (фаза 6, §6, §7.4–§7.5) ---
-  http.get("/api/v1/analytics/passport/:contractId", () => {
-    if (handlerState.passportWithoutEstimate) {
-      return HttpResponse.json({
-        ...samplePassport,
-        estimate: null,
-        key_rates: [],
-        top_n: handlerState.passportTopN,
-        totals: {
-          positions_priced: 0,
-          positions_shown: 0,
-          priced_amount: null,
-          with_standard: 0,
-          without_standard: 0,
-          over_standard: 0,
-          positions_pending_review: 0,
-          positions_non_work: 0,
-        },
-      });
-    }
-    // Топ режется до текущего N — так же, как это делает сервер (LIMIT).
-    const keyRates = samplePassport.key_rates.slice(0, handlerState.passportTopN);
-    return HttpResponse.json({
-      ...samplePassport,
-      top_n: handlerState.passportTopN,
-      key_rates: keyRates,
-      totals: { ...samplePassport.totals, positions_shown: keyRates.length },
-    });
-  }),
-
   // Паспорт проекта по статьям классификатора (Ф6 фазы 7, задача 6).
   http.get("/api/v1/analytics/project-passport/:contractId", () => {
     if (handlerState.projectPassportOutcome === "error") {

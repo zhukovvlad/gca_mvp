@@ -566,27 +566,14 @@ export function useUpdateAppSettings() {
     mutationFn: (passportTopN: number) => settingsApi.update(passportTopN),
     onSuccess: (settings) => {
       qc.invalidateQueries({ queryKey: qk.settings.all });
-      // Паспорт зависит от N — без этой инвалидации уже открытый паспорт остался
-      // бы с прежним числом строк, и настройка выглядела бы неработающей.
+      // Хвост фазы 6: паспорт объекта зависел от N, и эта инвалидация держала его
+      // перерисовку. Паспорт проекта (Ф6 фазы 7) от `passport_top_n` не зависит —
+      // после задачи 11 эта строка не обновляет ничего значимого, но и не вредит
+      // (лишний рефетч по корню, которого никто не показывает), поэтому не снята.
       qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success(`Ключевых расценок в паспорте: ${settings.passport_top_n}`);
     },
     onError: toastApiError,
-  });
-}
-
-/**
- * Паспорт объекта (§7.4).
- *
- * N берёт сервер из БД, поэтому здесь его нет ни в аргументах, ни в ключе:
- * перерисовку при смене настройки делает инвалидация `passport.all` в
- * `useUpdateAppSettings` (см. комментарий у `qk.passport.one`).
- */
-export function usePassport(contractId: number | undefined) {
-  return useQuery({
-    queryKey: qk.passport.one(contractId ?? 0),
-    queryFn: () => analyticsApi.passport(contractId as number),
-    enabled: contractId !== undefined,
   });
 }
 
@@ -598,10 +585,10 @@ export function usePassport(contractId: number | undefined) {
  * появления идентификатора — без него ушёл бы `GET /project-passport/0` при
  * каждом первом рендере со штатным 404 (тот же класс дефекта, что P3 у F5).
  *
- * Ключ — `qk.passport.project`, под тем же корнем `qk.passport.all`, что и
- * старый `usePassport` (см. комментарий у `qk.passport.project`): инвалидация
- * `useUpdateObject`/`useUpdateAppSettings` уже накрывает паспорт проекта, без
- * правки списка инвалидации.
+ * Ключ — `qk.passport.project`, под тем же корнем `qk.passport.all` (см.
+ * комментарий у `qk.passport.project`): инвалидация `useUpdateObject`/
+ * `useUpdateAppSettings` уже накрывает паспорт проекта, без правки списка
+ * инвалидации.
  */
 export function useProjectPassport(contractId: number | undefined) {
   return useQuery({

@@ -1,9 +1,11 @@
-"""Настройки приложения: топ-N ключевых расценок паспорта (§7.4, решение §6.2 фазы 6).
+"""Настройки приложения: топ-N ключевых расценок паспорта ФАЗЫ 6 (§7.4, решение §6.2
+фазы 6). Паспорт проекта Ф6 фазы 7 (спека §2.6) эту настройку не читает.
 
 Проверяется то, что решено фазой 6, а не то, что и так держит схема (отказы БД —
 `test_schema_constraints.py::TestAppSettings`):
 
-* чтение доступно и `member` — паспорт читает `passport_top_n`, а паспорт не admin-only;
+* чтение доступно и `member` — чтение настроек не admin-операция, а паспорт фазы 6,
+  который читает `passport_top_n`, сам не admin-only;
 * изменение — только `admin`;
 * диапазон отвергается **понятным 422**, а не пятисотым от нарушения `CHECK`;
 * границы диапазона отдаются клиенту (иначе форма завела бы второе представление
@@ -88,15 +90,18 @@ def test_out_of_range_gives_422_not_500(client, value):
     assert response.status_code == 422, response.text
 
 
-def test_out_of_range_message_explains_the_a4_reason(client):
-    """Текст отказа объясняет ПРИЧИНУ верхней границы (DoD §10 про одну страницу А4).
+def test_out_of_range_message_explains_the_reason(client):
+    """Текст отказа объясняет ПРИЧИНУ верхней границы, а не просто называет цифры.
 
     Проверяется не формулировка, а наличие объяснения: настройка «почему нельзя
     больше» неочевидна, и без причины отказ читается как произвол.
     """
     response = client.patch("/api/v1/settings", json={"passport_top_n": PASSPORT_TOP_N_MAX + 1})
-    detail = response.json()["detail"]
-    assert "А4" in str(detail)
+    detail = str(response.json()["detail"])
+    numbers_only = f"Число ключевых расценок должно быть от {PASSPORT_TOP_N_MIN} до {PASSPORT_TOP_N_MAX}."
+    assert len(detail) > len(numbers_only), (
+        f"Отказ называет только границы, без объяснения причины: {detail!r}"
+    )
 
 
 def test_non_integer_rejected(client):
