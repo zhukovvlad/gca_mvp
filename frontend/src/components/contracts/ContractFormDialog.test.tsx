@@ -192,14 +192,32 @@ describe("Форма договора: класса ещё нет в систе�
     await user.click(await screen.findByText("МИРА"));
   }
 
+  /**
+   * Создание класса стало двухшаговым: пункт «Создать класс» открывает
+   * черновик-форму, сохранение отправляет запрос (спека §2).
+   *
+   * Название вводится **в черновик**, а не в поиск комбобокса, хотя поиск его и
+   * предзаполняет. Причина — единственность якоря негативной проверки: тест,
+   * набирающий название в поиск, зависел бы заодно от предзаполнения, и снятие
+   * предзаполнения (план §4, снятие 2) валило бы вместе с ним и эти два теста.
+   * Предзаполнение стережёт свой тест, отдельный.
+   */
+  async function createClassViaDraft(
+    user: ReturnType<typeof userEvent.setup>,
+    title: string
+  ) {
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByText("Создать класс"));
+    await user.type(await screen.findByLabelText("Название класса (обязательно)"), title);
+    await user.click(screen.getByRole("button", { name: "Сохранить класс" }));
+  }
+
   it("класс заводится по месту, когда справочник пуст", async () => {
     noClassesAtAll();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
 
-    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
-    await user.type(await screen.findByPlaceholderText("Название класса"), "Административные");
-    await user.click(await screen.findByText(/Создать класс/));
+    await createClassViaDraft(user, "Административные");
 
     // Список так и остался пустым (сервер отдаёт []), поэтому подпись держится
     // отдельно от выдачи — как у объекта и подрядчика.
@@ -227,9 +245,7 @@ describe("Форма договора: класса ещё нет в систе�
     expect(submit).toBeDisabled();
     expect(screen.getByText(/У объекта «МИРА» класс не задан/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("combobox", { name: /Класс объектов/ }));
-    await user.type(await screen.findByPlaceholderText("Название класса"), "Административные");
-    await user.click(await screen.findByText(/Создать класс/));
+    await createClassViaDraft(user, "Административные");
 
     await waitFor(() => expect(submit).toBeEnabled());
   });
@@ -255,6 +271,187 @@ describe("Форма договора: класса ещё нет в систе�
     await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
     await screen.findByPlaceholderText("Название класса");
     expect(screen.queryByText(/Создать класс/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * Черновик класса (спека §2). Найденный пользователем дефект: пункт «Создать
+   * класс» при пустом поле поиска не делал **ничего** — обработчик выходил на
+   * `query.trim()`, а список закрывался вместе с полем, в которое надо было
+   * вводить название (замер §1 спеки: 0 запросов, список закрыт).
+   */
+  it("пункт «Создать класс» с пустым поиском открывает черновик, а не молчит", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    // Точное совпадение подписи — это и есть утверждение «запрос пуст»: с
+    // непустым запросом пункт подписан «Создать класс: «…»».
+    await user.click(await screen.findByText("Создать класс"));
+
+    expect(await screen.findByLabelText("Название класса (обязательно)")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Сохранить класс" })).toBeInTheDocument();
+  });
+
+  it("название из поиска предзаполняет черновик — прежний путь не удлиняется", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.type(await screen.findByPlaceholderText("Название класса"), "  Административные  ");
+    await user.click(await screen.findByText(/Создать класс/));
+
+    expect(await screen.findByLabelText("Название класса (обязательно)")).toHaveValue(
+      "Административные"
+    );
+  });
+
+  it("пустое название сохранить нельзя, непустое — создаёт класс", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByText("Создать класс"));
+
+    const save = screen.getByRole("button", { name: "Сохранить класс" });
+    expect(save).toBeDisabled();
+
+    await user.type(
+      await screen.findByLabelText("Название класса (обязательно)"),
+      "Административные"
+    );
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    // Класс создан — черновик закрылся сам.
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Название класса (обязательно)")).not.toBeInTheDocument();
+    });
+  });
+
+  it("на время запроса кнопка черновика неактивна: второго POST не будет", async () => {
+    let posts = 0;
+    let release: (() => void) | undefined;
+    const pendingRequest = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/v1/rate-classes", () => HttpResponse.json([])),
+      http.post("/api/v1/rate-classes", async () => {
+        posts += 1;
+        await pendingRequest;
+        return HttpResponse.json(
+          {
+            id: 3,
+            title: "Административные",
+            description: null,
+            contracts_count: 0,
+            objects_count: 0,
+            standards_count: 0,
+            created_at: null,
+            updated_at: null,
+          },
+          { status: 201 }
+        );
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByText("Создать класс"));
+    await user.type(
+      await screen.findByLabelText("Название класса (обязательно)"),
+      "Административные"
+    );
+
+    const save = screen.getByRole("button", { name: "Сохранить класс" });
+    await user.click(save);
+
+    // Пока запрос висит, кнопка обязана быть выключена: второй POST на то же
+    // название вернёт 409, а не класс.
+    await waitFor(() => expect(save).toBeDisabled());
+    await user.click(save);
+    expect(posts).toBe(1);
+
+    release?.();
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /Класс объектов/ })).toHaveTextContent(
+        "Административные"
+      );
+    });
+  });
+
+  /**
+   * Тело запроса, а не «форма закрылась» (спека §2.1): сервер обрабатывает края
+   * описания несимметрично — `create_rate_class` их **не** обрезает, поэтому
+   * пробельное описание легло бы в базу как есть.
+   */
+  const descriptionCases: Array<[string, string, string | null]> = [
+    ["пробельное описание уходит null, а не строкой", "   ", null],
+    ["края непустого описания обрезаются", "  Многоэтажные жилые  ", "Многоэтажные жилые"],
+  ];
+
+  it.each(descriptionCases)("%s", async (_name, typed, expected) => {
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.get("/api/v1/rate-classes", () => HttpResponse.json([])),
+      http.post("/api/v1/rate-classes", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(
+          {
+            id: 3,
+            title: body.title,
+            description: body.description ?? null,
+            contracts_count: 0,
+            objects_count: 0,
+            standards_count: 0,
+            created_at: null,
+            updated_at: null,
+          },
+          { status: 201 }
+        );
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByText("Создать класс"));
+    await user.type(
+      await screen.findByLabelText("Название класса (обязательно)"),
+      "  Административные  "
+    );
+    await user.type(screen.getByLabelText("Описание класса"), typed);
+    await user.click(screen.getByRole("button", { name: "Сохранить класс" }));
+
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.title).toBe("Административные");
+    expect(body!.description).toBe(expected);
+  });
+
+  /**
+   * Регрессионный щит права, а не тест нового поведения: пункта создания у
+   * `member` нет уже сегодня, поэтому нет и черновика — тест зелен и до правки.
+   * Доказывается он снятием `isAdmin` (план §4, снятие 8), а не красным прогоном.
+   */
+  it("у member черновика класса нет — как нет и пункта создания", async () => {
+    noClassesAtAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />, {
+      initialUser: { id: 2, email: "member@example.com", role: "member" },
+    });
+
+    await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
+    await screen.findByPlaceholderText("Название класса");
+
+    expect(screen.queryByText(/Создать класс/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Название класса (обязательно)")
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Сохранить класс" })).not.toBeInTheDocument();
   });
 });
 

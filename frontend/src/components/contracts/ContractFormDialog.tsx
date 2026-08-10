@@ -169,6 +169,16 @@ function ContractForm({
   const [contractorDraft, setContractorDraft] = useState<{ title: string; inn: string } | null>(
     null
   );
+  /**
+   * Черновик нового класса — тем же приёмом, что подрядчик, и по той же причине:
+   * одним нажатием класс не заводится. Прежний обработчик брал название из поля
+   * поиска, а при пустом поле **выходил молча** — и вместе со списком исчезало
+   * поле, в которое надо было вводить название (замер §1 спеки: 0 запросов).
+   * Черновик даёт и то, чего не было вовсе: описание класса.
+   */
+  const [classDraft, setClassDraft] = useState<{ title: string; description: string } | null>(
+    null
+  );
 
   // Запросы поиска уходят на сервер как `q`: клиентской фильтрации мало, потому
   // что записи за пределами страницы выдачи иначе недостижимы (дефект, найденный
@@ -236,15 +246,24 @@ function ContractForm({
     }
   }
 
-  async function handleCreateRateClass(query: string) {
-    const title = query.trim();
+  async function handleSaveClassDraft() {
+    if (!classDraft) return;
+    const title = classDraft.title.trim();
     if (!title) return;
     try {
-      const created = await createRateClass.mutateAsync({ title, description: null });
+      const created = await createRateClass.mutateAsync({
+        // Края описания режет фронт — так уже сделано на экране «Нормативы»
+        // (`RateClassesTab`), и второй конвенции на то же поле быть не должно.
+        // Пробельное описание обязано уйти `null`: `create_rate_class` края не
+        // обрезает, и «   » легло бы в базу как есть (спека §2.1).
+        title,
+        description: classDraft.description.trim() || null,
+      });
       setClassLabel(created.title);
       patch({ rate_class_id: created.id });
+      setClassDraft(null);
     } catch {
-      // Причина уже в тосте — как правило, название занято.
+      // Причина уже в тосте (чаще всего — название занято); черновик оставляем.
     }
   }
 
@@ -490,10 +509,62 @@ function ContractForm({
             loading={classesQ.isFetching}
             // Классы — право `admin` (§3), у member кнопки создания нет вовсе:
             // сервер всё равно ответит 403, и предлагать действие бессмысленно.
-            onCreateRequest={isAdmin ? handleCreateRateClass : undefined}
+            onCreateRequest={
+              isAdmin
+                ? (query) => setClassDraft({ title: query.trim(), description: "" })
+                : undefined
+            }
             createLabel="Создать класс"
             disabled={createRateClass.isPending}
           />
+          {classDraft && (
+            <div className="grid gap-2 rounded-md border border-border-subtle p-3">
+              <p className="text-xs text-fg-secondary">
+                Новый класс объектов. По нему сравниваются нормативы, а в договоре
+                класс фиксируется снимком.
+              </p>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-rate-class-draft-title">
+                  Название класса (обязательно)
+                </Label>
+                <Input
+                  id="contract-rate-class-draft-title"
+                  value={classDraft.title}
+                  onChange={(e) => setClassDraft({ ...classDraft, title: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="contract-rate-class-draft-description">Описание класса</Label>
+                <Input
+                  id="contract-rate-class-draft-description"
+                  value={classDraft.description}
+                  onChange={(e) =>
+                    setClassDraft({ ...classDraft, description: e.target.value })
+                  }
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveClassDraft}
+                  // `isPending` здесь не украшение: второй клик отправил бы второй
+                  // POST на то же название и получил 409 вместо класса.
+                  disabled={!classDraft.title.trim() || createRateClass.isPending}
+                >
+                  Сохранить класс
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setClassDraft(null)}
+                >
+                  Отмена
+                </Button>
+              </div>
+            </div>
+          )}
           {form.object_id !== null && !classResolved && (
             <p role="alert" className="text-xs text-danger-text">
               У объекта «{objectLabel}» класс не задан, а класс договора обязателен:
