@@ -17,6 +17,7 @@ from models import (
     Contract,
     Contractor,
     Estimate,
+    EstimateAdditionalWork,
     EstimateRawData,
     Lot,
     ObjectModel,
@@ -146,6 +147,150 @@ def _unallocated_breakdown(db: Session, estimate_id: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
+#  Допработы вне VIEW: строки, а не сумма (задача 5)
+# ---------------------------------------------------------------------------
+
+def _extras_select(estimate_id: int) -> sa.Select:
+    """Строки допработ одной сметы — вне `v_category_totals` намеренно: там
+    деньги свёрнуты в одну сумму на статью, а экрану паспорта нужны СТРОКИ
+    (спека §2.9 п.6), и достать строки из готовой суммы невозможно.
+
+    Порядок ОБЪЯВЛЕН ЯВНО: `ORDER BY estimate_additional_works.proposal_id,
+    estimate_additional_works.ordinal`. Ключ полный (`UNIQUE (proposal_id,
+    ordinal)`, Ф4) — порядок тотален, ничьих нет. Без явного `ORDER BY`
+    PostgreSQL не обязан возвращать строки в каком-либо порядке, и паспорт
+    перетасовывал бы строки между запусками (замерено в
+    `test_extras_select_declares_an_explicit_order`: без этого предложения
+    Bitmap Heap Scan и Index Only Scan на `gca_test` дают РАЗНЫЙ порядок).
+
+    Граница: `proposal_id` — суррогатный ключ, порядок лотов здесь — это
+    порядок их СОЗДАНИЯ. Он совпадает с порядком файла потому, что импорт
+    вставляет лоты в порядке парсера, а не потому, что это объявлено
+    контрактом. Доменный ключ `lots.lot_key` отвергнут измерением: это строка,
+    и при десяти лотах `lot_10` встала бы раньше `lot_2`, тогда как
+    `proposal_id` в этом же случае даёт правильный файловый порядок.
+    """
+    return (
+        sa.select(
+            EstimateAdditionalWork.id,
+            EstimateAdditionalWork.ordinal,
+            EstimateAdditionalWork.title,
+            EstimateAdditionalWork.total_amount,
+            EstimateAdditionalWork.work_category_id,
+        )
+        .select_from(EstimateAdditionalWork)
+        .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+        .order_by(EstimateAdditionalWork.proposal_id, EstimateAdditionalWork.ordinal)
+    )
+
+
+def _extras_by_category(db: Session, estimate_id: int) -> tuple[dict[int, list[dict]], list[dict]]:
+    """Строки допработ, разложенные по статьям: `({category_id: [rows]},
+    [строки без статьи])`. Каждая строка — `{id, ordinal, title, amount}`;
+    `id`/`ordinal` — чтобы строку можно было найти в БД, не гадая.
+
+    Инвариант, который это обязано сохранить (проверен `test_extras_of_a_
+    node_sum_to_the_view_branch`): сумма `extras` узла равна ветке
+    `additional_works` того же узла в `v_category_totals` — те же самые
+    строки, посчитанные VIEW и перечисленные здесь по отдельности. Без этой
+    проверки два запроса могли бы молча разъехаться.
+    """
+    rows = db.execute(_extras_select(estimate_id)).all()
+    by_category: dict[int, list[dict]] = {}
+    unallocated: list[dict] = []
+    for row in rows:
+        item = {"id": row.id, "ordinal": row.ordinal, "title": row.title, "amount": row.total_amount}
+        if row.work_category_id is None:
+            unallocated.append(item)
+        else:
+            by_category.setdefault(row.work_category_id, []).append(item)
+    return by_category, unallocated
+
+
+# ---------------------------------------------------------------------------
+#  Собственные разделы узла (спека §2.9 п.6 — уточнение §2.6, задача 5)
+# ---------------------------------------------------------------------------
+
+def _own_sections_select(estimate_id: int) -> sa.Select:
+    """Строки-разделы (`is_chapter = true`) исходной сметы, у которых есть хотя
+    бы одна прямая позиция (не раздел) под ними и которые несут статью — то
+    есть разделы, давшие узлу его СОБСТВЕННЫЕ деньги.
+
+    Зачем это поле вообще существует (закрывает внутреннее противоречие
+    спеки, задокументированное здесь как её уточнение): §2.9 п.6 требует
+    подписывать служебную строку «какие разделы сметы туда попали», §6
+    отвергает «имя раздела как заголовок» именно В ПОЛЬЗУ этой подписи, а
+    макет, одобренный на гейте 1, показывает её живьём — но форма ответа §2.6
+    само поле не несёт. Эта реализация закрывает эту нестыковку спеки полем
+    `own_sections` и фиксирует это как уточнение спеки.
+
+    «Есть позиция» — `EXISTS`, а не join+DISTINCT: раздел с двумя и более
+    позициями не должен размножить себя в списке.
+
+    Порядок — НЕ `position_items.id` (прямой запрет из хвоста Ф3: то решение
+    сохраняет порядок вставки, но не объявляет его контрактом). Порядок —
+    числовой по ключу позиции, БЕЗ приведения типа:
+    `ORDER BY proposals.id, length(position_key_in_proposal),
+    position_key_in_proposal`. `::numeric` отвергнут намеренно: колонка
+    объявлена `String(255)` без `CHECK`, непрерывность `1..N` держится
+    СБОРКОЙ парсера, а не схемой, и на ключе, который схема не запрещает,
+    привести к нечисловому виду значит уронить само ЧТЕНИЕ паспорта.
+    «Длина, потом лексикографически» даёт ровно числовой порядок на цифровых
+    строках без ведущих нулей и никогда не падает ни на каком входе. Граница:
+    на нечисловом ключе порядок становится детерминированным, но
+    произвольным.
+    """
+    referencing_position = aliased(PositionItem, name="own_sections_referencing_position")
+    has_positions = (
+        sa.select(sa.literal(1))
+        .select_from(referencing_position)
+        .where(
+            referencing_position.chapter_item_id == PositionItem.id,
+            referencing_position.proposal_id == PositionItem.proposal_id,
+            referencing_position.is_chapter.is_(False),
+        )
+        .exists()
+    )
+    return (
+        sa.select(
+            PositionItem.id,
+            PositionItem.work_category_id,
+            PositionItem.chapter_number_in_proposal,
+            PositionItem.job_title_in_proposal,
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == estimate_id,
+            PositionItem.is_chapter.is_(True),
+            PositionItem.work_category_id.is_not(None),
+            has_positions,
+        )
+        .order_by(
+            Proposal.id,
+            sa.func.length(PositionItem.position_key_in_proposal),
+            PositionItem.position_key_in_proposal,
+        )
+    )
+
+
+def _own_sections_by_category(db: Session, estimate_id: int) -> dict[int, list[dict]]:
+    """Собственные разделы, разложенные по статьям: `{category_id: [{id,
+    number, title}]}`. Узел без собственных денег получает пустой список —
+    вызывающий код читает через `.get(id, [])`."""
+    rows = db.execute(_own_sections_select(estimate_id)).all()
+    by_category: dict[int, list[dict]] = {}
+    for row in rows:
+        by_category.setdefault(row.work_category_id, []).append(
+            {"id": row.id, "number": row.chapter_number_in_proposal, "title": row.job_title_in_proposal}
+        )
+    return by_category
+
+
+# ---------------------------------------------------------------------------
 #  Валовое ИТОГО сметы и ставка НДС (спека §2.5, правила 1-2, 5-6)
 # ---------------------------------------------------------------------------
 
@@ -263,7 +408,13 @@ def _flatten_categories(nodes) -> list[CategoryNode]:
     return flat
 
 
-def _category_dict(node: CategoryNode, grand_total, area_total) -> dict:
+def _category_dict(
+    node: CategoryNode,
+    grand_total,
+    area_total,
+    extras_by_category: dict[int, list[dict]],
+    own_sections_by_category: dict[int, list[dict]],
+) -> dict:
     ref = node.ref
     return {
         "id": ref.id,
@@ -282,6 +433,8 @@ def _category_dict(node: CategoryNode, grand_total, area_total) -> dict:
         "own_rows": node.own_rows,
         "own_rows_priced": node.own_rows_priced,
         "own_rows_not_finite": node.own_rows_not_finite,
+        "extras": extras_by_category.get(ref.id, []),
+        "own_sections": own_sections_by_category.get(ref.id, []),
     }
 
 
@@ -332,8 +485,6 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     """Паспорт проекта по статьям классификатора (спека Ф6 §2.6).
 
     Форма ответа — решённый контракт (§2.6), ключи и вложенность менять нельзя.
-    Часть полей НАМЕРЕННО отсутствует и появится в задаче 5:
-    `categories[].extras`, `categories[].own_sections`, `unallocated.extras`.
 
     Правила, реализованные здесь (§2.6, не смягчать):
 
@@ -365,6 +516,13 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         известных операнда (`totals.amount` и файловый итог) — `None`, если
         хотя бы один неизвестен, а не только когда неизвестен файловый итог
         (правило 3); иначе точная `Decimal`-разница (правило 4).
+    13. `categories[].extras`, `unallocated.extras` — строки допработ вне VIEW
+        (задача 5, `_extras_by_category`): гранулярность VIEW — одна сумма на
+        статью, а экрану нужны СТРОКИ (спека §2.9 п.6).
+    14. `categories[].own_sections` — разделы, давшие узлу его собственные
+        деньги (задача 5, `_own_sections_by_category`) — уточнение спеки §2.6
+        полем, закрывающим противоречие §2.9 п.6 / §6 (см. докстринг
+        `_own_sections_select`).
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -423,7 +581,9 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         # ещё не загружен. Дерево статей всё равно полное — экран показывает
         # тот же скелет, что и для договора со сметой, просто без чисел.
         roots = build_tree(refs, {})
-        categories = [_category_dict(node, None, None) for node in _flatten_categories(roots)]
+        categories = [
+            _category_dict(node, None, None, {}, {}) for node in _flatten_categories(roots)
+        ]
         return {
             "contract": contract_dict,
             "object": object_dict,
@@ -448,6 +608,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
                 "per_sqm": None,
                 "chapters": 0,
                 "rows_outside_structure": 0,
+                "extras": [],
             },
         }
 
@@ -488,6 +649,9 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     unallocated_amount = _sum_known(pos_amount, extra_amount)
     chapters, rows_outside_structure = _unallocated_breakdown(db, estimate.id)
 
+    extras_by_category, unallocated_extras = _extras_by_category(db, estimate.id)
+    own_sections_by_category = _own_sections_by_category(db, estimate.id)
+
     grand_total = _sum_known(*(node.total for node in roots), unallocated_amount)
     area_total = obj.area_total_sp
 
@@ -521,9 +685,13 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "per_sqm": _per_sqm(unallocated_amount, area_total),
         "chapters": chapters,
         "rows_outside_structure": rows_outside_structure,
+        "extras": unallocated_extras,
     }
 
-    categories = [_category_dict(node, grand_total, area_total) for node in flat_nodes]
+    categories = [
+        _category_dict(node, grand_total, area_total, extras_by_category, own_sections_by_category)
+        for node in flat_nodes
+    ]
 
     return {
         "contract": contract_dict,

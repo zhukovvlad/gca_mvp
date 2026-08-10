@@ -15,10 +15,12 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
+from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from crud.project_passport import get_project_passport
-from models import EstimateAdditionalWork, ProposalSummaryLine, WorkCategory
+from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
 from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
 
 pytestmark = pytest.mark.integration
@@ -672,3 +674,294 @@ def test_declared_zero_vat_is_distinguishable_from_absence(db_session, factories
     assert zero_result["estimate"]["vat_rate"] == Decimal("0")
     assert zero_result["estimate"]["vat_rate"] is not None
     assert absent_result["estimate"]["vat_rate"] is None
+
+
+# ---------------------------------------------------------------------------
+#  16. Допработы узла — сумма сходится с веткой VIEW (задача 5)
+# ---------------------------------------------------------------------------
+
+def test_extras_of_a_node_sum_to_the_view_branch(db_session, factories):
+    """Инвариант, связывающий два запроса (бриф задачи 5): сумма `extras` узла
+    обязана совпасть с суммой ветки `additional_works` того же узла в
+    `v_category_totals` — читанной СЫРЫМ SQL как независимый операнд. Без этой
+    проверки два запроса (VIEW и построчный) могли бы молча разъехаться —
+    одна и та же величина, посчитанная дважды. ДВЕ строки допработ на статью,
+    чтобы сумма не была тривиальным единственным значением."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    _additional_work(db_session, proposal, ordinal=1, category_id=category.id, amount=Decimal("300.00"))
+    _additional_work(db_session, proposal, ordinal=2, category_id=category.id, amount=Decimal("450.00"))
+    db_session.flush()
+    estimate_id = proposal.lot.estimate.id
+
+    oracle = db_session.execute(
+        sa.text(
+            "SELECT amount FROM v_category_totals WHERE estimate_id = :eid "
+            "AND work_category_id = :cid AND source = 'additional_works'"
+        ),
+        {"eid": estimate_id, "cid": category.id},
+    ).scalar_one()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert len(node["extras"]) == 2
+    assert sum(e["amount"] for e in node["extras"]) == oracle
+
+
+# ---------------------------------------------------------------------------
+#  17. _extras_select объявляет явный порядок (СТРУКТУРНЫЙ тест)
+# ---------------------------------------------------------------------------
+
+def test_extras_select_declares_an_explicit_order():
+    """СТРУКТУРНЫЙ тест: компилируем select и проверяем сам SQL-текст, а не
+    поведение. Поведенческий тест ЭТУ границу не охраняет: замерено на
+    `gca_test` — без `ORDER BY` Bitmap Heap Scan возвращает `2, 1` (тест
+    падает), а Index Only Scan возвращает `1, 2` (тест зелёный), то есть
+    поведенческая проверка опиралась бы на выбор планировщика, а это не
+    контракт."""
+    sql = str(crud_project_passport._extras_select(1).compile(dialect=postgresql.dialect()))
+
+    assert "ORDER BY" in sql
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert "proposal_id" in order_clause
+    assert "ordinal" in order_clause
+
+
+# ---------------------------------------------------------------------------
+#  18. Допработы возвращаются в порядке ordinal (поведенческий, позитивный)
+# ---------------------------------------------------------------------------
+
+def test_extras_come_back_in_ordinal_order(db_session, factories):
+    """Две записи заведены в ОБРАТНОМ порядке ordinal (сначала 2, потом 1) в
+    одном предложении — ответ обязан вернуть 1, затем 2, что доказывает: сортировка
+    делает `ORDER BY`, а не порядок вставки."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    _additional_work(db_session, proposal, ordinal=2, category_id=category.id, amount=Decimal("200.00"))
+    _additional_work(db_session, proposal, ordinal=1, category_id=category.id, amount=Decimal("100.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert [e["ordinal"] for e in node["extras"]] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+#  19. Строка extras несёт id и ordinal
+# ---------------------------------------------------------------------------
+
+def test_extras_carry_id_and_ordinal(db_session, factories):
+    """`id` и `ordinal` обязаны быть в ответе — иначе строку паспорта нельзя
+    найти в БД, не гадая."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    work = _additional_work(db_session, proposal, ordinal=1, category_id=category.id, amount=Decimal("500.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert len(node["extras"]) == 1
+    assert node["extras"][0]["id"] == work.id
+    assert node["extras"][0]["ordinal"] == 1
+
+
+# ---------------------------------------------------------------------------
+#  20. Допработа без статьи — в unallocated.extras, не в categories[].extras
+# ---------------------------------------------------------------------------
+
+def test_additional_work_without_a_category_lands_in_unallocated_extras(db_session, factories):
+    """Запись без статьи показывается в `unallocated["extras"]` и НЕ в
+    `categories[].extras` ни одной категории."""
+    proposal = _proposal(factories)
+    _additional_work(db_session, proposal, ordinal=1, amount=Decimal("400.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    assert len(result["unallocated"]["extras"]) == 1
+    assert result["unallocated"]["extras"][0]["amount"] == Decimal("400.00")
+    for c in result["categories"]:
+        assert c["extras"] == []
+
+
+# ---------------------------------------------------------------------------
+#  21. own_sections называет разделы, давшие статье её собственные деньги
+# ---------------------------------------------------------------------------
+
+def test_own_sections_name_the_chapter_rows_of_the_category(db_session, factories):
+    """Один раздел со статьёй и позицией под ним -> `own_sections` — список из
+    ОДНОЙ записи с настоящими номером и заголовком раздела."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter = _chapter(
+        factories, proposal, category_id=category.id,
+        chapter_number="3", job_title_in_proposal="Раздел 3",
+    )
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own_sections"] == [{"id": chapter.id, "number": "3", "title": "Раздел 3"}]
+
+
+# ---------------------------------------------------------------------------
+#  22. Спека §1.4: деньги приходят из ДВУХ разделов — оба обязаны попасть в ответ
+# ---------------------------------------------------------------------------
+
+def test_own_sections_list_both_sections_when_the_money_comes_from_two(db_session, factories):
+    """ДВА раздела с ОДНОЙ и той же статьёй, у каждого своя позиция — случай
+    спеки §1.4 (четвёртый из четырёх измеренных): в ответе обязаны быть ОБА."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter_a = _chapter(
+        factories, proposal, category_id=category.id,
+        chapter_number="1", job_title_in_proposal="Раздел А", position_key_in_proposal="1",
+    )
+    _position(factories, proposal, chapter=chapter_a, total_cost_total=Decimal("500.00"))
+    chapter_b = _chapter(
+        factories, proposal, category_id=category.id,
+        chapter_number="2", job_title_in_proposal="Раздел Б", position_key_in_proposal="2",
+    )
+    _position(factories, proposal, chapter=chapter_b, total_cost_total=Decimal("700.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert {s["id"] for s in node["own_sections"]} == {chapter_a.id, chapter_b.id}
+    assert len(node["own_sections"]) == 2
+
+
+# ---------------------------------------------------------------------------
+#  23. own_sections пуст, когда у узла нет собственных денег
+# ---------------------------------------------------------------------------
+
+def test_own_sections_are_empty_when_the_node_has_no_own_money(db_session, factories):
+    """Раздел несёт статью, но под ним НЕТ позиций -> у узла нет собственных
+    денег. КОРНЕВАЯ статья (код "1"), чтобы узел вообще доехал до ответа
+    (глубже первого уровня видимость требует rows > 0 у `build_tree`)."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    _chapter(factories, proposal, category_id=category.id, chapter_number="1")  # без позиций под ним
+    db_session.flush()
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own_rows"] == 0
+    assert node["own_sections"] == []
+
+
+# ---------------------------------------------------------------------------
+#  24. _own_sections_select объявляет явный порядок (СТРУКТУРНЫЙ тест)
+# ---------------------------------------------------------------------------
+
+def test_own_sections_select_declares_an_explicit_order():
+    """СТРУКТУРНЫЙ тест, та же техника, что у `test_extras_select_declares_an_
+    explicit_order`: проверяем сам SQL-текст на наличие `ORDER BY` с числовым
+    порядком по ключу позиции, а не поведение (планировщик может случайно
+    вернуть верный порядок и без него)."""
+    sql = str(crud_project_passport._own_sections_select(1).compile(dialect=postgresql.dialect()))
+
+    assert "ORDER BY" in sql
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert "proposals.id" in order_clause
+    assert "length(" in order_clause
+    assert "position_key_in_proposal" in order_clause
+
+
+# ---------------------------------------------------------------------------
+#  25. own_sections НЕ сортируется по id строки (хвост Ф3)
+# ---------------------------------------------------------------------------
+
+def test_own_sections_do_not_order_by_position_item_id(db_session, factories):
+    """Хвост Ф3: два раздела ОДНОЙ статьи в одном предложении, чей порядок по
+    ключу ПРОТИВОПОЛОЖЕН порядку по id — раздел с ключом "10" заведён ПЕРВЫМ
+    (меньший id), раздел с ключом "2" заведён ВТОРЫМ (больший id), у каждого
+    своя позиция. Ответ обязан перечислить "2" раньше "10" (длина-потом-лексика
+    даёт числовой порядок), то есть НЕ порядок id. Проверяем, что id
+    действительно в обратном порядке — иначе тест мог бы пройти случайно."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter_10 = _chapter(
+        factories, proposal, category_id=category.id,
+        chapter_number="10", position_key_in_proposal="10",
+    )
+    _position(factories, proposal, chapter=chapter_10, total_cost_total=Decimal("100.00"))
+    chapter_2 = _chapter(
+        factories, proposal, category_id=category.id,
+        chapter_number="2", position_key_in_proposal="2",
+    )
+    _position(factories, proposal, chapter=chapter_2, total_cost_total=Decimal("200.00"))
+    db_session.flush()
+
+    assert chapter_10.id < chapter_2.id  # порядок id — противоположен порядку ключа
+
+    result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert [s["number"] for s in node["own_sections"]] == ["2", "10"]
+
+
+# ---------------------------------------------------------------------------
+#  26. Деньги доезжают в JSON строками в каждой ветке (эндпоинт, RAW BODY)
+# ---------------------------------------------------------------------------
+
+_MONEY_FIELD_BY_BRANCH = {
+    "totals": "amount",
+    "categories": "total",
+    "unallocated": "amount",
+    "extras": "amount",
+}
+
+
+@pytest.mark.parametrize("branch", ["totals", "categories", "unallocated", "extras"])
+def test_money_reaches_json_as_strings_in_every_branch(client, db_session, factories, branch):
+    """Через ЭНДПОИНТ (не CRUD напрямую), проверка на СЫРОМ теле ответа
+    (`response.text`), а не на распарсенном JSON — парсинг спрятал бы сам
+    дефект (`json.loads("1000.0")` не отличит float от Decimal на глаз). Суммы
+    подобраны различными по каждой ветке, чтобы каждая была узнаваема: итог
+    договора 3500.00, собственная сумма категории (позиция+допработа) 1500.00,
+    нераспределённая позиция 2000.00, допработа 500.00. Тело — компактный JSON
+    (`separators=(",", ":")`), поэтому после двоеточия пробела нет."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    chapter = _chapter(factories, proposal, category_id=category.id, chapter_number="1")
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1000.00"))
+    _additional_work(db_session, proposal, ordinal=1, category_id=category.id, amount=Decimal("500.00"))
+    _position(factories, proposal, total_cost_total=Decimal("2000.00"))  # нераспределённая
+    db_session.flush()
+
+    response = client.get(f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}")
+    assert response.status_code == 200
+    body = response.text
+
+    value = {"totals": "3500.00", "categories": "1500.00", "unallocated": "2000.00", "extras": "500.00"}[branch]
+    field = _MONEY_FIELD_BY_BRANCH[branch]
+    numeric = Decimal(value)
+
+    assert f'"{field}":"{value}"' in body
+    assert f'"{field}":{int(numeric)}.0' not in body
+    assert f'"{field}":{int(numeric)}' not in body
+
+
+# ---------------------------------------------------------------------------
+#  27. member читает эндпоинт (§3 AGENTS.md: аналитика есть чтение)
+# ---------------------------------------------------------------------------
+
+def test_member_can_read_the_endpoint(client, factories):
+    """Этот тест доказывает ОТСУТСТВИЕ ограничения: он зелёный ещё ДО фичи (до
+    появления самого эндпоинта он получит 404 на несуществующем роуте, а не
+    403 — то есть роль тут ни при чём) и потому не участвует в доказательствах
+    снятием защиты. Его роль — регрессионный щит будущего сужения прав."""
+    contract = factories.ContractFactory.create()
+    client.auth_state["role"] = UserRole.member
+
+    response = client.get(f"/api/v1/analytics/project-passport/{contract.id}")
+
+    assert response.status_code == 200
