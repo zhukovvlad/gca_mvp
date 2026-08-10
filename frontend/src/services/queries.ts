@@ -149,6 +149,8 @@ export function useUpdateRateClass() {
       referencesApi.updateRateClass(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Название класса денормализовано в шапку паспорта (`rate_class_title`).
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Класс объектов обновлён");
     },
     onError: toastApiError,
@@ -250,6 +252,8 @@ export function useUpdateContractor() {
       referencesApi.updateContractor(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.contractors.all });
+      // Название подрядчика денормализовано в шапку паспорта (`contractor_title`).
+      qc.invalidateQueries({ queryKey: qk.passport.all });
     },
     onError: toastApiError,
   });
@@ -289,6 +293,11 @@ export function useCreateContract() {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.contractors.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Новый договор меняет `object_contracts_count` у ВСЕХ паспортов этого
+      // объекта: бейдж «у объекта N договоров» предупреждает, что ₽/м² делит
+      // разные деньги на одну площадь (спека Ф6 §2.6, обязательство 3 Ф5).
+      // Без инвалидации он ещё минуту показывал бы прежнее N.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Договор создан");
     },
     onError: toastApiError,
@@ -302,6 +311,12 @@ export function useUpdateContract() {
       contractsApi.update(id, input),
     onSuccess: (contract) => {
       qc.invalidateQueries({ queryKey: qk.contracts.all });
+      // Шапка паспорта проекта денормализует реквизиты договора целиком —
+      // номер, подписанта, дату, класс и три коммерческих условия (спека Ф6
+      // §2.6). При `staleTime: 60_000` без этой инвалидации правка реквизитов
+      // не доезжала бы до уже открытого паспорта целую минуту, и он был бы
+      // «свежим» по мнению React Query и устаревшим по факту.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success(`Договор ${contract.contract_number} обновлён`);
     },
     onError: toastApiError,
@@ -314,6 +329,11 @@ export function useDeleteContract() {
     mutationFn: (id: number) => contractsApi.remove(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.contracts.all });
+      // Удаление бьёт по паспорту дважды: у остальных договоров объекта
+      // меняется `object_contracts_count`, а паспорт САМОГО удалённого договора
+      // остаётся в кэше — и без инвалидации к нему можно вернуться назад и
+      // увидеть документ по договору, которого уже нет.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Договор удалён");
     },
     onError: toastApiError,
@@ -399,6 +419,11 @@ export function useImportJob(jobId: number | undefined, contractId?: number) {
         qc.invalidateQueries({ queryKey: qk.contracts.card(contractId) });
         qc.invalidateQueries({ queryKey: qk.contracts.importJobs(contractId) });
         qc.invalidateQueries({ queryKey: qk.review.all });
+        // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
+        // или заменяется, а с ней все суммы по статьям. Без этой инвалидации
+        // паспорт, открытый до загрузки, ещё минуту показывал бы «смета не
+        // загружена» либо суммы прежней сметы (спека Ф6 §2.4).
+        qc.invalidateQueries({ queryKey: qk.passport.all });
       }
       return job;
     },
@@ -566,8 +591,10 @@ export function useUpdateAppSettings() {
     mutationFn: (passportTopN: number) => settingsApi.update(passportTopN),
     onSuccess: (settings) => {
       qc.invalidateQueries({ queryKey: qk.settings.all });
-      // Паспорт зависит от N — без этой инвалидации уже открытый паспорт остался
-      // бы с прежним числом строк, и настройка выглядела бы неработающей.
+      // Хвост фазы 6: паспорт объекта зависел от N, и эта инвалидация держала его
+      // перерисовку. Паспорт проекта (Ф6 фазы 7) от `passport_top_n` не зависит —
+      // после задачи 11 эта строка не обновляет ничего значимого, но и не вредит
+      // (лишний рефетч по корню, которого никто не показывает), поэтому не снята.
       qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success(`Ключевых расценок в паспорте: ${settings.passport_top_n}`);
     },
@@ -576,16 +603,22 @@ export function useUpdateAppSettings() {
 }
 
 /**
- * Паспорт объекта (§7.4).
+ * Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6, задача 6).
  *
- * N берёт сервер из БД, поэтому здесь его нет ни в аргументах, ни в ключе:
- * перерисовку при смене настройки делает инвалидация `passport.all` в
- * `useUpdateAppSettings` (см. комментарий у `qk.passport.one`).
+ * Форма та же, что у `useContract`/`useObject` выше: `contractId` необязателен
+ * (карточка договора грузится первой), `enabled` держит запрос под замком до
+ * появления идентификатора — без него ушёл бы `GET /project-passport/0` при
+ * каждом первом рендере со штатным 404 (тот же класс дефекта, что P3 у F5).
+ *
+ * Ключ — `qk.passport.project`, под тем же корнем `qk.passport.all` (см.
+ * комментарий у `qk.passport.project`): инвалидация `useUpdateObject`/
+ * `useUpdateAppSettings` уже накрывает паспорт проекта, без правки списка
+ * инвалидации.
  */
-export function usePassport(contractId: number | undefined) {
+export function useProjectPassport(contractId: number | undefined) {
   return useQuery({
-    queryKey: qk.passport.one(contractId ?? 0),
-    queryFn: () => analyticsApi.passport(contractId as number),
+    queryKey: qk.passport.project(contractId ?? 0),
+    queryFn: () => analyticsApi.projectPassport(contractId as number),
     enabled: contractId !== undefined,
   });
 }

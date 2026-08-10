@@ -1,0 +1,1237 @@
+<!--
+  Ф6 фазы 7 — референс экрана паспорта проекта. Одобрен пользователем на гейте 1.
+
+  ЧТО ЭТО. Согласованная форма экрана `/contracts/:id/passport`: шапка с ТЭП и
+  коммерческими условиями, кольцо структуры, таблица по статьям классификатора.
+  Файл — не прототип реализации: продакшен-экран собирается на React, примитивах
+  shadcn/ui и токенах `frontend/src/index.css`. Здесь те же токены повторены
+  литералами, чтобы файл открывался сам по себе.
+
+  ДАННЫЕ ВЫМЫШЛЕННЫЕ. Ни одной реальной суммы, ни названия объекта, ни
+  контрагента. Настоящие только коды и названия статей классификатора — это
+  справочник, а не коммерческие данные (политика samples/, DoD фазы 7).
+
+  ПЕРЕКЛЮЧАТЕЛИ СВЕРХУ частью экрана не являются: это состояния для проверки —
+  «ТЭП не заведены», нулевые подстатьи, несколько договоров у объекта,
+  расхождение с ИТОГО сметы, тёмная тема, полное раскрытие дерева.
+
+  ЗАМЕРЕНО в системном Chrome (playwright-core, channel "chrome"):
+  сообщений в консоли 0 во всех шести состояниях; выхода за правый край нет ни
+  на 1280, ни на 720 px, ни в печатной раскладке; рендер в A4 PDF — 2 листа в
+  свёрнутом виде и 4 в полностью раскрытом.
+
+  ШРИФТЫ здесь не инлайнены — при открытии файла напрямую серифный заголовок
+  уедет в Georgia. Проектные начертания (Cormorant Garamond, Geist Variable)
+  подставляются из `frontend/node_modules/@fontsource*`; в самом приложении они
+  приходят из `index.css` и подмены не требуют.
+
+  ПАЛИТРА КОЛЬЦА выбрана не на вкус: приглушённый набор в регистре документа
+  трижды не прошёл проверку разделимости (соседняя пара давала ΔE 4,4 при
+  пороге 15 даже для нормального зрения). Здесь стоит набор, прошедший все
+  проверки в светлой и тёмной темах на поверхностях проекта, а
+  «Нераспределённое» вдобавок заштриховано — цвет не единственный носитель
+  смысла.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Паспорт проекта — макет Ф6</title>
+</head>
+<body>
+<style>
+/* @font-face здесь намеренно нет — см. комментарий в начале файла. */
+
+/* ===========================================================================
+   Токены — взяты из frontend/src/index.css проекта (GCA Design Tokens).
+   Светлая палитра живёт в голом :root; тёмная переопределяет ТЕ ЖЕ имена
+   дважды — под prefers-color-scheme и под стамп [data-theme="dark"], —
+   чтобы работали все три состояния: system, light, dark.
+   =========================================================================== */
+
+:root {
+  --bg-page:           #F4F2EC;
+  --bg-surface:        #FFFFFF;
+  --bg-surface-sunken: #F7F6F2;
+  --bg-surface-hover:  #FAFAF7;
+
+  --text-primary:      #1F2128;
+  --text-secondary:    #5A5D66;
+  --text-tertiary:     #8E8B82;
+  --text-muted:        #B5B2A8;
+
+  --border-subtle:     rgba(0, 0, 0, 0.08);
+  --border-default:    rgba(0, 0, 0, 0.14);
+  --border-strong:     rgba(0, 0, 0, 0.22);
+
+  --accent:            #5F8568;
+  --accent-soft:       #E8F0EA;
+  --accent-border:     #C9D9CD;
+  --accent-text:       #3D5443;
+
+  --action:            #2D3A30;
+  --action-text:       #F7F6F2;
+
+  --warning:           #B5642E;
+  --warning-strong:    #A33D1F;
+  --warning-soft:      #FAF1E1;
+  --warning-border:    #E8C8A8;
+  --warning-text:      #6B3915;
+
+  --info:              #4A7290;
+  --info-soft:         #E5EEF4;
+  --info-border:       #C5D7E2;
+  --info-text:         #2C4A60;
+
+  --neutral-soft:      #EFEEE6;
+  --neutral-border:    #D8D4C8;
+
+  /* Кольцо структуры: категориальный набор, прошедший валидатор
+     (полоса светлоты, порог цветности, разделимость при дальтонизме,
+     контраст к поверхности) в обеих темах на поверхностях этого проекта. */
+  --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --s4: #eda100;
+  --s5: #e87ba4;  --s6: #008300;  --s7: #4a3aa7;  --s8: #e34948;
+  --s-rest: #898781;
+
+  --shadow-sheet: 0 1px 2px rgba(31, 33, 40, .06), 0 8px 24px rgba(31, 33, 40, .06);
+
+  --font-sans:  "Geist Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Cormorant Garamond", "Source Serif Pro", Georgia, serif;
+  --font-mono:  "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-page:           #1A1D24;
+    --bg-surface:        #232730;
+    --bg-surface-sunken: #1F232B;
+    --bg-surface-hover:  #262B35;
+
+    --text-primary:      #EDEAE0;
+    --text-secondary:    #B5B2A8;
+    --text-tertiary:     #8E8B82;
+    --text-muted:        #6E6B65;
+
+    --border-subtle:     #2D323D;
+    --border-default:    #3A4148;
+    --border-strong:     #4A525C;
+
+    --accent:            #8FAB91;
+    --accent-soft:       #2A352D;
+    --accent-border:     #3A4A3D;
+    --accent-text:       #B8C4BB;
+
+    --action:            #B8C4BB;
+    --action-text:       #1A1D24;
+
+    --warning:           #D49A6E;
+    --warning-strong:    #E8B080;
+    --warning-soft:      #353027;
+    --warning-border:    #4A3D2E;
+    --warning-text:      #D49A6E;
+
+    --info:              #7AA0BE;
+    --info-soft:         #2A323D;
+    --info-border:       #3A4854;
+    --info-text:         #A5C0D6;
+
+    --neutral-soft:      #2A2D33;
+    --neutral-border:    #353944;
+
+    --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
+    --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
+    --s-rest: #898781;
+
+    --shadow-sheet: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .28);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg-page:           #1A1D24;
+  --bg-surface:        #232730;
+  --bg-surface-sunken: #1F232B;
+  --bg-surface-hover:  #262B35;
+
+  --text-primary:      #EDEAE0;
+  --text-secondary:    #B5B2A8;
+  --text-tertiary:     #8E8B82;
+  --text-muted:        #6E6B65;
+
+  --border-subtle:     #2D323D;
+  --border-default:    #3A4148;
+  --border-strong:     #4A525C;
+
+  --accent:            #8FAB91;
+  --accent-soft:       #2A352D;
+  --accent-border:     #3A4A3D;
+  --accent-text:       #B8C4BB;
+
+  --action:            #B8C4BB;
+  --action-text:       #1A1D24;
+
+  --warning:           #D49A6E;
+  --warning-strong:    #E8B080;
+  --warning-soft:      #353027;
+  --warning-border:    #4A3D2E;
+  --warning-text:      #D49A6E;
+
+  --info:              #7AA0BE;
+  --info-soft:         #2A323D;
+  --info-border:       #3A4854;
+  --info-text:         #A5C0D6;
+
+  --neutral-soft:      #2A2D33;
+  --neutral-border:    #353944;
+
+  --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
+  --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
+  --s-rest: #898781;
+
+  --shadow-sheet: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .28);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px 16px 64px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --------------------------------------------------------------- демо-панель */
+
+.demobar {
+  max-width: 1060px;
+  margin: 0 auto 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.demobar > .demolabel {
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.demobar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.demobar input { accent-color: var(--accent); margin: 0; }
+.demobar button {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.demobar button:hover { background: var(--bg-surface-hover); }
+:is(.demobar button, .btn, .rowbtn):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ лист */
+
+.sheet {
+  max-width: 1060px;
+  margin: 0 auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sheet);
+}
+
+/* титульная полоса */
+
+.titleband {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 20px 26px 16px;
+  border-bottom: 2px solid var(--text-primary);
+}
+
+.stamp {
+  flex: none;
+  width: 58px;
+  height: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--accent);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  transform: rotate(-2deg);
+}
+:root[data-theme="dark"] .stamp,
+:root:not([data-theme="light"]) .stamp { }
+.stamp b { font-size: 19px; line-height: 1; font-weight: 700; }
+.stamp span { font-size: 7.5px; letter-spacing: .12em; margin-top: 4px; }
+
+.titlemain { flex: 1 1 auto; min-width: 0; }
+
+.eyebrow {
+  font-size: 10.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+h1 {
+  font-family: var(--font-serif);
+  font-size: 27px;
+  line-height: 1.15;
+  font-weight: 500;
+  margin: 4px 0 0;
+  text-wrap: balance;
+}
+h1 .num {
+  font-family: var(--font-mono);
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -.01em;
+}
+h1 .sep { color: var(--text-muted); font-family: var(--font-sans); }
+
+.subline {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--neutral-border);
+  color: var(--text-secondary);
+  background: var(--neutral-soft);
+  white-space: nowrap;
+}
+.badge[hidden] { display: none; }
+.badge.info    { border-color: var(--info-border);    color: var(--info-text);    background: var(--info-soft); }
+.badge.warn    { border-color: var(--warning-border); color: var(--warning-text); background: var(--warning-soft); }
+.badge.accent  { border-color: var(--accent-border);  color: var(--accent-text);  background: var(--accent-soft); }
+
+.titleactions { flex: none; }
+.btn {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  border: 1px solid var(--action);
+  background: var(--action);
+  color: var(--action-text);
+}
+.btn:hover { opacity: .9; }
+
+/* линейка показателей */
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.metric {
+  flex: 1 1 210px;
+  padding: 11px 26px;
+  border-right: 1px solid var(--border-subtle);
+}
+.metric:last-child { border-right: 0; }
+.metric dt {
+  font-size: 10px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.metric dd {
+  margin: 3px 0 0;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.metric .sub {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.metric .absent {
+  display: inline-block;
+  margin-top: 3px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border: 1px solid var(--warning-border);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  border-radius: 3px;
+}
+
+/* оговорки коммерческих условий — свободный текст, зажат по высоте */
+
+.terms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 2px 26px;
+  padding: 9px 26px 11px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface-sunken);
+}
+.term {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.term b {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.term span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* строка сверки — молчит, пока сходится */
+
+.reconcile {
+  display: none;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 26px;
+  border-bottom: 1px solid var(--warning-border);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: 12.5px;
+}
+.reconcile.on { display: flex; }
+.reconcile b { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* --------------------------------------------------------- структура */
+
+.structure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 22px;
+  padding: 14px 26px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sronly {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ringbox { position: relative; width: 208px; height: 200px; flex: none; }
+.ringbox svg { display: block; width: 100%; height: 100%; }
+.ringbox .center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  text-align: center;
+}
+.ringbox .center .cap {
+  font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-tertiary);
+}
+.ringbox .center .val {
+  font-family: var(--font-mono); font-size: 15px; font-weight: 600; letter-spacing: -.02em;
+}
+.slice { cursor: default; transition: opacity .12s ease; }
+.slice.dim { opacity: .3; }
+
+.legend {
+  flex: 1 1 380px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  column-gap: 24px;
+  row-gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+.legend li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12px;
+  min-width: 0;
+  padding: 1px 0;
+}
+.legend .chip {
+  flex: none;
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  align-self: center;
+}
+.legend .nm {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+.legend li.unalloc .nm { color: var(--warning-text); font-weight: 600; }
+/* чип «Нераспределённого» штрихуется так же, как его сектор: цвет там не
+   единственный носитель смысла — этого требует доступность, и заодно снимает
+   соседство с жёлтым слотом палитры. */
+.legend li.unalloc .chip {
+  background:
+    repeating-linear-gradient(45deg,
+      var(--warning) 0 2px,
+      var(--warning-soft) 2px 4px);
+  outline: 1px solid var(--warning-border);
+  outline-offset: -1px;
+}
+.legend .pc {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- таблица */
+
+.tablewrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; min-width: 720px; }
+
+thead th {
+  font-size: 10px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-align: left;
+  padding: 8px 8px;
+  border-bottom: 1px solid var(--text-primary);
+  white-space: nowrap;
+}
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+th.c-code { width: 62px; padding-left: 26px; }
+th.c-sum  { width: 158px; }
+th.c-share{ width: 74px; }
+th.c-m2   { width: 104px; padding-right: 26px; }
+
+tbody td {
+  padding: 5px 8px;
+  font-size: 13px;
+  vertical-align: baseline;
+}
+tbody tr.lvl1 > td { border-top: 1px solid var(--border-subtle); }
+tbody tr:hover > td { background: var(--bg-surface-hover); }
+
+td.code {
+  padding-left: 26px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+td.sum, td.m2 { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+td.share { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; }
+td.m2 { padding-right: 26px; color: var(--text-secondary); }
+
+tr.lvl1 td.name, tr.lvl1 td.sum { font-weight: 600; }
+tr.empty td { color: var(--text-muted); }
+tr.empty td.sum, tr.empty td.m2, tr.empty td.share { color: var(--text-muted); }
+
+td.name { min-width: 240px; }
+.nmwrap { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.nmcol  { display: flex; flex-direction: column; min-width: 0; }
+.nmline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+/* Наименование зажимается по высоте: в каталоге есть строки на килобайты
+   (AGENTS.md §11), а бейдж обязан остаться на одной строке с названием,
+   иначе восемь корзин делают таблицу вдвое выше. */
+.nmwrap .txt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-width: 0;
+}
+.nmline .badge { flex: none; }
+.rowbtn {
+  flex: none;
+  width: 14px; height: 14px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 14px;
+  transition: transform .12s ease;
+}
+.rowbtn[aria-expanded="true"] { transform: rotate(90deg); }
+.rowbtn.spacer { visibility: hidden; cursor: default; }
+
+.sub { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
+
+tr.service td.name .txt { color: var(--text-secondary); font-style: italic; }
+tr.service td.code { color: var(--text-muted); }
+
+tr.unalloc td {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  border-top: 1px solid var(--warning-border);
+  border-bottom: 1px solid var(--warning-border);
+}
+tr.unalloc td.name { font-weight: 600; }
+tr.unalloc:hover > td { background: var(--warning-soft); }
+
+tr.grand td {
+  border-top: 1px solid var(--text-primary);
+  padding-top: 9px; padding-bottom: 9px;
+  font-weight: 700;
+}
+tr.grand:hover > td { background: transparent; }
+tr.grand td.name { font-family: var(--font-serif); font-size: 17px; font-weight: 600; }
+tr.grand td.sum, tr.grand td.m2, tr.grand td.share {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  border-bottom: 3px double var(--text-primary);
+}
+
+/* --------------------------------------------------------------- подвал */
+
+.sheetfoot { padding: 12px 26px 18px; }
+.note {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 9px;
+}
+.note p { margin: 0; max-width: 74ch; }
+.note .stamped { font-family: var(--font-mono); white-space: nowrap; }
+
+.signs {
+  margin-top: 22px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.signs div { border-top: 1px solid var(--border-default); padding-top: 4px; }
+
+/* --------------------------------------------------------------- подсказка */
+
+#tip {
+  position: fixed;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity .1s ease;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-sheet);
+  border-radius: 4px;
+  padding: 6px 9px;
+  font-size: 12px;
+  max-width: 300px;
+}
+#tip.on { opacity: 1; }
+#tip .t { font-weight: 600; margin-bottom: 2px; }
+#tip .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
+/* --------------------------------------------------------------- печать */
+
+@media print {
+  @page { size: A4 portrait; margin: 10mm; }
+  body { background: #fff; padding: 0; font-size: 9.5pt; }
+  .demobar, .titleactions, #tip { display: none !important; }
+  .sheet { max-width: none; border: 0; box-shadow: none; }
+  .titleband { padding: 0 0 8px; }
+  .metrics, .terms, .structure { padding-left: 0; padding-right: 0; }
+  .metric { padding: 7px 14px 7px 0; }
+  .terms { background: transparent; padding-left: 0; padding-right: 0; }
+  th.c-code, td.code { padding-left: 0; }
+  th.c-m2, td.m2 { padding-right: 0; }
+  .sheetfoot { padding: 10px 0 0; }
+  /* min-width таблицы нужен экрану (горизонтальная прокрутка в .tablewrap),
+     но на бумаге прокрутки нет: 720 px против 190 мм печатного поля срезали
+     правый край на 2 px. Замерено рендером в A4 PDF. */
+  table { min-width: 0; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  tr.grand { break-inside: avoid; }
+  .signs { break-inside: avoid; }
+  .ringbox { width: 168px; height: 162px; }
+}
+</style>
+
+<div class="demobar">
+  <span class="demolabel">Проверка состояний</span>
+  <label><input type="checkbox" id="tTep" checked> ТЭП заведены</label>
+  <label><input type="checkbox" id="tZero"> показывать нулевые подстатьи</label>
+  <label><input type="checkbox" id="tMulti"> у объекта несколько договоров</label>
+  <label><input type="checkbox" id="tRec"> сумма разошлась с ИТОГО сметы</label>
+  <button type="button" id="tTheme">Тема</button>
+  <button type="button" id="tExpand">Раскрыть всё</button>
+</div>
+
+<article class="sheet">
+
+  <header class="titleband">
+    <div class="stamp" aria-hidden="true"><b>СП</b><span>ОБЪЕКТ·7</span></div>
+    <div class="titlemain">
+      <p class="eyebrow">Паспорт проекта · свод по статьям классификатора</p>
+      <h1>ЖК «Северный парк» <span class="sep">·</span> <span class="num">ДГП-7-СМР</span></h1>
+      <p class="subline">
+        <span>ООО «СтройПодряд»</span><span class="sep">·</span>
+        <span>подписан 14.07.2026</span><span class="sep">·</span>
+        <span>класс Бизнес</span><span class="sep">·</span>
+        <span>подписант Соколов А. В.</span>
+        <span class="badge info" id="multiBadge" hidden>у объекта 2 договора · ₽/м² делит разные деньги на одну площадь</span>
+      </p>
+    </div>
+    <div class="titleactions"><button class="btn" type="button" onclick="window.print()">Печать</button></div>
+  </header>
+
+  <dl class="metrics">
+    <div class="metric">
+      <dt>Площадь общая</dt>
+      <dd id="mArea">67 413 м²</dd>
+      <div class="sub" id="mAreaSub">подземная 14 210 · надземная 53 203</div>
+    </div>
+    <div class="metric">
+      <dt>Стоимость по смете, с НДС</dt>
+      <dd id="mTotal">—</dd>
+      <div class="sub">ставка НДС 20 % · исходная смета договора</div>
+    </div>
+    <div class="metric">
+      <dt>Стоимость за м²</dt>
+      <dd id="mPerM2">—</dd>
+      <div class="sub" id="mPerM2Sub">по общей площади</div>
+    </div>
+    <div class="metric">
+      <dt>Аванс · гарантия · удержание</dt>
+      <dd>20 / 10 / 5 %</dd>
+      <div class="sub">условия договора</div>
+    </div>
+  </dl>
+
+  <div class="terms">
+    <p class="term"><b>Аванс</b><span>Выплачивается двумя траншами и погашается пропорционально стоимости принятых работ, но не позднее достижения 80 % готовности комплекса.</span></p>
+    <p class="term"><b>Гарантия</b><span>Безотзывная банковская гарантия исполнения обязательств, срок действия — до подписания акта приёмки плюс 90 календарных дней.</span></p>
+    <p class="term"><b>Удержание</b><span>Возвращается двумя равными частями: половина после ввода в эксплуатацию, половина по истечении гарантийного периода.</span></p>
+  </div>
+
+  <p class="reconcile" id="reconcile">
+    <span>⚠</span>
+    <span>Сумма по статьям не сходится с ИТОГО сметы: расхождение <b>−12 675 964,53 ₽</b>. Числа ниже показаны как есть; расхождение означает потерянные или задвоенные строки и требует разбора.</span>
+  </p>
+
+  <section class="structure" aria-labelledby="structTitle">
+    <h2 id="structTitle" hidden>Структура стоимости по статьям</h2>
+    <div class="ringbox">
+      <svg id="ring" viewBox="0 0 200 200" role="img" aria-labelledby="ringDesc"></svg>
+      <p id="ringDesc" class="sronly"></p>
+      <div class="center">
+        <span class="cap">Структура</span>
+        <span class="val" id="ringVal">—</span>
+      </div>
+    </div>
+    <ul class="legend" id="legend"></ul>
+  </section>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="c-code" scope="col">Код</th>
+          <th scope="col">Статья классификатора</th>
+          <th class="c-sum num" scope="col">Итого, ₽</th>
+          <th class="c-share num" scope="col">Доля</th>
+          <th class="c-m2 num" scope="col">₽ / м²</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <footer class="sheetfoot">
+    <div class="note">
+      <p>Свод по исходной смете договора; допсоглашения не учитываются. Деньги допработ показаны в своих статьях отдельными строками и без разбивки на СМР и материалы. «Нераспределённое» — разделы сметы, которым файл не назначил статью классификатора. Прочерк означает, что позиций по статье в смете нет; ноль — что позиции есть, а сумма нулевая.</p>
+      <p class="stamped">сформировано 09.08.2026</p>
+    </div>
+    <div class="signs">
+      <div>Составил — должность, подпись, расшифровка</div>
+      <div>Утвердил — должность, подпись, расшифровка</div>
+    </div>
+  </footer>
+
+</article>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+/* ===========================================================================
+   Данные ВЫМЫШЛЕННЫЕ. Настоящие — только коды и названия статей
+   классификатора: это справочник, а не коммерческие данные (политика samples/).
+   =========================================================================== */
+
+const AREA_TOTAL = 67413;
+const AREA_UNDER = 14210;
+const AREA_ABOVE = 53203;
+
+/* own    — деньги позиций, привязанных прямо к этой статье
+   extras — допработы, привязанные к этой статье
+   absent — статьи нет в смете вовсе (прочерк, не ноль)              */
+const CATS = [
+  { code: "1", title: "Подготовительные работы, содержание площадки", own: 214600000 },
+  { code: "2", title: "Котлован", children: [
+      { code: "2.1",  title: "Устройство свайного основания", own: 0 },
+      { code: "2.2",  title: "Срез оголовка сваи", own: 0 },
+      { code: "2.3",  title: "Устройство распорной системы", own: 0 },
+      { code: "2.4",  title: "Устройство ограждающих конструкций котлована", own: 229610037 },
+      { code: "2.5",  title: "Строительное водопонижение", own: 0 },
+      { code: "2.6",  title: "Земляные работы", own: 371281616 },
+      { code: "2.99", title: "Прочее (котлован)", bucket: true, own: 11508465 },
+  ]},
+  { code: "3", title: "Устройство гидроизоляции подземной части", children: [
+      { code: "3.1",  title: "Устройство подготовки под фундаментную плиту", own: 0 },
+      { code: "3.2",  title: "Устройство гидроизоляции фундамента и подземной части здания",
+                      own: 289805245,
+                      extras: [{ title: "Гидроизоляция фундаментной плиты", amount: 12675965 }] },
+      { code: "3.3",  title: "Виброизоляция", own: 0 },
+      { code: "3.99", title: "Прочее (гидроизоляции подземной части)", bucket: true, own: 0 },
+  ]},
+  { code: "4", title: "Конструктивные решения", children: [
+      { code: "4.1",  title: "Подземная часть. Конструктивные решения", own: 1402118300 },
+      { code: "4.2",  title: "Надземная часть. Конструктивные решения", own: 1727201474 },
+      { code: "4.3",  title: "Металлоконструкции", own: 85587000 },
+      { code: "4.99", title: "Прочее (конструктивные решения)", bucket: true, own: 0 },
+  ]},
+  { code: "5", title: "Общестроительные работы (без отделки)", own: 486223900 },
+  { code: "6", title: "Фасадные работы",
+    own: 23000000,
+    ownFrom: ["6.5 «Прочее»"],
+    children: [
+      { code: "6.1",  title: "Светопрозрачные конструкции 1 этажа", own: 136589779 },
+      { code: "6.2",  title: "Светопрозрачные конструкции типового этажа", own: 903411020 },
+      { code: "6.3",  title: "Устройство навесного фасада 1 этажа", own: 88985000 },
+      { code: "6.4",  title: "Устройство навесного фасада типового этажа", own: 668351216 },
+      { code: "6.5",  title: "Устройство модульного фасада", own: 0 },
+      { code: "6.6",  title: "Система обслуживания фасадов", own: 22000000 },
+      { code: "6.7",  title: "Устройство мокрого фасада", own: 0 },
+      { code: "6.8",  title: "Фасадные работы (реставрация)", own: 0 },
+      { code: "6.9",  title: "Окна, витражи (реставрация)", own: 0 },
+      { code: "6.10", title: "Декоративные элементы и другие", own: 0 },
+      { code: "6.99", title: "Прочее (фасады)", bucket: true, own: 0 },
+  ]},
+  { code: "7", title: "Кровля", own: 168450600 },
+  { code: "8", title: "Отделочные работы (паркинг, надземная часть МОП)", own: 934218340 },
+  { code: "9", title: "Лифты, подъемники", own: 286500000 },
+  { code: "10", title: "ВИС - механические системы", children: [
+      { code: "10.1",  title: "Системы внутреннего водоснабжения", own: 128400000 },
+      { code: "10.2",  title: "Система водяного пожаротушения, противопожарный водопровод", own: 196500000 },
+      { code: "10.3",  title: "Система внутреннего водоотведения", own: 84320480 },
+      { code: "10.4",  title: "ОВ и К. Система отопления", own: 214000000 },
+      { code: "10.5",  title: "ОВ и К. Система общеобменной вентиляции", own: 341000000 },
+      { code: "10.6",  title: "ОВ и К. Система кондиционирования", own: 218000000 },
+      { code: "10.7",  title: "Системы противодымной вентиляции", own: 96000000 },
+      { code: "10.8",  title: "Индивидуальный тепловой пункт", own: 84000000 },
+      { code: "10.9",  title: "Система автоматического газового и/или порошкового пожаротушения", own: 0 },
+      { code: "10.99", title: "Прочее ВИС - механические системы", bucket: true, own: 29000000 },
+  ]},
+  { code: "11", title: "ВИС - Электрические и слаботочные системы", children: [
+      { code: "11.1",  title: "Внутреннее электрооборудование, освещение", own: 312000000 },
+      { code: "11.2",  title: "Монтаж системы молниезащиты и заземления", own: 34118220 },
+      { code: "11.3",  title: "Сети связи", own: 88000000 },
+      { code: "11.4",  title: "Система пожарной сигнализации и Система оповещения и управления эвакуацией людей при пожаре", own: 126000000 },
+      { code: "11.5",  title: "Системы Безопасности", own: 94000000 },
+      { code: "11.6",  title: "Системы автоматизации и диспетчеризации инженерных систем", own: 68000000 },
+      { code: "11.7",  title: "Автоматизированная система контроля и учёта электроэнергии и энергоресурсов", own: 0 },
+      { code: "11.8",  title: "Мероприятия по Единой цифровой среде здания", own: 0 },
+      { code: "11.9",  title: "Мероприятия по внедрению/пусконаладке Умной квартиры", own: 0 },
+      { code: "11.10", title: "ОЗДС(дератизация)", own: 0 },
+      { code: "11.11", title: "Наружное освещение согласно концепции", own: 22000000 },
+      { code: "11.12", title: "Фасадное освещение согласно концепции", own: 20000000 },
+      { code: "11.99", title: "Прочее ВИС - Электрические и слаботочные системы", bucket: true, own: 0 },
+  ]},
+  { code: "12", title: "Благоустройство, дороги", children: [
+      { code: "12.1",  title: "Земляные работы", own: 48300000 },
+      { code: "12.2",  title: "Твердые покрытия (в тч финишные слои кровли подземной части/стилобата), бортовой камень", own: 186400115 },
+      { code: "12.3",  title: "Озеленение территории", own: 74260000 },
+      { code: "12.4",  title: "МАФы (в тч детские площадки), велопарковки, шлагбаумы, фонтаны", own: 82000000 },
+      { code: "12.99", title: "Прочее благоустройство", bucket: true, own: 12000000 },
+  ]},
+  { code: "13", title: "ТХ", absent: true },
+  { code: "14", title: "MR-base", own: 289733805 },
+  { code: "15", title: "MR-ready (дополнительно финишная отделка)", absent: true },
+  { code: "16", title: "Разработка рабочей документации", own: 152100000 },
+  { code: "17", title: "Офис продаж (СМР)", absent: true },
+  { code: "18", title: "Наружные инженерные сети и техническое присоединение", absent: true },
+  { code: "19", title: "Работы по реконструкции и реставрации", absent: true },
+  { code: "20", title: "MR - SHELL & CORE", absent: true },
+  { code: "99", title: "Прочее", bucket: true, own: 96118400 },
+];
+
+const UNALLOCATED = { amount: 108904311, sections: 4 };
+
+/* ------------------------------------------------------------ вычисления */
+
+function total(node) {
+  const own = node.own || 0;
+  const ex = (node.extras || []).reduce((s, e) => s + e.amount, 0);
+  const kids = (node.children || []).reduce((s, c) => s + total(c), 0);
+  return own + ex + kids;
+}
+
+const GRAND = CATS.reduce((s, c) => s + (c.absent ? 0 : total(c)), 0) + UNALLOCATED.amount;
+
+/* --------------------------------------------------------- форматирование */
+
+const nf0 = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+const nf2 = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const state = { tep: true, zero: false, open: new Set(["3", "6"]) };
+
+const money = (v) => (v === null ? "—" : nf0.format(Math.round(v)));
+const perM2 = (v) => (!state.tep || v === null ? "—" : nf0.format(Math.round(v / AREA_TOTAL)));
+const share = (v) => (nf2.format((v / GRAND) * 100) + " %");
+
+/* ------------------------------------------------------------ кольцо */
+
+const SLICE_VARS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+
+function buildRing() {
+  const named = CATS.filter((c) => !c.absent && total(c) > 0)
+    .map((c) => ({ code: c.code, title: c.title, value: total(c) }))
+    .sort((a, b) => b.value - a.value);
+
+  const top = named.slice(0, 8).map((d, i) => ({ ...d, fill: `var(${SLICE_VARS[i]})`, key: "s" + i }));
+  const rest = named.slice(8);
+  const data = [...top];
+  if (rest.length) {
+    data.push({
+      code: "…",
+      title: `Остальные статьи (${rest.length})`,
+      value: rest.reduce((s, d) => s + d.value, 0),
+      fill: "var(--s-rest)",
+      key: "rest",
+    });
+  }
+  data.push({
+    code: "⚠",
+    title: "Нераспределённое",
+    value: UNALLOCATED.amount,
+    fill: "url(#hatch)",
+    flat: "var(--warning)",
+    unalloc: true,
+    key: "unalloc",
+  });
+
+  const svg = document.getElementById("ring");
+  const R = 88, r = 60, cx = 100, cy = 100, GAP = 1.1;
+  const parts = [
+    `<defs><pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+      `<rect width="7" height="7" fill="var(--warning-soft)"/>` +
+      `<line x1="0" y1="0" x2="0" y2="7" stroke="var(--warning)" stroke-width="3.4"/>` +
+    `</pattern></defs>`,
+  ];
+
+  let angle = -90;
+  data.forEach((d) => {
+    const sweep = (d.value / GRAND) * 360;
+    const a0 = angle + GAP / 2;
+    const a1 = angle + sweep - GAP / 2;
+    angle += sweep;
+    if (a1 <= a0) return;
+    const rad = (a) => (a * Math.PI) / 180;
+    const p = (radius, a) => `${(cx + radius * Math.cos(rad(a))).toFixed(2)} ${(cy + radius * Math.sin(rad(a))).toFixed(2)}`;
+    const large = a1 - a0 > 180 ? 1 : 0;
+    const dstr =
+      `M ${p(R, a0)} A ${R} ${R} 0 ${large} 1 ${p(R, a1)} ` +
+      `L ${p(r, a1)} A ${r} ${r} 0 ${large} 0 ${p(r, a0)} Z`;
+    parts.push(
+      `<path class="slice" data-key="${d.key}" d="${dstr}" fill="${d.fill}" ` +
+      `stroke="var(--bg-surface)" stroke-width="1"></path>`
+    );
+  });
+
+  svg.innerHTML = parts.join("");
+  document.getElementById("ringDesc").textContent =
+    "Круговая диаграмма структуры стоимости: " +
+    data.map((d) => `${d.title} ${nf2.format((d.value / GRAND) * 100)} процента`).join(", ") + ".";
+  document.getElementById("ringVal").textContent =
+    nf2.format(GRAND / 1e9).replace(".", ",") + " млрд ₽";
+
+  const legend = document.getElementById("legend");
+  legend.innerHTML = data
+    .map(
+      (d) =>
+        `<li data-key="${d.key}"${d.unalloc ? ' class="unalloc"' : ""}>` +
+        `<span class="chip" style="background:${d.flat || d.fill}"></span>` +
+        `<span class="nm">${d.code === "…" || d.code === "⚠" ? "" : d.code + " · "}${d.title}</span>` +
+        `<span class="pc">${nf2.format((d.value / GRAND) * 100)} %</span></li>`
+    )
+    .join("");
+
+  const tip = document.getElementById("tip");
+  const byKey = Object.fromEntries(data.map((d) => [d.key, d]));
+  function hoverOn(key, ev) {
+    const d = byKey[key];
+    if (!d) return;
+    svg.querySelectorAll(".slice").forEach((s) => s.classList.toggle("dim", s.dataset.key !== key));
+    tip.innerHTML =
+      `<div class="t">${d.code === "…" || d.code === "⚠" ? "" : d.code + " · "}${d.title}</div>` +
+      `<div class="v">${money(d.value)} ₽ · ${nf2.format((d.value / GRAND) * 100)} %</div>`;
+    tip.classList.add("on");
+    moveTip(ev);
+  }
+  function moveTip(ev) {
+    const t = document.getElementById("tip");
+    const x = Math.min(ev.clientX + 14, window.innerWidth - t.offsetWidth - 10);
+    const y = Math.max(ev.clientY - t.offsetHeight - 10, 8);
+    t.style.left = x + "px";
+    t.style.top = y + "px";
+  }
+  function hoverOff() {
+    svg.querySelectorAll(".slice").forEach((s) => s.classList.remove("dim"));
+    tip.classList.remove("on");
+  }
+  [svg, legend].forEach((root) => {
+    root.addEventListener("mousemove", (ev) => {
+      const el = ev.target.closest("[data-key]");
+      if (el) hoverOn(el.dataset.key, ev);
+      else hoverOff();
+    });
+    root.addEventListener("mouseleave", hoverOff);
+  });
+}
+
+/* ------------------------------------------------------------ таблица */
+
+function rowHTML({ code, name, sub, amount, depth, cls, badges, expandable, expanded, key }) {
+  const pad = 8 + depth * 20;
+  const btn = expandable
+    ? `<button class="rowbtn" type="button" aria-expanded="${expanded}" data-toggle="${key}" ` +
+      `aria-label="${expanded ? "Свернуть" : "Развернуть"} статью ${code}">▶</button>`
+    : `<button class="rowbtn spacer" type="button" tabindex="-1" aria-hidden="true">▶</button>`;
+  const badgeHTML = (badges || [])
+    .map((b) => `<span class="badge ${b.kind || ""}">${b.text}</span>`)
+    .join("");
+  return (
+    `<tr class="${cls}">` +
+    `<td class="code">${code}</td>` +
+    `<td class="name" style="padding-left:${pad}px">` +
+      `<span class="nmwrap">${btn}<span class="nmcol">` +
+        `<span class="nmline"><span class="txt">${name}</span>${badgeHTML}</span>` +
+        (sub ? `<span class="sub">${sub}</span>` : "") +
+      `</span></span></td>` +
+    `<td class="sum num">${amount === null ? "—" : money(amount)}</td>` +
+    `<td class="share num">${amount === null ? "—" : share(amount)}</td>` +
+    `<td class="m2 num">${amount === null ? "—" : perM2(amount)}</td>` +
+    `</tr>`
+  );
+}
+
+function renderNode(node, depth, out) {
+  if (node.absent) {
+    out.push(rowHTML({
+      code: node.code, name: node.title, amount: null, depth,
+      cls: depth === 0 ? "lvl1 empty" : "empty",
+      badges: node.bucket ? [{ text: "корзина" }] : [],
+    }));
+    return;
+  }
+
+  const t = total(node);
+  const kids = node.children || [];
+  const extras = node.extras || [];
+  const ownAlone = (node.own || 0) > 0 && (kids.length > 0 || extras.length > 0);
+  const expandable = kids.length > 0 || extras.length > 0;
+  const expanded = state.open.has(node.code);
+
+  if (t === 0 && depth > 0 && !state.zero) return;
+
+  out.push(rowHTML({
+    code: node.code, name: node.title, amount: t, depth,
+    cls: (depth === 0 ? "lvl1" : "") + (t === 0 ? " empty" : ""),
+    badges: node.bucket ? [{ text: "корзина" }] : [],
+    expandable, expanded, key: node.code,
+  }));
+
+  if (!expanded) return;
+
+  kids.forEach((k) => renderNode(k, depth + 1, out));
+
+  extras.forEach((e, i) =>
+    out.push(rowHTML({
+      code: "·", name: e.title, amount: e.amount, depth: depth + 1,
+      cls: "service", key: node.code + "-x" + i,
+      badges: [{ text: "доп. работы", kind: "accent" }],
+      sub: "из блока «Сведения по дополнительным работам»",
+    }))
+  );
+
+  if (ownAlone) {
+    out.push(rowHTML({
+      code: "·",
+      name: kids.length ? "Без подстатьи" : "Позиции сметы",
+      amount: node.own,
+      depth: depth + 1,
+      cls: "service",
+      sub: node.ownFrom
+        ? "раздел сметы " + node.ownFrom.join(", ")
+        : "позиции, привязанные прямо к этой статье",
+    }));
+  }
+}
+
+function renderTable() {
+  const out = [];
+  CATS.forEach((c) => renderNode(c, 0, out));
+
+  out.push(
+    `<tr class="unalloc">` +
+    `<td class="code">⚠</td>` +
+    `<td class="name" style="padding-left:8px"><span class="nmwrap">` +
+      `<button class="rowbtn spacer" type="button" tabindex="-1" aria-hidden="true">▶</button>` +
+      `<span class="nmcol"><span class="nmline"><span class="txt">Нераспределённое</span></span>` +
+      `<span class="sub">${UNALLOCATED.sections} раздела сметы без статьи классификатора — требует разбора</span>` +
+      `</span></span></td>` +
+    `<td class="sum num">${money(UNALLOCATED.amount)}</td>` +
+    `<td class="share num">${share(UNALLOCATED.amount)}</td>` +
+    `<td class="m2 num">${perM2(UNALLOCATED.amount)}</td>` +
+    `</tr>`
+  );
+
+  out.push(
+    `<tr class="grand">` +
+    `<td class="code"></td>` +
+    `<td class="name" style="padding-left:8px">Итого по договору</td>` +
+    `<td class="sum num">${money(GRAND)}</td>` +
+    `<td class="share num">100,00 %</td>` +
+    `<td class="m2 num">${perM2(GRAND)}</td>` +
+    `</tr>`
+  );
+
+  document.getElementById("tbody").innerHTML = out.join("");
+}
+
+/* ------------------------------------------------------------ шапка */
+
+function renderHead() {
+  document.getElementById("mTotal").textContent = money(GRAND) + " ₽";
+  const area = document.getElementById("mArea");
+  const areaSub = document.getElementById("mAreaSub");
+  const m2 = document.getElementById("mPerM2");
+  const m2sub = document.getElementById("mPerM2Sub");
+
+  if (state.tep) {
+    area.innerHTML = nf0.format(AREA_TOTAL) + " м²";
+    areaSub.textContent = "подземная " + nf0.format(AREA_UNDER) + " · надземная " + nf0.format(AREA_ABOVE);
+    m2.innerHTML = nf0.format(Math.round(GRAND / AREA_TOTAL)) + " ₽";
+    m2sub.textContent = "по общей площади";
+  } else {
+    area.innerHTML = '<span class="absent">ТЭП не заведены</span>';
+    areaSub.textContent = "площади вводятся в карточке объекта";
+    m2.innerHTML = '<span class="absent">нет ТЭП</span>';
+    m2sub.textContent = "удельные показатели не считаются";
+  }
+}
+
+/* ------------------------------------------------------------ события */
+
+function renderAll() { renderHead(); renderTable(); }
+
+document.getElementById("tbody").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-toggle]");
+  if (!b) return;
+  const code = b.dataset.toggle;
+  state.open.has(code) ? state.open.delete(code) : state.open.add(code);
+  renderTable();
+});
+
+document.getElementById("tTep").addEventListener("change", (e) => { state.tep = e.target.checked; renderAll(); });
+document.getElementById("tZero").addEventListener("change", (e) => { state.zero = e.target.checked; renderTable(); });
+document.getElementById("tMulti").addEventListener("change", (e) => {
+  document.getElementById("multiBadge").hidden = !e.target.checked;
+});
+document.getElementById("tRec").addEventListener("change", (e) => {
+  document.getElementById("reconcile").classList.toggle("on", e.target.checked);
+});
+document.getElementById("tTheme").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+});
+document.getElementById("tExpand").addEventListener("click", (e) => {
+  const allCodes = CATS.filter((c) => c.children || c.extras).map((c) => c.code);
+  const deep = [];
+  CATS.forEach((c) => (c.children || []).forEach((k) => { if (k.children || k.extras) deep.push(k.code); }));
+  const every = [...allCodes, ...deep];
+  const isOpen = every.every((c) => state.open.has(c));
+  state.open = isOpen ? new Set() : new Set(every);
+  e.target.textContent = isOpen ? "Раскрыть всё" : "Свернуть всё";
+  renderTable();
+});
+
+buildRing();
+renderAll();
+</script>
+</body>
+</html>

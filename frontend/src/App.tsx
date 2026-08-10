@@ -13,7 +13,7 @@ import AdminUsers from "@/pages/admin/AdminUsers";
 import ContractCardPage from "@/pages/contracts/ContractCardPage";
 import ContractsPage from "@/pages/contracts/ContractsPage";
 import MatrixPage from "@/pages/matrix/MatrixPage";
-import PassportPage from "@/pages/passport/PassportPage";
+import ProjectPassportPage from "@/pages/passport/ProjectPassportPage";
 import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
@@ -75,10 +75,10 @@ export default function App() {
                 <Route path="/contracts/:contractId" element={<ContractCardPage />} />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*
-                  Аналитика фазы 6 — чтение, поэтому доступна и `member` (§3):
+                  Паспорт проекта (Ф6 фазы 7) — чтение, поэтому доступен и `member` (§3):
                   паспорт печатают и без прав на правку справочников.
                 */}
-                <Route path="/contracts/:contractId/passport" element={<PassportPage />} />
+                <Route path="/contracts/:contractId/passport" element={<ProjectPassportPage />} />
                 <Route path="/matrix" element={<MatrixPage />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route element={<RequireAdmin />}>

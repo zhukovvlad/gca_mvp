@@ -15,9 +15,9 @@ import {
   sampleAppSettings,
   sampleMatrix,
   sampleMatrixCellDetail,
-  samplePassport,
+  sampleProjectPassport,
 } from "./fixtures";
-import type { ImportJobStatus } from "@/types/domain";
+import type { ImportJobStatus, ProjectPassport } from "@/types/domain";
 
 /**
  * Мутируемое состояние обработчиков. Сбрасывается между тестами через
@@ -40,13 +40,24 @@ interface HandlerState {
   /** Исход скачивания исходника: файл на месте, задания нет (404), удалён (410). */
   fileOutcome: "ok" | "missing" | "purged";
   /**
-   * Текущее значение `passport_top_n`. Мутируется PATCH-ем настроек, чтобы тест мог
-   * проверить, что смена N перерисовывает паспорт: без общего состояния GET отдавал
-   * бы прежнее число и проверка ничего не значила бы.
+   * Текущее значение `passport_top_n`. Мутируется PATCH-ем настроек. Паспорт
+   * проекта (Ф6 фазы 7) от него не зависит — поле осталось ради самих
+   * настроек: экран Settings и его тесты по-прежнему читают/пишут это число.
    */
   passportTopN: number;
-  /** Отдать паспорт договора без сметы: `estimate: null`, пустой топ. */
-  passportWithoutEstimate: boolean;
+  /**
+   * Исход паспорта ПРОЕКТА (Ф6 фазы 7, задача 6) — граничные случаи спеки
+   * §2.6, §2.9: не только «нет сметы», но и «нет ТЭП», «сумма неизвестна»,
+   * «сумма ровно ноль», «данные повреждены».
+   */
+  projectPassportOutcome:
+    | "full"
+    | "no-estimate"
+    | "no-tep"
+    | "empty-total"
+    | "zero-total"
+    | "corrupted"
+    | "error";
   /** Отдать пустую матрицу — и различить «нет договоров» от «нет работ». */
   matrixOutcome: "rows" | "no-rows" | "no-columns" | "pending-review";
   /**
@@ -68,7 +79,7 @@ export const handlerState: HandlerState = {
   batchSkipsFirst: false,
   fileOutcome: "ok",
   passportTopN: sampleAppSettings.passport_top_n,
-  passportWithoutEstimate: false,
+  projectPassportOutcome: "full",
   matrixOutcome: "rows",
   positionsPendingReview: 0,
   lastReportRequest: null,
@@ -83,7 +94,7 @@ export function resetHandlerState() {
   handlerState.batchSkipsFirst = false;
   handlerState.fileOutcome = "ok";
   handlerState.passportTopN = sampleAppSettings.passport_top_n;
-  handlerState.passportWithoutEstimate = false;
+  handlerState.projectPassportOutcome = "full";
   handlerState.matrixOutcome = "rows";
   handlerState.positionsPendingReview = 0;
   handlerState.lastReportRequest = null;
@@ -91,6 +102,125 @@ export function resetHandlerState() {
 
 function page<T>(items: T[]) {
   return { items, total: items.length, page: 1, page_size: 20 };
+}
+
+/**
+ * Паспорт проекта, приведённый к одному из граничных случаев `HandlerState.
+ * projectPassportOutcome` (спека §2.6, §2.9). Возвращает НОВЫЙ объект — не
+ * мутирует `sampleProjectPassport`, иначе один тест испортил бы фикстуру для
+ * следующего.
+ */
+function projectPassportForOutcome(
+  outcome: HandlerState["projectPassportOutcome"]
+): ProjectPassport {
+  const base = sampleProjectPassport;
+  switch (outcome) {
+    case "full":
+      return base;
+
+    case "no-estimate":
+      // Договор без сметы (правило 8 CRUD) — карточка есть, файла ещё нет:
+      // дерево статей остаётся полным скелетом, но без единой суммы.
+      return {
+        ...base,
+        estimate: null,
+        totals: { ...base.totals, amount: null, per_sqm: null, delta_to_file_total: null },
+        categories: base.categories.map((c) => ({
+          ...c,
+          total: null,
+          rows: 0,
+          rows_priced: 0,
+          rows_not_finite: 0,
+          share_pct: null,
+          per_sqm: null,
+          own: null,
+          own_rows: 0,
+          own_rows_priced: 0,
+          own_rows_not_finite: 0,
+          extras: [],
+        })),
+        unallocated: {
+          ...base.unallocated,
+          amount: null,
+          rows: 0,
+          rows_priced: 0,
+          rows_not_finite: 0,
+          share_pct: null,
+          per_sqm: null,
+          chapters: 0,
+          rows_outside_structure: 0,
+          extras: [],
+        },
+      };
+
+    case "no-tep":
+      // ТЭП объекта не заведены (спека §2.3 фазы 5) — площадей нет, и `per_sqm`
+      // обязан стать `null` ВЕЗДЕ, а не только у объекта: делить на
+      // отсутствующую площадь нельзя нигде (правило 6).
+      return {
+        ...base,
+        object: {
+          ...base.object,
+          area_aboveground_sp: null,
+          area_underground_sp: null,
+          area_total_sp: null,
+        },
+        totals: { ...base.totals, per_sqm: null },
+        categories: base.categories.map((c) => ({ ...c, per_sqm: null })),
+        unallocated: { ...base.unallocated, per_sqm: null },
+      };
+
+    case "empty-total":
+      // Сумма НЕИЗВЕСТНА (не ноль!), хотя файловый итог известен — сверка
+      // (правило 12) требует ДВА известных операнда, поэтому дельта тоже
+      // `null`. Статьи, у которых есть строки, показывают `total: null`, а не
+      // ноль: строки есть, их сумма просто не сложилась.
+      return {
+        ...base,
+        totals: {
+          ...base.totals,
+          amount: null,
+          per_sqm: null,
+          delta_to_file_total: null,
+        },
+        categories: base.categories.map((c) =>
+          c.rows > 0
+            ? { ...c, total: null, per_sqm: null, share_pct: null }
+            : { ...c, share_pct: null }
+        ),
+        unallocated: { ...base.unallocated, amount: null, per_sqm: null, share_pct: null },
+      };
+
+    case "zero-total":
+      // Сумма РОВНО ноль — знаменатель непригоден для доли (правило `_share_
+      // pct`: `grand_total == 0` даёт `None` точно так же, как `None`), и это
+      // ОТЛИЧИМО от «сумма неизвестна» выше: там `amount: null`, здесь —
+      // настоящий `"0.00"`.
+      return {
+        ...base,
+        totals: { ...base.totals, amount: "0.00" },
+        categories: base.categories.map((c) => ({ ...c, share_pct: null })),
+        unallocated: { ...base.unallocated, share_pct: null },
+      };
+
+    case "corrupted":
+      // Мусор в исходных числах (открытый хвост Ф4, спека §1.11): часть строк
+      // не `is_finite()`, и сверка с файлом расходится — обе аномалии видны
+      // одновременно, третья причина «непонятно, что не так» не годится.
+      return {
+        ...base,
+        totals: {
+          ...base.totals,
+          positions_rows_not_finite: 5,
+          file_total_including_vat: "4750000.00",
+          delta_to_file_total: "-50000.00",
+        },
+      };
+
+    case "error":
+      // Обрабатывается отдельной веткой хендлера ниже — сюда не доходит.
+      return base;
+  }
 }
 
 function jobPayload(status: ImportJobStatus) {
@@ -475,8 +605,9 @@ export const handlers = [
   ),
   http.patch("/api/v1/settings", async ({ request }) => {
     const body = (await request.json()) as { passport_top_n: number };
-    // Диапазон проверяет сервер, и его отказ объясняет причину (одна страница А4).
-    // Обработчик воспроизводит именно это поведение, а не «принимает всё».
+    // Диапазон проверяет сервер, и его отказ объясняет причину (раскладка экрана
+    // паспорта фазы 6). Обработчик воспроизводит именно это поведение, а не
+    // «принимает всё».
     if (
       !Number.isInteger(body.passport_top_n) ||
       body.passport_top_n < sampleAppSettings.passport_top_n_min ||
@@ -486,8 +617,8 @@ export const handlers = [
         {
           detail:
             `Число ключевых расценок должно быть от ${sampleAppSettings.passport_top_n_min} до ` +
-            `${sampleAppSettings.passport_top_n_max}. Верхняя граница — не прихоть: паспорт ` +
-            "обязан печататься на одну страницу А4.",
+            `${sampleAppSettings.passport_top_n_max}. Верхняя граница — не прихоть: она ` +
+            "подобрана под раскладку экрана паспорта фазы 6, а не взята произвольно.",
         },
         { status: 422 }
       );
@@ -497,33 +628,15 @@ export const handlers = [
   }),
 
   // --- Аналитика (фаза 6, §6, §7.4–§7.5) ---
-  http.get("/api/v1/analytics/passport/:contractId", () => {
-    if (handlerState.passportWithoutEstimate) {
-      return HttpResponse.json({
-        ...samplePassport,
-        estimate: null,
-        key_rates: [],
-        top_n: handlerState.passportTopN,
-        totals: {
-          positions_priced: 0,
-          positions_shown: 0,
-          priced_amount: null,
-          with_standard: 0,
-          without_standard: 0,
-          over_standard: 0,
-          positions_pending_review: 0,
-          positions_non_work: 0,
-        },
-      });
+  // Паспорт проекта по статьям классификатора (Ф6 фазы 7, задача 6).
+  http.get("/api/v1/analytics/project-passport/:contractId", () => {
+    if (handlerState.projectPassportOutcome === "error") {
+      return HttpResponse.json(
+        { detail: "Не удалось построить паспорт проекта." },
+        { status: 500 }
+      );
     }
-    // Топ режется до текущего N — так же, как это делает сервер (LIMIT).
-    const keyRates = samplePassport.key_rates.slice(0, handlerState.passportTopN);
-    return HttpResponse.json({
-      ...samplePassport,
-      top_n: handlerState.passportTopN,
-      key_rates: keyRates,
-      totals: { ...samplePassport.totals, positions_shown: keyRates.length },
-    });
+    return HttpResponse.json(projectPassportForOutcome(handlerState.projectPassportOutcome));
   }),
 
   http.get("/api/v1/analytics/matrix", ({ request }) => {

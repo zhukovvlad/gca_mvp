@@ -15,7 +15,7 @@ import type {
   Matrix,
   MatrixCellDetail,
   MatrixParams,
-  Passport,
+  ProjectPassport,
 } from "@/types/domain";
 
 export const settingsApi = {
@@ -26,9 +26,6 @@ export const settingsApi = {
 };
 
 export const analyticsApi = {
-  passport: (contractId: number): Promise<Passport> =>
-    api.get<Passport>(`/v1/analytics/passport/${contractId}`).then((r) => r.data),
-
   matrix: (params?: MatrixParams): Promise<Matrix> =>
     api.get<Matrix>("/v1/analytics/matrix", { params }).then((r) => r.data),
 
@@ -37,6 +34,12 @@ export const analyticsApi = {
       .get<MatrixCellDetail>("/v1/analytics/matrix/cell", {
         params: { contract_id, catalog_position_id },
       })
+      .then((r) => r.data),
+
+  /** Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6). */
+  projectPassport: (contractId: number): Promise<ProjectPassport> =>
+    api
+      .get<ProjectPassport>(`/v1/analytics/project-passport/${contractId}`)
       .then((r) => r.data),
 };
 

@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from crud import analytics as crud_analytics
+from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from database import get_db
 from responses import decimal_json
@@ -92,5 +93,17 @@ def get_matrix_cell(
                 db, contract_id=contract_id, catalog_position_id=catalog_position_id
             )
         )
+    except DomainError as e:
+        _raise(e)
+
+
+@router.get("/project-passport/{contract_id}")
+def get_project_passport(contract_id: int, db: Session = Depends(get_db)):
+    """Паспорт проекта по статьям классификатора (Ф6 фазы 7).
+
+    Чтение — доступно `member` (§3 AGENTS.md: аналитика есть чтение).
+    """
+    try:
+        return decimal_json(crud_project_passport.get_project_passport(db, contract_id))
     except DomainError as e:
         _raise(e)

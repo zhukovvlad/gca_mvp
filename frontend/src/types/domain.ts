@@ -354,86 +354,6 @@ export interface AppSettings {
   updated_at: string | null;
 }
 
-/** Реквизиты договора для паспорта (§1 пункт 2). */
-export interface PassportContract {
-  id: number;
-  contract_number: string;
-  title: string | null;
-  object_id: number;
-  object_title: string;
-  contractor_id: number;
-  contractor_title: string;
-  rate_class_id: number;
-  rate_class_title: string;
-  signer: string | null;
-  signed_date: string;
-  total_amount: Decimal | null;
-  notes: string | null;
-}
-
-export interface PassportEstimate {
-  id: number;
-  /** `null` — исходная смета (§4). */
-  amendment_no: number | null;
-  title: string | null;
-  data_prepared_on_date: string | null;
-}
-
-/** Строка «ключевых расценок»: позиция последней сметы (§7.4). */
-export interface PassportKeyRate {
-  position_item_id: number;
-  catalog_position_id: number;
-  /** Формулировка ИЗ СМЕТЫ — паспорт документ по конкретному договору. */
-  job_title: string;
-  /** Каталожное название: по нему подобран норматив. */
-  catalog_job_title: string;
-  unit_code: string | null;
-  weight: Decimal | null;
-  unit_cost_total: Decimal;
-  total_cost_total: Decimal | null;
-  /** `null` — норматива на дату сметы нет (§4); это НЕ ноль. */
-  standard_unit_rate: Decimal | null;
-  deviation_pct: Decimal | null;
-}
-
-export interface PassportTotals {
-  /** Всего расценённых работ в смете — совокупность, из которой взят топ. */
-  positions_priced: number;
-  /** Сколько строк показано: длина топа, не обязательно равна `top_n`. */
-  positions_shown: number;
-  priced_amount: Decimal | null;
-  with_standard: number;
-  without_standard: number;
-  /** Только превышение: ровно по нормативу — не превышение (§10). */
-  over_standard: number;
-  /**
-   * Расценённые позиции, чья работа ещё не утверждена в каталоге (TO_REVIEW).
-   *
-   * Объясняет пустой топ при непустой смете: VIEW отклонений берёт только
-   * `kind='POSITION'` (§4). Найдено прогоном стенда — экран называл неверную
-   * причину («не заполнена цена»), отправляя искать проблему не там.
-   */
-  positions_pending_review: number;
-  /**
-   * Расценённые позиции, чья каталожная строка помечена как НЕ-работа
-   * (`HEADER`/`TRASH`/`LOT_HEADER`).
-   *
-   * Третья причина пустого паспорта, и она не равна ни «ждут матчинга», ни «нет
-   * цены»: такие строки уже разобраны (§5.4.3), исправлять их не нужно. Появилась
-   * после правки по замечанию ревью — до неё они ошибочно попадали в «ждут матчинга».
-   */
-  positions_non_work: number;
-}
-
-export interface Passport {
-  contract: PassportContract;
-  /** `null` — смета ещё не загружена; паспорт печатается по реквизитам. */
-  estimate: PassportEstimate | null;
-  top_n: number;
-  key_rates: PassportKeyRate[];
-  totals: PassportTotals;
-}
-
 /** Колонка матрицы — договор выборки (§6, группировка по объекту). */
 export interface MatrixColumn {
   contract_id: number;
@@ -472,9 +392,9 @@ export interface Matrix {
   total: number;
   page: number;
   page_size: number;
-  /** См. `PassportTotals.positions_pending_review`; здесь — по договорам выборки. */
+  /** Расценённые позиции, чья работа ещё не утверждена в каталоге (TO_REVIEW) — по договорам выборки. */
   positions_pending_review: number;
-  /** См. `PassportTotals.positions_non_work`; здесь — по договорам выборки. */
+  /** Расценённые позиции, чья каталожная строка помечена как НЕ-работа (`HEADER`/`TRASH`/`LOT_HEADER`) — по договорам выборки. */
   positions_non_work: number;
 }
 
@@ -518,4 +438,143 @@ export interface BankComparisonParams {
   date_from?: string;
   date_to?: string;
   rate_class_id?: number;
+}
+
+// ---------------------------------------------------------------------------
+//  Паспорт проекта по статьям классификатора (фаза 7, Ф6, спека §2.6)
+// ---------------------------------------------------------------------------
+//
+//  Форма — зеркало `backend/crud/project_passport.py::get_project_passport`,
+//  ключ в ключ: там сказано «форма ответа — решённый контракт, ключи и
+//  вложенность менять нельзя». Старые `Passport*` (фаза 6) удалены задачей 11:
+//  экран паспорта объекта переехал на этот тип.
+//
+//  Деньги — decimal-СТРОКИ (`Decimal`), а не `number`, и это касается КАЖДОГО
+//  поля ниже, отмеченного этим типом: `share_pct`, `per_sqm`, `total`, `own`,
+//  `amount`, `file_total_including_vat`, `delta_to_file_total`, обеих площадей
+//  и `area_total_sp`, трёх `*_pct` условий договора, `vat_rate`. Приводить их
+//  к `number` нельзя НИГДЕ — только форматировать на слое представления
+//  (`formatDecimalMoney`/`MoneyCell`).
+
+/** Реквизиты и коммерческие условия договора для паспорта проекта (спека §2.6). */
+export interface ProjectPassportContract {
+  id: number;
+  contract_number: string;
+  title: string | null;
+  signer: string | null;
+  signed_date: string;
+  object_id: number;
+  object_title: string;
+  contractor_title: string;
+  rate_class_title: string;
+  advance_pct: Decimal | null;
+  advance_note: string | null;
+  bank_guarantee_pct: Decimal | null;
+  bank_guarantee_note: string | null;
+  retention_pct: Decimal | null;
+  retention_note: string | null;
+  /** Сколько договоров у объекта всего — для бейджа на экране (правило 7). */
+  object_contracts_count: number;
+}
+
+/** ТЭП объекта для паспорта проекта — те же три величины, что у {@link ObjectItem}. */
+export interface ProjectPassportObject {
+  id: number;
+  title: string;
+  area_underground_sp: Decimal | null;
+  area_aboveground_sp: Decimal | null;
+  area_total_sp: Decimal | null;
+}
+
+/** Исходная смета договора (правило «исходная», не «последняя» — спека §2.4). */
+export interface ProjectPassportEstimate {
+  id: number;
+  /** `null` — исходная смета не имеет допсоглашения. */
+  amendment_no: number | null;
+  title: string | null;
+  data_prepared_on_date: string | null;
+  /** Может законно отсутствовать (правило 9). */
+  parser_version: string | null;
+  /** `null` при разногласии ставок предложений или их отсутствии (правило 11). */
+  vat_rate: Decimal | null;
+}
+
+/** Строка допработы вне VIEW: гранулярность нужна поштучно (правило 13). */
+export interface ProjectPassportExtra {
+  id: number;
+  ordinal: number;
+  title: string;
+  amount: Decimal;
+}
+
+/** Раздел сметы, давший узлу его собственные деньги (правило 14). */
+export interface ProjectPassportSection {
+  id: number;
+  number: string | null;
+  title: string;
+}
+
+/** Узел дерева статей — элемент ПЛОСКОГО списка `categories` (правило 2). */
+export interface ProjectPassportCategory {
+  id: number;
+  code: string;
+  title: string;
+  parent_id: number | null;
+  is_bucket: boolean;
+  sort_order: number;
+  /** `null` — статья отсутствует в смете, а не «ноль»; ноль тоже возможен и отличим. */
+  total: Decimal | null;
+  rows: number;
+  rows_priced: number;
+  rows_not_finite: number;
+  /** Доля от `totals.amount` — единый знаменатель для ВСЕХ строк (правило 5). */
+  share_pct: Decimal | null;
+  per_sqm: Decimal | null;
+  /** Собственные деньги узла (без детей) — НЕ «родитель минус дети» (см. crud). */
+  own: Decimal | null;
+  own_rows: number;
+  own_rows_priced: number;
+  own_rows_not_finite: number;
+  extras: ProjectPassportExtra[];
+  own_sections: ProjectPassportSection[];
+}
+
+/** «Нераспределённое»: деньги без статьи, с двумя РАЗНЫМИ причинами (правило спеки §2.6). */
+export interface ProjectPassportUnallocated {
+  amount: Decimal | null;
+  rows: number;
+  rows_priced: number;
+  rows_not_finite: number;
+  share_pct: Decimal | null;
+  per_sqm: Decimal | null;
+  /** Разделы без статьи, под которыми есть хотя бы одна позиция. */
+  chapters: number;
+  /** Позиции вовсе без ссылки на раздел — другая причина, считается отдельно. */
+  rows_outside_structure: number;
+  extras: ProjectPassportExtra[];
+}
+
+export interface ProjectPassportTotals {
+  /** Сумма ТОЛЬКО известных слагаемых (корни дерева + `unallocated`, правило 3). */
+  amount: Decimal | null;
+  per_sqm: Decimal | null;
+  positions_rows: number;
+  positions_rows_priced: number;
+  positions_rows_not_finite: number;
+  additional_works_rows: number;
+  /** Файловое «Итого включая НДС» по всем предложениям сметы (спека §2.5). */
+  file_total_including_vat: Decimal | null;
+  /** Требует ДВА известных операнда — `null`, если хотя бы один неизвестен (правило 12). */
+  delta_to_file_total: Decimal | null;
+}
+
+/** Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6). */
+export interface ProjectPassport {
+  contract: ProjectPassportContract;
+  object: ProjectPassportObject;
+  /** `null` — у договора ещё нет сметы; дерево статей — пустой скелет (правило 8). */
+  estimate: ProjectPassportEstimate | null;
+  totals: ProjectPassportTotals;
+  categories: ProjectPassportCategory[];
+  unallocated: ProjectPassportUnallocated;
 }
