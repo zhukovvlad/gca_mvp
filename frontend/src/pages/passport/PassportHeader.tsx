@@ -67,7 +67,8 @@ function Metric({
  * Одна оговорка коммерческого условия: подпись + свободный текст, зажатый по
  * высоте. **`data-print="clamp"` есть, а класса `block` рядом с ним НЕТ** —
  * `block` отменяет `display: -webkit-box` и снимает зажим вовсе (AGENTS.md §11);
- * ловушка живёт в репозитории у `PassportPage.tsx:324` прямо сейчас.
+ * ловушка была живой у экрана фазы 6 (`PassportPage.tsx`, удалён этой же
+ * веткой): там `data-print="clamp"` соседствовал с `className="block"`.
  */
 function Term({ label, note }: { label: string; note: string | null }) {
   return (
@@ -136,7 +137,10 @@ export function PassportHeader({ passport }: { passport: ProjectPassport }) {
       </div>
 
       {/* линейка показателей (§2.9 п. 3) */}
-      <dl className="grid grid-cols-1 divide-y divide-border-subtle border-b border-border-subtle sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+      <dl
+        data-testid="passport-metrics"
+        className="grid grid-cols-1 divide-y divide-border-subtle border-b border-border-subtle sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4"
+      >
         <Metric
           label="Площадь общая"
           value={

@@ -219,6 +219,37 @@ describe("Паспорт проекта: шапка документа", () => {
       expect(classes).not.toContain("block");
     });
   });
+
+  /**
+   * Заведён по находке финального ревью ветки: требование §2.9 п. 2 — САМ
+   * СОСТАВ шапки — исполнителя не имело. Состояние «заполнено» из теста 1
+   * утверждало только номер договора, то есть выпадение подписанта, класса,
+   * подрядчика, даты или раскладки площади не уронило бы ни одного теста.
+   * Требование спеки без исполнителя либо получает тест, либо объявляется
+   * границей; здесь выбран тест.
+   */
+  it("шапка несёт весь состав §2.9 п. 2", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // Реквизиты договора.
+    expect(screen.getByText(/ЖК Заречный/)).toBeInTheDocument();
+    expect(screen.getByText(/СтройГарант/)).toBeInTheDocument();
+    expect(screen.getByText(/Жилые дома/)).toBeInTheDocument();
+    expect(screen.getByText(/Смирнов А\.В\./)).toBeInTheDocument();
+    expect(screen.getByText(/15\.05\.2025/)).toBeInTheDocument();
+
+    // Линейка показателей: общая площадь с раскладкой на подземную и надземную.
+    const sheet = screen.getByTestId("passport-metrics");
+    expect(sheet).toHaveTextContent(/47\s*000/);
+    expect(sheet).toHaveTextContent(/40\s*000/);
+    expect(sheet).toHaveTextContent(/7\s*000/);
+    // Стоимость с НДС и ставка подписью, стоимость за м², три условия договора.
+    expect(sheet).toHaveTextContent(/ставка НДС 20\s*%/);
+    expect(sheet).toHaveTextContent(/30/);
+    expect(sheet).toHaveTextContent(/10/);
+    expect(sheet).toHaveTextContent(/5/);
+  });
 });
 
 /**
@@ -571,6 +602,26 @@ describe("Паспорт проекта: таблица по статьям", ()
     // Обе причины разными числами — не одна вместо другой (урок Ф4a).
     expect(caption).toHaveTextContent("без цены: 1");
     expect(caption).toHaveTextContent("с ошибкой: 2");
+  });
+
+  /**
+   * Заведён по находке финального ревью ветки. Доля строки «Итого по договору»
+   * была записана литералом «100,00 %» и потому утверждала «сто процентов от
+   * неизвестной суммы» при пустом итоге и «сто процентов от нуля» при нулевом —
+   * ровно то, что правило 5 §2.6 запрещает всем прочим строкам, чей `share_pct`
+   * в этих случаях приходит `null`. Ни один тест ячейку не стерёг.
+   */
+  it.each([
+    { name: "итог не определён", outcome: "empty-total" as const },
+    { name: "итог равен нулю", outcome: "zero-total" as const },
+  ])("доля итога — прочерк, когда $name", async ({ outcome }) => {
+    handlerState.projectPassportOutcome = outcome;
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const grand = await screen.findByTestId("row-grand-total");
+    expect(grand).not.toHaveTextContent("100,00 %");
+    expect(grand).toHaveTextContent("—");
   });
 });
 

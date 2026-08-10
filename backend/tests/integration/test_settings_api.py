@@ -97,11 +97,19 @@ def test_out_of_range_message_explains_the_reason(client):
     больше» неочевидна, и без причины отказ читается как произвол.
     """
     response = client.patch("/api/v1/settings", json={"passport_top_n": PASSPORT_TOP_N_MAX + 1})
+    assert response.status_code == 422
     detail = str(response.json()["detail"])
-    numbers_only = f"Число ключевых расценок должно быть от {PASSPORT_TOP_N_MIN} до {PASSPORT_TOP_N_MAX}."
-    assert len(detail) > len(numbers_only), (
-        f"Отказ называет только границы, без объяснения причины: {detail!r}"
-    )
+
+    # Границы названы — иначе человеку неоткуда узнать, что вводить.
+    assert str(PASSPORT_TOP_N_MIN) in detail and str(PASSPORT_TOP_N_MAX) in detail
+
+    # И названа ПРИЧИНА границы. Сравнение по длине с «только цифрами» было бы
+    # мёртвой проверкой: любой длинный текст прошёл бы её, в том числе
+    # `str(list[dict])` от Pydantic, если валидация поля когда-нибудь затенит
+    # доменный отказ, — то есть тест остался бы зелёным ровно тогда, когда
+    # объяснение исчезло. Здесь утверждается смысловой признак: отказ ссылается
+    # на ЭКРАН, под раскладку которого граница подобрана.
+    assert "фазы 6" in detail, f"Отказ не объясняет причину границы: {detail!r}"
 
 
 def test_non_integer_rejected(client):

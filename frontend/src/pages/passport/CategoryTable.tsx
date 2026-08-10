@@ -396,7 +396,18 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
             <TableCell className="text-right">
               <MoneyCell value={totals.amount} className="font-semibold" />
             </TableCell>
-            <TableCell className="text-right text-sm font-semibold text-fg">100,00 %</TableCell>
+            {/*
+              Доля итога — тавтологические 100 %, но ТОЛЬКО когда итог вообще
+              пригоден как знаменатель. Литерал «100,00 %» здесь означал бы
+              «сто процентов от неизвестной суммы» при пустом итоге и «сто
+              процентов от нуля» при нулевом — ровно то, что правило 5 §2.6
+              запрещает всем остальным строкам, чей `share_pct` в этих случаях
+              приходит `null`. Прочерк ставится по тому же признаку, что и у
+              них: сумма непригодна как знаменатель.
+            */}
+            <TableCell className="text-right text-sm font-semibold text-fg">
+              {totals.amount === null || isZeroDecimal(totals.amount) ? "—" : "100,00 %"}
+            </TableCell>
             <TableCell className="text-right">
               <MoneyCell value={totals.per_sqm} className="font-semibold" />
             </TableCell>
