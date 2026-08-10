@@ -20,9 +20,10 @@ import type { ProjectPassport } from "@/types/domain";
  * статьям (задача 8) и кольцо структуры (задача 9) сюда не входят — этот файл
  * их не строит и не проверяет.
  *
- * Экран ещё НЕ подключён к маршруту (задача 11 переключит `/contracts/:contractId/
- * passport`): маршрут пока занят экраном фазы 6. Монтируем компонент напрямую
- * внутри `Routes` с тем же шаблоном пути — тот же приём, что у `PassportPage.test.tsx`.
+ * Экран занимает маршрут `/contracts/:contractId/passport` (`App.tsx`); экран
+ * фазы 6 удалён этой же веткой. Компонент монтируется напрямую внутри `Routes`
+ * с тем же шаблоном пути — без него `useParams` пуст, запрос не уходит вовсе, и
+ * экран навсегда остаётся скелетоном.
  */
 function renderPassport() {
   return renderWithProviders(
@@ -237,6 +238,25 @@ describe("Паспорт проекта: шапка документа", () => {
     expect(screen.getByText(/ЖК Заречный/)).toBeInTheDocument();
     expect(screen.getByText(/СтройГарант/)).toBeInTheDocument();
     expect(screen.getByText(/Смирнов А\.В\./)).toBeInTheDocument();
+  });
+
+  /**
+   * Заведён по второму кругу внешнего ревью. Оставив шапку при отсутствующей
+   * смете, первая правка перенесла в это состояние подпись «ставка НДС не
+   * заявлена в файле · исходная смета договора» — два утверждения о документе,
+   * которого ещё нет. «Ставка не заявлена в ЗАГРУЖЕННОМ файле» и «файла нет
+   * вовсе» — разные состояния, и смешивать их значит повторять ошибку, за
+   * которую фаза уже платила на «нет норматива» против «0 %».
+   */
+  it("подпись стоимости не говорит о файле, которого нет", async () => {
+    handlerState.projectPassportOutcome = "no-estimate";
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const metrics = screen.getByTestId("passport-metrics");
+    expect(metrics).toHaveTextContent(/смета не загружена/);
+    expect(metrics).not.toHaveTextContent(/не заявлена в файле/);
+    expect(metrics).not.toHaveTextContent(/исходная смета договора/);
   });
 
   /**

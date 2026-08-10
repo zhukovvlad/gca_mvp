@@ -293,6 +293,11 @@ export function useCreateContract() {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.contractors.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Новый договор меняет `object_contracts_count` у ВСЕХ паспортов этого
+      // объекта: бейдж «у объекта N договоров» предупреждает, что ₽/м² делит
+      // разные деньги на одну площадь (спека Ф6 §2.6, обязательство 3 Ф5).
+      // Без инвалидации он ещё минуту показывал бы прежнее N.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Договор создан");
     },
     onError: toastApiError,
@@ -324,6 +329,11 @@ export function useDeleteContract() {
     mutationFn: (id: number) => contractsApi.remove(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.contracts.all });
+      // Удаление бьёт по паспорту дважды: у остальных договоров объекта
+      // меняется `object_contracts_count`, а паспорт САМОГО удалённого договора
+      // остаётся в кэше — и без инвалидации к нему можно вернуться назад и
+      // увидеть документ по договору, которого уже нет.
+      qc.invalidateQueries({ queryKey: qk.passport.all });
       toast.success("Договор удалён");
     },
     onError: toastApiError,

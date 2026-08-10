@@ -4,6 +4,8 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  useCreateContract,
+  useDeleteContract,
   useImportJob,
   useProjectPassport,
   useUpdateContract,
@@ -12,7 +14,7 @@ import {
   useUpdateRateClass,
 } from "./queries";
 import { qk } from "./queryKeys";
-import { sampleImportJobs, sampleProjectPassport } from "@/test/fixtures";
+import { sampleContracts, sampleImportJobs, sampleProjectPassport } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 
@@ -120,6 +122,48 @@ describe("инвалидация паспорта проекта источни�
         });
         await act(async () => {
           await result.current.mutateAsync({ id: 1, input: { title: "Новый" } });
+        });
+      },
+    },
+    /*
+      Два случая ниже — по второму кругу внешнего ревью. Создание и удаление
+      договора меняют `object_contracts_count` у ВСЕХ паспортов объекта (бейдж
+      «у объекта N договоров»), а удаление вдобавок оставляет в кэше паспорт
+      САМОГО удалённого договора — к нему можно вернуться назад и увидеть
+      документ по договору, которого уже нет.
+    */
+    {
+      name: "создание договора",
+      run: async (queryClient: ReturnType<typeof createTestQueryClient>) => {
+        server.use(
+          http.post("/api/v1/contracts", () => HttpResponse.json(sampleContracts[0], { status: 201 }))
+        );
+        const { result } = renderHook(() => useCreateContract(), {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          ),
+        });
+        await act(async () => {
+          await result.current.mutateAsync({
+            object_id: 1,
+            contractor_id: 1,
+            rate_class_id: 1,
+            contract_number: "ГП-9999",
+          } as never);
+        });
+      },
+    },
+    {
+      name: "удаление договора",
+      run: async (queryClient: ReturnType<typeof createTestQueryClient>) => {
+        server.use(http.delete("/api/v1/contracts/:id", () => new HttpResponse(null, { status: 204 })));
+        const { result } = renderHook(() => useDeleteContract(), {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          ),
+        });
+        await act(async () => {
+          await result.current.mutateAsync(1);
         });
       },
     },
