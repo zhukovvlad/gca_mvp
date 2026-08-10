@@ -240,18 +240,22 @@ describe("Паспорт проекта: таблица по статьям", ()
     renderPassport();
     await screen.findByText("ГП-0212");
 
+    // Запросы ограничены таблицей: задача 9 добавила на ту же страницу легенду
+    // кольца структуры, которая дословно повторяет названия топ-8 статей и
+    // «Нераспределённое» — глобальный `screen.getByText` стал бы неоднозначен.
+    const table = screen.getByRole("table");
     const rootTitles = sampleProjectPassport.categories
       .filter((c) => c.parent_id === null)
       .map((c) => c.title);
     for (const title of rootTitles) {
-      expect(screen.getByText(title)).toBeInTheDocument();
+      expect(within(table).getByText(title)).toBeInTheDocument();
     }
-    expect(screen.getByText("Нераспределённое")).toBeInTheDocument();
-    expect(screen.getByText("Итого по договору")).toBeInTheDocument();
+    expect(within(table).getByText("Нераспределённое")).toBeInTheDocument();
+    expect(within(table).getByText("Итого по договору")).toBeInTheDocument();
 
     // Известный дочерний узел («Разработка грунта», ребёнок «Земляных работ»)
     // не показан, пока родитель свёрнут.
-    expect(screen.queryByText("Разработка грунта")).not.toBeInTheDocument();
+    expect(within(table).queryByText("Разработка грунта")).not.toBeInTheDocument();
   });
 
   // Тест 2.
@@ -437,8 +441,11 @@ describe("Паспорт проекта: таблица по статьям", ()
     renderPassport();
     await screen.findByText("ГП-0212");
 
-    expect(screen.getByText("Нераспределённое")).toBeInTheDocument();
-    expect(screen.getByText(/2 раздела сметы без статьи классификатора/)).toBeInTheDocument();
+    // Ограничено таблицей — легенда кольца структуры (задача 9) тоже называет
+    // «Нераспределённое» отдельной строкой, глобальный поиск был бы неоднозначен.
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("Нераспределённое")).toBeInTheDocument();
+    expect(within(table).getByText(/2 раздела сметы без статьи классификатора/)).toBeInTheDocument();
   });
 
   // Тест 11.
@@ -564,5 +571,107 @@ describe("Паспорт проекта: таблица по статьям", ()
     // Обе причины разными числами — не одна вместо другой (урок Ф4a).
     expect(caption).toHaveTextContent("без цены: 1");
     expect(caption).toHaveTextContent("с ошибкой: 2");
+  });
+});
+
+/**
+ * Кольцо структуры (задача 9, спека §2.10).
+ *
+ * `sampleProjectPassport` уже даёт ДЕВЯТЬ корней с известной суммой (01, 99, 04,
+ * 05, 06, 07, 08, 09, 10) и ОДИН с неизвестной («03 Отделочные работы»,
+ * `total: null`) — этого хватает и на топ-8, и на свёрнутую девятую статью
+ * («Инженерные сети», 175 000 — меньше всех восьми), и на статью, которая не
+ * входит никуда. Отдельного `server.use()` для композиции не нужно (по сумме,
+ * убыванием): 05 (900 000), 06 (800 000), 07 (700 000), 08 (600 000),
+ * 01 (500 000), 09 (400 000), 99 (300 000), 10 (200 000) — топ-8; 04 (175 000) —
+ * «Остальные статьи (1)»; 03 (null) — не в кольце и не в «Остальных».
+ *
+ * Проверки легенды идут ЧЕРЕЗ `within(legend)`: те же названия статей рендерит
+ * и таблица (задача 8) на той же странице — глобальный `screen.getByText` был
+ * бы неоднозначен.
+ */
+describe("Паспорт проекта: кольцо структуры", () => {
+  // Тест 1.
+  it("легенда несёт восемь крупнейших статей", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    const top8Titles = [
+      "Фасадные работы",
+      "Устройство кровли",
+      "Электромонтажные работы",
+      "Слаботочные системы",
+      "Земляные работы",
+      "Благоустройство",
+      "Кровельные работы",
+      "Прочие работы",
+    ];
+    for (const title of top8Titles) {
+      expect(within(legend).getByText(title)).toBeInTheDocument();
+    }
+    // Девятая по сумме статья («Инженерные сети», 175 000) отдельной строкой не
+    // показана — она свёрнута в «Остальные» (тест ниже).
+    expect(within(legend).queryByText("Инженерные сети")).not.toBeInTheDocument();
+  });
+
+  // Тест 2.
+  it("девятая и дальше сведены в «Остальные статьи (N)»", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    expect(within(legend).getByText("Остальные статьи (1)")).toBeInTheDocument();
+  });
+
+  // Тест 3.
+  it("«Нераспределённое» названо в легенде отдельно", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const legend = screen.getByTestId("structure-ring-legend");
+    expect(within(legend).getByText("Нераспределённое")).toBeInTheDocument();
+  });
+
+  // Тест 4.
+  it("при неопределённой сумме кольца нет и сказано, что сумма не определена", async () => {
+    handlerState.projectPassportOutcome = "empty-total";
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(
+      await screen.findByText(/структура не строится: сумма по смете не определена/)
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("structure-ring-legend")).not.toBeInTheDocument();
+  });
+
+  // Тест 5.
+  it("при нулевой сумме кольца нет и сказано, что сумма равна нулю", async () => {
+    handlerState.projectPassportOutcome = "zero-total";
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(
+      await screen.findByText(/структура не строится: сумма по смете равна нулю/)
+    ).toBeInTheDocument();
+    // Формулировка ДРУГОГО случая («сумма не определена») здесь появиться не
+    // должна — два разных факта о смете не взаимозаменимы (правило 6 §2.10).
+    expect(
+      screen.queryByText(/структура не строится: сумма по смете не определена/)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("structure-ring-legend")).not.toBeInTheDocument();
+  });
+
+  // Тест 6.
+  it("статья с неизвестной суммой не входит в «Остальные»", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    // Фикстура: «Отделочные работы» (03) — total: null, корень, рядом с девятью
+    // известными. Если бы неизвестная сумма молча сворачивалась в «Остальные»
+    // нулём, счётчик стал бы (2), а не (1).
+    const legend = screen.getByTestId("structure-ring-legend");
+    expect(within(legend).queryByText("Отделочные работы")).not.toBeInTheDocument();
+    expect(within(legend).getByText("Остальные статьи (1)")).toBeInTheDocument();
   });
 });

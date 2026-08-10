@@ -6,6 +6,7 @@ import { useProjectPassport } from "@/services/queries";
 
 import { CategoryTable } from "./CategoryTable";
 import { PassportHeader } from "./PassportHeader";
+import { StructureRing } from "./StructureRing";
 
 /**
  * Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6, §2.9; план,
@@ -68,6 +69,9 @@ export default function ProjectPassportPage() {
   return (
     <div className="container-page py-8">
       <PassportHeader passport={passport} />
+      <div className="mt-6">
+        <StructureRing passport={passport} />
+      </div>
       <div className="mt-6">
         <CategoryTable passport={passport} />
       </div>
