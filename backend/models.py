@@ -861,7 +861,7 @@ class PositionItem(Base):
             name="ck_position_items_category_source_pairs",
         ),
         CheckConstraint(
-            "category_source IS NULL OR category_source = 'file'",
+            "category_source IS NULL OR category_source IN ('file','manual')",
             name="ck_position_items_category_source",
         ),
         Index("idx_position_items_catalog_id", "catalog_position_id"),
@@ -875,6 +875,54 @@ class PositionItem(Base):
             "idx_position_items_chapter_item_id",
             "chapter_item_id",
             postgresql_where=sa_text("chapter_item_id IS NOT NULL"),
+        ),
+    )
+
+
+class EstimateCategoryOverride(Base):
+    """Ручное решение о статье строки-раздела (миграция 0011).
+
+    Первичный ключ — сама строка-раздел: «одно решение на раздел» держит схема.
+    `RESTRICT` на статью и на автора: у решения, попадающего в паспорт для банка,
+    и статья, и автор должны оставаться живыми.
+    """
+
+    __tablename__ = "estimate_category_overrides"
+
+    position_item_id = Column(
+        BigInteger,
+        ForeignKey(
+            "position_items.id",
+            ondelete="CASCADE",
+            name="fk_estimate_category_overrides_position_item_id",
+        ),
+        primary_key=True,
+    )
+    work_category_id = Column(
+        BigInteger,
+        ForeignKey(
+            "work_categories.id",
+            ondelete="RESTRICT",
+            name="fk_estimate_category_overrides_work_category_id",
+        ),
+        nullable=False,
+    )
+    assigned_by = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="RESTRICT",
+            name="fk_estimate_category_overrides_assigned_by",
+        ),
+        nullable=False,
+    )
+    assigned_at = _created_at()
+    note = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_estimate_category_overrides_work_category_id",
+            "work_category_id",
         ),
     )
 
