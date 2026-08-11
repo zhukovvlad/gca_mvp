@@ -462,7 +462,9 @@ describe("Паспорт проекта: таблица по статьям", ()
     withPassport((base) => ({
       ...base,
       categories: base.categories.map((c) =>
-        c.code === "04" ? { ...c, own_sections: [{ id: 1, number: "6.5", title: "Прочее" }] } : c
+        c.code === "04"
+          ? { ...c, own_sections: [{ id: 1, number: "6.5", title: "Прочее", source: "file" }] }
+          : c
       ),
     }));
     const user = userEvent.setup();

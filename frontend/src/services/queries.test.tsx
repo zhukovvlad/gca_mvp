@@ -4,10 +4,12 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  useClearCategoryOverride,
   useCreateContract,
   useDeleteContract,
   useImportJob,
   useProjectPassport,
+  useSetCategoryOverride,
   useUpdateContract,
   useUpdateContractor,
   useUpdateObject,
@@ -248,5 +250,94 @@ describe("useProjectPassport: переиспользование корня па
     });
 
     expect(new Set(requested)).toEqual(new Set());
+  });
+});
+
+/**
+ * `useSetCategoryOverride` / `useClearCategoryOverride` (Ф7, разнос §2.6):
+ * обе мутации обязаны инвалидировать паспорт ДОГОВОРА, потому что эндпоинты
+ * PUT/DELETE его не возвращают — они возвращают только сводку изменений
+ * (`chapters_updated`/`additional_works_updated`/`chapters_manual`), а не
+ * паспорт (форма паспорта объявлена ровно один раз, вторая копия расползлась
+ * бы). Без инвалидации экран, уже открытый на паспорте, показывал бы старое
+ * «Нераспределённое» — тест должен доказывать именно это, а не сам факт
+ * похода за PUT/DELETE.
+ *
+ * Паспорт заранее кладётся в кэш через `setQueryData` — БЕЗ активного
+ * наблюдателя (никакой `useProjectPassport` не рендерится). Так `isInvalidated`
+ * не зависит от гонки с фоновым рефетчем: TanStack Query по умолчанию
+ * перезапрашивает при инвалидации только АКТИВНЫЕ (наблюдаемые) запросы, а
+ * инвалидированный неактивный запрос просто помечается и остаётся в этом виде
+ * до следующего наблюдателя. `gcTime` ключа паспорта поднят точечным
+ * `setQueryDefaults`: у тестового клиента `gcTime: 0`, и без этого правки
+ * запись могла бы уйти в сборку мусора до того, как мутация успеет её
+ * инвалидировать — тест был бы хрупким независимо от корректности `onSuccess`.
+ *
+ * Уберите `onSuccess` в хуке — `isInvalidated` останется `false`, и
+ * `toBe(true)` упадёт: проверка не вакуумная.
+ *
+ * Второй, НЕсвязанный договор (другой ключ `qk.passport.project`) заведён в
+ * том же кэше и проверяется отдельно — он обязан остаться `isInvalidated:
+ * false`. Без этой половины проверки хук, инвалидирующий `qk.passport.all`
+ * (или вовсе всё) целиком, прошёл бы тест так же зелено: узкий ключ
+ * `qk.passport.project(contractId)` выбран НАМЕРЕННО, чтобы правка одного
+ * договора не роняла кэш паспортов остальных, — и это ровно то, что первая
+ * половина проверки одна доказать не может.
+ */
+describe("useSetCategoryOverride / useClearCategoryOverride: инвалидация паспорта договора", () => {
+  it("после назначения статьи паспорт ЭТОГО договора помечается устаревшим, а чужой — нет", async () => {
+    const queryClient = createTestQueryClient();
+    const passportKey = qk.passport.project(5);
+    const otherPassportKey = qk.passport.project(99);
+    queryClient.setQueryDefaults(passportKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(otherPassportKey, { gcTime: 60_000 });
+    queryClient.setQueryData(passportKey, sampleProjectPassport);
+    queryClient.setQueryData(otherPassportKey, sampleProjectPassport);
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+
+    const { result } = renderHook(() => useSetCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        estimateId: 11,
+        positionItemId: 42,
+        workCategoryId: 20,
+        contractId: 5,
+      });
+    });
+
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
+    // Договор 99 ни при чём — его кэш не должен шевельнуться.
+    expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+  });
+
+  it("после снятия ручного решения паспорт ЭТОГО договора помечается устаревшим, а чужой — нет", async () => {
+    const queryClient = createTestQueryClient();
+    const passportKey = qk.passport.project(7);
+    const otherPassportKey = qk.passport.project(99);
+    queryClient.setQueryDefaults(passportKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(otherPassportKey, { gcTime: 60_000 });
+    queryClient.setQueryData(passportKey, sampleProjectPassport);
+    queryClient.setQueryData(otherPassportKey, sampleProjectPassport);
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+
+    const { result } = renderHook(() => useClearCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ estimateId: 11, positionItemId: 42, contractId: 7 });
+    });
+
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
   });
 });

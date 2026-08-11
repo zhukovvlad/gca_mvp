@@ -120,7 +120,13 @@ function projectPassportForOutcome(
 
     case "no-estimate":
       // Договор без сметы (правило 8 CRUD) — карточка есть, файла ещё нет:
-      // дерево статей остаётся полным скелетом, но без единой суммы.
+      // дерево статей остаётся полным скелетом, но без единой суммы. Без
+      // сметы нет ни строк дерева разноса, ни действующих ручных решений —
+      // сервер отдаёт их пустыми списками явно (не наследует из `base`,
+      // иначе этот вариант описывал бы состояние, которого бэкенд не может
+      // произвести: договор без сметы с деревом «Нераспределённого» и живым
+      // ручным решением внутри него). `category_options` — справочник
+      // классификатора целиком, от сметы не зависит и остаётся полным.
       return {
         ...base,
         estimate: null,
@@ -150,7 +156,9 @@ function projectPassportForOutcome(
           chapters: 0,
           rows_outside_structure: 0,
           extras: [],
+          sections: [],
         },
+        manual_assignments: [],
       };
 
     case "no-tep":
@@ -638,6 +646,32 @@ export const handlers = [
     }
     return HttpResponse.json(projectPassportForOutcome(handlerState.projectPassportOutcome));
   }),
+
+  // Ручной разнос разделов по статьям (Ф7, спека разноса §2.6). Ответ — сводка
+  // изменений, НЕ паспорт (форма паспорта объявлена ровно один раз в фикстуре).
+  http.put(
+    "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+    async ({ request }) => {
+      const body = (await request.json().catch(() => ({}))) as {
+        work_category_id?: unknown;
+        note?: string | null;
+      };
+      if (typeof body.work_category_id !== "number") {
+        return HttpResponse.json(
+          { detail: "Поле work_category_id обязательно." },
+          { status: 422 }
+        );
+      }
+      return HttpResponse.json({
+        chapters_updated: 1,
+        additional_works_updated: 0,
+        chapters_manual: 1,
+      });
+    }
+  ),
+  http.delete("/api/v1/estimates/:estimateId/category-overrides/:positionItemId", () =>
+    HttpResponse.json({ chapters_updated: 1, additional_works_updated: 0, chapters_manual: 0 })
+  ),
 
   http.get("/api/v1/analytics/matrix", ({ request }) => {
     const url = new URL(request.url);

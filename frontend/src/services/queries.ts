@@ -20,6 +20,7 @@ import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   BankComparisonParams,
+  ClearCategoryOverrideInput,
   ContractInput,
   ContractorInput,
   ManualKind,
@@ -30,6 +31,7 @@ import type {
   ReapproveInput,
   MatrixParams,
   ReviewQueueParams,
+  SetCategoryOverrideInput,
 } from "@/types/domain";
 
 /** Элемент `detail` при ошибке валидации Pydantic. */
@@ -620,6 +622,36 @@ export function useProjectPassport(contractId: number | undefined) {
     queryKey: qk.passport.project(contractId ?? 0),
     queryFn: () => analyticsApi.projectPassport(contractId as number),
     enabled: contractId !== undefined,
+  });
+}
+
+/**
+ * Назначить статью разделу/допработе вручную (Ф7, разнос).
+ *
+ * `contractId` — отдельное поле входа, хотя эндпоинту оно не нужно: снести
+ * нужно кэш запроса паспорта, а он ключуется договором, не сметой (§ спеки
+ * разноса — правило про инвалидацию).
+ */
+export function useSetCategoryOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SetCategoryOverrideInput) => analyticsApi.setCategoryOverride(input),
+    onSuccess: (_data, input) => {
+      qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Снять ручное решение о статье — см. {@link useSetCategoryOverride}. */
+export function useClearCategoryOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ClearCategoryOverrideInput) => analyticsApi.clearCategoryOverride(input),
+    onSuccess: (_data, input) => {
+      qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
+    },
+    onError: toastApiError,
   });
 }
 
