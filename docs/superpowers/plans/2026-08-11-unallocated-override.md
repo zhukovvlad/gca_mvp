@@ -1866,7 +1866,7 @@ git commit -m "feat(api): PUT/DELETE разноса раздела по стат
 - Consumes: `EstimateCategoryOverride`, существующий механизм `warnings` сессии B.
 - Produces: warning нового `import_job` при непустом наборе утраченных решений.
 
-- [ ] **Step 1: Написать падающий тест**
+- [x] **Step 1: Написать падающий тест**
 
 Дописать в `backend/tests/integration/test_estimate_import.py`:
 
@@ -1900,12 +1900,12 @@ def test_replace_says_nothing_when_there_were_no_decisions(
     assert not any("ручных решений" in w for w in job.warnings)
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd backend && uv run pytest tests/integration/test_estimate_import.py -k replace_reports -v`
 Expected: FAIL — предупреждения нет.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В `_replace_existing`, **до** `db.execute(delete(Estimate)...)`:
 
@@ -1935,17 +1935,17 @@ Expected: FAIL — предупреждения нет.
         )
 ```
 
-- [ ] **Step 4: Прогнать**
+- [x] **Step 4: Прогнать**
 
 Run: `cd backend && uv run pytest tests/integration/test_estimate_import.py -v`
 Expected: PASS, существующие тесты замены не ослаблены.
 
-- [ ] **Step 5: Доказать защиту снятием**
+- [x] **Step 5: Доказать защиту снятием**
 
 Убрать `if lost[0]:` (писать всегда) → `test_replace_says_nothing_when_there_were_no_decisions`
 краснеет. Убрать блок целиком → `test_replace_reports_...` краснеет.
 
-- [ ] **Step 6: Счётчик решений — в строку списка смет договора**
+- [x] **Step 6: Счётчик решений — в строку списка смет договора**
 
 Форма замены **не может** взять число из паспорта, и на это две независимые
 причины. Первая: карточка договора паспорт не загружает вовсе — она держит
@@ -1986,7 +1986,7 @@ def test_each_estimate_row_carries_its_own_decision_count(
 Прогнать: `cd backend && uv run pytest tests/integration -k decision_count -v` — PASS.
 Снятие: считать по договору, а не по смете → тест краснеет на строке допсоглашения.
 
-- [ ] **Step 7: Предупредить в форме замены — до загрузки**
+- [x] **Step 7: Предупредить в форме замены — до загрузки**
 
 Warning в `import_jobs` приходит **после** того, как решения уже уничтожены; как
 предупреждение он бесполезен, и спека §2.9 п. 2 требует сказать **до**. Тест сначала:
@@ -2025,7 +2025,7 @@ it("замена допсоглашения без решений молчит, 
 (2) брать счётчик исходной сметы вместо заменяемой → второй тест краснеет — это и
 есть защита от того дефекта, который нашло ревью.
 
-- [ ] **Step 8: Коммит**
+- [x] **Step 8: Коммит**
 
 ```bash
 git add backend/services/estimate_import.py backend/crud/contracts.py backend/tests/integration frontend/src/components/contracts frontend/src/types/domain.ts
