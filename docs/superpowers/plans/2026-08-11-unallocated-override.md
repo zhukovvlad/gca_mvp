@@ -2062,7 +2062,7 @@ git commit -m "feat(import): замена сметы сообщает об ут�
   - `useSetCategoryOverride()`, `useClearCategoryOverride()` — обе инвалидируют
     `qk.passport.project(contractId)`
 
-- [ ] **Step 1: Написать падающий тест мутации**
+- [x] **Step 1: Написать падающий тест мутации**
 
 ```typescript
 it("после назначения статьи паспорт перезапрашивается", async () => {
@@ -2077,12 +2077,12 @@ it("после назначения статьи паспорт перезапр
 });
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd frontend && npx vitest run src/services/queries.test.ts`
 Expected: FAIL — `useSetCategoryOverride is not a function`.
 
-- [ ] **Step 3: Реализовать типы**
+- [x] **Step 3: Реализовать типы**
 
 В `frontend/src/types/domain.ts`:
 
@@ -2139,7 +2139,7 @@ export interface ProjectPassportCategoryOption {
 Обновить `frontend/src/test/fixtures.ts` и `handlers.ts`: новые поля обязательны,
 поэтому `tsc` укажет все места, где фикстуры их не несут.
 
-- [ ] **Step 4: Реализовать клиент и мутации**
+- [x] **Step 4: Реализовать клиент и мутации**
 
 Мутации принимают `contractId` **отдельным полем**, хотя эндпоинт его не требует:
 инвалидировать нужно запрос паспорта, а он ключуется договором.
@@ -2157,7 +2157,7 @@ export function useSetCategoryOverride() {
 }
 ```
 
-- [ ] **Step 5: Прогнать**
+- [x] **Step 5: Прогнать**
 
 ```bash
 cd frontend && npx tsc --noEmit
@@ -2167,7 +2167,7 @@ Expected: PASS. Шаги **по отдельности**, не через `&&` (
 [silent-test-runs](../../insights/silent-test-runs.md): `&&` прячет, какой из шагов
 не взлетел).
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add frontend/src/types/domain.ts frontend/src/services frontend/src/test
