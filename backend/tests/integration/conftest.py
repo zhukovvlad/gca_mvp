@@ -232,6 +232,155 @@ def top_unassigned_chapter(db_session, imported_estimate):
 
 
 @pytest.fixture
+def unallocated_tree(db_session, make_imported_estimate):
+    """Нераспределённая часть дерева разделов Задачи 4 — смета через НАСТОЯЩИЙ
+    импорт (`make_imported_estimate`, не голые ORM-строки поверх чужого
+    предложения): `services/category_override.apply_overrides` при разносе
+    ВСЕГДА пересчитывает предложение целиком с проверкой биекции ключей
+    `raw_data` ↔ строки БД (спека разноса §2.3) — строка, добавленная в обход
+    импорта, тут же провалила бы эту биекцию `mapping_broken`. Поэтому у
+    `unallocated_tree` СВОЯ смета, а не надстройка над `imported_estimate`.
+
+    Числа заданы НЕЗАВИСИМО от кода, который их будет считать (спека разноса
+    §5.2, задача 4): вершина «9» без единой своей позиции; ребёнок «9.1» с
+    двумя расценёнными позициями (30 и 30); ребёнок «9.2» с одной
+    расценённой (20), одной без цены и одной с ценой `'NaN'` — не число,
+    исключается из суммы, но считается строкой; раздел «8» вовсе без позиций
+    в поддереве — граница §5.2 обязана убрать его из выдачи. Ни одна из этих
+    строк не несёт статьи — весь кусок нераспределён. Порядок строк ниже —
+    файловый (глубина раздела резолвер считает по числу точек в номере, а
+    родителя — стеком по порядку строк, спека разноса §1.2): «9.1»/«9.2»
+    обязаны идти сразу за «9», иначе резолвер не признает их детьми «9».
+
+    Второй кусок («20», «20.1», «20.1.1») — случай переподвешивания родителя
+    (ревью гейта после Задачи 4): «20» несёт ВАЛИДНУЮ статью файла (код «1»),
+    «20.1» несёт код «9999», которого нет в справочнике — правило Ф3
+    «утверждение файла сильнее наследования» (`services/category_resolution.
+    _article_for`) не даёт ей унаследовать статью «20» именно ПОТОМУ, что у
+    неё есть собственное (хоть и нечитаемое системой) утверждение: «20.1»
+    действительно без статьи, хотя её файловый родитель — раздел С статьёй.
+    «20.1.1» — без своей статьи вовсе, наследует от «20.1» (та без статьи —
+    наследовать нечего), тоже без статьи.
+
+    Третий кусок («21», «21.1», «21.2») — случай смешанного поддерева (та же
+    ревью-находка, пункт 2): «21» и «21.1» без статьи, «21.2» несёт СВОЮ
+    валидную статью файла (код «2») и потому ничего не наследует и ничего не
+    отдаст решению на «21» — правило Ф3 в чистом виде, без «нечитаемого» кода.
+
+    Четвёртый кусок («22», «22.1», «22.2») — та же ревью-находка, но с
+    блокирующим узлом («22.1», код «9999») ПОД родителем, у которого своей
+    статьи нет вовсе (в отличие от куска «20», где родитель СО статьёй): «22»
+    без утверждения, «22.1» — код «9999» (блокирует наследование СВОИМ
+    утверждением, не статусом родителя), «22.2» — без утверждения, наследует
+    от «22» нормально. Доказывает, что предикат — «есть своё утверждение»,
+    а не «предок со статьёй»: у «22» самой статьи нет, а «22.1» всё равно не
+    наследует от неё и не отдаёт ей своих денег.
+    """
+    estimate = make_imported_estimate(
+        [
+            position(job_title="Раздел 8 — пустой", is_chapter=True, chapter_number="8"),
+            position(job_title="Раздел 9", is_chapter=True, chapter_number="9"),
+            position(job_title="Подраздел 9.1", is_chapter=True, chapter_number="9.1"),
+            position(
+                job_title="Позиция 9.1-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="30", total_cost_total="30", chapter_ref="9.1",
+            ),
+            position(
+                job_title="Позиция 9.1-б", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="30", total_cost_total="30", chapter_ref="9.1",
+            ),
+            position(job_title="Подраздел 9.2", is_chapter=True, chapter_number="9.2"),
+            position(
+                job_title="Позиция 9.2-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="20", total_cost_total="20", chapter_ref="9.2",
+            ),
+            position(
+                job_title="Позиция 9.2-б без цены", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total=None, total_cost_total=None, chapter_ref="9.2",
+            ),
+            position(
+                job_title="Позиция 9.2-в с ценой NaN", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="NaN", total_cost_total="NaN", chapter_ref="9.2",
+            ),
+            # Переподвешивание: «20» — со статьёй, «20.1» — без (код «9999» не
+            # в справочнике, наследовать не даёт), «20.1.1» — без (наследует
+            # от «20.1», а там наследовать нечего).
+            position(
+                job_title="Раздел 20 — со статьёй", is_chapter=True, chapter_number="20",
+                article_smr="1",
+            ),
+            position(
+                job_title="Подраздел 20.1 — код не в справочнике", is_chapter=True,
+                chapter_number="20.1", article_smr="9999",
+            ),
+            position(
+                job_title="Позиция 20.1-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="15", total_cost_total="15", chapter_ref="20.1",
+            ),
+            position(job_title="Подраздел 20.1.1", is_chapter=True, chapter_number="20.1.1"),
+            position(
+                job_title="Позиция 20.1.1-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="5", total_cost_total="5", chapter_ref="20.1.1",
+            ),
+            # Смешанное поддерево: «21» без статьи, «21.1» без статьи (её
+            # деньги решение на «21» переместит), «21.2» — своя валидная
+            # статья файла (её деньги решение на «21» НЕ переместит).
+            position(job_title="Раздел 21", is_chapter=True, chapter_number="21"),
+            position(job_title="Подраздел 21.1 — без статьи", is_chapter=True, chapter_number="21.1"),
+            position(
+                job_title="Позиция 21.1-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="45", total_cost_total="45", chapter_ref="21.1",
+            ),
+            position(
+                job_title="Подраздел 21.2 — своя статья", is_chapter=True, chapter_number="21.2",
+                article_smr="2",
+            ),
+            position(
+                job_title="Позиция 21.2-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="999", total_cost_total="999", chapter_ref="21.2",
+            ),
+            # Блокирующий узел ПОД родителем без статьи: «22» без утверждения,
+            # «22.1» — код «9999» (блокирует своим утверждением), «22.2» —
+            # без утверждения (наследует от «22» нормально).
+            position(job_title="Раздел 22 — без утверждения", is_chapter=True, chapter_number="22"),
+            position(
+                job_title="Подраздел 22.1 — код не в справочнике", is_chapter=True,
+                chapter_number="22.1", article_smr="9999",
+            ),
+            position(
+                job_title="Позиция 22.1-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="777", total_cost_total="777", chapter_ref="22.1",
+            ),
+            position(job_title="Подраздел 22.2 — без статьи", is_chapter=True, chapter_number="22.2"),
+            position(
+                job_title="Позиция 22.2-а", unit="м2", quantity=1, suggested_quantity=1,
+                unit_cost_total="33", total_cost_total="33", chapter_ref="22.2",
+            ),
+        ]
+    )
+
+    def _chapter(number: str) -> int:
+        return db_session.execute(
+            sa.select(PositionItem.id)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(
+                Lot.estimate_id == estimate.id,
+                PositionItem.is_chapter.is_(True),
+                PositionItem.chapter_number_in_proposal == number,
+            )
+        ).scalar_one()
+
+    return SimpleNamespace(
+        contract_id=estimate.contract_id,
+        estimate_id=estimate.id,
+        top_chapter_id=_chapter("9"),
+        empty_chapter_id=_chapter("8"),
+        mixed_top_chapter_id=_chapter("21"),
+    )
+
+
+@pytest.fixture
 def any_position_row(db_session, imported_estimate):
     """Любая строка-ПОЗИЦИЯ (не раздел) `imported_estimate` — статья привязывается
     только к разделам (спека §1.3), и это то, что здесь проверяется отказом."""
