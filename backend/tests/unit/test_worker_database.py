@@ -154,19 +154,22 @@ def test_refusal_reason_none_for_serial_and_worker_names():
 
 
 def test_db_engine_skips_before_create_database_on_refusal(monkeypatch):
-    """П. 8: непустая причина барьера (b) — skip ДО функции создания базы.
+    """П. 8: имя без `_test` — skip настоящего барьера (b) ДО функции создания базы.
 
-    Причина подаётся стабом: с целым генератором имя воркёра всегда кончается
-    на `_test`, естественным входом ветку отказа на gw-пути не исполнить (а на
-    master-пути создание базы не исполняется вовсе — шпион был бы вакуозным).
-    Сам расчёт причины стерегут тесты чистой функции выше (пп. 6–7).
+    Плохое имя тест подаёт сам — подменой генератора: с целым генератором имя
+    воркёра всегда кончается на `_test`, и ветка отказа на gw-пути не
+    исполнилась бы (а на master-пути создание базы не исполняется вовсе —
+    шпион был бы вакуозным). Барьер (b) при этом НАСТОЯЩИЙ, не стаб: снятие 6
+    реестра (test_database_refusal_reason всегда None) обязано ронять именно
+    этот тест — стаб причины замаскировал бы снятие. Имя базы в подмене —
+    заведомо несуществующее: если бы прогон прошёл дальше барьера, он упал бы
+    на подключении, а не мутировал бы живую dev-базу.
     """
     monkeypatch.setenv("TEST_DATABASE_URL", BASE_URL)
     monkeypatch.setenv("DATABASE_URL", PROD_URL)
+    bad_url = "postgresql+psycopg://postgres@localhost:5459/gca_probe_suffixless"
     monkeypatch.setattr(
-        conftest_module,
-        "test_database_refusal_reason",
-        lambda url: "искусственная причина отказа",
+        conftest_module, "worker_database_url", lambda url, worker_id: bad_url
     )
     created: list[str] = []
     monkeypatch.setattr(conftest_module, "_create_worker_database", created.append)
