@@ -109,6 +109,12 @@ test-int-local-k pattern: pg-test-start
 test-backend-local: pg-test-start
     cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest
 
+# Параллельный прогон: pytest-xdist, у каждого воркёра своя база gca_gw<N>_test
+# (создаётся фикстурой db_engine сама, предсоздание не нужно — спека §1.3a).
+# n обязателен, пока значение по умолчанию не выбрано замером (план, задача 2b).
+test-backend-parallel n: pg-test-start
+    cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest -n {{n}}
+
 # Точечный прогон unit по -k паттерну
 test-unit-k pattern:
     cd backend && uv run pytest tests/unit -v -k "{{pattern}}"
