@@ -100,7 +100,7 @@ React + TS, Vite, shadcn/ui, TanStack Query, vitest + MSW.
     **эффективная** статья имеет происхождение `manual` (свои + унаследованные).
   - `CategoryResolutionContractError` — при `work_category_id`, которого нет в карте.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в `backend/tests/unit/test_category_resolution.py` (хелперы `rows`,
 `chapter`, `work`, фикстура `resolver` и карта `CATALOG` уже есть в файле):
@@ -183,12 +183,12 @@ class TestOverrides:
         assert result.counters.chapters_manual == 0
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падают**
+- [x] **Step 2: Прогнать и убедиться, что падают**
 
 Run: `cd backend && uv run pytest tests/unit/test_category_resolution.py -k Overrides -v`
 Expected: FAIL — `ImportError: cannot import name 'CATEGORY_SOURCE_MANUAL'`.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В `backend/services/category_resolution.py`:
 
@@ -341,13 +341,13 @@ class _StackEntry:
         return ref, CATEGORY_SOURCE_FILE, "own"
 ```
 
-- [ ] **Step 4: Прогнать всё юнит-покрытие резолвера**
+- [x] **Step 4: Прогнать всё юнит-покрытие резолвера**
 
 Run: `cd backend && uv run pytest tests/unit/test_category_resolution.py tests/unit/test_additional_works.py -v`
 Expected: PASS, включая **все** тесты Ф3 и Ф4 — сигнатура расширена значением по
 умолчанию, поведение импорта не изменилось.
 
-- [ ] **Step 5: Доказать защиту снятием**
+- [x] **Step 5: Доказать защиту снятием**
 
 Для каждой из трёх защит снять её, увидеть красный, вернуть:
 1. убрать проверку `override_id is not None` в начале `_article_for` →
@@ -359,7 +359,7 @@ Expected: PASS, включая **все** тесты Ф3 и Ф4 — сигнат
 
 Записать в devlog, что снятие каждой применялось и давало красный.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add backend/services/category_resolution.py backend/tests/unit/test_category_resolution.py
