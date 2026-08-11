@@ -386,7 +386,7 @@ git commit -m "feat(category): резолвер принимает ручные 
   с полями `position_item_id`, `work_category_id`, `assigned_by`, `assigned_at`, `note`;
   `ck_position_items_category_source` разрешает `('file','manual')`.
 
-- [ ] **Step 1: Написать падающий тест схемы**
+- [x] **Step 1: Написать падающий тест схемы**
 
 Создать `backend/tests/integration/test_category_overrides_schema.py`:
 
@@ -484,12 +484,12 @@ def test_a_batch_larger_than_five_survives(db_session, chapter_rows_ten, admin_u
 используют `test_project_passport_api.py` и `test_estimate_import.py`); подсмотреть
 его имя в этих файлах и **переиспользовать**, а не писать второй.
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd backend && uv run pytest tests/integration/test_category_overrides_schema.py -v`
 Expected: FAIL — `ImportError: cannot import name 'EstimateCategoryOverride'`.
 
-- [ ] **Step 3: Написать миграцию**
+- [x] **Step 3: Написать миграцию**
 
 Создать `backend/alembic/versions/2026_08_11_0011-category_overrides.py`:
 
@@ -612,7 +612,7 @@ def downgrade() -> None:
     op.drop_table("estimate_category_overrides")
 ```
 
-- [ ] **Step 4: Добавить модель**
+- [x] **Step 4: Добавить модель**
 
 В `backend/models.py` — рядом с `PositionItem`, после неё:
 
@@ -674,7 +674,7 @@ class EstimateCategoryOverride(Base):
         ),
 ```
 
-- [ ] **Step 5: Накатить и прогнать**
+- [x] **Step 5: Накатить и прогнать**
 
 ```bash
 cd backend && uv run alembic upgrade head
@@ -682,7 +682,7 @@ uv run pytest tests/integration/test_category_overrides_schema.py -v
 ```
 Expected: PASS (6 тестов).
 
-- [ ] **Step 6: Проверить круговой рейс**
+- [x] **Step 6: Проверить круговой рейс**
 
 ```bash
 cd backend && uv run alembic downgrade base && uv run alembic upgrade head
@@ -702,7 +702,7 @@ Expected: обе команды успешны на **чистой** БД (жи�
 
 После каждого — вернуть состояние и убедиться, что `downgrade` проходит на чистой БД.
 
-- [ ] **Step 7: Коммит**
+- [x] **Step 7: Коммит**
 
 ```bash
 git add backend/alembic/versions/2026_08_11_0011-category_overrides.py backend/models.py backend/tests/integration/test_category_overrides_schema.py backend/tests/integration/conftest.py
@@ -739,7 +739,7 @@ ck_position_items_category_source расширен до ('file','manual'); downg
   - `def clear_override(db, *, estimate_id, position_item_id) -> ApplyResult`
   - `@dataclass(frozen=True) class ApplyResult: chapters_updated: int; additional_works_updated: int; chapters_manual: int`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Создать `backend/tests/integration/test_category_override_apply.py`:
 
@@ -1008,12 +1008,12 @@ def _extras_snapshot(db, estimate_id) -> dict[int, int | None]:
 `backend/tests/integration/conftest.py`, на **обезличенных** fixture-файлах Ф3/Ф4
 (реальные суммы в тесты не попадают).
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd backend && uv run pytest tests/integration/test_category_override_apply.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'services.category_override'`.
 
-- [ ] **Step 3: Реализовать сервис**
+- [x] **Step 3: Реализовать сервис**
 
 Создать `backend/services/category_override.py`. Ключевые части — блокировка,
 биекция, материализация и пересчёт допработ:
@@ -1252,12 +1252,12 @@ def _require_bijection(lot_key: str, positions, ids_by_key) -> None:
 `lots.lot_key` (`UNIQUE (estimate_id, lot_key)`) и беря единственное предложение
 лота (`AGENTS.md` §4); позиции извлекает **тем же** `_extract_positions`, что импорт.
 
-- [ ] **Step 4: Прогнать**
+- [x] **Step 4: Прогнать**
 
 Run: `cd backend && uv run pytest tests/integration/test_category_override_apply.py -v`
 Expected: PASS (9 тестов).
 
-- [ ] **Step 5: Доказать защиту снятием**
+- [x] **Step 5: Доказать защиту снятием**
 
 1. Убрать `.with_for_update()` — доказывается не тестом, а замером: два
    параллельных `set_override` в двух сессиях на одну смету; без лока второй
@@ -1271,7 +1271,7 @@ Expected: PASS (9 тестов).
 5. Убрать проверку `structure_disabled` → `test_a_disabled_structure_refuses_the_decision`
    краснеет.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add backend/services/category_override.py backend/tests/integration/test_category_override_apply.py backend/tests/integration/conftest.py
