@@ -1555,7 +1555,7 @@ category_options отдаёт справочник целиком: passport.cate
 - Produces: `PUT`/`DELETE /api/v1/estimates/{estimate_id}/category-overrides/{position_item_id}`,
   ответ `{"chapters_updated": int, "additional_works_updated": int, "chapters_manual": int}`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Создать `backend/tests/integration/test_category_overrides_api.py`:
 
@@ -1699,12 +1699,12 @@ def test_a_disabled_structure_is_409(
     assert r.status_code == 409
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd backend && uv run pytest tests/integration/test_category_overrides_api.py -v`
 Expected: FAIL — 404 на все маршруты (роутера нет).
 
-- [ ] **Step 3: Реализовать роутер**
+- [x] **Step 3: Реализовать роутер**
 
 Создать `backend/routers/category_overrides.py`:
 
@@ -1824,12 +1824,12 @@ def delete_override(
 app.include_router(category_overrides_router.router, dependencies=_auth_dep)
 ```
 
-- [ ] **Step 4: Прогнать**
+- [x] **Step 4: Прогнать**
 
 Run: `cd backend && uv run pytest tests/integration/test_category_overrides_api.py -v`
 Expected: PASS (7 тестов).
 
-- [ ] **Step 5: Доказать защиту снятием**
+- [x] **Step 5: Доказать защиту снятием**
 
 1. В `set_override` всегда обновлять `assigned_by`/`assigned_at` →
    `test_repeating_an_identical_put_is_a_no_op` краснеет.
@@ -1838,7 +1838,7 @@ Expected: PASS (7 тестов).
 3. Убрать `dependencies=_auth_dep` при регистрации → тест на анонимный доступ
    (дописать: анонимный клиент получает 401) краснеет.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add backend/routers/category_overrides.py backend/main.py backend/tests/integration/test_category_overrides_api.py
