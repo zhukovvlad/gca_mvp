@@ -4,10 +4,14 @@
 * Unit-тесты не требуют БД.
 * Integration-тесты используют реальный Postgres (через TEST_DATABASE_URL),
   но Alembic мигрирует один раз на сессию. Каждый тест — в транзакции с rollback.
+* Под pytest-xdist каждый воркёр работает со СВОЕЙ базой (`gca_gw<N>_test`),
+  которую сам и создаёт; серийный прогон идёт по `gca_test` как раньше.
+  Спека: docs/superpowers/specs/2026-08-11-pytest-parallel-workers-design.md.
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -36,14 +40,108 @@ os.environ.setdefault("SECRET_KEY", "test-only-secret-key-not-for-production-32c
 os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 
 
+_WORKER_ID_RE = re.compile(r"gw\d+")
+
+
+def worker_database_url(url: str, worker_id: str) -> str:
+    """URL базы воркёра pytest-xdist (спека §2, §2.2). Три ветки, все явные.
+
+    `master` (серийный прогон, `-n0`, контроллер) — URL как есть, сегодняшнее
+    поведение. `gw<N>` — имя базы перестраивается `gca_test` → `gca_gw<N>_test`:
+    идентификатор встаёт в середину, суффикс `_test` сохраняется — иначе барьер
+    (b) молча пропустил бы все integration-тесты (§2.1 спеки). Всё остальное —
+    громкий RuntimeError, не skip и не фолбэк на общую базу: значение уходит в
+    DDL, а пропуск здесь неотличим от зелёного прогона.
+    """
+    if worker_id == "master":
+        return url
+    if not _WORKER_ID_RE.fullmatch(worker_id):
+        raise RuntimeError(
+            f"Неожидаемый идентификатор воркёра pytest-xdist: {worker_id!r} — "
+            "ожидается 'master' либо 'gw<N>'. Отказ от прогона: значение "
+            "участвует в имени базы (DDL)."
+        )
+    parsed = make_url(url)
+    db_name = parsed.database or ""
+    if not db_name.endswith("_test"):
+        raise RuntimeError(
+            f"Не построить имя базы воркёра из {db_name!r}: ожидается имя, "
+            "оканчивающееся на '_test'. Тихие альтернативы хуже обе: передать "
+            "имя как есть — pytest.skip барьера (b) на каждом воркёре, "
+            "дописать суффикс — воркёры прошли бы барьер, который серийный "
+            "прогон по этому URL не проходит."
+        )
+    worker_name = f"{db_name[: -len('_test')]}_{worker_id}_test"
+    return parsed.set(database=worker_name).render_as_string(hide_password=False)
+
+
+def test_database_refusal_reason(url: str) -> str | None:
+    """Решение барьера (b): `None` — работать можно, строка — причина отказа.
+
+    Вынесено из `db_engine`, чтобы живость барьера была проверяема без
+    кластера (wiring-тесты test_worker_database.py): внутри фикстуры ветка
+    отказа при правильном имени не исполняется вовсе. Сам отказ остаётся
+    `pytest.skip` на вызывающей стороне — семантика серийного прогона не
+    меняется. Имя conftest-функции с приставкой test_ pytest не собирает:
+    conftest — плагин, а не тестовый модуль.
+    """
+    db_name = make_url(url).database or ""
+    if not db_name.endswith("_test"):
+        return (
+            f"TEST_DATABASE_URL указывает на базу '{db_name}' — ожидается имя, "
+            "оканчивающееся на '_test'; отказ от DROP SCHEMA"
+        )
+    return None
+
+
+def _create_worker_database(url: str) -> None:
+    """CREATE DATABASE базы воркёра, если её нет (спека §2.4).
+
+    Подключение к служебной `postgres` в autocommit; имя — через
+    `psycopg.sql.Identifier`, не f-строкой (§2.2 спеки). Предсоздание в
+    рецепте не нужно: параллельные CREATE DATABASE сервер сериализует
+    ожиданием (замер §1.3a, 8 из 8), а свою базу каждый воркёр создаёт сам.
+    """
+    import psycopg
+    from psycopg import sql
+
+    parsed = make_url(url)
+    db_name = parsed.database or ""
+    with psycopg.connect(
+        host=parsed.host,
+        port=parsed.port,
+        user=parsed.username,
+        password=parsed.password,
+        dbname="postgres",
+        autocommit=True,
+    ) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+        ).fetchone()
+        if not exists:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+
+
 @pytest.fixture(scope="session")
-def db_engine() -> Iterator:
-    """Engine на TEST_DATABASE_URL. Накатывает Alembic один раз на сессию."""
+def db_engine(worker_id) -> Iterator:
+    """Engine на TEST_DATABASE_URL. Накатывает Alembic один раз на сессию.
+
+    `worker_id` — штатная session-фикстура pytest-xdist: `master` при серийном
+    прогоне, `gw<N>` в воркёре. Порядок операций зафиксирован планом и стережётся
+    wiring-тестами (test_worker_database.py, пп. 8–11):
+
+        worker URL → resolve + барьер (a) → барьер (b) → ensure_mutation_allowed
+                   → CREATE DATABASE → engine / DROP SCHEMA / migrations
+
+    Перестройка URL — первым шагом: иначе барьеры судили бы `gca_test`, а работа
+    шла бы по `gca_gw0_test`. CREATE DATABASE — мутация, поэтому строго после
+    `ensure_mutation_allowed`: раньше — и она обошла бы один из трёх барьеров.
+    """
     test_url = os.getenv("TEST_DATABASE_URL")
     if not test_url:
         pytest.skip("TEST_DATABASE_URL не задан — integration tests пропущены")
 
-    engine = create_engine(test_url, pool_pre_ping=True)
+    test_url = worker_database_url(test_url, worker_id)
 
     # Безопасность: отказываемся работать, если TEST_DATABASE_URL совпадает с
     # DATABASE_URL приложения. DROP SCHEMA — деструктивная операция.
@@ -80,13 +178,11 @@ def db_engine() -> Iterator:
             )
 
     # Барьер (b): имя БД обязано быть тестовым (суффикс _test) — цена опечатки
-    # в четыре символа — DROP SCHEMA на dev-базе.
-    db_name = make_url(test_url).database or ""
-    if not db_name.endswith("_test"):
-        pytest.skip(
-            f"TEST_DATABASE_URL указывает на базу '{db_name}' — ожидается имя, "
-            "оканчивающееся на '_test'; отказ от DROP SCHEMA"
-        )
+    # в четыре символа — DROP SCHEMA на dev-базе. Решение вынесено в
+    # test_database_refusal_reason, отказ (pytest.skip) остаётся здесь.
+    refusal = test_database_refusal_reason(test_url)
+    if refusal is not None:
+        pytest.skip(refusal)
 
     # Накатываем миграции через Alembic
     from alembic import command
@@ -99,6 +195,13 @@ def db_engine() -> Iterator:
     # Guard закрывает случай, которого барьеры не ловят: удалённая "_test"-база,
     # которая не loopback и не в DB_EXTRA_TARGETS.
     ensure_mutation_allowed(test_url, "conftest DROP SCHEMA")
+
+    # Мутации — только после всех трёх барьеров. Базу создаёт лишь воркёр:
+    # master-путь ведёт себя как раньше (gca_test готовят рецепты justfile).
+    if worker_id != "master":
+        _create_worker_database(test_url)
+
+    engine = create_engine(test_url, pool_pre_ping=True)
 
     # Сбрасываем схему перед накатом — гарантируем чистый старт
     with engine.begin() as conn:

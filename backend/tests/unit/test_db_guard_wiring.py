@@ -146,7 +146,7 @@ def test_db_engine_fixture_fails_loudly_on_unresolvable_target(monkeypatch):
     """
     monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+psycopg://postgres@localhost:5459/udp_test")
     monkeypatch.setenv("PGHOSTADDR", "10.1.2.3")
-    gen = conftest_module.db_engine.__wrapped__()
+    gen = conftest_module.db_engine.__wrapped__("master")
     with pytest.raises(RuntimeError, match="TEST_DATABASE_URL"):
         next(gen)
 
@@ -174,7 +174,7 @@ def test_db_engine_fails_loudly_when_prod_unresolvable_and_same_target(monkeypat
         "DATABASE_URL",
         "postgresql+psycopg://postgres@localhost:5459/udp_test?dbname=udp_test",
     )
-    gen = conftest_module.db_engine.__wrapped__()
+    gen = conftest_module.db_engine.__wrapped__("master")
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         next(gen)
 
@@ -193,6 +193,6 @@ def test_db_engine_fails_loudly_when_prod_unresolvable_and_different_target(monk
         "DATABASE_URL",
         "postgresql+psycopg://postgres@remote.example.com:5432/otherdb?dbname=otherdb",
     )
-    gen = conftest_module.db_engine.__wrapped__()
+    gen = conftest_module.db_engine.__wrapped__("master")
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         next(gen)
