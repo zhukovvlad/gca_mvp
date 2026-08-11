@@ -80,5 +80,10 @@ jobs:
       - name: Run backend tests (unit + integration)
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
         # pgvector image makes CREATE EXTENSION vector succeed.
-        run: uv run --locked pytest
+        #
+        # -n 12 согласован с локальным рецептом test-backend-parallel (DoD спеки
+        # pytest-parallel-workers: локально и в CI один прогон). Каждый xdist-воркёр
+        # создаёт себе базу gca_gw<N>_test и мигрирует её сам — сервису достаточно
+        # заранее существующей gca_test для db-test-check.
+        run: uv run --locked pytest -n 12
         working-directory: backend

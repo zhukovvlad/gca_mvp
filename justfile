@@ -109,6 +109,14 @@ test-int-local-k pattern: pg-test-start
 test-backend-local: pg-test-start
     cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest
 
+# Параллельный прогон: pytest-xdist, у каждого воркёра своя база gca_gw<N>_test
+# (создаётся фикстурой db_engine сама, предсоздание не нужно — спека §1.3a).
+# Default n=12 выбран замером на 16 ядрах (devlog 2026-08-11): серийно 291,6 с,
+# 4 воркёра — 194 с, 8 — 173 с, 12 — 151/141 с; дальше кривую держит серийный
+# пол (module-scoped разбор оферт и БД-контенция), не число воркёров.
+test-backend-parallel n="12": pg-test-start
+    cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest -n {{n}}
+
 # Точечный прогон unit по -k паттерну
 test-unit-k pattern:
     cd backend && uv run pytest tests/unit -v -k "{{pattern}}"
@@ -146,7 +154,9 @@ ci-lock-backend:
 # CHECK- и Computed-выражения — замерено на Ф1: при подмене обоих autogenerate
 # возвращает пустой diff и лишь UserWarning. За выражения отвечают parity-тесты
 # (test_schema_constraints.py), а не этот шаг.
-ci: ci-lock-backend lint-backend db-test-check test-backend-local lint-frontend typecheck-frontend test-frontend
+# Backend-тесты в ci идут параллельно (test-backend-parallel, база на воркёра);
+# серийный test-backend-local остаётся для отладки и воспроизводимого порядка.
+ci: ci-lock-backend lint-backend db-test-check test-backend-parallel lint-frontend typecheck-frontend test-frontend
     @echo "OK: все проверки прошли"
 
 # === Coverage ===
