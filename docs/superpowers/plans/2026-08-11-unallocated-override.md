@@ -1304,7 +1304,7 @@ git commit -m "feat(category): сервис применения ручных р
   - `category_options[]` — `{id, code, title, is_bucket}` по **всему** справочнику;
   - `categories[].own_sections[].source`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [x] **Step 1: Написать падающие тесты**
 
 Дописать в `backend/tests/integration/test_project_passport_api.py`:
 
@@ -1447,12 +1447,12 @@ def test_own_sections_declare_their_source(client, db_session, imported_estimate
     assert "manual" in sources and "file" in sources
 ```
 
-- [ ] **Step 2: Прогнать и убедиться, что падает**
+- [x] **Step 2: Прогнать и убедиться, что падает**
 
 Run: `cd backend && uv run pytest tests/integration/test_project_passport_api.py -k "unallocated_sections or manual_assignments or own_sections_declare or no_money_anywhere" -v`
 Expected: FAIL — `KeyError: 'sections'`.
 
-- [ ] **Step 3: Реализовать**
+- [x] **Step 3: Реализовать**
 
 В `backend/crud/project_passport.py`:
 
@@ -1503,12 +1503,12 @@ Expected: FAIL — `KeyError: 'sections'`.
 Свёртку поддерева НЕ писать рекурсивным CTE в SQL: дерево крошечное, а второе
 место, знающее закон свёртки, разъедется с первым.
 
-- [ ] **Step 4: Прогнать полное покрытие паспорта**
+- [x] **Step 4: Прогнать полное покрытие паспорта**
 
 Run: `cd backend && uv run pytest tests/integration/test_project_passport_api.py tests/unit/test_responses.py -v`
 Expected: PASS, существующие тесты Ф6 не ослаблены.
 
-- [ ] **Step 5: Доказать защиту снятием**
+- [x] **Step 5: Доказать защиту снятием**
 
 1. Вернуть в `_unallocated_sections` фильтр «только разделы с прямыми позициями» →
    `test_unallocated_tree_reports_exact_own_and_subtree_metrics` краснеет на разделе
@@ -1526,7 +1526,7 @@ Expected: PASS, существующие тесты Ф6 не ослаблены.
 6. Не переподвешивать родителя внутрь выборки → краснеет
    `top["parent_position_item_id"] is None`.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add backend/crud/project_passport.py backend/tests/integration/test_project_passport_api.py
