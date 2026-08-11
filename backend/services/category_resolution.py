@@ -35,6 +35,10 @@ from parser.constants import (
 #: закрепляет. Расширение делает та фича, которая вводит новый источник.
 CATEGORY_SOURCE_FILE = "file"
 
+#: Второй источник привязки. Порядок утверждений — спека разноса §2.1:
+#: ручное решение этого раздела > его валидная статья из файла > статья родителя.
+CATEGORY_SOURCE_MANUAL = "manual"
+
 #: Номер раздела и код статьи: цифры через точки, завершающая точка допустима.
 _CODE_RE = re.compile(r"^\d+(\.\d+)*\.?$")
 
@@ -44,11 +48,14 @@ MAX_WARNING_EXAMPLES = 5
 
 
 class CategoryResolutionContractError(Exception):
-    """Вход не является результатом парсера.
+    """Вход не является результатом парсера — либо решение ссылается на статью,
+    которой нет в переданной карте справочника.
 
     Тихого фолбэка здесь нет намеренно: восстановить порядок строк файла из
     неканоничных ключей нельзя, а догадка дала бы правдоподобную, но чужую
     структуру — тот же класс ошибки, что «вложить раздел в текущую вершину».
+    Решение с несуществующим `work_category_id` — того же рода: карта статей
+    собрана не из той же таблицы, откуда взято решение, и молчать об этом нельзя.
     """
 
 
@@ -77,10 +84,15 @@ class RowResolution:
 @dataclass(frozen=True)
 class ResolutionCounters:
     chapters_own: int = 0
+    """Раздел несёт СВОЮ статью — из файла либо из решения; счётчики перекрываются."""
     chapters_inherited: int = 0
     chapters_unassigned: int = 0
     positions_unassigned: int = 0
     rows_outside_structure: int = 0
+    chapters_manual: int = 0
+    """Строки-разделы, чья ЭФФЕКТИВНАЯ статья пришла из ручного решения — свои и
+    унаследованные. Это НЕ число решений: одно решение на вершине даёт столько
+    разделов, сколько их в поддереве. Число решений знает вызывающий по таблице."""
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,9 @@ class _StackEntry:
     category: CategoryRef | None
     """Эффективная статья: своя либо унаследованная. Считается в момент помещения в
     стек, поэтому наследование стоит O(1) и не требует проходов вверх."""
+    category_source: str | None
+    """Происхождение ЭФФЕКТИВНОЙ статьи: `file`, `manual` либо `None`. Едет вместе
+    с `category`, потому что наследование обязано наследовать и источник."""
 
 
 def _norm(value: Any) -> str:
@@ -319,6 +334,7 @@ class CategoryResolver:
 
     def __init__(self, by_code: Mapping[str, CategoryRef]) -> None:
         self._by_code = dict(by_code)
+        self._by_id = {ref.id: ref for ref in self._by_code.values()}
 
     @classmethod
     def from_db(cls, db: Session) -> CategoryResolver:
@@ -327,21 +343,27 @@ class CategoryResolver:
         ).all()
         return cls({code: CategoryRef(id=cid, title=title) for code, cid, title in rows})
 
-    def resolve_proposal(self, positions: Mapping[str, Any]) -> ProposalResolution:
+    def resolve_proposal(
+        self,
+        positions: Mapping[str, Any],
+        overrides: Mapping[str, int] | None = None,
+    ) -> ProposalResolution:
         keys = _ordered_keys(positions)
         conflicts = _structural_conflicts(positions, keys)
         bad_numbers = _unparsable_numbers(positions, keys)
         if conflicts or bad_numbers:
+            # Решения сюда НЕ передаются намеренно (спека §1.6): привязки нет ни у
+            # одной строки предложения, наследовать назначенную статью некому.
             return _disabled(positions, keys, conflicts, bad_numbers)
-        return self._resolve_stack(positions, keys)
+        return self._resolve_stack(positions, keys, overrides or {})
 
     def _resolve_stack(
-        self, positions: Mapping[str, Any], keys: list[str]
+        self, positions: Mapping[str, Any], keys: list[str], overrides: Mapping[str, int]
     ) -> ProposalResolution:
         rows: dict[str, RowResolution] = {}
         warnings = _Warnings()
         stack: list[_StackEntry] = []
-        own = inherited = unassigned = positions_unassigned = outside = 0
+        own = inherited = unassigned = positions_unassigned = outside = manual = 0
 
         for key in keys:
             row = positions[key]
@@ -376,14 +398,20 @@ class CategoryResolver:
             parent = stack[-1] if stack else None
 
             raw = _trimmed(row.get(JSON_KEY_ARTICLE_SMR))
-            category, outcome = self._article_for(raw, parent, warnings, key, row)
+            category, source, outcome = self._article_for(
+                raw, parent, warnings, key, row, overrides.get(key)
+            )
             if outcome == "own":
                 own += 1
             elif outcome == "inherited":
                 inherited += 1
+            elif outcome == "manual":
+                own += 1  # своя статья у раздела есть — просто не из файла
             else:
                 unassigned += 1
                 warnings.unassigned_chapters.append(_place(key, row))
+            if source == CATEGORY_SOURCE_MANUAL:
+                manual += 1
 
             rows[key] = RowResolution(
                 position_key=key,
@@ -391,9 +419,11 @@ class CategoryResolver:
                 parent_position_key=parent.position_key if parent else None,
                 smr_article_raw=raw,
                 work_category_id=category.id if category else None,
-                category_source=CATEGORY_SOURCE_FILE if category else None,
+                category_source=source,
             )
-            stack.append(_StackEntry(position_key=key, depth=depth, category=category))
+            stack.append(
+                _StackEntry(position_key=key, depth=depth, category=category, category_source=source)
+            )
 
         counters = ResolutionCounters(
             chapters_own=own,
@@ -401,6 +431,7 @@ class CategoryResolver:
             chapters_unassigned=unassigned,
             positions_unassigned=positions_unassigned,
             rows_outside_structure=outside,
+            chapters_manual=manual,
         )
         return ProposalResolution(
             rows=rows,
@@ -416,34 +447,50 @@ class CategoryResolver:
         warnings: _Warnings,
         key: str,
         row: Mapping[str, Any],
-    ) -> tuple[CategoryRef | None, str]:
-        """Эффективная статья раздела и итог для счётчика.
+        override_id: int | None,
+    ) -> tuple[CategoryRef | None, str | None, str]:
+        """Эффективная статья раздела, её происхождение и итог для счётчика.
 
-        **Утверждение файла сильнее наследования.** Наследование срабатывает только
-        когда файл про статью молчит. Если «Статья СМР» заполнена, но прочитать её
-        нельзя, статья предка НЕ подставляется: файл называет здесь другую статью, и
-        подстановка отнесла бы деньги туда, куда файл их не относил.
+        **Ручное решение сильнее файла.** Не из вежливости к человеку: у раздела
+        может стоять нечитаемый или неизвестный код, и тогда файл НЕ молчит —
+        правило Ф3 «утверждение файла сильнее наследования» само по себе оставило
+        бы такой раздел неразносимым навсегда. Клетка при решении не читается
+        вовсе, поэтому и предупреждения о ней не выдаются: они уже записаны в
+        историю той загрузки, которая их нашла.
+
+        **Утверждение файла сильнее наследования** (правило Ф3) — не тронуто.
         """
+        if override_id is not None:
+            ref = self._by_id.get(override_id)
+            if ref is None:
+                raise CategoryResolutionContractError(
+                    f"Решение по разделу «{key}» ссылается на статью {override_id}, "
+                    "которой нет в справочнике. FK это исключает, значит карта статей "
+                    "собрана не из той же таблицы, и молчать об этом нельзя."
+                )
+            return ref, CATEGORY_SOURCE_MANUAL, "manual"
+
         if raw is None:
             inherited = parent.category if parent else None
-            return inherited, "inherited" if inherited else "unassigned"
+            source = parent.category_source if inherited else None
+            return inherited, source, "inherited" if inherited else "unassigned"
 
         collapsed = _norm(raw)
         prefix = collapsed.split(" ")[0]
         if not _CODE_RE.match(prefix):
             warnings.unreadable_prefix.append(_place(key, row, raw=collapsed))
-            return None, "unassigned"
+            return None, None, "unassigned"
 
         code = prefix.rstrip(".")
         ref = self._by_code.get(code)
         if ref is None:
             warnings.unknown_code[code].append(_place(key, row))
-            return None, "unassigned"
+            return None, None, "unassigned"
 
         in_file = collapsed[len(prefix):].strip()
         if in_file and in_file.casefold() != _norm(ref.title).casefold():
             warnings.title_mismatch.setdefault(code, (in_file, ref.title))
-        return ref, "own"
+        return ref, CATEGORY_SOURCE_FILE, "own"
 
 
 def _disabled(
