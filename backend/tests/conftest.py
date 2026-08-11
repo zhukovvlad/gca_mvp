@@ -40,6 +40,88 @@ os.environ.setdefault("SECRET_KEY", "test-only-secret-key-not-for-production-32c
 os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 
 
+# ---------------------------------------------------------------------------
+#  Страж пропусков: в полном прогоне skip допустим только из явного реестра
+# ---------------------------------------------------------------------------
+
+#: Реестр законных пропусков ПОЛНОГО прогона (TEST_DATABASE_URL задан):
+#: (префикс nodeid, фрагмент причины). Закрепляется СОСТАВ, а не число:
+#: локально пропусков 6 (публичные endpoints), в CI — 13 (плюс семь тестов
+#: реальных оферт: samples/ не коммитится, AGENTS.md §9). Любой пропуск вне
+#: реестра — прежде всего skip барьеров db_engine — роняет прогон: зелёный
+#: код возврата при молча пропущенном integration-слое и есть главный дефект,
+#: который эта защита исключает (P1 ревью PR #15; снятие 7 реестра фичи).
+_ALLOWED_SKIPS = (
+    ("tests/test_auth_coverage.py", "Публичный endpoint — auth не требуется"),
+    ("tests/unit/parser/test_estimate.py", "Каталог samples/ пуст или отсутствует"),
+)
+
+
+def unexpected_skips(skips: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Нарушители из списка (nodeid, причина): всё, чего нет в _ALLOWED_SKIPS.
+
+    Разрешение требует совпадения ОБЕИХ частей — файла и причины: реестр
+    закрепляет состав пропусков, а не индульгенцию файлу или тексту причины.
+    """
+    return [
+        (nodeid, reason)
+        for nodeid, reason in skips
+        if not any(
+            nodeid.startswith(prefix) and fragment in reason
+            for prefix, fragment in _ALLOWED_SKIPS
+        )
+    ]
+
+
+#: Пропуски, накопленные хуками за сессию. На контроллере xdist сюда попадают
+#: и отчёты воркёров — их пересылает сам xdist через pytest_runtest_logreport.
+_observed_skips: list[tuple[str, str]] = []
+
+
+def _skip_reason(report) -> str:
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        return str(longrepr[2])  # (файл, строка, "Skipped: причина")
+    return str(longrepr)
+
+
+def pytest_runtest_logreport(report):
+    if report.skipped:
+        _observed_skips.append((report.nodeid, _skip_reason(report)))
+
+
+def pytest_collectreport(report):
+    # Модульные skip'ы (allow_module_level) не доходят до runtest-хука.
+    if report.skipped:
+        _observed_skips.append((report.nodeid, _skip_reason(report)))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Уронить полный прогон, если случился пропуск вне реестра.
+
+    Исполняется в самом прогоне, а не в CI-обвязке: любой запуск pytest с
+    заданным TEST_DATABASE_URL (локальные рецепты just, CI-воркфлоу) защищён
+    одинаково. Без TEST_DATABASE_URL прогон неполный по построению (integration
+    пропускается штатно) — там счёт не имеет смысла. На воркёрах xdist ничего
+    не решаем: сводит контроллер, которому пересылаются все отчёты.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    if not os.getenv("TEST_DATABASE_URL"):
+        return
+    offenders = unexpected_skips(_observed_skips)
+    if not offenders:
+        return
+    lines = "\n".join(f"  {nodeid}\n    {reason}" for nodeid, reason in offenders)
+    print(
+        "\n[skip-guard] Пропуски вне реестра _ALLOWED_SKIPS — прогон не имеет "
+        f"права выглядеть зелёным ({len(offenders)} шт.):\n{lines}",
+        flush=True,
+    )
+    if session.exitstatus == 0:
+        session.exitstatus = 1
+
+
 _WORKER_ID_RE = re.compile(r"gw\d+")
 
 
