@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,121 @@ from tests.payloads import additional_works_row, payload_for, position, svedeniy
 def admin_user(factories):
     """Автор ручного решения — роль admin (право на разнос, спека §3)."""
     return factories.UserFactory.create(role=UserRole.admin)
+
+
+# ---------------------------------------------------------------------------
+#  Клиенты HTTP-слоя разноса (Задача 5)
+# ---------------------------------------------------------------------------
+#
+# Корневой `client` (tests/conftest.py) не годится сюда: он подсовывает
+# `get_current_user` MagicMock с `.id = 1`, а `PUT` этой фичи кладёт
+# `current_user.id` в `assigned_by` — RESTRICT FK на `users.id`. Ни одного
+# пользователя с id=1 в тестовой базе нет (сиды сдвинули последовательность),
+# так что мок уронил бы `flush` `IntegrityError`-ом внутри сервиса, и `PUT`
+# отдавал бы 500 вместо ожидаемого кода — искать пришлось бы мнимый баг роутера.
+
+
+def _member_client(db_session, factories, *, raise_server_exceptions: bool) -> Iterator:
+    """Общий строитель `member_client`/`member_client_no_raise` — две ручные
+    копии одного и того же клиента отличались только одним флагом `TestClient`,
+    а правило проекта против второй реализации одного понятия относится и к
+    фикстурам, не только к продовому коду.
+
+    `c.user` — держатель ТЕКУЩЕГО автора, `c.set_user(other)` его меняет:
+    тесту на перенос аудита (`assigned_by`) нужен ВТОРОЙ, отличный от первого,
+    пользователь для второго запроса — иначе поле `assigned_by` не может
+    сдвинуться в принципе, что бы ни делал код (тот же приём, что у
+    `auth_state["role"]` в корневом `client`).
+    """
+    from fastapi.testclient import TestClient
+
+    from auth import get_current_user
+    from database import get_db
+    from main import app
+
+    holder = {"user": factories.UserFactory.create(role=UserRole.member)}
+
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass  # cleanup в db_session фикстуре
+
+    def override_get_current_user():
+        return holder["user"]
+
+    _csrf_token = "test-csrf-token"
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    with TestClient(
+        app,
+        headers={"X-CSRF-Token": _csrf_token},
+        raise_server_exceptions=raise_server_exceptions,
+    ) as c:
+        c.cookies.set("csrf_token", _csrf_token)
+        c.user = holder["user"]
+        c.set_user = lambda u: (holder.__setitem__("user", u), setattr(c, "user", u))
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def member_client(db_session, factories) -> Iterator:
+    """Как корневой `client`, но `get_current_user` возвращает НАСТОЯЩУЮ
+    строку `users` с ролью `member` — право разноса статей по классу принадлежит
+    ей, как и ручному матчингу (§3), а не только `admin`."""
+    yield from _member_client(db_session, factories, raise_server_exceptions=True)
+
+
+@pytest.fixture
+def member_client_no_raise(db_session, factories) -> Iterator:
+    """Как `member_client`, но `TestClient(..., raise_server_exceptions=False)`.
+
+    Нужен тестам, где сервис доходит до `500` через непойманное исключение
+    (`_apply` в `except CategoryOverrideError` для кодов вне `_STATUS` делает
+    голый `raise`, а не `HTTPException`) — обычный `TestClient` пробрасывает
+    такое исключение вызывающему коду теста вместо того, чтобы завернуть его
+    в ответ, и `assert response.status_code == 500` до этой строки просто не
+    дошёл бы. Тот же приём, что у `unauth_client` в `tests/test_auth_coverage.py`.
+    """
+    yield from _member_client(db_session, factories, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def anon_client(db_session) -> Iterator:
+    """`TestClient` БЕЗ переопределения `get_current_user`: запрос идёт в
+    настоящую auth-зависимость и обязан получить `401` — эндпоинты разноса
+    закрыты аутентификацией целиком, а не какой-то отдельной ролью (§3)."""
+    from fastapi.testclient import TestClient
+
+    from database import get_db
+    from main import app
+
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass  # cleanup в db_session фикстуре
+
+    _csrf_token = "test-csrf-token"
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, headers={"X-CSRF-Token": _csrf_token}) as c:
+        c.cookies.set("csrf_token", _csrf_token)
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def other_category_id(db_session, category_id) -> int:
+    """Статья-лист, отличная от `category_id` — тест переноса аудита проверяет
+    смену `work_category_id`, и для этого нужны ДВЕ разные статьи."""
+    used_as_parent = sa.select(WorkCategory.parent_id).where(WorkCategory.parent_id.is_not(None))
+    return db_session.execute(
+        sa.select(WorkCategory.id)
+        .where(WorkCategory.id.not_in(used_as_parent), WorkCategory.id != category_id)
+        .order_by(WorkCategory.sort_order)
+        .limit(1)
+    ).scalar_one()
 
 
 @pytest.fixture
