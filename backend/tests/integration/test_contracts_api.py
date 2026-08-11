@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 
 from models import Contract, ImportJobStatus, UserRole
+from services.category_override import set_override
 
 # Тестам нужен настоящий Postgres. Без маркера выборка `pytest -m integration`
 # молча их не собирала бы — а это ложная уверенность при точечном прогоне.
@@ -291,6 +292,35 @@ def test_card_counts_positions_of_estimate(client, factories):
 
     estimates = client.get(f"/api/v1/contracts/{contract.id}").json()["estimates"]
     assert estimates[0]["positions_count"] == 3
+
+
+def test_each_estimate_row_carries_its_own_decision_count(
+    client, db_session, contract_with_amendment, chapter_of_source, chapter_of_amendment,
+    category_id, admin_user,
+):
+    """Счётчик обязан быть ПОСМЕТНЫМ: паспорт описывает только исходную смету, а
+    заменять можно любое допсоглашение (спека §2.9, задача 6).
+
+    `chapter_of_amendment` в аргументах — не для действия, а для доказательства:
+    он подтверждает, что у допсоглашения ЕСТЬ свой раздел, который МОГ БЫ
+    получить решение и не получил, — а не что там просто нет раздела, на
+    который решение можно было бы поставить.
+    """
+    assert chapter_of_amendment.is_chapter
+    set_override(
+        db_session,
+        estimate_id=contract_with_amendment.source_estimate_id,
+        position_item_id=chapter_of_source.id,
+        work_category_id=category_id,
+        note=None,
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    rows = client.get(f"/api/v1/contracts/{contract_with_amendment.id}").json()["estimates"]
+    by_amendment = {r["amendment_no"]: r for r in rows}
+    assert by_amendment[None]["category_overrides_count"] == 1
+    assert by_amendment[1]["category_overrides_count"] == 0
 
 
 def test_import_job_history_marks_only_the_current_estimate_job(client, factories):

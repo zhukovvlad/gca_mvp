@@ -29,13 +29,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models import (
     Contract,
     Estimate,
     EstimateAdditionalWork,
+    EstimateCategoryOverride,
     EstimateRawData,
     Lot,
     PositionItem,
@@ -598,6 +599,39 @@ def _replace_existing(
         return None
 
     old_id, created_at = row
+
+    # Решения о статьях уходят каскадом вместе со сметой (спека разноса §1.8), и
+    # поэтому об их утрате надо сказать: иначе аналитик потеряет работу молча и
+    # узнает об этом по вернувшемуся «Нераспределённому». Предупреждение пишет
+    # сессия B — оно описывает ДОМЕННОЕ состояние и не должно существовать, если
+    # домен откатился (AGENTS.md §5). В `warnings` попадает число и дата, а не
+    # перечень: истории решений проект не ведёт (спека разноса §3.3). Счёт — ДО
+    # `delete`: после него решений уже физически нет, считать было бы нечего.
+    lost = db.execute(
+        select(
+            func.count(),
+            func.max(EstimateCategoryOverride.assigned_at),
+        )
+        .select_from(EstimateCategoryOverride)
+        .join(PositionItem, PositionItem.id == EstimateCategoryOverride.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == old_id)
+    ).one()
+    if lost[0]:
+        # Число — после двоеточия, не сразу за словом: русское согласование
+        # числительного с «решение/решения/решений» иначе ломается на 1 (ровно
+        # самом частом случае: аналитик читает это в момент, когда только что
+        # потерял СВОЁ решение). `lost[1]` — момент ПОСЛЕДНЕГО решения
+        # (`MAX(assigned_at)`), поэтому «последнее», а не «сделанных до»: «до»
+        # занижало бы дату на сутки относительно факта.
+        warnings.append(
+            f"Утрачено ручных решений о статьях: {lost[0]} (последнее — "
+            f"{lost[1]:%d.%m.%Y}). Они относились к заменённой смете и удалены "
+            "вместе с ней. Разнос «Нераспределённого» по новой смете нужно "
+            "сделать заново."
+        )
+
     db.execute(delete(Estimate).where(Estimate.id == old_id))
     warnings.append(
         f"Заменена смета estimate_id={old_id} от {created_at.date().isoformat()}. "

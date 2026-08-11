@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { apiErrorDetail, apiErrorStatus, useImportJob, useUploadEstimate } from "@/services/queries";
-import type { ImportJob, ImportJobStatus } from "@/types/domain";
+import type { EstimateRow, ImportJob, ImportJobStatus } from "@/types/domain";
 
 const XLSX_ACCEPT = {
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
@@ -48,6 +48,20 @@ function isRunning(status: ImportJobStatus): boolean {
 
 interface EstimateUploadPanelProps {
   contractId: number;
+  /**
+   * Сметы договора — та же строка, что карточка уже загрузила `useContract`
+   * (спека §2.9 п. 2, задача 6). Нужна ради `category_overrides_count`
+   * ЗАМЕНЯЕМОЙ пары: паспорт для этого не годится (он всегда про смету с
+   * `amendment_no IS NULL`, а заменить можно любое допсоглашение), а второй
+   * запрос карточка не делает — этот список у неё уже есть.
+   */
+  estimates: EstimateRow[];
+}
+
+/** Решений, сгорающих вместе со сметой пары `amendmentNo` — 0, если пары нет
+ * в списке или решений на ней не было. */
+function lostDecisionsFor(estimates: EstimateRow[], amendmentNo: number | null): number {
+  return estimates.find((e) => e.amendment_no === amendmentNo)?.category_overrides_count ?? 0;
 }
 
 /**
@@ -62,19 +76,28 @@ interface EstimateUploadPanelProps {
  * * `409` — не ошибка, а развилка «файл другой, нужна замена». Замена — право
  *   `admin` (§5), поэтому у `member` предложения заменить нет вовсе.
  */
-export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
+export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPanelProps) {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
 
   const [amendmentNo, setAmendmentNo] = useState("");
   const [jobId, setJobId] = useState<number | undefined>(undefined);
   const [idempotent, setIdempotent] = useState(false);
-  const [conflict, setConflict] = useState<{ file: File; detail: string } | null>(null);
+  // `amendmentNo` заморожен в момент конфликта, а не читается заново из
+  // инпута при показе диалога: пара, которую увидит подтверждение, обязана
+  // быть той же самой, что дала 409, — а не тем, что пользователь успел
+  // подправить в поле, пока диалог уже открыт.
+  const [conflict, setConflict] = useState<{
+    file: File;
+    detail: string;
+    amendmentNo: number | null;
+  } | null>(null);
   const [rejection, setRejection] = useState<string | null>(null);
 
   const upload = useUploadEstimate();
   const jobQ = useImportJob(jobId, contractId);
   const job: ImportJob | undefined = jobQ.data;
+  const lostOnReplace = conflict ? lostDecisionsFor(estimates, conflict.amendmentNo) : 0;
 
   function parsedAmendment(): number | null {
     const raw = amendmentNo.trim();
@@ -83,14 +106,22 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  async function send(file: File, replace: boolean) {
+  // `amendmentNo` — параметр, не внутреннее чтение `parsedAmendment()`:
+  // номер, который уходит в запрос, и номер, который показан в предупреждении
+  // диалога (`conflict.amendmentNo`), обязаны быть ОДНИМ и тем же значением
+  // с ОДНИМ источником у вызывающего, а не двумя независимыми чтениями поля
+  // в разные моменты. Сегодня разъехаться им не даёт модальность диалога
+  // (инпут не в фокус-трапе, пока он открыт), но эта гарантия — свойство
+  // диалога, а не сигнатуры; если он когда-нибудь станет немодальным, разъезд
+  // не должен стать тихой возможностью.
+  async function send(file: File, replace: boolean, amendmentNo: number | null) {
     setRejection(null);
     setIdempotent(false);
     try {
       const created = await upload.mutateAsync({
         file,
         contract_id: contractId,
-        amendment_no: parsedAmendment(),
+        amendment_no: amendmentNo,
         replace,
       });
       setJobId(created.id);
@@ -102,7 +133,7 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
       const status = apiErrorStatus(error);
       const detail = apiErrorDetail(error) ?? "Не удалось загрузить файл.";
       if (status === 409 && isAdmin && !replace) {
-        setConflict({ file, detail });
+        setConflict({ file, detail, amendmentNo });
         return;
       }
       setRejection(detail);
@@ -111,7 +142,7 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
 
   function handleDrop(files: File[]) {
     const file = files[0];
-    if (file) void send(file, false);
+    if (file) void send(file, false, parsedAmendment());
   }
 
   return (
@@ -215,6 +246,18 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
               задания импорта и их файлы останутся в истории — это аудит.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {lostOnReplace > 0 && (
+            // Число — после отдельного двоеточия, не перед существительным:
+            // «N решений» не согласуется на N=1 («решение», не «решений») —
+            // тот же приём, что и в тексте предупреждения `import_jobs`.
+            <p role="alert" className="flex items-start gap-2 text-sm text-danger-text">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              Замена уничтожит ручной разнос заменяемой сметы; решений будет потеряно:{" "}
+              {lostOnReplace}.
+            </p>
+          )}
+
           <AlertDialogFooter>
             <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
             <AlertDialogAction
@@ -223,7 +266,10 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
                   onClick={() => {
                     const pending = conflict;
                     setConflict(null);
-                    if (pending) void send(pending.file, true);
+                    // `pending.amendmentNo` — тот же номер, что показан в
+                    // предупреждении выше: запрос обязан заменить РОВНО ту
+                    // пару, число решений которой аналитик только что видел.
+                    if (pending) void send(pending.file, true, pending.amendmentNo);
                   }}
                 >
                   Заменить смету

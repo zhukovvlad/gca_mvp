@@ -160,6 +160,7 @@ export const sampleContractCard: ContractCard = {
       data_prepared_on_date: "2026-03-10",
       import_job_id: 900,
       positions_count: 1830,
+      category_overrides_count: 0,
       created_at: "2026-03-11T08:00:00Z",
     },
   ],

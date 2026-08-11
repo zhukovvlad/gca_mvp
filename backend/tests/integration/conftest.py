@@ -348,6 +348,83 @@ def top_unassigned_chapter(db_session, imported_estimate):
 
 
 @pytest.fixture
+def contract_with_amendment(db_session, factories):
+    """Один договор с ДВУМЯ сметами — исходной и допсоглашением №1, обе через
+    настоящий импорт (см. `make_imported_estimate`): та фабрика всегда создаёт
+    себе новый договор, а тест посметного счётчика (задача 6) нуждается ровно
+    в противоположном — паре смет ОДНОГО договора, чтобы отличить «решения
+    есть у договора» от «решения есть у ЭТОЙ его сметы».
+
+    Раздел без статьи в каждой смете — цель `set_override` в тесте.
+
+    `resolver` — своя копия, не общая фикстура: `UnitResolver` дешёв
+    (`services/unit_resolution.py`), а завязка на одноимённую фикстуру
+    `test_estimate_import.py` сделала бы этот файл зависимым от того, какой
+    тестовый модуль запущен рядом.
+    """
+    contract = factories.ContractFactory.create()
+    db_session.flush()
+    resolver = UnitResolver(db_session)
+
+    def _import(amendment_no):
+        data = payload_for(
+            contract, [position(job_title="Раздел", is_chapter=True, chapter_number="1")]
+        )
+        outcome = import_estimate(
+            db_session,
+            contract=contract,
+            amendment_no=amendment_no,
+            data=data,
+            parser_version="1.0.0",
+            import_job_id=None,
+            replace=False,
+            unit_resolver=resolver,
+            category_resolver=CategoryResolver.from_db(db_session),
+        )
+        db_session.flush()
+        return outcome.estimate_id
+
+    source_estimate_id = _import(None)
+    amendment_estimate_id = _import(1)
+    db_session.commit()
+    return SimpleNamespace(
+        id=contract.id,
+        source_estimate_id=source_estimate_id,
+        amendment_estimate_id=amendment_estimate_id,
+    )
+
+
+@pytest.fixture
+def chapter_of_source(db_session, contract_with_amendment):
+    """Раздел исходной сметы `contract_with_amendment` — цель решения в тесте
+    посметного счётчика."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == contract_with_amendment.source_estimate_id,
+            PositionItem.is_chapter.is_(True),
+        )
+    ).scalar_one()
+
+
+@pytest.fixture
+def chapter_of_amendment(db_session, contract_with_amendment):
+    """Раздел допсоглашения №1 `contract_with_amendment` — второй, независимый
+    раздел ТОЙ ЖЕ пары смет."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == contract_with_amendment.amendment_estimate_id,
+            PositionItem.is_chapter.is_(True),
+        )
+    ).scalar_one()
+
+
+@pytest.fixture
 def unallocated_tree(db_session, make_imported_estimate):
     """Нераспределённая часть дерева разделов Задачи 4 — смета через НАСТОЯЩИЙ
     импорт (`make_imported_estimate`, не голые ORM-строки поверх чужого

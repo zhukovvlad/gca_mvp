@@ -9,6 +9,7 @@ import pytest
 import sqlalchemy as sa
 
 from models import (
+    Contract,
     Estimate,
     EstimateAdditionalWork,
     EstimateRawData,
@@ -29,6 +30,7 @@ from parser.constants import (
     JSON_KEY_VAT_RATE,
 )
 from parser.postprocess import BASELINE_MISSING_TITLE
+from services.category_override import set_override
 from services.category_resolution import CategoryResolver
 from services.estimate_import import (
     EstimateImportError,
@@ -66,6 +68,26 @@ def run_import(db_session, resolver, contract, data, *, amendment_no=None, repla
         unit_resolver=resolver,
         category_resolver=CategoryResolver.from_db(db_session),
     )
+
+
+@pytest.fixture
+def replace_upload(db_session, resolver):
+    """Повторная загрузка ТОЙ ЖЕ пары (contract, amendment_no) с `replace=True`.
+
+    Возвращает `ImportOutcome`, а не HTTP-задание: обязательство задачи 6 —
+    что предупреждение попадает в `warnings`, тот самый список, который
+    сессия B пишет в `import_jobs.warnings` (это делает вызывающий роутер, не
+    сам сервис) — HTTP-слой к проверке этого факта ничего не добавляет.
+    """
+
+    def _replace(contract_id: int, *, amendment_no: int | None = None):
+        contract = db_session.get(Contract, contract_id)
+        return run_import(
+            db_session, resolver, contract, payload_for(contract),
+            amendment_no=amendment_no, replace=True,
+        )
+
+    return _replace
 
 
 # ---------------------------------------------------------------------------
@@ -896,6 +918,40 @@ class TestReplace:
         with pytest.raises(sa.exc.IntegrityError):
             run_import(db_session, resolver, contract, payload_for(contract))
             db_session.flush()
+
+
+# ---------------------------------------------------------------------------
+#  Громкость замены: решения сгорают каскадом, но не молча (спека §2.9 п. 1)
+# ---------------------------------------------------------------------------
+
+def test_replace_reports_the_manual_decisions_it_destroys(
+    db_session, imported_estimate, top_unassigned_chapter, category_id, admin_user, replace_upload
+):
+    """Спека §2.9: решения сгорают каскадом, поэтому об утрате надо СКАЗАТЬ."""
+    set_override(
+        db_session,
+        estimate_id=imported_estimate.id,
+        position_item_id=top_unassigned_chapter.id,
+        work_category_id=category_id,
+        note=None,
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    # Проверяется фраза, где число стоит РЯДОМ со своим существительным
+    # («решений о статьях: 1»), а не голая цифра: в тексте есть ещё и дата, и
+    # любая её цифра прошла бы проверку при неверном счётчике.
+    assert any("Утрачено ручных решений о статьях: 1" in w for w in job.warnings)
+
+
+def test_replace_says_nothing_when_there_were_no_decisions(
+    db_session, imported_estimate, replace_upload
+):
+    """Негативная половина: без решений предупреждения быть не должно, иначе оно
+    ничего не значит."""
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("ручных решений" in w for w in job.warnings)
 
 
 # ---------------------------------------------------------------------------

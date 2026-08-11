@@ -112,6 +112,13 @@ export interface EstimateRow {
   data_prepared_on_date: string | null;
   import_job_id: number | null;
   positions_count: number;
+  /**
+   * Число ручных решений о статьях, сделанных ПО ЭТОЙ смете (Ф7, задача 6).
+   * Посметный, не по договору: форма замены предупреждает об утрате решений
+   * именно заменяемой пары (contract_id, amendment_no), а паспорт для этого
+   * не годится — он всегда про смету с `amendment_no IS NULL`.
+   */
+  category_overrides_count: number;
   created_at: string | null;
 }
 
