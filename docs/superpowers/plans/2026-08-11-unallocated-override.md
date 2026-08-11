@@ -49,8 +49,15 @@ React + TS, Vite, shadcn/ui, TanStack Query, vitest + MSW.
   обязан нарушать **ровно одно** ограничение.
 - **Перед пушем — `just ci`** (`AGENTS.md` §9.3). Правки только в `docs/` от него
   освобождены.
-- Frontend — **только shadcn/ui**, ставить через `npx shadcn add`. Своих
-  UI-компонентов не писать.
+- Frontend — **только shadcn/ui** для UI-**примитивов**; новых примитивов не
+  писать, недостающие ставить через `npx shadcn add`. Доменные компоненты
+  (`UnallocatedPanel`) писать своими — это не примитивы.
+- **`passport.categories` — НЕ справочник.** `build_tree` оставляет корни всегда, а
+  глубже — только узлы, у которых есть строки
+  ([project_passport.py](../../../backend/crud/project_passport.py#L91)). Список
+  вариантов для выбора статьи брать **только** из `category_options` (задача 4);
+  взять его из `categories` значит недодать аналитику большую часть 362 статей —
+  ровно те, которых в смете ещё нет, а разносить надо как раз в них.
 
 ## Структура файлов
 
@@ -60,7 +67,8 @@ React + TS, Vite, shadcn/ui, TanStack Query, vitest + MSW.
 | `backend/alembic/versions/2026_08_11_0011-category_overrides.py` (C) | таблица решений, расширение `ck_position_items_category_source`, отказ downgrade при живых решениях |
 | `backend/models.py` (M) | ORM-модель `EstimateCategoryOverride`, обновление `CheckConstraint` |
 | `backend/services/category_override.py` (C) | применение: блокировка, чтение `raw_data`, прогон резолвера, материализация разделов и допработ |
-| `backend/crud/project_passport.py` (M) | дерево нераспределённого, `manual_assignments`, `own_sections[].source` |
+| `backend/crud/project_passport.py` (M) | метрики дерева разделов (один расчёт), дерево нераспределённого, `manual_assignments`, `own_sections[].source`, `category_options` |
+| `backend/crud/contracts.py` (M) | `category_overrides_count` в каждой строке `estimates[]` карточки договора |
 | `backend/routers/category_overrides.py` (C) | HTTP-слой: `PUT`/`DELETE`, коды отказов, транзакция |
 | `backend/main.py` (M) | регистрация роутера |
 | `backend/services/estimate_import.py` (M) | громкость замены: warning об утраченных решениях |
@@ -69,6 +77,7 @@ React + TS, Vite, shadcn/ui, TanStack Query, vitest + MSW.
 | `frontend/src/services/queries.ts` (M) | мутации с инвалидацией паспорта |
 | `frontend/src/pages/passport/UnallocatedPanel.tsx` (C) | панель-верстак: дерево, выбор статьи, список разнесённого |
 | `frontend/src/pages/passport/CategoryTable.tsx` (M) | шеврон и разворот, пометка `'manual'`, нулевое состояние, печатная сноска |
+| `frontend/src/components/contracts/EstimateUploadPanel.tsx` (M) | предупреждение об утрате разноса **до** загрузки, по счётчику заменяемой пары |
 
 Панель — отдельный файл, а не рост `CategoryTable.tsx`: у неё своя сетка, своё
 состояние выбора и свои мутации, а `CategoryTable` уже несёт таблицу, разворот
@@ -394,14 +403,17 @@ from models import EstimateCategoryOverride
 pytestmark = pytest.mark.integration
 
 
-def test_manual_is_accepted_and_a_third_value_is_not(db_session, chapter_row):
-    chapter_row.work_category_id = chapter_row.work_category_id or None
+def test_manual_is_accepted_and_a_third_value_is_not(db_session, chapter_row, category_id):
+    # Статья ОБЯЗАТЕЛЬНА: ck_position_items_category_source_pairs требует, чтобы
+    # work_category_id и category_source были заполнены или пусты ВМЕСТЕ. Без
+    # `category_id` тест падал бы о парный констрейнт, то есть проверял бы не то,
+    # что заявлено, — вход негативного теста обязан нарушать РОВНО ОДНО ограничение.
     db_session.execute(
         sa.text(
             "UPDATE position_items SET work_category_id = :cat, category_source = 'manual' "
             "WHERE id = :rid"
         ),
-        {"cat": chapter_row.work_category_id, "rid": chapter_row.id},
+        {"cat": category_id, "rid": chapter_row.id},
     )
     db_session.flush()
 
@@ -567,20 +579,27 @@ def downgrade() -> None:
     # PostgreSQL: констрейнт версии 0010 запрещает 'manual', и живые решения
     # сделали бы `create_check_constraint` непроходимым (то же правило, которым
     # 0003 отказывается откатываться после многокилобайтного наименования).
-    manual = (
-        op.get_bind()
-        .execute(
-            sa.text("SELECT count(*) FROM position_items WHERE category_source = 'manual'")
-        )
-        .scalar_one()
-    )
-    if manual:
+    #
+    # Проверяются ОБЕ таблицы, и это не перестраховка. Материализованных строк
+    # 'manual' может не быть при живом решении: если структура разделов
+    # предложения не определена, решение записано, а материализация не
+    # состоялась. Проверка только по `position_items` в этом случае молча снесла
+    # бы таблицу решений вместе с работой аналитика.
+    bind = op.get_bind()
+    manual = bind.execute(
+        sa.text("SELECT count(*) FROM position_items WHERE category_source = 'manual'")
+    ).scalar_one()
+    decisions = bind.execute(
+        sa.text("SELECT count(*) FROM estimate_category_overrides")
+    ).scalar_one()
+    if manual or decisions:
         raise RuntimeError(
-            f"Откат 0011 невозможен: {manual} строк-разделов несут "
-            "category_source='manual' (ручной разнос статей). Констрейнт версии 0010 "
-            "такие значения запрещает. Снимите ручные решения через API либо удалите "
-            "сметы, к которым они относятся, — это потеря данных и решение человека, "
-            "а не миграции."
+            f"Откат 0011 невозможен: ручных решений о статьях — {decisions}, "
+            f"материализованных строк-разделов с category_source='manual' — {manual}. "
+            "Констрейнт версии 0010 такие значения запрещает, а таблица решений "
+            "исчезла бы вместе с работой аналитика. Снимите ручные решения через API "
+            "либо удалите сметы, к которым они относятся, — это потеря данных и "
+            "решение человека, а не миграции."
         )
     op.drop_constraint("ck_position_items_category_source", "position_items", type_="check")
     op.create_check_constraint(
@@ -670,9 +689,18 @@ cd backend && uv run alembic downgrade base && uv run alembic upgrade head
 ```
 Expected: обе команды успешны на **чистой** БД (живых `'manual'` нет).
 
-Затем проверить отказ downgrade при живом решении: поставить одной строке-разделу
-`category_source='manual'`, запустить `alembic downgrade 0010`, увидеть `RuntimeError`
-с текстом про ручной разнос, вернуть значение обратно.
+Затем проверить отказ downgrade **двумя независимыми входами** — по одному на
+каждое слагаемое условия, иначе одно из них не доказано:
+
+1. только материализация: поставить строке-разделу `work_category_id` и
+   `category_source='manual'`, таблицу решений оставить пустой → `alembic downgrade 0010`
+   даёт `RuntimeError` с текстом про ручной разнос;
+2. только решение: вставить строку в `estimate_category_overrides`, ни одной
+   строки `'manual'` в `position_items` → тот же отказ. Это и есть случай, ради
+   которого проверяются обе таблицы: при неопределённой структуре предложения
+   решение есть, а материализации нет.
+
+После каждого — вернуть состояние и убедиться, что `downgrade` проходит на чистой БД.
 
 - [ ] **Step 7: Коммит**
 
@@ -700,7 +728,12 @@ ck_position_items_category_source расширен до ('file','manual'); downg
   копировать**; при необходимости переименовать в `extract_positions` и оставить
   алиас на старое имя внутри модуля импорта).
 - Produces:
-  - `class CategoryOverrideError(Exception)` с полем `code: Literal["not_found","not_a_chapter","structure_disabled","mapping_broken"]`
+  - `class CategoryOverrideError(Exception)` с полем
+    `code: Literal["not_found","not_a_chapter","structure_disabled","mapping_broken"]`.
+    `not_found` покрывает **три** случая: сметы нет (в т.ч. её удалила замена под
+    блокировкой), раздела нет либо он из другой сметы, **статьи нет**. Последнее —
+    отдельная проверка `_require_category`, а не надежда на FK: `IntegrityError`
+    вылетел бы уже из `flush` и стал бы `500`, тогда как спека §2.7 обещает `404`.
   - `def apply_overrides(db: Session, estimate_id: int) -> ApplyResult`
   - `def set_override(db, *, estimate_id, position_item_id, work_category_id, note, user_id) -> ApplyResult`
   - `def clear_override(db, *, estimate_id, position_item_id) -> ApplyResult`
@@ -798,9 +831,44 @@ def test_applying_twice_changes_nothing_the_second_time(
     )
     db_session.flush()
     once = _chapter_snapshot(db_session, imported_estimate.id)
-    apply_overrides(db_session, imported_estimate.id)
+
+    again = apply_overrides(db_session, imported_estimate.id)
     db_session.flush()
     assert _chapter_snapshot(db_session, imported_estimate.id) == once
+    # Счётчики ОБЯЗАНЫ быть нулями: снимок совпал бы и при безусловной перезаписи
+    # теми же значениями, то есть сам по себе он защиту «писать только
+    # изменившееся» не стережёт — краснеет только это утверждение.
+    assert again.chapters_updated == 0
+    assert again.additional_works_updated == 0
+
+
+def test_a_missing_category_is_refused_before_the_flush(
+    db_session, imported_estimate, top_unassigned_chapter, admin_user
+):
+    """Спека §2.7 обещает `404`, а не `500`: FK дал бы `IntegrityError` из flush."""
+    with pytest.raises(CategoryOverrideError) as exc:
+        set_override(
+            db_session,
+            estimate_id=imported_estimate.id,
+            position_item_id=top_unassigned_chapter.id,
+            work_category_id=10**9,
+            note=None,
+            user_id=admin_user.id,
+        )
+    assert exc.value.code == "not_found"
+
+
+def test_clearing_a_decision_that_is_not_there_succeeds(db_session, imported_estimate,
+                                                        top_unassigned_chapter):
+    """Снятие идемпотентно: два оператора могут снять одно решение одновременно, и
+    второму нечего сообщить об ошибке — состояние уже такое, какого он хотел.
+    Пересчёт при этом всё равно выполняется: он и есть смысл вызова."""
+    result = clear_override(
+        db_session,
+        estimate_id=imported_estimate.id,
+        position_item_id=top_unassigned_chapter.id,
+    )
+    assert result.chapters_updated == 0
 
 
 def test_an_additional_work_referencing_the_chapter_gets_the_same_article(
@@ -1042,6 +1110,10 @@ def set_override(
     """
     _lock_estimate(db, estimate_id)
     _require_chapter_of(db, estimate_id, position_item_id)
+    # Существование статьи проверяется ЗДЕСЬ, а не оставляется на FK: нарушение
+    # FK вылетает из `flush` как `IntegrityError` и превратилось бы в `500`,
+    # тогда как спека §2.7 обещает на несуществующую статью `404`.
+    _require_category(db, work_category_id)
 
     existing = db.get(EstimateCategoryOverride, position_item_id)
     if existing is None:
@@ -1219,41 +1291,114 @@ git commit -m "feat(category): сервис применения ручных р
 - Test: `backend/tests/integration/test_project_passport_api.py`
 
 **Interfaces:**
-- Consumes: `get_project_passport`, `_unallocated_breakdown`, `_own_sections_select`.
-- Produces в ответе: `unallocated.sections[]` (`position_item_id`,
-  `parent_position_item_id`, `number`, `title`, `depth`, `amount`, `subtree_amount`,
-  `rows`, `rows_priced`, `rows_not_finite`, `smr_article_raw`),
-  `manual_assignments[]` (те же поля плюс `work_category_id`, `category_code`,
-  `category_title`, `assigned_by_email`, `assigned_at`, `note`),
-  `categories[].own_sections[].source`.
+- Consumes: `get_project_passport`, `_unallocated_breakdown`, `_own_sections_select`,
+  уже прочитанный список `WorkCategory` (`refs`).
+- Produces:
+  - внутреннее — `_section_metrics(db, estimate_id) -> dict[int, SectionMetrics]`,
+    **единственный** расчёт метрик дерева разделов; два потребителя ниже;
+  - в ответе — `unallocated.sections[]` (`position_item_id`,
+    `parent_position_item_id`, `number`, `title`, `depth`, `amount`,
+    `subtree_amount`, `rows`, `rows_priced`, `rows_not_finite`, `smr_article_raw`);
+  - `manual_assignments[]` — те же поля плюс `work_category_id`, `category_code`,
+    `category_title`, `assigned_by_email`, `assigned_at`, `note`;
+  - `category_options[]` — `{id, code, title, is_bucket}` по **всему** справочнику;
+  - `categories[].own_sections[].source`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
 Дописать в `backend/tests/integration/test_project_passport_api.py`:
 
 ```python
-def test_unallocated_sections_form_a_tree_with_subtree_sums(client, imported_estimate):
-    body = client.get(f"/api/v1/analytics/project-passport/{imported_estimate.contract_id}").json()
-    sections = body["unallocated"]["sections"]
-    assert sections, "нераспределённые разделы обязаны быть перечислены"
+def test_unallocated_tree_reports_exact_own_and_subtree_metrics(client, unallocated_tree):
+    """Числа заданы фикстурой НЕЗАВИСИМО и проверяются точно.
 
-    # Промежуточный раздел БЕЗ своих позиций обязан присутствовать (спека §1.5):
-    # иначе разнос вершинами недоступен, а он — смысл фичи.
-    intermediate = [s for s in sections if s["amount"] is None and s["subtree_amount"] is not None]
-    assert intermediate, "вершина без своих позиций, но с деньгами ниже, обязана быть в списке"
+    Фикстура `unallocated_tree` строит ровно такую нераспределённую часть (все
+    суммы синтетические, реальных денег в тестах нет):
 
-    by_id = {s["position_item_id"]: s for s in sections}
-    for s in sections:
-        parent = s["parent_position_item_id"]
-        assert parent is None or parent in by_id, "дерево не должно ссылаться наружу"
-        assert s["depth"] == 0 or by_id[parent]["depth"] == s["depth"] - 1
+        вершина  «9»   — своих позиций 0
+          ребёнок «9.1» — 2 позиции с ценой: 30 и 30
+          ребёнок «9.2» — 1 позиция с ценой: 20
+                          + 1 позиция без цены
+                          + 1 позиция с ценой 'NaN'
+
+    Тогда: own(9) = None, subtree(9) = 80, rows(9) = 5, rows_priced(9) = 3,
+    rows_not_finite(9) = 1; own(9.1) = 60; own(9.2) = 20.
+
+    Проверка «родитель = сумма детей» тут НЕ вырождена: у вершины своих денег нет
+    вовсе, поэтому подсчёт разностью «родитель минус дети» дал бы ноль, а не None,
+    и это видно по числам, а не по форме.
+    """
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    sections = {s["number"]: s for s in body["unallocated"]["sections"]}
+
+    top = sections["9"]
+    assert top["amount"] is None, "у вершины своих позиций нет — это не ноль"
+    assert Decimal(top["subtree_amount"]) == Decimal("80")
+    assert (top["rows"], top["rows_priced"], top["rows_not_finite"]) == (5, 3, 1)
+    assert top["parent_position_item_id"] is None
+    assert top["depth"] == 0
+
+    left = sections["9.1"]
+    assert Decimal(left["amount"]) == Decimal("60")
+    assert Decimal(left["subtree_amount"]) == Decimal("60")
+    assert (left["rows"], left["rows_priced"], left["rows_not_finite"]) == (2, 2, 0)
+    assert left["parent_position_item_id"] == top["position_item_id"]
+    assert left["depth"] == 1
+
+    right = sections["9.2"]
+    assert Decimal(right["amount"]) == Decimal("20")
+    assert (right["rows"], right["rows_priced"], right["rows_not_finite"]) == (3, 1, 1)
+    assert right["depth"] == 1
 
 
-def test_a_section_with_no_money_anywhere_is_absent(client, imported_estimate):
-    """Граница §5.2: разносить там нечего, и в счётчике `chapters` их тоже нет."""
-    body = client.get(f"/api/v1/analytics/project-passport/{imported_estimate.contract_id}").json()
-    for s in body["unallocated"]["sections"]:
-        assert s["subtree_amount"] is not None or s["rows"] > 0
+def test_a_section_with_no_money_and_no_rows_anywhere_is_absent(client, unallocated_tree):
+    """Граница §5.2. Фикстура содержит раздел «8» без позиций во всём поддереве —
+    его в списке быть не должно: разносить там нечего, и в счётчике `chapters` его
+    тоже нет."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    assert "8" not in {s["number"] for s in body["unallocated"]["sections"]}
+
+
+def test_category_options_carry_the_whole_classifier(client, unallocated_tree):
+    """`categories` — НЕ справочник: `build_tree` прячет вложенные узлы без строк.
+    Разносить же надо в том числе в статьи, которых в смете ещё нет, поэтому
+    выбор берёт варианты из отдельного поля."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    options = body["category_options"]
+
+    total = client.get("/api/v1/references/work-categories").json()  # либо прямой COUNT по таблице
+    assert len(options) == len(total), "варианты обязаны покрывать весь справочник"
+
+    visible = {c["code"] for c in body["categories"]}
+    assert {o["code"] for o in options} - visible, (
+        "в справочнике обязаны быть статьи, которых нет в видимом дереве паспорта, — "
+        "иначе тест не отличает category_options от categories"
+    )
+    assert all({"id", "code", "title", "is_bucket"} <= set(o) for o in options)
+
+
+def test_manual_assignment_of_a_category_absent_from_the_visible_tree(
+    client, db_session, unallocated_tree, top_unassigned_chapter, admin_user
+):
+    """Ключевой случай пункта 1 ревью: аналитик выбирает статью, которой в смете
+    ещё нет вовсе, — и она обязана появиться в дереве с деньгами."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    visible = {c["code"] for c in body["categories"]}
+    target = next(o for o in body["category_options"] if o["code"] not in visible)
+
+    set_override(
+        db_session,
+        estimate_id=unallocated_tree.estimate_id,
+        position_item_id=top_unassigned_chapter.id,
+        work_category_id=target["id"],
+        note=None,
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    node = next(c for c in after["categories"] if c["code"] == target["code"])
+    assert Decimal(node["total"]) == Decimal("80")
 
 
 def test_manual_assignments_carry_their_author(client, db_session, imported_estimate,
@@ -1313,23 +1458,50 @@ Expected: FAIL — `KeyError: 'sections'`.
 
 1. `_own_sections_select` — добавить `PositionItem.category_source` в выборку и
    `"source": row.category_source` в `_own_sections_by_category`.
-2. Новая функция `_unallocated_sections(db, estimate_id)`: строит дерево строк-разделов
-   без статьи. Родитель — `chapter_item_id` строки-раздела (у разделов он ведёт на
-   раздел-предок), глубина — из длины цепочки родителей **внутри выборки**; свои
-   деньги — сумма прямых позиций (тот же фильтр годности, что в VIEW: `NaN`/`±Infinity`
-   исключаются); `subtree_amount` — свёртка по дереву в Python, как `build_tree`
-   (**не** «родитель минус дети»). Узел остаётся в дереве, только если у него или
-   ниже есть строки: граница §5.2.
-3. Новая функция `_manual_assignments(db, estimate_id)`: join
-   `estimate_category_overrides` → `position_items` → `work_categories` → `users`,
-   порядок — по `subtree_amount` убыв., затем по ключу позиции.
-4. В `get_project_passport`: положить `"sections"` в `unallocated_dict`,
-   `"manual_assignments"` — в корень ответа. **Для договора без сметы** (ветка
-   `estimate is None`) — `"sections": []` и `"manual_assignments": []`: форма ответа
-   обязана быть одинаковой, иначе экран получит `undefined` там, где ждёт массив.
 
-Свёртку поддерева НЕ писать вторым обходом рекурсивным CTE в SQL: дерево крошечное,
-а второе место, знающее закон свёртки, разъедется с первым.
+2. **Один расчёт метрик дерева разделов — `_section_metrics(db, estimate_id)`.**
+   Возвращает `dict[int, SectionMetrics]` по **всем** строкам-разделам сметы:
+   `parent_position_item_id`, `depth`, `number`, `title`, `smr_article_raw`,
+   `work_category_id`, `own_amount`, `own_rows`, `own_rows_priced`,
+   `own_rows_not_finite`, `subtree_amount`, `rows`, `rows_priced`,
+   `rows_not_finite`.
+
+   Родитель — `chapter_item_id` строки-раздела (у раздела он ведёт на раздел-предок),
+   глубина — длина цепочки родителей. Свои деньги — сумма прямых позиций с **тем же
+   фильтром годности, что в VIEW** (`NaN`/`±Infinity` исключаются из суммы и падают
+   в `rows_not_finite`); `subtree_amount` — свёртка по дереву в Python, «только
+   известные слагаемые», как `build_tree._build_node`, и **никогда** как «родитель
+   минус дети»: у вершины без своих позиций разность дала бы `0` там, где верно
+   `None`.
+
+   Расчёт **один на два потребителя** — `_unallocated_sections` фильтрует его выход
+   по `work_category_id IS NULL`, а `_manual_assignments` обогащает им свои строки.
+   Два независимых расчёта тех же метрик разъехались бы, и это тот же класс дефекта,
+   от которого уходит вся фича.
+
+3. `_unallocated_sections(db, estimate_id)` = метрики, отфильтрованные по
+   `work_category_id IS NULL`, минус узлы, у которых **ни у себя, ни ниже** нет
+   строк (граница §5.2), с родителем, переподвешенным **внутрь выборки** (у корня
+   нераспределённой части `parent_position_item_id = None`, `depth` пересчитан от
+   этого корня — иначе экран получил бы отступ от структуры файла, а не от того,
+   что показано).
+
+4. `_manual_assignments(db, estimate_id)`: join `estimate_category_overrides` →
+   `position_items` → `work_categories` → `users`, метрики — из того же
+   `_section_metrics`; порядок — по `subtree_amount` убыв., затем по ключу позиции.
+
+5. `_category_options(refs)` — плоский список `{id, code, title, is_bucket}` по
+   **всем** прочитанным `WorkCategory`, отсортированный по `sort_order`. Справочник
+   уже читается для `build_tree` (362 строки), второго запроса не нужно.
+
+6. В `get_project_passport`: `"sections"` — в `unallocated_dict`,
+   `"manual_assignments"` и `"category_options"` — в корень ответа. **Для договора
+   без сметы** (ветка `estimate is None`) — `"sections": []`,
+   `"manual_assignments": []`, а `"category_options"` — **полный** список: форма
+   ответа обязана быть одинаковой, а справочник от наличия сметы не зависит.
+
+Свёртку поддерева НЕ писать рекурсивным CTE в SQL: дерево крошечное, а второе
+место, знающее закон свёртки, разъедется с первым.
 
 - [ ] **Step 4: Прогнать полное покрытие паспорта**
 
@@ -1339,20 +1511,34 @@ Expected: PASS, существующие тесты Ф6 не ослаблены.
 - [ ] **Step 5: Доказать защиту снятием**
 
 1. Вернуть в `_unallocated_sections` фильтр «только разделы с прямыми позициями» →
-   `test_unallocated_sections_form_a_tree_with_subtree_sums` краснеет на
-   `intermediate` (это ровно тот дефект, который нашёл макет).
+   `test_unallocated_tree_reports_exact_own_and_subtree_metrics` краснеет на разделе
+   «9» (это ровно тот дефект, который нашёл макет).
 2. Убрать `source` из `own_sections` → `test_own_sections_declare_their_source` краснеет.
-3. Считать `subtree_amount` как «родитель минус дети» → краснеет проверка сумм.
+3. Считать `subtree_amount` как «родитель минус дети» → тот же тест краснеет на
+   `subtree_amount` вершины: вместо `80` выйдет `0`, а `own` вершины перестанет
+   быть `None`.
+4. Убрать фильтр годности из `own_amount` → краснеет `rows_not_finite` и сумма
+   раздела «9.2» (в фикстуре есть строка с `NaN` именно для этого).
+5. Отдать `category_options` из `passport.categories` →
+   `test_category_options_carry_the_whole_classifier` краснеет на длине, а
+   `test_manual_assignment_of_a_category_absent_from_the_visible_tree` — на
+   `next(...)`, потому что выбрать отсутствующую статью станет невозможно.
+6. Не переподвешивать родителя внутрь выборки → краснеет
+   `top["parent_position_item_id"] is None`.
 
 - [ ] **Step 6: Коммит**
 
 ```bash
 git add backend/crud/project_passport.py backend/tests/integration/test_project_passport_api.py
-git commit -m "feat(passport): дерево нераспределённого, manual_assignments, source у own_sections
+git commit -m "feat(passport): дерево нераспределённого, manual_assignments, category_options
 
 Дерево включает промежуточные разделы без своих позиций: без них разнос вершинами
-недоступен, и аналитик получает 24 решения вместо 2. Свёртка поддерева — в Python,
-как build_tree, а не разностью «родитель минус дети»."
+недоступен, и аналитик получает 24 решения вместо 2. Метрики дерева считает ОДНА
+функция на два потребителя; свёртка поддерева — в Python, как build_tree, а не
+разностью «родитель минус дети».
+
+category_options отдаёт справочник целиком: passport.categories прячет вложенные
+узлы без строк, а разносить надо в том числе в статьи, которых в смете ещё нет."
 ```
 
 ---
@@ -1433,6 +1619,17 @@ def test_changing_the_article_moves_the_audit(
         _url(imported_estimate.id, top_unassigned_chapter.id),
         json={"work_category_id": category_id},
     )
+    # Время сдвигается НАЗАД заведомо далеко, а не читается как есть: два запроса
+    # внутри одного теста укладываются в разрешение `now()`, и `>=` прошло бы даже
+    # при неизменённом времени — то есть стерегло бы ровно ничего.
+    db_session.execute(
+        sa.text(
+            "UPDATE estimate_category_overrides SET assigned_at = now() - interval '1 day' "
+            "WHERE position_item_id = :rid"
+        ),
+        {"rid": top_unassigned_chapter.id},
+    )
+    db_session.commit()
     before = db_session.execute(
         sa.select(EstimateCategoryOverride.assigned_at).where(
             EstimateCategoryOverride.position_item_id == top_unassigned_chapter.id
@@ -1449,7 +1646,24 @@ def test_changing_the_article_moves_the_audit(
         ).where(EstimateCategoryOverride.position_item_id == top_unassigned_chapter.id)
     ).one()
     assert after.work_category_id == other_category_id
-    assert after.assigned_at >= before
+    assert after.assigned_at > before
+
+
+def test_a_missing_category_is_404(member_client, imported_estimate, top_unassigned_chapter):
+    r = member_client.put(
+        _url(imported_estimate.id, top_unassigned_chapter.id),
+        json={"work_category_id": 10**9},
+    )
+    assert r.status_code == 404
+
+
+def test_deleting_a_decision_that_is_not_there_is_200(
+    member_client, imported_estimate, top_unassigned_chapter
+):
+    """Снятие идемпотентно (см. сервисный тест): состояние уже такое, какого хотел
+    вызывающий, и сообщать ему об ошибке не о чем."""
+    r = member_client.delete(_url(imported_estimate.id, top_unassigned_chapter.id))
+    assert r.status_code == 200
 
 
 def test_delete_removes_the_decision(
@@ -1523,13 +1737,18 @@ router = APIRouter(prefix="/api/v1/estimates", tags=["category-overrides"])
 
 #: Код ошибки сервиса → HTTP. `not_found` покрывает и гонку с заменой сметы:
 #: после ожидания блокировки строки просто нет, и отличить это от изначально
-#: отсутствовавшей сметы нельзя (спека §2.5). `409` остаётся ТОЛЬКО за
-#: `structure_disabled`.
+#: отсутствовавшей сметы нельзя (спека §2.5). `409` принадлежит ТОЛЬКО
+#: `structure_disabled` — так сказано в спеке §2.7.
+#:
+#: `mapping_broken` в карте ОТСУТСТВУЕТ намеренно: расхождение разобранной копии
+#: файла со строками сметы — нарушение целостности НАШИХ данных, а не конфликт
+#: пользовательского действия. Пользователь ничего не может с ним сделать, и
+#: `409` предложил бы ему повторить попытку, которая обречена. Такая ошибка
+#: должна дойти до `500` и до логов — этим и занимается `_apply`.
 _STATUS = {
     "not_found": status.HTTP_404_NOT_FOUND,
     "not_a_chapter": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "structure_disabled": status.HTTP_409_CONFLICT,
-    "mapping_broken": status.HTTP_409_CONFLICT,
 }
 
 
@@ -1544,7 +1763,14 @@ def _apply(db: Session, action, **kwargs):
         db.commit()
     except CategoryOverrideError as exc:
         db.rollback()
-        raise HTTPException(_STATUS[exc.code], str(exc)) from exc
+        http_status = _STATUS.get(exc.code)
+        if http_status is None:
+            # `mapping_broken` — не пользовательский конфликт, а нарушение
+            # целостности наших данных: логируем и отдаём 500, потому что повторять
+            # такой запрос бессмысленно, а тишина скрыла бы поломку.
+            log.error("Разнос статей: %s", exc, exc_info=True)
+            raise
+        raise HTTPException(http_status, str(exc)) from exc
     except Exception:
         db.rollback()
         raise
@@ -1629,10 +1855,12 @@ git commit -m "feat(api): PUT/DELETE разноса раздела по стат
 
 **Files:**
 - Modify: `backend/services/estimate_import.py` (`_replace_existing`, около строки 571)
-- Modify: форма замены сметы на экране договора (файл найти по `replace` в
-  `frontend/src/pages/contracts/` — это существующая форма загрузки с флагом замены)
+- Modify: `backend/crud/contracts.py` (`_estimates_of`, строка 161)
+- Modify: `frontend/src/components/contracts/EstimateUploadPanel.tsx`
+- Modify: `frontend/src/types/domain.ts` (поле в строке списка смет договора)
 - Test: `backend/tests/integration/test_estimate_import.py`
-- Test: тест формы замены рядом с ней (`*.test.tsx` того же каталога)
+- Test: `backend/tests/integration/` — тест карточки договора на новое поле
+- Test: `frontend/src/components/contracts/EstimateUploadPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: `EstimateCategoryOverride`, существующий механизм `warnings` сессии B.
@@ -1658,8 +1886,9 @@ def test_replace_reports_the_manual_decisions_it_destroys(
     db_session.commit()
 
     job = replace_upload(imported_estimate.contract_id)
-    assert any("ручных решений о статьях" in w for w in job.warnings)
-    assert any("1" in w for w in job.warnings if "ручных решений" in w)
+    # Проверяется ТОЧНАЯ фраза, а не вхождение «1»: в тексте есть дата, и любая
+    # цифра из неё прошла бы проверку при неверном счётчике.
+    assert any("Утрачено 1 ручных решений о статьях" in w for w in job.warnings)
 
 
 def test_replace_says_nothing_when_there_were_no_decisions(
@@ -1716,41 +1945,99 @@ Expected: PASS, существующие тесты замены не ослаб
 Убрать `if lost[0]:` (писать всегда) → `test_replace_says_nothing_when_there_were_no_decisions`
 краснеет. Убрать блок целиком → `test_replace_reports_...` краснеет.
 
-- [ ] **Step 6: Предупредить в форме замены — до загрузки**
+- [ ] **Step 6: Счётчик решений — в строку списка смет договора**
 
-Warning в `import_jobs` приходит **после** того, как решения уже уничтожены; спека
-§2.9 п. 2 требует предупредить и **до**. Тест сначала:
+Форма замены **не может** взять число из паспорта, и на это две независимые
+причины. Первая: карточка договора паспорт не загружает вовсе — она держит
+`useContract`, `useContractImportJobs`, `useObject`
+([ContractCardPage.tsx](../../../frontend/src/pages/contracts/ContractCardPage.tsx#L45)).
+Вторая, важнее: паспорт **всегда** описывает исходную смету (`amendment_no IS NULL`,
+правило Ф6), а форма заменяет **любое** допсоглашение — то есть число из паспорта
+относилось бы к другой паре `(contract_id, amendment_no)` и врало бы тем убедительнее,
+чем больше у договора допсоглашений.
+
+Источник — список смет, который карточка уже загружает
+([`_estimates_of`](../../../backend/crud/contracts.py#L161)). Тест сначала:
+
+```python
+def test_each_estimate_row_carries_its_own_decision_count(
+    client, db_session, contract_with_amendment, chapter_of_source, chapter_of_amendment,
+    category_id, admin_user
+):
+    """Счётчик обязан быть ПОСМЕТНЫМ: паспорт описывает только исходную смету, а
+    заменять можно любое допсоглашение."""
+    set_override(
+        db_session, estimate_id=contract_with_amendment.source_estimate_id,
+        position_item_id=chapter_of_source.id, work_category_id=category_id,
+        note=None, user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    rows = client.get(f"/api/v1/contracts/{contract_with_amendment.id}").json()["estimates"]
+    by_amendment = {r["amendment_no"]: r for r in rows}
+    assert by_amendment[None]["category_overrides_count"] == 1
+    assert by_amendment[1]["category_overrides_count"] == 0
+```
+
+Реализация — подзапрос в `_estimates_of`: `count` по
+`estimate_category_overrides` через `position_items → proposals → lots` с
+`lots.estimate_id = estimates.id`.
+
+Прогнать: `cd backend && uv run pytest tests/integration -k decision_count -v` — PASS.
+Снятие: считать по договору, а не по смете → тест краснеет на строке допсоглашения.
+
+- [ ] **Step 7: Предупредить в форме замены — до загрузки**
+
+Warning в `import_jobs` приходит **после** того, как решения уже уничтожены; как
+предупреждение он бесполезен, и спека §2.9 п. 2 требует сказать **до**. Тест сначала:
 
 ```typescript
-it("форма замены предупреждает об утрате ручного разноса до загрузки", async () => {
-  // Предупреждение обязано быть видно ДО отправки: warning в import_jobs
-  // приходит, когда решения уже уничтожены, и как предупреждение он бесполезен.
-  renderReplaceForm({ manualAssignmentsCount: 2 });
-  await userEvent.click(screen.getByLabelText(/заменить/i));
+it("форма замены предупреждает об утрате разноса заменяемой сметы", async () => {
+  // Счётчик берётся по amendment_no ТОЙ пары, которую заменяют.
+  renderUploadPanel({
+    estimates: [
+      { amendment_no: null, category_overrides_count: 2 },
+      { amendment_no: 1, category_overrides_count: 0 },
+    ],
+    replacing: { amendment_no: null },
+  });
   expect(screen.getByRole("alert")).toHaveTextContent(/ручной разнос/i);
+  expect(screen.getByRole("alert")).toHaveTextContent("2");
 });
 
-it("без ручных решений форма молчит", async () => {
-  renderReplaceForm({ manualAssignmentsCount: 0 });
-  await userEvent.click(screen.getByLabelText(/заменить/i));
+it("замена допсоглашения без решений молчит, даже если у исходной сметы они есть", async () => {
+  // Ровно тот случай, который сломал бы источник «из паспорта»: у исходной сметы
+  // решения есть, но заменяют не её.
+  renderUploadPanel({
+    estimates: [
+      { amendment_no: null, category_overrides_count: 2 },
+      { amendment_no: 1, category_overrides_count: 0 },
+    ],
+    replacing: { amendment_no: 1 },
+  });
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 ```
 
-Число решений форма берёт из уже загруженного паспорта договора
-(`manual_assignments.length`) — второго эндпоинта для этого не заводить.
+Прогнать: `cd frontend && npx vitest run src/components/contracts` — Expected: PASS.
 
-Прогнать: `cd frontend && npx vitest run src/pages/contracts` — Expected: PASS.
-Снятие: убрать условие «только при непустом числе» → второй тест краснеет.
+Снятие: (1) убрать условие «только при непустом счётчике» → второй тест краснеет;
+(2) брать счётчик исходной сметы вместо заменяемой → второй тест краснеет — это и
+есть защита от того дефекта, который нашло ревью.
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 8: Коммит**
 
 ```bash
-git add backend/services/estimate_import.py backend/tests/integration/test_estimate_import.py frontend/src/pages/contracts
+git add backend/services/estimate_import.py backend/crud/contracts.py backend/tests/integration frontend/src/components/contracts frontend/src/types/domain.ts
 git commit -m "feat(import): замена сметы сообщает об утраченных ручных решениях
 
 Число и дата, не перечень: истории решений проект не ведёт. Пишет сессия B —
-предупреждение описывает доменное состояние."
+предупреждение описывает доменное состояние.
+
+Форма замены предупреждает ДО загрузки, и счётчик для неё посметный
+(category_overrides_count в строке estimates[]): паспорт описывает только исходную
+смету, а заменять можно любое допсоглашение — число из паспорта относилось бы к
+другой паре."
 ```
 
 ---
@@ -1761,13 +2048,15 @@ git commit -m "feat(import): замена сметы сообщает об ут�
 - Modify: `frontend/src/types/domain.ts`, `frontend/src/services/api/analytics.ts`,
   `frontend/src/services/queries.ts`, `frontend/src/test/fixtures.ts`,
   `frontend/src/test/handlers.ts`
-- Test: `frontend/src/services/queries.test.ts` (создать, если нет — иначе дописать)
+- Test: `frontend/src/services/queries.test.tsx` (файл уже существует — **дописать**)
 
 **Interfaces:**
 - Produces:
   - `ProjectPassportUnallocatedSection`, `ProjectPassportManualAssignment`,
+    `ProjectPassportCategoryOption`,
     `ProjectPassportSection.source: "file" | "manual"`,
-    `ProjectPassportUnallocated.sections`, `ProjectPassport.manual_assignments`
+    `ProjectPassportUnallocated.sections`, `ProjectPassport.manual_assignments`,
+    `ProjectPassport.category_options`
   - `analyticsApi.setCategoryOverride({estimateId, positionItemId, workCategoryId, note})`
   - `analyticsApi.clearCategoryOverride({estimateId, positionItemId})`
   - `useSetCategoryOverride()`, `useClearCategoryOverride()` — обе инвалидируют
@@ -1830,9 +2119,22 @@ export interface ProjectPassportManualAssignment
 }
 ```
 
+```typescript
+/** Вариант выбора статьи. Источник — `category_options`, НЕ `categories`:
+ *  последний прячет вложенные узлы без строк, а разносить надо в том числе в
+ *  статьи, которых в смете ещё нет. */
+export interface ProjectPassportCategoryOption {
+  id: number;
+  code: string;
+  title: string;
+  is_bucket: boolean;
+}
+```
+
 `ProjectPassportSection` получает `source: "file" | "manual"`,
 `ProjectPassportUnallocated` — `sections: ProjectPassportUnallocatedSection[]`,
-`ProjectPassport` — `manual_assignments: ProjectPassportManualAssignment[]`.
+`ProjectPassport` — `manual_assignments: ProjectPassportManualAssignment[]` и
+`category_options: ProjectPassportCategoryOption[]`.
 
 Обновить `frontend/src/test/fixtures.ts` и `handlers.ts`: новые поля обязательны,
 поэтому `tsc` укажет все места, где фикстуры их не несут.
@@ -1858,9 +2160,12 @@ export function useSetCategoryOverride() {
 - [ ] **Step 5: Прогнать**
 
 ```bash
-cd frontend && npx tsc --noEmit && npx vitest run src/services/queries.test.ts
+cd frontend && npx tsc --noEmit
+npx vitest run src/services/queries.test.tsx
 ```
-Expected: PASS.
+Expected: PASS. Шаги **по отдельности**, не через `&&` (инсайт
+[silent-test-runs](../../insights/silent-test-runs.md): `&&` прячет, какой из шагов
+не взлетел).
 
 - [ ] **Step 6: Коммит**
 
@@ -1883,17 +2188,21 @@ git commit -m "feat(frontend): типы дерева нераспределён�
 
 **Interfaces:**
 - Consumes: `ProjectPassportUnallocatedSection`, `ProjectPassportManualAssignment`,
-  `useSetCategoryOverride`, `useClearCategoryOverride`, `ProjectPassportCategory`
-  (как источник списка статей для выбора).
+  **`ProjectPassportCategoryOption` как единственный источник вариантов выбора**,
+  `useSetCategoryOverride`, `useClearCategoryOverride`.
 - Produces: `<UnallocatedPanel passport={...} contractId={...} estimateId={...} />`,
   `data-testid="unallocated-panel"`, `data-print="hide"`.
 
-- [ ] **Step 1: Поставить компоненты shadcn**
+- [ ] **Step 1: Переиспользовать уже установленные примитивы**
 
-```bash
-cd frontend && npx shadcn add command popover
-```
-Своих компонентов не писать (правило пользователя).
+`command.tsx` и `popover.tsx` **уже есть** в `frontend/src/components/ui/` вместе со
+своими зависимостями — импортировать их. `npx shadcn add command popover` **не
+запускать**: CLI перезапишет локальные компоненты, а вместе с ними и правки, если
+они там есть.
+
+Проверить перед началом: `ls frontend/src/components/ui/ | grep -E "command|popover"`
+— должны быть оба файла. Если чего-то нет, тогда и только тогда добавить его
+через `npx shadcn add <имя>`.
 
 - [ ] **Step 2: Написать падающие тесты**
 
@@ -1910,6 +2219,24 @@ it("вершина показывает сумму поддерева, а не �
   // У вершины своих позиций нет: `amount === null`, а решение стоит суммы поддерева.
   expect(within(top).getByTestId("subtree-amount-42")).toHaveTextContent("85 087 749,27 ₽");
   expect(within(top).queryByTestId("own-amount-42")).not.toBeInTheDocument();
+});
+
+it("в выборе статьи есть статьи, которых нет в видимом дереве паспорта", async () => {
+  // Источник вариантов — category_options, а не categories: последний прячет
+  // вложенные узлы без строк, и половина справочника до аналитика не дошла бы.
+  render(<UnallocatedPanel passport={passportWithTree} contractId={5} estimateId={11} />);
+  await userEvent.click(screen.getByTestId("pick-category-42"));
+  const visible = new Set(passportWithTree.categories.map((c) => c.code));
+  const hidden = passportWithTree.category_options.filter((o) => !visible.has(o.code));
+  expect(hidden.length).toBeGreaterThan(0);
+  expect(screen.getByText(hidden[0].title)).toBeInTheDocument();
+});
+
+it("поиск находит статью и по коду, и по названию", async () => {
+  render(<UnallocatedPanel passport={passportWithTree} contractId={5} estimateId={11} />);
+  await userEvent.click(screen.getByTestId("pick-category-42"));
+  await userEvent.type(screen.getByRole("combobox"), "20");
+  expect(screen.getByText(/MR - SHELL/)).toBeInTheDocument();
 });
 
 it("длинное наименование зажато и не отменяет line-clamp классом block", () => {
@@ -1932,7 +2259,14 @@ Expected: FAIL — модуля нет.
 `UnallocatedPanel.tsx` — своя сетка (дерево / сумма / действие), два блока:
 «разделы без статьи» (по убыванию `subtree_amount`, отступ по `depth`) и
 «разнесено вручную» (статья, автор, дата, примечание, «снять»). Выбор статьи —
-`Command` внутри `Popover`, поиск по коду и названию: в справочнике 362 строки.
+`Command` внутри `Popover` **по `passport.category_options`**, поиск по коду и
+названию: в справочнике 362 строки, и без поиска он неюзабелен.
+
+- [ ] **Step 4a: Доказать защиту снятием**
+
+Подменить источник вариантов на `passport.categories` → тест «в выборе статьи есть
+статьи, которых нет в видимом дереве» краснеет. Это ровно тот дефект, который нашло
+ревью плана.
 
 В `CategoryTable.tsx` строка `row-unallocated` получает `ExpandToggle` (компонент
 уже есть и уже помечен `data-print="hide"`), а под ней — строка с `colSpan` на всю
@@ -2014,6 +2348,24 @@ it("неразносимый остаток сохраняет предупре�
   expect(row.className).toContain("warning");
   expect(screen.getByTestId("unallocated-caption")).toHaveTextContent("вне структуры");
 });
+
+it("нераспределённые допработы тоже держат остаток непустым", async () => {
+  /*
+    Третий случай границы §5.5, и он НЕ виден ни в `sections`, ни в
+    `rows_outside_structure`: строка допработ с неразрешимой ссылкой («нет
+    кандидатов» либо «статьи различаются») остаётся в `unallocated.extras`. При
+    sections=[] и rows_outside_structure=0 экран объявил бы «всё разнесено», имея
+    непустое «Нераспределённое» на экране рядом. Органов разноса рядом с extras
+    быть не должно — их статья приезжает из раздела, на который они ссылаются.
+  */
+  renderPassport(passportWithUnresolvableExtras); // sections: [], rows_outside_structure: 0
+  const row = await screen.findByTestId("row-unallocated");
+  expect(row.className).toContain("warning");
+  expect(screen.getByTestId("unallocated-caption")).not.toHaveTextContent(
+    "все разделы сметы отнесены к статьям",
+  );
+  expect(screen.queryByTestId(/^pick-category-/)).not.toBeInTheDocument();
+});
 ```
 
 - [ ] **Step 2: Прогнать и убедиться, что падает**
@@ -2024,9 +2376,24 @@ Expected: FAIL на всех пяти.
 - [ ] **Step 3: Реализовать**
 
 Бейдж «вручную» в развороте статьи; сноска под таблицей (только при непустом
-`manual_assignments`, число — `manual_assignments.length`, без суммы); нулевое
-состояние — снять безусловный `text-warning-text` и различать два случая по
-`unallocated.rows_outside_structure` и по наличию разносимых `sections`.
+`manual_assignments`, число — `manual_assignments.length`, без суммы).
+
+Нулевое состояние — снять безусловный `text-warning-text`. Предикат «всё
+разнесено» — **три** слагаемых, и все три обязательны:
+
+```
+allocated = sections.length === 0
+         && rows_outside_structure === 0
+         && extras.length === 0
+```
+
+Третье слагаемое закрывает случай, невидимый в первых двух: строка допработ с
+неразрешимой ссылкой живёт в `unallocated.extras` и разносу недоступна (граница
+§5.5). Без него экран объявлял бы «всё разнесено», имея непустое
+«Нераспределённое» в той же строке.
+
+Причина остатка называется существующим `unallocatedCaption` — второго текста о
+том же не заводить.
 
 - [ ] **Step 4: Прогнать**
 
@@ -2040,7 +2407,10 @@ Expected: PASS.
 1. Добавить сумму в сноску → `test "сноска ... не называет сумму"` краснеет.
 2. Рисовать сноску всегда → `test "сноски нет вовсе"` краснеет.
 3. Вернуть безусловный `text-warning-text` → нулевое состояние краснеет.
-4. Игнорировать `rows_outside_structure` → «неразносимый остаток» краснеет.
+4. Убрать из предиката `rows_outside_structure` → «неразносимый остаток» краснеет.
+5. Убрать из предиката `extras.length` → «нераспределённые допработы» краснеет.
+   Слагаемые снимаются **по одному**: вход каждого теста нарушает ровно одно из
+   трёх условий, поэтому снятие одного слагаемого не маскируется двумя другими.
 
 - [ ] **Step 6: Коммит**
 
@@ -2138,7 +2508,38 @@ additional_works_updated, chapters_manual)`, `CategoryOverrideError.code`,
 `assigned_by_email`, `subtree_amount`, `position_item_id` — одни и те же во всех
 задачах, где встречаются. `EstimateCategoryOverride` — единственное имя модели.
 
-**Две поправки, найденные самопроверкой:**
+**Поправки второго ревью (пять существенных, все проверены по коду):**
+
+1. **Селектор статей** брал варианты из `passport.categories`, который прячет
+   вложенные узлы без строк, — аналитик не увидел бы как раз те статьи, в которые и
+   надо разносить. Введено `category_options` (задачи 4, 7, 8) с тестом на выбор
+   статьи, отсутствующей в видимом дереве, и со снятием защиты.
+2. **Предупреждение формы замены** опиралось на паспорт, которого карточка договора
+   не загружает, и которое к тому же всегда описывает исходную смету, тогда как
+   заменять можно любое допсоглашение. Введён посметный
+   `category_overrides_count` в `estimates[]` (задача 6, шаги 6–7), с тестами
+   отдельно на исходную смету и на допсоглашение.
+3. **HTTP-контракт:** добавлена явная проверка существования статьи
+   (`_require_category` → `404` вместо `500` от FK); `mapping_broken` убран из карты
+   статусов — это нарушение целостности наших данных, а не конфликт действия, и
+   доходит до `500` с логом; определена семантика `DELETE` отсутствующего решения —
+   идемпотентный успех.
+4. **Нулевое состояние** различалось по двум признакам из трёх: нераспределённые
+   допработы с неразрешимой ссылкой не видны ни в `sections`, ни в
+   `rows_outside_structure`. Предикат стал тройным, слагаемые снимаются по одному.
+5. **Дерево и метрики** проверялись только по форме. Введён один расчёт
+   `_section_metrics` на два потребителя и тест с независимо заданными числами
+   (30/30, 20, строка без цены, строка `NaN`), проверяющий точные `amount`,
+   `subtree_amount`, `rows`, `rows_priced`, `rows_not_finite`, — теперь снятие
+   свёртки действительно краснеет.
+
+Механические: статья в тесте констрейнта (иначе нарушались бы два ограничения
+разом), downgrade проверяет обе таблицы, двойной `apply` проверяет нулевые
+счётчики, аудит сдвигается назад на сутки и сравнивается строгим `>`, warning
+проверяется точной фразой, `queries.test.tsx`, `command`/`popover` уже установлены —
+переиспользовать, «не писать своих UI-**примитивов**» вместо «компонентов».
+
+**Две поправки первой самопроверки:**
 
 1. Предупреждение формы замены (спека §2.9 п. 2) — фронтовое, а задача 6 была
    целиком бэкендовой, то есть требование спеки осталось бы без исполняющего
