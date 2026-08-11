@@ -18,7 +18,11 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy as sa
 
-from models import UserRole, WorkCategory
+from models import Estimate, Lot, PositionItem, Proposal, UserRole, WorkCategory
+from services.category_resolution import CategoryResolver
+from services.estimate_import import import_estimate
+from services.unit_resolution import UnitResolver
+from tests.payloads import additional_works_row, payload_for, position, svedeniya_info
 
 
 @pytest.fixture
@@ -126,3 +130,190 @@ def override_row(db_session, chapter_row, category_id, admin_user):
     return SimpleNamespace(
         position_item_id=position_item_id, work_category_id=category_id, assigned_by=admin_user.id
     )
+
+
+# ---------------------------------------------------------------------------
+#  Второй строитель цепочки — через настоящий импорт (Задача 3 и далее)
+# ---------------------------------------------------------------------------
+#
+# `make_override_proposal` выше даёт цепочку договор→смета→лот→предложение из
+# ORM-фабрик, БЕЗ `estimate_raw_data` — этого достаточно тестам схемы, которым
+# нужны только строки. Сервису применения решений (`services/category_override.py`)
+# настоящий `raw_data` необходим: вход его резолвера собирается ИЗ НЕГО, а не из
+# строк БД (спека разноса §2.3, проверяемость неизменяемым JSON). Поэтому здесь —
+# второй строитель, а не второе применение первого: он идёт через реальный
+# `import_estimate`, как `run_import` в `test_estimate_import.py` (тот хелпер
+# локален своему модулю — по правилу этого репозитория тестовые хелперы не
+# импортируются между модулями тестов, поэтому здесь его эквивалент, не импорт).
+
+
+@pytest.fixture
+def make_imported_estimate(db_session, factories):
+    """Смета через НАСТОЯЩИЙ импорт — callable, тестам Задач 3-6 нужно несколько
+    независимых смет за один тест (чужая смета, смета со сломанной нумерацией
+    разделов и т.п., как и `make_override_proposal` выше)."""
+
+    def _make(positions, **kwargs):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract, positions, **kwargs)
+        outcome = import_estimate(
+            db_session,
+            contract=contract,
+            amendment_no=None,
+            data=data,
+            parser_version="1.0.0",
+            import_job_id=None,
+            replace=False,
+            unit_resolver=UnitResolver(db_session),
+            category_resolver=CategoryResolver.from_db(db_session),
+        )
+        db_session.flush()
+        return db_session.get(Estimate, outcome.estimate_id)
+
+    return _make
+
+
+@pytest.fixture
+def imported_estimate(make_imported_estimate):
+    """Смета Задачи 3: раздел без статьи с подразделом ПОД СОБОЙ (нужен
+    `top_unassigned_chapter` — наследование решения обязано дойти до всего
+    поддерева, не только до самого раздела) и отдельный раздел С валидной
+    статьёй файла — без него пересчёт без решений воспроизводил бы только
+    пустоту, и тест на воспроизводимость импорта ничего не стерёг бы."""
+    return make_imported_estimate(
+        [
+            position(job_title="Раздел без статьи", is_chapter=True, chapter_number="1"),
+            position(job_title="Подраздел без статьи", is_chapter=True, chapter_number="1.1"),
+            position(
+                job_title="Работа под подразделом",
+                unit="м2",
+                quantity=1,
+                suggested_quantity=1,
+                unit_cost_total="100.00",
+                total_cost_total="100.00",
+                chapter_ref="1.1",
+                number="3",
+            ),
+            position(
+                job_title="Раздел со статьёй",
+                is_chapter=True,
+                chapter_number="2",
+                article_smr="1",
+                number="4",
+            ),
+            position(
+                job_title="Работа под разделом со статьёй",
+                unit="м2",
+                quantity=1,
+                suggested_quantity=1,
+                unit_cost_total="200.00",
+                total_cost_total="200.00",
+                chapter_ref="2",
+                number="5",
+            ),
+        ]
+    )
+
+
+@pytest.fixture
+def top_unassigned_chapter(db_session, imported_estimate):
+    """Раздел «1» без статьи, с подразделом «1.1» под собой — цель ручного
+    решения в тестах сервиса разноса."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == imported_estimate.id,
+            PositionItem.job_title_in_proposal == "Раздел без статьи",
+        )
+    ).scalar_one()
+
+
+@pytest.fixture
+def any_position_row(db_session, imported_estimate):
+    """Любая строка-ПОЗИЦИЯ (не раздел) `imported_estimate` — статья привязывается
+    только к разделам (спека §1.3), и это то, что здесь проверяется отказом."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == imported_estimate.id, PositionItem.is_chapter.is_(False))
+        .limit(1)
+    ).scalar_one()
+
+
+@pytest.fixture
+def other_estimate_chapter(db_session, make_imported_estimate):
+    """Раздел ЧУЖОЙ сметы — второй вызов строителя даёт независимую цепочку."""
+    other = make_imported_estimate(
+        [position(job_title="Раздел чужой сметы", is_chapter=True, chapter_number="1")]
+    )
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == other.id, PositionItem.is_chapter.is_(True))
+    ).scalar_one()
+
+
+@pytest.fixture
+def estimate_with_extra_ref(make_imported_estimate):
+    """Смета с агрегатной строкой допработ, расшитой через «Сведения» на
+    раздел «1», у которого своей статьи нет — начальное состояние
+    `resolve_ref` обязано быть «кандидат без статьи» (спека §1.4)."""
+    return make_imported_estimate(
+        [
+            position(job_title="Раздел без статьи", is_chapter=True, chapter_number="1"),
+            position(
+                job_title="Работа",
+                unit="м2",
+                quantity=1,
+                suggested_quantity=1,
+                unit_cost_total="500.00",
+                total_cost_total="500.00",
+                chapter_ref="1",
+                number="2",
+            ),
+        ],
+        additional_works=additional_works_row(total="500.00"),
+        additional_info=svedeniya_info("1 Допработы по разделу - 500.00 руб."),
+    )
+
+
+@pytest.fixture
+def referenced_chapter(db_session, estimate_with_extra_ref):
+    """Раздел «1» `estimate_with_extra_ref` — на него ссылается строка допработ."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == estimate_with_extra_ref.id, PositionItem.is_chapter.is_(True)
+        )
+    ).scalar_one()
+
+
+@pytest.fixture
+def estimate_with_broken_numbering(make_imported_estimate):
+    """Смета, у которой резолвер отключает структуру целиком: номер раздела
+    не разбирается в глубину (тот же приём, что в `test_estimate_import.py`)."""
+    return make_imported_estimate(
+        [position(job_title="Примечание", number="3", chapter_number="прим.", is_chapter=True)]
+    )
+
+
+@pytest.fixture
+def broken_chapter(db_session, estimate_with_broken_numbering):
+    """Единственный раздел `estimate_with_broken_numbering` — цель решения,
+    которое обязано быть отказано кодом `structure_disabled`."""
+    return db_session.execute(
+        sa.select(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == estimate_with_broken_numbering.id,
+            PositionItem.is_chapter.is_(True),
+        )
+    ).scalar_one()
