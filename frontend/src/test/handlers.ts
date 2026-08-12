@@ -647,7 +647,7 @@ export const handlers = [
     return HttpResponse.json(projectPassportForOutcome(handlerState.projectPassportOutcome));
   }),
 
-  // Ручной разнос разделов по статьям (Ф7, спека разноса §2.6). Ответ — сводка
+  // Ручной разнос разделов по статьям (спека разноса §2.6). Ответ — сводка
   // изменений, НЕ паспорт (форма паспорта объявлена ровно один раз в фикстуре).
   http.put(
     "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",

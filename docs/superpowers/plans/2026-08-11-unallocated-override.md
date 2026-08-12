@@ -2217,7 +2217,7 @@ it("вершина показывает сумму поддерева, а не �
   render(<UnallocatedPanel passport={passportWithTree} contractId={5} estimateId={11} />);
   const top = screen.getByTestId("unallocated-section-42");
   // У вершины своих позиций нет: `amount === null`, а решение стоит суммы поддерева.
-  expect(within(top).getByTestId("subtree-amount-42")).toHaveTextContent("85 087 749,27 ₽");
+  expect(within(top).getByTestId("subtree-amount-42")).toHaveTextContent("115 000,00 ₽");
   expect(within(top).queryByTestId("own-amount-42")).not.toBeInTheDocument();
 });
 

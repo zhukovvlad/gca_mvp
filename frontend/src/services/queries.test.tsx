@@ -254,7 +254,7 @@ describe("useProjectPassport: переиспользование корня па
 });
 
 /**
- * `useSetCategoryOverride` / `useClearCategoryOverride` (Ф7, разнос §2.6):
+ * `useSetCategoryOverride` / `useClearCategoryOverride` (спека разноса §2.6):
  * обе мутации обязаны инвалидировать паспорт ДОГОВОРА, потому что эндпоинты
  * PUT/DELETE его не возвращают — они возвращают только сводку изменений
  * (`chapters_updated`/`additional_works_updated`/`chapters_manual`), а не

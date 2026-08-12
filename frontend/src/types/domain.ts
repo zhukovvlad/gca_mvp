@@ -113,7 +113,7 @@ export interface EstimateRow {
   import_job_id: number | null;
   positions_count: number;
   /**
-   * Число ручных решений о статьях, сделанных ПО ЭТОЙ смете (Ф7, задача 6).
+   * Число ручных решений о статьях, сделанных ПО ЭТОЙ смете (задача 6).
    * Посметный, не по договору: форма замены предупреждает об утрате решений
    * именно заменяемой пары (contract_id, amendment_no), а паспорт для этого
    * не годится — он всегда про смету с `amendment_no IS NULL`.
@@ -519,7 +519,7 @@ export interface ProjectPassportSection {
   id: number;
   number: string | null;
   title: string;
-  /** `'file'` — раздел получил статью из клетки «Статья СМР»; `'manual'` — статья назначена вручную (Ф7, разнос). */
+  /** `'file'` — раздел получил статью из клетки «Статья СМР»; `'manual'` — статья назначена вручную (спека разноса). */
   source: "file" | "manual";
 }
 
@@ -577,7 +577,7 @@ export interface ProjectPassportUnallocatedSection {
 }
 
 /**
- * Действующее ручное решение о статье раздела (Ф7, разнос).
+ * Действующее ручное решение о статье раздела (спека разноса).
  *
  * **`subtree_amount`/`rows`/`rows_priced`/`rows_not_finite` здесь значат
  * ДРУГОЕ, чем в {@link ProjectPassportUnallocated.sections}, хотя поля
@@ -652,14 +652,14 @@ export interface ProjectPassport {
   totals: ProjectPassportTotals;
   categories: ProjectPassportCategory[];
   unallocated: ProjectPassportUnallocated;
-  /** Действующие ручные решения о статьях — по всем разделам и допработам сметы (Ф7, разнос). */
+  /** Действующие ручные решения о статьях — по всем разделам сметы (спека разноса). Допработы следуют производно от разделов. */
   manual_assignments: ProjectPassportManualAssignment[];
   /** Варианты для выбора статьи при разносе — см. {@link ProjectPassportCategoryOption}. */
   category_options: ProjectPassportCategoryOption[];
 }
 
 // ---------------------------------------------------------------------------
-//  Ручной разнос разделов по статьям (фаза 7, Ф7)
+//  Ручной разнос разделов по статьям (спека разноса)
 // ---------------------------------------------------------------------------
 
 /**
@@ -679,7 +679,7 @@ export interface CategoryOverrideChangeSummary {
 }
 
 /**
- * Назначить статью разделу/допработе (`PUT .../category-overrides/{id}`).
+ * Назначить статью разделу (`PUT .../category-overrides/{id}`).
  *
  * `contractId` эндпоинту не нужен — но нужен инвалидации: запрос паспорта
  * ключуется договором, а не сметой (см. `useSetCategoryOverride`).
