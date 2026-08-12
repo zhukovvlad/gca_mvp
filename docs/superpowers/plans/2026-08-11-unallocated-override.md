@@ -2193,7 +2193,7 @@ git commit -m "feat(frontend): типы дерева нераспределён�
 - Produces: `<UnallocatedPanel passport={...} contractId={...} estimateId={...} />`,
   `data-testid="unallocated-panel"`, `data-print="hide"`.
 
-- [ ] **Step 1: Переиспользовать уже установленные примитивы**
+- [x] **Step 1: Переиспользовать уже установленные примитивы**
 
 `command.tsx` и `popover.tsx` **уже есть** в `frontend/src/components/ui/` вместе со
 своими зависимостями — импортировать их. `npx shadcn add command popover` **не
@@ -2204,7 +2204,7 @@ git commit -m "feat(frontend): типы дерева нераспределён�
 — должны быть оба файла. Если чего-то нет, тогда и только тогда добавить его
 через `npx shadcn add <имя>`.
 
-- [ ] **Step 2: Написать падающие тесты**
+- [x] **Step 2: Написать падающие тесты**
 
 Создать `frontend/src/pages/passport/UnallocatedPanel.test.tsx`. Покрыть: разворот
 по шеврону, дерево с отступом по `depth` и суммой поддерева, поиск статьи по коду и
@@ -2249,12 +2249,12 @@ it("длинное наименование зажато и не отменяе�
 
 Суммы в тестах фронта — **синтетические** (фикстуры), не из реальной сметы.
 
-- [ ] **Step 3: Прогнать и убедиться, что падает**
+- [x] **Step 3: Прогнать и убедиться, что падает**
 
 Run: `cd frontend && npx vitest run src/pages/passport/UnallocatedPanel.test.tsx`
 Expected: FAIL — модуля нет.
 
-- [ ] **Step 4: Реализовать панель и разворот**
+- [x] **Step 4: Реализовать панель и разворот**
 
 `UnallocatedPanel.tsx` — своя сетка (дерево / сумма / действие), два блока:
 «разделы без статьи» (по убыванию `subtree_amount`, отступ по `depth`) и
@@ -2262,7 +2262,7 @@ Expected: FAIL — модуля нет.
 `Command` внутри `Popover` **по `passport.category_options`**, поиск по коду и
 названию: в справочнике 362 строки, и без поиска он неюзабелен.
 
-- [ ] **Step 4a: Доказать защиту снятием**
+- [x] **Step 4a: Доказать защиту снятием**
 
 Подменить источник вариантов на `passport.categories` → тест «в выборе статьи есть
 статьи, которых нет в видимом дереве» краснеет. Это ровно тот дефект, который нашло
@@ -2272,14 +2272,14 @@ Expected: FAIL — модуля нет.
 уже есть и уже помечен `data-print="hide"`), а под ней — строка с `colSpan` на всю
 ширину, куда монтируется панель.
 
-- [ ] **Step 5: Прогнать**
+- [x] **Step 5: Прогнать**
 
 ```bash
 cd frontend && npx vitest run src/pages/passport && npx tsc --noEmit && npx eslint src
 ```
 Expected: PASS, существующие тесты паспорта не ослаблены.
 
-- [ ] **Step 6: Коммит**
+- [x] **Step 6: Коммит**
 
 ```bash
 git add frontend/src/pages/passport frontend/src/components/ui
