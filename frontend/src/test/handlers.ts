@@ -75,6 +75,13 @@ interface HandlerState {
    * карточки у вызывающего). `null` — отдавать фикстуру как есть.
    */
   contractCardEstimatesOverride: EstimateRow[] | null;
+  /**
+   * Заваливает `GET /contracts/:id` 500-й ошибкой, когда `true` (находка
+   * ревью PR #16, finding 3): рефетч карточки на 409 обязан провалиться, а не
+   * молча вернуть фикстуру, — так тест видит именно ветку `isError`, а не
+   * успешный ответ.
+   */
+  contractCardFails: boolean;
 }
 
 export const handlerState: HandlerState = {
@@ -91,6 +98,7 @@ export const handlerState: HandlerState = {
   positionsPendingReview: 0,
   lastReportRequest: null,
   contractCardEstimatesOverride: null,
+  contractCardFails: false,
 };
 
 export function resetHandlerState() {
@@ -107,6 +115,7 @@ export function resetHandlerState() {
   handlerState.positionsPendingReview = 0;
   handlerState.lastReportRequest = null;
   handlerState.contractCardEstimatesOverride = null;
+  handlerState.contractCardFails = false;
 }
 
 function page<T>(items: T[]) {
@@ -446,6 +455,12 @@ export const handlers = [
   http.get("/api/v1/contracts/:id", ({ params }) => {
     if (Number(params.id) !== sampleContractCard.id) {
       return HttpResponse.json({ detail: "Договор не найден." }, { status: 404 });
+    }
+    if (handlerState.contractCardFails) {
+      return HttpResponse.json(
+        { detail: "Не удалось загрузить карточку договора." },
+        { status: 500 }
+      );
     }
     if (handlerState.contractCardEstimatesOverride === null) {
       return HttpResponse.json(sampleContractCard);

@@ -262,7 +262,7 @@ export default function ContractCardPage() {
         </TabsContent>
 
         <TabsContent value="upload" className="mt-4">
-          <EstimateUploadPanel contractId={contract.id} estimates={contract.estimates} />
+          <EstimateUploadPanel contractId={contract.id} />
         </TabsContent>
 
         <TabsContent value="history" className="mt-4">

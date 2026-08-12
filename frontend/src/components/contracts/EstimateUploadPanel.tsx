@@ -54,15 +54,17 @@ function isRunning(status: ImportJobStatus): boolean {
 
 interface EstimateUploadPanelProps {
   contractId: number;
-  /**
-   * Сметы договора — та же строка, что карточка уже загрузила `useContract`
-   * (спека §2.9 п. 2, задача 6). Нужна ради `category_overrides_count`
-   * ЗАМЕНЯЕМОЙ пары: паспорт для этого не годится (он всегда про смету с
-   * `amendment_no IS NULL`, а заменить можно любое допсоглашение), а второй
-   * запрос карточка не делает — этот список у неё уже есть.
-   */
-  estimates: EstimateRow[];
 }
+
+// Раньше здесь был проп `estimates` (карточка договора, которую уже загрузил
+// родитель) — панель брала из него `category_overrides_count` ЗАМЕНЯЕМОЙ пары
+// для диалога (§2.9 п. 2). Находка ревью PR #16 (finding 3) закрыла на нём
+// последнюю дверь: панель сама держит `useContract` и на 409 ждёт СВЕЖИЙ
+// ответ сервера, а числу из чужого пропа — как и устаревшему кэшу — доверять
+// нельзя (не только «может устареть», а именно «непроверено»). Как только
+// фолбэк на проп убрали, у пропа не осталось ни одного читателя — он снят
+// целиком, а не оставлен неиспользуемым ради формы: у карточки договора
+// (`ContractCardPage.tsx`) он тоже снят.
 
 /** Решений, сгорающих вместе со сметой пары `amendmentNo` — 0, если пары нет
  * в списке или решений на ней не было. */
@@ -82,7 +84,7 @@ function lostDecisionsFor(estimates: EstimateRow[], amendmentNo: number | null):
  * * `409` — не ошибка, а развилка «файл другой, нужна замена». Замена — право
  *   `admin` (§5), поэтому у `member` предложения заменить нет вовсе.
  */
-export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPanelProps) {
+export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
 
@@ -93,14 +95,11 @@ export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPan
   // инпута при показе диалога: пара, которую увидит подтверждение, обязана
   // быть той же самой, что дала 409, — а не тем, что пользователь успел
   // подправить в поле, пока диалог уже открыт. `estimates` заморожен там же и
-  // по той же причине, но со своей оговоркой (находка ревью PR #16): проп
-  // `estimates` — это карточка договора, которую загрузил РОДИТЕЛЬ, а
-  // мутации разноса (`useSetCategoryOverride`/`useClearCategoryOverride`)
-  // инвалидируют запрос ПАСПОРТА, не карточки — на момент 409 проп мог
-  // устареть или просто не совпасть с тем, что держит сервер (другая вкладка,
-  // другой пользователь). Поэтому в `conflict.estimates` попадает НЕ проп, а
-  // результат явного рефетча карточки, дождавшийся ответа сервера ДО того,
-  // как диалог открылся, — см. `send` ниже.
+  // по той же причине, но источник у него ЕДИНСТВЕННЫЙ (находка ревью PR #16,
+  // finding 2а и 3): результат явного рефетча карточки на 409, дождавшийся
+  // ответа сервера ДО того, как диалог открылся, — см. `send` ниже. Диалог
+  // открывается ТОЛЬКО когда этот рефетч успешен; фолбэка на кэш или на что
+  // бы то ни было ещё здесь нет и не должно быть.
   const [conflict, setConflict] = useState<{
     file: File;
     detail: string;
@@ -155,7 +154,25 @@ export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPan
         // что успел закэшировать `useContract` до этого 409. Диалог не
         // открывается на заведомо устаревшем счёте.
         const fresh = await contractQ.refetch();
-        setConflict({ file, detail, amendmentNo, estimates: fresh.data?.estimates ?? estimates });
+        // Находка ревью (finding 3): в TanStack Query v5 `refetch()` НЕ
+        // бросает по умолчанию (`throwOnError: false`) — упавший запрос
+        // спокойно резолвится с `isError: true`, а `data` при этом держит
+        // ПОСЛЕДНЕЕ УСПЕШНОЕ значение (устаревшее) либо вовсе `undefined`,
+        // если успеха не было НИКОГДА. `fresh.data?.estimates ?? estimates`
+        // тогда подставил бы в диалог непроверенное число одним из двух
+        // путей — оба хуже отсутствия диалога: обязательство спеки §2.9 —
+        // объявить утрату ДО неё, а непроверенный счёт способен её только
+        // ЗАНИЗИТЬ молча. Поэтому при ошибке или отсутствии данных диалог
+        // не открывается вовсе — отказ идёт через `rejection` и явно зовёт
+        // повторить загрузку, чтобы аналитик не остался в тупике.
+        if (fresh.isError || fresh.data === undefined) {
+          setRejection(
+            "Смета уже загружена, но проверить текущее число ручных решений по ней " +
+              "не удалось — замена сейчас не предлагается. Повторите загрузку."
+          );
+          return;
+        }
+        setConflict({ file, detail, amendmentNo, estimates: fresh.data.estimates });
         return;
       }
       setRejection(detail);
@@ -195,7 +212,17 @@ export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPan
       )}
 
       {rejection && (
-        <p role="alert" className="flex items-start gap-2 text-sm text-danger-text">
+        // `data-testid` рядом с ролью — не дубль: открытый `AlertDialog`
+        // модален и помечает фон `aria-hidden`, из-за чего запрос по РОЛИ
+        // перестаёт видеть этот текст ровно тогда, когда диалог всё-таки
+        // открылся. Тест на упавший рефетч обязан различать «отказа нет» и
+        // «отказ есть, но его накрыл диалог», иначе главное утверждение —
+        // об отсутствии диалога — недостижимо (см. комментарий в тесте).
+        <p
+          data-testid="upload-rejection"
+          role="alert"
+          className="flex items-start gap-2 text-sm text-danger-text"
+        >
           <AlertTriangle className="mt-0.5 size-4 shrink-0" />
           {rejection}
         </p>
