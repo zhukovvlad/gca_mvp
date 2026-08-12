@@ -17,7 +17,7 @@ import {
   sampleMatrixCellDetail,
   sampleProjectPassport,
 } from "./fixtures";
-import type { ImportJobStatus, ProjectPassport } from "@/types/domain";
+import type { EstimateRow, ImportJobStatus, ProjectPassport } from "@/types/domain";
 
 /**
  * Мутируемое состояние обработчиков. Сбрасывается между тестами через
@@ -68,6 +68,13 @@ interface HandlerState {
   positionsPendingReview: number;
   /** Последний запрос выгрузки: по нему тест проверяет, что фильтры доехали. */
   lastReportRequest: { report: string; params: Record<string, string> } | null;
+  /**
+   * Переопределяет `estimates[]` ответа `GET /contracts/:id`, когда задано
+   * (находка ревью PR #16 — счёт решений в диалоге замены обязан быть тем,
+   * что сервер держит В МОМЕНТ конфликта, а не тем, что застряло в проп-кэше
+   * карточки у вызывающего). `null` — отдавать фикстуру как есть.
+   */
+  contractCardEstimatesOverride: EstimateRow[] | null;
 }
 
 export const handlerState: HandlerState = {
@@ -83,6 +90,7 @@ export const handlerState: HandlerState = {
   matrixOutcome: "rows",
   positionsPendingReview: 0,
   lastReportRequest: null,
+  contractCardEstimatesOverride: null,
 };
 
 export function resetHandlerState() {
@@ -98,6 +106,7 @@ export function resetHandlerState() {
   handlerState.matrixOutcome = "rows";
   handlerState.positionsPendingReview = 0;
   handlerState.lastReportRequest = null;
+  handlerState.contractCardEstimatesOverride = null;
 }
 
 function page<T>(items: T[]) {
@@ -438,7 +447,13 @@ export const handlers = [
     if (Number(params.id) !== sampleContractCard.id) {
       return HttpResponse.json({ detail: "Договор не найден." }, { status: 404 });
     }
-    return HttpResponse.json(sampleContractCard);
+    if (handlerState.contractCardEstimatesOverride === null) {
+      return HttpResponse.json(sampleContractCard);
+    }
+    return HttpResponse.json({
+      ...sampleContractCard,
+      estimates: handlerState.contractCardEstimatesOverride,
+    });
   }),
   http.post("/api/v1/contracts", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;

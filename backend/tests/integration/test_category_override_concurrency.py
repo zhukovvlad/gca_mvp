@@ -47,7 +47,16 @@ import time
 import pytest
 import sqlalchemy as sa
 
-from models import EstimateCategoryOverride, Lot, PositionItem, Proposal, UserRole, WorkCategory
+from models import (
+    Contract,
+    Estimate,
+    EstimateCategoryOverride,
+    Lot,
+    PositionItem,
+    Proposal,
+    UserRole,
+    WorkCategory,
+)
 from services.category_override import set_override
 from services.category_resolution import CATEGORY_SOURCE_MANUAL, CategoryResolver
 from services.estimate_import import import_estimate
@@ -264,3 +273,183 @@ class TestConcurrentDecisions:
             assert rows[scene.subchapter_a_id] == (scene.category_a, CATEGORY_SOURCE_MANUAL)
             assert rows[scene.chapter_b_id] == (scene.category_b, CATEGORY_SOURCE_MANUAL)
             assert rows[scene.subchapter_b_id] == (scene.category_b, CATEGORY_SOURCE_MANUAL)
+
+
+@pytest.fixture
+def replace_scene(committing_db, committing_factories, committing_session_factory):
+    """Смета с ОДНИМ разделом без статьи — цель решения, которое конкурирует с
+    заменой этой же сметы (находка ревью PR #16, спека разноса §2.9 п.1,
+    §1.8)."""
+    contract = committing_factories.ContractFactory.create()
+    committing_db.flush()
+    resolver = UnitResolver(committing_db)
+    outcome = import_estimate(
+        committing_db,
+        contract=contract,
+        amendment_no=None,
+        data=payload_for(
+            contract,
+            [position(job_title="Раздел без статьи", is_chapter=True, chapter_number="1")],
+        ),
+        parser_version="1.0.0",
+        import_job_id=None,
+        replace=False,
+        unit_resolver=resolver,
+        category_resolver=CategoryResolver.from_db(committing_db),
+    )
+
+    admin = committing_factories.UserFactory.create(role=UserRole.admin)
+    used_as_parent = sa.select(WorkCategory.parent_id).where(WorkCategory.parent_id.is_not(None))
+    category_id = committing_db.execute(
+        sa.select(WorkCategory.id)
+        .where(WorkCategory.id.not_in(used_as_parent))
+        .order_by(WorkCategory.sort_order)
+        .limit(1)
+    ).scalar_one()
+
+    committing_db.commit()
+
+    chapter_id = committing_db.execute(
+        sa.select(PositionItem.id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == outcome.estimate_id, PositionItem.is_chapter.is_(True))
+    ).scalar_one()
+
+    class Scene:
+        session_factory = committing_session_factory
+        contract_id = contract.id
+        old_estimate_id = outcome.estimate_id
+        chapter_id_ = chapter_id
+        category_id_ = category_id
+        admin_id = admin.id
+
+    return Scene()
+
+
+class TestReplaceRaceWithDecision:
+    """Находка ревью PR #16 (спека разноса §2.9 п.1, §1.8, §2.5).
+
+    До фикса `_replace_existing` считал утраченные решения ДО какой-либо
+    блокировки строки сметы: `select(Estimate.id, Estimate.created_at)` шёл
+    без `with_for_update()`, а лок брала только сама `delete(Estimate)` —
+    неявно и слишком поздно. Решение, вставленное и закоммиченное сессией B
+    между чтением счёта и `delete`, в счёт не попадало: `DELETE` каскадом
+    уносил его материализацию молча, а «Утрачено ручных решений...» в
+    warnings не появлялось вовсе — ровно то, что спека §2.9 объявляет
+    недопустимым.
+
+    Тест ставит решение ПЕРВЫМ в очередь на лок строки сметы: сессия B держит
+    `set_override` незакоммиченным (лок взят, строка решения вставлена,
+    коммита нет), сессия A запускает `import_estimate(replace=True)` и
+    обязана встать в очередь за тем же локом. Без фикса `_replace_existing`
+    лока при первом `SELECT` не берёт — блокировка происходит позже, на самом
+    `DELETE` (та же строка сметы, но уже ПОСЛЕ того, как счёт уже прочитан
+    нулём), и итоговое `warnings` эту находку не переживает: ассерт по тексту
+    предупреждения красный именно и только в этом случае. С фиксом лок берёт
+    сам `SELECT`, поэтому замена дожидается коммита решения ДО чтения счёта,
+    и правильное число (1) попадает в предупреждение до того, как решение
+    уедет каскадом.
+    """
+
+    def test_replace_waits_for_uncommitted_decision_and_counts_it(self, replace_scene):
+        scene = replace_scene
+        decision_written = threading.Event()
+        release_decision = threading.Event()
+        decision_outcome: dict[str, object] = {}
+        replace_outcome: dict[str, object] = {}
+
+        def decision_operator():
+            with scene.session_factory() as db2:
+                try:
+                    set_override(
+                        db2,
+                        estimate_id=scene.old_estimate_id,
+                        position_item_id=scene.chapter_id_,
+                        work_category_id=scene.category_id_,
+                        note=None,
+                        user_id=scene.admin_id,
+                    )
+                    decision_written.set()
+                    assert release_decision.wait(timeout=15), (
+                        "решение не получило сигнал на коммит"
+                    )
+                    db2.commit()
+                    decision_outcome["done"] = True
+                except Exception as exc:  # pragma: no cover — диагностика
+                    decision_written.set()
+                    db2.rollback()
+                    decision_outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+        decision_thread = threading.Thread(target=decision_operator, daemon=True)
+        decision_thread.start()
+        assert decision_written.wait(timeout=10)
+        assert "error" not in decision_outcome, decision_outcome
+
+        with scene.session_factory() as db1:
+            contract = db1.get(Contract, scene.contract_id)
+
+            def replace_operator():
+                try:
+                    replace_outcome["result"] = import_estimate(
+                        db1,
+                        contract=contract,
+                        amendment_no=None,
+                        data=payload_for(
+                            contract,
+                            [
+                                position(
+                                    job_title="Новый раздел",
+                                    is_chapter=True,
+                                    chapter_number="1",
+                                )
+                            ],
+                        ),
+                        parser_version="1.0.0",
+                        import_job_id=None,
+                        replace=True,
+                        unit_resolver=UnitResolver(db1),
+                        category_resolver=CategoryResolver.from_db(db1),
+                    )
+                except Exception as exc:  # pragma: no cover — диагностика
+                    replace_outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+            replace_thread = threading.Thread(target=replace_operator, daemon=True)
+            replace_thread.start()
+
+            # МЕХАНИЗМ: замена обязана встать на ожидание лока строки сметы,
+            # который держит незакоммиченное решение. Без фикса блокировка
+            # всё равно наступит (на `DELETE`), но случится ПОЗЖЕ, чем счёт
+            # решений уже прочитан, — этот ассерт про сам факт очереди, а не
+            # про то, где именно она возникла.
+            assert _wait_until_a_backend_blocks(scene.session_factory), (
+                "замена не встала на ожидание лока — решение её не блокирует"
+            )
+            release_decision.set()
+
+            replace_thread.join(timeout=20)
+            assert not replace_thread.is_alive()
+            assert "error" not in replace_outcome, replace_outcome
+
+            db1.commit()
+
+        decision_thread.join(timeout=20)
+        assert not decision_thread.is_alive()
+        assert decision_outcome == {"done": True}, decision_outcome
+
+        result = replace_outcome["result"]
+        # МЕРА: без фикса счёт решений читается МИМО лока и остаётся нулевым —
+        # этот ассерт красный именно в этом случае, независимо от того, что
+        # блокировка (проверенная выше) всё равно произошла на `DELETE`.
+        assert any(
+            "Утрачено ручных решений о статьях: 1" in w for w in result.warnings
+        ), result.warnings
+
+        with scene.session_factory() as check:
+            assert check.get(Estimate, scene.old_estimate_id) is None
+            remaining = check.execute(
+                sa.select(sa.func.count())
+                .select_from(EstimateCategoryOverride)
+                .where(EstimateCategoryOverride.position_item_id == scene.chapter_id_)
+            ).scalar_one()
+            assert remaining == 0

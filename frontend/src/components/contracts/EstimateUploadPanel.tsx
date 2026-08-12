@@ -18,7 +18,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCurrentUser } from "@/hooks/useAuth";
-import { apiErrorDetail, apiErrorStatus, useImportJob, useUploadEstimate } from "@/services/queries";
+import {
+  apiErrorDetail,
+  apiErrorStatus,
+  useContract,
+  useImportJob,
+  useUploadEstimate,
+} from "@/services/queries";
 import type { EstimateRow, ImportJob, ImportJobStatus } from "@/types/domain";
 
 const XLSX_ACCEPT = {
@@ -86,18 +92,28 @@ export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPan
   // `amendmentNo` заморожен в момент конфликта, а не читается заново из
   // инпута при показе диалога: пара, которую увидит подтверждение, обязана
   // быть той же самой, что дала 409, — а не тем, что пользователь успел
-  // подправить в поле, пока диалог уже открыт.
+  // подправить в поле, пока диалог уже открыт. `estimates` заморожен там же и
+  // по той же причине, но со своей оговоркой (находка ревью PR #16): проп
+  // `estimates` — это карточка договора, которую загрузил РОДИТЕЛЬ, а
+  // мутации разноса (`useSetCategoryOverride`/`useClearCategoryOverride`)
+  // инвалидируют запрос ПАСПОРТА, не карточки — на момент 409 проп мог
+  // устареть или просто не совпасть с тем, что держит сервер (другая вкладка,
+  // другой пользователь). Поэтому в `conflict.estimates` попадает НЕ проп, а
+  // результат явного рефетча карточки, дождавшийся ответа сервера ДО того,
+  // как диалог открылся, — см. `send` ниже.
   const [conflict, setConflict] = useState<{
     file: File;
     detail: string;
     amendmentNo: number | null;
+    estimates: EstimateRow[];
   } | null>(null);
   const [rejection, setRejection] = useState<string | null>(null);
 
   const upload = useUploadEstimate();
   const jobQ = useImportJob(jobId, contractId);
   const job: ImportJob | undefined = jobQ.data;
-  const lostOnReplace = conflict ? lostDecisionsFor(estimates, conflict.amendmentNo) : 0;
+  const contractQ = useContract(contractId);
+  const lostOnReplace = conflict ? lostDecisionsFor(conflict.estimates, conflict.amendmentNo) : 0;
 
   function parsedAmendment(): number | null {
     const raw = amendmentNo.trim();
@@ -133,7 +149,13 @@ export function EstimateUploadPanel({ contractId, estimates }: EstimateUploadPan
       const status = apiErrorStatus(error);
       const detail = apiErrorDetail(error) ?? "Не удалось загрузить файл.";
       if (status === 409 && isAdmin && !replace) {
-        setConflict({ file, detail, amendmentNo });
+        // Число решений в диалоге обязано быть тем, что сервер держит В
+        // МОМЕНТ конфликта (находка ревью PR #16): рефетч карточки — и
+        // ДОЖДАТЬСЯ его — ПЕРЕД открытием диалога, а не подстановка того,
+        // что успел закэшировать `useContract` до этого 409. Диалог не
+        // открывается на заведомо устаревшем счёте.
+        const fresh = await contractQ.refetch();
+        setConflict({ file, detail, amendmentNo, estimates: fresh.data?.estimates ?? estimates });
         return;
       }
       setRejection(detail);

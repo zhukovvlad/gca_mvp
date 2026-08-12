@@ -16,6 +16,15 @@ import type { EstimateRow } from "@/types/domain";
  * форма теста: он не подставляет счётчик пропом напрямую, а доводит панель до
  * настоящего конфликта (drop → 409 → диалог) и проверяет, что предупреждение
  * внутри диалога взяло число ИМЕННО той пары, которую заменяют.
+ *
+ * После находки ревью PR #16 источник этого числа — рефетч карточки на 409
+ * (§2.9 п. 2), а не проп `estimates` напрямую: панель сама вызывает
+ * `useContract` и ждёт ответа `GET /contracts/:id` ПЕРЕД открытием диалога.
+ * `renderUploadPanel` поэтому держит ДВА независимых источника — `estimates`
+ * (проп, как его увидел бы компонент от родителя) и `serverEstimates` (что
+ * мокнутый сервер отдаёт на `GET /contracts/:id`), по умолчанию равные, чтобы
+ * существующие тесты этого файла не знали о разнице. Сценарий находки задаёт
+ * их РАЗНЫМИ намеренно — см. `serverEstimates` в третьем блоке ниже.
  */
 
 /** Кладёт файл в dropzone: сам input скрыт, поэтому ищем его по типу (тот же
@@ -51,15 +60,23 @@ function estimateRow(
  * `replacing.amendment_no` — то, что пользователь вводит в поле ДО сброса
  * файла: панель узнаёт номер допсоглашения именно оттуда (`parsedAmendment`),
  * а не из пропа — пропа с id заменяемой сметы у панели нет и не может быть.
+ *
+ * `serverEstimates` — ответ мокнутого `GET /contracts/:id` на момент 409;
+ * по умолчанию равен `estimates` (проп и сервер согласны), чтобы тесты, не
+ * знающие о рефетче на конфликте, продолжали проверять то же самое, что и
+ * раньше. Тест на находку ревью передаёт его отдельно.
  */
 async function renderUploadPanel({
   estimates,
   replacing,
+  serverEstimates = estimates,
 }: {
   estimates: EstimateRow[];
   replacing: { amendment_no: number | null };
+  serverEstimates?: EstimateRow[];
 }) {
   handlerState.uploadOutcome = "conflict";
+  handlerState.contractCardEstimatesOverride = serverEstimates;
   const user = userEvent.setup();
   renderWithProviders(<EstimateUploadPanel contractId={100} estimates={estimates} />);
 
@@ -99,5 +116,27 @@ describe("Форма замены предупреждает об утрате �
     });
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("Число в диалоге замены — с сервера на момент конфликта, не из устаревшего кэша (находка ревью PR #16)", () => {
+  it("409 обязан обновить число ПЕРЕД тем, как открыть диалог, а не показать устаревший 0 из пропа", async () => {
+    // `estimates` (проп) — то же самое, что ЗАМЕНЯЕМАЯ панель получила бы от
+    // родителя, у которого карточка договора закэширована со старым 0
+    // (решение только что появилось в другой вкладке/у другого пользователя,
+    // и мутации разноса инвалидируют запрос ПАСПОРТА, не карточки, до фикса
+    // finding 2б). `serverEstimates` — то, что сервер на `GET /contracts/:id`
+    // честно отдаёт В МОМЕНТ конфликта: 3, а не 0. Без фикса finding 2а
+    // панель ни разу не рефетчит карточку и подставляет в диалог устаревший 0
+    // из пропа, из-за чего условие `lostOnReplace > 0` ложно и диалог
+    // предупреждения не покажет ВООБЩЕ — то есть `getByRole("alert")` ниже
+    // упадёт «не найдено», а не только с неверным числом.
+    await renderUploadPanel({
+      estimates: [estimateRow({ amendment_no: null, category_overrides_count: 0 })],
+      serverEstimates: [estimateRow({ amendment_no: null, category_overrides_count: 3 })],
+      replacing: { amendment_no: null },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("потеряно: 3");
   });
 });

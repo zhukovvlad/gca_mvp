@@ -587,13 +587,25 @@ def _replace_existing(
     if not replace:
         return None
 
+    # `with_for_update()` ЗДЕСЬ, а не только на самом `delete` ниже (находка
+    # ревью PR #16): без него счёт утраченных решений идёт МИМО лока строки
+    # сметы, а лок неявно берёт лишь `DELETE`, то есть слишком поздно —
+    # решение, вставленное и закоммиченное сессией B в промежутке между этим
+    # чтением и `delete`, в счёт не попадёт, а `DELETE` унесёт его каскадом
+    # молча (спека §2.9). Лок здесь сериализует замену против
+    # `_lock_estimate` в `services/category_override.py` на ТОЙ ЖЕ строке
+    # сметы (спека §1.8, §2.5): кто раньше встал в очередь на лок, тот и
+    # читает счёт первым, но счёт при этом ВСЕГДА читается под локом, а не
+    # мимо него.
     row = db.execute(
-        select(Estimate.id, Estimate.created_at).where(
+        select(Estimate.id, Estimate.created_at)
+        .where(
             Estimate.contract_id == contract_id,
             Estimate.amendment_no.is_(None)
             if amendment_no is None
             else Estimate.amendment_no == amendment_no,
         )
+        .with_for_update()
     ).one_or_none()
     if row is None:
         return None

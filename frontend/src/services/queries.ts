@@ -638,6 +638,11 @@ export function useSetCategoryOverride() {
     mutationFn: (input: SetCategoryOverrideInput) => analyticsApi.setCategoryOverride(input),
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
+      // Карточка договора несёт свой СОБСТВЕННЫЙ счёт `category_overrides_count`
+      // на смету (задача 6, `EstimateUploadPanel`), а не производную от паспорта —
+      // без этой инвалидации она оставалась бы устаревшей для ЛЮБОГО потребителя
+      // `qk.contracts.card`, не только для формы замены (находка ревью PR #16).
+      qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
     },
     onError: toastApiError,
   });
@@ -650,6 +655,7 @@ export function useClearCategoryOverride() {
     mutationFn: (input: ClearCategoryOverrideInput) => analyticsApi.clearCategoryOverride(input),
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
+      qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
     },
     onError: toastApiError,
   });

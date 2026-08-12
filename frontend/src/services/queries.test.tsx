@@ -16,7 +16,12 @@ import {
   useUpdateRateClass,
 } from "./queries";
 import { qk } from "./queryKeys";
-import { sampleContracts, sampleImportJobs, sampleProjectPassport } from "@/test/fixtures";
+import {
+  sampleContractCard,
+  sampleContracts,
+  sampleImportJobs,
+  sampleProjectPassport,
+} from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 
@@ -283,18 +288,32 @@ describe("useProjectPassport: переиспользование корня па
  * `qk.passport.project(contractId)` выбран НАМЕРЕННО, чтобы правка одного
  * договора не роняла кэш паспортов остальных, — и это ровно то, что первая
  * половина проверки одна доказать не может.
+ *
+ * Карточка договора (`qk.contracts.card`) проверяется в тех же тестах, а не
+ * отдельным блоком (находка ревью PR #16): `EstimateUploadPanel` считает
+ * `category_overrides_count` из ЭТОГО запроса, а не из паспорта, — без
+ * инвалидации карточка оставалась бы устаревшей для формы замены и для
+ * любого другого потребителя `useContract`, хотя паспорт уже обновился.
  */
 describe("useSetCategoryOverride / useClearCategoryOverride: инвалидация паспорта договора", () => {
-  it("после назначения статьи паспорт ЭТОГО договора помечается устаревшим, а чужой — нет", async () => {
+  it("после назначения статьи паспорт и карточка ЭТОГО договора помечаются устаревшими, а чужие — нет", async () => {
     const queryClient = createTestQueryClient();
     const passportKey = qk.passport.project(5);
     const otherPassportKey = qk.passport.project(99);
+    const cardKey = qk.contracts.card(5);
+    const otherCardKey = qk.contracts.card(99);
     queryClient.setQueryDefaults(passportKey, { gcTime: 60_000 });
     queryClient.setQueryDefaults(otherPassportKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(cardKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(otherCardKey, { gcTime: 60_000 });
     queryClient.setQueryData(passportKey, sampleProjectPassport);
     queryClient.setQueryData(otherPassportKey, sampleProjectPassport);
+    queryClient.setQueryData(cardKey, sampleContractCard);
+    queryClient.setQueryData(otherCardKey, sampleContractCard);
     expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(cardKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
 
     const { result } = renderHook(() => useSetCategoryOverride(), {
       wrapper: ({ children }) => (
@@ -312,20 +331,30 @@ describe("useSetCategoryOverride / useClearCategoryOverride: инвалидац�
     });
 
     expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(cardKey)?.isInvalidated).toBe(true);
     // Договор 99 ни при чём — его кэш не должен шевельнуться.
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
   });
 
-  it("после снятия ручного решения паспорт ЭТОГО договора помечается устаревшим, а чужой — нет", async () => {
+  it("после снятия ручного решения паспорт и карточка ЭТОГО договора помечаются устаревшими, а чужие — нет", async () => {
     const queryClient = createTestQueryClient();
     const passportKey = qk.passport.project(7);
     const otherPassportKey = qk.passport.project(99);
+    const cardKey = qk.contracts.card(7);
+    const otherCardKey = qk.contracts.card(99);
     queryClient.setQueryDefaults(passportKey, { gcTime: 60_000 });
     queryClient.setQueryDefaults(otherPassportKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(cardKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(otherCardKey, { gcTime: 60_000 });
     queryClient.setQueryData(passportKey, sampleProjectPassport);
     queryClient.setQueryData(otherPassportKey, sampleProjectPassport);
+    queryClient.setQueryData(cardKey, sampleContractCard);
+    queryClient.setQueryData(otherCardKey, sampleContractCard);
     expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(cardKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
 
     const { result } = renderHook(() => useClearCategoryOverride(), {
       wrapper: ({ children }) => (
@@ -338,6 +367,8 @@ describe("useSetCategoryOverride / useClearCategoryOverride: инвалидац�
     });
 
     expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(cardKey)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
   });
 });
