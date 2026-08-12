@@ -475,6 +475,34 @@ describe("Панель-верстак разноса: разнесено вру�
     expect(remove5005).toHaveAttribute("data-testid", "manual-remove-5005");
     expect(remove5004).not.toBe(remove5005);
   });
+
+  it("сумма записи о ручном решении — subtree_amount, а не amount (задача 9)", () => {
+    /*
+      Задача 8 оставила testid `manual-amount-{id}` без единого теста: в
+      фикстуре у записи 5004 amount и subtree_amount СОВПАДАЮТ ("60000.00" оба),
+      поэтому подмена одного поля на другое в `ManualAssignmentRow` ничего не
+      изменила бы на экране (task-9-controller-notes). Здесь — локальная
+      надстройка, где они различаются: `amount` — файловая свёртка ТОЛЬКО
+      собственных строк раздела, `subtree_amount` — файловая свёртка всего его
+      поддерева (доккомент `ProjectPassportManualAssignment` в domain.ts). Показ
+      обязан нести именно ВТОРОЕ число — цену решения по всему поддереву.
+    */
+    const passportWithDifferingSums: ProjectPassport = {
+      ...sampleProjectPassport,
+      manual_assignments: [
+        {
+          ...sampleProjectPassport.manual_assignments[0],
+          amount: "10000.00",
+          subtree_amount: "60000.00",
+        },
+      ],
+    };
+    renderPanel(passportWithDifferingSums);
+
+    const amountCell = screen.getByTestId("manual-amount-5004");
+    expect(amountCell).toHaveTextContent("60 000,00 ₽");
+    expect(amountCell).not.toHaveTextContent("10 000,00 ₽");
+  });
 });
 
 describe("Панель-верстак разноса: зажим длинного наименования", () => {
