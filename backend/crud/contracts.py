@@ -37,6 +37,7 @@ from models import (
     Contract,
     Contractor,
     Estimate,
+    EstimateCategoryOverride,
     ImportJob,
     Lot,
     ObjectModel,
@@ -159,10 +160,17 @@ def get_contract(db: Session, contract_id: int) -> Contract:
 
 
 def _estimates_of(db: Session, contract_id: int) -> list[dict]:
-    """Сметы договора со числом позиций, одним запросом.
+    """Сметы договора со числом позиций и числом решений о статьях, одним запросом.
 
-    Число позиций считается коррелированным подзапросом через лоты и
-    предложение: в карточке смет единицы, а дозапрос на каждую дал бы N+1.
+    Оба счётчика — коррелированные подзапросы через лоты и предложение: в
+    карточке смет единицы, а дозапрос на каждую дал бы N+1.
+
+    `category_overrides_count` — ПОСМЕТНЫЙ, не по договору (задача 6):
+    форма замены на экране предупреждает об утрате решений ИМЕННО заменяемой
+    пары (contract_id, amendment_no), а паспорт для этого не годится — он
+    всегда про смету с `amendment_no IS NULL`, а заменить можно любое
+    допсоглашение. Число из паспорта относилось бы к другой паре и врало бы
+    тем убедительнее, чем больше у договора допсоглашений.
     """
     positions_count = (
         sa.select(sa.func.count())
@@ -172,8 +180,17 @@ def _estimates_of(db: Session, contract_id: int) -> list[dict]:
         .where(Lot.estimate_id == Estimate.id)
         .scalar_subquery()
     )
+    category_overrides_count = (
+        sa.select(sa.func.count())
+        .select_from(EstimateCategoryOverride)
+        .join(PositionItem, PositionItem.id == EstimateCategoryOverride.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == Estimate.id)
+        .scalar_subquery()
+    )
     rows = db.execute(
-        sa.select(Estimate, positions_count)
+        sa.select(Estimate, positions_count, category_overrides_count)
         .where(Estimate.contract_id == contract_id)
         # NULL (исходная смета) — первой: nulls first при возрастании.
         .order_by(Estimate.amendment_no.asc().nulls_first())
@@ -186,9 +203,10 @@ def _estimates_of(db: Session, contract_id: int) -> list[dict]:
             "data_prepared_on_date": iso(estimate.data_prepared_on_date),
             "import_job_id": estimate.import_job_id,
             "positions_count": count,
+            "category_overrides_count": overrides_count,
             "created_at": iso(estimate.created_at),
         }
-        for estimate, count in rows
+        for estimate, count, overrides_count in rows
     ]
 
 

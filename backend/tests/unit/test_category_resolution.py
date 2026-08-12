@@ -5,6 +5,7 @@ import pytest
 
 from services.category_resolution import (
     CATEGORY_SOURCE_FILE,
+    CATEGORY_SOURCE_MANUAL,
     CategoryRef,
     CategoryResolutionContractError,
     CategoryResolver,
@@ -487,3 +488,108 @@ class TestKeyContract:
         assert result.rows == {}
         assert result.warnings == []
         assert result.structure_disabled is False
+
+
+class TestOverrides:
+    """Приоритет решений (спека §2.1) и протекание источника вниз (§2.4)."""
+
+    def test_empty_overrides_change_nothing(self, resolver):
+        payload = rows(chapter("1", article="1. Подготовительные работы"), work(number="2"))
+        assert resolver.resolve_proposal(payload, {}) == resolver.resolve_proposal(payload)
+
+    def test_override_assigns_a_chapter_the_file_left_blank(self, resolver):
+        result = resolver.resolve_proposal(rows(chapter("14"), work(number="2")), {"1": 104})
+        assert result.rows["1"].work_category_id == 104
+        assert result.rows["1"].category_source == CATEGORY_SOURCE_MANUAL
+        assert result.counters.chapters_manual == 1
+        # Раздел несёт СВОЮ статью — просто не из файла; без этой строки удаление
+        # `own += 1` в ветке "manual" осталось бы незамеченным всем набором тестов.
+        assert result.counters.chapters_own == 1
+        assert result.counters.chapters_unassigned == 0
+        assert result.counters.positions_unassigned == 0
+
+    def test_override_beats_an_unreadable_code(self, resolver):
+        payload = rows(chapter("14", article="см. приложение"))
+        without = resolver.resolve_proposal(payload)
+        assert without.rows["1"].work_category_id is None
+        assert any("не читается" in w for w in without.warnings)
+
+        result = resolver.resolve_proposal(payload, {"1": 104})
+        assert result.rows["1"].work_category_id == 104
+        assert result.rows["1"].category_source == CATEGORY_SOURCE_MANUAL
+        # Клетку не читали — значит и о её нечитаемости не сообщаем.
+        assert not any("не читается" in w for w in result.warnings)
+
+    def test_override_beats_a_valid_file_article(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(chapter("1", article="1. Подготовительные работы")), {"1": 104}
+        )
+        assert result.rows["1"].work_category_id == 104
+        assert result.rows["1"].category_source == CATEGORY_SOURCE_MANUAL
+
+    def test_descendant_inherits_the_manual_source(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(chapter("14"), chapter("14.1", key_number="2"), work(number="3")),
+            {"1": 104},
+        )
+        assert result.rows["2"].work_category_id == 104
+        assert result.rows["2"].category_source == CATEGORY_SOURCE_MANUAL
+        # Оба раздела держатся на решении — счётчик по ЭФФЕКТИВНОМУ источнику.
+        assert result.counters.chapters_manual == 2
+
+    def test_own_valid_article_survives_a_manual_parent(self, resolver):
+        result = resolver.resolve_proposal(
+            rows(chapter("4"), chapter("4.1", article="4.1 Ж/Б конструкции", key_number="2")),
+            {"1": 101},
+        )
+        assert result.rows["1"].category_source == CATEGORY_SOURCE_MANUAL
+        assert result.rows["2"].work_category_id == 141
+        assert result.rows["2"].category_source == CATEGORY_SOURCE_FILE
+        assert result.counters.chapters_manual == 1
+
+    def test_own_unreadable_article_survives_a_manual_ancestor(self, resolver):
+        """Симметрично предыдущему: правило Ф3 держит и нечитаемый свой код."""
+        result = resolver.resolve_proposal(
+            rows(chapter("14"), chapter("14.1", article="см. приложение", key_number="2")),
+            {"1": 104},
+        )
+        assert result.rows["2"].work_category_id is None
+        assert result.rows["2"].category_source is None
+        assert any("не читается" in w for w in result.warnings)
+
+    def test_override_beats_would_be_inheritance_and_flows_into_its_subtree(self, resolver):
+        """Решение сильнее и наследования от уже размеченного предка (не только
+        файла и его собственной статьи), и протекает в собственное поддерево
+        раздела — от статьи-грандпредка не остаётся ничего.
+        """
+        result = resolver.resolve_proposal(
+            rows(
+                chapter("4", article="4. Возведение конструкций"),
+                chapter("4.1", key_number="2"),
+                chapter("4.1.2", key_number="3"),
+            ),
+            {"2": 172},
+        )
+        assert result.rows["2"].work_category_id == 172
+        assert result.rows["2"].category_source == CATEGORY_SOURCE_MANUAL
+        assert result.rows["3"].work_category_id == 172
+        assert result.rows["3"].category_source == CATEGORY_SOURCE_MANUAL
+
+    def test_removing_the_override_returns_the_chapter_to_unassigned(self, resolver):
+        payload = rows(chapter("14"), work(number="2"))
+        assert resolver.resolve_proposal(payload, {"1": 104}).rows["1"].work_category_id == 104
+        after = resolver.resolve_proposal(payload, {})
+        assert after.rows["1"].work_category_id is None
+        assert after.rows["1"].category_source is None
+        assert after.counters.chapters_manual == 0
+
+    def test_unknown_category_id_is_a_contract_error(self, resolver):
+        with pytest.raises(CategoryResolutionContractError, match="нет в справочнике"):
+            resolver.resolve_proposal(rows(chapter("14")), {"1": 999999})
+
+    def test_overrides_do_not_revive_a_disabled_structure(self, resolver):
+        # Номер раздела не разбирается -> структура гашена по всему предложению.
+        result = resolver.resolve_proposal(rows(chapter("14а")), {"1": 104})
+        assert result.structure_disabled is True
+        assert result.rows["1"].work_category_id is None
+        assert result.counters.chapters_manual == 0

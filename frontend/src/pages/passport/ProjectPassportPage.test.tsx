@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { delay, http, HttpResponse } from "msw";
@@ -462,7 +462,9 @@ describe("Паспорт проекта: таблица по статьям", ()
     withPassport((base) => ({
       ...base,
       categories: base.categories.map((c) =>
-        c.code === "04" ? { ...c, own_sections: [{ id: 1, number: "6.5", title: "Прочее" }] } : c
+        c.code === "04"
+          ? { ...c, own_sections: [{ id: 1, number: "6.5", title: "Прочее", source: "file" }] }
+          : c
       ),
     }));
     const user = userEvent.setup();
@@ -783,6 +785,488 @@ describe("Паспорт проекта: таблица по статьям", ()
 
     const cell = await screen.findByTestId("share-unallocated");
     expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
+});
+
+/**
+ * Пометка ручного разноса, печатная сноска, нулевое состояние (задача 9, спека
+ * §2.10, §5.5; ревью 1 — Ruling 1/2/3, findings 3-11).
+ *
+ * `sampleProjectPassport`: статья "10" («Прочие работы», id 14) несёт ЕДИНСТВЕННЫЙ
+ * `own_sections` с `source: "manual"` (id 3, «5.3 «Устройство эстакад»»); статья
+ * "04" несёт два `own_sections` c `source: "file"` — негативная половина обеих
+ * пометок. `manual_assignments` фикстуры несёт ОДНУ запись (5004); тесты сноски
+ * надстраивают вторую локально, а не правят общую фикстуру
+ * (task-9-controller-notes: «adding NEW fixtures… build them as local derivations»).
+ *
+ * **Две пометки «вручную», не одна (Ruling 1 ревью 1)**: на строке самой
+ * статьи (`row-cat-{code}`, рендерится всегда — печатается БЕЗ разворота) и в
+ * служебной строке `own_sections` (рендерится только при развороте, называет
+ * КОНКРЕТНЫЙ раздел). `expandable` статьи держит СТАРУЮ формулу (`hasChildren
+ * || hasExtras`, Ruling 2) — задача 9 больше не расширяет её условием
+ * `own_sections`, поэтому лист без детей и допработ (как статья "10") можно
+ * проверить только на строке; служебная строка с per-section бейджем
+ * проверяется на статье "04" с ЛОКАЛЬНО надстроенным третьим (ручным)
+ * `own_sections` — у "04" есть дети, и она разворачивается легитимно.
+ *
+ * Нулевое состояние и его граница — три ЛОКАЛЬНЫЕ надстройки `unallocated`
+ * ниже, каждая изолирующая РОВНО одно слагаемое предиката «всё разнесено»
+ * (`sections.length === 0 && rows_outside_structure === 0 && extras.length ===
+ * 0`), чтобы снятие любого одного слагаемого краснило ровно свой тест, а не
+ * маскировалось двумя другими (controller-notes).
+ */
+describe("Паспорт проекта: пометка ручного разноса, печатная сноска, нулевое состояние", () => {
+  // Тест 1 (Ruling 1: пометка обязана попадать на бумагу БЕЗ разворота узла —
+  // `index.css` не несёт печатного правила, которое разворачивало бы дерево;
+  // печатный слой только СКРЫВАЕТ элементы с `data-print="hide"`, ничего не
+  // раскрывает, поэтому единственная гарантированно печатаемая пометка — та,
+  // что стоит на всегда-рендерящейся строке статьи).
+  it("разнесённый вручную раздел помечен на строке статьи без разворота", async () => {
+    // Пометка ПЕЧАТАЕТСЯ: паспорт идёт в банк, и он не должен выдавать наше
+    // решение за содержимое файла. Статья "10" — единственная в фикстуре с
+    // source: "manual" (own_sections id 3) — и лист без детей/допработ:
+    // строка проверяется СРАЗУ, разворот здесь не требуется и не выполняется.
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const row = screen.getByTestId("row-cat-10");
+    const mark = within(row).getByText("вручную");
+    expect(mark).toBeInTheDocument();
+    // Ни сама пометка, ни один из её предков внутри строки не помечены
+    // data-print="hide" — тот же признак, что стережёт служебные элементы в
+    // describe("Паспорт проекта: печать") ниже.
+    expect(mark.closest('[data-print="hide"]')).toBeNull();
+  });
+
+  // Тест 2 (негативная половина обеих пометок; заведена сверх брифа решением
+  // исполнителя — controller-notes: «Without that half the badge would pass by
+  // being unconditional»).
+  it("файловая статья не несёт пометку «вручную» ни на строке, ни в служебной строке", async () => {
+    // Статья "04": оба own_sections — source: "file". Без этой проверки обе
+    // пометки прошли бы негативный сценарий, даже будь они безусловными.
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(within(screen.getByTestId("row-cat-04")).queryByText("вручную")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+    const caption = await screen.findByTestId("own-caption-04");
+    expect(within(caption).queryByText("вручную")).not.toBeInTheDocument();
+  });
+
+  // Тест 2б (Ruling 2: `expandable` больше не расширяется `own_sections`, и
+  // единственная фикстурная manual-запись сидит на листе "10" — служебную
+  // строку с ПЕР-SECTION бейджем поэтому проверяем на "04", локально
+  // надстроенной третьим, ручным разделом; у "04" есть дети, и она
+  // разворачивается легитимной, немодифицированной формулой).
+  it("разнесённый вручную раздел помечен и в служебной строке — по конкретному разделу", async () => {
+    const user = userEvent.setup();
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "04"
+          ? {
+              ...c,
+              own_sections: [
+                ...c.own_sections,
+                {
+                  id: 90,
+                  number: "4.3",
+                  title: "Раздел «Демонтаж перегородок фасада»",
+                  source: "manual" as const,
+                },
+              ],
+            }
+          : c
+      ),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    const section = await screen.findByTestId("own-section-manual-90");
+    expect(within(section).getByText("вручную")).toBeInTheDocument();
+    expect(section.getAttribute("data-print")).not.toBe("hide");
+  });
+
+  // Тест 3 (ревью 1, finding 11: `it.each` с ДВУМЯ разными длинами пинит
+  // печатаемое число к `manual_assignments.length`, а не просто к присутствию
+  // цифры — захардкоженная "2" раньше проходила бы тест столь же зелёным,
+  // потому что единственный прогон брал ровно два решения).
+  it.each([
+    { name: "одно решение (фикстура без надстроек) — печатается «1»", extra: false, expected: "1" },
+    { name: "два решения — печатается «2»", extra: true, expected: "2" },
+  ])("сноска называет число решений и не называет сумму: $name", async ({ extra, expected }) => {
+    if (extra) {
+      withPassport((base) => ({
+        ...base,
+        manual_assignments: [
+          ...base.manual_assignments,
+          {
+            ...base.manual_assignments[0],
+            position_item_id: 5005,
+            number: "5.4",
+            title: "Раздел «Устройство площадки»",
+          },
+        ],
+      }));
+    }
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const note = await screen.findByTestId("manual-footnote");
+    expect(note).toHaveTextContent(expected);
+    // Общей суммы в сноске быть не должно (спека §2.10): при вложенных решениях
+    // subtree_amount задваивается, а подсчёт по эффективному 'manual' потерял бы
+    // допработы, у которых category_source нет вовсе.
+    //
+    // Ревью 1, finding 11, вторая половина: старый guard (`/₽/`) ловил только
+    // сумму, напечатанную ЧЕРЕЗ MoneyCell (со знаком валюты). Decimal-строка,
+    // дописанная в текст напрямую («…: 2 (60000.00)»), знака валюты не несёт и
+    // проходила бы. Новый guard ловит форму денежной суммы саму по себе — цифра,
+    // затем разделитель дробной части, затем ровно два знака.
+    expect(note.textContent ?? "").not.toMatch(/\d[.,]\d\d(?!\d)/);
+    expect(note.textContent ?? "").not.toMatch(/₽/);
+    // Сноска ПЕЧАТАЕТСЯ — та же причина, что у бейджа «вручную» (паспорт уходит
+    // в банк и не должен скрывать, что часть статей — наше решение, а не файл).
+    // Без этой проверки случайный data-print="hide" на самой сноске молча снял
+    // бы её с бумаги, оставив экран выглядеть как прежде.
+    expect(note.getAttribute("data-print")).not.toBe("hide");
+  });
+
+  // Тест 4.
+  it("сноски нет вовсе, когда ручных решений нет", async () => {
+    withPassport((base) => ({ ...base, manual_assignments: [] }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.queryByTestId("manual-footnote")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Нулевой остаток, СОГЛАСОВАННЫЙ по деньгам (ревью 1, finding 7): предыдущая
+   * версия зануляла только `unallocated.*`, оставляя `totals.amount` равным
+   * "4700000.00" — суммой, которая по докстроке самой фикстуры (`fixtures.ts`)
+   * ВКЛЮЧАЕТ эти же 125 000 нераспределённого. Страница показывала бы «Итого
+   * по договору» на 125 000 больше суммы видимых строк — тот же класс дефекта
+   * («паспорт, который backend не может выдать»), просто переехавший со
+   * строки «Нераспределённое» на строку «Итого». `totals.amount`/`per_sqm`
+   * пересчитаны на сумму КОРНЕЙ без unallocated (4 700 000 − 125 000 =
+   * 4 575 000; per_sqm = 4 575 000 / 47 000 = area_total_sp фикстуры).
+   *
+   * `totals.positions_rows*` НЕ трогаются: derivация заявляет коэрентность
+   * ТОЛЬКО по деньгам, видимым рядом со строкой «Нераспределённое» (сумма
+   * строки и «Итого по договору») — этот тест их не читает, и заводить
+   * коэрентность там, где её никто не проверяет, значило бы гадать вслепую.
+   */
+  function withFullyAllocatedUnallocated(base: ProjectPassport): ProjectPassport {
+    return {
+      ...base,
+      totals: {
+        ...base.totals,
+        amount: "4575000.00",
+        per_sqm: "97.34042553191489361702127659",
+      },
+      unallocated: {
+        amount: "0.00",
+        rows: 0,
+        rows_priced: 0,
+        rows_not_finite: 0,
+        share_pct: "0",
+        per_sqm: "0",
+        chapters: 0,
+        rows_outside_structure: 0,
+        extras: [],
+        sections: [],
+      },
+    };
+  }
+
+  // Тест 5.
+  it("нулевое «Нераспределённое» выглядит как достигнутая цель", async () => {
+    withPassport(withFullyAllocatedUnallocated);
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const row = await screen.findByTestId("row-unallocated");
+    expect(row.className).not.toContain("warning");
+    expect(screen.getByTestId("unallocated-caption")).toHaveTextContent(
+      "все разделы сметы отнесены к статьям"
+    );
+    // Предупреждающий цвет стоит в ДВУХ местах — на строке и на её ячейках
+    // (controller-notes): условность только строки оставила бы предупреждающий
+    // текст внутри строки, которая больше не заявляет себя предупреждением.
+    expect(screen.getByTestId("unallocated-caption").className).not.toContain("warning");
+    expect(screen.getByTestId("share-unallocated").className).not.toContain("warning");
+
+    // Ревью 1, finding 4: глиф — САМАЯ ЗАМЕТНАЯ половина нулевого состояния, и
+    // до этой проверки правку `{allocated ? "✓" : "⚠"}` можно было бы тихо
+    // свернуть обратно в голый "⚠" — все 96 тестов оставались бы зелёными, а
+    // бумага показала бы знак, противоречащий собственному тексту той же строки.
+    expect(screen.getByTestId("unallocated-status")).toHaveTextContent("✓");
+    expect(screen.getByTestId("unallocated-status")).not.toHaveTextContent("⚠");
+    // Глиф скрыт от скринридера (finding 10): заголовок «Нераспределённое» и
+    // подпись рядом уже произносят словами то же различие — озвучивать вслепую
+    // «галочка»/«предупреждающий знак» без слов было бы вторым, более скудным
+    // сообщением о том же факте, а не новой информацией.
+    expect(screen.getByTestId("unallocated-status")).toHaveAttribute("aria-hidden", "true");
+
+    // Окраска ДЕНЕГ следует тому же `allocated`, что и строка/глиф/подпись —
+    // вторая необследованная половина finding 4 (сумма и ₽/м² красились
+    // безусловно вплоть до этой правки).
+    expect(
+      screen.getByTestId("amount-unallocated").querySelector("span")?.className ?? ""
+    ).not.toContain("warning");
+    expect(
+      screen.getByTestId("per-sqm-unallocated").querySelector("span")?.className ?? ""
+    ).not.toContain("warning");
+  });
+
+  /** Изолирует РОВНО `rows_outside_structure` — sections и extras пусты. */
+  function withOnlyRowsOutsideStructure(base: ProjectPassport): ProjectPassport {
+    return {
+      ...base,
+      unallocated: {
+        ...base.unallocated,
+        sections: [],
+        chapters: 0,
+        rows_outside_structure: 1,
+        extras: [],
+      },
+    };
+  }
+
+  // Тест 6.
+  it("неразносимый остаток сохраняет предупреждающий вид", async () => {
+    // Граница §5.5: позиции вне структуры разносу недоступны, и подпись обязана
+    // называть ИМЕННО эту причину — иначе ноль обещался бы там, где недостижим.
+    withPassport(withOnlyRowsOutsideStructure);
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const row = await screen.findByTestId("row-unallocated");
+    expect(row.className).toContain("warning");
+    expect(screen.getByTestId("unallocated-caption")).toHaveTextContent("вне структуры");
+
+    // Зеркальная (не-allocated) половина finding 4: тот же глиф и та же
+    // окраска денег читают `allocated`, и здесь он ложный — без этой половины
+    // тест 5 защищал бы только ветку `allocated`, а ветка `!allocated` тех же
+    // трёх ячеек осталась бы недоказанной.
+    expect(screen.getByTestId("unallocated-status")).toHaveTextContent("⚠");
+    expect(
+      screen.getByTestId("amount-unallocated").querySelector("span")?.className ?? ""
+    ).toContain("warning");
+    expect(
+      screen.getByTestId("per-sqm-unallocated").querySelector("span")?.className ?? ""
+    ).toContain("warning");
+  });
+
+  /** Изолирует РОВНО `extras` — sections и rows_outside_structure пусты. */
+  function withOnlyUnresolvableExtras(base: ProjectPassport): ProjectPassport {
+    return {
+      ...base,
+      unallocated: {
+        ...base.unallocated,
+        sections: [],
+        chapters: 0,
+        rows_outside_structure: 0,
+        extras: [
+          { id: 601, ordinal: 1, title: "Допработа без разрешимой статьи (1)", amount: "1000.00" },
+          { id: 602, ordinal: 2, title: "Допработа без разрешимой статьи (2)", amount: "2000.00" },
+        ],
+      },
+    };
+  }
+
+  // Тест 7.
+  it("нераспределённые допработы тоже держат остаток непустым", async () => {
+    /*
+      Третий случай границы §5.5, и он НЕ виден ни в `sections`, ни в
+      `rows_outside_structure`: строка допработ с неразрешимой ссылкой («нет
+      кандидатов» либо «статьи различаются») остаётся в `unallocated.extras`. При
+      sections=[] и rows_outside_structure=0 экран объявил бы «всё разнесено», имея
+      непустое «Нераспределённое» на экране рядом. Органов разноса рядом с extras
+      быть не должно — их статья приезжает из раздела, на который они ссылаются.
+    */
+    withPassport(withOnlyUnresolvableExtras);
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const row = await screen.findByTestId("row-unallocated");
+    const caption = screen.getByTestId("unallocated-caption");
+
+    expect(row.className).toContain("warning");
+    // Подпись обязана назвать ДЕЙСТВУЮЩУЮ причину (спека §2.8). Проверять только
+    // отсутствие «всё разнесено» недостаточно: `unallocatedCaption` строит базу из
+    // `chapters`, и при разнесённых разделах она даёт «0 разделов сметы без статьи
+    // классификатора» — подпись называет причину, которой нет, вместо той, которая есть.
+    expect(caption).toHaveTextContent(/допработ/i);
+    expect(caption).toHaveTextContent("2"); // столько строк в фикстуре надстройки
+    expect(caption).not.toHaveTextContent("0 разделов");
+    // Ревью 1, Ruling 3: текст обязан НЕ утверждать неустранимость — старая
+    // формулировка («…разносу недоступны») была ложной для самого частого
+    // случая («кандидат без статьи», устраняется тем же экраном разносом
+    // родительского раздела).
+    expect(caption).not.toHaveTextContent(/недоступны/i);
+    /*
+      Ревью 1, finding 3: `queryByTestId(/^pick-category-/)` здесь убрана — она
+      не могла упасть НИКОГДА. Пикеры рендерятся только внутри `UnallocatedPanel`
+      (`pick-category-{id}` в `CategoryPicker`), а этот тест панель не открывает
+      (`unallocatedOpen` стартует `false` и здесь не переключается) — запрос был
+      бы пуст при ЛЮБОЙ реализации, включая гипотетическую с пикером у каждой
+      строки допработ. Правило «органов разноса рядом с допработами нет» здесь
+      структурно верно по другой причине: `UnallocatedPanel.tsx` вообще не читает
+      `unallocated.extras` — допработы не рендерятся в панели НИ В КАКОМ виде,
+      поэтому у них не может быть ничего «рядом». Открывать панель и заново
+      проверять то же самое было бы тестом ни о чём: содержимое панели (дерево,
+      пикер, разнесено вручную) — предмет `UnallocatedPanel.test.tsx`, который
+      монтирует её напрямую; собственного теста «нет пикера у extras» там нет,
+      потому что нет и самих extras-строк, у которых пикер мог бы быть.
+    */
+  });
+
+  // Тест 8.
+  it("подпись не поминает допработы, когда их нет", async () => {
+    // Негативная половина: иначе ветка о допработах ничего не значит.
+    withPassport(withOnlyRowsOutsideStructure); // extras: []
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.getByTestId("unallocated-caption")).not.toHaveTextContent(/допработ/i);
+  });
+});
+
+/**
+ * Панель-верстак разноса (задача 8): шеврон строки «Нераспределённое»
+ * разворачивает `UnallocatedPanel` под ней. Содержимое панели (дерево,
+ * поиск статьи, «разнесено вручную») проверяет `UnallocatedPanel.test.tsx` —
+ * он монтирует панель напрямую с синтетическими `contractId`/`estimateId`.
+ * Здесь — только разводка: панель обязана всплыть по клику ровно там, где
+ * `CategoryTable` её монтирует, и получить id маршрута и id сметы РЕАЛЬНОЙ
+ * фикстуры, а не выдуманные (task-8-controller-notes: два источника id —
+ * ровно то, из-за чего инвалидация тихо перестаёт совпадать).
+ */
+describe("Паспорт проекта: панель-верстак разноса", () => {
+  it("шеврон «Нераспределённого» разворачивает и сворачивает панель", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.queryByTestId("unallocated-panel")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    expect(await screen.findByTestId("unallocated-panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Свернуть нераспределённое" }));
+    expect(screen.queryByTestId("unallocated-panel")).not.toBeInTheDocument();
+  });
+
+  it("строка панели не попадает в печатный поток", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    const panelRow = await screen.findByTestId("row-unallocated-panel");
+    expect(panelRow).toHaveAttribute("data-print", "hide");
+  });
+
+  it("мутация разноса несёт id раздела и id сметы фикстуры, а не выдуманные", async () => {
+    // sampleProjectPassport: estimate.id 600. Раздел 5001 — корень дерева
+    // нераспределённого, category_options id 8 / код "04.02" — «Пусконаладочные
+    // работы», не участвующая иначе в этом файле. `contractId` эта проверка
+    // НЕ покрывает: эндпоинт `PUT .../category-overrides/:positionItemId` его
+    // не несёт вовсе (он идёт только в инвалидацию) — см. тест провенанса ниже.
+    const received: { estimateId: string; positionItemId: string } = {
+      estimateId: "",
+      positionItemId: "",
+    };
+    server.use(
+      http.put(
+        "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+        ({ params }) => {
+          received.estimateId = String(params.estimateId);
+          received.positionItemId = String(params.positionItemId);
+          return HttpResponse.json({
+            chapters_updated: 1,
+            additional_works_updated: 0,
+            chapters_manual: 1,
+          });
+        }
+      )
+    );
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    await user.click(await screen.findByTestId("pick-category-5001"));
+    await user.click(await screen.findByText("Пусконаладочные работы"));
+
+    await waitFor(() => expect(received.positionItemId).toBe("5001"));
+    expect(received.estimateId).toBe("600");
+  });
+
+  /**
+   * Finding I-2 (ревью 1). Прежний тест назывался «по id маршрута», но не мог
+   * это проверить: эндпоинт `PUT .../category-overrides/:positionItemId` не
+   * несёт `contractId` вовсе — тот идёт ТОЛЬКО в
+   * `qc.invalidateQueries({ queryKey: qk.passport.project(contractId) })`
+   * (`services/queries.ts`). Хуже: маршрут этого файла — `/contracts/12/…`,
+   * а `sampleProjectPassport.contract.id` — тоже `12`, и подмена
+   * `contractId={passport.contract.id}` в `CategoryTable` (ровно то, что
+   * запрещают controller-notes) проходила бы этим тестом незамеченной — оба
+   * источника совпадали.
+   *
+   * Пробный сценарий: маршрут `/contracts/77/passport`, а «сервер» отвечает
+   * паспортом, чей `contract.id` — 12 (фикстура не трогается). Это НЕ
+   * состояние, которое отдаёт бэкенд в реальной работе (паспорт по маршруту
+   * `:contractId` всегда несёт `contract.id` того же договора) — это
+   * намеренный зонд, разводящий два источника id, которые совпадают
+   * ВСЮДУ ЕЩЁ в этом файле. Наблюдаем не запрос (в нём id нет), а
+   * ИНВАЛИДАЦИЮ: если `contractId` мутации — id маршрута (77), успешный PUT
+   * инвалидирует активный запрос паспорта, и `GET
+   * .../project-passport/77` уходит повторно. Если бы `contractId` брали из
+   * `passport.contract.id` (12), инвалидация целила бы в ключ, на который
+   * никто не подписан, и повторного запроса не было бы вовсе — тест увис бы
+   * на `waitFor` и покраснел по таймауту.
+   */
+  it("мутация инвалидирует паспорт по id МАРШРУТА, а не по contract.id из ответа", async () => {
+    let hitsForRoute77 = 0;
+    server.use(
+      http.get("/api/v1/analytics/project-passport/:contractId", ({ params }) => {
+        if (String(params.contractId) === "77") hitsForRoute77 += 1;
+        // contract.id фикстуры остаётся 12 — намеренное несовпадение с
+        // маршрутом 77, см. докстроку теста.
+        return HttpResponse.json(sampleProjectPassport);
+      }),
+      http.put(
+        "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+        () =>
+          HttpResponse.json({
+            chapters_updated: 1,
+            additional_works_updated: 0,
+            chapters_manual: 1,
+          })
+      )
+    );
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/contracts/:contractId/passport" element={<ProjectPassportPage />} />
+      </Routes>,
+      { initialRoute: "/contracts/77/passport" }
+    );
+    await screen.findByText("ГП-0212");
+    await waitFor(() => expect(hitsForRoute77).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    await user.click(await screen.findByTestId("pick-category-5001"));
+    await user.click(await screen.findByText("Пусконаладочные работы"));
+
+    await waitFor(() => expect(hitsForRoute77).toBe(2));
   });
 });
 

@@ -17,7 +17,7 @@ import {
   sampleMatrixCellDetail,
   sampleProjectPassport,
 } from "./fixtures";
-import type { ImportJobStatus, ProjectPassport } from "@/types/domain";
+import type { EstimateRow, ImportJobStatus, ProjectPassport } from "@/types/domain";
 
 /**
  * Мутируемое состояние обработчиков. Сбрасывается между тестами через
@@ -68,6 +68,20 @@ interface HandlerState {
   positionsPendingReview: number;
   /** Последний запрос выгрузки: по нему тест проверяет, что фильтры доехали. */
   lastReportRequest: { report: string; params: Record<string, string> } | null;
+  /**
+   * Переопределяет `estimates[]` ответа `GET /contracts/:id`, когда задано
+   * (находка ревью PR #16 — счёт решений в диалоге замены обязан быть тем,
+   * что сервер держит В МОМЕНТ конфликта, а не тем, что застряло в проп-кэше
+   * карточки у вызывающего). `null` — отдавать фикстуру как есть.
+   */
+  contractCardEstimatesOverride: EstimateRow[] | null;
+  /**
+   * Заваливает `GET /contracts/:id` 500-й ошибкой, когда `true` (находка
+   * ревью PR #16, finding 3): рефетч карточки на 409 обязан провалиться, а не
+   * молча вернуть фикстуру, — так тест видит именно ветку `isError`, а не
+   * успешный ответ.
+   */
+  contractCardFails: boolean;
 }
 
 export const handlerState: HandlerState = {
@@ -83,6 +97,8 @@ export const handlerState: HandlerState = {
   matrixOutcome: "rows",
   positionsPendingReview: 0,
   lastReportRequest: null,
+  contractCardEstimatesOverride: null,
+  contractCardFails: false,
 };
 
 export function resetHandlerState() {
@@ -98,6 +114,8 @@ export function resetHandlerState() {
   handlerState.matrixOutcome = "rows";
   handlerState.positionsPendingReview = 0;
   handlerState.lastReportRequest = null;
+  handlerState.contractCardEstimatesOverride = null;
+  handlerState.contractCardFails = false;
 }
 
 function page<T>(items: T[]) {
@@ -120,7 +138,13 @@ function projectPassportForOutcome(
 
     case "no-estimate":
       // Договор без сметы (правило 8 CRUD) — карточка есть, файла ещё нет:
-      // дерево статей остаётся полным скелетом, но без единой суммы.
+      // дерево статей остаётся полным скелетом, но без единой суммы. Без
+      // сметы нет ни строк дерева разноса, ни действующих ручных решений —
+      // сервер отдаёт их пустыми списками явно (не наследует из `base`,
+      // иначе этот вариант описывал бы состояние, которого бэкенд не может
+      // произвести: договор без сметы с деревом «Нераспределённого» и живым
+      // ручным решением внутри него). `category_options` — справочник
+      // классификатора целиком, от сметы не зависит и остаётся полным.
       return {
         ...base,
         estimate: null,
@@ -150,7 +174,9 @@ function projectPassportForOutcome(
           chapters: 0,
           rows_outside_structure: 0,
           extras: [],
+          sections: [],
         },
+        manual_assignments: [],
       };
 
     case "no-tep":
@@ -430,7 +456,19 @@ export const handlers = [
     if (Number(params.id) !== sampleContractCard.id) {
       return HttpResponse.json({ detail: "Договор не найден." }, { status: 404 });
     }
-    return HttpResponse.json(sampleContractCard);
+    if (handlerState.contractCardFails) {
+      return HttpResponse.json(
+        { detail: "Не удалось загрузить карточку договора." },
+        { status: 500 }
+      );
+    }
+    if (handlerState.contractCardEstimatesOverride === null) {
+      return HttpResponse.json(sampleContractCard);
+    }
+    return HttpResponse.json({
+      ...sampleContractCard,
+      estimates: handlerState.contractCardEstimatesOverride,
+    });
   }),
   http.post("/api/v1/contracts", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
@@ -638,6 +676,32 @@ export const handlers = [
     }
     return HttpResponse.json(projectPassportForOutcome(handlerState.projectPassportOutcome));
   }),
+
+  // Ручной разнос разделов по статьям (спека разноса §2.6). Ответ — сводка
+  // изменений, НЕ паспорт (форма паспорта объявлена ровно один раз в фикстуре).
+  http.put(
+    "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+    async ({ request }) => {
+      const body = (await request.json().catch(() => ({}))) as {
+        work_category_id?: unknown;
+        note?: string | null;
+      };
+      if (typeof body.work_category_id !== "number") {
+        return HttpResponse.json(
+          { detail: "Поле work_category_id обязательно." },
+          { status: 422 }
+        );
+      }
+      return HttpResponse.json({
+        chapters_updated: 1,
+        additional_works_updated: 0,
+        chapters_manual: 1,
+      });
+    }
+  ),
+  http.delete("/api/v1/estimates/:estimateId/category-overrides/:positionItemId", () =>
+    HttpResponse.json({ chapters_updated: 1, additional_works_updated: 0, chapters_manual: 0 })
+  ),
 
   http.get("/api/v1/analytics/matrix", ({ request }) => {
     const url = new URL(request.url);

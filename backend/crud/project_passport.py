@@ -7,6 +7,9 @@
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -18,6 +21,7 @@ from models import (
     Contractor,
     Estimate,
     EstimateAdditionalWork,
+    EstimateCategoryOverride,
     EstimateRawData,
     Lot,
     ObjectModel,
@@ -25,6 +29,7 @@ from models import (
     Proposal,
     ProposalSummaryLine,
     RateClass,
+    User,
     WorkCategory,
 )
 from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
@@ -68,6 +73,34 @@ DECLARED_CATEGORY_TOTALS_COLUMNS = tuple(c.name for c in CATEGORY_TOTALS.columns
 #: здесь, а в `services/category_rollup.py`, и импортированы выше. Причина — в его
 #: докстроке: обратное направление замкнуло бы модули в цикл и втянуло бы `models`
 #: с `Session` в модуль, объявленный чистым. Источник истины остаётся один.
+
+
+def _finite_amount(column: sa.ColumnElement) -> sa.ColumnElement:
+    """Предикат годности денежной колонки: истина только на конечном числе.
+
+    `NULL` явно не проверяется — сравнение `NULL <> число` само даёт `NULL`
+    (SQL-ложь в `WHERE`/`CASE WHEN`), и колонка без значения естественно
+    выпадает из суммы и из счётчика «расценено», не будучи при этом «не
+    числом» (`rows_not_finite` её не считает — она просто отсутствует).
+
+    Это ТА ЖЕ проверка, что несёт `v_category_totals` в неизменяемой миграции
+    0010 (`amount <> 'NaN'::numeric AND amount <> 'Infinity'::numeric AND
+    amount <> '-Infinity'::numeric`), но не общая с ней реализация: строку
+    миграции нельзя ни импортировать, ни переиспользовать — она застыла
+    навсегда, а `_section_metrics` ниже агрегирует по РАЗДЕЛУ, тогда как VIEW
+    агрегирует по `(estimate_id, work_category_id)`, и её агрегат для этой
+    задачи не годится ни в каком виде. Поэтому предикат выражен здесь ОДИН
+    РАЗ, и весь модуль, которому он нужен, пользуется этой функцией, а не
+    повторяет три сравнения инлайном, — это ИМЕНОВАННАЯ ГРАНИЦА между двумя
+    местами, которые обязаны совпадать по смыслу, а не общий код: расхождение
+    между этой функцией и строкой миграции 0010 придётся замечать вручную,
+    страхует его только парность двух докстрок.
+    """
+    return sa.and_(
+        column != Decimal("NaN"),
+        column != Decimal("Infinity"),
+        column != Decimal("-Infinity"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +292,7 @@ def _own_sections_select(estimate_id: int) -> sa.Select:
             PositionItem.work_category_id,
             PositionItem.chapter_number_in_proposal,
             PositionItem.job_title_in_proposal,
+            PositionItem.category_source,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -279,13 +313,23 @@ def _own_sections_select(estimate_id: int) -> sa.Select:
 
 def _own_sections_by_category(db: Session, estimate_id: int) -> dict[int, list[dict]]:
     """Собственные разделы, разложенные по статьям: `{category_id: [{id,
-    number, title}]}`. Узел без собственных денег получает пустой список —
-    вызывающий код читает через `.get(id, [])`."""
+    number, title, source}]}`. Узел без собственных денег получает пустой
+    список — вызывающий код читает через `.get(id, [])`.
+
+    `source` — `category_source` раздела (`'file'`/`'manual'`, задача 4):
+    экран обязан отличать статью, пришедшую из файла, от статьи, назначенной
+    аналитиком руками, — обе несут одинаковые деньги, но разное доверие.
+    """
     rows = db.execute(_own_sections_select(estimate_id)).all()
     by_category: dict[int, list[dict]] = {}
     for row in rows:
         by_category.setdefault(row.work_category_id, []).append(
-            {"id": row.id, "number": row.chapter_number_in_proposal, "title": row.job_title_in_proposal}
+            {
+                "id": row.id,
+                "number": row.chapter_number_in_proposal,
+                "title": row.job_title_in_proposal,
+                "source": row.category_source,
+            }
         )
     return by_category
 
@@ -478,6 +522,440 @@ def _branch(direct_for_key: dict[str, DirectTotals], source: str) -> tuple:
 
 
 # ---------------------------------------------------------------------------
+#  Дерево разделов: нераспределённое, ручной разнос, справочник целиком
+#  (фаза 7, разнос по статьям, задача 4)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SectionMetrics:
+    """Метрики дерева разделов ОДНОГО раздела сметы: свои деньги (`own_*`) и
+    свёртка всего его поддерева (`rows`/`rows_priced`/`rows_not_finite`/
+    `subtree_amount`), плюс место раздела в файловой структуре
+    (`parent_position_item_id`, `depth`) и его текущая статья.
+
+    `proposal_id`/`position_key_in_proposal` не входят в ответ паспорта — они
+    здесь только для устойчивого порядка `_manual_assignments`, тот же
+    числовой порядок по ключу позиции, что несёт `_own_sections_select`.
+    """
+
+    proposal_id: int
+    position_key_in_proposal: str
+    parent_position_item_id: int | None
+    depth: int
+    number: str | None
+    title: str
+    smr_article_raw: str | None
+    work_category_id: int | None
+    own_amount: Decimal | None
+    own_rows: int
+    own_rows_priced: int
+    own_rows_not_finite: int
+    subtree_amount: Decimal | None
+    rows: int
+    rows_priced: int
+    rows_not_finite: int
+
+
+def _fold_subtree(
+    own_amount: Decimal | None,
+    own_rows: int,
+    own_rows_priced: int,
+    own_rows_not_finite: int,
+    child_folds: Sequence[tuple[Decimal | None, int, int, int]],
+) -> tuple[Decimal | None, int, int, int]:
+    """Закон свёртки поддерева «только известные слагаемые» — ОДНА функция на
+    оба потребителя внутри этого модуля: `_section_metrics._fold` (полная
+    файловая структура, без разбора статей детей) и `_unallocated_sections.
+    _unallocated_fold` (только нераспределённая часть поддерева). Та же
+    логика, что у `build_tree._build_node` (спека §2.6): неизвестное (`None`)
+    — отсутствующее слагаемое, а не ноль.
+
+    Разница между двумя потребителями — не в законе свёртки (он один, здесь),
+    а в том, КАКИХ детей они передают уже свёрнутыми в `child_folds`: выбор
+    детей — дело вызывающего, эта функция его не знает и не должна. Именно
+    поэтому предикат «правило Ф3 против сырой структуры» правится в ОДНОМ
+    месте (фильтр перед вызовом), а не раздвоением этой функции.
+    """
+    rows = own_rows + sum(r for _, r, _, _ in child_folds)
+    rows_priced = own_rows_priced + sum(p for _, _, p, _ in child_folds)
+    rows_not_finite = own_rows_not_finite + sum(n for _, _, _, n in child_folds)
+
+    summands = [own_amount] if own_amount is not None else []
+    summands.extend(a for a, _, _, _ in child_folds if a is not None)
+    amount = sum(summands) if summands else None
+
+    return amount, rows, rows_priced, rows_not_finite
+
+
+def _section_metrics(db: Session, estimate_id: int) -> dict[int, SectionMetrics]:
+    """Метрики дерева разделов сметы — ЕДИНСТВЕННЫЙ расчёт (спека разноса
+    §5.2-5.3): `_unallocated_sections` берёт из него подмножество без статьи,
+    `_manual_assignments` обогащает им свои строки. Два независимых расчёта
+    одних и тех же чисел разъехались бы — это и есть класс дефекта, ради
+    ухода от которого существует вся фича.
+
+    Родитель раздела — его СОБСТВЕННЫЙ `chapter_item_id`: он ведёт на
+    раздел-предок точно так же, как на позициях (материализация пишет это
+    поле одинаково для любой строки при импорте и при пересчёте разноса).
+    Глубина — длина цепочки родителей от истинного корня файла; это НЕ то же
+    самое, что глубина в выдаче `_unallocated_sections` — там корень
+    переподвешен на границу выборки, а не на структуру файла целиком.
+
+    Свёртка поддерева — «только известные слагаемые», как `build_tree.
+    _build_node` (спека §2.6): раздел без своих позиций даёт `own_amount is
+    None`, и это неизвестное слагаемое, а не ноль. Дерево крошечное, поэтому
+    свёртка написана в Python, а не рекурсивным CTE — второе место, знающее
+    закон свёртки, разъехалось бы с первым (build_tree). Сам закон — в
+    `_fold_subtree`, ОДНОЙ функции на этот расчёт и на `_unallocated_sections.
+    _unallocated_fold`.
+
+    Парная граница с миграцией 0010 здесь ровно одна: предикат годности
+    (`_finite_amount`). `own_totals` ниже группирует по `chapter_item_id` без
+    дополнительного равенства `proposal_id` — в отличие от `v_category_totals`,
+    чей JOIN несёт `ch.proposal_id = pi.proposal_id` явно. Это НЕ вторая
+    парная граница, требующая отдельного именования: составной self-FK
+    `fk_position_items_chapter` (`(proposal_id, chapter_item_id)` →
+    `(proposal_id, id)`) делает невозможным `chapter_item_id`, ссылающийся на
+    строку ДРУГОГО предложения — группировка по нему одному однозначна по
+    ограничению схемы, а не по соглашению между этим запросом и VIEW.
+    """
+    finite = _finite_amount(PositionItem.total_cost_total)
+    priced_and_finite = sa.and_(PositionItem.total_cost_total.is_not(None), finite)
+    priced_not_finite = sa.and_(PositionItem.total_cost_total.is_not(None), sa.not_(finite))
+
+    own_totals = db.execute(
+        sa.select(
+            PositionItem.chapter_item_id,
+            sa.func.sum(sa.case((finite, PositionItem.total_cost_total))).label("own_amount"),
+            sa.func.count().label("own_rows"),
+            sa.func.count(sa.case((priced_and_finite, 1))).label("own_rows_priced"),
+            sa.func.count(sa.case((priced_not_finite, 1))).label("own_rows_not_finite"),
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(
+            Lot.estimate_id == estimate_id,
+            PositionItem.is_chapter.is_(False),
+            PositionItem.chapter_item_id.is_not(None),
+        )
+        .group_by(PositionItem.chapter_item_id)
+    ).all()
+    own_by_chapter = {
+        row.chapter_item_id: (row.own_amount, row.own_rows, row.own_rows_priced, row.own_rows_not_finite)
+        for row in own_totals
+    }
+
+    chapter_rows = db.execute(
+        sa.select(
+            PositionItem.id,
+            PositionItem.chapter_item_id,
+            PositionItem.chapter_number_in_proposal,
+            PositionItem.job_title_in_proposal,
+            PositionItem.smr_article_raw,
+            PositionItem.work_category_id,
+            PositionItem.proposal_id,
+            PositionItem.position_key_in_proposal,
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(True))
+    ).all()
+
+    chapters_by_id = {row.id: row for row in chapter_rows}
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for row in chapter_rows:
+        if row.chapter_item_id is not None:
+            children_by_parent[row.chapter_item_id].append(row.id)
+
+    depth_cache: dict[int, int] = {}
+
+    def _depth(chapter_id: int) -> int:
+        if chapter_id not in depth_cache:
+            parent = chapters_by_id[chapter_id].chapter_item_id
+            depth_cache[chapter_id] = 0 if parent is None else _depth(parent) + 1
+        return depth_cache[chapter_id]
+
+    metrics: dict[int, SectionMetrics] = {}
+
+    def _fold(chapter_id: int) -> SectionMetrics:
+        if chapter_id in metrics:
+            return metrics[chapter_id]
+        row = chapters_by_id[chapter_id]
+        own_amount, own_rows, own_rows_priced, own_rows_not_finite = own_by_chapter.get(
+            chapter_id, (None, 0, 0, 0)
+        )
+        # Полная файловая структура — дети берутся ВСЕ, без разбора статей
+        # (в отличие от `_unallocated_sections._unallocated_fold`, которая
+        # передаёт сюда же только не блокирующих наследование детей).
+        children = [_fold(child_id) for child_id in children_by_parent.get(chapter_id, ())]
+        child_folds = [(c.subtree_amount, c.rows, c.rows_priced, c.rows_not_finite) for c in children]
+        subtree_amount, rows, rows_priced, rows_not_finite = _fold_subtree(
+            own_amount, own_rows, own_rows_priced, own_rows_not_finite, child_folds
+        )
+
+        result = SectionMetrics(
+            proposal_id=row.proposal_id,
+            position_key_in_proposal=row.position_key_in_proposal,
+            parent_position_item_id=row.chapter_item_id,
+            depth=_depth(chapter_id),
+            number=row.chapter_number_in_proposal,
+            title=row.job_title_in_proposal,
+            smr_article_raw=row.smr_article_raw,
+            work_category_id=row.work_category_id,
+            own_amount=own_amount,
+            own_rows=own_rows,
+            own_rows_priced=own_rows_priced,
+            own_rows_not_finite=own_rows_not_finite,
+            subtree_amount=subtree_amount,
+            rows=rows,
+            rows_priced=rows_priced,
+            rows_not_finite=rows_not_finite,
+        )
+        metrics[chapter_id] = result
+        return result
+
+    for chapter_id in chapters_by_id:
+        _fold(chapter_id)
+    return metrics
+
+
+def _unallocated_sections(db: Session, estimate_id: int) -> list[dict]:
+    """Нераспределённая часть дерева разделов: подмножество `_section_metrics`
+    без статьи (`work_category_id IS NULL`), минус граница §5.2 — узел, у
+    которого нет ни единой строки ни у себя, ни в НАСЛЕДУЕМОЙ части поддерева
+    (см. ниже): там нечего разносить, и его не должно быть в списке решений.
+
+    **Кого решение на узле реально наследует.** Правило Ф3 «утверждение файла
+    сильнее наследования» (`services/category_resolution._article_for`):
+    ребёнок наследует статью предка ТОЛЬКО когда у него самого нет НИКАКОГО
+    утверждения — ни валидного, ни нечитаемого, ни неизвестного справочнику
+    (`smr_article_raw is None`). Ребёнок с любым СВОИМ утверждением ничего не
+    наследует, даже если это утверждение не дало ему статьи (нечитаемый
+    префикс или код вне справочника — тот же исход `"unassigned"`, что и у
+    пустой ячейки, но по другой причине: там сам файл НЕ промолчал). Поэтому
+    множество «наследует от этого узла» — это `work_category_id IS NULL AND
+    smr_article_raw IS NULL`, а НЕ просто `work_category_id IS NULL`: раздел
+    без статьи, но со своим (хотя бы нечитаемым) утверждением, — блокирующий
+    узел, он сам был бы кандидатом на РУЧНОЕ решение (Task 1: решение на нём
+    самом сильнее его же нечитаемого файлового утверждения), но решение
+    ВЫШЕ него его не тронет.
+
+    `subtree_amount`/`rows`/`rows_priced`/`rows_not_finite` здесь — НЕ те же
+    числа, что несёт `_section_metrics.subtree_amount` по всей файловой
+    структуре (см. докстроку `_manual_assignments` — там те же поля значат
+    ДРУГОЕ, полную файловую структуру): свёртка ниже ограничена наследуемой
+    частью поддерева, а не просто узлами без статьи. Блокирующий ребёнок (и
+    всё, что под ним) исключён из свёртки предка целиком — решение,
+    принятое на предке, его деньги не переместит, и подсказка на предке не
+    должна их обещать. Свёртку считаем прямо на выходе `_section_metrics`
+    (закон — `_fold_subtree`, ОДНА функция на оба потребителя, спека §2.6):
+    отдельного расчёта, дублирующего `_section_metrics`, не заводим — только
+    фильтр детей ПЕРЕД тем же законом свёртки. Ряды (`rows`/`rows_priced`/
+    `rows_not_finite`) ограничены той же выборкой, что и `subtree_amount`, —
+    иначе сумма и её знаменатели описывали бы два разных поддерева, что
+    внутренне противоречиво.
+
+    Родитель переподвешен ВНУТРЬ выборки: у корня нераспределённого куска
+    `parent_position_item_id = None`, а глубина считается от ЭТОГО корня, не
+    от структуры файла целиком — иначе экран получил бы отступ от того, что
+    он вообще не показывает. Переподвешивание применяет ТОТ ЖЕ предикат, что
+    и свёртка, а не только к детям: узел со своим утверждением (блокирующий)
+    — ВСЕГДА корень своего кусочка, независимо от того, что выше него в
+    файле, даже если файловый предок сам без статьи. Без этого дерево
+    противоречило бы самому себе: свёртка обещает, что деньги блокирующего
+    узла предок не получит, а строка блокирующего узла всё равно висела бы
+    отступом под предком на экране — «родитель = сумма показанных детей»
+    перестало бы держаться.
+
+    Для узла БЕЗ своего утверждения цикл поиска ближайшего предка не
+    меняется: он ищет ближайшего предка без статьи (`unassigned_ids`),
+    невзирая на то, блокирующий тот предок или нет. Это корректно ровно
+    потому, что у узла без своего утверждения нет статьи только если её не
+    было и у прямого файлового родителя (иначе узел унаследовал бы её) —
+    значит ближайший предок без статьи, кем бы он ни был, и есть настоящий
+    источник наследования этого узла, а решение НА НЁМ (не выше) действительно
+    дойдёт до узла через цепочку наследования.
+    """
+    metrics = _section_metrics(db, estimate_id)
+    unassigned_ids = {pid for pid, sm in metrics.items() if sm.work_category_id is None}
+
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for pid, sm in metrics.items():
+        if sm.parent_position_item_id is not None:
+            children_by_parent[sm.parent_position_item_id].append(pid)
+
+    def _inherits(pid: int) -> bool:
+        """Наследует ли `pid` от предка: без статьи И без своего утверждения
+        (см. докстроку функции) — ключевой предикат и свёртки, и переподвешивания."""
+        return pid in unassigned_ids and metrics[pid].smr_article_raw is None
+
+    # Свёртка ТОЛЬКО по наследуемой части поддерева: блокирующий ребёнок (со
+    # своим утверждением, пусть и не давшим статьи) и всё, что под ним,
+    # исключены целиком — их деньги решение на этом узле не переместит.
+    fold_cache: dict[int, tuple[Decimal | None, int, int, int]] = {}
+
+    def _unallocated_fold(pid: int) -> tuple[Decimal | None, int, int, int]:
+        if pid not in fold_cache:
+            sm = metrics[pid]
+            children = [c for c in children_by_parent.get(pid, ()) if _inherits(c)]
+            child_folds = [_unallocated_fold(c) for c in children]
+            fold_cache[pid] = _fold_subtree(
+                sm.own_amount, sm.own_rows, sm.own_rows_priced, sm.own_rows_not_finite, child_folds
+            )
+        return fold_cache[pid]
+
+    rehung_parent: dict[int, int | None] = {}
+    for pid in unassigned_ids:
+        if not _inherits(pid):
+            # Блокирующий узел — всегда корень своего кусочка (см. докстроку).
+            rehung_parent[pid] = None
+            continue
+        parent = metrics[pid].parent_position_item_id
+        while parent is not None and parent not in unassigned_ids:
+            parent = metrics[parent].parent_position_item_id
+        rehung_parent[pid] = parent
+
+    depth_cache: dict[int, int] = {}
+
+    def _rehung_depth(pid: int) -> int:
+        if pid not in depth_cache:
+            parent = rehung_parent[pid]
+            depth_cache[pid] = 0 if parent is None else _rehung_depth(parent) + 1
+        return depth_cache[pid]
+
+    sections = []
+    for pid in unassigned_ids:
+        amount, rows, rows_priced, rows_not_finite = _unallocated_fold(pid)
+        if rows == 0:
+            continue
+        sm = metrics[pid]
+        sections.append(
+            {
+                "position_item_id": pid,
+                "parent_position_item_id": rehung_parent[pid],
+                "number": sm.number,
+                "title": sm.title,
+                "depth": _rehung_depth(pid),
+                "amount": sm.own_amount,
+                "subtree_amount": amount,
+                "rows": rows,
+                "rows_priced": rows_priced,
+                "rows_not_finite": rows_not_finite,
+                "smr_article_raw": sm.smr_article_raw,
+            }
+        )
+
+    # Порядок — детерминированный: сначала переподвешенные корни, затем их
+    # поддеревья, тем же числовым порядком ключа позиции, что у
+    # `_own_sections_select`.
+    sections.sort(
+        key=lambda s: (
+            s["depth"],
+            metrics[s["position_item_id"]].proposal_id,
+            len(metrics[s["position_item_id"]].position_key_in_proposal),
+            metrics[s["position_item_id"]].position_key_in_proposal,
+        )
+    )
+    return sections
+
+
+def _manual_assignments(db: Session, estimate_id: int) -> list[dict]:
+    """Действующие ручные решения сметы, обогащённые ТЕМИ ЖЕ метриками дерева
+    разделов, что несёт `_unallocated_sections` (`_section_metrics` — расчёт
+    один на двух потребителей, спека разноса §5.2-5.3).
+
+    **`subtree_amount`/`rows`/`rows_priced`/`rows_not_finite` здесь значат
+    ДРУГОЕ, чем в `unallocated.sections[]`, хотя поля называются одинаково.**
+    Здесь это ПОЛНАЯ файловая свёртка `_section_metrics` — по всей структуре
+    под решённым разделом, без разбора статей внутренних узлов. Она НЕ обрезана
+    правилом Ф3 (см. докстроку `_unallocated_sections`) намеренно: спека прямо
+    принимает, что эти числа не складываются между вложенными решениями —
+    если внутри поддерева решённого раздела есть СВОЁ вложенное решение (или
+    свой валидный файловый код), его деньги всё равно попадают в файловую
+    свёртку внешнего решения, потому что до появления вложенного решения
+    внешнее реально их накрывало, а печатаемая здесь строка — учётная запись
+    «сколько денег лежит под этим решением по факту файла», а не «сколько
+    денег ЭТО решение продолжает двигать прямо сейчас» (это второе — то, что
+    считает `unallocated.sections[]`, и только там). Обрезать это поле тем же
+    правилом было бы другой задачей — координатор явно попросил его не трогать.
+
+    Порядок — по `subtree_amount` убывающе (крупные решения сверху; решение
+    без единой строки в поддереве — `None`, оно в самом низу), затем по
+    ключу позиции (числовой порядок `_own_sections_select`).
+    """
+    metrics = _section_metrics(db, estimate_id)
+    author = aliased(User)
+    rows = db.execute(
+        sa.select(
+            EstimateCategoryOverride.position_item_id,
+            EstimateCategoryOverride.note,
+            EstimateCategoryOverride.assigned_at,
+            WorkCategory.id.label("work_category_id"),
+            WorkCategory.code.label("category_code"),
+            WorkCategory.title.label("category_title"),
+            author.email.label("assigned_by_email"),
+        )
+        .select_from(EstimateCategoryOverride)
+        .join(PositionItem, PositionItem.id == EstimateCategoryOverride.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(WorkCategory, WorkCategory.id == EstimateCategoryOverride.work_category_id)
+        .join(author, author.id == EstimateCategoryOverride.assigned_by)
+        .where(Lot.estimate_id == estimate_id)
+    ).all()
+
+    assignments = []
+    for row in rows:
+        sm = metrics[row.position_item_id]
+        assignments.append(
+            {
+                "position_item_id": row.position_item_id,
+                "parent_position_item_id": sm.parent_position_item_id,
+                "number": sm.number,
+                "title": sm.title,
+                "depth": sm.depth,
+                "amount": sm.own_amount,
+                "subtree_amount": sm.subtree_amount,
+                "rows": sm.rows,
+                "rows_priced": sm.rows_priced,
+                "rows_not_finite": sm.rows_not_finite,
+                "smr_article_raw": sm.smr_article_raw,
+                "work_category_id": row.work_category_id,
+                "category_code": row.category_code,
+                "category_title": row.category_title,
+                "assigned_by_email": row.assigned_by_email,
+                "assigned_at": iso(row.assigned_at),
+                "note": row.note,
+            }
+        )
+
+    def _sort_key(item: dict) -> tuple:
+        sm = metrics[item["position_item_id"]]
+        amount = item["subtree_amount"]
+        rank = (0, -amount) if amount is not None else (1, Decimal(0))
+        return (rank, sm.proposal_id, len(sm.position_key_in_proposal), sm.position_key_in_proposal)
+
+    assignments.sort(key=_sort_key)
+    return assignments
+
+
+def _category_options(refs: Sequence[CategoryRef]) -> list[dict]:
+    """Плоский список ВСЕГО справочника статей — не `passport.categories`:
+    там `build_tree` прячет вложенные узлы без строк (правило видимости
+    спеки §2.2), а разносить нужно и в статьи, которых в смете ещё нет вовсе
+    (спека разноса §1, ключевой случай ревью). Отсортирован по `sort_order` —
+    порядок отображения справочника, тот же, что несёт `build_tree` для
+    корней и детей.
+    """
+    return [
+        {"id": ref.id, "code": ref.code, "title": ref.title, "is_bucket": ref.is_bucket}
+        for ref in sorted(refs, key=lambda r: r.sort_order)
+    ]
+
+
+# ---------------------------------------------------------------------------
 #  Паспорт проекта целиком (спека §2.6)
 # ---------------------------------------------------------------------------
 
@@ -522,7 +1000,21 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     14. `categories[].own_sections` — разделы, давшие узлу его собственные
         деньги (задача 5, `_own_sections_by_category`) — уточнение спеки §2.6
         полем, закрывающим противоречие §2.9 п.6 / §6 (см. докстринг
-        `_own_sections_select`).
+        `_own_sections_select`). Каждая запись несёт `source` (`'file'`/
+        `'manual'`, спека разноса, задача 4) — какая статья пришла из файла,
+        а какая назначена аналитиком руками.
+    15. `unallocated.sections` — дерево нераспределённых разделов
+        (`_unallocated_sections`, спека разноса §5.2): включает промежуточные
+        разделы без своих позиций, у которых есть деньги ниже, — без них
+        разнос вершиной недоступен. `manual_assignments` — действующие
+        ручные решения (`_manual_assignments`, §5.3), обогащённые ТЕМИ ЖЕ
+        метриками дерева (`_section_metrics` — расчёт один на обоих
+        потребителей).
+    16. `category_options` — справочник статей ЦЕЛИКОМ (`_category_options`),
+        не `categories`: там `build_tree` прячет вложенные узлы без строк, а
+        разносить нужно и в статьи, которых в смете ещё нет вовсе. Это поле
+        не зависит от наличия сметы (правило 8) — оно то же самое на обоих
+        путях функции.
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -609,7 +1101,13 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
                 "chapters": 0,
                 "rows_outside_structure": 0,
                 "extras": [],
+                "sections": [],
             },
+            "manual_assignments": [],
+            # Справочник целиком, а не пустой список: форма ответа обязана
+            # быть той же, что при наличии сметы (правило 8), а классификатор
+            # от наличия сметы не зависит вовсе (задача 4).
+            "category_options": _category_options(refs),
         }
 
     parser_version = db.execute(
@@ -686,6 +1184,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "chapters": chapters,
         "rows_outside_structure": rows_outside_structure,
         "extras": unallocated_extras,
+        "sections": _unallocated_sections(db, estimate.id),
     }
 
     categories = [
@@ -700,4 +1199,6 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "totals": totals,
         "categories": categories,
         "unallocated": unallocated_dict,
+        "manual_assignments": _manual_assignments(db, estimate.id),
+        "category_options": _category_options(refs),
     }

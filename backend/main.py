@@ -19,6 +19,7 @@ from routers import admin as admin_router
 from routers import analytics as analytics_router
 from routers import auth as auth_router
 from routers import catalog as catalog_router
+from routers import category_overrides as category_overrides_router
 from routers import contracts as contracts_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
@@ -153,6 +154,8 @@ app.include_router(catalog_router.router, dependencies=_auth_dep)
 app.include_router(rate_standards_router.router, dependencies=_auth_dep)
 # Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
 app.include_router(review_router.router, dependencies=_auth_dep)
+# Ручной разнос разделов по статьям — тоже `member` (§3, спека разноса §2.7).
+app.include_router(category_overrides_router.router, dependencies=_auth_dep)
 
 # Легаси-аналитика фазы 6 (§7.4–§7.6, §9.6). Настройки: чтение всем — чтение
 # настроек не admin-операция; изменение — admin внутри роутера.

@@ -12,10 +12,13 @@ import api from "@/lib/api";
 import type {
   AppSettings,
   BankComparisonParams,
+  CategoryOverrideChangeSummary,
+  ClearCategoryOverrideInput,
   Matrix,
   MatrixCellDetail,
   MatrixParams,
   ProjectPassport,
+  SetCategoryOverrideInput,
 } from "@/types/domain";
 
 export const settingsApi = {
@@ -40,6 +43,36 @@ export const analyticsApi = {
   projectPassport: (contractId: number): Promise<ProjectPassport> =>
     api
       .get<ProjectPassport>(`/v1/analytics/project-passport/${contractId}`)
+      .then((r) => r.data),
+
+  /**
+   * Назначить статью разделу вручную (спека разноса).
+   *
+   * Ответ — сводка изменений, а не паспорт: `contractId` входа сюда не идёт,
+   * он нужен только вызывающей стороне (инвалидация запроса паспорта).
+   */
+  setCategoryOverride: ({
+    estimateId,
+    positionItemId,
+    workCategoryId,
+    note,
+  }: SetCategoryOverrideInput): Promise<CategoryOverrideChangeSummary> =>
+    api
+      .put<CategoryOverrideChangeSummary>(
+        `/v1/estimates/${estimateId}/category-overrides/${positionItemId}`,
+        { work_category_id: workCategoryId, note }
+      )
+      .then((r) => r.data),
+
+  /** Снять ручное решение — раздел возвращается к статье из файла (или к «Нераспределённому»), допработы следуют производно. */
+  clearCategoryOverride: ({
+    estimateId,
+    positionItemId,
+  }: ClearCategoryOverrideInput): Promise<CategoryOverrideChangeSummary> =>
+    api
+      .delete<CategoryOverrideChangeSummary>(
+        `/v1/estimates/${estimateId}/category-overrides/${positionItemId}`
+      )
       .then((r) => r.data),
 };
 

@@ -961,7 +961,9 @@ class TestPositionItemCategoryColumns:
                 sa.update(PositionItem).where(PositionItem.id == item.id).values(**values)
             )
 
-    def test_source_other_than_file_is_rejected(self, db_session, factories):
+    def test_source_other_than_file_or_manual_is_rejected(self, db_session, factories):
+        """Миграция 0011 расширила допустимые значения до ('file','manual') —
+        третье значение (не 'file' и не 'manual') остаётся непредставимым."""
         proposal = factories.ProposalFactory.create()
         item = self._row(db_session, factories, proposal, is_chapter=True)
         with rejected(db_session, contains="ck_position_items_category_source"):
@@ -970,7 +972,7 @@ class TestPositionItemCategoryColumns:
                 .where(PositionItem.id == item.id)
                 .values(
                     work_category_id=self._any_category_id(db_session),
-                    category_source="manual",
+                    category_source="guess",
                 )
             )
 

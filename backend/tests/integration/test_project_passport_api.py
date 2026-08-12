@@ -24,6 +24,7 @@ from crud.project_passport import get_project_passport
 from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
 from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
 from responses import _decimal_encoder
+from services.category_override import set_override
 
 pytestmark = pytest.mark.integration
 
@@ -801,7 +802,9 @@ def test_additional_work_without_a_category_lands_in_unallocated_extras(db_sessi
 
 def test_own_sections_name_the_chapter_rows_of_the_category(db_session, factories):
     """Один раздел со статьёй и позицией под ним -> `own_sections` — список из
-    ОДНОЙ записи с настоящими номером и заголовком раздела."""
+    ОДНОЙ записи с настоящими номером, заголовком и источником статьи раздела
+    (`source`, задача 4 — `_chapter()` ставит статью с `category_source='file'`,
+    как того требует `ck_position_items_category_source_pairs`)."""
     category = _category(db_session, "1")
     proposal = _proposal(factories)
     chapter = _chapter(
@@ -814,7 +817,9 @@ def test_own_sections_name_the_chapter_rows_of_the_category(db_session, factorie
     result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
     node = next(c for c in result["categories"] if c["id"] == category.id)
 
-    assert node["own_sections"] == [{"id": chapter.id, "number": "3", "title": "Раздел 3"}]
+    assert node["own_sections"] == [
+        {"id": chapter.id, "number": "3", "title": "Раздел 3", "source": "file"}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1067,3 +1072,313 @@ def test_every_decimal_path_reaches_json_as_the_encoder_rendered_it(
         assert isinstance(shown, str), f"{where}: {shown!r} — {type(shown).__name__}, не str"
         assert shown == _decimal_encoder(value), f"{where}: JSON расходится с энкодером"
         assert _CONTRACT_RE.fullmatch(shown), f"{where}: {shown!r} — не строка контракта"
+
+
+# ---------------------------------------------------------------------------
+#  29. Дерево нераспределённого: точные own/subtree по вершине и её детям
+# ---------------------------------------------------------------------------
+
+def test_unallocated_tree_reports_exact_own_and_subtree_metrics(client, unallocated_tree):
+    """Числа заданы фикстурой НЕЗАВИСИМО и проверяются точно.
+
+    Фикстура `unallocated_tree` строит ровно такую нераспределённую часть (все
+    суммы синтетические, реальных денег в тестах нет):
+
+        вершина  «9»   — своих позиций 0
+          ребёнок «9.1» — 2 позиции с ценой: 30 и 30
+          ребёнок «9.2» — 1 позиция с ценой: 20
+                          + 1 позиция без цены
+                          + 1 позиция с ценой 'NaN'
+
+    Тогда: own(9) = None, subtree(9) = 80, rows(9) = 5, rows_priced(9) = 3,
+    rows_not_finite(9) = 1; own(9.1) = 60; own(9.2) = 20.
+
+    Проверка «родитель = сумма детей» тут НЕ вырождена: у вершины своих денег нет
+    вовсе, поэтому подсчёт разностью «родитель минус дети» дал бы ноль, а не None,
+    и это видно по числам, а не по форме.
+    """
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    sections = {s["number"]: s for s in body["unallocated"]["sections"]}
+
+    top = sections["9"]
+    assert top["amount"] is None, "у вершины своих позиций нет — это не ноль"
+    assert Decimal(top["subtree_amount"]) == Decimal("80")
+    assert (top["rows"], top["rows_priced"], top["rows_not_finite"]) == (5, 3, 1)
+    assert top["parent_position_item_id"] is None
+    assert top["depth"] == 0
+
+    left = sections["9.1"]
+    assert Decimal(left["amount"]) == Decimal("60")
+    assert Decimal(left["subtree_amount"]) == Decimal("60")
+    assert (left["rows"], left["rows_priced"], left["rows_not_finite"]) == (2, 2, 0)
+    assert left["parent_position_item_id"] == top["position_item_id"]
+    assert left["depth"] == 1
+
+    right = sections["9.2"]
+    assert Decimal(right["amount"]) == Decimal("20")
+    assert (right["rows"], right["rows_priced"], right["rows_not_finite"]) == (3, 1, 1)
+    assert right["depth"] == 1
+
+
+# ---------------------------------------------------------------------------
+#  30. Граница §5.2: раздел без единой строки в поддереве отсутствует в списке
+# ---------------------------------------------------------------------------
+
+def test_a_section_with_no_money_and_no_rows_anywhere_is_absent(client, unallocated_tree):
+    """Граница §5.2. Фикстура содержит раздел «8» без позиций во всём поддереве —
+    его в списке быть не должно: разносить там нечего."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    assert "8" not in {s["number"] for s in body["unallocated"]["sections"]}
+
+
+# ---------------------------------------------------------------------------
+#  31. category_options покрывает весь классификатор, а не видимое дерево
+# ---------------------------------------------------------------------------
+
+def test_category_options_carry_the_whole_classifier(client, db_session, unallocated_tree):
+    """`categories` — НЕ справочник: `build_tree` прячет вложенные узлы без строк.
+    Разносить же надо в том числе в статьи, которых в смете ещё нет, поэтому
+    выбор берёт варианты из отдельного поля.
+
+    Поправка брифа: эндпоинт `/api/v1/references/work-categories` не существует
+    (ни один роутер его не объявляет) — вместо него здесь прямой COUNT по
+    таблице `work_categories`."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    options = body["category_options"]
+
+    total = db_session.execute(sa.select(sa.func.count()).select_from(WorkCategory)).scalar_one()
+    assert len(options) == total, "варианты обязаны покрывать весь справочник"
+
+    visible = {c["code"] for c in body["categories"]}
+    assert {o["code"] for o in options} - visible, (
+        "в справочнике обязаны быть статьи, которых нет в видимом дереве паспорта, — "
+        "иначе тест не отличает category_options от categories"
+    )
+    assert all({"id", "code", "title", "is_bucket"} <= set(o) for o in options)
+
+
+# ---------------------------------------------------------------------------
+#  32. Ключевой случай ревью: разнос в статью, которой в смете ещё нет вовсе
+# ---------------------------------------------------------------------------
+
+def test_manual_assignment_of_a_category_absent_from_the_visible_tree(
+    client, db_session, unallocated_tree, admin_user
+):
+    """Ключевой случай пункта 1 ревью: аналитик выбирает статью, которой в смете
+    ещё нет вовсе, — и она обязана появиться в дереве с деньгами.
+
+    Поправка брифа: брифовский `top_unassigned_chapter` — раздел «1»
+    `imported_estimate`, СМЕТЫ, ОТДЕЛЬНОЙ от `unallocated_tree` (у той своя,
+    через настоящий импорт — см. докстрока фикстуры). Использовать их вместе
+    технически невозможно: `set_override` по разделу другой сметы отказывает
+    `not_found` раньше, чем дело доходит до чисел. Разносится вершина «9»
+    самого `unallocated_tree` (`top_chapter_id`) — ожидание брифа (сумма 80)
+    остаётся тем же самым числом, потому что это и есть подсчитанное поддерево
+    вершины «9» (30 + 30 + 20)."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    visible = {c["code"] for c in body["categories"]}
+    target = next(o for o in body["category_options"] if o["code"] not in visible)
+
+    set_override(
+        db_session,
+        estimate_id=unallocated_tree.estimate_id,
+        position_item_id=unallocated_tree.top_chapter_id,
+        work_category_id=target["id"],
+        note=None,
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    node = next(c for c in after["categories"] if c["code"] == target["code"])
+    assert Decimal(node["total"]) == Decimal("80")
+
+
+# ---------------------------------------------------------------------------
+#  33. manual_assignments несёт автора решения и убирает раздел из нераспределённого
+# ---------------------------------------------------------------------------
+
+def test_manual_assignments_carry_their_author(client, db_session, imported_estimate,
+                                               top_unassigned_chapter, category_id, admin_user):
+    set_override(
+        db_session,
+        estimate_id=imported_estimate.id,
+        position_item_id=top_unassigned_chapter.id,
+        work_category_id=category_id,
+        note="проверка",
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    body = client.get(f"/api/v1/analytics/project-passport/{imported_estimate.contract_id}").json()
+    assignments = body["manual_assignments"]
+    assert len(assignments) == 1
+    assert assignments[0]["position_item_id"] == top_unassigned_chapter.id
+    assert assignments[0]["assigned_by_email"] == admin_user.email
+    assert assignments[0]["note"] == "проверка"
+    assert assignments[0]["category_code"]
+    # Разнесённый раздел ушёл из списка разносимого.
+    assert top_unassigned_chapter.id not in {
+        s["position_item_id"] for s in body["unallocated"]["sections"]
+    }
+
+
+# ---------------------------------------------------------------------------
+#  34. own_sections называет источник статьи: файл или ручной разнос
+# ---------------------------------------------------------------------------
+
+def test_own_sections_declare_their_source(client, db_session, imported_estimate,
+                                           top_unassigned_chapter, category_id, admin_user):
+    set_override(
+        db_session,
+        estimate_id=imported_estimate.id,
+        position_item_id=top_unassigned_chapter.id,
+        work_category_id=category_id,
+        note=None,
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    body = client.get(f"/api/v1/analytics/project-passport/{imported_estimate.contract_id}").json()
+    sources = {
+        section["source"]
+        for category in body["categories"]
+        for section in category["own_sections"]
+    }
+    assert "manual" in sources and "file" in sources
+
+
+# ---------------------------------------------------------------------------
+#  35. Переподвешивание проходит МИМО раздела со статьёй (ревью гейта после Задачи 4)
+# ---------------------------------------------------------------------------
+
+def test_unallocated_parent_is_rehung_past_an_assigned_ancestor(client, unallocated_tree):
+    """`unallocated_tree` несёт второй кусок: «20» со статьёй файла (код «1»),
+    «20.1» — код «9999», которого нет в справочнике (правило Ф3 «утверждение
+    файла сильнее наследования» не даёт ей унаследовать статью «20» именно
+    потому, что у неё есть своё, хоть и нечитаемое системой, утверждение), и
+    «20.1.1» без своей статьи, наследующий от «20.1» (там наследовать нечего).
+
+    «20.1» — файловый ребёнок раздела СО статьёй, но сама без статьи. Она
+    обязана стать КОРНЕМ своего куска нераспределённого (`parent_position_
+    item_id = None`, `depth = 0`), а не унести депеш файлового родителя «20» —
+    иначе экран получил бы отступ от раздела, которого он не показывает
+    («20» в `unallocated.sections` нет вовсе — у него есть статья)."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    sections = {s["number"]: s for s in body["unallocated"]["sections"]}
+
+    assert "20" not in sections, "у раздела есть статья — его не должно быть в нераспределённом"
+
+    top = sections["20.1"]
+    assert top["parent_position_item_id"] is None
+    assert top["depth"] == 0
+
+    child = sections["20.1.1"]
+    assert child["parent_position_item_id"] == top["position_item_id"]
+    assert child["depth"] == 1
+
+
+# ---------------------------------------------------------------------------
+#  36. subtree_amount не включает деньги ребёнка со своей статьёй файла
+# ---------------------------------------------------------------------------
+
+def test_subtree_amount_excludes_a_descendant_with_its_own_file_article(client, unallocated_tree):
+    """`unallocated_tree` несёт третий кусок: «21» и «21.1» — без статьи,
+    «21.2» — своя ВАЛИДНАЯ статья файла (код «2», без нечитаемых кодов —
+    правило Ф3 в чистом виде). У «21.2» есть своё утверждение — она ничего не
+    наследует от «21», и решение, принятое на «21», её деньги (999) не
+    переместит: резолвер не тронет статью «21.2» вовсе. `subtree_amount`
+    вершины «21» поэтому обязан включать только «21.1» (45), а не 45 + 999.
+
+    Числа (45 и 999) заданы фикстурой независимо и нарочно далеко друг от
+    друга — совпадение 45 со «случайно правильным» 544 (45+999 неверно) или
+    любым другим числом было бы видно немедленно."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    sections = {s["number"]: s for s in body["unallocated"]["sections"]}
+
+    assert "21.2" not in sections, "у раздела есть статья — его не должно быть в нераспределённом"
+
+    node = sections["21"]
+    assert Decimal(node["subtree_amount"]) == Decimal("45")
+    assert node["rows"] == 1
+    assert node["rows_priced"] == 1
+    assert node["rows_not_finite"] == 0
+
+
+# ---------------------------------------------------------------------------
+#  37. Блокирующий узел (нечитаемый код) исключён из свёртки предка И
+#      становится корнем своего кусочка — даже под родителем БЕЗ статьи
+# ---------------------------------------------------------------------------
+
+def test_unallocated_fold_excludes_a_child_with_its_own_unreadable_code(client, unallocated_tree):
+    """Находка ревью после первого раунда правок: предикат наследования — «нет
+    статьи И нет своего утверждения», а не просто «нет статьи». `unallocated_
+    tree` несёт четвёртый кусок: «22» — без утверждения вовсе; «22.1» — код
+    «9999» (проходит регэксп кода, но его нет в справочнике — правило Ф3
+    «утверждение файла сильнее наследования» не даёт ей наследовать, хотя её
+    файловый родитель «22» И ТАК без статьи — блокирует именно СВОЁ
+    утверждение «22.1», а не статус родителя); «22.2» — без утверждения,
+    наследует от «22» нормально.
+
+    Числа (777 и 33) заданы фикстурой независимо и далеко друг от друга —
+    «22».subtree_amount обязан быть 33 (только «22.2»), а не 777 + 33 = 810.
+
+    «22.1» при этом ОБЯЗАН появиться в списке сам по себе — она разносима
+    (решение на ней самой сильнее её же нечитаемого кода, тот же Task 1), но
+    как КОРЕНЬ собственного кусочка (`parent_position_item_id is None`,
+    `depth == 0`), не как узел, висящий отступом под «22»: свёртка «22»
+    обещает, что её деньги останутся при ней, и дерево не должно этому
+    противоречить показом «22.1» как ребёнка «22»."""
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    sections = {s["number"]: s for s in body["unallocated"]["sections"]}
+
+    parent = sections["22"]
+    assert Decimal(parent["subtree_amount"]) == Decimal("33")
+    assert parent["rows"] == 1
+    assert parent["rows_priced"] == 1
+    assert parent["rows_not_finite"] == 0
+
+    blocking = sections["22.1"]
+    assert blocking["parent_position_item_id"] is None
+    assert blocking["depth"] == 0
+    assert Decimal(blocking["amount"]) == Decimal("777")
+
+
+# ---------------------------------------------------------------------------
+#  38. manual_assignments: порядок по subtree_amount убыв., None в самом низу
+# ---------------------------------------------------------------------------
+
+def test_manual_assignments_are_ordered_by_subtree_amount_descending_with_none_last(
+    client, db_session, unallocated_tree, category_id, admin_user
+):
+    """Три решения с РАЗНЫМИ поддеревьями, заданными фикстурой независимо:
+    «21» (полная файловая свёртка — 21.1 (45) + 21.2 (999) = 1044, здесь БЕЗ
+    обрезки правилом Ф3, см. докстроку `_manual_assignments`), «9» (80,
+    30+30+20) и «8» (без единой строки в поддереве вовсе — `subtree_amount`
+    обязан быть `None`, а не 0). Ожидаемый порядок: 1044, 80, None."""
+    set_override(
+        db_session, estimate_id=unallocated_tree.estimate_id,
+        position_item_id=unallocated_tree.mixed_top_chapter_id,
+        work_category_id=category_id, note=None, user_id=admin_user.id,
+    )
+    set_override(
+        db_session, estimate_id=unallocated_tree.estimate_id,
+        position_item_id=unallocated_tree.top_chapter_id,
+        work_category_id=category_id, note=None, user_id=admin_user.id,
+    )
+    set_override(
+        db_session, estimate_id=unallocated_tree.estimate_id,
+        position_item_id=unallocated_tree.empty_chapter_id,
+        work_category_id=category_id, note=None, user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    body = client.get(f"/api/v1/analytics/project-passport/{unallocated_tree.contract_id}").json()
+    assignments = body["manual_assignments"]
+    assert len(assignments) == 3
+
+    amounts = [
+        Decimal(a["subtree_amount"]) if a["subtree_amount"] is not None else None
+        for a in assignments
+    ]
+    assert amounts == [Decimal("1044"), Decimal("80"), None]

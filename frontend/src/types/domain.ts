@@ -112,6 +112,13 @@ export interface EstimateRow {
   data_prepared_on_date: string | null;
   import_job_id: number | null;
   positions_count: number;
+  /**
+   * Число ручных решений о статьях, сделанных ПО ЭТОЙ смете (задача 6).
+   * Посметный, не по договору: форма замены предупреждает об утрате решений
+   * именно заменяемой пары (contract_id, amendment_no), а паспорт для этого
+   * не годится — он всегда про смету с `amendment_no IS NULL`.
+   */
+  category_overrides_count: number;
   created_at: string | null;
 }
 
@@ -512,6 +519,8 @@ export interface ProjectPassportSection {
   id: number;
   number: string | null;
   title: string;
+  /** `'file'` — раздел получил статью из клетки «Статья СМР»; `'manual'` — статья назначена вручную (спека разноса). */
+  source: "file" | "manual";
 }
 
 /** Узел дерева статей — элемент ПЛОСКОГО списка `categories` (правило 2). */
@@ -539,6 +548,70 @@ export interface ProjectPassportCategory {
   own_sections: ProjectPassportSection[];
 }
 
+/** Раздел сметы без статьи — узел ДЕРЕВА разносимого (спека разноса §2.6). */
+export interface ProjectPassportUnallocatedSection {
+  position_item_id: number;
+  /** `null` — узел верхнего уровня внутри нераспределённой части. */
+  parent_position_item_id: number | null;
+  number: string | null;
+  title: string;
+  depth: number;
+  /**
+   * Свои прямые позиции (`SUM` только по расценённым). `null` — нет ни одной
+   * своей расценённой суммы, а это ДВА разных случая, а не один: своих строк
+   * нет вовсе (`rows: 0`) — и своих строк ЕСТЬ, но ни одна не расценена
+   * (`rows > 0`, `rows_priced === 0`). Различает их именно пара `rows`/
+   * `rows_priced` рядом, а не сам `amount`.
+   */
+  amount: Decimal | null;
+  /** Итог поддерева — именно он показывает цену решения на этой вершине. */
+  subtree_amount: Decimal | null;
+  rows: number;
+  rows_priced: number;
+  rows_not_finite: number;
+  /**
+   * Что стояло в клетке «Статья СМР»; `null` — файл молчал. Различие причин
+   * выражается ровно этим полем, отдельного `reason` нет намеренно.
+   */
+  smr_article_raw: string | null;
+}
+
+/**
+ * Действующее ручное решение о статье раздела (спека разноса).
+ *
+ * **`subtree_amount`/`rows`/`rows_priced`/`rows_not_finite` здесь значат
+ * ДРУГОЕ, чем в {@link ProjectPassportUnallocated.sections}, хотя поля
+ * называются одинаково.** Там — обрезанная свёртка ТОЛЬКО наследуемой (ещё
+ * нераспределённой) части поддерева. Здесь — ПОЛНАЯ файловая свёртка по всей
+ * структуре под решённым разделом, без разбора статей внутренних узлов, и она
+ * НЕ обрезана намеренно: если внутри поддерева решённого раздела есть своё
+ * вложенное решение (или свой валидный файловый код), его деньги всё равно
+ * входят в файловую свёртку внешнего решения. Эти числа НЕ складываются между
+ * вложенными решениями и не сравнимы с числами `unallocated.sections[]`
+ * напрямую — это учётная запись «сколько денег лежит под этим решением по
+ * факту файла», а не «сколько денег это решение продолжает двигать сейчас».
+ */
+export interface ProjectPassportManualAssignment extends ProjectPassportUnallocatedSection {
+  work_category_id: number;
+  category_code: string;
+  category_title: string;
+  assigned_by_email: string;
+  assigned_at: string;
+  note: string | null;
+}
+
+/**
+ * Вариант выбора статьи при ручном разносе. Источник — `category_options`, а
+ * НЕ `categories`: `build_tree` прячет вложенные узлы дерева без строк, а
+ * разносить надо в том числе в статьи, которых в смете ещё нет вовсе.
+ */
+export interface ProjectPassportCategoryOption {
+  id: number;
+  code: string;
+  title: string;
+  is_bucket: boolean;
+}
+
 /** «Нераспределённое»: деньги без статьи, с двумя РАЗНЫМИ причинами (правило спеки §2.6). */
 export interface ProjectPassportUnallocated {
   amount: Decimal | null;
@@ -552,6 +625,8 @@ export interface ProjectPassportUnallocated {
   /** Позиции вовсе без ссылки на раздел — другая причина, считается отдельно. */
   rows_outside_structure: number;
   extras: ProjectPassportExtra[];
+  /** Дерево разделов без статьи (спека разноса §2.6) — экран разноса показывает иерархию, не плоский список. */
+  sections: ProjectPassportUnallocatedSection[];
 }
 
 export interface ProjectPassportTotals {
@@ -577,4 +652,49 @@ export interface ProjectPassport {
   totals: ProjectPassportTotals;
   categories: ProjectPassportCategory[];
   unallocated: ProjectPassportUnallocated;
+  /** Действующие ручные решения о статьях — по всем разделам сметы (спека разноса). Допработы следуют производно от разделов. */
+  manual_assignments: ProjectPassportManualAssignment[];
+  /** Варианты для выбора статьи при разносе — см. {@link ProjectPassportCategoryOption}. */
+  category_options: ProjectPassportCategoryOption[];
+}
+
+// ---------------------------------------------------------------------------
+//  Ручной разнос разделов по статьям (спека разноса)
+// ---------------------------------------------------------------------------
+
+/**
+ * Сводка изменений после разноса — НЕ паспорт целиком: форма паспорта
+ * объявлена ровно один раз (см. {@link ProjectPassport} выше), и вторая её
+ * копия здесь разошлась бы с первой при первом же изменении.
+ */
+export interface CategoryOverrideChangeSummary {
+  chapters_updated: number;
+  additional_works_updated: number;
+  /**
+   * Строк (не решений!), чья ДЕЙСТВУЮЩАЯ статья ручная — свои и унаследованные
+   * от родителя вместе. Число решений может быть меньше: одно решение на
+   * вершине дерева накрывает статьёй все строки поддерева.
+   */
+  chapters_manual: number;
+}
+
+/**
+ * Назначить статью разделу (`PUT .../category-overrides/{id}`).
+ *
+ * `contractId` эндпоинту не нужен — но нужен инвалидации: запрос паспорта
+ * ключуется договором, а не сметой (см. `useSetCategoryOverride`).
+ */
+export interface SetCategoryOverrideInput {
+  contractId: number;
+  estimateId: number;
+  positionItemId: number;
+  workCategoryId: number;
+  note?: string | null;
+}
+
+/** Снять ручное решение (`DELETE .../category-overrides/{id}`) — см. {@link SetCategoryOverrideInput}. */
+export interface ClearCategoryOverrideInput {
+  contractId: number;
+  estimateId: number;
+  positionItemId: number;
 }

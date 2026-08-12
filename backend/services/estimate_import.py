@@ -29,13 +29,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models import (
     Contract,
     Estimate,
     EstimateAdditionalWork,
+    EstimateCategoryOverride,
     EstimateRawData,
     Lot,
     PositionItem,
@@ -465,7 +466,7 @@ def import_estimate(
 
         _warn_on_unexpected_baseline(lot_content, lot_key, warnings)
 
-        proposal_data = next(iter((lot_content or {}).get(JSON_KEY_PROPOSALS).values()))
+        proposal_data = extract_single_proposal(lot_content)
         warnings.extend(compare_header_with_contract(data, contract, proposal_data))
         _log_ignored_contractor_details(proposal_data)
 
@@ -494,9 +495,9 @@ def import_estimate(
         # (Global Constraint плана; спека §1.5 факт 3, §2.8 п.1) и передаётся
         # обоим потребителям — материализации позиций и допработ. Второй
         # независимый вызов задвоил бы ВСЕ предупреждения Ф3, а не только
-        # категорийные. `_extract_positions` — единственный предикат «это не
+        # категорийные. `extract_positions` — единственный предикат «это не
         # словарь» (раньше он дублировался и здесь, и внутри `_import_positions`).
-        positions = _extract_positions(proposal_data)
+        positions = extract_positions(proposal_data)
         try:
             resolution: ProposalResolution = category_resolver.resolve_proposal(positions)
         except CategoryResolutionContractError as exc:
@@ -586,18 +587,63 @@ def _replace_existing(
     if not replace:
         return None
 
+    # `with_for_update()` ЗДЕСЬ, а не только на самом `delete` ниже (находка
+    # ревью PR #16): без него счёт утраченных решений идёт МИМО лока строки
+    # сметы, а лок неявно берёт лишь `DELETE`, то есть слишком поздно —
+    # решение, вставленное и закоммиченное сессией B в промежутке между этим
+    # чтением и `delete`, в счёт не попадёт, а `DELETE` унесёт его каскадом
+    # молча (спека §2.9). Лок здесь сериализует замену против
+    # `_lock_estimate` в `services/category_override.py` на ТОЙ ЖЕ строке
+    # сметы (спека §1.8, §2.5): кто раньше встал в очередь на лок, тот и
+    # читает счёт первым, но счёт при этом ВСЕГДА читается под локом, а не
+    # мимо него.
     row = db.execute(
-        select(Estimate.id, Estimate.created_at).where(
+        select(Estimate.id, Estimate.created_at)
+        .where(
             Estimate.contract_id == contract_id,
             Estimate.amendment_no.is_(None)
             if amendment_no is None
             else Estimate.amendment_no == amendment_no,
         )
+        .with_for_update()
     ).one_or_none()
     if row is None:
         return None
 
     old_id, created_at = row
+
+    # Решения о статьях уходят каскадом вместе со сметой (спека разноса §1.8), и
+    # поэтому об их утрате надо сказать: иначе аналитик потеряет работу молча и
+    # узнает об этом по вернувшемуся «Нераспределённому». Предупреждение пишет
+    # сессия B — оно описывает ДОМЕННОЕ состояние и не должно существовать, если
+    # домен откатился (AGENTS.md §5). В `warnings` попадает число и дата, а не
+    # перечень: истории решений проект не ведёт (спека разноса §3.3). Счёт — ДО
+    # `delete`: после него решений уже физически нет, считать было бы нечего.
+    lost = db.execute(
+        select(
+            func.count(),
+            func.max(EstimateCategoryOverride.assigned_at),
+        )
+        .select_from(EstimateCategoryOverride)
+        .join(PositionItem, PositionItem.id == EstimateCategoryOverride.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == old_id)
+    ).one()
+    if lost[0]:
+        # Число — после двоеточия, не сразу за словом: русское согласование
+        # числительного с «решение/решения/решений» иначе ломается на 1 (ровно
+        # самом частом случае: аналитик читает это в момент, когда только что
+        # потерял СВОЁ решение). `lost[1]` — момент ПОСЛЕДНЕГО решения
+        # (`MAX(assigned_at)`), поэтому «последнее», а не «сделанных до»: «до»
+        # занижало бы дату на сутки относительно факта.
+        warnings.append(
+            f"Утрачено ручных решений о статьях: {lost[0]} (последнее — "
+            f"{lost[1]:%d.%m.%Y}). Они относились к заменённой смете и удалены "
+            "вместе с ней. Разнос «Нераспределённого» по новой смете нужно "
+            "сделать заново."
+        )
+
     db.execute(delete(Estimate).where(Estimate.id == old_id))
     warnings.append(
         f"Заменена смета estimate_id={old_id} от {created_at.date().isoformat()}. "
@@ -711,16 +757,39 @@ def _import_summary(
         )
 
 
-def _extract_positions(proposal_data: dict[str, Any]) -> dict[str, Any]:
+def extract_positions(proposal_data: dict[str, Any]) -> dict[str, Any]:
     """`contractor_items.positions`, либо `{}` — единственный предикат «это не
     вывод парсера» (Global Constraint плана Task 5: ни одного второго предиката
     для уже выраженного понятия). Раньше эта же проверка дублировалась внутри
     `_import_positions`, ДО вызова резолвера; теперь план резолва и материализация
     позиций потребляют один и тот же результат этой функции.
+
+    Публичная (без `_`) — читается и сервисом ручного разноса статей
+    (`services/category_override.py`): вход резолвера там собирается из того
+    же `raw_data`, тем же предикатом, что и на импорте (спека разноса §2.3).
     """
     items = proposal_data.get(JSON_KEY_CONTRACTOR_ITEMS) or {}
     positions = items.get(JSON_KEY_CONTRACTOR_POSITIONS) or {}
     return positions if isinstance(positions, dict) else {}
+
+
+def extract_single_proposal(lot_content: dict[str, Any] | None) -> dict[str, Any]:
+    """Единственное предложение лота — единственный предикат «это предложение
+    ЭТОГО лота» (тот же Global Constraint, что у `extract_positions`: одно
+    понятие — один предикат, а не по копии на потребителя). Ровно одно
+    предложение на лот — инвариант §4, закреплённый `uq_proposals_lot_id`.
+
+    Пустой лот отдаёт `{}`, а не роняет `AttributeError` из `.values()` на
+    `None`: на импорте этот путь недостижим (`_validate_payload` отвергает лот
+    без предложения РАНЬШЕ, чем взять его отсюда), но у второго потребителя —
+    сервиса разноса статей, читающего то же `raw_data` уже ПОСЛЕ импорта, —
+    той же гарантии нет теми же средствами, и не это место должно ронять
+    непонятную ошибку вместо осмысленного ответа.
+
+    Публичная (без `_`) — по тем же причинам, что у `extract_positions`.
+    """
+    proposals = (lot_content or {}).get(JSON_KEY_PROPOSALS) or {}
+    return next(iter(proposals.values()), {})
 
 
 def _reject_stale_1_1_0_shape(
@@ -869,7 +938,7 @@ def _import_positions(
     РОВНО ОДИН РАЗ в `import_estimate`, а не здесь: второй независимый вызов
     задвоил бы ВСЕ предупреждения Ф3, спека §1.5 факт 3). Guard «не словарь» для
     `positions` тоже больше не дублируется здесь — единственный предикат об этом
-    теперь `_extract_positions`.
+    теперь `extract_positions`.
 
     `long_titles` — аккумулятор на ВСЮ смету, а не на лот: функция вызывается по
     одному разу на лот, и складывай предупреждение внутри — файл с тремя лотами
