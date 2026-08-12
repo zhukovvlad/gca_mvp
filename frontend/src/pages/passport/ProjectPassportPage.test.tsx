@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { delay, http, HttpResponse } from "msw";
@@ -785,6 +785,138 @@ describe("Паспорт проекта: таблица по статьям", ()
 
     const cell = await screen.findByTestId("share-unallocated");
     expect((cell.textContent ?? "").replace(/\s+/g, " ").trim()).toBe("0,00 %");
+  });
+});
+
+/**
+ * Панель-верстак разноса (задача 8): шеврон строки «Нераспределённое»
+ * разворачивает `UnallocatedPanel` под ней. Содержимое панели (дерево,
+ * поиск статьи, «разнесено вручную») проверяет `UnallocatedPanel.test.tsx` —
+ * он монтирует панель напрямую с синтетическими `contractId`/`estimateId`.
+ * Здесь — только разводка: панель обязана всплыть по клику ровно там, где
+ * `CategoryTable` её монтирует, и получить id маршрута и id сметы РЕАЛЬНОЙ
+ * фикстуры, а не выдуманные (task-8-controller-notes: два источника id —
+ * ровно то, из-за чего инвалидация тихо перестаёт совпадать).
+ */
+describe("Паспорт проекта: панель-верстак разноса", () => {
+  it("шеврон «Нераспределённого» разворачивает и сворачивает панель", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.queryByTestId("unallocated-panel")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    expect(await screen.findByTestId("unallocated-panel")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Свернуть нераспределённое" }));
+    expect(screen.queryByTestId("unallocated-panel")).not.toBeInTheDocument();
+  });
+
+  it("строка панели не попадает в печатный поток", async () => {
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    const panelRow = await screen.findByTestId("row-unallocated-panel");
+    expect(panelRow).toHaveAttribute("data-print", "hide");
+  });
+
+  it("мутация разноса несёт id раздела и id сметы фикстуры, а не выдуманные", async () => {
+    // sampleProjectPassport: estimate.id 600. Раздел 5001 — корень дерева
+    // нераспределённого, category_options id 8 / код "04.02" — «Пусконаладочные
+    // работы», не участвующая иначе в этом файле. `contractId` эта проверка
+    // НЕ покрывает: эндпоинт `PUT .../category-overrides/:positionItemId` его
+    // не несёт вовсе (он идёт только в инвалидацию) — см. тест провенанса ниже.
+    const received: { estimateId: string; positionItemId: string } = {
+      estimateId: "",
+      positionItemId: "",
+    };
+    server.use(
+      http.put(
+        "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+        ({ params }) => {
+          received.estimateId = String(params.estimateId);
+          received.positionItemId = String(params.positionItemId);
+          return HttpResponse.json({
+            chapters_updated: 1,
+            additional_works_updated: 0,
+            chapters_manual: 1,
+          });
+        }
+      )
+    );
+    const user = userEvent.setup();
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    await user.click(await screen.findByTestId("pick-category-5001"));
+    await user.click(await screen.findByText("Пусконаладочные работы"));
+
+    await waitFor(() => expect(received.positionItemId).toBe("5001"));
+    expect(received.estimateId).toBe("600");
+  });
+
+  /**
+   * Finding I-2 (ревью 1). Прежний тест назывался «по id маршрута», но не мог
+   * это проверить: эндпоинт `PUT .../category-overrides/:positionItemId` не
+   * несёт `contractId` вовсе — тот идёт ТОЛЬКО в
+   * `qc.invalidateQueries({ queryKey: qk.passport.project(contractId) })`
+   * (`services/queries.ts`). Хуже: маршрут этого файла — `/contracts/12/…`,
+   * а `sampleProjectPassport.contract.id` — тоже `12`, и подмена
+   * `contractId={passport.contract.id}` в `CategoryTable` (ровно то, что
+   * запрещают controller-notes) проходила бы этим тестом незамеченной — оба
+   * источника совпадали.
+   *
+   * Пробный сценарий: маршрут `/contracts/77/passport`, а «сервер» отвечает
+   * паспортом, чей `contract.id` — 12 (фикстура не трогается). Это НЕ
+   * состояние, которое отдаёт бэкенд в реальной работе (паспорт по маршруту
+   * `:contractId` всегда несёт `contract.id` того же договора) — это
+   * намеренный зонд, разводящий два источника id, которые совпадают
+   * ВСЮДУ ЕЩЁ в этом файле. Наблюдаем не запрос (в нём id нет), а
+   * ИНВАЛИДАЦИЮ: если `contractId` мутации — id маршрута (77), успешный PUT
+   * инвалидирует активный запрос паспорта, и `GET
+   * .../project-passport/77` уходит повторно. Если бы `contractId` брали из
+   * `passport.contract.id` (12), инвалидация целила бы в ключ, на который
+   * никто не подписан, и повторного запроса не было бы вовсе — тест увис бы
+   * на `waitFor` и покраснел по таймауту.
+   */
+  it("мутация инвалидирует паспорт по id МАРШРУТА, а не по contract.id из ответа", async () => {
+    let hitsForRoute77 = 0;
+    server.use(
+      http.get("/api/v1/analytics/project-passport/:contractId", ({ params }) => {
+        if (String(params.contractId) === "77") hitsForRoute77 += 1;
+        // contract.id фикстуры остаётся 12 — намеренное несовпадение с
+        // маршрутом 77, см. докстроку теста.
+        return HttpResponse.json(sampleProjectPassport);
+      }),
+      http.put(
+        "/api/v1/estimates/:estimateId/category-overrides/:positionItemId",
+        () =>
+          HttpResponse.json({
+            chapters_updated: 1,
+            additional_works_updated: 0,
+            chapters_manual: 1,
+          })
+      )
+    );
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/contracts/:contractId/passport" element={<ProjectPassportPage />} />
+      </Routes>,
+      { initialRoute: "/contracts/77/passport" }
+    );
+    await screen.findByText("ГП-0212");
+    await waitFor(() => expect(hitsForRoute77).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: "Развернуть нераспределённое" }));
+    await user.click(await screen.findByTestId("pick-category-5001"));
+    await user.click(await screen.findByText("Пусконаладочные работы"));
+
+    await waitFor(() => expect(hitsForRoute77).toBe(2));
   });
 });
 

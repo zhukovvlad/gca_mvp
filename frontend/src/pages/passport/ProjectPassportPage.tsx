@@ -77,6 +77,15 @@ export default function ProjectPassportPage() {
     );
   }
 
+  if (id === undefined) {
+    // Защитная случайность, не наблюдаемая в реальной работе: `passport`
+    // заполнен только если запрос ушёл, а `useProjectPassport` держит его
+    // заблокированным (`enabled: contractId !== undefined`), пока `id` не
+    // определён. TypeScript этой связи не видит — сужаем явно, без `!`/каста
+    // (task-8-controller-notes).
+    return null;
+  }
+
   return (
     // data-print="sheet" — документ целиком (задача 10, спека §2.11): шапка,
     // кольцо структуры и таблица по статьям печатаются как один лист/свод, а
@@ -87,7 +96,7 @@ export default function ProjectPassportPage() {
         <StructureRing passport={passport} />
       </div>
       <div className="mt-6">
-        <CategoryTable passport={passport} />
+        <CategoryTable passport={passport} contractId={id} />
       </div>
     </div>
   );

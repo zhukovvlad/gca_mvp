@@ -22,6 +22,8 @@ import type {
   ProjectPassportUnallocated,
 } from "@/types/domain";
 
+import { UnallocatedPanel } from "./UnallocatedPanel";
+
 /**
  * Таблица по статьям классификатора (Ф6 фазы 7, спека §2.9 пп. 5-9, 12, 15;
  * план, задача 8).
@@ -135,11 +137,20 @@ function ExpandToggle({
   expanded,
   code,
   onToggle,
+  label,
 }: {
   expandable: boolean;
   expanded: boolean;
-  code: string;
+  code?: string;
   onToggle: () => void;
+  /**
+   * Переопределяет `aria-label` целиком — по умолчанию
+   * `Развернуть/Свернуть статью ${code}`. Нужно строке «Нераспределённое»:
+   * она не статья классификатора, и стандартная подпись называла бы её
+   * неверно. Существующие вызовы (статьи дерева) label не передают и держат
+   * прежнюю подпись без изменений.
+   */
+  label?: string;
 }) {
   if (!expandable) {
     return <span className="inline-block size-3.5 shrink-0" aria-hidden="true" />;
@@ -152,7 +163,7 @@ function ExpandToggle({
       // «служебные элементы уходят»). CSS скрывает ровно то, что помечено.
       data-print="hide"
       aria-expanded={expanded}
-      aria-label={`${expanded ? "Свернуть" : "Развернуть"} статью ${code}`}
+      aria-label={label ?? `${expanded ? "Свернуть" : "Развернуть"} статью ${code}`}
       onClick={onToggle}
       className="shrink-0 text-fg-tertiary hover:text-fg"
     >
@@ -328,15 +339,35 @@ function CategoryRow({
   );
 }
 
-export function CategoryTable({ passport }: { passport: ProjectPassport }) {
+export function CategoryTable({
+  passport,
+  contractId,
+}: {
+  passport: ProjectPassport;
+  /**
+   * Из маршрута (`ProjectPassportPage`), НЕ из `passport.contract.id` — запрос
+   * паспорта ключуется id маршрута, и мутации разноса инвалидируют тот же
+   * ключ (`qk.passport.project`). Два источника одного значения — ровно то,
+   * из-за чего инвалидация тихо перестаёт совпадать (task-8-controller-notes).
+   */
+  contractId: number;
+}) {
   const { categories, unallocated, totals } = passport;
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
   // Правило 12 §2.9: переключатель по умолчанию ВЫКЛЮЧЕН — нулевые подстатьи
   // скрыты, пока пользователь их не запросит явно.
   const [showZero, setShowZero] = useState(false);
   const zeroToggleId = useId();
+  // Разворот панели-верстака разноса (задача 8) — своё состояние, не часть
+  // `expandedIds`: у «Нераспределённого» нет id статьи классификатора.
+  const [unallocatedOpen, setUnallocatedOpen] = useState(false);
 
   const roots = useMemo(() => buildCategoryTree(categories), [categories]);
+  // `ProjectPassportPage` рендерит эту таблицу только после проверки
+  // `passport.estimate !== null` — но тип `ProjectPassportEstimate | null`
+  // об этом не знает здесь. Без сметы панель разноса не открыть: разносить
+  // нечем (нет `estimateId` для мутаций).
+  const estimateId = passport.estimate?.id;
 
   function toggle(id: number) {
     setExpandedIds((prev) => {
@@ -397,10 +428,20 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
           >
             <TableCell className="text-warning-text">⚠</TableCell>
             <TableCell>
-              <p className="font-semibold text-warning-text">Нераспределённое</p>
-              <p data-testid="unallocated-caption" className="text-2xs text-warning-text">
-                {unallocatedCaption(unallocated)}
-              </p>
+              <div className="flex min-w-0 items-start gap-2">
+                <ExpandToggle
+                  expandable
+                  expanded={unallocatedOpen}
+                  onToggle={() => setUnallocatedOpen((prev) => !prev)}
+                  label={unallocatedOpen ? "Свернуть нераспределённое" : "Развернуть нераспределённое"}
+                />
+                <div className="min-w-0">
+                  <p className="font-semibold text-warning-text">Нераспределённое</p>
+                  <p data-testid="unallocated-caption" className="text-2xs text-warning-text">
+                    {unallocatedCaption(unallocated)}
+                  </p>
+                </div>
+              </div>
             </TableCell>
             <TableCell className="text-right">
               <MoneyCell value={unallocated.amount} className="text-warning-text" />
@@ -419,6 +460,20 @@ export function CategoryTable({ passport }: { passport: ProjectPassport }) {
               />
             </TableCell>
           </TableRow>
+
+          {/*
+            Панель-верстак разноса (задача 8) — своя строка на всю ширину, а
+            не пятая колонка «Нераспределённого»: в раскладке макета селектор
+            статьи влезает только на место «Доля» и «₽/м²», а автору, дате и
+            кнопке «снять» места нет вовсе.
+          */}
+          {unallocatedOpen && estimateId !== undefined && (
+            <TableRow data-testid="row-unallocated-panel" data-print="hide">
+              <TableCell colSpan={5} className="p-0">
+                <UnallocatedPanel passport={passport} contractId={contractId} estimateId={estimateId} />
+              </TableCell>
+            </TableRow>
+          )}
 
           <TableRow data-testid="row-grand-total" data-print="row" className="border-t-2 border-fg">
             <TableCell />
