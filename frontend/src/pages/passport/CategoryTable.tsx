@@ -115,6 +115,17 @@ function sectionLabel(section: ProjectPassportSection): string {
  * но старые тесты его текст и не проверяют (единственная фикстурная запись с
  * `source: "manual"` — у статьи "10", которую они не трогают).
  */
+/**
+ * `whitespace-normal break-words` — не косметика, а печатное обязательство
+ * (`AGENTS.md` §10: «без обрезки по правому краю»). Ячейка таблицы shadcn несёт
+ * `whitespace-nowrap`, а `white-space` НАСЛЕДУЕТСЯ, поэтому подпись без явного
+ * переопределения растёт в одну строку: замер в браузере на смете 329-ТУ стенда
+ * дал 2437 px содержимого в колонке 221 px и текст, уходящий за лист А4 на
+ * 1852 px. Подпись без единой ручной секции уходила за лист на 77 px — то есть
+ * дефект принадлежит самой подписи, а не бейджам ручного разноса. Свёрнутое
+ * дерево этого не показывает: там служебных строк нет вовсе, и все прежние
+ * замеры печати мерили только его.
+ */
 function OwnSectionsCaption({
   code,
   sections,
@@ -124,14 +135,20 @@ function OwnSectionsCaption({
 }) {
   if (sections.length === 0) {
     return (
-      <p data-testid={`own-caption-${code}`} className="text-2xs text-fg-tertiary">
+      <p
+        data-testid={`own-caption-${code}`}
+        className="whitespace-normal break-words text-2xs text-fg-tertiary"
+      >
         позиции, привязанные прямо к этой статье
       </p>
     );
   }
   const word = sections.length === 1 ? "раздел сметы" : "разделы сметы";
   return (
-    <p data-testid={`own-caption-${code}`} className="text-2xs text-fg-tertiary">
+    <p
+      data-testid={`own-caption-${code}`}
+      className="whitespace-normal break-words text-2xs text-fg-tertiary"
+    >
       {word}{" "}
       {sections.map((section, index) => (
         <Fragment key={section.id}>
