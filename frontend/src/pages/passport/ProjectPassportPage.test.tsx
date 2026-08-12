@@ -521,6 +521,36 @@ describe("Паспорт проекта: таблица по статьям", ()
     expect(caption).toHaveClass("break-words");
   });
 
+  // Тест 8б. ТА ЖЕ проверка на ПУСТОЙ ветке подписи (`sections.length === 0`).
+  //
+  // Заведена по ревью PR #19. Ревьюер назвал ветку «переполнявшейся на 77 px» —
+  // это не так: 77 px давала подпись `own-caption-11.99`, у которой разделы
+  // ЕСТЬ, просто все файловые (115 символов текста). Пустая ветка печатает
+  // фиксированную строку и в замерах стенда не встретилась ни разу. Но вывод
+  // ревью верен по другой причине: отступ вложенности сужает колонку с
+  // глубиной, поэтому и фиксированная строка на глубоком уровне может не
+  // поместиться, а до этого теста ветка держалась только на том, что
+  // реализация продублирована. Теперь класс общий (`OWN_CAPTION_CLASS`), и
+  // тест стережёт обе ветки — снятие класса краснит их вместе.
+  it("подпись переносится и когда разделы неизвестны (пустой own_sections)", async () => {
+    const user = userEvent.setup();
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) =>
+        c.code === "04" ? { ...c, own_sections: [] } : c
+      ),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    const caption = await screen.findByTestId("own-caption-04");
+    expect(caption).toHaveTextContent("позиции, привязанные прямо к этой статье");
+    expect(caption).toHaveClass("whitespace-normal");
+    expect(caption).toHaveClass("break-words");
+  });
+
   // Тест 9.
   it("строка допработ с бейджем внутри своей статьи", async () => {
     const user = userEvent.setup();
