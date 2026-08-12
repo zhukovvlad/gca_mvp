@@ -89,6 +89,23 @@ function sectionLabel(section: ProjectPassportSection): string {
 }
 
 /**
+ * `whitespace-normal break-words` — не косметика, а печатное обязательство
+ * (`AGENTS.md` §10: «без обрезки по правому краю»). Ячейка таблицы shadcn несёт
+ * `whitespace-nowrap`, а `white-space` НАСЛЕДУЕТСЯ, поэтому подпись без явного
+ * переопределения растёт в одну строку: замер в браузере на смете 329-ТУ стенда
+ * дал 2437 px содержимого в колонке 221 px и текст, уходящий за лист А4 на
+ * 1852 px. Подпись, у которой разделы есть, но все ФАЙЛОВЫЕ, уходила за лист на
+ * 77 px — то есть дефект принадлежит самой подписи, а не бейджам ручного
+ * разноса. Свёрнутое дерево этого не показывает: там служебных строк нет вовсе,
+ * и все прежние замеры печати мерили только его.
+ *
+ * Класс общий на обе ветки подписи намеренно (ревью PR #19): пока он был
+ * продублирован, пустую ветку не стерёг ни один тест, а отступ вложенности
+ * сужает колонку с глубиной — фиксированная строка тоже может не поместиться.
+ */
+const OWN_CAPTION_CLASS = "whitespace-normal break-words text-2xs text-fg-tertiary";
+
+/**
  * Подпись служебной строки собственных денег статьи (правило 6 §2.9), теперь
  * с бейджем «вручную» у разделов, чья статья назначена решением, а не файлом
  * (задача 9, спека §2.10: паспорт идёт в банк и не должен выдавать решение
@@ -124,14 +141,14 @@ function OwnSectionsCaption({
 }) {
   if (sections.length === 0) {
     return (
-      <p data-testid={`own-caption-${code}`} className="text-2xs text-fg-tertiary">
+      <p data-testid={`own-caption-${code}`} className={OWN_CAPTION_CLASS}>
         позиции, привязанные прямо к этой статье
       </p>
     );
   }
   const word = sections.length === 1 ? "раздел сметы" : "разделы сметы";
   return (
-    <p data-testid={`own-caption-${code}`} className="text-2xs text-fg-tertiary">
+    <p data-testid={`own-caption-${code}`} className={OWN_CAPTION_CLASS}>
       {word}{" "}
       {sections.map((section, index) => (
         <Fragment key={section.id}>
