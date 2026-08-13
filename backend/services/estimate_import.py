@@ -598,7 +598,12 @@ def _replace_existing(
     # читает счёт первым, но счёт при этом ВСЕГДА читается под локом, а не
     # мимо него.
     row = db.execute(
-        select(Estimate.id, Estimate.created_at)
+        select(
+            Estimate.id,
+            Estimate.created_at,
+            Estimate.vat_rate_base_override,
+            Estimate.vat_rate_target,
+        )
         .where(
             Estimate.contract_id == contract_id,
             Estimate.amendment_no.is_(None)
@@ -610,7 +615,7 @@ def _replace_existing(
     if row is None:
         return None
 
-    old_id, created_at = row
+    old_id, created_at, old_vat_base, old_vat_target = row
 
     # Решения о статьях уходят каскадом вместе со сметой (спека разноса §1.8), и
     # поэтому об их утрате надо сказать: иначе аналитик потеряет работу молча и
@@ -642,6 +647,24 @@ def _replace_existing(
             f"{lost[1]:%d.%m.%Y}). Они относились к заменённой смете и удалены "
             "вместе с ней. Разнос «Нераспределённого» по новой смете нужно "
             "сделать заново."
+        )
+
+    # Обе ручные поправки ставки НДС (`vat_rate_base_override`/`vat_rate_target`)
+    # уходят каскадом вместе со сметой — выбранное поведение, а не следствие
+    # схемы (спека §2.11): новый файл несёт свои факты, и переносить чужую
+    # поправку на него означало бы столкнуть её с тем, что заявит новый файл.
+    # Молчаливой пропажи ручной работы не будет — тот же приём, что у решений о
+    # статьях выше, и тот же счёт ДО `delete`: после него поправки уже
+    # физически нет, читать было бы нечего.
+    if old_vat_base is not None or old_vat_target is not None:
+        parts = []
+        if old_vat_base is not None:
+            parts.append(f"база: {old_vat_base}%")
+        if old_vat_target is not None:
+            parts.append(f"показ: {old_vat_target}%")
+        warnings.append(
+            "Заменена смета с ручной поправкой ставки НДС (" + ", ".join(parts) + "); "
+            "поправка снята вместе со сметой и не перенесена на новую."
         )
 
     db.execute(delete(Estimate).where(Estimate.id == old_id))

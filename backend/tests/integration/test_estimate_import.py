@@ -37,6 +37,7 @@ from services.estimate_import import (
     compare_header_with_contract,
     import_estimate,
 )
+from services.estimate_vat import set_vat_rates
 from services.unit_resolution import UnitResolver
 from tests.payloads import (
     additional_works_row,
@@ -952,6 +953,38 @@ def test_replace_says_nothing_when_there_were_no_decisions(
     ничего не значит."""
     job = replace_upload(imported_estimate.contract_id)
     assert not any("ручных решений" in w for w in job.warnings)
+
+
+def test_replace_warns_about_dropped_manual_vat_rates(
+    db_session, imported_estimate, admin_user, replace_upload
+):
+    """Спека §2.11: обе поправки ставки НДС уходят каскадом вместе со сметой при
+    `replace`, и об утрате надо СКАЗАТЬ — тот же приём, что у решений о статьях
+    выше, только для другой ручной работы."""
+    set_vat_rates(
+        db_session,
+        estimate_id=imported_estimate.id,
+        base_override=Decimal("12"),
+        target=Decimal("16"),
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    warnings = " ".join(job.warnings)
+    assert "ручной поправкой ставки НДС" in warnings
+    assert "12" in warnings
+    assert "16" in warnings
+
+
+def test_replace_says_nothing_about_vat_when_there_was_no_manual_rate(
+    db_session, imported_estimate, replace_upload
+):
+    """Негативная половина: без ручной поправки ставки предупреждения о ней быть
+    не должно, иначе оно ничего не значит (та же логика, что у решений о
+    статьях)."""
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("ставки НДС" in w for w in job.warnings)
 
 
 # ---------------------------------------------------------------------------
