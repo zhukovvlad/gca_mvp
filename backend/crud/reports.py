@@ -25,9 +25,11 @@
 §4), и сравнивать его с валовым фактом означало бы сравнивать разные единицы
 измерения. Факт приводится к нетто через `money.vat.gross_to_net` по БАЗОВОЙ
 ставке НДС конкретной позиции (`vat_rate_base` из `DEVIATION_INPUTS`); свод по
-договору (отчёт «а») — однодоговорная поверхность, он остаётся в валовой шкале и
-переходит на целевую ставку задачей 8, не этой задачей — её агрегаты
-(`_work_aggregate_select`) не тронуты.
+договору (отчёт «а») — однодоговорная поверхность, и задача 8 переводит его на
+ставку ПОКАЗА (`money.vat.effective_display_rate`, спека §5.1): факт и норматив
+показываются в ОДНОЙ и той же ставке (цель, иначе перекрытая база, иначе
+единогласная заявленная ставка предложений; `None` при разногласии — тогда
+норматив гасится, а факт остаётся в СВОИХ, исходных ставках построчно).
 
 **Счётчики исключённого — разбиение на ЧЕТЫРЕ класса, а не пересечение** (задача 4,
 приоритет строго сверху вниз, и он не декоративный):
@@ -88,11 +90,13 @@ from models import (
     CatalogPosition,
     Contract,
     Contractor,
+    Lot,
     ObjectModel,
+    Proposal,
     RateClass,
     UnitOfMeasure,
 )
-from money.vat import gross_to_net, quantize_money
+from money.vat import effective_display_rate, gross_to_net, net_to_gross, quantize_money, restate_gross
 
 #: Ноль как Decimal — чтобы суммирование не начиналось с int и не давало float.
 ZERO = Decimal(0)
@@ -121,6 +125,36 @@ def _deviation_pct(fact: Decimal | None, standard: Decimal | None) -> Decimal | 
 #  (а) Свод расценок по договору с отклонениями
 # ---------------------------------------------------------------------------
 
+def _declared_rates(db: Session, estimate_id: int) -> list[Decimal | None]:
+    """Заявленные ставки НДС предложений сметы — СЫРОЙ список (задача 8, спека
+    §5.1): `effective_display_rate` сам сворачивает его в единогласную ставку
+    или `None` при разногласии/незнании/отсутствии предложений, поэтому
+    сворачивать его здесь ЕЩЁ РАЗ незачем."""
+    return list(
+        db.execute(
+            sa.select(Proposal.vat_rate)
+            .select_from(Proposal)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimate_id)
+        ).scalars().all()
+    )
+
+
+def _standard_in_display_rate(standard: Decimal | None, rate: Decimal | None) -> Decimal | None:
+    """Норматив — цена без НДС; на одно-договорной поверхности он показывается в
+    ЭФФЕКТИВНОЙ ставке поверхности, той же, в которой показан факт (задача 8,
+    спека §5.1).
+
+    `rate is None` (разногласие заявленных ставок предложений, оговорённая
+    граница §5.1) гасит норматив целиком: показать «в какой-то из» ставок
+    нельзя. Отклонение от приведения не меняется: приведение ОБЕИХ сторон к
+    одной ставке отношения не меняет.
+    """
+    if standard is None or rate is None:
+        return None
+    return net_to_gross(standard, rate)
+
+
 def contract_summary(db: Session, contract_id: int) -> dict:
     """Свод по договору: все расценённые работы последней сметы с отклонениями.
 
@@ -129,8 +163,13 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     предмет торга. У таких строк отклонение — `None`, что на листе печатается как
     «нет норматива» (§10 требует отличать это от нуля).
 
-    Остаётся в валовой шкале (переход на целевую ставку НДС — задача 8, не эта):
-    однодоговорная поверхность, факт и норматив здесь НЕ приводятся к нетто.
+    **Однодоговорная поверхность в СТАВКЕ ПОКАЗА (задача 8, спека §5.1).** Факт и
+    норматив показываются в ОДНОЙ и той же ставке — `effective_display_rate`
+    (цель, иначе перекрытая база, иначе единогласная заявленная ставка
+    предложений; `None` при разногласии). Факт приводится К КАЖДОЙ группе
+    работа×база СВОЕЙ базой (`_fold_summary_work`, тот же приём, что у
+    `_fold_bank_work`), норматив (уже нетто) — одной конвертацией `net_to_gross`
+    в конце: у него нет собственной базы НДС, разносить его по группам незачем.
     """
     contract_row = db.execute(
         sa.select(Contract, ObjectModel.title, Contractor.title, RateClass.title)
@@ -155,22 +194,38 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         "total_amount": contract.total_amount,
         "estimate_amendment_no": estimate.amendment_no if estimate else None,
         "estimate_date": iso(estimate.data_prepared_on_date) if estimate else None,
+        # Подпись листа (задача 8, шаг 6): в какой ставке показаны суммы этого
+        # свода — «с НДС N %» либо «без НДС» при ставке 0, либо не подписывается
+        # вовсе при разногласии (единой ставки показа нет). Ключ есть на ОБОИХ
+        # путях функции (правило «форма ответа одна и та же», см. `crud.
+        # project_passport`), даже когда сметы ещё нет вовсе.
+        "vat_display_rate": None,
     }
     if estimate is None:
         return {"header": header, "rows": [], "totals": _empty_report_totals()}
 
-    grouped = db.execute(
+    effective_rate = effective_display_rate(
+        estimate.vat_rate_target, estimate.vat_rate_base_override, _declared_rates(db, estimate.id)
+    )
+    header["vat_display_rate"] = effective_rate
+
+    group_rows = db.execute(
         _work_aggregate_select()
         .where(DEVIATION_INPUTS.c.estimate_id == estimate.id, DEVIATION_INPUTS.c.weight > 0)
         .group_by(
             DEVIATION_INPUTS.c.catalog_position_id,
             CatalogPosition.standard_job_title,
             UnitOfMeasure.code,
+            DEVIATION_INPUTS.c.vat_rate_base,
         )
-        .order_by(sa.desc("fact_amount_total"))
     ).all()
 
-    rows = [_summary_row(r) for r in grouped]
+    rows = _fold_summary_rows(group_rows, effective_rate)
+    # Итоги — из НЕОКРУГЛЁННЫХ строк (см. модульную документацию про границу
+    # округления): `_totals_of` читает `amount`/`comparable_amount`/
+    # `comparable_standard_amount`, и они обязаны остаться точными ДО того, как
+    # `_quantize_row_for_display` округлит поля строк ниже — иначе получилось
+    # бы `Σ round(x)` вместо `round(Σ x)`.
     totals = _totals_of(rows)
     # Что отбросил фильтр `weight > 0` — счётчиком, не молчанием. Свод показывает
     # предмет торга целиком, и позиция с ценой, но без объёма, обязана быть хотя бы
@@ -189,27 +244,36 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         .select_from(DEVIATION_INPUTS)
         .where(DEVIATION_INPUTS.c.estimate_id == estimate.id)
     ).scalar_one()
+
+    # Округление — ПОСЛЕДНИЙ шаг, когда totals уже посчитаны из точных строк.
+    for row in rows:
+        _quantize_row_for_display(row)
+    _quantize_totals_for_display(totals)
     return {"header": header, "rows": rows, "totals": totals}
 
 
 def _work_aggregate_select():
-    """Агрегаты по работе для свода по договору: факт, объём, норматив — раздельно
-    для сравнимых строк (используется ТОЛЬКО `contract_summary`, задача 4).
+    """Слагаемые группы свода по договору: работа × база НДС (задача 8, спека §5.1).
 
-    Отчёт «для банка» на нетто-ось (задача 4) с этой функцией больше не работает —
-    у него своя, `_bank_position_groups_select`, потому что ему нужна ДОПОЛНИТЕЛЬНАЯ
-    группировка по базе НДС для перевода в нетто (см. её докстрок). Общего
-    определения «сравнимо» у двух отчётов тоже больше нет: здесь оно по-прежнему
-    только про норматив (валовая шкала, задача 8 её не меняла), там — про норматив
-    И про известную базу НДС разом.
+    Группировка ДОПОЛНИТЕЛЬНО идёт по `vat_rate_base` — тем же приёмом, что у
+    отчёта «для банка» (`_bank_position_groups_select`) и у паспорта проекта
+    (`crud.project_passport._direct_totals`): множитель приведения к ставке
+    показа постоянен внутри группы одной базы, поэтому `restate_gross` можно
+    вызвать РАЗ на группу (`_fold_summary_work`), а не на каждую позицию — при
+    том, что базы внутри ОДНОЙ работы вполне могут различаться (несколько
+    предложений на одном договоре). Общего определения «сравнимо» у двух
+    отчётов НЕТ: здесь оно по-прежнему только про норматив — эта поверхность
+    однодоговорная, и целевая ставка гасит норматив ЦЕЛИКОМ уже там, где
+    заявленные ставки предложений разошлись (`effective_display_rate`), без
+    отдельного счётчика «без базы», который есть только у отчёта «для банка».
 
     `FILTER (WHERE rate_standard_id IS NOT NULL)` отделяет сравнимые строки от
     остальных **внутри одного проходa**: иначе понадобился бы второй запрос, а его
     результат пришлось бы сшивать с первым по ключу.
 
-    `fact_amount_total` (по всем строкам) нужен своду по договору — он показывает
-    весь предмет торга; `fact_amount` (только по сравнимым) нужен отклонению, чтобы
-    оно считалось от той же совокупности, что норматив.
+    `fact_amount_total` (по всем строкам группы) нужен своду по договору — он
+    показывает весь предмет торга; `fact_amount` (только по сравнимым) нужен
+    отклонению, чтобы оно считалось от той же совокупности, что норматив.
     """
     comparable = DEVIATION_INPUTS.c.rate_standard_id.isnot(None)
     weighted_fact = DEVIATION_INPUTS.c.unit_cost_total * DEVIATION_INPUTS.c.weight
@@ -219,6 +283,7 @@ def _work_aggregate_select():
             DEVIATION_INPUTS.c.catalog_position_id.label("catalog_position_id"),
             CatalogPosition.standard_job_title.label("job_title"),
             UnitOfMeasure.code.label("unit_code"),
+            DEVIATION_INPUTS.c.vat_rate_base.label("vat_rate_base"),
             sa.func.sum(weighted_fact).label("fact_amount_total"),
             sa.func.sum(DEVIATION_INPUTS.c.weight).label("volume_total"),
             sa.func.sum(weighted_fact).filter(comparable).label("fact_amount"),
@@ -233,31 +298,115 @@ def _work_aggregate_select():
     )
 
 
-def _summary_row(row) -> dict:
-    """Строка свода: ставка по всем строкам работы, отклонение — по сравнимым."""
-    rate = _weighted(row.fact_amount_total, row.volume_total)
-    standard = _weighted(row.standard_amount, row.volume)
+def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_rate) -> dict:
+    """Одна строка свода по договору из групп работа×база НДС (задача 8, спека §5.1).
+
+    Факт приводится к ставке показа ПО КАЖДОЙ группе — её база постоянна внутри
+    группы (тот же приём, что у `_fold_bank_work`); при `effective_rate is None`
+    (нет ни цели, ни перекрытой базы, ни единогласия предложений) `restate_gross`
+    для каждой группы уходит в ветку тождества (эффективная ставка равна СВОЕЙ
+    базе группы), и факт остаётся построчно в своих исходных ставках — той же
+    формой, что и до задачи 8.
+
+    Норматив (уже нетто) НЕ разносится по группам: у него нет собственной базы
+    НДС, конвертировать его частями незачем — он копится СЫРЫМ (`standard_net_
+    total`) и приводится к ставке показа ОДНИМ вызовом `_standard_in_display_
+    rate` в конце. При разногласии баз (`effective_rate is None`) норматив
+    гасится целиком (граница §5.1) — даже если у него самого есть значение.
+
+    Величины здесь НЕОКРУГЛЕНЫ (см. модульную документацию про границу
+    округления): `_quantize_row_for_display` округляет вызывающий код
+    (`contract_summary`), когда строка уже отслужила свою роль слагаемого в
+    `_totals_of`.
+    """
+    fact_total: Decimal | None = None
+    volume_total = ZERO
+    fact_comparable: Decimal | None = None
+    volume_comparable = ZERO
+    standard_net_total = ZERO
+    positions_total = 0
+    positions_without_standard = 0
+
+    for group in groups:
+        positions_total += group.positions
+        positions_without_standard += group.positions_without_standard
+
+        restated_total = restate_gross(group.fact_amount_total, group.vat_rate_base, effective_rate)
+        if restated_total.amount is not None:
+            fact_total = (
+                restated_total.amount if fact_total is None else fact_total + restated_total.amount
+            )
+        if group.volume_total is not None:
+            volume_total += group.volume_total
+
+        if group.fact_amount is not None:
+            restated_comparable = restate_gross(
+                group.fact_amount, group.vat_rate_base, effective_rate
+            )
+            fact_comparable = (
+                restated_comparable.amount
+                if fact_comparable is None
+                else fact_comparable + restated_comparable.amount
+            )
+            volume_comparable += group.volume or ZERO
+            standard_net_total += group.standard_amount or ZERO
+
+    standard_amount = (
+        None if fact_comparable is None else _standard_in_display_rate(standard_net_total, effective_rate)
+    )
     deviation_money = (
-        None
-        if row.fact_amount is None or row.standard_amount is None
-        else row.fact_amount - row.standard_amount
+        None if fact_comparable is None or standard_amount is None
+        else fact_comparable - standard_amount
     )
     return {
-        "catalog_position_id": row.catalog_position_id,
-        "job_title": row.job_title,
-        "unit_code": row.unit_code,
-        "volume": row.volume_total,
-        "rate": rate,
-        "standard_unit_rate": standard,
-        "amount": row.fact_amount_total,
-        "deviation_pct": _deviation_pct(row.fact_amount, row.standard_amount),
+        "job_title": job_title,
+        "unit_code": unit_code,
+        "volume": volume_total,
+        "rate": _weighted(fact_total, volume_total),
+        "standard_unit_rate": _weighted(standard_amount, volume_comparable),
+        "amount": fact_total,
+        "deviation_pct": _deviation_pct(fact_comparable, standard_amount),
         "deviation_money": deviation_money,
         # Сравнимая часть — по ней считаются итоги, и она может быть меньше строки.
-        "comparable_amount": row.fact_amount,
-        "comparable_standard_amount": row.standard_amount,
-        "positions": row.positions,
-        "positions_without_standard": row.positions_without_standard,
+        "comparable_amount": fact_comparable,
+        "comparable_standard_amount": standard_amount,
+        "positions": positions_total,
+        "positions_without_standard": positions_without_standard,
     }
+
+
+def _fold_summary_rows(group_rows, effective_rate) -> list[dict]:
+    """Строки SQL (работа×база) -> строки свода (одна на работу), задача 8.
+
+    Тот же двухпроходный приём, что у `_fold_bank_rows`: группы одной работы не
+    обязаны идти в результате подряд (разных баз может быть несколько),
+    поэтому сначала собираем их по ключу, потом сворачиваем.
+    """
+    order: list[int] = []
+    meta: dict[int, tuple[str, str | None]] = {}
+    groups_by_work: dict[int, list] = {}
+    for r in group_rows:
+        key = r.catalog_position_id
+        if key not in meta:
+            meta[key] = (r.job_title, r.unit_code)
+            order.append(key)
+            groups_by_work[key] = []
+        groups_by_work[key].append(r)
+
+    rows = []
+    for key in order:
+        job_title, unit_code = meta[key]
+        row = _fold_summary_work(job_title, unit_code, groups_by_work[key], effective_rate)
+        row["catalog_position_id"] = key
+        rows.append(row)
+
+    # Крупные работы сверху — тот же порядок, что раньше давал `ORDER BY
+    # fact_amount_total DESC` в SQL (перешёл в Python: строки теперь
+    # сворачиваются здесь, а не приходят готовыми из SQL). Тай-брейк по
+    # `catalog_position_id` — та же причина, что у `_fold_bank_rows`: без него
+    # порядок работ с РАВНОЙ суммой ничем не определён.
+    rows.sort(key=lambda r: (-(r["amount"] or ZERO), r["catalog_position_id"]))
+    return rows
 
 
 # ---------------------------------------------------------------------------

@@ -3,10 +3,12 @@ from decimal import Decimal, getcontext
 import pytest
 
 from money.vat import (
+    NET_RECONCILIATION_TOLERANCE,
     AmountStatus,
     NetStatus,
     ProposalNetCheck,
     check_proposal_net,
+    effective_display_rate,
     fold_net_reconciliation,
     gross_to_net,
     net_to_gross,
@@ -213,3 +215,85 @@ def test_fold_delta_ignores_non_comparable_proposals():
 
 def test_fold_delta_is_null_without_comparable_proposals():
     assert fold_net_reconciliation([_check(1, NetStatus.UNKNOWN_BASE)]).delta is None
+
+
+# ---------------------------------------------------------------------------
+#  effective_display_rate (задача 8, спека §5.1)
+# ---------------------------------------------------------------------------
+
+def test_effective_rate_prefers_target_over_everything_else():
+    """Цель побеждает даже когда база и заявленные ставки говорят другое."""
+    rate = effective_display_rate(Decimal("16"), Decimal("20"), [Decimal("10"), Decimal("10")])
+    assert rate == Decimal("16")
+
+
+def test_effective_rate_falls_back_to_base_override_without_target():
+    rate = effective_display_rate(None, Decimal("20"), [Decimal("10"), Decimal("12")])
+    assert rate == Decimal("20")
+
+
+def test_effective_rate_falls_back_to_unanimous_declared_rate():
+    """Ни цели, ни перекрытой базы нет — единогласная заявленная ставка предложений."""
+    rate = effective_display_rate(None, None, [Decimal("20"), Decimal("20")])
+    assert rate == Decimal("20")
+
+
+def test_effective_rate_is_null_on_disagreement():
+    """Разногласие заявленных ставок — оговорённая граница §5.1: показать
+    «в какой-то из» ставок нельзя."""
+    rate = effective_display_rate(None, None, [Decimal("20"), Decimal("12")])
+    assert rate is None
+
+
+def test_effective_rate_is_null_when_any_declared_rate_is_unknown():
+    rate = effective_display_rate(None, None, [Decimal("20"), None])
+    assert rate is None
+
+
+def test_effective_rate_is_null_without_any_proposal():
+    rate = effective_display_rate(None, None, [])
+    assert rate is None
+
+
+# ---------------------------------------------------------------------------
+#  Три отложенных теста задачи 2 (приложение оркестратора п.7, задача 8 доводит)
+# ---------------------------------------------------------------------------
+
+def test_check_agrees_at_the_exact_tolerance_boundary():
+    """|delta| РОВНО NET_RECONCILIATION_TOLERANCE (3.5) — сравнение нестрогое,
+    статус OK. Парный тест ниже проверяет, что чуть выше границы уже MISMATCH —
+    та же конвенция, что у `parser/vat_rate.py` (`VAT_RATE_TOLERANCE`, пара
+    «ровно на границе» / «чуть за границей»), которой у этого допуска не было.
+
+    Ставка явная и ненулевая (20 %), а не фон задачи по умолчанию.
+    """
+    result = check_proposal_net(1, Decimal("1200.00"), Decimal("996.50"), Decimal("20"))
+    assert result.status is NetStatus.OK
+    assert result.delta == NET_RECONCILIATION_TOLERANCE
+
+
+def test_check_mismatches_just_past_the_tolerance_boundary():
+    result = check_proposal_net(1, Decimal("1200.00"), Decimal("996.49"), Decimal("20"))
+    assert result.status is NetStatus.MISMATCH
+    assert result.delta == Decimal("3.51")
+
+
+def test_fold_delta_sums_signed_deltas_of_different_signs():
+    """Знак дельты при нескольких сравнимых: mismatch +10 и ok −3 дают +7, а
+    не |10|+|-3|=13 и не среднее. Обе ставки явные и ненулевые (20 %)."""
+    mismatch = check_proposal_net(1, Decimal("1200.00"), Decimal("990.00"), Decimal("20"))
+    ok = check_proposal_net(2, Decimal("600.00"), Decimal("503.00"), Decimal("20"))
+    assert mismatch.status is NetStatus.MISMATCH
+    assert mismatch.delta == Decimal("10")
+    assert ok.status is NetStatus.OK
+    assert ok.delta == Decimal("-3")
+
+    folded = fold_net_reconciliation([mismatch, ok])
+    assert folded.delta == Decimal("7")
+
+
+def test_fold_empty_input_is_not_applicable():
+    folded = fold_net_reconciliation([])
+    assert folded.status is NetStatus.NOT_APPLICABLE
+    assert folded.delta is None
+    assert folded.mismatched_proposal_ids == []

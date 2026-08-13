@@ -123,6 +123,29 @@ def restate_gross(
     return RestatedAmount(amount=net_to_gross(net, effective), status=AmountStatus.RESTATED)
 
 
+def effective_display_rate(
+    target: Decimal | None, base_override: Decimal | None, declared: Sequence[Decimal | None]
+) -> Decimal | None:
+    """Ставка, в которой показывается ОДНО-ДОГОВОРНАЯ поверхность (спека §5.1).
+
+    Цель, если задана; иначе перекрытая база; иначе — ЕДИНОГЛАСНАЯ заявленная
+    ставка предложений. Разногласие и любое неизвестное дают `None`: показать
+    «в какой-то из» ставок нельзя, и это оговорённая граница §5.1.
+
+    Без этой функции норматив уезжал бы в чистое нетто там, где факт остаётся
+    валовым, — строка стала бы измерена в двух разных единицах сразу.
+    """
+    if target is not None:
+        return target
+    if base_override is not None:
+        return base_override
+    rates = list(declared)
+    if not rates or any(rate is None for rate in rates):
+        return None
+    first = rates[0]
+    return first if all(rate == first for rate in rates) else None
+
+
 def quantize_money(value: Decimal | None) -> Decimal | None:
     """Округлить до копеек. Вызывается ОДИН раз, над готовым полем ответа.
 

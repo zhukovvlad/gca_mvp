@@ -26,6 +26,7 @@ from urllib.parse import unquote
 import pytest
 from openpyxl import load_workbook
 
+from crud.reports import contract_summary
 from models import CatalogKind
 
 pytestmark = pytest.mark.integration
@@ -809,6 +810,98 @@ class TestBankComparison:
         self._two_classes(factories)
         ws = _sheet(client.get("/api/v1/reports/bank-comparison"))
         assert "средневзвешенное по объёму" in _text_of(ws)
+
+
+# ---------------------------------------------------------------------------
+#  Задача 8: свод по договору в ставке показа (спека §5.1)
+# ---------------------------------------------------------------------------
+
+def _set_vat_target(db_session, estimate, rate):
+    estimate.vat_rate_target = rate
+    db_session.flush()
+
+
+def _contract_with_standard(factories, *, unit_cost_total, vat_rate, standard):
+    """Один договор, одна смета, одно предложение, одна расценённая позиция
+    (вес 1 — сумма и ставка совпадают) с известным нормативом класса объектов.
+    """
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=vat_rate)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Работа задачи 8")
+    _position(factories, proposal, position, unit_cost=str(unit_cost_total), weight="1")
+    _standard(factories, position, contract.rate_class, str(standard))
+    return contract, proposal.lot.estimate
+
+
+def _contract_with_two_proposals(factories, *, vat_rates):
+    """Один договор, одна смета, ДВА лота/предложения с РАЗНЫМИ явными
+    ставками НДС — единая ставка показа недостижима, `effective_display_rate`
+    обязана вернуть `None` (задача 8, спека §5.1, оговорённая граница)."""
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Спорная работа")
+    _standard(factories, position, contract.rate_class, "100")
+    for rate in vat_rates:
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=rate
+        )
+        _position(factories, proposal, position, unit_cost="120", weight="1")
+    return contract
+
+
+def test_standard_follows_the_effective_rate_without_explicit_target(factories, db_session):
+    """Цель не задана -> эффективная ставка равна ЕДИНОГЛАСНОЙ заявленной
+    ставке предложения (20 %, единственного), и норматив идёт в неё же. Иначе
+    факт остался бы валовым (120), а норматив — чистым нетто (100) — строка
+    оказалась бы измерена в двух разных единицах сразу.
+
+    Краснеет от: `contract_summary`, не приводящей норматив к ставке показа
+    вовсе (тогда `standard_unit_rate` остался бы "100.00", а не "120.00") —
+    подтверждено мутацией: см. отчёт задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("120")
+    assert Decimal(row["standard_unit_rate"]) == Decimal("120.00")
+    assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
+def test_contract_summary_shows_both_sides_in_target(factories, db_session):
+    """Цель показа (16 %) приведена к базе предложения (20 %): факт 120 (база
+    20 %) даёт нетто 100, а 100 нетто по цели 16 % даёт 116.00 — И факт, И
+    норматив показаны в ОДНОЙ ставке, отклонение остаётся нулевым (приведение
+    обеих сторон к одной ставке отношения не меняет).
+
+    Краснеет от: конвертации факта БЕЗ конвертации норматива (или наоборот) —
+    тогда `deviation_pct` сдвинулся бы с 0 — подтверждено мутацией: см. отчёт
+    задачи."""
+    contract, estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    _set_vat_target(db_session, estimate, Decimal("16"))
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("116.00")
+    assert Decimal(row["standard_unit_rate"]) == Decimal("116.00")
+    assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
+def test_standard_is_null_when_bases_disagree(factories, db_session):
+    """Разногласие заявленных ставок предложений — оговорённая граница §5.1:
+    единой ставки показа нет, и выдавать «какую-то из» нельзя.
+
+    Краснеет от: `_standard_in_display_rate`/`effective_display_rate`,
+    подставляющей любую из двух ставок вместо `None` (тогда `standard_
+    unit_rate` вернул бы число) — подтверждено мутацией: см. отчёт задачи."""
+    contract = _contract_with_two_proposals(factories, vat_rates=[Decimal("20"), Decimal("12")])
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert row["standard_unit_rate"] is None
 
 
 def test_fold_bank_rows_breaks_ties_by_catalog_position_id_ascending():

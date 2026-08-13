@@ -21,7 +21,7 @@ from sqlalchemy.dialects import postgresql
 from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from crud.project_passport import get_project_passport
-from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
+from models import Estimate, EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
 from parser.constants import (
     JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
     JSON_KEY_TOTAL_COST_INCLUDING_VAT,
@@ -1626,3 +1626,108 @@ def test_net_reconciliation_aggregates_mismatch_across_multiple_proposals(
     assert totals["net_reconciliation"]["status"] == "mismatch"
     assert totals["net_reconciliation"]["mismatched_proposal_ids"] == [proposal_2.id]
     assert totals["net_reconciliation"]["delta"] == "400.00"
+
+
+# ---------------------------------------------------------------------------
+#  40. Задача 8: суммы паспорта в ставке показа (спека §5.1)
+# ---------------------------------------------------------------------------
+
+def _set_vat_target(db_session, contract, rate):
+    """Ставит целевую ставку показа на ИСХОДНОЙ смете договора (правило CRUD
+    «исходная смета», та же, что читает `_source_estimate`)."""
+    estimate = (
+        db_session.query(Estimate)
+        .filter_by(contract_id=contract.id, amendment_no=None)
+        .one()
+    )
+    estimate.vat_rate_target = rate
+    db_session.flush()
+    return estimate
+
+
+def _contract_with_positions(factories, *, total, vat_rate):
+    """Один договор, одна смета, одно предложение, одна нераспределённая
+    позиция на всю сумму `total` — минимальная одно-договорная поверхность
+    для проверки задачи 8."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = vat_rate
+    factories.PositionItemFactory.create(proposal=proposal, total_cost_total=total)
+    return proposal.lot.estimate.contract
+
+
+#: Числа для «трёх групп по 0.005» ниже: база 8 %, цель 16 % (обе ЯВНЫЕ и
+#: НЕНУЛЕВЫЕ — приложение оркестратора «ставка по умолчанию — ложная
+#: предпосылка»). `gross`, посчитанный отсюда, восстанавливает через
+#: `restate_gross(gross, base, target)` РОВНО `restated_row_amount` — тест не
+#: обязан гадать промежуточные округления, задача этой арифметики только
+#: подготовить вход.
+def _contract_with_three_proposals_of(factories, restated_row_amount, *, base, target):
+    """Три ОТДЕЛЬНЫХ предложения (три лота) одного договора, по одной позиции
+    каждое, с одной и той же базовой ставкой НДС `base`. VIEW группируется по
+    (`proposal_id`, `vat_rate_base`) — три РАЗНЫХ предложения дают три
+    РАЗНЫЕ строки для одного и того же узла («Нераспределённое»), даже когда
+    их базы совпадают (приложение оркестратора §1): именно это и нужно, чтобы
+    отличить «округлить каждую группу отдельно» от «сложить и округлить один
+    раз» (спека §2.6, `global-constraints.md`).
+    """
+    gross = restated_row_amount * (Decimal("100") + base) / (Decimal("100") + target)
+    estimate = factories.EstimateFactory.create()
+    contract = estimate.contract
+    for _ in range(3):
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=base
+        )
+        factories.PositionItemFactory.create(proposal=proposal, total_cost_total=gross)
+    return contract
+
+
+def test_passport_totals_follow_the_target_rate(client, factories, db_session):
+    """Цель показа (16 %) приведена к базе предложения (20 %): валовое 120 даёт
+    нетто ровно 100, а 100 нетто по цели 16 % даёт ровно 116.00 — не 120
+    (тождество) и не 100 (голое нетто).
+
+    Краснеет от: `_direct_totals`/`get_project_passport`, не применяющих
+    `restate_gross` вовсе (тогда `totals["amount"]` остался бы "120", а не
+    "116.00" — подтверждено мутацией: см. отчёт задачи)."""
+    contract = _contract_with_positions(factories, total=Decimal("120"), vat_rate=Decimal("20"))
+    _set_vat_target(db_session, contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("116.00")
+
+
+def test_passport_totals_untouched_without_target(client, factories, db_session):
+    """Ветка тождества: без поправки ответ обязан совпасть ПОСИМВОЛЬНО с тем,
+    что паспорт отдавал бы до задачи 8 — сравнение через сырую JSON-строку, а
+    не `Decimal(...) == Decimal(...)` (то пропустило бы сдвиг `exponent`,
+    ради отсутствия которого ветка тождества `restate_gross` и заведена).
+
+    Краснеет от: любого безусловного `quantize_money` на `totals["amount"]`
+    (например, перенесённого из ветки «пересчитано» в общий путь) — тогда
+    "120.5" стало бы "120.50", подтверждено мутацией: см. отчёт задачи."""
+    contract = _contract_with_positions(factories, total=Decimal("120.5"), vat_rate=Decimal("20"))
+    db_session.commit()
+
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert totals["amount"] == "120.5"
+
+
+def test_passport_total_is_quantized_once_not_per_group(client, factories, db_session):
+    """Округление внутри агрегации дало бы `Σ round(x) ≠ round(Σ x)`: три
+    группы, каждая приводится к РОВНО 0.005 при базе 8 % и цели 16 %.
+    Поштучное округление (0.005 -> 0.01 ROUND_HALF_UP) дало бы 0.03; сложение
+    ТРЁХ необрезанных 0.005 (= 0.015), а потом ОДНО округление — даёт 0.02.
+
+    Краснеет от: `quantize_money`, перенесённого внутрь цикла накопления
+    `_direct_totals` (тогда ответ был бы "0.03", а не "0.02") — подтверждено
+    мутацией: см. отчёт задачи."""
+    contract = _contract_with_three_proposals_of(
+        factories, Decimal("0.005"), base=Decimal("8"), target=Decimal("16")
+    )
+    _set_vat_target(db_session, contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("0.02")

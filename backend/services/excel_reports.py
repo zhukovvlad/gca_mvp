@@ -157,6 +157,22 @@ def build_contract_summary(data: dict, *, generated_at: dt.date) -> bytes:
         ws, 1, f"СВОД РАСЦЕНОК ПО ДОГОВОРУ {header['contract_number']}", _N_COLS, bg=C_HEADER_BG
     )
 
+    # Подпись ставки показа (задача 8 пересчёта НДС, спека §5.1): свод —
+    # однодоговорная поверхность, факт и норматив показаны в ОДНОЙ ставке, и
+    # лист обязан назвать её, иначе «Ставка»/«Норматив» не сказали бы, в чём
+    # они измерены. При разногласии заявленных ставок предложений
+    # (`vat_display_rate is None`) подписи нет вовсе — единой ставки показа
+    # не существует, и утверждать любую из них было бы неправдой.
+    vat_display_rate = header["vat_display_rate"]
+    if vat_display_rate is not None:
+        caption = (
+            "Суммы показаны без НДС" if vat_display_rate == 0
+            else f"Суммы показаны с НДС {vat_display_rate} %"
+        )
+        cell = ws.cell(row=row, column=1, value=caption)
+        cell.font = font(size=9, bold=True)
+        row += 1
+
     amendment = header["estimate_amendment_no"]
     facts = [
         f"Объект: {header['object_title']}",
