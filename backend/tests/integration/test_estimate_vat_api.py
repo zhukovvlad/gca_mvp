@@ -90,8 +90,9 @@ def test_declaring_base_then_target_succeeds(admin_client, factories, db_session
     не проверяется: `admin_client` использует один `db_session` на оба
     запроса, и к моменту второго запроса это один и тот же закешированный
     ORM-объект в identity map — оба выражения уже равны. Ту, другую, поломку
-    ловит `test_clearing_base_with_target_kept_is_rejected` — там оба поля
-    применяются ОДНИМ запросом.)
+    ловит первый `PATCH` в `test_clearing_only_one_rate_keeps_the_audit` — там
+    `base_override` и `target` заданы ОДНИМ запросом при неизвестной ставке
+    предложения.)
     """
     estimate = factories.estimate_with_proposals(vat_rates=[None])
     db_session.commit()
