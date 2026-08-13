@@ -2458,8 +2458,11 @@ git commit -m "feat(passport): суммы и норматив в эффекти�
 - Modify: `frontend/src/services/api/domain.ts`
 - Modify: `frontend/src/services/queries.ts`
 - Modify: `frontend/src/pages/matrix/MatrixPage.tsx`
+- Modify: `frontend/src/components/ui-domain/DeviationCell.tsx`
+- Modify: `frontend/src/components/matrix/MatrixCellDialog.tsx`
 - Test: `frontend/src/services/queries.test.tsx`
 - Test: `frontend/src/pages/matrix/MatrixPage.test.tsx`
+- Test: `frontend/src/components/matrix/MatrixCellDialog.test.tsx`
 
 **Interfaces:**
 - Produces: `useSetEstimateVat()` — мутация, инвалидирующая `qk.passport.project(contractId)`.
@@ -2614,7 +2617,150 @@ const INCOMPLETE_NOTE_ID = "matrix-row-amount-incomplete-note";
 падает, если `aria-describedby` указывает в пустоту, — именно поэтому `id`
 постоянный, а не собранный из идентификатора строки.
 
-- [ ] **Шаг 7: прогнать тесты и типы**
+- [ ] **Шаг 7: написать падающие тесты причины и drill-down**
+
+`deviation_reason` доезжает до API и до типа, но **экрана не достигает**: сегодня
+`DeviationCell` подписывает **любой** `null` как «нет норматива»
+([DeviationCell.tsx:11](../../../frontend/src/components/ui-domain/DeviationCell.tsx#L11),
+[:36](../../../frontend/src/components/ui-domain/DeviationCell.tsx#L36)), и его
+читают оба потребителя — ячейка матрицы
+([MatrixPage.tsx:411](../../../frontend/src/pages/matrix/MatrixPage.tsx#L411)) и
+диалог ([MatrixCellDialog.tsx:106](../../../frontend/src/components/matrix/MatrixCellDialog.tsx#L106)).
+Без этого шага «неизвестна база НДС» визуально превращается в неверное «нет
+норматива» — ровно та потеря различия, за которую §10 уже платила на «нет
+норматива» против «0 %».
+
+```tsx
+// frontend/src/components/ui-domain/DeviationCell.test.tsx
+it("различает «нет норматива» и «неизвестна база НДС»", () => {
+  const { rerender } = render(<DeviationCell value={null} reason="no_standard" />);
+  expect(screen.getByText("нет норматива")).toBeInTheDocument();
+
+  rerender(<DeviationCell value={null} reason="unknown_vat_base" />);
+  expect(screen.getByText("неизвестна база НДС")).toBeInTheDocument();
+});
+
+it("подсказка компактного варианта тоже различает причины", () => {
+  render(<DeviationCell value={null} reason="unknown_vat_base" variant="compact" />);
+  expect(screen.getByTitle(/база НДС не заявлена/i)).toBeInTheDocument();
+});
+
+it("без причины ведёт себя как раньше — «нет норматива»", () => {
+  render(<DeviationCell value={null} />);
+  expect(screen.getByText("нет норматива")).toBeInTheDocument();
+});
+```
+
+```tsx
+// frontend/src/components/matrix/MatrixCellDialog.test.tsx
+it("показывает валовую ставку, нетто и базу отдельными подписями", async () => {
+  renderDialog({
+    items: [{
+      ...itemFixture,
+      unit_cost_total: "120.00", unit_cost_net: "100.00", vat_rate_base: "20",
+      deviation_pct: "0", deviation_reason: null,
+    }],
+  });
+  expect(await screen.findByTestId("item-gross")).toHaveTextContent("120");
+  expect(screen.getByTestId("item-net")).toHaveTextContent("100");
+  expect(screen.getByTestId("item-vat-base")).toHaveTextContent("20");
+});
+
+it("нетто отсутствует, когда база неизвестна, и причина названа верно", async () => {
+  renderDialog({
+    items: [{
+      ...itemFixture,
+      unit_cost_total: "120.00", unit_cost_net: null, vat_rate_base: null,
+      deviation_pct: null, deviation_reason: "unknown_vat_base",
+    }],
+  });
+  expect(await screen.findByTestId("item-net")).toHaveTextContent("—");
+  expect(screen.getByText("неизвестна база НДС")).toBeInTheDocument();
+  expect(screen.queryByText("нет норматива")).not.toBeInTheDocument();
+});
+```
+
+```tsx
+// frontend/src/pages/matrix/MatrixPage.test.tsx
+it("ячейка без базы НДС не выдаёт себя за «нет норматива»", async () => {
+  renderMatrix({ rows: [{ ...rowFixture, cells: [
+    { ...cellFixture, rate: null, deviation_pct: null, deviation_reason: "unknown_vat_base" },
+  ] }] });
+  expect(await screen.findByTitle(/база НДС не заявлена/i)).toBeInTheDocument();
+});
+```
+
+- [ ] **Шаг 8: провести причину до обоих экранов**
+
+```tsx
+// frontend/src/components/ui-domain/DeviationCell.tsx
+/** Почему отклонения нет. `undefined` — старые вызовы, для них поведение прежнее. */
+export type DeviationReason = "no_standard" | "unknown_vat_base";
+
+const REASON_TEXT: Record<DeviationReason, { full: string; title: string }> = {
+  no_standard: {
+    full: "нет норматива",
+    title: "Нет норматива на дату сметы — сравнивать не с чем",
+  },
+  unknown_vat_base: {
+    full: "неизвестна база НДС",
+    title: "База НДС не заявлена в файле и не назначена — нетто вывести не из чего",
+  },
+};
+```
+
+`reason` добавляется **необязательным**: у `DeviationCell` есть потребители вне
+фичи, и обязательный проп сломал бы их без нужды. Значение по умолчанию —
+`no_standard`, то есть сегодняшнее поведение.
+
+```tsx
+// frontend/src/pages/matrix/MatrixPage.tsx:411
+<DeviationCell
+  value={cell.deviation_pct}
+  reason={cell.deviation_reason ?? undefined}
+  variant="compact"
+  className="block text-xs"
+/>
+```
+
+```tsx
+// frontend/src/components/matrix/MatrixCellDialog.tsx — три подписи вместо одной
+<td data-testid="item-gross"><MoneyCell value={item.unit_cost_total} currency="" /></td>
+<td data-testid="item-net">
+  {item.unit_cost_net === null ? "—" : <MoneyCell value={item.unit_cost_net} currency="" />}
+</td>
+<td data-testid="item-vat-base">
+  {item.vat_rate_base === null ? "—" : `${formatPercentDecimal(item.vat_rate_base)} %`}
+</td>
+<td><DeviationCell value={item.deviation_pct} reason={item.deviation_reason ?? undefined} /></td>
+```
+
+Заголовки колонок диалога называют величины прямо — «ставка из файла», «ставка без
+НДС», «база НДС»: обещание спеки §2.5 «валовое, нетто и база рядом» выполняется на
+экране, а не только в JSON.
+
+```ts
+// frontend/src/types/domain.ts — оба типа матрицы
+export interface MatrixCell {
+  contract_id: number;
+  rate: Decimal | null;
+  amount: Decimal | null;
+  standard_unit_rate: Decimal | null;
+  deviation_pct: Decimal | null;
+  /** Почему отклонения нет: два разных факта нельзя сводить к одному прочерку. */
+  deviation_reason: "no_standard" | "unknown_vat_base" | null;
+}
+
+export interface MatrixCellItem {
+  // ... существующие поля
+  /** Ставка без НДС — та, что вошла в ячейку; `null`, если база неизвестна. */
+  unit_cost_net: Decimal | null;
+  vat_rate_base: Decimal | null;
+  deviation_reason: "no_standard" | "unknown_vat_base" | null;
+}
+```
+
+- [ ] **Шаг 9: прогнать тесты и типы**
 
 ```bash
 cd frontend && npx vitest run && npx tsc -b --noEmit
@@ -2622,11 +2768,11 @@ cd frontend && npx vitest run && npx tsc -b --noEmit
 Expected: PASS. Гонять **только из `frontend/`**: в корне лежит другой vitest, он не
 разрешает алиас `@/` и падает на сборке.
 
-- [ ] **Шаг 8: коммит**
+- [ ] **Шаг 10: коммит**
 
 ```bash
-git add frontend/src/types frontend/src/services frontend/src/pages/matrix
-git commit -m "feat(frontend): хук правки ставки НДС и маркер неполного веса строки"
+git add frontend/src/types frontend/src/services frontend/src/pages/matrix frontend/src/components
+git commit -m "feat(frontend): причина пустого отклонения, нетто и база в drill-down"
 ```
 
 ---
