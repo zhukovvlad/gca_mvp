@@ -365,41 +365,6 @@ class TestBankComparison:
         assert Decimal(str(ws.cell(row=row12, column=7).value)) == Decimal("0")
         assert Decimal(str(ws.cell(row=row12, column=8).value)) == Decimal("0")
 
-    def test_row_order_has_a_deterministic_tiebreak(self, client, factories):
-        """Ревью задачи 4: равные суммы — порядок задаёт id работы, не жеребьёвка.
-
-        После перевода отчёта на нетто-ось сортировка строк класса переехала в
-        Python (общая сумма работы существует только ПОСЛЕ свёртки групп разных
-        баз НДС) и потеряла тай-брейк: без него порядок работ с равной суммой не
-        определён, и два прогона на одних данных могли бы дать разные файлы.
-        """
-        rate_class = factories.RateClassFactory.create(title="Класс равных сумм")
-        contract = factories.ContractFactory.create(rate_class=rate_class)
-        _c, _e, proposal = _estimate_with(factories, contract=contract)
-
-        first = factories.CatalogPositionFactory.create(standard_job_title="Работа А")
-        _position(factories, proposal, first, unit_cost="100", weight="10")
-        _standard(factories, first, rate_class, "100")
-
-        second = factories.CatalogPositionFactory.create(standard_job_title="Работа Б")
-        _position(factories, proposal, second, unit_cost="100", weight="10")
-        _standard(factories, second, rate_class, "100")
-
-        expected = (
-            ["Работа А", "Работа Б"] if first.id < second.id else ["Работа Б", "Работа А"]
-        )
-
-        for _ in range(3):
-            ws = _sheet(
-                client.get(
-                    "/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id}
-                )
-            )
-            a_at, _ = _find_row(ws, lambda r: r[0] == "Работа А")
-            b_at, _ = _find_row(ws, lambda r: r[0] == "Работа Б")
-            actual = ["Работа А", "Работа Б"] if a_at < b_at else ["Работа Б", "Работа А"]
-            assert actual == expected
-
     def test_work_appears_inside_its_class_section(self, client, factories):
         """Работа стоит в секции своего класса, а не где-нибудь на листе."""
         self._two_classes(factories)
@@ -844,6 +809,57 @@ class TestBankComparison:
         self._two_classes(factories)
         ws = _sheet(client.get("/api/v1/reports/bank-comparison"))
         assert "средневзвешенное по объёму" in _text_of(ws)
+
+
+def test_fold_bank_rows_breaks_ties_by_catalog_position_id_ascending():
+    """Юнит-тест на саму сортировку `_fold_bank_rows` — не на её эмерджентное
+    проявление через целый HTTP-запрос (ре-ревью задачи 4, третий круг).
+
+    **Почему прежний интеграционный тест был вакуозным.** Он гонял ДВЕ строки
+    через весь конвейер (фабрики → SQL → fold → xlsx) и совпадал с ожидаемым
+    порядком СЛУЧАЙНО: сортировка Python устойчива (stable — при равных ключах
+    сохраняет порядок входа), а `_bank_position_groups_select` не несёт
+    `ORDER BY` и отдаёт группы в порядке вставки — который как раз совпадал с
+    ожидаемым порядком по `catalog_position_id`, потому что тестовая работа
+    «А» создавалась раньше «Б». Сняв тай-брейк из `_fold_bank_rows`, ревьюер
+    прогнал тот тест пять раз подряд — все пять зелёные: тест не отличал
+    «защита есть» от «защиты нет» (`docs/insights/verifying-guards.md`, слой 7).
+
+    **Как это исправлено.** Вход собран НАПРЯМУЮ для `_fold_bank_rows` (минуя
+    HTTP, SQL и фабрики), и порядок специально сделан ПРОТИВОПОЛОЖНЫМ
+    ожидаемому: группа с БОЛЬШИМ `catalog_position_id` (200) идёт ПЕРВОЙ, с
+    МЕНЬШИМ (100) — второй, а суммы (`weighted_fact_gross`/`weight_comparable`/
+    `weighted_standard`) у обеих групп ОДИНАКОВЫЕ, чтобы порядок решался
+    ИСКЛЮЧИТЕЛЬНО тай-брейком, а не разницей сумм. Устойчивая сортировка без
+    тай-брейка сохранила бы вход как есть → `[200, 100]` на выходе (тест обязан
+    покраснеть, см. проверку снятием в отчёте task-4-report.md); с тай-брейком
+    (`crud/reports.py::_fold_bank_rows`, ключ `(-amount, catalog_position_id)`)
+    выход обязан быть `[100, 200]` — по возрастанию id, независимо от входа.
+    """
+    from types import SimpleNamespace
+
+    from crud.reports import _fold_bank_rows
+
+    def group(catalog_position_id: int) -> SimpleNamespace:
+        """Одна группа работа×база (форма строки `_bank_position_groups_select`)."""
+        return SimpleNamespace(
+            rate_class_id=1,
+            catalog_position_id=catalog_position_id,
+            job_title=f"Работа {catalog_position_id}",
+            unit_code="шт",
+            vat_rate_base=Decimal("0"),
+            weighted_fact_gross=Decimal("1000"),
+            weight_comparable=Decimal("10"),
+            weighted_standard=Decimal("1000"),
+            positions=1,
+            positions_without_standard=0,
+        )
+
+    # Вход НАРОЧНО в порядке УБЫВАНИЯ id (200, потом 100) — обратно ожидаемому.
+    rows_by_class = _fold_bank_rows([group(200), group(100)])
+
+    ids_in_order = [r["catalog_position_id"] for r in rows_by_class[1]]
+    assert ids_in_order == [100, 200]
 
 
 def test_xlsx_number_precision_boundary():
