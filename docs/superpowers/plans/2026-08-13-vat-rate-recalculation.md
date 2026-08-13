@@ -193,29 +193,49 @@ def volumes(db) -> None:
         print(f"{label}: {db.execute(sa.text(query)).scalar_one()}")
 
 
+def to_factor(rate: Decimal) -> Decimal:
+    """Ставка → множитель, той же арифметикой, что строит VALUES.
+
+    Нужна, чтобы группирующие величины кандидатов стали сравнимыми: у первого
+    это ставка, у второго — множитель, и без приведения строки не сопоставить.
+    """
+    with localcontext(Context(prec=PRECISION)):
+        return HUNDRED / (HUNDRED + rate)
+
+
 def compare(db, sql_1: str, sql_2: str) -> None:
     """Сверка ДО сравнения планов: кандидаты обязаны делать одну и ту же работу.
 
-    Группирующая колонка у них разная по смыслу (ставка против множителя), но
-    разбиение она задаёт одно и то же, поэтому сравниваются число строк и
-    `weighted_cost` по ключу (работа, договор).
+    Сравнение идёт ПОСТРОЧНО, по полному ключу — свод по (работа, договор)
+    скрыл бы разное число групп внутри ячейки, то есть ровно то расхождение,
+    ради которого сверка и заводится. `weight_total` сравнивается наравне с
+    `weighted_cost`: разойтись они могут независимо.
     """
-    def by_cell(sql: str) -> dict:
-        result: dict[tuple[int, int], Decimal] = {}
+    def rows_of(sql: str, normalize) -> dict:
+        result = {}
         for row in db.execute(sa.text(sql)):
-            key = (row.catalog_position_id, row.contract_id)
-            result[key] = result.get(key, Decimal(0)) + row.weighted_cost
+            key = (row.catalog_position_id, row.contract_id, normalize(row.grouper))
+            if key in result:
+                raise SystemExit(f"Дубль ключа {key} — группировка запроса не та, что заявлена")
+            result[key] = (row.weighted_cost, row.weight_total)
         return result
 
-    first, second = by_cell(sql_1), by_cell(sql_2)
-    print(f"ключей: кандидат 1 — {len(first)}, кандидат 2 — {len(second)}")
-    if first != second:
-        differing = [key for key in first.keys() | second.keys() if first.get(key) != second.get(key)]
+    first = rows_of(sql_1, to_factor)          # ставка → множитель
+    second = rows_of(sql_2, lambda value: value)  # уже множитель
+
+    print(f"строк: кандидат 1 — {len(first)}, кандидат 2 — {len(second)}")
+    if len(first) != len(second):
         raise SystemExit(
-            f"Кандидаты расходятся на {len(differing)} ключах — сравнивать планы "
-            f"бессмысленно, они делают разную работу. Примеры: {differing[:5]}"
+            "Разное число строк — кандидаты делают разную работу, сравнивать планы "
+            "бессмысленно"
         )
-    print("результаты совпадают — планы сопоставимы")
+
+    differing = [key for key in first.keys() | second.keys() if first.get(key) != second.get(key)]
+    if differing:
+        for key in differing[:5]:
+            print(f"  {key}: кандидат 1 — {first.get(key)}, кандидат 2 — {second.get(key)}")
+        raise SystemExit(f"Кандидаты расходятся на {len(differing)} строках")
+    print("результаты совпадают построчно — планы сопоставимы")
 
 
 def explain(db, sql: str, label: str) -> None:
@@ -1502,10 +1522,95 @@ def test_sql_net_weight_agrees_with_python(db_session, factories):
 
 - [ ] **Шаг 11: перевести паспорт фазы 6 и drill-down ячейки**
 
-Колонку `deviation_pct` читают **два** места, а не одно: паспорт фазы 6 и
-`get_matrix_cell` ([analytics.py:770](../../../backend/crud/analytics.py#L770)).
-Оба переводятся на `_deviation` от нетто; пропуск второго обрушил бы drill-down на
-несуществующей колонке уже после миграции.
+Колонку `deviation_pct` читают **два** места, и оба через один и тот же
+`_priced_positions_select`: паспорт фазы 6 и `get_matrix_cell`
+([analytics.py:770](../../../backend/crud/analytics.py#L770)). Правка селекта
+убирает поле у обоих сразу, поэтому drill-down переписывается тем же шагом —
+иначе он упадёт на несуществующем атрибуте сразу после миграции.
+
+**Drill-down несёт обе величины.** Его обещание — «человек, проверяя цифру,
+складывает то же, что сложила система» ([analytics.py:739-741](../../../backend/crud/analytics.py#L739-L741)),
+а ячейка теперь нетто. Значит валовое остаётся как есть (посимвольно, §2.4), рядом
+встают нетто и база, отклонение считается от нетто:
+
+```python
+# backend/crud/analytics.py, get_matrix_cell — вместо чтения r.deviation_pct
+        "items": [
+            _cell_item(r)
+            for r in rows
+        ],
+```
+
+```python
+# backend/crud/analytics.py
+def _cell_item(r) -> dict:
+    """Строка drill-down: валовое из файла, нетто из ячейки и база между ними.
+
+    `unit_cost_total` НЕ трогается — это исходные деньги файла, и §2.4 обещает
+    их посимвольное совпадение. `unit_cost_net` добавляется рядом: без него
+    человек складывал бы валовые, а ячейка показывала бы нетто.
+    """
+    net = None if r.vat_rate_base is None else gross_to_net(r.unit_cost_total, r.vat_rate_base)
+    return {
+        "position_item_id": r.position_item_id,
+        "job_title": r.job_title_in_proposal,
+        "unit_code": r.unit_code,
+        "weight": r.weight,
+        "unit_cost_total": r.unit_cost_total,
+        "unit_cost_net": quantize_money(net),
+        "vat_rate_base": r.vat_rate_base,
+        "total_cost_total": r.total_cost_total,
+        "standard_unit_rate": r.standard_unit_rate,
+        "deviation_pct": _deviation(net, r.standard_unit_rate),
+        "deviation_reason": (
+            "unknown_vat_base" if net is None
+            else ("no_standard" if r.standard_unit_rate is None else None)
+        ),
+    }
+```
+
+Тест drill-down **после** миграции, а не только паспорта:
+
+```python
+# backend/tests/integration/test_analytics_api.py
+def test_matrix_cell_drilldown_survives_the_migration(client, factories, db_session):
+    """Ячейка и её drill-down обязаны сходиться: иначе человек, проверяя цифру,
+    складывает не то, что сложила система."""
+    contract = factories.contract_with_standard(
+        unit_cost_total=Decimal("120"), weight=Decimal("2"),
+        vat_rate=Decimal("20"), standard=Decimal("100"),
+    )
+    db_session.commit()
+    body = client.get(
+        "/api/v1/analytics/matrix/cell",
+        params={"contract_id": contract.id, "catalog_position_id": contract.catalog_position_id},
+    ).json()
+
+    item = body["items"][0]
+    assert Decimal(item["unit_cost_total"]) == Decimal("120")   # валовое не тронуто
+    assert Decimal(item["unit_cost_net"]) == Decimal("100.00")
+    assert Decimal(item["vat_rate_base"]) == Decimal("20")
+    assert Decimal(item["deviation_pct"]) == Decimal("0")
+    assert item["deviation_reason"] is None
+
+
+def test_matrix_cell_drilldown_without_base_reports_the_reason(client, factories, db_session):
+    contract = factories.contract_with_standard(
+        unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+    item = client.get(
+        "/api/v1/analytics/matrix/cell",
+        params={"contract_id": contract.id, "catalog_position_id": contract.catalog_position_id},
+    ).json()["items"][0]
+    assert item["unit_cost_net"] is None
+    assert item["deviation_pct"] is None
+    assert item["deviation_reason"] == "unknown_vat_base"
+```
+
+Тип фронта `MatrixCellItem` ([domain.ts:418-427](../../../frontend/src/types/domain.ts#L418-L427))
+получает `unit_cost_net: Decimal | null`, `vat_rate_base: Decimal | null` и
+`deviation_reason` — задачей 9, вместе с остальными типами.
 
 ```python
 # backend/crud/analytics.py, _priced_positions_select — вместо DEVIATIONS.c.deviation_pct
@@ -2474,22 +2579,40 @@ it("строка без веса печатает прочерк, а не нол
 ```
 
 ```tsx
-// frontend/src/pages/matrix/MatrixPage.tsx — ячейка веса строки
+// frontend/src/pages/matrix/MatrixPage.tsx
+/**
+ * Постоянный id сноски. Маркеры всех строк ссылаются на ОДИН элемент: сноска
+ * под таблицей одна, и генерировать `id` от `catalog_position_id` значило бы
+ * сослаться на элемент, которого нет, — `aria-describedby` молча повис бы.
+ */
+const INCOMPLETE_NOTE_ID = "matrix-row-amount-incomplete-note";
+```
+
+```tsx
+// ячейка веса строки
 <td data-testid="row-amount">
   {row.row_amount === null ? "—" : <MoneyCell value={row.row_amount} />}
   {row.row_amount_incomplete && (
-    <span
-      data-testid="row-amount-incomplete"
-      aria-describedby={`${row.catalog_position_id}-incomplete`}
-    >
+    <span data-testid="row-amount-incomplete" aria-describedby={INCOMPLETE_NOTE_ID}>
       *
     </span>
   )}
 </td>
 ```
 
-Сноска под таблицей объясняет звёздочку один раз: «база НДС известна не во всех
-договорах; такие ячейки не показаны и в вес строки не вошли».
+```tsx
+// сноска под таблицей — РЕНДЕРИТСЯ, когда неполна хотя бы одна строка
+{rows.some((row) => row.row_amount_incomplete) && (
+  <p id={INCOMPLETE_NOTE_ID}>
+    * База НДС известна не во всех договорах; такие ячейки не показаны и в вес
+    строки не вошли.
+  </p>
+)}
+```
+
+Тест доступности проверяет **связь**, а не наличие текста: `toHaveAccessibleDescription`
+падает, если `aria-describedby` указывает в пустоту, — именно поэтому `id`
+постоянный, а не собранный из идентификатора строки.
 
 - [ ] **Шаг 7: прогнать тесты и типы**
 
