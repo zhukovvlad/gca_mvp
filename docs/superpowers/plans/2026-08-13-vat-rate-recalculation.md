@@ -9,15 +9,16 @@
 **Architecture:** в БД по-прежнему лежат валовые деньги файла; две новые колонки на
 `estimates` несут решение человека, а не факт файла. Правило пересчёта записано
 один раз, на Python, в `backend/money/vat.py`; SQL агрегирует до уровня, на котором
-множитель постоянен (предложение), и формулы не содержит. Ось сравнения — нетто,
-поэтому отклонения не зависят от ставки показа.
+множитель постоянен (предложение), и формулы не содержит — с одним названным
+исключением (см. «Отступление от §2.6»). Ось сравнения — нетто, поэтому отклонения
+не зависят от ставки показа.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2.x sync ORM, Alembic, psycopg3,
 PostgreSQL 16; React + TS, Vite, shadcn/ui, TanStack Query, Vitest.
 
 **Spec:** [docs/superpowers/specs/2026-08-13-vat-rate-recalculation-design.md](../specs/2026-08-13-vat-rate-recalculation-design.md)
 
-**Ветка:** `feat/vat-rate-recalculation` (уже создана, спека в ней закоммичена)
+**Ветка:** `feat/vat-rate-recalculation` (создана, спека в ней закоммичена)
 
 ## Global Constraints
 
@@ -26,14 +27,21 @@ PostgreSQL 16; React + TS, Vite, shadcn/ui, TanStack Query, Vitest.
 - **Ставки НДС хранятся в процентных пунктах** (`20`, не `0.20`) — спека Ф4б §2.9.
 - **`ARITHMETIC_PRECISION = 100` — значащих цифр**, не знаков после запятой
   ([summary_block.py:154](../../../backend/parser/summary_block.py#L154)).
-- **Глобальный контекст `Decimal` приложения не меняется** — отдельный тест, как у
-  Ф4a и Ф4б.
+- **Глобальный контекст `Decimal` приложения не меняется** — отдельный тест.
+- **Округление до копеек — только на границе ответа, и только для пересчитанного.**
+  Внутрь агрегации оно не попадает никогда: `Σ round(x) ≠ round(Σ x)`.
+- **Имена методов-валидаторов Pydantic уникальны по всему дереву наследования** —
+  `AGENTS.md` §11: два одноимённых валидатора схлопываются в один слот, и второй
+  исчезает молча.
 - **COALESCE-уникальные, частичные, EXCLUDE-индексы и VIEW — только raw SQL** через
   `op.execute()`; `downgrade` снимает их явно (`AGENTS.md` §11).
 - **Миграция обязана быть неизменной во времени:** литералы в ней записываются
   строками, а не импортируются из моделей.
 - **`users.id` — `integer`, не `bigint`;** FK на него повторяет тип
   ([0011:16](../../../backend/alembic/versions/2026_08_11_0011-category_overrides.py#L16)).
+- **Ни один коммит не оставляет ветку красной.** Задача, ломающая потребителя,
+  чинит его тем же коммитом; тест, требующий ещё не написанного маршрута, едет
+  вместе с маршрутом.
 - **PostgreSQL той же мажорной версии, что в проде (16)** — в тестах тоже.
 - **Перед пушем — `just ci`**, шагами по отдельности. `vitest` гонять **только из
   `frontend/`**; `tsc -b --noEmit` (`AGENTS.md` §11).
@@ -42,29 +50,40 @@ PostgreSQL 16; React + TS, Vite, shadcn/ui, TanStack Query, Vitest.
 - **Политика `samples/`:** реальные суммы и реквизиты контрагентов не попадают ни в
   код, ни в тесты, ни в доки, ни в сообщения коммитов.
 
+## Отступление от §2.6 спеки, требующее записи в devlog
+
+Спека говорит: «SQL формулы не содержит». **Сортировка и пагинация матрицы этого не
+позволяют.** Строки матрицы упорядочены по `row_amount` — весу строки в деньгах
+([analytics.py:451](../../../backend/crud/analytics.py#L451)), — и `row_amount`
+одновременно **показывается**. Считать его в Python значит вытащить все строки
+матрицы до пагинации; оставить сортировку по валовому весу значит сортировать по
+числу, отличному от показанного.
+
+Решение: **одно** нетто-выражение в SQL, только для веса строки, и оно **пришпилено
+тестом** к `gross_to_net` на тех же входах (задача 3, шаг 8). Правило по-прежнему
+одно — просто у него появляется вторая исполняющая площадка, и расхождение площадок
+ловится тестом, а не надеждой. Записывается в devlog как отступление.
+
 ## Этапы
 
 Фича одна, PR один, приёмка единая. Реализация делится надвое (спека §6):
 
-- **Этап 1 — нетто-ось:** задачи 0–7. Ставку человек ещё не правит; меняется смысл
-  сравнения и появляется диагностика.
-- **Этап 2 — ручные ставки:** задачи 8–15. Появляются API, экран, аудит и показ в
-  целевой ставке.
+- **Этап 1 — нетто-ось:** задачи 0–5.
+- **Этап 2 — ручные ставки:** задачи 6–13.
 
 ---
 
 ## Задача 0: четыре замера (гейт, кода нет)
 
 Нулевая задача обязательна и идёт **до всего остального** (спека §1.6). Каждый
-замер способен отменить решение, под которым стоит. **При расхождении — остановиться,
-исправить спеку и пройти гейт 2 повторно**, а не править дизайн внутри реализации.
+замер способен отменить решение, под которым стоит. **При расхождении —
+остановиться, исправить спеку и пройти гейт 2 повторно**, а не править дизайн
+внутри реализации.
 
 **Files:**
 - Create: `docs/devlog/2026-08-13-vat-rate-recalculation.md` (раздел «Замеры»)
 
 - [ ] **Шаг 1: замер А — лоты, предложения и ставки корпуса**
-
-Против стенда `gca_dev`:
 
 ```sql
 SELECT e.id AS estimate_id,
@@ -79,38 +98,92 @@ GROUP BY e.id
 ORDER BY e.id;
 ```
 
-Записать таблицу в devlog. **Отменяет границу §5.1**, если найдётся смета, где
-`distinct_rates > 1`: тогда «одна ручная база на смету» — дефект, а не ограничение.
+**Отменяет границу §5.1**, если найдётся смета с `distinct_rates > 1`: тогда «одна
+ручная база на смету» — дефект, а не ограничение.
 
-- [ ] **Шаг 2: замер Б — объёмы и план запроса матрицы**
+- [ ] **Шаг 2: замер Б — два кандидатных запроса, сопоставимые планы**
+
+Замер обязан **выбрать механизм**, а не описать текущий. Поэтому исполняются два
+кандидата на одном и том же охвате (без фильтров, самый широкий).
+
+Кандидат 1 — группировка по базе (то, что делает миграция 0012):
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT d.catalog_position_id, d.contract_id,
+       COALESCE(e.vat_rate_base_override, p.vat_rate) AS vat_rate_base,
+       SUM(d.unit_cost_total * d.weight) AS weighted_cost,
+       SUM(d.weight)                     AS weight_total
+FROM v_position_deviations d
+JOIN proposals p ON p.id = d.proposal_id
+JOIN lots      l ON l.id = p.lot_id
+JOIN estimates e ON e.id = l.estimate_id
+WHERE d.weight > 0
+GROUP BY d.catalog_position_id, d.contract_id,
+         COALESCE(e.vat_rate_base_override, p.vat_rate);
+```
+
+Кандидат 2 — join на `VALUES` с множителями, посчитанными в Python:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT d.catalog_position_id, d.contract_id,
+       SUM(d.unit_cost_total * d.weight * f.factor) AS weighted_net,
+       SUM(d.weight)                                AS weight_total
+FROM v_position_deviations d
+JOIN (VALUES (1::bigint, 0.8333333333::numeric), (2, 0.8333333333)) AS f(proposal_id, factor)
+     ON f.proposal_id = d.proposal_id
+WHERE d.weight > 0
+GROUP BY d.catalog_position_id, d.contract_id;
+```
+
+Записать для обоих: время, `Buffers: shared hit/read`, форму соединения. Плюс
+объёмы:
 
 ```sql
 SELECT count(*) FROM position_items WHERE is_chapter = false;
 SELECT count(*) FROM v_position_deviations;
 ```
 
-Затем `EXPLAIN (ANALYZE, BUFFERS)` на текущем запросе ячеек матрицы (без фильтров,
-самый широкий охват). Записать план и время. **Определяет механизм** доставки
-множителя в задаче 4: группировка по базе против join на `VALUES`.
+**Выбор фиксируется в devlog числами.** Кандидат 2 несёт дополнительное свойство —
+список предложений приходится строить в Python и передавать в запрос, что растёт
+линейно с охватом матрицы; это тоже записывается.
 
-- [ ] **Шаг 3: замер В — стабильность округления до копеек**
+- [ ] **Шаг 3: замер В — устойчивость точности, а не детерминизм**
+
+Повторить те же входы недостаточно: это проверяет детерминизм, которого у `Decimal`
+и так нет причин терять. Проверяется **устойчивость к самой точности**: результат
+при проектной `ARITHMETIC_PRECISION` обязан после округления до копеек совпасть с
+результатом при заведомо избыточной контрольной точности.
 
 ```python
-from decimal import Decimal
-from backend.money.vat import gross_to_net, net_to_gross   # ещё не существует — считать вручную теми же формулами
-# предельные суммы договоров ГП: взять максимум total_cost_total со стенда,
-# домножить на 10 и на 100, прогнать пары (база, цель) из {0, 12, 16, 20, 22}
+from decimal import Context, Decimal, localcontext
+from finance import money_round
+
+HUNDRED = Decimal(100)
+
+
+def restate(gross: Decimal, base: Decimal, target: Decimal, prec: int) -> Decimal:
+    with localcontext(Context(prec=prec)):
+        return gross * HUNDRED / (HUNDRED + base) * (HUNDRED + target) / HUNDRED
+
+
+MAX = Decimal("<максимум total_cost_total со стенда>")
+for scale in (1, 10, 100):
+    gross = MAX * scale
+    for base in (Decimal(0), Decimal(12), Decimal(16), Decimal(20), Decimal(22)):
+        for target in (Decimal(0), Decimal(12), Decimal(16), Decimal(20), Decimal(22)):
+            project = money_round(restate(gross, base, target, 100), 2)
+            control = money_round(restate(gross, base, target, 1000), 2)
+            assert project == control, (gross, base, target, project, control)
 ```
 
-Для каждой пары проверить: `money_round(показ, 2)` при повторном прогоне тех же
-входов даёт тот же результат, и `Σ money_round(показ_i)` отличается от
-`money_round(Σ показ_i)` не более чем на копейку на строку. Записать максимальное
-расхождение числом. **Отменяет §2.3**, если итог «плавает»: понадобится
-фиксированная схема округления, а не «округляем на слое представления».
+Отдельно замерить расхождение суммы округлённых слагаемых с округлённой суммой на
+реальном составе позиций сметы и записать **числом**. **Отменяет §2.3**, если
+проектная точность разойдётся с контрольной: понадобится фиксированная схема
+округления.
 
 - [ ] **Шаг 4: замер Г — допуск `NET_RECONCILIATION_TOLERANCE`**
-
-По каждому предложению стенда с известной ставкой и полным блоком итогов:
 
 ```sql
 SELECT p.id,
@@ -122,15 +195,14 @@ SELECT p.id,
 FROM proposals p;
 ```
 
-Посчитать `gross × 100 / (100 + vat_rate) − file_net` в `Decimal` и записать
-максимум по модулю. Константа берётся **на два порядка выше** замеренного шума и
-записывается в devlog вместе с обоими числами.
+Посчитать `gross × 100 / (100 + vat_rate) − file_net` в `Decimal`, записать максимум
+по модулю. Константа берётся **на два порядка выше** замеренного шума; в devlog
+пишутся оба числа.
 
-- [ ] **Шаг 5: зафиксировать замеры и решение**
+- [ ] **Шаг 5: зафиксировать вердикт**
 
-Если все четыре согласуются со спекой — записать в devlog «расхождений нет, гейт 2
-в силе» и продолжать. Если хоть один разошёлся — **остановиться**, вынести
-расхождение пользователю, править спеку.
+Все четыре согласуются со спекой — записать «расхождений нет, гейт 2 в силе».
+Хоть один разошёлся — **остановиться** и вынести расхождение пользователю.
 
 - [ ] **Шаг 6: замерить базу тестов**
 
@@ -139,13 +211,11 @@ cd backend && uv run pytest --collect-only -q | tail -3
 cd frontend && npx vitest run --reporter=dot 2>&1 | tail -5
 ```
 
-Записать оба числа в devlog как базу для всех последующих задач.
-
 - [ ] **Шаг 7: коммит**
 
 ```bash
 git add docs/devlog/2026-08-13-vat-rate-recalculation.md
-git commit -m "docs(devlog): четыре замера нулевой задачи, база тестов"
+git commit -m "docs(devlog): четыре замера нулевой задачи, выбор механизма агрегации"
 ```
 
 ---
@@ -164,11 +234,11 @@ git commit -m "docs(devlog): четыре замера нулевой задач
   - `net_to_gross(net: Decimal, target: Decimal) -> Decimal`
   - `vat_from_net(net: Decimal, target: Decimal) -> Decimal`
   - `restate_gross(gross: Decimal | None, base: Decimal | None, target: Decimal | None) -> RestatedAmount`
-  - `serialize_amount(restated: RestatedAmount) -> Decimal | None`
+  - `quantize_money(value: Decimal | None) -> Decimal | None`
   - `AmountStatus` (`original`, `restated`, `unknown_base`, `not_finite`)
   - `RestatedAmount(amount: Decimal | None, status: AmountStatus)`
 
-- [ ] **Шаг 1: написать падающий тест на три функции и тождество**
+- [ ] **Шаг 1: написать падающий тест**
 
 ```python
 # backend/tests/unit/test_money_vat.py
@@ -180,8 +250,8 @@ from money.vat import (
     AmountStatus,
     gross_to_net,
     net_to_gross,
+    quantize_money,
     restate_gross,
-    serialize_amount,
     vat_from_net,
 )
 
@@ -199,7 +269,7 @@ def test_vat_from_net_is_zero_at_zero_target():
     assert vat_from_net(Decimal("100"), Decimal("0")) == Decimal("0")
 
 
-def test_restate_keeps_object_untouched_when_target_equals_base():
+def test_restate_keeps_value_and_exponent_when_target_equals_base():
     gross = Decimal("100.50")
     result = restate_gross(gross, Decimal("20"), Decimal("20"))
     assert result.status is AmountStatus.ORIGINAL
@@ -207,18 +277,26 @@ def test_restate_keeps_object_untouched_when_target_equals_base():
     assert result.amount.as_tuple().exponent == gross.as_tuple().exponent
 
 
-def test_restate_keeps_object_untouched_when_target_not_set():
+def test_restate_keeps_value_when_target_not_set():
     gross = Decimal("100.50")
     result = restate_gross(gross, Decimal("20"), None)
     assert result.status is AmountStatus.ORIGINAL
     assert result.amount.as_tuple().exponent == gross.as_tuple().exponent
 
 
+def test_restate_is_identity_when_override_equals_declared_rate():
+    """Ветка тождества не зависит от того, перекрыта ли база."""
+    gross = Decimal("100.50")
+    result = restate_gross(gross, Decimal("20"), Decimal("20"))
+    assert result.status is AmountStatus.ORIGINAL
+
+
 def test_restate_without_base_reports_unknown_and_returns_source():
     gross = Decimal("100.50")
     result = restate_gross(gross, None, Decimal("16"))
     assert result.status is AmountStatus.UNKNOWN_BASE
-    assert result.amount is gross
+    assert result.amount == gross
+    assert result.amount.as_tuple().exponent == gross.as_tuple().exponent
 
 
 def test_restate_recalculates_when_target_differs():
@@ -232,17 +310,11 @@ def test_restate_does_not_fail_on_non_finite(raw):
     gross = Decimal(raw)
     result = restate_gross(gross, Decimal("20"), Decimal("16"))
     assert result.status is AmountStatus.NOT_FINITE
-    assert result.amount is gross
 
 
-def test_serialize_rounds_only_restated_amounts():
-    """Округление исходного значения сдвинуло бы exponent и сломало тождество."""
-    original = restate_gross(Decimal("100.5"), Decimal("20"), Decimal("20"))
-    assert serialize_amount(original) == Decimal("100.5")
-    assert serialize_amount(original).as_tuple().exponent == -1
-
-    restated = restate_gross(Decimal("120"), Decimal("20"), Decimal("16"))
-    assert serialize_amount(restated) == Decimal("116.00")
+def test_quantize_money_rounds_half_up_to_kopecks():
+    assert quantize_money(Decimal("116.005")) == Decimal("116.01")
+    assert quantize_money(None) is None
 
 
 def test_global_decimal_context_is_not_touched():
@@ -260,7 +332,7 @@ Expected: FAIL, `ModuleNotFoundError: No module named 'money'`
 
 ```python
 # backend/money/__init__.py
-"""Денежные правила приложения. Парсер сюда не импортируется в обратную сторону."""
+"""Денежные правила приложения."""
 ```
 
 ```python
@@ -275,6 +347,10 @@ Expected: FAIL, `ModuleNotFoundError: No module named 'money'`
 Канон — валовое. И валовое, и нетто суть факты файла, но единый путь
 преобразования и сохранение аддитивности позиций дают именно валовому; файловое
 нетто служит независимой перекрёстной проверкой (§2.2, §2.10).
+
+ОКРУГЛЕНИЕ ЗДЕСЬ НЕ ДЕЛАЕТСЯ. `quantize_money` вызывается один раз, на границе
+ответа, над ГОТОВЫМ полем; внутрь агрегации она попасть не имеет права, иначе
+`Σ round(x) ≠ round(Σ x)`.
 """
 from __future__ import annotations
 
@@ -294,7 +370,6 @@ from parser.summary_block import ARITHMETIC_PRECISION
 
 _HUNDRED = Decimal(100)
 
-#: Ставки в процентных пунктах, поэтому делить и умножать приходится на сто.
 #: Контекст строится ЯВНО и не наследует глобальный: `localcontext()` без
 #: аргумента копирует текущий контекст ВМЕСТЕ С ЕГО ТРАПАМИ, и включённый
 #: где-то `Inexact` превратил бы штатное деление в исключение. Округление здесь
@@ -305,8 +380,7 @@ _VAT_CONTEXT = Context(
     traps=[Overflow, DivisionByZero, InvalidOperation],
 )
 
-#: Допуск сверки выведенного нетто с файловым, в рублях. Снят замером Г задачи 0
-#: и записан в devlog вместе с замеренным шумом.
+#: Допуск сверки выведенного нетто с файловым, в рублях. Снят замером Г задачи 0.
 NET_RECONCILIATION_TOLERANCE = Decimal("0.01")  # ← подставить замеренное значение
 
 
@@ -355,10 +429,10 @@ def restate_gross(
 ) -> RestatedAmount:
     """Показать валовую сумму в ставке показа. Три ветки спеки §2.4.
 
-    Ветка тождества — ТРЕБОВАНИЕ, а не оптимизация: пока цель равна базе,
-    значение обязано вернуться нетронутым, вместе со своим `exponent`.
-    Умножение на единицу его сдвинуло бы, и посимвольное совпадение денежных
-    полей (§2.4) перестало бы выполняться.
+    Ветка тождества — ТРЕБОВАНИЕ, а не оптимизация, и срабатывает всегда при
+    равенстве цели и базы, независимо от того, перекрыта база или нет. Умножение
+    на единицу сдвинуло бы `exponent`, и посимвольное совпадение денежных полей
+    (§2.4) перестало бы выполняться.
     """
     if base is None:
         return RestatedAmount(amount=gross, status=AmountStatus.UNKNOWN_BASE)
@@ -376,21 +450,17 @@ def restate_gross(
     return RestatedAmount(amount=net_to_gross(net, effective), status=AmountStatus.RESTATED)
 
 
-def serialize_amount(restated: RestatedAmount) -> Decimal | None:
-    """Значение для выдачи наружу: округляется ТОЛЬКО пересчитанное.
-
-    Округлять исходное нельзя: `Decimal('100.5')` стал бы `Decimal('100.50')`,
-    и посимвольное сравнение §2.4 упало бы там, где ничего не менялось.
-    """
-    if restated.status is not AmountStatus.RESTATED or restated.amount is None:
-        return restated.amount
-    return money_round(restated.amount, 2)
+def quantize_money(value: Decimal | None) -> Decimal | None:
+    """Округлить до копеек. Вызывается ОДИН раз, над готовым полем ответа."""
+    if value is None:
+        return None
+    return money_round(value, 2)
 ```
 
 - [ ] **Шаг 4: прогнать тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_money_vat.py -v`
-Expected: PASS, 11 тестов
+Expected: PASS, 13 тестов
 
 - [ ] **Шаг 5: замерить сбор и закоммитить**
 
@@ -409,15 +479,14 @@ git commit -m "feat(money): правила пересчёта между ста�
 - Test: `backend/tests/unit/test_money_vat.py`
 
 **Interfaces:**
-- Consumes: `gross_to_net`, `NET_RECONCILIATION_TOLERANCE` из задачи 1.
 - Produces:
   - `NetStatus` (`ok`, `mismatch`, `unknown_base`, `not_applicable`)
   - `ProposalNetCheck(proposal_id: int, status: NetStatus, delta: Decimal | None)`
   - `NetReconciliation(status: NetStatus, delta: Decimal | None, mismatched_proposal_ids: list[int])`
-  - `check_proposal_net(proposal_id: int, gross_total: Decimal | None, file_net: Decimal | None, base: Decimal | None) -> ProposalNetCheck`
+  - `check_proposal_net(proposal_id, gross_total, file_net, base) -> ProposalNetCheck`
   - `fold_net_reconciliation(checks: Sequence[ProposalNetCheck]) -> NetReconciliation`
 
-- [ ] **Шаг 1: написать падающий тест на свёртку**
+- [ ] **Шаг 1: написать падающий тест**
 
 ```python
 # дописать в backend/tests/unit/test_money_vat.py
@@ -465,10 +534,7 @@ def test_fold_prefers_mismatch_over_unknown_base():
     """Приоритет идёт от противоречия к незнанию: расхождение — факт,
     незнание — его отсутствие."""
     folded = fold_net_reconciliation(
-        [
-            _check(1, NetStatus.UNKNOWN_BASE),
-            _check(2, NetStatus.MISMATCH, Decimal("10")),
-        ]
+        [_check(1, NetStatus.UNKNOWN_BASE), _check(2, NetStatus.MISMATCH, Decimal("10"))]
     )
     assert folded.status is NetStatus.MISMATCH
     assert folded.mismatched_proposal_ids == [2]
@@ -496,8 +562,7 @@ def test_fold_delta_ignores_non_comparable_proposals():
 
 
 def test_fold_delta_is_null_without_comparable_proposals():
-    folded = fold_net_reconciliation([_check(1, NetStatus.UNKNOWN_BASE)])
-    assert folded.delta is None
+    assert fold_net_reconciliation([_check(1, NetStatus.UNKNOWN_BASE)]).delta is None
 ```
 
 - [ ] **Шаг 2: прогнать и убедиться, что падает**
@@ -553,8 +618,7 @@ def check_proposal_net(
     if base is None:
         return ProposalNetCheck(proposal_id, NetStatus.UNKNOWN_BASE, None)
 
-    operands = (gross_total, file_net)
-    if any(value is None or not value.is_finite() for value in operands):
+    if any(value is None or not value.is_finite() for value in (gross_total, file_net)):
         return ProposalNetCheck(proposal_id, NetStatus.NOT_APPLICABLE, None)
 
     delta = gross_to_net(gross_total, base) - file_net
@@ -588,7 +652,7 @@ def fold_net_reconciliation(checks: Sequence[ProposalNetCheck]) -> NetReconcilia
 - [ ] **Шаг 4: прогнать тесты**
 
 Run: `cd backend && uv run pytest tests/unit/test_money_vat.py -v`
-Expected: PASS, 20 тестов
+Expected: PASS, 22 теста
 
 - [ ] **Шаг 5: коммит**
 
@@ -599,30 +663,29 @@ git commit -m "feat(money): свёртка сверки нетто по смет
 
 ---
 
-## Задача 3: миграция 0012 — колонки, переименование VIEW, группировка
+## Задача 3: миграция 0012 и нетто-аналитика (одним коммитом)
+
+Миграция снимает `v_position_deviations` и колонку `deviation_pct`, а её читает
+`crud/analytics.py`. Разделить задачи нельзя: промежуточный коммит был бы **красным**.
+Поэтому схема и оба потребителя аналитики едут вместе.
 
 **Files:**
 - Create: `backend/alembic/versions/2026_08_13_0012-vat_rate_recalculation.py`
 - Modify: `backend/models.py` (класс `Estimate`, строки 438–473)
-- Test: `backend/tests/integration/test_schema_constraints.py`
+- Modify: `backend/crud/analytics.py:61-83`, `:160-183`, `:245-260`, `:363-380`, `:436-470`, `:600-651`
+- Test: `backend/tests/integration/test_schema_constraints.py`, `test_analytics_api.py`
 
 **Interfaces:**
-- Produces: колонки `estimates.vat_rate_base_override`, `estimates.vat_rate_target`,
-  `estimates.vat_rate_updated_by_id`, `estimates.vat_rate_updated_at`; VIEW
-  `v_position_deviation_inputs` (колонка `deviation_pct` отсутствует, добавлены
-  `vat_rate_base` и `vat_rate_target`); VIEW `v_category_totals` с `proposal_id` и
-  `vat_rate_base` в выдаче и группировке.
+- Consumes: `gross_to_net` из `money.vat`.
+- Produces: колонки `estimates.vat_rate_base_override`, `vat_rate_target`,
+  `vat_rate_updated_by_id`, `vat_rate_updated_at`; VIEW `v_position_deviation_inputs`;
+  `v_category_totals` с `proposal_id` и `vat_rate_base`; отражение `DEVIATION_INPUTS`;
+  ячейка матрицы — средневзвешенная **нетто**-ставка; `row_amount` — **нетто**.
 
-- [ ] **Шаг 1: написать падающий тест схемы**
+- [ ] **Шаг 1: написать падающие тесты схемы**
 
 ```python
 # дописать в backend/tests/integration/test_schema_constraints.py
-import pytest
-import sqlalchemy as sa
-
-pytestmark = pytest.mark.integration
-
-
 def test_estimates_vat_columns_reject_out_of_range(db_session, factories):
     estimate = factories.estimate()
     db_session.commit()
@@ -650,10 +713,7 @@ def test_deviation_inputs_view_has_no_deviation_pct(db_session):
 
 
 def test_old_deviations_view_is_gone(db_session):
-    exists = db_session.execute(
-        sa.text("SELECT to_regclass('v_position_deviations')")
-    ).scalar()
-    assert exists is None
+    assert db_session.execute(sa.text("SELECT to_regclass('v_position_deviations')")).scalar() is None
 
 
 def test_category_totals_view_groups_by_proposal(db_session):
@@ -669,23 +729,91 @@ def test_category_totals_view_groups_by_proposal(db_session):
     assert {"proposal_id", "vat_rate_base"} <= columns
 ```
 
-- [ ] **Шаг 2: прогнать и убедиться, что падает**
+- [ ] **Шаг 2: написать падающие тесты матрицы**
 
-Run: `cd backend && uv run pytest tests/integration/test_schema_constraints.py -k "vat or deviation_inputs or category_totals_view_groups" -v`
-Expected: FAIL — `UndefinedColumn` / `assert None is None` не выполняется
+Проверяется не только `rate`: `amount`, `row_amount`, порядок строк и количество
+ячеек на пару — всё это меняется группировкой по базе.
 
-- [ ] **Шаг 3: написать миграцию**
+```python
+# дописать в backend/tests/integration/test_analytics_api.py
+def test_matrix_cell_rate_is_net_of_declared_vat(client, factories, db_session):
+    factories.priced_estimate(unit_cost_total=Decimal("120"), vat_rate=Decimal("20"))
+    db_session.commit()
+    cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+    assert Decimal(cell["rate"]) == Decimal("100.00")
+
+
+def test_matrix_cell_amount_is_net(client, factories, db_session):
+    factories.priced_estimate(
+        unit_cost_total=Decimal("120"), weight=Decimal("2"), vat_rate=Decimal("20")
+    )
+    db_session.commit()
+    cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+    assert Decimal(cell["amount"]) == Decimal("200.00")
+
+
+def test_matrix_row_amount_is_net_and_orders_rows(client, factories, db_session):
+    """Строка с БОЛЬШИМ валовым весом, но большей ставкой НДС, обязана встать
+    ниже — иначе сортировка идёт по числу, отличному от показанного."""
+    factories.priced_estimate(
+        catalog_title="A", unit_cost_total=Decimal("122"), weight=Decimal("1"), vat_rate=Decimal("22")
+    )
+    factories.priced_estimate(
+        catalog_title="B", unit_cost_total=Decimal("112"), weight=Decimal("1"), vat_rate=Decimal("12")
+    )
+    db_session.commit()
+    rows = client.get("/api/v1/analytics/matrix").json()["rows"]
+    assert [row["standard_job_title"] for row in rows] == ["B", "A"]
+    assert Decimal(rows[0]["row_amount"]) == Decimal("100.00")
+
+
+def test_matrix_yields_one_cell_per_position_and_contract(client, factories, db_session):
+    """Группировка по базе не имеет права раздваивать ячейку."""
+    factories.priced_estimate_with_two_proposals(
+        unit_cost_total=Decimal("120"), vat_rates=[Decimal("20"), Decimal("20")]
+    )
+    db_session.commit()
+    row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+    contract_ids = [cell["contract_id"] for cell in row["cells"]]
+    assert len(contract_ids) == len(set(contract_ids))
+
+
+def test_matrix_cell_is_empty_without_vat_base(client, factories, db_session):
+    factories.priced_estimate(unit_cost_total=Decimal("120"), vat_rate=None)
+    db_session.commit()
+    cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+    assert cell["rate"] is None
+    assert cell["deviation_reason"] == "unknown_vat_base"
+
+
+def test_phase6_passport_deviation_is_net_based(client, factories, db_session):
+    """Норматив — цена без НДС: 120 с НДС 20 % против норматива 100 дают 0 %."""
+    contract = factories.contract_with_standard(
+        unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    db_session.commit()
+    body = client.get(f"/api/v1/analytics/passport/{contract.id}").json()
+    assert Decimal(body["top_positions"][0]["deviation_pct"]) == Decimal("0")
+    assert body["totals"]["over_standard"] == 0
+```
+
+- [ ] **Шаг 3: прогнать и убедиться, что падает**
+
+Run: `cd backend && uv run pytest tests/integration/test_schema_constraints.py tests/integration/test_analytics_api.py -v`
+Expected: FAIL — VIEW не существует, `rate` равен `120`
+
+- [ ] **Шаг 4: написать миграцию**
 
 ```python
 # backend/alembic/versions/2026_08_13_0012-vat_rate_recalculation.py
 """Ручные ставки НДС на смете, нетто-ось сравнения.
 
-Фаза 7, фича пересчёта. Три изменения схемы, все — следствия спеки:
+Три изменения схемы, все — следствия спеки:
 
 1. Четыре колонки на `estimates`: база, назначенная человеком; ставка показа;
    автор и время последней правки. `proposals.vat_rate` не трогается — он
-   остаётся неприкосновенным фактом файла, правка живёт рядом, а не поверх.
-   Тип автора — `integer`, как `users.id` (то же уточнение, что в 0011).
+   остаётся неприкосновенным фактом файла. Тип автора — `integer`, как
+   `users.id` (то же уточнение, что в 0011).
 
 2. `v_position_deviations` → `v_position_deviation_inputs`. Колонка
    `deviation_pct` УБРАНА: она считалась на валовой цене, а норматив объявлен
@@ -694,12 +822,9 @@ Expected: FAIL — `UndefinedColumn` / `assert None is None` не выполня
    же класс ошибки, что `total_cost_with_vat` со значением «без НДС».
 
 3. `v_category_totals` группируется ДОПОЛНИТЕЛЬНО по предложению и его базовой
-   ставке — то есть до уровня, на котором множитель пересчёта постоянен.
-   Умножение остаётся в Python: правило обязано быть записано один раз и на
-   одном языке.
+   ставке — до уровня, на котором множитель пересчёта постоянен.
 
-Литералы записаны строками: миграция обязана быть неизменной во времени (то же
-правило, что у 0002–0011).
+Литералы записаны строками: миграция обязана быть неизменной во времени.
 
 Revision ID: 0012
 Revises: 0011
@@ -709,7 +834,6 @@ import sqlalchemy as sa
 
 from alembic import op
 
-# revision identifiers, used by Alembic.
 revision = "0012"
 down_revision = "0011"
 branch_labels = None
@@ -787,12 +911,6 @@ WHERE pi.is_chapter = false
   AND cp.kind = 'POSITION'
 """
 
-_FINITE_POSITIONS = """
-        WHERE pi.total_cost_total <> 'NaN'::numeric
-          AND pi.total_cost_total <> 'Infinity'::numeric
-          AND pi.total_cost_total <> '-Infinity'::numeric
-"""
-
 V_CATEGORY_TOTALS_WITH_PROPOSAL = """
 CREATE VIEW v_category_totals AS
 SELECT
@@ -868,68 +986,8 @@ GROUP BY l.estimate_id, p.id, COALESCE(e.vat_rate_base_override, p.vat_rate),
 
 # Дословная копия объявления из миграции 0010 — нужна для downgrade.
 V_CATEGORY_TOTALS_0010 = """
-CREATE VIEW v_category_totals AS
-SELECT
-    l.estimate_id,
-    ch.work_category_id,
-    'positions'::text AS source,
-    SUM(pi.total_cost_total) FILTER (
-        WHERE pi.total_cost_total <> 'NaN'::numeric
-          AND pi.total_cost_total <> 'Infinity'::numeric
-          AND pi.total_cost_total <> '-Infinity'::numeric
-    ) AS amount,
-    COUNT(*)::int AS row_count,
-    COUNT(*) FILTER (
-        WHERE pi.total_cost_total IS NOT NULL
-          AND pi.total_cost_total <> 'NaN'::numeric
-          AND pi.total_cost_total <> 'Infinity'::numeric
-          AND pi.total_cost_total <> '-Infinity'::numeric
-    )::int AS rows_with_amount,
-    COUNT(*) FILTER (
-        WHERE pi.total_cost_total IS NOT NULL
-          AND NOT (
-                  pi.total_cost_total <> 'NaN'::numeric
-              AND pi.total_cost_total <> 'Infinity'::numeric
-              AND pi.total_cost_total <> '-Infinity'::numeric
-          )
-    )::int AS rows_not_finite
-FROM position_items pi
-JOIN proposals p ON p.id = pi.proposal_id
-JOIN lots      l ON l.id = p.lot_id
-LEFT JOIN position_items ch
-       ON ch.id = pi.chapter_item_id
-      AND ch.proposal_id = pi.proposal_id
-WHERE pi.is_chapter = false
-GROUP BY l.estimate_id, ch.work_category_id
-UNION ALL
-SELECT
-    l.estimate_id,
-    aw.work_category_id,
-    'additional_works'::text AS source,
-    SUM(aw.total_amount) FILTER (
-        WHERE aw.total_amount <> 'NaN'::numeric
-          AND aw.total_amount <> 'Infinity'::numeric
-          AND aw.total_amount <> '-Infinity'::numeric
-    ) AS amount,
-    COUNT(*)::int AS row_count,
-    COUNT(*) FILTER (
-        WHERE aw.total_amount IS NOT NULL
-          AND aw.total_amount <> 'NaN'::numeric
-          AND aw.total_amount <> 'Infinity'::numeric
-          AND aw.total_amount <> '-Infinity'::numeric
-    )::int AS rows_with_amount,
-    COUNT(*) FILTER (
-        WHERE aw.total_amount IS NOT NULL
-          AND NOT (
-                  aw.total_amount <> 'NaN'::numeric
-              AND aw.total_amount <> 'Infinity'::numeric
-              AND aw.total_amount <> '-Infinity'::numeric
-          )
-    )::int AS rows_not_finite
-FROM estimate_additional_works aw
-JOIN proposals p ON p.id = aw.proposal_id
-JOIN lots      l ON l.id = p.lot_id
-GROUP BY l.estimate_id, aw.work_category_id
+<скопировать целиком из backend/alembic/versions/2026_08_10_0010-category_totals_view.py,
+ константа V_CATEGORY_TOTALS, без единой правки>
 """
 
 
@@ -938,8 +996,7 @@ def upgrade() -> None:
     op.add_column("estimates", sa.Column("vat_rate_target", sa.Numeric(), nullable=True))
     op.add_column("estimates", sa.Column("vat_rate_updated_by_id", sa.Integer(), nullable=True))
     op.add_column(
-        "estimates",
-        sa.Column("vat_rate_updated_at", sa.DateTime(timezone=True), nullable=True),
+        "estimates", sa.Column("vat_rate_updated_at", sa.DateTime(timezone=True), nullable=True)
     )
     op.create_check_constraint(
         "ck_estimates_vat_rate_base_override",
@@ -968,9 +1025,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # VIEW снимаются ДО колонок: оба ссылаются на vat_rate_base_override.
     op.execute("DROP VIEW IF EXISTS v_category_totals")
     op.execute("DROP VIEW IF EXISTS v_position_deviation_inputs")
-    # VIEW снимаются ДО колонок: оба ссылаются на vat_rate_base_override.
     op.drop_constraint("fk_estimates_vat_rate_updated_by_id", "estimates", type_="foreignkey")
     op.drop_constraint("ck_estimates_vat_rate_target", "estimates", type_="check")
     op.drop_constraint("ck_estimates_vat_rate_base_override", "estimates", type_="check")
@@ -982,14 +1039,14 @@ def downgrade() -> None:
     op.execute(V_POSITION_DEVIATIONS)
 ```
 
-- [ ] **Шаг 4: дописать модель**
+- [ ] **Шаг 5: дописать модель**
 
 ```python
 # backend/models.py, класс Estimate — после import_job_id (строка 450)
     # Ручные ставки НДС (спека пересчёта §2.1). Решение человека о СМЕТЕ, а не
-    # факт файла: `proposals.vat_rate` остаётся неприкосновенным, правка живёт
-    # рядом. База перекрываема всегда, в том числе поверх заявленной файлом, —
-    # файл умеет ошибиться, и это обязано лечиться приложением.
+    # факт файла: `proposals.vat_rate` остаётся неприкосновенным. База
+    # перекрываема всегда, в том числе поверх заявленной файлом, — файл умеет
+    # ошибиться, и это обязано лечиться приложением.
     vat_rate_base_override = Column(Numeric, nullable=True)
     vat_rate_target = Column(Numeric, nullable=True)
     # `users.id` — integer, не bigint; тип повторяет его (то же, что в 0011).
@@ -1012,78 +1069,7 @@ def downgrade() -> None:
         ),
 ```
 
-- [ ] **Шаг 5: прогнать миграцию и тесты**
-
-```bash
-cd backend && uv run alembic upgrade head && uv run alembic check
-uv run pytest tests/integration/test_schema_constraints.py -v
-```
-Expected: `alembic check` чист, тесты схемы PASS
-
-- [ ] **Шаг 6: круговой рейс**
-
-```bash
-cd backend && uv run alembic downgrade base && uv run alembic upgrade head
-```
-Expected: обе команды без ошибок. Падение на `downgrade` — дефект порядка снятия
-VIEW и колонок, а не повод пропустить шаг.
-
-- [ ] **Шаг 7: проверить партией больше пяти**
-
-```bash
-cd backend && uv run pytest tests/integration/test_category_totals_view.py -v
-```
-Expected: PASS. `prepare_threshold = 5` в psycopg3 — партия из 5 проходит, из 10
-падает; VIEW обязан проверяться партией, а не одной строкой.
-
-- [ ] **Шаг 8: коммит**
-
-```bash
-git add backend/alembic/versions/2026_08_13_0012-vat_rate_recalculation.py backend/models.py backend/tests/integration/test_schema_constraints.py
-git commit -m "feat(db): миграция 0012 — ручные ставки НДС, нетто-ось VIEW"
-```
-
----
-
-## Задача 4: `crud/analytics.py` — отражение VIEW и нетто-матрица
-
-**Files:**
-- Modify: `backend/crud/analytics.py:61-83` (отражение), `:436-471` (`_cells_cte`), `:631-651` (сборка строк)
-- Test: `backend/tests/integration/test_analytics_api.py`
-
-**Interfaces:**
-- Consumes: `gross_to_net` из `money.vat`; VIEW `v_position_deviation_inputs`.
-- Produces: `DEVIATION_INPUTS` (переименованное отражение), ячейка матрицы —
-  средневзвешенная **нетто**-ставка.
-
-- [ ] **Шаг 1: написать падающий тест**
-
-```python
-# дописать в backend/tests/integration/test_analytics_api.py
-def test_matrix_cell_rate_is_net_of_declared_vat(client, factories, db_session):
-    """Ячейка матрицы — нетто-ставка: 120 при заявленных 20 % дают 100."""
-    estimate = factories.priced_estimate(unit_cost_total=Decimal("120"), vat_rate=Decimal("20"))
-    db_session.commit()
-    body = client.get("/api/v1/analytics/matrix").json()
-    cell = body["rows"][0]["cells"][0]
-    assert Decimal(cell["rate"]) == Decimal("100.00")
-
-
-def test_matrix_cell_rate_is_null_without_vat_base(client, factories, db_session):
-    factories.priced_estimate(unit_cost_total=Decimal("120"), vat_rate=None)
-    db_session.commit()
-    body = client.get("/api/v1/analytics/matrix").json()
-    cell = body["rows"][0]["cells"][0]
-    assert cell["rate"] is None
-    assert cell["deviation_reason"] == "unknown_vat_base"
-```
-
-- [ ] **Шаг 2: прогнать и убедиться, что падает**
-
-Run: `cd backend && uv run pytest tests/integration/test_analytics_api.py -k "net_of_declared or without_vat_base" -v`
-Expected: FAIL — `rate` равен `120`, ключа `deviation_reason` нет
-
-- [ ] **Шаг 3: переименовать отражение**
+- [ ] **Шаг 6: переименовать отражение VIEW**
 
 ```python
 # backend/crud/analytics.py, заменить блок DEVIATIONS (строки 61-79)
@@ -1108,19 +1094,29 @@ DEVIATION_INPUTS = sa.table(
     sa.column("vat_rate_target", sa.Numeric),
 )
 
-#: Прежнее имя оставлено алиасом на время правки потребителей и удаляется
-#: последней задачей этапа 1: одновременное переименование в шести местах
-#: прячет опечатку до попадания на стенд.
+#: Прежнее имя — алиас на время правки потребителей вне этого модуля
+#: (`crud/reports.py` читает те же колонки и `deviation_pct` не трогает).
+#: Снимается задачей 5 с прогоном всего backend: одновременное переименование в
+#: шести местах прячет опечатку до попадания на стенд.
 DEVIATIONS = DEVIATION_INPUTS
 ```
 
-- [ ] **Шаг 4: перевести ячейку матрицы на нетто**
+- [ ] **Шаг 7: переписать ячейки матрицы на нетто**
 
-SQL агрегирует до уровня постоянного множителя — до базы; умножает Python.
+SQL агрегирует до базы — уровня постоянного множителя; ставку и отклонение
+считает Python.
 
 ```python
-# backend/crud/analytics.py, _cells_cte — добавить базу в выдачу и группировку
-def _cells_cte(scope_filters: list):
+# backend/crud/analytics.py
+def _cell_groups_cte(scope_filters: list):
+    """Слагаемые ячеек в разрезе базы НДС — уровня, где множитель постоянен.
+
+    Формула §6 сохраняется дословно: `SUM(unit_cost_total * w)` и `SUM(w)`.
+    Делит и приводит к нетто Python, потому что правило обязано быть записано
+    один раз. `MIN(standard_unit_rate)` — по прежнему доводу: внутри группы
+    норматив один, агрегат нужен лишь чтобы вынести его из `GROUP BY`.
+    """
+    latest = latest_estimates()
     weighted = sa.func.sum(DEVIATION_INPUTS.c.unit_cost_total * DEVIATION_INPUTS.c.weight)
     return (
         sa.select(
@@ -1140,18 +1136,37 @@ def _cells_cte(scope_filters: list):
             DEVIATION_INPUTS.c.contract_id,
             DEVIATION_INPUTS.c.vat_rate_base,
         )
+        .cte("cell_groups")
     )
 ```
 
 ```python
-# backend/crud/analytics.py, сборка строк — процент и ставка считаются в Python
-def _net_rate(weighted_cost, weight_total, base):
-    """Средневзвешенная НЕТТО-ставка ячейки; `None`, если базы нет."""
-    if weighted_cost is None or weight_total is None or weight_total == 0:
-        return None
-    if base is None:
-        return None
-    return gross_to_net(weighted_cost / weight_total, base)
+# backend/crud/analytics.py — свёртка групп одной ячейки
+def _fold_cell(groups) -> dict:
+    """Одна ячейка из групп по базе. Ровно одна ячейка на пару (работа, договор).
+
+    Хотя бы одна неизвестная база делает ячейку пустой целиком: показать
+    средневзвешенное по части строк значило бы выдать неполную величину за полную.
+    """
+    net_cost = Decimal(0)
+    weight_total = Decimal(0)
+    standard = None
+    for group in groups:
+        if group.vat_rate_base is None or not group.weight_total:
+            return {"rate": None, "amount": None, "deviation_pct": None,
+                    "deviation_reason": "unknown_vat_base", "standard_unit_rate": None}
+        net_cost += gross_to_net(group.weighted_cost, group.vat_rate_base)
+        weight_total += group.weight_total
+        standard = group.standard_unit_rate if standard is None else standard
+
+    rate = net_cost / weight_total if weight_total else None
+    return {
+        "rate": quantize_money(rate),
+        "amount": quantize_money(net_cost),
+        "standard_unit_rate": standard,
+        "deviation_pct": _deviation(rate, standard),
+        "deviation_reason": None if standard is not None else "no_standard",
+    }
 
 
 def _deviation(net_rate, standard):
@@ -1160,89 +1175,43 @@ def _deviation(net_rate, standard):
     return (net_rate / standard - 1) * 100
 ```
 
-Строки одной ячейки, пришедшие с разными базами, складываются по формуле §6
-дословно: `SUM(cost × w)` и `SUM(w)` берутся по каждой базе, нетто считается по
-своей базе, затем взвешенно сводится:
+- [ ] **Шаг 8: вес строки — единственное нетто-выражение в SQL, пришпиленное тестом**
+
+Сортировка и пагинация идут в SQL, поэтому нетто-вес строки считается там же.
+Это названное отступление от §2.6, и его расхождение с Python ловится тестом:
 
 ```python
-def _fold_cell(groups):
-    """`groups` — строки одной ячейки в разрезе базы НДС."""
-    net_sum = Decimal(0)
-    weight_sum = Decimal(0)
-    for group in groups:
-        if group.vat_rate_base is None or group.weight_total in (None, 0):
-            return None  # хотя бы одна база неизвестна — ячейка честно пуста
-        net_sum += gross_to_net(group.weighted_cost, group.vat_rate_base)
-        weight_sum += group.weight_total
-    if weight_sum == 0:
-        return None
-    return net_sum / weight_sum
-```
-
-- [ ] **Шаг 5: добавить причину пустого отклонения**
-
-```python
-# backend/crud/analytics.py, форма ячейки
-def _deviation_reason(net_rate, standard) -> str | None:
-    """Код причины пустого отклонения. Два разных факта — два разных кода:
-    §4 требует отличать «нет норматива» от нуля, и то же требование
-    распространяется на «неизвестна база НДС»."""
-    if net_rate is None:
-        return "unknown_vat_base"
-    if standard is None:
-        return "no_standard"
-    return None
-```
-
-- [ ] **Шаг 6: прогнать тесты аналитики**
-
-Run: `cd backend && uv run pytest tests/integration/test_analytics_api.py -v`
-Expected: PASS, включая `test_declared_view_columns_match_the_database` — он
-сверяет объявление отражения с `information_schema` и обязан подтвердить
-переименование.
-
-- [ ] **Шаг 7: коммит**
-
-```bash
-git add backend/crud/analytics.py backend/tests/integration/test_analytics_api.py
-git commit -m "feat(analytics): ячейка матрицы — средневзвешенная нетто-ставка"
-```
-
----
-
-## Задача 5: `crud/analytics.py` — паспорт фазы 6 на нетто
-
-Endpoint `GET /api/v1/analytics/passport/{id}` жив и адаптируется, а не удаляется:
-фаза 7 записала, что экран вернётся drill-down'ом из статьи.
-
-**Files:**
-- Modify: `backend/crud/analytics.py:160-183` (`_priced_positions_select`), `:245-260`, `:363-380` (`over_standard`)
-- Test: `backend/tests/integration/test_analytics_api.py`
-
-**Interfaces:**
-- Consumes: `gross_to_net`, `_deviation`, `_deviation_reason` из задачи 4.
-- Produces: строки паспорта фазы 6 с нетто-отклонением и кодом причины.
-
-- [ ] **Шаг 1: написать падающий тест**
-
-```python
-def test_phase6_passport_deviation_is_net_based(client, factories, db_session):
-    """Норматив — цена без НДС: 120 с НДС 20 % против норматива 100 дают 0 %."""
-    contract = factories.contract_with_standard(
-        unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+# backend/crud/analytics.py — вес строки матрицы
+_NET_WEIGHT = (
+    sa.func.sum(
+        DEVIATION_INPUTS.c.unit_cost_total
+        * DEVIATION_INPUTS.c.weight
+        * 100
+        / (100 + DEVIATION_INPUTS.c.vat_rate_base)
     )
-    db_session.commit()
-    body = client.get(f"/api/v1/analytics/passport/{contract.id}").json()
-    assert Decimal(body["top_positions"][0]["deviation_pct"]) == Decimal("0")
-    assert body["totals"]["over_standard"] == 0
+)
 ```
 
-- [ ] **Шаг 2: прогнать и убедиться, что падает**
+```python
+# backend/tests/integration/test_analytics_api.py
+def test_sql_net_weight_agrees_with_python(db_session, factories):
+    """Единственное нетто-выражение в SQL обязано совпадать с money.vat.
 
-Run: `cd backend && uv run pytest tests/integration/test_analytics_api.py -k phase6_passport -v`
-Expected: FAIL — `deviation_pct` равен `20`, `over_standard` равен `1`
+    Отступление от §2.6 допущено ради сортировки и пагинации; расхождение двух
+    площадок ловится здесь, а не на стенде.
+    """
+    factories.priced_estimate(unit_cost_total=Decimal("120"), weight=Decimal("3"),
+                              vat_rate=Decimal("20"))
+    db_session.commit()
+    from_sql = db_session.execute(sa.text(
+        "SELECT SUM(unit_cost_total * weight * 100 / (100 + vat_rate_base)) "
+        "FROM v_position_deviation_inputs"
+    )).scalar()
+    from_python = gross_to_net(Decimal("120") * Decimal("3"), Decimal("20"))
+    assert quantize_money(from_sql) == quantize_money(from_python)
+```
 
-- [ ] **Шаг 3: убрать чтение снятой колонки**
+- [ ] **Шаг 9: перевести паспорт фазы 6**
 
 ```python
 # backend/crud/analytics.py, _priced_positions_select — вместо DEVIATIONS.c.deviation_pct
@@ -1258,61 +1227,66 @@ Expected: FAIL — `deviation_pct` равен `20`, `over_standard` равен `
     row = {
         ...
         "deviation_pct": _deviation(net_unit_cost, r.standard_unit_rate),
-        "deviation_reason": _deviation_reason(net_unit_cost, r.standard_unit_rate),
+        "deviation_reason": (
+            "unknown_vat_base" if net_unit_cost is None
+            else ("no_standard" if r.standard_unit_rate is None else None)
+        ),
     }
 ```
 
-- [ ] **Шаг 4: перевести `over_standard`**
-
-`COUNT` по снятой колонке в SQL больше невозможен — счётчик считается в Python по
-тем же строкам, что и таблица:
+`over_standard` больше не считается `COUNT`-ом по снятой колонке — считается в
+Python по тем же строкам, что и таблица:
 
 ```python
     over_standard = sum(
-        1
-        for row in rows
-        if row["deviation_pct"] is not None and row["deviation_pct"] > 0
+        1 for row in rows if row["deviation_pct"] is not None and row["deviation_pct"] > 0
     )
 ```
 
-- [ ] **Шаг 5: прогнать тесты**
-
-Run: `cd backend && uv run pytest tests/integration/test_analytics_api.py -v`
-Expected: PASS
-
-- [ ] **Шаг 6: коммит**
+- [ ] **Шаг 10: прогнать всё, включая круговой рейс**
 
 ```bash
-git add backend/crud/analytics.py backend/tests/integration/test_analytics_api.py
-git commit -m "feat(analytics): паспорт фазы 6 сравнивает по нетто"
+cd backend && uv run alembic upgrade head && uv run alembic check
+uv run pytest tests/integration/test_schema_constraints.py tests/integration/test_analytics_api.py tests/integration/test_category_totals_view.py -v
+uv run alembic downgrade base && uv run alembic upgrade head
+uv run pytest -q
+```
+Expected: всё зелёное. `test_declared_view_columns_match_the_database` обязан
+подтвердить переименование; падение на `downgrade` — дефект порядка снятия
+объектов, а не повод пропустить шаг. Партия >5 строк проверяется тестом VIEW
+(`prepare_threshold = 5` в psycopg3).
+
+- [ ] **Шаг 11: коммит**
+
+```bash
+git add backend/alembic backend/models.py backend/crud/analytics.py backend/tests
+git commit -m "feat(db,analytics): миграция 0012 и нетто-ось матрицы и паспорта Ф6"
 ```
 
 ---
 
-## Задача 6: `crud/reports.py` — нетто, четыре класса, подпись ставки
+## Задача 4: `crud/reports.py` — нетто, четыре класса, подпись ставки
 
 **Files:**
-- Modify: `backend/crud/reports.py:77` (`_NO_VOLUME`), `:87-91` (`_deviation_pct`), `:135-220`, `:360-375`
+- Modify: `backend/crud/reports.py:77`, `:87-91`, `:135-220`, `:360-375`
+- Modify: `backend/services/excel_reports.py` (шапка листа «для банка»)
 - Test: `backend/tests/integration/test_reports_api.py`
 
 **Interfaces:**
 - Consumes: `gross_to_net` из `money.vat`, `DEVIATION_INPUTS` из `crud.analytics`.
 - Produces: разбиение позиций на четыре класса; счётчик `unknown_vat_base`.
 
-- [ ] **Шаг 1: написать падающий тест на разбиение**
+- [ ] **Шаг 1: написать падающий тест разбиения**
 
 ```python
 def test_bank_report_partition_covers_every_priced_position(client, factories, db_session):
     """Четыре класса образуют разбиение: сумма сходится с независимым счётчиком."""
     factories.bank_report_fixture()  # по одной позиции каждого класса
     db_session.commit()
-    body = client.get("/api/v1/reports/bank", params={"rate_class_id": 1}).json()
-    totals = body["totals"]
+    totals = client.get("/api/v1/reports/bank", params={"rate_class_id": 1}).json()["totals"]
     assert (
-        totals["comparable"]
-        + totals["no_volume"]
-        + totals["unknown_vat_base"]
-        + totals["no_standard"]
+        totals["comparable"] + totals["no_volume"]
+        + totals["unknown_vat_base"] + totals["no_standard"]
         == totals["priced_positions_total"]
     )
 
@@ -1349,10 +1323,8 @@ def _classify(row) -> str:
     if row.standard_unit_rate is None:
         return "no_standard"
     return "comparable"
-```
 
-```python
-# backend/crud/reports.py — факт и норматив приводятся к одной ставке
+
 def _net_fact(row) -> Decimal | None:
     if row.vat_rate_base is None:
         return None
@@ -1363,9 +1335,7 @@ def _net_fact(row) -> Decimal | None:
 
 ```python
 # backend/services/excel_reports.py — строка под заголовком отчёта «для банка»
-    sheet.cell(row=header_row, column=1).value = (
-        "Все суммы и нормативы — без НДС"
-    )
+    sheet.cell(row=header_row, column=1).value = "Все суммы и нормативы — без НДС"
 ```
 
 Отчёт «для банка» — выборка многих договоров с разными целями, поэтому общая ось
@@ -1386,15 +1356,16 @@ git commit -m "feat(reports): нетто-сравнение и четвёрты�
 
 ---
 
-## Задача 7: `crud/project_passport.py` — `net_reconciliation` в ответе
+## Задача 5: `crud/project_passport.py` — `net_reconciliation`, снятие алиаса
 
 **Files:**
 - Modify: `backend/crud/project_passport.py:341-400`, `:1156-1180`
+- Modify: `backend/crud/analytics.py` (снять алиас `DEVIATIONS`)
 - Test: `backend/tests/integration/test_project_passport_api.py`
 
 **Interfaces:**
-- Consumes: `check_proposal_net`, `fold_net_reconciliation`, `NetStatus` из `money.vat`.
-- Produces: ключ `net_reconciliation` в блоке `totals` паспорта:
+- Consumes: `check_proposal_net`, `fold_net_reconciliation` из `money.vat`.
+- Produces: ключ `net_reconciliation` в `totals`:
   `{"status": str, "delta": Decimal | None, "mismatched_proposal_ids": list[int]}`.
 
 - [ ] **Шаг 1: написать падающий тест**
@@ -1430,30 +1401,29 @@ Expected: FAIL, `KeyError: 'net_reconciliation'`
 def _net_reconciliation(db: Session, estimate: Estimate) -> NetReconciliation:
     """Сверка выведенного нетто с файловым, по предложениям, свёрнутая в вердикт.
 
-    База берётся эффективная (`COALESCE(override, vat_rate)`), а вот
-    СОГЛАСОВАННОСТЬ САМОГО ФАЙЛА проверяется по `proposals.vat_rate` и живёт в
-    парсере — это разные диагностики, и смешивать их нельзя (спека §2.10).
+    База берётся ЭФФЕКТИВНАЯ (`COALESCE(override, vat_rate)`), а согласованность
+    самого файла проверяется по `proposals.vat_rate` и живёт в парсере — это
+    разные диагностики, и смешивать их нельзя (спека §2.10).
     """
     rows = db.execute(
         sa.select(
-            Proposal.id,
+            Proposal.id.label("proposal_id"),
             Proposal.vat_rate,
-            _summary(JSON_KEY_TOTAL_COST_INCLUDING_VAT),
-            _summary(JSON_KEY_TOTAL_COST_EXCLUDING_VAT),
+            _summary_total(JSON_KEY_TOTAL_COST_INCLUDING_VAT).label("gross_total"),
+            _summary_total(JSON_KEY_TOTAL_COST_EXCLUDING_VAT).label("file_net"),
         )
         .select_from(Proposal)
         .join(Lot, Lot.id == Proposal.lot_id)
         .where(Lot.estimate_id == estimate.id)
     ).all()
 
+    override = estimate.vat_rate_base_override
     checks = [
         check_proposal_net(
-            row.id,
+            row.proposal_id,
             row.gross_total,
             row.file_net,
-            estimate.vat_rate_base_override
-            if estimate.vat_rate_base_override is not None
-            else row.vat_rate,
+            override if override is not None else row.vat_rate,
         )
         for row in rows
     ]
@@ -1463,7 +1433,7 @@ def _net_reconciliation(db: Session, estimate: Estimate) -> NetReconciliation:
 - [ ] **Шаг 4: положить в ответ, не тронув `delta_to_file_total`**
 
 ```python
-# backend/crud/project_passport.py, сборка totals — ДОБАВИТЬ ключ, ничего не меняя выше
+# backend/crud/project_passport.py — ДОБАВИТЬ ключ, ничего не меняя выше
     reconciliation = _net_reconciliation(db, estimate)
     totals["net_reconciliation"] = {
         "status": reconciliation.status.value,
@@ -1475,22 +1445,20 @@ def _net_reconciliation(db: Session, estimate: Estimate) -> NetReconciliation:
 `delta_to_file_total` остаётся ровно тем, чем был: валовое против валового, из
 исходных файловых денег. Ручные ставки на него не влияют **никогда**.
 
-- [ ] **Шаг 5: прогнать тесты**
-
-Run: `cd backend && uv run pytest tests/integration/test_project_passport_api.py -v`
-Expected: PASS
-
-- [ ] **Шаг 6: снять алиас `DEVIATIONS`**
+- [ ] **Шаг 5: снять алиас `DEVIATIONS` и прогнать backend целиком**
 
 ```python
 # backend/crud/analytics.py — удалить строку
 DEVIATIONS = DEVIATION_INPUTS
 ```
 
-Прогнать весь backend: `cd backend && uv run pytest -q`. Любое оставшееся
-употребление старого имени падает здесь, а не на стенде.
+```bash
+cd backend && uv run pytest -q
+```
+Expected: PASS. Любое оставшееся употребление старого имени падает здесь, а не на
+стенде. Импорт в `crud/reports.py` переводится на `DEVIATION_INPUTS` тем же шагом.
 
-- [ ] **Шаг 7: коммит — конец этапа 1**
+- [ ] **Шаг 6: коммит — конец этапа 1**
 
 ```bash
 git add backend/crud backend/tests
@@ -1499,25 +1467,28 @@ git commit -m "feat(passport): сверка нетто по предложени
 
 ---
 
-## Задача 8: `services/estimate_vat.py` — сервис правки ставок
+## Задача 6: сервис и `PATCH` ставок (одним коммитом)
+
+Тесты API без маршрута заведомо красные, поэтому сервис и роутер едут вместе.
 
 **Files:**
 - Create: `backend/services/estimate_vat.py`
+- Create: `backend/routers/estimate_vat.py`
+- Modify: `backend/main.py` (регистрация роутера, рядом со строкой 145)
 - Test: `backend/tests/integration/test_estimate_vat_api.py`
 
 **Interfaces:**
-- Consumes: модель `Estimate` из задачи 3.
-- Produces:
-  - `class EstimateVatError(Exception)` с полем `code`
-  - `UNSET` — часовой «поле не передано»
-  - `set_vat_rates(db, *, estimate_id: int, base_override, target, user_id: int) -> Estimate`
+- Consumes: модель `Estimate`, `require_admin` из `auth`.
+- Produces: `set_vat_rates(db, *, estimate_id, base_override, target, user_id) -> Estimate`;
+  `EstimateVatError(code)`; `UNSET`; `PATCH /api/v1/estimates/{estimate_id}/vat`.
 
-- [ ] **Шаг 1: написать падающий тест инварианта**
+- [ ] **Шаг 1: написать падающие тесты**
 
 ```python
 # backend/tests/integration/test_estimate_vat_api.py
-import pytest
 from decimal import Decimal
+
+import pytest
 
 pytestmark = pytest.mark.integration
 
@@ -1525,9 +1496,7 @@ pytestmark = pytest.mark.integration
 def test_target_rejected_when_any_proposal_has_unknown_base(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20"), None])
     db_session.commit()
-    response = client.patch(
-        f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"}
-    )
+    response = client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
     assert response.status_code == 422
     db_session.refresh(estimate)
     assert estimate.vat_rate_target is None
@@ -1546,6 +1515,7 @@ def test_declaring_base_then_target_succeeds(client, factories, db_session):
 
 def test_absent_field_is_not_touched(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": "12"})
     db_session.refresh(estimate)
@@ -1554,6 +1524,7 @@ def test_absent_field_is_not_touched(client, factories, db_session):
 
 def test_null_clears_the_field(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": None})
     db_session.refresh(estimate)
@@ -1562,16 +1533,16 @@ def test_null_clears_the_field(client, factories, db_session):
 
 def test_clearing_base_with_target_kept_is_rejected(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[None])
+    db_session.commit()
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": "12"})
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
-    response = client.patch(
-        f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": None}
-    )
+    response = client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": None})
     assert response.status_code == 422
 
 
 def test_clearing_both_rates_clears_the_audit(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
     db_session.refresh(estimate)
     assert estimate.vat_rate_updated_by_id is not None
@@ -1584,12 +1555,46 @@ def test_clearing_both_rates_clears_the_audit(client, factories, db_session):
 
 def test_clearing_only_one_rate_keeps_the_audit(client, factories, db_session):
     estimate = factories.estimate_with_proposals(vat_rates=[None])
+    db_session.commit()
     client.patch(
         f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": "12", "target": "16"}
     )
     client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": None})
     db_session.refresh(estimate)
     assert estimate.vat_rate_updated_by_id is not None
+
+
+@pytest.mark.parametrize("field", ["base_override", "target"])
+def test_json_float_is_rejected(client, factories, db_session, field):
+    """`float` в ставке запрещён §3, а `Decimal | None` в Pydantic его принял бы."""
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    response = client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={field: 16.5})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("field", ["base_override", "target"])
+def test_decimal_string_is_accepted(client, factories, db_session, field):
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    response = client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={field: "16.5"})
+    assert response.status_code == 200
+
+
+def test_member_is_forbidden(member_client, factories, db_session):
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    response = member_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
+    assert response.status_code == 403
+
+
+def test_concurrent_patches_keep_the_invariant(factories, db_engine):
+    """Две одновременные правки: одна снимает базу, другая задаёт цель.
+    Итоговое состояние обязано остаться законным.
+
+    Форма теста — как у tests/integration/test_category_override_concurrency.py:
+    два соединения, барьер между чтением и записью, проверка итога.
+    """
 ```
 
 - [ ] **Шаг 2: прогнать и убедиться, что падает**
@@ -1653,7 +1658,9 @@ def set_vat_rates(
     if estimate is None:
         raise EstimateVatError("not_found", "Смета не найдена")
 
-    new_base = estimate.vat_rate_base_override if isinstance(base_override, _Unset) else base_override
+    new_base = (
+        estimate.vat_rate_base_override if isinstance(base_override, _Unset) else base_override
+    )
     new_target = estimate.vat_rate_target if isinstance(target, _Unset) else target
 
     if new_target is not None and new_base is None:
@@ -1687,63 +1694,15 @@ def set_vat_rates(
     return estimate
 ```
 
-- [ ] **Шаг 4: прогнать тесты (упадут на отсутствии роутера — это задача 9)**
-
-Run: `cd backend && uv run pytest tests/integration/test_estimate_vat_api.py -v`
-Expected: FAIL, 404 — сервис есть, маршрута нет
-
-- [ ] **Шаг 5: коммит**
-
-```bash
-git add backend/services/estimate_vat.py backend/tests/integration/test_estimate_vat_api.py
-git commit -m "feat(estimates): сервис правки ставок НДС сметы"
-```
-
----
-
-## Задача 9: `routers/estimate_vat.py` — `PATCH`, права, коды ошибок
-
-**Files:**
-- Create: `backend/routers/estimate_vat.py`
-- Modify: `backend/main.py` (регистрация роутера, рядом со строкой 145)
-- Test: `backend/tests/integration/test_estimate_vat_api.py`
-
-**Interfaces:**
-- Consumes: `set_vat_rates`, `EstimateVatError`, `UNSET` из задачи 8; `require_admin` из `auth`.
-- Produces: `PATCH /api/v1/estimates/{estimate_id}/vat`.
-
-- [ ] **Шаг 1: дописать падающий тест прав и гонки**
-
-```python
-def test_member_is_forbidden(member_client, factories, db_session):
-    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
-    db_session.commit()
-    response = member_client.patch(
-        f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"}
-    )
-    assert response.status_code == 403
-
-
-def test_concurrent_patches_do_not_break_the_invariant(factories, db_engine):
-    """Две одновременные правки: одна объявляет базу, другая её снимает при
-    сохранённой цели. Итоговое состояние обязано остаться законным."""
-    # форма теста — как у tests/integration/test_category_override_concurrency.py
-```
-
-- [ ] **Шаг 2: прогнать и убедиться, что падает**
-
-Run: `cd backend && uv run pytest tests/integration/test_estimate_vat_api.py -v`
-Expected: FAIL, 404
-
-- [ ] **Шаг 3: написать роутер**
+- [ ] **Шаг 4: написать роутер с отказом от `float`**
 
 ```python
 # backend/routers/estimate_vat.py
 """Роутер правки ставок НДС сметы (спека пересчёта §2.7).
 
 Право — `admin`: правка меняет все деньги договора сразу, включая выгрузку для
-банка. Это тот же вес, что у замены смет и нормативов (`AGENTS.md` §3), и
-именно поэтому здесь `require_admin`, в отличие от разноса статей.
+банка. Это тот же вес, что у замены смет и нормативов (`AGENTS.md` §3), и именно
+поэтому здесь `require_admin`, в отличие от разноса статей.
 
 Транзакцию ведёт роутер, сервис только пишет — та же раскладка, что у разноса.
 """
@@ -1753,7 +1712,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from auth import require_admin
@@ -1768,17 +1727,32 @@ _STATUS = {
     "unknown_base": status.HTTP_422_UNPROCESSABLE_CONTENT,
 }
 
+_EXACT_VAT_FIELDS = ("base_override", "target")
+
 
 class VatRatesRequest(BaseModel):
     """Отсутствующее поле — «не менять», `null` — «снять».
 
     Различить их можно только через `model_fields_set`: Pydantic кладёт `None` и
-    в то, и в другое. Значения приходят СТРОКАМИ и конвертируются в `Decimal` —
-    `float` в деньгах и ставках запрещён (`AGENTS.md` §3).
+    в то, и в другое.
     """
 
     base_override: Decimal | None = Field(default=None, ge=0, le=100)
     target: Decimal | None = Field(default=None, ge=0, le=100)
+
+    # Имя метода УНИКАЛЬНО по всему дереву наследования (`AGENTS.md` §11):
+    # одноимённые валидаторы схлопываются в один слот, и второй исчезает молча.
+    # `Decimal | None` без этой проверки принял бы JSON-число с плавающей точкой,
+    # то есть ровно тот `float`, который §3 запрещает.
+    @field_validator(*_EXACT_VAT_FIELDS, mode="before", check_fields=False)
+    @classmethod
+    def _reject_float_in_vat_rates(cls, value):
+        if isinstance(value, float):
+            raise ValueError(
+                'Передавайте ставку строкой (например "16.5"), а не числом с '
+                "плавающей точкой."
+            )
+        return value
 
 
 @router.patch("/{estimate_id}/vat")
@@ -1819,33 +1793,103 @@ from routers import estimate_vat as estimate_vat_router
 app.include_router(estimate_vat_router.router, dependencies=_auth_dep)
 ```
 
-- [ ] **Шаг 4: прогнать тесты**
+- [ ] **Шаг 5: прогнать тесты**
 
 Run: `cd backend && uv run pytest tests/integration/test_estimate_vat_api.py -v`
-Expected: PASS, 9 тестов
+Expected: PASS, 13 тестов
 
-- [ ] **Шаг 5: коммит**
+- [ ] **Шаг 6: коммит**
 
 ```bash
-git add backend/routers/estimate_vat.py backend/main.py backend/tests/integration/test_estimate_vat_api.py
+git add backend/services/estimate_vat.py backend/routers/estimate_vat.py backend/main.py backend/tests/integration/test_estimate_vat_api.py
 git commit -m "feat(api): PATCH ставок НДС сметы под admin"
 ```
 
 ---
 
-## Задача 10: целевая ставка на одно-договорных поверхностях
+## Задача 7: предупреждение о снятой ручной ставке при `replace`
+
+Спека §2.11: обе поправки уходят с каскадом, и пропажа ручной работы **не должна
+быть молчаливой**. Предупреждение описывает доменное состояние → пишет **сессия B**
+(`AGENTS.md` §5).
+
+**Files:**
+- Modify: `backend/services/estimate_import.py` (ветка `replace`)
+- Test: `backend/tests/integration/test_estimate_import.py`
+
+- [ ] **Шаг 1: написать падающий тест**
+
+```python
+def test_replace_warns_about_dropped_manual_vat_rates(client, factories, db_session, tmp_path):
+    estimate = factories.imported_estimate()
+    factories.set_vat_rates(estimate, base_override=Decimal("12"), target=Decimal("16"))
+    db_session.commit()
+
+    job = factories.upload(estimate.contract_id, file=tmp_path / "other.xlsx", replace=True)
+    warnings = " ".join(job.warnings)
+    assert "ручная ставка" in warnings
+    assert "12" in warnings and "16" in warnings
+
+
+def test_replace_without_manual_rates_adds_no_such_warning(client, factories, db_session, tmp_path):
+    estimate = factories.imported_estimate()
+    db_session.commit()
+    job = factories.upload(estimate.contract_id, file=tmp_path / "other.xlsx", replace=True)
+    assert not any("ручная ставка" in w for w in job.warnings)
+```
+
+- [ ] **Шаг 2: прогнать и убедиться, что падает**
+
+Run: `cd backend && uv run pytest tests/integration/test_estimate_import.py -k manual_vat -v`
+Expected: FAIL — предупреждения нет
+
+- [ ] **Шаг 3: реализовать**
+
+```python
+# backend/services/estimate_import.py, ветка replace — ДО удаления сметы
+    if existing.vat_rate_base_override is not None or existing.vat_rate_target is not None:
+        parts = []
+        if existing.vat_rate_base_override is not None:
+            parts.append(f"база {existing.vat_rate_base_override}%")
+        if existing.vat_rate_target is not None:
+            parts.append(f"показ {existing.vat_rate_target}%")
+        domain_warnings.append(
+            "Заменена смета с ручными ставками НДС (" + ", ".join(parts) + "); "
+            "ставки сняты вместе со сметой и не перенесены на новую."
+        )
+```
+
+Дописывание — SQL-конкатенацией (`warnings || :items`), как во всех фичах фазы:
+«прочитать-изменить-записать» потеряло бы то, что дописала другая сессия.
+
+- [ ] **Шаг 4: прогнать тесты**
+
+Run: `cd backend && uv run pytest tests/integration/test_estimate_import.py -v`
+Expected: PASS
+
+- [ ] **Шаг 5: коммит**
+
+```bash
+git add backend/services/estimate_import.py backend/tests/integration/test_estimate_import.py
+git commit -m "feat(import): предупреждение о снятых ручных ставках при замене сметы"
+```
+
+---
+
+## Задача 8: целевая ставка на одно-договорных поверхностях
 
 **Files:**
 - Modify: `backend/crud/project_passport.py` (суммы дерева, кольцо, `per_sqm`)
-- Modify: `backend/crud/analytics.py` (паспорт фазы 6: факт и норматив в цели)
-- Modify: `backend/crud/reports.py` (свод по договору «а»: факт и норматив в цели)
+- Modify: `backend/crud/analytics.py` (паспорт фазы 6)
+- Modify: `backend/crud/reports.py` (свод по договору «а»)
 - Test: `backend/tests/integration/test_project_passport_api.py`, `test_reports_api.py`
 
 **Interfaces:**
-- Consumes: `restate_gross`, `serialize_amount`, `net_to_gross`, `AmountStatus` из `money.vat`.
-- Produces: суммы паспорта и свода в целевой ставке; норматив — тоже.
+- Consumes: `restate_gross`, `quantize_money`, `net_to_gross`, `AmountStatus` из `money.vat`.
+- Produces: `effective_display_rate(estimate, bases) -> Decimal | None`;
+  суммы и норматив одно-договорных поверхностей — в ставке показа.
 
-- [ ] **Шаг 1: написать падающий тест на обе стороны**
+- [ ] **Шаг 1: написать падающие тесты обеих сторон**
 
 ```python
 def test_passport_totals_follow_the_target_rate(client, factories, db_session):
@@ -1864,8 +1908,33 @@ def test_passport_totals_untouched_without_target(client, factories, db_session)
     assert totals["amount"] == "120.5"
 
 
+def test_passport_total_is_quantized_once_not_per_group(client, factories, db_session):
+    """Округление внутри агрегации дало бы Σ round(x) ≠ round(Σ x).
+
+    Три группы по 0.005 при цели, отличной от базы: поштучное округление даст
+    0.03, однократное — 0.02.
+    """
+    contract = factories.contract_with_three_proposals_of(Decimal("0.005"))
+    factories.set_vat_target(contract, Decimal("16"))
+    db_session.commit()
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("0.02")
+
+
+def test_standard_follows_the_effective_rate_without_explicit_target(client, factories, db_session):
+    """Цель не задана → эффективная ставка равна базе, и норматив идёт в неё же.
+    Иначе факт остался бы валовым, а норматив — чистым нетто."""
+    contract = factories.contract_with_standard(
+        unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    db_session.commit()
+    row = client.get(f"/api/v1/reports/contract-summary/{contract.id}").json()["rows"][0]
+    assert Decimal(row["unit_cost_total"]) == Decimal("120")
+    assert Decimal(row["standard_unit_rate"]) == Decimal("120.00")
+    assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
 def test_contract_summary_shows_both_sides_in_target(client, factories, db_session):
-    """Норматив приводится к той же ставке, что и факт: строка согласована."""
     contract = factories.contract_with_standard(
         unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
     )
@@ -1875,65 +1944,115 @@ def test_contract_summary_shows_both_sides_in_target(client, factories, db_sessi
     assert Decimal(row["unit_cost_total"]) == Decimal("116.00")
     assert Decimal(row["standard_unit_rate"]) == Decimal("116.00")
     assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
+def test_standard_is_null_when_bases_disagree(client, factories, db_session):
+    """Разногласие заявленных ставок — оговорённая граница: единой ставки показа
+    нет, и выдавать «какую-то из» нельзя."""
+    contract = factories.contract_with_two_proposals(vat_rates=[Decimal("20"), Decimal("12")])
+    db_session.commit()
+    row = client.get(f"/api/v1/reports/contract-summary/{contract.id}").json()["rows"][0]
+    assert row["standard_unit_rate"] is None
 ```
 
 - [ ] **Шаг 2: прогнать и убедиться, что падает**
 
-Run: `cd backend && uv run pytest tests/integration/test_project_passport_api.py -k target -v`
-Expected: FAIL — `amount` равен `120`
+Run: `cd backend && uv run pytest tests/integration/test_project_passport_api.py tests/integration/test_reports_api.py -k "target or effective or quantized or disagree" -v`
+Expected: FAIL — `amount` равен `120`, норматив равен `100`
 
-- [ ] **Шаг 3: провести цель в суммы паспорта**
+- [ ] **Шаг 3: завести эффективную ставку поверхности**
 
 ```python
-# backend/crud/project_passport.py — суммы приходят из VIEW в разрезе предложения
-def _restated_branch_amount(rows, target) -> Decimal | None:
-    """Сумма ветки в ставке показа. Группы приходят по предложению, у каждой
-    своя база, поэтому пересчитывается КАЖДАЯ и лишь потом складывается."""
-    total = None
-    for row in rows:
-        restated = restate_gross(row.amount, row.vat_rate_base, target)
-        value = serialize_amount(restated)
-        if value is None:
-            continue
-        total = value if total is None else total + value
-    return total
+# backend/money/vat.py
+def effective_display_rate(
+    target: Decimal | None, base_override: Decimal | None, declared: Sequence[Decimal | None]
+) -> Decimal | None:
+    """Ставка, в которой показывается ОДНО-ДОГОВОРНАЯ поверхность.
+
+    Цель, если задана; иначе перекрытая база; иначе — ЕДИНОГЛАСНАЯ заявленная
+    ставка предложений. Разногласие и любое неизвестное дают `None`: показать
+    «в какой-то из» ставок нельзя, и это оговорённая граница §5.1.
+
+    Без этой функции норматив уезжал бы в чистое нетто там, где факт остаётся
+    валовым, — строка стала бы измерена в двух разных единицах сразу.
+    """
+    if target is not None:
+        return target
+    if base_override is not None:
+        return base_override
+    rates = list(declared)
+    if not rates or any(rate is None for rate in rates):
+        return None
+    first = rates[0]
+    return first if all(rate == first for rate in rates) else None
 ```
 
-- [ ] **Шаг 4: привести норматив к той же ставке**
+- [ ] **Шаг 4: сложить суммы без промежуточного округления**
+
+```python
+# backend/crud/project_passport.py
+def _restated_branch_amount(rows, target) -> tuple[Decimal | None, bool]:
+    """Сумма ветки в ставке показа.
+
+    Слагаемые складываются с ПОЛНОЙ внутренней точностью; квантование делает
+    вызывающий код ОДИН раз, над готовым полем ответа. Округление внутри цикла
+    дало бы `Σ round(x) ≠ round(Σ x)` — ровно то расхождение, ради отсутствия
+    которого канон и выбран валовым.
+    """
+    total = None
+    restated_any = False
+    for row in rows:
+        restated = restate_gross(row.amount, row.vat_rate_base, target)
+        if restated.status is AmountStatus.RESTATED:
+            restated_any = True
+        if restated.amount is None or restated.status is AmountStatus.NOT_FINITE:
+            continue
+        total = restated.amount if total is None else total + restated.amount
+    return total, restated_any
+```
+
+```python
+# backend/crud/project_passport.py — граница ответа, единственное квантование
+    amount, restated_any = _restated_branch_amount(rows, target)
+    node["total"] = quantize_money(amount) if restated_any else amount
+```
+
+- [ ] **Шаг 5: привести норматив к эффективной ставке**
 
 ```python
 # backend/crud/reports.py и backend/crud/analytics.py — одно-договорные поверхности
-def _standard_in_target(standard: Decimal | None, target: Decimal | None) -> Decimal | None:
+def _standard_in_display_rate(standard: Decimal | None, rate: Decimal | None) -> Decimal | None:
     """Норматив — цена без НДС; на одно-договорной поверхности он показывается в
-    той же ставке, что и факт. Отклонение от этого не меняется: приведение обеих
-    сторон к одной ставке отношения не меняет."""
-    if standard is None:
+    ЭФФЕКТИВНОЙ ставке поверхности, той же, в которой показан факт.
+
+    Отклонение от этого не меняется: приведение обеих сторон к одной ставке
+    отношения не меняет.
+    """
+    if standard is None or rate is None:
         return None
-    if target is None:
-        return standard
-    return money_round(net_to_gross(standard, target), 2)
+    return quantize_money(net_to_gross(standard, rate))
 ```
 
-- [ ] **Шаг 5: подписать ставку на экране и на листе**
+- [ ] **Шаг 6: подписать ставку на экране и на листе**
 
-Паспорт: строка шапки «суммы показаны с НДС 16 %» либо «без НДС», если цель `0`.
+Паспорт: строка шапки «суммы показаны с НДС 16 %» либо «без НДС» при ставке `0`.
 Свод по договору: та же подпись под заголовком листа.
 
-- [ ] **Шаг 6: прогнать тесты**
+- [ ] **Шаг 7: прогнать всё**
 
-Run: `cd backend && uv run pytest tests/integration -q`
+Run: `cd backend && uv run pytest -q`
 Expected: PASS
 
-- [ ] **Шаг 7: коммит**
+- [ ] **Шаг 8: коммит**
 
 ```bash
-git add backend/crud backend/tests
-git commit -m "feat(passport): суммы и норматив в целевой ставке на одном договоре"
+git add backend/money/vat.py backend/crud backend/tests
+git commit -m "feat(passport): суммы и норматив в эффективной ставке поверхности"
 ```
 
 ---
 
-## Задача 11: фронт — типы, клиент, хук
+## Задача 9: фронт — типы, клиент, хук
 
 **Files:**
 - Modify: `frontend/src/types/domain.ts:496-507`
@@ -1947,11 +2066,11 @@ git commit -m "feat(passport): суммы и норматив в целевой 
 - [ ] **Шаг 1: написать падающий тест инвалидации**
 
 ```tsx
-// frontend/src/services/queries.test.tsx
 it("useSetEstimateVat инвалидирует паспорт этого договора и не трогает чужой", async () => {
   const passportKey = qk.passport.project(5);
   const otherKey = qk.passport.project(99);
-  // ... форма теста — как у существующего теста инвалидации паспорта
+  // форма — как у существующего теста инвалидации паспорта: обе половины
+  // обязательны, иначе тест пройдёт и при инвалидации всего подряд
 });
 ```
 
@@ -1963,7 +2082,7 @@ Expected: FAIL, `useSetEstimateVat is not a function`
 - [ ] **Шаг 3: дописать типы**
 
 ```ts
-// frontend/src/types/domain.ts, ProjectPassportEstimate — добавить три поля
+// frontend/src/types/domain.ts, ProjectPassportEstimate — добавить поля
   /** База, назначенная человеком; `null` — база берётся из файла. */
   vat_rate_base_override: Decimal | null;
   /** Ставка показа; `null` — показываем в базовой. */
@@ -1973,20 +2092,28 @@ Expected: FAIL, `useSetEstimateVat is not a function`
 ```
 
 ```ts
-// frontend/src/types/domain.ts — вердикт сверки нетто
+// frontend/src/types/domain.ts
 export type NetReconciliationStatus = "ok" | "mismatch" | "unknown_base" | "not_applicable";
 
 export interface NetReconciliation {
   status: NetReconciliationStatus;
+  /** Decimal-строка; `null` — сравнимых предложений нет. */
   delta: Decimal | null;
   mismatched_proposal_ids: number[];
+}
+
+export interface EstimateVatState {
+  estimate_id: number;
+  vat_rate_base_override: Decimal | null;
+  vat_rate_target: Decimal | null;
+  vat_rate_updated_at: string | null;
 }
 ```
 
 - [ ] **Шаг 4: дописать клиент и хук**
 
 ```ts
-// frontend/src/services/api/domain.ts
+// frontend/src/services/api/domain.ts, estimatesApi
   setVat: (
     estimateId: ID,
     input: { base_override?: Decimal | null; target?: Decimal | null },
@@ -1996,10 +2123,16 @@ export interface NetReconciliation {
 
 ```ts
 // frontend/src/services/queries.ts
+export interface SetEstimateVatInput {
+  estimateId: ID;
+  contractId: ID;
+  input: { base_override?: Decimal | null; target?: Decimal | null };
+}
+
 export function useSetEstimateVat() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ estimateId, contractId: _contractId, input }: SetEstimateVatInput) =>
+    mutationFn: ({ estimateId, input }: SetEstimateVatInput) =>
       estimatesApi.setVat(estimateId, input),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(variables.contractId) });
@@ -2015,8 +2148,8 @@ export function useSetEstimateVat() {
 ```bash
 cd frontend && npx vitest run src/services/queries.test.tsx && npx tsc -b --noEmit
 ```
-Expected: PASS, `tsc` чист. Гонять **только из `frontend/`**: в корне лежит другой
-vitest, он не разрешает алиас `@/` и падает на сборке.
+Expected: PASS. Гонять **только из `frontend/`**: в корне лежит другой vitest, он не
+разрешает алиас `@/` и падает на сборке.
 
 - [ ] **Шаг 6: коммит**
 
@@ -2027,23 +2160,70 @@ git commit -m "feat(frontend): клиент и хук правки ставки 
 
 ---
 
-## Задача 12: фронт — форма, три бейджа, печатная сноска
+## Задача 10: фронт — диалог правки, бейджи, сноска, сверка
 
 **Files:**
 - Create: `frontend/src/pages/passport/VatRateDialog.tsx`
 - Modify: `frontend/src/pages/passport/PassportHeader.tsx:94-195`
 - Test: `frontend/src/pages/passport/ProjectPassportPage.test.tsx`
+- Test: `frontend/src/pages/passport/VatRateDialog.test.tsx`
 
 **Interfaces:**
-- Consumes: `useSetEstimateVat` из задачи 11.
+- Consumes: `useSetEstimateVat` из задачи 9.
 
-- [ ] **Шаг 1: написать падающий тест трёх состояний**
+- [ ] **Шаг 1: написать падающие тесты действий пользователя**
 
 ```tsx
-it("без базы предлагает объявить ставку файла и не даёт задать показ", () => {
+// frontend/src/pages/passport/VatRateDialog.test.tsx
+it("без базы поле показа заблокировано и объясняет причину", () => {
+  render(<VatRateDialog estimate={estimateWithoutRate} contractId={1} />);
+  expect(screen.getByLabelText(/ставка показа/i)).toBeDisabled();
+  expect(screen.getByText(/сначала объявите базовую ставку/i)).toBeInTheDocument();
+});
+
+it("отправляет только изменённое поле, а не оба", async () => {
+  const patch = vi.fn().mockResolvedValue({});
+  render(<VatRateDialog estimate={estimateWithRate} contractId={1} />);
+  await userEvent.clear(screen.getByLabelText(/ставка показа/i));
+  await userEvent.type(screen.getByLabelText(/ставка показа/i), "16");
+  await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+  expect(patch).toHaveBeenCalledWith(expect.anything(), { target: "16" });
+});
+
+it("снятие ставки отправляет null, а не пустую строку", async () => {
+  const patch = vi.fn().mockResolvedValue({});
+  render(<VatRateDialog estimate={estimateWithTarget} contractId={1} />);
+  await userEvent.click(screen.getByRole("button", { name: /снять ставку показа/i }));
+  expect(patch).toHaveBeenCalledWith(expect.anything(), { target: null });
+});
+
+it("отправляет строку, а не число: float в ставке запрещён", async () => {
+  const patch = vi.fn().mockResolvedValue({});
+  render(<VatRateDialog estimate={estimateWithRate} contractId={1} />);
+  await userEvent.type(screen.getByLabelText(/ставка показа/i), "16.5");
+  await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+  expect(patch.mock.calls[0][1].target).toBe("16.5");
+});
+
+it("показывает текст 422 сервера, а не общее «ошибка»", async () => {
+  server.use(http.patch("/api/v1/estimates/:id/vat", () =>
+    HttpResponse.json({ detail: "Сначала объявите базовую ставку." }, { status: 422 })));
+  render(<VatRateDialog estimate={estimateWithRate} contractId={1} />);
+  await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+  expect(await screen.findByText(/сначала объявите базовую ставку/i)).toBeInTheDocument();
+});
+
+it("member не видит управления ставкой", () => {
+  render(<VatRateDialog estimate={estimateWithRate} contractId={1} />, { role: "member" });
+  expect(screen.queryByRole("button", { name: /изменить ставку/i })).not.toBeInTheDocument();
+});
+```
+
+```tsx
+// frontend/src/pages/passport/ProjectPassportPage.test.tsx
+it("без базы предлагает объявить ставку файла", () => {
   render(<PassportHeader passport={passportWithoutVatRate} />);
   expect(screen.getByText(/ставка НДС не заявлена в файле/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /пересчитать/i })).not.toBeInTheDocument();
 });
 
 it("показывает назначенную вручную базу рядом с заявленной файлом", () => {
@@ -2052,22 +2232,124 @@ it("показывает назначенную вручную базу рядо
   expect(screen.getByText(/файл заявил 20/)).toBeInTheDocument();
 });
 
-it("печатная сноска о поправке присутствует всегда, когда поправка есть", () => {
+it("печатная сноска о поправке присутствует и не скрыта от печати", () => {
   render(<PassportHeader passport={passportWithTarget} />);
   const note = screen.getByTestId("vat-print-note");
   expect(note).toHaveTextContent(/показано в ставке 16, пересчитано с 20/);
   expect(note).not.toHaveAttribute("data-print", "hide");
 });
+
+it("расхождение нетто видно при mismatch и несёт число нарушителей", () => {
+  render(<PassportHeader passport={passportWithNetMismatch} />);
+  expect(screen.getByTestId("net-reconciliation")).toHaveTextContent(/предложений: 2/);
+});
+
+it("при статусе ok сверка нетто не показывается вовсе", () => {
+  render(<PassportHeader passport={passportWithNetOk} />);
+  expect(screen.queryByTestId("net-reconciliation")).not.toBeInTheDocument();
+});
 ```
 
 - [ ] **Шаг 2: прогнать и убедиться, что падает**
 
-Run: `cd frontend && npx vitest run src/pages/passport/ProjectPassportPage.test.tsx`
-Expected: FAIL — таких узлов нет
+Run: `cd frontend && npx vitest run src/pages/passport`
+Expected: FAIL — компонента нет, узлов нет
 
-- [ ] **Шаг 3: реализовать бейджи и сноску**
+- [ ] **Шаг 3: написать диалог**
 
-Три состояния из спеки §2.8, и они не сливаются в один бейдж:
+```tsx
+// frontend/src/pages/passport/VatRateDialog.tsx
+import { useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useSetEstimateVat } from "@/services/queries";
+import type { ID, ProjectPassportEstimate } from "@/types/domain";
+
+/**
+ * Правка ставок НДС сметы.
+ *
+ * Поля СТРОКОВЫЕ и уезжают строками: `Number()` над ставкой — это `float`,
+ * запрещённый §3 на всех слоях. Отсутствующее поле и `null` различаются
+ * намеренно: первое значит «не менять», второе — «снять», и слать оба сразу
+ * нельзя, иначе снятие цели затирало бы базу.
+ */
+export function VatRateDialog({
+  estimate,
+  contractId,
+  canEdit,
+}: {
+  estimate: ProjectPassportEstimate;
+  contractId: ID;
+  canEdit: boolean;
+}) {
+  const base = estimate.vat_rate_base_override ?? estimate.vat_rate;
+  const [baseDraft, setBaseDraft] = useState(estimate.vat_rate_base_override ?? "");
+  const [targetDraft, setTargetDraft] = useState(estimate.vat_rate_target ?? "");
+  const mutation = useSetEstimateVat();
+
+  if (!canEdit) return null;
+
+  const submit = (input: { base_override?: string | null; target?: string | null }) =>
+    mutation.mutate({ estimateId: estimate.id, contractId, input });
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">Изменить ставку</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Ставка НДС сметы</DialogTitle>
+        </DialogHeader>
+
+        <Label htmlFor="vat-base">Базовая ставка (какой соответствуют суммы файла)</Label>
+        <Input id="vat-base" inputMode="decimal" value={baseDraft}
+               onChange={(e) => setBaseDraft(e.target.value)} />
+
+        <Label htmlFor="vat-target">Ставка показа</Label>
+        <Input id="vat-target" inputMode="decimal" value={targetDraft}
+               disabled={base === null}
+               onChange={(e) => setTargetDraft(e.target.value)} />
+        {base === null && (
+          <p role="note">Сначала объявите базовую ставку — пересчитывать не от чего.</p>
+        )}
+
+        {mutation.isError && <p role="alert">{errorText(mutation.error)}</p>}
+
+        <DialogFooter>
+          <Button variant="ghost"
+                  onClick={() => submit({ target: null })}>Снять ставку показа</Button>
+          <Button onClick={() => submit(changedOnly(estimate, baseDraft, targetDraft))}>
+            Сохранить
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Только изменённые поля: неизменённое не отправляется вовсе (§2.7). */
+function changedOnly(
+  estimate: ProjectPassportEstimate, baseDraft: string, targetDraft: string,
+) {
+  const input: { base_override?: string | null; target?: string | null } = {};
+  const asValue = (draft: string) => (draft.trim() === "" ? null : draft.trim());
+  if (asValue(baseDraft) !== (estimate.vat_rate_base_override ?? null)) {
+    input.base_override = asValue(baseDraft);
+  }
+  if (asValue(targetDraft) !== (estimate.vat_rate_target ?? null)) {
+    input.target = asValue(targetDraft);
+  }
+  return input;
+}
+```
+
+- [ ] **Шаг 4: три бейджа, сноска и сверка в шапке**
 
 ```tsx
 // frontend/src/pages/passport/PassportHeader.tsx
@@ -2078,8 +2360,7 @@ function vatSummary(estimate: ProjectPassportEstimate): string {
 
   if (base === null) return "ставка НДС не заявлена в файле";
   if (estimate.vat_rate_base_override !== null) {
-    const suffix =
-      declared === null ? "" : ` (файл заявил ${formatPercentDecimal(declared)})`;
+    const suffix = declared === null ? "" : ` (файл заявил ${formatPercentDecimal(declared)})`;
     const head = `база НДС ${formatPercentDecimal(base)} назначена вручную${suffix}`;
     return target === null || target === base
       ? head
@@ -2096,23 +2377,36 @@ function vatSummary(estimate: ProjectPassportEstimate): string {
 раскрытию дерева не подчинена — тот же приём, что у сноски о ручном разносе.
 `data-print="hide"` на ней стоять не имеет права.
 
-- [ ] **Шаг 4: прогнать тесты и типы**
+Сверка нетто показывается **только при `mismatch`**, как существующая сверка
+`delta_to_file_total`, и несёт число предложений-нарушителей — без него аналитик
+увидел бы расхождение и не нашёл источник:
+
+```tsx
+{totals.net_reconciliation.status === "mismatch" && (
+  <p data-testid="net-reconciliation">
+    Выведенное нетто расходится с заявленным в файле; предложений:{" "}
+    {totals.net_reconciliation.mismatched_proposal_ids.length}
+  </p>
+)}
+```
+
+- [ ] **Шаг 5: прогнать тесты и типы**
 
 ```bash
 cd frontend && npx vitest run && npx tsc -b --noEmit
 ```
 Expected: PASS
 
-- [ ] **Шаг 5: коммит**
+- [ ] **Шаг 6: коммит**
 
 ```bash
 git add frontend/src/pages/passport
-git commit -m "feat(frontend): форма ставки НДС, три бейджа и печатная сноска"
+git commit -m "feat(frontend): диалог ставки НДС, бейджи, сноска и сверка нетто"
 ```
 
 ---
 
-## Задача 13: замер печатной раскладки А4 в браузере
+## Задача 11: замер печатной раскладки А4 в браузере
 
 `@media print` в jsdom не наблюдаем, и расчёт «на бумаге» ошибается — это уже
 стоило проекту двух дефектов (`AGENTS.md` §11). Проверяется только замером.
@@ -2145,7 +2439,7 @@ git commit -m "docs(devlog): замер печатной раскладки А4 
 
 ---
 
-## Задача 14: негативные проверки снятием защиты
+## Задача 12: негативные проверки снятием защиты
 
 Тринадцать снятий спеки §4.5. **Делает оркестратор лично**, по протоколу
 [verifying-guards.md](../../insights/verifying-guards.md) целиком.
@@ -2158,15 +2452,13 @@ git commit -m "docs(devlog): замер печатной раскладки А4 
 ```bash
 cd backend && uv run pytest -q | tail -3
 ```
-Записать число прошедших. Без этого числа красный прогон не с чем сравнить.
+Записать число прошедших. Без него красный прогон не с чем сравнить.
 
 - [ ] **Шаг 2: снять защиту, сверить, что снятие применилось**
 
-Для каждой из тринадцати: сделать побайтовую копию файла, применить снятие,
-`assert old in text` до правки, напечатать sha256 до и после. Восстанавливать —
-**из копии**, не `git checkout --`: он даёт CRLF и ложную тревогу.
-
-Перечень снятий — спека §4.5, пункты 1–13.
+Для каждой из тринадцати: побайтовая копия файла, `assert old in text` до правки,
+sha256 до и после. Восстанавливать — **из копии**, не `git checkout --`: он даёт
+CRLF и ложную тревогу. Перечень — спека §4.5, пункты 1–13.
 
 - [ ] **Шаг 3: по каждому снятию записать, что покраснело**
 
@@ -2174,63 +2466,66 @@ cd backend && uv run pytest -q | tail -3
 
 - [ ] **Шаг 4: назвать соседний слой защиты**
 
-По каждой проверке спросить, что ещё стоит на пути дефекта. Кандидаты в пару
-названы спекой заранее: 2 и 3 стерегут один инвариант с разных сторон, 1 и 7 обе
-защищают числа Ф6. Если дефект не воспроизводится одним снятием — это
-записывается замером, а не объявляется «дефект воспроизведён».
+Кандидаты в пару названы спекой заранее: 2 и 3 стерегут один инвариант с разных
+сторон, 1 и 7 обе защищают числа Ф6. Если дефект не воспроизводится одним снятием
+— это записывается замером, а не объявляется «дефект воспроизведён».
 
 - [ ] **Шаг 5: коммит**
 
 ```bash
 git add docs/devlog/2026-08-13-vat-rate-recalculation.md
-git commit -m "docs(devlog): тринадцать снятий защиты, ни одной мёртвой"
+git commit -m "docs(devlog): тринадцать снятий защиты"
 ```
 
 ---
 
-## Задача 15: ревизия `AGENTS.md`, рамка фазы, devlog, стенд
+## Задача 13: ревизия `AGENTS.md`, рамка фазы, стенд, PR
 
 **Files:**
-- Modify: `AGENTS.md` (§4 семантика отклонений, §7.6 макет отчёта, §10 DoD)
-- Modify: `docs/phase7-frame.md` (строка о фиче)
+- Modify: `AGENTS.md` (§4, §7.6, §10)
+- Modify: `docs/phase7-frame.md`
 - Modify: `docs/devlog/2026-08-13-vat-rate-recalculation.md`
 
 - [ ] **Шаг 1: ревизия §4**
 
-Заменить формулу отклонения на нетто-версию, объявить `standard_unit_rate` ценой
-**без НДС**, добавить вторую причину пустого отклонения. Врезкой — причина ревизии
-и ссылка на спеку.
+Формула отклонения — нетто-версия; `standard_unit_rate` объявлен ценой **без НДС**;
+вторая причина пустого отклонения. Врезкой — причина ревизии и ссылка на спеку.
 
 - [ ] **Шаг 2: ревизия §7.6**
 
-Разбиение позиций отчёта «для банка» — четыре класса с приоритетом; норматив и
-отклонение в деньгах — нетто; подпись ставки в шапке листа.
+Четыре класса с приоритетом; норматив и отклонение в деньгах — нетто; подпись
+ставки в шапке листа.
 
-- [ ] **Шаг 3: соответствие «требование → тест»**
+- [ ] **Шаг 3: записать отступление от §2.6**
 
-Построить список: поведенческое требование §2 спеки → тест, который его исполняет.
+В devlog — единственное нетто-выражение в SQL, его причина (сортировка и
+пагинация) и тест, который пришпиливает его к `money.vat`.
+
+- [ ] **Шаг 4: соответствие «требование → тест»**
+
+Список: поведенческое требование §2 спеки → тест, который его исполняет.
 Требование без исполнителя либо получает тест, либо **объявляется границей** в
 devlog. Молчаливого третьего варианта нет.
 
-- [ ] **Шаг 4: перевести стенд**
+- [ ] **Шаг 5: перевести стенд**
 
 ```bash
 just db-dev-init
 ```
-Затем удалить заведённые нормативы и завести заново в семантике нетто. Сметы
-**не** перезаливать: контракт парсера не менялся. Сверить счётчики договоров,
-объектов, подрядчиков, смет и каталога (1932) до и после.
+Затем удалить заведённые нормативы и завести заново в семантике нетто. Сметы **не**
+перезаливать: контракт парсера не менялся. Сверить счётчики договоров, объектов,
+подрядчиков, смет и каталога (1932) до и после.
 
-- [ ] **Шаг 5: прогнать `just ci` целиком**
+- [ ] **Шаг 6: прогнать `just ci` целиком**
 
 ```bash
 just ci
 echo "EXIT=$?"
 ```
-Expected: `EXIT=0`. Читать код возврата, а не хвост вывода: конвейер возвращает код
-последней команды, и падение приходит как `exit 0`.
+Expected: `EXIT=0`. Читать **код возврата**, а не хвост вывода: конвейер возвращает
+код последней команды, и падение приходит как `exit 0`.
 
-- [ ] **Шаг 6: коммит и PR**
+- [ ] **Шаг 7: коммит и PR**
 
 ```bash
 git add AGENTS.md docs/
@@ -2245,21 +2540,28 @@ PR со ссылками на рамку фазы, спеку и этот пла
 ## Самопроверка плана
 
 **Покрытие спеки.** §2.1 → задача 3; §2.2 → задачи 1, 2; §2.3 → задачи 0 (замер В),
-1 (`serialize_amount`); §2.4 → задачи 1, 10; §2.5 → задачи 4, 5, 6, 10, 15;
-§2.6 → задачи 3, 4, 5; §2.7 → задачи 8, 9; §2.8 → задача 12; §2.9 → задача 6;
-§2.10 → задачи 2, 7; §2.11 → задача 8 (каскад проверяется существующим тестом
-`replace`); §2.12 → задача 15. §4.5 → задача 14. §6 DoD → задачи 13, 14, 15.
+1, 8 (однократное квантование); §2.4 → задачи 1, 8; §2.5 → задачи 3, 4, 8, 13;
+§2.6 → задачи 3, 5 (+ названное отступление); §2.7 → задача 6; §2.8 → задача 10;
+§2.9 → задача 4; §2.10 → задачи 2, 5, 10; §2.11 → задача 7; §2.12 → задача 13;
+§4.5 → задача 12; §6 DoD → задачи 11, 12, 13.
 
-**Известное упрощение, названное вслух:** фабрики тестов (`factories.priced_estimate`,
-`factories.contract_with_standard`, `factories.estimate_with_proposals`,
-`factories.set_vat_target`, `factories.bank_report_fixture`) в
-`backend/tests/factories.py` частью ещё не существуют. Каждая заводится в той
-задаче, где впервые вызвана, тем же коммитом — отдельной задачи под них нет
-намеренно: фабрика без потребителя не проверяется ничем.
+**Известное упрощение, названное вслух:** фабрики тестов (`priced_estimate`,
+`priced_estimate_with_two_proposals`, `contract_with_standard`,
+`estimate_with_proposals`, `set_vat_target`, `set_vat_rates`,
+`contract_with_consistent_summary`, `contract_with_three_proposals_of`,
+`contract_with_two_proposals`, `bank_report_fixture`, `imported_estimate`, `upload`)
+в `backend/tests/factories.py` частью ещё не существуют. Каждая заводится в той
+задаче, где впервые вызвана, тем же коммитом: фабрика без потребителя не
+проверяется ничем.
 
-**Согласованность имён.** `DEVIATION_INPUTS` заводится в задаче 4 и там же на
-переходный период получает алиас `DEVIATIONS`; алиас снимается шагом 6 задачи 7,
-после чего весь backend прогоняется целиком. `gross_to_net`/`net_to_gross`/
-`vat_from_net`/`restate_gross`/`serialize_amount` объявлены в задаче 1 и дальше
-употребляются под теми же именами; `check_proposal_net`/`fold_net_reconciliation`/
-`NetStatus` — в задаче 2.
+**Согласованность имён.** `DEVIATION_INPUTS` заводится в задаче 3, там же получает
+переходный алиас `DEVIATIONS`; алиас снимается шагом 5 задачи 5 с прогоном всего
+backend. `gross_to_net`/`net_to_gross`/`vat_from_net`/`restate_gross`/
+`quantize_money`/`effective_display_rate` — модуль `money.vat`;
+`check_proposal_net`/`fold_net_reconciliation`/`NetStatus` — там же, задача 2.
+`quantize_money` заменила `serialize_amount` черновика: округление перестало быть
+свойством одного значения и стало операцией границы ответа.
+
+**Ни один коммит не оставляет ветку красной.** Задачи 3 (миграция + аналитика) и 6
+(сервис + роутер) слиты именно поэтому; в обеих промежуточное состояние было бы
+заведомо красным.
