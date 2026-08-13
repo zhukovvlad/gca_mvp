@@ -36,13 +36,25 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 def _estimate_with(factories, *, contract=None, amendment_no=None,
-                   estimate_date=dt.date(2025, 4, 1)):
+                   estimate_date=dt.date(2025, 4, 1), vat_rate=Decimal("0")):
+    """Цепочка договор → смета → лот → предложение.
+
+    `vat_rate` по умолчанию `0` (задача 4 пересчёта НДС, тот же приём, что в
+    `test_analytics_api.py::_estimate_with`): при базе 0 % нетто численно равно
+    валовому (`gross_to_net(x, 0) == x`), поэтому все тесты этого файла, писавшиеся
+    ДО перевода отчёта «для банка» на нетто-ось и не указывавшие ставку явно,
+    продолжают проверять те же значения — без ставки НДС проверять здесь нечего,
+    это дело `test_bank_report_partition_covers_every_priced_position` и соседних
+    тестов четырёхклассового разбиения.
+    """
     contract = contract or factories.ContractFactory.create()
     estimate = factories.EstimateFactory.create(
         contract=contract, amendment_no=amendment_no, data_prepared_on_date=estimate_date
     )
     lot = factories.LotFactory.create(estimate=estimate)
-    proposal = factories.ProposalFactory.create(lot=lot, contractor=contract.contractor)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
     return contract, estimate, proposal
 
 
@@ -556,6 +568,86 @@ class TestBankComparison:
         # Общий счёт посчитан НЕЗАВИСИМО (count по VIEW, не сумма счётчиков):
         # равенство 2 + 1 + 1 = 4 — проверяемый инвариант, а не тавтология.
         assert "Всего расценённых позиций: 4" in text
+
+    def test_bank_report_partition_covers_every_priced_position(self, client, factories):
+        """Четыре класса образуют разбиение: сумма сходится с независимым счётчиком.
+
+        Задача 4 пересчёта НДС расширяет разбиение с трёх частей до четырёх — здесь
+        по одной позиции каждого класса: без объёма, с объёмом но без базы НДС, с
+        объёмом и базой но без норматива, сравнимая.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс всех четырёх")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, estimate, proposal = _estimate_with(factories, contract=contract)
+
+        comparable = factories.CatalogPositionFactory.create(standard_job_title="Сравнимая")
+        _position(factories, proposal, comparable, unit_cost="100", weight="10")
+        _standard(factories, comparable, rate_class, "100")
+
+        no_standard = factories.CatalogPositionFactory.create(standard_job_title="Без норматива")
+        _position(factories, proposal, no_standard, unit_cost="50", weight="5")
+
+        no_volume = factories.CatalogPositionFactory.create(standard_job_title="Без объёма")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=no_volume,
+            unit_cost_total=Decimal("999"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        # База НДС неизвестна — отдельное предложение той же сметы, ставка не
+        # заявлена (`vat_rate=None`). Норматив у неё ЕСТЬ (нарочно): приоритет §7.6
+        # ставит неизвестную базу выше отсутствия норматива, и позиция обязана
+        # попасть именно в счётчик базы, а не в «сравнимые» и не в «без норматива».
+        unknown_base_lot = factories.LotFactory.create(estimate=estimate)
+        unknown_base_proposal = factories.ProposalFactory.create(
+            lot=unknown_base_lot, contractor=contract.contractor, vat_rate=None
+        )
+        unknown_base = factories.CatalogPositionFactory.create(standard_job_title="Без базы НДС")
+        _position(factories, unknown_base_proposal, unknown_base, unit_cost="80", weight="8")
+        _standard(factories, unknown_base, rate_class, "70")
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        assert "Сравнимых позиций (в расчёте отклонения): 1" in text
+        assert "Позиций с объёмом, но без базы НДС (в отклонение не вошли): 1" in text
+        assert "с объёмом, но без норматива (в отклонение не вошли): 1" in text
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        # Независимый общий счёт: 1 + 1 + 1 + 1 = 4 — проверяемый инвариант файла.
+        assert "Всего расценённых позиций: 4 (равно сумме четырёх счётчиков выше)" in text
+
+    def test_position_without_volume_and_without_base_counts_once(self, client, factories):
+        """Приоритет блокирующей причины: объём перевешивает базу НДС (задача 4).
+
+        Позиция без обоих (объёма и базы) считается ОДИН раз, в счётчике объёма —
+        тот же довод §7.6, что и для пары «объём/норматив»: норматив (здесь —
+        база НДС) без объёма не помог бы ничем.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс приоритета базы")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract, vat_rate=None)
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Без объёма и без базы")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("777"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        assert "Позиций с объёмом, но без базы НДС (в отклонение не вошли): 0" in text
 
     def test_bank_counts_priced_positions_without_volume(self, client, factories):
         """Счётчик «без объёма» работает и в отчёте «для банка», по выборке."""

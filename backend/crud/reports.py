@@ -19,30 +19,54 @@
 переплата — около +5 %. Банку показывают вторую цифру. Поэтому итог считается как
 `(факт − норматив) / норматив` по суммам, а не усреднением процентов.
 
-**Счётчики исключённого — разбиение, а не пересечение.** Каждая расценённая
-позиция выборки попадает ровно в одну из трёх групп: сравнимые (в строках отчёта),
-«с объёмом, но без норматива», «без объёма» (независимо от норматива — это
-блокирующая причина, норматив без объёма не помог бы). Уточнение по замечанию
-ревью: прежняя подпись «без норматива» для позиции без объёма И без норматива
-давала ложный ноль. Разбиение выбрано вместо пересекающихся счётчиков, чтобы
-суммы сходились — и сходились **по файлу**: строка отчёта агрегирует работу
-(несколько позиций → одна строка), поэтому по числу строк равенство не проверить
-(третье замечание ревью). В итогах печатается счётчик сравнимых позиций, а в
-сноске — независимо посчитанное «Всего расценённых позиций»: сравнимые + два
-счётчика исключённого = всего, и это настоящий инвариант, а не тавтология —
-общий счёт берётся отдельным `count(*)` по VIEW, не суммой напечатанного.
+**Отчёт «для банка» — нетто-ось (задача 4 пересчёта НДС, спека §2.5).** Выборка
+охватывает много договоров с разными целевыми ставками НДС, поэтому общей оси,
+кроме нетто, у неё нет: норматив — цена без НДС по определению (ревизия `AGENTS.md`
+§4), и сравнивать его с валовым фактом означало бы сравнивать разные единицы
+измерения. Факт приводится к нетто через `money.vat.gross_to_net` по БАЗОВОЙ
+ставке НДС конкретной позиции (`vat_rate_base` из `DEVIATION_INPUTS`); свод по
+договору (отчёт «а») — однодоговорная поверхность, он остаётся в валовой шкале и
+переходит на целевую ставку задачей 8, не этой задачей — её агрегаты
+(`_work_aggregate_select`) не тронуты.
+
+**Счётчики исключённого — разбиение на ЧЕТЫРЕ класса, а не пересечение** (задача 4,
+приоритет строго сверху вниз, и он не декоративный):
+
+1. без объёма — блокирующая причина: норматив без объёма не помог бы, поэтому
+   позиция без объёма И без базы НДС считается здесь один раз, а не в следующем
+   классе;
+2. с объёмом, но без базы НДС — нетто не выведено, сравнивать не с чем;
+3. с объёмом и базой, но без норматива;
+4. сравнимые (в строках отчёта).
+
+Каждая расценённая позиция выборки попадает ровно в один класс. В итогах
+печатается счётчик сравнимых позиций и три счётчика исключённого, а в сноске —
+независимо посчитанное «Всего расценённых позиций»: сумма четырёх напечатанных
+чисел равна ему, и это настоящий инвариант, а не тавтология — общий счёт берётся
+отдельным `count(*)` по VIEW, не суммой напечатанного. Строка отчёта агрегирует
+работу (несколько позиций → одна строка), поэтому по числу строк равенство не
+проверить — разбиение печатается счётчиками именно для того, чтобы сходиться
+**по файлу**.
 
 **Строки отчёта «для банка» — только работы, у которых норматив есть.** Так прямо
 попросил пользователь: «позиции без норматива в расчёт отклонения не входят и
 показываются отдельным счётчиком». Иначе они разбавили бы средневзвешенное
 отклонение вниз, и отчёт занизил бы переплату — то есть соврал бы в пользу
-подрядчика. Счётчик исключённых печатается в итогах каждого класса и в общем итоге.
+подрядчика.
 
 **Итоги считаются в Python, а не в SQL** — в отличие от матрицы (решение §6.3). Это
 не противоречие: там SQL выигрывал потому, что Python пришлось бы перекачивать
 140 тысяч строк ради 1200 ячеек, а здесь строки и есть содержимое файла, они
 транспортируются в любом случае. Суммировать уже полученное дешевле, чем добавлять
 второй запрос.
+
+**Округление — только на границе, и только там, где ничего больше не суммируется**
+(§7.6, `global-constraints.md`). Слагаемые (`comparable_amount`,
+`comparable_standard_amount`) остаются НЕОКРУГЛЁННЫМИ до самого конца функции:
+`_totals_of` и промежуточные строки суммируют точные величины, и только когда все
+суммы (по классу и по выборке) уже посчитаны, `bank_comparison` округляет деньги
+для показа — иначе `Σ round(x) ≠ round(Σ x)` тихо разъехалось бы с числом, которое
+банк получит, сложив колонку на калькуляторе.
 """
 from __future__ import annotations
 
@@ -53,7 +77,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from crud.analytics import (
-    DEVIATIONS,
+    DEVIATION_INPUTS,
     column_scope_filters,
     get_latest_estimate,
     latest_estimates,
@@ -68,13 +92,15 @@ from models import (
     RateClass,
     UnitOfMeasure,
 )
+from money.vat import gross_to_net, quantize_money
 
 #: Ноль как Decimal — чтобы суммирование не начиналось с int и не давало float.
 ZERO = Decimal(0)
 
 #: Позиция расценена, но взвесить её нечем: оба количества пусты либо объём ≤ 0.
-#: Дополнение к фильтру `weight > 0` — то, что он отбрасывает.
-_NO_VOLUME = sa.or_(DEVIATIONS.c.weight.is_(None), DEVIATIONS.c.weight <= 0)
+#: Дополнение к фильтру `weight > 0` — то, что он отбрасывает. Блокирующая причина
+#: (класс 1 из четырёх, задача 4): срабатывает раньше проверки базы НДС и норматива.
+_NO_VOLUME = sa.or_(DEVIATION_INPUTS.c.weight.is_(None), DEVIATION_INPUTS.c.weight <= 0)
 
 
 def _weighted(amount: Decimal | None, volume: Decimal | None) -> Decimal | None:
@@ -102,6 +128,9 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     свод по договору, а не сравнение с нормативами, и человек должен видеть весь
     предмет торга. У таких строк отклонение — `None`, что на листе печатается как
     «нет норматива» (§10 требует отличать это от нуля).
+
+    Остаётся в валовой шкале (переход на целевую ставку НДС — задача 8, не эта):
+    однодоговорная поверхность, факт и норматив здесь НЕ приводятся к нетто.
     """
     contract_row = db.execute(
         sa.select(Contract, ObjectModel.title, Contractor.title, RateClass.title)
@@ -132,9 +161,9 @@ def contract_summary(db: Session, contract_id: int) -> dict:
 
     grouped = db.execute(
         _work_aggregate_select()
-        .where(DEVIATIONS.c.estimate_id == estimate.id, DEVIATIONS.c.weight > 0)
+        .where(DEVIATION_INPUTS.c.estimate_id == estimate.id, DEVIATION_INPUTS.c.weight > 0)
         .group_by(
-            DEVIATIONS.c.catalog_position_id,
+            DEVIATION_INPUTS.c.catalog_position_id,
             CatalogPosition.standard_job_title,
             UnitOfMeasure.code,
         )
@@ -149,22 +178,30 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     # ей тоже нельзя. Находка собственного ревью фазы.
     totals["positions_without_volume"] = db.execute(
         sa.select(sa.func.count())
-        .select_from(DEVIATIONS)
-        .where(DEVIATIONS.c.estimate_id == estimate.id, _NO_VOLUME)
+        .select_from(DEVIATION_INPUTS)
+        .where(DEVIATION_INPUTS.c.estimate_id == estimate.id, _NO_VOLUME)
     ).scalar_one()
     # Общий счёт — НЕЗАВИСИМЫМ count(*) по VIEW, без фильтра объёма: равенство
     # «сравнимые + без норматива + без объёма = всего» становится проверяемым
     # инвариантом файла, а не суммой напечатанных чисел (замечание ревью).
     totals["positions_priced"] = db.execute(
         sa.select(sa.func.count())
-        .select_from(DEVIATIONS)
-        .where(DEVIATIONS.c.estimate_id == estimate.id)
+        .select_from(DEVIATION_INPUTS)
+        .where(DEVIATION_INPUTS.c.estimate_id == estimate.id)
     ).scalar_one()
     return {"header": header, "rows": rows, "totals": totals}
 
 
 def _work_aggregate_select():
-    """Агрегаты по работе: факт, объём, норматив — раздельно для сравнимых строк.
+    """Агрегаты по работе для свода по договору: факт, объём, норматив — раздельно
+    для сравнимых строк (используется ТОЛЬКО `contract_summary`, задача 4).
+
+    Отчёт «для банка» на нетто-ось (задача 4) с этой функцией больше не работает —
+    у него своя, `_bank_position_groups_select`, потому что ему нужна ДОПОЛНИТЕЛЬНАЯ
+    группировка по базе НДС для перевода в нетто (см. её докстрок). Общего
+    определения «сравнимо» у двух отчётов тоже больше нет: здесь оно по-прежнему
+    только про норматив (валовая шкала, задача 8 её не меняла), там — про норматив
+    И про известную базу НДС разом.
 
     `FILTER (WHERE rate_standard_id IS NOT NULL)` отделяет сравнимые строки от
     остальных **внутри одного проходa**: иначе понадобился бы второй запрос, а его
@@ -174,25 +211,25 @@ def _work_aggregate_select():
     весь предмет торга; `fact_amount` (только по сравнимым) нужен отклонению, чтобы
     оно считалось от той же совокупности, что норматив.
     """
-    comparable = DEVIATIONS.c.rate_standard_id.isnot(None)
-    weighted_fact = DEVIATIONS.c.unit_cost_total * DEVIATIONS.c.weight
-    weighted_standard = DEVIATIONS.c.standard_unit_rate * DEVIATIONS.c.weight
+    comparable = DEVIATION_INPUTS.c.rate_standard_id.isnot(None)
+    weighted_fact = DEVIATION_INPUTS.c.unit_cost_total * DEVIATION_INPUTS.c.weight
+    weighted_standard = DEVIATION_INPUTS.c.standard_unit_rate * DEVIATION_INPUTS.c.weight
     return (
         sa.select(
-            DEVIATIONS.c.catalog_position_id.label("catalog_position_id"),
+            DEVIATION_INPUTS.c.catalog_position_id.label("catalog_position_id"),
             CatalogPosition.standard_job_title.label("job_title"),
             UnitOfMeasure.code.label("unit_code"),
             sa.func.sum(weighted_fact).label("fact_amount_total"),
-            sa.func.sum(DEVIATIONS.c.weight).label("volume_total"),
+            sa.func.sum(DEVIATION_INPUTS.c.weight).label("volume_total"),
             sa.func.sum(weighted_fact).filter(comparable).label("fact_amount"),
-            sa.func.sum(DEVIATIONS.c.weight).filter(comparable).label("volume"),
+            sa.func.sum(DEVIATION_INPUTS.c.weight).filter(comparable).label("volume"),
             sa.func.sum(weighted_standard).filter(comparable).label("standard_amount"),
             sa.func.count().label("positions"),
             sa.func.count().filter(~comparable).label("positions_without_standard"),
         )
-        .select_from(DEVIATIONS)
-        .join(CatalogPosition, CatalogPosition.id == DEVIATIONS.c.catalog_position_id)
-        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == DEVIATIONS.c.unit_id)
+        .select_from(DEVIATION_INPUTS)
+        .join(CatalogPosition, CatalogPosition.id == DEVIATION_INPUTS.c.catalog_position_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == DEVIATION_INPUTS.c.unit_id)
     )
 
 
@@ -227,6 +264,161 @@ def _summary_row(row) -> dict:
 #  (б) Сравнение с нормативами «для банка»: класс → работа
 # ---------------------------------------------------------------------------
 
+def _bank_position_groups_select():
+    """Слагаемые группы отчёта «для банка»: работа × база НДС (задача 4, спека §2.4).
+
+    Группировка ДОПОЛНИТЕЛЬНО идёт по `vat_rate_base` — тем же приёмом, что у
+    матрицы (`crud/analytics.py::_cell_groups_cte`): множитель пересчёта в нетто
+    постоянен внутри группы одной базы, поэтому `gross_to_net` можно вызвать РАЗ на
+    группу (`_fold_bank_work`), а не на каждую позицию — при том, что базы внутри
+    ОДНОЙ работы одного класса вполне могут различаться (выборка «для банка» берёт
+    много договоров/предложений, у каждого своя ставка), и без этой группировки
+    один вызов `gross_to_net` на всю сумму работы был бы арифметически неверен.
+    Норматив уже нетто по определению (ревизия `AGENTS.md` §4) и в пересчёте не
+    нуждается.
+
+    `positions_without_standard` считается ВНУТРИ группы известной базы. Группа с
+    `vat_rate_base IS NULL` в этот счётчик не попадает вовсе — по приоритету §7.6
+    неизвестная база блокирует раньше, чем отсутствие норматива, и это разбирает
+    `_fold_bank_work`, а не эта функция: здесь только сырые слагаемые.
+    """
+    comparable = DEVIATION_INPUTS.c.rate_standard_id.isnot(None)
+    weighted_fact = DEVIATION_INPUTS.c.unit_cost_total * DEVIATION_INPUTS.c.weight
+    weighted_standard = DEVIATION_INPUTS.c.standard_unit_rate * DEVIATION_INPUTS.c.weight
+    return (
+        sa.select(
+            DEVIATION_INPUTS.c.rate_class_id.label("rate_class_id"),
+            DEVIATION_INPUTS.c.catalog_position_id.label("catalog_position_id"),
+            CatalogPosition.standard_job_title.label("job_title"),
+            UnitOfMeasure.code.label("unit_code"),
+            DEVIATION_INPUTS.c.vat_rate_base.label("vat_rate_base"),
+            sa.func.sum(weighted_fact).filter(comparable).label("weighted_fact_gross"),
+            sa.func.sum(DEVIATION_INPUTS.c.weight).filter(comparable).label("weight_comparable"),
+            sa.func.sum(weighted_standard).filter(comparable).label("weighted_standard"),
+            sa.func.count().label("positions"),
+            sa.func.count().filter(~comparable).label("positions_without_standard"),
+        )
+        .select_from(DEVIATION_INPUTS)
+        .join(CatalogPosition, CatalogPosition.id == DEVIATION_INPUTS.c.catalog_position_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == DEVIATION_INPUTS.c.unit_id)
+    )
+
+
+def _fold_bank_work(job_title: str, unit_code: str | None, groups) -> dict:
+    """Одна строка отчёта «для банка» из групп работа×база НДС (задача 4).
+
+    Группа с известной базой приводится к нетто ОДНИМ вызовом `gross_to_net` (её
+    гросс-сумма уже свёрнута SQL-ом — множитель пересчёта постоянен внутри группы);
+    группа с `vat_rate_base IS NULL` целиком уходит в счётчик «без базы»,
+    НЕЗАВИСИМО от того, есть ли в ней норматив: приоритет §7.6 ставит неизвестную
+    базу выше отсутствия норматива.
+
+    Величины здесь НЕОКРУГЛЕНЫ (см. модульную документацию про границу округления):
+    `comparable_amount`/`comparable_standard_amount` идут дальше в `_totals_of` как
+    есть, а показ (`amount`, `rate`, `standard_unit_rate`, `deviation_money`)
+    округляет вызывающий (`bank_comparison`) в самом конце, когда все суммы уже
+    посчитаны.
+    """
+    net_fact_total = ZERO
+    weight_total = ZERO
+    standard_weighted_total = ZERO
+    positions_total = 0
+    positions_without_standard = 0
+    positions_without_vat_base = 0
+    has_comparable = False
+
+    for group in groups:
+        positions_total += group.positions
+        if group.vat_rate_base is None:
+            positions_without_vat_base += group.positions
+            continue
+        positions_without_standard += group.positions_without_standard
+        if group.weighted_fact_gross is not None:
+            has_comparable = True
+            net_fact_total += gross_to_net(group.weighted_fact_gross, group.vat_rate_base)
+            weight_total += group.weight_comparable
+            standard_weighted_total += group.weighted_standard
+
+    volume = weight_total if has_comparable else None
+    amount = net_fact_total if has_comparable else None
+    standard_amount = standard_weighted_total if has_comparable else None
+    deviation_money = (
+        None if amount is None or standard_amount is None else amount - standard_amount
+    )
+    return {
+        "job_title": job_title,
+        "unit_code": unit_code,
+        "volume": volume,
+        "rate": _weighted(amount, volume),
+        "standard_unit_rate": _weighted(standard_amount, volume),
+        "amount": amount,
+        "deviation_pct": _deviation_pct(amount, standard_amount),
+        "deviation_money": deviation_money,
+        # Сравнимая часть — по ней считаются итоги (см. `_totals_of`); совпадает с
+        # `amount`/`standard_amount` здесь, потому что видимая строка отчёта «для
+        # банка» и есть только сравнимая часть работы (§7.6).
+        "comparable_amount": amount,
+        "comparable_standard_amount": standard_amount,
+        "positions": positions_total,
+        "positions_without_standard": positions_without_standard,
+        "positions_without_vat_base": positions_without_vat_base,
+    }
+
+
+def _fold_bank_rows(group_rows) -> dict[int, list[dict]]:
+    """Строки SQL (работа×база) → строки отчёта (одна на класс×работу), по классам.
+
+    Два прохода — тот же приём, что у матрицы (`crud/analytics.py::
+    _shape_matrix_rows`): группы одной работы не обязаны идти в результате подряд
+    (разных баз может быть несколько), поэтому сначала собираем их по ключу, потом
+    сворачиваем.
+    """
+    order: list[tuple[int, int]] = []
+    meta: dict[tuple[int, int], tuple[str, str | None]] = {}
+    groups_by_work: dict[tuple[int, int], list] = {}
+    for r in group_rows:
+        key = (r.rate_class_id, r.catalog_position_id)
+        if key not in meta:
+            meta[key] = (r.job_title, r.unit_code)
+            order.append(key)
+            groups_by_work[key] = []
+        groups_by_work[key].append(r)
+
+    rows_by_class: dict[int, list[dict]] = {}
+    for key in order:
+        class_id, catalog_position_id = key
+        job_title, unit_code = meta[key]
+        row = _fold_bank_work(job_title, unit_code, groups_by_work[key])
+        row["catalog_position_id"] = catalog_position_id
+        rows_by_class.setdefault(class_id, []).append(row)
+
+    for bucket in rows_by_class.values():
+        # Крупные работы сверху — тот же порядок, что раньше давал `ORDER BY
+        # fact_amount DESC` в SQL. Строки без сравнимой части (`comparable_amount
+        # is None`) в видимый список всё равно не попадут (см. `kept` ниже),
+        # поэтому их место в этой сортировке не важно.
+        bucket.sort(key=lambda r: r["comparable_amount"] or ZERO, reverse=True)
+    return rows_by_class
+
+
+def _quantize_row_for_display(row: dict) -> dict:
+    """Округление ГРАНИЦЫ для одной строки отчёта — вызывается один раз, когда
+    строка уже отслужила свою роль слагаемого в `_totals_of` (задача 4, §7.6)."""
+    row["rate"] = quantize_money(row["rate"])
+    row["standard_unit_rate"] = quantize_money(row["standard_unit_rate"])
+    row["amount"] = quantize_money(row["amount"])
+    row["deviation_money"] = quantize_money(row["deviation_money"])
+    return row
+
+
+def _quantize_totals_for_display(totals: dict) -> dict:
+    """То же самое для готовых итогов (по классу и по выборке)."""
+    totals["amount"] = quantize_money(totals["amount"])
+    totals["standard_amount"] = quantize_money(totals["standard_amount"])
+    totals["deviation_money"] = quantize_money(totals["deviation_money"])
+    return totals
+
+
 def bank_comparison(
     db: Session,
     *,
@@ -245,24 +437,19 @@ def bank_comparison(
         rate_class_id=rate_class_id, date_from=date_from, date_to=date_to
     )
 
-    grouped = db.execute(
-        _work_aggregate_select()
-        .join(latest, latest.c.estimate_id == DEVIATIONS.c.estimate_id)
-        .join(RateClass, RateClass.id == DEVIATIONS.c.rate_class_id)
-        .add_columns(
-            DEVIATIONS.c.rate_class_id.label("rate_class_id"),
-            RateClass.title.label("rate_class_title"),
-        )
-        .where(DEVIATIONS.c.weight > 0, *scope)
+    group_rows = db.execute(
+        _bank_position_groups_select()
+        .join(latest, latest.c.estimate_id == DEVIATION_INPUTS.c.estimate_id)
+        .where(DEVIATION_INPUTS.c.weight > 0, *scope)
         .group_by(
-            DEVIATIONS.c.rate_class_id,
-            RateClass.title,
-            DEVIATIONS.c.catalog_position_id,
+            DEVIATION_INPUTS.c.rate_class_id,
+            DEVIATION_INPUTS.c.catalog_position_id,
             CatalogPosition.standard_job_title,
             UnitOfMeasure.code,
+            DEVIATION_INPUTS.c.vat_rate_base,
         )
-        .order_by(RateClass.title.asc(), sa.desc("fact_amount"))
     ).all()
+    rows_by_class = _fold_bank_rows(group_rows)
 
     # Классы выборки — из ДОГОВОРОВ с последней сметой, а не из строк, прошедших
     # `weight > 0`. Иначе класс, все расценённые позиции которого без объёма,
@@ -293,32 +480,31 @@ def bank_comparison(
     latest_for_volume = latest_estimates()
     no_volume_by_class = dict(
         db.execute(
-            sa.select(DEVIATIONS.c.rate_class_id, sa.func.count())
+            sa.select(DEVIATION_INPUTS.c.rate_class_id, sa.func.count())
             .select_from(
-                DEVIATIONS.join(
-                    latest_for_volume, latest_for_volume.c.estimate_id == DEVIATIONS.c.estimate_id
+                DEVIATION_INPUTS.join(
+                    latest_for_volume, latest_for_volume.c.estimate_id == DEVIATION_INPUTS.c.estimate_id
                 )
             )
             .where(_NO_VOLUME, *scope)
-            .group_by(DEVIATIONS.c.rate_class_id)
+            .group_by(DEVIATION_INPUTS.c.rate_class_id)
         ).all()
     )
 
     latest_for_total = latest_estimates()
 
-    rows_by_class: dict[int, list[dict]] = {}
-    for row in grouped:
-        rows_by_class.setdefault(row.rate_class_id, []).append(_bank_row(row))
-
     sections: list[dict] = []
     for class_id, class_title in scope_classes:
         bucket = rows_by_class.get(class_id, [])
-        # Строки без норматива в отчёт не попадают, но их счётчик обязан дожить до
-        # итогов: этого требует согласованный макет (§6.1).
-        excluded = sum(r["positions_without_standard"] for r in bucket)
+        # Строки без базы НДС и строки без норматива в отчёт не попадают, но их
+        # счётчики обязаны дожить до итогов: этого требует согласованный макет
+        # (§6.1), расширенный до четырёх классов задачей 4.
+        excluded_no_standard = sum(r["positions_without_standard"] for r in bucket)
+        excluded_vat_base = sum(r["positions_without_vat_base"] for r in bucket)
         kept = [r for r in bucket if r["volume"] is not None]
         totals = _totals_of(kept)
-        totals["positions_without_standard"] = excluded
+        totals["positions_without_standard"] = excluded_no_standard
+        totals["positions_without_vat_base"] = excluded_vat_base
         totals["positions_without_volume"] = no_volume_by_class.get(class_id, 0)
         sections.append(
             {
@@ -329,56 +515,42 @@ def bank_comparison(
             }
         )
 
+    grand_totals = _totals_of([r for s in sections for r in s["rows"]]) | {
+        "positions_without_standard": sum(
+            s["totals"]["positions_without_standard"] for s in sections
+        ),
+        "positions_without_vat_base": sum(
+            s["totals"]["positions_without_vat_base"] for s in sections
+        ),
+        "positions_without_volume": sum(
+            s["totals"]["positions_without_volume"] for s in sections
+        ),
+        # Независимый общий счёт (см. свод): проверяемость разбиения по файлу.
+        # Считает ВСЕ четыре класса разом — он не фильтрует ни по объёму, ни по
+        # базе НДС, ни по нормативу, поэтому равенство с суммой четырёх напечатанных
+        # счётчиков остаётся настоящим инвариантом, а не тавтологией.
+        "positions_priced": db.execute(
+            sa.select(sa.func.count()).select_from(
+                DEVIATION_INPUTS.join(
+                    latest_for_total,
+                    latest_for_total.c.estimate_id == DEVIATION_INPUTS.c.estimate_id,
+                )
+            ).where(*scope)
+        ).scalar_one(),
+    }
+
+    # Округление — САМЫЙ ПОСЛЕДНИЙ шаг, когда каждая сумма (по классу и по
+    # выборке) уже посчитана из точных слагаемых (см. модульную документацию).
+    for section in sections:
+        for row in section["rows"]:
+            _quantize_row_for_display(row)
+        _quantize_totals_for_display(section["totals"])
+    _quantize_totals_for_display(grand_totals)
+
     return {
         "header": _bank_header(db, latest, date_from, date_to, rate_class_id),
         "sections": sections,
-        "totals": _totals_of([r for s in sections for r in s["rows"]])
-        | {
-            "positions_without_standard": sum(
-                s["totals"]["positions_without_standard"] for s in sections
-            ),
-            "positions_without_volume": sum(
-                s["totals"]["positions_without_volume"] for s in sections
-            ),
-            # Независимый общий счёт (см. свод): проверяемость разбиения по файлу.
-            "positions_priced": db.execute(
-                sa.select(sa.func.count()).select_from(
-                    DEVIATIONS.join(
-                        latest_for_total,
-                        latest_for_total.c.estimate_id == DEVIATIONS.c.estimate_id,
-                    )
-                ).where(*scope)
-            ).scalar_one(),
-        },
-    }
-
-
-def _bank_row(row) -> dict:
-    """Строка отчёта «для банка»: только сравнимая часть работы.
-
-    Объём, ставка и стоимость берутся по строкам **с нормативом**, а не по всем: иначе
-    «отклонение в деньгах» не совпало бы с разницей показанных сумм, и читатель не
-    смог бы сойтись с отчётом на калькуляторе.
-    """
-    return {
-        "catalog_position_id": row.catalog_position_id,
-        "job_title": row.job_title,
-        "unit_code": row.unit_code,
-        "volume": row.volume,
-        "rate": _weighted(row.fact_amount, row.volume),
-        "standard_unit_rate": _weighted(row.standard_amount, row.volume),
-        "amount": row.fact_amount,
-        "standard_amount": row.standard_amount,
-        "deviation_pct": _deviation_pct(row.fact_amount, row.standard_amount),
-        "deviation_money": (
-            None
-            if row.fact_amount is None or row.standard_amount is None
-            else row.fact_amount - row.standard_amount
-        ),
-        "comparable_amount": row.fact_amount,
-        "comparable_standard_amount": row.standard_amount,
-        "positions": row.positions,
-        "positions_without_standard": row.positions_without_standard,
+        "totals": grand_totals,
     }
 
 
@@ -452,6 +624,11 @@ def _totals_of(rows: list[dict]) -> dict:
     Отклонение НЕ усредняется из процентов строк (см. модульную документацию): здесь
     оно считается как `(факт − норматив) / норматив` по сравнимым суммам, то есть
     оказывается взвешенным по объёму автоматически.
+
+    `comparable_positions` вычитает ОБА счётчика исключённого, которые может нести
+    строка: `positions_without_standard` — у обоих отчётов, `positions_without_
+    vat_base` — только у строк отчёта «для банка» (задача 4). `.get(..., 0)` не
+    меняет свод по договору: там такого ключа нет, и по умолчанию он не участвует.
     """
     if not rows:
         return _empty_report_totals()
@@ -468,10 +645,12 @@ def _totals_of(rows: list[dict]) -> dict:
     return {
         "volume": None,  # объёмы работ в разных единицах — суммировать их нельзя
         # Позиции, реально вошедшие в расчёт отклонения. Считается по строкам, а не
-        # отдельным запросом: у отброшенных работ (без единого норматива) сравнимых
-        # позиций нет по построению, поэтому сумма по переданным строкам полна.
+        # отдельным запросом: у отброшенных работ (без единого норматива либо без
+        # известной базы НДС) сравнимых позиций нет по построению, поэтому сумма по
+        # переданным строкам полна.
         "comparable_positions": sum(
-            r["positions"] - r["positions_without_standard"] for r in rows
+            r["positions"] - r["positions_without_standard"] - r.get("positions_without_vat_base", 0)
+            for r in rows
         ),
         "amount": amount,
         "standard_amount": standard if comparable_exists else None,
