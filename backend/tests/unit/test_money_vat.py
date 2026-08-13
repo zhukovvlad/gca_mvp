@@ -4,6 +4,10 @@ import pytest
 
 from money.vat import (
     AmountStatus,
+    NetStatus,
+    ProposalNetCheck,
+    check_proposal_net,
+    fold_net_reconciliation,
     gross_to_net,
     net_to_gross,
     quantize_money,
@@ -142,3 +146,70 @@ def test_global_decimal_context_is_not_touched():
     assert after_ctx.prec == before_prec
     assert after_ctx.traps == before_traps
     assert after_ctx.rounding == before_rounding
+
+
+def _check(pid, status, delta=None):
+    return ProposalNetCheck(proposal_id=pid, status=status, delta=delta)
+
+
+def test_check_agrees_within_tolerance():
+    result = check_proposal_net(1, Decimal("120.00"), Decimal("100.00"), Decimal("20"))
+    assert result.status is NetStatus.OK
+    assert result.delta == Decimal("0")
+
+
+def test_check_reports_mismatch_beyond_tolerance():
+    result = check_proposal_net(1, Decimal("120.00"), Decimal("90.00"), Decimal("20"))
+    assert result.status is NetStatus.MISMATCH
+    assert result.delta == Decimal("10")
+
+
+def test_check_without_base_is_unknown_base():
+    result = check_proposal_net(1, Decimal("120.00"), Decimal("100.00"), None)
+    assert result.status is NetStatus.UNKNOWN_BASE
+    assert result.delta is None
+
+
+@pytest.mark.parametrize(
+    ("gross", "file_net"),
+    [(None, Decimal("100")), (Decimal("120"), None), (Decimal("NaN"), Decimal("100"))],
+)
+def test_check_without_both_operands_is_not_applicable(gross, file_net):
+    result = check_proposal_net(1, gross, file_net, Decimal("20"))
+    assert result.status is NetStatus.NOT_APPLICABLE
+    assert result.delta is None
+
+
+def test_fold_prefers_mismatch_over_unknown_base():
+    """Приоритет идёт от противоречия к незнанию: расхождение — факт,
+    незнание — его отсутствие."""
+    folded = fold_net_reconciliation(
+        [_check(1, NetStatus.UNKNOWN_BASE), _check(2, NetStatus.MISMATCH, Decimal("10"))]
+    )
+    assert folded.status is NetStatus.MISMATCH
+    assert folded.mismatched_proposal_ids == [2]
+
+
+def test_fold_reports_unknown_base_when_no_mismatch():
+    folded = fold_net_reconciliation(
+        [_check(1, NetStatus.UNKNOWN_BASE), _check(2, NetStatus.OK, Decimal("0"))]
+    )
+    assert folded.status is NetStatus.UNKNOWN_BASE
+    assert folded.mismatched_proposal_ids == []
+
+
+def test_fold_is_not_applicable_without_any_comparable():
+    folded = fold_net_reconciliation([_check(1, NetStatus.NOT_APPLICABLE)])
+    assert folded.status is NetStatus.NOT_APPLICABLE
+    assert folded.delta is None
+
+
+def test_fold_delta_ignores_non_comparable_proposals():
+    """Добавление непроверяемого предложения не имеет права двигать сумму."""
+    base = [_check(1, NetStatus.OK, Decimal("0.30"))]
+    with_extra = base + [_check(2, NetStatus.UNKNOWN_BASE), _check(3, NetStatus.NOT_APPLICABLE)]
+    assert fold_net_reconciliation(base).delta == fold_net_reconciliation(with_extra).delta
+
+
+def test_fold_delta_is_null_without_comparable_proposals():
+    assert fold_net_reconciliation([_check(1, NetStatus.UNKNOWN_BASE)]).delta is None

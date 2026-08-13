@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import (
     Context,
@@ -134,3 +135,75 @@ def quantize_money(value: Decimal | None) -> Decimal | None:
     if not value.is_finite():
         return value
     return money_round(value, 2)
+
+
+class NetStatus(StrEnum):
+    """Вердикт сверки выведенного нетто с файловым (спека §2.10)."""
+
+    OK = "ok"
+    MISMATCH = "mismatch"
+    UNKNOWN_BASE = "unknown_base"
+    NOT_APPLICABLE = "not_applicable"
+
+
+@dataclass(frozen=True)
+class ProposalNetCheck:
+    proposal_id: int
+    status: NetStatus
+    delta: Decimal | None
+
+
+@dataclass(frozen=True)
+class NetReconciliation:
+    status: NetStatus
+    delta: Decimal | None
+    mismatched_proposal_ids: list[int]
+
+
+_COMPARABLE = (NetStatus.OK, NetStatus.MISMATCH)
+
+
+def check_proposal_net(
+    proposal_id: int,
+    gross_total: Decimal | None,
+    file_net: Decimal | None,
+    base: Decimal | None,
+) -> ProposalNetCheck:
+    """Сверить выведенное из валового нетто с тем, что заявил файл.
+
+    Перекрёстная проверка, не источник значения: эталон приезжает из блока
+    итогов, разобранного другим кодом и по другим правилам, поэтому одна ошибка
+    не сдвигает обе стороны сравнения сразу.
+    """
+    if base is None:
+        return ProposalNetCheck(proposal_id, NetStatus.UNKNOWN_BASE, None)
+
+    if any(value is None or not value.is_finite() for value in (gross_total, file_net)):
+        return ProposalNetCheck(proposal_id, NetStatus.NOT_APPLICABLE, None)
+
+    delta = gross_to_net(gross_total, base) - file_net
+    status = NetStatus.MISMATCH if abs(delta) > NET_RECONCILIATION_TOLERANCE else NetStatus.OK
+    return ProposalNetCheck(proposal_id, status, delta)
+
+
+def fold_net_reconciliation(checks: Sequence[ProposalNetCheck]) -> NetReconciliation:
+    """Свернуть проверки предложений в один вердикт по смете (спека §2.10).
+
+    Дельты непроверяемых предложений в сумму НЕ входят: иначе величина с именем
+    «расхождение нетто» несла бы в себе нули, означающие «не сверяли», и
+    уменьшалась бы от добавления предложений, которых сверка не касалась.
+    """
+    comparable = [check for check in checks if check.status in _COMPARABLE]
+    mismatched = [check.proposal_id for check in checks if check.status is NetStatus.MISMATCH]
+
+    if mismatched:
+        status = NetStatus.MISMATCH
+    elif any(check.status is NetStatus.UNKNOWN_BASE for check in checks):
+        status = NetStatus.UNKNOWN_BASE
+    elif comparable:
+        status = NetStatus.OK
+    else:
+        status = NetStatus.NOT_APPLICABLE
+
+    delta = sum((check.delta for check in comparable), start=Decimal(0)) if comparable else None
+    return NetReconciliation(status=status, delta=delta, mismatched_proposal_ids=mismatched)
