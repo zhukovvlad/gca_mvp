@@ -37,14 +37,22 @@ def test_restate_keeps_value_when_target_not_set():
     gross = Decimal("100.50")
     result = restate_gross(gross, Decimal("20"), None)
     assert result.status is AmountStatus.ORIGINAL
+    assert result.amount == gross
     assert result.amount.as_tuple().exponent == gross.as_tuple().exponent
 
 
 def test_restate_is_identity_when_override_equals_declared_rate():
-    """Ветка тождества не зависит от того, перекрыта ли база."""
+    """Ветка тождества срабатывает всегда при равенстве цели и базы.
+
+    Измерение «перекрыта база или нет» на этом слое НЕ наблюдаемо вовсе —
+    restate_gross получает уже эффективную базу, и различие проверяется выше,
+    на слое API. Тест закрепляет ветку тождества, не проверку перекрытия.
+    """
     gross = Decimal("100.50")
     result = restate_gross(gross, Decimal("20"), Decimal("20"))
     assert result.status is AmountStatus.ORIGINAL
+    assert result.amount == gross
+    assert result.amount.as_tuple().exponent == gross.as_tuple().exponent
 
 
 def test_restate_without_base_reports_unknown_and_returns_source():
@@ -66,6 +74,35 @@ def test_restate_does_not_fail_on_non_finite(raw):
     gross = Decimal(raw)
     result = restate_gross(gross, Decimal("20"), Decimal("16"))
     assert result.status is AmountStatus.NOT_FINITE
+    if gross.is_nan():
+        assert result.amount.is_nan()
+    else:
+        assert result.amount == gross
+        assert result.amount.is_infinite()
+
+
+def test_restate_not_finite_when_target_equals_base():
+    """NOT_FINITE перевешивает ORIGINAL: не-конечная сумма негодна при любой ставке."""
+    gross = Decimal("Infinity")
+    result = restate_gross(gross, Decimal("20"), Decimal("20"))
+    assert result.status is AmountStatus.NOT_FINITE
+    assert result.amount == gross
+    assert result.amount.is_infinite()
+
+
+def test_restate_not_finite_when_base_unknown():
+    """NOT_FINITE перевешивает UNKNOWN_BASE: не-конечная сумма негодна без базы."""
+    gross = Decimal("NaN")
+    result = restate_gross(gross, None, Decimal("16"))
+    assert result.status is AmountStatus.NOT_FINITE
+    assert result.amount.is_nan()
+
+
+def test_restate_keeps_none_value_when_restating_different_rates():
+    """При None сумме и различных ставках статус ORIGINAL: нет арифметики."""
+    result = restate_gross(None, Decimal("20"), Decimal("16"))
+    assert result.status is AmountStatus.ORIGINAL
+    assert result.amount is None
 
 
 def test_quantize_money_rounds_half_up_to_kopecks():
@@ -73,7 +110,35 @@ def test_quantize_money_rounds_half_up_to_kopecks():
     assert quantize_money(None) is None
 
 
+def test_quantize_money_returns_infinity_unchanged():
+    """quantize_money не округляет и не роняет не-конечные значения."""
+    inf = Decimal("Infinity")
+    result = quantize_money(inf)
+    assert result == inf
+    assert result.is_infinite()
+
+    neg_inf = Decimal("-Infinity")
+    result = quantize_money(neg_inf)
+    assert result == neg_inf
+    assert result.is_infinite()
+
+
+def test_quantize_money_returns_nan_unchanged():
+    """quantize_money не округляет и не роняет NaN."""
+    nan = Decimal("NaN")
+    result = quantize_money(nan)
+    assert result.is_nan()
+
+
 def test_global_decimal_context_is_not_touched():
-    before = getcontext().prec
+    before_ctx = getcontext()
+    before_prec = before_ctx.prec
+    before_traps = before_ctx.traps.copy()
+    before_rounding = before_ctx.rounding
+
     gross_to_net(Decimal("120"), Decimal("20"))
-    assert getcontext().prec == before
+
+    after_ctx = getcontext()
+    assert after_ctx.prec == before_prec
+    assert after_ctx.traps == before_traps
+    assert after_ctx.rounding == before_rounding

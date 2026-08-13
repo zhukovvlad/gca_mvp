@@ -51,7 +51,8 @@ class AmountStatus(StrEnum):
     """Что произошло с суммой при приведении к ставке показа."""
 
     ORIGINAL = "original"
-    """Цель равна базе — значение НЕ тронуто, арифметики не было."""
+    """Значение НЕ тронуто, арифметики не было — либо потому что цель равна
+    базе, либо потому что суммы нет вовсе."""
 
     RESTATED = "restated"
     """Пересчитано: нетто выведено из базы, затем поднято до цели."""
@@ -97,6 +98,19 @@ def restate_gross(
     на единицу сдвинуло бы `exponent`, и посимвольное совпадение денежных полей
     (§2.4) перестало бы выполняться.
     """
+    if gross is None:
+        # Значение отсутствует. Проверяем базу: если её нет, статус UNKNOWN_BASE,
+        # иначе None пойдёт в ORIGINAL (не пересчитываем то, чего нет).
+        if base is None:
+            return RestatedAmount(amount=None, status=AmountStatus.UNKNOWN_BASE)
+        # При None сумме тождество сохраняется: не было арифметики.
+        return RestatedAmount(amount=None, status=AmountStatus.ORIGINAL)
+
+    # Статус NOT_FINITE перевешивает UNKNOWN_BASE и ORIGINAL: негодная сумма
+    # негодна при любой базе и при любой цели.
+    if not gross.is_finite():
+        return RestatedAmount(amount=gross, status=AmountStatus.NOT_FINITE)
+
     if base is None:
         return RestatedAmount(amount=gross, status=AmountStatus.UNKNOWN_BASE)
 
@@ -104,17 +118,19 @@ def restate_gross(
     if effective == base:
         return RestatedAmount(amount=gross, status=AmountStatus.ORIGINAL)
 
-    if gross is None:
-        return RestatedAmount(amount=None, status=AmountStatus.ORIGINAL)
-    if not gross.is_finite():
-        return RestatedAmount(amount=gross, status=AmountStatus.NOT_FINITE)
-
     net = gross_to_net(gross, base)
     return RestatedAmount(amount=net_to_gross(net, effective), status=AmountStatus.RESTATED)
 
 
 def quantize_money(value: Decimal | None) -> Decimal | None:
-    """Округлить до копеек. Вызывается ОДИН раз, над готовым полем ответа."""
+    """Округлить до копеек. Вызывается ОДИН раз, над готовым полем ответа.
+
+    На не-конечном значении (NaN, ±Infinity) возвращает его без изменений —
+    округлять нечего, а терять факт «сумма не число» нельзя (None неверный
+    ответ). НИКОГДА не бросает исключение.
+    """
     if value is None:
         return None
+    if not value.is_finite():
+        return value
     return money_round(value, 2)
