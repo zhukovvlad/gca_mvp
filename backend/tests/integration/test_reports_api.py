@@ -904,6 +904,109 @@ def test_standard_is_null_when_bases_disagree(factories, db_session):
     assert row["standard_unit_rate"] is None
 
 
+def test_contract_summary_amount_and_rate_are_untouched_without_target(factories, db_session):
+    """Ревью задачи 8 (Правка 1): без цели/перекрытой базы, при работе БЕЗ
+    норматива (норматив несёт свою собственную реальную конвертацию нетто->
+    ставка показа и квантуется всегда — не он предмет этого теста), `amount`
+    и `rate` обязаны совпасть ПОСИМВОЛЬНО с тем, что свод отдавал бы до
+    задачи 8 — сравнение через `str()`, а не `Decimal(...)==Decimal(...)`
+    (то пропустило бы сдвиг `exponent`, ради отсутствия которого условное
+    квантование и заведено).
+
+    Краснеет от: безусловного вызова `_quantize_row_for_display` (без
+    гейта `restated_any`) — тогда `amount`/`rate` стали бы "12000.560"/
+    "12000.56", а не "12000.556" — подтверждено мутацией: см. отчёт задачи."""
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
+    position = factories.CatalogPositionFactory.create(standard_job_title="Работа тождества")
+    _position(factories, proposal, position, unit_cost="12000.556", weight="1")
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert str(row["amount"]) == "12000.556"
+    assert str(row["rate"]) == "12000.556"
+
+
+def test_summary_restates_each_group_by_its_own_base_not_the_accumulated_sum(factories, db_session):
+    """Различение баз ВНУТРИ одной работы (ревью задачи 8, Правка 3): 120 при
+    базе 20 % и 112 при базе 12 %, цель 16 %. Правильный ответ — сумма ДВУХ
+    независимых пересчётов: `restate(120, 20, 16) = 116` и
+    `restate(112, 12, 16) = 116`, итого 232.00. Дефект «сложить сначала
+    (120+112=232), потом пересчитать ОДНИМ вызовом по ОДНОЙ базе» дал бы
+    ДРУГОЕ число — тест различает эти два пути численно, а не просто
+    проверяет наличие суммы (три предыдущих теста задачи 8 брали ОДНУ и ту
+    же базу на все группы и различение баз не проверяли).
+
+    Краснеет от: группировки по `catalog_position_id` БЕЗ `vat_rate_base`
+    (тогда SQL просуммировал бы 120+112=232 ДО пересчёта, и один вызов
+    `restate_gross(232, 20 или 12, 16)` дал бы число, отличное от 232.00) —
+    подтверждено мутацией: см. отчёт задачи."""
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Смешанные базы")
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(
+        lot=lot_1, contractor=contract.contractor, vat_rate=Decimal("20")
+    )
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(
+        lot=lot_2, contractor=contract.contractor, vat_rate=Decimal("12")
+    )
+    _position(factories, proposal_1, position, unit_cost="120", weight="1")
+    _position(factories, proposal_2, position, unit_cost="112", weight="1")
+    _set_vat_target(db_session, estimate, Decimal("16"))
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("232.00")
+
+
+def test_disagreement_note_explains_the_mixed_rates_on_the_sheet(client, factories, db_session):
+    """Ревью задачи 8 (Правка 6, 7): при разногласии ставок норматив гасится
+    (см. `test_standard_is_null_when_bases_disagree`), но `amount` строки всё
+    равно складывает валовые из РАЗНЫХ ставок построчно — лист обязан назвать
+    это явно, а не молчать о единицах измерения (спека §2.5, строка 280). Тест
+    идёт через HTTP и читает готовый XLSX (та же форма, что у сестринского
+    листа «для банка», `test_footnote_explains_the_weighted_deviation`), а не
+    только через `crud.reports.contract_summary` — так закрывается и потеря
+    проверки самого маршрута/файла, отмеченная в сомнениях отчёта задачи.
+
+    Краснеет от: `build_contract_summary`, печатающей подпись только при
+    известной `vat_display_rate` и молчащей при `None` (текущий текст до
+    Правки 6) — подтверждено мутацией: см. отчёт задачи."""
+    contract = _contract_with_two_proposals(factories, vat_rates=[Decimal("20"), Decimal("12")])
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    assert "Единой ставки НДС нет" in _text_of(ws)
+
+
+def test_vat_display_rate_caption_shows_a_human_readable_percent(client, factories, db_session):
+    """Ревью задачи 8 (Правка 8): подпись листа не должна печатать сырой
+    `Decimal` («с НДС 20.00 %»), а человеческий вид («с НДС 20 %»).
+
+    Краснеет от: `_format_percent`, отданной как `str(Decimal(...))` без
+    отбрасывания хвостовых нулей — подтверждено мутацией: см. отчёт задачи.
+
+    Ставка заведена ИМЕННО `Decimal("20.00")` (не `Decimal("20")`): `numeric`
+    Postgres сохраняет заявленный масштаб (замерено отдельно — `CAST('20.00'
+    AS numeric)` возвращает `exponent=-2`), поэтому `str()` без форматирования
+    дал бы "20.00" буквально — на входе `Decimal("20")` мутация была бы
+    невидима (`str(Decimal("20")) == "20"` совпадает с верным выводом)."""
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20.00"))
+    position = factories.CatalogPositionFactory.create(standard_job_title="Ставка целиком")
+    _position(factories, proposal, position, unit_cost="100", weight="1")
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    text = _text_of(ws)
+    assert "с НДС 20 %" in text
+    assert "20.00" not in text
+
+
 def test_fold_bank_rows_breaks_ties_by_catalog_position_id_ascending():
     """Юнит-тест на саму сортировку `_fold_bank_rows` — не на её эмерджентное
     проявление через целый HTTP-запрос (ре-ревью задачи 4, третий круг).

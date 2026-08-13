@@ -53,7 +53,14 @@ from models import (
     RateClass,
     UnitOfMeasure,
 )
-from money.vat import gross_to_net, quantize_money
+from money.vat import (
+    AmountStatus,
+    effective_display_rate,
+    gross_to_net,
+    net_to_gross,
+    quantize_money,
+    restate_gross,
+)
 
 log = logging.getLogger(__name__)
 
@@ -235,6 +242,41 @@ def _net_deviation(
     return net, _deviation(net, standard_unit_rate), reason
 
 
+def _declared_rates(db: Session, estimate_id: int) -> list[Decimal | None]:
+    """Заявленные ставки НДС предложений сметы — СЫРОЙ список для
+    `effective_display_rate` (задача 8, ревью — Правка 2, спека §5.1):
+    функция сама сворачивает его в единогласную ставку или `None` при
+    разногласии/незнании/отсутствии предложений.
+
+    Тот же приём, что у `crud.reports._declared_rates`/`crud.project_
+    passport._vat_rate` — сознательно НЕ переиспользован ни один из них (эти
+    три модуля не тянут друг друга ни в одну сторону, см. их собственные
+    докстроки о циклах импорта): три строки SQL дешевле дублировать, чем
+    заводить межмодульный импорт приватного имени.
+    """
+    return list(
+        db.execute(
+            sa.select(Proposal.vat_rate)
+            .select_from(Proposal)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimate_id)
+        ).scalars().all()
+    )
+
+
+def _standard_in_display_rate(standard: Decimal | None, rate: Decimal | None) -> Decimal | None:
+    """Норматив (нетто) в ставке показа (задача 8, ревью — Правка 2, спека
+    §5.1) — парная граница с `crud.reports._standard_in_display_rate`: то же
+    правило, не общий код (те же причины, что у `_declared_rates`).
+
+    `rate is None` (разногласие заявленных ставок предложений) гасит
+    норматив целиком: показать «в какой-то из» ставок нельзя (§5.1).
+    """
+    if standard is None or rate is None:
+        return None
+    return net_to_gross(standard, rate)
+
+
 def get_passport(db: Session, contract_id: int) -> dict:
     """Данные паспорта объекта (§7.4): реквизиты, ключевые расценки, отклонения.
 
@@ -256,6 +298,18 @@ def get_passport(db: Session, contract_id: int) -> dict:
     Итоги считаются по **всей** совокупности, не по показанному топу: иначе
     «показаны 15 из 1100» соседствовало бы с суммой пятнадцати строк, и её легко
     было бы прочитать как сумму сметы.
+
+    **Однодоговорная поверхность в СТАВКЕ ПОКАЗА (задача 8, ревью — Правка 2,
+    спека §5.1).** До этой правки `unit_cost_total`/`total_cost_total` были
+    валовыми файловыми, а `standard_unit_rate` — сырым нетто: факт и
+    норматив стояли в РАЗНЫХ единицах, ровно тот дефект, ради которого
+    заведена `effective_display_rate`. Теперь обе величины приводятся к ОДНОЙ
+    ставке показа — факт через `restate_gross` по СВОЕЙ базе строки,
+    норматив через `_standard_in_display_rate`. **`deviation_pct` и
+    `over_standard` НЕ ТРОНУТЫ** — они считаются от нетто (`_net_deviation`)
+    и от ставки показа не зависят (спека §2.5, строка 253): норматив-нетто
+    против факта-нетто — ось, независимая от того, в какой ставке экран
+    ПОКАЗЫВАЕТ те же самые числа.
     """
     top_n = get_passport_top_n(db)
     body: dict = {
@@ -274,11 +328,19 @@ def get_passport(db: Session, contract_id: int) -> dict:
         body["totals"] = _empty_totals()
         return body
 
+    effective_rate = effective_display_rate(
+        estimate.vat_rate_target, estimate.vat_rate_base_override, _declared_rates(db, estimate.id)
+    )
+
     body["estimate"] = {
         "id": estimate.id,
         "amendment_no": estimate.amendment_no,
         "title": estimate.title,
         "data_prepared_on_date": iso(estimate.data_prepared_on_date),
+        # Ставка показа (задача 8, спека §5.1) — экран подписывает ключевые
+        # расценки этой ставкой («суммы показаны с НДС N %» либо «без НДС»
+        # при 0); `None` — при разногласии заявленных ставок предложений.
+        "vat_display_rate": effective_rate,
     }
 
     rows = db.execute(
@@ -293,10 +355,27 @@ def get_passport(db: Session, contract_id: int) -> dict:
     ).all()
 
     key_rates = []
+    key_rates_restated_any = False
     for r in rows:
+        # Отклонение — от НЕТТО, по СЫРЫМ полям строки: ось, не зависящая от
+        # ставки показа (см. докстроку функции, "не трогай deviation_pct").
         net, deviation_pct, reason = _net_deviation(
             r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
         )
+        # Показ факта — в ставке показа (задача 8): ветка тождества
+        # `restate_gross` сохраняет исходное значение посимвольно, когда
+        # эффективная ставка совпадает с базой СТРОКИ (нет цели/перекрытой
+        # базы, и предложение одно или все предложения сметы единогласны).
+        display_unit_cost = restate_gross(r.unit_cost_total, r.vat_rate_base, effective_rate)
+        display_total_cost = restate_gross(r.total_cost_total, r.vat_rate_base, effective_rate)
+        if AmountStatus.RESTATED in (display_unit_cost.status, display_total_cost.status):
+            key_rates_restated_any = True
+        # Норматив (нетто) — в ту же ставку показа: у него нет ветки
+        # тождества (это ВСЕГДА реальная конвертация нетто->гросс), поэтому
+        # его появление само по себе включает квантование строки ниже.
+        display_standard = _standard_in_display_rate(r.standard_unit_rate, effective_rate)
+        if display_standard is not None:
+            key_rates_restated_any = True
         key_rates.append(
             {
                 "position_item_id": r.position_item_id,
@@ -305,14 +384,11 @@ def get_passport(db: Session, contract_id: int) -> dict:
                 "catalog_job_title": r.standard_job_title,
                 "unit_code": r.unit_code,
                 "weight": r.weight,
-                # Валовое из файла — НЕ трогается (спека пересчёта §2.4, ветка
-                # тождества): человек, проверяя цифру, должен видеть исходную
-                # сумму рядом с выведенным нетто, а не вместо неё.
-                "unit_cost_total": r.unit_cost_total,
+                "unit_cost_total": display_unit_cost.amount,
                 "unit_cost_net": quantize_money(net),
                 "vat_rate_base": r.vat_rate_base,
-                "total_cost_total": r.total_cost_total,
-                "standard_unit_rate": r.standard_unit_rate,
+                "total_cost_total": display_total_cost.amount,
+                "standard_unit_rate": display_standard,
                 # Точный Decimal; округление до 0.1 п.п. — только на слое
                 # представления (§4). В JSON уедет строкой. Теперь считается от
                 # НЕТТО (норматив — цена без НДС, спека пересчёта §1).
@@ -320,8 +396,17 @@ def get_passport(db: Session, contract_id: int) -> dict:
                 "deviation_reason": reason,
             }
         )
+    if key_rates_restated_any:
+        # Округление — ОДИН раз, на границе, и только если хоть что-то реально
+        # пересчиталось (тот же принцип, что в паспорте проекта и в своде по
+        # договору, ревью задачи 8): без цели/перекрытой базы/нормы поле
+        # осталось бы посимвольно тем же, что и до этой правки.
+        for item in key_rates:
+            item["unit_cost_total"] = quantize_money(item["unit_cost_total"])
+            item["total_cost_total"] = quantize_money(item["total_cost_total"])
+            item["standard_unit_rate"] = quantize_money(item["standard_unit_rate"])
     body["key_rates"] = key_rates
-    body["totals"] = _passport_totals(db, estimate.id)
+    body["totals"] = _passport_totals(db, estimate.id, effective_rate)
     # Сколько строк реально показано — это длина топа, а не отдельный запрос:
     # топ мог оказаться короче N, если расценённых работ в смете меньше.
     body["totals"]["positions_shown"] = len(body["key_rates"])
@@ -424,27 +509,34 @@ def _unmatched_counts_select():
     )
 
 
-def _passport_totals(db: Session, estimate_id: int) -> dict:
+def _passport_totals(db: Session, estimate_id: int, effective_rate: Decimal | None) -> dict:
     """Итоги по ВСЕЙ совокупности расценённых работ сметы.
 
     `over_standard` — сколько работ дороже норматива. Позиции без норматива в этот
     счётчик не входят и учтены отдельным (`without_standard`): §10 требует, чтобы
     «нет норматива» было отличимо от «0 %», а слив их в один счётчик стёр бы
-    разницу ровно там, где она нужна.
+    разницу ровно там, где она нужна. Он считается от НЕТТО и от ставки показа
+    не зависит (см. докстроку `get_passport`, "не трогай").
+
+    `priced_amount` — задача 8 (ревью, Правка 2, спека §5.1): раньше это была
+    прямая `SUM(PositionItem.total_cost_total)` без всякого отношения к базе
+    НДС; теперь каждая строка приводится к ставке показа СВОЕЙ базой (тот же
+    приём, что у `crud.project_passport._direct_totals` и `crud.reports.
+    _fold_summary_work`) ДО накопления — отсюда и Python-цикл вместо
+    SQL-`SUM`: строки с разными базами внутри одной сметы нельзя просуммировать
+    сырыми, а потом пересчитать одним вызовом.
 
     VIEW больше не несёт `deviation_pct` (миграция 0012), поэтому `over_standard`
     считается в Python, по нетто (спека пересчёта §1) — теми же строками, что и
-    остальные итоги, отдельным узким запросом (только поля, нужные `_net_deviation`),
+    `priced_amount`, ОДНИМ узким запросом (только поля, нужные обоим расчётам),
     а не перекачкой всего `_priced_positions_select`.
     """
-    row = db.execute(
+    counts_row = db.execute(
         sa.select(
             sa.func.count().label("positions_priced"),
-            sa.func.sum(PositionItem.total_cost_total).label("priced_amount"),
             sa.func.count(DEVIATION_INPUTS.c.rate_standard_id).label("with_standard"),
         )
         .select_from(DEVIATION_INPUTS)
-        .join(PositionItem, PositionItem.id == DEVIATION_INPUTS.c.position_item_id)
         .where(DEVIATION_INPUTS.c.estimate_id == estimate_id)
     ).one()
 
@@ -453,9 +545,15 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
             DEVIATION_INPUTS.c.unit_cost_total,
             DEVIATION_INPUTS.c.vat_rate_base,
             DEVIATION_INPUTS.c.standard_unit_rate,
-        ).where(DEVIATION_INPUTS.c.estimate_id == estimate_id)
+            PositionItem.total_cost_total,
+        )
+        .select_from(DEVIATION_INPUTS)
+        .join(PositionItem, PositionItem.id == DEVIATION_INPUTS.c.position_item_id)
+        .where(DEVIATION_INPUTS.c.estimate_id == estimate_id)
     ).all()
     over_standard = 0
+    priced_amount: Decimal | None = None
+    priced_amount_restated_any = False
     for r in deviation_rows:
         _net, deviation_pct, _reason = _net_deviation(
             r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
@@ -463,16 +561,30 @@ def _passport_totals(db: Session, estimate_id: int) -> dict:
         if deviation_pct is not None and deviation_pct > 0:
             over_standard += 1
 
+        restated_total = restate_gross(r.total_cost_total, r.vat_rate_base, effective_rate)
+        if restated_total.status is AmountStatus.RESTATED:
+            priced_amount_restated_any = True
+        if restated_total.amount is not None:
+            priced_amount = (
+                restated_total.amount if priced_amount is None else priced_amount + restated_total.amount
+            )
+    # Округление — ОДИН раз, на границе, и только если хоть что-то реально
+    # пересчиталось (тот же принцип, что в паспорте проекта и в своде по
+    # договору): без цели/перекрытой базы поле остаётся посимвольно тем же,
+    # что и до задачи 8.
+    if priced_amount_restated_any:
+        priced_amount = quantize_money(priced_amount)
+
     counts = db.execute(
         _unmatched_counts_select().where(Lot.estimate_id == estimate_id)
     ).one()
     return {
-        "positions_priced": row.positions_priced,
+        "positions_priced": counts_row.positions_priced,
         # Перезаписывается вызывающим на длину топа (см. `get_passport`).
         "positions_shown": 0,
-        "priced_amount": row.priced_amount,
-        "with_standard": row.with_standard,
-        "without_standard": row.positions_priced - row.with_standard,
+        "priced_amount": priced_amount,
+        "with_standard": counts_row.with_standard,
+        "without_standard": counts_row.positions_priced - counts_row.with_standard,
         "over_standard": over_standard,
         # Две причины пустого топа при непустой смете, и они РАЗНЫЕ: первую человек
         # исправляет в очереди Review, вторую исправлять не нужно вовсе (§5.4.3).

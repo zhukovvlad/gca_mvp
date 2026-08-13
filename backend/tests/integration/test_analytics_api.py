@@ -1154,3 +1154,85 @@ class TestMatrixCellDrillDownNetAxis:
         assert item["unit_cost_net"] is None
         assert item["deviation_pct"] is None
         assert item["deviation_reason"] == "unknown_vat_base"
+
+
+# ---------------------------------------------------------------------------
+#  Задача 8 (ревью, Правка 2): паспорт объекта в ставке показа (спека §5.1)
+# ---------------------------------------------------------------------------
+#
+# Матрица И её drill-down (`_cell_item`, `get_matrix_cell`) остаются на нетто-
+# оси — они много-договорные (задача 3), и это НЕ трогается здесь (см. тесты
+# класса выше: `unit_cost_total` там по-прежнему "валовое не тронуто"). Только
+# паспорт ОБЪЕКТА (`get_passport`, однодоговорная поверхность) переходит на
+# ставку показа — ровно то, что было пропущено в первом круге реализации
+# задачи 8 без движущего теста, и это найдено внешним ревью.
+
+def _set_vat_target(db_session, contract, rate):
+    from models import Estimate
+
+    estimate = db_session.query(Estimate).filter_by(contract_id=contract.id).one()
+    estimate.vat_rate_target = rate
+    db_session.flush()
+    return estimate
+
+
+class TestPassportDisplayRate:
+    def test_standard_and_fact_follow_the_target_rate(self, client, factories, db_session):
+        """Цель показа (16 %) приведена к базе предложения (20 %): факт 120
+        (база 20 %) даёт нетто 100, а 100 нетто по цели 16 % даёт 116.00 —
+        И факт, И норматив показаны в ОДНОЙ ставке.
+
+        Краснеет от: `get_passport`, приводящей к ставке показа факт БЕЗ
+        норматива или наоборот (тогда числа разошлись бы) — подтверждено
+        мутацией: см. отчёт задачи."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        _set_vat_target(db_session, contract, Decimal("16"))
+        db_session.commit()
+
+        rate = _passport(client, contract.id)["key_rates"][0]
+        assert Decimal(rate["unit_cost_total"]) == Decimal("116.00")
+        assert Decimal(rate["total_cost_total"]) == Decimal("116.00")
+        assert Decimal(rate["standard_unit_rate"]) == Decimal("116.00")
+
+    def test_standard_and_fact_are_untouched_without_target(self, client, factories, db_session):
+        """Парный тест тождества: без цели эффективная ставка равна базе
+        предложения (20 %, единогласной), и факт остаётся посимвольно тем же
+        валовым значением, что и до задачи 8 — сравнение через СЫРУЮ строку
+        JSON, а не `Decimal(...)==Decimal(...)` (норматив при этом ВСЁ РАВНО
+        показывается в этой же ставке — см. соседний тест `test_standard_
+        follows_the_effective_rate_without_explicit_target` в `crud.reports`,
+        та же семантика: у нормы нет ветки тождества, у факта — есть).
+
+        Краснеет от: безусловного `quantize_money` на `unit_cost_total`/
+        `total_cost_total` (тогда "120.5" стало бы "120.50") — подтверждено
+        мутацией: см. отчёт задачи."""
+        contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
+        position = factories.CatalogPositionFactory.create(standard_job_title="Тождество Ф6")
+        _position(factories, proposal, position, unit_cost="120.5", weight="1")
+        db_session.commit()
+
+        raw = client.get(f"/api/v1/analytics/passport/{contract.id}").text
+        assert '"unit_cost_total":"120.5"' in raw.replace(", ", ",")
+        assert '"total_cost_total":"120.5"' in raw.replace(", ", ",")
+
+    def test_priced_amount_follows_the_target_rate_too(self, client, factories, db_session):
+        """`totals.priced_amount` — та же ставка показа, что и `key_rates`
+        (ревью задачи 8, Правка 2): раньше это была сырая `SUM(total_cost_
+        total)` без отношения к базе НДС.
+
+        Краснеет от: `_passport_totals`, суммирующей `PositionItem.total_
+        cost_total` СЫРЫМ SQL-`SUM` вместо построчного `restate_gross`
+        (тогда `priced_amount` остался бы "120", а не "116.00") —
+        подтверждено мутацией: см. отчёт задачи."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        _set_vat_target(db_session, contract, Decimal("16"))
+        db_session.commit()
+
+        totals = _passport(client, contract.id)["totals"]
+        assert Decimal(totals["priced_amount"]) == Decimal("116.00")

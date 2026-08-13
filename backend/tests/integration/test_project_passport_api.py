@@ -1704,14 +1704,40 @@ def test_passport_totals_untouched_without_target(client, factories, db_session)
     не `Decimal(...) == Decimal(...)` (то пропустило бы сдвиг `exponent`,
     ради отсутствия которого ветка тождества `restate_gross` и заведена).
 
-    Краснеет от: любого безусловного `quantize_money` на `totals["amount"]`
+    Ревью задачи 8 (Правка 5): спека §2.4 называет ПОИМЁННО суммы паспорта,
+    дерево статей, кольцо и ₽/м² — одного поля `totals.amount` мало. Здесь
+    вход устроен так, чтобы задействовать ВСЕ шесть: категория несёт
+    собственную (и потому единственную) позицию 300.5 (`categories[0].total`
+    И `.own` — оба поля равны здесь по конструкции, дерева без детей), площадь
+    объекта задана (`per_sqm` категории и «Нераспределённого»), и есть
+    нераспределённая позиция 50.25 (`unallocated.amount`/`.per_sqm`).
+
+    Краснеет от: любого безусловного `quantize_money` на любом из шести полей
     (например, перенесённого из ветки «пересчитано» в общий путь) — тогда
-    "120.5" стало бы "120.50", подтверждено мутацией: см. отчёт задачи."""
-    contract = _contract_with_positions(factories, total=Decimal("120.5"), vat_rate=Decimal("20"))
+    "120.5"/"300.5"/"3.005"/"50.25"/"0.5025"/"350.75" стали бы
+    "120.50"/"300.50"/"3.00"(округлённым)/"50.25"/"0.50"/"350.75" — подтверждено
+    мутацией: см. отчёт задачи."""
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("100.00"), area_underground_sp=Decimal("0.00")
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    category = _category(db_session, "1")
+    proposal = _proposal(factories, contract=contract)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id, chapter_number="1")
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("300.5"))
+    _position(factories, proposal, total_cost_total=Decimal("50.25"))  # нераспределённая
     db_session.commit()
 
-    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
-    assert totals["amount"] == "120.5"
+    body = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()
+
+    assert body["totals"]["amount"] == "350.75"
+    node = next(c for c in body["categories"] if c["id"] == category.id)
+    assert node["total"] == "300.5"
+    assert node["own"] == "300.5"
+    assert node["per_sqm"] == "3.005"
+    assert body["unallocated"]["amount"] == "50.25"
+    assert body["unallocated"]["per_sqm"] == "0.5025"
 
 
 def test_passport_total_is_quantized_once_not_per_group(client, factories, db_session):
@@ -1731,3 +1757,78 @@ def test_passport_total_is_quantized_once_not_per_group(client, factories, db_se
 
     totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
     assert Decimal(totals["amount"]) == Decimal("0.02")
+
+
+def test_passport_restates_each_row_by_its_own_base_not_the_accumulated_sum(
+    client, factories, db_session
+):
+    """Различение баз ВНУТРИ одного узла (ревью задачи 8, Правка 3): 120 при
+    базе 20 % и 112 при базе 12 %, цель 16 %. Правильный ответ — сумма ДВУХ
+    независимых пересчётов: `restate(120, 20, 16) = 116` и
+    `restate(112, 12, 16) = 116`, итого 232.00. Дефект «сложить сначала
+    (120+112=232), потом пересчитать ОДНИМ вызовом по ОДНОЙ базе» дал бы
+    ДРУГОЕ число — тест различает эти два пути численно (три предыдущих теста
+    задачи 8 брали ОДНУ и ту же базу на все группы и различение баз не
+    проверяли — находка внешнего ревью, вакуозность формы «одинаковые
+    значения там, где проверяется различение»).
+
+    Обе позиции — «Нераспределённое» (без категории): различение баз не
+    зависит от дерева статей, а от группировки VIEW по `(proposal_id,
+    vat_rate_base)`, и «Нераспределённое» — та же арифметика, что и категория
+    (`_sum_known` в `_direct_totals`).
+
+    Краснеет от: восстановления накопленной СУММЫ по ОДНОЙ базе вместо каждой
+    строки по СВОЕЙ — подтверждено мутацией: см. отчёт задачи."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=proposal_1.contractor)
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("12")
+    factories.PositionItemFactory.create(proposal=proposal_1, total_cost_total=Decimal("120"))
+    factories.PositionItemFactory.create(proposal=proposal_2, total_cost_total=Decimal("112"))
+    _set_vat_target(db_session, estimate.contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{estimate.contract_id}"
+    ).json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("232.00")
+
+
+def test_delta_to_file_total_ignores_the_display_target_too(client, factories, db_session):
+    """Парный тест к `test_delta_to_file_total_ignores_manual_rates` (ревью
+    задачи 8, Правка 4): тот тест перекрывает БАЗУ (`vat_rate_base_override`),
+    которая структурно не может сдвинуть эффективную базу относительно самой
+    себя (VIEW считает `vat_rate_base = COALESCE(override, vat_rate)`) — там
+    пересчёт ВСЕГДА уходит в тождество, и мутация «вернуть `grand_total`
+    вместо `raw_grand_total`» осталась бы незамеченной. Здесь — ЦЕЛЬ
+    (`vat_rate_target`), отличная от базы предложения (20 % против 16 %),
+    поэтому `totals.amount` РЕАЛЬНО пересчитывается (1200.00 -> 1160.00), а
+    `delta_to_file_total` обязана остаться той же цифрой.
+
+    Краснеет от: `delta_to_file_total`, посчитанной от `grand_total` вместо
+    `raw_grand_total` (тогда после установки цели дельта сдвинулась бы с
+    "0.00" на "-40.00", поскольку файловый итог 1200.00 сравнивался бы уже с
+    пересчитанным 1160.00) — подтверждено мутацией: см. отчёт задачи."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    db_session.flush()
+
+    contract_id = proposal.lot.estimate.contract_id
+    before = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+    assert before["totals"]["delta_to_file_total"] == "0.00"
+    assert before["totals"]["amount"] == "1200.00" or Decimal(before["totals"]["amount"]) == Decimal("1200.00")
+
+    _set_vat_target(db_session, proposal.lot.estimate.contract, Decimal("16"))
+    db_session.commit()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+
+    assert Decimal(after["totals"]["amount"]) == Decimal("1160.00")  # пересчёт РЕАЛЬНО случился
+    assert after["totals"]["delta_to_file_total"] == before["totals"]["delta_to_file_total"]
+    assert after["totals"]["delta_to_file_total"] == "0.00"

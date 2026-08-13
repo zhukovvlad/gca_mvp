@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 from openpyxl import Workbook
 
@@ -161,15 +162,21 @@ def build_contract_summary(data: dict, *, generated_at: dt.date) -> bytes:
     # однодоговорная поверхность, факт и норматив показаны в ОДНОЙ ставке, и
     # лист обязан назвать её, иначе «Ставка»/«Норматив» не сказали бы, в чём
     # они измерены. При разногласии заявленных ставок предложений
-    # (`vat_display_rate is None`) подписи нет вовсе — единой ставки показа
-    # не существует, и утверждать любую из них было бы неправдой.
+    # (`vat_display_rate is None`, ревью задачи 8, Правка 6) единой ставки нет,
+    # но `amount` всё равно складывает валовые из РАЗНЫХ ставок построчно —
+    # молчание здесь было бы неправдой не меньшей, чем ложная ставка, поэтому
+    # подпись заменяется на `vat_display_note` (спека §2.5, строка 280: лист
+    # обязан назвать единицы измерения явно).
     vat_display_rate = header["vat_display_rate"]
     if vat_display_rate is not None:
         caption = (
             "Суммы показаны без НДС" if vat_display_rate == 0
-            else f"Суммы показаны с НДС {vat_display_rate} %"
+            else f"Суммы показаны с НДС {_format_percent(vat_display_rate)} %"
         )
-        cell = ws.cell(row=row, column=1, value=caption)
+    else:
+        caption = header.get("vat_display_note")
+    if caption:
+        cell = ws.cell(row=row, column=1, value=safe_str(caption))
         cell.font = font(size=9, bold=True)
         row += 1
 
@@ -347,6 +354,19 @@ def _ru_date(iso_date: str | None) -> str:
     if not iso_date:
         return "—"
     return dt.date.fromisoformat(iso_date).strftime("%d.%m.%Y")
+
+
+def _format_percent(value: Decimal) -> str:
+    """Ставка НДС для подписи листа — человеческий вид, а не сырой `Decimal`
+    (ревью задачи 8, Правка 8): `Decimal("20.00")` печаталась бы «20.00 %»,
+    хотя ставка хранится в процентных пунктах и заявляется человеком как
+    целое число в подавляющем большинстве случаев. Дробная часть, если она
+    есть (например «16.5»), сохраняется — округляется до сотых и лишние нули
+    отбрасываются, а не наоборот."""
+    text = format(value.quantize(Decimal("0.01")), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _period_text(date_from: str | None, date_to: str | None) -> str:

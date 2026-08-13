@@ -96,7 +96,14 @@ from models import (
     RateClass,
     UnitOfMeasure,
 )
-from money.vat import effective_display_rate, gross_to_net, net_to_gross, quantize_money, restate_gross
+from money.vat import (
+    AmountStatus,
+    effective_display_rate,
+    gross_to_net,
+    net_to_gross,
+    quantize_money,
+    restate_gross,
+)
 
 #: Ноль как Decimal — чтобы суммирование не начиналось с int и не давало float.
 ZERO = Decimal(0)
@@ -200,6 +207,11 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         # путях функции (правило «форма ответа одна и та же», см. `crud.
         # project_passport`), даже когда сметы ещё нет вовсе.
         "vat_display_rate": None,
+        # Ревью задачи 8 (Правка 6): при разногласии заявленных ставок норматив
+        # гасится (граница §5.1), но `amount` строки ВСЁ РАВНО складывает
+        # валовые из РАЗНЫХ ставок построчно — лист обязан назвать это явно,
+        # а не молчать о единицах измерения (спека §2.5, строка 280).
+        "vat_display_note": None,
     }
     if estimate is None:
         return {"header": header, "rows": [], "totals": _empty_report_totals()}
@@ -208,6 +220,12 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         estimate.vat_rate_target, estimate.vat_rate_base_override, _declared_rates(db, estimate.id)
     )
     header["vat_display_rate"] = effective_rate
+    if effective_rate is None:
+        header["vat_display_note"] = (
+            "Единой ставки НДС нет (предложения заявили разные ставки, либо "
+            "хотя бы одна неизвестна): суммы складывают строки в ИХ ИСХОДНЫХ "
+            "ставках, норматив не показан."
+        )
 
     group_rows = db.execute(
         _work_aggregate_select()
@@ -220,7 +238,7 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         )
     ).all()
 
-    rows = _fold_summary_rows(group_rows, effective_rate)
+    rows, restated_any = _fold_summary_rows(group_rows, effective_rate)
     # Итоги — из НЕОКРУГЛЁННЫХ строк (см. модульную документацию про границу
     # округления): `_totals_of` читает `amount`/`comparable_amount`/
     # `comparable_standard_amount`, и они обязаны остаться точными ДО того, как
@@ -245,10 +263,17 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         .where(DEVIATION_INPUTS.c.estimate_id == estimate.id)
     ).scalar_one()
 
-    # Округление — ПОСЛЕДНИЙ шаг, когда totals уже посчитаны из точных строк.
-    for row in rows:
-        _quantize_row_for_display(row)
-    _quantize_totals_for_display(totals)
+    # Округление — ПОСЛЕДНИЙ шаг, когда totals уже посчитаны из точных строк, и
+    # ТОЛЬКО если что-то реально пересчиталось (ревью задачи 8, Правка 1): без
+    # цели/перекрытой базы и без единой заявленной ставки, отличной от базы,
+    # каждая строка остаётся в СВОЕЙ исходной ставке (ветка тождества
+    # `restate_gross`), и квантование сдвинуло бы `exponent` без всякой
+    # арифметики — тот же принцип, что уже применён в паспорте проекта
+    # (`crud.project_passport._quantize_if_restated`).
+    if restated_any:
+        for row in rows:
+            _quantize_row_for_display(row)
+        _quantize_totals_for_display(totals)
     return {"header": header, "rows": rows, "totals": totals}
 
 
@@ -298,7 +323,7 @@ def _work_aggregate_select():
     )
 
 
-def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_rate) -> dict:
+def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_rate) -> tuple[dict, bool]:
     """Одна строка свода по договору из групп работа×база НДС (задача 8, спека §5.1).
 
     Факт приводится к ставке показа ПО КАЖДОЙ группе — её база постоянна внутри
@@ -318,6 +343,14 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     округления): `_quantize_row_for_display` округляет вызывающий код
     (`contract_summary`), когда строка уже отслужила свою роль слагаемого в
     `_totals_of`.
+
+    Второй элемент возврата — `restated_any`: признак того, что в ЭТОЙ строке
+    реально произошёл пересчёт (ревью задачи 8, Правка 1) — либо факт какой-то
+    группы получил статус `RESTATED`, либо норматив был реально показан
+    (`standard_amount is not None`, то есть у нормы всегда РЕАЛЬНАЯ конвертация
+    нетто→ставка показа, без ветки тождества, в отличие от факта). Вызывающий
+    код квантует ВСЮ строку целиком, только если хоть одна строка свода дала
+    `True` — тот же принцип, что уже применён в паспорте проекта.
     """
     fact_total: Decimal | None = None
     volume_total = ZERO
@@ -326,12 +359,15 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     standard_net_total = ZERO
     positions_total = 0
     positions_without_standard = 0
+    restated_any = False
 
     for group in groups:
         positions_total += group.positions
         positions_without_standard += group.positions_without_standard
 
         restated_total = restate_gross(group.fact_amount_total, group.vat_rate_base, effective_rate)
+        if restated_total.status is AmountStatus.RESTATED:
+            restated_any = True
         if restated_total.amount is not None:
             fact_total = (
                 restated_total.amount if fact_total is None else fact_total + restated_total.amount
@@ -343,6 +379,8 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
             restated_comparable = restate_gross(
                 group.fact_amount, group.vat_rate_base, effective_rate
             )
+            if restated_comparable.status is AmountStatus.RESTATED:
+                restated_any = True
             fact_comparable = (
                 restated_comparable.amount
                 if fact_comparable is None
@@ -354,11 +392,16 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     standard_amount = (
         None if fact_comparable is None else _standard_in_display_rate(standard_net_total, effective_rate)
     )
+    if standard_amount is not None:
+        # Норматив не несёт ветки тождества (в отличие от факта): показ в
+        # ставке показа — ВСЕГДА реальная конвертация нетто→гросс, даже когда
+        # цель не задана, а эффективная ставка равна базе предложения.
+        restated_any = True
     deviation_money = (
         None if fact_comparable is None or standard_amount is None
         else fact_comparable - standard_amount
     )
-    return {
+    row = {
         "job_title": job_title,
         "unit_code": unit_code,
         "volume": volume_total,
@@ -373,9 +416,10 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
         "positions": positions_total,
         "positions_without_standard": positions_without_standard,
     }
+    return row, restated_any
 
 
-def _fold_summary_rows(group_rows, effective_rate) -> list[dict]:
+def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool]:
     """Строки SQL (работа×база) -> строки свода (одна на работу), задача 8.
 
     Тот же двухпроходный приём, что у `_fold_bank_rows`: группы одной работы не
@@ -394,11 +438,13 @@ def _fold_summary_rows(group_rows, effective_rate) -> list[dict]:
         groups_by_work[key].append(r)
 
     rows = []
+    restated_any = False
     for key in order:
         job_title, unit_code = meta[key]
-        row = _fold_summary_work(job_title, unit_code, groups_by_work[key], effective_rate)
+        row, row_restated = _fold_summary_work(job_title, unit_code, groups_by_work[key], effective_rate)
         row["catalog_position_id"] = key
         rows.append(row)
+        restated_any = restated_any or row_restated
 
     # Крупные работы сверху — тот же порядок, что раньше давал `ORDER BY
     # fact_amount_total DESC` в SQL (перешёл в Python: строки теперь
@@ -406,7 +452,7 @@ def _fold_summary_rows(group_rows, effective_rate) -> list[dict]:
     # `catalog_position_id` — та же причина, что у `_fold_bank_rows`: без него
     # порядок работ с РАВНОЙ суммой ничем не определён.
     rows.sort(key=lambda r: (-(r["amount"] or ZERO), r["catalog_position_id"]))
-    return rows
+    return rows, restated_any
 
 
 # ---------------------------------------------------------------------------
