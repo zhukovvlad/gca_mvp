@@ -21,6 +21,7 @@ from routers import auth as auth_router
 from routers import catalog as catalog_router
 from routers import category_overrides as category_overrides_router
 from routers import contracts as contracts_router
+from routers import estimate_vat as estimate_vat_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
 from routers import rate_standards as rate_standards_router
@@ -144,6 +145,9 @@ app.include_router(units.router, prefix="/api/units", tags=["units"], dependenci
 # у этих двух роутеров он есть, а у более раннего /api/units — нет.
 app.include_router(estimates_router.router, dependencies=_auth_dep)
 app.include_router(import_jobs_router.router, dependencies=_auth_dep)
+# Правка ставок НДС сметы — admin (§3, спека пересчёта §2.7): меняет все
+# деньги договора сразу, включая выгрузку для банка.
+app.include_router(estimate_vat_router.router, dependencies=_auth_dep)
 
 # CRUD фазы 5 (§7, §9.5). Тот же префикс /api/v1: чтение — любому
 # аутентифицированному, изменение — под require_admin внутри роутера (§6.2).

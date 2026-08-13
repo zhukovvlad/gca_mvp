@@ -44,17 +44,19 @@ def admin_user(factories):
 # отдавал бы 500 вместо ожидаемого кода — искать пришлось бы мнимый баг роутера.
 
 
-def _member_client(db_session, factories, *, raise_server_exceptions: bool) -> Iterator:
-    """Общий строитель `member_client`/`member_client_no_raise` — две ручные
-    копии одного и того же клиента отличались только одним флагом `TestClient`,
-    а правило проекта против второй реализации одного понятия относится и к
-    фикстурам, не только к продовому коду.
+def _role_client(
+    db_session, factories, *, role: UserRole, raise_server_exceptions: bool
+) -> Iterator:
+    """Общий строитель `member_client`/`member_client_no_raise`/`admin_client` —
+    ручные копии одного и того же клиента отличались бы только ролью и одним
+    флагом `TestClient`, а правило проекта против второй реализации одного
+    понятия относится и к фикстурам, не только к продовому коду.
 
     `c.user` — держатель ТЕКУЩЕГО автора, `c.set_user(other)` его меняет:
-    тесту на перенос аудита (`assigned_by`) нужен ВТОРОЙ, отличный от первого,
-    пользователь для второго запроса — иначе поле `assigned_by` не может
-    сдвинуться в принципе, что бы ни делал код (тот же приём, что у
-    `auth_state["role"]` в корневом `client`).
+    тесту на перенос аудита (`assigned_by`, а для Задачи 6 — `vat_rate_updated_
+    by_id`) нужен ВТОРОЙ, отличный от первого, пользователь для второго
+    запроса — иначе поле не может сдвинуться в принципе, что бы ни делал код
+    (тот же приём, что у `auth_state["role"]` в корневом `client`).
     """
     from fastapi.testclient import TestClient
 
@@ -62,7 +64,7 @@ def _member_client(db_session, factories, *, raise_server_exceptions: bool) -> I
     from database import get_db
     from main import app
 
-    holder = {"user": factories.UserFactory.create(role=UserRole.member)}
+    holder = {"user": factories.UserFactory.create(role=role)}
 
     def override_get_db():
         try:
@@ -88,6 +90,12 @@ def _member_client(db_session, factories, *, raise_server_exceptions: bool) -> I
     app.dependency_overrides.clear()
 
 
+def _member_client(db_session, factories, *, raise_server_exceptions: bool) -> Iterator:
+    yield from _role_client(
+        db_session, factories, role=UserRole.member, raise_server_exceptions=raise_server_exceptions
+    )
+
+
 @pytest.fixture
 def member_client(db_session, factories) -> Iterator:
     """Как корневой `client`, но `get_current_user` возвращает НАСТОЯЩУЮ
@@ -108,6 +116,21 @@ def member_client_no_raise(db_session, factories) -> Iterator:
     дошёл бы. Тот же приём, что у `unauth_client` в `tests/test_auth_coverage.py`.
     """
     yield from _member_client(db_session, factories, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def admin_client(db_session, factories) -> Iterator:
+    """Как `member_client`, но роль `admin` — правка ставок НДС сметы (Задача 6,
+    спека пересчёта §2.7) требует `require_admin`, а её FK `RESTRICT` на
+    `vat_rate_updated_by_id` (models.py) не переживает `MagicMock`-пользователя
+    с несуществующим `id=1`, которым отвечает корневой `client`
+    (tests/conftest.py): в свежей тестовой транзакции пользователя с id=1 нет
+    (тот же урок, из-за которого `test_category_overrides_api.py` держит
+    `member_client`, а не корневой `client`, — см. докстринг `_role_client`).
+    """
+    yield from _role_client(
+        db_session, factories, role=UserRole.admin, raise_server_exceptions=True
+    )
 
 
 @pytest.fixture

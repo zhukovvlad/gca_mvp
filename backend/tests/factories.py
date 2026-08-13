@@ -191,3 +191,18 @@ class RateStandardFactory(_BaseFactory):
     standard_unit_rate = Decimal("100.00")
     valid_from = dt.date(2025, 1, 1)
     valid_to = None
+
+
+def estimate_with_proposals(vat_rates: list) -> Estimate:
+    """Смета с N предложениями, по одному на СВОЙ лот — своя ставка НДС на
+    каждое (спека пересчёта §2.7, тесты `test_estimate_vat_api.py`).
+
+    Один лот не может нести больше одного предложения (`uq_proposals_lot_id`,
+    models.py) — отсюда отдельный `Lot` под КАЖДЫМ элементом `vat_rates`, а не
+    один лот с несколькими предложениями.
+    """
+    estimate = EstimateFactory.create()
+    for rate in vat_rates:
+        lot = LotFactory.create(estimate=estimate)
+        ProposalFactory.create(lot=lot, vat_rate=rate)
+    return estimate
