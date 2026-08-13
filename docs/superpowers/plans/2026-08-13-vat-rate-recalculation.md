@@ -50,19 +50,17 @@ PostgreSQL 16; React + TS, Vite, shadcn/ui, TanStack Query, Vitest.
 - **Политика `samples/`:** реальные суммы и реквизиты контрагентов не попадают ни в
   код, ни в тесты, ни в доки, ни в сообщения коммитов.
 
-## Отступление от §2.6 спеки, требующее записи в devlog
+## Вес строки матрицы: исключение, внесённое в спеку
 
-Спека говорит: «SQL формулы не содержит». **Сортировка и пагинация матрицы этого не
-позволяют.** Строки матрицы упорядочены по `row_amount` — весу строки в деньгах
-([analytics.py:451](../../../backend/crud/analytics.py#L451)), — и `row_amount`
-одновременно **показывается**. Считать его в Python значит вытащить все строки
-матрицы до пагинации; оставить сортировку по валовому весу значит сортировать по
-числу, отличному от показанного.
+Спека §2.6 несёт **названное исключение**: нетто-вес строки (`row_amount`) считает
+SQL, потому что он служит ключом `ORDER BY` и пагинации и одновременно
+показывается. Ячейки по-прежнему сводит Python. Исключение оплачено тестом,
+сравнивающим SQL-выражение с `gross_to_net` на тех же входах (задача 3, шаг 8), и
+записывается в devlog вместе с причиной.
 
-Решение: **одно** нетто-выражение в SQL, только для веса строки, и оно **пришпилено
-тестом** к `gross_to_net` на тех же входах (задача 3, шаг 8). Правило по-прежнему
-одно — просто у него появляется вторая исполняющая площадка, и расхождение площадок
-ловится тестом, а не надеждой. Записывается в devlog как отступление.
+Оттуда же — правило неполноты: `SUM` игнорирует `NULL`, поэтому вес считается по
+ячейкам с известной базой, а неполнота объявляется **булевым признаком строки**;
+когда база неизвестна везде, вес пуст и строка уходит в конец (`NULLS LAST`).
 
 ## Этапы
 
@@ -101,41 +99,73 @@ ORDER BY e.id;
 **Отменяет границу §5.1**, если найдётся смета с `distinct_rates > 1`: тогда «одна
 ручная база на смету» — дефект, а не ограничение.
 
-- [ ] **Шаг 2: замер Б — два кандидатных запроса, сопоставимые планы**
+- [ ] **Шаг 2: замер Б — два сопоставимых кандидата на полном корпусе**
 
-Замер обязан **выбрать механизм**, а не описать текущий. Поэтому исполняются два
-кандидата на одном и том же охвате (без фильтров, самый широкий).
+Замер обязан **выбрать механизм**, поэтому кандидаты выравниваются по трём осям:
+один и тот же полный набор предложений, одна и та же гранулярность выдачи, одна и
+та же арифметическая точность.
 
-Кандидат 1 — группировка по базе (то, что делает миграция 0012):
+**Три условия сопоставимости, каждое — исправление наивного варианта:**
+
+1. Замер идёт **до** миграции, поэтому `estimates.vat_rate_base_override` ещё не
+   существует. Эффективная база моделируется как `p.vat_rate` — на момент замера
+   поправок нет ни у одной сметы, и это не упрощение, а тождество.
+2. `VALUES` строится **для всех** предложений корпуса, а не для двух примеров:
+   иначе кандидат 2 обрабатывает меньше данных и выигрывает по построению.
+3. Множитель считается **с проектной точностью**, не обрезанным литералом:
+   `0.8333333333` заранее уступает делению в кандидате 1 и по точности, и по
+   скорости.
+
+Список `VALUES` генерируется скриптом, а не пишется руками:
+
+```python
+# scripts/measure_b_values.py — печатает готовый VALUES для кандидата 2
+from decimal import Context, Decimal, localcontext
+
+HUNDRED = Decimal(100)
+rows = db.execute(sa.text("SELECT id, vat_rate FROM proposals ORDER BY id")).all()
+with localcontext(Context(prec=100)):
+    items = ", ".join(
+        f"({r.id}::bigint, {HUNDRED / (HUNDRED + r.vat_rate)}::numeric)"
+        for r in rows
+        if r.vat_rate is not None
+    )
+print(f"(VALUES {items}) AS f(proposal_id, factor)")
+```
+
+Кандидат 1 — группировка по базе, свод в Python:
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT d.catalog_position_id, d.contract_id,
-       COALESCE(e.vat_rate_base_override, p.vat_rate) AS vat_rate_base,
+SELECT d.catalog_position_id, d.contract_id, p.vat_rate AS vat_rate_base,
        SUM(d.unit_cost_total * d.weight) AS weighted_cost,
        SUM(d.weight)                     AS weight_total
 FROM v_position_deviations d
 JOIN proposals p ON p.id = d.proposal_id
-JOIN lots      l ON l.id = p.lot_id
-JOIN estimates e ON e.id = l.estimate_id
-WHERE d.weight > 0
-GROUP BY d.catalog_position_id, d.contract_id,
-         COALESCE(e.vat_rate_base_override, p.vat_rate);
+WHERE d.weight > 0 AND p.vat_rate IS NOT NULL
+GROUP BY d.catalog_position_id, d.contract_id, p.vat_rate;
 ```
 
-Кандидат 2 — join на `VALUES` с множителями, посчитанными в Python:
+Кандидат 2 — join на `VALUES` с множителями из Python:
 
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)
-SELECT d.catalog_position_id, d.contract_id,
-       SUM(d.unit_cost_total * d.weight * f.factor) AS weighted_net,
-       SUM(d.weight)                                AS weight_total
+SELECT d.catalog_position_id, d.contract_id, f.factor AS vat_factor,
+       SUM(d.unit_cost_total * d.weight) AS weighted_cost,
+       SUM(d.weight)                     AS weight_total
 FROM v_position_deviations d
-JOIN (VALUES (1::bigint, 0.8333333333::numeric), (2, 0.8333333333)) AS f(proposal_id, factor)
-     ON f.proposal_id = d.proposal_id
+JOIN <вставить сгенерированный VALUES> ON f.proposal_id = d.proposal_id
 WHERE d.weight > 0
-GROUP BY d.catalog_position_id, d.contract_id;
+GROUP BY d.catalog_position_id, d.contract_id, f.factor;
 ```
+
+**Гранулярность у обоих одинакова**: строка на (работа, договор, множитель), и в
+обоих случаях свод делает Python. Кандидаты различаются только тем, **откуда
+берётся множитель** — из колонки или из переданного списка.
+
+Проверить это до сравнения планов: оба запроса обязаны вернуть **одинаковое число
+строк** и совпадающие `weighted_cost` по каждой строке. Разошлось — сравнивать
+планы бессмысленно, кандидаты делают разную работу.
 
 Записать для обоих: время, `Buffers: shared hit/read`, форму соединения. Плюс
 объёмы:
@@ -143,11 +173,13 @@ GROUP BY d.catalog_position_id, d.contract_id;
 ```sql
 SELECT count(*) FROM position_items WHERE is_chapter = false;
 SELECT count(*) FROM v_position_deviations;
+SELECT count(*) FROM proposals WHERE vat_rate IS NOT NULL;
 ```
 
-**Выбор фиксируется в devlog числами.** Кандидат 2 несёт дополнительное свойство —
-список предложений приходится строить в Python и передавать в запрос, что растёт
-линейно с охватом матрицы; это тоже записывается.
+**Выбор фиксируется в devlog числами и определяет шаги 7–8 задачи 3.** У кандидата 2
+есть свойство вне плана запроса: список предложений строится в Python и растёт
+линейно с охватом матрицы — при выборке в сотни договоров это сотни literal-строк в
+каждом запросе. Записывается вместе с временем.
 
 - [ ] **Шаг 3: замер В — устойчивость точности, а не детерминизм**
 
@@ -753,18 +785,58 @@ def test_matrix_cell_amount_is_net(client, factories, db_session):
 
 
 def test_matrix_row_amount_is_net_and_orders_rows(client, factories, db_session):
-    """Строка с БОЛЬШИМ валовым весом, но большей ставкой НДС, обязана встать
-    ниже — иначе сортировка идёт по числу, отличному от показанного."""
+    """СТРОГАЯ инверсия: валовым выше A, по нетто выше B.
+
+    Вход подобран так, что нетто НЕ совпадают, — иначе порядок решал бы
+    тай-брейк, и тест был бы зелёным и при валовой сортировке:
+      A: 122 при НДС 22 % → нетто 100
+      B: 111 при НДС 10 % → нетто 100.909…
+    """
     factories.priced_estimate(
-        catalog_title="A", unit_cost_total=Decimal("122"), weight=Decimal("1"), vat_rate=Decimal("22")
+        catalog_title="A", unit_cost_total=Decimal("122"), weight=Decimal("1"),
+        vat_rate=Decimal("22"),
     )
     factories.priced_estimate(
-        catalog_title="B", unit_cost_total=Decimal("112"), weight=Decimal("1"), vat_rate=Decimal("12")
+        catalog_title="B", unit_cost_total=Decimal("111"), weight=Decimal("1"),
+        vat_rate=Decimal("10"),
     )
     db_session.commit()
     rows = client.get("/api/v1/analytics/matrix").json()["rows"]
     assert [row["standard_job_title"] for row in rows] == ["B", "A"]
-    assert Decimal(rows[0]["row_amount"]) == Decimal("100.00")
+    assert Decimal(rows[0]["row_amount"]) == Decimal("100.91")
+    assert Decimal(rows[1]["row_amount"]) == Decimal("100.00")
+
+
+def test_row_amount_is_partial_and_flagged_when_a_base_is_unknown(client, factories, db_session):
+    """`SUM` игнорирует NULL: без признака неполная сумма выглядела бы полной."""
+    factories.priced_estimate(
+        catalog_title="A", contract_number="C-1", unit_cost_total=Decimal("120"),
+        weight=Decimal("1"), vat_rate=Decimal("20"),
+    )
+    factories.priced_estimate(
+        catalog_title="A", contract_number="C-2", unit_cost_total=Decimal("500"),
+        weight=Decimal("1"), vat_rate=None,
+    )
+    db_session.commit()
+    row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+    assert Decimal(row["row_amount"]) == Decimal("100.00")
+    assert row["row_amount_incomplete"] is True
+
+
+def test_row_amount_is_empty_when_every_base_is_unknown(client, factories, db_session):
+    """Пусто, а не ноль: ноль читался бы как «работы на ноль рублей»."""
+    factories.priced_estimate(
+        catalog_title="A", unit_cost_total=Decimal("500"), weight=Decimal("1"), vat_rate=None
+    )
+    factories.priced_estimate(
+        catalog_title="B", unit_cost_total=Decimal("120"), weight=Decimal("1"),
+        vat_rate=Decimal("20"),
+    )
+    db_session.commit()
+    rows = client.get("/api/v1/analytics/matrix").json()["rows"]
+    assert rows[-1]["standard_job_title"] == "A"     # NULLS LAST
+    assert rows[-1]["row_amount"] is None
+    assert rows[-1]["row_amount_incomplete"] is True
 
 
 def test_matrix_yields_one_cell_per_position_and_contract(client, factories, db_session):
@@ -1101,10 +1173,23 @@ DEVIATION_INPUTS = sa.table(
 DEVIATIONS = DEVIATION_INPUTS
 ```
 
-- [ ] **Шаг 7: переписать ячейки матрицы на нетто**
+- [ ] **Шаг 7: переписать ячейки матрицы на нетто — по результату замера Б**
 
-SQL агрегирует до базы — уровня постоянного множителя; ставку и отклонение
-считает Python.
+**Этот шаг условен.** Механизм выбирает замер Б задачи 0, а не план. Ниже записан
+вариант «группировка»; если замер выбрал `VALUES`, меняется **только** этот шаг,
+и меняется точечно:
+
+| Что | Группировка (ниже) | `VALUES` |
+|---|---|---|
+| источник множителя | колонка `vat_rate_base` из VIEW | список `(proposal_id, factor)`, построенный Python из тех же баз |
+| `GROUP BY` | + `vat_rate_base` | + `f.factor` |
+| свод в Python | `_fold_cell` по группам базы | `_fold_cell` по группам множителя |
+
+Миграция, модель, отражение VIEW, `_NET_WEIGHT` и паспорт фазы 6 от выбора **не
+зависят**: `vat_rate_base` нужен VIEW в обоих случаях — его читают `crud/reports.py`
+и паспорт проекта. Поэтому шаги 4–6 и 8–9 исполняются одинаково.
+
+SQL агрегирует до уровня постоянного множителя; ставку и отклонение считает Python.
 
 ```python
 # backend/crud/analytics.py
@@ -1175,22 +1260,38 @@ def _deviation(net_rate, standard):
     return (net_rate / standard - 1) * 100
 ```
 
-- [ ] **Шаг 8: вес строки — единственное нетто-выражение в SQL, пришпиленное тестом**
+- [ ] **Шаг 8: вес строки — единственное нетто-выражение в SQL, с признаком неполноты**
 
-Сортировка и пагинация идут в SQL, поэтому нетто-вес строки считается там же.
-Это названное отступление от §2.6, и его расхождение с Python ловится тестом:
+Сортировка и пагинация идут в SQL, поэтому нетто-вес строки считается там же
+(исключение §2.6 спеки). Молчаливой частичной суммы при этом быть не должно:
+`SUM` игнорирует `NULL`, и строка, часть ячеек которой без базы, выглядела бы
+полной. Неполнота объявляется отдельным булевым признаком, вес — `NULLS LAST`.
 
 ```python
 # backend/crud/analytics.py — вес строки матрицы
-_NET_WEIGHT = (
-    sa.func.sum(
-        DEVIATION_INPUTS.c.unit_cost_total
-        * DEVIATION_INPUTS.c.weight
-        * 100
-        / (100 + DEVIATION_INPUTS.c.vat_rate_base)
-    )
+#: Единственное нетто-выражение в SQL (исключение §2.6): `row_amount` служит
+#: ключом ORDER BY и пагинации и одновременно показывается. Пришпилено к
+#: `money.vat.gross_to_net` тестом — две площадки одного правила обязаны
+#: совпадать, и расхождение падает в CI, а не проявляется на стенде.
+_NET_WEIGHT = sa.func.sum(
+    DEVIATION_INPUTS.c.unit_cost_total
+    * DEVIATION_INPUTS.c.weight
+    * 100
+    / (100 + DEVIATION_INPUTS.c.vat_rate_base)
 )
+
+#: Признак неполноты: хотя бы одна строка без базы вошла бы в `SUM` как
+#: пропуск, а не как ноль, и сумма выглядела бы полной.
+_WEIGHT_INCOMPLETE = sa.func.bool_or(DEVIATION_INPUTS.c.vat_rate_base.is_(None))
 ```
+
+```python
+# backend/crud/analytics.py — сортировка строк
+    .order_by(page_rows.c.row_amount.desc().nullslast(), page_rows.c.catalog_position_id.asc())
+```
+
+Пустой вес при полностью неизвестной базе оставляется пустым: `COALESCE(…, 0)`
+увёл бы строку в середину сортировки и читался бы как «работы на ноль рублей».
 
 ```python
 # backend/tests/integration/test_analytics_api.py
