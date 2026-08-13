@@ -226,9 +226,10 @@ def test_rollup_invariant_holds_on_the_whole_tree(db_session, factories):
         extra_amount = db_session.execute(
             sa.text(
                 "SELECT amount FROM v_category_totals "
-                "WHERE estimate_id = :eid AND work_category_id = :cid AND source = 'additional_works'"
+                "WHERE estimate_id = :eid AND proposal_id = :pid AND work_category_id = :cid "
+                "AND source = 'additional_works'"
             ),
-            {"eid": estimate_id, "cid": node["id"]},
+            {"eid": estimate_id, "pid": proposal.id, "cid": node["id"]},
         ).scalar_one_or_none()
 
         children_totals = [
@@ -245,6 +246,37 @@ def test_rollup_invariant_holds_on_the_whole_tree(db_session, factories):
             checked_all_three = True
 
     assert checked_all_three
+
+
+def test_direct_totals_accumulate_across_two_proposals(db_session, factories):
+    """Смета с ДВУМЯ предложениями: сумма статьи обязана быть суммой ПО ОБОИМ
+    (задача 3 пересчёта НДС, §3 приложения оркестратора).
+
+    С миграцией 0012 `v_category_totals` группируется ещё и по `proposal_id`, то
+    есть на статью со сметой из нескольких предложений придёт несколько строк.
+    `_direct_totals` обязана НАКАПЛИВАТЬ их, а не присваивать (присваивание молча
+    оставило бы только последнее предложение — сегодняшние фикстуры этого не
+    ловят, потому что у них ровно одно предложение на смету)."""
+    category = _category(db_session, "1")
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(lot=lot_1, contractor=contract.contractor)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=contract.contractor)
+    chapter_1 = _chapter(factories, proposal_1, category_id=category.id)
+    chapter_2 = _chapter(factories, proposal_2, category_id=category.id)
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("2000.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own"] == Decimal("3000.00")
+    assert node["own_rows"] == 2
+    assert node["own_rows_priced"] == 2
+    assert node["own_rows_not_finite"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -706,9 +738,9 @@ def test_extras_of_a_node_sum_to_the_view_branch(db_session, factories):
     oracle = db_session.execute(
         sa.text(
             "SELECT amount FROM v_category_totals WHERE estimate_id = :eid "
-            "AND work_category_id = :cid AND source = 'additional_works'"
+            "AND proposal_id = :pid AND work_category_id = :cid AND source = 'additional_works'"
         ),
-        {"eid": estimate_id, "cid": category.id},
+        {"eid": estimate_id, "pid": proposal.id, "cid": category.id},
     ).scalar_one()
 
     result = get_project_passport(db_session, proposal.lot.estimate.contract_id)

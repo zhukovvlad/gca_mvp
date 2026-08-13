@@ -85,9 +85,25 @@ def _rows_for_estimate(session, estimate_id: int) -> list[sa.RowMapping]:
     )
 
 
-def _row(rows: list[sa.RowMapping], *, work_category_id, source: str) -> sa.RowMapping:
-    matches = [r for r in rows if r["work_category_id"] == work_category_id and r["source"] == source]
-    assert len(matches) == 1, (work_category_id, source, rows)
+def _row(
+    rows: list[sa.RowMapping], *, work_category_id, source: str, proposal_id=None
+) -> sa.RowMapping:
+    """Одна строка VIEW по (статья, источник) — и по предложению, если задано.
+
+    С миграцией 0012 VIEW группируется ещё и по `proposal_id`/`vat_rate_base`
+    (задача 3 пересчёта НДС): на статью со сметой из нескольких предложений
+    придёт несколько строк. Файл тестирует смету с ОДНИМ предложением везде,
+    поэтому `len(matches) == 1` остаётся истинным и без фильтра по предложению —
+    но `proposal_id`, будучи передан, защищает инвариант явно, а не по умолчанию.
+    """
+    matches = [
+        r
+        for r in rows
+        if r["work_category_id"] == work_category_id
+        and r["source"] == source
+        and (proposal_id is None or r["proposal_id"] == proposal_id)
+    ]
+    assert len(matches) == 1, (work_category_id, source, proposal_id, rows)
     return matches[0]
 
 

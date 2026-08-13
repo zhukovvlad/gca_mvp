@@ -448,6 +448,17 @@ class Estimate(Base):
     import_job_id = Column(
         BigInteger, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True
     )
+    # Ручные ставки НДС (спека пересчёта §2.1). Решение человека о СМЕТЕ, а не
+    # факт файла: `proposals.vat_rate` остаётся неприкосновенным. База
+    # перекрываема всегда, в том числе поверх заявленной файлом, — файл умеет
+    # ошибиться, и это обязано лечиться приложением.
+    vat_rate_base_override = Column(Numeric, nullable=True)
+    vat_rate_target = Column(Numeric, nullable=True)
+    # `users.id` — integer, не bigint; тип повторяет его (то же, что в 0011).
+    vat_rate_updated_by_id = Column(
+        Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    vat_rate_updated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -461,6 +472,15 @@ class Estimate(Base):
     __table_args__ = (
         CheckConstraint(
             "amendment_no IS NULL OR amendment_no > 0", name="ck_estimates_amendment_no"
+        ),
+        CheckConstraint(
+            "vat_rate_base_override IS NULL "
+            "OR (vat_rate_base_override >= 0 AND vat_rate_base_override <= 100)",
+            name="ck_estimates_vat_rate_base_override",
+        ),
+        CheckConstraint(
+            "vat_rate_target IS NULL OR (vat_rate_target >= 0 AND vat_rate_target <= 100)",
+            name="ck_estimates_vat_rate_target",
         ),
         # Отдельного индекса по contract_id нет намеренно: выборки по договору
         # обслуживает uq_estimates_contract_amendment — полный уникальный индекс

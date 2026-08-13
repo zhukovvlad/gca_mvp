@@ -29,6 +29,7 @@ import sqlalchemy as sa
 
 from crud.analytics import DECLARED_VIEW_COLUMNS
 from models import PASSPORT_TOP_N_DEFAULT, CatalogKind
+from money.vat import gross_to_net, quantize_money
 
 pytestmark = pytest.mark.integration
 
@@ -43,13 +44,25 @@ def _estimate_with(
     contract=None,
     amendment_no=None,
     estimate_date=dt.date(2025, 4, 1),
+    vat_rate=Decimal("0"),
 ):
+    """Цепочка договор → смета → лот → предложение.
+
+    `vat_rate` по умолчанию `0` (задача 3 пересчёта НДС): при базе 0 % нетто
+    численно равно валовому (`gross_to_net(x, 0) == x`), поэтому все тесты этого
+    файла, писавшиеся ДО перевода матрицы и паспорта на нетто-ось и не
+    указывавшие ставку явно, продолжают проверять те же значения — без ставки
+    НДС проверять здесь нечего, это дело `test_matrix_cell_rate_is_net_of_
+    declared_vat` и соседних тестов пересчёта.
+    """
     contract = contract or factories.ContractFactory.create()
     estimate = factories.EstimateFactory.create(
         contract=contract, amendment_no=amendment_no, data_prepared_on_date=estimate_date
     )
     lot = factories.LotFactory.create(estimate=estimate)
-    proposal = factories.ProposalFactory.create(lot=lot, contractor=contract.contractor)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
     return contract, estimate, proposal
 
 
@@ -63,6 +76,95 @@ def _position(factories, proposal, position, *, unit_cost, weight, total=None):
         quantity=Decimal("1"),
         total_cost_total=Decimal(total) if total is not None else Decimal(unit_cost) * Decimal(weight),
     )
+
+
+# ---------------------------------------------------------------------------
+#  Помощники нетто-оси (задача 3 пересчёта НДС): построены на `_estimate_with`/
+#  `_position` — фабрик `factories.priced_estimate(...)` в проекте НЕТ, составные
+#  строители живут локальными хелперами тестового файла (см. приложение
+#  оркестратора к брифу задачи).
+# ---------------------------------------------------------------------------
+
+def _find_catalog_position(factories, title: str | None):
+    if title is None:
+        return factories.CatalogPositionFactory.create()
+    from models import CatalogPosition
+
+    session = factories._session_holder["session"]
+    existing = session.query(CatalogPosition).filter_by(standard_job_title=title).first()
+    return existing or factories.CatalogPositionFactory.create(standard_job_title=title)
+
+
+def _find_contract(factories, contract_number: str | None):
+    if contract_number is None:
+        return factories.ContractFactory.create()
+    from models import Contract
+
+    session = factories._session_holder["session"]
+    existing = session.query(Contract).filter_by(contract_number=contract_number).first()
+    return existing or factories.ContractFactory.create(contract_number=contract_number)
+
+
+def _priced_estimate(
+    factories,
+    *,
+    unit_cost_total=None,
+    vat_rate=None,
+    weight=Decimal("1"),
+    catalog_title=None,
+    contract_number=None,
+    positions=None,
+):
+    """Смета с расценённой(ыми) позицией(ями), одна ставка НДС на предложение.
+
+    `catalog_title`/`contract_number`, повторённые между вызовами, переиспользуют
+    ту же каталожную строку/договор — так собираются несколько предложений на
+    одну пару (работа, договор), нужные тестам ячейки и веса строки.
+
+    `positions=[(unit_cost, vat_rate), ...]` заводит НЕСКОЛЬКО предложений (лотов)
+    под одним договором/сметой — по одному на пару, поскольку ставка НДС живёт на
+    предложении (`proposals.vat_rate`), а не на позиции.
+    """
+    contract = _find_contract(factories, contract_number)
+    estimate = factories.EstimateFactory.create(contract=contract)
+    position = _find_catalog_position(factories, catalog_title)
+
+    pairs = positions if positions is not None else [(unit_cost_total, vat_rate)]
+    for cost, rate in pairs:
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=rate
+        )
+        _position(factories, proposal, position, unit_cost=cost, weight=weight)
+    return contract, estimate, position
+
+
+def _priced_estimate_with_two_proposals(factories, *, unit_cost_total, vat_rates, weight=Decimal("1")):
+    return _priced_estimate(
+        factories,
+        positions=[(unit_cost_total, rate) for rate in vat_rates],
+        weight=weight,
+    )
+
+
+def _contract_with_standard(factories, *, unit_cost_total, vat_rate, standard, weight=Decimal("1")):
+    """Смета с одной расценённой позицией и нормативом на её класс.
+
+    `catalog_position_id` кладётся на возвращённый `contract` — удобство ТОЛЬКО
+    для тестов этого файла (у ORM-модели `Contract` такого атрибута нет), чтобы
+    вызывающему не пришлось тащить третий возврат ради одного id.
+    """
+    contract, estimate, position = _priced_estimate(
+        factories, unit_cost_total=unit_cost_total, vat_rate=vat_rate, weight=weight
+    )
+    factories.RateStandardFactory.create(
+        catalog_position=position,
+        rate_class=contract.rate_class,
+        standard_unit_rate=standard,
+        valid_from=dt.date(2025, 1, 1),
+    )
+    contract.catalog_position_id = position.id
+    return contract
 
 
 def _passport(client, contract_id: int) -> dict:
@@ -86,7 +188,9 @@ def _cell_of(row: dict, contract_id: int) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def test_declared_view_columns_match_the_database(db_session):
-    """`crud.analytics.DEVIATIONS` — объявление руками, VIEW создан raw SQL в 0002.
+    """`crud.analytics.DEVIATION_INPUTS` — объявление руками, VIEW создан raw SQL
+    в 0002 и переименован (лишён `deviation_pct`, обзавёлся базой/целью НДС)
+    миграцией 0012.
 
     `alembic check` их не сверяет (VIEW не в `Base.metadata`), поэтому расхождение
     поймает только этот тест: переименованная в миграции колонка иначе проявилась бы
@@ -96,7 +200,7 @@ def test_declared_view_columns_match_the_database(db_session):
         db_session.execute(
             sa.text(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'v_position_deviations' ORDER BY ordinal_position"
+                "WHERE table_name = 'v_position_deviation_inputs' ORDER BY ordinal_position"
             )
         ).scalars()
     )
@@ -398,14 +502,21 @@ class TestMatrixSemantics:
         assert cell["standard_unit_rate"] is None
 
     def test_cell_money_is_string(self, client, factories):
-        """§3 в каждой ячейке — в матрице денег больше всего."""
+        """§3 в каждой ячейке — в матрице денег больше всего.
+
+        Значение округлено до копеек (`quantize_money` на границе ответа, задача 3
+        пересчёта НДС: ячейка теперь нетто-величина, а не сырое деление) — тест
+        проверяет ТИП (`Decimal`, не float) и точность округлённого результата, а
+        не сохранение исходных шести знаков после запятой, которого больше нет ни
+        у одного пересчитанного денежного поля.
+        """
         contract, _estimate, proposal = _estimate_with(factories)
         position = factories.CatalogPositionFactory.create()
         _position(factories, proposal, position, unit_cost="1234567.891234", weight="1")
 
         cell = _cell_of(_matrix(client)["rows"][0], contract.id)
         assert isinstance(cell["rate"], str)
-        assert Decimal(cell["rate"]) == Decimal("1234567.891234")
+        assert Decimal(cell["rate"]) == Decimal("1234567.89")
 
 
 class TestMatrixColumnsAndPaging:
@@ -813,3 +924,194 @@ class TestPendingReviewIsExplained:
         # Вне выборки неразобранная позиция есть, внутри — нет.
         assert _matrix(client)["positions_pending_review"] == 1
         assert _matrix(client, rate_class_id=kept_class.id)["positions_pending_review"] == 0
+
+
+# ---------------------------------------------------------------------------
+#  Нетто-ось матрицы и паспорта (задача 3 пересчёта НДС, спека §2.4, §6)
+# ---------------------------------------------------------------------------
+
+class TestMatrixNetAxis:
+    def test_matrix_cell_rate_is_net_of_declared_vat(self, client, factories, db_session):
+        _priced_estimate(factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"))
+        db_session.commit()
+        cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+        assert Decimal(cell["rate"]) == Decimal("100.00")
+
+    def test_matrix_cell_amount_is_net(self, client, factories, db_session):
+        _priced_estimate(
+            factories, unit_cost_total=Decimal("120"), weight=Decimal("2"), vat_rate=Decimal("20")
+        )
+        db_session.commit()
+        cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+        assert Decimal(cell["amount"]) == Decimal("200.00")
+
+    def test_matrix_row_amount_is_net_and_orders_rows(self, client, factories, db_session):
+        """СТРОГАЯ инверсия: валовым выше A, по нетто выше B.
+
+        Вход подобран так, что нетто НЕ совпадают, — иначе порядок решал бы
+        тай-брейк, и тест был бы зелёным и при валовой сортировке:
+          A: 122 при НДС 22 % -> нетто 100
+          B: 111 при НДС 10 % -> нетто 100.909...
+        """
+        _priced_estimate(
+            factories, catalog_title="A", unit_cost_total=Decimal("122"),
+            weight=Decimal("1"), vat_rate=Decimal("22"),
+        )
+        _priced_estimate(
+            factories, catalog_title="B", unit_cost_total=Decimal("111"),
+            weight=Decimal("1"), vat_rate=Decimal("10"),
+        )
+        db_session.commit()
+        rows = client.get("/api/v1/analytics/matrix").json()["rows"]
+        assert [row["job_title"] for row in rows] == ["B", "A"]
+        assert Decimal(rows[0]["row_amount"]) == Decimal("100.91")
+        assert Decimal(rows[1]["row_amount"]) == Decimal("100.00")
+
+    def test_row_amount_is_partial_and_flagged_when_a_base_is_unknown(
+        self, client, factories, db_session
+    ):
+        """`SUM` игнорирует NULL: без признака неполная сумма выглядела бы полной."""
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-1",
+            unit_cost_total=Decimal("120"), weight=Decimal("1"), vat_rate=Decimal("20"),
+        )
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-2",
+            unit_cost_total=Decimal("500"), weight=Decimal("1"), vat_rate=None,
+        )
+        db_session.commit()
+        row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+        assert Decimal(row["row_amount"]) == Decimal("100.00")
+        assert row["row_amount_incomplete"] is True
+
+    def test_row_amount_is_empty_when_every_base_is_unknown(self, client, factories, db_session):
+        """Пусто, а не ноль: ноль читался бы как «работы на ноль рублей»."""
+        _priced_estimate(
+            factories, catalog_title="A", unit_cost_total=Decimal("500"),
+            weight=Decimal("1"), vat_rate=None,
+        )
+        _priced_estimate(
+            factories, catalog_title="B", unit_cost_total=Decimal("120"),
+            weight=Decimal("1"), vat_rate=Decimal("20"),
+        )
+        db_session.commit()
+        rows = client.get("/api/v1/analytics/matrix").json()["rows"]
+        assert rows[-1]["job_title"] == "A"  # NULLS LAST
+        assert rows[-1]["row_amount"] is None
+        assert rows[-1]["row_amount_incomplete"] is True
+
+    def test_matrix_yields_one_cell_per_position_and_contract(self, client, factories, db_session):
+        """Группировка по базе не имеет права раздваивать ячейку."""
+        _priced_estimate_with_two_proposals(
+            factories, unit_cost_total=Decimal("120"), vat_rates=[Decimal("20"), Decimal("20")]
+        )
+        db_session.commit()
+        row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+        contract_ids = [cell["contract_id"] for cell in row["cells"]]
+        assert len(contract_ids) == len(set(contract_ids))
+
+    def test_matrix_cell_is_empty_without_vat_base(self, client, factories, db_session):
+        _priced_estimate(factories, unit_cost_total=Decimal("120"), vat_rate=None)
+        db_session.commit()
+        cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+        assert cell["rate"] is None
+        assert cell["deviation_reason"] == "unknown_vat_base"
+
+    def test_row_amount_excludes_partially_unknown_cell(self, client, factories, db_session):
+        """Ячейка с одной известной и одной неизвестной базой скрыта целиком —
+        значит её известная часть НЕ имеет права попасть в вес строки.
+
+        Без правила «единица неполноты — ячейка» сюда попало бы 100.00 от первой
+        позиции, и `row_amount` разошёлся бы с суммой показанных ячеек.
+        """
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-1",
+            positions=[(Decimal("120"), Decimal("20")), (Decimal("500"), None)],
+        )
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-2",
+            positions=[(Decimal("240"), Decimal("20"))],
+        )
+        db_session.commit()
+        row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+
+        hidden = next(c for c in row["cells"] if c["rate"] is None)
+        shown = next(c for c in row["cells"] if c["rate"] is not None)
+        assert hidden["deviation_reason"] == "unknown_vat_base"
+        assert Decimal(row["row_amount"]) == Decimal(shown["amount"])
+        assert row["row_amount_incomplete"] is True
+
+    def test_sql_net_weight_agrees_with_python(self, db_session, factories):
+        """Единственное нетто-выражение в SQL обязано совпадать с money.vat.
+
+        Отступление от §2.6 допущено ради сортировки и пагинации; расхождение двух
+        площадок ловится здесь, а не на стенде.
+        """
+        _priced_estimate(
+            factories, unit_cost_total=Decimal("120"), weight=Decimal("3"), vat_rate=Decimal("20")
+        )
+        db_session.commit()
+        from_sql = db_session.execute(
+            sa.text(
+                "SELECT SUM(unit_cost_total * weight * 100 / (100 + vat_rate_base)) "
+                "FROM v_position_deviation_inputs"
+            )
+        ).scalar()
+        from_python = gross_to_net(Decimal("120") * Decimal("3"), Decimal("20"))
+        assert quantize_money(from_sql) == quantize_money(from_python)
+
+
+class TestPassportNetAxis:
+    def test_phase6_passport_deviation_is_net_based(self, client, factories, db_session):
+        """Норматив — цена без НДС: 120 с НДС 20 % против норматива 100 дают 0 %."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        db_session.commit()
+        body = client.get(f"/api/v1/analytics/passport/{contract.id}").json()
+        assert Decimal(body["key_rates"][0]["deviation_pct"]) == Decimal("0")
+        assert body["totals"]["over_standard"] == 0
+
+
+class TestMatrixCellDrillDownNetAxis:
+    def test_matrix_cell_drilldown_survives_the_migration(self, client, factories, db_session):
+        """Ячейка и её drill-down обязаны сходиться: иначе человек, проверяя цифру,
+        складывает не то, что сложила система."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), weight=Decimal("2"),
+            vat_rate=Decimal("20"), standard=Decimal("100"),
+        )
+        db_session.commit()
+        body = client.get(
+            "/api/v1/analytics/matrix/cell",
+            params={
+                "contract_id": contract.id,
+                "catalog_position_id": contract.catalog_position_id,
+            },
+        ).json()
+
+        item = body["items"][0]
+        assert Decimal(item["unit_cost_total"]) == Decimal("120")  # валовое не тронуто
+        assert Decimal(item["unit_cost_net"]) == Decimal("100.00")
+        assert Decimal(item["vat_rate_base"]) == Decimal("20")
+        assert Decimal(item["deviation_pct"]) == Decimal("0")
+        assert item["deviation_reason"] is None
+
+    def test_matrix_cell_drilldown_without_base_reports_the_reason(
+        self, client, factories, db_session
+    ):
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+        )
+        db_session.commit()
+        item = client.get(
+            "/api/v1/analytics/matrix/cell",
+            params={
+                "contract_id": contract.id,
+                "catalog_position_id": contract.catalog_position_id,
+            },
+        ).json()["items"][0]
+        assert item["unit_cost_net"] is None
+        assert item["deviation_pct"] is None
+        assert item["deviation_reason"] == "unknown_vat_base"

@@ -46,18 +46,22 @@ from services.category_rollup import (
 #  VIEW прямых сумм по статьям как объект SQLAlchemy
 # ---------------------------------------------------------------------------
 
-#: `v_category_totals` создаётся raw SQL в миграции 0010 и потому невидим для
-#: `Base.metadata` — ровно как `v_position_deviations` фазы 2. Отражение
-#: объявлено здесь, чтобы запросы собирались `select()`-ом, а не склеивались из
-#: строк: строковый SQL не проверяется ничем до попадания в БД.
+#: `v_category_totals` создаётся raw SQL в миграции 0010 (регруппирован по
+#: предложению и его базовой ставке НДС миграцией 0012 — спека пересчёта §2.4) и
+#: потому невидим для `Base.metadata` — ровно как `v_position_deviation_inputs`
+#: фазы 2. Отражение объявлено здесь, чтобы запросы собирались `select()`-ом, а
+#: не склеивались из строк: строковый SQL не проверяется ничем до попадания в БД.
 #:
 #: Цена отражения — оно может разъехаться с настоящим VIEW. Это ловит
 #: `test_category_totals_view.py::test_declared_view_columns_match_the_database`,
-#: сверяя объявление с `information_schema`; без сверки переименованная в
-#: миграции колонка проявилась бы ошибкой выполнения на живом стенде.
+#: сверяя объявление с `information_schema` ПО ПОРЯДКУ КОЛОНОК — порядок здесь
+#: обязан совпасть с порядком в `CREATE VIEW` миграции 0012, иначе сверка падает
+#: сообщением про несовпадение кортежей, из которого причина не читается.
 CATEGORY_TOTALS = sa.table(
     "v_category_totals",
     sa.column("estimate_id", sa.BigInteger),
+    sa.column("proposal_id", sa.BigInteger),
+    sa.column("vat_rate_base", sa.Numeric),
     sa.column("work_category_id", sa.BigInteger),
     sa.column("source", sa.Text),
     sa.column("amount", sa.Numeric),
@@ -495,18 +499,38 @@ def _direct_totals(
     бы», но тогда юнит-тесты `build_tree` исполняли бы один тип, а продакшен —
     другой: объявленный контракт `Mapping[str, DirectTotals]` стал бы неправдой,
     а новое поле у `DirectTotals` упало бы только на живом стенде.
+
+    **НАКОПЛЕНИЕ, а не присваивание** (задача 3 пересчёта НДС, §3 приложения).
+    С миграцией 0012 VIEW группируется ещё и по `proposal_id`/`vat_rate_base`, то
+    есть на статью со сметой из НЕСКОЛЬКИХ предложений придёт НЕСКОЛЬКО строк.
+    Присваивание молча оставило бы только последнюю — на одном предложении (все
+    сегодняшние фикстуры) это было бы незаметно, а сумма статьи стала бы неверной
+    ровно там, где предложений больше одного (`test_direct_totals_accumulate_
+    across_two_proposals`). `amount` складывается через `_sum_known` — та же
+    NULL-семантика, что у остальной арифметики модуля: неизвестное слагаемое, а
+    не ноль.
     """
     rows = db.execute(
         sa.select(CATEGORY_TOTALS).where(CATEGORY_TOTALS.c.estimate_id == estimate_id)
     ).all()
     direct: dict[int | None, dict[str, DirectTotals]] = {}
     for row in rows:
-        direct.setdefault(row.work_category_id, {})[row.source] = DirectTotals(
-            amount=row.amount,
-            row_count=row.row_count,
-            rows_with_amount=row.rows_with_amount,
-            rows_not_finite=row.rows_not_finite,
-        )
+        bucket = direct.setdefault(row.work_category_id, {})
+        existing = bucket.get(row.source)
+        if existing is None:
+            bucket[row.source] = DirectTotals(
+                amount=row.amount,
+                row_count=row.row_count,
+                rows_with_amount=row.rows_with_amount,
+                rows_not_finite=row.rows_not_finite,
+            )
+        else:
+            bucket[row.source] = DirectTotals(
+                amount=_sum_known(existing.amount, row.amount),
+                row_count=existing.row_count + row.row_count,
+                rows_with_amount=existing.rows_with_amount + row.rows_with_amount,
+                rows_not_finite=existing.rows_not_finite + row.rows_not_finite,
+            )
     return direct
 
 

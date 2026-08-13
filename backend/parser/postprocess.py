@@ -18,7 +18,8 @@
 §5.2): в смете ГП предложения «Расчетная стоимость» нет, и
 `normalize_lots_json_structure` штатно подставляет заглушку и вычищает поля
 отклонений у подрядчика. Отклонения от норматива в GCA считает VIEW
-`v_position_deviations`, а `position_items.deviation_from_baseline_cost`
+`v_position_deviation_inputs` (переименован из `v_position_deviations`
+миграцией 0012), а `position_items.deviation_from_baseline_cost`
 остаётся NULL (AGENTS.md §4).
 """
 

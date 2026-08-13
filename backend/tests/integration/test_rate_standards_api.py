@@ -51,7 +51,7 @@ def _payload(position, rate_class, **extra) -> dict:
 
 def _deviation(db_session, item_id: int):
     row = db_session.execute(
-        sa.text("SELECT * FROM v_position_deviations WHERE position_item_id = :id"),
+        sa.text("SELECT * FROM v_position_deviation_inputs WHERE position_item_id = :id"),
         {"id": item_id},
     ).mappings().one()
     return row
@@ -487,7 +487,7 @@ def test_reapproval_does_not_change_deviation_of_an_older_estimate(
         },
     ).json()["id"]
 
-    assert _deviation(db_session, old_item.id)["deviation_pct"] == Decimal("20")
+    assert _deviation(db_session, old_item.id)["standard_unit_rate"] == Decimal("100.00")
 
     # Переутверждение с 2026-01-01: ставка выросла до 150.
     assert client.post(
@@ -496,12 +496,12 @@ def test_reapproval_does_not_change_deviation_of_an_older_estimate(
     ).status_code == 200
 
     db_session.expire_all()
-    # Старая смета сравнивается со старой ставкой — отклонение НЕ изменилось.
+    # Старая смета сравнивается со старой ставкой — норматив НЕ изменился
+    # (отклонение теперь считает Python от нетто, crud.analytics._deviation —
+    # само значение проверяют test_analytics_api.py/test_deviations_view.py).
     assert _deviation(db_session, old_item.id)["standard_unit_rate"] == Decimal("100.00")
-    assert _deviation(db_session, old_item.id)["deviation_pct"] == Decimal("20")
-    # Новая смета — с новой ставкой: 120/150 - 1 = -20%.
+    # Новая смета — с новой ставкой.
     assert _deviation(db_session, new_item.id)["standard_unit_rate"] == Decimal("150.00")
-    assert _deviation(db_session, new_item.id)["deviation_pct"] == Decimal("-20")
 
 
 # ---------------------------------------------------------------------------
