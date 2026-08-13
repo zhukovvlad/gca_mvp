@@ -303,6 +303,103 @@ class TestBankComparison:
         assert "Договоров:" in text
         assert "Составил" in text
 
+    def test_vat_axis_is_declared_on_the_sheet(self, client, factories):
+        """Спека §2.5: подпись ставки показа обязана быть на листе, и до «Периода».
+
+        Ревью задачи 4: строка была на листе, но её не читал ни один тест — исчезни
+        она молча, никто бы не заметил. Читатель обязан видеть, в чём измерены
+        числа, которые он складывает, ДО того как увидит саму таблицу.
+        """
+        self._two_classes(factories)
+        ws = _sheet(client.get("/api/v1/reports/bank-comparison"))
+
+        note_at, _ = _find_row(ws, lambda r: r[0] == "Все суммы и нормативы — без НДС")
+        period_at, _ = _find_row(
+            ws, lambda r: isinstance(r[0], str) and r[0].startswith("Период:")
+        )
+        assert note_at < period_at
+
+    def test_bank_report_converts_fact_to_net_across_different_vat_bases(self, client, factories):
+        """Задача 4: факт приводится к нетто по БАЗЕ каждой позиции — числовой замер.
+
+        Ревью задачи 4: весь класс `TestBankComparison` до этого теста гонялся на
+        ставке НДС по умолчанию (0 %), при которой `gross_to_net(x, 0) == x`
+        тождественно, — то есть центральная содержательная часть задачи (перевод
+        факта в нетто) не была проверена НИ ОДНИМ тестом. Перепутанные местами
+        аргументы `gross_to_net`, потерянная группировка по базе или подстановка
+        ставки 0 вместо настоящей базы оставили бы CI зелёным.
+
+        `unit_cost=120` при ставке 20 % и `unit_cost=112` при ставке 12 % дают ОДНО
+        и то же нетто — 100, при том же нормативе 100: обе работы обязаны показать
+        отклонение 0, а не валовые 120/112. Две РАЗНЫЕ ставки в одном классе
+        проверяют ещё и группировку по `vat_rate_base` внутри работы, а не только
+        единственный вызов `gross_to_net`.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс с реальным НДС")
+
+        contract20 = factories.ContractFactory.create(rate_class=rate_class)
+        _c1, _e1, p20 = _estimate_with(factories, contract=contract20, vat_rate=Decimal("20"))
+        work20 = factories.CatalogPositionFactory.create(standard_job_title="Ставка 20")
+        _position(factories, p20, work20, unit_cost="120", weight="10")
+        _standard(factories, work20, rate_class, "100")
+
+        contract12 = factories.ContractFactory.create(rate_class=rate_class)
+        _c2, _e2, p12 = _estimate_with(factories, contract=contract12, vat_rate=Decimal("12"))
+        work12 = factories.CatalogPositionFactory.create(standard_job_title="Ставка 12")
+        _position(factories, p12, work12, unit_cost="112", weight="10")
+        _standard(factories, work12, rate_class, "100")
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+
+        row20, _ = _find_row(ws, lambda r: r[0] == "Ставка 20")
+        assert Decimal(str(ws.cell(row=row20, column=4).value)) == Decimal("100")  # Ставка (нетто)
+        assert Decimal(str(ws.cell(row=row20, column=6).value)) == Decimal("1000")  # Стоимость
+        assert Decimal(str(ws.cell(row=row20, column=7).value)) == Decimal("0")  # Отклонение, %
+        assert Decimal(str(ws.cell(row=row20, column=8).value)) == Decimal("0")  # Отклонение, ₽
+
+        row12, _ = _find_row(ws, lambda r: r[0] == "Ставка 12")
+        assert Decimal(str(ws.cell(row=row12, column=4).value)) == Decimal("100")
+        assert Decimal(str(ws.cell(row=row12, column=6).value)) == Decimal("1000")
+        assert Decimal(str(ws.cell(row=row12, column=7).value)) == Decimal("0")
+        assert Decimal(str(ws.cell(row=row12, column=8).value)) == Decimal("0")
+
+    def test_row_order_has_a_deterministic_tiebreak(self, client, factories):
+        """Ревью задачи 4: равные суммы — порядок задаёт id работы, не жеребьёвка.
+
+        После перевода отчёта на нетто-ось сортировка строк класса переехала в
+        Python (общая сумма работы существует только ПОСЛЕ свёртки групп разных
+        баз НДС) и потеряла тай-брейк: без него порядок работ с равной суммой не
+        определён, и два прогона на одних данных могли бы дать разные файлы.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс равных сумм")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract)
+
+        first = factories.CatalogPositionFactory.create(standard_job_title="Работа А")
+        _position(factories, proposal, first, unit_cost="100", weight="10")
+        _standard(factories, first, rate_class, "100")
+
+        second = factories.CatalogPositionFactory.create(standard_job_title="Работа Б")
+        _position(factories, proposal, second, unit_cost="100", weight="10")
+        _standard(factories, second, rate_class, "100")
+
+        expected = (
+            ["Работа А", "Работа Б"] if first.id < second.id else ["Работа Б", "Работа А"]
+        )
+
+        for _ in range(3):
+            ws = _sheet(
+                client.get(
+                    "/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id}
+                )
+            )
+            a_at, _ = _find_row(ws, lambda r: r[0] == "Работа А")
+            b_at, _ = _find_row(ws, lambda r: r[0] == "Работа Б")
+            actual = ["Работа А", "Работа Б"] if a_at < b_at else ["Работа Б", "Работа А"]
+            assert actual == expected
+
     def test_work_appears_inside_its_class_section(self, client, factories):
         """Работа стоит в секции своего класса, а не где-нибудь на листе."""
         self._two_classes(factories)

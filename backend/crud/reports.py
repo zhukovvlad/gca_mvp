@@ -397,7 +397,16 @@ def _fold_bank_rows(group_rows) -> dict[int, list[dict]]:
         # fact_amount DESC` в SQL. Строки без сравнимой части (`comparable_amount
         # is None`) в видимый список всё равно не попадут (см. `kept` ниже),
         # поэтому их место в этой сортировке не важно.
-        bucket.sort(key=lambda r: r["comparable_amount"] or ZERO, reverse=True)
+        #
+        # Тай-брейк по `catalog_position_id` — та же причина, что у матрицы
+        # (`crud/analytics.py`, сортировка `row_amount.desc().nullslast()` +
+        # `catalog_position_id.asc()`): без него порядок работ с РАВНОЙ суммой
+        # ничем не определён, и два прогона на одних данных могли бы отдать
+        # разные файлы. Найдено ревью задачи 4 — до правки список сортировался
+        # только по сумме.
+        bucket.sort(
+            key=lambda r: (-(r["comparable_amount"] or ZERO), r["catalog_position_id"])
+        )
     return rows_by_class
 
 
