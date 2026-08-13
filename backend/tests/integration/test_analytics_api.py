@@ -27,7 +27,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from crud.analytics import DECLARED_VIEW_COLUMNS
+from crud.analytics import _NET_COST, DECLARED_VIEW_COLUMNS, DEVIATION_INPUTS
 from models import PASSPORT_TOP_N_DEFAULT, CatalogKind
 from money.vat import gross_to_net, quantize_money
 
@@ -1017,6 +1017,28 @@ class TestMatrixNetAxis:
         assert cell["rate"] is None
         assert cell["deviation_reason"] == "unknown_vat_base"
 
+    def test_matrix_cell_keeps_standard_unit_rate_without_vat_base(
+        self, client, factories, db_session
+    ):
+        """Норматив не гаснет вместе с ячейкой — отступление от текста плана в
+        пользу спеки (найдено ревью задачи 3): спека §2.5 говорит дословно
+        «норматив при неизвестной базе показывается как нетто; не вычисляется
+        только отклонение». Норматив от НДС не зависит и есть нетто по
+        определению, поэтому гасить его вместе с `rate`/`amount` значило бы
+        стирать разницу между «норматив есть, сравнить не с чем» и «норматива
+        нет вовсе» — а ради этой разницы и заведена пара кодов причины.
+        """
+        _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+        )
+        db_session.commit()
+        cell = client.get("/api/v1/analytics/matrix").json()["rows"][0]["cells"][0]
+        assert cell["rate"] is None
+        assert cell["amount"] is None
+        assert cell["deviation_pct"] is None
+        assert cell["deviation_reason"] == "unknown_vat_base"
+        assert Decimal(cell["standard_unit_rate"]) == Decimal("100")
+
     def test_row_amount_excludes_partially_unknown_cell(self, client, factories, db_session):
         """Ячейка с одной известной и одной неизвестной базой скрыта целиком —
         значит её известная часть НЕ имеет права попасть в вес строки.
@@ -1046,19 +1068,36 @@ class TestMatrixNetAxis:
 
         Отступление от §2.6 допущено ради сортировки и пагинации; расхождение двух
         площадок ловится здесь, а не на стенде.
+
+        SQL-сторона собирается ИЗ САМОГО `crud.analytics._NET_COST` — не
+        переписывается вручную строкой `sa.text(...)`. Ручная копия проверяла бы
+        третье, независимое выражение: расхождение между ПРОДАКШЕН-выражением и
+        `money.vat` осталось бы незамеченным, если бы разошлись именно они, а не
+        текст теста и `money.vat`.
+
+        ДВЕ одинаковые строки, а не одна: `100 / 120` не представимо конечной
+        десятичной дробью (83.333...), и сумма двух таких строк (166.666...)
+        округляется до 166.67 (ROUND_HALF_UP). Если бы округление до копеек
+        случайно попало ВНУТРЬ `_NET_COST` (на строку, а не на сумму), тот же вход
+        дал бы 83.33 + 83.33 = 166.66 — другое число. На одной строке эта разница
+        не проявилась бы: `round(x) == round(round(x))` тривиально, и первая
+        редакция теста (единственная строка, `120 × 3 / 120` = ровно `300`) её не
+        обнаруживала — снятием защиты подтверждено, см. отчёт задачи 3.
         """
         _priced_estimate(
-            factories, unit_cost_total=Decimal("120"), weight=Decimal("3"), vat_rate=Decimal("20")
+            factories,
+            positions=[(Decimal("100"), Decimal("20")), (Decimal("100"), Decimal("20"))],
+            weight=Decimal("1"),
         )
         db_session.commit()
         from_sql = db_session.execute(
-            sa.text(
-                "SELECT SUM(unit_cost_total * weight * 100 / (100 + vat_rate_base)) "
-                "FROM v_position_deviation_inputs"
-            )
+            sa.select(sa.func.sum(_NET_COST)).select_from(DEVIATION_INPUTS)
         ).scalar()
-        from_python = gross_to_net(Decimal("120") * Decimal("3"), Decimal("20"))
+        from_python = gross_to_net(Decimal("100"), Decimal("20")) + gross_to_net(
+            Decimal("100"), Decimal("20")
+        )
         assert quantize_money(from_sql) == quantize_money(from_python)
+        assert quantize_money(from_sql) == Decimal("166.67")
 
 
 class TestPassportNetAxis:

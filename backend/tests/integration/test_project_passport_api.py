@@ -256,7 +256,14 @@ def test_direct_totals_accumulate_across_two_proposals(db_session, factories):
     есть на статью со сметой из нескольких предложений придёт несколько строк.
     `_direct_totals` обязана НАКАПЛИВАТЬ их, а не присваивать (присваивание молча
     оставило бы только последнее предложение — сегодняшние фикстуры этого не
-    ловят, потому что у них ровно одно предложение на смету)."""
+    ловят, потому что у них ровно одно предложение на смету).
+
+    `own_rows_not_finite` намеренно НЕТРИВИАЛЬНО (не 0) и РАЗНОЕ у двух
+    предложений (1 у первого, 2 у второго): при присваивании результат зависел бы
+    от того, какая строка VIEW обработана последней (порядок строк без `ORDER BY`
+    не гарантирован), и был бы либо 1, либо 2 — но не 3. Только НАКОПЛЕНИЕ даёт
+    3 независимо от порядка строк, что и делает проверку детерминированной (ревью
+    задачи 3, доказано снятием защиты — см. отчёт)."""
     category = _category(db_session, "1")
     contract = factories.ContractFactory.create()
     estimate = factories.EstimateFactory.create(contract=contract)
@@ -267,15 +274,52 @@ def test_direct_totals_accumulate_across_two_proposals(db_session, factories):
     chapter_1 = _chapter(factories, proposal_1, category_id=category.id)
     chapter_2 = _chapter(factories, proposal_2, category_id=category.id)
     _position(factories, proposal_1, chapter=chapter_1, total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=Decimal("NaN"))
     _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("2000.00"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("Infinity"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("-Infinity"))
     db_session.flush()
 
     result = get_project_passport(db_session, contract.id)
     node = next(c for c in result["categories"] if c["id"] == category.id)
 
     assert node["own"] == Decimal("3000.00")
-    assert node["own_rows"] == 2
+    assert node["own_rows"] == 5
     assert node["own_rows_priced"] == 2
+    assert node["own_rows_not_finite"] == 3
+
+
+def test_direct_totals_stay_unknown_when_every_proposal_has_no_amount(db_session, factories):
+    """Обе строки VIEW (по одной на предложение) несут `amount IS NULL` — сумма
+    статьи обязана остаться `None` («данных нет»), а не превратиться в `0.00`
+    («работы на ноль рублей»), — та самая разница, которую проект держит
+    осознанно (спека §1.11: `amount is None` тогда и только тогда, когда
+    `rows_with_amount == 0`).
+
+    Замена `_sum_known(existing.amount, row.amount)` на `(existing.amount or 0) +
+    (row.amount or 0)` не роняет НИ ОДИН существующий тест (в них хотя бы одно
+    предложение всегда ценит хотя бы одну строку) — этот тест единственный,
+    вынуждающий ОБА операнда накопления быть `None` одновременно (ревью задачи 3,
+    доказано снятием защиты — см. отчёт)."""
+    category = _category(db_session, "1")
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(lot=lot_1, contractor=contract.contractor)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=contract.contractor)
+    chapter_1 = _chapter(factories, proposal_1, category_id=category.id)
+    chapter_2 = _chapter(factories, proposal_2, category_id=category.id)
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=None)
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=None)
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own"] is None
+    assert node["own_rows"] == 2
+    assert node["own_rows_priced"] == 0
     assert node["own_rows_not_finite"] == 0
 
 

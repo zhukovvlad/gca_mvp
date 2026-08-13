@@ -576,21 +576,47 @@ def _fold_cell(groups) -> dict:
     предложений — одна и та же база НДС (`test_matrix_yields_one_cell_per_
     position_and_contract`): группировка SQL их уже слила в одну строку.
 
-    Хотя бы одна неизвестная база делает ячейку пустой ЦЕЛИКОМ: показать
+    Хотя бы одна неизвестная база делает `rate`/`amount` пустыми ЦЕЛИКОМ: показать
     средневзвешенное по части строк значило бы выдать неполную величину за
     полную (та же логика, что у `row_amount_incomplete`, только на уровне ячейки).
+
+    **`standard_unit_rate` при этом НЕ гаснет** — отступление от буквального
+    текста плана в пользу спеки (задача 3 пересчёта НДС, найдено ревью): норматив
+    от НДС не зависит и есть нетто по определению (спека §2.5, «норматив при
+    неизвестной базе показывается как нетто; не вычисляется только отклонение»).
+    Гасить его значило бы стирать разницу между «норматив есть, сравнить не с
+    чем» (`unknown_vat_base`) и «норматива нет вовсе» (`no_standard`) — а ради
+    этой самой разницы и заведена пара кодов причины. Норматив берётся с ТЕКУЩЕЙ
+    группы, а не с накопленной по прошлым: в пределах одной пары (работа,
+    договор) дата сравнения и класс договора одни на все группы независимо от
+    базы (см. докстроку `_cell_groups_cte`), поэтому `standard_unit_rate` любой
+    группы этой пары — то же самое значение, и брать его из группы, на которой
+    сработал ранний выход, корректно независимо от порядка групп.
     """
     net_cost = Decimal(0)
     weight_total = Decimal(0)
     standard = None
     for group in groups:
-        if group.vat_rate_base is None or not group.weight_total:
+        if group.vat_rate_base is None:
             return {
                 "rate": None,
                 "amount": None,
-                "standard_unit_rate": None,
+                "standard_unit_rate": group.standard_unit_rate,
                 "deviation_pct": None,
                 "deviation_reason": "unknown_vat_base",
+            }
+        if not group.weight_total:
+            # Недостижимо сегодня: `_cell_groups_cte` фильтрует `weight > 0`, и
+            # группа не может существовать без хотя бы одной такой строки —
+            # SUM(weight) группы поэтому не бывает нулём/NULL. Оставлено защитой
+            # на случай будущей правки фильтра, с ПРАВИЛЬНОЙ (не заимствованной у
+            # соседней ветки) причиной — найдено ревью задачи 3.
+            return {
+                "rate": None,
+                "amount": None,
+                "standard_unit_rate": group.standard_unit_rate,
+                "deviation_pct": None,
+                "deviation_reason": "no_weight",
             }
         net_cost += gross_to_net(group.weighted_cost, group.vat_rate_base)
         weight_total += group.weight_total

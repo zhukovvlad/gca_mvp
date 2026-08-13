@@ -139,7 +139,7 @@ def test_chapter_rows_do_not_enter_the_sums(db_session, factories):
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=category.id, source=SOURCE_POSITIONS)
+    row = _row(rows, work_category_id=category.id, source=SOURCE_POSITIONS, proposal_id=proposal.id)
     assert row["amount"] == Decimal("1000.00")
     assert row["row_count"] == 1
 
@@ -151,7 +151,7 @@ def test_position_under_a_chapter_without_a_category_falls_into_null(db_session,
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS)
+    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS, proposal_id=proposal.id)
     assert row["amount"] == position.total_cost_total
 
 
@@ -163,7 +163,7 @@ def test_position_without_a_chapter_reference_falls_into_null(db_session, factor
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS)
+    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS, proposal_id=proposal.id)
     assert row["amount"] == position.total_cost_total
 
 
@@ -180,8 +180,12 @@ def test_additional_works_come_with_their_own_source(db_session, factories):
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    positions_row = _row(rows, work_category_id=category.id, source=SOURCE_POSITIONS)
-    additional_row = _row(rows, work_category_id=category.id, source=SOURCE_ADDITIONAL_WORKS)
+    positions_row = _row(
+        rows, work_category_id=category.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
+    additional_row = _row(
+        rows, work_category_id=category.id, source=SOURCE_ADDITIONAL_WORKS, proposal_id=proposal.id
+    )
     assert positions_row["amount"] == Decimal("1000.00")
     assert additional_row["amount"] == Decimal("500.00")
 
@@ -192,7 +196,7 @@ def test_additional_work_without_a_category_falls_into_null(db_session, factorie
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=None, source=SOURCE_ADDITIONAL_WORKS)
+    row = _row(rows, work_category_id=None, source=SOURCE_ADDITIONAL_WORKS, proposal_id=proposal.id)
     assert row["amount"] == Decimal("500.00")
 
 
@@ -214,8 +218,12 @@ def test_duplicate_chapter_numbers_do_not_double_the_money(db_session, factories
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row_6 = _row(rows, work_category_id=category_6.id, source=SOURCE_POSITIONS)
-    row_7 = _row(rows, work_category_id=category_7.id, source=SOURCE_POSITIONS)
+    row_6 = _row(
+        rows, work_category_id=category_6.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
+    row_7 = _row(
+        rows, work_category_id=category_7.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
     assert row_6["amount"] == Decimal("1000.00")
     assert row_6["row_count"] == 1
     assert row_7["amount"] == Decimal("2000.00")
@@ -238,8 +246,12 @@ def test_amount_is_null_exactly_when_no_row_entered_it(db_session, factories):
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row_a = _row(rows, work_category_id=category_a.id, source=SOURCE_POSITIONS)
-    row_b = _row(rows, work_category_id=category_b.id, source=SOURCE_POSITIONS)
+    row_a = _row(
+        rows, work_category_id=category_a.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
+    row_b = _row(
+        rows, work_category_id=category_b.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
 
     assert row_a["amount"] is not None
     assert row_a["rows_with_amount"] == 1
@@ -256,7 +268,7 @@ def test_row_without_a_price_counts_but_does_not_enter_the_amount(db_session, fa
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS)
+    row = _row(rows, work_category_id=None, source=SOURCE_POSITIONS, proposal_id=proposal.id)
     assert row["row_count"] == 1
     assert row["rows_with_amount"] == 0
     assert row["rows_not_finite"] == 0
@@ -278,7 +290,9 @@ def test_non_finite_value_does_not_poison_the_aggregate(db_session, factories, b
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=category.id, source=SOURCE_POSITIONS)
+    row = _row(
+        rows, work_category_id=category.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
     assert row["amount"] == Decimal("3000.00")
     assert row["amount"].is_finite()
     assert row["row_count"] == 3
@@ -298,7 +312,9 @@ def test_opposite_infinities_do_not_poison_the_aggregate(db_session, factories):
     db_session.flush()
 
     rows = _rows_for_estimate(db_session, proposal.lot.estimate.id)
-    row = _row(rows, work_category_id=category.id, source=SOURCE_POSITIONS)
+    row = _row(
+        rows, work_category_id=category.id, source=SOURCE_POSITIONS, proposal_id=proposal.id
+    )
     assert row["amount"] == Decimal("1000.00")
     assert row["amount"].is_finite()
     assert row["row_count"] == 3
