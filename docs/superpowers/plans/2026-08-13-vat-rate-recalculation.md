@@ -80,6 +80,8 @@ SQL, потому что он служит ключом `ORDER BY` и пагин
 
 **Files:**
 - Create: `docs/devlog/2026-08-13-vat-rate-recalculation.md` (раздел «Замеры»)
+- Create: `backend/scripts/measure_vat_aggregation.py` (замер Б, целиком ниже)
+- Create: `backend/scripts/__init__.py` (пустой)
 
 - [ ] **Шаг 1: замер А — лоты, предложения и ставки корпуса**
 
@@ -116,65 +118,133 @@ ORDER BY e.id;
    `0.8333333333` заранее уступает делению в кандидате 1 и по точности, и по
    скорости.
 
-Список `VALUES` генерируется скриптом, а не пишется руками:
+Скрипт строит оба запроса, сверяет их результаты и снимает оба плана:
 
 ```python
-# scripts/measure_b_values.py — печатает готовый VALUES для кандидата 2
+# backend/scripts/measure_vat_aggregation.py
+"""Замер Б нулевой задачи: группировка по базе против join на VALUES.
+
+Запуск (из backend/, стенд поднят):
+    uv run python -m scripts.measure_vat_aggregation
+
+Замер идёт ДО миграции 0012, поэтому `estimates.vat_rate_base_override` ещё не
+существует; эффективная база моделируется как `proposals.vat_rate`. На момент
+замера ручных поправок нет ни у одной сметы, так что это тождество, а не
+упрощение.
+"""
+from __future__ import annotations
+
 from decimal import Context, Decimal, localcontext
 
+import sqlalchemy as sa
+
+from database import SessionLocal
+
 HUNDRED = Decimal(100)
-rows = db.execute(sa.text("SELECT id, vat_rate FROM proposals ORDER BY id")).all()
-with localcontext(Context(prec=100)):
-    items = ", ".join(
-        f"({r.id}::bigint, {HUNDRED / (HUNDRED + r.vat_rate)}::numeric)"
-        for r in rows
-        if r.vat_rate is not None
-    )
-print(f"(VALUES {items}) AS f(proposal_id, factor)")
-```
+PRECISION = 100
 
-Кандидат 1 — группировка по базе, свод в Python:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT d.catalog_position_id, d.contract_id, p.vat_rate AS vat_rate_base,
+CANDIDATE_1 = """
+SELECT d.catalog_position_id, d.contract_id, p.vat_rate AS grouper,
        SUM(d.unit_cost_total * d.weight) AS weighted_cost,
        SUM(d.weight)                     AS weight_total
 FROM v_position_deviations d
 JOIN proposals p ON p.id = d.proposal_id
 WHERE d.weight > 0 AND p.vat_rate IS NOT NULL
-GROUP BY d.catalog_position_id, d.contract_id, p.vat_rate;
-```
+GROUP BY d.catalog_position_id, d.contract_id, p.vat_rate
+ORDER BY 1, 2, 3
+"""
 
-Кандидат 2 — join на `VALUES` с множителями из Python:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT d.catalog_position_id, d.contract_id, f.factor AS vat_factor,
+CANDIDATE_2_TEMPLATE = """
+SELECT d.catalog_position_id, d.contract_id, f.factor AS grouper,
        SUM(d.unit_cost_total * d.weight) AS weighted_cost,
        SUM(d.weight)                     AS weight_total
 FROM v_position_deviations d
-JOIN <вставить сгенерированный VALUES> ON f.proposal_id = d.proposal_id
+JOIN (VALUES {items}) AS f(proposal_id, factor) ON f.proposal_id = d.proposal_id
 WHERE d.weight > 0
-GROUP BY d.catalog_position_id, d.contract_id, f.factor;
+GROUP BY d.catalog_position_id, d.contract_id, f.factor
+ORDER BY 1, 2, 3
+"""
+
+
+def build_values(db) -> str:
+    """VALUES для ВСЕХ предложений с известной ставкой, полной точностью.
+
+    Обрезанный литерал вроде `0.8333333333` дал бы кандидату 2 фору по скорости
+    и проигрыш по точности — то есть сравнивались бы разные вычисления.
+    """
+    rows = db.execute(
+        sa.text("SELECT id, vat_rate FROM proposals WHERE vat_rate IS NOT NULL ORDER BY id")
+    ).all()
+    with localcontext(Context(prec=PRECISION)):
+        items = ", ".join(
+            f"({row.id}::bigint, {HUNDRED / (HUNDRED + row.vat_rate)}::numeric)" for row in rows
+        )
+    if not items:
+        raise SystemExit("На стенде нет ни одного предложения с заявленной ставкой НДС")
+    return items
+
+
+def volumes(db) -> None:
+    for label, query in (
+        ("позиций (не разделы)", "SELECT count(*) FROM position_items WHERE is_chapter = false"),
+        ("строк VIEW", "SELECT count(*) FROM v_position_deviations"),
+        ("предложений со ставкой", "SELECT count(*) FROM proposals WHERE vat_rate IS NOT NULL"),
+    ):
+        print(f"{label}: {db.execute(sa.text(query)).scalar_one()}")
+
+
+def compare(db, sql_1: str, sql_2: str) -> None:
+    """Сверка ДО сравнения планов: кандидаты обязаны делать одну и ту же работу.
+
+    Группирующая колонка у них разная по смыслу (ставка против множителя), но
+    разбиение она задаёт одно и то же, поэтому сравниваются число строк и
+    `weighted_cost` по ключу (работа, договор).
+    """
+    def by_cell(sql: str) -> dict:
+        result: dict[tuple[int, int], Decimal] = {}
+        for row in db.execute(sa.text(sql)):
+            key = (row.catalog_position_id, row.contract_id)
+            result[key] = result.get(key, Decimal(0)) + row.weighted_cost
+        return result
+
+    first, second = by_cell(sql_1), by_cell(sql_2)
+    print(f"ключей: кандидат 1 — {len(first)}, кандидат 2 — {len(second)}")
+    if first != second:
+        differing = [key for key in first.keys() | second.keys() if first.get(key) != second.get(key)]
+        raise SystemExit(
+            f"Кандидаты расходятся на {len(differing)} ключах — сравнивать планы "
+            f"бессмысленно, они делают разную работу. Примеры: {differing[:5]}"
+        )
+    print("результаты совпадают — планы сопоставимы")
+
+
+def explain(db, sql: str, label: str) -> None:
+    print(f"\n=== EXPLAIN {label} ===")
+    for line in db.execute(sa.text(f"EXPLAIN (ANALYZE, BUFFERS) {sql}")):
+        print(line[0])
+
+
+def main() -> None:
+    with SessionLocal() as db:
+        volumes(db)
+        candidate_2 = CANDIDATE_2_TEMPLATE.format(items=build_values(db))
+        compare(db, CANDIDATE_1, candidate_2)
+        explain(db, CANDIDATE_1, "кандидат 1 — группировка по базе")
+        explain(db, candidate_2, "кандидат 2 — join на VALUES")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-**Гранулярность у обоих одинакова**: строка на (работа, договор, множитель), и в
-обоих случаях свод делает Python. Кандидаты различаются только тем, **откуда
-берётся множитель** — из колонки или из переданного списка.
-
-Проверить это до сравнения планов: оба запроса обязаны вернуть **одинаковое число
-строк** и совпадающие `weighted_cost` по каждой строке. Разошлось — сравнивать
-планы бессмысленно, кандидаты делают разную работу.
-
-Записать для обоих: время, `Buffers: shared hit/read`, форму соединения. Плюс
-объёмы:
-
-```sql
-SELECT count(*) FROM position_items WHERE is_chapter = false;
-SELECT count(*) FROM v_position_deviations;
-SELECT count(*) FROM proposals WHERE vat_rate IS NOT NULL;
+```bash
+cd backend && uv run python -m scripts.measure_vat_aggregation | tee ../docs/devlog/measure-b.txt
 ```
+
+**Гранулярность у обоих одинакова**: строка на (работа, договор, группирующая
+величина), и в обоих случаях свод делает Python. Кандидаты различаются только тем,
+**откуда берётся множитель** — из колонки или из переданного списка. Скрипт
+отказывается сравнивать планы, если результаты разошлись.
 
 **Выбор фиксируется в devlog числами и определяет шаги 7–8 задачи 3.** У кандидата 2
 есть свойство вне плана запроса: список предложений строится в Python и растёт
@@ -1260,38 +1330,156 @@ def _deviation(net_rate, standard):
     return (net_rate / standard - 1) * 100
 ```
 
-- [ ] **Шаг 8: вес строки — единственное нетто-выражение в SQL, с признаком неполноты**
+- [ ] **Шаг 8: вес строки — по ЯЧЕЙКАМ, а не по строкам VIEW**
 
 Сортировка и пагинация идут в SQL, поэтому нетто-вес строки считается там же
-(исключение §2.6 спеки). Молчаливой частичной суммы при этом быть не должно:
-`SUM` игнорирует `NULL`, и строка, часть ячеек которой без базы, выглядела бы
-полной. Неполнота объявляется отдельным булевым признаком, вес — `NULLS LAST`.
+(исключение §2.6 спеки). Две ловушки, и обе закрываются одной раскладкой.
+
+**Первая: единица неполноты — ячейка, а не строка VIEW.** `_fold_cell` скрывает
+ячейку **целиком**, если хотя бы у одной её позиции база неизвестна. Суммируй мы
+нетто по строкам VIEW, известная часть скрытой ячейки всё равно попала бы в
+`row_amount`, и вес строки перестал бы сходиться с суммой показанных `cell.amount`.
+
+**Вторая: `SUM` игнорирует `NULL`.** Без явного признака частичная сумма выглядела
+бы полной.
+
+Отсюда двухуровневая агрегация: сначала ячейка, потом строка.
 
 ```python
-# backend/crud/analytics.py — вес строки матрицы
+# backend/crud/analytics.py
 #: Единственное нетто-выражение в SQL (исключение §2.6): `row_amount` служит
 #: ключом ORDER BY и пагинации и одновременно показывается. Пришпилено к
 #: `money.vat.gross_to_net` тестом — две площадки одного правила обязаны
 #: совпадать, и расхождение падает в CI, а не проявляется на стенде.
-_NET_WEIGHT = sa.func.sum(
+_NET_COST = (
     DEVIATION_INPUTS.c.unit_cost_total
     * DEVIATION_INPUTS.c.weight
     * 100
     / (100 + DEVIATION_INPUTS.c.vat_rate_base)
 )
 
-#: Признак неполноты: хотя бы одна строка без базы вошла бы в `SUM` как
-#: пропуск, а не как ноль, и сумма выглядела бы полной.
-_WEIGHT_INCOMPLETE = sa.func.bool_or(DEVIATION_INPUTS.c.vat_rate_base.is_(None))
+
+def _cell_weights_cte(scope_filters: list):
+    """Нетто-вес КАЖДОЙ ячейки и признак её невычислимости.
+
+    Гранулярность — ячейка (работа × договор), та же, что у `_fold_cell`: вес
+    строки обязан сходиться с суммой показанных ячеек, а показывается ячейка
+    только целиком.
+    """
+    latest = latest_estimates()
+    return (
+        sa.select(
+            DEVIATION_INPUTS.c.catalog_position_id.label("catalog_position_id"),
+            DEVIATION_INPUTS.c.contract_id.label("contract_id"),
+            sa.func.sum(_NET_COST).label("cell_net"),
+            sa.func.bool_or(DEVIATION_INPUTS.c.vat_rate_base.is_(None)).label("cell_unknown"),
+        )
+        .select_from(
+            DEVIATION_INPUTS.join(latest, latest.c.estimate_id == DEVIATION_INPUTS.c.estimate_id)
+        )
+        .where(DEVIATION_INPUTS.c.weight > 0, *scope_filters)
+        .group_by(DEVIATION_INPUTS.c.catalog_position_id, DEVIATION_INPUTS.c.contract_id)
+        .cte("cell_weights")
+    )
 ```
 
 ```python
-# backend/crud/analytics.py — сортировка строк
-    .order_by(page_rows.c.row_amount.desc().nullslast(), page_rows.c.catalog_position_id.asc())
+# backend/crud/analytics.py, get_matrix — row_totals строится на ячейках
+    cell_weights = _cell_weights_cte(filters)
+    row_totals = (
+        sa.select(
+            cell_weights.c.catalog_position_id.label("catalog_position_id"),
+            # В вес входят ТОЛЬКО вычислимые ячейки — те, что видит аналитик.
+            sa.func.sum(
+                sa.case((cell_weights.c.cell_unknown.is_(False), cell_weights.c.cell_net))
+            ).label("row_amount"),
+            sa.func.bool_or(cell_weights.c.cell_unknown).label("row_amount_incomplete"),
+        )
+        .group_by(cell_weights.c.catalog_position_id)
+        .cte("row_totals")
+    )
 ```
 
-Пустой вес при полностью неизвестной базе оставляется пустым: `COALESCE(…, 0)`
-увёл бы строку в середину сортировки и читался бы как «работы на ноль рублей».
+- [ ] **Шаг 9: провести признак до экрана — пять мест, ни одного пропуска**
+
+Скрытый булев признак в JSON от «молчаливой» суммы не спасает: аналитик обязан
+**видеть** маркер. Проводка идёт до конца, и каждое место названо.
+
+```python
+# 1) backend/crud/analytics.py, row_base (строки 601-613) — вынести колонку
+    row_base = sa.select(
+        row_totals.c.catalog_position_id,
+        row_totals.c.row_amount,
+        row_totals.c.row_amount_incomplete,
+        CatalogPosition.standard_job_title,
+        UnitOfMeasure.code.label("unit_code"),
+    )...
+
+# 2) backend/crud/analytics.py, page_rows (строка 625) — NULLS LAST
+    .order_by(
+        row_totals.c.row_amount.desc().nullslast(),
+        row_totals.c.catalog_position_id.asc(),
+    )
+
+# 3) backend/crud/analytics.py, итоговый SELECT (строки 631-651)
+        page_rows.c.row_amount_incomplete,
+
+# 4) backend/crud/analytics.py, _shape_matrix_rows (строка 716-722)
+            row = {
+                "catalog_position_id": r.catalog_position_id,
+                "job_title": r.standard_job_title,
+                "unit_code": r.unit_code,
+                "row_amount": r.row_amount,
+                "row_amount_incomplete": r.row_amount_incomplete,
+                "cells": [],
+            }
+```
+
+Пятое место — `_shape_matrix_rows` теперь получает **несколько строк на ячейку**
+(группировка по базе), и складывать их обязан `_fold_cell`, а не `append` подряд:
+
+```python
+# 5) backend/crud/analytics.py, _shape_matrix_rows — ячейки собираются группами
+    groups: dict[tuple[int, int], list] = {}
+    for r in rows:
+        groups.setdefault((r.catalog_position_id, r.contract_id), []).append(r)
+    for (catalog_position_id, contract_id), cell_groups in groups.items():
+        shaped[catalog_position_id]["cells"].append(
+            {"contract_id": contract_id, **_fold_cell(cell_groups)}
+        )
+```
+
+`COALESCE(…, 0)` в вес не ставится: ноль увёл бы строку в середину сортировки и
+читался бы как «работы на ноль рублей».
+
+- [ ] **Шаг 10: тест смешанной ячейки — вес сходится с показанным**
+
+```python
+# backend/tests/integration/test_analytics_api.py
+def test_row_amount_excludes_partially_unknown_cell(client, factories, db_session):
+    """Ячейка с одной известной и одной неизвестной базой скрыта целиком —
+    значит её известная часть НЕ имеет права попасть в вес строки.
+
+    Без правила «единица неполноты — ячейка» сюда попало бы 100.00 от первой
+    позиции, и `row_amount` разошёлся бы с суммой показанных ячеек.
+    """
+    factories.priced_estimate(
+        catalog_title="A", contract_number="C-1",
+        positions=[(Decimal("120"), Decimal("20")), (Decimal("500"), None)],
+    )
+    factories.priced_estimate(
+        catalog_title="A", contract_number="C-2",
+        positions=[(Decimal("240"), Decimal("20"))],
+    )
+    db_session.commit()
+    row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+
+    hidden = next(c for c in row["cells"] if c["rate"] is None)
+    shown = next(c for c in row["cells"] if c["rate"] is not None)
+    assert hidden["deviation_reason"] == "unknown_vat_base"
+    assert Decimal(row["row_amount"]) == Decimal(shown["amount"])
+    assert row["row_amount_incomplete"] is True
+```
 
 ```python
 # backend/tests/integration/test_analytics_api.py
@@ -1312,7 +1500,12 @@ def test_sql_net_weight_agrees_with_python(db_session, factories):
     assert quantize_money(from_sql) == quantize_money(from_python)
 ```
 
-- [ ] **Шаг 9: перевести паспорт фазы 6**
+- [ ] **Шаг 11: перевести паспорт фазы 6 и drill-down ячейки**
+
+Колонку `deviation_pct` читают **два** места, а не одно: паспорт фазы 6 и
+`get_matrix_cell` ([analytics.py:770](../../../backend/crud/analytics.py#L770)).
+Оба переводятся на `_deviation` от нетто; пропуск второго обрушил бы drill-down на
+несуществующей колонке уже после миграции.
 
 ```python
 # backend/crud/analytics.py, _priced_positions_select — вместо DEVIATIONS.c.deviation_pct
@@ -1344,7 +1537,7 @@ Python по тем же строкам, что и таблица:
     )
 ```
 
-- [ ] **Шаг 10: прогнать всё, включая круговой рейс**
+- [ ] **Шаг 12: прогнать всё, включая круговой рейс**
 
 ```bash
 cd backend && uv run alembic upgrade head && uv run alembic check
@@ -1357,7 +1550,7 @@ Expected: всё зелёное. `test_declared_view_columns_match_the_database`
 объектов, а не повод пропустить шаг. Партия >5 строк проверяется тестом VIEW
 (`prepare_threshold = 5` в psycopg3).
 
-- [ ] **Шаг 11: коммит**
+- [ ] **Шаг 13: коммит**
 
 ```bash
 git add backend/alembic backend/models.py backend/crud/analytics.py backend/tests
@@ -2153,13 +2346,15 @@ git commit -m "feat(passport): суммы и норматив в эффекти�
 
 ---
 
-## Задача 9: фронт — типы, клиент, хук
+## Задача 9: фронт — типы, клиент, хук, маркер неполноты в матрице
 
 **Files:**
-- Modify: `frontend/src/types/domain.ts:496-507`
+- Modify: `frontend/src/types/domain.ts:379-394` (матрица), `:496-507` (паспорт)
 - Modify: `frontend/src/services/api/domain.ts`
 - Modify: `frontend/src/services/queries.ts`
+- Modify: `frontend/src/pages/matrix/MatrixPage.tsx`
 - Test: `frontend/src/services/queries.test.tsx`
+- Test: `frontend/src/pages/matrix/MatrixPage.test.tsx`
 
 **Interfaces:**
 - Produces: `useSetEstimateVat()` — мутация, инвалидирующая `qk.passport.project(contractId)`.
@@ -2244,19 +2439,71 @@ export function useSetEstimateVat() {
 }
 ```
 
-- [ ] **Шаг 5: прогнать тесты и типы**
+- [ ] **Шаг 5: написать падающий тест маркера неполноты в матрице**
+
+```tsx
+// frontend/src/pages/matrix/MatrixPage.test.tsx
+it("помечает строку, чей вес посчитан не по всем ячейкам", async () => {
+  renderMatrix({ rows: [{ ...rowFixture, row_amount: "100.00", row_amount_incomplete: true }] });
+  const marker = await screen.findByTestId("row-amount-incomplete");
+  expect(marker).toBeInTheDocument();
+  expect(marker).toHaveAccessibleDescription(/база НДС известна не во всех договорах/i);
+});
+
+it("не помечает строку с полным весом", async () => {
+  renderMatrix({ rows: [{ ...rowFixture, row_amount: "100.00", row_amount_incomplete: false }] });
+  expect(screen.queryByTestId("row-amount-incomplete")).not.toBeInTheDocument();
+});
+
+it("строка без веса печатает прочерк, а не ноль", async () => {
+  renderMatrix({ rows: [{ ...rowFixture, row_amount: null, row_amount_incomplete: true }] });
+  expect(await screen.findByTestId("row-amount")).toHaveTextContent("—");
+});
+```
+
+- [ ] **Шаг 6: провести признак в тип и на экран**
+
+```ts
+// frontend/src/types/domain.ts, MatrixRow — рядом с row_amount
+  /**
+   * Вес строки посчитан НЕ по всем её ячейкам: хотя бы в одном договоре база
+   * НДС неизвестна, и такая ячейка не показывается и в вес не входит.
+   * Признак обязателен на экране — иначе частичная сумма выглядит полной.
+   */
+  row_amount_incomplete: boolean;
+```
+
+```tsx
+// frontend/src/pages/matrix/MatrixPage.tsx — ячейка веса строки
+<td data-testid="row-amount">
+  {row.row_amount === null ? "—" : <MoneyCell value={row.row_amount} />}
+  {row.row_amount_incomplete && (
+    <span
+      data-testid="row-amount-incomplete"
+      aria-describedby={`${row.catalog_position_id}-incomplete`}
+    >
+      *
+    </span>
+  )}
+</td>
+```
+
+Сноска под таблицей объясняет звёздочку один раз: «база НДС известна не во всех
+договорах; такие ячейки не показаны и в вес строки не вошли».
+
+- [ ] **Шаг 7: прогнать тесты и типы**
 
 ```bash
-cd frontend && npx vitest run src/services/queries.test.tsx && npx tsc -b --noEmit
+cd frontend && npx vitest run && npx tsc -b --noEmit
 ```
 Expected: PASS. Гонять **только из `frontend/`**: в корне лежит другой vitest, он не
 разрешает алиас `@/` и падает на сборке.
 
-- [ ] **Шаг 6: коммит**
+- [ ] **Шаг 8: коммит**
 
 ```bash
-git add frontend/src/types frontend/src/services
-git commit -m "feat(frontend): клиент и хук правки ставки НДС"
+git add frontend/src/types frontend/src/services frontend/src/pages/matrix
+git commit -m "feat(frontend): хук правки ставки НДС и маркер неполного веса строки"
 ```
 
 ---
