@@ -5,6 +5,15 @@
 поэтому здесь `require_admin`, в отличие от разноса статей.
 
 Транзакцию ведёт роутер, сервис только пишет — та же раскладка, что у разноса.
+
+**Ответ идёт через `responses.decimal_json`, а не голый `dict`.** FastAPI
+прогоняет `dict`-ответ через `jsonable_encoder` ДО рендера, а тот превращает
+`Decimal` во `float` (документированный дефект фазы 5, `responses.py`) — этот
+роутер отвергал бы `float` на входе (`_reject_float_in_vat_rates`) и сам же
+отдавал бы его на выходе, что нарушает `AGENTS.md` §3 на слое ответа. Тот же
+приём, что у `routers/analytics.py`. Энкодер `decimal_json` строгий и бросает
+`TypeError` на `datetime`, поэтому `vat_rate_updated_at` приводится к ISO-строке
+через `crud.common.iso` явно.
 """
 from __future__ import annotations
 
@@ -16,8 +25,10 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from auth import require_admin
+from crud.common import iso
 from database import get_db
 from models import User
+from responses import decimal_json
 from services.estimate_vat import UNSET, EstimateVatError, set_vat_rates
 
 router = APIRouter(prefix="/api/v1/estimates", tags=["estimate-vat"])
@@ -79,9 +90,11 @@ def patch_vat_rates(
         db.rollback()
         raise
 
-    return {
-        "estimate_id": estimate.id,
-        "vat_rate_base_override": estimate.vat_rate_base_override,
-        "vat_rate_target": estimate.vat_rate_target,
-        "vat_rate_updated_at": estimate.vat_rate_updated_at,
-    }
+    return decimal_json(
+        {
+            "estimate_id": estimate.id,
+            "vat_rate_base_override": estimate.vat_rate_base_override,
+            "vat_rate_target": estimate.vat_rate_target,
+            "vat_rate_updated_at": iso(estimate.vat_rate_updated_at),
+        }
+    )

@@ -17,6 +17,7 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 from models import Estimate
 from services.estimate_vat import EstimateVatError, set_vat_rates
@@ -37,12 +38,61 @@ def test_target_rejected_when_any_proposal_has_unknown_base(admin_client, factor
     assert estimate.vat_rate_target is None
 
 
+def test_response_carries_rates_as_strings_not_floats(admin_client, factories, db_session):
+    """Ревью (Critical): голый `dict` из роутера идёт через `jsonable_encoder`
+    ДО рендера, а тот превращает `Decimal` во `float` — роутер отвергал бы
+    `float` на входе (`_reject_float_in_vat_rates`) и сам же отдавал бы его на
+    выходе, нарушая `AGENTS.md` §3 на слое ответа. Ни один из тестов выше в
+    ТЕЛО ответа не смотрел вовсе (только код статуса и состояние БД), так что
+    этот дефект (унаследованный из буквального кода брифа — там был голый
+    `return {...}`) ни один из них не поймал бы.
+
+    Краснеет от возврата голого `dict` вместо `decimal_json(...)` — тогда
+    `"0.1"` (строка) стала бы `0.1` (JSON-числом), и `isinstance(..., str)`
+    ниже был бы `False`. Проверяется именно РАЗОБРАННЫЙ JSON (тип значения),
+    а не факт наличия ключа — по итогам предыдущего ревью «утверждение о
+    наличии поля вместо утверждения о его значении» само по себе не
+    дискриминирует."""
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    response = admin_client.patch(
+        f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": "0.1", "target": "0.1"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["vat_rate_base_override"], str)
+    assert body["vat_rate_base_override"] == "0.1"
+    assert isinstance(body["vat_rate_target"], str)
+    assert body["vat_rate_target"] == "0.1"
+    # Сырой текст ответа — вторая, независимая проверка формы: число без
+    # кавычек в JSON выглядело бы как `"vat_rate_target":0.1`, со строкой —
+    # как `"vat_rate_target":"0.1"`.
+    assert '"vat_rate_target":"0.1"' in response.text
+    assert '"vat_rate_base_override":"0.1"' in response.text
+    # updated_at обязан доехать ISO-строкой (crud.common.iso), а не упасть
+    # `TypeError`-ом внутри энкодера `decimal_json` (он умеет только Decimal).
+    assert isinstance(body["vat_rate_updated_at"], str)
+
+
 def test_declaring_base_then_target_succeeds(admin_client, factories, db_session):
-    """Краснеет, если объявление базы НЕ снимает последующий запрет на цель —
-    например, если проверка неизвестной базы смотрит на
-    `estimate.vat_rate_base_override` вместо `new_base` (значения ПОСЛЕ
-    применения текущего запроса) и потому не видит базу, объявленную этим же
-    первым `PATCH`."""
+    """Краснеет от двух РАЗНЫХ поломок (проверено мутацией по каждой):
+
+    1. От непроводки объявленной базы между запросами — если бы первый `PATCH`
+       не записывал `vat_rate_base_override` (или не коммитил запись), второй
+       запрос увидел бы базу всё ещё неизвестной и получил бы 422 вместо 200.
+    2. От безусловной проверки неизвестной базы — если бы условие
+       `if new_target is not None and new_base is None` потеряло вторую
+       половину (стало `if new_target is not None`), проверка сработала бы
+       ДАЖЕ при уже объявленной базе, и второй запрос снова получил бы 422.
+
+    (Различие «`new_base` пересчитанное внутри вызова» vs
+    `estimate.vat_rate_base_override`, прочитанный внутри ТОГО ЖЕ вызова, тут
+    не проверяется: `admin_client` использует один `db_session` на оба
+    запроса, и к моменту второго запроса это один и тот же закешированный
+    ORM-объект в identity map — оба выражения уже равны. Ту, другую, поломку
+    ловит `test_clearing_base_with_target_kept_is_rejected` — там оба поля
+    применяются ОДНИМ запросом.)
+    """
     estimate = factories.estimate_with_proposals(vat_rates=[None])
     db_session.commit()
     assert admin_client.patch(
@@ -151,6 +201,120 @@ def test_clearing_only_one_rate_keeps_the_audit(admin_client, factories, db_sess
     assert estimate.vat_rate_updated_by_id is not None
     assert estimate.vat_rate_updated_by_id == second_author.id
     assert estimate.vat_rate_updated_by_id != first_author.id
+
+
+def test_clearing_base_and_target_together_is_accepted(admin_client, factories, db_session):
+    """Ревью (Important): единственный тест, где ОБА поля снимаются ОДНИМ
+    запросом при неизвестной ставке предложения — оправдывает архитектурный
+    выбор «проверять ИТОГ, а не поле за полем» (докстринг `set_vat_rates`).
+    Пополевая реализация («откажи, если снимают базу, а в БД лежит цель»)
+    проходит ВЕСЬ остальной набор этого файла не хуже правильной —
+    `test_clearing_base_with_target_kept_is_rejected` держит цель ЗАДАННОЙ
+    (не снимает её тем же запросом), так что она эту дыру не закрывает.
+
+    Краснеет, если инвариант проверяется по ПРОМЕЖУТОЧНОМУ состоянию
+    («сначала применили снятие базы — target прочитанный ещё старый, `16` —
+    отказ 422»), а не по ФИНАЛЬНОМУ (`new_base=None, new_target=None` —
+    легально независимо от того, известны ли ставки предложений)."""
+    estimate = factories.estimate_with_proposals(vat_rates=[None])
+    db_session.commit()
+    admin_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": "12"})
+    admin_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
+
+    response = admin_client.patch(
+        f"/api/v1/estimates/{estimate.id}/vat", json={"base_override": None, "target": None}
+    )
+    assert response.status_code == 200
+    db_session.refresh(estimate)
+    assert estimate.vat_rate_base_override is None
+    assert estimate.vat_rate_target is None
+    assert estimate.vat_rate_updated_by_id is None
+    assert estimate.vat_rate_updated_at is None
+
+
+def test_empty_patch_does_not_restamp_the_audit(admin_client, factories, db_session):
+    """Ревью (Minor, но неверное поведение): замерено, что `PATCH {}`
+    (ни одно поле не передано) отвечал 200, ничего не менял по ставкам, но
+    ВСЁ РАВНО перештамповывал `vat_rate_updated_by_id`/`vat_rate_updated_at`
+    текущим вызывающим — аудит «действующей поправки» доставался тому, кто
+    просто дёрнул ручку.
+
+    Второй запрос идёт от ВТОРОГО, отдельного admin (`admin_client.set_user`)
+    — та же ловушка аудита, что и у `test_clearing_only_one_rate_keeps_the_
+    audit`: если бы проверялось только «автор не None», тест не отличил бы
+    «аудит не тронут» от «аудит переписан заново тем же значением». Здесь
+    второй запрос — от ДРУГОГО пользователя, так что перештамповка обязана
+    сдвинуть `vat_rate_updated_by_id` на второго автора, если она происходит;
+    тест краснеет именно на этом сравнении (и на `updated_at`, который обязан
+    остаться БУКВАЛЬНО тем же объектом времени, а не просто «не None»)."""
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    first_author = admin_client.user
+    admin_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
+    db_session.refresh(estimate)
+    assert estimate.vat_rate_updated_by_id == first_author.id
+    first_updated_at = estimate.vat_rate_updated_at
+
+    second_author = factories.UserFactory.create(role=first_author.role)
+    db_session.commit()
+    admin_client.set_user(second_author)
+
+    response = admin_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={})
+    assert response.status_code == 200
+    db_session.refresh(estimate)
+    assert estimate.vat_rate_target == Decimal("16")
+    assert estimate.vat_rate_base_override is None
+    assert estimate.vat_rate_updated_by_id == first_author.id
+    assert estimate.vat_rate_updated_by_id != second_author.id
+    assert estimate.vat_rate_updated_at == first_updated_at
+
+
+def test_author_of_a_live_correction_cannot_be_deleted_but_can_after_clearing(
+    admin_client, factories, db_session
+):
+    """Ревью (SPEC FAIL): спека §4.3 требует ПАРУ утверждений, не одно —
+    пользователя с ДЕЙСТВУЮЩЕЙ поправкой удалить нельзя, а ПОСЛЕ снятия
+    поправки — можно. До этого теста была проверена только защита (RESTRICT
+    как таковой, косвенно — через CHECK/FK схемы других фич), а не пара
+    целиком применительно именно к `vat_rate_updated_by_id`.
+
+    Первая половина краснеет, если `ondelete="RESTRICT"` на
+    `vat_rate_updated_by_id` (models.py) заменить на `SET NULL` или снять
+    вовсе: `DELETE FROM users` тогда тихо прошёл бы, пока поправка ещё
+    действует, — и её автор потерялся бы без предупреждения.
+
+    Вторая половина краснеет, если снятие обеих ставок (тест
+    `test_clearing_both_rates_clears_the_audit` проверяет это отдельно) НЕ
+    освобождает автора — тогда второй `DELETE` здесь тоже упал бы
+    `IntegrityError`, и пользователь остался бы неудаляемым НАВСЕГДА (ровно
+    та цена бездумного безусловного аудита, которую называет докстринг
+    `set_vat_rates`). Проверяется, что строка `users` РЕАЛЬНО удалена (счётчик
+    по id), а не только что второй `DELETE` не упал."""
+    estimate = factories.estimate_with_proposals(vat_rates=[Decimal("20")])
+    db_session.commit()
+    author_id = admin_client.user.id
+
+    response = admin_client.patch(f"/api/v1/estimates/{estimate.id}/vat", json={"target": "16"})
+    assert response.status_code == 200
+
+    with (
+        pytest.raises(IntegrityError, match="fk_estimates_vat_rate_updated_by_id"),
+        db_session.begin_nested(),
+    ):
+        db_session.execute(sa.text("DELETE FROM users WHERE id = :uid"), {"uid": author_id})
+        db_session.flush()
+
+    clear_response = admin_client.patch(
+        f"/api/v1/estimates/{estimate.id}/vat", json={"target": None}
+    )
+    assert clear_response.status_code == 200
+
+    db_session.execute(sa.text("DELETE FROM users WHERE id = :uid"), {"uid": author_id})
+    db_session.flush()
+    remaining = db_session.execute(
+        sa.text("SELECT count(*) FROM users WHERE id = :uid"), {"uid": author_id}
+    ).scalar_one()
+    assert remaining == 0
 
 
 @pytest.mark.parametrize("field", ["base_override", "target"])

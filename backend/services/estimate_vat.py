@@ -50,6 +50,12 @@ def set_vat_rates(
     if estimate is None:
         raise EstimateVatError("not_found", "Смета не найдена")
 
+    if isinstance(base_override, _Unset) and isinstance(target, _Unset):
+        # Пустой PATCH: ни одно поле не передано. Ничего не пересчитываем и,
+        # ГЛАВНОЕ, не трогаем аудит — «действующая поправка» не должна
+        # доставаться тому, кто просто дёрнул ручку, ничего не изменив.
+        return estimate
+
     new_base = (
         estimate.vat_rate_base_override if isinstance(base_override, _Unset) else base_override
     )
