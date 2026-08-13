@@ -22,7 +22,10 @@ from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from crud.project_passport import get_project_passport
 from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
-from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
+from parser.constants import (
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+)
 from responses import _decimal_encoder
 from services.category_override import set_override
 
@@ -1458,3 +1461,64 @@ def test_manual_assignments_are_ordered_by_subtree_amount_descending_with_none_l
         for a in assignments
     ]
     assert amounts == [Decimal("1044"), Decimal("80"), None]
+
+
+# ---------------------------------------------------------------------------
+#  39. Сверка выведенного нетто с файловым (спека §2.10, задача 5)
+# ---------------------------------------------------------------------------
+
+def test_passport_reports_net_reconciliation_ok(client, factories, db_session):
+    """Ставка НДС предложения ЯВНАЯ и НЕНУЛЕВАЯ (20 %, приложение оркестратора
+    «ставка по умолчанию — ложная предпосылка»): при базе 0 пересчёт был бы
+    тождеством и спрятал бы любую ошибку конвертации. Валовое 1200.00 по
+    ставке 20 % даёт РОВНО 1000.00 нетто — то же самое, что заявил файл в
+    строке «Итого без НДС», — вердикт обязан быть "ok" без единого
+    расхождения. Если бы `_net_reconciliation` перепутала аргументы
+    `check_proposal_net` (валовое/нетто) или базу (например, взяла 0 вместо
+    ставки предложения), пересчитанное нетто разошлось бы с заявленным, и
+    вердикт стал бы "mismatch"/"unknown_base", а не "ok"."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "ok"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == []
+    assert totals["net_reconciliation"]["delta"] == "0.00"
+
+
+def test_delta_to_file_total_ignores_manual_rates(client, factories, db_session):
+    """Диагностика ИМПОРТА (`delta_to_file_total`): она про потерянные или
+    задвоенные строки при импорте, а не про пересчёт НДС, и обязана остаться
+    той же самой цифрой независимо от того, какую базу пересчёта аналитик
+    выставит вручную (`estimate.vat_rate_base_override`) — тождество §2.4
+    действует и здесь (приложение оркестратора, п.5). База пересчёта задана
+    ЯВНО и НЕНУЛЕВОЙ (16 %) до и после, чтобы `net_reconciliation` реально
+    считался обеими сторонами, а не молчал на тождестве нулевой ставки; сама
+    `delta_to_file_total` при этом закреплена ЧИСЛОМ (0.00), а не только
+    равенством "до/после" — иначе тест прошёл бы и при полностью сломанном,
+    но одинаково сломанном с обеих сторон вычислении."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    db_session.flush()
+
+    contract_id = proposal.lot.estimate.contract_id
+    before = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+    assert before["totals"]["delta_to_file_total"] == "0.00"
+
+    proposal.lot.estimate.vat_rate_base_override = Decimal("16")
+    db_session.flush()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+
+    assert after["totals"]["delta_to_file_total"] == before["totals"]["delta_to_file_total"]
+    assert after["totals"]["delta_to_file_total"] == "0.00"

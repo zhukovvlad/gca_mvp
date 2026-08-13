@@ -93,13 +93,6 @@ DEVIATION_INPUTS = sa.table(
     sa.column("vat_rate_target", sa.Numeric),
 )
 
-#: Прежнее имя — алиас на время правки потребителей ВНЕ этого модуля
-#: (`crud/reports.py` читает те же колонки, которых `deviation_pct` не касался,
-#: и не завязан на переименование иначе как через это имя). Снимается задачей 5
-#: с прогоном всего backend: одновременное переименование в шести местах прячет
-#: опечатку до попадания на стенд.
-DEVIATIONS = DEVIATION_INPUTS
-
 #: Объявленный порядок колонок — он же ожидаемый в БД (снят из `information_schema`
 #: и зафиксирован §1 брифинга фазы 6, обновлён задачей 3 пересчёта НДС).
 DECLARED_VIEW_COLUMNS = tuple(c.name for c in DEVIATION_INPUTS.columns)

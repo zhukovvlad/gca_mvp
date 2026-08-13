@@ -32,7 +32,11 @@ from models import (
     User,
     WorkCategory,
 )
-from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
+from money.vat import NetReconciliation, NetStatus, check_proposal_net, fold_net_reconciliation
+from parser.constants import (
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+)
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -402,6 +406,80 @@ def _vat_rate(db: Session, estimate_id: int) -> Decimal | None:
     if all(rate == first_rate for rate in rates):
         return first_rate
     return None
+
+
+# ---------------------------------------------------------------------------
+#  Сверка выведенного нетто с файловым, по предложениям (спека §2.10, задача 5)
+# ---------------------------------------------------------------------------
+
+def _net_reconciliation(db: Session, estimate: Estimate) -> NetReconciliation:
+    """Сверка выведенного нетто с файловым, по предложениям, свёрнутая в вердикт.
+
+    ЭТО ТРЕТЬЯ, ОТДЕЛЬНАЯ диагностика (приложение оркестратора, п.3 «три
+    диагностики — про разное»), и её нельзя путать ни с одной из двух других:
+
+    * `delta_to_file_total` (выше) сверяет валовое с валовым, из исходных
+      файловых денег, и НИКОГДА не зависит от поправок — трогать его отсюда
+      запрещено;
+    * согласованность самого файла (заявленная `proposals.vat_rate` против
+      файлового блока итогов) — диагностика парсера, ей здесь не место.
+
+    База берётся ЭФФЕКТИВНАЯ (`COALESCE(estimates.vat_rate_base_override,
+    proposals.vat_rate)`) — та самая, на которую опирается пересчёт §2.4.
+    Гранулярность — ОДНО ПРЕДЛОЖЕНИЕ на строку (не сумма по смете, как у
+    `_file_total_including_vat` — та агрегирующая семантика этой сверке не
+    подходит): `check_proposal_net` сравнивает валовое ИТОГО одного
+    предложения с его же файловым нетто.
+
+    Оба операнда читаются LEFT JOIN-ом на `proposal_summary_lines` (пара
+    `(proposal_id, summary_key)` уникальна схемой, `uq_proposal_summary_lines_
+    key`, — не более одной строки на предложение и ключ, дубль исключён
+    ограничением). Предложение без нужной строки закономерно даёт `NULL`, и
+    `check_proposal_net` обязан отличить это от найденного, но не сошедшегося
+    значения — он делает это сам (`NOT_APPLICABLE`), и это тот же открытый
+    хвост Ф4 (`NaN`/`Infinity`), что и у `_file_total_including_vat`: обе
+    проверки годности значения инкапсулированы в `check_proposal_net`, а не
+    продублированы здесь второй раз.
+    """
+    gross_line = aliased(ProposalSummaryLine, name="net_reconciliation_gross")
+    net_line = aliased(ProposalSummaryLine, name="net_reconciliation_net")
+    rows = db.execute(
+        sa.select(
+            Proposal.id.label("proposal_id"),
+            Proposal.vat_rate,
+            gross_line.total_cost.label("gross_total"),
+            net_line.total_cost.label("file_net"),
+        )
+        .select_from(Proposal)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .outerjoin(
+            gross_line,
+            sa.and_(
+                gross_line.proposal_id == Proposal.id,
+                gross_line.summary_key == JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+            ),
+        )
+        .outerjoin(
+            net_line,
+            sa.and_(
+                net_line.proposal_id == Proposal.id,
+                net_line.summary_key == JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+            ),
+        )
+        .where(Lot.estimate_id == estimate.id)
+    ).all()
+
+    override = estimate.vat_rate_base_override
+    checks = [
+        check_proposal_net(
+            row.proposal_id,
+            row.gross_total,
+            row.file_net,
+            override if override is not None else row.vat_rate,
+        )
+        for row in rows
+    ]
+    return fold_net_reconciliation(checks)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1117,14 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         разносить нужно и в статьи, которых в смете ещё нет вовсе. Это поле
         не зависит от наличия сметы (правило 8) — оно то же самое на обоих
         путях функции.
+    17. `totals.net_reconciliation` — сверка выведенного нетто с файловым, по
+        предложениям (спека §2.10, задача 5, `_net_reconciliation`): ТРЕТЬЯ,
+        независимая от `delta_to_file_total` диагностика (валовое против
+        валового, исходное, никогда не зависящее от поправок) и от
+        согласованности файла (заявленная ставка против файлового блока
+        итогов, живёт в парсере) — сравнивает `gross_to_net(валовое,
+        ЭФФЕКТИВНАЯ база)` с файловым нетто. Ключ ДОБАВЛЕН, ничего в
+        `delta_to_file_total` не тронуто (тождество §2.4).
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -1113,6 +1199,14 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
                 "additional_works_rows": 0,
                 "file_total_including_vat": None,
                 "delta_to_file_total": None,
+                # Форма ответа одна и та же на обоих путях функции (правило 8):
+                # без сметы сверить нечего, тот же вердикт, что дал бы
+                # `fold_net_reconciliation([])` на пустом списке предложений.
+                "net_reconciliation": {
+                    "status": NetStatus.NOT_APPLICABLE.value,
+                    "delta": None,
+                    "mismatched_proposal_ids": [],
+                },
             },
             "categories": categories,
             "unallocated": {
@@ -1187,6 +1281,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     else:
         delta_to_file_total = None
 
+    reconciliation = _net_reconciliation(db, estimate)
     totals = {
         "amount": grand_total,
         "per_sqm": _per_sqm(grand_total, area_total),
@@ -1195,7 +1290,14 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "positions_rows_not_finite": positions_rows_not_finite,
         "additional_works_rows": additional_works_rows,
         "file_total_including_vat": file_total_including_vat,
+        # Тождество §2.4 (приложение оркестратора, п.5): ключ ДОБАВЛЕН, ничего
+        # из полей выше не тронуто — ни расчёт, ни порядок, ни значение.
         "delta_to_file_total": delta_to_file_total,
+        "net_reconciliation": {
+            "status": reconciliation.status.value,
+            "delta": reconciliation.delta,
+            "mismatched_proposal_ids": reconciliation.mismatched_proposal_ids,
+        },
     }
 
     unallocated_dict = {
