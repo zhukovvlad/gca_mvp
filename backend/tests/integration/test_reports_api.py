@@ -905,25 +905,33 @@ def test_standard_is_null_when_bases_disagree(factories, db_session):
 
 
 def test_contract_summary_amount_and_rate_are_untouched_without_target(factories, db_session):
-    """Ревью задачи 8 (Правка 1): без цели/перекрытой базы, при работе БЕЗ
-    норматива (норматив несёт свою собственную реальную конвертацию нетто->
-    ставка показа и квантуется всегда — не он предмет этого теста), `amount`
-    и `rate` обязаны совпасть ПОСИМВОЛЬНО с тем, что свод отдавал бы до
-    задачи 8 — сравнение через `str()`, а не `Decimal(...)==Decimal(...)`
-    (то пропустило бы сдвиг `exponent`, ради отсутствия которого условное
-    квантование и заведено).
+    """Ре-ревью задачи 8, круг 3, Правка 1 — тест ПЕРЕПИСАН: круг 2 заводил
+    позицию БЕЗ норматива и тем самым ОБХОДИЛ дефект (гейт был поднят ОДНИМ
+    флагом на строку от одного лишь показа норматива, а этот путь тест ни
+    разу не проходил; находка внешнего ре-ревью). Позиция теперь ИМЕЕТ
+    норматив — то есть строка попадает ровно в тот путь, где дефект жил.
 
-    Краснеет от: безусловного вызова `_quantize_row_for_display` (без
-    гейта `restated_any`) — тогда `amount`/`rate` стали бы "12000.560"/
-    "12000.56", а не "12000.556" — подтверждено мутацией: см. отчёт задачи."""
+    Без цели/перекрытой базы `amount`/`rate` обязаны совпасть ПОСИМВОЛЬНО с
+    тем, что свод отдавал бы до задачи 8 — сравнение через `str()`, а не
+    `Decimal(...)==Decimal(...)` (то пропустило бы сдвиг `exponent`).
+    Норматив (нетто 10000) ПРИ ЭТОМ ВСЁ РАВНО приводится к ставке показа
+    (10000 нетто по базе/цели 20 % даёт 12000.00) — у нормы нет ветки
+    тождества, у факта — есть; это и есть гейт «по полю».
+
+    Краснеет от (круг 2): подъёма ОДНОГО флага на строку сразу от показа
+    норматива И квантования им же факта — тогда `amount`/`rate` стали бы
+    "12000.560"/"12000.56", а не "12000.556" — подтверждено мутацией: см.
+    отчёт задачи."""
     contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
-    position = factories.CatalogPositionFactory.create(standard_job_title="Работа тождества")
+    position = factories.CatalogPositionFactory.create(standard_job_title="Работа тождества, с нормативом")
     _position(factories, proposal, position, unit_cost="12000.556", weight="1")
+    _standard(factories, position, contract.rate_class, "10000")
     db_session.commit()
 
     row = contract_summary(db_session, contract.id)["rows"][0]
     assert str(row["amount"]) == "12000.556"
     assert str(row["rate"]) == "12000.556"
+    assert Decimal(row["standard_unit_rate"]) == Decimal("12000.00")
 
 
 def test_summary_restates_each_group_by_its_own_base_not_the_accumulated_sum(factories, db_session):

@@ -1198,25 +1198,41 @@ class TestPassportDisplayRate:
         assert Decimal(rate["standard_unit_rate"]) == Decimal("116.00")
 
     def test_standard_and_fact_are_untouched_without_target(self, client, factories, db_session):
-        """Парный тест тождества: без цели эффективная ставка равна базе
-        предложения (20 %, единогласной), и факт остаётся посимвольно тем же
-        валовым значением, что и до задачи 8 — сравнение через СЫРУЮ строку
-        JSON, а не `Decimal(...)==Decimal(...)` (норматив при этом ВСЁ РАВНО
-        показывается в этой же ставке — см. соседний тест `test_standard_
-        follows_the_effective_rate_without_explicit_target` в `crud.reports`,
-        та же семантика: у нормы нет ветки тождества, у факта — есть).
+        """Парный тест тождества — ре-ревью задачи 8, круг 3: ПЕРЕПИСАН так,
+        чтобы позиция ИМЕЛА норматив (круг 2 заводил тест БЕЗ норматива и тем
+        самым обходил дефект — гейт был поднят ОДНИМ флагом на строку целиком
+        от одного лишь показа норматива, а тест этот путь ни разу не проходил;
+        находка внешнего ре-ревью).
 
-        Краснеет от: безусловного `quantize_money` на `unit_cost_total`/
-        `total_cost_total` (тогда "120.5" стало бы "120.50") — подтверждено
-        мутацией: см. отчёт задачи."""
+        Без цели эффективная ставка равна базе предложения (20 %,
+        единогласной): факт остаётся посимвольно тем же валовым значением,
+        что и до задачи 8 (сравнение через СЫРУЮ строку JSON, а не
+        `Decimal(...)==Decimal(...)` — то пропустило бы сдвиг `exponent`).
+        Норматив (нетто 100) ПРИ ЭТОМ ВСЁ РАВНО приводится к ставке показа
+        (100 нетто по базе/цели 20 % даёт 120.00) — у нормы нет ветки
+        тождества, у факта — есть; это и есть гейт «по полю».
+
+        Краснеет от (круг 2): подъёма ОДНОГО флага `key_rates_restated_any`
+        сразу от показа норматива И квантования им же факта — тогда
+        `unit_cost_total`/`total_cost_total` стали бы "120.50", а не "120.5"
+        — подтверждено мутацией: см. отчёт задачи."""
         contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
-        position = factories.CatalogPositionFactory.create(standard_job_title="Тождество Ф6")
+        position = factories.CatalogPositionFactory.create(standard_job_title="Тождество Ф6, с нормативом")
         _position(factories, proposal, position, unit_cost="120.5", weight="1")
+        factories.RateStandardFactory.create(
+            catalog_position=position,
+            rate_class=contract.rate_class,
+            standard_unit_rate=Decimal("100"),
+            valid_from=dt.date(2025, 1, 1),
+        )
         db_session.commit()
 
         raw = client.get(f"/api/v1/analytics/passport/{contract.id}").text
         assert '"unit_cost_total":"120.5"' in raw.replace(", ", ",")
         assert '"total_cost_total":"120.5"' in raw.replace(", ", ",")
+
+        rate = _passport(client, contract.id)["key_rates"][0]
+        assert Decimal(rate["standard_unit_rate"]) == Decimal("120.00")
 
     def test_priced_amount_follows_the_target_rate_too(self, client, factories, db_session):
         """`totals.priced_amount` — та же ставка показа, что и `key_rates`
@@ -1236,3 +1252,39 @@ class TestPassportDisplayRate:
 
         totals = _passport(client, contract.id)["totals"]
         assert Decimal(totals["priced_amount"]) == Decimal("116.00")
+
+    def test_standard_is_shown_as_net_when_this_row_has_no_vat_base(
+        self, client, factories, db_session
+    ):
+        """Ре-ревью задачи 8, круг 3, Правка 2 — парный к матричному тесту
+        `test_matrix_cell_keeps_standard_unit_rate_without_vat_base` (спека
+        §2.5, строка 293, дословно: «норматив при неизвестной базе
+        показывается как нетто; не вычисляется только отклонение»).
+
+        НЕИЗВЕСТНАЯ база (`vat_rate=None`) — не то же самое, что РАЗНОГЛАСИЕ
+        заявленных ставок предложений (§5.1): при неизвестности гасить
+        норматив нельзя, у него всё ещё есть значение, просто не с чем
+        сравнить деньгами (`deviation_reason`); гасить его молча значило бы
+        стереть эту разницу.
+
+        Круг 2 схлопнул оба случая в одну ветку `effective_display_rate is
+        None -> норматив None`, поскольку функция сама не различает
+        «неизвестность» и «разногласие» (обе дают `None`) — round 3 развёл их
+        на стороне вызывающего кода по признаку «база ЭТОЙ строки известна
+        (`r.vat_rate_base is not None`) или нет», не трогая саму
+        `effective_display_rate`.
+
+        Краснеет от: `standard_value = _standard_in_display_rate(r.standard_
+        unit_rate, effective_rate)` БЕЗ ветки `if r.vat_rate_base is None`
+        (тогда `effective_rate is None` из-за неизвестной ставки погасил бы
+        норматив так же, как разногласие) — подтверждено мутацией: см. отчёт
+        задачи."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+        )
+        db_session.commit()
+
+        rate = _passport(client, contract.id)["key_rates"][0]
+        assert Decimal(rate["standard_unit_rate"]) == Decimal("100")
+        assert rate["deviation_pct"] is None
+        assert rate["deviation_reason"] == "unknown_vat_base"

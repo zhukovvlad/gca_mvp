@@ -238,12 +238,14 @@ def contract_summary(db: Session, contract_id: int) -> dict:
         )
     ).all()
 
-    rows, restated_any = _fold_summary_rows(group_rows, effective_rate)
+    rows, fact_restated_any, standard_shown_any = _fold_summary_rows(group_rows, effective_rate)
     # Итоги — из НЕОКРУГЛЁННЫХ строк (см. модульную документацию про границу
     # округления): `_totals_of` читает `amount`/`comparable_amount`/
     # `comparable_standard_amount`, и они обязаны остаться точными ДО того, как
-    # `_quantize_row_for_display` округлит поля строк ниже — иначе получилось
-    # бы `Σ round(x)` вместо `round(Σ x)`.
+    # `_quantize_summary_row` округлит поля строк ниже — иначе получилось бы
+    # `Σ round(x)` вместо `round(Σ x)`. Служебные ключи `_fact_restated`/
+    # `_standard_shown`, приложенные `_fold_summary_rows`, `_totals_of` не
+    # трогает (читает только именованные денежные поля).
     totals = _totals_of(rows)
     # Что отбросил фильтр `weight > 0` — счётчиком, не молчанием. Свод показывает
     # предмет торга целиком, и позиция с ценой, но без объёма, обязана быть хотя бы
@@ -264,16 +266,15 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     ).scalar_one()
 
     # Округление — ПОСЛЕДНИЙ шаг, когда totals уже посчитаны из точных строк, и
-    # ТОЛЬКО если что-то реально пересчиталось (ревью задачи 8, Правка 1): без
-    # цели/перекрытой базы и без единой заявленной ставки, отличной от базы,
-    # каждая строка остаётся в СВОЕЙ исходной ставке (ветка тождества
-    # `restate_gross`), и квантование сдвинуло бы `exponent` без всякой
-    # арифметики — тот же принцип, что уже применён в паспорте проекта
-    # (`crud.project_passport._quantize_if_restated`).
-    if restated_any:
-        for row in rows:
-            _quantize_row_for_display(row)
-        _quantize_totals_for_display(totals)
+    # ПОЛЕВЫМ гейтом (ре-ревью задачи 8, круг 3, Правка 1 — круг 2 квантовал
+    # ЦЕЛУЮ строку одним флагом, поднятым одним лишь показом норматива, и
+    # ломал тождество §2.4 на факте, который никто не пересчитывал): факт
+    # (`amount`/`rate`) квантуется, только если РЕАЛЬНО пересчитан
+    # (`_fact_restated`); норматив (`standard_unit_rate`) — как только вообще
+    # посчитан (`_standard_shown`, у него нет ветки тождества).
+    for row in rows:
+        _quantize_summary_row(row)
+    _quantize_summary_totals(totals, fact_restated_any=fact_restated_any, standard_shown_any=standard_shown_any)
     return {"header": header, "rows": rows, "totals": totals}
 
 
@@ -323,7 +324,9 @@ def _work_aggregate_select():
     )
 
 
-def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_rate) -> tuple[dict, bool]:
+def _fold_summary_work(
+    job_title: str, unit_code: str | None, groups, effective_rate
+) -> tuple[dict, bool, bool]:
     """Одна строка свода по договору из групп работа×база НДС (задача 8, спека §5.1).
 
     Факт приводится к ставке показа ПО КАЖДОЙ группе — её база постоянна внутри
@@ -340,17 +343,20 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     гасится целиком (граница §5.1) — даже если у него самого есть значение.
 
     Величины здесь НЕОКРУГЛЕНЫ (см. модульную документацию про границу
-    округления): `_quantize_row_for_display` округляет вызывающий код
-    (`contract_summary`), когда строка уже отслужила свою роль слагаемого в
-    `_totals_of`.
+    округления): вызывающий код (`contract_summary`) квантует их САМ, ПОСЛЕ
+    `_totals_of`, ПОЛЕВЫМ гейтом (см. второй/третий элементы возврата).
 
-    Второй элемент возврата — `restated_any`: признак того, что в ЭТОЙ строке
-    реально произошёл пересчёт (ревью задачи 8, Правка 1) — либо факт какой-то
-    группы получил статус `RESTATED`, либо норматив был реально показан
-    (`standard_amount is not None`, то есть у нормы всегда РЕАЛЬНАЯ конвертация
-    нетто→ставка показа, без ветки тождества, в отличие от факта). Вызывающий
-    код квантует ВСЮ строку целиком, только если хоть одна строка свода дала
-    `True` — тот же принцип, что уже применён в паспорте проекта.
+    **Гейт квантования — ПО ПОЛЮ, не по строке** (ре-ревью задачи 8, круг 3,
+    Правка 1: круг 2 держал ОДИН флаг на всю строку, поднятый одним лишь
+    показом норматива, и квантовал ИМ ЖЕ факт, который никто не пересчитывал
+    — регресс тождества §2.4 на `amount`/`rate` при любой работе с
+    нормативом и без цели). Возвращаются ДВА независимых признака:
+    `fact_restated` — хоть одна группа факта получила статус `RESTATED`
+    (гейт для `amount`/`rate`); `standard_shown` — норматив вообще посчитан
+    (`standard_amount is not None`, гейт для `standard_unit_rate` — у нормы
+    нет ветки тождества, показ в ставке показа ВСЕГДА реальная конвертация
+    нетто→гросс). `deviation_money` квантуется, если сработал ХОТЯ БЫ ОДИН из
+    двух гейтов (обе его стороны могли внести нецелые хвосты).
     """
     fact_total: Decimal | None = None
     volume_total = ZERO
@@ -359,7 +365,7 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     standard_net_total = ZERO
     positions_total = 0
     positions_without_standard = 0
-    restated_any = False
+    fact_restated = False
 
     for group in groups:
         positions_total += group.positions
@@ -367,7 +373,7 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
 
         restated_total = restate_gross(group.fact_amount_total, group.vat_rate_base, effective_rate)
         if restated_total.status is AmountStatus.RESTATED:
-            restated_any = True
+            fact_restated = True
         if restated_total.amount is not None:
             fact_total = (
                 restated_total.amount if fact_total is None else fact_total + restated_total.amount
@@ -380,7 +386,7 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
                 group.fact_amount, group.vat_rate_base, effective_rate
             )
             if restated_comparable.status is AmountStatus.RESTATED:
-                restated_any = True
+                fact_restated = True
             fact_comparable = (
                 restated_comparable.amount
                 if fact_comparable is None
@@ -392,11 +398,7 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
     standard_amount = (
         None if fact_comparable is None else _standard_in_display_rate(standard_net_total, effective_rate)
     )
-    if standard_amount is not None:
-        # Норматив не несёт ветки тождества (в отличие от факта): показ в
-        # ставке показа — ВСЕГДА реальная конвертация нетто→гросс, даже когда
-        # цель не задана, а эффективная ставка равна базе предложения.
-        restated_any = True
+    standard_shown = standard_amount is not None
     deviation_money = (
         None if fact_comparable is None or standard_amount is None
         else fact_comparable - standard_amount
@@ -416,15 +418,22 @@ def _fold_summary_work(job_title: str, unit_code: str | None, groups, effective_
         "positions": positions_total,
         "positions_without_standard": positions_without_standard,
     }
-    return row, restated_any
+    return row, fact_restated, standard_shown
 
 
-def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool]:
+def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool, bool]:
     """Строки SQL (работа×база) -> строки свода (одна на работу), задача 8.
 
     Тот же двухпроходный приём, что у `_fold_bank_rows`: группы одной работы не
     обязаны идти в результате подряд (разных баз может быть несколько),
     поэтому сначала собираем их по ключу, потом сворачиваем.
+
+    Второй/третий элементы возврата — `fact_restated_any`/`standard_shown_any`,
+    ИТОГОВЫЕ (по всему своду) версии полевых гейтов `_fold_summary_work`: они
+    гейтуют квантование `totals` (см. `contract_summary`) — САМИ строки
+    квантуются `contract_summary` по СВОИМ, построчным флагам, приложенным к
+    каждой строке служебными ключами `_fact_restated`/`_standard_shown`
+    (снимаются перед возвратом наружу).
     """
     order: list[int] = []
     meta: dict[int, tuple[str, str | None]] = {}
@@ -438,13 +447,19 @@ def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool]:
         groups_by_work[key].append(r)
 
     rows = []
-    restated_any = False
+    fact_restated_any = False
+    standard_shown_any = False
     for key in order:
         job_title, unit_code = meta[key]
-        row, row_restated = _fold_summary_work(job_title, unit_code, groups_by_work[key], effective_rate)
+        row, fact_restated, standard_shown = _fold_summary_work(
+            job_title, unit_code, groups_by_work[key], effective_rate
+        )
         row["catalog_position_id"] = key
+        row["_fact_restated"] = fact_restated
+        row["_standard_shown"] = standard_shown
         rows.append(row)
-        restated_any = restated_any or row_restated
+        fact_restated_any = fact_restated_any or fact_restated
+        standard_shown_any = standard_shown_any or standard_shown
 
     # Крупные работы сверху — тот же порядок, что раньше давал `ORDER BY
     # fact_amount_total DESC` в SQL (перешёл в Python: строки теперь
@@ -452,7 +467,41 @@ def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool]:
     # `catalog_position_id` — та же причина, что у `_fold_bank_rows`: без него
     # порядок работ с РАВНОЙ суммой ничем не определён.
     rows.sort(key=lambda r: (-(r["amount"] or ZERO), r["catalog_position_id"]))
-    return rows, restated_any
+    return rows, fact_restated_any, standard_shown_any
+
+
+def _quantize_summary_row(row: dict) -> dict:
+    """Округление ГРАНИЦЫ одной строки свода — полевым гейтом (ре-ревью задачи
+    8, круг 3, Правка 1): `amount`/`rate` квантуются, только если факт этой
+    СТРОКИ реально пересчитан (`row["_fact_restated"]`); `standard_unit_rate`
+    — как только вообще посчитан (`row["_standard_shown"]`, у нормы нет
+    ветки тождества); `deviation_money` — если сработал ХОТЯ БЫ ОДИН из двух
+    гейтов. Служебные ключи `_fact_restated`/`_standard_shown` снимаются —
+    это внутреннее состояние свёртки, не часть контракта ответа.
+    """
+    fact_restated = row.pop("_fact_restated")
+    standard_shown = row.pop("_standard_shown")
+    if fact_restated:
+        row["amount"] = quantize_money(row["amount"])
+        row["rate"] = quantize_money(row["rate"])
+    if standard_shown:
+        row["standard_unit_rate"] = quantize_money(row["standard_unit_rate"])
+    if row["deviation_money"] is not None and (fact_restated or standard_shown):
+        row["deviation_money"] = quantize_money(row["deviation_money"])
+    return row
+
+
+def _quantize_summary_totals(totals: dict, *, fact_restated_any: bool, standard_shown_any: bool) -> dict:
+    """То же самое полевое округление для готовых ИТОГОВ свода (см.
+    `_quantize_summary_row`) — те же два гейта, свёрнутые по ИЛИ через все
+    строки (`_fold_summary_rows`)."""
+    if fact_restated_any:
+        totals["amount"] = quantize_money(totals["amount"])
+    if standard_shown_any:
+        totals["standard_amount"] = quantize_money(totals["standard_amount"])
+    if totals["deviation_money"] is not None and (fact_restated_any or standard_shown_any):
+        totals["deviation_money"] = quantize_money(totals["deviation_money"])
+    return totals
 
 
 # ---------------------------------------------------------------------------

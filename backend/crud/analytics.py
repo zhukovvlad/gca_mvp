@@ -355,7 +355,6 @@ def get_passport(db: Session, contract_id: int) -> dict:
     ).all()
 
     key_rates = []
-    key_rates_restated_any = False
     for r in rows:
         # Отклонение — от НЕТТО, по СЫРЫМ полям строки: ось, не зависящая от
         # ставки показа (см. докстроку функции, "не трогай deviation_pct").
@@ -366,16 +365,45 @@ def get_passport(db: Session, contract_id: int) -> dict:
         # `restate_gross` сохраняет исходное значение посимвольно, когда
         # эффективная ставка совпадает с базой СТРОКИ (нет цели/перекрытой
         # базы, и предложение одно или все предложения сметы единогласны).
+        #
+        # Гейт квантования — ПО ПОЛЮ, не по строке (ре-ревью задачи 8, круг 3,
+        # Правка 1: круг 2 поднимал ОДИН флаг на всю строку от одного лишь
+        # ПОКАЗА норматива и квантовал ИМ ЖЕ факт, который никто не
+        # пересчитывал — регресс тождества §2.4). Факт квантуется, ТОЛЬКО
+        # если он сам получил статус `RESTATED`.
         display_unit_cost = restate_gross(r.unit_cost_total, r.vat_rate_base, effective_rate)
+        unit_cost_value = display_unit_cost.amount
+        if display_unit_cost.status is AmountStatus.RESTATED:
+            unit_cost_value = quantize_money(unit_cost_value)
+
         display_total_cost = restate_gross(r.total_cost_total, r.vat_rate_base, effective_rate)
-        if AmountStatus.RESTATED in (display_unit_cost.status, display_total_cost.status):
-            key_rates_restated_any = True
-        # Норматив (нетто) — в ту же ставку показа: у него нет ветки
-        # тождества (это ВСЕГДА реальная конвертация нетто->гросс), поэтому
-        # его появление само по себе включает квантование строки ниже.
-        display_standard = _standard_in_display_rate(r.standard_unit_rate, effective_rate)
-        if display_standard is not None:
-            key_rates_restated_any = True
+        total_cost_value = display_total_cost.amount
+        if display_total_cost.status is AmountStatus.RESTATED:
+            total_cost_value = quantize_money(total_cost_value)
+
+        # Норматив (ре-ревью, круг 3, Правка 2, спека §2.5 строка 293):
+        # НЕИЗВЕСТНАЯ база ЭТОЙ строки (`r.vat_rate_base is None`) — норматив
+        # показывается как НЕТТО, не гасится: конвертировать не во что, а
+        # гасить его так же, как при разногласии, стёрло бы разницу между «не
+        # с чем сравнить» (§10, `deviation_reason="unknown_vat_base"`, уже
+        # различённой `_net_deviation` выше) и «нормы вовсе нет» — тот же
+        # прецедент, что уже стерегёт матрица (`_fold_cell`,
+        # `test_matrix_cell_keeps_standard_unit_rate_without_vat_base`).
+        # РАЗНОГЛАСИЕ (база строки ИЗВЕСТНА, но эффективная ставка сметы —
+        # `None`, потому что заявленные ставки ДРУГИХ предложений разошлись)
+        # — другой случай: единой ставки показа нет вовсе, и здесь норматив
+        # ГАСИТСЯ (§5.1, не переделывается).
+        if r.vat_rate_base is None:
+            standard_value = r.standard_unit_rate
+        else:
+            standard_value = _standard_in_display_rate(r.standard_unit_rate, effective_rate)
+            if standard_value is not None:
+                # Норматив не несёт ветки тождества (это ВСЕГДА реальная
+                # конвертация нетто->гросс, даже когда факт остался
+                # нетронутым), поэтому квантуется, когда вообще посчитан —
+                # безусловно относительно факта, а не «заодно с ним».
+                standard_value = quantize_money(standard_value)
+
         key_rates.append(
             {
                 "position_item_id": r.position_item_id,
@@ -384,11 +412,11 @@ def get_passport(db: Session, contract_id: int) -> dict:
                 "catalog_job_title": r.standard_job_title,
                 "unit_code": r.unit_code,
                 "weight": r.weight,
-                "unit_cost_total": display_unit_cost.amount,
+                "unit_cost_total": unit_cost_value,
                 "unit_cost_net": quantize_money(net),
                 "vat_rate_base": r.vat_rate_base,
-                "total_cost_total": display_total_cost.amount,
-                "standard_unit_rate": display_standard,
+                "total_cost_total": total_cost_value,
+                "standard_unit_rate": standard_value,
                 # Точный Decimal; округление до 0.1 п.п. — только на слое
                 # представления (§4). В JSON уедет строкой. Теперь считается от
                 # НЕТТО (норматив — цена без НДС, спека пересчёта §1).
@@ -396,15 +424,6 @@ def get_passport(db: Session, contract_id: int) -> dict:
                 "deviation_reason": reason,
             }
         )
-    if key_rates_restated_any:
-        # Округление — ОДИН раз, на границе, и только если хоть что-то реально
-        # пересчиталось (тот же принцип, что в паспорте проекта и в своде по
-        # договору, ревью задачи 8): без цели/перекрытой базы/нормы поле
-        # осталось бы посимвольно тем же, что и до этой правки.
-        for item in key_rates:
-            item["unit_cost_total"] = quantize_money(item["unit_cost_total"])
-            item["total_cost_total"] = quantize_money(item["total_cost_total"])
-            item["standard_unit_rate"] = quantize_money(item["standard_unit_rate"])
     body["key_rates"] = key_rates
     body["totals"] = _passport_totals(db, estimate.id, effective_rate)
     # Сколько строк реально показано — это длина топа, а не отдельный запрос:
