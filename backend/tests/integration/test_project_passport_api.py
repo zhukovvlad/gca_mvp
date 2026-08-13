@@ -1522,3 +1522,107 @@ def test_delta_to_file_total_ignores_manual_rates(client, factories, db_session)
 
     assert after["totals"]["delta_to_file_total"] == before["totals"]["delta_to_file_total"]
     assert after["totals"]["delta_to_file_total"] == "0.00"
+
+
+def test_net_reconciliation_uses_the_effective_base_not_the_file_vat_rate(
+    client, factories, db_session
+):
+    """Ревью задачи 5 (Правка 1): `net_reconciliation` обязана сверять по
+    ЭФФЕКТИВНОЙ базе (`COALESCE(vat_rate_base_override, vat_rate)`), а не по
+    сырой `proposals.vat_rate` — это и есть разница между ЭТОЙ диагностикой и
+    согласованностью самого файла (та смотрит только на файловую ставку и
+    живёт в парсере). Числа подобраны так, чтобы обе базы давали РАЗНЫЕ
+    вердикты: override=20% -> нетто ровно 1000.00, ЧТО заявил файл -> "ok";
+    сырая ставка предложения 5% -> нетто 1142.86, расхождение ~142.86 —
+    больше чем в 40 раз выше допуска `NET_RECONCILIATION_TOLERANCE=3.5` -> в
+    случае подмены источника базы вердикт обязан стать "mismatch". Ставки
+    ЯВНЫЕ и НЕНУЛЕВЫЕ по обе стороны — ни файловая, ни override не равны 0.
+
+    Краснеет от: `_net_reconciliation`, взявшей `row.vat_rate` вместо
+    эффективной базы `override if override is not None else row.vat_rate`
+    (проверено вручную снятием защиты — см. отчёт задачи 5)."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("5")
+    proposal.lot.estimate.vat_rate_base_override = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "ok"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == []
+    assert totals["net_reconciliation"]["delta"] == "0.00"
+
+
+def test_passport_reports_net_reconciliation_mismatch(client, factories, db_session):
+    """Ревью задачи 5 (Правка 2): исход "mismatch" ни разу не был проведён
+    через сам эндпоинт — свёртка покрыта 11 юнит-тестами `money/vat.py`, но
+    проводка «расхождение в данных -> статус в ответе API» нет. Ставка 20 %
+    (ЯВНАЯ, НЕНУЛЕВАЯ) на валовом 1200.00 даёт нетто РОВНО 1000.00, а файл
+    заявляет 900.00 — расхождение 100.00, на два порядка выше допуска
+    `NET_RECONCILIATION_TOLERANCE=3.5`, вердикт обязан быть "mismatch", а
+    нарушитель — назван по id.
+
+    Краснеет от: `_net_reconciliation`, не отличающей `MISMATCH` от `OK`
+    (например, сравнением через допуск, применённый неверно, или вовсе не
+    прокинутой в ответ причиной расхождения), а также от `fold_net_
+    reconciliation`, не подхваченной вовсе (тест бы остался на "ok" или
+    "not_applicable")."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("900.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "mismatch"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == [proposal.id]
+    assert totals["net_reconciliation"]["delta"] == "100.00"
+
+
+def test_net_reconciliation_aggregates_mismatch_across_multiple_proposals(
+    client, factories, db_session
+):
+    """Ревью задачи 5 (Правка 3): наружу идёт АГРЕГАТ по смете, а его сборка
+    по НЕСКОЛЬКИМ предложениям через сам эндпоинт не проверялась. Смета с
+    ДВУМЯ предложениями (два лота, как в `test_direct_totals_accumulate_
+    across_two_proposals`): у первого сходится (валовое 1200.00, ставка 20 %,
+    файл 1000.00 -> "ok", дельта 0.00), у второго расходится (валовое 600.00,
+    та же ставка 20 % -> нетто 500.00, файл 100.00 -> дельта 400.00, далеко
+    за допуском 3.5). Обе ставки ЯВНЫЕ и НЕНУЛЕВЫЕ.
+
+    Итог обязан назвать РОВНО одного нарушителя (не оба и не ни одного) и
+    сложить дельту ТОЛЬКО сравнимых предложений (0.00 + 400.00 = 400.00, а
+    не дельту одного предложения и не среднее).
+
+    Краснеет от: SQL-запроса `_net_reconciliation`, теряющего одно из двух
+    предложений сметы (например, `join` вместо `outerjoin` или неверный
+    предикат по `estimate_id`) — тогда либо нарушитель не найден вовсе, либо
+    найдены оба (при случайном декартовом произведении), либо от свёртки,
+    просуммировавшей дельту не всех сравнимых предложений."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=proposal_1.contractor)
+
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    _summary_line(db_session, proposal_2, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("600.00"))
+    _summary_line(db_session, proposal_2, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("100.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "mismatch"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == [proposal_2.id]
+    assert totals["net_reconciliation"]["delta"] == "400.00"
