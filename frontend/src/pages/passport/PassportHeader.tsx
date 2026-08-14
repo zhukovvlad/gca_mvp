@@ -5,7 +5,10 @@ import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatDecimalMoney, pluralRu } from "@/lib/format";
-import type { ProjectPassport } from "@/types/domain";
+import type { ID } from "@/types/common";
+import type { ProjectPassport, ProjectPassportEstimate } from "@/types/domain";
+
+import { VatRateDialog } from "./VatRateDialog";
 
 /**
  * Титульная полоса, линейка показателей и оговорки коммерческих условий паспорта
@@ -43,6 +46,77 @@ function formatPercentDecimal(value: string): string {
     ? value.replace(/0+$/, "").replace(/\.$/, "")
     : value;
   return `${trimmed} %`;
+}
+
+/**
+ * Текст о ставке НДС сметы (спека пересчёта §2.7, задача 10).
+ *
+ * Три состояния складываются из ПОЛЕЙ сметы (`vat_rate`,
+ * `vat_rate_base_override`, `vat_rate_target`) — они объясняют ПРОИСХОЖДЕНИЕ
+ * ставки: файл, назначенная вручную база, заданная цель. Это НЕ то же самое,
+ * что `vat_display_rate` — ставка, в которой ФАКТИЧЕСКИ выражены суммы паспорта
+ * (`totals.amount`, `per_sqm`, статьи). Приоритет цель→база→заявленная уже
+ * реализован на сервере (`money.vat.effective_display_rate`,
+ * `crud/project_passport.py:1321`), и здесь он НЕ повторяется арифметикой —
+ * `vat_display_rate` только СРАВНИВАЕТСЯ с базой/заявленной, чтобы решить,
+ * упоминать ли фактическую ставку показа отдельно. Вторая копия самого
+ * правила приоритета разъехалась бы с сервером молча при первой же его правке
+ * (задача 10, приложение оркестратора п. 4).
+ */
+function vatSummary(estimate: ProjectPassportEstimate): string {
+  const declared = estimate.vat_rate;
+  const override = estimate.vat_rate_base_override;
+  const target = estimate.vat_rate_target;
+  const base = override ?? declared;
+
+  if (base === null) return "ставка НДС не заявлена в файле";
+
+  // Ни база, ни цель не назначены вручную — показ совпадает с заявленной по
+  // построению, и `vat_display_rate` можно не читать вовсе.
+  if (override === null && target === null) {
+    return `ставка НДС ${formatPercentDecimal(base)}`;
+  }
+
+  const display = estimate.vat_display_rate;
+
+  if (override !== null) {
+    const suffix = declared === null ? "" : ` (файл заявил ${formatPercentDecimal(declared)})`;
+    const head = `база НДС ${formatPercentDecimal(override)} назначена вручную${suffix}`;
+    const displayDiffers = display !== null && display !== override;
+    return displayDiffers ? `${head}; показано в ставке ${formatPercentDecimal(display)}` : head;
+  }
+
+  // override === null, target !== null.
+  const displayDiffers = display !== null && display !== base;
+  return displayDiffers
+    ? `показано в ставке ${formatPercentDecimal(display)}, пересчитано с ${formatPercentDecimal(base)}`
+    : `ставка НДС ${formatPercentDecimal(base)}`;
+}
+
+/**
+ * Печатная сноска о поправке ставки НДС (спека пересчёта §2.7, задача 10).
+ *
+ * `null` — ставки не правились вовсе (ни база, ни цель), сноски нет.
+ * Присутствует БЕЗУСЛОВНО, когда поправка действует — тот же приём, что у
+ * печатной сноски о ручном разносе (`AGENTS.md` §7.4): банк не должен принять
+ * пересчитанные числа за содержимое файла молча.
+ */
+function vatFootnote(estimate: ProjectPassportEstimate): string | null {
+  const override = estimate.vat_rate_base_override;
+  const target = estimate.vat_rate_target;
+  if (override === null && target === null) return null;
+
+  const declared = estimate.vat_rate;
+  const display = estimate.vat_display_rate;
+
+  if (display !== null && declared !== null && display !== declared) {
+    return (
+      `Суммы паспорта показаны в ставке НДС ${formatPercentDecimal(display)}, ` +
+      `пересчитано из заявленной в файле ${formatPercentDecimal(declared)} — ` +
+      "ставка НДС этой сметы скорректирована вручную."
+    );
+  }
+  return "Ставка НДС этой сметы скорректирована вручную.";
 }
 
 function Metric({
@@ -91,11 +165,21 @@ function Term({ label, note }: { label: string; note: string | null }) {
   );
 }
 
-export function PassportHeader({ passport }: { passport: ProjectPassport }) {
+export function PassportHeader({
+  passport,
+  contractId,
+}: {
+  passport: ProjectPassport;
+  /**
+   * Id договора из МАРШРУТА, а не `passport.contract.id` из ответа — тот же
+   * приём, что у `CategoryTable` (task-8-controller-notes: два источника id
+   * молча расходятся в инвалидации мутации).
+   */
+  contractId: ID;
+}) {
   const { contract, object, estimate, totals } = passport;
 
   const noTep = object.area_total_sp === null;
-  const vatRate = estimate?.vat_rate ?? null;
   const showMultiBadge = contract.object_contracts_count > 1;
 
   // Правило 8 (§2.9): молчание — нормальный вид, сверка видна только при ДВУХ
@@ -103,6 +187,10 @@ export function PassportHeader({ passport }: { passport: ProjectPassport }) {
   const showReconcile =
     totals.delta_to_file_total !== null && !isZeroDecimal(totals.delta_to_file_total);
   const showCorruption = totals.positions_rows_not_finite > 0;
+  // Сверка нетто (спека пересчёта §2.10) — видна ТОЛЬКО при mismatch, как и
+  // существующая сверка `delta_to_file_total`: `ok`/`not_applicable`/
+  // `unknown_base` на экран не выводятся вовсе.
+  const netMismatch = totals.net_reconciliation.status === "mismatch";
 
   return (
     <header className="border border-border-subtle bg-surface">
@@ -183,12 +271,14 @@ export function PassportHeader({ passport }: { passport: ProjectPassport }) {
             estimate === null ? (
               "смета не загружена"
             ) : (
-              <>
-                {vatRate === null
-                  ? "ставка НДС не заявлена в файле"
-                  : `ставка НДС ${formatPercentDecimal(vatRate)}`}{" "}
-                · исходная смета договора
-              </>
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span data-testid="vat-summary">
+                  {vatSummary(estimate)} · исходная смета договора
+                </span>
+                <span data-print="hide">
+                  <VatRateDialog estimate={estimate} contractId={contractId} />
+                </span>
+              </span>
             )
           }
         />
@@ -256,6 +346,39 @@ export function PassportHeader({ passport }: { passport: ProjectPassport }) {
             суммы (не поддающиеся сложению) и не вошли в общую сумму. Это не заменяет подпись
             неполноты у конкретной статьи — она называет, в какой статье, а баннер — сколько всего.
           </span>
+        </p>
+      )}
+
+      {/*
+        Сверка выведенного нетто с файловым (спека пересчёта §2.10) — видна
+        ТОЛЬКО при mismatch. Печатается число предложений-нарушителей, а не их
+        перечень идентификаторов: перечень на бумаге бессмыслен, а аналитик без
+        числа увидел бы расхождение и не нашёл бы источник.
+      */}
+      {netMismatch && (
+        <p
+          data-testid="net-reconciliation"
+          className="flex items-start gap-2 border-b border-warning-border bg-warning-soft px-6 py-2 text-sm text-warning-text"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>
+            Выведенное нетто расходится с заявленным в файле; предложений:{" "}
+            {totals.net_reconciliation.mismatched_proposal_ids.length}.
+          </span>
+        </p>
+      )}
+
+      {/*
+        Печатная сноска о поправке ставки НДС (спека пересчёта §2.7) — лежит
+        под остальным содержимым и раскрытию дерева не подчинена (в этом
+        документе раскрытия и вовсе нет): `data-print="hide"` на ней стоять не
+        имеет права, тот же приём, что у сноски о ручном разносе (`AGENTS.md`
+        §7.4) — банк не должен принять пересчитанные числа за содержимое
+        файла молча.
+      */}
+      {estimate !== null && vatFootnote(estimate) !== null && (
+        <p data-testid="vat-print-note" className="px-6 py-2 text-xs text-fg-secondary">
+          {vatFootnote(estimate)}
         </p>
       )}
     </header>

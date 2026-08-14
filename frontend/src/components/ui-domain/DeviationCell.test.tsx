@@ -37,4 +37,19 @@ describe("DeviationCell: различение причин пустого отк
     render(<DeviationCell value={null} />);
     expect(screen.getByText("нет норматива")).toBeInTheDocument();
   });
+
+  /**
+   * Райдер задачи 10 пересчёта НДС (найдено ревью задачи 9): `_fold_cell`
+   * (`backend/crud/analytics.py:743`) умеет вернуть `deviation_reason:
+   * "no_weight"` — защитная ветка на случай потери единственной строки с
+   * положительным весом, недостижимая сегодня (CTE фильтрует `weight > 0`), но
+   * код причины мог прийти с сервера уже сейчас. Без записи в типе и словаре
+   * `REASON_TEXT["no_weight"]` был бы `undefined`, и деструктуризация
+   * `{ full, title }` бросала бы `TypeError` вместо показа подписи.
+   */
+  it("различает «нет веса» — райдер задачи 9, защитная ветка _fold_cell", () => {
+    expect(() => render(<DeviationCell value={null} reason="no_weight" />)).not.toThrow();
+    expect(screen.getByText("нет веса")).toBeInTheDocument();
+    expect(screen.queryByText("нет норматива")).not.toBeInTheDocument();
+  });
 });

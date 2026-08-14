@@ -517,6 +517,9 @@ export const sampleProjectPassport: ProjectPassport = {
     vat_rate_base_override: null,
     vat_rate_target: null,
     vat_rate_updated_at: null,
+    // Без поправок ставка показа совпадает с заявленной (задача 10) —
+    // `effective_display_rate` без override/target возвращает `declared`.
+    vat_display_rate: "20",
   },
   totals: {
     // 500000 + 300000 + 175000 + 900000 + 800000 + 700000 + 600000 + 400000 +

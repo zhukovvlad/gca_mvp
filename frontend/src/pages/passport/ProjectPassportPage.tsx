@@ -54,6 +54,19 @@ export default function ProjectPassportPage() {
     );
   }
 
+  if (id === undefined) {
+    // Защитная случайность, не наблюдаемая в реальной работе: `passport`
+    // заполнен только если запрос ушёл, а `useProjectPassport` держит его
+    // заблокированным (`enabled: contractId !== undefined`), пока `id` не
+    // определён. TypeScript этой связи не видит — сужаем явно, без `!`/каста
+    // (task-8-controller-notes). Проверка вынесена ДО ветки «смета не
+    // загружена» ниже: `PassportHeader` там тоже требует `id` МАРШРУТА для
+    // `VatRateDialog`, и подмена на `passport.contract.id` завела бы второй
+    // источник того же id (тот самый анти-приём, что уже поймало ревью
+    // задачи 8 у мутации разноса).
+    return null;
+  }
+
   /*
     Смета не загружена — это НЕ повод прятать документ целиком. Спека §2.4
     объясняет ответ `200` именно тем, что «карточка заведена, файл ещё не
@@ -66,7 +79,7 @@ export default function ProjectPassportPage() {
   if (passport.estimate === null) {
     return (
       <div className="container-page py-8" data-print="sheet">
-        <PassportHeader passport={passport} />
+        <PassportHeader passport={passport} contractId={id} />
         <div className="mt-6">
           <EmptyState
             title="Смета к договору ещё не загружена"
@@ -77,21 +90,12 @@ export default function ProjectPassportPage() {
     );
   }
 
-  if (id === undefined) {
-    // Защитная случайность, не наблюдаемая в реальной работе: `passport`
-    // заполнен только если запрос ушёл, а `useProjectPassport` держит его
-    // заблокированным (`enabled: contractId !== undefined`), пока `id` не
-    // определён. TypeScript этой связи не видит — сужаем явно, без `!`/каста
-    // (task-8-controller-notes).
-    return null;
-  }
-
   return (
     // data-print="sheet" — документ целиком (задача 10, спека §2.11): шапка,
     // кольцо структуры и таблица по статьям печатаются как один лист/свод, а
     // не по отдельности. Ровно один узел во всём дереве несёт эту метку.
     <div className="container-page py-8" data-print="sheet">
-      <PassportHeader passport={passport} />
+      <PassportHeader passport={passport} contractId={id} />
       <div className="mt-6">
         <StructureRing passport={passport} />
       </div>

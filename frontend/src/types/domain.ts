@@ -392,8 +392,13 @@ export interface MatrixCell {
   amount: Decimal | null;
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
-  /** Почему отклонения нет: два разных факта нельзя сводить к одному прочерку. */
-  deviation_reason: "no_standard" | "unknown_vat_base" | null;
+  /**
+   * Почему отклонения нет: два разных факта нельзя сводить к одному прочерку.
+   * `no_weight` — райдер задачи 10 (`_fold_cell`, `backend/crud/analytics.py:743`):
+   * защитная ветка, недостижимая сегодня (CTE фильтрует `weight > 0`), но код
+   * причины должен быть заведён в типе заранее, а не молча дать `undefined`.
+   */
+  deviation_reason: "no_standard" | "unknown_vat_base" | "no_weight" | null;
 }
 
 export interface MatrixRow {
@@ -569,6 +574,20 @@ export interface ProjectPassportEstimate {
   vat_rate_target: Decimal | null;
   /** Когда правили ставки; `null` — поправок нет. */
   vat_rate_updated_at: string | null;
+  /**
+   * Ставка, в которой ФАКТИЧЕСКИ показаны деньги паспорта (`totals.amount`,
+   * `per_sqm`, суммы статей) — приоритет цель → назначенная база → единогласная
+   * заявленная (спека пересчёта §5.1, `money.vat.effective_display_rate`,
+   * `crud/project_passport.py:1321`). `null` — при разногласии заявленных
+   * ставок предложений: единой ставки нет, пересчёт не применяется.
+   *
+   * Считается на сервере ОДИН раз и приходит уже готовым — фронт обязан читать
+   * это поле, а не выводить эффективную ставку заново арифметикой из
+   * `vat_rate`/`vat_rate_base_override`/`vat_rate_target`: правило приоритета
+   * уже реализовано на сервере, и вторая копия того же правила разъедется
+   * молча при первой же его правке (задача 10, приложение оркестратора п. 4).
+   */
+  vat_display_rate: Decimal | null;
 }
 
 /** Ответ `PATCH /v1/estimates/{id}/vat` (спека пересчёта §2.7) — новое состояние ставок сметы. */

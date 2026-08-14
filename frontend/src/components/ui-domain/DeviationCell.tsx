@@ -10,8 +10,15 @@ import { cn } from "@/lib/utils";
  *
  * `undefined` (проп `reason` не передан) — старые вызовы вне этой фичи; для
  * них поведение прежнее — «нет норматива».
+ *
+ * `no_weight` — райдер задачи 10 пересчёта НДС (найдено ревью задачи 9,
+ * `backend/crud/analytics.py:743`, `_fold_cell`): защитная ветка на случай,
+ * если группа ячейки лишится единственной строки с положительным весом.
+ * Сегодня недостижима (CTE фильтрует `weight > 0`), но код причины уже мог
+ * прийти с сервера, и `REASON_TEXT[reason]` без записи давал бы `TypeError`
+ * на `undefined` при разборе деструктуризацией.
  */
-export type DeviationReason = "no_standard" | "unknown_vat_base";
+export type DeviationReason = "no_standard" | "unknown_vat_base" | "no_weight";
 
 const REASON_TEXT: Record<DeviationReason, { full: string; title: string }> = {
   no_standard: {
@@ -21,6 +28,10 @@ const REASON_TEXT: Record<DeviationReason, { full: string; title: string }> = {
   unknown_vat_base: {
     full: "неизвестна база НДС",
     title: "База НДС не заявлена в файле и не назначена — нетто вывести не из чего",
+  },
+  no_weight: {
+    full: "нет веса",
+    title: "Ни одна строка ячейки не несёт положительного веса — средневзвешенную ставку вывести не из чего",
   },
 };
 

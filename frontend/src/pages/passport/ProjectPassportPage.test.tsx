@@ -1630,3 +1630,127 @@ describe("Паспорт проекта: печать", () => {
     });
   });
 });
+
+/**
+ * Диалог правки ставок НДС, три состояния подписи, печатная сноска и сверка
+ * нетто (задача 10, спека пересчёта §2.7, §2.10).
+ *
+ * **Расхождения с текстом брифа, зафиксированные явно (см. отчёт задачи):**
+ * пример брифа искал текст глобально (`screen.getByText`) — начиная с этой
+ * фичи в шапке рядом стоят ДВЕ вещи, обе несущие ставку/пересчёт («ставка
+ * показа», сноска), и глобальный поиск стал неоднозначен. Ассерты ниже
+ * поэтому идут через `within(getByTestId("vat-summary"|"vat-print-note"))`.
+ * Пример брифа также сверял литеральную подстроку «показано в ставке 16,
+ * пересчитано с 20» без знака процента — реальный `formatPercentDecimal`
+ * этого файла вставляет « %» между числом и следующим словом («16 %,
+ * пересчитано»), поэтому проверка ниже — по числам через regex, а не по
+ * склеенной строке буквально.
+ */
+describe("Паспорт проекта: ставка НДС и сверка нетто", () => {
+  // Тест 1. Краснеет от: возврата `"ставка НДС не заявлена в файле"` НЕ из
+  // `vatSummary`, а из старого инлайна с иной веткой (например, отсутствия
+  // проверки `base === null` вовсе, что напечатало бы "ставка НДС null %").
+  it("без базы предлагает объявить ставку файла", async () => {
+    withPassport((base) => ({
+      ...base,
+      estimate: base.estimate
+        ? {
+            ...base.estimate,
+            vat_rate: null,
+            vat_rate_base_override: null,
+            vat_rate_target: null,
+            vat_display_rate: null,
+          }
+        : null,
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const summary = screen.getByTestId("vat-summary");
+    expect(within(summary).getByText(/ставка НДС не заявлена в файле/)).toBeInTheDocument();
+  });
+
+  // Тест 2. Краснеет от: пропуска суффикса «файл заявил …» (например, если
+  // `vatSummary` печатает только назначенную базу без исходной заявленной) —
+  // тогда вторая проверка ниже не находит «20» рядом с «файл заявил».
+  it("показывает назначенную вручную базу рядом с заявленной файлом", async () => {
+    withPassport((base) => ({
+      ...base,
+      estimate: base.estimate
+        ? {
+            ...base.estimate,
+            vat_rate: "20",
+            vat_rate_base_override: "12",
+            vat_rate_target: null,
+            vat_display_rate: "12",
+          }
+        : null,
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const summary = screen.getByTestId("vat-summary");
+    expect(within(summary).getByText(/база НДС 12\s*%.*назначена вручную/)).toBeInTheDocument();
+    expect(within(summary).getByText(/файл заявил 20\s*%/)).toBeInTheDocument();
+  });
+
+  // Тест 3. Краснеет от: сноски, вычисляющей ставку показа арифметикой из
+  // `vat_rate_target` вместо чтения `vat_display_rate` (запрет приложения
+  // оркестратора п. 4) — на ЭТОМ входе результат совпал бы случайно, но
+  // отдельный юнит-тест `vatFootnote`-подобной логики здесь не нужен: сама
+  // проверка `data-print` — про печать, а не про источник ставки.
+  it("печатная сноска о поправке присутствует и не скрыта от печати", async () => {
+    withPassport((base) => ({
+      ...base,
+      estimate: base.estimate
+        ? {
+            ...base.estimate,
+            vat_rate: "20",
+            vat_rate_base_override: null,
+            vat_rate_target: "16",
+            vat_display_rate: "16",
+          }
+        : null,
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const note = await screen.findByTestId("vat-print-note");
+    expect(within(note).getByText(/показаны в ставке НДС 16\s*%/)).toBeInTheDocument();
+    expect(within(note).getByText(/заявленной в файле 20\s*%/)).toBeInTheDocument();
+    expect(note).not.toHaveAttribute("data-print", "hide");
+    expect(note.closest('[data-print="hide"]')).toBeNull();
+  });
+
+  // Тест 4. Краснеет от: условия показа сверки, завязанного на `!== null`
+  // вместо `=== "mismatch"` (например, показ и при `unknown_base`) — тест 5
+  // ниже (статус "ok") эту же ветку не поймал бы сам по себе, если бы
+  // случайно совпало число нарушителей с нулём.
+  it("расхождение нетто видно при mismatch и несёт число нарушителей", async () => {
+    withPassport((base) => ({
+      ...base,
+      totals: {
+        ...base.totals,
+        net_reconciliation: {
+          status: "mismatch",
+          delta: "1234.56",
+          mismatched_proposal_ids: [9001, 9002],
+        },
+      },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.getByTestId("net-reconciliation")).toHaveTextContent(/предложений: 2/);
+  });
+
+  // Тест 5. Негативная половина теста 4 — без неё «показывается при mismatch»
+  // не значило бы «и НЕ показывается иначе», а фикстура по умолчанию несёт
+  // именно status: "ok" (sampleProjectPassport).
+  it("при статусе ok сверка нетто не показывается вовсе", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.queryByTestId("net-reconciliation")).not.toBeInTheDocument();
+  });
+});
