@@ -338,9 +338,21 @@ def _fold_summary_work(
 
     Норматив (уже нетто) НЕ разносится по группам: у него нет собственной базы
     НДС, конвертировать его частями незачем — он копится СЫРЫМ (`standard_net_
-    total`) и приводится к ставке показа ОДНИМ вызовом `_standard_in_display_
-    rate` в конце. При разногласии баз (`effective_rate is None`) норматив
-    гасится целиком (граница §5.1) — даже если у него самого есть значение.
+    total`).
+
+    **НЕИЗВЕСТНОСТЬ базы отличена от РАЗНОГЛАСИЯ ставок** (ре-ревью задачи 8,
+    круг 4, Правка 2 — тот же дефект, что чинился на паспорте Ф6 кругом 3,
+    просто на этой поверхности; спека §2.5, строка 293, дословно: «норматив
+    при неизвестной базе показывается как нетто; не вычисляется только
+    отклонение»). Признак — `vat_rate_base` САМИХ ГРУПП этой работы, а не
+    `effective_rate is None` (та даёт `None` в ОБОИХ случаях и сама их не
+    различает): если у ХОТЯ БЫ ОДНОЙ группы база не заявлена, норматив
+    показывается СЫРЫМ нетто без попытки конвертации (конвертировать не во
+    что), а отклонение НЕ ВЫЧИСЛЯЕТСЯ (факт этой группы тоже остался
+    непересчитанным — сравнивать валовое с нетто было бы сравнением разных
+    единиц). Если базы ВСЕХ групп известны, но `effective_rate` всё равно
+    `None` — это НАСТОЯЩЕЕ разногласие заявленных ставок предложений (§5.1),
+    и вот тогда норматив гасится целиком.
 
     Величины здесь НЕОКРУГЛЕНЫ (см. модульную документацию про границу
     округления): вызывающий код (`contract_summary`) квантует их САМ, ПОСЛЕ
@@ -352,11 +364,12 @@ def _fold_summary_work(
     — регресс тождества §2.4 на `amount`/`rate` при любой работе с
     нормативом и без цели). Возвращаются ДВА независимых признака:
     `fact_restated` — хоть одна группа факта получила статус `RESTATED`
-    (гейт для `amount`/`rate`); `standard_shown` — норматив вообще посчитан
-    (`standard_amount is not None`, гейт для `standard_unit_rate` — у нормы
-    нет ветки тождества, показ в ставке показа ВСЕГДА реальная конвертация
-    нетто→гросс). `deviation_money` квантуется, если сработал ХОТЯ БЫ ОДИН из
-    двух гейтов (обе его стороны могли внести нецелые хвосты).
+    (гейт для `amount`/`rate`); `standard_shown` — норматив РЕАЛЬНО приведён
+    к ставке показа (гейт для `standard_unit_rate` — у нормы нет ветки
+    тождества при настоящей конвертации, но в ветке «база неизвестна» нормы
+    конвертации вообще не было, и квантовать нечего). `deviation_money`
+    квантуется, если сработал ХОТЯ БЫ ОДИН из двух гейтов (обе его стороны
+    могли внести нецелые хвосты).
     """
     fact_total: Decimal | None = None
     volume_total = ZERO
@@ -395,12 +408,26 @@ def _fold_summary_work(
             volume_comparable += group.volume or ZERO
             standard_net_total += group.standard_amount or ZERO
 
-    standard_amount = (
-        None if fact_comparable is None else _standard_in_display_rate(standard_net_total, effective_rate)
-    )
-    standard_shown = standard_amount is not None
+    any_unknown_base = any(group.vat_rate_base is None for group in groups)
+    if fact_comparable is None:
+        standard_amount = None
+        standard_shown = False
+    elif any_unknown_base:
+        # База ХОТЯ БЫ ОДНОЙ группы не заявлена: норматив показывается СЫРЫМ
+        # нетто, без попытки конвертации (спека §2.5, строка 293) — не
+        # квантуется, конвертации не было (та же логика, что у факта в
+        # ветке тождества).
+        standard_amount = standard_net_total
+        standard_shown = False
+    else:
+        # Базы ВСЕХ групп известны — если `effective_rate` всё же `None`,
+        # это настоящее разногласие заявленных ставок (§5.1), и норматив
+        # гасится (`_standard_in_display_rate` вернёт `None`).
+        standard_amount = _standard_in_display_rate(standard_net_total, effective_rate)
+        standard_shown = standard_amount is not None
+    deviation_pct = None if any_unknown_base else _deviation_pct(fact_comparable, standard_amount)
     deviation_money = (
-        None if fact_comparable is None or standard_amount is None
+        None if any_unknown_base or fact_comparable is None or standard_amount is None
         else fact_comparable - standard_amount
     )
     row = {
@@ -410,11 +437,15 @@ def _fold_summary_work(
         "rate": _weighted(fact_total, volume_total),
         "standard_unit_rate": _weighted(standard_amount, volume_comparable),
         "amount": fact_total,
-        "deviation_pct": _deviation_pct(fact_comparable, standard_amount),
+        "deviation_pct": deviation_pct,
         "deviation_money": deviation_money,
-        # Сравнимая часть — по ней считаются итоги, и она может быть меньше строки.
-        "comparable_amount": fact_comparable,
-        "comparable_standard_amount": standard_amount,
+        # Сравнимая часть — по ней считаются итоги, и она может быть меньше
+        # строки. При неизвестной базе (`any_unknown_base`) — `None`, не
+        # сырые валовое/нетто: строка не участвует в суммах ИТОГОВ (`_totals_
+        # of`), иначе они смешали бы единицы этой строки с приведёнными
+        # суммами других работ отчёта.
+        "comparable_amount": None if any_unknown_base else fact_comparable,
+        "comparable_standard_amount": None if any_unknown_base else standard_amount,
         "positions": positions_total,
         "positions_without_standard": positions_without_standard,
     }

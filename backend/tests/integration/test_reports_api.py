@@ -904,6 +904,39 @@ def test_standard_is_null_when_bases_disagree(factories, db_session):
     assert row["standard_unit_rate"] is None
 
 
+def test_standard_is_shown_as_net_when_this_row_has_no_vat_base(factories, db_session):
+    """Ре-ревью задачи 8, круг 4, Правка 2 — парный к тесту выше
+    (`test_standard_is_null_when_bases_disagree`): та сторона стережёт
+    «гасить при разногласии», эта — «не гасить при неизвестной базе» (спека
+    §2.5, строка 293, дословно: «норматив при неизвестной базе показывается
+    как нетто; не вычисляется только отклонение»). Тот же дефект, что чинился
+    на паспорте Ф6 кругом 3 (`test_analytics_api.py::TestPassportDisplayRate
+    ::test_standard_is_shown_as_net_when_this_row_has_no_vat_base`), просто
+    здесь, на своде: `_fold_summary_work` схлопывал «база не заявлена» и
+    «ставки разошлись» в одну ветку `effective_rate is None -> норматив
+    None`, хотя это РАЗНЫЕ случаи.
+
+    Одно предложение, ставка НЕ заявлена (`vat_rate=None`) — не разногласие
+    (предложение одно), а незнание: норматив ОБЯЗАН остаться видимым как
+    сырой нетто, отклонение — пустым (сравнивать не с чем, единицы не
+    сведены).
+
+    Краснеет от: `_fold_summary_work`, применяющей `_standard_in_display_
+    rate(standard_net_total, effective_rate)` БЕЗ ветки `any_unknown_base`
+    (тогда `effective_rate is None` из-за незаявленной ставки погасил бы
+    норматив так же, как разногласие) — подтверждено мутацией: см. отчёт
+    задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["standard_unit_rate"]) == Decimal("100")
+    assert row["deviation_pct"] is None
+    assert row["deviation_money"] is None
+
+
 def test_contract_summary_amount_and_rate_are_untouched_without_target(factories, db_session):
     """Ре-ревью задачи 8, круг 3, Правка 1 — тест ПЕРЕПИСАН: круг 2 заводил
     позицию БЕЗ норматива и тем самым ОБХОДИЛ дефект (гейт был поднят ОДНИМ

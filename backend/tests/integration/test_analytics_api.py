@@ -1288,3 +1288,39 @@ class TestPassportDisplayRate:
         assert Decimal(rate["standard_unit_rate"]) == Decimal("100")
         assert rate["deviation_pct"] is None
         assert rate["deviation_reason"] == "unknown_vat_base"
+
+    def test_standard_is_null_when_proposals_disagree_on_the_rate(
+        self, client, factories, db_session
+    ):
+        """Ре-ревью задачи 8, круг 4, Правка 1 — парный к соседнему тесту
+        выше (`test_standard_is_shown_as_net_when_this_row_has_no_vat_base`):
+        та сторона стережёт «не гасить при неизвестной базе», эта — «гасить
+        при настоящем разногласии» (§5.1). Круг 3 развёл обе ветки в коде, но
+        застраховал тестом только ОДНУ сторону — ре-ревьюер сломал ветку
+        разногласия (`crud/analytics.py:275-277`, вернул норматив вместо
+        гашения) и прогнал ВЕСЬ файл + `test_project_passport_api.py` — 129
+        зелёных, ни одного красного: стража не было вовсе.
+
+        ДВА предложения с РАЗНЫМИ заявленными ставками (20 % и 12 %) на ОДНУ
+        и ту же работу — базы ОБЕИХ строк ИЗВЕСТНЫ (в отличие от соседнего
+        теста), но единой ставки показа нет: `effective_display_rate`
+        отдаёт `None` по разногласию, а не по незнанию. Норматив обязан
+        погаснуть на КАЖДОЙ из двух строк.
+
+        Краснеет от: возврата норматива вместо `None` в ветке `else`
+        (`r.vat_rate_base is not None`) при разногласии — подтверждено
+        мутацией: см. отчёт задачи."""
+        contract, _estimate, position = _priced_estimate_with_two_proposals(
+            factories, unit_cost_total=Decimal("120"), vat_rates=[Decimal("20"), Decimal("12")]
+        )
+        factories.RateStandardFactory.create(
+            catalog_position=position,
+            rate_class=contract.rate_class,
+            standard_unit_rate=Decimal("100"),
+            valid_from=dt.date(2025, 1, 1),
+        )
+        db_session.commit()
+
+        key_rates = _passport(client, contract.id)["key_rates"]
+        assert len(key_rates) == 2
+        assert all(rate["standard_unit_rate"] is None for rate in key_rates)
