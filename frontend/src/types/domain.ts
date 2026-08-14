@@ -393,12 +393,17 @@ export interface MatrixCell {
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
   /**
-   * Почему отклонения нет: два разных факта нельзя сводить к одному прочерку.
+   * Почему отклонения нет: разные факты нельзя сводить к одному прочерку.
    * `no_weight` — райдер задачи 10 (`_fold_cell`, `backend/crud/analytics.py:743`):
    * защитная ветка, недостижимая сегодня (CTE фильтрует `weight > 0`), но код
    * причины должен быть заведён в типе заранее, а не молча дать `undefined`.
+   * `not_finite` — дефект 1, круг 3 (ре-ревью Codex, PR #21): `_fold_cell`
+   * теперь тоже гасит `rate`/`amount` ЦЕЛИКОМ и называет причину честно,
+   * когда средневзвешенная ставка ячейки (или сумма, из которой она
+   * получена) оказывается `NaN`/`Infinity` — до этой правки утечка была бы
+   * видна в самой ячейке буквальным `"NaN"`.
    */
-  deviation_reason: "no_standard" | "unknown_vat_base" | "no_weight" | null;
+  deviation_reason: "no_standard" | "unknown_vat_base" | "no_weight" | "not_finite" | null;
 }
 
 export interface MatrixRow {

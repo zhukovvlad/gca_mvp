@@ -23,11 +23,18 @@ import datetime as dt
 import json
 import re
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
 
-from crud.analytics import _NET_COST, DECLARED_VIEW_COLUMNS, DEVIATION_INPUTS, _net_deviation
+from crud.analytics import (
+    _NET_COST,
+    DECLARED_VIEW_COLUMNS,
+    DEVIATION_INPUTS,
+    _fold_cell,
+    _net_deviation,
+)
 from models import PASSPORT_TOP_N_DEFAULT, CatalogKind
 from money.vat import gross_to_net, quantize_money
 
@@ -1215,6 +1222,87 @@ class TestMatrixCellDrillDownSurvivesNonFiniteCost:
         item = body["items"][0]
         assert item["deviation_pct"] is None
         assert item["deviation_reason"] == "not_finite"
+
+
+# ---------------------------------------------------------------------------
+#  Дефект 1, ТРЕТИЙ экземпляр (ре-ревью Codex, PR #21, круг 3): найден и
+#  воспроизведён оркестратором на `_fold_cell` (ячейка матрицы) ПОСЛЕ починки
+#  `_net_deviation`. Это не «то же сомнение», а третья поверхность того же
+#  класса: `SUM`/деление в `_fold_cell` тихо распространяют `NaN`/`Infinity`
+#  из `weighted_cost` на средневзвешенную ставку ЯЧЕЙКИ, и утечка серьёзнее,
+#  чем в паспорте/drill-down — под угрозой ДВА денежных поля ответа сразу
+#  (`rate` И `amount`), а не только `deviation_pct`, и матрица — поверхность,
+#  которую UI реально рисует.
+# ---------------------------------------------------------------------------
+
+class TestFoldCellNotFinite:
+    """Прямой вызов `_fold_cell` — воспроизведение оркестратора буквально:
+    `_fold_cell([group(vat_rate_base=20, weighted_cost=NaN, weight_total=2,
+    standard_unit_rate=100)])`."""
+
+    def _group(self, **kwargs):
+        base = {
+            "vat_rate_base": Decimal("20"),
+            "weighted_cost": Decimal("200"),
+            "weight_total": Decimal("2"),
+            "standard_unit_rate": Decimal("100"),
+        }
+        base.update(kwargs)
+        return SimpleNamespace(**base)
+
+    @pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_weighted_cost_hides_rate_and_amount_with_honest_reason(self, bad):
+        """Краснеет от текущего (до правки круга 3) кода: `rate`/`amount`
+        возвращались буквальным `Decimal('NaN')`/`Decimal('Infinity')` — число
+        под видом числа, но не число, — а `deviation_reason` оставался
+        `None` (== «норматив есть, отклонение известно»), хотя отклонение
+        как раз НЕ известно."""
+        result = _fold_cell([self._group(weighted_cost=Decimal(bad))])
+        assert result["rate"] is None
+        assert result["amount"] is None
+        assert result["deviation_pct"] is None
+        assert result["deviation_reason"] == "not_finite"
+        # Норматив не гасится — та же логика, что у unknown_vat_base/no_weight:
+        # он от НДС не зависит и остаётся нетто по определению.
+        assert result["standard_unit_rate"] == Decimal("100")
+
+    def test_finite_case_is_unaffected(self):
+        """Контроль: обычный конечный случай не должен пострадать от починки."""
+        result = _fold_cell([self._group()])
+        assert result["rate"] == Decimal("83.33")  # gross_to_net(200,20)/2
+        assert result["amount"] == Decimal("166.67")
+        assert result["deviation_reason"] is None
+
+
+class TestMatrixCellFoldSurvivesNonFiniteCost:
+    """Воспроизведение ЧЕРЕЗ САМ ЭНДПОИНТ матрицы (не только прямым вызовом
+    `_fold_cell`) — тот же принцип, что и у паспорта дефекта 1: не верить
+    одному способу репродукции."""
+
+    def test_nan_cost_hides_rate_and_amount_instead_of_leaking_nan(
+        self, client, factories, db_session
+    ):
+        """До починки: ячейка матрицы отдавала бы буквальный `"NaN"` в
+        `rate`/`amount`, подписанный `deviation_reason=None` (== «нет
+        причины, отклонение как есть») — числовой мусор под видом факта,
+        да ещё и с честной на вид, но лживой причиной."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("NaN"), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        db_session.commit()
+
+        row = next(
+            r for r in _matrix(client)["rows"] if r["catalog_position_id"] == contract.catalog_position_id
+        )
+        cell = _cell_of(row, contract.id)
+
+        assert cell["rate"] is None
+        assert cell["amount"] is None
+        assert cell["deviation_pct"] is None
+        assert cell["deviation_reason"] == "not_finite"
+        # Норматив виден — та же граница, что у "unknown_vat_base"/"no_weight".
+        assert cell["standard_unit_rate"] is not None
 
 
 class TestMatrixCellDrillDownNetAxis:

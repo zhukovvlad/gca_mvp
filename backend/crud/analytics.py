@@ -783,11 +783,55 @@ def _fold_cell(groups) -> dict:
         standard = group.standard_unit_rate if standard is None else standard
 
     rate = net_cost / weight_total if weight_total else None
+
+    # Дефект 1, третий экземпляр (ре-ревью Codex, PR #21, круг 3): `NaN`/
+    # `Infinity` в `unit_cost_total` доезжает сюда открытым хвостом Ф4 (§5.6) и
+    # тихо распространяется через SQL `SUM` (`weighted_cost`) и через
+    # `gross_to_net`/деление — `rate` (а с ним и `amount`, та же величина
+    # `net_cost`) становится нефинитным БЕЗ исключения. В отличие от
+    # `_net_deviation` (паспорт/drill-down), здесь под угрозой не только
+    # `deviation_pct`, а ДВА денежных поля ответа: аналитик увидел бы в ячейке
+    # матрицы буквальное `"NaN"`, подписанное `deviation_reason=None`/
+    # `"no_standard"` — то есть «нет норматива» вместо честного «величина не
+    # число». Матрица — поверхность, которую UI реально рисует (в отличие от
+    # паспорта фазы 6), так что утечка была бы видна аналитику напрямую.
+    #
+    # Нефинитная `rate` прячет ОБА поля (`rate`/`amount`) целиком — та же
+    # логика, что уже применена к `unknown_vat_base`/`no_weight` выше: частичная
+    # величина хуже отсутствующей. `standard_unit_rate` не гасится (та же
+    # причина, что в докстроке функции) — норматив от НДС не зависит и остаётся
+    # нетто по определению независимо от годности факта.
+    if rate is not None and not rate.is_finite():
+        return {
+            "rate": None,
+            "amount": None,
+            "standard_unit_rate": standard,
+            "deviation_pct": None,
+            "deviation_reason": "not_finite",
+        }
+
+    deviation_pct = _deviation(rate, standard)
+    if deviation_pct is not None and not deviation_pct.is_finite():
+        # Пояс и подтяжки, симметрично `_net_deviation`: `rate` здесь уже
+        # доказанно финитен (проверка выше), поэтому это может случиться,
+        # только если сам норматив окажется нефинитным — гипотетически
+        # возможно, т.к. PostgreSQL считает `'NaN'::numeric > 0` ИСТИНОЙ и
+        # CHECK `standard_unit_rate > 0` NaN не отсекает. `rate`/`amount`
+        # остаются видимыми (они настоящие числа), гасится только отклонение —
+        # тот же выбор, что у `_net_deviation`.
+        return {
+            "rate": quantize_money(rate),
+            "amount": quantize_money(net_cost),
+            "standard_unit_rate": standard,
+            "deviation_pct": None,
+            "deviation_reason": "not_finite",
+        }
+
     return {
         "rate": quantize_money(rate),
         "amount": quantize_money(net_cost),
         "standard_unit_rate": standard,
-        "deviation_pct": _deviation(rate, standard),
+        "deviation_pct": deviation_pct,
         "deviation_reason": None if standard is not None else "no_standard",
     }
 

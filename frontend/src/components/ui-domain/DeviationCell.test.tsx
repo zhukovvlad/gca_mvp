@@ -54,15 +54,16 @@ describe("DeviationCell: различение причин пустого отк
   });
 
   /**
-   * Дефект 1 (ре-ревью Codex, PR #21): `_net_deviation` теперь может вернуть
-   * причину `"not_finite"` (цена строки — `NaN`/`Infinity`, открытый хвост
-   * Ф4 §5.6). Без записи в типе и в `REASON_TEXT` компонент упал бы
-   * `TypeError` при деструктуризации `REASON_TEXT[reason]` на `undefined` —
-   * тем же способом, что уже стерёгся тест «нет веса» выше.
+   * Дефект 1 (ре-ревью Codex, PR #21): и `_net_deviation` (паспорт/drill-down),
+   * и `_fold_cell` (ячейка матрицы, круг 3) теперь могут вернуть причину
+   * `"not_finite"` (величина — `NaN`/`Infinity`, открытый хвост Ф4 §5.6). Без
+   * записи в типе и в `REASON_TEXT` компонент упал бы `TypeError` при
+   * деструктуризации `REASON_TEXT[reason]` на `undefined` — тем же способом,
+   * что уже стерёгся тест «нет веса» выше.
    */
-  it("различает «цена не число» — дефект 1 ре-ревью Codex, `_net_deviation`", () => {
+  it("различает «не число» — дефект 1 ре-ревью Codex, `_net_deviation`/`_fold_cell`", () => {
     expect(() => render(<DeviationCell value={null} reason="not_finite" />)).not.toThrow();
-    expect(screen.getByText("цена не число")).toBeInTheDocument();
+    expect(screen.getByText("не число")).toBeInTheDocument();
     expect(screen.queryByText("нет норматива")).not.toBeInTheDocument();
     expect(screen.queryByText("неизвестна база НДС")).not.toBeInTheDocument();
   });
