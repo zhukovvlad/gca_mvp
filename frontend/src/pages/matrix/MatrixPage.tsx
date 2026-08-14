@@ -31,6 +31,16 @@ const PAGE_SIZE = 50;
 const ALL_CLASSES = "all";
 
 /**
+ * Постоянный id сноски о неполном весе строки (спека §2.6, исключение).
+ *
+ * Маркеры ВСЕХ строк ссылаются на ОДИН элемент: сноска под таблицей одна, и
+ * генерировать `id` от `catalog_position_id` значило бы сослаться на элемент,
+ * которого нет на текущей странице, — `aria-describedby` молча повис бы в
+ * пустоту.
+ */
+const INCOMPLETE_NOTE_ID = "matrix-row-amount-incomplete-note";
+
+/**
  * Сквозная матрица (AGENTS.md §6, §7.5).
  *
  * Строки — каталожные работы (`kind='POSITION'`), колонки — договоры с группировкой
@@ -320,6 +330,13 @@ export default function MatrixPage() {
             Работ в выборке: {matrix.total}. Порядок — по суммарной стоимости работы во всех
             договорах выборки, поэтому на первой странице самое весомое. Договоров: {matrix.columns.length}.
           </p>
+          {/* Рендерится, когда неполна хотя бы одна строка ТЕКУЩЕЙ страницы. */}
+          {rows.some((row) => row.row_amount_incomplete) && (
+            <p id={INCOMPLETE_NOTE_ID} className="mt-2 text-xs text-fg-tertiary">
+              * База НДС известна не во всех договорах; такие ячейки не показаны и в вес
+              строки не вошли.
+            </p>
+          )}
         </>
       )}
 
@@ -376,6 +393,31 @@ function buildColumns(
         {row.original.unit_code && (
           <span className="text-xs text-fg-tertiary">{row.original.unit_code}</span>
         )}
+        {/*
+          Вес строки — рядом с работой, а не отдельной колонкой на договоры: он
+          не привязан ни к одному конкретному договору. Признак неполноты
+          (спека §2.6, исключение) обязателен на экране, иначе частичная сумма
+          выглядит полной — SUM игнорирует NULL, и вес молча считается по части
+          ячеек, когда база НДС известна не везде.
+        */}
+        <div className="mt-1 text-xs text-fg-tertiary" data-testid="row-amount">
+          Вес:{" "}
+          {row.original.row_amount === null ? (
+            "—"
+          ) : (
+            <MoneyCell value={row.original.row_amount} maxFractionDigits={2} />
+          )}
+          {row.original.row_amount_incomplete && (
+            <span
+              data-testid="row-amount-incomplete"
+              aria-describedby={INCOMPLETE_NOTE_ID}
+              className="ml-0.5"
+              title="Вес посчитан не по всем ячейкам — см. сноску под таблицей"
+            >
+              *
+            </span>
+          )}
+        </div>
       </div>
     ),
   });
@@ -408,7 +450,12 @@ function buildColumns(
                   maxFractionDigits={2}
                   className="block"
                 />
-                <DeviationCell value={cell.deviation_pct} variant="compact" className="block text-xs" />
+                <DeviationCell
+                  value={cell.deviation_pct}
+                  reason={cell.deviation_reason ?? undefined}
+                  variant="compact"
+                  className="block text-xs"
+                />
               </button>
             );
           },

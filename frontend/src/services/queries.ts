@@ -23,6 +23,7 @@ import type {
   ClearCategoryOverrideInput,
   ContractInput,
   ContractorInput,
+  Decimal,
   ManualKind,
   ObjectInput,
   RateClassInput,
@@ -656,6 +657,33 @@ export function useClearCategoryOverride() {
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
       qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Правка ставок НДС сметы (спека пересчёта §2.7, задача 9).
+ *
+ * `contractId` — отдельное поле входа, хотя эндпоинту оно не нужно: правка
+ * меняет паспорт ДОГОВОРА (все деньги пересчитываются в ставке показа), а
+ * паспорт ключуется договором, не сметой — тот же приём, что у
+ * `useSetCategoryOverride`/`useClearCategoryOverride` выше.
+ */
+export interface SetEstimateVatInput {
+  estimateId: ID;
+  contractId: ID;
+  input: { base_override?: Decimal | null; target?: Decimal | null };
+}
+
+export function useSetEstimateVat() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ estimateId, input }: SetEstimateVatInput) =>
+      estimatesApi.setVat(estimateId, input),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: qk.passport.project(variables.contractId) });
+      toast.success("Ставка НДС обновлена");
     },
     onError: toastApiError,
   });

@@ -375,12 +375,25 @@ export interface MatrixColumn {
   comparison_date: string | null;
 }
 
-/** Ячейка: средневзвешенная ставка работы по договору (§6). */
+/**
+ * Ячейка: средневзвешенная ставка работы по договору (§6).
+ *
+ * Пересчёт НДС (спека пересчёта §2.4-2.5): хотя бы одна неизвестная база НДС
+ * среди предложений, сложившихся в ячейку, гасит `rate`, `amount` и
+ * `deviation_pct` ЦЕЛИКОМ — показать средневзвешенное по части строк значило
+ * бы выдать неполную величину за полную. `standard_unit_rate` при этом НЕ
+ * гаснет: норматив от НДС не зависит и есть нетто по определению (спека §2.5)
+ * — на экране законно возможна строка, где ставка пуста, а норматив показан.
+ */
 export interface MatrixCell {
   contract_id: number;
-  rate: Decimal;
+  rate: Decimal | null;
+  /** Нетто-вес ЭТОЙ ячейки (спека §2.6); `null` вместе с `rate` при неизвестной базе. */
+  amount: Decimal | null;
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
+  /** Почему отклонения нет: два разных факта нельзя сводить к одному прочерку. */
+  deviation_reason: "no_standard" | "unknown_vat_base" | null;
 }
 
 export interface MatrixRow {
@@ -389,6 +402,12 @@ export interface MatrixRow {
   unit_code: string | null;
   /** Вес строки в деньгах — по нему строки упорядочены (§6.4 отчёта фазы 6). */
   row_amount: Decimal | null;
+  /**
+   * Вес строки посчитан НЕ по всем её ячейкам: хотя бы в одном договоре база
+   * НДС неизвестна, и такая ячейка не показывается и в вес не входит.
+   * Признак обязателен на экране — иначе частичная сумма выглядит полной.
+   */
+  row_amount_incomplete: boolean;
   /** Ячейки только тех договоров, где работа встречается: список, не объект. */
   cells: MatrixCell[];
 }
@@ -414,16 +433,29 @@ export interface MatrixParams {
   page_size?: number;
 }
 
-/** Drill-down по ячейке: позиции, сложившиеся в средневзвешенную ставку (§6). */
+/**
+ * Drill-down по ячейке: позиции, сложившиеся в средневзвешенную ставку (§6).
+ *
+ * Пересчёт НДС (спека §2.4-2.5): `unit_cost_total` — валовое ИЗ ФАЙЛА, без
+ * изменений; `unit_cost_net` — выведенное нетто той же строки, `null`, когда
+ * база строки неизвестна; `vat_rate_base` — база МЕЖДУ ними, тоже `null` в
+ * этом случае. Три подписи рядом — обещание §2.5 «валовое, нетто и база
+ * рядом» выполняется на экране, а не только в JSON.
+ */
 export interface MatrixCellItem {
   position_item_id: number;
   job_title: string;
   unit_code: string | null;
   weight: Decimal | null;
   unit_cost_total: Decimal;
+  /** Ставка без НДС — та, что вошла в ячейку; `null`, если база неизвестна. */
+  unit_cost_net: Decimal | null;
+  vat_rate_base: Decimal | null;
   total_cost_total: Decimal | null;
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
+  /** Почему отклонения нет: два разных факта нельзя сводить к одному прочерку. */
+  deviation_reason: "no_standard" | "unknown_vat_base" | null;
 }
 
 export interface MatrixCellDetail {
@@ -432,6 +464,33 @@ export interface MatrixCellDetail {
   estimate_id: number;
   amendment_no: number | null;
   items: MatrixCellItem[];
+}
+
+/**
+ * Строка `key_rates[]` паспорта ФАЗЫ 6 (`GET /api/v1/analytics/passport/{id}`).
+ *
+ * Фронт этот эндпоинт не вызывает — паспорт объекта фазы 6 заменён паспортом
+ * проекта фазы 7 (спека §1.3). Тип заведён, чтобы контракт не разошёлся молча:
+ * пересчёт НДС провёл `unit_cost_net`/`vat_rate_base`/`deviation_reason` и сюда
+ * тоже (тот же `_priced_positions_select`, что у drill-down, из соображения
+ * симметрии), а роутер отдаёт `dict` через `decimal_json` без `response_model`
+ * — несоответствие типов бэкенд не заметит, только фронт увидел бы «поле
+ * пропало» задним числом.
+ */
+export interface PassportKeyRate {
+  position_item_id: number;
+  catalog_position_id: number;
+  job_title: string;
+  catalog_job_title: string;
+  unit_code: string | null;
+  weight: Decimal | null;
+  unit_cost_total: Decimal;
+  unit_cost_net: Decimal | null;
+  vat_rate_base: Decimal | null;
+  total_cost_total: Decimal | null;
+  standard_unit_rate: Decimal | null;
+  deviation_pct: Decimal | null;
+  deviation_reason: "no_standard" | "unknown_vat_base" | null;
 }
 
 /**
@@ -504,6 +563,20 @@ export interface ProjectPassportEstimate {
   parser_version: string | null;
   /** `null` при разногласии ставок предложений или их отсутствии (правило 11). */
   vat_rate: Decimal | null;
+  /** База, назначенная человеком; `null` — база берётся из файла (спека пересчёта §2.7). */
+  vat_rate_base_override: Decimal | null;
+  /** Ставка показа; `null` — показываем в базовой (спека пересчёта §2.7). */
+  vat_rate_target: Decimal | null;
+  /** Когда правили ставки; `null` — поправок нет. */
+  vat_rate_updated_at: string | null;
+}
+
+/** Ответ `PATCH /v1/estimates/{id}/vat` (спека пересчёта §2.7) — новое состояние ставок сметы. */
+export interface EstimateVatState {
+  estimate_id: number;
+  vat_rate_base_override: Decimal | null;
+  vat_rate_target: Decimal | null;
+  vat_rate_updated_at: string | null;
 }
 
 /** Строка допработы вне VIEW: гранулярность нужна поштучно (правило 13). */
@@ -629,6 +702,17 @@ export interface ProjectPassportUnallocated {
   sections: ProjectPassportUnallocatedSection[];
 }
 
+/** Вердикт сверки выведенного нетто с файловым (спека пересчёта §2.10). */
+export type NetReconciliationStatus = "ok" | "mismatch" | "unknown_base" | "not_applicable";
+
+/** Сверка выведенного нетто с заявленным в файле, по предложениям сметы (§2.10). */
+export interface NetReconciliation {
+  status: NetReconciliationStatus;
+  /** Decimal-строка; `null` — сравнимых предложений нет. */
+  delta: Decimal | null;
+  mismatched_proposal_ids: number[];
+}
+
 export interface ProjectPassportTotals {
   /** Сумма ТОЛЬКО известных слагаемых (корни дерева + `unallocated`, правило 3). */
   amount: Decimal | null;
@@ -641,6 +725,8 @@ export interface ProjectPassportTotals {
   file_total_including_vat: Decimal | null;
   /** Требует ДВА известных операнда — `null`, если хотя бы один неизвестен (правило 12). */
   delta_to_file_total: Decimal | null;
+  /** Расхождение выведенного нетто с файловым, по предложениям (спека пересчёта §2.10). */
+  net_reconciliation: NetReconciliation;
 }
 
 /** Паспорт проекта по статьям классификатора (Ф6 фазы 7, спека §2.6). */
