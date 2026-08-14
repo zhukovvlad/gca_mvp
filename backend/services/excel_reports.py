@@ -61,6 +61,32 @@ _N_COLS = len(_COLUMNS)
 #: Пометка вместо нуля там, где норматива нет (§10).
 NO_STANDARD = "нет норматива"
 
+#: Пометка для ИТОГОВОЙ строки, когда причина пустого отклонения — не
+#: отсутствующий норматив, а неизвестная база НДС (Правка 2, ре-ревью финала
+#: ветки пересчёта): смешивать их в одну подпись `NO_STANDARD` запрещает §10 и
+#: спека §2.5 — это ДВА разных факта, и на уровне итога, а не только у строки.
+UNKNOWN_VAT_BASE = "неизвестна база НДС"
+
+
+def _totals_deviation_reason(totals: dict) -> str:
+    """Причина пустого отклонения ИТОГОВОЙ строки — своя, не одна на двоих.
+
+    Различитель — счётчики самого `totals`: публичный `positions_without_vat_base`
+    у отчёта «для банка» (задача 4, всегда точен — считается по ПОЛНОМУ набору
+    строк класса/выборки, не только по показанным) либо служебный
+    `_positions_blocked_by_vat_base` у свода по договору (`crud.reports.
+    _totals_of` — не печатается, гейт `_write_excluded_counters` смотрит на ДРУГОЕ
+    имя ключа). Если исключение целиком объясняется неизвестной базой (норматив
+    есть, база нет) — подпись так и говорит; если есть хоть одна позиция без
+    норматива вовсе, либо причины смешаны, остаётся прежняя `NO_STANDARD` —
+    более узкое, но не ложное утверждение («норматива нет» верно хотя бы отчасти).
+    """
+    unknown_base = totals.get("positions_without_vat_base", totals.get("_positions_blocked_by_vat_base", 0))
+    no_standard = totals.get("positions_without_standard", 0)
+    if unknown_base > 0 and no_standard == 0:
+        return UNKNOWN_VAT_BASE
+    return NO_STANDARD
+
 
 def _write_row(ws, row_num: int, row: dict, *, even: bool) -> None:
     background = fill(C_EVEN if even else C_ODD)
@@ -111,12 +137,14 @@ def _write_totals(ws, row_num: int, label: str, totals: dict, *, bg: str) -> int
                number_format=FMT_MONEY, horizontal="right")
     # Пустое отклонение печатается пометкой, а не пустотой и не нулём: в итоговой
     # строке отчёта для банка ноль означал бы «сошлось с нормативом» (см.
-    # `crud.reports._empty_report_totals`).
+    # `crud.reports._empty_report_totals`). Причина пустоты — СВОЯ, а не одна на
+    # двоих (Правка 2): «нет норматива» и «неизвестна база НДС» — разные факты.
     comparable = deviation is not None
-    write_cell(ws, row_num, 7, deviation if comparable else NO_STANDARD,
+    reason = NO_STANDARD if comparable else _totals_deviation_reason(totals)
+    write_cell(ws, row_num, 7, deviation if comparable else reason,
                cell_font=deviation_font(deviation, bold=True), cell_fill=background,
                number_format=FMT_PCT if comparable else "@", horizontal="right")
-    write_cell(ws, row_num, 8, totals["deviation_money"] if comparable else NO_STANDARD,
+    write_cell(ws, row_num, 8, totals["deviation_money"] if comparable else reason,
                cell_font=deviation_font(deviation, bold=True), cell_fill=background,
                number_format=FMT_MONEY if comparable else "@", horizontal="right")
     return row_num + 1
@@ -325,15 +353,29 @@ def _write_footnote(ws, row_num: int, totals: dict) -> int:
     # напечатанных счётчиков выше — проверяемый инвариант файла, а не тавтология.
     # У отчёта «для банка» их четыре (задача 4: добавлен счётчик базы НДС), у свода
     # по договору — по-прежнему три.
-    counters_word = "четырёх" if "positions_without_vat_base" in totals else "трёх"
-    total_note = ws.cell(
-        row=row_num,
-        column=1,
-        value=(
-            f"Всего расценённых позиций: {totals['positions_priced']} "
-            f"(равно сумме {counters_word} счётчиков выше)"
-        ),
+    #
+    # Правка 2 (ре-ревью финала ветки): у свода по договору появилась работа,
+    # чьё отклонение погашено неизвестной базой НДС, а не отсутствием норматива
+    # (`crud.reports._fold_summary_work`, ветка `any_unknown_base`) — задача 4
+    # отчёта «для банка» свод не трогала, отдельного печатаемого счётчика под
+    # эту причину у него нет и не заводится (у свода своя форма макета). Тогда
+    # заявление «равно сумме N счётчиков» держится не по счёту слагаемых, а по
+    # ФАКТИЧЕСКОМУ равенству: печатать его при несовпадении значило бы повторить
+    # ту же ложь, которую правка устраняет двумя строками выше и в
+    # `_write_totals` — молчание о слагаемом честнее неверной арифметики.
+    has_vat_base_counter = "positions_without_vat_base" in totals
+    printed_counters_sum = (
+        totals["comparable_positions"]
+        + totals["positions_without_standard"]
+        + totals["positions_without_volume"]
+        + (totals["positions_without_vat_base"] if has_vat_base_counter else 0)
     )
+    reconciles = printed_counters_sum == totals["positions_priced"]
+    counters_word = "четырёх" if has_vat_base_counter else "трёх"
+    total_text = f"Всего расценённых позиций: {totals['positions_priced']}"
+    if reconciles:
+        total_text += f" (равно сумме {counters_word} счётчиков выше)"
+    total_note = ws.cell(row=row_num, column=1, value=total_text)
     total_note.font = font(size=9, bold=True)
     row_num += 1
     cell = ws.cell(

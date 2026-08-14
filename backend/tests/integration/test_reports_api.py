@@ -937,6 +937,71 @@ def test_standard_is_shown_as_net_when_this_row_has_no_vat_base(factories, db_se
     assert row["deviation_money"] is None
 
 
+def test_comparable_positions_excludes_unknown_vat_base(factories, db_session):
+    """Правка 2 финального ревью ветки (точка 2) — живой сценарий с прогона
+    стенда: смета с одним предложением без заявленной ставки НДС (`vat_rate=
+    None`) и позицией с заведённым нормативом. Лист печатал «Сравнимых
+    позиций (в расчёте отклонения): 1», хотя отклонение не посчитано ни для
+    одной позиции — норматив ЕСТЬ (`positions_without_standard == 0`), значит
+    старый счётчик `comparable_positions = positions - positions_without_
+    standard` не знал о неизвестной базе НДС вовсе.
+
+    Краснеет от: возврата `_fold_summary_work` к единственному счётчику
+    `positions_without_standard` без `positions_without_vat_base` — тогда
+    `comparable_positions` снова стал бы `1` — подтверждено снятием, см. отчёт
+    задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    data = contract_summary(db_session, contract.id)
+    row = data["rows"][0]
+    assert row["deviation_pct"] is None  # отклонение не посчитано...
+    assert row["standard_unit_rate"] is not None  # ...хотя норматив показан
+    assert data["totals"]["comparable_positions"] == 0
+
+
+def test_summary_sheet_names_unknown_vat_base_not_missing_standard(client, factories, db_session):
+    """Правка 2 финального ревью ветки (точки 1 и 3) — тот же живой сценарий,
+    но проверка идёт через HTTP и читает готовый xlsx: до правки лист
+    одновременно врал в подписи шапки («норматив не показан» — неправда, он
+    показан как сырой нетто, спека §2.5 строка 293) и в итоговой строке
+    (`_write_totals` печатала `NO_STANDARD` = «нет норматива», хотя причина —
+    неизвестная база, а не отсутствие норматива).
+
+    Краснеет от: возврата `header['vat_display_note']` к тексту, вычисленному
+    только по `effective_rate is None` без различения причины, либо
+    `_write_totals` к безусловному `NO_STANDARD` — подтверждено снятием, см.
+    отчёт задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    text = _text_of(ws)
+
+    assert "База НДС неизвестна" in text
+    # Старый текст для ЭТОГО случая был неправдой: норматив показан, а не скрыт.
+    assert "норматив не показан" not in text
+    assert "Сравнимых позиций (в расчёте отклонения): 0" in text
+    # Сноска обязана не заявлять равенство, которое не сходится: у свода нет
+    # печатаемого счётчика под эту (четвёртую) причину исключения (§7.6 её не
+    # трогала), поэтому «Сравнимых + без норматива + без объёма» здесь 0, а
+    # «Всего расценённых» — 1. Печатать «равно сумме трёх счётчиков» при таком
+    # расхождении было бы той же ложью, которую эта правка устраняет строками
+    # выше — сноска обязана промолчать о равенстве, а не соврать о нём.
+    assert "Всего расценённых позиций: 1" in text
+    assert "равно сумме" not in text
+
+    row_index, _row = _find_row(ws, lambda r: r[0] == "ИТОГО ПО ДОГОВОРУ")
+    assert ws.cell(row=row_index, column=7).value == "неизвестна база НДС"
+    assert ws.cell(row=row_index, column=8).value == "неизвестна база НДС"
+
+
 def test_contract_summary_amount_and_rate_are_untouched_without_target(factories, db_session):
     """Ре-ревью задачи 8, круг 3, Правка 1 — тест ПЕРЕПИСАН: круг 2 заводил
     позицию БЕЗ норматива и тем самым ОБХОДИЛ дефект (гейт был поднят ОДНИМ
@@ -1046,6 +1111,64 @@ def test_vat_display_rate_caption_shows_a_human_readable_percent(client, factori
     text = _text_of(ws)
     assert "с НДС 20 %" in text
     assert "20.00" not in text
+
+
+# ---------------------------------------------------------------------------
+#  Правка 3 финального ревью ветки: `Decimal('NaN')` не роняет отчёт 500-й
+# ---------------------------------------------------------------------------
+
+def test_summary_survives_nan_amount_in_sort_key(client, factories):
+    """Открытый хвост Ф4 (§5.6) пропускает `NaN`/`Infinity` при импорте, и эта
+    ветка перенесла сортировку строк свода в Python (§2.6, `_fold_summary_
+    rows`): `Decimal('NaN') < x` в контексте с трапами бросает `InvalidOperation`
+    (он трапится) — раньше порядок задавал SQL `ORDER BY`, которому NaN
+    безразличен. Путь падения СОЗДАН этой веткой, а не существовал раньше.
+
+    Два РАЗНЫХ каталожных объекта нужны нарочно: сортировка с одной строкой не
+    вызывает сравнение ключей вовсе, а с двумя — обязана.
+
+    Краснеет от: возврата `rows.sort` к ключу `-(r["amount"] or ZERO)` без
+    группировки по конечности — подтверждено снятием, см. отчёт задачи."""
+    contract, _estimate, proposal = _estimate_with(factories)
+    normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
+    _position(factories, proposal, normal, unit_cost="100", weight="10")
+    broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
+    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+
+    response = client.get(
+        "/api/v1/reports/contract-summary", params={"contract_id": contract.id}
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_bank_report_survives_nan_comparable_amount_in_sort_key(client, factories):
+    """Тот же дефект, что у свода (см. тест выше), у отчёта «для банка»
+    (`_fold_bank_rows`, ключ по `comparable_amount`) — сортировка тоже перешла
+    в Python этой веткой (§2.6) и тоже не защищена от нефинитной суммы.
+
+    Норматив заведён на ОБЕИХ работах: без него `comparable_amount` был бы
+    `None` (нет норматива — блокирующая причина ДО сортировки), и строка не
+    попала бы в сравнение ключей вовсе — дефект остался бы незамеченным.
+
+    Краснеет от: возврата `bucket.sort` к ключу `-(r["comparable_amount"] or
+    ZERO)` без группировки по конечности — подтверждено снятием, см. отчёт
+    задачи."""
+    rate_class = factories.RateClassFactory.create(title="Класс с порченой суммой")
+    contract = factories.ContractFactory.create(rate_class=rate_class)
+    _c, _e, proposal = _estimate_with(factories, contract=contract)
+
+    normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
+    _position(factories, proposal, normal, unit_cost="100", weight="10")
+    _standard(factories, normal, rate_class, "100")
+
+    broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
+    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+    _standard(factories, broken, rate_class, "100")
+
+    response = client.get(
+        "/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id}
+    )
+    assert response.status_code == 200, response.text
 
 
 def test_fold_bank_rows_breaks_ties_by_catalog_position_id_ascending():

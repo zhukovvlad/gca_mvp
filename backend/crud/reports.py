@@ -121,6 +121,31 @@ def _weighted(amount: Decimal | None, volume: Decimal | None) -> Decimal | None:
     return amount / volume
 
 
+def _amount_sort_key(amount: Decimal | None) -> tuple[int, Decimal]:
+    """Ключ сортировки строк отчёта по убыванию суммы, устойчивый к `NaN`/`Infinity`.
+
+    Правка 3 (ре-ревью финала ветки): открытый хвост Ф4 (§5.6) пропускает
+    нефинитную стоимость при импорте, и она доезжает до `amount`/
+    `comparable_amount`. Раньше порядок строк задавал SQL `ORDER BY`, которому
+    `NaN` безразличен; эта ветка перенесла свёртку в Python (§2.6), а
+    `Decimal('NaN') < x` в контексте с трапами бросает `InvalidOperation` —
+    сравнение внутри `list.sort` роняло бы отчёт 500-й на первом же файле с
+    такой строкой.
+
+    Нефинитная сумма — не ноль и не «самая большая»: она уходит в КОНЕЦ, тем
+    же приёмом, что «вес неизвестен» у строки матрицы (`NULLS LAST`, спека
+    §2.6) — недостоверное число не должно всплывать наверх списка. Первый
+    элемент кортежа разводит финитные и нефинитные суммы в две группы, чтобы
+    `Decimal`-сравнение между ними (второй элемент) никогда не происходило;
+    внутри группы нефинитных чисел второй элемент — общий `ZERO`, тай-брейк
+    полностью ложится на `catalog_position_id`, добавляемый вызывающим кодом.
+    """
+    value = amount if amount is not None else ZERO
+    if not value.is_finite():
+        return (1, ZERO)
+    return (0, -value)
+
+
 def _deviation_pct(fact: Decimal | None, standard: Decimal | None) -> Decimal | None:
     """Отклонение по СУММАМ, а не усреднение процентов (см. модульную документацию)."""
     if fact is None or standard is None or standard == 0:
@@ -216,16 +241,36 @@ def contract_summary(db: Session, contract_id: int) -> dict:
     if estimate is None:
         return {"header": header, "rows": [], "totals": _empty_report_totals()}
 
+    declared_rates = _declared_rates(db, estimate.id)
     effective_rate = effective_display_rate(
-        estimate.vat_rate_target, estimate.vat_rate_base_override, _declared_rates(db, estimate.id)
+        estimate.vat_rate_target, estimate.vat_rate_base_override, declared_rates
     )
     header["vat_display_rate"] = effective_rate
     if effective_rate is None:
-        header["vat_display_note"] = (
-            "Единой ставки НДС нет (предложения заявили разные ставки, либо "
-            "хотя бы одна неизвестна): суммы складывают строки в ИХ ИСХОДНЫХ "
-            "ставках, норматив не показан."
-        )
+        # Правка 2 (ре-ревью финала ветки): `effective_rate is None` смешивает ДВЕ
+        # разные причины, и подпись листа обязана назвать ту, что случилась на
+        # самом деле, а не одну на двоих (§10, спека §2.5). Различитель —
+        # ЗАЯВЛЕННЫЕ ставки предложений, а не `any_unknown_base` внутри
+        # `_fold_summary_work` (та задаётся ПО РАБОТЕ и не видна здесь):
+        #   хотя бы одна ставка `NULL` → база неизвестна хотя бы у одного
+        #     предложения, норматив показывается СЫРЫМ нетто (`_fold_summary_work`,
+        #     ветка `any_unknown_base`, спека §2.5 строка 293) — отклонение не
+        #     вычисляется, а не «не показан»;
+        #   все ставки известны, но не совпадают → настоящее разногласие (§5.1),
+        #     и вот тогда норматив гасится целиком — здесь текст прежний.
+        if any(rate is None for rate in declared_rates):
+            header["vat_display_note"] = (
+                "База НДС неизвестна хотя бы у одного предложения сметы: "
+                "норматив показан как нетто без пересчёта в единую ставку, "
+                "отклонение не вычислено — это ДРУГАЯ причина, чем «нет "
+                "норматива» (AGENTS.md §4)."
+            )
+        else:
+            header["vat_display_note"] = (
+                "Единой ставки НДС нет (предложения заявили разные ставки): "
+                "суммы складывают строки в ИХ ИСХОДНЫХ ставках, норматив не "
+                "показан."
+            )
 
     group_rows = db.execute(
         _work_aggregate_select()
@@ -377,12 +422,12 @@ def _fold_summary_work(
     volume_comparable = ZERO
     standard_net_total = ZERO
     positions_total = 0
-    positions_without_standard = 0
+    positions_without_standard_raw = 0
     fact_restated = False
 
     for group in groups:
         positions_total += group.positions
-        positions_without_standard += group.positions_without_standard
+        positions_without_standard_raw += group.positions_without_standard
 
         restated_total = restate_gross(group.fact_amount_total, group.vat_rate_base, effective_rate)
         if restated_total.status is AmountStatus.RESTATED:
@@ -409,6 +454,21 @@ def _fold_summary_work(
             standard_net_total += group.standard_amount or ZERO
 
     any_unknown_base = any(group.vat_rate_base is None for group in groups)
+    # Правка 2 (ре-ревью финала ветки, `comparable_positions` реально сравнимых
+    # позиций): при `any_unknown_base` отклонение гасится для ВСЕЙ работы (ветки
+    # ниже, `comparable_amount`/`comparable_standard_amount` уходят в `None`
+    # целиком) — значит НИ ОДНА позиция этой работы не попадает в расчёт
+    # отклонения, независимо от того, найден ли у неё норматив. Приоритет тот
+    # же, что у отчёта «для банка» (`_fold_bank_work`): неизвестная база
+    # перевешивает отсутствие норматива, поэтому позиции уходят в СВОЙ счётчик
+    # базы целиком, а не остаются вдобавок в «без норматива» — иначе
+    # `_totals_of` вычла бы их из `comparable_positions` дважды.
+    if any_unknown_base:
+        positions_without_standard = 0
+        positions_without_vat_base = positions_total
+    else:
+        positions_without_standard = positions_without_standard_raw
+        positions_without_vat_base = 0
     if fact_comparable is None:
         standard_amount = None
         standard_shown = False
@@ -448,6 +508,11 @@ def _fold_summary_work(
         "comparable_standard_amount": None if any_unknown_base else standard_amount,
         "positions": positions_total,
         "positions_without_standard": positions_without_standard,
+        # Не печатается отдельной строкой на своде (задача 4 отчёта «для банка»
+        # его не трогала — у свода своя форма макета, §6.1 согласован
+        # отдельно): нужен только `_totals_of`, чтобы `comparable_positions` не
+        # засчитывал позиции, чьё отклонение погашено неизвестной базой НДС.
+        "positions_without_vat_base": positions_without_vat_base,
     }
     return row, fact_restated, standard_shown
 
@@ -497,7 +562,7 @@ def _fold_summary_rows(group_rows, effective_rate) -> tuple[list[dict], bool, bo
     # сворачиваются здесь, а не приходят готовыми из SQL). Тай-брейк по
     # `catalog_position_id` — та же причина, что у `_fold_bank_rows`: без него
     # порядок работ с РАВНОЙ суммой ничем не определён.
-    rows.sort(key=lambda r: (-(r["amount"] or ZERO), r["catalog_position_id"]))
+    rows.sort(key=lambda r: (*_amount_sort_key(r["amount"]), r["catalog_position_id"]))
     return rows, fact_restated_any, standard_shown_any
 
 
@@ -680,7 +745,7 @@ def _fold_bank_rows(group_rows) -> dict[int, list[dict]]:
         # разные файлы. Найдено ревью задачи 4 — до правки список сортировался
         # только по сумме.
         bucket.sort(
-            key=lambda r: (-(r["comparable_amount"] or ZERO), r["catalog_position_id"])
+            key=lambda r: (*_amount_sort_key(r["comparable_amount"]), r["catalog_position_id"])
         )
     return rows_by_class
 
@@ -899,6 +964,7 @@ def _empty_report_totals() -> dict:
         "positions_without_standard": 0,
         "positions_without_volume": 0,
         "positions_priced": 0,
+        "_positions_blocked_by_vat_base": 0,
     }
 
 
@@ -910,9 +976,19 @@ def _totals_of(rows: list[dict]) -> dict:
     оказывается взвешенным по объёму автоматически.
 
     `comparable_positions` вычитает ОБА счётчика исключённого, которые может нести
-    строка: `positions_without_standard` — у обоих отчётов, `positions_without_
-    vat_base` — только у строк отчёта «для банка» (задача 4). `.get(..., 0)` не
-    меняет свод по договору: там такого ключа нет, и по умолчанию он не участвует.
+    строка: `positions_without_standard` и `positions_without_vat_base` — оба
+    поля теперь несут ОБЕ строки (Правка 2, ре-ревью финала ветки: у свода тоже
+    бывает работа, чьё отклонение погашено неизвестной базой НДС, а не
+    отсутствием норматива). `.get(..., 0)` защищает только от совсем старых
+    строк без этого ключа — сейчас таких нет, но функция не должна падать,
+    если он вдруг отсутствует.
+
+    `_positions_blocked_by_vat_base` — служебный агрегат (ключ с подчёркиванием,
+    НЕ печатается: `_write_excluded_counters` в `services/excel_reports.py`
+    гейтуется по имени `positions_without_vat_base`, а не по этому). Он нужен
+    только `_write_totals`, чтобы отличить у ИТОГОВОЙ строки причину пустого
+    отклонения — «нет норматива» от «неизвестна база НДС» (Правка 2, пункт 3):
+    без него обе причины схлопывались бы в одну подпись `NO_STANDARD`.
     """
     if not rows:
         return _empty_report_totals()
@@ -943,4 +1019,5 @@ def _totals_of(rows: list[dict]) -> dict:
         "works": len(rows),
         "positions": sum(r["positions"] for r in rows),
         "positions_without_standard": sum(r["positions_without_standard"] for r in rows),
+        "_positions_blocked_by_vat_base": sum(r.get("positions_without_vat_base", 0) for r in rows),
     }
