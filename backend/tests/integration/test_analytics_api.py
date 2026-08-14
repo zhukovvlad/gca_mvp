@@ -1070,6 +1070,64 @@ class TestMatrixNetAxis:
         assert Decimal(row["row_amount"]) == Decimal(shown["amount"])
         assert row["row_amount_incomplete"] is True
 
+    # -----------------------------------------------------------------------
+    #  Круг 3 (ре-ревью Codex, PR #21, найдено оркестратором лично): та же
+    #  неполнота, но по ДРУГОЙ причине — не неизвестная база НДС, а NaN/
+    #  Infinity стоимость при ИЗВЕСТНОЙ базе (открытый хвост Ф4, §5.6).
+    #  `row_amount_incomplete` на `main` не существует вовсе — признак завела
+    #  эта ветка, и наполовину честным его сделала тоже эта ветка: он
+    #  проверял только `cell_unknown`, а `cell_not_finite` не проверял совсем.
+    # -----------------------------------------------------------------------
+
+    def test_row_amount_excludes_a_non_finite_cell_and_flags_incompleteness(
+        self, client, factories, db_session
+    ):
+        """Прямая зеркальная пара к `test_row_amount_is_partial_and_flagged_
+        when_a_base_is_unknown` выше — та же форма теста, другая причина
+        неполноты.
+
+        Краснеет от возврата прежнего поведения (проверено снятием правки —
+        `git stash` вернул `_cell_weights_cte`/`row_totals` без
+        `cell_not_finite`): `row_amount` содержал бы `NaN` (весь `SUM`
+        становится NaN от одной нефинитной ячейки — `NaN` не `NULL`, `SUM` его
+        не игнорирует), а `row_amount_incomplete` оставался бы `False`, то
+        есть строка отчиталась бы «вес полон», неся при этом мусор.
+        """
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-1",
+            unit_cost_total=Decimal("120"), weight=Decimal("1"), vat_rate=Decimal("20"),
+        )
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-2",
+            unit_cost_total=Decimal("NaN"), weight=Decimal("1"), vat_rate=Decimal("20"),
+        )
+        db_session.commit()
+        row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+        assert Decimal(row["row_amount"]) == Decimal("100.00")
+        assert row["row_amount_incomplete"] is True
+
+    def test_row_amount_excludes_partially_non_finite_cell(self, client, factories, db_session):
+        """Зеркало `test_row_amount_excludes_partially_unknown_cell`: ячейка с
+        одним финитным и одним NaN-предложением скрыта ЦЕЛИКОМ (единица
+        неполноты — ячейка, а не строка VIEW), значит её финитная часть НЕ
+        имеет права попасть в вес строки."""
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-1",
+            positions=[(Decimal("120"), Decimal("20")), (Decimal("NaN"), Decimal("20"))],
+        )
+        _priced_estimate(
+            factories, catalog_title="A", contract_number="C-2",
+            positions=[(Decimal("240"), Decimal("20"))],
+        )
+        db_session.commit()
+        row = client.get("/api/v1/analytics/matrix").json()["rows"][0]
+
+        hidden = next(c for c in row["cells"] if c["rate"] is None)
+        shown = next(c for c in row["cells"] if c["rate"] is not None)
+        assert hidden["deviation_reason"] == "not_finite"
+        assert Decimal(row["row_amount"]) == Decimal(shown["amount"])
+        assert row["row_amount_incomplete"] is True
+
     def test_sql_net_weight_agrees_with_python(self, db_session, factories):
         """Единственное нетто-выражение в SQL обязано совпадать с money.vat.
 

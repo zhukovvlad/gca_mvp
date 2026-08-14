@@ -849,6 +849,24 @@ _NET_COST = (
     / (100 + DEVIATION_INPUTS.c.vat_rate_base)
 )
 
+#: Предикат «стоимость строки — NaN/Infinity» — тот же класс проверки, что
+#: `crud.project_passport._finite_amount`, но не общий с ней код: те же
+#: причины, что у `_declared_rates`/`_standard_in_display_rate` (модули
+#: сознательно не тянут друг друга, три строки дешевле дублировать, чем
+#: заводить межмодульный импорт приватного имени). Круг 3 (ре-ревью Codex,
+#: PR #21, найдено оркестратором): без этого предиката `row_amount_incomplete`
+#: поднимался ТОЛЬКО от неизвестной базы НДС (`cell_unknown`), и строка с
+#: ИЗВЕСТНОЙ базой, но NaN/Infinity стоимостью (открытый хвост Ф4, §5.6),
+#: утекала бы своим весом в `row_amount`, отчитываясь при этом флагом «вес
+#: полон» — тот самый инвариант, ради которого признак заводился («`SUM`
+#: игнорирует `NULL`, и без явного условия частичная сумма выглядела бы
+#: полной»), закрытый только наполовину.
+_NOT_FINITE_COST = sa.or_(
+    DEVIATION_INPUTS.c.unit_cost_total == Decimal("NaN"),
+    DEVIATION_INPUTS.c.unit_cost_total == Decimal("Infinity"),
+    DEVIATION_INPUTS.c.unit_cost_total == Decimal("-Infinity"),
+)
+
 
 def _cell_weights_cte(scope_filters: list):
     """Нетто-вес КАЖДОЙ ячейки и признак её невычислимости (спека §2.6, исключение).
@@ -860,6 +878,15 @@ def _cell_weights_cte(scope_filters: list):
     ячейки всё равно попала бы в `row_amount`, и вес строки перестал бы сходиться
     с суммой показанных `cell.amount` (`test_row_amount_excludes_partially_
     unknown_cell`).
+
+    **Неполнота — ДВЕ разные причины, обе гасят ячейку одинаково** (круг 3):
+    `cell_unknown` — база НДС неизвестна хотя бы у одной строки ячейки;
+    `cell_not_finite` — стоимость хотя бы одной строки ячейки не число
+    (`_NOT_FINITE_COST`). Раздельные флаги — не для различения на экране
+    (признак строки один, `row_amount_incomplete`), а чтобы каждый считался по
+    СВОЕЙ, а не по чужой причине: слить их в один `bool_or` уже здесь значило
+    бы потерять возможность различить причины, если экран когда-нибудь
+    научится их показывать раздельно (тот же довод, что у `deviation_reason`).
     """
     latest = latest_estimates()
     return (
@@ -868,6 +895,7 @@ def _cell_weights_cte(scope_filters: list):
             DEVIATION_INPUTS.c.contract_id.label("contract_id"),
             sa.func.sum(_NET_COST).label("cell_net"),
             sa.func.bool_or(DEVIATION_INPUTS.c.vat_rate_base.is_(None)).label("cell_unknown"),
+            sa.func.bool_or(_NOT_FINITE_COST).label("cell_not_finite"),
         )
         .select_from(
             DEVIATION_INPUTS.join(latest, latest.c.estimate_id == DEVIATION_INPUTS.c.estimate_id)
@@ -997,10 +1025,23 @@ def get_matrix(
             # В вес входят ТОЛЬКО вычислимые ячейки — те, что видит аналитик
             # (спека §2.6, исключение: `SUM` игнорирует `NULL`, и без явного
             # `CASE` известная часть скрытой ячейки молча попала бы в вес).
+            # Круг 3 (ре-ревью Codex, PR #21): условие расширено на
+            # `cell_not_finite` — ячейка с известной базой, но NaN/Infinity
+            # стоимостью, гасится ТОЙ ЖЕ веткой, что и ячейка с неизвестной
+            # базой; иначе её нетто-вклад (сам нефинитный) утекал бы в
+            # `row_amount` под видом настоящей суммы.
             sa.func.sum(
-                sa.case((cell_weights.c.cell_unknown.is_(False), cell_weights.c.cell_net))
+                sa.case((
+                    sa.and_(
+                        cell_weights.c.cell_unknown.is_(False),
+                        cell_weights.c.cell_not_finite.is_(False),
+                    ),
+                    cell_weights.c.cell_net,
+                ))
             ).label("row_amount"),
-            sa.func.bool_or(cell_weights.c.cell_unknown).label("row_amount_incomplete"),
+            sa.func.bool_or(
+                sa.or_(cell_weights.c.cell_unknown, cell_weights.c.cell_not_finite)
+            ).label("row_amount_incomplete"),
         )
         .group_by(cell_weights.c.catalog_position_id)
         .cte("row_totals")
