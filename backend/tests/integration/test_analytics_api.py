@@ -27,7 +27,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from crud.analytics import _NET_COST, DECLARED_VIEW_COLUMNS, DEVIATION_INPUTS
+from crud.analytics import _NET_COST, DECLARED_VIEW_COLUMNS, DEVIATION_INPUTS, _net_deviation
 from models import PASSPORT_TOP_N_DEFAULT, CatalogKind
 from money.vat import gross_to_net, quantize_money
 
@@ -1111,6 +1111,110 @@ class TestPassportNetAxis:
         body = client.get(f"/api/v1/analytics/passport/{contract.id}").json()
         assert Decimal(body["key_rates"][0]["deviation_pct"]) == Decimal("0")
         assert body["totals"]["over_standard"] == 0
+
+
+# ---------------------------------------------------------------------------
+#  Дефект 1 (ре-ревью Codex, PR #21): `NaN`/`Infinity` в валовой цене доезжают
+#  сюда открытым хвостом Ф4 (§5.6: импорт не проверяет годность цены).
+#  Арифметика (`gross_to_net`, `_deviation`) тихо распространяет нефинитное
+#  значение дальше — но `_passport_totals` ЗАТЕМ его СРАВНИВАЕТ
+#  (`deviation_pct > 0`), а сравнение нефинитного `Decimal` бросает
+#  `InvalidOperation` (тот же класс, что уже чинили в `crud.reports.
+#  _amount_sort_key` и `services.excel.deviation_font` — здесь третья
+#  поверхность). `_net_deviation` обязана возвращать финитный `deviation_pct`
+#  либо `None` вместе с ЧЕСТНОЙ причиной: не «нет норматива» (норматив есть)
+#  и не «неизвестна база НДС» (база известна) — четвёртый код `not_finite`.
+# ---------------------------------------------------------------------------
+
+class TestNetDeviationNotFinite:
+    """Прямые вызовы `_net_deviation` — без БД, чистая функция."""
+
+    @pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_gross_yields_no_deviation_with_honest_reason(self, bad):
+        """Краснеет от текущего кода: `net`/`deviation_pct` возвращались
+        нефинитными, а `reason` — `None` (== «нормы отношение известно»), хотя
+        норматив в этом вызове ЕСТЬ (100) — то есть причина ЛГАЛА."""
+        net, deviation_pct, reason = _net_deviation(
+            Decimal(bad), Decimal("20"), Decimal("100")
+        )
+        assert deviation_pct is None
+        assert reason == "not_finite"
+        # `net` может остаться нефинитным (это отдельное поле паспорта —
+        # `unit_cost_net`, у него свой открытый хвост через `quantize_money`,
+        # см. AGENTS.md §11), но ОТКЛОНЕНИЕ обязано быть либо числом, либо
+        # отсутствовать целиком.
+
+    def test_not_finite_wins_over_missing_standard(self):
+        """Норматива тоже нет — но `not_finite` важнее «нет норматива»: сама
+        величина не число, и это не то же самое, что «сравнивать не с чем»."""
+        _net, deviation_pct, reason = _net_deviation(Decimal("NaN"), Decimal("20"), None)
+        assert deviation_pct is None
+        assert reason == "not_finite"
+
+    def test_finite_case_is_unaffected(self):
+        """Контроль: обычный конечный случай не должен пострадать от починки."""
+        net, deviation_pct, reason = _net_deviation(
+            Decimal("120"), Decimal("20"), Decimal("100")
+        )
+        assert net == Decimal("100")
+        assert deviation_pct == Decimal("0")
+        assert reason is None
+
+
+class TestPassportSurvivesNonFiniteCost:
+    """Воспроизведение дефекта 1 ЧЕРЕЗ САМ ЭНДПОИНТ паспорта (не только прямым
+    вызовом `_net_deviation`) — оркестратор явно потребовал не верить одному
+    способу репродукции."""
+
+    @pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+    def test_non_finite_cost_with_standard_does_not_crash_passport(
+        self, client, factories, db_session, bad
+    ):
+        """До починки: `_passport_totals` сравнивает `deviation_pct > 0` на
+        `Decimal('NaN')` и бросает `decimal.InvalidOperation` — запрос
+        завершается 500-й (`TestClient` с `raise_server_exceptions=True`
+        поднимает это исключение прямо в тесте, см. `tests/conftest.py`)."""
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal(bad), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        db_session.commit()
+
+        body = _passport(client, contract.id)
+
+        rate = body["key_rates"][0]
+        assert rate["deviation_pct"] is None
+        assert rate["deviation_reason"] == "not_finite"
+        # Причина обязана остаться ЧЕСТНОЙ, а не превратиться молча в
+        # «нет норматива» (§10) — норматив у этой позиции есть (100).
+        assert rate["standard_unit_rate"] is not None
+        # `over_standard` не должен посчитать нефинитную строку превышением
+        # (и не должен упасть, воспроизводя дефект 1).
+        assert body["totals"]["over_standard"] == 0
+        assert body["totals"]["with_standard"] == 1
+
+
+class TestMatrixCellDrillDownSurvivesNonFiniteCost:
+    """`get_matrix_cell`/`_cell_item` — ВТОРОЙ живой потребитель `_net_deviation`
+    (drill-down матрицы, реально вызывается фронтендом, `MatrixCellDialog.tsx`,
+    в отличие от паспорта фазы 6). Чинится той же правкой `_net_deviation`."""
+
+    def test_nan_cost_reports_the_reason_instead_of_crashing(self, client, factories, db_session):
+        contract = _contract_with_standard(
+            factories, unit_cost_total=Decimal("NaN"), vat_rate=Decimal("20"),
+            standard=Decimal("100"),
+        )
+        db_session.commit()
+        body = client.get(
+            "/api/v1/analytics/matrix/cell",
+            params={
+                "contract_id": contract.id,
+                "catalog_position_id": contract.catalog_position_id,
+            },
+        ).json()
+        item = body["items"][0]
+        assert item["deviation_pct"] is None
+        assert item["deviation_reason"] == "not_finite"
 
 
 class TestMatrixCellDrillDownNetAxis:

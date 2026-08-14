@@ -459,8 +459,15 @@ export interface MatrixCellItem {
   total_cost_total: Decimal | null;
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
-  /** Почему отклонения нет: два разных факта нельзя сводить к одному прочерку. */
-  deviation_reason: "no_standard" | "unknown_vat_base" | null;
+  /**
+   * Почему отклонения нет: разные факты нельзя сводить к одному прочерку.
+   * `not_finite` — Дефект 1 ре-ревью Codex (PR #21): `unit_cost_total`
+   * пришёл `NaN`/`Infinity` открытым хвостом Ф4 (§5.6) — норматив у строки
+   * может БЫТЬ, база НДС может быть ИЗВЕСТНА, но сама величина не число, и
+   * это не «нет норматива» и не «неизвестна база» (`backend/crud/
+   * analytics.py::_net_deviation`).
+   */
+  deviation_reason: "no_standard" | "unknown_vat_base" | "not_finite" | null;
 }
 
 export interface MatrixCellDetail {
@@ -495,7 +502,8 @@ export interface PassportKeyRate {
   total_cost_total: Decimal | null;
   standard_unit_rate: Decimal | null;
   deviation_pct: Decimal | null;
-  deviation_reason: "no_standard" | "unknown_vat_base" | null;
+  /** См. `MatrixCellItem.deviation_reason` — тот же `_net_deviation`. */
+  deviation_reason: "no_standard" | "unknown_vat_base" | "not_finite" | null;
 }
 
 /**

@@ -17,8 +17,15 @@ import { cn } from "@/lib/utils";
  * Сегодня недостижима (CTE фильтрует `weight > 0`), но код причины уже мог
  * прийти с сервера, и `REASON_TEXT[reason]` без записи давал бы `TypeError`
  * на `undefined` при разборе деструктуризацией.
+ *
+ * `not_finite` — Дефект 1, ре-ревью Codex (PR #21, `_net_deviation`):
+ * `unit_cost_total` пришёл `NaN`/`Infinity` открытым хвостом Ф4 (§5.6, импорт
+ * не проверяет годность цены). Норматив у строки может БЫТЬ, база НДС может
+ * быть ИЗВЕСТНА — сама величина просто не число, и смешивать это с «нет
+ * норматива» или «неизвестна база» значило бы солгать о причине ровно тем
+ * способом, против которого заведена вся эта пара кодов.
  */
-export type DeviationReason = "no_standard" | "unknown_vat_base" | "no_weight";
+export type DeviationReason = "no_standard" | "unknown_vat_base" | "no_weight" | "not_finite";
 
 const REASON_TEXT: Record<DeviationReason, { full: string; title: string }> = {
   no_standard: {
@@ -32,6 +39,10 @@ const REASON_TEXT: Record<DeviationReason, { full: string; title: string }> = {
   no_weight: {
     full: "нет веса",
     title: "Ни одна строка ячейки не несёт положительного веса — средневзвешенную ставку вывести не из чего",
+  },
+  not_finite: {
+    full: "цена не число",
+    title: "Цена строки — NaN/Infinity, а не число: сравнивать с нормативом нечего",
   },
 };
 

@@ -47,8 +47,47 @@ export function VatRateDialog({
   // пересчитывать не от чего (спека §2.7).
   const base = estimate.vat_rate_base_override ?? estimate.vat_rate;
 
-  const [baseDraft, setBaseDraft] = useState(estimate.vat_rate_base_override ?? "");
-  const [targetDraft, setTargetDraft] = useState(estimate.vat_rate_target ?? "");
+  // Черновики полей vs серверная правда (Дефект 2, ре-ревью Codex, PR #21).
+  //
+  // `useState(estimate.X ?? "")` инициализирует ОДИН раз при монтировании, а
+  // диалог не закрывается и не размонтируется между открытиями — «Снять
+  // ставку показа» шлёт `{ target: null }` В ОБХОД инпута (кнопка не трогает
+  // `targetDraft` вовсе), мутация проходит, инвалидация рефетчит `estimate` с
+  // `vat_rate_target: null`, но черновик как был «16», так и остаётся:
+  // следующее «Сохранить» сравнивает этот старый черновик с новым `null` из
+  // пропа (`changedOnly` ниже), видит различие и отправляет `{ target: "16" }`
+  // — ставка возвращается, хотя её только что сняли. У `baseDraft` та же
+  // болезнь по построению: с сервера `base_override` может обновиться и БЕЗ
+  // участия этого диалога (правка в другой вкладке, рефетч по фокусу окна —
+  // тот же query invalidation тянет оба поля разом), и черновик так же
+  // застрял бы на старом значении.
+  //
+  // Лечится сверкой «последнего известного серверного значения» с текущим
+  // черновиком, а не эффектом: пока черновик РАВЕН последнему известному —
+  // пользователь его не трогал, и новое значение из пропа применяется прямо
+  // в него. Если черновик уже РАСХОДИТСЯ (пользователь печатает что-то своё,
+  // ещё не сохранённое) — новое значение обновляет только точку сравнения,
+  // а сам черновик остаётся нетронутым: чужой рефетч не должен стирать
+  // недосохранённый ввод. Это стандартный для React приём «подправить state
+  // при смене пропа во время рендера» (без лишнего кадра, который дал бы
+  // `useEffect`), а не хук — поэтому он ниже `useState`, но выше `if
+  // (!isAdmin)`, чтобы не менять порядок вызовов хуков.
+  const [baseKnown, setBaseKnown] = useState(estimate.vat_rate_base_override ?? "");
+  const [targetKnown, setTargetKnown] = useState(estimate.vat_rate_target ?? "");
+  const [baseDraft, setBaseDraft] = useState(baseKnown);
+  const [targetDraft, setTargetDraft] = useState(targetKnown);
+
+  const liveBase = estimate.vat_rate_base_override ?? "";
+  if (liveBase !== baseKnown) {
+    if (baseDraft === baseKnown) setBaseDraft(liveBase);
+    setBaseKnown(liveBase);
+  }
+  const liveTarget = estimate.vat_rate_target ?? "";
+  if (liveTarget !== targetKnown) {
+    if (targetDraft === targetKnown) setTargetDraft(liveTarget);
+    setTargetKnown(liveTarget);
+  }
+
   const mutation = useSetEstimateVat();
 
   if (!isAdmin) return null;

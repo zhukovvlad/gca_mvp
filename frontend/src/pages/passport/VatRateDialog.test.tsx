@@ -52,6 +52,17 @@ const estimateWithTarget: ProjectPassportEstimate = {
   vat_display_rate: "16",
 };
 
+/** База назначена вручную (не только заявлена файлом) — нужна тестам,
+ * проверяющим синхронизацию именно `baseDraft` (тому же приёму, что у
+ * `estimateWithTarget` для `targetDraft`). */
+const estimateWithBaseOverride: ProjectPassportEstimate = {
+  ...baseEstimate,
+  vat_rate: "20",
+  vat_rate_base_override: "20",
+  vat_rate_target: "16",
+  vat_display_rate: "16",
+};
+
 /** Успешный ответ-заглушка PATCH — тело эха не имеет значения, важен запрос. */
 function stubSuccess() {
   let body: unknown;
@@ -169,5 +180,123 @@ describe("VatRateDialog: правка ставок НДС", () => {
     });
 
     expect(screen.queryByRole("button", { name: /изменить ставку/i })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Дефект 2 (ре-ревью Codex, PR #21): `targetDraft`/`baseDraft` инициализировались
+ * `useState(...)` ОДНОЖДЫ при монтировании и не следовали за рефетчем сметы.
+ * Диалог не закрывается после успешной мутации — это обычный рабочий поток, не
+ * экзотика: «Снять» → мутация → инвалидация → рефетч приносит
+ * `vat_rate_target: null`, но поле оставалось прежним значением, и следующее
+ * «Сохранить» отправляло бы его обратно как правку.
+ *
+ * Здесь `rerender` симулирует именно этот рефетч: родитель (`PassportHeader`)
+ * передал бы диалогу свежий `estimate` тем же деревом, без размонтирования.
+ */
+describe("VatRateDialog: черновики следуют за рефетчем (дефект 2)", () => {
+  // Краснеет от: возврата `useState(estimate.vat_rate_target ?? "")` без
+  // сверки с `estimate` на каждом рендере — поле осталось бы «16» после
+  // рефетча, а второе «Сохранить» отправило бы `{ target: "16" }`.
+  it("«Снять ставку показа» не оживает после рефетча: «Сохранить» не возвращает прежнее значение", async () => {
+    const getBody = stubSuccess();
+    const user = userEvent.setup();
+    const { rerender } = renderWithProviders(
+      <VatRateDialog estimate={estimateWithTarget} contractId={1} />
+    );
+    await openDialog(user);
+
+    await user.click(screen.getByRole("button", { name: /снять ставку показа/i }));
+    await waitFor(() => expect(getBody()).toEqual({ target: null }));
+
+    // Симулируем рефетч паспорта после инвалидации: сервер уже подтвердил
+    // снятие, родитель передаёт диалогу свежий `estimate`.
+    rerender(
+      <VatRateDialog
+        estimate={{ ...estimateWithTarget, vat_rate_target: null, vat_display_rate: "20" }}
+        contractId={1}
+      />
+    );
+
+    expect(screen.getByLabelText(/ставка показа/i)).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: /^сохранить$/i }));
+    await waitFor(() => expect(getBody()).toBeDefined());
+    expect(getBody()).not.toEqual({ target: "16" });
+    expect(getBody()).toEqual({});
+  });
+
+  // Та же болезнь по построению у `baseDraft` (`base_override` может
+  // обновиться на сервере и БЕЗ участия этого диалога — тот же рефетч,
+  // вызванный ЧУЖИМ полем, приносит смету целиком).
+  //
+  // Краснеет от: возврата `useState(estimate.vat_rate_base_override ?? "")`
+  // без сверки с `estimate` на каждом рендере — поле осталось бы «20».
+  it("базовая ставка тоже не застревает при рефетче, вызванном соседним полем", async () => {
+    const getBody = stubSuccess();
+    const user = userEvent.setup();
+    const { rerender } = renderWithProviders(
+      <VatRateDialog estimate={estimateWithBaseOverride} contractId={1} />
+    );
+    await openDialog(user);
+    expect(screen.getByLabelText(/базовая ставка/i)).toHaveValue("20");
+
+    await user.click(screen.getByRole("button", { name: /снять ставку показа/i }));
+    await waitFor(() => expect(getBody()).toEqual({ target: null }));
+
+    // Рефетч приносит смету, где база ТОЖЕ уже null — этот диалог её не
+    // менял, значение целиком внешнее (например, правка в другой вкладке).
+    rerender(
+      <VatRateDialog
+        estimate={{
+          ...estimateWithBaseOverride,
+          vat_rate_base_override: null,
+          vat_rate_target: null,
+          vat_display_rate: "20",
+        }}
+        contractId={1}
+      />
+    );
+
+    expect(screen.getByLabelText(/базовая ставка/i)).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: /^сохранить$/i }));
+    await waitFor(() => expect(getBody()).toBeDefined());
+    expect(getBody()).not.toEqual({ base_override: "20" });
+  });
+
+  // Инвариант «ручной ввод не затирается посреди редактирования»: рефетч,
+  // вызванный СОСЕДНИМ полем («Снять ставку показа»), не должен стереть
+  // недосохранённый ввод в базовой ставке, пока сама база на сервере не
+  // менялась.
+  //
+  // Краснеет от НАИВНОГО альтернативного лечения — полной пересинхронизации
+  // обоих черновиков эффектом по идентичности `estimate` (например,
+  // `useEffect(() => { setBaseDraft(...); setTargetDraft(...); }, [estimate])`
+  // без сверки «черновик ещё не тронут») — см. отчёт задачи, проверено
+  // именно такой поломкой.
+  it("рефетч по чужому полю не стирает недосохранённый ввод в другом", async () => {
+    const getBody = stubSuccess();
+    const user = userEvent.setup();
+    const { rerender } = renderWithProviders(
+      <VatRateDialog estimate={estimateWithBaseOverride} contractId={1} />
+    );
+    await openDialog(user);
+
+    await user.clear(screen.getByLabelText(/базовая ставка/i));
+    await user.type(screen.getByLabelText(/базовая ставка/i), "25");
+
+    await user.click(screen.getByRole("button", { name: /снять ставку показа/i }));
+    await waitFor(() => expect(getBody()).toEqual({ target: null }));
+
+    // Рефетч меняет ТОЛЬКО цель — база на сервере не тронута этим действием.
+    rerender(
+      <VatRateDialog
+        estimate={{ ...estimateWithBaseOverride, vat_rate_target: null, vat_display_rate: "20" }}
+        contractId={1}
+      />
+    );
+
+    expect(screen.getByLabelText(/базовая ставка/i)).toHaveValue("25");
   });
 });

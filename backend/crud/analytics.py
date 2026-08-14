@@ -231,15 +231,45 @@ def _net_deviation(
     рано или поздно разошлась бы с первой (тот же довод, что у самого VIEW).
 
     Возвращает `(net, deviation_pct, deviation_reason)`. `deviation_reason`
-    различает ДВЕ разные причины пустого отклонения (§10): база НДС неизвестна
-    (нетто вообще не выведено) и норматива нет (нетто есть, сравнивать не с чем).
+    различает ТРИ разные причины пустого отклонения (§10): база НДС неизвестна
+    (нетто вообще не выведено), норматива нет (нетто есть, сравнивать не с
+    чем) и — ре-ревью Codex, PR #21, дефект 1 — сама величина не число.
+
+    **`NaN`/`Infinity` в `unit_cost_total`** доезжают сюда открытым хвостом Ф4
+    (§5.6: импорт не проверяет годность цены). Арифметика (`gross_to_net`,
+    `_deviation`) тихо распространяет нефинитное значение дальше — так и
+    задумано для сумм (см. `quantize_money`), — но ОТКЛОНЕНИЕ затем
+    СРАВНИВАЕТСЯ с нулём (`_passport_totals`, `deviation_pct > 0`), а сравнение
+    нефинитного `Decimal` бросает `InvalidOperation` (тот же класс, что уже
+    чинили в `crud.reports._amount_sort_key` и `services.excel.deviation_font`
+    — здесь третья поверхность, найдена внешним ревью). Возвращать нефинитное
+    `deviation_pct` из этой функции поэтому нельзя вовсе — не только ради
+    вызывающего кода `_passport_totals`, а как собственный инвариант функции.
+
+    Причина в этом случае — ЧЕТВЁРТЫЙ код, `not_finite`, и он не может
+    подменяться существующими: норматив у строки может БЫТЬ (`no_standard`
+    было бы ложью), а база НДС может быть ИЗВЕСТНА (`unknown_vat_base` было
+    бы ложью тоже) — сама величина просто не число, и это другой факт (§2.5:
+    две причины пустоты нельзя сводить к одной, здесь их уже три, и сведение
+    к любой из существующих настолько же неверно, как исходное `None`).
     """
     net = None if vat_rate_base is None else gross_to_net(unit_cost_total, vat_rate_base)
+    if net is not None and not net.is_finite():
+        return net, None, "not_finite"
+    deviation_pct = _deviation(net, standard_unit_rate)
+    if deviation_pct is not None and not deviation_pct.is_finite():
+        # Пояс и подтяжки: сегодня недостижимо, если `net` уже проверен выше и
+        # `standard_unit_rate` не NULL (миграция 0002 держит `standard_unit_rate
+        # > 0`), но PostgreSQL считает `'NaN'::numeric > 0` ИСТИНОЙ (тот же
+        # факт, что уже задокументирован в `services.additional_works` для
+        # похожего CHECK) — то есть нефинитный норматив теоретически МОГ бы
+        # пройти CHECK. Не полагаемся на это молча.
+        return net, None, "not_finite"
     reason = (
         "unknown_vat_base" if net is None
         else ("no_standard" if standard_unit_rate is None else None)
     )
-    return net, _deviation(net, standard_unit_rate), reason
+    return net, deviation_pct, reason
 
 
 def _declared_rates(db: Session, estimate_id: int) -> list[Decimal | None]:
@@ -577,7 +607,13 @@ def _passport_totals(db: Session, estimate_id: int, effective_rate: Decimal | No
         _net, deviation_pct, _reason = _net_deviation(
             r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
         )
-        if deviation_pct is not None and deviation_pct > 0:
+        # Пояс и подтяжки (дефект 1, ре-ревью Codex, PR #21): `_net_deviation`
+        # уже не имеет права вернуть нефинитное `deviation_pct` (см. её
+        # докстроку), но сравнение здесь — то самое место, где нефинитный
+        # `Decimal` бросал `InvalidOperation`, и оно обязано быть устойчивым
+        # НЕЗАВИСИМО от гарантии вызываемой функции, а не полагаться на неё
+        # одну — на случай, если инвариант выше когда-нибудь ослабят молча.
+        if deviation_pct is not None and deviation_pct.is_finite() and deviation_pct > 0:
             over_standard += 1
 
         restated_total = restate_gross(r.total_cost_total, r.vat_rate_base, effective_rate)
