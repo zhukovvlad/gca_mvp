@@ -32,7 +32,20 @@ from models import (
     User,
     WorkCategory,
 )
-from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
+from money.vat import (
+    AmountStatus,
+    NetReconciliation,
+    NetStatus,
+    check_proposal_net,
+    effective_display_rate,
+    fold_net_reconciliation,
+    quantize_money,
+    restate_gross,
+)
+from parser.constants import (
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+)
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -46,18 +59,22 @@ from services.category_rollup import (
 #  VIEW прямых сумм по статьям как объект SQLAlchemy
 # ---------------------------------------------------------------------------
 
-#: `v_category_totals` создаётся raw SQL в миграции 0010 и потому невидим для
-#: `Base.metadata` — ровно как `v_position_deviations` фазы 2. Отражение
-#: объявлено здесь, чтобы запросы собирались `select()`-ом, а не склеивались из
-#: строк: строковый SQL не проверяется ничем до попадания в БД.
+#: `v_category_totals` создаётся raw SQL в миграции 0010 (регруппирован по
+#: предложению и его базовой ставке НДС миграцией 0012 — спека пересчёта §2.4) и
+#: потому невидим для `Base.metadata` — ровно как `v_position_deviation_inputs`
+#: фазы 2. Отражение объявлено здесь, чтобы запросы собирались `select()`-ом, а
+#: не склеивались из строк: строковый SQL не проверяется ничем до попадания в БД.
 #:
 #: Цена отражения — оно может разъехаться с настоящим VIEW. Это ловит
 #: `test_category_totals_view.py::test_declared_view_columns_match_the_database`,
-#: сверяя объявление с `information_schema`; без сверки переименованная в
-#: миграции колонка проявилась бы ошибкой выполнения на живом стенде.
+#: сверяя объявление с `information_schema` ПО ПОРЯДКУ КОЛОНОК — порядок здесь
+#: обязан совпасть с порядком в `CREATE VIEW` миграции 0012, иначе сверка падает
+#: сообщением про несовпадение кортежей, из которого причина не читается.
 CATEGORY_TOTALS = sa.table(
     "v_category_totals",
     sa.column("estimate_id", sa.BigInteger),
+    sa.column("proposal_id", sa.BigInteger),
+    sa.column("vat_rate_base", sa.Numeric),
     sa.column("work_category_id", sa.BigInteger),
     sa.column("source", sa.Text),
     sa.column("amount", sa.Numeric),
@@ -401,6 +418,80 @@ def _vat_rate(db: Session, estimate_id: int) -> Decimal | None:
 
 
 # ---------------------------------------------------------------------------
+#  Сверка выведенного нетто с файловым, по предложениям (спека §2.10, задача 5)
+# ---------------------------------------------------------------------------
+
+def _net_reconciliation(db: Session, estimate: Estimate) -> NetReconciliation:
+    """Сверка выведенного нетто с файловым, по предложениям, свёрнутая в вердикт.
+
+    ЭТО ТРЕТЬЯ, ОТДЕЛЬНАЯ диагностика (приложение оркестратора, п.3 «три
+    диагностики — про разное»), и её нельзя путать ни с одной из двух других:
+
+    * `delta_to_file_total` (выше) сверяет валовое с валовым, из исходных
+      файловых денег, и НИКОГДА не зависит от поправок — трогать его отсюда
+      запрещено;
+    * согласованность самого файла (заявленная `proposals.vat_rate` против
+      файлового блока итогов) — диагностика парсера, ей здесь не место.
+
+    База берётся ЭФФЕКТИВНАЯ (`COALESCE(estimates.vat_rate_base_override,
+    proposals.vat_rate)`) — та самая, на которую опирается пересчёт §2.4.
+    Гранулярность — ОДНО ПРЕДЛОЖЕНИЕ на строку (не сумма по смете, как у
+    `_file_total_including_vat` — та агрегирующая семантика этой сверке не
+    подходит): `check_proposal_net` сравнивает валовое ИТОГО одного
+    предложения с его же файловым нетто.
+
+    Оба операнда читаются LEFT JOIN-ом на `proposal_summary_lines` (пара
+    `(proposal_id, summary_key)` уникальна схемой, `uq_proposal_summary_lines_
+    key`, — не более одной строки на предложение и ключ, дубль исключён
+    ограничением). Предложение без нужной строки закономерно даёт `NULL`, и
+    `check_proposal_net` обязан отличить это от найденного, но не сошедшегося
+    значения — он делает это сам (`NOT_APPLICABLE`), и это тот же открытый
+    хвост Ф4 (`NaN`/`Infinity`), что и у `_file_total_including_vat`: обе
+    проверки годности значения инкапсулированы в `check_proposal_net`, а не
+    продублированы здесь второй раз.
+    """
+    gross_line = aliased(ProposalSummaryLine, name="net_reconciliation_gross")
+    net_line = aliased(ProposalSummaryLine, name="net_reconciliation_net")
+    rows = db.execute(
+        sa.select(
+            Proposal.id.label("proposal_id"),
+            Proposal.vat_rate,
+            gross_line.total_cost.label("gross_total"),
+            net_line.total_cost.label("file_net"),
+        )
+        .select_from(Proposal)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .outerjoin(
+            gross_line,
+            sa.and_(
+                gross_line.proposal_id == Proposal.id,
+                gross_line.summary_key == JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+            ),
+        )
+        .outerjoin(
+            net_line,
+            sa.and_(
+                net_line.proposal_id == Proposal.id,
+                net_line.summary_key == JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+            ),
+        )
+        .where(Lot.estimate_id == estimate.id)
+    ).all()
+
+    override = estimate.vat_rate_base_override
+    checks = [
+        check_proposal_net(
+            row.proposal_id,
+            row.gross_total,
+            row.file_net,
+            override if override is not None else row.vat_rate,
+        )
+        for row in rows
+    ]
+    return fold_net_reconciliation(checks)
+
+
+# ---------------------------------------------------------------------------
 #  Арифметика «только известные слагаемые» (спека §2.6, правила 3, 5, 6)
 # ---------------------------------------------------------------------------
 
@@ -452,12 +543,23 @@ def _flatten_categories(nodes) -> list[CategoryNode]:
     return flat
 
 
+def _quantize_if_restated(value: Decimal | None, restated_any: bool) -> Decimal | None:
+    """Округлить ГОТОВОЕ денежное поле — но только если задача 8 реально что-то
+    пересчитала (`restated_any`). Без поправки поле обязано остаться тем же
+    объектом-по-значению, что и до задачи 8 (тождество §2.4, посимвольно): вызов
+    `quantize_money` на нетронутой сумме сдвинул бы её `exponent` без всякой
+    арифметики, а именно от этого сдвига и защищает ветка тождества
+    `restate_gross`."""
+    return quantize_money(value) if restated_any else value
+
+
 def _category_dict(
     node: CategoryNode,
     grand_total,
     area_total,
     extras_by_category: dict[int, list[dict]],
     own_sections_by_category: dict[int, list[dict]],
+    restated_any: bool,
 ) -> dict:
     ref = node.ref
     return {
@@ -467,13 +569,13 @@ def _category_dict(
         "parent_id": ref.parent_id,
         "is_bucket": ref.is_bucket,
         "sort_order": ref.sort_order,
-        "total": node.total,
+        "total": _quantize_if_restated(node.total, restated_any),
         "rows": node.rows,
         "rows_priced": node.rows_priced,
         "rows_not_finite": node.rows_not_finite,
         "share_pct": _share_pct(node.total, grand_total),
-        "per_sqm": _per_sqm(node.total, area_total),
-        "own": node.own,
+        "per_sqm": _quantize_if_restated(_per_sqm(node.total, area_total), restated_any),
+        "own": _quantize_if_restated(node.own, restated_any),
         "own_rows": node.own_rows,
         "own_rows_priced": node.own_rows_priced,
         "own_rows_not_finite": node.own_rows_not_finite,
@@ -483,8 +585,8 @@ def _category_dict(
 
 
 def _direct_totals(
-    db: Session, estimate_id: int
-) -> dict[int | None, dict[str, DirectTotals]]:
+    db: Session, estimate_id: int, effective_rate: Decimal | None
+) -> tuple[dict[int | None, dict[str, DirectTotals]], bool, Decimal | None]:
     """Прямые суммы VIEW для одной сметы: `{work_category_id -> {source -> DirectTotals}}`.
 
     `None` в ключе — «Нераспределённое» (спека §2.2): позиции и допработы без
@@ -495,19 +597,66 @@ def _direct_totals(
     бы», но тогда юнит-тесты `build_tree` исполняли бы один тип, а продакшен —
     другой: объявленный контракт `Mapping[str, DirectTotals]` стал бы неправдой,
     а новое поле у `DirectTotals` упало бы только на живом стенде.
+
+    **НАКОПЛЕНИЕ, а не присваивание** (задача 3 пересчёта НДС, §3 приложения).
+    С миграцией 0012 VIEW группируется ещё и по `proposal_id`/`vat_rate_base`, то
+    есть на статью со сметой из НЕСКОЛЬКИХ предложений придёт НЕСКОЛЬКО строк.
+    Присваивание молча оставило бы только последнюю — на одном предложении (все
+    сегодняшние фикстуры) это было бы незаметно, а сумма статьи стала бы неверной
+    ровно там, где предложений больше одного (`test_direct_totals_accumulate_
+    across_two_proposals`). `amount` складывается через `_sum_known` — та же
+    NULL-семантика, что у остальной арифметики модуля: неизвестное слагаемое, а
+    не ноль.
+
+    **Ставка показа приводится ЗДЕСЬ, ДО накопления** (задача 8 пересчёта НДС,
+    приложение оркестратора §1): каждая строка VIEW уже несёт СВОЮ, постоянную
+    внутри себя `vat_rate_base` (группировка по `proposal_id`/`vat_rate_base` —
+    ровно ради этого), поэтому `restate_gross(row.amount, row.vat_rate_base,
+    effective_rate)` вызывается ДЛЯ КАЖДОЙ строки, и только РЕЗУЛЬТАТ идёт в
+    `_sum_known`. Пересчитывать уже накопленную сумму статьи нельзя — в ней
+    смешаны строки с разными базами. Возвращаемый `restated_any` — признак «хоть
+    одна строка реально пересчитана» (не тождество): вызывающий код квантует
+    деньги ответа только при `restated_any`, иначе поле осталось бы численно тем
+    же, что и без задачи 8, но потеряло бы `exponent` — а посимвольное совпадение
+    (спека §2.4) требует именно ветку тождества `restate_gross`, а не квантование
+    того же числа.
+
+    Третий элемент — `raw_total`, СЫРАЯ сумма `amount` по ВСЕМ строкам VIEW, ДО
+    пересчёта, тем же `_sum_known`. Она нужна `delta_to_file_total` (диагностика
+    ИМПОРТА, приложение оркестратора п.6): её операнды обязаны остаться
+    валовыми и исходными НЕЗАВИСИМО от ставки показа, а `totals["amount"]`
+    (ветка дерева статей) с задачи 8 может быть уже пересчитан — те же деньги
+    статьи и «Нераспределённого», просто до и после приведения к ставке показа.
     """
     rows = db.execute(
         sa.select(CATEGORY_TOTALS).where(CATEGORY_TOTALS.c.estimate_id == estimate_id)
     ).all()
     direct: dict[int | None, dict[str, DirectTotals]] = {}
+    restated_any = False
+    raw_total = None
     for row in rows:
-        direct.setdefault(row.work_category_id, {})[row.source] = DirectTotals(
-            amount=row.amount,
-            row_count=row.row_count,
-            rows_with_amount=row.rows_with_amount,
-            rows_not_finite=row.rows_not_finite,
-        )
-    return direct
+        raw_total = _sum_known(raw_total, row.amount)
+        restated = restate_gross(row.amount, row.vat_rate_base, effective_rate)
+        if restated.status is AmountStatus.RESTATED:
+            restated_any = True
+        amount = restated.amount
+        bucket = direct.setdefault(row.work_category_id, {})
+        existing = bucket.get(row.source)
+        if existing is None:
+            bucket[row.source] = DirectTotals(
+                amount=amount,
+                row_count=row.row_count,
+                rows_with_amount=row.rows_with_amount,
+                rows_not_finite=row.rows_not_finite,
+            )
+        else:
+            bucket[row.source] = DirectTotals(
+                amount=_sum_known(existing.amount, amount),
+                row_count=existing.row_count + row.row_count,
+                rows_with_amount=existing.rows_with_amount + row.rows_with_amount,
+                rows_not_finite=existing.rows_not_finite + row.rows_not_finite,
+            )
+    return direct, restated_any, raw_total
 
 
 def _branch(direct_for_key: dict[str, DirectTotals], source: str) -> tuple:
@@ -1015,6 +1164,27 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         разносить нужно и в статьи, которых в смете ещё нет вовсе. Это поле
         не зависит от наличия сметы (правило 8) — оно то же самое на обоих
         путях функции.
+    17. `totals.net_reconciliation` — сверка выведенного нетто с файловым, по
+        предложениям (спека §2.10, задача 5, `_net_reconciliation`): ТРЕТЬЯ,
+        независимая от `delta_to_file_total` диагностика (валовое против
+        валового, исходное, никогда не зависящее от поправок) и от
+        согласованности файла (заявленная ставка против файлового блока
+        итогов, живёт в парсере) — сравнивает `gross_to_net(валовое,
+        ЭФФЕКТИВНАЯ база)` с файловым нетто. Ключ ДОБАВЛЕН, ничего в
+        `delta_to_file_total` не тронуто (тождество §2.4).
+    18. `totals.amount`, `per_sqm`, `categories[].total`/`own`/`per_sqm`,
+        `unallocated.amount`/`per_sqm` — в СТАВКЕ ПОКАЗА (задача 8 пересчёта
+        НДС, спека §5.1, `effective_display_rate`): цель, иначе перекрытая
+        база, иначе единогласная заявленная ставка предложений; `None` при
+        разногласии — тогда пересчёт не применяется (эффективная ставка
+        отсутствует, и восстанавливать её выбором «какой-то из» нельзя).
+        Пересчёт применяется К КАЖДОЙ строке VIEW ПО ЕЁ базе, ДО накопления
+        (`_direct_totals`), и квантуется ОДИН раз, на границе ответа
+        (`_quantize_if_restated`) — и только если хоть что-то реально
+        пересчиталось, иначе поле обязано остаться посимвольно тем же, что и
+        без задачи 8 (ветка тождества `restate_gross`). `delta_to_file_total`
+        и `net_reconciliation` (правила 12, 17) не тронуты — они опираются на
+        `raw_grand_total`/файловую базу, а не на ставку показа.
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -1074,7 +1244,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         # тот же скелет, что и для договора со сметой, просто без чисел.
         roots = build_tree(refs, {})
         categories = [
-            _category_dict(node, None, None, {}, {}) for node in _flatten_categories(roots)
+            _category_dict(node, None, None, {}, {}, restated_any=False)
+            for node in _flatten_categories(roots)
         ]
         return {
             "contract": contract_dict,
@@ -1089,6 +1260,14 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
                 "additional_works_rows": 0,
                 "file_total_including_vat": None,
                 "delta_to_file_total": None,
+                # Форма ответа одна и та же на обоих путях функции (правило 8):
+                # без сметы сверить нечего, тот же вердикт, что дал бы
+                # `fold_net_reconciliation([])` на пустом списке предложений.
+                "net_reconciliation": {
+                    "status": NetStatus.NOT_APPLICABLE.value,
+                    "delta": None,
+                    "mismatched_proposal_ids": [],
+                },
             },
             "categories": categories,
             "unallocated": {
@@ -1114,16 +1293,35 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         sa.select(EstimateRawData.parser_version).where(EstimateRawData.estimate_id == estimate.id)
     ).scalar_one_or_none()
 
+    # Единогласная заявленная ставка предложений сметы (правило §2.5, правило
+    # 5) — считается ОДИН раз и переиспользуется как вход "declared" для
+    # `effective_display_rate` (задача 8, спека §5.1): обёрнутая в
+    # одноэлементный список, она несёт ровно ту же информацию, что и сырой
+    # список заявленных ставок — `None` при разногласии/незнании/отсутствии
+    # предложений, значение при единогласии, — так что вторая, дублирующая
+    # копия того же свёртывающего запроса здесь не нужна.
+    vat_rate = _vat_rate(db, estimate.id)
+    effective_rate = effective_display_rate(
+        estimate.vat_rate_target, estimate.vat_rate_base_override, [vat_rate]
+    )
+
     estimate_dict = {
         "id": estimate.id,
         "amendment_no": estimate.amendment_no,
         "title": estimate.title,
         "data_prepared_on_date": iso(estimate.data_prepared_on_date),
         "parser_version": parser_version,
-        "vat_rate": _vat_rate(db, estimate.id),
+        "vat_rate": vat_rate,
+        "vat_rate_base_override": estimate.vat_rate_base_override,
+        "vat_rate_target": estimate.vat_rate_target,
+        # Ставка показа одно-договорной поверхности (задача 8, спека §5.1):
+        # цель, иначе перекрытая база, иначе единогласная заявленная ставка;
+        # `None` при разногласии. Экран подписывает суммы паспорта этой
+        # ставкой («суммы показаны с НДС N %» либо «без НДС» при 0).
+        "vat_display_rate": effective_rate,
     }
 
-    direct = _direct_totals(db, estimate.id)
+    direct, restated_any, raw_grand_total = _direct_totals(db, estimate.id, effective_rate)
     roots = build_tree(refs, direct)
     flat_nodes = _flatten_categories(roots)
 
@@ -1158,29 +1356,45 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     # `is not None` на ОБОИХ, не только на файловом итоге — табличная сумма
     # законно неизвестна сама по себе (например, все позиции без цены), и
     # `None - Decimal` тут же уронил бы вычитание.
-    if grand_total is not None and file_total_including_vat is not None:
-        delta_to_file_total = grand_total - file_total_including_vat
+    #
+    # Операнд слева — `raw_grand_total`, а НЕ `grand_total`: диагностика
+    # ИМПОРТА сравнивает валовое с валовым, исходное, и ручные ставки на неё
+    # не влияют НИКОГДА (приложение оркестратора задачи 8, п.6). С задачи 8
+    # `grand_total` может быть уже приведён к ставке показа — это тождество
+    # §2.4 сохранило бы совпадение только пока ставка показа не задана, а
+    # `delta_to_file_total` обязана остаться той же цифрой всегда, а не только
+    # в этом частном случае.
+    if raw_grand_total is not None and file_total_including_vat is not None:
+        delta_to_file_total = raw_grand_total - file_total_including_vat
     else:
         delta_to_file_total = None
 
+    reconciliation = _net_reconciliation(db, estimate)
     totals = {
-        "amount": grand_total,
-        "per_sqm": _per_sqm(grand_total, area_total),
+        "amount": _quantize_if_restated(grand_total, restated_any),
+        "per_sqm": _quantize_if_restated(_per_sqm(grand_total, area_total), restated_any),
         "positions_rows": positions_rows,
         "positions_rows_priced": positions_rows_priced,
         "positions_rows_not_finite": positions_rows_not_finite,
         "additional_works_rows": additional_works_rows,
         "file_total_including_vat": file_total_including_vat,
+        # Тождество §2.4 (приложение оркестратора, п.5): ключ ДОБАВЛЕН, ничего
+        # из полей выше не тронуто — ни расчёт, ни порядок, ни значение.
         "delta_to_file_total": delta_to_file_total,
+        "net_reconciliation": {
+            "status": reconciliation.status.value,
+            "delta": reconciliation.delta,
+            "mismatched_proposal_ids": reconciliation.mismatched_proposal_ids,
+        },
     }
 
     unallocated_dict = {
-        "amount": unallocated_amount,
+        "amount": _quantize_if_restated(unallocated_amount, restated_any),
         "rows": pos_rows + extra_rows,
         "rows_priced": pos_priced + extra_priced,
         "rows_not_finite": pos_not_finite + extra_not_finite,
         "share_pct": _share_pct(unallocated_amount, grand_total),
-        "per_sqm": _per_sqm(unallocated_amount, area_total),
+        "per_sqm": _quantize_if_restated(_per_sqm(unallocated_amount, area_total), restated_any),
         "chapters": chapters,
         "rows_outside_structure": rows_outside_structure,
         "extras": unallocated_extras,
@@ -1188,7 +1402,10 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     }
 
     categories = [
-        _category_dict(node, grand_total, area_total, extras_by_category, own_sections_by_category)
+        _category_dict(
+            node, grand_total, area_total, extras_by_category, own_sections_by_category,
+            restated_any=restated_any,
+        )
         for node in flat_nodes
     ]
 

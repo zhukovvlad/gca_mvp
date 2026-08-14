@@ -6,6 +6,7 @@
  * брифинга).
  */
 import api from "@/lib/api";
+import type { ID } from "@/types/common";
 import type {
   BatchKindResult,
   CatalogPositionRow,
@@ -15,6 +16,8 @@ import type {
   ContractRow,
   Contractor,
   ContractorInput,
+  Decimal,
+  EstimateVatState,
   ImportJob,
   ManualKind,
   MergeResult,
@@ -147,6 +150,20 @@ export const estimatesApi = {
     api
       .get<Blob>(`/v1/import-jobs/${jobId}/file`, { responseType: "blob" })
       .then((r) => r.data),
+
+  /**
+   * Правка ставок НДС сметы (спека пересчёта §2.7).
+   *
+   * Ответ идёт через `decimal_json` на бэкенде (`routers/estimate_vat.py`) —
+   * ставки и время приезжают строками, а не `float`/`number`: `Decimal` во
+   * фронте — это строка (`types/domain.ts:13`), и приводить их к `number`
+   * здесь нельзя ни на входе, ни на выходе (§3).
+   */
+  setVat: (
+    estimateId: ID,
+    input: { base_override?: Decimal | null; target?: Decimal | null }
+  ): Promise<EstimateVatState> =>
+    api.patch<EstimateVatState>(`/v1/estimates/${estimateId}/vat`, input).then((r) => r.data),
 };
 
 // ---------------------------------------------------------------------------

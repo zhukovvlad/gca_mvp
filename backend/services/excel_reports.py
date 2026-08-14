@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 from openpyxl import Workbook
 
@@ -59,6 +60,32 @@ _N_COLS = len(_COLUMNS)
 
 #: Пометка вместо нуля там, где норматива нет (§10).
 NO_STANDARD = "нет норматива"
+
+#: Пометка для ИТОГОВОЙ строки, когда причина пустого отклонения — не
+#: отсутствующий норматив, а неизвестная база НДС (Правка 2, ре-ревью финала
+#: ветки пересчёта): смешивать их в одну подпись `NO_STANDARD` запрещает §10 и
+#: спека §2.5 — это ДВА разных факта, и на уровне итога, а не только у строки.
+UNKNOWN_VAT_BASE = "неизвестна база НДС"
+
+
+def _totals_deviation_reason(totals: dict) -> str:
+    """Причина пустого отклонения ИТОГОВОЙ строки — своя, не одна на двоих.
+
+    Различитель — счётчики самого `totals`: публичный `positions_without_vat_base`
+    у отчёта «для банка» (задача 4, всегда точен — считается по ПОЛНОМУ набору
+    строк класса/выборки, не только по показанным) либо служебный
+    `_positions_blocked_by_vat_base` у свода по договору (`crud.reports.
+    _totals_of` — не печатается, гейт `_write_excluded_counters` смотрит на ДРУГОЕ
+    имя ключа). Если исключение целиком объясняется неизвестной базой (норматив
+    есть, база нет) — подпись так и говорит; если есть хоть одна позиция без
+    норматива вовсе, либо причины смешаны, остаётся прежняя `NO_STANDARD` —
+    более узкое, но не ложное утверждение («норматива нет» верно хотя бы отчасти).
+    """
+    unknown_base = totals.get("positions_without_vat_base", totals.get("_positions_blocked_by_vat_base", 0))
+    no_standard = totals.get("positions_without_standard", 0)
+    if unknown_base > 0 and no_standard == 0:
+        return UNKNOWN_VAT_BASE
+    return NO_STANDARD
 
 
 def _write_row(ws, row_num: int, row: dict, *, even: bool) -> None:
@@ -110,12 +137,14 @@ def _write_totals(ws, row_num: int, label: str, totals: dict, *, bg: str) -> int
                number_format=FMT_MONEY, horizontal="right")
     # Пустое отклонение печатается пометкой, а не пустотой и не нулём: в итоговой
     # строке отчёта для банка ноль означал бы «сошлось с нормативом» (см.
-    # `crud.reports._empty_report_totals`).
+    # `crud.reports._empty_report_totals`). Причина пустоты — СВОЯ, а не одна на
+    # двоих (Правка 2): «нет норматива» и «неизвестна база НДС» — разные факты.
     comparable = deviation is not None
-    write_cell(ws, row_num, 7, deviation if comparable else NO_STANDARD,
+    reason = NO_STANDARD if comparable else _totals_deviation_reason(totals)
+    write_cell(ws, row_num, 7, deviation if comparable else reason,
                cell_font=deviation_font(deviation, bold=True), cell_fill=background,
                number_format=FMT_PCT if comparable else "@", horizontal="right")
-    write_cell(ws, row_num, 8, totals["deviation_money"] if comparable else NO_STANDARD,
+    write_cell(ws, row_num, 8, totals["deviation_money"] if comparable else reason,
                cell_font=deviation_font(deviation, bold=True), cell_fill=background,
                number_format=FMT_MONEY if comparable else "@", horizontal="right")
     return row_num + 1
@@ -156,6 +185,28 @@ def build_contract_summary(data: dict, *, generated_at: dt.date) -> bytes:
     row = write_banner(
         ws, 1, f"СВОД РАСЦЕНОК ПО ДОГОВОРУ {header['contract_number']}", _N_COLS, bg=C_HEADER_BG
     )
+
+    # Подпись ставки показа (задача 8 пересчёта НДС, спека §5.1): свод —
+    # однодоговорная поверхность, факт и норматив показаны в ОДНОЙ ставке, и
+    # лист обязан назвать её, иначе «Ставка»/«Норматив» не сказали бы, в чём
+    # они измерены. При разногласии заявленных ставок предложений
+    # (`vat_display_rate is None`, ревью задачи 8, Правка 6) единой ставки нет,
+    # но `amount` всё равно складывает валовые из РАЗНЫХ ставок построчно —
+    # молчание здесь было бы неправдой не меньшей, чем ложная ставка, поэтому
+    # подпись заменяется на `vat_display_note` (спека §2.5, строка 280: лист
+    # обязан назвать единицы измерения явно).
+    vat_display_rate = header["vat_display_rate"]
+    if vat_display_rate is not None:
+        caption = (
+            "Суммы показаны без НДС" if vat_display_rate == 0
+            else f"Суммы показаны с НДС {_format_percent(vat_display_rate)} %"
+        )
+    else:
+        caption = header.get("vat_display_note")
+    if caption:
+        cell = ws.cell(row=row, column=1, value=safe_str(caption))
+        cell.font = font(size=9, bold=True)
+        row += 1
 
     amendment = header["estimate_amendment_no"]
     facts = [
@@ -200,6 +251,14 @@ def build_bank_comparison(data: dict, *, generated_at: dt.date) -> bytes:
     header = data["header"]
     row = write_banner(ws, 1, "СРАВНЕНИЕ РАСЦЕНОК С НОРМАТИВАМИ", _N_COLS, bg=C_HEADER_BG)
 
+    # Подпись ставки показа (задача 4 пересчёта НДС, спека §2.5): выборка охватывает
+    # много договоров с разными целевыми ставками, поэтому общей оси, кроме нетто, у
+    # неё нет. Без этой строки «Ставка»/«Норматив» листа не сказали бы, в чём они
+    # измерены, — а банк складывает колонку, не заглядывая в код.
+    vat_note = ws.cell(row=row, column=1, value="Все суммы и нормативы — без НДС")
+    vat_note.font = font(size=9, bold=True)
+    row += 1
+
     period = _period_text(header["date_from"], header["date_to"])
     for fact in (
         f"Период: {period}",
@@ -239,27 +298,43 @@ def build_bank_comparison(data: dict, *, generated_at: dt.date) -> bytes:
 
 
 def _write_excluded_counters(ws, row_num: int, totals: dict) -> int:
-    """Оба счётчика исключённого — под каждым итогом (макет §6.1).
+    """Счётчики исключённого — под каждым итогом (макет §6.1, четыре класса —
+    задача 4 пересчёта НДС).
 
     Печатаются всегда, даже нулём: отсутствие строки читалось бы как «таких позиций
     не проверяли», а ноль говорит «проверили, их нет».
 
-    Подписи образуют **разбиение** (см. `crud/reports.py`): строки таблицы + эти два
-    счётчика = все расценённые позиции выборки, без пересечений. «С объёмом, но без
-    норматива» — уточнение по замечанию ревью: позиция без объёма и без норматива
-    считается один раз, в счётчике объёма, и прежняя подпись «без норматива: 0» для
-    такого файла была бы ложью.
+    Подписи образуют **разбиение** (см. `crud/reports.py`): строка «Сравнимых
+    позиций» + три счётчика исключённого = все расценённые позиции выборки, без
+    пересечений. У свода по договору (`totals` без ключа `positions_without_
+    vat_base`) третья строка не печатается — там этого класса нет (задача 4 его не
+    трогала, отчёт остаётся в валовой шкале).
+
+    «С объёмом, но без норматива» — уточнение по замечанию ревью: позиция без
+    объёма и без норматива считается один раз, в счётчике объёма, и прежняя подпись
+    «без норматива: 0» для такого файла была бы ложью. Та же логика распространена
+    на счётчик базы НДС: приоритет строго сверху вниз (объём → база НДС → норматив).
     """
-    for note in (
+    notes = [
         # Первая строка делает разбиение проверяемым: строка отчёта агрегирует
         # работу, и по числу видимых строк позиции не сосчитать (замечание ревью).
         f"Сравнимых позиций (в расчёте отклонения): "
         f"{totals['comparable_positions']}",
+    ]
+    if "positions_without_vat_base" in totals:
+        notes.append(
+            f"Позиций с объёмом, но без базы НДС (в отклонение не вошли): "
+            f"{totals['positions_without_vat_base']}"
+        )
+    notes.append(
         f"Позиций с объёмом, но без норматива (в отклонение не вошли): "
-        f"{totals['positions_without_standard']}",
+        f"{totals['positions_without_standard']}"
+    )
+    notes.append(
         f"Позиций с ценой, но без объёма (в расчёт не вошли): "
-        f"{totals['positions_without_volume']}",
-    ):
+        f"{totals['positions_without_volume']}"
+    )
+    for note in notes:
         cell = ws.cell(row=row_num, column=1, value=note)
         cell.font = font(size=9)
         row_num += 1
@@ -274,16 +349,33 @@ def _write_footnote(ws, row_num: int, totals: dict) -> int:
     число, даёт другое значение.
     """
     row_num = _write_excluded_counters(ws, row_num, totals)
-    # Общий счёт посчитан независимо (count(*) по VIEW): совпадение с суммой трёх
-    # счётчиков выше — проверяемый инвариант файла, а не тавтология.
-    total_note = ws.cell(
-        row=row_num,
-        column=1,
-        value=(
-            f"Всего расценённых позиций: {totals['positions_priced']} "
-            "(равно сумме трёх счётчиков выше)"
-        ),
+    # Общий счёт посчитан независимо (count(*) по VIEW): совпадение с суммой
+    # напечатанных счётчиков выше — проверяемый инвариант файла, а не тавтология.
+    # У отчёта «для банка» их четыре (задача 4: добавлен счётчик базы НДС), у свода
+    # по договору — по-прежнему три.
+    #
+    # Правка 2 (ре-ревью финала ветки): у свода по договору появилась работа,
+    # чьё отклонение погашено неизвестной базой НДС, а не отсутствием норматива
+    # (`crud.reports._fold_summary_work`, ветка `any_unknown_base`) — задача 4
+    # отчёта «для банка» свод не трогала, отдельного печатаемого счётчика под
+    # эту причину у него нет и не заводится (у свода своя форма макета). Тогда
+    # заявление «равно сумме N счётчиков» держится не по счёту слагаемых, а по
+    # ФАКТИЧЕСКОМУ равенству: печатать его при несовпадении значило бы повторить
+    # ту же ложь, которую правка устраняет двумя строками выше и в
+    # `_write_totals` — молчание о слагаемом честнее неверной арифметики.
+    has_vat_base_counter = "positions_without_vat_base" in totals
+    printed_counters_sum = (
+        totals["comparable_positions"]
+        + totals["positions_without_standard"]
+        + totals["positions_without_volume"]
+        + (totals["positions_without_vat_base"] if has_vat_base_counter else 0)
     )
+    reconciles = printed_counters_sum == totals["positions_priced"]
+    counters_word = "четырёх" if has_vat_base_counter else "трёх"
+    total_text = f"Всего расценённых позиций: {totals['positions_priced']}"
+    if reconciles:
+        total_text += f" (равно сумме {counters_word} счётчиков выше)"
+    total_note = ws.cell(row=row_num, column=1, value=total_text)
     total_note.font = font(size=9, bold=True)
     row_num += 1
     cell = ws.cell(
@@ -304,6 +396,19 @@ def _ru_date(iso_date: str | None) -> str:
     if not iso_date:
         return "—"
     return dt.date.fromisoformat(iso_date).strftime("%d.%m.%Y")
+
+
+def _format_percent(value: Decimal) -> str:
+    """Ставка НДС для подписи листа — человеческий вид, а не сырой `Decimal`
+    (ревью задачи 8, Правка 8): `Decimal("20.00")` печаталась бы «20.00 %»,
+    хотя ставка хранится в процентных пунктах и заявляется человеком как
+    целое число в подавляющем большинстве случаев. Дробная часть, если она
+    есть (например «16.5»), сохраняется — округляется до сотых и лишние нули
+    отбрасываются, а не наоборот."""
+    text = format(value.quantize(Decimal("0.01")), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _period_text(date_from: str | None, date_to: str | None) -> str:

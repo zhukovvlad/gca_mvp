@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 
 import MatrixPage from "./MatrixPage";
-import { longJobTitle } from "@/test/fixtures";
+import { longJobTitle, sampleMatrix } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
+import type { MatrixCell, MatrixRow } from "@/types/domain";
 
 /**
  * Сквозная матрица (§6, §7.5).
@@ -15,9 +18,39 @@ import { renderWithProviders } from "@/test/utils";
  * различимость «нет норматива» / «работы нет в смете» / «0 %», drill-down и фильтры.
  */
 
-function renderMatrix() {
+function renderMatrix(overrides?: { rows: MatrixRow[] }) {
+  if (overrides) {
+    server.use(
+      http.get("/api/v1/analytics/matrix", () =>
+        HttpResponse.json({ ...sampleMatrix, rows: overrides.rows, total: overrides.rows.length })
+      )
+    );
+  }
   return renderWithProviders(<MatrixPage />, { initialRoute: "/matrix" });
 }
+
+/**
+ * Строка/ячейка матрицы, переиспользуемая тестами неполноты веса и причины
+ * пустого отклонения (задача 9). `contract_id: 10` — реальный договор из
+ * `sampleMatrixColumns` («ГП-0114»), иначе ячейка осталась бы без колонки.
+ */
+const cellFixture: MatrixCell = {
+  contract_id: 10,
+  rate: "12000.50",
+  amount: "360015.00",
+  standard_unit_rate: "10000.00",
+  deviation_pct: "20.00",
+  deviation_reason: null,
+};
+
+const rowFixture: MatrixRow = {
+  catalog_position_id: 701,
+  job_title: "Кладка кирпичная",
+  unit_code: "M3",
+  row_amount: "18000000.00",
+  row_amount_incomplete: false,
+  cells: [cellFixture],
+};
 
 /**
  * Кликабельная ячейка на пересечении работы и договора.
@@ -82,28 +115,26 @@ describe("Сквозная матрица", () => {
     expect(screen.getByText(/12\s000,50/)).toBeInTheDocument();
   });
 
-  it("средневзвешенная ставка показана копейками, точное значение — в подсказке", async () => {
+  it("средневзвешенная ставка приезжает уже квантованной до копеек", async () => {
     renderMatrix();
     await screen.findByText("Кладка кирпичная");
 
     /*
-      **Найдено пользователем на стенде.** Ставка ячейки вычислена делением
-      `SUM(ставка × вес) / SUM(вес)` на `numeric`, и PostgreSQL доводит результат до
-      своей шкалы: в матрице стояло «49 467,503222935929» и «32 263 577,210000000000».
-      Двенадцать знаков изображают точность, которой нет, а таблица из-за них
-      читалась как набор случайных цифр.
+      **Найдено пользователем на стенде, затем исправлено на бэкенде.** Раньше ставка
+      ячейки приезжала делением `SUM(ставка × вес) / SUM(вес)` на `numeric` с полной
+      точностью деления («49 467,503222935929»), и `MoneyCell` защитно округлял её на
+      экране, пряча точное значение в `title`. Пересчёт НДС (задача 3) перевёл `rate`
+      на `quantize_money` (`crud/analytics.py::_fold_cell`) — теперь ячейка КВАНТУЕТСЯ
+      ДО КОПЕЕК на границе ответа, и такого хвоста от API больше не бывает: тест на
+      старом сценарии проверял бы формат, которого контракт больше не отдаёт
+      (приложение оркестратора задачи 9, п.4).
 
-      Округление здесь — решение слоя представления и только для ВЫЧИСЛЕННЫХ величин:
-      хранимые ставки (паспорт, drill-down, нормативы) по-прежнему показываются
-      целиком, иначе форма врала бы о цифре, по которой идёт торг.
+      Способность `MoneyCell` округлять и прятать точное значение в `title` не
+      потеряна — она по-прежнему покрыта на `per_sqm` паспорта
+      (`ProjectPassportPage.test.tsx`), где `numeric`-деление реально даёт длинный
+      хвост.
     */
-    // Ставка с длинной дробью показана копейками...
-    const rounded = screen.getByText(/^640,50$/);
-    expect(rounded).toBeInTheDocument();
-    // ...а точное значение доступно в подсказке, то есть не спрятано.
-    expect(rounded).toHaveAttribute("title", expect.stringContaining("640,503222935929"));
-
-    // У ровной ставки подсказки нет — она повторяла бы видимое.
+    expect(screen.getByText(/^640,50$/)).not.toHaveAttribute("title");
     expect(screen.getByText(/^9\s500,00$/)).not.toHaveAttribute("title");
   });
 
@@ -261,5 +292,86 @@ describe("Сквозная матрица", () => {
     expect(
       await screen.findByText(/Период — по дате сметы \(при её отсутствии по дате договора\)/)
     ).toBeInTheDocument();
+  });
+
+  it("объявляет, что суммы и нормативы показаны без НДС", async () => {
+    /*
+      Правка 1 финального ревью ветки пересчёта НДС: матрица — много-договорная
+      поверхность (спека §2.5), общей ставки показа у выборки нет, и она измерена
+      в нетто — как и оба листа xlsx («для банка» несёт «Все суммы и нормативы —
+      без НДС»). Экранный собрат этой подписи не нёс — аналитик читал ставку
+      ячейки как валовую из файла и не сходился ни с паспортом (целевая ставка),
+      ни с файлом. Подпись обязана быть видна ДО таблицы, независимо от того,
+      загрузились ли данные.
+    */
+    renderMatrix();
+    expect(await screen.findByText(/без НДС \(нетто\)/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Вес строки: маркер неполноты (спека §2.6, исключение; задача 9).
+ *
+ * `SUM` игнорирует `NULL`, поэтому вес строки молча считается по ЧАСТИ ячеек,
+ * когда база НДС известна не во всех договорах, — без явного признака частичная
+ * сумма выглядела бы полной. `row_amount_incomplete` — булев признак строки,
+ * который обязан попасть на экран отдельным маркером.
+ */
+describe("Вес строки: маркер неполноты", () => {
+  it("помечает строку, чей вес посчитан не по всем ячейкам", async () => {
+    renderMatrix({
+      rows: [{ ...rowFixture, row_amount: "100.00", row_amount_incomplete: true }],
+    });
+
+    const marker = await screen.findByTestId("row-amount-incomplete");
+    expect(marker).toBeInTheDocument();
+    // Проверяет СВЯЗЬ, а не наличие текста: `toHaveAccessibleDescription` падает,
+    // если `aria-describedby` указывает в пустоту (постоянный id сноски — ровно
+    // ради этого; собранный из `catalog_position_id` сослался бы на элемент,
+    // которого на текущей странице нет).
+    expect(marker).toHaveAccessibleDescription(/база НДС известна не во всех договорах/i);
+  });
+
+  it("не помечает строку с полным весом", async () => {
+    renderMatrix({
+      rows: [{ ...rowFixture, row_amount: "100.00", row_amount_incomplete: false }],
+    });
+
+    await screen.findByText(rowFixture.job_title);
+    expect(screen.queryByTestId("row-amount-incomplete")).not.toBeInTheDocument();
+  });
+
+  it("строка без веса печатает прочерк, а не ноль", async () => {
+    renderMatrix({
+      rows: [{ ...rowFixture, row_amount: null, row_amount_incomplete: true }],
+    });
+
+    expect(await screen.findByTestId("row-amount")).toHaveTextContent("—");
+  });
+});
+
+/**
+ * Причина пустого отклонения на экране матрицы (спека пересчёта §2.5, §10;
+ * задача 9). До этого шага `deviation_reason` доезжал до типа, но не до экрана:
+ * `DeviationCell` подписывал любой пустой результат как «нет норматива», и
+ * «неизвестна база НДС» визуально превращалась в неверное «нет норматива» —
+ * при этом норматив (`standard_unit_rate`) у такой ячейки законно МОЖЕТ быть
+ * показан (приложение оркестратора, п.3): пусто здесь только `rate`.
+ */
+describe("Причина пустого отклонения в ячейке матрицы", () => {
+  it("ячейка без базы НДС не выдаёт себя за «нет норматива»", async () => {
+    renderMatrix({
+      rows: [
+        {
+          ...rowFixture,
+          cells: [
+            { ...cellFixture, rate: null, deviation_pct: null, deviation_reason: "unknown_vat_base" },
+          ],
+        },
+      ],
+    });
+
+    expect(await screen.findByTitle(/база НДС не заявлена/i)).toBeInTheDocument();
+    expect(screen.queryByTitle(/Нет норматива на дату сметы/)).not.toBeInTheDocument();
   });
 });

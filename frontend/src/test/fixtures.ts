@@ -376,19 +376,25 @@ export const sampleMatrixRows: MatrixRow[] = [
     job_title: "Кладка кирпичная",
     unit_code: "M3",
     row_amount: "18000000.00",
+    // Обе ячейки этой строки — с известной базой НДС, вес посчитан по обеим.
+    row_amount_incomplete: false,
     cells: [
       {
         contract_id: 10,
         rate: "12000.50",
+        amount: "10800450.00",
         standard_unit_rate: "10000.00",
         deviation_pct: "20.005000000000000000",
+        deviation_reason: null,
       },
       // Второй договор дешевле норматива — знак отклонения обязан быть виден.
       {
         contract_id: 11,
         rate: "9500.00",
+        amount: "7199550.00",
         standard_unit_rate: "10000.00",
         deviation_pct: "-5.000000000000000000",
+        deviation_reason: null,
       },
       // У третьего работы в смете нет вовсе: ячейки не будет — и это НЕ «нет
       // норматива». §10 требует различать эти случаи.
@@ -399,15 +405,25 @@ export const sampleMatrixRows: MatrixRow[] = [
     job_title: longJobTitle,
     unit_code: "M2",
     row_amount: "192000.00",
+    row_amount_incomplete: false,
     cells: [
       {
         contract_id: 12,
-        // Длинная дробь — не украшение: ровно в таком виде приезжает
-        // средневзвешенная ставка (деление `numeric` доводит результат до своей
-        // шкалы). Без неё в фикстуре тест округления показа ничего не проверял бы.
-        rate: "640.503222935929",
+        /*
+          Пересчёт НДС (задача 3, приложение оркестратора п.4): `rate`/`amount`
+          квантуются ДО КОПЕЕК на границе ответа (`quantize_money` в
+          `crud/analytics.py::_fold_cell`), поэтому длинного хвоста деления
+          `numeric` в реальном ответе больше не бывает — прежнее значение
+          "640.503222935929" проверяло формат, которого API больше не отдаёт.
+          Округление показа (`MoneyCell`/tooltip с точным значением) по-прежнему
+          покрыто на `per_sqm` паспорта (`ProjectPassportPage.test.tsx`).
+        */
+        rate: "640.50",
+        amount: "12800.00",
+        // Норматива нет вовсе (а не «база неизвестна») — отсюда deviation_reason.
         standard_unit_rate: null,
         deviation_pct: null,
+        deviation_reason: "no_standard",
       },
     ],
   },
@@ -497,6 +513,13 @@ export const sampleProjectPassport: ProjectPassport = {
     data_prepared_on_date: "2025-06-01",
     parser_version: "1.4.0",
     vat_rate: "20",
+    // Ставки не правились — законное состояние по умолчанию (спека пересчёта §2.7).
+    vat_rate_base_override: null,
+    vat_rate_target: null,
+    vat_rate_updated_at: null,
+    // Без поправок ставка показа совпадает с заявленной (задача 10) —
+    // `effective_display_rate` без override/target возвращает `declared`.
+    vat_display_rate: "20",
   },
   totals: {
     // 500000 + 300000 + 175000 + 900000 + 800000 + 700000 + 600000 + 400000 +
@@ -511,6 +534,9 @@ export const sampleProjectPassport: ProjectPassport = {
     // (расхождения нет), поэтому дельта ровно ноль.
     file_total_including_vat: "4700000.00",
     delta_to_file_total: "0.00",
+    // Сверка нетто (спека пересчёта §2.10): предложение одно, ставка одна —
+    // сравнимо и сходится. Расхождение (`mismatch`) — забота фикстур задачи 10.
+    net_reconciliation: { status: "ok", delta: "0.00", mismatched_proposal_ids: [] },
   },
   categories: [
     {
@@ -1005,9 +1031,13 @@ export const sampleMatrixCellDetail: MatrixCellDetail = {
       unit_code: "M3",
       weight: "30",
       unit_cost_total: "100.00",
+      // База НДС известна — нетто выведено из валового (спека пересчёта §2.5).
+      unit_cost_net: "83.33",
+      vat_rate_base: "20",
       total_cost_total: "3000.00",
       standard_unit_rate: "100.00",
       deviation_pct: "0.000000000000000000",
+      deviation_reason: null,
     },
     {
       position_item_id: 9002,
@@ -1015,9 +1045,12 @@ export const sampleMatrixCellDetail: MatrixCellDetail = {
       unit_code: "M3",
       weight: "20",
       unit_cost_total: "200.00",
+      unit_cost_net: "166.67",
+      vat_rate_base: "20",
       total_cost_total: "4000.00",
       standard_unit_rate: "100.00",
       deviation_pct: "100.000000000000000000",
+      deviation_reason: null,
     },
   ],
 };

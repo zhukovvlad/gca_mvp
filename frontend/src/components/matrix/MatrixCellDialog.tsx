@@ -1,6 +1,7 @@
 import { DeviationCell } from "@/components/ui-domain/DeviationCell";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
+import { formatSharePercent } from "@/lib/format";
 import {
   Dialog,
   DialogContent,
@@ -77,7 +78,9 @@ export function MatrixCellDialog({
                   <TableHead>Наименование в смете</TableHead>
                   <TableHead className="w-16">Ед.</TableHead>
                   <TableHead className="w-24 text-right">Объём</TableHead>
-                  <TableHead className="w-28 text-right">Ставка</TableHead>
+                  <TableHead className="w-28 text-right">Ставка из файла</TableHead>
+                  <TableHead className="w-28 text-right">Ставка без НДС</TableHead>
+                  <TableHead className="w-20 text-right">База НДС</TableHead>
                   <TableHead className="w-24 text-right">Откл.</TableHead>
                   <TableHead className="w-32 text-right">Стоимость</TableHead>
                 </TableRow>
@@ -99,11 +102,36 @@ export function MatrixCellDialog({
                     <TableCell className="text-right">
                       <MoneyCell value={item.weight} currency="" />
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" data-testid="item-gross">
                       <MoneyCell value={item.unit_cost_total} currency="" />
                     </TableCell>
+                    {/*
+                      Валовое, нетто и база рядом (спека §2.5) — три разные подписи,
+                      а не одна «Ставка»: без нетто человек не увидит, из какой
+                      величины ФАКТИЧЕСКИ сложилось отклонение (оно всегда от нетто),
+                      а без базы не поймёт, каким процентом валовое привели к нетто.
+                    */}
+                    <TableCell className="text-right" data-testid="item-net">
+                      {item.unit_cost_net === null ? (
+                        "—"
+                      ) : (
+                        <MoneyCell value={item.unit_cost_net} currency="" />
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right" data-testid="item-vat-base">
+                      {item.vat_rate_base === null ? "—" : formatSharePercent(item.vat_rate_base)}
+                    </TableCell>
+                    {/*
+                      `variant="full"` (по умолчанию) — не `"compact"`, как было
+                      раньше: диалог место есть, человек читает документ, а не
+                      таблицу («компакт» здесь стирал бы саму причину до
+                      прочерка, ровно то различие, ради которого заведён `reason`).
+                    */}
                     <TableCell className="text-right">
-                      <DeviationCell value={item.deviation_pct} variant="compact" />
+                      <DeviationCell
+                        value={item.deviation_pct}
+                        reason={item.deviation_reason ?? undefined}
+                      />
                     </TableCell>
                     <TableCell className="text-right">
                       <MoneyCell value={item.total_cost_total} currency="" />

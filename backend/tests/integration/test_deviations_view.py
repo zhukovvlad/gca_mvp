@@ -1,8 +1,14 @@
-"""Семантика VIEW v_position_deviations (AGENTS.md §4).
+"""Семантика VIEW v_position_deviation_inputs (AGENTS.md §4).
 
 Проверяем ровно то, что зафиксировано брифом: дата сравнения и её фолбэк,
-выбор норматива по классу ДОГОВОРА, «нет норматива» ≠ 0%, и состав строк
-(разделы, строки без цены и не-POSITION в отклонения не попадают).
+выбор норматива по классу ДОГОВОРА, состав строк (разделы, строки без цены и
+не-POSITION в выборку не попадают). VIEW переименован и лишён `deviation_pct`
+миграцией 0012 (задача 3 пересчёта НДС): норматив объявлен ценой без НДС, а
+VIEW отдавал бы отклонение на валовой цене — молча неверное. Отклонение теперь
+считает Python от нетто (`crud.analytics._deviation`), и это проверяют
+`test_analytics_api.py`/`test_rate_standards_api.py`; здесь — только то, что
+`standard_unit_rate`/`rate_standard_id` выбраны верно (тот же факт, который
+раньше проверялся косвенно, через готовое отклонение).
 """
 from __future__ import annotations
 
@@ -20,7 +26,9 @@ pytestmark = pytest.mark.integration
 def _deviation_rows(session, item_id: int) -> list[sa.RowMapping]:
     return list(
         session.execute(
-            sa.text("SELECT * FROM v_position_deviations WHERE position_item_id = :id"),
+            sa.text(
+                "SELECT * FROM v_position_deviation_inputs WHERE position_item_id = :id"
+            ),
             {"id": item_id},
         ).mappings()
     )
@@ -53,17 +61,17 @@ class TestDeviationValue:
 
         (row,) = _deviation_rows(db_session, item.id)
         assert row["standard_unit_rate"] == Decimal("100.00")
-        assert row["deviation_pct"] == Decimal("20")
         assert row["comparison_date"] == dt.date(2025, 4, 1)
 
     def test_missing_standard_gives_null_not_zero(self, db_session, factories):
-        """«Нет норматива» должно быть отличимо от «0%» (§10)."""
+        """«Нет норматива» — `rate_standard_id`/`standard_unit_rate` пусты, и Python
+        выше (`crud.analytics._deviation`) обязан отличить это от «0%» (§10)."""
         item = _priced_item(factories, unit_cost_total=Decimal("120.00"))
         db_session.flush()
 
         (row,) = _deviation_rows(db_session, item.id)
         assert row["rate_standard_id"] is None
-        assert row["deviation_pct"] is None
+        assert row["standard_unit_rate"] is None
 
     def test_standard_of_another_class_is_not_applied(self, db_session, factories):
         item = _priced_item(factories, unit_cost_total=Decimal("120.00"))
@@ -75,7 +83,7 @@ class TestDeviationValue:
         db_session.flush()
 
         (row,) = _deviation_rows(db_session, item.id)
-        assert row["deviation_pct"] is None
+        assert row["rate_standard_id"] is None
 
     def test_weight_prefers_suggested_quantity(self, db_session, factories):
         """w = COALESCE(suggested_quantity, quantity) — §6, подтверждено фазой 0."""
@@ -106,7 +114,7 @@ class TestComparisonDate:
 
         (row,) = _deviation_rows(db_session, item.id)
         assert row["comparison_date"] == contract.signed_date
-        assert row["deviation_pct"] == Decimal("10")
+        assert row["standard_unit_rate"] == Decimal("100.00")
 
     def test_standard_outside_the_period_is_not_applied(self, db_session, factories):
         item = _priced_item(
@@ -122,7 +130,7 @@ class TestComparisonDate:
         db_session.flush()
 
         (row,) = _deviation_rows(db_session, item.id)
-        assert row["deviation_pct"] is None
+        assert row["rate_standard_id"] is None
 
     def test_reapproval_does_not_change_old_estimates(self, db_session, factories):
         """Переутверждение норматива не меняет отклонения прошлых смет (§10)."""
@@ -161,8 +169,8 @@ class TestComparisonDate:
 
         (old_row,) = _deviation_rows(db_session, old_item.id)
         (new_row,) = _deviation_rows(db_session, new_item.id)
-        assert old_row["deviation_pct"] == Decimal("20")
-        assert new_row["deviation_pct"] == Decimal("-20")
+        assert old_row["standard_unit_rate"] == Decimal("100.00")
+        assert new_row["standard_unit_rate"] == Decimal("150.00")
 
 
 class TestExcludedRows:

@@ -37,6 +37,7 @@ from services.estimate_import import (
     compare_header_with_contract,
     import_estimate,
 )
+from services.estimate_vat import set_vat_rates
 from services.unit_resolution import UnitResolver
 from tests.payloads import (
     additional_works_row,
@@ -952,6 +953,94 @@ def test_replace_says_nothing_when_there_were_no_decisions(
     ничего не значит."""
     job = replace_upload(imported_estimate.contract_id)
     assert not any("ручных решений" in w for w in job.warnings)
+
+
+def test_replace_warns_about_dropped_manual_vat_rates(
+    db_session, imported_estimate, admin_user, replace_upload
+):
+    """Спека §2.11: обе поправки ставки НДС уходят каскадом вместе со сметой при
+    `replace`, и об утрате надо СКАЗАТЬ — тот же приём, что у решений о статьях
+    выше, только для другой ручной работы.
+
+    Утверждается ПАРА «подпись + значение» (`"база: 12%"`, `"показ: 16%"`), а не
+    голые числа где угодно в склеенной строке — иначе перестановка значений
+    между подписями осталась бы незамеченной. База и цель — РАЗНЫЕ числа (12 и
+    16) нарочно: на одинаковых числах такая перестановка неразличима в принципе.
+    """
+    set_vat_rates(
+        db_session,
+        estimate_id=imported_estimate.id,
+        base_override=Decimal("12"),
+        target=Decimal("16"),
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    warnings = " ".join(job.warnings)
+    assert "ручной поправкой ставки НДС" in warnings
+    assert "база: 12%" in warnings
+    assert "показ: 16%" in warnings
+
+
+def test_replace_warns_about_dropped_manual_vat_rate_with_only_base_set(
+    db_session, imported_estimate, admin_user, replace_upload
+):
+    """Однополевой случай: задана только база, цель не тронута (`set_vat_rates`
+    это допускает). Предупреждение обязано назвать именно заданную величину со
+    своей подписью, а скобки — не остаться пустыми (находка ревью: соединение
+    двух независимых `if` через `and` осталось бы незамеченным без этого
+    теста, потому что при обоих полях заданных условие `and` тоже истинно)."""
+    set_vat_rates(
+        db_session,
+        estimate_id=imported_estimate.id,
+        base_override=Decimal("12"),
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    warnings = " ".join(job.warnings)
+    assert "база: 12%" in warnings
+    assert "показ:" not in warnings
+    assert "()" not in warnings
+
+
+def test_replace_warns_about_dropped_manual_vat_rate_with_only_target_set(
+    db_session, make_imported_estimate, admin_user, replace_upload
+):
+    """Зеркало предыдущего теста: задана только цель. Требует, чтобы у
+    предложения сметы была своя ставка НДС (`Proposal.vat_rate`) — иначе
+    `set_vat_rates` откажет кодом `unknown_base`, поэтому здесь отдельная
+    смета через `make_imported_estimate(..., vat_rate=...)`, а не общий
+    `imported_estimate` (у него `Proposal.vat_rate` не задан)."""
+    estimate = make_imported_estimate(
+        [position(job_title="Раздел", is_chapter=True, chapter_number="1")],
+        vat_rate="20",
+    )
+    set_vat_rates(
+        db_session,
+        estimate_id=estimate.id,
+        target=Decimal("16"),
+        user_id=admin_user.id,
+    )
+    db_session.commit()
+
+    job = replace_upload(estimate.contract_id)
+    warnings = " ".join(job.warnings)
+    assert "показ: 16%" in warnings
+    assert "база:" not in warnings
+    assert "()" not in warnings
+
+
+def test_replace_says_nothing_about_vat_when_there_was_no_manual_rate(
+    db_session, imported_estimate, replace_upload
+):
+    """Негативная половина: без ручной поправки ставки предупреждения о ней быть
+    не должно, иначе оно ничего не значит (та же логика, что у решений о
+    статьях)."""
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("ставки НДС" in w for w in job.warnings)
 
 
 # ---------------------------------------------------------------------------

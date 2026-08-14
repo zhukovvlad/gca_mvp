@@ -21,8 +21,11 @@ from sqlalchemy.dialects import postgresql
 from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from crud.project_passport import get_project_passport
-from models import EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
-from parser.constants import JSON_KEY_TOTAL_COST_INCLUDING_VAT
+from models import Estimate, EstimateAdditionalWork, ProposalSummaryLine, UserRole, WorkCategory
+from parser.constants import (
+    JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+    JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+)
 from responses import _decimal_encoder
 from services.category_override import set_override
 
@@ -226,9 +229,10 @@ def test_rollup_invariant_holds_on_the_whole_tree(db_session, factories):
         extra_amount = db_session.execute(
             sa.text(
                 "SELECT amount FROM v_category_totals "
-                "WHERE estimate_id = :eid AND work_category_id = :cid AND source = 'additional_works'"
+                "WHERE estimate_id = :eid AND proposal_id = :pid AND work_category_id = :cid "
+                "AND source = 'additional_works'"
             ),
-            {"eid": estimate_id, "cid": node["id"]},
+            {"eid": estimate_id, "pid": proposal.id, "cid": node["id"]},
         ).scalar_one_or_none()
 
         children_totals = [
@@ -245,6 +249,81 @@ def test_rollup_invariant_holds_on_the_whole_tree(db_session, factories):
             checked_all_three = True
 
     assert checked_all_three
+
+
+def test_direct_totals_accumulate_across_two_proposals(db_session, factories):
+    """Смета с ДВУМЯ предложениями: сумма статьи обязана быть суммой ПО ОБОИМ
+    (задача 3 пересчёта НДС, §3 приложения оркестратора).
+
+    С миграцией 0012 `v_category_totals` группируется ещё и по `proposal_id`, то
+    есть на статью со сметой из нескольких предложений придёт несколько строк.
+    `_direct_totals` обязана НАКАПЛИВАТЬ их, а не присваивать (присваивание молча
+    оставило бы только последнее предложение — сегодняшние фикстуры этого не
+    ловят, потому что у них ровно одно предложение на смету).
+
+    `own_rows_not_finite` намеренно НЕТРИВИАЛЬНО (не 0) и РАЗНОЕ у двух
+    предложений (1 у первого, 2 у второго): при присваивании результат зависел бы
+    от того, какая строка VIEW обработана последней (порядок строк без `ORDER BY`
+    не гарантирован), и был бы либо 1, либо 2 — но не 3. Только НАКОПЛЕНИЕ даёт
+    3 независимо от порядка строк, что и делает проверку детерминированной (ревью
+    задачи 3, доказано снятием защиты — см. отчёт)."""
+    category = _category(db_session, "1")
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(lot=lot_1, contractor=contract.contractor)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=contract.contractor)
+    chapter_1 = _chapter(factories, proposal_1, category_id=category.id)
+    chapter_2 = _chapter(factories, proposal_2, category_id=category.id)
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=Decimal("NaN"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("2000.00"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("Infinity"))
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=Decimal("-Infinity"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own"] == Decimal("3000.00")
+    assert node["own_rows"] == 5
+    assert node["own_rows_priced"] == 2
+    assert node["own_rows_not_finite"] == 3
+
+
+def test_direct_totals_stay_unknown_when_every_proposal_has_no_amount(db_session, factories):
+    """Обе строки VIEW (по одной на предложение) несут `amount IS NULL` — сумма
+    статьи обязана остаться `None` («данных нет»), а не превратиться в `0.00`
+    («работы на ноль рублей»), — та самая разница, которую проект держит
+    осознанно (спека §1.11: `amount is None` тогда и только тогда, когда
+    `rows_with_amount == 0`).
+
+    Замена `_sum_known(existing.amount, row.amount)` на `(existing.amount or 0) +
+    (row.amount or 0)` не роняет НИ ОДИН существующий тест (в них хотя бы одно
+    предложение всегда ценит хотя бы одну строку) — этот тест единственный,
+    вынуждающий ОБА операнда накопления быть `None` одновременно (ревью задачи 3,
+    доказано снятием защиты — см. отчёт)."""
+    category = _category(db_session, "1")
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(lot=lot_1, contractor=contract.contractor)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=contract.contractor)
+    chapter_1 = _chapter(factories, proposal_1, category_id=category.id)
+    chapter_2 = _chapter(factories, proposal_2, category_id=category.id)
+    _position(factories, proposal_1, chapter=chapter_1, total_cost_total=None)
+    _position(factories, proposal_2, chapter=chapter_2, total_cost_total=None)
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own"] is None
+    assert node["own_rows"] == 2
+    assert node["own_rows_priced"] == 0
+    assert node["own_rows_not_finite"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -706,9 +785,9 @@ def test_extras_of_a_node_sum_to_the_view_branch(db_session, factories):
     oracle = db_session.execute(
         sa.text(
             "SELECT amount FROM v_category_totals WHERE estimate_id = :eid "
-            "AND work_category_id = :cid AND source = 'additional_works'"
+            "AND proposal_id = :pid AND work_category_id = :cid AND source = 'additional_works'"
         ),
-        {"eid": estimate_id, "cid": category.id},
+        {"eid": estimate_id, "pid": proposal.id, "cid": category.id},
     ).scalar_one()
 
     result = get_project_passport(db_session, proposal.lot.estimate.contract_id)
@@ -1382,3 +1461,374 @@ def test_manual_assignments_are_ordered_by_subtree_amount_descending_with_none_l
         for a in assignments
     ]
     assert amounts == [Decimal("1044"), Decimal("80"), None]
+
+
+# ---------------------------------------------------------------------------
+#  39. Сверка выведенного нетто с файловым (спека §2.10, задача 5)
+# ---------------------------------------------------------------------------
+
+def test_passport_reports_net_reconciliation_ok(client, factories, db_session):
+    """Ставка НДС предложения ЯВНАЯ и НЕНУЛЕВАЯ (20 %, приложение оркестратора
+    «ставка по умолчанию — ложная предпосылка»): при базе 0 пересчёт был бы
+    тождеством и спрятал бы любую ошибку конвертации. Валовое 1200.00 по
+    ставке 20 % даёт РОВНО 1000.00 нетто — то же самое, что заявил файл в
+    строке «Итого без НДС», — вердикт обязан быть "ok" без единого
+    расхождения. Если бы `_net_reconciliation` перепутала аргументы
+    `check_proposal_net` (валовое/нетто) или базу (например, взяла 0 вместо
+    ставки предложения), пересчитанное нетто разошлось бы с заявленным, и
+    вердикт стал бы "mismatch"/"unknown_base", а не "ok"."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "ok"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == []
+    assert totals["net_reconciliation"]["delta"] == "0.00"
+
+
+def test_delta_to_file_total_ignores_manual_rates(client, factories, db_session):
+    """Диагностика ИМПОРТА (`delta_to_file_total`): она про потерянные или
+    задвоенные строки при импорте, а не про пересчёт НДС, и обязана остаться
+    той же самой цифрой независимо от того, какую базу пересчёта аналитик
+    выставит вручную (`estimate.vat_rate_base_override`) — тождество §2.4
+    действует и здесь (приложение оркестратора, п.5). База пересчёта задана
+    ЯВНО и НЕНУЛЕВОЙ (16 %) до и после, чтобы `net_reconciliation` реально
+    считался обеими сторонами, а не молчал на тождестве нулевой ставки; сама
+    `delta_to_file_total` при этом закреплена ЧИСЛОМ (0.00), а не только
+    равенством "до/после" — иначе тест прошёл бы и при полностью сломанном,
+    но одинаково сломанном с обеих сторон вычислении."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    db_session.flush()
+
+    contract_id = proposal.lot.estimate.contract_id
+    before = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+    assert before["totals"]["delta_to_file_total"] == "0.00"
+
+    proposal.lot.estimate.vat_rate_base_override = Decimal("16")
+    db_session.flush()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+
+    assert after["totals"]["delta_to_file_total"] == before["totals"]["delta_to_file_total"]
+    assert after["totals"]["delta_to_file_total"] == "0.00"
+
+
+def test_net_reconciliation_uses_the_effective_base_not_the_file_vat_rate(
+    client, factories, db_session
+):
+    """Ревью задачи 5 (Правка 1): `net_reconciliation` обязана сверять по
+    ЭФФЕКТИВНОЙ базе (`COALESCE(vat_rate_base_override, vat_rate)`), а не по
+    сырой `proposals.vat_rate` — это и есть разница между ЭТОЙ диагностикой и
+    согласованностью самого файла (та смотрит только на файловую ставку и
+    живёт в парсере). Числа подобраны так, чтобы обе базы давали РАЗНЫЕ
+    вердикты: override=20% -> нетто ровно 1000.00, ЧТО заявил файл -> "ok";
+    сырая ставка предложения 5% -> нетто 1142.86, расхождение ~142.86 —
+    больше чем в 40 раз выше допуска `NET_RECONCILIATION_TOLERANCE=3.5` -> в
+    случае подмены источника базы вердикт обязан стать "mismatch". Ставки
+    ЯВНЫЕ и НЕНУЛЕВЫЕ по обе стороны — ни файловая, ни override не равны 0.
+
+    Краснеет от: `_net_reconciliation`, взявшей `row.vat_rate` вместо
+    эффективной базы `override if override is not None else row.vat_rate`
+    (проверено вручную снятием защиты — см. отчёт задачи 5)."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("5")
+    proposal.lot.estimate.vat_rate_base_override = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "ok"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == []
+    assert totals["net_reconciliation"]["delta"] == "0.00"
+
+
+def test_passport_reports_net_reconciliation_mismatch(client, factories, db_session):
+    """Ревью задачи 5 (Правка 2): исход "mismatch" ни разу не был проведён
+    через сам эндпоинт — свёртка покрыта 11 юнит-тестами `money/vat.py`, но
+    проводка «расхождение в данных -> статус в ответе API» нет. Ставка 20 %
+    (ЯВНАЯ, НЕНУЛЕВАЯ) на валовом 1200.00 даёт нетто РОВНО 1000.00, а файл
+    заявляет 900.00 — расхождение 100.00, на два порядка выше допуска
+    `NET_RECONCILIATION_TOLERANCE=3.5`, вердикт обязан быть "mismatch", а
+    нарушитель — назван по id.
+
+    Краснеет от: `_net_reconciliation`, не отличающей `MISMATCH` от `OK`
+    (например, сравнением через допуск, применённый неверно, или вовсе не
+    прокинутой в ответ причиной расхождения), а также от `fold_net_
+    reconciliation`, не подхваченной вовсе (тест бы остался на "ok" или
+    "not_applicable")."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("900.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{proposal.lot.estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "mismatch"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == [proposal.id]
+    assert totals["net_reconciliation"]["delta"] == "100.00"
+
+
+def test_net_reconciliation_aggregates_mismatch_across_multiple_proposals(
+    client, factories, db_session
+):
+    """Ревью задачи 5 (Правка 3): наружу идёт АГРЕГАТ по смете, а его сборка
+    по НЕСКОЛЬКИМ предложениям через сам эндпоинт не проверялась. Смета с
+    ДВУМЯ предложениями (два лота, как в `test_direct_totals_accumulate_
+    across_two_proposals`): у первого сходится (валовое 1200.00, ставка 20 %,
+    файл 1000.00 -> "ok", дельта 0.00), у второго расходится (валовое 600.00,
+    та же ставка 20 % -> нетто 500.00, файл 100.00 -> дельта 400.00, далеко
+    за допуском 3.5). Обе ставки ЯВНЫЕ и НЕНУЛЕВЫЕ.
+
+    Итог обязан назвать РОВНО одного нарушителя (не оба и не ни одного) и
+    сложить дельту ТОЛЬКО сравнимых предложений (0.00 + 400.00 = 400.00, а
+    не дельту одного предложения и не среднее).
+
+    Краснеет от: SQL-запроса `_net_reconciliation`, теряющего одно из двух
+    предложений сметы (например, `join` вместо `outerjoin` или неверный
+    предикат по `estimate_id`) — тогда либо нарушитель не найден вовсе, либо
+    найдены оба (при случайном декартовом произведении), либо от свёртки,
+    просуммировавшей дельту не всех сравнимых предложений."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=proposal_1.contractor)
+
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("20")
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    _summary_line(db_session, proposal_1, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("1000.00"))
+    _summary_line(db_session, proposal_2, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("600.00"))
+    _summary_line(db_session, proposal_2, key=JSON_KEY_TOTAL_COST_EXCLUDING_VAT, total=Decimal("100.00"))
+    db_session.flush()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{estimate.contract_id}"
+    ).json()["totals"]
+
+    assert totals["net_reconciliation"]["status"] == "mismatch"
+    assert totals["net_reconciliation"]["mismatched_proposal_ids"] == [proposal_2.id]
+    assert totals["net_reconciliation"]["delta"] == "400.00"
+
+
+# ---------------------------------------------------------------------------
+#  40. Задача 8: суммы паспорта в ставке показа (спека §5.1)
+# ---------------------------------------------------------------------------
+
+def _set_vat_target(db_session, contract, rate):
+    """Ставит целевую ставку показа на ИСХОДНОЙ смете договора (правило CRUD
+    «исходная смета», та же, что читает `_source_estimate`)."""
+    estimate = (
+        db_session.query(Estimate)
+        .filter_by(contract_id=contract.id, amendment_no=None)
+        .one()
+    )
+    estimate.vat_rate_target = rate
+    db_session.flush()
+    return estimate
+
+
+def _contract_with_positions(factories, *, total, vat_rate):
+    """Один договор, одна смета, одно предложение, одна нераспределённая
+    позиция на всю сумму `total` — минимальная одно-договорная поверхность
+    для проверки задачи 8."""
+    proposal = _proposal(factories)
+    proposal.vat_rate = vat_rate
+    factories.PositionItemFactory.create(proposal=proposal, total_cost_total=total)
+    return proposal.lot.estimate.contract
+
+
+#: Числа для «трёх групп по 0.005» ниже: база 8 %, цель 16 % (обе ЯВНЫЕ и
+#: НЕНУЛЕВЫЕ — приложение оркестратора «ставка по умолчанию — ложная
+#: предпосылка»). `gross`, посчитанный отсюда, восстанавливает через
+#: `restate_gross(gross, base, target)` РОВНО `restated_row_amount` — тест не
+#: обязан гадать промежуточные округления, задача этой арифметики только
+#: подготовить вход.
+def _contract_with_three_proposals_of(factories, restated_row_amount, *, base, target):
+    """Три ОТДЕЛЬНЫХ предложения (три лота) одного договора, по одной позиции
+    каждое, с одной и той же базовой ставкой НДС `base`. VIEW группируется по
+    (`proposal_id`, `vat_rate_base`) — три РАЗНЫХ предложения дают три
+    РАЗНЫЕ строки для одного и того же узла («Нераспределённое»), даже когда
+    их базы совпадают (приложение оркестратора §1): именно это и нужно, чтобы
+    отличить «округлить каждую группу отдельно» от «сложить и округлить один
+    раз» (спека §2.6, `global-constraints.md`).
+    """
+    gross = restated_row_amount * (Decimal("100") + base) / (Decimal("100") + target)
+    estimate = factories.EstimateFactory.create()
+    contract = estimate.contract
+    for _ in range(3):
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=base
+        )
+        factories.PositionItemFactory.create(proposal=proposal, total_cost_total=gross)
+    return contract
+
+
+def test_passport_totals_follow_the_target_rate(client, factories, db_session):
+    """Цель показа (16 %) приведена к базе предложения (20 %): валовое 120 даёт
+    нетто ровно 100, а 100 нетто по цели 16 % даёт ровно 116.00 — не 120
+    (тождество) и не 100 (голое нетто).
+
+    Краснеет от: `_direct_totals`/`get_project_passport`, не применяющих
+    `restate_gross` вовсе (тогда `totals["amount"]` остался бы "120", а не
+    "116.00" — подтверждено мутацией: см. отчёт задачи)."""
+    contract = _contract_with_positions(factories, total=Decimal("120"), vat_rate=Decimal("20"))
+    _set_vat_target(db_session, contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("116.00")
+
+
+def test_passport_totals_untouched_without_target(client, factories, db_session):
+    """Ветка тождества: без поправки ответ обязан совпасть ПОСИМВОЛЬНО с тем,
+    что паспорт отдавал бы до задачи 8 — сравнение через сырую JSON-строку, а
+    не `Decimal(...) == Decimal(...)` (то пропустило бы сдвиг `exponent`,
+    ради отсутствия которого ветка тождества `restate_gross` и заведена).
+
+    Ревью задачи 8 (Правка 5): спека §2.4 называет ПОИМЁННО суммы паспорта,
+    дерево статей, кольцо и ₽/м² — одного поля `totals.amount` мало. Здесь
+    вход устроен так, чтобы задействовать ВСЕ шесть: категория несёт
+    собственную (и потому единственную) позицию 300.5 (`categories[0].total`
+    И `.own` — оба поля равны здесь по конструкции, дерева без детей), площадь
+    объекта задана (`per_sqm` категории и «Нераспределённого»), и есть
+    нераспределённая позиция 50.25 (`unallocated.amount`/`.per_sqm`).
+
+    Краснеет от: любого безусловного `quantize_money` на любом из шести полей
+    (например, перенесённого из ветки «пересчитано» в общий путь) — тогда
+    "120.5"/"300.5"/"3.005"/"50.25"/"0.5025"/"350.75" стали бы
+    "120.50"/"300.50"/"3.00"(округлённым)/"50.25"/"0.50"/"350.75" — подтверждено
+    мутацией: см. отчёт задачи."""
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("100.00"), area_underground_sp=Decimal("0.00")
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    category = _category(db_session, "1")
+    proposal = _proposal(factories, contract=contract)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id, chapter_number="1")
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("300.5"))
+    _position(factories, proposal, total_cost_total=Decimal("50.25"))  # нераспределённая
+    db_session.commit()
+
+    body = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()
+
+    assert body["totals"]["amount"] == "350.75"
+    node = next(c for c in body["categories"] if c["id"] == category.id)
+    assert node["total"] == "300.5"
+    assert node["own"] == "300.5"
+    assert node["per_sqm"] == "3.005"
+    assert body["unallocated"]["amount"] == "50.25"
+    assert body["unallocated"]["per_sqm"] == "0.5025"
+
+
+def test_passport_total_is_quantized_once_not_per_group(client, factories, db_session):
+    """Округление внутри агрегации дало бы `Σ round(x) ≠ round(Σ x)`: три
+    группы, каждая приводится к РОВНО 0.005 при базе 8 % и цели 16 %.
+    Поштучное округление (0.005 -> 0.01 ROUND_HALF_UP) дало бы 0.03; сложение
+    ТРЁХ необрезанных 0.005 (= 0.015), а потом ОДНО округление — даёт 0.02.
+
+    Краснеет от: `quantize_money`, перенесённого внутрь цикла накопления
+    `_direct_totals` (тогда ответ был бы "0.03", а не "0.02") — подтверждено
+    мутацией: см. отчёт задачи."""
+    contract = _contract_with_three_proposals_of(
+        factories, Decimal("0.005"), base=Decimal("8"), target=Decimal("16")
+    )
+    _set_vat_target(db_session, contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(f"/api/v1/analytics/project-passport/{contract.id}").json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("0.02")
+
+
+def test_passport_restates_each_row_by_its_own_base_not_the_accumulated_sum(
+    client, factories, db_session
+):
+    """Различение баз ВНУТРИ одного узла (ревью задачи 8, Правка 3): 120 при
+    базе 20 % и 112 при базе 12 %, цель 16 %. Правильный ответ — сумма ДВУХ
+    независимых пересчётов: `restate(120, 20, 16) = 116` и
+    `restate(112, 12, 16) = 116`, итого 232.00. Дефект «сложить сначала
+    (120+112=232), потом пересчитать ОДНИМ вызовом по ОДНОЙ базе» дал бы
+    ДРУГОЕ число — тест различает эти два пути численно (три предыдущих теста
+    задачи 8 брали ОДНУ и ту же базу на все группы и различение баз не
+    проверяли — находка внешнего ревью, вакуозность формы «одинаковые
+    значения там, где проверяется различение»).
+
+    Обе позиции — «Нераспределённое» (без категории): различение баз не
+    зависит от дерева статей, а от группировки VIEW по `(proposal_id,
+    vat_rate_base)`, и «Нераспределённое» — та же арифметика, что и категория
+    (`_sum_known` в `_direct_totals`).
+
+    Краснеет от: восстановления накопленной СУММЫ по ОДНОЙ базе вместо каждой
+    строки по СВОЕЙ — подтверждено мутацией: см. отчёт задачи."""
+    proposal_1 = _proposal(factories)
+    estimate = proposal_1.lot.estimate
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(lot=lot_2, contractor=proposal_1.contractor)
+    proposal_1.vat_rate = Decimal("20")
+    proposal_2.vat_rate = Decimal("12")
+    factories.PositionItemFactory.create(proposal=proposal_1, total_cost_total=Decimal("120"))
+    factories.PositionItemFactory.create(proposal=proposal_2, total_cost_total=Decimal("112"))
+    _set_vat_target(db_session, estimate.contract, Decimal("16"))
+    db_session.commit()
+
+    totals = client.get(
+        f"/api/v1/analytics/project-passport/{estimate.contract_id}"
+    ).json()["totals"]
+    assert Decimal(totals["amount"]) == Decimal("232.00")
+
+
+def test_delta_to_file_total_ignores_the_display_target_too(client, factories, db_session):
+    """Парный тест к `test_delta_to_file_total_ignores_manual_rates` (ревью
+    задачи 8, Правка 4): тот тест перекрывает БАЗУ (`vat_rate_base_override`),
+    которая структурно не может сдвинуть эффективную базу относительно самой
+    себя (VIEW считает `vat_rate_base = COALESCE(override, vat_rate)`) — там
+    пересчёт ВСЕГДА уходит в тождество, и мутация «вернуть `grand_total`
+    вместо `raw_grand_total`» осталась бы незамеченной. Здесь — ЦЕЛЬ
+    (`vat_rate_target`), отличная от базы предложения (20 % против 16 %),
+    поэтому `totals.amount` РЕАЛЬНО пересчитывается (1200.00 -> 1160.00), а
+    `delta_to_file_total` обязана остаться той же цифрой.
+
+    Краснеет от: `delta_to_file_total`, посчитанной от `grand_total` вместо
+    `raw_grand_total` (тогда после установки цели дельта сдвинулась бы с
+    "0.00" на "-40.00", поскольку файловый итог 1200.00 сравнивался бы уже с
+    пересчитанным 1160.00) — подтверждено мутацией: см. отчёт задачи."""
+    category = _category(db_session, "1")
+    proposal = _proposal(factories)
+    proposal.vat_rate = Decimal("20")
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1200.00"))
+    _summary_line(db_session, proposal, key=JSON_KEY_TOTAL_COST_INCLUDING_VAT, total=Decimal("1200.00"))
+    db_session.flush()
+
+    contract_id = proposal.lot.estimate.contract_id
+    before = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+    assert before["totals"]["delta_to_file_total"] == "0.00"
+    assert before["totals"]["amount"] == "1200.00" or Decimal(before["totals"]["amount"]) == Decimal("1200.00")
+
+    _set_vat_target(db_session, proposal.lot.estimate.contract, Decimal("16"))
+    db_session.commit()
+
+    after = client.get(f"/api/v1/analytics/project-passport/{contract_id}").json()
+
+    assert Decimal(after["totals"]["amount"]) == Decimal("1160.00")  # пересчёт РЕАЛЬНО случился
+    assert after["totals"]["delta_to_file_total"] == before["totals"]["delta_to_file_total"]
+    assert after["totals"]["delta_to_file_total"] == "0.00"

@@ -10,6 +10,7 @@ import {
   useImportJob,
   useProjectPassport,
   useSetCategoryOverride,
+  useSetEstimateVat,
   useUpdateContract,
   useUpdateContractor,
   useUpdateObject,
@@ -370,5 +371,56 @@ describe("useSetCategoryOverride / useClearCategoryOverride: инвалидац�
     expect(queryClient.getQueryState(cardKey)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
+  });
+});
+
+/**
+ * `useSetEstimateVat` (спека пересчёта §2.7, задача 9): правка ставок НДС сметы
+ * меняет ВСЕ деньги паспорта договора (ставка показа затрагивает весь пересчёт),
+ * поэтому мутация обязана инвалидировать паспорт ИМЕННО этого договора. Форма —
+ * как у `useSetCategoryOverride` выше: паспорт заранее кладётся в кэш через
+ * `setQueryData` без активного наблюдателя, `gcTime` поднят точечным
+ * `setQueryDefaults` (у тестового клиента `gcTime: 0`), а второй,
+ * НЕсвязанный договор заведён в том же кэше и проверяется отдельно — узкий
+ * ключ `qk.passport.project(contractId)` выбран НАМЕРЕННО, и без второй
+ * половины проверки хук, инвалидирующий всё подряд (`qk.passport.all` или
+ * весь кэш), прошёл бы тест так же зелено.
+ */
+describe("useSetEstimateVat: инвалидация паспорта договора", () => {
+  it("useSetEstimateVat инвалидирует паспорт этого договора и не трогает чужой", async () => {
+    const queryClient = createTestQueryClient();
+    const passportKey = qk.passport.project(5);
+    const otherKey = qk.passport.project(99);
+    queryClient.setQueryDefaults(passportKey, { gcTime: 60_000 });
+    queryClient.setQueryDefaults(otherKey, { gcTime: 60_000 });
+    queryClient.setQueryData(passportKey, sampleProjectPassport);
+    queryClient.setQueryData(otherKey, sampleProjectPassport);
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
+
+    server.use(
+      http.patch("/api/v1/estimates/:id/vat", () =>
+        HttpResponse.json({
+          estimate_id: 11,
+          vat_rate_base_override: null,
+          vat_rate_target: "16",
+          vat_rate_updated_at: "2026-08-13T10:00:00Z",
+        })
+      )
+    );
+
+    const { result } = renderHook(() => useSetEstimateVat(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ estimateId: 11, contractId: 5, input: { target: "16" } });
+    });
+
+    expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
+    // Договор 99 ни при чём — его кэш не должен шевельнуться.
+    expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
   });
 });

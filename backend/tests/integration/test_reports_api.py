@@ -26,6 +26,7 @@ from urllib.parse import unquote
 import pytest
 from openpyxl import load_workbook
 
+from crud.reports import contract_summary
 from models import CatalogKind
 
 pytestmark = pytest.mark.integration
@@ -36,13 +37,25 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 def _estimate_with(factories, *, contract=None, amendment_no=None,
-                   estimate_date=dt.date(2025, 4, 1)):
+                   estimate_date=dt.date(2025, 4, 1), vat_rate=Decimal("0")):
+    """Цепочка договор → смета → лот → предложение.
+
+    `vat_rate` по умолчанию `0` (задача 4 пересчёта НДС, тот же приём, что в
+    `test_analytics_api.py::_estimate_with`): при базе 0 % нетто численно равно
+    валовому (`gross_to_net(x, 0) == x`), поэтому все тесты этого файла, писавшиеся
+    ДО перевода отчёта «для банка» на нетто-ось и не указывавшие ставку явно,
+    продолжают проверять те же значения — без ставки НДС проверять здесь нечего,
+    это дело `test_bank_report_partition_covers_every_priced_position` и соседних
+    тестов четырёхклассового разбиения.
+    """
     contract = contract or factories.ContractFactory.create()
     estimate = factories.EstimateFactory.create(
         contract=contract, amendment_no=amendment_no, data_prepared_on_date=estimate_date
     )
     lot = factories.LotFactory.create(estimate=estimate)
-    proposal = factories.ProposalFactory.create(lot=lot, contractor=contract.contractor)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
     return contract, estimate, proposal
 
 
@@ -290,6 +303,68 @@ class TestBankComparison:
         # Шапка выборки и подписи — тоже часть макета.
         assert "Договоров:" in text
         assert "Составил" in text
+
+    def test_vat_axis_is_declared_on_the_sheet(self, client, factories):
+        """Спека §2.5: подпись ставки показа обязана быть на листе, и до «Периода».
+
+        Ревью задачи 4: строка была на листе, но её не читал ни один тест — исчезни
+        она молча, никто бы не заметил. Читатель обязан видеть, в чём измерены
+        числа, которые он складывает, ДО того как увидит саму таблицу.
+        """
+        self._two_classes(factories)
+        ws = _sheet(client.get("/api/v1/reports/bank-comparison"))
+
+        note_at, _ = _find_row(ws, lambda r: r[0] == "Все суммы и нормативы — без НДС")
+        period_at, _ = _find_row(
+            ws, lambda r: isinstance(r[0], str) and r[0].startswith("Период:")
+        )
+        assert note_at < period_at
+
+    def test_bank_report_converts_fact_to_net_across_different_vat_bases(self, client, factories):
+        """Задача 4: факт приводится к нетто по БАЗЕ каждой позиции — числовой замер.
+
+        Ревью задачи 4: весь класс `TestBankComparison` до этого теста гонялся на
+        ставке НДС по умолчанию (0 %), при которой `gross_to_net(x, 0) == x`
+        тождественно, — то есть центральная содержательная часть задачи (перевод
+        факта в нетто) не была проверена НИ ОДНИМ тестом. Перепутанные местами
+        аргументы `gross_to_net`, потерянная группировка по базе или подстановка
+        ставки 0 вместо настоящей базы оставили бы CI зелёным.
+
+        `unit_cost=120` при ставке 20 % и `unit_cost=112` при ставке 12 % дают ОДНО
+        и то же нетто — 100, при том же нормативе 100: обе работы обязаны показать
+        отклонение 0, а не валовые 120/112. Две РАЗНЫЕ ставки в одном классе
+        проверяют ещё и группировку по `vat_rate_base` внутри работы, а не только
+        единственный вызов `gross_to_net`.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс с реальным НДС")
+
+        contract20 = factories.ContractFactory.create(rate_class=rate_class)
+        _c1, _e1, p20 = _estimate_with(factories, contract=contract20, vat_rate=Decimal("20"))
+        work20 = factories.CatalogPositionFactory.create(standard_job_title="Ставка 20")
+        _position(factories, p20, work20, unit_cost="120", weight="10")
+        _standard(factories, work20, rate_class, "100")
+
+        contract12 = factories.ContractFactory.create(rate_class=rate_class)
+        _c2, _e2, p12 = _estimate_with(factories, contract=contract12, vat_rate=Decimal("12"))
+        work12 = factories.CatalogPositionFactory.create(standard_job_title="Ставка 12")
+        _position(factories, p12, work12, unit_cost="112", weight="10")
+        _standard(factories, work12, rate_class, "100")
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+
+        row20, _ = _find_row(ws, lambda r: r[0] == "Ставка 20")
+        assert Decimal(str(ws.cell(row=row20, column=4).value)) == Decimal("100")  # Ставка (нетто)
+        assert Decimal(str(ws.cell(row=row20, column=6).value)) == Decimal("1000")  # Стоимость
+        assert Decimal(str(ws.cell(row=row20, column=7).value)) == Decimal("0")  # Отклонение, %
+        assert Decimal(str(ws.cell(row=row20, column=8).value)) == Decimal("0")  # Отклонение, ₽
+
+        row12, _ = _find_row(ws, lambda r: r[0] == "Ставка 12")
+        assert Decimal(str(ws.cell(row=row12, column=4).value)) == Decimal("100")
+        assert Decimal(str(ws.cell(row=row12, column=6).value)) == Decimal("1000")
+        assert Decimal(str(ws.cell(row=row12, column=7).value)) == Decimal("0")
+        assert Decimal(str(ws.cell(row=row12, column=8).value)) == Decimal("0")
 
     def test_work_appears_inside_its_class_section(self, client, factories):
         """Работа стоит в секции своего класса, а не где-нибудь на листе."""
@@ -557,6 +632,86 @@ class TestBankComparison:
         # равенство 2 + 1 + 1 = 4 — проверяемый инвариант, а не тавтология.
         assert "Всего расценённых позиций: 4" in text
 
+    def test_bank_report_partition_covers_every_priced_position(self, client, factories):
+        """Четыре класса образуют разбиение: сумма сходится с независимым счётчиком.
+
+        Задача 4 пересчёта НДС расширяет разбиение с трёх частей до четырёх — здесь
+        по одной позиции каждого класса: без объёма, с объёмом но без базы НДС, с
+        объёмом и базой но без норматива, сравнимая.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс всех четырёх")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, estimate, proposal = _estimate_with(factories, contract=contract)
+
+        comparable = factories.CatalogPositionFactory.create(standard_job_title="Сравнимая")
+        _position(factories, proposal, comparable, unit_cost="100", weight="10")
+        _standard(factories, comparable, rate_class, "100")
+
+        no_standard = factories.CatalogPositionFactory.create(standard_job_title="Без норматива")
+        _position(factories, proposal, no_standard, unit_cost="50", weight="5")
+
+        no_volume = factories.CatalogPositionFactory.create(standard_job_title="Без объёма")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=no_volume,
+            unit_cost_total=Decimal("999"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        # База НДС неизвестна — отдельное предложение той же сметы, ставка не
+        # заявлена (`vat_rate=None`). Норматив у неё ЕСТЬ (нарочно): приоритет §7.6
+        # ставит неизвестную базу выше отсутствия норматива, и позиция обязана
+        # попасть именно в счётчик базы, а не в «сравнимые» и не в «без норматива».
+        unknown_base_lot = factories.LotFactory.create(estimate=estimate)
+        unknown_base_proposal = factories.ProposalFactory.create(
+            lot=unknown_base_lot, contractor=contract.contractor, vat_rate=None
+        )
+        unknown_base = factories.CatalogPositionFactory.create(standard_job_title="Без базы НДС")
+        _position(factories, unknown_base_proposal, unknown_base, unit_cost="80", weight="8")
+        _standard(factories, unknown_base, rate_class, "70")
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        assert "Сравнимых позиций (в расчёте отклонения): 1" in text
+        assert "Позиций с объёмом, но без базы НДС (в отклонение не вошли): 1" in text
+        assert "с объёмом, но без норматива (в отклонение не вошли): 1" in text
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        # Независимый общий счёт: 1 + 1 + 1 + 1 = 4 — проверяемый инвариант файла.
+        assert "Всего расценённых позиций: 4 (равно сумме четырёх счётчиков выше)" in text
+
+    def test_position_without_volume_and_without_base_counts_once(self, client, factories):
+        """Приоритет блокирующей причины: объём перевешивает базу НДС (задача 4).
+
+        Позиция без обоих (объёма и базы) считается ОДИН раз, в счётчике объёма —
+        тот же довод §7.6, что и для пары «объём/норматив»: норматив (здесь —
+        база НДС) без объёма не помог бы ничем.
+        """
+        rate_class = factories.RateClassFactory.create(title="Класс приоритета базы")
+        contract = factories.ContractFactory.create(rate_class=rate_class)
+        _c, _e, proposal = _estimate_with(factories, contract=contract, vat_rate=None)
+        ghost = factories.CatalogPositionFactory.create(standard_job_title="Без объёма и без базы")
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=ghost,
+            unit_cost_total=Decimal("777"),
+            suggested_quantity=None,
+            quantity=None,
+            total_cost_total=None,
+        )
+
+        ws = _sheet(
+            client.get("/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id})
+        )
+        text = _text_of(ws)
+
+        assert "но без объёма (в расчёт не вошли): 1" in text
+        assert "Позиций с объёмом, но без базы НДС (в отклонение не вошли): 0" in text
+
     def test_bank_counts_priced_positions_without_volume(self, client, factories):
         """Счётчик «без объёма» работает и в отчёте «для банка», по выборке."""
         rate_class = factories.RateClassFactory.create(title="Класс с призраком")
@@ -655,6 +810,416 @@ class TestBankComparison:
         self._two_classes(factories)
         ws = _sheet(client.get("/api/v1/reports/bank-comparison"))
         assert "средневзвешенное по объёму" in _text_of(ws)
+
+
+# ---------------------------------------------------------------------------
+#  Задача 8: свод по договору в ставке показа (спека §5.1)
+# ---------------------------------------------------------------------------
+
+def _set_vat_target(db_session, estimate, rate):
+    estimate.vat_rate_target = rate
+    db_session.flush()
+
+
+def _contract_with_standard(factories, *, unit_cost_total, vat_rate, standard):
+    """Один договор, одна смета, одно предложение, одна расценённая позиция
+    (вес 1 — сумма и ставка совпадают) с известным нормативом класса объектов.
+    """
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=vat_rate)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Работа задачи 8")
+    _position(factories, proposal, position, unit_cost=str(unit_cost_total), weight="1")
+    _standard(factories, position, contract.rate_class, str(standard))
+    return contract, proposal.lot.estimate
+
+
+def _contract_with_two_proposals(factories, *, vat_rates):
+    """Один договор, одна смета, ДВА лота/предложения с РАЗНЫМИ явными
+    ставками НДС — единая ставка показа недостижима, `effective_display_rate`
+    обязана вернуть `None` (задача 8, спека §5.1, оговорённая граница)."""
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Спорная работа")
+    _standard(factories, position, contract.rate_class, "100")
+    for rate in vat_rates:
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=rate
+        )
+        _position(factories, proposal, position, unit_cost="120", weight="1")
+    return contract
+
+
+def test_standard_follows_the_effective_rate_without_explicit_target(factories, db_session):
+    """Цель не задана -> эффективная ставка равна ЕДИНОГЛАСНОЙ заявленной
+    ставке предложения (20 %, единственного), и норматив идёт в неё же. Иначе
+    факт остался бы валовым (120), а норматив — чистым нетто (100) — строка
+    оказалась бы измерена в двух разных единицах сразу.
+
+    Краснеет от: `contract_summary`, не приводящей норматив к ставке показа
+    вовсе (тогда `standard_unit_rate` остался бы "100.00", а не "120.00") —
+    подтверждено мутацией: см. отчёт задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("120")
+    assert Decimal(row["standard_unit_rate"]) == Decimal("120.00")
+    assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
+def test_contract_summary_shows_both_sides_in_target(factories, db_session):
+    """Цель показа (16 %) приведена к базе предложения (20 %): факт 120 (база
+    20 %) даёт нетто 100, а 100 нетто по цели 16 % даёт 116.00 — И факт, И
+    норматив показаны в ОДНОЙ ставке, отклонение остаётся нулевым (приведение
+    обеих сторон к одной ставке отношения не меняет).
+
+    Краснеет от: конвертации факта БЕЗ конвертации норматива (или наоборот) —
+    тогда `deviation_pct` сдвинулся бы с 0 — подтверждено мутацией: см. отчёт
+    задачи."""
+    contract, estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=Decimal("20"), standard=Decimal("100")
+    )
+    _set_vat_target(db_session, estimate, Decimal("16"))
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("116.00")
+    assert Decimal(row["standard_unit_rate"]) == Decimal("116.00")
+    assert Decimal(row["deviation_pct"]) == Decimal("0")
+
+
+def test_standard_is_null_when_bases_disagree(factories, db_session):
+    """Разногласие заявленных ставок предложений — оговорённая граница §5.1:
+    единой ставки показа нет, и выдавать «какую-то из» нельзя.
+
+    Краснеет от: `_standard_in_display_rate`/`effective_display_rate`,
+    подставляющей любую из двух ставок вместо `None` (тогда `standard_
+    unit_rate` вернул бы число) — подтверждено мутацией: см. отчёт задачи."""
+    contract = _contract_with_two_proposals(factories, vat_rates=[Decimal("20"), Decimal("12")])
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert row["standard_unit_rate"] is None
+
+
+def test_standard_is_shown_as_net_when_this_row_has_no_vat_base(factories, db_session):
+    """Ре-ревью задачи 8, круг 4, Правка 2 — парный к тесту выше
+    (`test_standard_is_null_when_bases_disagree`): та сторона стережёт
+    «гасить при разногласии», эта — «не гасить при неизвестной базе» (спека
+    §2.5, строка 293, дословно: «норматив при неизвестной базе показывается
+    как нетто; не вычисляется только отклонение»). Тот же дефект, что чинился
+    на паспорте Ф6 кругом 3 (`test_analytics_api.py::TestPassportDisplayRate
+    ::test_standard_is_shown_as_net_when_this_row_has_no_vat_base`), просто
+    здесь, на своде: `_fold_summary_work` схлопывал «база не заявлена» и
+    «ставки разошлись» в одну ветку `effective_rate is None -> норматив
+    None`, хотя это РАЗНЫЕ случаи.
+
+    Одно предложение, ставка НЕ заявлена (`vat_rate=None`) — не разногласие
+    (предложение одно), а незнание: норматив ОБЯЗАН остаться видимым как
+    сырой нетто, отклонение — пустым (сравнивать не с чем, единицы не
+    сведены).
+
+    Краснеет от: `_fold_summary_work`, применяющей `_standard_in_display_
+    rate(standard_net_total, effective_rate)` БЕЗ ветки `any_unknown_base`
+    (тогда `effective_rate is None` из-за незаявленной ставки погасил бы
+    норматив так же, как разногласие) — подтверждено мутацией: см. отчёт
+    задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["standard_unit_rate"]) == Decimal("100")
+    assert row["deviation_pct"] is None
+    assert row["deviation_money"] is None
+
+
+def test_comparable_positions_excludes_unknown_vat_base(factories, db_session):
+    """Правка 2 финального ревью ветки (точка 2) — живой сценарий с прогона
+    стенда: смета с одним предложением без заявленной ставки НДС (`vat_rate=
+    None`) и позицией с заведённым нормативом. Лист печатал «Сравнимых
+    позиций (в расчёте отклонения): 1», хотя отклонение не посчитано ни для
+    одной позиции — норматив ЕСТЬ (`positions_without_standard == 0`), значит
+    старый счётчик `comparable_positions = positions - positions_without_
+    standard` не знал о неизвестной базе НДС вовсе.
+
+    Краснеет от: возврата `_fold_summary_work` к единственному счётчику
+    `positions_without_standard` без `positions_without_vat_base` — тогда
+    `comparable_positions` снова стал бы `1` — подтверждено снятием, см. отчёт
+    задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    data = contract_summary(db_session, contract.id)
+    row = data["rows"][0]
+    assert row["deviation_pct"] is None  # отклонение не посчитано...
+    assert row["standard_unit_rate"] is not None  # ...хотя норматив показан
+    assert data["totals"]["comparable_positions"] == 0
+
+
+def test_summary_sheet_names_unknown_vat_base_not_missing_standard(client, factories, db_session):
+    """Правка 2 финального ревью ветки (точки 1 и 3) — тот же живой сценарий,
+    но проверка идёт через HTTP и читает готовый xlsx: до правки лист
+    одновременно врал в подписи шапки («норматив не показан» — неправда, он
+    показан как сырой нетто, спека §2.5 строка 293) и в итоговой строке
+    (`_write_totals` печатала `NO_STANDARD` = «нет норматива», хотя причина —
+    неизвестная база, а не отсутствие норматива).
+
+    Краснеет от: возврата `header['vat_display_note']` к тексту, вычисленному
+    только по `effective_rate is None` без различения причины, либо
+    `_write_totals` к безусловному `NO_STANDARD` — подтверждено снятием, см.
+    отчёт задачи."""
+    contract, _estimate = _contract_with_standard(
+        factories, unit_cost_total=Decimal("120"), vat_rate=None, standard=Decimal("100")
+    )
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    text = _text_of(ws)
+
+    assert "База НДС неизвестна" in text
+    # Старый текст для ЭТОГО случая был неправдой: норматив показан, а не скрыт.
+    assert "норматив не показан" not in text
+    assert "Сравнимых позиций (в расчёте отклонения): 0" in text
+    # Сноска обязана не заявлять равенство, которое не сходится: у свода нет
+    # печатаемого счётчика под эту (четвёртую) причину исключения (§7.6 её не
+    # трогала), поэтому «Сравнимых + без норматива + без объёма» здесь 0, а
+    # «Всего расценённых» — 1. Печатать «равно сумме трёх счётчиков» при таком
+    # расхождении было бы той же ложью, которую эта правка устраняет строками
+    # выше — сноска обязана промолчать о равенстве, а не соврать о нём.
+    assert "Всего расценённых позиций: 1" in text
+    assert "равно сумме" not in text
+
+    row_index, _row = _find_row(ws, lambda r: r[0] == "ИТОГО ПО ДОГОВОРУ")
+    assert ws.cell(row=row_index, column=7).value == "неизвестна база НДС"
+    assert ws.cell(row=row_index, column=8).value == "неизвестна база НДС"
+
+
+def test_contract_summary_amount_and_rate_are_untouched_without_target(factories, db_session):
+    """Ре-ревью задачи 8, круг 3, Правка 1 — тест ПЕРЕПИСАН: круг 2 заводил
+    позицию БЕЗ норматива и тем самым ОБХОДИЛ дефект (гейт был поднят ОДНИМ
+    флагом на строку от одного лишь показа норматива, а этот путь тест ни
+    разу не проходил; находка внешнего ре-ревью). Позиция теперь ИМЕЕТ
+    норматив — то есть строка попадает ровно в тот путь, где дефект жил.
+
+    Без цели/перекрытой базы `amount`/`rate` обязаны совпасть ПОСИМВОЛЬНО с
+    тем, что свод отдавал бы до задачи 8 — сравнение через `str()`, а не
+    `Decimal(...)==Decimal(...)` (то пропустило бы сдвиг `exponent`).
+    Норматив (нетто 10000) ПРИ ЭТОМ ВСЁ РАВНО приводится к ставке показа
+    (10000 нетто по базе/цели 20 % даёт 12000.00) — у нормы нет ветки
+    тождества, у факта — есть; это и есть гейт «по полю».
+
+    Краснеет от (круг 2): подъёма ОДНОГО флага на строку сразу от показа
+    норматива И квантования им же факта — тогда `amount`/`rate` стали бы
+    "12000.560"/"12000.56", а не "12000.556" — подтверждено мутацией: см.
+    отчёт задачи."""
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
+    position = factories.CatalogPositionFactory.create(standard_job_title="Работа тождества, с нормативом")
+    _position(factories, proposal, position, unit_cost="12000.556", weight="1")
+    _standard(factories, position, contract.rate_class, "10000")
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert str(row["amount"]) == "12000.556"
+    assert str(row["rate"]) == "12000.556"
+    assert Decimal(row["standard_unit_rate"]) == Decimal("12000.00")
+
+
+def test_summary_restates_each_group_by_its_own_base_not_the_accumulated_sum(factories, db_session):
+    """Различение баз ВНУТРИ одной работы (ревью задачи 8, Правка 3): 120 при
+    базе 20 % и 112 при базе 12 %, цель 16 %. Правильный ответ — сумма ДВУХ
+    независимых пересчётов: `restate(120, 20, 16) = 116` и
+    `restate(112, 12, 16) = 116`, итого 232.00. Дефект «сложить сначала
+    (120+112=232), потом пересчитать ОДНИМ вызовом по ОДНОЙ базе» дал бы
+    ДРУГОЕ число — тест различает эти два пути численно, а не просто
+    проверяет наличие суммы (три предыдущих теста задачи 8 брали ОДНУ и ту
+    же базу на все группы и различение баз не проверяли).
+
+    Краснеет от: группировки по `catalog_position_id` БЕЗ `vat_rate_base`
+    (тогда SQL просуммировал бы 120+112=232 ДО пересчёта, и один вызов
+    `restate_gross(232, 20 или 12, 16)` дал бы число, отличное от 232.00) —
+    подтверждено мутацией: см. отчёт задачи."""
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    position = factories.CatalogPositionFactory.create(standard_job_title="Смешанные базы")
+    lot_1 = factories.LotFactory.create(estimate=estimate)
+    proposal_1 = factories.ProposalFactory.create(
+        lot=lot_1, contractor=contract.contractor, vat_rate=Decimal("20")
+    )
+    lot_2 = factories.LotFactory.create(estimate=estimate)
+    proposal_2 = factories.ProposalFactory.create(
+        lot=lot_2, contractor=contract.contractor, vat_rate=Decimal("12")
+    )
+    _position(factories, proposal_1, position, unit_cost="120", weight="1")
+    _position(factories, proposal_2, position, unit_cost="112", weight="1")
+    _set_vat_target(db_session, estimate, Decimal("16"))
+    db_session.commit()
+
+    row = contract_summary(db_session, contract.id)["rows"][0]
+    assert Decimal(row["amount"]) == Decimal("232.00")
+
+
+def test_disagreement_note_explains_the_mixed_rates_on_the_sheet(client, factories, db_session):
+    """Ревью задачи 8 (Правка 6, 7): при разногласии ставок норматив гасится
+    (см. `test_standard_is_null_when_bases_disagree`), но `amount` строки всё
+    равно складывает валовые из РАЗНЫХ ставок построчно — лист обязан назвать
+    это явно, а не молчать о единицах измерения (спека §2.5, строка 280). Тест
+    идёт через HTTP и читает готовый XLSX (та же форма, что у сестринского
+    листа «для банка», `test_footnote_explains_the_weighted_deviation`), а не
+    только через `crud.reports.contract_summary` — так закрывается и потеря
+    проверки самого маршрута/файла, отмеченная в сомнениях отчёта задачи.
+
+    Краснеет от: `build_contract_summary`, печатающей подпись только при
+    известной `vat_display_rate` и молчащей при `None` (текущий текст до
+    Правки 6) — подтверждено мутацией: см. отчёт задачи."""
+    contract = _contract_with_two_proposals(factories, vat_rates=[Decimal("20"), Decimal("12")])
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    assert "Единой ставки НДС нет" in _text_of(ws)
+
+
+def test_vat_display_rate_caption_shows_a_human_readable_percent(client, factories, db_session):
+    """Ревью задачи 8 (Правка 8): подпись листа не должна печатать сырой
+    `Decimal` («с НДС 20.00 %»), а человеческий вид («с НДС 20 %»).
+
+    Краснеет от: `_format_percent`, отданной как `str(Decimal(...))` без
+    отбрасывания хвостовых нулей — подтверждено мутацией: см. отчёт задачи.
+
+    Ставка заведена ИМЕННО `Decimal("20.00")` (не `Decimal("20")`): `numeric`
+    Postgres сохраняет заявленный масштаб (замерено отдельно — `CAST('20.00'
+    AS numeric)` возвращает `exponent=-2`), поэтому `str()` без форматирования
+    дал бы "20.00" буквально — на входе `Decimal("20")` мутация была бы
+    невидима (`str(Decimal("20")) == "20"` совпадает с верным выводом)."""
+    contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20.00"))
+    position = factories.CatalogPositionFactory.create(standard_job_title="Ставка целиком")
+    _position(factories, proposal, position, unit_cost="100", weight="1")
+    db_session.commit()
+
+    ws = _sheet(
+        client.get("/api/v1/reports/contract-summary", params={"contract_id": contract.id})
+    )
+    text = _text_of(ws)
+    assert "с НДС 20 %" in text
+    assert "20.00" not in text
+
+
+# ---------------------------------------------------------------------------
+#  Правка 3 финального ревью ветки: `Decimal('NaN')` не роняет отчёт 500-й
+# ---------------------------------------------------------------------------
+
+def test_summary_survives_nan_amount_in_sort_key(client, factories):
+    """Открытый хвост Ф4 (§5.6) пропускает `NaN`/`Infinity` при импорте, и эта
+    ветка перенесла сортировку строк свода в Python (§2.6, `_fold_summary_
+    rows`): `Decimal('NaN') < x` в контексте с трапами бросает `InvalidOperation`
+    (он трапится) — раньше порядок задавал SQL `ORDER BY`, которому NaN
+    безразличен. Путь падения СОЗДАН этой веткой, а не существовал раньше.
+
+    Два РАЗНЫХ каталожных объекта нужны нарочно: сортировка с одной строкой не
+    вызывает сравнение ключей вовсе, а с двумя — обязана.
+
+    Краснеет от: возврата `rows.sort` к ключу `-(r["amount"] or ZERO)` без
+    группировки по конечности — подтверждено снятием, см. отчёт задачи."""
+    contract, _estimate, proposal = _estimate_with(factories)
+    normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
+    _position(factories, proposal, normal, unit_cost="100", weight="10")
+    broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
+    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+
+    response = client.get(
+        "/api/v1/reports/contract-summary", params={"contract_id": contract.id}
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_bank_report_survives_nan_comparable_amount_in_sort_key(client, factories):
+    """Тот же дефект, что у свода (см. тест выше), у отчёта «для банка»
+    (`_fold_bank_rows`, ключ по `comparable_amount`) — сортировка тоже перешла
+    в Python этой веткой (§2.6) и тоже не защищена от нефинитной суммы.
+
+    Норматив заведён на ОБЕИХ работах: без него `comparable_amount` был бы
+    `None` (нет норматива — блокирующая причина ДО сортировки), и строка не
+    попала бы в сравнение ключей вовсе — дефект остался бы незамеченным.
+
+    Краснеет от: возврата `bucket.sort` к ключу `-(r["comparable_amount"] or
+    ZERO)` без группировки по конечности — подтверждено снятием, см. отчёт
+    задачи."""
+    rate_class = factories.RateClassFactory.create(title="Класс с порченой суммой")
+    contract = factories.ContractFactory.create(rate_class=rate_class)
+    _c, _e, proposal = _estimate_with(factories, contract=contract)
+
+    normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
+    _position(factories, proposal, normal, unit_cost="100", weight="10")
+    _standard(factories, normal, rate_class, "100")
+
+    broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
+    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+    _standard(factories, broken, rate_class, "100")
+
+    response = client.get(
+        "/api/v1/reports/bank-comparison", params={"rate_class_id": rate_class.id}
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_fold_bank_rows_breaks_ties_by_catalog_position_id_ascending():
+    """Юнит-тест на саму сортировку `_fold_bank_rows` — не на её эмерджентное
+    проявление через целый HTTP-запрос (ре-ревью задачи 4, третий круг).
+
+    **Почему прежний интеграционный тест был вакуозным.** Он гонял ДВЕ строки
+    через весь конвейер (фабрики → SQL → fold → xlsx) и совпадал с ожидаемым
+    порядком СЛУЧАЙНО: сортировка Python устойчива (stable — при равных ключах
+    сохраняет порядок входа), а `_bank_position_groups_select` не несёт
+    `ORDER BY` и отдаёт группы в порядке вставки — который как раз совпадал с
+    ожидаемым порядком по `catalog_position_id`, потому что тестовая работа
+    «А» создавалась раньше «Б». Сняв тай-брейк из `_fold_bank_rows`, ревьюер
+    прогнал тот тест пять раз подряд — все пять зелёные: тест не отличал
+    «защита есть» от «защиты нет» (`docs/insights/verifying-guards.md`, слой 7).
+
+    **Как это исправлено.** Вход собран НАПРЯМУЮ для `_fold_bank_rows` (минуя
+    HTTP, SQL и фабрики), и порядок специально сделан ПРОТИВОПОЛОЖНЫМ
+    ожидаемому: группа с БОЛЬШИМ `catalog_position_id` (200) идёт ПЕРВОЙ, с
+    МЕНЬШИМ (100) — второй, а суммы (`weighted_fact_gross`/`weight_comparable`/
+    `weighted_standard`) у обеих групп ОДИНАКОВЫЕ, чтобы порядок решался
+    ИСКЛЮЧИТЕЛЬНО тай-брейком, а не разницей сумм. Устойчивая сортировка без
+    тай-брейка сохранила бы вход как есть → `[200, 100]` на выходе (тест обязан
+    покраснеть, см. проверку снятием в отчёте task-4-report.md); с тай-брейком
+    (`crud/reports.py::_fold_bank_rows`, ключ `(-amount, catalog_position_id)`)
+    выход обязан быть `[100, 200]` — по возрастанию id, независимо от входа.
+    """
+    from types import SimpleNamespace
+
+    from crud.reports import _fold_bank_rows
+
+    def group(catalog_position_id: int) -> SimpleNamespace:
+        """Одна группа работа×база (форма строки `_bank_position_groups_select`)."""
+        return SimpleNamespace(
+            rate_class_id=1,
+            catalog_position_id=catalog_position_id,
+            job_title=f"Работа {catalog_position_id}",
+            unit_code="шт",
+            vat_rate_base=Decimal("0"),
+            weighted_fact_gross=Decimal("1000"),
+            weight_comparable=Decimal("10"),
+            weighted_standard=Decimal("1000"),
+            positions=1,
+            positions_without_standard=0,
+        )
+
+    # Вход НАРОЧНО в порядке УБЫВАНИЯ id (200, потом 100) — обратно ожидаемому.
+    rows_by_class = _fold_bank_rows([group(200), group(100)])
+
+    ids_in_order = [r["catalog_position_id"] for r in rows_by_class[1]]
+    assert ids_in_order == [100, 200]
 
 
 def test_xlsx_number_precision_boundary():

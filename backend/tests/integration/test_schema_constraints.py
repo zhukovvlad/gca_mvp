@@ -24,6 +24,7 @@ from models import (
     CatalogKind,
     CatalogPosition,
     Contract,
+    Estimate,
     EstimateAdditionalWork,
     EstimateRawData,
     ImportJobStatus,
@@ -1684,3 +1685,67 @@ class TestAreasAndTermsParity:
             if isinstance(c, CheckConstraint)
         }
         assert contract_checks == self.ORM_CONTRACT_CHECKS
+
+
+# ---------------------------------------------------------------------------
+#  estimates.vat_rate_*: ручные ставки НДС сметы (задача 3 пересчёта, §2.1)
+# ---------------------------------------------------------------------------
+
+class TestEstimateVatRateColumns:
+    """`CHECK` на обеих новых процентных колонках — тот же класс защиты, что у
+    `TestProposalVatRate` (§2.9): диапазон, а не основной фильтр."""
+
+    def test_base_override_out_of_range_is_rejected(self, db_session, factories):
+        estimate = factories.EstimateFactory.create()
+        with rejected(db_session, contains="ck_estimates_vat_rate_base_override"):
+            db_session.execute(
+                sa.update(Estimate)
+                .where(Estimate.id == estimate.id)
+                .values(vat_rate_base_override=Decimal("101"))
+            )
+
+    def test_target_out_of_range_is_rejected(self, db_session, factories):
+        estimate = factories.EstimateFactory.create()
+        with rejected(db_session, contains="ck_estimates_vat_rate_target"):
+            db_session.execute(
+                sa.update(Estimate)
+                .where(Estimate.id == estimate.id)
+                .values(vat_rate_target=Decimal("101"))
+            )
+
+
+# ---------------------------------------------------------------------------
+#  Миграция 0012: переименование VIEW отклонений, нетто-ось v_category_totals
+# ---------------------------------------------------------------------------
+
+def test_deviation_inputs_view_has_no_deviation_pct(db_session):
+    columns = {
+        row[0]
+        for row in db_session.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'v_position_deviation_inputs'"
+            )
+        )
+    }
+    assert "deviation_pct" not in columns
+    assert {"vat_rate_base", "vat_rate_target"} <= columns
+
+
+def test_old_deviations_view_is_gone(db_session):
+    assert db_session.execute(
+        sa.text("SELECT to_regclass('v_position_deviations')")
+    ).scalar() is None
+
+
+def test_category_totals_view_groups_by_proposal(db_session):
+    columns = {
+        row[0]
+        for row in db_session.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'v_category_totals'"
+            )
+        )
+    }
+    assert {"proposal_id", "vat_rate_base"} <= columns
