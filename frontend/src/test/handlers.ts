@@ -393,6 +393,7 @@ export const handlers = [
         area_aboveground_sp: null,
         area_underground_sp: null,
         area_total_sp: null,
+        area_useful_sp: null,
         contracts_count: 0,
         created_at: null,
         updated_at: null,

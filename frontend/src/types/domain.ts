@@ -48,8 +48,14 @@ export interface ObjectItem {
   /** ТЭП объекта (спека §2.2, §2.3): две вводимые площади, третья вычисляемая. */
   area_aboveground_sp: Decimal | null;
   area_underground_sp: Decimal | null;
-  /** `null` — «ТЭП не заведены»; вычисляется в БД, напрямую не задаётся. */
+  /** `null` — общая площадь не заведена; вычисляется в БД, напрямую не задаётся. */
   area_total_sp: Decimal | null;
+  /**
+   * Полезная площадь — ЧАСТЬ общей, а не третье слагаемое: в `area_total_sp`
+   * не входит и ни в одном расчёте не участвует (спека 2026-08-15 §2.2, §4).
+   * Парой с надземной и подземной не связана — может быть заведена одна (§2.4).
+   */
+  area_useful_sp: Decimal | null;
   contracts_count: number;
   created_at: string | null;
   updated_at: string | null;
@@ -61,6 +67,7 @@ export interface ObjectInput {
   rate_class_id?: number | null;
   area_aboveground_sp?: Decimal | null;
   area_underground_sp?: Decimal | null;
+  area_useful_sp?: Decimal | null;
 }
 
 export interface Contractor {
@@ -561,13 +568,15 @@ export interface ProjectPassportContract {
   object_contracts_count: number;
 }
 
-/** ТЭП объекта для паспорта проекта — те же три величины, что у {@link ObjectItem}. */
+/** ТЭП объекта для паспорта проекта — те же четыре величины, что у {@link ObjectItem}. */
 export interface ProjectPassportObject {
   id: number;
   title: string;
   area_underground_sp: Decimal | null;
   area_aboveground_sp: Decimal | null;
   area_total_sp: Decimal | null;
+  /** Показывается, но в ₽/м² не участвует: знаменатель — общая (спека §2.2). */
+  area_useful_sp: Decimal | null;
 }
 
 /** Исходная смета договора (правило «исходная», не «последняя» — спека §2.4). */

@@ -108,6 +108,66 @@ describe("Диалог правки объекта: площади и живая
   });
 });
 
+// --- Полезная площадь: третье поле ввода (спека 2026-08-15 §2.7) ---
+
+describe("Диалог правки объекта: полезная площадь (спека 2026-08-15 §2.7)", () => {
+  it("подставляет существующее значение при открытии", async () => {
+    renderWithProviders(
+      <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
+    );
+    expect(await screen.findByLabelText(/полезная/i)).toHaveValue(
+      sampleObjects[0].area_useful_sp
+    );
+  });
+
+  it("отправляет полезную площадь строкой", async () => {
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.patch("/api/v1/objects/:id", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: OBJECT_WITH_AREAS });
+      })
+    );
+    renderWithProviders(
+      <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
+    );
+    await userEvent.clear(await screen.findByLabelText(/полезная/i));
+    await userEvent.type(screen.getByLabelText(/полезная/i), "45000,25");
+    await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+    await waitFor(() => expect(body).toBeDefined());
+    // Запятая приведена к точке, значение — строка: та же механика, что у пары.
+    expect(body!.area_useful_sp).toBe("45000.25");
+  });
+
+  it("пустое поле уходит как null", async () => {
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.patch("/api/v1/objects/:id", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: OBJECT_WITH_AREAS });
+      })
+    );
+    renderWithProviders(
+      <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
+    );
+    await userEvent.clear(await screen.findByLabelText(/полезная/i));
+    await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.area_useful_sp).toBeNull();
+  });
+
+  it("в общую площадь не входит: живая сумма считается только по паре", async () => {
+    /* Полезная — ЧАСТЬ общей, а не третье слагаемое (спека §2.2). Знаменатель
+       ₽/м² не меняется, и предпросмотр обязан это показывать. */
+    renderWithProviders(
+      <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
+    );
+    await userEvent.clear(await screen.findByLabelText(/полезная/i));
+    await userEvent.type(screen.getByLabelText(/полезная/i), "1000");
+    expect(await screen.findByTestId("area-total-preview")).toHaveTextContent("75741");
+  });
+});
+
 // --- Остальные поля объекта: диалог правит объект целиком, а не только ТЭП ---
 
 describe("Диалог правки объекта: остальные поля (спека §2.9)", () => {

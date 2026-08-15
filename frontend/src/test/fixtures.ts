@@ -60,6 +60,9 @@ export const sampleObjects: ObjectItem[] = [
     area_aboveground_sp: "62399.70",
     area_underground_sp: "13341.30",
     area_total_sp: "75741.00",
+    // Полезная заведена и МЕНЬШЕ общей — часть общей, а не третье слагаемое:
+    // 75741.00 остаётся суммой пары (спека 2026-08-15 §2.2).
+    area_useful_sp: "54210.00",
     contracts_count: 1,
     created_at: null,
     updated_at: null,
@@ -75,6 +78,7 @@ export const sampleObjects: ObjectItem[] = [
     area_aboveground_sp: null,
     area_underground_sp: null,
     area_total_sp: null,
+    area_useful_sp: null,
     contracts_count: 0,
     created_at: null,
     updated_at: null,
@@ -505,6 +509,9 @@ export const sampleProjectPassport: ProjectPassport = {
     area_underground_sp: "7000.00",
     area_aboveground_sp: "40000.00",
     area_total_sp: "47000.00",
+    // Полезная в знаменатель ₽/м² НЕ входит: он остаётся 47 000 (спека §2.2),
+    // поэтому все посчитанные ниже `per_sqm` этой фикстурой не меняются.
+    area_useful_sp: "33500.00",
   },
   estimate: {
     id: 600,
