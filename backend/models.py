@@ -277,6 +277,11 @@ class ObjectModel(Base):
         Computed(OBJECT_AREA_TOTAL_EXPRESSION, persisted=True),
         nullable=True,
     )
+    # Полезная площадь (миграция 0013): ЧАСТЬ общей, а не третье слагаемое —
+    # выражение area_total_sp не меняется (спека 2026-08-15 §2.2). Парой с
+    # надземной и подземной НЕ связана (§2.4), поэтому при NULL-паре сравнение
+    # с суммой даёт NULL и пропускает — принятая граница.
+    area_useful_sp = Column(Numeric, nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -300,6 +305,18 @@ class ObjectModel(Base):
         CheckConstraint(
             "(area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)",
             name="ck_objects_areas_both_or_neither",
+        ),
+        CheckConstraint(
+            "area_useful_sp IS NULL OR area_useful_sp >= 0",
+            name="ck_objects_area_useful_sp_non_negative",
+        ),
+        # Через СЛАГАЕМЫЕ, не через area_total_sp (спека §2.3): тот же результат
+        # без зависимости от того, разрешает ли PostgreSQL ссылку на генерируемую
+        # колонку в CHECK другой колонки.
+        CheckConstraint(
+            "area_useful_sp IS NULL "
+            "OR area_useful_sp <= area_aboveground_sp + area_underground_sp",
+            name="ck_objects_area_useful_sp_within_total",
         ),
     )
 
