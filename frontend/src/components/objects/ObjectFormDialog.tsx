@@ -75,6 +75,7 @@ interface FormState {
   rate_class_id: number | null;
   area_aboveground_sp: string;
   area_underground_sp: string;
+  area_useful_sp: string;
 }
 
 function fromObject(object: ObjectItem): FormState {
@@ -84,6 +85,7 @@ function fromObject(object: ObjectItem): FormState {
     rate_class_id: object.rate_class_id,
     area_aboveground_sp: object.area_aboveground_sp ?? "",
     area_underground_sp: object.area_underground_sp ?? "",
+    area_useful_sp: object.area_useful_sp ?? "",
   };
 }
 
@@ -118,6 +120,9 @@ function ObjectForm({
    * станет знаменателем руб/м² в паспорте. Показывается только когда ОБЕ
    * площади дают валидное десятичное число — `addDecimalStrings` возвращает
    * `null` иначе (пустое поле включительно).
+   *
+   * Полезная площадь в сумму НЕ входит: она часть общей, а не третье слагаемое
+   * (спека 2026-08-15 §2.2). Знаменатель руб/м² не меняется этой фичей нигде.
    */
   const totalPreview = addDecimalStrings(
     normalizeDecimalInput(form.area_aboveground_sp),
@@ -139,6 +144,7 @@ function ObjectForm({
       rate_class_id: form.rate_class_id,
       area_aboveground_sp: normalizeDecimalInput(form.area_aboveground_sp) || null,
       area_underground_sp: normalizeDecimalInput(form.area_underground_sp) || null,
+      area_useful_sp: normalizeDecimalInput(form.area_useful_sp) || null,
     };
 
     try {
@@ -222,6 +228,26 @@ function ObjectForm({
               onChange={(e) => patch({ area_underground_sp: e.target.value })}
             />
           </div>
+        </div>
+
+        {/*
+          Полезная — отдельной строкой под парой, а не третьей колонкой в той
+          же сетке: она не слагаемое общей (спека 2026-08-15 §2.2), и стоять
+          в одном ряду со слагаемыми означало бы обратное. Парой с ними она не
+          связана — заводится и очищается независимо (§2.4).
+        */}
+        <div className="grid gap-2">
+          <Label htmlFor="object-area-useful">Полезная площадь, м²</Label>
+          <Input
+            id="object-area-useful"
+            inputMode="decimal"
+            placeholder="54210.00"
+            value={form.area_useful_sp}
+            onChange={(e) => patch({ area_useful_sp: e.target.value })}
+          />
+          <p className="text-xs text-fg-secondary">
+            Часть общей площади. В общую не входит и в руб/м² не участвует.
+          </p>
         </div>
 
         {totalPreview !== null && (

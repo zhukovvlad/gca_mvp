@@ -190,6 +190,12 @@ function projectPassportForOutcome(
           area_aboveground_sp: null,
           area_underground_sp: null,
           area_total_sp: null,
+          // Полезная тоже `null`: имя исхода означает «ТЭП НЕ ЗАВЕДЕНЫ», то
+          // есть ни одной площади. С появлением четвёртой колонки (спека
+          // 2026-08-15) исход, унаследовавший полезную из `base`, описывал бы
+          // ДРУГОЕ состояние — «заведена одна полезная», у которого свой,
+          // отличный текст.
+          area_useful_sp: null,
         },
         totals: { ...base.totals, per_sqm: null },
         categories: base.categories.map((c) => ({ ...c, per_sqm: null })),
@@ -393,6 +399,7 @@ export const handlers = [
         area_aboveground_sp: null,
         area_underground_sp: null,
         area_total_sp: null,
+        area_useful_sp: null,
         contracts_count: 0,
         created_at: null,
         updated_at: null,

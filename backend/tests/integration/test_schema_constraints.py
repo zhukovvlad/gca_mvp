@@ -1347,6 +1347,69 @@ def _make_object_and_read(session, **kwargs):
     ).one()
 
 
+#: Прогрев формы запроса перед нарушающим исполнением: строго больше пяти.
+_USEFUL_WARMUP_EXECUTIONS = 8
+
+
+def _make_object_with_useful(
+    session,
+    *,
+    above: str | None,
+    under: str | None,
+    useful: str | None,
+    title: str | None = None,
+    address: str = "Test St, 1",
+) -> int:
+    """INSERT со ВСЕМИ ТРЕМЯ площадями — отдельная форма запроса.
+
+    Отдельный хелпер, а не расширение `_make_object`: форма запроса у прогрева
+    и у нарушающего исполнения обязана совпадать (`prepare_threshold = 5`
+    считает ПОВТОРНЫЕ ИСПОЛНЕНИЯ одной формы, а не строки в одном INSERT —
+    [batch-larger-than-five](../../../docs/insights/batch-larger-than-five.md)),
+    а существующие тесты площадей остаются на своей форме и не краснеют заодно.
+
+    ASCII в title/address — тот же довод, что в докстринге `_make_object`.
+    """
+    return session.execute(
+        sa.text(
+            "insert into objects "
+            "(title, address, area_aboveground_sp, area_underground_sp, area_useful_sp) "
+            "values (:title, :address, :above, :under, :useful) returning id"
+        ),
+        {
+            "title": title or f"TEP useful object {next(_tep_seq)}",
+            "address": address,
+            "above": Decimal(above) if above is not None else None,
+            "under": Decimal(under) if under is not None else None,
+            "useful": Decimal(useful) if useful is not None else None,
+        },
+    ).scalar_one()
+
+
+def _make_object_with_useful_and_read(session, **kwargs):
+    """Как `_make_object_with_useful`, но сразу читает обратно четыре площади."""
+    object_id = _make_object_with_useful(session, **kwargs)
+    return session.execute(
+        sa.text(
+            "select area_aboveground_sp, area_underground_sp, area_total_sp, area_useful_sp "
+            "from objects where id = :id"
+        ),
+        {"id": object_id},
+    ).one()
+
+
+def _warm_up_useful_insert_form(session) -> None:
+    """Восемь ВАЛИДНЫХ исполнений той же формы, что и нарушающее следом.
+
+    Порог подготовки запросов psycopg3 — пять; до него у PostgreSQL другой план,
+    и класс дефектов, живущий за порогом, на одном исполнении не виден. Считаются
+    именно повторные исполнения: один `INSERT` с десятью строками порога НЕ
+    достигает.
+    """
+    for i in range(_USEFUL_WARMUP_EXECUTIONS):
+        _make_object_with_useful(session, above="100", under=str(i), useful="50")
+
+
 def _make_rate_class_id(session) -> int:
     """ASCII нарочно — см. довод в докстринге `_make_object`."""
     return session.execute(
@@ -1511,6 +1574,62 @@ class TestObjectAreas:
         assert exc.value.orig.sqlstate == "428C9"
 
 
+class TestObjectUsefulArea:
+    """Полезная площадь объекта (спека 2026-08-15 §2.1–§2.4, миграция 0013).
+
+    Полезная — ЧАСТЬ общей, а не третье слагаемое: `area_total_sp` не трогается
+    (§2.2). Ограничений два, и они разные по причине: неотрицательность —
+    самодостаточная, «не больше суммы слагаемых» — про отношение к паре.
+
+    `CHECK` записан через СЛАГАЕМЫЕ, а не через `area_total_sp` (§2.3): тот же
+    результат без зависимости от того, разрешает ли PostgreSQL ссылку на
+    генерируемую колонку в `CHECK` другой колонки.
+
+    Вход каждого негативного теста нарушает РОВНО ОДНО ограничение — иначе
+    маскировку создавал бы сам выбор входа
+    ([verifying-guards](../../../docs/insights/verifying-guards.md), слой 8).
+    """
+
+    def test_useful_greater_than_the_sum_of_parts_is_rejected(self, db_session):
+        """Нарушение ровно одно: `100.01 >= 0` истинно, общая `100 > 0` тоже."""
+        _warm_up_useful_insert_form(db_session)
+        with rejected(db_session, contains="ck_objects_area_useful_sp_within_total"):
+            _make_object_with_useful(db_session, above="60", under="40", useful="100.01")
+
+    def test_negative_useful_is_rejected(self, db_session):
+        """Партнёр — пара `(100, 0)`: общая `100 > 0`, и `-1 <= 100` истинно,
+        поэтому `within_total` этот арм не маскирует."""
+        _warm_up_useful_insert_form(db_session)
+        with rejected(db_session, contains="ck_objects_area_useful_sp_non_negative"):
+            _make_object_with_useful(db_session, above="100", under="0", useful="-1")
+
+    def test_useful_equal_to_the_sum_is_accepted(self, db_session):
+        """Граница ВКЛЮЧЕНА: полезная, равная общей, — законное состояние."""
+        row = _make_object_with_useful_and_read(
+            db_session, above="60", under="40", useful="100"
+        )
+        assert row.area_useful_sp == Decimal("100")
+        assert row.area_total_sp == Decimal("100")
+
+    def test_useful_without_the_pair_is_accepted(self, db_session):
+        """Граница §2.4 спеки, закрепляется НАМЕРЕННО, чтобы её не ужесточили
+        мимоходом: полезная не связана парой с надземной и подземной, а при
+        `NULL`-паре сумма слагаемых `NULL`, `CHECK` даёт `NULL` и пропускает.
+        Данные приходят кусками — это принятая цена, а не дефект.
+        """
+        row = _make_object_with_useful_and_read(
+            db_session, above=None, under=None, useful="80"
+        )
+        assert row.area_useful_sp == Decimal("80")
+        assert row.area_total_sp is None
+
+    def test_useful_null_is_accepted(self, db_session):
+        row = _make_object_with_useful_and_read(
+            db_session, above="60", under="40", useful=None
+        )
+        assert row.area_useful_sp is None
+
+
 class TestContractCommercialTerms:
     """Коммерческие условия договора: три пары «процент + комментарий» (спека §2.5)."""
 
@@ -1578,6 +1697,14 @@ class TestAreasAndTermsParity:
         "ck_objects_areas_both_or_neither": (
             "CHECK (((area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)))"
         ),
+        # --- миграция 0013, полезная площадь (спека 2026-08-15 §2.3) ---
+        "ck_objects_area_useful_sp_non_negative": (
+            "CHECK (((area_useful_sp IS NULL) OR (area_useful_sp >= (0)::numeric)))"
+        ),
+        "ck_objects_area_useful_sp_within_total": (
+            "CHECK (((area_useful_sp IS NULL)"
+            " OR (area_useful_sp <= (area_aboveground_sp + area_underground_sp))))"
+        ),
     }
     DB_OBJECT_AREA_TOTAL_GENERATED = "(area_aboveground_sp + area_underground_sp)"
 
@@ -1613,6 +1740,14 @@ class TestAreasAndTermsParity:
         "ck_objects_area_total_sp_positive": "area_total_sp IS NULL OR area_total_sp > 0",
         "ck_objects_areas_both_or_neither": (
             "(area_aboveground_sp IS NULL) = (area_underground_sp IS NULL)"
+        ),
+        # --- миграция 0013, полезная площадь (спека 2026-08-15 §2.3) ---
+        "ck_objects_area_useful_sp_non_negative": (
+            "area_useful_sp IS NULL OR area_useful_sp >= 0"
+        ),
+        "ck_objects_area_useful_sp_within_total": (
+            "area_useful_sp IS NULL "
+            "OR area_useful_sp <= area_aboveground_sp + area_underground_sp"
         ),
     }
     ORM_OBJECT_AREA_TOTAL_EXPRESSION = "area_aboveground_sp + area_underground_sp"

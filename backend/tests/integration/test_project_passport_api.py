@@ -445,6 +445,36 @@ def test_per_sqm_is_null_on_a_null_area_not_zero(db_session, factories, place):
         assert row["per_sqm"] is None
 
 
+def test_useful_area_reaches_the_response_without_touching_per_sqm(db_session, factories):
+    """Полезная площадь ПОКАЗЫВАЕТСЯ, но в знаменатель ₽/м² не входит
+    (спека 2026-08-15 §2.2, §4).
+
+    Обе половины обязательны. Первая — что поле вообще доезжает до ответа:
+    без него шапка паспорта не сможет его показать. Вторая — что знаменатель
+    остался общей площадью: числа подобраны так, чтобы подмена знаменателя была
+    ВИДНА. 4700 / 47000 = 0.1, а 4700 / 33500 = 0.1402... — если бы полезная
+    стала знаменателем или слагаемым, значение перестало бы быть ровным.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal("40000.00"),
+        area_underground_sp=Decimal("7000.00"),
+        area_useful_sp=Decimal("33500.00"),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    category = _category(db_session, "1")
+    proposal = _proposal(factories, contract=contract)
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("4700.00"))
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+
+    assert result["object"]["area_useful_sp"] == Decimal("33500.00")
+    # Знаменатель — общая, а не полезная и не их сумма.
+    assert result["object"]["area_total_sp"] == Decimal("47000.00")
+    assert result["totals"]["per_sqm"] == Decimal("4700.00") / Decimal("47000.00")
+
+
 # ---------------------------------------------------------------------------
 #  8. Нулевая сумма — это число, а не отсутствие числа
 # ---------------------------------------------------------------------------

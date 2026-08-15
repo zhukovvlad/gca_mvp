@@ -55,6 +55,33 @@ def object_without_areas(client, factories):
     return obj.id
 
 
+@pytest.fixture
+def object_with_useful_area(client):
+    """Слагаемые 60 + 40 (общая 100) и полезная 80 — вход обеих ветвей правила
+    «полезная ≤ общей» (спека 2026-08-15, DoD): запас между 80 и 100 позволяет
+    нарушить правило и уменьшением СЛАГАЕМОГО, и увеличением полезной.
+
+    Создаётся ЧЕРЕЗ API, а не `ObjectFactory`, — тот же приём, что у
+    `test_patch_into_an_inverted_period_gives_422` в `test_rate_standards_api.py`,
+    и по той же причине. `_BaseFactory` персистит `flush`-ем, а `update_object`
+    при отказе делает `db.rollback()` (`rollback_on_domain_error`) — он забрал бы
+    с собой и не закоммиченную строку фикстуры, и последующий `GET` отвечал бы
+    `404` вместо прежних значений. Замерено на первом прогоне: `PATCH → 422`,
+    `GET → 404`. То есть предпосылка теста об откате проверялась бы на объекте,
+    которого уже нет. `create_object` коммитит, и правка переживает откат ровно
+    как в проде.
+    """
+    return client.post(
+        "/api/v1/objects",
+        json={
+            "title": "О-полезная-итоговое-состояние",
+            "area_aboveground_sp": "60",
+            "area_underground_sp": "40",
+            "area_useful_sp": "80",
+        },
+    ).json()["id"]
+
+
 # ---------------------------------------------------------------------------
 #  Классы объектов
 # ---------------------------------------------------------------------------
@@ -293,18 +320,168 @@ def test_patch_resulting_in_both_zero_is_422(client, object_with_zero_undergroun
     assert "общая" in r.text.lower()
 
 
-@pytest.mark.parametrize("field", ["area_aboveground_sp", "area_underground_sp"])
+#: Все три площади объекта. Параметризация ИМЕНЕМ поля — единственная форма, при
+#: которой пропуск поля в ручном списке валидатора `_AreaMixin` валит прогон:
+#: отдельные тесты на каждый случай выполняются двумя тестами на одно поле, и
+#: забытое третье остаётся незамеченным (DoD спеки 2026-08-15).
+_AREA_FIELDS = ["area_aboveground_sp", "area_underground_sp", "area_useful_sp"]
+
+
+@pytest.mark.parametrize("field", _AREA_FIELDS)
 def test_float_area_is_rejected(client, field):
+    """Первый из ДВУХ независимых наборов: `_reject_float` в `_AreaMixin`.
+
+    Партнёры подобраны так, что подставленное значение законно в ЛЮБОЙ из трёх
+    позиций: 62399.7 не делает общую нулевой и не поднимает полезную выше общей.
+    Иначе снятие `_reject_float` маскировалось бы соседней защитой, и красного
+    не было бы ([verifying-guards](../../../docs/insights/verifying-guards.md),
+    слой 8) — тест доказывал бы не то.
+    """
     r = client.post(
         "/api/v1/objects",
         json={
             "title": f"О4-{field}",
-            "area_aboveground_sp": "100",
-            "area_underground_sp": "100",
+            "area_aboveground_sp": "100000",
+            "area_underground_sp": "100000",
+            "area_useful_sp": "10000",
             field: 62399.7,
         },
     )
     assert r.status_code == 422
+
+
+@pytest.mark.parametrize("field", _AREA_FIELDS)
+def test_negative_area_is_rejected_on_every_field(client, field):
+    """Второй независимый набор: `_non_negative` в `_AreaMixin`.
+
+    Список полей у него СВОЙ, отдельный от `_reject_float`, поэтому одного
+    набора мало: поле, вписанное в первый список и забытое во втором, прошло бы
+    мимо. Партнёры снова подобраны на единственное нарушение: при `-1` в любой
+    из позиций общая остаётся положительной, а полезная — не выше общей.
+    """
+    r = client.post(
+        "/api/v1/objects",
+        json={
+            "title": f"О4н-{field}",
+            "area_aboveground_sp": "100",
+            "area_underground_sp": "100",
+            "area_useful_sp": "10",
+            field: "-1",
+        },
+    )
+    assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+#  Полезная площадь: правило «полезная ≤ общей» судит ИТОГОВОЕ состояние
+# ---------------------------------------------------------------------------
+
+def test_patch_shrinking_a_part_below_useful_is_422(client, object_with_useful_area):
+    """Ветвь A: нарушение вносит СЛАГАЕМОЕ, а не полезная площадь.
+
+    Именно этой ветви нет в наивной реализации — та проверяет только «своё»
+    поле. Общая падает со 100 до 70 при полезной 80, и правило обязано судить
+    состояние ПОСЛЕ применения дельты, а не переданную дельту.
+    """
+    r = client.patch(
+        f"/api/v1/objects/{object_with_useful_area}",
+        json={"area_aboveground_sp": "30"},
+    )
+    assert r.status_code == 422
+    assert "полезн" in r.text.lower()
+
+    # Доказательство отката: без него тест допускает частичную запись —
+    # отвергнутое слагаемое осталось бы в сессии и доехало бы до следующего
+    # чтения (тот же довод, что у `rollback_on_domain_error` в update_object).
+    after = client.get(f"/api/v1/objects/{object_with_useful_area}").json()
+    assert after["area_aboveground_sp"] == "60"
+    assert after["area_underground_sp"] == "40"
+    assert after["area_useful_sp"] == "80"
+
+
+def test_patch_raising_useful_above_total_is_422(client, object_with_useful_area):
+    """Ветвь B: симметричная — нарушение вносит сама полезная площадь.
+
+    Стережёт вырождение правила в проверку только «своего» поля с другой
+    стороны: без неё судья мог бы смотреть только на слагаемые.
+    """
+    r = client.patch(
+        f"/api/v1/objects/{object_with_useful_area}",
+        json={"area_useful_sp": "120"},
+    )
+    assert r.status_code == 422
+    assert "полезн" in r.text.lower()
+
+
+def test_post_useful_above_total_is_422_not_500(client):
+    """Ветвь C: СОЗДАНИЕ — отдельный путь, двумя предыдущими не покрытый.
+
+    Без неё судья мог бы стоять только в `update_object`, и создание уходило бы
+    на `CHECK` схемы сырой пятисоткой: `translating_integrity` переводит только
+    нарушения уникальности и только в 409.
+    """
+    r = client.post(
+        "/api/v1/objects",
+        json={
+            "title": "О-полезная-больше-общей",
+            "area_aboveground_sp": "60",
+            "area_underground_sp": "40",
+            "area_useful_sp": "120",
+        },
+    )
+    assert r.status_code == 422
+    assert "полезн" in r.text.lower()
+
+
+def test_post_useful_equal_to_total_is_allowed(client):
+    """Граница ВКЛЮЧЕНА: полезная, равная общей, — законное состояние."""
+    r = client.post(
+        "/api/v1/objects",
+        json={
+            "title": "О-полезная-равна-общей",
+            "area_aboveground_sp": "60",
+            "area_underground_sp": "40",
+            "area_useful_sp": "100",
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["area_useful_sp"] == "100"
+
+
+def test_post_useful_without_the_pair_is_saved(client):
+    """Граница §2.4 спеки: полезная НЕ связана парой с надземной и подземной.
+
+    Закрепляется намеренно, чтобы правило пары не расширили на третью площадь
+    мимоходом: данные приходят кусками, и запрет ввода полезной до ввода пары
+    дороже, чем непроверяемый случай, который он закрывает.
+    """
+    r = client.post(
+        "/api/v1/objects",
+        json={"title": "О-полезная-без-пары", "area_useful_sp": "80"},
+    )
+    assert r.status_code == 201
+    created = r.json()
+    assert created["area_useful_sp"] == "80"
+    assert created["area_total_sp"] is None
+
+
+def test_patch_useful_area_as_a_string(client, object_with_useful_area):
+    """Позитив PATCH: значение строкой доезжает и возвращается строкой."""
+    r = client.patch(
+        f"/api/v1/objects/{object_with_useful_area}",
+        json={"area_useful_sp": "95.50"},
+    )
+    assert r.status_code == 200
+    assert r.json()["area_useful_sp"] == "95.50"
+
+
+def test_patch_null_clears_useful_area(client, object_with_useful_area):
+    r = client.patch(
+        f"/api/v1/objects/{object_with_useful_area}",
+        json={"area_useful_sp": None},
+    )
+    assert r.status_code == 200
+    assert r.json()["area_useful_sp"] is None
 
 
 @pytest.mark.parametrize("endpoint", ["list", "one", "post", "patch"])

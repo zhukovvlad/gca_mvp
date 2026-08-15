@@ -1226,6 +1226,11 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "area_underground_sp": obj.area_underground_sp,
         "area_aboveground_sp": obj.area_aboveground_sp,
         "area_total_sp": obj.area_total_sp,
+        # Полезная площадь только ПОКАЗЫВАЕТСЯ: знаменатель `per_sqm` ниже
+        # остаётся `area_total_sp` и этой фичей не меняется (спека
+        # 2026-08-15 §2.2, §4) — иначе поехали бы все удельные показатели,
+        # уже показанные пользователю и напечатанные.
+        "area_useful_sp": obj.area_useful_sp,
     }
 
     refs = [

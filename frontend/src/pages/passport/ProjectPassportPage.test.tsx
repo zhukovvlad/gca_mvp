@@ -120,6 +120,97 @@ describe("Паспорт проекта: шапка документа", () => {
     }
   );
 
+  /*
+    Полезная площадь (спека 2026-08-15). Дефект тот же, что в карточке
+    договора: `noTep` висел на `area_total_sp === null` и управлял ТРЕМЯ
+    местами — значением метрики площади, её подписью и метрикой ₽/м² с
+    подписью. По границе §2.4 полезная заводится БЕЗ пары, и паспорт сказал бы
+    «ТЭП не заведены» про заведённые данные.
+
+    Правило целевого состояния: нет общей — метрика площади говорит «Общая
+    площадь не заведена», полезная при этом ПОКАЗЫВАЕТСЯ, а удельная стоимость
+    НЕ считается. Знаменатель ₽/м² — всегда общая площадь (§2.2, §4).
+
+    У метрики ₽/м² состояний ТРИ, а не два: «нет ТЭП» — ложь того же рода, если
+    ТЭП заведены, а не заведена лишь общая.
+  */
+  function captionOf(testId: string) {
+    // Подпись показателя — соседний <p> у его значения; `\s` в JS покрывает и
+    // неразрывный пробел, которым разделяются разряды.
+    const value = screen.getByTestId(testId);
+    return (value.parentElement?.querySelector("p")?.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  it("полезная площадь видна в подписи, ₽/м² считается по общей", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(captionOf("metric-area")).toBe(
+      "подземная 7 000,00 · надземная 40 000,00 · полезная 33 500,00"
+    );
+    // ₽/м² — как раньше: знаменатель полезная не трогает.
+    expect((screen.getByTestId("metric-per-sqm").textContent ?? "").trim()).not.toBe(
+      "не считается"
+    );
+    expect(captionOf("metric-per-sqm")).toBe("по общей площади");
+  });
+
+  it("без полезной площади подпись и ₽/м² дословно прежние", async () => {
+    /* Контроль неизменности. Стережёт самый вероятный побочный эффект правки
+       подписи — полезную площадь, которая начнёт печататься как «—» или
+       `undefined` там, где её просто нет. Обязан быть зелёным и ДО правки. */
+    withPassport((base) => ({
+      ...base,
+      object: { ...base.object, area_useful_sp: null },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(captionOf("metric-area")).toBe("подземная 7 000,00 · надземная 40 000,00");
+    expect(captionOf("metric-area")).not.toMatch(/полезн|undefined|—/i);
+    expect(captionOf("metric-per-sqm")).toBe("по общей площади");
+  });
+
+  it("одна полезная без пары: «Общая площадь не заведена», а не «ТЭП не заведены»", async () => {
+    /* Проверяет ОБЕ метрики сразу — площадь и ₽/м²: правка одной при забытой
+       второй и есть тот дефект, ради которого тест написан. */
+    withPassport((base) => ({
+      ...base,
+      object: {
+        ...base.object,
+        area_aboveground_sp: null,
+        area_underground_sp: null,
+        area_total_sp: null,
+        area_useful_sp: "33500.00",
+      },
+      totals: { ...base.totals, per_sqm: null },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    expect(screen.getByText("Общая площадь не заведена")).toBeInTheDocument();
+    expect(screen.queryByText("ТЭП не заведены")).not.toBeInTheDocument();
+    expect(captionOf("metric-area")).toBe("полезная 33 500,00");
+
+    expect((screen.getByTestId("metric-per-sqm").textContent ?? "").trim()).toBe("не считается");
+    expect(captionOf("metric-per-sqm")).toBe("нет общей площади");
+    expect(screen.queryByText("нет ТЭП")).not.toBeInTheDocument();
+  });
+
+  it("ни одной площади: «ТЭП не заведены» и «нет ТЭП» дословно как раньше", async () => {
+    /* Второй контроль неизменности: крайние состояния таблицы правила обязаны
+       остаться посимвольно прежними. */
+    handlerState.projectPassportOutcome = "no-tep";
+    renderPassport();
+
+    expect(await screen.findByText("ТЭП не заведены")).toBeInTheDocument();
+    expect(screen.getByText("нет ТЭП")).toBeInTheDocument();
+    expect(captionOf("metric-area")).toBe("площади вводятся в карточке объекта");
+    expect(captionOf("metric-per-sqm")).toBe("удельные показатели не считаются");
+  });
+
   // Тест 3.
   it("ставка НДС «не заявлена в файле», а не ноль", async () => {
     withPassport((base) => ({
