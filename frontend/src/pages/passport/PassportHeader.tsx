@@ -179,7 +179,26 @@ export function PassportHeader({
 }) {
   const { contract, object, estimate, totals } = passport;
 
-  const noTep = object.area_total_sp === null;
+  /*
+    Прежний флаг `noTep = area_total_sp === null` управлял ТРЕМЯ местами разом,
+    и с появлением полезной площади (спека 2026-08-15) это стало ложью: по
+    границе §2.4 полезная заводится БЕЗ пары, и паспорт утверждал бы «ТЭП не
+    заведены» про заведённые данные. Флаг расщеплён на два смысла:
+
+    - `noTotalArea` — нет ОБЩЕЙ: удельная стоимость не считается (знаменатель
+      ₽/м² — всегда общая площадь и этой фичей не меняется, §2.2);
+    - `noAreasAtAll` — нет НИ ОДНОЙ: только здесь уместны прежние дословные
+      «ТЭП не заведены» и «нет ТЭП».
+  */
+  const noTotalArea = object.area_total_sp === null;
+  const noAreasAtAll = noTotalArea && object.area_useful_sp === null;
+  /** Полезная — в подписи существующей метрики, а не отдельной плиткой: правка
+   *  не добавляет строк в сетку показателей. `null`, когда её нет — прочерк
+   *  читался бы как заведённый ноль. */
+  const usefulCaption =
+    object.area_useful_sp === null
+      ? null
+      : `полезная ${formatDecimalMoney(object.area_useful_sp, "")}`;
   const showMultiBadge = contract.object_contracts_count > 1;
 
   // Правило 8 (§2.9): молчание — нормальный вид, сверка видна только при ДВУХ
@@ -237,9 +256,13 @@ export function PassportHeader({
       >
         <Metric
           label="Площадь общая"
+          testId="metric-area"
           value={
-            noTep ? (
-              <StatusPill tone="warning" label="ТЭП не заведены" />
+            noTotalArea ? (
+              <StatusPill
+                tone="warning"
+                label={noAreasAtAll ? "ТЭП не заведены" : "Общая площадь не заведена"}
+              />
             ) : (
               <>
                 <MoneyCell value={object.area_total_sp} currency="" /> м²
@@ -247,12 +270,12 @@ export function PassportHeader({
             )
           }
           caption={
-            noTep
-              ? "площади вводятся в карточке объекта"
+            noTotalArea
+              ? (usefulCaption ?? "площади вводятся в карточке объекта")
               : `подземная ${formatDecimalMoney(object.area_underground_sp, "")} · надземная ${formatDecimalMoney(
                   object.area_aboveground_sp,
                   ""
-                )}`
+                )}${usefulCaption ? ` · ${usefulCaption}` : ""}`
           }
         />
 
@@ -287,15 +310,31 @@ export function PassportHeader({
           label="Стоимость за м²"
           testId="metric-per-sqm"
           value={
-            noTep ? (
+            /*
+              Состояний ТРИ, а не два. Средняя ветвь новая: ТЭП заведены, не
+              заведена общая — прежнее дословное «нет ТЭП» здесь было бы ложью
+              того же рода, что и в метрике площади. Крайние ветви обязаны
+              остаться посимвольно прежними.
+            */
+            noAreasAtAll ? (
               <span className="font-sans text-sm font-semibold text-warning-text">нет ТЭП</span>
+            ) : noTotalArea ? (
+              <span className="font-sans text-sm font-semibold text-warning-text">
+                не считается
+              </span>
             ) : (
               // Вычисленная величина — округляется на слое показа, точное
               // значение уходит в `title` (та же причина, что в `CategoryTable`).
               <MoneyCell value={totals.per_sqm} maxFractionDigits={2} />
             )
           }
-          caption={noTep ? "удельные показатели не считаются" : "по общей площади"}
+          caption={
+            noAreasAtAll
+              ? "удельные показатели не считаются"
+              : noTotalArea
+                ? "нет общей площади"
+                : "по общей площади"
+          }
         />
 
         <Metric
