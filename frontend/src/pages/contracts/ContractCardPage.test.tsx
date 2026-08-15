@@ -27,7 +27,12 @@ import type { ContractCard } from "@/types/domain";
  */
 function renderCard(
   options?: Parameters<typeof renderWithProviders>[1] & {
-    objectAreas?: { above: string | null; under: string | null; total: string | null };
+    objectAreas?: {
+      above: string | null;
+      under: string | null;
+      total: string | null;
+      useful?: string | null;
+    };
     terms?: Partial<
       Pick<
         ContractCard,
@@ -52,6 +57,11 @@ function renderCard(
           area_aboveground_sp: objectAreas.above,
           area_underground_sp: objectAreas.under,
           area_total_sp: objectAreas.total,
+          // Ключ необязательный, и умолчание — `null`, а не значение фикстуры:
+          // существующие вызовы `objectAreas` описывают состояние площадей
+          // ЦЕЛИКОМ, и подмешанная полезная площадь из `sampleObjects[0]`
+          // сделала бы их вход не тем, который они называют.
+          area_useful_sp: objectAreas.useful ?? null,
         })
       )
     );
@@ -272,6 +282,48 @@ describe("Карточка договора: ТЭП объекта и комме
   it("показывает «ТЭП не заведены», когда площадей нет", async () => {
     renderCard({ objectAreas: { above: null, under: null, total: null } });
     expect(await screen.findByText(/тэп не заведены/i)).toBeInTheDocument();
+  });
+
+  /*
+    Полезная площадь (спека 2026-08-15). Дефект вносит эта же фича и чинит его
+    она же: пустое состояние висело на `area_total_sp === null`, а по границе
+    §2.4 полезная заводится БЕЗ пары — и карточка утверждала бы «ТЭП не
+    заведены» про заведённые данные.
+
+    Случаи 2 и 4 — контроль неизменности существующего поведения. Оба обязаны
+    быть зелёными и ДО правки: если хоть один красен, неверна предпосылка
+    теста, а не реализация ([false-test-premises]).
+  */
+  it("показывает четыре величины, когда заведены и пара, и полезная", async () => {
+    renderCard({
+      objectAreas: {
+        above: "62399.70",
+        under: "13341.30",
+        total: "75741.00",
+        useful: "54210.00",
+      },
+    });
+    expect(await screen.findByText("62 399,70")).toBeInTheDocument();
+    expect(screen.getByText("13 341,30")).toBeInTheDocument();
+    expect(screen.getByText("75 741,00")).toBeInTheDocument();
+    expect(screen.getByText("54 210,00")).toBeInTheDocument();
+  });
+
+  it("не показывает строку полезной площади, когда её нет", async () => {
+    /* Не «—» и не пустая строка, а ОТСУТСТВИЕ строки: прочерк читался бы как
+       заведённый ноль. Контроль неизменности — этот вход и сейчас рисует ровно
+       три величины. */
+    renderCard({
+      objectAreas: { above: "62399.70", under: "13341.30", total: "75741.00", useful: null },
+    });
+    expect(await screen.findByText("75 741,00")).toBeInTheDocument();
+    expect(screen.queryByText(/полезная площадь/i)).not.toBeInTheDocument();
+  });
+
+  it("не пишет «ТЭП не заведены», когда заведена одна полезная площадь", async () => {
+    renderCard({ objectAreas: { above: null, under: null, total: null, useful: "54210.00" } });
+    expect(await screen.findByText("54 210,00")).toBeInTheDocument();
+    expect(screen.queryByText(/тэп не заведены/i)).not.toBeInTheDocument();
   });
 
   it("показывает отказ, когда объект не загрузился", async () => {

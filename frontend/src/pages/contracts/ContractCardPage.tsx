@@ -164,9 +164,22 @@ export default function ContractCardPage() {
           {objectQ.isError && (
             <Field label="ТЭП объекта">Не удалось загрузить ТЭП объекта</Field>
           )}
-          {objectQ.data && objectQ.data.area_total_sp === null && (
-            <Field label="ТЭП объекта">ТЭП не заведены</Field>
-          )}
+          {/*
+            «ТЭП не заведены» — про ОТСУТСТВИЕ ВСЕХ площадей, а не только общей.
+            Полезная площадь парой с надземной и подземной не связана и заводится
+            отдельно (спека 2026-08-15 §2.4), поэтому условие на одной лишь
+            `area_total_sp` утверждало бы «не заведены» про заведённые данные.
+
+            Строка полезной площади показывается, только когда значение есть:
+            прочерк на её месте читался бы как заведённый ноль. В общую площадь
+            она не входит и в руб/м² не участвует (§2.2) — своя строка, не
+            слагаемое.
+          */}
+          {objectQ.data &&
+            objectQ.data.area_total_sp === null &&
+            objectQ.data.area_useful_sp === null && (
+              <Field label="ТЭП объекта">ТЭП не заведены</Field>
+            )}
           {objectQ.data && objectQ.data.area_total_sp !== null && (
             <>
               <Field label="Наземная площадь, м²">
@@ -179,6 +192,11 @@ export default function ContractCardPage() {
                 <MoneyCell value={objectQ.data.area_total_sp} currency="" />
               </Field>
             </>
+          )}
+          {objectQ.data && objectQ.data.area_useful_sp !== null && (
+            <Field label="Полезная площадь, м²">
+              <MoneyCell value={objectQ.data.area_useful_sp} currency="" />
+            </Field>
           )}
         </dl>
       </Surface>
