@@ -174,6 +174,7 @@ def _object_dict(obj: ObjectModel, contracts: int, rate_class_title: str | None)
         "area_aboveground_sp": obj.area_aboveground_sp,
         "area_underground_sp": obj.area_underground_sp,
         "area_total_sp": obj.area_total_sp,
+        "area_useful_sp": obj.area_useful_sp,
         "contracts_count": contracts,
         "created_at": iso(obj.created_at),
         "updated_at": iso(obj.updated_at),
@@ -250,6 +251,38 @@ def validate_area_pair(above: Decimal | None, under: Decimal | None) -> None:
         )
 
 
+def validate_useful_area(
+    above: Decimal | None, under: Decimal | None, useful: Decimal | None
+) -> None:
+    """Судит ИТОГОВОЕ состояние трёх площадей, а не переданную дельту (§2.5).
+
+    Отдельная функция, а не расширение `validate_area_pair`: правило пары —
+    про надземную и подземную, и полезная в него не входит (§2.4). Общая у них
+    только форма — обе судят состояние ПОСЛЕ применения дельты и обе зовутся с
+    обоих путей, создания и правки.
+
+    Нарушение вносит любая из трёх колонок: `PATCH`, уменьшающий СЛАГАЕМОЕ,
+    роняет общую под уже заведённую полезную ровно так же, как `PATCH`,
+    поднимающий саму полезную. Проверять «своё» поле здесь недостаточно.
+
+    Сравнение — через СЛАГАЕМЫЕ, тем же выражением, что `CHECK` в схеме (§2.3),
+    и с той же границей §2.4: при незаведённой паре сравнивать не с чем, и
+    полезная проходит без сравнения. `CHECK` остаётся последним рубежом; здесь
+    отказ человекочитаемый, потому что `translating_integrity` переводит только
+    нарушения уникальности и только в 409.
+    """
+    if useful is None or above is None or under is None:
+        return
+    total = above + under
+    if useful > total:
+        raise DomainError(
+            422,
+            f"Полезная площадь ({useful}) больше общей ({total}). Полезная — "
+            "часть общей, а не третье слагаемое: уменьшите её либо увеличьте "
+            "наземную или подземную площадь.",
+        )
+
+
 def create_object(
     db: Session,
     *,
@@ -258,9 +291,11 @@ def create_object(
     rate_class_id: int | None = None,
     area_aboveground_sp: Decimal | None = None,
     area_underground_sp: Decimal | None = None,
+    area_useful_sp: Decimal | None = None,
 ) -> dict:
     title = require_text(title, "Название")
     validate_area_pair(area_aboveground_sp, area_underground_sp)
+    validate_useful_area(area_aboveground_sp, area_underground_sp, area_useful_sp)
     rate_class_id = _resolve_rate_class(db, rate_class_id)
     if db.query(ObjectModel).filter(ObjectModel.title == title).first():
         raise DomainError(409, _UNIQUE_MESSAGES["uq_objects_title"])
@@ -273,6 +308,7 @@ def create_object(
         rate_class_id=rate_class_id,
         area_aboveground_sp=area_aboveground_sp,
         area_underground_sp=area_underground_sp,
+        area_useful_sp=area_useful_sp,
     )
     db.add(obj)
     with translating_integrity(db, _UNIQUE_MESSAGES):
@@ -291,6 +327,7 @@ def update_object(
     rate_class_id=UNSET,
     area_aboveground_sp=UNSET,
     area_underground_sp=UNSET,
+    area_useful_sp=UNSET,
 ) -> dict:
     obj = db.get(ObjectModel, object_id)
     if obj is None:
@@ -310,7 +347,12 @@ def update_object(
             obj.area_aboveground_sp = area_aboveground_sp
         if area_underground_sp is not UNSET:
             obj.area_underground_sp = area_underground_sp
+        if area_useful_sp is not UNSET:
+            obj.area_useful_sp = area_useful_sp
         validate_area_pair(obj.area_aboveground_sp, obj.area_underground_sp)
+        validate_useful_area(
+            obj.area_aboveground_sp, obj.area_underground_sp, obj.area_useful_sp
+        )
     with translating_integrity(db, _UNIQUE_MESSAGES):
         db.commit()
     log.info("object_updated id=%s", object_id)

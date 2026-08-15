@@ -54,10 +54,21 @@ class RateClassUpdate(BaseModel):
 
 
 class _AreaMixin(BaseModel):
-    """Площади: не `float` и не отрицательные (спека §2.4, §2.6)."""
+    """Площади: не `float` и не отрицательные (спека §2.4, §2.6).
+
+    У каждого валидатора СВОЙ ручной список имён, и защита новым полем **не
+    наследуется**: колонка, не вписанная в оба списка, молча примет `float` —
+    и двоичный хвост приедет в знаменатель руб/м², ради защиты от которого
+    миксин и написан (спека 2026-08-15 §2.6). Пропуск ловится параметризацией
+    по именам полей в `test_references_api.py`, а не чтением кода.
+    """
 
     @field_validator(
-        "area_aboveground_sp", "area_underground_sp", mode="before", check_fields=False
+        "area_aboveground_sp",
+        "area_underground_sp",
+        "area_useful_sp",
+        mode="before",
+        check_fields=False,
     )
     @classmethod
     def _reject_float(cls, value):
@@ -69,7 +80,12 @@ class _AreaMixin(BaseModel):
             )
         return value
 
-    @field_validator("area_aboveground_sp", "area_underground_sp", check_fields=False)
+    @field_validator(
+        "area_aboveground_sp",
+        "area_underground_sp",
+        "area_useful_sp",
+        check_fields=False,
+    )
     @classmethod
     def _non_negative(cls, value: Decimal | None):
         if value is not None and value < 0:
@@ -83,6 +99,7 @@ class ObjectCreate(_AreaMixin):
     rate_class_id: int | None = None
     area_aboveground_sp: Decimal | None = None
     area_underground_sp: Decimal | None = None
+    area_useful_sp: Decimal | None = None
 
 
 class ObjectUpdate(_AreaMixin):
@@ -91,6 +108,7 @@ class ObjectUpdate(_AreaMixin):
     rate_class_id: int | None = None
     area_aboveground_sp: Decimal | None = None
     area_underground_sp: Decimal | None = None
+    area_useful_sp: Decimal | None = None
 
 
 class ContractorCreate(BaseModel):
@@ -227,6 +245,7 @@ def create_object(
             rate_class_id=body.rate_class_id,
             area_aboveground_sp=body.area_aboveground_sp,
             area_underground_sp=body.area_underground_sp,
+            area_useful_sp=body.area_useful_sp,
         )
     except DomainError as e:
         _raise(e)
@@ -250,6 +269,7 @@ def update_object(
             rate_class_id=_unset(fields, "rate_class_id"),
             area_aboveground_sp=_unset(fields, "area_aboveground_sp"),
             area_underground_sp=_unset(fields, "area_underground_sp"),
+            area_useful_sp=_unset(fields, "area_useful_sp"),
         )
     except DomainError as e:
         _raise(e)
