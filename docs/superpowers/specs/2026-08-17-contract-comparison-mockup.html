@@ -1,0 +1,421 @@
+<!--
+  Макет страницы сравнения договоров (маршрут `/compare`), гейт 1 фичи
+  `feat/contract-compare-scaffold`. Заведён 2026-08-17.
+
+  ЧТО ЭТО. Согласованная форма экрана: строки — дерево статей классификатора,
+  колонки — договоры выборки. Спека, от которой макет не имеет права
+  расходиться: `2026-08-17-contract-comparison-design.md`.
+
+  ДАННЫЕ НАСТОЯЩИЕ — стенд `gca_dev` на 2026-08-17: 5 договоров, 21 корневая
+  статья (17 с данными), реальные суммы, площади и ставки НДС. Это не «рыба»:
+  на выдуманных данных нельзя судить ни о ширине колонок, ни о длине названий
+  статей, ни о том, сколько ячеек окажется пустыми.
+
+  ЧТО МАКЕТ ПОКАЗЫВАЕТ ЧЕСТНО, А НЕ ПРЯЧЕТ:
+  * корзина «ДС» пуста везде — допсоглашений в системе ноль (спека §2.2);
+  * у `ДГП-42-TU` нет ТЭП, поэтому ₽/м² прочерк и в медиану он не входит;
+  * «полезная площадь» отсутствует вовсе — не заполнена ни у одного объекта;
+  * коммерческие условия заведены у одного договора из пяти;
+  * ставки показа разные (16/20/22) — видно в режиме «своя ставка».
+
+  ГРАБЛИ ВЁРСТКИ, найденные на этом макете замером в браузере: `display:flex`
+  на ячейке `th` выбивает её из табличного контекста, и `rowspan`/`colspan`
+  молча перестают работать. Содержимое заголовка лежит во вложенном `.rh`.
+
+  Шрифты — системные стеки, как в макете паспорта: файл не вшивает base64,
+  чтобы не раздувать репозиторий.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Сравнение договоров — макет</title>
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --up-lo:#F3E3D5; --up-hi:#E8C8A8; --up-fg:#6B3915;
+  --dn-lo:#DCE8E0; --dn-hi:#C9D9CD; --dn-fg:#2F4A38;
+  --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.28);
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+    --up-lo:#3A2A1C; --up-hi:#4E3620; --up-fg:#E8C8A8;
+    --dn-lo:#25302A; --dn-hi:#2F4038; --dn-fg:#B8C4BB;
+    --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  --up-lo:#3A2A1C; --up-hi:#4E3620; --up-fg:#E8C8A8;
+  --dn-lo:#25302A; --dn-hi:#2F4038; --dn-fg:#B8C4BB;
+  --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.6);
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1560px; margin:0 auto; padding:26px 22px 60px;
+  display:flex; flex-direction:column; gap:20px; }
+.mockbar { background:var(--info-soft); border:1px solid var(--info-bd); border-radius:8px;
+  padding:10px 14px; font-size:12.5px; color:var(--fg2); }
+.mockbar b { color:var(--fg); }
+h1 { font-family:var(--font-serif); font-weight:500; font-size:38px; line-height:1.1;
+  margin:0; letter-spacing:-.01em; }
+h2 { font-family:var(--font-serif); font-weight:500; font-size:23px; margin:0 0 2px; }
+.sub { color:var(--fg2); margin:6px 0 0; max-width:78ch; text-wrap:pretty; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 12px; max-width:88ch; }
+.card { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px; }
+.card-pad { padding:15px 17px; }
+.chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:2px 9px;
+  border-radius:999px; background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  color:var(--neutral-text); white-space:nowrap; }
+.chip.warn { background:var(--warn-soft); border-color:var(--warn-bd); color:var(--warn-text); }
+.chip.sel { background:var(--accent-soft); border-color:var(--accent-bd);
+  color:var(--accent-text); font-weight:500; }
+.muted { color:var(--fg4); }
+.modes { display:grid; grid-template-columns:1fr 1fr; gap:13px; }
+@media (max-width:900px) { .modes { grid-template-columns:1fr; } }
+.lbl { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; display:block; margin-bottom:8px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+code { font-family:ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace; font-size:12px; }
+table.list { border-collapse:collapse; width:100%; font-size:13px; }
+table.list th { text-align:left; font-weight:500; color:var(--fg3); font-size:11px;
+  letter-spacing:.07em; text-transform:uppercase; padding:8px 10px; background:var(--sechead);
+  border-bottom:1px solid var(--bd-subtle); }
+table.list td { padding:9px 10px; border-bottom:1px solid var(--bd-subtle); }
+table.list tr.picked td { background:var(--accent-soft); }
+.cbx { width:15px; height:15px; accent-color:var(--accent); }
+.listfoot { display:flex; justify-content:space-between; align-items:center; gap:12px;
+  padding:11px 14px; border-top:1px solid var(--bd-subtle); background:var(--sunken);
+  border-radius:0 0 12px 12px; flex-wrap:wrap; }
+.btn { font:inherit; font-size:13px; font-weight:500; padding:7px 14px; border-radius:8px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); cursor:pointer; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:transparent; }
+.btn:focus-visible, .seg button:focus-visible, .chev:focus-visible, select:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px; }
+.controls { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+.ctl { display:flex; gap:8px; align-items:center; }
+.ctl-lbl { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; }
+.seg { display:inline-flex; border:1px solid var(--bd); border-radius:8px; overflow:hidden; }
+.seg button { all:unset; cursor:pointer; padding:6px 13px; font-size:13px; color:var(--fg2);
+  border-right:1px solid var(--bd-subtle); }
+.seg button:last-child { border-right:none; }
+.seg button[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent-text);
+  font-weight:600; }
+select { font:inherit; font-size:13px; padding:6px 8px; border-radius:8px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); }
+.axisnote { font-size:12.5px; color:var(--fg2); }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px;
+  background:var(--surface); }
+table.cmp { border-collapse:separate; border-spacing:0; font-size:13px; min-width:100%; }
+table.cmp th, table.cmp td { padding:7px 12px; }
+table.cmp thead th { background:var(--sechead); vertical-align:top; text-align:left;
+  border-bottom:1px solid var(--bd-subtle); }
+.chead, .cmeta { border-left:1px solid var(--bd-subtle); }
+.cno { font-weight:600; font-size:13.5px; white-space:nowrap; }
+.cobj, .csigned { color:var(--fg2); font-size:12px; white-space:nowrap; }
+.csigned { color:var(--fg3); }
+.cmeta .area { font-size:12px; color:var(--fg2); margin-top:4px;
+  font-variant-numeric:tabular-nums; }
+.cmeta .terms { font-size:11.5px; color:var(--fg3); margin-top:2px; white-space:nowrap; }
+.cmeta .rate { font-size:11.5px; color:var(--fg3); margin-top:2px; white-space:nowrap; }
+.cmeasure { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; text-align:right; white-space:nowrap; }
+.cmeasure:nth-of-type(odd) { border-left:1px solid var(--bd-subtle); }
+/* НЕ display:flex на ячейке: flex выбивает её из табличного контекста и ломает rowspan. */
+th.rowhead { position:sticky; left:0; z-index:2; background:var(--surface); text-align:left;
+  font-weight:400; min-width:340px; max-width:340px; box-shadow:var(--shadow-sticky); }
+thead th.rowhead { background:var(--sechead); z-index:4; }
+.rh { display:flex; align-items:baseline; gap:7px; }
+.code { color:var(--fg3); font-size:11.5px; font-variant-numeric:tabular-nums; min-width:24px; }
+.title { color:var(--fg); }
+tr.lvl1 .title { font-weight:500; }
+tr.lvl2 th.rowhead .rh { padding-left:24px; }
+tr.lvl2 .title, tr.lvl2 td { color:var(--fg2); }
+.nomed { color:var(--fg4); font-size:11px; margin-left:auto; padding-left:8px; cursor:help; }
+table.cmp tbody td, table.cmp tbody th.rowhead { border-bottom:1px solid var(--bd-subtle); }
+table.cmp tbody tr:hover td, table.cmp tbody tr:hover th.rowhead { background:var(--hover); }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.num:nth-of-type(odd) { border-left:1px solid var(--bd-subtle); }
+.pm2 { color:var(--fg2); }
+.pmv { display:inline-block; }
+.dev { display:inline-block; margin-left:7px; font-size:11px; padding:1px 5px; border-radius:4px;
+  font-variant-numeric:tabular-nums; }
+.dev.flat { color:var(--fg4); }
+.dev.up-lo { background:var(--up-lo); color:var(--up-fg); }
+.dev.up-hi { background:var(--up-hi); color:var(--up-fg); font-weight:600; }
+.dev.dn-lo { background:var(--dn-lo); color:var(--dn-fg); }
+.dev.dn-hi { background:var(--dn-hi); color:var(--dn-fg); font-weight:600; }
+.totalrow th.rowhead, .totalrow td { background:var(--sunken); font-weight:600;
+  border-top:1px solid var(--bd); }
+.chev { all:unset; cursor:pointer; width:16px; height:16px; color:var(--fg3);
+  display:inline-flex; align-items:center; justify-content:center; flex:0 0 16px;
+  transition:transform .15s ease; }
+.chev svg { width:13px; height:13px; }
+.chev[aria-expanded="true"] { transform:rotate(90deg); color:var(--fg); }
+.chev-space { width:16px; flex:0 0 16px; display:inline-block; }
+@media (prefers-reduced-motion:reduce) { .chev { transition:none; } }
+.legend { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media (max-width:900px) { .legend { grid-template-columns:1fr; } }
+.legend h3 { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg3);
+  margin:0 0 8px; font-weight:600; }
+.legend ul { margin:0; padding-left:18px; color:var(--fg2); }
+.legend li { margin-bottom:6px; }
+.bound { border-left:3px solid var(--warn); padding-left:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <b>Макет, гейт 1.</b> Данные настоящие — стенд <code>gca_dev</code> на 2026-08-17.
+    Спека: <code>2026-08-17-contract-comparison-design.md</code>.
+    Переключатели НДС, показателя и раскрытие ветки — рабочие.
+  </div>
+
+  <header>
+    <h1>Сравнение договоров</h1>
+    <p class="sub">Строки — статьи классификатора, колонки — договоры. Тот же свод, что
+       в паспорте объекта, только на несколько договоров сразу и с общей осью строк.
+       Колонки идут от новых договоров к старым.</p>
+  </header>
+
+  <section>
+    <h2>Как попадают на страницу</h2>
+    <p class="secsub">Два входа, один экран; оба выражаются в адресе страницы.</p>
+    <div class="modes">
+      <div class="card card-pad">
+        <span class="lbl">Режим 1 · выбор галочками</span>
+        <div class="chips">
+          <span class="chip sel">12-СИТ-МР</span><span class="chip sel">ТЕСТ</span>
+          <span class="chip sel">ДГП-42-TU</span><span class="chip sel">ДГП-159-TU</span>
+          <span class="chip sel">СДП-1-МР</span>
+        </div>
+        <div class="muted" style="font-size:12.5px"><code>/compare?ids=5,6,2,1,4</code> —
+          выборка зафиксирована, ссылку можно переслать.</div>
+      </div>
+      <div class="card card-pad">
+        <span class="lbl">Режим 2 · всё по текущему фильтру</span>
+        <div class="chips">
+          <span class="chip">класс: Жилые — комфорт</span>
+          <span class="chip">поиск: «МР»</span>
+        </div>
+        <div class="muted" style="font-size:12.5px"><code>/compare?rate_class_id=2&amp;q=МР&amp;all=1</code> —
+          пересчитывается на сервере, новый подходящий договор попадёт сам.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Список договоров</h2>
+    <p class="secsub">Колонка галочек и две кнопки появляются в существующем списке (§7.1).
+       Отдельного пункта меню у сравнения нет: без выборки открывать нечего.</p>
+    <div class="card">
+      <table class="list">
+        <thead><tr><th style="width:34px"><input class="cbx" type="checkbox" checked
+          aria-label="Выбрать все"></th><th>Номер</th><th>Объект</th><th>Класс</th>
+          <th>Подписан</th></tr></thead>
+        <tbody>
+          <tr class="picked"><td><input class="cbx" type="checkbox" checked aria-label="Выбрать 12-СИТ-МР"></td><td><strong>12-СИТ-МР</strong></td><td>Cityzen Tr. 1 UB8b</td><td><span class="chip">Жилые — комфорт</span></td><td>06.07.2026</td></tr><tr class="picked"><td><input class="cbx" type="checkbox" checked aria-label="Выбрать ТЕСТ"></td><td><strong>ТЕСТ</strong></td><td>TOP TOWER</td><td><span class="chip">Жилые — люкс</span></td><td>01.01.2026</td></tr><tr class="picked"><td><input class="cbx" type="checkbox" checked aria-label="Выбрать ДГП-42-TU"></td><td><strong>ДГП-42-TU</strong></td><td>Объект 42-TU</td><td><span class="chip">Класс А</span></td><td>01.01.2026</td></tr><tr class="picked"><td><input class="cbx" type="checkbox" checked aria-label="Выбрать ДГП-159-TU"></td><td><strong>ДГП-159-TU</strong></td><td>Объект 159-TU</td><td><span class="chip">Жилые — комфорт</span></td><td>01.01.2026</td></tr><tr class="picked"><td><input class="cbx" type="checkbox" checked aria-label="Выбрать СДП-1-МР"></td><td><strong>СДП-1-МР</strong></td><td>МИРА</td><td><span class="chip">Жилые — бизнес</span></td><td>20.02.2025</td></tr>
+        </tbody>
+      </table>
+      <div class="listfoot">
+        <span class="muted">Выбрано 5 из 5</span>
+        <span style="display:flex; gap:8px">
+          <button class="btn">Сравнить всё по фильтру</button>
+          <button class="btn primary">Сравнить выбранные (5)</button>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Таблица сравнения</h2>
+    <p class="secsub">Первая колонка закреплена, остальные уезжают горизонтально — как в
+       сквозной матрице (§6.4). Статья «Конструктивные решения» раскрывается: у неё есть
+       второй уровень.</p>
+
+    <div class="card card-pad" style="margin-bottom:12px">
+      <div class="controls">
+        <span class="ctl"><span class="ctl-lbl">Показатель</span>
+          <span class="seg" role="group" aria-label="Показатель">
+            <button type="button" data-measure="total" aria-pressed="true">Итого</button>
+            <button type="button" data-measure="dgp" aria-pressed="false">ДГП</button>
+            <button type="button" data-measure="ds" aria-pressed="false">ДС</button>
+          </span></span>
+        <span class="ctl"><span class="ctl-lbl">НДС</span>
+          <span class="seg" role="group" aria-label="Режим НДС">
+            <button type="button" data-vat="own" aria-pressed="true">Своя ставка</button>
+            <button type="button" data-vat="single" aria-pressed="false">Единая</button>
+            <button type="button" data-vat="net" aria-pressed="false">Без НДС</button>
+          </span>
+          <select id="rate" aria-label="Единая ставка" disabled>
+            <option value="16">16&nbsp;%</option>
+            <option value="20" selected>20&nbsp;%</option>
+            <option value="22">22&nbsp;%</option>
+          </select></span>
+        <button class="btn" type="button">Выгрузить в Excel</button>
+      </div>
+      <p class="axisnote" id="axisnote" style="margin:10px 0 0"></p>
+    </div>
+
+    <div class="scroller">
+      <table class="cmp">
+        <thead>
+          <tr><th class="rowhead" rowspan="3"><span class="rh"><span class="chev-space"></span>
+              <span class="title" style="font-weight:600">Статья классификатора</span></span></th>
+              <th colspan="2" class="chead"><div class="cno">12-СИТ-МР</div><div class="cobj">Cityzen Tr. 1 UB8b</div><div class="csigned">подписан 06.07.2026</div></th><th colspan="2" class="chead"><div class="cno">ТЕСТ</div><div class="cobj">TOP TOWER</div><div class="csigned">подписан 01.01.2026</div></th><th colspan="2" class="chead"><div class="cno">ДГП-42-TU</div><div class="cobj">Объект 42-TU</div><div class="csigned">подписан 01.01.2026</div></th><th colspan="2" class="chead"><div class="cno">ДГП-159-TU</div><div class="cobj">Объект 159-TU</div><div class="csigned">подписан 01.01.2026</div></th><th colspan="2" class="chead"><div class="cno">СДП-1-МР</div><div class="cobj">МИРА</div><div class="csigned">подписан 20.02.2025</div></th></tr>
+          <tr><th colspan="2" class="cmeta"><div><span class="chip">Жилые — комфорт</span></div><div class="area">79 692 м²</div><div class="terms"><span class="muted">условия не заведены</span></div><div class="rate">ставка договора <b>22 %</b></div></th><th colspan="2" class="cmeta"><div><span class="chip">Жилые — люкс</span></div><div class="area">166 757 м²</div><div class="terms"><span class="muted">условия не заведены</span></div><div class="rate">ставка договора <b>22 %</b></div></th><th colspan="2" class="cmeta"><div><span class="chip">Класс А</span></div><div class="area"><span class="chip warn">ТЭП не заведены</span></div><div class="terms"><span class="muted">условия не заведены</span></div><div class="rate">ставка договора <b>20 %</b></div></th><th colspan="2" class="cmeta"><div><span class="chip">Жилые — комфорт</span></div><div class="area">75 741 м²</div><div class="terms">аванс 30% · БГ 10% · удерж. 5%</div><div class="rate">ставка договора <b>16 %</b></div></th><th colspan="2" class="cmeta"><div><span class="chip">Жилые — бизнес</span></div><div class="area">75 741 м²</div><div class="terms"><span class="muted">условия не заведены</span></div><div class="rate">ставка договора <b>20 %</b></div></th></tr>
+          <tr><th class="cmeasure"><span class="axis"></span></th><th class="cmeasure">за м²</th><th class="cmeasure"><span class="axis"></span></th><th class="cmeasure">за м²</th><th class="cmeasure"><span class="axis"></span></th><th class="cmeasure">за м²</th><th class="cmeasure"><span class="axis"></span></th><th class="cmeasure">за м²</th><th class="cmeasure"><span class="axis"></span></th><th class="cmeasure">за м²</th></tr>
+        </thead>
+        <tbody><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">1</span><span class="title">Подготовительные работы, содержание площадки</span></span></th><td class="num" data-net="1304938238.61" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="1304938238.61" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev flat">+7 %</span></td><td class="num" data-net="4941616238.55" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="4941616238.55" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+95 %</span></td><td class="num" data-net="1699404082.92" data-rate="20" data-area=""></td><td class="num pm2" data-net="1699404082.92" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="1067418212.74" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="1067418212.74" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−7 %</span></td><td class="num" data-net="1067418212.74" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="1067418212.74" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−7 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">2</span><span class="title">Котлован</span></span></th><td class="num" data-net="36330920.45" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="36330920.45" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+13 %</span></td><td class="num" data-net="233840465.58" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="233840465.58" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+249 %</span></td><td class="num" data-net="48720002.11" data-rate="20" data-area=""></td><td class="num pm2" data-net="48720002.11" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="26378409.23" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="26378409.23" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td><td class="num" data-net="26378409.23" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="26378409.23" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">3</span><span class="title">Устройство гидроизоляции подземной части</span></span></th><td class="num" data-net="114549339.43" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="114549339.43" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev flat">+7 %</span></td><td class="num" data-net="135644109.87" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="135644109.87" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev dn-hi">−40 %</span></td><td class="num" data-net="154021477.28" data-rate="20" data-area=""></td><td class="num pm2" data-net="154021477.28" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="102213895.22" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="102213895.22" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td><td class="num" data-net="102213895.22" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="102213895.22" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><button class="chev" aria-expanded="false" aria-label="Раскрыть статью"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span class="code">4</span><span class="title">Конструктивные решения</span></span></th><td class="num" data-net="2459417249.14" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="2459417249.14" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+13 %</span></td><td class="num" data-net="5785867028.89" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="5785867028.89" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+27 %</span></td><td class="num" data-net="4312641158.26" data-rate="20" data-area=""></td><td class="num pm2" data-net="4312641158.26" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="1792181539.22" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="1792181539.22" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td><td class="num" data-net="1792181539.22" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="1792181539.22" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td></tr><tr class="lvl2 kid-4" hidden><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">4.1</span><span class="title">Подземная часть. Конструктивные решения</span></span></th><td class="num" data-net="801951526.84" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="801951526.84" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-hi">+35 %</span></td><td class="num" data-net="792942498.48" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="792942498.48" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev dn-hi">−36 %</span></td><td class="num" data-net="1054507722.47" data-rate="20" data-area=""></td><td class="num pm2" data-net="1054507722.47" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="566250191.02" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="566250191.02" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td><td class="num" data-net="566250191.02" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="566250191.02" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td></tr><tr class="lvl2 kid-4" hidden><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">4.2</span><span class="title">Надземная часть. Конструктивные решения</span></span></th><td class="num" data-net="1582271508.52" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="1582271508.52" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+11 %</span></td><td class="num" data-net="4570474919.16" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="4570474919.16" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+54 %</span></td><td class="num" data-net="3221891437.35" data-rate="20" data-area=""></td><td class="num pm2" data-net="3221891437.35" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="1199269555.78" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="1199269555.78" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−11 %</span></td><td class="num" data-net="1199269555.78" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="1199269555.78" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−11 %</span></td></tr><tr class="lvl2 kid-4" hidden><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">4.3</span><span class="title">Металлоконструкции</span><span class="nomed" title="Сопоставимых значений меньше трёх — медиана не считается">—</span></span></th><td class="num" data-net="75194213.79" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="75194213.79" data-rate="22" data-area="79692.37"><span class="pmv"></span></td><td class="num" data-net="422449611.26" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="422449611.26" data-rate="22" data-area="166756.9"><span class="pmv"></span></td><td class="num" data-net="36241998.44" data-rate="20" data-area=""></td><td class="num pm2" data-net="36241998.44" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="" data-rate="16" data-area="75741.0"><span class="pmv"></span></td><td class="num" data-net="" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="" data-rate="20" data-area="75741.0"><span class="pmv"></span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">5</span><span class="title">Общестроительные работы (без отделки)</span></span></th><td class="num" data-net="159829562.43" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="159829562.43" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td><td class="num" data-net="447755441.27" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="447755441.27" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-lo">+17 %</span></td><td class="num" data-net="376053748.11" data-rate="20" data-area=""></td><td class="num pm2" data-net="376053748.11" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="173992336.67" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="173992336.67" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td><td class="num" data-net="173992336.67" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="173992336.67" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">6</span><span class="title">Фасадные работы</span></span></th><td class="num" data-net="3453444485.28" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="3453444485.28" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+13 %</span></td><td class="num" data-net="9687134400.42" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="9687134400.42" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+51 %</span></td><td class="num" data-net="5080810397.92" data-rate="20" data-area=""></td><td class="num pm2" data-net="5080810397.92" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="2528441629.50" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="2528441629.50" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td><td class="num" data-net="2528441629.50" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="2528441629.50" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">7</span><span class="title">Кровля</span></span></th><td class="num" data-net="171130371.80" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="171130371.80" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-hi">+36 %</span></td><td class="num" data-net="156313410.37" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="156313410.37" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev dn-hi">−41 %</span></td><td class="num" data-net="200202742.54" data-rate="20" data-area=""></td><td class="num pm2" data-net="200202742.54" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="119651118.22" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="119651118.22" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td><td class="num" data-net="119651118.22" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="119651118.22" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">+0 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">8</span><span class="title">Отделочные работы (паркинг, надземная часть МОП)</span></span></th><td class="num" data-net="1114066505.95" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="1114066505.95" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-hi">+25 %</span></td><td class="num" data-net="2926074914.74" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="2926074914.74" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+57 %</span></td><td class="num" data-net="1686035773.14" data-rate="20" data-area=""></td><td class="num pm2" data-net="1686035773.14" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="629785151.12" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="629785151.12" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-hi">−25 %</span></td><td class="num" data-net="629785151.12" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="629785151.12" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-hi">−25 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">9</span><span class="title">Лифты, подъемники</span></span></th><td class="num" data-net="270491803.28" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="270491803.28" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+17 %</span></td><td class="num" data-net="2859386794.58" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="2859386794.58" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+490 %</span></td><td class="num" data-net="687500000.00" data-rate="20" data-area=""></td><td class="num pm2" data-net="687500000.00" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="183333333.33" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="183333333.33" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−17 %</span></td><td class="num" data-net="183333333.33" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="183333333.33" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−17 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">10</span><span class="title">ВИС - механические системы</span></span></th><td class="num" data-net="1193272376.61" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="1193272376.61" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+10 %</span></td><td class="num" data-net="3219511184.11" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="3219511184.11" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+42 %</span></td><td class="num" data-net="2043589837.23" data-rate="20" data-area=""></td><td class="num pm2" data-net="2043589837.23" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="918606956.92" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="918606956.92" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−10 %</span></td><td class="num" data-net="918606956.92" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="918606956.92" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−10 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">11</span><span class="title">ВИС - Электрические и слаботочные системы</span></span></th><td class="num" data-net="711585182.53" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="711585182.53" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev flat">+0 %</span></td><td class="num" data-net="2382757258.68" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="2382757258.68" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+61 %</span></td><td class="num" data-net="1551018308.42" data-rate="20" data-area=""></td><td class="num pm2" data-net="1551018308.42" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="671571965.92" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="671571965.92" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−0 %</span></td><td class="num" data-net="671571965.92" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="671571965.92" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−0 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">12</span><span class="title">Благоустройство, дороги</span><span class="nomed" title="Сопоставимых значений меньше трёх — медиана не считается">—</span></span></th><td class="num" data-net="194736092.54" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="194736092.54" data-rate="22" data-area="79692.37"><span class="pmv"></span></td><td class="num" data-net="566461633.10" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="566461633.10" data-rate="22" data-area="166756.9"><span class="pmv"></span></td><td class="num" data-net="378693627.26" data-rate="20" data-area=""></td><td class="num pm2" data-net="378693627.26" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="16" data-area="75741.0"><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="20" data-area="75741.0"><span class="pmv"></span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">13</span><span class="title">ТХ</span></span></th><td class="num" data-net="34263915.85" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="34263915.85" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-hi">+46 %</span></td><td class="num" data-net="65184801.77" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="65184801.77" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+33 %</span></td><td class="num" data-net="27097452.42" data-rate="20" data-area=""></td><td class="num pm2" data-net="27097452.42" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="14966875.00" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="14966875.00" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-hi">−33 %</span></td><td class="num" data-net="14966875.00" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="14966875.00" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-hi">−33 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">14</span><span class="title">MR-base</span><span class="nomed" title="Сопоставимых значений меньше трёх — медиана не считается">—</span></span></th><td class="num" data-net="" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="" data-rate="22" data-area="79692.37"><span class="pmv"></span></td><td class="num" data-net="" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="" data-rate="22" data-area="166756.9"><span class="pmv"></span></td><td class="num" data-net="2010809247.68" data-rate="20" data-area=""></td><td class="num pm2" data-net="2010809247.68" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="16" data-area="75741.0"><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="20" data-area="75741.0"><span class="pmv"></span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">16</span><span class="title">Разработка рабочей документации</span></span></th><td class="num" data-net="189209019.77" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="189209019.77" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev flat">+6 %</span></td><td class="num" data-net="556760248.00" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="556760248.00" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+49 %</span></td><td class="num" data-net="291667013.71" data-rate="20" data-area=""></td><td class="num pm2" data-net="291667013.71" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="160667650.00" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="160667650.00" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−6 %</span></td><td class="num" data-net="160667650.00" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="160667650.00" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev flat">−6 %</span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">20</span><span class="title">MR - SHELL & CORE</span><span class="nomed" title="Сопоставимых значений меньше трёх — медиана не считается">—</span></span></th><td class="num" data-net="69744056.78" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="69744056.78" data-rate="22" data-area="79692.37"><span class="pmv"></span></td><td class="num" data-net="" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="" data-rate="22" data-area="166756.9"><span class="pmv"></span></td><td class="num" data-net="" data-rate="20" data-area=""></td><td class="num pm2" data-net="" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="" data-rate="16" data-area="75741.0"><span class="pmv"></span></td><td class="num" data-net="" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="" data-rate="20" data-area="75741.0"><span class="pmv"></span></td></tr><tr class="lvl1"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code">99</span><span class="title">Прочее</span><span class="nomed" title="Сопоставимых значений меньше трёх — медиана не считается">—</span></span></th><td class="num" data-net="8196721.31" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="8196721.31" data-rate="22" data-area="79692.37"><span class="pmv"></span></td><td class="num" data-net="35692070.09" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="35692070.09" data-rate="22" data-area="166756.9"><span class="pmv"></span></td><td class="num" data-net="115054245.38" data-rate="20" data-area=""></td><td class="num pm2" data-net="115054245.38" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="16" data-area="75741.0"><span class="pmv"></span></td><td class="num" data-net="0.00" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="0.00" data-rate="20" data-area="75741.0"><span class="pmv"></span></td></tr><tr class="totalrow"><th scope="row" class="rowhead"><span class="rh"><span class="chev-space"></span><span class="code"></span><span class="title">Итого по договору</span></span></th><td class="num" data-net="11485205841.76" data-rate="22" data-area="79692.37"></td><td class="num pm2" data-net="11485205841.76" data-rate="22" data-area="79692.37"><span class="pmv"></span><span class="dev up-lo">+13 %</span></td><td class="num" data-net="34000000000.00" data-rate="22" data-area="166756.9"></td><td class="num pm2" data-net="34000000000.00" data-rate="22" data-area="166756.9"><span class="pmv"></span><span class="dev up-hi">+60 %</span></td><td class="num" data-net="20663319114.38" data-rate="20" data-area=""></td><td class="num pm2" data-net="20663319114.38" data-rate="20" data-area=""><span class="pmv"></span></td><td class="num" data-net="8389209073.10" data-rate="16" data-area="75741.0"></td><td class="num pm2" data-net="8389209073.10" data-rate="16" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td><td class="num" data-net="8389209073.10" data-rate="20" data-area="75741.0"></td><td class="num pm2" data-net="8389209073.10" data-rate="20" data-area="75741.0"><span class="pmv"></span><span class="dev dn-lo">−13 %</span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card card-pad">
+    <div class="legend">
+      <div>
+        <h3>Как читать подсветку</h3>
+        <ul>
+          <li>Процент — отклонение <b>нетто ₽/м²</b> от медианы строки. Медиана считается
+              по нетто <b>в любом режиме показа</b>: иначе подсветка мерила бы разницу
+              ставок 16&nbsp;% и 22&nbsp;%, а не цен.</li>
+          <li>Полоса ±10&nbsp;% нейтральна, дальше две ступени. Цвет означает
+              «выше/ниже медианы», а не «плохо/хорошо»: дешевле может быть недобором объёма.</li>
+          <li>Пустые и нулевые ячейки в медиану не входят. Ноль здесь означает «работы в
+              договор не входят либо учтены в другой статье», а не «дёшево».</li>
+          <li>Прочерк <span class="nomed" style="margin:0;padding:0">—</span> у названия
+              статьи: сопоставимых значений меньше трёх, медиана не считается.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Что видно на настоящих данных</h3>
+        <ul>
+          <li><b>ДС пусты везде</b> — допсоглашений в системе ноль. Переключатель «ДС»
+              честно покажет нули.</li>
+          <li><b>₽/м² у ДГП-42-TU нет</b> — не заведены ТЭП; в медиану он не входит.</li>
+          <li><b>Ставки разные:</b> 22, 22, 20, 16, 20. В режиме «своя ставка» суммы
+              пересчитаны каждая в свою — сравнивать их между собой нельзя, и подсветка
+              поэтому живёт на нетто.</li>
+          <li><b>ДГП-159-TU и СДП-1-МР</b> совпадают по нетто до копейки: это одна и та же
+              смета, загруженная на стенде дважды.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="card card-pad">
+    <div class="bound">
+      <h3 style="margin:0 0 6px; font-size:13px">Границы, названные спекой</h3>
+      <p style="margin:0; color:var(--fg2); font-size:13px">
+        Рубли 2025 и 2026 годов складываются без поправки на инфляцию — источника индекса
+        в системе нет, это отдельная фича (§4.1). «ДС на рассмотрении» из Excel-образца не
+        делается: у смет нет признака подписанности. ₽/м² полезной площади нет — она не
+        заполнена ни у одного объекта. Печати и drill-down в позиции у страницы нет.
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  var fmt = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+  var state = { measure: "total", vat: "own", rate: 20 };
+
+  function factor(cellRate) {
+    if (state.vat === "net") return 1;
+    if (state.vat === "single") return 1 + state.rate / 100;
+    return 1 + cellRate / 100;
+  }
+
+  function render() {
+    document.querySelectorAll("td.num").forEach(function (td) {
+      var net = td.dataset.net === "" ? null : parseFloat(td.dataset.net);
+      // ДС в данных нет ни одного: корзина ДГП совпадает с итогом, ДС — ноль.
+      var value = net === null ? null : (state.measure === "ds" ? 0 : net);
+      var f = factor(parseFloat(td.dataset.rate));
+      var shown = value === null ? null : value * f;
+      if (td.classList.contains("pm2")) {
+        var area = td.dataset.area === "" ? null : parseFloat(td.dataset.area);
+        var el = td.querySelector(".pmv");
+        el.textContent = (shown === null || area === null) ? "—" : fmt.format(shown / area);
+        if (shown === null || area === null) el.className = "pmv nomed";
+        else el.className = "pmv";
+      } else {
+        td.textContent = shown === null ? "—" : fmt.format(shown);
+      }
+    });
+    var note = document.getElementById("axisnote");
+    if (state.vat === "own") {
+      note.innerHTML = "Суммы — <b>каждая в своей ставке договора</b> (16…22&nbsp;%): " +
+        "договор виден таким, каким существует. Между собой такие колонки несравнимы, " +
+        "поэтому отклонения посчитаны <b>без НДС</b>.";
+    } else if (state.vat === "single") {
+      note.innerHTML = "Вся выборка пересчитана в <b>" + state.rate + "&nbsp;%</b>. " +
+        "Фактические ставки договоров различаются (16…22&nbsp;%). Отклонения не меняются: " +
+        "единая ставка — общий множитель.";
+    } else {
+      note.innerHTML = "Суммы <b>без НДС</b> — общая ось со сквозной матрицей и отчётом " +
+        "«для банка».";
+    }
+    document.querySelectorAll("th.cmeasure .axis").forEach(function (s) {
+      s.textContent = state.vat === "net" ? "₽, нетто"
+        : (state.vat === "single" ? "₽, " + state.rate + " %" : "₽, своя");
+    });
+  }
+
+  document.querySelectorAll(".seg button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      b.parentElement.querySelectorAll("button").forEach(function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      if (b.dataset.measure) state.measure = b.dataset.measure;
+      if (b.dataset.vat) {
+        state.vat = b.dataset.vat;
+        document.getElementById("rate").disabled = state.vat !== "single";
+      }
+      render();
+    });
+  });
+  document.getElementById("rate").addEventListener("change", function (e) {
+    state.rate = parseFloat(e.target.value);
+    render();
+  });
+  document.querySelectorAll(".chev").forEach(function (c) {
+    c.addEventListener("click", function () {
+      var open = c.getAttribute("aria-expanded") === "true";
+      c.setAttribute("aria-expanded", String(!open));
+      document.querySelectorAll(".kid-4").forEach(function (r) { r.hidden = open; });
+    });
+  });
+  render();
+</script>
+</body>
+</html>
