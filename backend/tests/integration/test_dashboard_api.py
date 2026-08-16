@@ -44,15 +44,28 @@ pytestmark = pytest.mark.integration
 #  Помощники: договор → смета → лот → предложение → позиции
 # ---------------------------------------------------------------------------
 
-def _chain(factories, *, contract=None, obj=None, amendment_no=None, vat_rate=Decimal("20")):
+def _chain(
+    factories,
+    *,
+    contract=None,
+    obj=None,
+    rate_class=None,
+    amendment_no=None,
+    vat_rate=Decimal("20"),
+):
     """Цепочка до предложения. Возвращает `(contract, estimate, proposal)`.
 
     `vat_rate` кладётся на предложение — это заявленная файлом база, вход
     `effective_display_rate`. `obj` позволяет посадить несколько договоров на
-    один объект (нужно объектной лестнице, задача 2).
+    один объект (нужно объектной лестнице, задача 2), `rate_class` — свести
+    несколько объектов в одну дорожку диаграммы.
     """
     if contract is None:
-        kwargs = {"object": obj} if obj is not None else {}
+        kwargs = {}
+        if obj is not None:
+            kwargs["object"] = obj
+        if rate_class is not None:
+            kwargs["rate_class"] = rate_class
         contract = factories.ContractFactory.create(**kwargs)
     estimate = factories.EstimateFactory.create(contract=contract, amendment_no=amendment_no)
     lot = factories.LotFactory.create(estimate=estimate)
@@ -78,15 +91,36 @@ def _row(factories, proposal, *, total, is_chapter=False):
     )
 
 
-def _priced_contract(factories, *, total="1000", vat_rate=Decimal("20"), obj=None):
+def _priced_contract(
+    factories, *, total="1000", vat_rate=Decimal("20"), obj=None, rate_class=None
+):
     """Договор, который лестница обязана УЧЕСТЬ: смета, ставка, полная стоимость."""
-    contract, estimate, proposal = _chain(factories, obj=obj, vat_rate=vat_rate)
+    contract, estimate, proposal = _chain(
+        factories, obj=obj, rate_class=rate_class, vat_rate=vat_rate
+    )
     _row(factories, proposal, total=total)
     return contract, estimate
 
 
+def _object(factories, *, above=None, under=None, useful=None):
+    """Объект с ТЭП. `area_total_sp` — генерируемая колонка (надземная +
+    подземная), поэтому её считает БД, а тест её только читает."""
+    return factories.ObjectFactory.create(
+        area_aboveground_sp=None if above is None else Decimal(above),
+        area_underground_sp=None if under is None else Decimal(under),
+        area_useful_sp=None if useful is None else Decimal(useful),
+    )
+
+
 def _layer(db_session):
     return {row.contract_id: row for row in crud_dashboard.contract_layer(db_session)}
+
+
+def _objects(db_session):
+    contracts = crud_dashboard.contract_layer(db_session)
+    return {
+        row.object_id: row for row in crud_dashboard.object_layer(db_session, contracts)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +322,261 @@ def test_amount_restates_each_row_before_accumulating(db_session, factories):
     assert row.amount == Decimal("230")
     assert row.amount != Decimal("220")
     assert row.amount != Decimal("240")
+
+
+# ---------------------------------------------------------------------------
+#  Показатели шапки (решения 5 и 7 макета)
+# ---------------------------------------------------------------------------
+#
+# Считает их БЭКЕНД, и это отдельный блок тестов. Без него фронтенд проверял бы
+# отображение своей же MSW-фикстуры: сервер мог бы не вернуть половину полей, а
+# прогон остался бы зелёным.
+
+class TestHeadline:
+    def test_each_area_carries_its_own_coverage(self, db_session, factories):
+        """У НАДЗЕМНОЙ с ПОДЗЕМНОЙ охват общий (`CHECK` миграции 0009 держит их
+        парой), у ПОЛЕЗНОЙ — свой (`CHECK` миграции 0013 её с парой не связывает).
+        Объект, у которого заведена только полезная, входит в охват полезной и НЕ
+        входит в охват пары — общий «не заведена у N» это различие скрывал бы.
+        """
+        _object(factories, above="100", under="20")
+        _object(factories, above="300", under="80")
+        _object(factories, useful="50")
+        db_session.flush()
+
+        areas = crud_dashboard.area_summary(db_session)
+
+        assert areas["total"]["value"] == Decimal("500")
+        assert areas["total"]["coverage"] == {"total": 3, "counted": 2}
+        assert areas["aboveground"]["value"] == Decimal("400")
+        assert areas["aboveground"]["coverage"] == {"total": 3, "counted": 2}
+        assert areas["underground"]["value"] == Decimal("100")
+        assert areas["underground"]["coverage"] == {"total": 3, "counted": 2}
+        # Полезная: сумма ТОЛЬКО третьего объекта, охват — один из трёх.
+        assert areas["useful"]["value"] == Decimal("50")
+        assert areas["useful"]["coverage"] == {"total": 3, "counted": 1}
+
+    def test_largest_and_smallest_objects_by_area(self, db_session, factories):
+        biggest = _object(factories, above="900", under="100")
+        _object(factories, above="400", under="100")
+        smallest = _object(factories, above="50", under="10")
+        _object(factories, useful="777")  # без пары — в экстремумы не входит
+        db_session.flush()
+
+        areas = crud_dashboard.area_summary(db_session)
+
+        assert areas["largest"]["object_id"] == biggest.id
+        assert areas["largest"]["area_total_sp"] == Decimal("1000")
+        assert areas["smallest"]["object_id"] == smallest.id
+        assert areas["smallest"]["area_total_sp"] == Decimal("60")
+        assert areas["total"]["coverage"] == {"total": 4, "counted": 3}
+
+    def test_counters_do_not_merge_objects_and_contracts(self, db_session, factories):
+        """Решение 9 макета: «5 договоров» и «1 объект» — разные сущности, они не
+        складываются. Счётчики обязаны приезжать порознь."""
+        rate_class = factories.RateClassFactory.create()
+        first = _object(factories, above="100", under="0")
+        second = _object(factories, above="200", under="0")
+        _priced_contract(factories, obj=first, rate_class=rate_class)
+        _priced_contract(factories, obj=second, rate_class=rate_class)
+        _priced_contract(factories, obj=second, rate_class=rate_class)
+        factories.ContractFactory.create(object=first)  # без сметы
+        db_session.flush()
+
+        counters = crud_dashboard.base_counters(
+            db_session, crud_dashboard.contract_layer(db_session)
+        )
+
+        assert counters["objects"] == 2
+        assert counters["contracts"] == 4
+        assert counters["contracts_with_estimate"] == 3
+        assert counters["objects"] != counters["contracts"]
+
+    def test_per_sqm_extremes_carry_their_own_coverage(self, db_session, factories):
+        cheap = _object(factories, above="100", under="0")
+        pricey = _object(factories, above="100", under="0")
+        _object(factories, above="100", under="0")  # без договора — вне охвата
+        _priced_contract(factories, obj=cheap, total="1000")
+        _priced_contract(factories, obj=pricey, total="5000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        extremes = crud_dashboard.per_sqm_extremes(objects)
+
+        assert extremes["max"]["object_id"] == pricey.id
+        assert extremes["max"]["per_sqm"] == Decimal("50")
+        assert extremes["min"]["object_id"] == cheap.id
+        assert extremes["min"]["per_sqm"] == Decimal("10")
+        assert extremes["coverage"] == {"total": 3, "counted": 2}
+
+
+# ---------------------------------------------------------------------------
+#  Объектная лестница и разведение двух охватов
+# ---------------------------------------------------------------------------
+
+class TestObjectLadder:
+    def test_object_with_several_contracts_is_out_of_ranking(self, db_session, factories):
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories, obj=obj)
+        db_session.flush()
+
+        assert _objects(db_session)[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS
+        )
+
+    def test_object_without_counted_contract_is_out_of_ranking(self, db_session, factories):
+        """Единственный договор объекта исключён договорной лестницей (без
+        сметы) — ставить в рейтинг нечего."""
+        obj = _object(factories, above="100", under="0")
+        factories.ContractFactory.create(object=obj)
+        db_session.flush()
+
+        assert _objects(db_session)[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        )
+
+    def test_object_without_area_is_in_ranking_but_not_in_chart(self, db_session, factories):
+        """Отсутствие площади — охват ДИАГРАММЫ, а не рейтинга: сумма договора
+        известна, и в рейтинге объекту место есть."""
+        obj = _object(factories)
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        row = {r.object_id: r for r in objects}[obj.id]
+
+        assert row.reason is None
+        assert row.amount == Decimal("1000")
+        assert row.per_sqm is None
+        assert [r.object_id for r in crud_dashboard.object_ranking(objects)] == [obj.id]
+        chart = crud_dashboard.per_sqm_chart(objects)
+        assert chart["coverage"] == {"total": 1, "counted": 0}
+        assert chart["classes"] == []
+
+    def test_two_ladders_are_different_ladders(self, db_session, factories):
+        """ОБЯЗАТЕЛЬНЫЙ ВХОД, разводящий охваты (спека §2.5, DoD).
+
+        Объект с ДВУМЯ УЧТЁННЫМИ договорами выпадает ТОЛЬКО из рейтинга; деньги
+        обоих его договоров остаются в ИТОГО — они настоящие. Оба утверждения
+        обязаны стоять в ОДНОМ тесте: порознь каждое пройдёт и на реализации с
+        одним общим фильтром, которая выкидывает объект отовсюду сразу.
+        """
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, total="700")
+        _priced_contract(factories, obj=obj, total="300")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+
+        # Рейтинг: объекта нет.
+        assert {r.object_id for r in crud_dashboard.object_ranking(objects)} == set()
+        assert {r.object_id: r for r in objects}[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS
+        )
+        # Деньги: оба договора учтены и оба в ИТОГО.
+        assert crud_dashboard.contract_coverage(contracts)["counted"] == 2
+        assert crud_dashboard.money_total(contracts) == Decimal("1000")
+
+
+# ---------------------------------------------------------------------------
+#  Рейтинг: топ-10 и тай-брейк
+# ---------------------------------------------------------------------------
+
+class TestRanking:
+    def test_eleventh_object_is_hidden_but_counted_in_coverage(self, db_session, factories):
+        for index in range(11):
+            obj = _object(factories, above="100", under="0")
+            _priced_contract(factories, obj=obj, total=str(1000 + index))
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        top = crud_dashboard.object_ranking(objects)
+
+        assert len(top) == 10
+        assert crud_dashboard.object_coverage(objects)["counted"] == 11
+        # Убран самый дешёвый, а не произвольный.
+        assert min(row.amount for row in top) == Decimal("1001")
+
+    def test_equal_sums_get_a_defined_order(self, db_session, factories):
+        """Поведенческая половина тай-брейка. Одной её МАЛО: PostgreSQL и
+        `sorted` вправе стабильно возвращать тот же порядок, и сто повторных
+        прогонов ничего не докажут. Вторая половина — тест ФОРМЫ ключа
+        сортировки (`tests/unit/test_dashboard_ranking.py`).
+        """
+        first = _object(factories, above="100", under="0")
+        second = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=first, total="1000")
+        _priced_contract(factories, obj=second, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        order = [row.object_id for row in crud_dashboard.object_ranking(objects)]
+
+        assert order == sorted([first.id, second.id])
+
+
+# ---------------------------------------------------------------------------
+#  Диаграмма ₽/м²: обе стороны и формула точки
+# ---------------------------------------------------------------------------
+
+class TestPerSqmChart:
+    def test_class_with_two_objects_has_spread_between_its_min_and_max(
+        self, db_session, factories
+    ):
+        """ПОЛОЖИТЕЛЬНАЯ сторона. Без неё реализация, не рисующая полос вовсе,
+        проходит отрицательный тест целиком."""
+        rate_class = factories.RateClassFactory.create()
+        cheap = _object(factories, above="100", under="0")
+        pricey = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=cheap, rate_class=rate_class, total="1000")
+        _priced_contract(factories, obj=pricey, rate_class=rate_class, total="3000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        lane = crud_dashboard.per_sqm_chart(objects)["classes"][0]
+
+        assert lane["rate_class_id"] == rate_class.id
+        assert lane["spread"] == {"min": Decimal("10"), "max": Decimal("30")}
+        assert sorted(point["per_sqm"] for point in lane["points"]) == [
+            Decimal("10"),
+            Decimal("30"),
+        ]
+
+    def test_class_with_one_object_has_no_spread(self, db_session, factories):
+        """Решение 11: размаха не существует, рисовать его было бы выдумкой."""
+        rate_class = factories.RateClassFactory.create()
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, rate_class=rate_class, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        lane = crud_dashboard.per_sqm_chart(objects)["classes"][0]
+
+        assert len(lane["points"]) == 1
+        assert lane["spread"] is None
+
+    def test_per_sqm_denominator_is_area_total_without_useful(self, db_session, factories):
+        """Знаменатель ₽/м² — `area_total_sp` (надземная + подземная). Полезная в
+        неё НЕ входит (миграция 0013), и фича полезной площади этот знаменатель
+        нигде не меняла. Вход подобран так, что ошибка знаменателя видна:
+          1000 / 100 = 10, а 1000 / (100 + 30) = 7.69…
+        """
+        obj = _object(factories, above="60", under="40", useful="30")
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        row = {r.object_id: r for r in crud_dashboard.object_layer(db_session, contracts)}[
+            obj.id
+        ]
+
+        assert row.area_total_sp == Decimal("100")
+        assert row.per_sqm == Decimal("10")

@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -37,7 +38,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from crud.project_passport import CATEGORY_TOTALS
-from models import Contract, Estimate, Lot, Proposal
+from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass
 from money.vat import effective_display_rate, restate_gross
 
 # ---------------------------------------------------------------------------
@@ -257,6 +258,13 @@ def contract_layer(db: Session) -> list[ContractMoney]:
     return layer
 
 
+def money_total(rows: Sequence[ContractMoney]) -> Decimal:
+    """ИТОГО: сумма УЧТЁННЫХ договоров. Складываются суммы, измеренные каждая в
+    своей действующей ставке, — осознанная ревизия `AGENTS.md` §10 (спека §2.2),
+    поэтому поверхность обязана нести подпись о величине, а не тултип."""
+    return sum((row.amount for row in rows if row.amount is not None), start=Decimal(0))
+
+
 def contract_coverage(rows: Sequence[ContractMoney]) -> dict:
     """Охват денежных итогов: сколько договоров учтено из скольких и почему нет.
 
@@ -271,3 +279,346 @@ def contract_coverage(rows: Sequence[ContractMoney]) -> dict:
         else:
             reasons[row.reason] += 1
     return {"total": len(rows), "counted": counted, "reasons": reasons}
+
+
+# ---------------------------------------------------------------------------
+#  Объектная лестница охвата (спека §2.5) — ВТОРАЯ, не та же самая
+# ---------------------------------------------------------------------------
+#
+# Объектный охват защищает РЕЙТИНГ и ДИАГРАММУ, договорный — ДЕНЬГИ, и места
+# исключения у них разные. Объект с несколькими договорами ГП выпадает ТОЛЬКО из
+# рейтинга: рейтинг устроен как «один объект — один договор», и объект с двумя в
+# нём непредставим, — а деньги его договоров настоящие и из ИТОГО выпадать не
+# должны. Один общий фильтр на оба охвата — самая дорогая из возможных здесь
+# ошибок, потому что снаружи она выглядит как аккуратность.
+
+OBJECT_REASON_MANY_CONTRACTS = "many_contracts"
+OBJECT_REASON_NO_COUNTED_CONTRACT = "no_counted_contract"
+
+#: Порядок — приоритет, сверху вниз, как и у договорной лестницы.
+OBJECT_REASONS: tuple[str, ...] = (
+    OBJECT_REASON_MANY_CONTRACTS,
+    OBJECT_REASON_NO_COUNTED_CONTRACT,
+)
+
+#: Сколько объектов показывает рейтинг (решение 8 макета).
+RANKING_LIMIT = 10
+
+
+@dataclass(frozen=True)
+class ObjectMoney:
+    """Объект в рейтинге: место в объектной лестнице, деньги его единственного
+    учтённого договора и удельная стоимость.
+
+    Класс берётся с ДОГОВОРА, а не с объекта: `contracts.rate_class_id` — снимок
+    на момент заключения и авторитетен (`AGENTS.md` §4), тогда как
+    `objects.rate_class_id` лишь значение по умолчанию для новых договоров.
+    """
+
+    object_id: int
+    title: str
+    reason: str | None
+    amount: Decimal | None
+    area_total_sp: Decimal | None
+    area_useful_sp: Decimal | None
+    per_sqm: Decimal | None
+    rate_class_id: int | None
+    rate_class_title: str | None
+    contract_id: int | None
+    contract_number: str | None
+    signed_date: dt.date | None
+    contractor_title: str | None
+    display_rate: Decimal | None
+
+
+def _per_sqm(amount: Decimal | None, area_total: Decimal | None) -> Decimal | None:
+    """Удельная стоимость. Знаменатель — `area_total_sp`, то есть НАДЗЕМНАЯ ПЛЮС
+    ПОДЗЕМНАЯ: полезная площадь (миграция 0013) в общую не входит и знаменатель
+    не меняет — фича полезной площади его нигде не трогала. Деления на ноль быть
+    не может: `CHECK` Ф5 держит `area_total_sp` строго положительной, если она
+    вообще задана.
+    """
+    if amount is None or area_total is None:
+        return None
+    return amount / area_total
+
+
+def _contract_meta(db: Session) -> dict[int, dict]:
+    """Карточка договора для рейтинга — ОДНИМ запросом на всю базу."""
+    rows = db.execute(
+        sa.select(
+            Contract.id,
+            Contract.contract_number,
+            Contract.signed_date,
+            Contractor.title,
+            RateClass.id,
+            RateClass.title,
+        )
+        .join(Contractor, Contractor.id == Contract.contractor_id)
+        .join(RateClass, RateClass.id == Contract.rate_class_id)
+    ).all()
+    return {
+        row[0]: {
+            "contract_number": row[1],
+            "signed_date": row[2],
+            "contractor_title": row[3],
+            "rate_class_id": row[4],
+            "rate_class_title": row[5],
+        }
+        for row in rows
+    }
+
+
+def object_layer(db: Session, contracts: Sequence[ContractMoney]) -> list[ObjectMoney]:
+    """Объектный слой целиком: по строке на КАЖДЫЙ объект базы, со своей причиной.
+
+    Договорный слой приходит ГОТОВЫМ, а не пересчитывается: «учтённость»
+    договора — понятие ДОГОВОРНОЙ лестницы, и второй её реализации здесь быть не
+    должно.
+    """
+    rows = db.execute(
+        sa.select(
+            ObjectModel.id,
+            ObjectModel.title,
+            ObjectModel.area_total_sp,
+            ObjectModel.area_useful_sp,
+        ).order_by(ObjectModel.id)
+    ).all()
+
+    by_object: dict[int, list[ContractMoney]] = {}
+    for contract in contracts:
+        by_object.setdefault(contract.object_id, []).append(contract)
+
+    meta = _contract_meta(db)
+
+    layer: list[ObjectMoney] = []
+    for object_id, title, area_total_sp, area_useful_sp in rows:
+        object_contracts = by_object.get(object_id, [])
+        counted = [row for row in object_contracts if row.reason is None]
+
+        reason: str | None = None
+        if len(object_contracts) > 1:
+            # Признак — `COUNT(contracts) > 1`, БЕЗ слова «действующих»: у
+            # `Contract` нет ни статуса, ни признака архивности, поэтому
+            # «действующий» в схеме не определён, и выдумывать ему смысл здесь
+            # нельзя (спека §2.5, граница §4).
+            reason = OBJECT_REASON_MANY_CONTRACTS
+        elif not counted:
+            reason = OBJECT_REASON_NO_COUNTED_CONTRACT
+
+        amount = per_sqm = display_rate = None
+        contract_id = contract_number = contractor_title = signed_date = None
+        rate_class_id = rate_class_title = None
+        if reason is None:
+            contract = counted[0]
+            amount = contract.amount
+            per_sqm = _per_sqm(amount, area_total_sp)
+            contract_id = contract.contract_id
+            display_rate = contract.display_rate
+            card = meta.get(contract.contract_id)
+            if card is not None:
+                contract_number = card["contract_number"]
+                signed_date = card["signed_date"]
+                contractor_title = card["contractor_title"]
+                rate_class_id = card["rate_class_id"]
+                rate_class_title = card["rate_class_title"]
+
+        layer.append(
+            ObjectMoney(
+                object_id=object_id,
+                title=title,
+                reason=reason,
+                amount=amount,
+                area_total_sp=area_total_sp,
+                area_useful_sp=area_useful_sp,
+                per_sqm=per_sqm,
+                rate_class_id=rate_class_id,
+                rate_class_title=rate_class_title,
+                contract_id=contract_id,
+                contract_number=contract_number,
+                signed_date=signed_date,
+                contractor_title=contractor_title,
+                display_rate=display_rate,
+            )
+        )
+    return layer
+
+
+def object_coverage(rows: Sequence[ObjectMoney]) -> dict:
+    """Охват рейтинга. Его счётчики НЕ складываются с договорными: «5 договоров»
+    и «1 объект» — разные сущности (решение 9 макета)."""
+    reasons = {reason: 0 for reason in OBJECT_REASONS}
+    counted = 0
+    for row in rows:
+        if row.reason is None:
+            counted += 1
+        else:
+            reasons[row.reason] += 1
+    return {"total": len(rows), "counted": counted, "reasons": reasons}
+
+
+def ranking_sort_key(row: ObjectMoney) -> tuple:
+    """Ключ порядка рейтинга: сумма по убыванию, `object_id` по возрастанию.
+
+    ВТОРИЧНЫЙ КЛЮЧ ОБЯЗАТЕЛЕН, и стережёт его тест ФОРМЫ
+    (`tests/unit/test_dashboard_ranking.py`), а не повторные прогоны: без него
+    два объекта с равными суммами получают ОДИНАКОВЫЙ ключ, и порядок начинает
+    зависеть от того, в каком порядке строки пришли из базы. Совпасть с
+    ожидаемым он при этом может сколько угодно раз подряд — это и делает
+    поведенческую проверку недостаточной.
+    """
+    return (-(row.amount if row.amount is not None else Decimal(0)), row.object_id)
+
+
+def object_ranking(
+    rows: Sequence[ObjectMoney], limit: int = RANKING_LIMIT
+) -> list[ObjectMoney]:
+    """Топ-N учтённых объектов по сумме. Объект, не влезший в N, остаётся УЧТЁННЫМ
+    в охвате: сноска говорит про исключённых, а не про непоказанных."""
+    counted = [row for row in rows if row.reason is None]
+    return sorted(counted, key=ranking_sort_key)[:limit]
+
+
+def per_sqm_chart(rows: Sequence[ObjectMoney]) -> dict:
+    """Дорожка на класс, точка на объект, полоса размаха (решение 11 макета).
+
+    **У класса с ОДНИМ объектом полосы НЕТ** — размаха не существует, и нарисовать
+    его значило бы выдумать факт. Обратная ошибка (не рисовать полосу никогда)
+    отрицательным тестом не ловится вовсе, поэтому её стережёт отдельный,
+    ПОЛОЖИТЕЛЬНЫЙ тест класса с двумя объектами.
+
+    Охват диаграммы СВОЙ: объект без `area_total_sp` в рейтинге есть, а точки у
+    него нет.
+    """
+    lanes: dict[int, dict] = {}
+    counted = 0
+    for row in rows:
+        if row.reason is not None or row.per_sqm is None or row.rate_class_id is None:
+            continue
+        counted += 1
+        lane = lanes.setdefault(
+            row.rate_class_id,
+            {
+                "rate_class_id": row.rate_class_id,
+                "rate_class_title": row.rate_class_title,
+                "points": [],
+            },
+        )
+        lane["points"].append(
+            {
+                "object_id": row.object_id,
+                "title": row.title,
+                "per_sqm": row.per_sqm,
+                "amount": row.amount,
+                "area_total_sp": row.area_total_sp,
+            }
+        )
+
+    classes = []
+    for lane in sorted(lanes.values(), key=lambda item: item["rate_class_id"]):
+        lane["points"].sort(key=lambda point: (point["per_sqm"], point["object_id"]))
+        values = [point["per_sqm"] for point in lane["points"]]
+        lane["spread"] = {"min": min(values), "max": max(values)} if len(values) > 1 else None
+        classes.append(lane)
+
+    return {"classes": classes, "coverage": {"total": len(rows), "counted": counted}}
+
+
+def per_sqm_extremes(rows: Sequence[ObjectMoney]) -> dict:
+    """Максимум и минимум ₽/м². Они тоже выборка по ЧАСТИ базы, поэтому подписаны
+    своим охватом (решение 4 макета: «из 8»)."""
+    points = [row for row in rows if row.reason is None and row.per_sqm is not None]
+    coverage = {"total": len(rows), "counted": len(points)}
+
+    def _point(row: ObjectMoney) -> dict:
+        return {
+            "object_id": row.object_id,
+            "title": row.title,
+            "per_sqm": row.per_sqm,
+            "area_total_sp": row.area_total_sp,
+            "rate_class_title": row.rate_class_title,
+        }
+
+    if not points:
+        return {"max": None, "min": None, "coverage": coverage}
+    return {
+        "max": _point(max(points, key=lambda row: (row.per_sqm, -row.object_id))),
+        "min": _point(min(points, key=lambda row: (row.per_sqm, row.object_id))),
+        "coverage": coverage,
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Показатели шапки: площади и счётчики (решения 4, 5, 7 макета)
+# ---------------------------------------------------------------------------
+
+def _sum_area(values: Sequence[Decimal | None]) -> tuple[Decimal | None, int]:
+    known = [value for value in values if value is not None]
+    return (sum(known, start=Decimal(0)) if known else None), len(known)
+
+
+def area_summary(db: Session) -> dict:
+    """Площади базы: общая, надземная, подземная, полезная — У КАЖДОЙ СВОЙ ОХВАТ.
+
+    Надземная и подземная заводятся ПАРОЙ (`CHECK` миграции 0009 — «обе или ни
+    одной»), полезная от пары НЕ зависит (`CHECK` миграции 0013 сравнивает её со
+    слагаемыми, и при `NULL`-паре сравнение пропускает). Поэтому объект, у
+    которого заведена только полезная, входит в охват полезной и НЕ входит в
+    охват пары, а общий счётчик «не заведена у N» это различие скрывал бы
+    (решение 4 макета).
+    """
+    rows = db.execute(
+        sa.select(
+            ObjectModel.id,
+            ObjectModel.title,
+            ObjectModel.area_total_sp,
+            ObjectModel.area_aboveground_sp,
+            ObjectModel.area_underground_sp,
+            ObjectModel.area_useful_sp,
+        ).order_by(ObjectModel.id)
+    ).all()
+    total_objects = len(rows)
+
+    def _block(index: int) -> dict:
+        value, counted = _sum_area([row[index] for row in rows])
+        return {"value": value, "coverage": {"total": total_objects, "counted": counted}}
+
+    with_total = sorted(
+        (row for row in rows if row.area_total_sp is not None),
+        key=lambda row: (row.area_total_sp, row.id),
+    )
+
+    def _named(row) -> dict:
+        return {"object_id": row.id, "title": row.title, "area_total_sp": row.area_total_sp}
+
+    return {
+        "total": _block(2),
+        "aboveground": _block(3),
+        "underground": _block(4),
+        "useful": _block(5),
+        "largest": _named(with_total[-1]) if with_total else None,
+        "smallest": _named(with_total[0]) if with_total else None,
+    }
+
+
+def base_counters(db: Session, contracts: Sequence[ContractMoney]) -> dict:
+    """Счётчики шапки. Объекты, классы и договоры — РАЗНЫЕ сущности и приезжают
+    порознь (решение 9 макета: «5 договоров» и «1 объект» не складываются).
+
+    «Классов» считается по `objects.rate_class_id` — это «объекты лежат в N
+    классах», а не размер справочника: пустой класс на главной ничего не
+    описывает.
+    """
+    objects = db.execute(sa.select(sa.func.count()).select_from(ObjectModel)).scalar_one()
+    classes = db.execute(
+        sa.select(sa.func.count(sa.distinct(ObjectModel.rate_class_id))).where(
+            ObjectModel.rate_class_id.is_not(None)
+        )
+    ).scalar_one()
+    with_estimate = sum(1 for row in contracts if row.reason != CONTRACT_REASON_NO_ESTIMATE)
+    return {
+        "objects": objects,
+        "classes": classes,
+        "contracts": len(contracts),
+        "contracts_with_estimate": with_estimate,
+    }
