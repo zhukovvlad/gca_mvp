@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, Download, Pencil, Ruler } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { AlertTriangle, Download, Pencil, Ruler, Trash2 } from "lucide-react";
 
+import { ContractDeleteDialog } from "@/components/contracts/ContractDeleteDialog";
 import { ContractFormDialog } from "@/components/contracts/ContractFormDialog";
 import { EstimateUploadPanel } from "@/components/contracts/EstimateUploadPanel";
 import { ObjectFormDialog } from "@/components/objects/ObjectFormDialog";
@@ -46,8 +47,10 @@ export default function ContractCardPage() {
   const id = contractId ? Number(contractId) : undefined;
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
+  const navigate = useNavigate();
   const [editOpen, setEditOpen] = useState(false);
   const [objectEditOpen, setObjectEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const contractQ = useContract(id);
   const jobsQ = useContractImportJobs(id);
@@ -127,6 +130,17 @@ export default function ContractCardPage() {
               {isAdmin && (
                 <Button variant="outline" onClick={() => setObjectEditOpen(true)}>
                   <Ruler className="size-4" /> ТЭП объекта
+                </Button>
+              )}
+              {/*
+                Второй вход в удаление (спека §2.6): тот же диалог, что и из
+                списка (`ContractsPage.tsx`), но здесь после успеха уводит на
+                `/contracts` — карточки удалённого договора больше нет, оставаться
+                на ней некуда.
+              */}
+              {isAdmin && (
+                <Button variant="outline" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 className="size-4" /> Удалить
                 </Button>
               )}
             </>
@@ -293,6 +307,11 @@ export default function ContractCardPage() {
         open={objectEditOpen}
         onOpenChange={setObjectEditOpen}
         objectId={contract.object_id}
+      />
+      <ContractDeleteDialog
+        contract={deleteOpen ? contract : null}
+        onOpenChange={() => setDeleteOpen(false)}
+        onDeleted={() => navigate("/contracts")}
       />
     </div>
   );

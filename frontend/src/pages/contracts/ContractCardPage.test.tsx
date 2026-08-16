@@ -262,6 +262,40 @@ describe("Права на карточке (§6.2)", () => {
   });
 });
 
+describe("Удаление договора с карточки (спека §2.6)", () => {
+  it("admin удаляет договор с карточки и уходит со страницы", async () => {
+    const user = userEvent.setup();
+    renderCard({ role: "admin" });
+    await screen.findByRole("button", { name: /Удалить/ });
+
+    await user.click(screen.getByRole("button", { name: /Удалить/ }));
+    await user.type(screen.getByLabelText(/Введите номер договора/), "ГП-2026-001");
+    await user.click(screen.getByRole("button", { name: "Удалить договор" }));
+
+    // Роутер здесь MemoryRouter, `window.location` он не трогает; уход виден тем,
+    // что маршрут карточки (единственный, объявленный в `renderCard`) больше не
+    // совпадает и вся её разметка пропала — заголовок с номером договора исчез.
+    // Строка "ЖК Северный" из плана не годится сюда замером: она стоит внутри
+    // составной подписи PageHeader (`${object_title} · ${contractor_title}`),
+    // и `queryByText` по умолчанию ищет ТОЧНОЕ совпадение узла — оно никогда не
+    // совпадёт с одной лишь частью строки, и утверждение было бы вакуозным
+    // (истинным что до, что после удаления).
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "ГП-2026-001" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("member кнопки удаления не видит", async () => {
+    renderCard({ role: "member" });
+    // `findByText` здесь неоднозначен: "ГП-2026-001" стоит и в хлебной крошке
+    // (`Breadcrumbs`, последний элемент — `<span>`), и в заголовке `PageHeader` —
+    // те же грабли, что уже описаны у соседнего теста "кнопки правки ТЭП нет у
+    // member" выше по файлу.
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+    expect(screen.queryByRole("button", { name: /Удалить/ })).not.toBeInTheDocument();
+  });
+});
+
 /**
  * ТЭП объекта и коммерческие условия — оба блока на чтение (спека §2.9, §2.5).
  *
