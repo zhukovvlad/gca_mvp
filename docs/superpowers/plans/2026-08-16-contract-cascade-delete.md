@@ -104,27 +104,61 @@ TanStack Query, shadcn/ui, vitest, MSW.
 правило) и вписать на их место:
 
 ```python
-def test_delete_contract_removes_estimates_and_jobs(client, factories, db_session):
-    """Каскад: договор уходит вместе со сметой, позициями и заданиями (спека §2.2)."""
+def test_delete_contract_removes_the_whole_subtree(client, factories, db_session):
+    """Каскад уносит ВЕСЬ состав, названный спекой §2.2, и не трогает общее (§2.5)."""
+    user = factories.UserFactory.create(role=UserRole.admin)
     contract = factories.ContractFactory.create()
     estimate = factories.EstimateFactory.create(contract=contract)
     proposal = factories.ProposalFactory.create(lot__estimate=estimate)
     position = factories.PositionItemFactory.create(proposal=proposal)
+    catalog = factories.CatalogPositionFactory.create()
+    position.catalog_position_id = catalog.id
     job = factories.ImportJobFactory.create(
         contract=contract, status=ImportJobStatus.done.value
     )
-    catalog = factories.CatalogPositionFactory.create()
-    position.catalog_position_id = catalog.id
+
+    # Фабрик у этих четырёх таблиц нет — модели создаются напрямую.
+    raw = EstimateRawData(estimate_id=estimate.id, raw_data={"lots": []}, parser_version="test")
+    category_id = db_session.execute(
+        sa.select(WorkCategory.id).order_by(WorkCategory.id).limit(1)
+    ).scalar_one()
+    override = EstimateCategoryOverride(
+        position_item_id=position.id, work_category_id=category_id, assigned_by=user.id
+    )
+    # Нераспределённая запись: ссылки и статьи нет — так требуют CHECK-и
+    # `ck_estimate_additional_works_unresolved_ref` и `..._raw_line_pairs`.
+    extra = EstimateAdditionalWork(
+        proposal_id=proposal.id, ordinal=1, title="Дополнительные работы",
+        total_amount=Decimal("100.00"),
+    )
+    # `manual` обязан идти с `expires_at IS NULL` — CHECK `ck_matching_cache_ttl_by_source`.
+    cache = MatchingCache(
+        cache_key="k" * 64, norm_version=1, job_title_text="работа",
+        unit_text=None, catalog_position_id=catalog.id, source="manual", expires_at=None,
+    )
+    standard = factories.RateStandardFactory.create(
+        catalog_position=catalog, rate_class=contract.rate_class
+    )
+    db_session.add_all([raw, override, extra, cache])
     db_session.flush()
 
     assert client.delete(f"/api/v1/contracts/{contract.id}").status_code == 204
+
+    # Bulk DELETE проходит мимо identity map: без expire_all `get` вернул бы
+    # удалённые объекты из кэша сессии, и тест был бы вакуозным.
+    db_session.expire_all()
 
     assert db_session.get(Contract, contract.id) is None
     assert db_session.get(Estimate, estimate.id) is None
     assert db_session.get(ImportJob, job.id) is None
     assert db_session.get(PositionItem, position.id) is None
-    # Каталог общий (§3), справочники и нормативы живут своей жизнью (спека §2.5).
+    assert db_session.get(EstimateRawData, estimate.id) is None
+    assert db_session.get(EstimateCategoryOverride, position.id) is None
+    assert db_session.get(EstimateAdditionalWork, extra.id) is None
+    # Каталог, кэш матчинга, нормативы и справочники — общие (§3, спека §2.5).
     assert db_session.get(CatalogPosition, catalog.id) is not None
+    assert db_session.get(MatchingCache, cache.cache_key) is not None
+    assert db_session.get(RateStandard, standard.id) is not None
     assert db_session.get(ObjectModel, contract.object_id) is not None
     assert db_session.get(Contractor, contract.contractor_id) is not None
     assert db_session.get(RateClass, contract.rate_class_id) is not None
@@ -158,9 +192,19 @@ def test_delete_missing_contract_gives_404(client):
     assert client.delete("/api/v1/contracts/999999").status_code == 404
 ```
 
-Импорты файла дополнить: `Estimate`, `ImportJob`, `PositionItem`,
-`CatalogPosition`, `ObjectModel`, `Contractor`, `RateClass` из `models` (сейчас
-импортируются только `Contract`, `ImportJobStatus`, `UserRole`).
+Импорты файла дополнить: `sqlalchemy as sa`, `Decimal` (уже есть), а из
+`models` — `Estimate`, `EstimateAdditionalWork`, `EstimateCategoryOverride`,
+`EstimateRawData`, `ImportJob`, `MatchingCache`, `PositionItem`,
+`CatalogPosition`, `ObjectModel`, `Contractor`, `RateClass`, `RateStandard`,
+`WorkCategory` (сейчас импортируются только `Contract`, `ImportJobStatus`,
+`UserRole`).
+
+**Две проверенные предпосылки этого теста.** `work_categories` и `users` НЕ
+входят в `_DOMAIN_TABLES` conftest-а (`tests/conftest.py:383-400`), поэтому
+классификатор, засеянный миграцией 0005, переживает `TRUNCATE` между тестами —
+статью можно взять готовой. Первичный ключ `EstimateCategoryOverride` — это
+`position_item_id`, поэтому `db_session.get(...)` берётся по `position.id`, а не
+по собственному id (его у таблицы нет).
 
 **Матрица и дашборд** этими тестами не проверяются намеренно: чтобы договор
 появился в матрице, нужна смета с расценёнными позициями и наполненный каталог,
@@ -173,7 +217,7 @@ def test_delete_missing_contract_gives_404(client):
 ```
 cd backend && DATABASE_URL=postgresql+psycopg://postgres@localhost:5459/postgres TEST_DATABASE_URL=postgresql+psycopg://postgres@localhost:5459/gca_test SECRET_KEY=test uv run pytest tests/integration/test_contracts_api.py -k delete -v
 ```
-Ожидание: `test_delete_contract_removes_estimates_and_jobs` падает с `409`
+Ожидание: `test_delete_contract_removes_the_whole_subtree` падает с `409`
 («удалить нельзя»), остальные новые — тоже.
 
 - [ ] **Step 3: Переписать `delete_contract`**
@@ -267,64 +311,88 @@ from models import Contract, ImportJob, ImportJobStatus
 pytestmark = pytest.mark.integration
 
 
-def test_lock_blocks_concurrent_job_insert(
+def test_delete_holds_the_contract_row_lock(
     committing_db, committing_factories, committing_session_factory
 ):
-    """Пока договор заблокирован удалением, вставить задание импорта нельзя (§2.2).
+    """Пока `delete_contract` работает, вставить задание импорта нельзя (§2.2).
 
-    Замок проверяется НАБЛЮДАЕМЫМ отказом: вторая сессия ставит короткий
-    `lock_timeout` и обязана упереться. Снятие `.with_for_update()` в
-    `delete_contract` этот тест не ловит по построению (он берёт замок сам) —
-    он доказывает лишь то, ЧТО замок такого рода сериализует вставку; снятие
-    защиты в самом коде проверяется шагом 6.
+    Проба вставки запускается ИЗНУТРИ удаления — обработчиком, который срабатывает
+    сразу после того, как production-код выполнил свой `SELECT … FOR UPDATE`.
+    Поэтому тест привязан к самому коду двумя независимыми способами: снятие
+    `.with_for_update()` не даст обработчику найти свой запрос (проба не
+    выполнится, и `probe` останется пустым), а если она всё же выполнится — то
+    без замка вставка пройдёт. Обе поломки красят тест.
     """
     contract = committing_factories.ContractFactory.create()
     # Фабрики настроены на `sqlalchemy_session_persistence = "flush"` — без
     # явного коммита другие сессии договора не увидят.
     committing_db.commit()
+    contract_id = contract.id
 
-    holder = committing_session_factory()
-    holder.execute(
-        sa.select(Contract).where(Contract.id == contract.id).with_for_update()
-    ).scalar_one()
+    session = committing_session_factory()
+    connection = session.connection()
+    probe: dict[str, bool] = {}
 
-    other = committing_session_factory()
-    try:
-        other.execute(sa.text("SET lock_timeout = '300ms'"))
-        other.add(
-            ImportJob(
-                contract_id=contract.id,
-                amendment_no=None,
-                filename="e.xlsx",
-                file_key="0" * 32,
-                file_sha256="0" * 64,
-                status=ImportJobStatus.pending.value,
+    @sa.event.listens_for(connection, "after_cursor_execute")
+    def run_probe(conn, cursor, statement, parameters, context, executemany):
+        if "FOR UPDATE" not in statement.upper() or probe:
+            return
+        other = committing_session_factory()
+        try:
+            other.execute(sa.text("SET lock_timeout = '400ms'"))
+            other.add(
+                ImportJob(
+                    contract_id=contract_id,
+                    amendment_no=None,
+                    filename="e.xlsx",
+                    file_key="0" * 32,
+                    file_sha256="0" * 64,
+                    status=ImportJobStatus.pending.value,
+                )
             )
-        )
-        with pytest.raises(Exception) as exc:
             other.commit()
-        assert "lock" in str(exc.value).lower()
+            probe["blocked"] = False
+        except Exception as exc:  # noqa: BLE001 — интересует сам факт отказа
+            probe["blocked"] = "lock" in str(exc).lower()
+            other.rollback()
+        finally:
+            other.close()
+
+    try:
+        crud_contracts.delete_contract(session, contract_id)
     finally:
-        other.rollback()
-        other.close()
-        holder.rollback()
-        holder.close()
+        sa.event.remove(connection, "after_cursor_execute", run_probe)
+        session.close()
+
+    assert probe.get("blocked") is True, (
+        "вставка задания прошла, пока шло удаление, — строка договора не заблокирована"
+    )
 ```
 
-**Исполнителю:** `SET lock_timeout` — без `LOCAL`, иначе вне явного блока
-транзакции значение не переживёт. Если окажется, что вставка не блокируется,
-проверить замером, какой замок реально берёт `INSERT` (`pg_locks` по
-`relation = 'contracts'::regclass`) — утверждение «FK берёт `FOR KEY SHARE`»
-должно подтвердиться наблюдением, а не остаться предпосылкой.
+Файл дополнительно импортирует `from crud import contracts as crud_contracts`.
 
-- [ ] **Step 6: Прогнать тест сериализации; убедиться, что он краснеет без замка**
+**Исполнителю, три предпосылки этого теста — проверить, а не поверить:**
+
+1. **Обработчик вешается на `Connection`.** Если версия SQLAlchemy откажется
+   регистрировать `after_cursor_execute` на объекте `Connection`, повесить его на
+   `db_engine` и внутри сверять `conn.connection is connection.connection`, чтобы
+   проба не срабатывала на чужих запросах.
+2. **`SET lock_timeout` — без `LOCAL`:** вне явного блока транзакции `LOCAL`-значение
+   не переживёт до вставки.
+3. **Пул отдаёт вторую connection.** Проба открывает собственное соединение, пока
+   первое занято; при пуле в одну connection тест повис бы. Размер пула — в
+   `database.py`, проверить перед написанием.
+
+- [ ] **Step 6: Прогнать тест лока и снять защиту**
 
 ```
 cd backend && … uv run pytest tests/integration/test_contract_cascade_delete.py -v
 ```
-Затем временно убрать `.with_for_update()` из `delete_contract` — тест должен
-упасть; вернуть. Пробник правки — с `assert old in source`, иначе не
-применившийся патч читается как доказанная защита (урок фазы 5).
+Затем временно убрать `.with_for_update()` из `delete_contract` — тест обязан
+упасть с пустым `probe` («вставка задания прошла…» либо `None is not True`);
+вернуть. Пробник правки писать с `assert old in source` перед заменой: молча не
+применившийся патч выглядит как доказанная защита (урок фазы 5, четыре ложных
+«прошло»).
 
 - [ ] **Step 7: Правка утверждений в тронутых файлах**
 
@@ -393,12 +461,14 @@ def test_files_are_deleted_after_commit(
 
 
 def test_commit_failure_deletes_no_files(
-    committing_client, committing_db, committing_factories, tmp_storage, monkeypatch
+    committing_client, committing_db, committing_factories, committing_session_factory,
+    tmp_storage, monkeypatch
 ):
-    """Сбой коммита → НИ ОДНОГО обращения к хранилищу, файлы и записи целы.
+    """Сбой КОММИТА → ни одного обращения к хранилищу; записи и файлы целы (§2.4).
 
-    Это утверждение о ПОРЯДКЕ, а не о факте удаления: шпион «позван на каждый
-    ключ» прошёл бы и при удалении файлов до коммита (спека §2.4).
+    Удаление проходит по-настоящему: CRUD выполняет все DELETE, и падает именно
+    `commit` сессии запроса. Иначе тест был бы вакуозным — «файлы целы, потому
+    что удаление не начиналось» доказывает не порядок, а отсутствие работы.
     """
     contract = committing_factories.ContractFactory.create()
     key = tmp_storage.save(b"PK\x03\x04 payload")
@@ -410,35 +480,51 @@ def test_commit_failure_deletes_no_files(
     calls: list[str] = []
     monkeypatch.setattr(tmp_storage, "delete", lambda k: calls.append(k) or True)
 
-    import crud.contracts as crud_contracts
+    from database import get_db
+    from main import app
 
-    def explode(db, contract_id):
+    broken = committing_session_factory()
+
+    @sa.event.listens_for(broken, "before_commit")
+    def refuse_commit(session):
         raise RuntimeError("коммит не прошёл")
 
-    monkeypatch.setattr(crud_contracts, "delete_contract", explode)
-
-    with pytest.raises(RuntimeError):
-        committing_client.delete(f"/api/v1/contracts/{contract.id}")
+    previous = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = lambda: iter([broken])
+    try:
+        with pytest.raises(RuntimeError):
+            committing_client.delete(f"/api/v1/contracts/{contract.id}")
+    finally:
+        broken.rollback()
+        broken.close()
+        if previous is not None:
+            app.dependency_overrides[get_db] = previous
 
     assert calls == []
     assert tmp_storage.exists(key)
+    committing_db.rollback()  # снимаем снимок транзакции, иначе видно старое
     assert committing_db.get(Contract, contract.id) is not None
+    assert (
+        committing_db.execute(
+            sa.select(sa.func.count()).select_from(ImportJob).where(
+                ImportJob.contract_id == contract.id
+            )
+        ).scalar_one()
+        == 1
+    )
 ```
 
-**Исполнителю про `test_commit_failure_deletes_no_files`.** Патч ставится на
-`crud.contracts.delete_contract`, а НЕ на `Session.commit`: `committing_client`
-берёт сессии из той же фабрики, и общий патч коммита уронил бы фикстуры вместе с
-проверяемым кодом (эталон обязан не ехать вместе с проверяемым —
-`docs/insights/verifying-guards.md`). Роутер импортирует модуль
-(`from crud import contracts as crud_contracts`), поэтому подмена атрибута
-модуля действует. `TestClient` по умолчанию пробрасывает исключение наружу
-(`raise_server_exceptions=True`) — отсюда `pytest.raises`, а не проверка кода
-`500`; если в проекте окажется обработчик, превращающий `RuntimeError` в ответ,
-заменить на проверку кода.
-
-**Важно:** этот тест доказывает только «до вызова CRUD файлы не трогают».
-Настоящий порядок «коммит → хранилище» доказывается шагом 6 — переносом вызова
-уборки перед CRUD.
+**Исполнителю про `test_commit_failure_deletes_no_files`.** Патч НЕ ставится на
+`Session.commit` глобально: `committing_client` берёт сессии из той же фабрики,
+и общий патч уронил бы фикстуры вместе с проверяемым кодом — эталон обязан не
+ехать вместе с проверяемым (`docs/insights/verifying-guards.md`). Здесь ломается
+ровно одна сессия — та, что отдана запросу. `TestClient` по умолчанию
+пробрасывает исключение наружу (`raise_server_exceptions=True`), отсюда
+`pytest.raises`; если окажется, что в проекте есть обработчик, превращающий
+`RuntimeError` в ответ, заменить на проверку его кода. Проверить также форму
+override-а `get_db`: в `conftest.py` он объявлен генератором
+(`def override_get_db(): yield …`), и `lambda: iter([broken])` обязан вести себя
+так же — если FastAPI на нём споткнётся, объявить обычную функцию-генератор.
 
 ```python
 def test_one_broken_key_does_not_stop_the_rest(
@@ -542,8 +628,24 @@ def delete_contract(
 
 - [ ] **Step 6: Проверить порядок снятием защиты**
 
-Временно перенести `purge_files_best_effort` ДО `crud_contracts.delete_contract`
-— `test_commit_failure_deletes_no_files` обязан покраснеть. Вернуть как было.
+Простой «перенос вызова выше» невозможен — `file_keys` появляются только из
+возврата CRUD. Снимается защита ровно тем, чем её сломал бы неосторожный рефактор:
+ключи берутся отдельным запросом ДО удаления.
+
+```python
+    # ВРЕМЕННО, для проверки теста:
+    keys = list(
+        db.execute(
+            sa.select(ImportJob.file_key).where(ImportJob.contract_id == contract_id)
+        ).scalars()
+    )
+    purge_files_best_effort(storage, keys, context="снятие защиты")
+    file_keys = crud_contracts.delete_contract(db, contract_id)
+```
+
+`test_commit_failure_deletes_no_files` обязан покраснеть: файл исчезнет с диска,
+хотя домен откатился. Вернуть код как было и перепроверить зелёное. Перед
+правкой — `assert old in source` в пробнике.
 
 - [ ] **Step 7: Правка утверждения в `storage.py`**
 
@@ -864,14 +966,19 @@ git commit -m "fix(contracts): удаление договора инвалид�
     expect(confirm).toBeDisabled();
 
     // Опечатка не разблокирует: сверка точная.
-    await user.type(screen.getByLabelText(/Введите номер договора/), "ГП-2026-00");
+    const input = screen.getByLabelText(/Введите номер договора/);
+    await user.type(input, "ГП-2026-00");
     expect(confirm).toBeDisabled();
 
-    await user.type(screen.getByLabelText(/Введите номер договора/), "1");
-    expect(confirm).toBeEnabled();
+    await user.type(input, "1");
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    // И пробел по краям — это уже НЕ тот номер: сверка без `trim()`.
+    await user.type(input, " ");
+    expect(confirm).toBeDisabled();
   });
 
-  it("диалог называет, сколько смет и заданий уйдёт", async () => {
+  it("диалог называет ЧИСЛА удаляемого — смет и заданий", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractsPage />);
     await screen.findByText("ГП-2026-001");
@@ -879,11 +986,42 @@ git commit -m "fix(contracts): удаление договора инвалид�
     await user.click(screen.getAllByRole("button", { name: /Действия с договором/ })[0]);
     await user.click(await screen.findByRole("menuitem", { name: /Удалить/ }));
 
-    // Число заданий приходит из GET /contracts/:id/import-jobs (обработчик MSW
-    // уже есть и отдаёт sampleImportJobs).
-    expect(await screen.findByText(/заданий импорта/i)).toBeInTheDocument();
+    // Числа фикстур: у ГП-2026-001 `estimates_count: 1` (fixtures.ts:127), а
+    // обработчик `GET /contracts/:id/import-jobs` отдаёт `sampleImportJobs` —
+    // ДВА задания (900 и 899, fixtures.ts:175-220). Утверждение на слова
+    // «заданий импорта» прошло бы при любом неверном числе.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/сметы \(1\)/i);
+    expect(dialog).toHaveTextContent(/задания импорта \(2\)/i);
+  });
+
+  it("пока история загрузок не пришла, удаление недоступно", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/contracts/:id/import-jobs", async () => {
+        await delay("infinite");
+        return HttpResponse.json([]);
+      })
+    );
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    await user.click(screen.getAllByRole("button", { name: /Действия с договором/ })[0]);
+    await user.click(await screen.findByRole("menuitem", { name: /Удалить/ }));
+    await user.type(screen.getByLabelText(/Введите номер договора/), "ГП-2026-001");
+
+    // Номер введён верно, но состав удаляемого ещё не назван — подтверждать
+    // нечего (спека §2.6).
+    expect(screen.getByRole("button", { name: "Удалить договор" })).toBeDisabled();
   });
 ```
+
+Импорты файла дополнить: `delay, http, HttpResponse` из `msw` и `server` из
+`@/test/server` (сейчас файл их не импортирует — он обходится обработчиками по
+умолчанию). Роль `alertdialog` — предпосылка: если base-ui-версия
+`AlertDialogContent` даёт другую роль, взять контейнер через
+`screen.getByText(/Удалить договор «/).closest("[role]")` и проверить замером,
+а не догадкой.
 
 - [ ] **Step 3: Прогнать — красное**
 
@@ -941,7 +1079,13 @@ export function ContractDeleteDialog({
     setTyped("");
   }, [contract?.id]);
 
-  const confirmed = contract !== null && typed.trim() === contract.contract_number;
+  // Сверка ТОЧНАЯ, без `trim()`: «разрешим пробелы по краям» — это уже не тот
+  // номер, который человека просили набрать, а операция необратима.
+  const confirmed = contract !== null && typed === contract.contract_number;
+  // Пока история загрузок не пришла, состав удаляемого ещё не назван — кнопка
+  // не может быть доступна: иначе подтверждают вслепую. Ошибка запроса — то же
+  // самое, только хуже: число заданий неизвестно и уже не придёт.
+  const compositionKnown = jobsQ.isSuccess;
 
   return (
     <AlertDialog open={contract !== null} onOpenChange={(open) => !open && onOpenChange(false)}>
@@ -974,7 +1118,7 @@ export function ContractDeleteDialog({
             render={
               <Button
                 variant="destructive"
-                disabled={!confirmed || remove.isPending}
+                disabled={!confirmed || !compositionKnown || remove.isPending}
                 onClick={() => {
                   if (!contract || !confirmed) return;
                   remove.mutate(contract.id, {
