@@ -489,8 +489,13 @@ def test_commit_failure_deletes_no_files(
     def refuse_commit(session):
         raise RuntimeError("коммит не прошёл")
 
+    def override_broken_db():
+        # Именно генератор: `lambda: iter([broken])` FastAPI счёл бы ЗНАЧЕНИЕМ
+        # зависимости, и роутер получил бы итератор вместо сессии.
+        yield broken
+
     previous = app.dependency_overrides.get(get_db)
-    app.dependency_overrides[get_db] = lambda: iter([broken])
+    app.dependency_overrides[get_db] = override_broken_db
     try:
         with pytest.raises(RuntimeError):
             committing_client.delete(f"/api/v1/contracts/{contract.id}")
@@ -987,12 +992,13 @@ git commit -m "fix(contracts): удаление договора инвалид�
     await user.click(await screen.findByRole("menuitem", { name: /Удалить/ }));
 
     // Числа фикстур: у ГП-2026-001 `estimates_count: 1` (fixtures.ts:127), а
-    // обработчик `GET /contracts/:id/import-jobs` отдаёт `sampleImportJobs` —
-    // ДВА задания (900 и 899, fixtures.ts:175-220). Утверждение на слова
-    // «заданий импорта» прошло бы при любом неверном числе.
+    // обработчик истории отдаёт ЧЕТЫРЕ задания —
+    // `[...sampleImportJobs, sampleFailedJob, sampleRunningJob]`
+    // (handlers.ts:477-479), то есть 2 + 1 + 1. Утверждение на слова «заданий
+    // импорта» прошло бы при любом неверном числе, поэтому проверяются числа.
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent(/сметы \(1\)/i);
-    expect(dialog).toHaveTextContent(/задания импорта \(2\)/i);
+    expect(dialog).toHaveTextContent(/задания импорта \(4\)/i);
   });
 
   it("пока история загрузок не пришла, удаление недоступно", async () => {
