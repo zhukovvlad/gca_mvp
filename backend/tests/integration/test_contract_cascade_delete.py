@@ -1,10 +1,13 @@
 """Каскадное удаление договора: файлы, порядок, локи, гонка (спека §2.2-§2.4)."""
 from __future__ import annotations
 
+import threading
+
 import pytest
 import sqlalchemy as sa
 
 from crud import contracts as crud_contracts
+from crud.common import DomainError
 from models import Contract, ImportJob, ImportJobStatus
 
 pytestmark = pytest.mark.integration
@@ -65,6 +68,119 @@ def test_delete_holds_the_contract_row_lock(
 
     assert probe.get("blocked") is True, (
         "вставка задания прошла, пока шло удаление, — строка договора не заблокирована"
+    )
+
+
+def test_upload_wins_the_race_and_delete_answers_409(
+    committing_db, committing_factories, committing_session_factory
+):
+    """Обратный порядок гонки: загрузка успела первой, удаление ждёт и отказывает.
+
+    Тест выше показывает исход «удаление успело первым» (вставку не пускают), а
+    `test_upload_returns_404_when_contract_deleted_mid_flight` — что видит при
+    этом проигравшая загрузка. Здесь проверяется ВТОРОЙ исход, названный спекой
+    §2.3: задание уже вставлено, но ещё не закоммичено, и удаление обязано
+    дождаться его и ответить `409`, а не снести данные из-под живого импорта.
+
+    Два независимых потока и настоящий замок, а не имитация порядка:
+
+    * поток загрузки вставляет задание (`FOR KEY SHARE` на строке договора по
+      внешнему ключу) и держит транзакцию открытой;
+    * поток удаления входит в `delete_contract` и упирается в `FOR UPDATE`;
+    * тест убеждается, что удаление НЕ вернулось до коммита загрузки, — иначе
+      сериализации нет и проверять дальше нечего;
+    * загрузка коммитит, удаление просыпается, видит `pending` и отказывает.
+
+    Снятие `.with_for_update()` красит тест по существу: проверка активного
+    задания не увидела бы незакоммиченную вставку, удаление прошло бы дальше и
+    снесло задание, вместо того чтобы отказать.
+    """
+    contract = committing_factories.ContractFactory.create()
+    committing_db.commit()
+    contract_id = contract.id
+
+    inserted = threading.Event()
+    may_commit = threading.Event()
+    upload_committed = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def upload_side() -> None:
+        session = committing_session_factory()
+        try:
+            session.add(
+                ImportJob(
+                    contract_id=contract_id,
+                    amendment_no=None,
+                    filename="race.xlsx",
+                    file_key="0" * 32,
+                    file_sha256="0" * 64,
+                    status=ImportJobStatus.pending.value,
+                )
+            )
+            session.flush()  # INSERT ушёл в БД, транзакция ещё открыта
+            outcome["job_id"] = session.execute(
+                sa.select(ImportJob.id).where(ImportJob.contract_id == contract_id)
+            ).scalar_one()
+            inserted.set()
+            may_commit.wait(timeout=10)
+            session.commit()
+            upload_committed.set()
+        finally:
+            session.close()
+
+    def delete_side() -> None:
+        session = committing_session_factory()
+        try:
+            crud_contracts.delete_contract(session, contract_id)
+            outcome["result"] = "deleted"
+        except DomainError as exc:
+            outcome["result"] = "refused"
+            outcome["status"] = exc.status_code
+            outcome["detail"] = exc.detail
+        except Exception as exc:  # noqa: BLE001 — любой иной исход тоже интересен
+            outcome["result"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            session.rollback()
+            session.close()
+            outcome["finished_after_commit"] = upload_committed.is_set()
+
+    uploader = threading.Thread(target=upload_side, name="upload")
+    deleter = threading.Thread(target=delete_side, name="delete")
+    uploader.start()
+    assert inserted.wait(timeout=10), "поток загрузки не вставил задание"
+    deleter.start()
+
+    # Окно одностороннее: при работающем замке удаление не вернётся НИКОГДА,
+    # пока держится транзакция загрузки, а без замка вернулось бы сразу.
+    deleter.join(timeout=1.0)
+    assert deleter.is_alive(), (
+        "удаление вернулось, не дождавшись коммита загрузки, — строка договора "
+        "не сериализует загрузку и удаление"
+    )
+
+    may_commit.set()
+    uploader.join(timeout=10)
+    deleter.join(timeout=10)
+    assert not deleter.is_alive(), "удаление не завершилось после коммита загрузки"
+
+    assert outcome["result"] == "refused", (
+        f"ожидался отказ 409, получено: {outcome.get('result')!r}"
+    )
+    assert outcome["status"] == 409
+    assert str(outcome["job_id"]) in outcome["detail"]
+    assert ImportJobStatus.pending.value in outcome["detail"]
+    assert outcome["finished_after_commit"] is True
+
+    # Данных живого импорта удаление не тронуло.
+    committing_db.rollback()  # снимаем снимок транзакции, иначе видно старое
+    assert committing_db.get(Contract, contract_id) is not None
+    assert (
+        committing_db.execute(
+            sa.select(sa.func.count())
+            .select_from(ImportJob)
+            .where(ImportJob.contract_id == contract_id)
+        ).scalar_one()
+        == 1
     )
 
 
