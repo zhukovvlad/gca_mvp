@@ -63,6 +63,10 @@ XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 #: любого другого и ответить 409, а не 500.
 ACTIVE_PAIR_INDEX = "uq_import_jobs_active_pair"
 
+#: Внешний ключ `import_jobs.contract_id`. Имя присвоено PostgreSQL по умолчанию
+#: (миграция 0002 объявила ключ без имени) — оно закреплено тестом предпосылки.
+CONTRACT_FK_CONSTRAINT = "import_jobs_contract_id_fkey"
+
 
 def job_response(db: Session, job: ImportJob) -> dict:
     """Единый формат задания импорта — общий с роутером `import_jobs`."""
@@ -165,7 +169,8 @@ def upload_estimate(
 
     Ответы: `202` — задание создано; `200` — идемпотентный возврат уже
     выполненного задания с тем же файлом; `409` — смета уже загружена (нужен
-    `replace=true`) либо импорт этой пары уже идёт.
+    `replace=true`) либо импорт этой пары уже идёт; `404` — договора нет либо
+    он удалён, пока загружался файл.
     """
     if replace and current_user.role != UserRole.admin:
         raise HTTPException(
@@ -246,6 +251,20 @@ def upload_estimate(
         # Файл остаётся только у реально созданного задания (§5).
         db.rollback()
         storage.delete(file_key)
+        # Договор удалён между проверкой его существования и вставкой задания
+        # (спека §2.3). Распознаём структурированной диагностикой, а не поиском
+        # подстроки: имя в тексте ошибки соседствует с пользовательскими данными.
+        diag = getattr(exc.orig, "diag", None)
+        if (
+            getattr(exc.orig, "sqlstate", None) == "23503"
+            and getattr(diag, "constraint_name", None) == CONTRACT_FK_CONSTRAINT
+        ):
+            log.info("Договор %s удалён, пока загружался файл", contract_id)
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Договор {contract_id} удалён, пока загружался файл. Смета не "
+                "импортирована.",
+            ) from exc
         if ACTIVE_PAIR_INDEX in str(exc.orig):
             # Гонка: между проверкой активного задания и INSERT такое же задание
             # успел создать параллельный запрос. Данные защищены индексом, но

@@ -582,7 +582,8 @@ def _replace_existing(
     proposals → position_items, estimate_raw_data), и ORM-каскад лишь вычитал бы
     в память тысячи строк, чтобы удалить их по одной.
 
-    Старые `import_jobs` и их файлы НЕ удаляются — это аудит (§5).
+    Старые `import_jobs` и их файлы НЕ удаляются при ЗАМЕНЕ сметы — это аудит
+    (§5); удаление договора уносит их (v6.7).
     """
     if not replace:
         return None
@@ -670,7 +671,7 @@ def _replace_existing(
     db.execute(delete(Estimate).where(Estimate.id == old_id))
     warnings.append(
         f"Заменена смета estimate_id={old_id} от {created_at.date().isoformat()}. "
-        "Прежние задания импорта и их файлы сохранены как аудит."
+        "Прежние задания импорта и их файлы сохранены как аудит замены."
     )
     return old_id
 

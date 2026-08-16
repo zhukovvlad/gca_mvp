@@ -506,6 +506,7 @@ export const handlers = [
     const body = (await request.json()) as Record<string, unknown>;
     return HttpResponse.json({ ...sampleContractCard, ...body });
   }),
+  http.delete("/api/v1/contracts/:id", () => new HttpResponse(null, { status: 204 })),
 
   // --- Загрузка сметы и поллинг ---
   http.post("/api/v1/estimates/upload", async ({ request }) => {

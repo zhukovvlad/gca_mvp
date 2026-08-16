@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { FilePlus2, Search } from "lucide-react";
+import { FilePlus2, MoreHorizontal, Search, Trash2 } from "lucide-react";
 
 import { Pager } from "@/components/domain/Pager";
+import { ContractDeleteDialog } from "@/components/contracts/ContractDeleteDialog";
 import { ContractFormDialog } from "@/components/contracts/ContractFormDialog";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
@@ -11,6 +12,12 @@ import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import {
   Select,
@@ -28,6 +35,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/useAuth";
+import type { ContractRow } from "@/types/domain";
 import { formatDate } from "@/lib/format";
 import { useDebounce } from "@/lib/useDebounce";
 import { useContracts, useRateClasses } from "@/services/queries";
@@ -53,6 +61,7 @@ export default function ContractsPage() {
   const [rateClassId, setRateClassId] = useState<string>(ALL_CLASSES);
   const [page, setPage] = useState(1);
   const [formOpen, setFormOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<ContractRow | null>(null);
 
   const search = useDebounce(searchInput, 300);
   const classesQ = useRateClasses();
@@ -164,6 +173,7 @@ export default function ContractsPage() {
                     <TableHead>Подписан</TableHead>
                     <TableHead className="text-right">Сумма</TableHead>
                     <TableHead className="text-right">Сметы</TableHead>
+                    <TableHead className="w-12" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -191,6 +201,33 @@ export default function ContractsPage() {
                       <TableCell className="text-right tabular-nums">
                         {contract.estimates_count}
                       </TableCell>
+                      <TableCell className="text-right">
+                        {isAdmin && (
+                          <DropdownMenu>
+                            {/*
+                              Триггер принимает СВОИ пропсы и children (base-ui
+                              `MenuPrimitive.Trigger`), а не `render`/`asChild` —
+                              образец живого использования в проекте:
+                              `components/layout/TopNav.tsx:79`.
+                            */}
+                            <DropdownMenuTrigger
+                              type="button"
+                              aria-label="Действия с договором"
+                              className="inline-flex size-8 items-center justify-center rounded-md hover:bg-surface-hover"
+                            >
+                              <MoreHorizontal className="size-4" />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onClick={() => setToDelete(contract)}
+                              >
+                                <Trash2 className="size-4" /> Удалить
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -208,6 +245,7 @@ export default function ContractsPage() {
       </div>
 
       <ContractFormDialog open={formOpen} onOpenChange={setFormOpen} />
+      <ContractDeleteDialog contract={toDelete} onOpenChange={() => setToDelete(null)} />
     </div>
   );
 }

@@ -9,8 +9,10 @@
   которого `objects.rate_class_id` и существует. Если его нет ни там, ни в
   запросе — отказ, а не `NULL`: колонка NOT NULL, а переклассификация объекта не
   должна менять отклонения прошлых смет.
-* **Удаление отказывается, если у договора есть сметы или задания импорта.**
-  Записи `import_jobs` не удаляются никогда — это аудит (§5, правило 3).
+* **Удаление договора каскадное и необратимое** (спека 2026-08-16): вместе с
+  договором уходят его сметы, задания импорта и файлы. Прежнее правило «задания
+  импорта не удаляются никогда» сужено: аудит защищает от подмены сметы в живом
+  договоре, а не от удаления самого договора владельцем данных (`AGENTS.md` §5).
 
 Права: чтение — любому аутентифицированному, изменение — `admin` (решение фазы 5
 §6.2, согласовано с пользователем).
@@ -34,6 +36,7 @@ from crud.common import (
     translating_integrity,
 )
 from models import (
+    TERMINAL_IMPORT_JOB_STATUSES,
     Contract,
     Contractor,
     Estimate,
@@ -432,24 +435,66 @@ def update_contract(
     return get_contract_dict(db, contract_id)
 
 
-def delete_contract(db: Session, contract_id: int) -> None:
-    """Удалить договор. Отказ, если есть сметы или задания импорта.
+def delete_contract(db: Session, contract_id: int) -> list[str]:
+    """Удаляет договор вместе со сметами, заданиями импорта и их файлами.
 
-    Задания импорта — аудит и не удаляются никогда (§5, правило 3), поэтому
-    договор с историей загрузок неудаляем в принципе: удалить его значило бы
-    оборвать FK, на котором эта история висит. Пустая карточка (опечатка при
-    заведении) удаляется свободно.
+    Возвращает ключи файлов удалённых заданий — удаляет их вызывающая сторона
+    ПОСЛЕ коммита (спека §2.4): ошибка носителя не вправе откатывать доменное
+    решение.
+
+    Порядок шагов несущий:
+
+    1. `FOR UPDATE` на договоре. Вставка задания импорта берёт на этой же строке
+       `FOR KEY SHARE` по внешнему ключу, а он конфликтует с `FOR UPDATE`, —
+       значит загрузку и удаление сериализует база, и обогнать проверку шага 2
+       новым upload нельзя.
+    2. Отказ, если задание этого договора активно: удалять данные из-под
+       работающего импорта нельзя.
+    3. Задания удаляются ПЕРЕД сметами: `estimates.import_job_id` объявлен
+       `ON DELETE SET NULL`, обратный порядок ничего не ломает, но и не нужен.
+
+    Всё, что ниже сметы (raw_data, лоты, предложения, позиции, ручные решения по
+    статьям, расшивка допработ), уносит `ON DELETE CASCADE` самой БД.
     """
-    contract = get_contract(db, contract_id)
-    estimates = db.query(Estimate).filter(Estimate.contract_id == contract_id).count()
-    jobs = db.query(ImportJob).filter(ImportJob.contract_id == contract_id).count()
-    if estimates or jobs:
+    contract = db.execute(
+        sa.select(Contract)
+        .where(Contract.id == contract_id)
+        .with_for_update()
+        # identity map отдал бы объект, загруженный ДО блокировки, и проверка
+        # шла бы по устаревшему состоянию (урок фазы 5).
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if contract is None:
+        raise DomainError(404, f"Договор {contract_id} не найден.")
+
+    active = db.execute(
+        sa.select(ImportJob.id, ImportJob.status)
+        .where(
+            ImportJob.contract_id == contract_id,
+            ImportJob.status.notin_([s.value for s in TERMINAL_IMPORT_JOB_STATUSES]),
+        )
+        .order_by(ImportJob.id)
+        .limit(1)
+    ).first()
+    if active is not None:
         raise DomainError(
             409,
-            f"Договор «{contract.contract_number}» удалить нельзя: смет ({estimates}), "
-            f"заданий импорта ({jobs}). Задания импорта — аудит и не удаляются; "
-            "замена сметы делается загрузкой с replace=true.",
+            f"Импорт сметы этого договора выполняется (задание {active.id}, статус "
+            f"«{active.status}»). Дождитесь завершения и повторите удаление.",
         )
-    db.delete(contract)
+
+    file_keys = list(
+        db.execute(
+            sa.select(ImportJob.file_key)
+            .where(ImportJob.contract_id == contract_id)
+            .order_by(ImportJob.id)
+        ).scalars()
+    )
+    db.execute(sa.delete(ImportJob).where(ImportJob.contract_id == contract_id))
+    db.execute(sa.delete(Estimate).where(Estimate.contract_id == contract_id))
+    db.execute(sa.delete(Contract).where(Contract.id == contract_id))
     db.commit()
-    log.info("contract_deleted id=%s", contract_id)
+    log.info(
+        "contract_deleted id=%s jobs=%d", contract_id, len(file_keys)
+    )
+    return file_keys

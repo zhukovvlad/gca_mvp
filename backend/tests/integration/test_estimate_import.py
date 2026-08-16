@@ -875,7 +875,11 @@ class TestReplace:
         assert any(f"estimate_id={old_id}" in w for w in second.warnings)
 
     def test_replace_keeps_old_import_jobs(self, db_session, factories, resolver):
-        """Старые задания и их файлы — аудит, они не удаляются (§5)."""
+        """Старые задания и их файлы — аудит ЗАМЕНЫ, замена их не удаляет (§5).
+
+        Абсолютным это правило больше не является: удаление самого договора
+        уносит задания вместе с ним (v6.7). Здесь проверяется именно замена.
+        """
         contract = factories.ContractFactory.create()
         old_job = factories.ImportJobFactory.create(contract=contract, status="done")
         db_session.flush()

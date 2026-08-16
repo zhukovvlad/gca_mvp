@@ -8,7 +8,7 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 
-from models import Estimate, ImportJob, ImportJobStatus, UserRole
+from models import Contract, Estimate, ImportJob, ImportJobStatus, UserRole
 from parser import ParseResult
 from services import import_pipeline
 from tests.payloads import payload_for, position
@@ -387,6 +387,76 @@ class TestValidation:
 
         assert committing_db.execute(sa.select(sa.func.count()).select_from(ImportJob)).scalar_one() == 0
         assert not tmp_storage.root.exists() or not list(tmp_storage.root.iterdir())
+
+
+# ---------------------------------------------------------------------------
+#  Гонка загрузки и удаления договора (спека §2.3)
+# ---------------------------------------------------------------------------
+
+def test_contract_fk_constraint_name_is_what_the_router_expects(db_session):
+    """ПРЕДПОСЫЛКА: имя внешнего ключа присвоил PostgreSQL, миграция его не задавала.
+
+    Роутер распознаёт исчезнувший договор по имени констрейнта; если имя другое,
+    ветка `404` мертва, а тест пути ниже это скроет — он вызывает ту же ошибку.
+    Поэтому имя проверяется НАСТОЯЩИМ нарушением (insights/false-test-premises).
+    """
+    import psycopg
+
+    from routers.estimates import CONTRACT_FK_CONSTRAINT
+
+    with pytest.raises(Exception) as exc:
+        db_session.execute(
+            sa.text(
+                "INSERT INTO import_jobs (contract_id, filename, file_key, file_sha256, status) "
+                "VALUES (999999, 'x.xlsx', '0', '0', 'pending')"
+            )
+        )
+        db_session.flush()
+    orig = getattr(exc.value, "orig", exc.value)
+    assert isinstance(orig, psycopg.errors.ForeignKeyViolation)
+    assert orig.sqlstate == "23503"
+    assert orig.diag.constraint_name == CONTRACT_FK_CONSTRAINT
+    db_session.rollback()
+
+
+def test_upload_returns_404_when_contract_deleted_mid_flight(
+    committing_client, contract, committing_session_factory, tmp_storage, monkeypatch
+):
+    """DELETE успел первым: загрузка отвечает 404, файла и задания не остаётся.
+
+    Договор удаляется в реальном шве — между проверкой его существования и
+    вставкой задания, — поэтому воспроизводится именно рассматриваемая гонка,
+    а не её имитация (спека §2.3).
+
+    `contract` — существующая фикстура этого файла (строка 55): она создаёт
+    договор и КОММИТИТ его, без чего другие сессии его не увидят.
+    """
+    contract_id = contract.id
+
+    import routers.estimates as estimates_router
+
+    real_active_job = estimates_router._active_job
+
+    def delete_then_check(db, cid, amendment_no):
+        killer = committing_session_factory()
+        killer.execute(sa.delete(Contract).where(Contract.id == cid))
+        killer.commit()
+        killer.close()
+        return real_active_job(db, cid, amendment_no)
+
+    monkeypatch.setattr(estimates_router, "_active_job", delete_then_check)
+
+    before = set(p.name for p in tmp_storage.root.iterdir()) if tmp_storage.root.exists() else set()
+    response = committing_client.post(
+        "/api/v1/estimates/upload",
+        files={"file": ("smeta.xlsx", b"PK\x03\x04payload", estimates_router.XLSX_MEDIA_TYPE)},
+        data={"contract_id": str(contract_id)},
+    )
+    after = set(p.name for p in tmp_storage.root.iterdir()) if tmp_storage.root.exists() else set()
+
+    assert response.status_code == 404
+    assert "удал" in response.json()["detail"].lower()
+    assert after == before  # файл проигравшей загрузки не остался
 
 
 # ---------------------------------------------------------------------------

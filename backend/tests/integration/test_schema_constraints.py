@@ -176,7 +176,10 @@ class TestImportJobsActiveLock:
         db_session.flush()
 
     def test_many_terminal_jobs_for_same_pair_allowed(self, db_session, factories):
-        """История загрузок и замен — аудит, старые jobs не удаляются (§5, §7.1)."""
+        """История загрузок и замен — аудит: ЗАМЕНА старые jobs не удаляет (§5, §7.1).
+
+        Удаление самого договора их уносит (v6.7) — это другой путь, здесь не он.
+        """
         job = factories.ImportJobFactory.create(status=ImportJobStatus.done.value)
         for _ in range(3):
             factories.ImportJobFactory.create(

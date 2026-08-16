@@ -14,8 +14,26 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
-from models import Contract, ImportJobStatus, UserRole
+from models import (
+    CatalogPosition,
+    Contract,
+    Contractor,
+    Estimate,
+    EstimateAdditionalWork,
+    EstimateCategoryOverride,
+    EstimateRawData,
+    ImportJob,
+    ImportJobStatus,
+    MatchingCache,
+    ObjectModel,
+    PositionItem,
+    RateClass,
+    RateStandard,
+    UserRole,
+    WorkCategory,
+)
 from services.category_override import set_override
 
 # Тестам нужен настоящий Postgres. Без маркера выборка `pytest -m integration`
@@ -391,22 +409,118 @@ def test_delete_empty_contract_succeeds(client, factories):
     assert client.get(f"/api/v1/contracts/{contract.id}").status_code == 404
 
 
-def test_delete_contract_with_import_history_is_refused(client, factories):
+def test_delete_contract_removes_the_whole_subtree(client, factories, db_session):
+    """Каскад уносит ВЕСЬ состав, названный спекой §2.2, и не трогает общее (§2.5)."""
+    user = factories.UserFactory.create(role=UserRole.admin)
     contract = factories.ContractFactory.create()
-    factories.ImportJobFactory.create(contract=contract)
+    estimate = factories.EstimateFactory.create(contract=contract)
+    proposal = factories.ProposalFactory.create(lot__estimate=estimate)
+    position = factories.PositionItemFactory.create(proposal=proposal)
+    catalog = factories.CatalogPositionFactory.create()
+    position.catalog_position_id = catalog.id
+    job = factories.ImportJobFactory.create(
+        contract=contract, status=ImportJobStatus.done.value
+    )
+
+    # Фабрик у этих четырёх таблиц нет — модели создаются напрямую.
+    raw = EstimateRawData(estimate_id=estimate.id, raw_data={"lots": []}, parser_version="test")
+    category_id = db_session.execute(
+        sa.select(WorkCategory.id).order_by(WorkCategory.id).limit(1)
+    ).scalar_one()
+    override = EstimateCategoryOverride(
+        position_item_id=position.id, work_category_id=category_id, assigned_by=user.id
+    )
+    # Нераспределённая запись: ссылки и статьи нет — так требуют CHECK-и
+    # `ck_estimate_additional_works_unresolved_ref` и `..._raw_line_pairs`.
+    extra = EstimateAdditionalWork(
+        proposal_id=proposal.id, ordinal=1, title="Дополнительные работы",
+        total_amount=Decimal("100.00"),
+    )
+    # `manual` обязан идти с `expires_at IS NULL` — CHECK `ck_matching_cache_ttl_by_source`.
+    cache = MatchingCache(
+        cache_key="k" * 64, norm_version=1, job_title_text="работа",
+        unit_text=None, catalog_position_id=catalog.id, source="manual", expires_at=None,
+    )
+    standard = factories.RateStandardFactory.create(
+        catalog_position=catalog, rate_class=contract.rate_class
+    )
+    db_session.add_all([raw, override, extra, cache])
+    db_session.flush()
+
+    # Идентификаторы захватываются здесь, а не после удаления: `client`
+    # переиспользует ЭТУ ЖЕ сессию (транзакционный `client` подменяет `get_db`
+    # на `db_session`), а `db.commit()` внутри `delete_contract` по умолчанию
+    # (`expire_on_commit=True`) истощает атрибуты ВСЕХ объектов сессии — сама
+    # PK-колонка не исключение. Обращение к `position.id` уже ПОСЛЕ коммита
+    # запустило бы обновление истёкшего атрибута и упало бы наравне с
+    # обращением через `get()` — тест обязан снять числа ДО удаления.
+    contract_id = contract.id
+    estimate_id = estimate.id
+    job_id = job.id
+    position_id = position.id
+    extra_id = extra.id
+    standard_id = standard.id
+    catalog_id = catalog.id
+    cache_key = cache.cache_key
+    object_id = contract.object_id
+    contractor_id = contract.contractor_id
+    rate_class_id = contract.rate_class_id
+
+    assert client.delete(f"/api/v1/contracts/{contract_id}").status_code == 204
+
+    # Bulk DELETE проходит мимо identity map: без сброса кэша `get` вернул бы
+    # удалённые объекты из сессии, и тест был бы вакуозным. Строки, унесённые
+    # ON DELETE CASCADE САМОЙ БД (PositionItem и ниже), ORM не удаляла сама —
+    # они остаются в identity map истёкшими (после `commit()`), и `get()` на
+    # них пытается их перечитать и падает `ObjectDeletedError`, а не
+    # возвращает `None`. `expunge_all()` снимает объекты из identity map
+    # целиком — `get()` идёт в БД заново по чистому id и для исчезнувшей
+    # строки просто возвращает `None`, независимо от того, кто её удалил —
+    # явный DELETE ORM или каскад PostgreSQL.
+    db_session.expunge_all()
+
+    assert db_session.get(Contract, contract_id) is None
+    assert db_session.get(Estimate, estimate_id) is None
+    assert db_session.get(ImportJob, job_id) is None
+    assert db_session.get(PositionItem, position_id) is None
+    assert db_session.get(EstimateRawData, estimate_id) is None
+    assert db_session.get(EstimateCategoryOverride, position_id) is None
+    assert db_session.get(EstimateAdditionalWork, extra_id) is None
+    # Каталог, кэш матчинга, нормативы и справочники — общие (§3, спека §2.5).
+    assert db_session.get(CatalogPosition, catalog_id) is not None
+    assert db_session.get(MatchingCache, cache_key) is not None
+    assert db_session.get(RateStandard, standard_id) is not None
+    assert db_session.get(ObjectModel, object_id) is not None
+    assert db_session.get(Contractor, contractor_id) is not None
+    assert db_session.get(RateClass, rate_class_id) is not None
+    # И договора больше нет в списке — то, что видит человек.
+    listed = client.get("/api/v1/contracts").json()["items"]
+    assert all(item["id"] != contract_id for item in listed)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ImportJobStatus.pending.value,
+        ImportJobStatus.parsing.value,
+        ImportJobStatus.importing.value,
+        ImportJobStatus.matching.value,
+    ],
+)
+def test_delete_contract_is_refused_while_import_runs(client, factories, status):
+    """Активное задание — отказ 409, а не каскад посреди импорта (спека §2.2)."""
+    contract = factories.ContractFactory.create()
+    job = factories.ImportJobFactory.create(contract=contract, status=status)
 
     response = client.delete(f"/api/v1/contracts/{contract.id}")
+
     assert response.status_code == 409
-    assert "аудит" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert str(job.id) in detail and status in detail
 
 
-def test_delete_contract_with_estimate_is_refused(client, factories):
-    contract = factories.ContractFactory.create()
-    factories.EstimateFactory.create(contract=contract)
-
-    response = client.delete(f"/api/v1/contracts/{contract.id}")
-    assert response.status_code == 409
-    assert "смет (1)" in response.json()["detail"]
+def test_delete_missing_contract_gives_404(client):
+    assert client.delete("/api/v1/contracts/999999").status_code == 404
 
 
 # ---------------------------------------------------------------------------
