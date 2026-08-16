@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import timedelta
 
 from sqlalchemy import select, update
@@ -151,3 +152,21 @@ def run_startup_maintenance(session_factory, storage: Storage, *, retention_days
         log.exception("Ретенция файлов error-заданий не выполнена; recovery это не отменяет")
 
     return recovered, purged
+
+
+def purge_files_best_effort(storage: Storage, file_keys: Iterable[str], *, context: str) -> int:
+    """Удаляет файлы по ключам, изолируя ошибки ПО КЛЮЧАМ.
+
+    Вызывается ПОСЛЕ коммита доменной транзакции (спека §2.4): ошибка носителя
+    не вправе откатывать уже принятое решение, поэтому она только пишется в лог.
+    Цена названа границей спеки §4.1: неудалённый файл остаётся на диске
+    навсегда — ретенция §8 ходит по заданиям, а записи задания уже нет.
+    """
+    purged = 0
+    for key in file_keys:
+        try:
+            if storage.delete(key):
+                purged += 1
+        except (StorageKeyError, OSError):
+            log.exception("%s: файл %r не удалён — пропущен", context, key)
+    return purged

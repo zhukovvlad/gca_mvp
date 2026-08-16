@@ -23,6 +23,8 @@ from crud.common import DomainError
 from database import get_db
 from models import User
 from responses import decimal_json
+from services.maintenance import purge_files_best_effort
+from storage import Storage, get_storage
 
 router = APIRouter(prefix="/api/v1/contracts", tags=["contracts"])
 
@@ -266,11 +268,18 @@ def update_contract(
 def delete_contract(
     contract_id: int,
     db: Session = Depends(get_db),
+    storage: Storage = Depends(get_storage),
     _: User = Depends(require_admin),
 ):
-    """Удалить договор. 409, если есть сметы или задания импорта (аудит, §5)."""
+    """Удалить договор вместе со сметами, заданиями импорта и файлами.
+
+    `409`, если импорт этой сметы выполняется прямо сейчас (спека §2.2).
+    Файлы удаляются ПОСЛЕ коммита и best-effort: ответ `204` не зависит от того,
+    удалось ли снять их с диска (спека §2.4).
+    """
     try:
-        crud_contracts.delete_contract(db, contract_id)
+        file_keys = crud_contracts.delete_contract(db, contract_id)
     except DomainError as e:
         _raise(e)
+    purge_files_best_effort(storage, file_keys, context=f"Удаление договора {contract_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
