@@ -105,7 +105,7 @@ describe("Диаграмма ₽/м² — обе стороны", () => {
   it("охват диаграммы назван и отличается от охвата рейтинга", async () => {
     await renderDashboard();
 
-    expect(screen.getByText(/Вошли 2 объектов из 4/)).toBeInTheDocument();
+    expect(screen.getByText(/Вошли 2 объекта из 4/)).toBeInTheDocument();
   });
 });
 

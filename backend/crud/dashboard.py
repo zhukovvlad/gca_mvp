@@ -616,15 +616,22 @@ def base_counters(db: Session, contracts: Sequence[ContractMoney]) -> dict:
     """Счётчики шапки. Объекты, классы и договоры — РАЗНЫЕ сущности и приезжают
     порознь (решение 9 макета: «5 договоров» и «1 объект» не складываются).
 
-    «Классов» считается по `objects.rate_class_id` — это «объекты лежат в N
-    классах», а не размер справочника: пустой класс на главной ничего не
-    описывает.
+    «Классов» считается по `contracts.rate_class_id`, а НЕ по
+    `objects.rate_class_id` и не по размеру справочника. Три причины, и первая
+    решающая:
+
+    * снимок класса на договоре авторитетен (`AGENTS.md` §4), а класс объекта —
+      лишь значение по умолчанию для новых договоров;
+    * рейтинг и диаграмма этой же страницы группируют по снимку договора, и
+      счётчик обязан считать ТО ЖЕ САМОЕ. Замерено браузерным smoke на стенде
+      `gca_dev`: по классу объекта выходило «в 1 классах», тогда как диаграмма
+      двумя блоками ниже рисовала ТРИ дорожки — два числа об одном и том же на
+      одном экране;
+    * пустой класс справочника на главной ничего не описывает.
     """
     objects = db.execute(sa.select(sa.func.count()).select_from(ObjectModel)).scalar_one()
     classes = db.execute(
-        sa.select(sa.func.count(sa.distinct(ObjectModel.rate_class_id))).where(
-            ObjectModel.rate_class_id.is_not(None)
-        )
+        sa.select(sa.func.count(sa.distinct(Contract.rate_class_id)))
     ).scalar_one()
     with_estimate = sum(1 for row in contracts if row.reason != CONTRACT_REASON_NO_ESTIMATE)
     return {

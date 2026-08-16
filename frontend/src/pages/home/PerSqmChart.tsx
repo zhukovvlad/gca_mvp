@@ -1,4 +1,4 @@
-import { formatDecimalMoney } from "@/lib/format";
+import { formatDecimalMoney, pluralRu } from "@/lib/format";
 import type { DashboardChart, DashboardChartLane } from "@/types/domain";
 
 /** Цвета дорожек — набор `--chart-*`, прошедший валидатор различимости
@@ -27,10 +27,15 @@ function scaleOf(chart: DashboardChart): Scale {
   return { min, span: max === min ? 1 : max - min };
 }
 
+/** Поля дорожки: точка крайнего значения центрируется на границе и наполовину
+ *  свисала бы за неё. Замечено браузерным smoke — jsdom этого не наблюдает. */
+const LANE_INSET_PCT = 3;
+
 function offset(value: string, scale: Scale): number {
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return 0;
-  return ((numeric - scale.min) / scale.span) * 100;
+  if (!Number.isFinite(numeric)) return LANE_INSET_PCT;
+  const raw = (numeric - scale.min) / scale.span;
+  return LANE_INSET_PCT + raw * (100 - 2 * LANE_INSET_PCT);
 }
 
 function Lane({
@@ -123,9 +128,8 @@ export function PerSqmChart({ chart }: { chart: DashboardChart }) {
         ))}
       </div>
       <div className="border-t border-border-subtle px-4 py-3 text-xs text-fg-tertiary">
-        Вошли {chart.coverage.counted} объект
-        {chart.coverage.counted === 1 ? "" : "ов"} из {chart.coverage.total}: у остальных не
-        заведена площадь или нет действующей суммы.
+        Вошли {chart.coverage.counted} объект{pluralRu(chart.coverage.counted)} из{" "}
+        {chart.coverage.total}: у остальных не заведена площадь или нет действующей суммы.
       </div>
     </section>
   );

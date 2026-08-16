@@ -395,6 +395,36 @@ class TestHeadline:
         assert counters["contracts"] == 4
         assert counters["contracts_with_estimate"] == 3
         assert counters["objects"] != counters["contracts"]
+        # Классы считаются по СНИМКУ на договоре (`AGENTS.md` §4) — тем же
+        # признаком, по которому группируют рейтинг и диаграмма этой страницы.
+        # Три из четырёх договоров сидят на одном классе, четвёртый (`без
+        # сметы`) завёл свой — итого два, а не число классов объектов.
+        assert counters["classes"] == 2
+
+    def test_class_counter_matches_the_chart_lanes(self, db_session, factories):
+        """Счётчик классов и число дорожек диаграммы обязаны сходиться.
+
+        Замерено браузерным smoke на стенде: счёт по `objects.rate_class_id`
+        давал «в 1 классах», тогда как диаграмма двумя блоками ниже рисовала три
+        дорожки. Два числа об одном и том же на одном экране — дефект, который
+        jsdom не наблюдает, а человек видит сразу.
+        """
+        shared_object_class = factories.RateClassFactory.create()
+        for _ in range(3):
+            obj = factories.ObjectFactory.create(
+                rate_class=shared_object_class,
+                area_aboveground_sp=Decimal("100"),
+                area_underground_sp=Decimal("0"),
+            )
+            _priced_contract(factories, obj=obj, rate_class=factories.RateClassFactory.create())
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        counters = crud_dashboard.base_counters(db_session, contracts)
+
+        assert counters["classes"] == len(crud_dashboard.per_sqm_chart(objects)["classes"])
+        assert counters["classes"] == 3
 
     def test_per_sqm_extremes_carry_their_own_coverage(self, db_session, factories):
         cheap = _object(factories, above="100", under="0")
@@ -440,6 +470,33 @@ class TestObjectLadder:
         assert _objects(db_session)[obj.id].reason == (
             crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
         )
+
+    def test_object_of_amendment_contract_leaves_ranking_and_chart(
+        self, db_session, factories
+    ):
+        """DoD спеки: договор с ДС исключён из итогов, РЕЙТИНГА и ДИАГРАММЫ.
+
+        Договорная лестница проверена отдельно; здесь — что исключение доезжает
+        до объектных поверхностей. Объект у договора один, поэтому в объектную
+        лестницу он попадает не как «много договоров», а как «ни одного
+        учтённого» — это разные причины, и путать их нельзя.
+        """
+        obj = _object(factories, above="100", under="0")
+        contract, _, proposal = _chain(factories, obj=obj)
+        _row(factories, proposal, total="1000")
+        _, _, amendment_proposal = _chain(factories, contract=contract, amendment_no=1)
+        _row(factories, amendment_proposal, total="500")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+
+        assert crud_dashboard.money_total(contracts) == Decimal("0")
+        assert {r.object_id: r for r in objects}[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        )
+        assert crud_dashboard.object_ranking(objects) == []
+        assert crud_dashboard.per_sqm_chart(objects)["classes"] == []
 
     def test_object_without_area_is_in_ranking_but_not_in_chart(self, db_session, factories):
         """Отсутствие площади — охват ДИАГРАММЫ, а не рейтинга: сумма договора

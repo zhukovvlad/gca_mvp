@@ -54,6 +54,12 @@ function describeContractCoverage(coverage: DashboardContractCoverage): string {
   return named.length > 0 ? `${head}: ${named.join(", ")}` : head;
 }
 
+/** «в 1 классе» / «в 2 классах»: у предложного падежа свои окончания, и
+ *  `pluralRu` (именительный) здесь не подходит. */
+function classSuffix(n: number): string {
+  return pluralRu(n) === "" ? "е" : "ах";
+}
+
 /** «2/4» — охват одного слагаемого, в своих единицах. */
 function coverageRatio(coverage: DashboardCoverage): string {
   return `${coverage.counted}/${coverage.total}`;
@@ -176,7 +182,9 @@ function CountersTile({ counters }: { counters: Dashboard["counters"] }) {
       */}
       <Tile label="Объектов" testId="counter-objects" className="py-3">
         <div className="mt-1 font-mono text-lg text-fg">{formatNumber(counters.objects)}</div>
-        <div className="text-2xs text-fg-secondary">в {counters.classes} классах</div>
+        <div className="text-2xs text-fg-secondary">
+          в {counters.classes} класс{classSuffix(counters.classes)}
+        </div>
       </Tile>
       <Tile label="Договоров" testId="counter-contracts" className="py-3">
         <div className="mt-1 font-mono text-lg text-fg">{formatNumber(counters.contracts)}</div>
