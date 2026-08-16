@@ -23,9 +23,12 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
 from crud import dashboard as crud_dashboard
 from crud.dashboard import (
@@ -34,7 +37,7 @@ from crud.dashboard import (
     CONTRACT_REASON_NO_ESTIMATE,
     CONTRACT_REASON_NO_RATE,
 )
-from models import UserRole
+from models import ImportJobStatus, UserRole
 from money.vat import gross_to_net, net_to_gross
 from tests.integration.test_analytics_api import _priced_estimate_with_two_proposals
 
@@ -621,3 +624,177 @@ class TestDashboardEndpoint:
         assert '"amount":1234567890.12' not in compact
         assert '"area_total_sp":"75741.00"' in compact
         assert '"area_total_sp":75741' not in compact
+
+
+# ---------------------------------------------------------------------------
+#  Таб «На что обратить внимание» (задача 4, решение 12 макета)
+# ---------------------------------------------------------------------------
+
+ATTENTION_URL = "/api/v1/analytics/dashboard/attention"
+
+
+def _second_proposal(factories, contract, estimate, *, vat_rate, total="1000"):
+    """Второе предложение той же сметы — ставка НДС живёт на предложении."""
+    lot = factories.LotFactory.create(estimate=estimate)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
+    _row(factories, proposal, total=total)
+    return proposal
+
+
+@contextmanager
+def _count_queries(db_session):
+    """Счётчик исполненных запросов. Готового приёма в проекте не было —
+    заводится этой задачей (`before_cursor_execute` на соединении сессии)."""
+    counter = {"n": 0}
+    bind = db_session.get_bind()
+
+    def _tick(conn, cursor, statement, parameters, context, executemany):
+        counter["n"] += 1
+
+    sa.event.listen(bind, "before_cursor_execute", _tick)
+    try:
+        yield counter
+    finally:
+        sa.event.remove(bind, "before_cursor_execute", _tick)
+
+
+class TestAttentionRights:
+    def test_admin_gets_five_rows(self, client, db_session):
+        db_session.commit()
+
+        body = client.get(ATTENTION_URL)
+
+        assert body.status_code == 200
+        assert set(body.json()) == set(crud_dashboard.ATTENTION_ROWS)
+        assert len(crud_dashboard.ATTENTION_ROWS) == 5
+
+    def test_member_gets_403(self, client, db_session):
+        """Право видно НА СЕРВЕРЕ, а не только скрытой вкладкой (спека §2.8)."""
+        db_session.commit()
+        client.auth_state["role"] = UserRole.member
+
+        assert client.get(ATTENTION_URL).status_code == 403
+
+
+class TestAttentionCounters:
+    def test_disagreeing_proposal_rates_are_diagnosed(self, db_session, factories):
+        """ПЕРВАЯ реальная причина `effective_display_rate == None`: предложения
+        заявили РАЗНЫЕ ставки. Наивный запрос решения 12
+        (`COALESCE(vat_rate_base_override, vat_rate) IS NULL`) смотрит только на
+        базу и о правиле единогласия не знает — он молчит, а договор при этом
+        исключён из итогов, то есть пропал БЕЗ ДИАГНОСТИКИ.
+        """
+        contract, estimate, _ = _chain(factories, vat_rate=Decimal("20"))
+        _second_proposal(factories, contract, estimate, vat_rate=Decimal("22"))
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 1
+
+    def test_partially_unknown_proposal_rate_is_diagnosed(self, db_session, factories):
+        """ВТОРАЯ реальная причина: часть предложений ставку не заявила вовсе.
+        Разведена с первой намеренно — обе дают `None` в одной функции, и одно
+        общее снятие уронило бы оба входа сразу, доказав лишь, что защита
+        где-то есть, а не что тестов два.
+        """
+        contract, estimate, _ = _chain(factories, vat_rate=Decimal("20"))
+        _second_proposal(factories, contract, estimate, vat_rate=None)
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 1
+
+    def test_base_override_is_not_diagnosed(self, db_session, factories):
+        """ЗЕЛЁНЫЙ КОНТРОЛЬ. Ставка назначена человеком — ни диагностики, ни
+        исключения из денег. Наивный запрос его тоже распознаёт, поэтому уронить
+        этот тест возвратом к наброску решения 12 невозможно: он стережёт не
+        набросок, а то, что диагностика не выдумывает проблему на ровном месте.
+        """
+        _, estimate, _ = _chain(factories, vat_rate=None)
+        estimate.vat_rate_base_override = Decimal("20")
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 0
+
+    def test_object_with_several_contracts_is_counted(self, db_session, factories):
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories)  # одиночный — не в счёте
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)[
+            "objects_with_several_contracts"
+        ] == 1
+
+    def test_contract_without_estimate_is_counted(self, db_session, factories):
+        factories.ContractFactory.create()
+        _priced_contract(factories)
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)[
+            "contracts_without_estimate"
+        ] == 1
+
+    def test_object_without_area_is_counted(self, db_session, factories):
+        _object(factories, above="100", under="0")
+        _object(factories)
+        _object(factories, useful="50")  # полезная общей не заводит
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)["objects_without_area"] == 2
+
+    def test_failed_import_older_than_thirty_days_is_not_counted(
+        self, db_session, factories
+    ):
+        """Окно 30 дней — часть диагностики, а не украшение: без него строка
+        показывала бы вечный долг и читалась бы как фон."""
+        contract = factories.ContractFactory.create()
+        fresh = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.error.value
+        )
+        stale = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.error.value
+        )
+        done = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.done.value
+        )
+        db_session.flush()
+        now = dt.datetime.now(dt.UTC)
+        fresh.created_at = now - dt.timedelta(days=3)
+        stale.created_at = now - dt.timedelta(days=31)
+        done.created_at = now - dt.timedelta(days=1)
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)["failed_imports_30d"] == 1
+
+
+def test_attention_query_count_does_not_grow_with_the_base(db_session, factories):
+    """N+1 ловится РАВЕНСТВОМ счётчиков на двух размерах выборки, а не магической
+    константой: «ровно пять запросов» сломается от первой же законной правки, а
+    равенство ловит именно рост.
+
+    Опасное место одно — строка «без ставки» считается `effective_display_rate`,
+    а это функция Python: позвать её в цикле по сметам, дозапрашивая предложения
+    на каждую, дало бы N+1 ровно на той странице, которая открывается чаще всех.
+    """
+    for _ in range(2):
+        _priced_contract(factories)
+    db_session.flush()
+    with _count_queries(db_session) as small:
+        crud_dashboard.attention_counters(db_session)
+
+    for _ in range(10):
+        _priced_contract(factories)
+    db_session.flush()
+    with _count_queries(db_session) as large:
+        crud_dashboard.attention_counters(db_session)
+
+    assert small["n"] > 0
+    assert small["n"] == large["n"]

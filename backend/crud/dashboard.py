@@ -39,7 +39,17 @@ from sqlalchemy.orm import Session
 
 from crud.common import iso
 from crud.project_passport import CATEGORY_TOTALS
-from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass
+from models import (
+    Contract,
+    Contractor,
+    Estimate,
+    ImportJob,
+    ImportJobStatus,
+    Lot,
+    ObjectModel,
+    Proposal,
+    RateClass,
+)
 from money.vat import effective_display_rate, restate_gross
 
 # ---------------------------------------------------------------------------
@@ -678,4 +688,100 @@ def get_dashboard(db: Session) -> dict:
         "ranking": [_ranking_card(row) for row in object_ranking(objects)],
         "ranking_coverage": object_coverage(objects),
         "chart": per_sqm_chart(objects),
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Таб «На что обратить внимание» (решение 12 макета, спека §2.3а)
+# ---------------------------------------------------------------------------
+
+#: Окно строки «импорты с ошибкой». Считается от `created_at` задания: у
+#: терминального `error` собственный возраст и есть возраст ошибки, а
+#: `finished_at` необязателен (задание могло не дойти до завершения и получить
+#: `error` от startup-recovery, §5).
+ATTENTION_IMPORT_WINDOW = dt.timedelta(days=30)
+
+#: Пять строк решения 12 — состав ответа, закреплённый тестом.
+ATTENTION_ROWS: tuple[str, ...] = (
+    "estimates_without_vat_rate",
+    "objects_with_several_contracts",
+    "contracts_without_estimate",
+    "objects_without_area",
+    "failed_imports_30d",
+)
+
+
+def _estimates_without_display_rate(db: Session) -> int:
+    """Сметы, у которых НЕТ действующей ставки — ТОЙ ЖЕ семантикой, что
+    договорная лестница (спека §2.3а), а не наброском решения 12.
+
+    Набросок пишет `COALESCE(vat_rate_base_override, vat_rate) IS NULL`, то есть
+    смотрит только на БАЗУ и не знает правила единогласия. Две реальные причины
+    он молчаливо пропускает — разногласие ставок предложений и частично
+    неизвестную ставку, — а деньги такого договора из итогов при этом
+    исключаются: он пропадает БЕЗ ДИАГНОСТИКИ, что хуже обеих ошибок по
+    отдельности.
+
+    Два запроса на всю базу, ни одного в цикле: `effective_display_rate` —
+    функция Python, и позвать её на смету, дозапросив предложения, значило бы
+    получить N+1 на самой посещаемой странице (стережёт
+    `test_attention_query_count_does_not_grow_with_the_base`).
+    """
+    estimates = db.execute(
+        sa.select(Estimate.id, Estimate.vat_rate_target, Estimate.vat_rate_base_override)
+    ).all()
+    declared = _declared_rates(db)
+    return sum(
+        1
+        for estimate_id, target, base_override in estimates
+        if effective_display_rate(target, base_override, declared.get(estimate_id, []))
+        is None
+    )
+
+
+def attention_counters(db: Session) -> dict:
+    """Пять счётчиков решения 12 — БЕЗ списков затронутых сущностей.
+
+    Списки нужны были бы действиям, а действия отложены решением пользователя на
+    гейте 3 (v1 показывает счётчики без действий). Возвращать их «на будущее»
+    нельзя: неиспользуемое поле ответа никем не проверяется и тихо разъезжается
+    с расчётом.
+    """
+    several = db.execute(
+        sa.select(sa.func.count()).select_from(
+            sa.select(Contract.object_id)
+            .group_by(Contract.object_id)
+            .having(sa.func.count() > 1)
+            .subquery()
+        )
+    ).scalar_one()
+
+    without_estimate = db.execute(
+        sa.select(sa.func.count())
+        .select_from(Contract)
+        .outerjoin(Estimate, Estimate.contract_id == Contract.id)
+        .where(Estimate.id.is_(None))
+    ).scalar_one()
+
+    without_area = db.execute(
+        sa.select(sa.func.count())
+        .select_from(ObjectModel)
+        .where(ObjectModel.area_total_sp.is_(None))
+    ).scalar_one()
+
+    failed_imports = db.execute(
+        sa.select(sa.func.count())
+        .select_from(ImportJob)
+        .where(
+            ImportJob.status == ImportJobStatus.error.value,
+            ImportJob.created_at >= sa.func.now() - ATTENTION_IMPORT_WINDOW,
+        )
+    ).scalar_one()
+
+    return {
+        "estimates_without_vat_rate": _estimates_without_display_rate(db),
+        "objects_with_several_contracts": several,
+        "contracts_without_estimate": without_estimate,
+        "objects_without_area": without_area,
+        "failed_imports_30d": failed_imports,
     }

@@ -19,6 +19,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from auth import require_admin
 from crud import analytics as crud_analytics
 from crud import dashboard as crud_dashboard
 from crud import project_passport as crud_project_passport
@@ -112,6 +113,23 @@ def get_dashboard(db: Session = Depends(get_db)):
     `float` (`responses.py`).
     """
     return decimal_json(crud_dashboard.get_dashboard(db))
+
+
+@router.get("/dashboard/attention", dependencies=[Depends(require_admin)])
+def get_dashboard_attention(db: Session = Depends(get_db)):
+    """Таб «На что обратить внимание» (решение 12 макета) — ТОЛЬКО `admin`.
+
+    Первое использование `require_admin` в этом роутере: остальная аналитика —
+    чтение, а это диагностики и работа аналитика (§3). Отдельный эндпоинт, а не
+    ветка внутри `/dashboard`, ровно затем, чтобы право закрывало диагностики, а
+    не весь дашборд (спека §2.8).
+
+    Ответ — ПЯТЬ СЧЁТЧИКОВ, без списков затронутых сущностей: списки нужны были
+    бы действиям, а действия отложены (решение пользователя на гейте 3).
+    Денег в ответе нет, поэтому `decimal_json` здесь не нужен — но и `Decimal`
+    сюда попасть не может, счётчики целые.
+    """
+    return crud_dashboard.attention_counters(db)
 
 
 @router.get("/project-passport/{contract_id}")
