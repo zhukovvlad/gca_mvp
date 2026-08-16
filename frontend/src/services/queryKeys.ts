@@ -89,6 +89,17 @@ export const qk = {
     project: (contractId: number) => ["passport", "project", contractId] as const,
   },
 
+  /**
+   * Стартовый дашборд (спека 2026-08-16). Два ключа под одним корнем: главная
+   * и её админский таб диагностик — разные эндпоинты и разные права, но одна
+   * поверхность, и инвалидируются они вместе.
+   */
+  dashboard: {
+    all: ["dashboard"] as const,
+    main: () => ["dashboard", "main"] as const,
+    attention: () => ["dashboard", "attention"] as const,
+  },
+
   matrix: {
     all: ["matrix"] as const,
     list: (params?: MatrixParams) => ["matrix", "list", params ?? {}] as const,

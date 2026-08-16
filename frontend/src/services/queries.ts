@@ -618,6 +618,32 @@ export function useUpdateAppSettings() {
  * `useUpdateAppSettings` уже накрывает паспорт проекта, без правки списка
  * инвалидации.
  */
+/** Основной таб стартового дашборда (спека 2026-08-16 §2.8) — читает и `member`. */
+export function useDashboard() {
+  return useQuery({
+    queryKey: qk.dashboard.main(),
+    queryFn: analyticsApi.dashboard,
+  });
+}
+
+/**
+ * Диагностики второго таба — **под условием**, а не безусловно.
+ *
+ * `enabled` здесь не оптимизация. Дорогой расчёт как раз и не запустится:
+ * `require_admin` — зависимость, она отклоняет запрос ДО обработчика, и
+ * `member` получил бы `403`, ничего не посчитав. Причина другая: безусловный
+ * хук штатно генерирует запрещённые запросы, засоряет журнал сервера отказами и
+ * делает право видимым только на сервере, тогда как §2.8 разводит эндпоинты,
+ * чтобы клиент И НЕ ПЫТАЛСЯ.
+ */
+export function useDashboardAttention(enabled: boolean) {
+  return useQuery({
+    queryKey: qk.dashboard.attention(),
+    queryFn: analyticsApi.dashboardAttention,
+    enabled,
+  });
+}
+
 export function useProjectPassport(contractId: number | undefined) {
   return useQuery({
     queryKey: qk.passport.project(contractId ?? 0),

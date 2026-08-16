@@ -6,7 +6,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom
 import { AppShell } from "@/components/layout/AppShell";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useCurrentUser } from "@/hooks/useAuth";
-import Home from "@/pages/Home";
+import HomeDashboardPage from "@/pages/home/HomeDashboardPage";
 import LoginPage from "@/pages/LoginPage";
 import AdminUserCreate from "@/pages/admin/AdminUserCreate";
 import AdminUsers from "@/pages/admin/AdminUsers";
@@ -64,7 +64,7 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route element={<ProtectedLayout />}>
               <Route element={<AppShell />}>
-                <Route path="/" element={<Home />} />
+                <Route path="/" element={<HomeDashboardPage />} />
                 {/*
                   Договоры и ручной матчинг доступны и `member` (§3): он читает
                   карточки, грузит сметы и разбирает очередь. Право `admin` на

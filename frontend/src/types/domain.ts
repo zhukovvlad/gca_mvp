@@ -825,3 +825,137 @@ export interface ClearCategoryOverrideInput {
   estimateId: number;
   positionItemId: number;
 }
+
+// ---------------------------------------------------------------------------
+//  Стартовый дашборд (спека 2026-08-16)
+// ---------------------------------------------------------------------------
+
+/**
+ * ОХВАТОВ ДВА, и типы это сохраняют. Договорный охват защищает деньги,
+ * объектный — рейтинг и диаграмму; у каждого свой набор причин, поэтому
+ * `reasons` типизирован раздельно, а не общим `Record<string, number>`:
+ * общая запись позволила бы сложить счётчики разных сущностей, чего решение 9
+ * макета прямо запрещает («5 договоров» и «1 объект» — разные вещи).
+ */
+export type DashboardContractReason =
+  | "no_estimate"
+  | "amendment"
+  | "no_rate"
+  | "incomplete";
+
+export type DashboardObjectReason = "many_contracts" | "no_counted_contract";
+
+export interface DashboardCoverage {
+  total: number;
+  counted: number;
+}
+
+export interface DashboardContractCoverage extends DashboardCoverage {
+  reasons: Record<DashboardContractReason, number>;
+}
+
+export interface DashboardObjectCoverage extends DashboardCoverage {
+  reasons: Record<DashboardObjectReason, number>;
+}
+
+/** Слагаемое площади со СВОИМ охватом (решение 4 макета). */
+export interface DashboardAreaBlock {
+  value: Decimal | null;
+  coverage: DashboardCoverage;
+}
+
+export interface DashboardNamedArea {
+  object_id: number;
+  title: string;
+  area_total_sp: Decimal | null;
+}
+
+export interface DashboardAreas {
+  total: DashboardAreaBlock;
+  aboveground: DashboardAreaBlock;
+  underground: DashboardAreaBlock;
+  useful: DashboardAreaBlock;
+  largest: DashboardNamedArea | null;
+  smallest: DashboardNamedArea | null;
+}
+
+export interface DashboardCounters {
+  objects: number;
+  classes: number;
+  contracts: number;
+  contracts_with_estimate: number;
+}
+
+export interface DashboardPerSqmPoint {
+  object_id: number;
+  title: string;
+  per_sqm: Decimal | null;
+  area_total_sp: Decimal | null;
+  rate_class_title: string | null;
+}
+
+export interface DashboardPerSqmExtremes {
+  max: DashboardPerSqmPoint | null;
+  min: DashboardPerSqmPoint | null;
+  coverage: DashboardCoverage;
+}
+
+export interface DashboardRankingCard {
+  object_id: number;
+  title: string;
+  rate_class_id: number | null;
+  rate_class_title: string | null;
+  area_total_sp: Decimal | null;
+  amount: Decimal | null;
+  per_sqm: Decimal | null;
+  display_rate: Decimal | null;
+  contract: {
+    id: number | null;
+    contract_number: string | null;
+    signed_date: string | null;
+    contractor_title: string | null;
+  };
+}
+
+export interface DashboardChartPoint {
+  object_id: number;
+  title: string;
+  per_sqm: Decimal;
+  amount: Decimal | null;
+  area_total_sp: Decimal | null;
+}
+
+export interface DashboardChartLane {
+  rate_class_id: number;
+  rate_class_title: string | null;
+  points: DashboardChartPoint[];
+  /** `null` у класса с ОДНИМ объектом: размаха не существует (решение 11). */
+  spread: { min: Decimal; max: Decimal } | null;
+}
+
+export interface DashboardChart {
+  classes: DashboardChartLane[];
+  coverage: DashboardCoverage;
+}
+
+export interface Dashboard {
+  money: { amount: Decimal; coverage: DashboardContractCoverage };
+  areas: DashboardAreas;
+  counters: DashboardCounters;
+  per_sqm: DashboardPerSqmExtremes;
+  ranking: DashboardRankingCard[];
+  ranking_coverage: DashboardObjectCoverage;
+  chart: DashboardChart;
+}
+
+/**
+ * Пять счётчиков решения 12 — БЕЗ списков затронутых сущностей: списки нужны
+ * были бы действиям, а действия отложены решением гейта 3.
+ */
+export interface DashboardAttention {
+  estimates_without_vat_rate: number;
+  objects_with_several_contracts: number;
+  contracts_without_estimate: number;
+  objects_without_area: number;
+  failed_imports_30d: number;
+}
