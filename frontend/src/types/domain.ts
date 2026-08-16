@@ -843,7 +843,15 @@ export type DashboardContractReason =
   | "no_rate"
   | "incomplete";
 
-export type DashboardObjectReason = "many_contracts" | "no_counted_contract";
+/**
+ * «Нет договоров вовсе» и «договоры есть, но ни один не учтён» — РАЗНЫЕ причины
+ * (находка ревью Codex). Вторую объясняет договорная половина охвата, первую не
+ * объясняет никто, и слитые в одну они прятали объект без договоров.
+ */
+export type DashboardObjectReason =
+  | "many_contracts"
+  | "no_contracts"
+  | "no_counted_contract";
 
 export interface DashboardCoverage {
   total: number;

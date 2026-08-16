@@ -1164,7 +1164,7 @@ export const sampleDashboard: Dashboard = {
   ranking_coverage: {
     total: 4,
     counted: 3,
-    reasons: { many_contracts: 1, no_counted_contract: 0 },
+    reasons: { many_contracts: 1, no_contracts: 0, no_counted_contract: 0 },
   },
   chart: {
     classes: [

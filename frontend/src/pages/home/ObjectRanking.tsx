@@ -50,7 +50,14 @@ function ExcludedNote({
   isAdmin: boolean;
 }) {
   const excludedContracts = contracts.total - contracts.counted;
-  const excludedObjects = objects.reasons.many_contracts;
+  const manyContracts = objects.reasons.many_contracts;
+  const noContracts = objects.reasons.no_contracts;
+  // `no_counted_contract` в сноске НЕ называется намеренно: такой объект уже
+  // объяснён договорной половиной — его единственный договор назван там со
+  // своей причиной, и второе упоминание описывало бы одну беду как две.
+  // `no_contracts` называется обязательно: о нём не говорит ни одна строка
+  // договорной половины, и без него объект пропадал бы молча.
+  const excludedObjects = manyContracts + noContracts;
   const named = (Object.keys(EXCLUDED_REASON_LABEL) as DashboardContractReason[])
     .filter((reason) => contracts.reasons[reason] > 0)
     .map((reason) => `${contracts.reasons[reason]} ${EXCLUDED_REASON_LABEL[reason]}`);
@@ -72,13 +79,22 @@ function ExcludedNote({
         </>
       )}
       {excludedContracts > 0 && excludedObjects > 0 && " — и "}
-      {excludedObjects > 0 && (
+      {manyContracts > 0 && (
         <>
           <b className="font-medium text-fg-secondary">
-            {excludedObjects} объект{pluralRu(excludedObjects)}
+            {manyContracts} объект{pluralRu(manyContracts)}
           </b>{" "}
           с несколькими договорами ГП: действующий не определён, хотя сами договоры в итогах
           учтены.
+        </>
+      )}
+      {manyContracts > 0 && noContracts > 0 && " "}
+      {noContracts > 0 && (
+        <>
+          <b className="font-medium text-fg-secondary">
+            {noContracts} объект{pluralRu(noContracts)}
+          </b>{" "}
+          без договоров: считать по ним нечего.
         </>
       )}
       {isAdmin && (

@@ -37,6 +37,7 @@ from crud.dashboard import (
     CONTRACT_REASON_NO_ESTIMATE,
     CONTRACT_REASON_NO_RATE,
 )
+from crud.project_passport import CATEGORY_TOTALS
 from models import ImportJobStatus, UserRole
 from money.vat import gross_to_net, net_to_gross
 from tests.integration.test_analytics_api import _priced_estimate_with_two_proposals
@@ -226,6 +227,52 @@ class TestContractLadder:
         db_session.flush()
 
         assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_INCOMPLETE
+
+    def test_contract_with_non_finite_cost_is_incomplete(self, db_session, factories):
+        """ПОВЕДЕНИЕ третьего условия §2.6: строка со стоимостью `NaN` исключает
+        договор. Требование DoD «по всем трём условиям» закрывается ЗДЕСЬ —
+        отдельной ветки в `_is_incomplete` у него нет и быть не может, см.
+        соседний тест про VIEW.
+        """
+        contract, _, proposal = _chain(factories)
+        _row(factories, proposal, total="1000")
+        _row(factories, proposal, total="NaN")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason == CONTRACT_REASON_INCOMPLETE
+        assert row.amount is None
+
+    def test_view_keeps_non_finite_rows_out_of_rows_with_amount(
+        self, db_session, factories
+    ):
+        """ПОЧЕМУ третьего условия нет отдельной веткой (находка ревью Codex).
+
+        Ревью справедливо заметило, что `rows_not_finite > 0` стоял без теста и
+        его удаление оставляло набор зелёным. Снятие показало причину: ветка
+        НЕДОСТИЖИМА. `rows_with_amount` в VIEW считается фильтром, исключающим
+        `NaN`/`±Infinity` наравне с `NULL`, а `row_count` — это `COUNT(*)` без
+        фильтра, поэтому нефинитная строка всегда делает
+        `rows_with_amount < row_count`, то есть срабатывает ВТОРОЕ условие.
+
+        Этот тест закрепляет саму импликацию на уровне VIEW. Если VIEW когда-
+        нибудь начнёт считать нефинитные строки ценёнными, тест покраснеет — и
+        это будет сигналом вернуть третье условие в `_is_incomplete`.
+        """
+        _, estimate, proposal = _chain(factories)
+        _row(factories, proposal, total="1000")
+        _row(factories, proposal, total="NaN")
+        db_session.flush()
+
+        totals = db_session.execute(
+            sa.select(CATEGORY_TOTALS).where(CATEGORY_TOTALS.c.estimate_id == estimate.id)
+        ).all()
+        row_count = sum(row.row_count for row in totals)
+        rows_with_amount = sum(row.rows_with_amount for row in totals)
+        rows_not_finite = sum(row.rows_not_finite for row in totals)
+
+        assert rows_not_finite > 0
+        assert rows_with_amount < row_count
 
     def test_contract_with_all_zero_costs_is_counted_with_zero(self, db_session, factories):
         """Заявленный ноль — факт, а не отсутствие факта (§2.6). Контроль
@@ -426,6 +473,35 @@ class TestHeadline:
         assert counters["classes"] == len(crud_dashboard.per_sqm_chart(objects)["classes"])
         assert counters["classes"] == 3
 
+    def test_class_counter_is_never_smaller_than_the_lanes(self, db_session, factories):
+        """Уточнение по ревью Codex: счётчик классов и число дорожек РАВНЫ не
+        всегда, и это законно — счётчик описывает всю базу, диаграмма свою
+        выборку, и её охват назван под ней отдельной строкой.
+
+        Вход ревью: один учтённый договор класса A плюс договор БЕЗ СМЕТЫ класса
+        B. Счётчик обязан сказать «2 класса», дорожка — одна.
+
+        Обязателен ОДНОСТОРОННИЙ инвариант: счётчик никогда не МЕНЬШЕ числа
+        дорожек. Обратное означало бы, что на экране видно больше классов, чем
+        страница насчитала, — несводимое противоречие, и ровно оно было дефектом
+        до правки счётчика.
+        """
+        counted_object = _object(factories, above="100", under="0")
+        _priced_contract(
+            factories, obj=counted_object, rate_class=factories.RateClassFactory.create()
+        )
+        factories.ContractFactory.create(rate_class=factories.RateClassFactory.create())
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        counters = crud_dashboard.base_counters(db_session, contracts)
+        lanes = len(crud_dashboard.per_sqm_chart(objects)["classes"])
+
+        assert counters["classes"] == 2
+        assert lanes == 1
+        assert counters["classes"] >= lanes
+
     def test_per_sqm_extremes_carry_their_own_coverage(self, db_session, factories):
         cheap = _object(factories, above="100", under="0")
         pricey = _object(factories, above="100", under="0")
@@ -470,6 +546,34 @@ class TestObjectLadder:
         assert _objects(db_session)[obj.id].reason == (
             crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
         )
+
+    def test_object_without_any_contract_has_its_own_reason(self, db_session, factories):
+        """«Нет договоров вовсе» — ОТДЕЛЬНАЯ причина от «договоры есть, но ни
+        один не учтён» (находка ревью Codex).
+
+        Разница не терминологическая, а в том, объяснён ли объект где-то ещё.
+        Объект с исключённым договором назван договорной половиной охвата — его
+        договор стоит там со своей причиной. Объект БЕЗ договоров не назван
+        нигде: договорная половина о нём молчит, и слитый со вторым случаем он
+        пропадал из сноски рейтинга молча.
+        """
+        lonely = _object(factories, above="100", under="0")
+        other = _object(factories, above="100", under="0")
+        factories.ContractFactory.create(object=other)
+        db_session.flush()
+
+        objects = crud_dashboard.object_layer(
+            db_session, crud_dashboard.contract_layer(db_session)
+        )
+        by_id = {row.object_id: row for row in objects}
+
+        assert by_id[lonely.id].reason == crud_dashboard.OBJECT_REASON_NO_CONTRACTS
+        assert by_id[other.id].reason == crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        assert crud_dashboard.object_coverage(objects)["reasons"] == {
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS: 0,
+            crud_dashboard.OBJECT_REASON_NO_CONTRACTS: 1,
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT: 1,
+        }
 
     def test_object_of_amendment_contract_leaves_ranking_and_chart(
         self, db_session, factories

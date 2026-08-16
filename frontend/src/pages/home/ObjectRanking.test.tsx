@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
 
 import HomeDashboardPage from "./HomeDashboardPage";
 import { renderWithProviders } from "@/test/utils";
 import { handlerState } from "@/test/handlers";
+import { sampleDashboard } from "@/test/fixtures";
+import { server } from "@/test/server";
 import type { User } from "@/types/auth";
 
 const MEMBER: User = { id: 2, email: "reader@example.com", role: "member" };
@@ -59,6 +62,40 @@ describe("Сноска исключённых", () => {
     expect(note).toHaveTextContent("3 договора");
     expect(note).toHaveTextContent("1 объект");
     expect(note).not.toHaveTextContent("4");
+  });
+
+  it("объект БЕЗ ДОГОВОРОВ не исчезает молча", async () => {
+    // Находка ревью Codex. Единственный ранее показанный объектный счётчик —
+    // `many_contracts`; объект без единого договора попадал в
+    // `no_contracts`, и когда исключённых ДОГОВОРОВ нет, сноска скрывалась
+    // целиком ранним `return null`. Объект пропадал из рейтинга без единого
+    // слова, хотя охват его исключение знал.
+    server.use(
+      http.get("/api/v1/analytics/dashboard", () =>
+        HttpResponse.json({
+          ...sampleDashboard,
+          money: {
+            ...sampleDashboard.money,
+            coverage: {
+              total: 3,
+              counted: 3,
+              reasons: { no_estimate: 0, amendment: 0, no_rate: 0, incomplete: 0 },
+            },
+          },
+          ranking_coverage: {
+            total: 4,
+            counted: 3,
+            reasons: { many_contracts: 0, no_contracts: 1, no_counted_contract: 0 },
+          },
+        })
+      )
+    );
+
+    await renderDashboard();
+
+    const note = screen.getByTestId("excluded-note");
+    expect(note).toHaveTextContent("1 объект");
+    expect(note).toHaveTextContent("без договоров");
   });
 
   it("называет РАЗНЫЕ места исключения", async () => {
@@ -132,6 +169,20 @@ describe("Таб «На что обратить внимание»", () => {
     );
     expect(within(panel).getByTestId("attention-objects_without_area")).toHaveTextContent("4");
     expect(within(panel).getByTestId("attention-failed_imports_30d")).toHaveTextContent("1");
+  });
+
+  it("строка НДС не приписывает разногласию ставок чужую причину", async () => {
+    // Находка ревью Codex. Текст макета («Нетто вывести не из чего») писался под
+    // наивный запрос решения 12, который ловил только смету без базы. Спека
+    // §2.3а перевела счётчик на `effective_display_rate`, и он ловит ВТОРУЮ
+    // причину — разногласие ставок предложений. На ней старый текст ложен: базы
+    // известны, нетто выводится построчно, не выводится ЕДИНАЯ ставка показа.
+    await openAttention();
+
+    const row = await screen.findByTestId("attention-estimates_without_vat_rate");
+    expect(row).not.toHaveTextContent("Нетто вывести не из чего");
+    expect(row).toHaveTextContent("предложения разошлись");
+    expect(row).toHaveTextContent("не входит в денежные итоги");
   });
 
   it("ДЕЙСТВИЙ НЕТ ВОВСЕ — ни ссылок, ни кнопок", async () => {
