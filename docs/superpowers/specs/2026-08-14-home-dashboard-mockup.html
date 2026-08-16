@@ -1,0 +1,958 @@
+<!--
+  Макет стартовой страницы (маршрут `/`), гейт 1 фичи «начальный дашборд».
+  Заведён 2026-08-14, обновлён 2026-08-15 по двум кругам внешнего ревью (Codex)
+  и правкам пользователя. Спеки нет, плана нет, ветки нет.
+
+  Данные вымышленные: ни одного реального контрагента, объекта и суммы
+  (политика `samples/`).
+
+  Переключатели в верхней полосе — роль (аналитик/читатель) и тема; в живом
+  приложении роль приходит с сервера. Заголовки набраны Georgia вместо
+  Cormorant Garamond: CSP артефакта не пускает шрифтовые CDN, на палитру и
+  раскладку это не влияет.
+
+  ── РЕШЕНИЯ, ПРИНЯТЫЕ НА ГЕЙТЕ 1 ─────────────────────────────────────────────
+  1. Маршрут `/` — два таба: «Основной дашборд» и «На что обратить внимание».
+     Второй только для `admin`; у `member` полоса табов не рисуется вовсе.
+  2. Роли в жизни: `admin` — аналитики (грузят, матчат, утверждают нормативы),
+     `member` — читатели-смежники. Право `member` на загрузку и матчинг (§3)
+     этим не отменяется — речь о повседневной работе, а не о правах.
+  3. ВАЛОВАЯ СЕМАНТИКА ГЛАВНОЙ. И суммы, и ₽/м² на дашборде — С НДС. Каждый
+     договор берётся в ДЕЙСТВУЮЩЕЙ ставке: `estimates.vat_rate_target`, если
+     ставку пересчитали вручную, иначе базовая `proposals.vat_rate` (колонки
+     решения человека завела миграция 0012). Договор без действующей ставки в
+     итог не входит.
+     ЭТО ОСОЗНАННАЯ РЕВИЗИЯ AGENTS.md §10 (много-договорные поверхности — в
+     нетто). Порядок закрепления, требование ревью: сперва явным решением в
+     спеке, затем согласованной ревизией §10 в AGENTS.md.
+     СТАВКА ОБЪЯВЛЕНА НА САМОЙ ПОВЕРХНОСТИ постоянной строкой под подзаголовком
+     страницы («Все суммы и удельные показатели — с НДС, в действующей ставке
+     договора») и в подписи диаграммы («₽ за м² с НДС»). Второй круг ревью снял
+     промежуточное решение, при котором подпись жила ТОЛЬКО в тултипе: это
+     противоречило §10 («читатель обязан видеть, в чём измерены числа, которые
+     он складывает»). Тултип у плитки ИТОГО остался, но объясняет РАСЧЁТ
+     (действующая ставка, разные ставки у разных договоров), а не заменяет
+     объявление величины.
+  4. ОХВАТ НАЗЫВАЕТСЯ У КАЖДОГО ИТОГА, СЧИТАННОГО ПО ЧАСТИ БАЗЫ (правка по
+     ревью). Плитка ИТОГО: «учтено 14 договоров из 19: 3 без сметы, 2 без
+     ставки» — прежнее «не вошло: 2 сметы» занижало исключённое. Площади: у
+     каждого слагаемого СВОЙ охват (8/12, 8/12, 5/12) — надземная с подземной
+     заводятся парой (CHECK миграции 0009), полезная независима, и общий
+     «не заведена у N» это скрывал. Экстремумы ₽/м² подписаны «из 8» — они
+     тоже выборка по части базы.
+  5. Плитка «Площадь объектов» — широкая: общая цифра слева, надземная /
+     подземная / полезная столбиком справа с охватами, наибольший и наименьший
+     объект под линией.
+  6. ПОЛЕЗНАЯ ПЛОЩАДЬ — НОВОЕ ПОЛЕ ДОМЕНА. Колонка `area_useful_sp` на
+     `objects`, в `area_total_sp` НЕ входит (та остаётся GENERATED = надземная +
+     подземная, миграция 0009). Нужна миграция 0013 (`head` = 0012), поле в
+     форме объекта и валидация. `CHECK` «полезная ≤ общей» ставим, но пишем
+     через слагаемые (`area_useful_sp IS NULL OR area_useful_sp <=
+     area_aboveground_sp + area_underground_sp`), а не через генерируемую
+     колонку. Граница: если пара надземная/подземная не заведена, сумма NULL,
+     CHECK пропускает — полезную можно завести без общей.
+  7. Счётчики «Объектов» и «Договоров» — парой в одной ячейке; там же парой
+     максимум и минимум ₽/м². Плитку «Работ в каталоге» убрали.
+  8. Вместо таблицы договоров — КАРТОЧКИ ОБЪЕКТОВ друг под другом, топ-10 по
+     сумме, полоса относительной величины. Один объект = один действующий
+     договор ГП. Кнопка карточки ведёт в ПАСПОРТ (решено «пока так»).
+  9. ИСКЛЮЧЁННЫЕ — СНОСКОЙ ПОД РЕЙТИНГОМ, А НЕ ОТДЕЛЬНОЙ ПАНЕЛЬЮ. Панель
+     «Не учтены в рейтинге или итогах» с тремя причинами и кнопками УБРАНА:
+     она дублировала три из пяти строк второго таба один в один, а кнопки в ней
+     админские, тогда как первый таб видит и читатель. Осталась одна сноска в
+     подвале списка объектов — там, где вопрос «а где такой-то объект?» и
+     возникает.
+     Сноска сохраняет ровно два факта, которых больше нигде нет: счётчики В
+     СВОИХ ЕДИНИЦАХ (5 договоров и 1 объект — разные вещи, не складываются) и
+     РАЗНЫЕ МЕСТА ИСКЛЮЧЕНИЯ — договоры без сметы и без ставки выпали и из
+     рейтинга, и из итогов, а объект с двумя договорами ТОЛЬКО из рейтинга
+     (деньги его договоров в итогах есть). Имён объектов и действий в сноске
+     нет — им место во втором табе. Ссылка на таб показывается только `admin`:
+     у читателя таба нет, и вести его туда некуда.
+     История: заголовок панели сперва звучал «…в рейтинге И итогах», что
+     противоречило третьей причине; второй круг ревью потребовал «ИЛИ» и
+     пометку места у каждой причины. Панель убрана уже после этого, но само
+     различие мест сохранено сноской — оно содержательное, а не редакционное.
+ 10. АВАТАР ОБЪЕКТА: сейчас заглушка — пиктограмма и цвет по классу из набора
+     `--chart-*`, прошедшего валидатор различимости (index.css §кольцо; новые
+     цвета на глаз не подбирать). Загрузка фото — ОТДЕЛЬНОЙ ФИЧЕЙ, место 56×56
+     занято в тех же габаритах.
+ 11. ДИАГРАММА «Удельная стоимость объектов»: дорожка на класс, точка на
+     объект, полоса размаха от минимума класса к максимуму. У класса с ОДНИМ
+     объектом полосы НЕТ — размаха не существует, рисовать его было бы
+     выдумкой. Слева диапазон класса числами и число объектов; конкретный
+     объект — по наведению. Под диаграммой охват: 8 объектов из 12.
+     Палитра (chart-7, chart-3, chart-1, chart-4 — в порядке соседства
+     дорожек) прогнана `dataviz/scripts/validate_palette.js` отдельно для
+     светлой и тёмной темы, обе прошли. В светлой WARN на контраст зелёного и
+     охристого к белой поверхности — снимается видимой подписью класса на
+     каждой дорожке, поэтому различение никогда не держится на одном цвете.
+ 12. Таб «На что обратить внимание» — ПЯТЬ строк, каждая считается одним
+     дешёвым запросом поверх существующей схемы:
+       · сметы без ставки НДС — COALESCE(vat_rate_base_override, vat_rate) IS NULL
+       · объекты с несколькими договорами ГП — GROUP BY object_id HAVING count>1
+       · договоры без загруженной сметы — LEFT JOIN estimates … IS NULL
+       · объекты без площади — objects.area_total_sp IS NULL
+       · импорты с ошибкой за 30 дней — import_jobs.status = 'error'
+
+  ── ЧТО ИЗ ТАБА УБРАНО И ПОЧЕМУ ──────────────────────────────────────────────
+  · «Работы без норматива» — цифра не меняется годами (1610 из 1932), читается
+    как фон и обесценивает соседние строки.
+  · «Позиции ждут ручного матчинга» — решение пользователя.
+  · «Нераспределённое в паспорте» — решение пользователя, принятое ПОСЛЕ
+    разбора цены. Дешёвого способа посчитать его по всей базе нет:
+    `get_project_passport()` (crud/project_passport.py) считает ОДИН договор и
+    рекурсивно разворачивает дерево разделов — самый тяжёлый расчёт проекта, а
+    на дашборде он шёл бы при каждом открытии главной. Обходной путь через
+    `v_category_totals` НЕВЕРЕН: VIEW группирует по `work_category_id` РАЗДЕЛА
+    (миграция 0010), а ручной разнос лежит в `estimate_category_overrides`
+    (миграция 0011, VIEW она не переписывала) — наивный запрос ругался бы на
+    работу, которая уже сделана.
+
+  ── ГРАНИЦЫ И НАХОДКИ ────────────────────────────────────────────────────────
+  · АРХИВНЫЕ ДОГОВОРЫ. У объекта один ДЕЙСТВУЮЩИЙ договор ГП; при смене
+    генподрядчика старый должен уходить в архив. Признака архивности в схеме
+    НЕТ, поэтому объект со сменой ГП уже сегодня считается ДВАЖДЫ в сквозной
+    матрице (§6) и в отчёте «для банка» (§7.6). Решение: «дашборд сейчас, архив
+    потом» — дашборд не угадывает действующий договор, а называет аномалию
+    строкой в табе. Дефект существует независимо от дашборда, записать в спеку
+    отдельным пунктом. Внешнее ревью такую обработку признало достаточной.
+  · ВХОД В МАТРИЦУ И ОТЧЁТЫ вынесен за скоуп («отдельный вопрос, не сейчас»).
+    Решение Ф6 фазы 7 — «вернутся drill-down'ом из статьи паспорта, а не
+    пунктами меню» (TopNav.tsx) — не ревизуется. Следствие: `member` сегодня
+    не может дойти до них никак, и дашборд этого не чинит.
+  · МОБИЛЬНАЯ ВЁРСТКА — ВНЕ СКОУПА, решается отдельной фичей по всему продукту.
+    Ревью сообщило об обрезании интерфейса справа на 390 px; ЗАМЕР НЕ
+    ПОВТОРЁН — Playwright в рабочем окружении не поднимается (нужен
+    браузерный мост-расширение), так что цифра принята со слов ревьюера, а не
+    проверена фактом. В спеке записать как границу вместе с этой оговоркой.
+    Десктопную раскладку ревью подтвердило.
+
+  ── ОТКРЫТО ──────────────────────────────────────────────────────────────────
+  · Вопросы пользователя по секциям, которые ещё не обсуждались.
+  · Состав карточки объекта: сейчас класс, площадь, договор с датой, подрядчик,
+    сумма, ставка, ₽/м². Чего не хватает — не решено.
+-->
+<title>Дашборд базы расценок</title>
+<style>
+  /* ── Токены проекта (frontend/src/index.css). Светлая — на голом :root. ───── */
+  :root {
+    --bg-page:#F4F2EC; --bg-surface:#FFFFFF; --bg-surface-sunken:#F7F6F2;
+    --bg-surface-hover:#FAFAF7; --bg-section-header:#FAFAF7;
+    --text-primary:#1F2128; --text-secondary:#5A5D66; --text-tertiary:#8E8B82; --text-muted:#B5B2A8;
+    --border-subtle:rgba(0,0,0,.08); --border-default:rgba(0,0,0,.14); --border-strong:rgba(0,0,0,.22);
+    --accent:#5F8568; --accent-soft:#E8F0EA; --accent-border:#C9D9CD; --accent-text:#3D5443;
+    --action:#2D3A30; --action-text:#F7F6F2;
+    --warning:#B5642E; --warning-soft:#FAF1E1; --warning-border:#E8C8A8; --warning-text:#6B3915;
+    --neutral-soft:#EFEEE6; --neutral-border:#D8D4C8; --neutral-text:#5F5E5A;
+    --danger:#C44545; --danger-soft:#F9E7E7; --danger-border:#E8C8C8; --danger-text:#7A2424;
+    --info:#4A7290; --info-soft:#E5EEF4; --info-border:#C5D7E2; --info-text:#2C4A60;
+    --chart-1:#2a78d6; --chart-3:#1baf7a; --chart-4:#eda100; --chart-7:#4a3aa7;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-page:#1A1D24; --bg-surface:#232730; --bg-surface-sunken:#1F232B;
+      --bg-surface-hover:#262B35; --bg-section-header:#1C1F26;
+      --text-primary:#EDEAE0; --text-secondary:#B5B2A8; --text-tertiary:#8E8B82; --text-muted:#6E6B65;
+      --border-subtle:#2D323D; --border-default:#3A4148; --border-strong:#4A525C;
+      --accent:#8FAB91; --accent-soft:#2A352D; --accent-border:#3A4A3D; --accent-text:#B8C4BB;
+      --action:#B8C4BB; --action-text:#1A1D24;
+      --warning:#D49A6E; --warning-soft:#353027; --warning-border:#4A3D2E; --warning-text:#D49A6E;
+      --neutral-soft:#2A2D33; --neutral-border:#353944; --neutral-text:#B5B2A8;
+      --danger:#E07878; --danger-soft:#3A2929; --danger-border:#4A3434; --danger-text:#E8A0A0;
+      --info:#7AA0BE; --info-soft:#2A323D; --info-border:#3A4854; --info-text:#A5C0D6;
+      --chart-1:#3987e5; --chart-3:#199e70; --chart-4:#c98500; --chart-7:#9085e9;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg-page:#1A1D24; --bg-surface:#232730; --bg-surface-sunken:#1F232B;
+    --bg-surface-hover:#262B35; --bg-section-header:#1C1F26;
+    --text-primary:#EDEAE0; --text-secondary:#B5B2A8; --text-tertiary:#8E8B82; --text-muted:#6E6B65;
+    --border-subtle:#2D323D; --border-default:#3A4148; --border-strong:#4A525C;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-border:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warning:#D49A6E; --warning-soft:#353027; --warning-border:#4A3D2E; --warning-text:#D49A6E;
+    --neutral-soft:#2A2D33; --neutral-border:#353944; --neutral-text:#B5B2A8;
+    --danger:#E07878; --danger-soft:#3A2929; --danger-border:#4A3434; --danger-text:#E8A0A0;
+    --info:#7AA0BE; --info-soft:#2A323D; --info-border:#3A4854; --info-text:#A5C0D6;
+    --chart-1:#3987e5; --chart-3:#199e70; --chart-4:#c98500; --chart-7:#9085e9;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg-page); color: var(--text-primary);
+    font-family: Inter, "Segoe UI", Roboto, -apple-system, sans-serif;
+    font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  h1,h2,h3 { font-weight: 500; line-height: 1.2; margin: 0; }
+  .serif { font-family: Georgia, "Times New Roman", serif; font-weight: 400; }
+  .container { max-width: 1400px; margin-inline: auto; padding-inline: 24px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ── Полоса мокапа ──────────────────────────────────────────────────────── */
+  .mock-bar {
+    background: var(--info-soft); border-bottom: .5px solid var(--info-border);
+    color: var(--info-text); font-size: 12px;
+  }
+  .mock-bar .container { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding-block: 8px; }
+  .mock-bar strong { font-weight: 600; }
+  .switcher { display: flex; gap: 4px; margin-left: auto; }
+  .switcher button {
+    font: inherit; cursor: pointer; padding: 3px 10px; border-radius: 4px;
+    border: .5px solid var(--info-border); background: transparent; color: var(--info-text);
+  }
+  .switcher button[aria-pressed="true"] { background: var(--info); color: var(--bg-surface); border-color: var(--info); }
+  .switcher button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ── Шапка приложения ───────────────────────────────────────────────────── */
+  header.app {
+    height: 56px; border-bottom: .5px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-surface) 95%, transparent);
+  }
+  header.app .container { display: flex; height: 100%; align-items: center; gap: 24px; }
+  .logo { font-family: Georgia, serif; font-size: 17px; letter-spacing: .01em; white-space: nowrap; }
+  .logo span { color: var(--accent); }
+  nav.top { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; }
+  nav.top a {
+    display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 6px;
+    font-size: 13px; font-weight: 500; text-decoration: none; color: var(--text-secondary);
+  }
+  nav.top a.active { background: var(--bg-surface-hover); color: var(--text-primary); }
+  .avatar {
+    width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent-text); font-size: 11px; font-weight: 600;
+  }
+
+  /* ── Заголовок страницы + табы ──────────────────────────────────────────── */
+  .page-head { padding-top: 32px; }
+  .page-head h1 { font-size: 26px; }
+  .page-head p { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; }
+  /* Ставка объявлена постоянной строкой на самой поверхности, а не только в
+     тултипе: читатель обязан видеть, в чём измерены числа, которые он
+     складывает (AGENTS.md §10). Тултип у плитки остаётся для подробностей. */
+  .axis-note {
+    display: inline-flex; align-items: center; gap: 7px; margin-top: 10px;
+    padding: 4px 10px; border-radius: 6px; font-size: 12px;
+    background: var(--accent-soft); border: .5px solid var(--accent-border); color: var(--accent-text);
+  }
+  .axis-note::before {
+    content: ""; width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent); flex: none;
+  }
+  .tabs { display: flex; gap: 4px; margin-top: 20px; border-bottom: .5px solid var(--border-subtle); }
+  .tabs button {
+    font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+    background: none; border: 0; border-bottom: 2px solid transparent;
+    padding: 8px 14px; margin-bottom: -1px; color: var(--text-secondary);
+  }
+  .tabs button[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); }
+  .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px 4px 0 0; }
+  .tabs .count {
+    margin-left: 7px; padding: 1px 6px; border-radius: 999px; font-size: 11px;
+    background: var(--warning-soft); color: var(--warning-text); border: .5px solid var(--warning-border);
+  }
+
+  /* ── KPI ────────────────────────────────────────────────────────────────── */
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 24px; }
+  .kpi.total, .kpi.wide { grid-column: span 2; }
+  .kpi {
+    background: var(--bg-surface); border: .5px solid var(--border-subtle);
+    border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; min-height: 108px;
+  }
+  .kpi .label {
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .kpi .value { font-size: 26px; font-weight: 500; letter-spacing: -.01em; }
+  .kpi .value small { font-size: 15px; font-weight: 400; color: var(--text-secondary); margin-left: 3px; }
+  .kpi .sub { font-size: 12px; color: var(--text-secondary); margin-top: auto; }
+  .kpi.total { border-color: var(--accent-border); background: var(--accent-soft); }
+  .kpi.total .label, .kpi.total .value { color: var(--accent-text); }
+  .kpi .excl { color: var(--warning-text); }
+
+  /* Подпись величины — тултипом у заголовка плитки. */
+  .tip-wrap { position: relative; display: inline-flex; align-items: center; gap: 5px; }
+  .info {
+    width: 14px; height: 14px; padding: 0; border-radius: 999px; cursor: help;
+    display: grid; place-items: center; font: 600 9px/1 inherit;
+    background: var(--bg-surface); color: var(--accent-text); border: .5px solid var(--accent-border);
+  }
+  .tip {
+    position: absolute; left: 0; top: calc(100% + 7px); z-index: 20; width: 250px;
+    padding: 9px 11px; border-radius: 8px; font-size: 11px; line-height: 1.45;
+    text-transform: none; letter-spacing: 0; color: var(--text-secondary);
+    background: var(--bg-surface); border: .5px solid var(--border-default);
+    box-shadow: var(--shadow-popover, 0 4px 12px rgba(0,0,0,.08));
+    opacity: 0; visibility: hidden; transition: opacity .12s ease;
+  }
+  .info:hover + .tip, .info:focus-visible + .tip { opacity: 1; visibility: visible; }
+  .info:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+
+  /* Пара «максимум / минимум ₽/м²» занимает одну ячейку сетки двумя плитками. */
+  .kpi-stack { display: flex; flex-direction: column; gap: 12px; }
+  .kpi.mini { min-height: 0; flex: 1; padding: 11px 14px; gap: 0; }
+  .kpi.mini .value { font-size: 19px; }
+  .kpi.mini .value small { font-size: 12px; }
+  .kpi.mini .who { font-size: 11px; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kpi.mini .who .pill { margin-right: 5px; }
+
+  .kpi .hint { font-size: 12px; color: var(--text-secondary); }
+  .kpi .extremes {
+    display: flex; flex-direction: column; gap: 3px; margin-top: auto; padding-top: 10px;
+    border-top: .5px solid var(--border-subtle); font-size: 11px; color: var(--text-tertiary);
+  }
+  .kpi .extremes span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kpi .extremes b { font-weight: 500; color: var(--text-secondary); }
+
+  /* Разбивка площадей стоит справа от основной цифры, а не под ней. */
+  .kpi .wide-body { display: flex; gap: 24px; align-items: flex-start; }
+  .kpi .wide-main { display: flex; flex-direction: column; min-width: 0; }
+  .kpi .stats { margin-left: auto; display: flex; flex-direction: column; gap: 3px; min-width: 168px; }
+  .kpi .stats > span { display: flex; align-items: baseline; gap: 12px; }
+  .kpi .stats i { font-style: normal; font-size: 11px; color: var(--text-tertiary); }
+  .kpi .stats b { margin-left: auto; font-size: 14px; font-weight: 500; }
+  /* Охват своего слагаемого: у полезной площади он свой, отличный от пары
+     надземная/подземная, — общий «не заведена у N» это скрывал. */
+  .kpi .stats u { text-decoration: none; font-size: 10px; color: var(--text-muted); min-width: 30px; text-align: right; }
+  @media (max-width: 760px) {
+    .kpi .wide-body { flex-direction: column; gap: 12px; }
+    .kpi .stats { margin-left: 0; min-width: 0; align-self: stretch; }
+  }
+
+  /* ── Панели ─────────────────────────────────────────────────────────────── */
+  .panel {
+    background: var(--bg-surface); border: .5px solid var(--border-subtle);
+    border-radius: 12px; margin-top: 20px; overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: .5px solid var(--border-subtle); background: var(--bg-section-header);
+  }
+  .panel-head h2 { font-size: 15px; }
+  .panel-head .note { font-size: 12px; color: var(--text-tertiary); }
+  .panel-head .more { margin-left: auto; font-size: 13px; color: var(--accent-text); text-decoration: none; }
+  .panel-head .more:hover { text-decoration: underline; }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 900px; }
+  th, td { text-align: left; padding: 9px 18px; border-bottom: .5px solid var(--border-subtle); }
+  th {
+    font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--text-tertiary); font-weight: 500; white-space: nowrap;
+  }
+  td { font-size: 13px; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--bg-surface-hover); }
+  .r { text-align: right; }
+  .obj { font-weight: 500; }
+  .sub2 { display: block; font-size: 12px; color: var(--text-tertiary); }
+  .money { font-size: 14px; font-weight: 500; white-space: nowrap; }
+  .empty { color: var(--text-muted); }
+
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+    white-space: nowrap; border: .5px solid;
+  }
+  .pill.rate { background: var(--neutral-soft); border-color: var(--neutral-border); color: var(--neutral-text); }
+  .pill.warn { background: var(--warning-soft); border-color: var(--warning-border); color: var(--warning-text); }
+  .pill.none { background: var(--bg-surface-sunken); border-color: var(--border-subtle); color: var(--text-tertiary); }
+  .pill.cls  { background: var(--info-soft); border-color: var(--info-border); color: var(--info-text); }
+  .pill.manual { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-text); }
+
+  /* ── Точечная диаграмма ₽/м² ────────────────────────────────────────────── */
+  /* Без overflow: подсказка точки уходит вверх, а любой скроллящий контейнер
+     обрезал бы её по вертикали. Раскладка процентная, поэтому переполнения нет
+     и без прокрутки; сверху оставлено место под подсказку первой дорожки. */
+  .plot { padding: 20px 18px 14px; }
+  .lane { display: grid; grid-template-columns: 186px 1fr; align-items: center; gap: 16px; }
+  .lane + .lane { margin-top: 4px; }
+  .lane-name { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text-primary); }
+  .lane-name em {
+    font-style: normal; display: block; font-size: 11px; color: var(--text-secondary);
+    margin-top: 2px; font-variant-numeric: tabular-nums;
+  }
+  .lane-name em i { font-style: normal; color: var(--text-muted); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--c); flex: none; margin-top: 4px; }
+  .track {
+    position: relative; height: 40px;
+    background-image:
+      repeating-linear-gradient(to right, var(--border-default) 0 1px, transparent 1px 28.5714%),
+      linear-gradient(to bottom, var(--border-subtle) 0 100%);
+    background-size: 100% 100%, 100% 1px;
+    background-position: 0 0, 0 50%;
+    background-repeat: repeat, no-repeat;
+  }
+  /* Полоса размаха: от минимума класса к максимуму. У класса с одним объектом
+     размаха нет, и полосы тоже нет — это факт, а не пропуск. */
+  .range {
+    position: absolute; top: 50%; height: 10px; border-radius: 999px;
+    transform: translateY(-50%); background: var(--c); opacity: .38;
+  }
+  .dot {
+    position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 999px;
+    background: var(--c); transform: translate(-50%, -50%); cursor: default;
+    box-shadow: 0 0 0 2px var(--bg-surface);
+  }
+  .dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .dot-tip {
+    position: absolute; left: 50%; top: calc(100% + 9px); transform: translateX(-50%);
+    z-index: 30; width: max-content; max-width: 260px; padding: 7px 10px; border-radius: 8px;
+    font-size: 11px; line-height: 1.4; color: var(--text-secondary); text-align: left;
+    background: var(--bg-surface); border: .5px solid var(--border-default);
+    box-shadow: var(--shadow-popover, 0 4px 12px rgba(0,0,0,.08));
+    opacity: 0; visibility: hidden; transition: opacity .12s ease;
+  }
+  .dot-tip b { display: block; font-weight: 500; color: var(--text-primary); }
+  .dot:hover .dot-tip, .dot:focus-visible .dot-tip { opacity: 1; visibility: visible; }
+  .dlabel {
+    position: absolute; top: 50%; transform: translate(-50%, -50%); margin-top: -16px;
+    font-size: 11px; color: var(--text-tertiary); white-space: nowrap;
+  }
+  .axis { display: grid; grid-template-columns: 186px 1fr; gap: 16px; margin-top: 6px; }
+  .axis-line { position: relative; height: 16px; }
+  .axis-line span {
+    position: absolute; top: 0; font-size: 11px; color: var(--text-tertiary);
+    transform: translateX(-50%); white-space: nowrap;
+  }
+  .axis-line span:first-child { transform: none; }
+  .plot-note { padding: 0 18px 16px; font-size: 12px; color: var(--text-tertiary); }
+  @media (prefers-reduced-motion: reduce) { .dot-tip { transition: none; } }
+  @media (max-width: 640px) {
+    .lane, .axis { grid-template-columns: 104px 1fr; gap: 10px; }
+    .lane-name { font-size: 11px; }
+  }
+
+  /* ── Плитки объектов ────────────────────────────────────────────────────── */
+  .cards { display: flex; flex-direction: column; }
+  .card {
+    position: relative; display: grid; gap: 20px; align-items: center;
+    grid-template-columns: 26px 56px minmax(0,1fr) auto auto;
+    padding: 16px 18px 18px; border-bottom: .5px solid var(--border-subtle);
+  }
+  .card:last-child { border-bottom: 0; }
+  .card:hover { background: var(--bg-surface-hover); }
+  .rank { font-size: 13px; color: var(--text-muted); text-align: right; align-self: start; padding-top: 2px; }
+  /* Заглушка аватара: цвет по классу объекта из набора --chart-*, прошедшего валидатор. */
+  .c-ava {
+    width: 56px; height: 56px; border-radius: 10px; display: grid; place-items: center;
+    align-self: start; color: var(--c);
+    background: color-mix(in srgb, var(--c) 15%, transparent);
+    border: .5px solid color-mix(in srgb, var(--c) 30%, transparent);
+  }
+  .c-ava svg { width: 26px; height: 26px; }
+  .card h3 { font-size: 15px; font-weight: 500; }
+  .c-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 5px; font-size: 12px; color: var(--text-secondary); }
+  .c-contracts { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+  .c-contract { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 12px; color: var(--text-secondary); }
+  .c-contract b { font-weight: 500; color: var(--text-primary); }
+  .c-money { text-align: right; }
+  .c-money .money { font-size: 17px; font-weight: 500; white-space: nowrap; }
+  .c-money .m-sub { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 5px; font-size: 12px; color: var(--text-secondary); }
+  .c-money .m-none { font-size: 13px; color: var(--text-muted); }
+  .c-go a {
+    font-size: 13px; text-decoration: none; padding: 6px 12px; border-radius: 6px;
+    border: .5px solid var(--border-default); color: var(--text-primary); white-space: nowrap;
+  }
+  .c-go a:hover { background: var(--bg-surface); }
+  .bar { position: absolute; left: 18px; right: 18px; bottom: 0; height: 2px; background: var(--border-subtle); border-radius: 2px; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; opacity: .55; }
+  .card.muted .bar i { background: var(--text-muted); opacity: .35; }
+  @media (max-width: 820px) {
+    .card { grid-template-columns: 56px minmax(0,1fr); }
+    .rank { display: none; }
+    .c-money { grid-column: 2; text-align: left; }
+    .c-money .m-sub { justify-content: flex-start; }
+    .c-go { grid-column: 2; }
+  }
+
+  /* Сноска рейтинга: отсутствие объекта в списке объясняется там, где вопрос и
+     возникает. Действия — во втором табе, дублировать их здесь незачем. */
+  .rank-note {
+    padding: 12px 18px 14px; border-top: .5px solid var(--border-subtle);
+    background: var(--bg-surface-sunken); font-size: 12px; color: var(--text-secondary);
+  }
+  .rank-note b { font-weight: 500; color: var(--text-primary); }
+
+  /* ── Блок предупреждений ────────────────────────────────────────────────── */
+  .warn-panel { border-color: var(--warning-border); }
+  .warn-panel .panel-head { background: var(--warning-soft); border-bottom-color: var(--warning-border); }
+  .warn-panel .panel-head h2 { color: var(--warning-text); }
+  .warn-item { display: flex; gap: 14px; align-items: baseline; padding: 12px 18px; border-bottom: .5px solid var(--border-subtle); }
+  .warn-item:last-child { border-bottom: 0; }
+  .warn-item .what { font-weight: 500; font-size: 13px; }
+  /* Откуда именно исключено: заголовок блока говорит «в рейтинге ИЛИ итогах»,
+     потому что причины исключают из разных мест. */
+  .warn-item .scope {
+    display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px;
+    font-size: 11px; font-weight: 400; vertical-align: 1px;
+    background: var(--bg-surface); border: .5px solid var(--warning-border); color: var(--warning-text);
+  }
+  .warn-item .why { font-size: 12px; color: var(--text-secondary); }
+  .warn-item .fix { margin-left: auto; font-size: 13px; color: var(--accent-text); text-decoration: none; white-space: nowrap; }
+  .warn-item .fix:hover { text-decoration: underline; }
+
+  /* ── Таб «нельзя верить» ────────────────────────────────────────────────── */
+  .issues { display: flex; flex-direction: column; }
+  .issue {
+    display: grid; grid-template-columns: 3px 1fr auto auto; gap: 16px; align-items: center;
+    padding: 0 18px 0 0; border-bottom: .5px solid var(--border-subtle);
+  }
+  .issue:last-child { border-bottom: 0; }
+  .issue .stripe { align-self: stretch; }
+  .issue.high .stripe { background: var(--danger); }
+  .issue.mid  .stripe { background: var(--warning); }
+  .issue.low  .stripe { background: var(--neutral-border); }
+  .issue .body { padding: 13px 0 13px 18px; }
+  .issue .t { font-size: 13px; font-weight: 500; }
+  .issue .d { font-size: 12px; color: var(--text-secondary); }
+  .issue .n { font-size: 20px; font-weight: 500; white-space: nowrap; }
+  .issue.high .n { color: var(--danger-text); }
+  .issue.mid .n  { color: var(--warning-text); }
+  .issue .go {
+    font-size: 13px; text-decoration: none; white-space: nowrap; padding: 5px 12px;
+    border-radius: 6px; border: .5px solid var(--border-default); color: var(--text-primary);
+  }
+  .issue .go:hover { background: var(--bg-surface-hover); }
+
+  .ok { padding: 40px 18px; text-align: center; color: var(--text-secondary); font-size: 13px; }
+
+  footer.note { padding: 28px 0 48px; font-size: 12px; color: var(--text-tertiary); }
+  footer.note code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+
+  [hidden] { display: none !important; }
+  @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 760px)  { .kpis { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px)  { .kpis { grid-template-columns: 1fr; } .kpi.total, .kpi.wide { grid-column: span 1; } }
+</style>
+
+<div class="mock-bar">
+  <div class="container">
+    <span><strong>Мокап</strong> — данные вымышленные, ни одного реального контрагента и ни одной реальной суммы.</span>
+    <div class="switcher" role="group" aria-label="Роль и тема">
+      <button type="button" id="b-admin" aria-pressed="true">Аналитик (admin)</button>
+      <button type="button" id="b-member" aria-pressed="false">Читатель (member)</button>
+      <button type="button" id="b-theme" aria-pressed="false">Тёмная тема</button>
+    </div>
+  </div>
+</div>
+
+<header class="app">
+  <div class="container">
+    <div class="logo">База расценок <span>ГП</span></div>
+    <nav class="top">
+      <a href="#" class="active">Главная</a>
+      <a href="#">Договоры</a>
+      <a href="#" class="role-admin">Ручной матчинг</a>
+      <a href="#" class="role-admin">Нормативы</a>
+      <a href="#" class="role-admin">Пользователи</a>
+    </nav>
+    <div class="avatar" id="avatar">ВЖ</div>
+  </div>
+</header>
+
+<main class="container">
+  <div class="page-head">
+    <h1 class="serif">База расценок генподряда</h1>
+    <p id="lede">Договоры ГП 2024–2027, объекты и загруженные сметы</p>
+    <div class="axis-note">Все суммы и удельные показатели — с НДС, в действующей ставке договора</div>
+
+    <div class="tabs" role="tablist" id="tabs">
+      <button type="button" role="tab" aria-selected="true" id="t-what">Основной дашборд</button>
+      <button type="button" role="tab" aria-selected="false" id="t-trust" class="role-admin">
+        На что обратить внимание <span class="count">5</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ Таб 1 ═══════════════════════════════════════════════════════════ -->
+  <section id="tab-what" role="tabpanel" aria-labelledby="t-what">
+    <div class="kpis">
+      <div class="kpi total">
+        <span class="label tip-wrap">
+          Итого по базе
+          <button type="button" class="info" aria-describedby="tip-total" aria-label="Как считается">i</button>
+          <span class="tip" role="tooltip" id="tip-total">
+            Каждый договор взят с НДС в действующей ставке: из файла сметы, а если ставку
+            пересчитали вручную — в назначенной. Ставки договоров различаются, поэтому итог
+            складывает суммы, измеренные в разных ставках.
+          </span>
+        </span>
+        <span class="value num">9 862,4<small> млн ₽</small></span>
+        <span class="sub excl">учтено 14 договоров из 19: 3 без сметы, 2 без ставки</span>
+      </div>
+      <div class="kpi wide">
+        <span class="label">Площадь объектов</span>
+        <div class="wide-body">
+          <div class="wide-main">
+            <span class="value num">486,3<small> тыс. м²</small></span>
+            <span class="hint">по 8 объектам из 12</span>
+          </div>
+          <div class="stats">
+            <span><i>Надземная</i><b class="num">402,1</b><u class="num">8/12</u></span>
+            <span><i>Подземная</i><b class="num">84,2</b><u class="num">8/12</u></span>
+            <span><i>Полезная</i><b class="num">361,7</b><u class="num">5/12</u></span>
+          </div>
+        </div>
+        <div class="extremes">
+          <span>Наибольший — <b>ЖК «Северная гряда», к. 2</b> · <span class="num">78 400 м²</span></span>
+          <span>Наименьший — <b>Детский сад на 240 мест</b> · <span class="num">6 100 м²</span></span>
+        </div>
+      </div>
+      <div class="kpi-stack">
+        <div class="kpi mini">
+          <span class="label">Объектов</span>
+          <span class="value num">12</span>
+          <span class="who">в 4 классах</span>
+        </div>
+        <div class="kpi mini">
+          <span class="label">Договоров</span>
+          <span class="value num">19</span>
+          <span class="who">со сметой — 16</span>
+        </div>
+      </div>
+      <div class="kpi-stack">
+        <div class="kpi mini">
+          <span class="label">Максимум ₽/м² · из 8</span>
+          <span class="value num">21 592<small> ₽/м²</small></span>
+          <span class="who"><span class="pill cls">Гостиница</span>«Приморская» · 23 750 м²</span>
+        </div>
+        <div class="kpi mini">
+          <span class="label">Минимум ₽/м² · из 8</span>
+          <span class="value num">12 254<small> ₽/м²</small></span>
+          <span class="who"><span class="pill cls">Жилой дом</span>«Северная гряда», к. 3 · 64 900 м²</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Удельная стоимость объектов</h2>
+        <span class="note">₽ за м² с НДС, точка — объект; полоса — размах класса от минимума к максимуму</span>
+      </div>
+      <div class="plot">
+        <div class="plot-inner">
+
+          <div class="lane">
+            <div class="lane-name">
+              <span class="swatch" style="--c: var(--chart-7)"></span>
+              <span>Гостиница<em>21 592 <i>· 1 объект</i></em></span>
+            </div>
+            <div class="track">
+              <span class="dot" style="--c: var(--chart-7); left: 82.80%" tabindex="0">
+                <span class="dot-tip"><b>Гостиница «Приморская»</b>21 592 ₽/м² · 23 750 м² · 512,8 млн ₽</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="lane">
+            <div class="lane-name">
+              <span class="swatch" style="--c: var(--chart-3)"></span>
+              <span>Офис<em>17 250 – 20 400 <i>· 2 объекта</i></em></span>
+            </div>
+            <div class="track">
+              <span class="range" style="--c: var(--chart-3); left: 51.79%; width: 22.50%"></span>
+              <span class="dot" style="--c: var(--chart-3); left: 51.79%" tabindex="0">
+                <span class="dot-tip"><b>БЦ «Меридиан»</b>17 250 ₽/м² · 28 400 м² · 489,9 млн ₽</span>
+              </span>
+              <span class="dot" style="--c: var(--chart-3); left: 74.29%" tabindex="0">
+                <span class="dot-tip"><b>БЦ «Тополиный»</b>20 400 ₽/м² · 16 900 м² · 344,8 млн ₽</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="lane">
+            <div class="lane-name">
+              <span class="swatch" style="--c: var(--chart-1)"></span>
+              <span>Жилой дом<em>12 254 – 18 956 <i>· 4 объекта</i></em></span>
+            </div>
+            <div class="track">
+              <span class="range" style="--c: var(--chart-1); left: 16.10%; width: 47.87%"></span>
+              <span class="dot" style="--c: var(--chart-1); left: 16.10%" tabindex="0">
+                <span class="dot-tip"><b>ЖК «Северная гряда», корп. 3</b>12 254 ₽/м² · 64 900 м² · 795,3 млн ₽</span>
+              </span>
+              <span class="dot" style="--c: var(--chart-1); left: 27.86%" tabindex="0">
+                <span class="dot-tip"><b>ЖК «Луговой»</b>13 900 ₽/м² · 31 200 м² · 433,7 млн ₽</span>
+              </span>
+              <span class="dot" style="--c: var(--chart-1); left: 38.43%" tabindex="0">
+                <span class="dot-tip"><b>ЖК «Речной», корп. 2</b>15 380 ₽/м² · 44 100 м² · 678,3 млн ₽</span>
+              </span>
+              <span class="dot" style="--c: var(--chart-1); left: 63.97%" tabindex="0">
+                <span class="dot-tip"><b>ЖК «Северная гряда», корп. 2</b>18 956 ₽/м² · 78 400 м² · 1 486,2 млн ₽</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="lane">
+            <div class="lane-name">
+              <span class="swatch" style="--c: var(--chart-4)"></span>
+              <span>Склад<em>14 640 <i>· 1 объект</i></em></span>
+            </div>
+            <div class="track">
+              <span class="dot" style="--c: var(--chart-4); left: 33.14%" tabindex="0">
+                <span class="dot-tip"><b>Логопарк «Северный»</b>14 640 ₽/м² · 52 300 м² · 765,7 млн ₽</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="axis">
+            <div></div>
+            <div class="axis-line">
+              <span style="left: 0">10 000</span>
+              <span style="left: 28.571%">14 000</span>
+              <span style="left: 57.143%">18 000</span>
+              <span style="left: 85.714%">22 000</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="plot-note">
+        Вошли 8 объектов из 12: у остальных не заведена площадь или нет действующей суммы.
+        Слева — диапазон класса и число объектов в нём; конкретный объект — по наведению на точку.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Крупнейшие объекты</h2>
+        <span class="note">первые 10 по сумме договоров · суммы с НДС</span>
+        <a class="more" href="#">Все договоры →</a>
+      </div>
+      <div class="cards">
+
+        <article class="card">
+          <div class="rank num">1</div>
+          <div class="c-ava" style="--c: var(--chart-1)" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="6" y="3" width="12" height="18" rx="1.5"/>
+              <path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2"/>
+            </svg>
+          </div>
+          <div class="c-main">
+            <h3>ЖК «Северная гряда», корп. 2</h3>
+            <div class="c-meta">
+              <span class="pill cls">Жилой дом</span>
+              <span class="num">78 400 м²</span>
+            </div>
+            <div class="c-contracts">
+              <div class="c-contract"><b>ДГП-118-ТУ</b> от 14.03.2025 · СтройМонтажСервис</div>
+            </div>
+          </div>
+          <div class="c-money">
+            <div class="money num">1 486 200 000 ₽</div>
+            <div class="m-sub"><span class="pill rate">НДС 20 %</span><span class="num">18 956 ₽/м²</span></div>
+          </div>
+          <div class="c-go"><a href="#">Паспорт →</a></div>
+          <div class="bar"><i style="width:100%"></i></div>
+        </article>
+
+        <article class="card">
+          <div class="rank num">2</div>
+          <div class="c-ava" style="--c: var(--chart-4)" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <path d="M3 10 12 5l9 5v11H3z"/>
+              <path d="M8 21v-6h8v6"/>
+            </svg>
+          </div>
+          <div class="c-main">
+            <h3>Складской комплекс «Восточный»</h3>
+            <div class="c-meta">
+              <span class="pill cls">Склад</span>
+              <span class="pill none">площадь не заведена</span>
+            </div>
+            <div class="c-contracts">
+              <div class="c-contract"><b>ДГП-097-ТУ</b> от 21.11.2024 · ПромСтройАльянс</div>
+            </div>
+          </div>
+          <div class="c-money">
+            <div class="money num">804 906 700 ₽</div>
+            <div class="m-sub"><span class="pill manual">НДС 12 % · вручную</span><span class="empty">₽/м² не считается</span></div>
+          </div>
+          <div class="c-go"><a href="#">Паспорт →</a></div>
+          <div class="bar"><i style="width:54%"></i></div>
+        </article>
+
+        <article class="card">
+          <div class="rank num">3</div>
+          <div class="c-ava" style="--c: var(--chart-1)" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="6" y="3" width="12" height="18" rx="1.5"/>
+              <path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2"/>
+            </svg>
+          </div>
+          <div class="c-main">
+            <h3>ЖК «Северная гряда», корп. 3</h3>
+            <div class="c-meta">
+              <span class="pill cls">Жилой дом</span>
+              <span class="num">64 900 м²</span>
+            </div>
+            <div class="c-contracts">
+              <div class="c-contract"><b>ДГП-121-ТУ</b> от 14.03.2025 · СтройМонтажСервис</div>
+            </div>
+          </div>
+          <div class="c-money">
+            <div class="money num">795 300 000 ₽</div>
+            <div class="m-sub"><span class="pill rate">без НДС</span><span class="num">12 254 ₽/м²</span></div>
+          </div>
+          <div class="c-go"><a href="#">Паспорт →</a></div>
+          <div class="bar"><i style="width:54%"></i></div>
+        </article>
+
+        <article class="card">
+          <div class="rank num">4</div>
+          <div class="c-ava" style="--c: var(--chart-7)" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="4" y="4" width="16" height="17" rx="1.5"/>
+              <path d="M8 8h3M13 8h3M8 12h3M13 12h3"/>
+              <path d="M10 21v-4h4v4"/>
+            </svg>
+          </div>
+          <div class="c-main">
+            <h3>Гостиница «Приморская»</h3>
+            <div class="c-meta">
+              <span class="pill cls">Гостиница</span>
+              <span class="num">23 750 м²</span>
+            </div>
+            <div class="c-contracts">
+              <div class="c-contract"><b>ДГП-134-ТУ</b> от 17.06.2025 · ГлавПодрядИнжиниринг</div>
+            </div>
+          </div>
+          <div class="c-money">
+            <div class="money num">512 800 000 ₽</div>
+            <div class="m-sub"><span class="pill rate">НДС 20 %</span><span class="num">21 592 ₽/м²</span></div>
+          </div>
+          <div class="c-go"><a href="#">Паспорт →</a></div>
+          <div class="bar"><i style="width:34%"></i></div>
+        </article>
+
+      </div>
+      <div class="rank-note">
+        В рейтинг не вошли <b>5 договоров</b> — 3 без загруженной сметы, 2 без заявленной ставки НДС
+        (их нет и в итогах) — и <b>1 объект</b> с двумя договорами ГП: действующий не определён, хотя
+        сами договоры в итогах учтены.<span class="role-admin"> Причины и действия — во вкладке
+        «На что обратить внимание».</span>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ══ Таб 2 ═══════════════════════════════════════════════════════════ -->
+  <section id="tab-trust" role="tabpanel" aria-labelledby="t-trust" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>На что обратить внимание</h2>
+        <span class="note">каждая строка ведёт туда, где это чинится</span>
+      </div>
+      <div class="issues">
+        <div class="issue high">
+          <div class="stripe"></div>
+          <div class="body">
+            <div class="t">Сметы без ставки НДС</div>
+            <div class="d">Нетто вывести не из чего: суммы скрыты, отклонения не считаются</div>
+          </div>
+          <div class="n num">2</div>
+          <a class="go" href="#">Назначить ставки</a>
+        </div>
+        <div class="issue mid">
+          <div class="stripe"></div>
+          <div class="body">
+            <div class="t">Объекты с несколькими договорами ГП</div>
+            <div class="d">Признака архивного договора в базе нет — объект считается дважды в матрице и в отчёте «для банка»</div>
+          </div>
+          <div class="n num">1</div>
+          <a class="go" href="#">Показать</a>
+        </div>
+        <div class="issue mid">
+          <div class="stripe"></div>
+          <div class="body">
+            <div class="t">Договоры без загруженной сметы</div>
+            <div class="d">Карточка есть, расценок нет — в аналитику договор не входит</div>
+          </div>
+          <div class="n num">3</div>
+          <a class="go" href="#">Загрузить</a>
+        </div>
+        <div class="issue low">
+          <div class="stripe"></div>
+          <div class="body">
+            <div class="t">Объекты без площади (ТЭП)</div>
+            <div class="d">₽/м² не выводится — колонка честно пустая</div>
+          </div>
+          <div class="n num">4</div>
+          <a class="go" href="#">Заполнить ТЭП</a>
+        </div>
+        <div class="issue low">
+          <div class="stripe"></div>
+          <div class="body">
+            <div class="t">Импорты, завершившиеся ошибкой</div>
+            <div class="d">За последние 30 дней. Файлы хранятся, загрузку можно повторить</div>
+          </div>
+          <div class="n num">1</div>
+          <a class="go" href="#">История загрузок</a>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ok">Когда чинить нечего, таб показывает одну строку: «Всё, что база умеет проверить, сходится».</div>
+    </div>
+  </section>
+
+  <footer class="note">
+    Мокап к брейншторму стартовой страницы. Палитра и бордеры — токены проекта из <code>frontend/src/index.css</code>;
+    заголовки набраны Georgia вместо Cormorant Garamond (CSP артефакта не пускает шрифтовые CDN).
+    Переключатель роли и темы — только для просмотра, в приложении роль приходит с сервера.
+  </footer>
+</main>
+
+<script>
+  (function () {
+    var tabWhat = document.getElementById('tab-what');
+    var tabTrust = document.getElementById('tab-trust');
+    var tWhat = document.getElementById('t-what');
+    var tTrust = document.getElementById('t-trust');
+    var tabsBar = document.getElementById('tabs');
+    var lede = document.getElementById('lede');
+    var avatar = document.getElementById('avatar');
+    var bAdmin = document.getElementById('b-admin');
+    var bMember = document.getElementById('b-member');
+    var bTheme = document.getElementById('b-theme');
+
+    function showTab(which) {
+      var trust = which === 'trust';
+      tabWhat.hidden = trust;
+      tabTrust.hidden = !trust;
+      tWhat.setAttribute('aria-selected', String(!trust));
+      tTrust.setAttribute('aria-selected', String(trust));
+    }
+    tWhat.addEventListener('click', function () { showTab('what'); });
+    tTrust.addEventListener('click', function () { showTab('trust'); });
+
+    function setRole(role) {
+      var admin = role === 'admin';
+      bAdmin.setAttribute('aria-pressed', String(admin));
+      bMember.setAttribute('aria-pressed', String(!admin));
+      Array.prototype.forEach.call(document.querySelectorAll('.role-admin'), function (el) {
+        el.hidden = !admin;
+      });
+      // У читателя таб один — полоса табов не рисуется вовсе.
+      tabsBar.hidden = !admin;
+      lede.textContent = admin
+        ? 'Договоры ГП 2024–2027, объекты и загруженные сметы'
+        : 'Договоры ГП 2024–2027 — суммы, ставки и удельные показатели';
+      avatar.textContent = admin ? 'ВЖ' : 'ИП';
+      if (!admin) showTab('what');
+    }
+    bAdmin.addEventListener('click', function () { setRole('admin'); });
+    bMember.addEventListener('click', function () { setRole('member'); });
+
+    bTheme.addEventListener('click', function () {
+      var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+      bTheme.setAttribute('aria-pressed', String(!dark));
+      bTheme.textContent = dark ? 'Тёмная тема' : 'Светлая тема';
+    });
+  })();
+</script>

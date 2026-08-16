@@ -13,6 +13,9 @@ import {
   sampleRateStandards,
   sampleReviewQueue,
   sampleAppSettings,
+  sampleDashboard,
+  sampleDashboardAttention,
+  sampleDashboardAttentionClean,
   sampleMatrix,
   sampleMatrixCellDetail,
   sampleProjectPassport,
@@ -82,6 +85,17 @@ interface HandlerState {
    * успешный ответ.
    */
   contractCardFails: boolean;
+  /**
+   * Сколько раз запрашивали диагностики второго таба.
+   *
+   * Проверка ОТСУТСТВИЯ запроса требует сигнала, общего для обеих ветвей: у
+   * `member` данных на экране нет ни при безусловном хуке (сервер ответит
+   * `403`), ни при условном, — поэтому «ничего не видно» ничего не доказывает.
+   * Доказывает счётчик вызовов и утверждение «ровно 0».
+   */
+  attentionRequests: number;
+  /** Исход диагностик: обычный набор либо «всё сходится» (макет, панель ok). */
+  attentionOutcome: "issues" | "clean";
 }
 
 export const handlerState: HandlerState = {
@@ -99,6 +113,8 @@ export const handlerState: HandlerState = {
   lastReportRequest: null,
   contractCardEstimatesOverride: null,
   contractCardFails: false,
+  attentionRequests: 0,
+  attentionOutcome: "issues",
 };
 
 export function resetHandlerState() {
@@ -116,6 +132,8 @@ export function resetHandlerState() {
   handlerState.lastReportRequest = null;
   handlerState.contractCardEstimatesOverride = null;
   handlerState.contractCardFails = false;
+  handlerState.attentionRequests = 0;
+  handlerState.attentionOutcome = "issues";
 }
 
 function page<T>(items: T[]) {
@@ -709,6 +727,22 @@ export const handlers = [
   http.delete("/api/v1/estimates/:estimateId/category-overrides/:positionItemId", () =>
     HttpResponse.json({ chapters_updated: 1, additional_works_updated: 0, chapters_manual: 0 })
   ),
+
+  http.get("/api/v1/analytics/dashboard", () => HttpResponse.json(sampleDashboard)),
+
+  /**
+   * Диагностики второго таба. Счётчик вызовов инкрементируется ДО ветвления по
+   * исходу: тест «`member` не отправляет ни одного запроса» смотрит именно на
+   * него, а не на содержимое ответа.
+   */
+  http.get("/api/v1/analytics/dashboard/attention", () => {
+    handlerState.attentionRequests += 1;
+    return HttpResponse.json(
+      handlerState.attentionOutcome === "clean"
+        ? sampleDashboardAttentionClean
+        : sampleDashboardAttention
+    );
+  }),
 
   http.get("/api/v1/analytics/matrix", ({ request }) => {
     const url = new URL(request.url);

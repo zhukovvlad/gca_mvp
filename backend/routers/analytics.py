@@ -19,7 +19,9 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from auth import require_admin
 from crud import analytics as crud_analytics
+from crud import dashboard as crud_dashboard
 from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from database import get_db
@@ -95,6 +97,39 @@ def get_matrix_cell(
         )
     except DomainError as e:
         _raise(e)
+
+
+@router.get("/dashboard")
+def get_dashboard(db: Session = Depends(get_db)):
+    """Основной таб стартового дашборда (спека 2026-08-16 §2.8).
+
+    Чтение — любому аутентифицированному, включая `member`: §3 отдаёт аналитику
+    и читателю. Диагностики второго таба живут ОТДЕЛЬНЫМ эндпоинтом под
+    `require_admin` — сложи их сюда, и `require_admin` закрыл бы вместе с ними
+    весь дашборд, который читателю положен.
+
+    `decimal_json` обязателен: ответ несёт деньги (ИТОГО, сумма каждой карточки
+    рейтинга), площади и ₽/м² — всё это `Decimal`, и без него FastAPI отдал бы
+    `float` (`responses.py`).
+    """
+    return decimal_json(crud_dashboard.get_dashboard(db))
+
+
+@router.get("/dashboard/attention", dependencies=[Depends(require_admin)])
+def get_dashboard_attention(db: Session = Depends(get_db)):
+    """Таб «На что обратить внимание» (решение 12 макета) — ТОЛЬКО `admin`.
+
+    Первое использование `require_admin` в этом роутере: остальная аналитика —
+    чтение, а это диагностики и работа аналитика (§3). Отдельный эндпоинт, а не
+    ветка внутри `/dashboard`, ровно затем, чтобы право закрывало диагностики, а
+    не весь дашборд (спека §2.8).
+
+    Ответ — ПЯТЬ СЧЁТЧИКОВ, без списков затронутых сущностей: списки нужны были
+    бы действиям, а действия отложены (решение пользователя на гейте 3).
+    Денег в ответе нет, поэтому `decimal_json` здесь не нужен — но и `Decimal`
+    сюда попасть не может, счётчики целые.
+    """
+    return crud_dashboard.attention_counters(db)
 
 
 @router.get("/project-passport/{contract_id}")

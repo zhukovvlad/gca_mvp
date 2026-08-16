@@ -2,6 +2,8 @@ import type { AdminUser } from "@/types/admin";
 import type {
   AppSettings,
   ContractCard,
+  Dashboard,
+  DashboardAttention,
   ContractImportJob,
   ContractRow,
   Contractor,
@@ -1060,4 +1062,165 @@ export const sampleMatrixCellDetail: MatrixCellDetail = {
       deviation_reason: null,
     },
   ],
+};
+
+// ---------------------------------------------------------------------------
+//  Стартовый дашборд (спека 2026-08-16). Данные вымышленные: ни одного
+//  реального контрагента, объекта и суммы (политика samples/).
+// ---------------------------------------------------------------------------
+//
+// Фикстура НАРОЧНО неоднородна и повторяет разобранные на гейте 1 случаи:
+//  · охваты у трёх слагаемых площади РАЗНЫЕ (2/4, 2/4, 1/4) — общий счётчик
+//    «не заведена у N» это различие скрывал бы;
+//  · один класс с ДВУМЯ объектами (полоса размаха есть) и один с ОДНИМ
+//    (полосы нет) — иначе половину диаграммы нечем было бы проверить;
+//  · объект без площади в рейтинге ЕСТЬ, а точки на диаграмме у него НЕТ.
+
+export const sampleDashboard: Dashboard = {
+  money: {
+    amount: "2291000000.00",
+    coverage: {
+      total: 6,
+      counted: 3,
+      reasons: { no_estimate: 2, amendment: 0, no_rate: 1, incomplete: 0 },
+    },
+  },
+  areas: {
+    total: { value: "143300.00", coverage: { total: 4, counted: 2 } },
+    aboveground: { value: "118900.00", coverage: { total: 4, counted: 2 } },
+    underground: { value: "24400.00", coverage: { total: 4, counted: 2 } },
+    useful: { value: "61700.00", coverage: { total: 4, counted: 1 } },
+    largest: { object_id: 1, title: "ЖК «Северная гряда», корп. 2", area_total_sp: "78400.00" },
+    smallest: { object_id: 2, title: "Детский сад на 240 мест", area_total_sp: "64900.00" },
+  },
+  counters: { objects: 4, classes: 2, contracts: 6, contracts_with_estimate: 4 },
+  per_sqm: {
+    max: {
+      object_id: 2,
+      title: "Детский сад на 240 мест",
+      per_sqm: "12254.00",
+      area_total_sp: "64900.00",
+      rate_class_title: "Жилой дом",
+    },
+    min: {
+      object_id: 1,
+      title: "ЖК «Северная гряда», корп. 2",
+      per_sqm: "9500.00",
+      area_total_sp: "78400.00",
+      rate_class_title: "Жилой дом",
+    },
+    coverage: { total: 4, counted: 2 },
+  },
+  ranking: [
+    {
+      object_id: 2,
+      title: "Детский сад на 240 мест",
+      rate_class_id: 1,
+      rate_class_title: "Жилой дом",
+      area_total_sp: "64900.00",
+      amount: "795300000.00",
+      per_sqm: "12254.00",
+      display_rate: "0",
+      contract: {
+        id: 12,
+        contract_number: "ДГП-121-ТУ",
+        signed_date: "2025-03-14",
+        contractor_title: "СтройМонтажСервис",
+      },
+    },
+    {
+      object_id: 3,
+      title: "Складской комплекс «Восточный»",
+      rate_class_id: 2,
+      rate_class_title: "Склад",
+      area_total_sp: null,
+      amount: "750900000.00",
+      per_sqm: null,
+      display_rate: "12",
+      contract: {
+        id: 13,
+        contract_number: "ДГП-097-ТУ",
+        signed_date: "2024-11-21",
+        contractor_title: "ПромСтройАльянс",
+      },
+    },
+    {
+      object_id: 1,
+      title: "ЖК «Северная гряда», корп. 2",
+      rate_class_id: 1,
+      rate_class_title: "Жилой дом",
+      area_total_sp: "78400.00",
+      amount: "744800000.00",
+      per_sqm: "9500.00",
+      display_rate: "20",
+      contract: {
+        id: 11,
+        contract_number: "ДГП-118-ТУ",
+        signed_date: "2025-03-14",
+        contractor_title: "СтройМонтажСервис",
+      },
+    },
+  ],
+  ranking_coverage: {
+    total: 4,
+    counted: 3,
+    reasons: { many_contracts: 1, no_contracts: 0, no_counted_contract: 0 },
+  },
+  chart: {
+    classes: [
+      {
+        rate_class_id: 1,
+        rate_class_title: "Жилой дом",
+        points: [
+          {
+            object_id: 1,
+            title: "ЖК «Северная гряда», корп. 2",
+            per_sqm: "9500.00",
+            amount: "744800000.00",
+            area_total_sp: "78400.00",
+          },
+          {
+            object_id: 2,
+            title: "Детский сад на 240 мест",
+            per_sqm: "12254.00",
+            amount: "795300000.00",
+            area_total_sp: "64900.00",
+          },
+        ],
+        spread: { min: "9500.00", max: "12254.00" },
+      },
+      {
+        rate_class_id: 2,
+        rate_class_title: "Гостиница",
+        points: [
+          {
+            object_id: 4,
+            title: "Гостиница «Приморская»",
+            per_sqm: "21592.00",
+            amount: "512800000.00",
+            area_total_sp: "23750.00",
+          },
+        ],
+        spread: null,
+      },
+    ],
+    coverage: { total: 4, counted: 2 },
+  },
+};
+
+export const sampleDashboardAttention: DashboardAttention = {
+  estimates_without_vat_rate: 2,
+  objects_with_several_contracts: 1,
+  contracts_without_estimate: 3,
+  objects_without_area: 4,
+  failed_imports_30d: 1,
+};
+
+/** Пустое состояние второго таба: чинить нечего (макет, панель ok). */
+export const sampleDashboardAttentionClean: DashboardAttention = {
+  estimates_without_vat_rate: 0,
+  objects_with_several_contracts: 0,
+  contracts_without_estimate: 0,
+  objects_without_area: 0,
+  failed_imports_30d: 0,
 };

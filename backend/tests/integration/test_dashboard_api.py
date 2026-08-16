@@ -1,0 +1,961 @@
+"""Стартовый дашборд: договорный слой (задача 1 плана).
+
+Что здесь под контролем — ровно то, чего нет ни в одном другом наборе:
+
+* **договорная лестница охвата** (спека §2.5): пять ступеней со строгим
+  приоритетом, каждый договор ровно в одной причине, счётчики образуют
+  разбиение;
+* **действующая ставка — `effective_display_rate`, а не буква решения 3
+  макета** (§2.3): договор, у которого ставка заявлена только в
+  `estimates.vat_rate_base_override`, обязан быть УЧТЁН;
+* **признак допсоглашения — наличие сметы с `amendment_no NOT NULL`, а не
+  `COUNT(estimates) > 1`** (§2.4): договор, у которого есть ТОЛЬКО ДС, счётом
+  смет не ловится;
+* **порядок пересчёта НДС — построчно, ДО накопления** (§2.6): вход с двумя
+  предложениями и РАЗНЫМИ базами; на одном предложении ошибка порядка
+  невидима, поэтому вход обязан быть именно таким;
+* **три условия неполноты** (§2.6), включая `SUM(row_count) = 0`, которое из
+  `rows_with_amount < row_count` не выводится: `SUM` по пустому множеству даёт
+  `NULL`, и сравнение молча ложно.
+
+Семантика самого VIEW (`v_category_totals`) здесь НЕ проверяется — она под
+`test_category_totals_view.py`, и второго её набора быть не должно.
+"""
+from __future__ import annotations
+
+import datetime as dt
+from contextlib import contextmanager
+from decimal import Decimal
+
+import pytest
+import sqlalchemy as sa
+
+from crud import dashboard as crud_dashboard
+from crud.dashboard import (
+    CONTRACT_REASON_AMENDMENT,
+    CONTRACT_REASON_INCOMPLETE,
+    CONTRACT_REASON_NO_ESTIMATE,
+    CONTRACT_REASON_NO_RATE,
+)
+from crud.project_passport import CATEGORY_TOTALS
+from models import ImportJobStatus, UserRole
+from money.vat import gross_to_net, net_to_gross
+from tests.integration.test_analytics_api import _priced_estimate_with_two_proposals
+
+pytestmark = pytest.mark.integration
+
+
+# ---------------------------------------------------------------------------
+#  Помощники: договор → смета → лот → предложение → позиции
+# ---------------------------------------------------------------------------
+
+def _chain(
+    factories,
+    *,
+    contract=None,
+    obj=None,
+    rate_class=None,
+    amendment_no=None,
+    vat_rate=Decimal("20"),
+):
+    """Цепочка до предложения. Возвращает `(contract, estimate, proposal)`.
+
+    `vat_rate` кладётся на предложение — это заявленная файлом база, вход
+    `effective_display_rate`. `obj` позволяет посадить несколько договоров на
+    один объект (нужно объектной лестнице, задача 2), `rate_class` — свести
+    несколько объектов в одну дорожку диаграммы.
+    """
+    if contract is None:
+        kwargs = {}
+        if obj is not None:
+            kwargs["object"] = obj
+        if rate_class is not None:
+            kwargs["rate_class"] = rate_class
+        contract = factories.ContractFactory.create(**kwargs)
+    estimate = factories.EstimateFactory.create(contract=contract, amendment_no=amendment_no)
+    lot = factories.LotFactory.create(estimate=estimate)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
+    return contract, estimate, proposal
+
+
+def _row(factories, proposal, *, total, is_chapter=False):
+    """Строка сметы с ЗАДАННОЙ файловой стоимостью.
+
+    В `v_category_totals` попадает только `total_cost_total`; `unit_cost_total`
+    к суммам дашборда отношения не имеет и оставлен фабричным.
+    """
+    return factories.PositionItemFactory.create(
+        proposal=proposal,
+        catalog_position=factories.CatalogPositionFactory.create(),
+        is_chapter=is_chapter,
+        quantity=Decimal("1"),
+        suggested_quantity=Decimal("1"),
+        total_cost_total=None if total is None else Decimal(total),
+    )
+
+
+def _priced_contract(
+    factories, *, total="1000", vat_rate=Decimal("20"), obj=None, rate_class=None
+):
+    """Договор, который лестница обязана УЧЕСТЬ: смета, ставка, полная стоимость."""
+    contract, estimate, proposal = _chain(
+        factories, obj=obj, rate_class=rate_class, vat_rate=vat_rate
+    )
+    _row(factories, proposal, total=total)
+    return contract, estimate
+
+
+def _object(factories, *, above=None, under=None, useful=None):
+    """Объект с ТЭП. `area_total_sp` — генерируемая колонка (надземная +
+    подземная), поэтому её считает БД, а тест её только читает."""
+    return factories.ObjectFactory.create(
+        area_aboveground_sp=None if above is None else Decimal(above),
+        area_underground_sp=None if under is None else Decimal(under),
+        area_useful_sp=None if useful is None else Decimal(useful),
+    )
+
+
+def _layer(db_session):
+    return {row.contract_id: row for row in crud_dashboard.contract_layer(db_session)}
+
+
+def _objects(db_session):
+    contracts = crud_dashboard.contract_layer(db_session)
+    return {
+        row.object_id: row for row in crud_dashboard.object_layer(db_session, contracts)
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Лестница: пять ступеней, каждая на своём входе
+# ---------------------------------------------------------------------------
+
+class TestContractLadder:
+    def test_contract_without_estimate_has_no_estimate_reason(self, db_session, factories):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_NO_ESTIMATE
+
+    def test_contract_with_amendment_is_excluded_as_amendment(self, db_session, factories):
+        """У договора есть и исходная смета, и ДС — правило сложения не принято
+        (§2.4), поэтому договор уходит целиком, а не «по исходной»."""
+        contract, _ = _priced_contract(factories)
+        _, _, amendment_proposal = _chain(factories, contract=contract, amendment_no=1)
+        _row(factories, amendment_proposal, total="500")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason == CONTRACT_REASON_AMENDMENT
+        assert row.amount is None
+
+    def test_contract_with_only_amendment_is_amendment_not_no_estimate(
+        self, db_session, factories
+    ):
+        """Загрузка не требует исходной сметы (§2.4), поэтому договор с ОДНОЙ
+        сметой-допсоглашением законен. `COUNT(estimates) > 1` его пропустит —
+        одна смета, значит «обычный», — и дашборд посчитает ДС за весь договор.
+        """
+        contract, _, proposal = _chain(factories, amendment_no=1)
+        _row(factories, proposal, total="1000")
+        db_session.flush()
+
+        assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_AMENDMENT
+
+    def test_contract_without_any_rate_has_no_rate_reason(self, db_session, factories):
+        contract, _, proposal = _chain(factories, vat_rate=None)
+        _row(factories, proposal, total="1000")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason == CONTRACT_REASON_NO_RATE
+        assert row.display_rate is None
+
+    def test_contract_with_conflicting_proposal_rates_has_no_rate_reason(
+        self, db_session, factories
+    ):
+        """Разногласие заявленных ставок — правило `effective_display_rate`,
+        которого в решении 3 макета не было вовсе (§2.3): показать «в какой-то
+        из» ставок нельзя."""
+        contract, estimate, first = _chain(factories, vat_rate=Decimal("20"))
+        _row(factories, first, total="1000")
+        lot = factories.LotFactory.create(estimate=estimate)
+        second = factories.ProposalFactory.create(
+            lot=lot, contractor=contract.contractor, vat_rate=Decimal("22")
+        )
+        _row(factories, second, total="1000")
+        db_session.flush()
+
+        assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_NO_RATE
+
+    def test_contract_with_only_base_override_is_counted(self, db_session, factories):
+        """ГЛАВНЫЙ вход §2.3: ставка заявлена ЧЕЛОВЕКОМ в
+        `vat_rate_base_override`, файл её не назвал. По букве решения 3 макета
+        (`target` иначе `proposals.vat_rate`) договор выглядит как «без ставки»
+        и уходит из итогов — на стенде это 2 договора из 6 и 24,6 % денег.
+        """
+        contract, estimate, proposal = _chain(factories, vat_rate=None)
+        _row(factories, proposal, total="1200")
+        estimate.vat_rate_base_override = Decimal("20")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason is None
+        assert row.display_rate == Decimal("20")
+        assert row.amount == Decimal("1200")
+
+    def test_estimate_without_any_priced_row_is_incomplete(self, db_session, factories):
+        """Смета из ОДНИХ разделов не даёт VIEW ни одной строки (позиционная
+        ветвь строится `WHERE pi.is_chapter = false`), поэтому `SUM(row_count)`
+        равен `NULL`, а `rows_with_amount < row_count` — `NULL`, то есть ложь.
+        Условие `SUM(row_count) = 0` обязательно и из второго не выводится.
+        """
+        contract, _, proposal = _chain(factories)
+        _row(factories, proposal, total="1000", is_chapter=True)
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason == CONTRACT_REASON_INCOMPLETE
+        assert row.amount is None
+
+    def test_contract_with_unpriced_row_is_incomplete(self, db_session, factories):
+        contract, _, proposal = _chain(factories)
+        _row(factories, proposal, total="1000")
+        _row(factories, proposal, total=None)
+        db_session.flush()
+
+        assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_INCOMPLETE
+
+    def test_contract_with_non_finite_cost_is_incomplete(self, db_session, factories):
+        """ПОВЕДЕНИЕ третьего условия §2.6: строка со стоимостью `NaN` исключает
+        договор. Требование DoD «по всем трём условиям» закрывается ЗДЕСЬ —
+        отдельной ветки в `_is_incomplete` у него нет и быть не может, см.
+        соседний тест про VIEW.
+        """
+        contract, _, proposal = _chain(factories)
+        _row(factories, proposal, total="1000")
+        _row(factories, proposal, total="NaN")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason == CONTRACT_REASON_INCOMPLETE
+        assert row.amount is None
+
+    def test_view_keeps_non_finite_rows_out_of_rows_with_amount(
+        self, db_session, factories
+    ):
+        """ПОЧЕМУ третьего условия нет отдельной веткой (находка ревью Codex).
+
+        Ревью справедливо заметило, что `rows_not_finite > 0` стоял без теста и
+        его удаление оставляло набор зелёным. Снятие показало причину: ветка
+        НЕДОСТИЖИМА. `rows_with_amount` в VIEW считается фильтром, исключающим
+        `NaN`/`±Infinity` наравне с `NULL`, а `row_count` — это `COUNT(*)` без
+        фильтра, поэтому нефинитная строка всегда делает
+        `rows_with_amount < row_count`, то есть срабатывает ВТОРОЕ условие.
+
+        Этот тест закрепляет саму импликацию на уровне VIEW. Если VIEW когда-
+        нибудь начнёт считать нефинитные строки ценёнными, тест покраснеет — и
+        это будет сигналом вернуть третье условие в `_is_incomplete`.
+        """
+        _, estimate, proposal = _chain(factories)
+        _row(factories, proposal, total="1000")
+        _row(factories, proposal, total="NaN")
+        db_session.flush()
+
+        totals = db_session.execute(
+            sa.select(CATEGORY_TOTALS).where(CATEGORY_TOTALS.c.estimate_id == estimate.id)
+        ).all()
+        row_count = sum(row.row_count for row in totals)
+        rows_with_amount = sum(row.rows_with_amount for row in totals)
+        rows_not_finite = sum(row.rows_not_finite for row in totals)
+
+        assert rows_not_finite > 0
+        assert rows_with_amount < row_count
+
+    def test_contract_with_all_zero_costs_is_counted_with_zero(self, db_session, factories):
+        """Заявленный ноль — факт, а не отсутствие факта (§2.6). Контроль
+        неизменности к ужесточению правила неполноты."""
+        contract, _, proposal = _chain(factories)
+        _row(factories, proposal, total="0")
+        _row(factories, proposal, total="0")
+        db_session.flush()
+
+        row = _layer(db_session)[contract.id]
+        assert row.reason is None
+        assert row.amount == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+#  Приоритет и разбиение
+# ---------------------------------------------------------------------------
+
+class TestContractCoverage:
+    def test_amendment_wins_over_missing_rate(self, db_session, factories):
+        """Пересечение причин: договор одновременно с ДС и без ставки. Без
+        строгого приоритета он попал бы в оба счётчика, и они перестали бы быть
+        разбиением."""
+        contract, _, proposal = _chain(factories, vat_rate=None)
+        _row(factories, proposal, total="1000")
+        _, _, amendment_proposal = _chain(factories, contract=contract, amendment_no=1)
+        _row(factories, amendment_proposal, total="500")
+        db_session.flush()
+
+        rows = crud_dashboard.contract_layer(db_session)
+        coverage = crud_dashboard.contract_coverage(rows)
+
+        assert _layer(db_session)[contract.id].reason == CONTRACT_REASON_AMENDMENT
+        assert coverage["reasons"][CONTRACT_REASON_AMENDMENT] == 1
+        assert coverage["reasons"][CONTRACT_REASON_NO_RATE] == 0
+
+    def test_reasons_and_counted_partition_all_contracts(self, db_session, factories):
+        """Сумма счётчиков причин плюс учтённые равна общему числу договоров.
+
+        Пятый договор нарочно ПОДХОДИТ ПОД ДВЕ причины сразу (и ДС, и без
+        ставки): на входе, где у каждого договора ровно одна беда, разбиение
+        выполняется и при независимом счёте причин — то есть утверждение
+        доказывало бы не то.
+        """
+        factories.ContractFactory.create()  # без сметы
+        _priced_contract(factories)  # учтён
+        _, _, no_rate_proposal = _chain(factories, vat_rate=None)
+        _row(factories, no_rate_proposal, total="1000")
+        _, _, incomplete_proposal = _chain(factories)
+        _row(factories, incomplete_proposal, total=None)
+        both, _, both_proposal = _chain(factories, vat_rate=None)
+        _row(factories, both_proposal, total="1000")
+        _, _, both_amendment = _chain(factories, contract=both, amendment_no=1)
+        _row(factories, both_amendment, total="500")
+        db_session.flush()
+
+        coverage = crud_dashboard.contract_coverage(crud_dashboard.contract_layer(db_session))
+
+        assert coverage["total"] == 5
+        assert coverage["counted"] == 1
+        assert sum(coverage["reasons"].values()) + coverage["counted"] == coverage["total"]
+        assert coverage["reasons"] == {
+            CONTRACT_REASON_NO_ESTIMATE: 1,
+            CONTRACT_REASON_AMENDMENT: 1,
+            CONTRACT_REASON_NO_RATE: 1,
+            CONTRACT_REASON_INCOMPLETE: 1,
+        }
+
+
+# ---------------------------------------------------------------------------
+#  Порядок пересчёта НДС: построчно, ДО накопления
+# ---------------------------------------------------------------------------
+
+def test_amount_restates_each_row_before_accumulating(db_session, factories):
+    """Смета с ДВУМЯ предложениями и РАЗНЫМИ базами (20 % и 10 %), цель 0 %.
+
+    Числа подобраны так, что верный порядок даёт целое:
+      132 / 1.2 = 110, 132 / 1.1 = 120  →  230.
+    Сложить сырые строки и пересчитать итог ОДИН раз нельзя ни по какой базе:
+      (132 + 132) / 1.2 = 220,  (132 + 132) / 1.1 = 240.
+    На одном предложении все три числа совпали бы — поэтому вход именно такой.
+    """
+    contract, estimate, _ = _priced_estimate_with_two_proposals(
+        factories,
+        unit_cost_total=Decimal("132"),
+        vat_rates=[Decimal("20"), Decimal("10")],
+    )
+    estimate.vat_rate_target = Decimal("0")
+    db_session.flush()
+
+    row = _layer(db_session)[contract.id]
+
+    expected = net_to_gross(gross_to_net(Decimal("132"), Decimal("20")), Decimal("0")) + \
+        net_to_gross(gross_to_net(Decimal("132"), Decimal("10")), Decimal("0"))
+    assert row.reason is None
+    assert row.display_rate == Decimal("0")
+    assert row.amount == expected
+    assert row.amount == Decimal("230")
+    assert row.amount != Decimal("220")
+    assert row.amount != Decimal("240")
+
+
+# ---------------------------------------------------------------------------
+#  Показатели шапки (решения 5 и 7 макета)
+# ---------------------------------------------------------------------------
+#
+# Считает их БЭКЕНД, и это отдельный блок тестов. Без него фронтенд проверял бы
+# отображение своей же MSW-фикстуры: сервер мог бы не вернуть половину полей, а
+# прогон остался бы зелёным.
+
+class TestHeadline:
+    def test_each_area_carries_its_own_coverage(self, db_session, factories):
+        """У НАДЗЕМНОЙ с ПОДЗЕМНОЙ охват общий (`CHECK` миграции 0009 держит их
+        парой), у ПОЛЕЗНОЙ — свой (`CHECK` миграции 0013 её с парой не связывает).
+        Объект, у которого заведена только полезная, входит в охват полезной и НЕ
+        входит в охват пары — общий «не заведена у N» это различие скрывал бы.
+        """
+        _object(factories, above="100", under="20")
+        _object(factories, above="300", under="80")
+        _object(factories, useful="50")
+        db_session.flush()
+
+        areas = crud_dashboard.area_summary(db_session)
+
+        assert areas["total"]["value"] == Decimal("500")
+        assert areas["total"]["coverage"] == {"total": 3, "counted": 2}
+        assert areas["aboveground"]["value"] == Decimal("400")
+        assert areas["aboveground"]["coverage"] == {"total": 3, "counted": 2}
+        assert areas["underground"]["value"] == Decimal("100")
+        assert areas["underground"]["coverage"] == {"total": 3, "counted": 2}
+        # Полезная: сумма ТОЛЬКО третьего объекта, охват — один из трёх.
+        assert areas["useful"]["value"] == Decimal("50")
+        assert areas["useful"]["coverage"] == {"total": 3, "counted": 1}
+
+    def test_largest_and_smallest_objects_by_area(self, db_session, factories):
+        biggest = _object(factories, above="900", under="100")
+        _object(factories, above="400", under="100")
+        smallest = _object(factories, above="50", under="10")
+        _object(factories, useful="777")  # без пары — в экстремумы не входит
+        db_session.flush()
+
+        areas = crud_dashboard.area_summary(db_session)
+
+        assert areas["largest"]["object_id"] == biggest.id
+        assert areas["largest"]["area_total_sp"] == Decimal("1000")
+        assert areas["smallest"]["object_id"] == smallest.id
+        assert areas["smallest"]["area_total_sp"] == Decimal("60")
+        assert areas["total"]["coverage"] == {"total": 4, "counted": 3}
+
+    def test_counters_do_not_merge_objects_and_contracts(self, db_session, factories):
+        """Решение 9 макета: «5 договоров» и «1 объект» — разные сущности, они не
+        складываются. Счётчики обязаны приезжать порознь."""
+        rate_class = factories.RateClassFactory.create()
+        first = _object(factories, above="100", under="0")
+        second = _object(factories, above="200", under="0")
+        _priced_contract(factories, obj=first, rate_class=rate_class)
+        _priced_contract(factories, obj=second, rate_class=rate_class)
+        _priced_contract(factories, obj=second, rate_class=rate_class)
+        factories.ContractFactory.create(object=first)  # без сметы
+        db_session.flush()
+
+        counters = crud_dashboard.base_counters(
+            db_session, crud_dashboard.contract_layer(db_session)
+        )
+
+        assert counters["objects"] == 2
+        assert counters["contracts"] == 4
+        assert counters["contracts_with_estimate"] == 3
+        assert counters["objects"] != counters["contracts"]
+        # Классы считаются по СНИМКУ на договоре (`AGENTS.md` §4) — тем же
+        # признаком, по которому группируют рейтинг и диаграмма этой страницы.
+        # Три из четырёх договоров сидят на одном классе, четвёртый (`без
+        # сметы`) завёл свой — итого два, а не число классов объектов.
+        assert counters["classes"] == 2
+
+    def test_class_counter_matches_the_chart_lanes(self, db_session, factories):
+        """Счётчик классов и число дорожек диаграммы обязаны сходиться.
+
+        Замерено браузерным smoke на стенде: счёт по `objects.rate_class_id`
+        давал «в 1 классах», тогда как диаграмма двумя блоками ниже рисовала три
+        дорожки. Два числа об одном и том же на одном экране — дефект, который
+        jsdom не наблюдает, а человек видит сразу.
+        """
+        shared_object_class = factories.RateClassFactory.create()
+        for _ in range(3):
+            obj = factories.ObjectFactory.create(
+                rate_class=shared_object_class,
+                area_aboveground_sp=Decimal("100"),
+                area_underground_sp=Decimal("0"),
+            )
+            _priced_contract(factories, obj=obj, rate_class=factories.RateClassFactory.create())
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        counters = crud_dashboard.base_counters(db_session, contracts)
+
+        assert counters["classes"] == len(crud_dashboard.per_sqm_chart(objects)["classes"])
+        assert counters["classes"] == 3
+
+    def test_class_counter_is_never_smaller_than_the_lanes(self, db_session, factories):
+        """Уточнение по ревью Codex: счётчик классов и число дорожек РАВНЫ не
+        всегда, и это законно — счётчик описывает всю базу, диаграмма свою
+        выборку, и её охват назван под ней отдельной строкой.
+
+        Вход ревью: один учтённый договор класса A плюс договор БЕЗ СМЕТЫ класса
+        B. Счётчик обязан сказать «2 класса», дорожка — одна.
+
+        Обязателен ОДНОСТОРОННИЙ инвариант: счётчик никогда не МЕНЬШЕ числа
+        дорожек. Обратное означало бы, что на экране видно больше классов, чем
+        страница насчитала, — несводимое противоречие, и ровно оно было дефектом
+        до правки счётчика.
+        """
+        counted_object = _object(factories, above="100", under="0")
+        _priced_contract(
+            factories, obj=counted_object, rate_class=factories.RateClassFactory.create()
+        )
+        factories.ContractFactory.create(rate_class=factories.RateClassFactory.create())
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        counters = crud_dashboard.base_counters(db_session, contracts)
+        lanes = len(crud_dashboard.per_sqm_chart(objects)["classes"])
+
+        assert counters["classes"] == 2
+        assert lanes == 1
+        assert counters["classes"] >= lanes
+
+    def test_per_sqm_extremes_carry_their_own_coverage(self, db_session, factories):
+        cheap = _object(factories, above="100", under="0")
+        pricey = _object(factories, above="100", under="0")
+        _object(factories, above="100", under="0")  # без договора — вне охвата
+        _priced_contract(factories, obj=cheap, total="1000")
+        _priced_contract(factories, obj=pricey, total="5000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        extremes = crud_dashboard.per_sqm_extremes(objects)
+
+        assert extremes["max"]["object_id"] == pricey.id
+        assert extremes["max"]["per_sqm"] == Decimal("50")
+        assert extremes["min"]["object_id"] == cheap.id
+        assert extremes["min"]["per_sqm"] == Decimal("10")
+        assert extremes["coverage"] == {"total": 3, "counted": 2}
+
+
+# ---------------------------------------------------------------------------
+#  Объектная лестница и разведение двух охватов
+# ---------------------------------------------------------------------------
+
+class TestObjectLadder:
+    def test_object_with_several_contracts_is_out_of_ranking(self, db_session, factories):
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories, obj=obj)
+        db_session.flush()
+
+        assert _objects(db_session)[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS
+        )
+
+    def test_object_without_counted_contract_is_out_of_ranking(self, db_session, factories):
+        """Единственный договор объекта исключён договорной лестницей (без
+        сметы) — ставить в рейтинг нечего."""
+        obj = _object(factories, above="100", under="0")
+        factories.ContractFactory.create(object=obj)
+        db_session.flush()
+
+        assert _objects(db_session)[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        )
+
+    def test_object_without_any_contract_has_its_own_reason(self, db_session, factories):
+        """«Нет договоров вовсе» — ОТДЕЛЬНАЯ причина от «договоры есть, но ни
+        один не учтён» (находка ревью Codex).
+
+        Разница не терминологическая, а в том, объяснён ли объект где-то ещё.
+        Объект с исключённым договором назван договорной половиной охвата — его
+        договор стоит там со своей причиной. Объект БЕЗ договоров не назван
+        нигде: договорная половина о нём молчит, и слитый со вторым случаем он
+        пропадал из сноски рейтинга молча.
+        """
+        lonely = _object(factories, above="100", under="0")
+        other = _object(factories, above="100", under="0")
+        factories.ContractFactory.create(object=other)
+        db_session.flush()
+
+        objects = crud_dashboard.object_layer(
+            db_session, crud_dashboard.contract_layer(db_session)
+        )
+        by_id = {row.object_id: row for row in objects}
+
+        assert by_id[lonely.id].reason == crud_dashboard.OBJECT_REASON_NO_CONTRACTS
+        assert by_id[other.id].reason == crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        assert crud_dashboard.object_coverage(objects)["reasons"] == {
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS: 0,
+            crud_dashboard.OBJECT_REASON_NO_CONTRACTS: 1,
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT: 1,
+        }
+
+    def test_object_of_amendment_contract_leaves_ranking_and_chart(
+        self, db_session, factories
+    ):
+        """DoD спеки: договор с ДС исключён из итогов, РЕЙТИНГА и ДИАГРАММЫ.
+
+        Договорная лестница проверена отдельно; здесь — что исключение доезжает
+        до объектных поверхностей. Объект у договора один, поэтому в объектную
+        лестницу он попадает не как «много договоров», а как «ни одного
+        учтённого» — это разные причины, и путать их нельзя.
+        """
+        obj = _object(factories, above="100", under="0")
+        contract, _, proposal = _chain(factories, obj=obj)
+        _row(factories, proposal, total="1000")
+        _, _, amendment_proposal = _chain(factories, contract=contract, amendment_no=1)
+        _row(factories, amendment_proposal, total="500")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+
+        assert crud_dashboard.money_total(contracts) == Decimal("0")
+        assert {r.object_id: r for r in objects}[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_NO_COUNTED_CONTRACT
+        )
+        assert crud_dashboard.object_ranking(objects) == []
+        assert crud_dashboard.per_sqm_chart(objects)["classes"] == []
+
+    def test_object_without_area_is_in_ranking_but_not_in_chart(self, db_session, factories):
+        """Отсутствие площади — охват ДИАГРАММЫ, а не рейтинга: сумма договора
+        известна, и в рейтинге объекту место есть."""
+        obj = _object(factories)
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        row = {r.object_id: r for r in objects}[obj.id]
+
+        assert row.reason is None
+        assert row.amount == Decimal("1000")
+        assert row.per_sqm is None
+        assert [r.object_id for r in crud_dashboard.object_ranking(objects)] == [obj.id]
+        chart = crud_dashboard.per_sqm_chart(objects)
+        assert chart["coverage"] == {"total": 1, "counted": 0}
+        assert chart["classes"] == []
+
+    def test_two_ladders_are_different_ladders(self, db_session, factories):
+        """ОБЯЗАТЕЛЬНЫЙ ВХОД, разводящий охваты (спека §2.5, DoD).
+
+        Объект с ДВУМЯ УЧТЁННЫМИ договорами выпадает ТОЛЬКО из рейтинга; деньги
+        обоих его договоров остаются в ИТОГО — они настоящие. Оба утверждения
+        обязаны стоять в ОДНОМ тесте: порознь каждое пройдёт и на реализации с
+        одним общим фильтром, которая выкидывает объект отовсюду сразу.
+        """
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, total="700")
+        _priced_contract(factories, obj=obj, total="300")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+
+        # Рейтинг: объекта нет.
+        assert {r.object_id for r in crud_dashboard.object_ranking(objects)} == set()
+        assert {r.object_id: r for r in objects}[obj.id].reason == (
+            crud_dashboard.OBJECT_REASON_MANY_CONTRACTS
+        )
+        # Деньги: оба договора учтены и оба в ИТОГО.
+        assert crud_dashboard.contract_coverage(contracts)["counted"] == 2
+        assert crud_dashboard.money_total(contracts) == Decimal("1000")
+
+
+# ---------------------------------------------------------------------------
+#  Рейтинг: топ-10 и тай-брейк
+# ---------------------------------------------------------------------------
+
+class TestRanking:
+    def test_eleventh_object_is_hidden_but_counted_in_coverage(self, db_session, factories):
+        for index in range(11):
+            obj = _object(factories, above="100", under="0")
+            _priced_contract(factories, obj=obj, total=str(1000 + index))
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        top = crud_dashboard.object_ranking(objects)
+
+        assert len(top) == 10
+        assert crud_dashboard.object_coverage(objects)["counted"] == 11
+        # Убран самый дешёвый, а не произвольный.
+        assert min(row.amount for row in top) == Decimal("1001")
+
+    def test_equal_sums_get_a_defined_order(self, db_session, factories):
+        """Поведенческая половина тай-брейка. Одной её МАЛО: PostgreSQL и
+        `sorted` вправе стабильно возвращать тот же порядок, и сто повторных
+        прогонов ничего не докажут. Вторая половина — тест ФОРМЫ ключа
+        сортировки (`tests/unit/test_dashboard_ranking.py`).
+        """
+        first = _object(factories, above="100", under="0")
+        second = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=first, total="1000")
+        _priced_contract(factories, obj=second, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        order = [row.object_id for row in crud_dashboard.object_ranking(objects)]
+
+        assert order == sorted([first.id, second.id])
+
+
+# ---------------------------------------------------------------------------
+#  Диаграмма ₽/м²: обе стороны и формула точки
+# ---------------------------------------------------------------------------
+
+class TestPerSqmChart:
+    def test_class_with_two_objects_has_spread_between_its_min_and_max(
+        self, db_session, factories
+    ):
+        """ПОЛОЖИТЕЛЬНАЯ сторона. Без неё реализация, не рисующая полос вовсе,
+        проходит отрицательный тест целиком."""
+        rate_class = factories.RateClassFactory.create()
+        cheap = _object(factories, above="100", under="0")
+        pricey = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=cheap, rate_class=rate_class, total="1000")
+        _priced_contract(factories, obj=pricey, rate_class=rate_class, total="3000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        lane = crud_dashboard.per_sqm_chart(objects)["classes"][0]
+
+        assert lane["rate_class_id"] == rate_class.id
+        assert lane["spread"] == {"min": Decimal("10"), "max": Decimal("30")}
+        assert sorted(point["per_sqm"] for point in lane["points"]) == [
+            Decimal("10"),
+            Decimal("30"),
+        ]
+
+    def test_class_with_one_object_has_no_spread(self, db_session, factories):
+        """Решение 11: размаха не существует, рисовать его было бы выдумкой."""
+        rate_class = factories.RateClassFactory.create()
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, rate_class=rate_class, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        objects = crud_dashboard.object_layer(db_session, contracts)
+        lane = crud_dashboard.per_sqm_chart(objects)["classes"][0]
+
+        assert len(lane["points"]) == 1
+        assert lane["spread"] is None
+
+    def test_per_sqm_denominator_is_area_total_without_useful(self, db_session, factories):
+        """Знаменатель ₽/м² — `area_total_sp` (надземная + подземная). Полезная в
+        неё НЕ входит (миграция 0013), и фича полезной площади этот знаменатель
+        нигде не меняла. Вход подобран так, что ошибка знаменателя видна:
+          1000 / 100 = 10, а 1000 / (100 + 30) = 7.69…
+        """
+        obj = _object(factories, above="60", under="40", useful="30")
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.flush()
+
+        contracts = crud_dashboard.contract_layer(db_session)
+        row = {r.object_id: r for r in crud_dashboard.object_layer(db_session, contracts)}[
+            obj.id
+        ]
+
+        assert row.area_total_sp == Decimal("100")
+        assert row.per_sqm == Decimal("10")
+
+
+# ---------------------------------------------------------------------------
+#  Эндпоинт основного таба (задача 3, спека §2.8)
+# ---------------------------------------------------------------------------
+
+DASHBOARD_URL = "/api/v1/analytics/dashboard"
+
+
+class TestDashboardEndpoint:
+    def test_answers_both_roles(self, client, factories, db_session):
+        """Основной таб — чтение, а его `AGENTS.md` §3 отдаёт и `member`.
+        Разведение эндпоинтов (§2.8) ради того и сделано: закрыть весь дашборд
+        вместе с диагностиками было бы отказом читателю в том, что ему положено.
+        """
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.commit()
+
+        assert client.get(DASHBOARD_URL).status_code == 200
+        client.auth_state["role"] = UserRole.member
+        assert client.get(DASHBOARD_URL).status_code == 200
+
+    def test_money_and_areas_reach_json_as_strings(self, client, factories, db_session):
+        """Смотрим на СЫРОЕ тело: после `json.loads` строка и `float`
+        неразличимы, а забытый `decimal_json` даёт ровно `float`.
+
+        Негативная половина обязательна — без неё утверждение прошло бы и на
+        числе, если бы строка совпала подстрокой где-то ещё в теле.
+        """
+        obj = _object(factories, above="62399.70", under="13341.30")
+        _priced_contract(factories, obj=obj, total="1234567890.12")
+        db_session.commit()
+
+        compact = client.get(DASHBOARD_URL).text.replace(" ", "")
+
+        assert '"amount":"1234567890.12"' in compact
+        assert '"amount":1234567890.12' not in compact
+        assert '"area_total_sp":"75741.00"' in compact
+        assert '"area_total_sp":75741' not in compact
+
+
+# ---------------------------------------------------------------------------
+#  Таб «На что обратить внимание» (задача 4, решение 12 макета)
+# ---------------------------------------------------------------------------
+
+ATTENTION_URL = "/api/v1/analytics/dashboard/attention"
+
+
+def _second_proposal(factories, contract, estimate, *, vat_rate, total="1000"):
+    """Второе предложение той же сметы — ставка НДС живёт на предложении."""
+    lot = factories.LotFactory.create(estimate=estimate)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=vat_rate
+    )
+    _row(factories, proposal, total=total)
+    return proposal
+
+
+@contextmanager
+def _count_queries(db_session):
+    """Счётчик исполненных запросов. Готового приёма в проекте не было —
+    заводится этой задачей (`before_cursor_execute` на соединении сессии)."""
+    counter = {"n": 0}
+    bind = db_session.get_bind()
+
+    def _tick(conn, cursor, statement, parameters, context, executemany):
+        counter["n"] += 1
+
+    sa.event.listen(bind, "before_cursor_execute", _tick)
+    try:
+        yield counter
+    finally:
+        sa.event.remove(bind, "before_cursor_execute", _tick)
+
+
+class TestAttentionRights:
+    def test_admin_gets_five_rows(self, client, db_session):
+        db_session.commit()
+
+        body = client.get(ATTENTION_URL)
+
+        assert body.status_code == 200
+        assert set(body.json()) == set(crud_dashboard.ATTENTION_ROWS)
+        assert len(crud_dashboard.ATTENTION_ROWS) == 5
+
+    def test_member_gets_403(self, client, db_session):
+        """Право видно НА СЕРВЕРЕ, а не только скрытой вкладкой (спека §2.8)."""
+        db_session.commit()
+        client.auth_state["role"] = UserRole.member
+
+        assert client.get(ATTENTION_URL).status_code == 403
+
+
+class TestAttentionCounters:
+    def test_disagreeing_proposal_rates_are_diagnosed(self, db_session, factories):
+        """ПЕРВАЯ реальная причина `effective_display_rate == None`: предложения
+        заявили РАЗНЫЕ ставки. Наивный запрос решения 12
+        (`COALESCE(vat_rate_base_override, vat_rate) IS NULL`) смотрит только на
+        базу и о правиле единогласия не знает — он молчит, а договор при этом
+        исключён из итогов, то есть пропал БЕЗ ДИАГНОСТИКИ.
+        """
+        contract, estimate, _ = _chain(factories, vat_rate=Decimal("20"))
+        _second_proposal(factories, contract, estimate, vat_rate=Decimal("22"))
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 1
+
+    def test_partially_unknown_proposal_rate_is_diagnosed(self, db_session, factories):
+        """ВТОРАЯ реальная причина: часть предложений ставку не заявила вовсе.
+        Разведена с первой намеренно — обе дают `None` в одной функции, и одно
+        общее снятие уронило бы оба входа сразу, доказав лишь, что защита
+        где-то есть, а не что тестов два.
+        """
+        contract, estimate, _ = _chain(factories, vat_rate=Decimal("20"))
+        _second_proposal(factories, contract, estimate, vat_rate=None)
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 1
+
+    def test_base_override_is_not_diagnosed(self, db_session, factories):
+        """ЗЕЛЁНЫЙ КОНТРОЛЬ. Ставка назначена человеком — ни диагностики, ни
+        исключения из денег. Наивный запрос его тоже распознаёт, поэтому уронить
+        этот тест возвратом к наброску решения 12 невозможно: он стережёт не
+        набросок, а то, что диагностика не выдумывает проблему на ровном месте.
+        """
+        _, estimate, _ = _chain(factories, vat_rate=None)
+        estimate.vat_rate_base_override = Decimal("20")
+        db_session.flush()
+
+        counters = crud_dashboard.attention_counters(db_session)
+
+        assert counters["estimates_without_vat_rate"] == 0
+
+    def test_object_with_several_contracts_is_counted(self, db_session, factories):
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories, obj=obj)
+        _priced_contract(factories)  # одиночный — не в счёте
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)[
+            "objects_with_several_contracts"
+        ] == 1
+
+    def test_contract_without_estimate_is_counted(self, db_session, factories):
+        factories.ContractFactory.create()
+        _priced_contract(factories)
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)[
+            "contracts_without_estimate"
+        ] == 1
+
+    def test_object_without_area_is_counted(self, db_session, factories):
+        _object(factories, above="100", under="0")
+        _object(factories)
+        _object(factories, useful="50")  # полезная общей не заводит
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)["objects_without_area"] == 2
+
+    def test_failed_import_older_than_thirty_days_is_not_counted(
+        self, db_session, factories
+    ):
+        """Окно 30 дней — часть диагностики, а не украшение: без него строка
+        показывала бы вечный долг и читалась бы как фон."""
+        contract = factories.ContractFactory.create()
+        fresh = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.error.value
+        )
+        stale = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.error.value
+        )
+        done = factories.ImportJobFactory.create(
+            contract=contract, status=ImportJobStatus.done.value
+        )
+        db_session.flush()
+        now = dt.datetime.now(dt.UTC)
+        fresh.created_at = now - dt.timedelta(days=3)
+        stale.created_at = now - dt.timedelta(days=31)
+        done.created_at = now - dt.timedelta(days=1)
+        db_session.flush()
+
+        assert crud_dashboard.attention_counters(db_session)["failed_imports_30d"] == 1
+
+
+def test_attention_query_count_does_not_grow_with_the_base(db_session, factories):
+    """N+1 ловится РАВЕНСТВОМ счётчиков на двух размерах выборки, а не магической
+    константой: «ровно пять запросов» сломается от первой же законной правки, а
+    равенство ловит именно рост.
+
+    Опасное место одно — строка «без ставки» считается `effective_display_rate`,
+    а это функция Python: позвать её в цикле по сметам, дозапрашивая предложения
+    на каждую, дало бы N+1 ровно на той странице, которая открывается чаще всех.
+    """
+    for _ in range(2):
+        _priced_contract(factories)
+    db_session.flush()
+    with _count_queries(db_session) as small:
+        crud_dashboard.attention_counters(db_session)
+
+    for _ in range(10):
+        _priced_contract(factories)
+    db_session.flush()
+    with _count_queries(db_session) as large:
+        crud_dashboard.attention_counters(db_session)
+
+    assert small["n"] > 0
+    assert small["n"] == large["n"]

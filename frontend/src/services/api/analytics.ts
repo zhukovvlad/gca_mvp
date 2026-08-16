@@ -14,6 +14,8 @@ import type {
   BankComparisonParams,
   CategoryOverrideChangeSummary,
   ClearCategoryOverrideInput,
+  Dashboard,
+  DashboardAttention,
   Matrix,
   MatrixCellDetail,
   MatrixParams,
@@ -29,6 +31,21 @@ export const settingsApi = {
 };
 
 export const analyticsApi = {
+  /** Основной таб стартового дашборда (спека 2026-08-16 §2.8) — читает и `member`. */
+  dashboard: (): Promise<Dashboard> =>
+    api.get<Dashboard>("/v1/analytics/dashboard").then((r) => r.data),
+
+  /**
+   * Таб «На что обратить внимание» — только `admin` (403 у `member`).
+   *
+   * Эндпоинт ОТДЕЛЬНЫЙ, и вызывать его нужно только когда вкладка положена:
+   * безусловный хук штатно генерирует запрещённые запросы и засоряет журнал
+   * сервера отказами, тогда как §2.8 разводит эндпоинты ровно затем, чтобы
+   * клиент и не пытался.
+   */
+  dashboardAttention: (): Promise<DashboardAttention> =>
+    api.get<DashboardAttention>("/v1/analytics/dashboard/attention").then((r) => r.data),
+
   matrix: (params?: MatrixParams): Promise<Matrix> =>
     api.get<Matrix>("/v1/analytics/matrix", { params }).then((r) => r.data),
 
