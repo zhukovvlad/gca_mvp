@@ -209,6 +209,49 @@ describe("инвалидация паспорта проекта источни�
   });
 });
 
+/**
+ * `useDeleteContract` (спека каскадного удаления §2.7): каскад уносит сметы и
+ * позиции договора, поэтому устаревает всё, где договор виден или посчитан —
+ * не только `contracts`/`passport` (которые хук уже инвалидировал), но и семь
+ * дополнительных корней таблицы §2.7. Ключи проверяются ПО ОТДЕЛЬНОСТИ:
+ * утверждение «вызвано девять раз» прошло бы и при девяти одинаковых ключах.
+ */
+describe("useDeleteContract: инвалидация после каскадного удаления", () => {
+  it("удаление договора инвалидирует все поверхности, где он виден", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    server.use(
+      http.delete("/api/v1/contracts/:id", () => new HttpResponse(null, { status: 204 }))
+    );
+
+    const { result } = renderHook(() => useDeleteContract(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync(1);
+    });
+
+    // Ключи проверяются ПО ОТДЕЛЬНОСТИ: «вызвано девять раз» прошло бы и при
+    // девяти одинаковых ключах.
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    for (const root of [
+      qk.contracts.all,
+      qk.importJobs.all,
+      qk.passport.all,
+      qk.matrix.all,
+      qk.dashboard.all,
+      qk.review.all,
+      qk.objects.all,
+      qk.contractors.all,
+      qk.rateClasses.all,
+    ]) {
+      expect(keys).toContain(JSON.stringify(root));
+    }
+  });
+});
+
 describe("useProjectPassport: переиспользование корня паспорта (Ф6)", () => {
   it("корень паспорта переиспользован новым хуком", async () => {
     const queryClient = createTestQueryClient();

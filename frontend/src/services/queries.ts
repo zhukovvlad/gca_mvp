@@ -337,6 +337,20 @@ export function useDeleteContract() {
       // остаётся в кэше — и без инвалидации к нему можно вернуться назад и
       // увидеть документ по договору, которого уже нет.
       qc.invalidateQueries({ queryKey: qk.passport.all });
+      // Каскад уносит сметы и позиции, поэтому устаревает всё, где договор
+      // виден или посчитан (спека §2.7). `qk.contracts.all` накрывает и историю
+      // загрузок договора; поллинг задания живёт в ОТДЕЛЬНОМ пространстве
+      // `qk.importJobs`, под префикс договоров он не попадает.
+      qc.invalidateQueries({ queryKey: qk.importJobs.all });
+      qc.invalidateQueries({ queryKey: qk.matrix.all });
+      qc.invalidateQueries({ queryKey: qk.dashboard.all });
+      // Позиции ушли — фактическая очередь Review изменилась.
+      qc.invalidateQueries({ queryKey: qk.review.all });
+      // Счётчики договоров в справочниках: ровно их инвалидирует
+      // `useCreateContract`, и несимметричность была бы дефектом.
+      qc.invalidateQueries({ queryKey: qk.objects.all });
+      qc.invalidateQueries({ queryKey: qk.contractors.all });
+      qc.invalidateQueries({ queryKey: qk.rateClasses.all });
       toast.success("Договор удалён");
     },
     onError: toastApiError,
