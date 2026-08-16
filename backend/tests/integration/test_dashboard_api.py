@@ -34,6 +34,7 @@ from crud.dashboard import (
     CONTRACT_REASON_NO_ESTIMATE,
     CONTRACT_REASON_NO_RATE,
 )
+from models import UserRole
 from money.vat import gross_to_net, net_to_gross
 from tests.integration.test_analytics_api import _priced_estimate_with_two_proposals
 
@@ -580,3 +581,43 @@ class TestPerSqmChart:
 
         assert row.area_total_sp == Decimal("100")
         assert row.per_sqm == Decimal("10")
+
+
+# ---------------------------------------------------------------------------
+#  Эндпоинт основного таба (задача 3, спека §2.8)
+# ---------------------------------------------------------------------------
+
+DASHBOARD_URL = "/api/v1/analytics/dashboard"
+
+
+class TestDashboardEndpoint:
+    def test_answers_both_roles(self, client, factories, db_session):
+        """Основной таб — чтение, а его `AGENTS.md` §3 отдаёт и `member`.
+        Разведение эндпоинтов (§2.8) ради того и сделано: закрыть весь дашборд
+        вместе с диагностиками было бы отказом читателю в том, что ему положено.
+        """
+        obj = _object(factories, above="100", under="0")
+        _priced_contract(factories, obj=obj, total="1000")
+        db_session.commit()
+
+        assert client.get(DASHBOARD_URL).status_code == 200
+        client.auth_state["role"] = UserRole.member
+        assert client.get(DASHBOARD_URL).status_code == 200
+
+    def test_money_and_areas_reach_json_as_strings(self, client, factories, db_session):
+        """Смотрим на СЫРОЕ тело: после `json.loads` строка и `float`
+        неразличимы, а забытый `decimal_json` даёт ровно `float`.
+
+        Негативная половина обязательна — без неё утверждение прошло бы и на
+        числе, если бы строка совпала подстрокой где-то ещё в теле.
+        """
+        obj = _object(factories, above="62399.70", under="13341.30")
+        _priced_contract(factories, obj=obj, total="1234567890.12")
+        db_session.commit()
+
+        compact = client.get(DASHBOARD_URL).text.replace(" ", "")
+
+        assert '"amount":"1234567890.12"' in compact
+        assert '"amount":1234567890.12' not in compact
+        assert '"area_total_sp":"75741.00"' in compact
+        assert '"area_total_sp":75741' not in compact

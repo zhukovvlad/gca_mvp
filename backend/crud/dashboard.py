@@ -37,6 +37,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from crud.common import iso
 from crud.project_passport import CATEGORY_TOTALS
 from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass
 from money.vat import effective_display_rate, restate_gross
@@ -621,4 +622,60 @@ def base_counters(db: Session, contracts: Sequence[ContractMoney]) -> dict:
         "classes": classes,
         "contracts": len(contracts),
         "contracts_with_estimate": with_estimate,
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Сборка ответа основного таба (спека §2.8)
+# ---------------------------------------------------------------------------
+
+def _ranking_card(row: ObjectMoney) -> dict:
+    """Карточка объекта в рейтинге (решение 8 макета).
+
+    `signed_date` приводится к ISO ЗДЕСЬ: энкодер `responses.decimal_json`
+    намеренно строгий и бросает `TypeError` на `date` — забывчивость видна сразу,
+    а не как «дата в неожиданном формате» на экране.
+    """
+    return {
+        "object_id": row.object_id,
+        "title": row.title,
+        "rate_class_id": row.rate_class_id,
+        "rate_class_title": row.rate_class_title,
+        "area_total_sp": row.area_total_sp,
+        "amount": row.amount,
+        "per_sqm": row.per_sqm,
+        "display_rate": row.display_rate,
+        "contract": {
+            "id": row.contract_id,
+            "contract_number": row.contract_number,
+            "signed_date": iso(row.signed_date),
+            "contractor_title": row.contractor_title,
+        },
+    }
+
+
+def get_dashboard(db: Session) -> dict:
+    """Основной таб главной целиком (спека §2.8): деньги, площади, счётчики,
+    рейтинг и диаграмма — ОДНИМ ответом.
+
+    Диагностики второго таба здесь НЕТ намеренно: они закрыты `require_admin`, и
+    сложенные в один ответ они закрыли бы вместе с собой и весь остальной
+    дашборд, который читателю положен (§2.8).
+
+    Договорный и объектный слои считаются по одному разу и переиспользуются: два
+    прохода по одним данным разъехались бы при первой правке.
+    """
+    contracts = contract_layer(db)
+    objects = object_layer(db, contracts)
+    return {
+        "money": {
+            "amount": money_total(contracts),
+            "coverage": contract_coverage(contracts),
+        },
+        "areas": area_summary(db),
+        "counters": base_counters(db, contracts),
+        "per_sqm": per_sqm_extremes(objects),
+        "ranking": [_ranking_card(row) for row in object_ranking(objects)],
+        "ranking_coverage": object_coverage(objects),
+        "chart": per_sqm_chart(objects),
     }

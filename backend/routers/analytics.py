@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from crud import analytics as crud_analytics
+from crud import dashboard as crud_dashboard
 from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from database import get_db
@@ -95,6 +96,22 @@ def get_matrix_cell(
         )
     except DomainError as e:
         _raise(e)
+
+
+@router.get("/dashboard")
+def get_dashboard(db: Session = Depends(get_db)):
+    """Основной таб стартового дашборда (спека 2026-08-16 §2.8).
+
+    Чтение — любому аутентифицированному, включая `member`: §3 отдаёт аналитику
+    и читателю. Диагностики второго таба живут ОТДЕЛЬНЫМ эндпоинтом под
+    `require_admin` — сложи их сюда, и `require_admin` закрыл бы вместе с ними
+    весь дашборд, который читателю положен.
+
+    `decimal_json` обязателен: ответ несёт деньги (ИТОГО, сумма каждой карточки
+    рейтинга), площади и ₽/м² — всё это `Decimal`, и без него FastAPI отдал бы
+    `float` (`responses.py`).
+    """
+    return decimal_json(crud_dashboard.get_dashboard(db))
 
 
 @router.get("/project-passport/{contract_id}")
