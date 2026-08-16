@@ -7,6 +7,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDecimalMoney, formatNumber, pluralRu } from "@/lib/format";
 import { useDashboard, useDashboardAttention } from "@/services/queries";
+import { AttentionPanel } from "./AttentionPanel";
+import { ObjectRanking } from "./ObjectRanking";
+import { PerSqmChart } from "./PerSqmChart";
 import type {
   Dashboard,
   DashboardContractCoverage,
@@ -210,14 +213,18 @@ function PerSqmTile({ perSqm }: { perSqm: Dashboard["per_sqm"] }) {
   );
 }
 
-function MainTab({ data }: { data: Dashboard }) {
+function MainTab({ data, isAdmin }: { data: Dashboard; isAdmin: boolean }) {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
-      <MoneyTile data={data} />
-      <AreaTile areas={data.areas} />
-      <CountersTile counters={data.counters} />
-      <PerSqmTile perSqm={data.per_sqm} />
-    </div>
+    <>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
+        <MoneyTile data={data} />
+        <AreaTile areas={data.areas} />
+        <CountersTile counters={data.counters} />
+        <PerSqmTile perSqm={data.per_sqm} />
+      </div>
+      <PerSqmChart chart={data.chart} />
+      <ObjectRanking data={data} isAdmin={isAdmin} />
+    </>
   );
 }
 
@@ -235,7 +242,7 @@ export default function HomeDashboardPage() {
   // Хук УСЛОВНЫЙ: `member` не должен слать запрос, который сервер обязан
   // отклонить (§2.8). Стережёт это счётчик вызовов в MSW, а не отсутствие
   // данных на экране — их у `member` нет в обеих ветвях.
-  useDashboardAttention(isAdmin);
+  const attention = useDashboardAttention(isAdmin);
 
   return (
     <div className="container-page py-8">
@@ -268,22 +275,17 @@ export default function HomeDashboardPage() {
               <TabsTrigger value="attention">На что обратить внимание</TabsTrigger>
             </TabsList>
             <TabsContent value="main" className="mt-4">
-              <MainTab data={data} />
+              <MainTab data={data} isAdmin />
             </TabsContent>
             <TabsContent value="attention" className="mt-4">
-              <AttentionPlaceholder />
+              {attention.data && <AttentionPanel data={attention.data} />}
             </TabsContent>
           </Tabs>
         ) : (
           <div className="mt-6">
-            <MainTab data={data} />
+            <MainTab data={data} isAdmin={false} />
           </div>
         ))}
     </div>
   );
-}
-
-/** Содержимое второго таба приезжает задачей 6 плана. */
-function AttentionPlaceholder() {
-  return null;
 }
