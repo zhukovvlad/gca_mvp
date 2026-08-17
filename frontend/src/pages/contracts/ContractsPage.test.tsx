@@ -148,4 +148,90 @@ describe("Экран «Договоры» (§7.1)", () => {
     // нечего (спека §2.6).
     expect(screen.getByRole("button", { name: "Удалить договор" })).toBeDisabled();
   });
+
+  // --- Выбор договоров для сравнения (спека сравнения §2.6, §2.9, DoD 14) ---
+  //
+  // Маршрут /compare ещё не существует (задача 8) — кнопки собирают АДРЕС и
+  // рендерятся ссылками, но никуда не переходят. Здесь проверяется только
+  // сборка href.
+
+  it("у каждой строки списка есть чекбокс выбора", async () => {
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    // sampleContracts — два договора без фильтра, значит и чекбоксов два.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+  });
+
+  it("«Сравнить выбранные» неактивна, пока не выбран ни один договор", async () => {
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    expect(screen.getByRole("button", { name: "Сравнить выбранные (0)" })).toBeDisabled();
+  });
+
+  it("выбор строк называет их число и собирает /compare?ids=… из выбранных id", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    await user.click(checkboxes[0]); // ГП-2026-001, id 100
+
+    expect(
+      screen.getByRole("link", { name: "Сравнить выбранные (1)" })
+    ).toHaveAttribute("href", "/compare?ids=100");
+
+    await user.click(checkboxes[1]); // ГП-2026-002, id 101
+
+    expect(
+      screen.getByRole("link", { name: "Сравнить выбранные (2)" })
+    ).toHaveAttribute("href", "/compare?ids=100,101");
+  });
+
+  it("«Сравнить всё по фильтру» несёт текущий поиск и класс плюс all=1, без page", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    await user.type(screen.getByLabelText("Поиск договоров"), "Северный");
+    await user.click(screen.getByRole("combobox", { name: /Класс объектов/ }));
+    await user.click(await screen.findByRole("option", { name: "Жилые дома" }));
+
+    // Кириллица в query неизбежно percent-encoded (это делает URLSearchParams
+    // корректно) — сравниваем декодированную строку, а не сырой href.
+    await waitFor(() => {
+      const href = screen.getByRole("link", { name: "Сравнить всё по фильтру" }).getAttribute("href");
+      expect(decodeURIComponent(href ?? "")).toBe("/compare?q=Северный&rate_class_id=1&all=1");
+    });
+    expect(
+      screen.getByRole("link", { name: "Сравнить всё по фильтру" }).getAttribute("href")
+    ).not.toContain("page");
+  });
+
+  it("пустой поиск и «Все классы» не оставляют в адресе пустых параметров", async () => {
+    renderWithProviders(<ContractsPage />);
+    await screen.findByText("ГП-2026-001");
+
+    expect(
+      screen.getByRole("link", { name: "Сравнить всё по фильтру" })
+    ).toHaveAttribute("href", "/compare?all=1");
+  });
+
+  it("member видит и чекбоксы, и обе кнопки сравнения (§2.9, DoD 14)", async () => {
+    renderWithProviders(<ContractsPage />, {
+      initialUser: { id: 2, email: "member@example.com", role: "member" },
+    });
+    await screen.findByText("ГП-2026-001");
+
+    // ПРЕДПОСЫЛКА: роль действительно переключилась. Без этой проверки тест
+    // прошёл бы и при молча не применившемся `initialUser` — чекбоксы и кнопки
+    // видны admin'у тоже, то есть утверждение «их видит member» стерегло бы
+    // только само их существование.
+    expect(screen.queryByRole("button", { name: /Новый договор/ })).not.toBeInTheDocument();
+
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Сравнить выбранные (0)" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Сравнить всё по фильтру" })).toBeInTheDocument();
+  });
 });

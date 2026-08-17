@@ -104,23 +104,33 @@ def _contracts_select():
     )
 
 
-def list_contracts(
-    db: Session,
+#: Порядок списка договоров: свежие сверху, `id` — тай-брейк. Объявлен здесь
+#: ОДИН раз, потому что его же обязано давать сравнение (спека сравнения §2.1,
+#: DoD 3): две копии «signed_date DESC, id DESC» разъехались бы при первой правке.
+CONTRACT_LIST_ORDER = (Contract.signed_date.desc(), Contract.id.desc())
+
+
+def apply_contract_filters(
+    stmt,
     *,
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
     rate_class_id: int | None = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> dict:
-    """Договоры с фильтрами и пагинацией (§7.1, список).
+):
+    """Наложить фильтры списка договоров (§7.1) на готовый `select`.
 
-    `q` — подстрока номера договора, названия договора, объекта или подрядчика:
-    человек ищет договор по тому, что помнит, а помнит он обычно объект.
+    Вынесено из `list_contracts` ОДНОЙ функцией потому, что тех же фильтров
+    требует выборка сравнения договоров (`?all=1`, спека сравнения §2.6: «ровно
+    контракт `routers.contracts.list_contracts`», перечень из четырёх). DoD 1
+    той фичи требует, чтобы выборка по `ids` и выборка по фильтру давали
+    одинаковый ответ на одинаковом множестве — со второй копией этих условий
+    равенство держалось бы на совпадении, а не на построении, и первая же правка
+    фильтра здесь молча развела бы список и сравнение.
+
+    Требует, чтобы `stmt` уже нёс join-ы на `objects` и `contractors`: `q` ищет
+    и по их названиям (`_contracts_select` их даёт).
     """
-    page, page_size = clamp_page(page, page_size)
-    stmt = _contracts_select()
     if q and q.strip():
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(
@@ -137,13 +147,63 @@ def list_contracts(
         stmt = stmt.where(Contract.contractor_id == contractor_id)
     if rate_class_id is not None:
         stmt = stmt.where(Contract.rate_class_id == rate_class_id)
+    return stmt
+
+
+def filtered_contract_ids(
+    db: Session,
+    *,
+    q: str | None = None,
+    object_id: int | None = None,
+    contractor_id: int | None = None,
+    rate_class_id: int | None = None,
+) -> list[int]:
+    """Идентификаторы ВСЕХ договоров под фильтры списка, без пагинации.
+
+    Без пагинации намеренно: сравнение берёт всю выборку, а не страницу списка
+    (спека сравнения §2.6 — `page`/`page_size` не переносятся). Порядок — тот же
+    `CONTRACT_LIST_ORDER`, что у списка.
+    """
+    stmt = apply_contract_filters(
+        _contracts_select(),
+        q=q,
+        object_id=object_id,
+        contractor_id=contractor_id,
+        rate_class_id=rate_class_id,
+    ).order_by(*CONTRACT_LIST_ORDER)
+    return [row[0].id for row in db.execute(stmt).all()]
+
+
+def list_contracts(
+    db: Session,
+    *,
+    q: str | None = None,
+    object_id: int | None = None,
+    contractor_id: int | None = None,
+    rate_class_id: int | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """Договоры с фильтрами и пагинацией (§7.1, список).
+
+    `q` — подстрока номера договора, названия договора, объекта или подрядчика:
+    человек ищет договор по тому, что помнит, а помнит он обычно объект.
+    """
+    page, page_size = clamp_page(page, page_size)
+    stmt = apply_contract_filters(
+        _contracts_select(),
+        q=q,
+        object_id=object_id,
+        contractor_id=contractor_id,
+        rate_class_id=rate_class_id,
+    )
 
     rows, total = paginated(
         db,
         stmt,
         # Свежие договоры сверху; id — тай-брейк, без него порядок страниц
         # не определён при равных датах, и запись могла бы попасть на две страницы.
-        order_by=(Contract.signed_date.desc(), Contract.id.desc()),
+        order_by=CONTRACT_LIST_ORDER,
         page=page,
         page_size=page_size,
     )

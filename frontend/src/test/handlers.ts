@@ -2,6 +2,7 @@ import { http, HttpResponse } from "msw";
 
 import {
   sampleAdminUsers,
+  sampleComparison,
   sampleContractCard,
   sampleContractors,
   sampleContracts,
@@ -20,7 +21,12 @@ import {
   sampleMatrixCellDetail,
   sampleProjectPassport,
 } from "./fixtures";
-import type { EstimateRow, ImportJobStatus, ProjectPassport } from "@/types/domain";
+import type {
+  ComparisonVatMode,
+  EstimateRow,
+  ImportJobStatus,
+  ProjectPassport,
+} from "@/types/domain";
 
 /**
  * Мутируемое состояние обработчиков. Сбрасывается между тестами через
@@ -779,6 +785,28 @@ export const handlers = [
 
   http.get("/api/v1/analytics/matrix/cell", () => HttpResponse.json(sampleMatrixCellDetail)),
 
+  /**
+   * Сравнение договоров (спека 2026-08-17, задача 8). Выборка (`ids`/`all` +
+   * фильтры) игнорируется намеренно — фикстура одна и та же, тест страницы
+   * проверяет клиентское поведение (дерево, переключатели, URL), а не то,
+   * что сервер умеет фильтровать (это покрыто `test_comparison_api.py`).
+   * `vat_mode`/`single_rate` эхом отражаются в ответе — иначе тест
+   * восстановления режима из URL не смог бы отличить «страница прочитала
+   * URL» от «страница показывает то, что всегда приходит с сервера».
+   */
+  http.get("/api/v1/analytics/comparison", ({ request }) => {
+    const url = new URL(request.url);
+    const vatMode = (url.searchParams.get("vat_mode") ?? "own") as ComparisonVatMode;
+    const singleRateParam = url.searchParams.get("single_rate");
+    const singleRate =
+      vatMode === "single" ? (singleRateParam ?? sampleComparison.rate_preselected) : null;
+    return HttpResponse.json({
+      ...sampleComparison,
+      vat_mode: vatMode,
+      single_rate: singleRate,
+    });
+  }),
+
   // --- Выгрузки §7.6 ---
   //
   // Отдаём непустой blob с настоящим media type: экран не разбирает содержимое, но
@@ -789,6 +817,25 @@ export const handlers = [
     const url = new URL(request.url);
     handlerState.lastReportRequest = {
       report: "contract-summary",
+      params: Object.fromEntries(url.searchParams),
+    };
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    });
+  }),
+  /**
+   * Третий файл §7.6 (`AGENTS.md` v6.8) — выгрузка сравнения. Параметры
+   * сохраняются тем же способом, что у двух других: тест страницы сравнения
+   * проверяет, что лист запрошен с ТЕМ ЖЕ режимом НДС, что открыт на экране,
+   * иначе числа файла и экрана разошлись бы (спека §2.7).
+   */
+  http.get("/api/v1/reports/comparison", ({ request }) => {
+    const url = new URL(request.url);
+    handlerState.lastReportRequest = {
+      report: "comparison",
       params: Object.fromEntries(url.searchParams),
     };
     return new HttpResponse(new Blob(["xlsx-stub"]), {

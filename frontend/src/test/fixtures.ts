@@ -1,6 +1,11 @@
 import type { AdminUser } from "@/types/admin";
 import type {
   AppSettings,
+  Comparison,
+  ComparisonBucketCell,
+  ComparisonCell,
+  ComparisonIncompleteReason,
+  ComparisonRow,
   ContractCard,
   Dashboard,
   DashboardAttention,
@@ -1223,4 +1228,314 @@ export const sampleDashboardAttentionClean: DashboardAttention = {
   contracts_without_estimate: 0,
   objects_without_area: 0,
   failed_imports_30d: 0,
+};
+
+// ---------------------------------------------------------------------------
+//  Сравнение договоров (спека 2026-08-17, задача 8)
+// ---------------------------------------------------------------------------
+//
+// Четыре договора, а не три-минимум задачи: три несут `area_total_sp` (нужно
+// РОВНО три сопоставимых значения для строки «1» — испытание подсветки, §2.5
+// правило 5), четвёртый (204) без ТЭП — испытание прочерка ₽/м² без нуля
+// (§2.4). Порядок колонок — `signed_date DESC, id DESC` (спека §2.1, DoD 3),
+// как их отдал бы сервер: 204 (новее всех) → 203 → 202 → 201 (старше всех).
+
+/** Ячейка без статьи в смете — прочерк во всех трёх осях (спека §2.1.2). */
+function absentBucket(): ComparisonBucketCell {
+  return {
+    net: null,
+    shown: null,
+    net_per_sqm: null,
+    shown_per_sqm: null,
+    state: "absent",
+    deviation_pct: null,
+    incomplete_reasons: [],
+  };
+}
+
+/** Статья есть, расценена в ноль (спека §2.1.2) — не путать с `absentBucket`. */
+function zeroBucket(perSqm: string | null = "0.00"): ComparisonBucketCell {
+  return {
+    net: "0.00",
+    shown: "0.00",
+    net_per_sqm: perSqm,
+    shown_per_sqm: perSqm,
+    state: "zero",
+    deviation_pct: null,
+    incomplete_reasons: [],
+  };
+}
+
+/** Число показано; `perSqm`/`deviationPct` — `null`, когда нет ТЭП или строка не сопоставима. */
+function valueBucket(
+  net: string,
+  shown: string,
+  perSqm: { net: string; shown: string } | null,
+  deviationPct: string | null = null
+): ComparisonBucketCell {
+  return {
+    net,
+    shown,
+    net_per_sqm: perSqm?.net ?? null,
+    shown_per_sqm: perSqm?.shown ?? null,
+    state: "value",
+    deviation_pct: deviationPct,
+    incomplete_reasons: [],
+  };
+}
+
+/**
+ * Ячейка погашена причинами неполноты (спека §2.1.3) — `state` остаётся
+ * `"value"` (статья ЕСТЬ), а `shown`/`net` гаснут в `null`. Ровно так
+ * ведёт себя `_resolve_cell`/`_build_bucket_cell` на бэкенде: гасит число,
+ * не факт присутствия строки.
+ */
+function blankedBucket(reasons: ComparisonIncompleteReason[]): ComparisonBucketCell {
+  return {
+    net: null,
+    shown: null,
+    net_per_sqm: null,
+    shown_per_sqm: null,
+    state: "value",
+    deviation_pct: null,
+    incomplete_reasons: reasons,
+  };
+}
+
+const COMPARISON_CONTRACT_IDS = [204, 203, 202, 201] as const;
+
+/** Ячейка "Итого" == "ДГП" (допсоглашений в фикстуре нет, ДС — везде ноль/прочерк). */
+function comparisonCellFromTotal(
+  contractId: number,
+  total: ComparisonBucketCell,
+  amendments: ComparisonBucketCell = total.state === "absent" ? absentBucket() : zeroBucket(null)
+): ComparisonCell {
+  return { contract_id: contractId, base: total, amendments, total };
+}
+
+export const sampleComparisonColumns = [
+  {
+    contract_id: 204,
+    contract_number: "ДГП-204",
+    object_title: "Объект D",
+    contractor_title: "Подрядчик D",
+    rate_class_title: "Класс D",
+    signed_date: "2026-06-01",
+    // ТЭП не заведены — ₽/м² договора обязан быть прочерком, не нулём (§2.4).
+    area_total_sp: null,
+    advance_pct: null,
+    bank_guarantee_pct: null,
+    retention_pct: null,
+    composition_caption: "20 %",
+  },
+  {
+    contract_id: 203,
+    contract_number: "ДГП-203",
+    object_title: "Объект C",
+    contractor_title: "Подрядчик C",
+    rate_class_title: "Класс C",
+    signed_date: "2026-01-01",
+    area_total_sp: "75741.00",
+    advance_pct: "30.00",
+    bank_guarantee_pct: "10.00",
+    retention_pct: "5.00",
+    composition_caption: "20 %",
+  },
+  {
+    contract_id: 202,
+    contract_number: "ДГП-202",
+    object_title: "Объект B",
+    contractor_title: "Подрядчик B",
+    rate_class_title: "Класс B",
+    signed_date: "2025-06-01",
+    area_total_sp: "166756.90",
+    advance_pct: null,
+    bank_guarantee_pct: null,
+    retention_pct: null,
+    composition_caption: "22 %",
+  },
+  {
+    contract_id: 201,
+    contract_number: "ДГП-201",
+    object_title: "Объект A",
+    contractor_title: "Подрядчик A",
+    rate_class_title: "Класс A",
+    signed_date: "2025-01-01",
+    area_total_sp: "79692.37",
+    advance_pct: null,
+    bank_guarantee_pct: null,
+    retention_pct: null,
+    composition_caption: "16 %",
+  },
+];
+
+/**
+ * Строка «1» («Земляные работы») — РОВНО три сопоставимых значения
+ * (203, 202, 201; медиана 1 500,00 ₽/м²), 204 исключён из медианы отсутствием
+ * ТЭП. Ровно та граница, на которой правило 5 §2.5 включает подсветку (DoD 11
+ * — «меньше трёх — подсветки нет» проверяется на строке «2» ниже, где
+ * сопоставимых 0).
+ */
+const comparisonRow1: ComparisonRow = {
+  kind: "category",
+  category_id: 1,
+  code: "1",
+  title: "Земляные работы",
+  level: 1,
+  parent_code: null,
+  cells: COMPARISON_CONTRACT_IDS.map((id) => {
+    if (id === 204) {
+      return comparisonCellFromTotal(id, valueBucket("1200000.00", "1440000.00", null));
+    }
+    if (id === 203) {
+      return comparisonCellFromTotal(
+        id,
+        valueBucket("75741000.00", "90889200.00", { net: "1000.00", shown: "1200.00" }, "-33.33")
+      );
+    }
+    if (id === 202) {
+      return comparisonCellFromTotal(
+        id,
+        valueBucket(
+          "333513800.00",
+          "406886836.00",
+          { net: "2000.00", shown: "2440.00" },
+          "33.33"
+        )
+      );
+    }
+    return comparisonCellFromTotal(
+      id,
+      valueBucket("119538555.00", "138664803.60", { net: "1500.00", shown: "1740.00" }, "0.00")
+    );
+  }),
+  medians: {
+    base: { value: "1500.00", comparable_count: 3, contract_ids: [203, 202, 201] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: "1500.00", comparable_count: 3, contract_ids: [203, 202, 201] },
+  },
+};
+
+/** Дочерняя статья «1.1» — испытание раскрытия ветки (DoD 16). */
+const comparisonRow11: ComparisonRow = {
+  kind: "category",
+  category_id: 11,
+  code: "1.1",
+  title: "Разработка грунта",
+  level: 2,
+  parent_code: "1",
+  cells: COMPARISON_CONTRACT_IDS.map((id) =>
+    comparisonCellFromTotal(id, valueBucket("500000.00", "600000.00", null))
+  ),
+  medians: {
+    base: { value: null, comparable_count: 0, contract_ids: [] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: null, comparable_count: 0, contract_ids: [] },
+  },
+};
+
+/** Синтетическая строка «Без подстатьи» статьи «1» (спека §2.1, own + прямые допработы). */
+const comparisonRow1Own: ComparisonRow = {
+  kind: "own",
+  category_id: 1,
+  code: "1::own",
+  title: "Без подстатьи",
+  level: 2,
+  parent_code: "1",
+  cells: COMPARISON_CONTRACT_IDS.map((id) =>
+    comparisonCellFromTotal(id, valueBucket("100000.00", "120000.00", null))
+  ),
+  medians: {
+    base: { value: null, comparable_count: 0, contract_ids: [] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: null, comparable_count: 0, contract_ids: [] },
+  },
+};
+
+/**
+ * Строка «2» — три РАЗНЫХ написания пустоты и ноля в одной строке (спека
+ * §2.1.2, §2.1.3): 204 — число, 203 — настоящий ноль, 202 — прочерк (статьи
+ * нет), 201 — ячейка погашена ДВУМЯ причинами сразу (порядок — как отдаёт
+ * сервер, `sorted()`: `not_finite_rows` раньше `unpriced_rows`). Ни одно
+ * значение сюда не входит в медиану (ноль/прочерк/погашенная исключены §2.5
+ * правила 3-4, а у 204 нет ТЭП) — сопоставимых 0, строка проверяет DoD 11.
+ */
+const comparisonRow2: ComparisonRow = {
+  kind: "category",
+  category_id: 2,
+  code: "2",
+  title: "Благоустройство, дороги",
+  level: 1,
+  parent_code: null,
+  cells: [
+    comparisonCellFromTotal(204, valueBucket("500000.00", "600000.00", null)),
+    comparisonCellFromTotal(203, zeroBucket("0.00")),
+    comparisonCellFromTotal(202, absentBucket()),
+    comparisonCellFromTotal(201, blankedBucket(["not_finite_rows", "unpriced_rows"])),
+  ],
+  medians: {
+    base: { value: null, comparable_count: 0, contract_ids: [] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: null, comparable_count: 0, contract_ids: [] },
+  },
+};
+
+/** «Нераспределённое» — последняя строка, вне медианы (спека §2.1.4). */
+const comparisonRowUnallocated: ComparisonRow = {
+  kind: "unallocated",
+  category_id: null,
+  code: "::unallocated",
+  title: "Нераспределённое",
+  level: 1,
+  parent_code: null,
+  cells: [
+    comparisonCellFromTotal(204, valueBucket("50000.00", "60000.00", null)),
+    comparisonCellFromTotal(203, absentBucket()),
+    comparisonCellFromTotal(202, absentBucket()),
+    comparisonCellFromTotal(201, absentBucket()),
+  ],
+  medians: {
+    base: { value: null, comparable_count: 0, contract_ids: [] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: null, comparable_count: 0, contract_ids: [] },
+  },
+};
+
+const comparisonTotalsCells: ComparisonCell[] = [
+  // Сумма НАМЕРЕННО с длинным хвостом, как её и отдаёт агрегат: он не квантует
+  // деньги (иначе `ДГП + ДС = Итого` разошлось бы на копейку, DoD 5), а нетто —
+  // частное от `gross_to_net`, почти никогда не представимое конечной дробью.
+  // Круглые значения здесь скрыли настоящий дефект показа: на стенде экран
+  // печатал «14 011 951 126,949999999999999982 ₽». Не заменять на круглое.
+  comparisonCellFromTotal(204, valueBucket("1750000.00", "2100000.949999999999999982", null)),
+  comparisonCellFromTotal(
+    203,
+    valueBucket("76241000.00", "91489200.00", { net: "1006.66", shown: "1207.99" }, "-33.11")
+  ),
+  comparisonCellFromTotal(
+    202,
+    valueBucket("333513800.00", "406886836.00", { net: "2000.00", shown: "2440.00" }, "32.90")
+  ),
+  comparisonCellFromTotal(
+    201,
+    valueBucket("119688555.00", "138839203.60", { net: "1501.88", shown: "1742.18" }, "0.21")
+  ),
+];
+
+export const sampleComparison: Comparison = {
+  vat_mode: "own",
+  single_rate: null,
+  rate_options: ["16.00", "20.00", "22.00"],
+  rate_preselected: "20.00",
+  caption:
+    "Суммы — каждая в своей ставке договора: договор виден таким, каким существует. " +
+    "Отклонения посчитаны без НДС.",
+  columns: sampleComparisonColumns,
+  rows: [comparisonRow1, comparisonRow11, comparisonRow1Own, comparisonRow2, comparisonRowUnallocated],
+  totals: comparisonTotalsCells,
+  totals_medians: {
+    base: { value: "1501.88", comparable_count: 3, contract_ids: [203, 202, 201] },
+    amendments: { value: null, comparable_count: 0, contract_ids: [] },
+    total: { value: "1501.88", comparable_count: 3, contract_ids: [203, 202, 201] },
+  },
 };

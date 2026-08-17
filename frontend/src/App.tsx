@@ -10,6 +10,7 @@ import HomeDashboardPage from "@/pages/home/HomeDashboardPage";
 import LoginPage from "@/pages/LoginPage";
 import AdminUserCreate from "@/pages/admin/AdminUserCreate";
 import AdminUsers from "@/pages/admin/AdminUsers";
+import ComparePage from "@/pages/compare/ComparePage";
 import ContractCardPage from "@/pages/contracts/ContractCardPage";
 import ContractsPage from "@/pages/contracts/ContractsPage";
 import MatrixPage from "@/pages/matrix/MatrixPage";
@@ -80,6 +81,13 @@ export default function App() {
                 */}
                 <Route path="/contracts/:contractId/passport" element={<ProjectPassportPage />} />
                 <Route path="/matrix" element={<MatrixPage />} />
+                {/*
+                  Сравнение договоров (спека 2026-08-17, §2.9) — чтение,
+                  доступно и `member`. Пункта в главном меню нет намеренно:
+                  вход только из списка договоров (`ContractsPage`), сравнение
+                  без выборки открывать не с чем.
+                */}
+                <Route path="/compare" element={<ComparePage />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route element={<RequireAdmin />}>
                   {/* Нормативы — право `admin` по букве §3. */}

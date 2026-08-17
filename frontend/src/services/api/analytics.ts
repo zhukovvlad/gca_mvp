@@ -14,6 +14,8 @@ import type {
   BankComparisonParams,
   CategoryOverrideChangeSummary,
   ClearCategoryOverrideInput,
+  Comparison,
+  ComparisonParams,
   Dashboard,
   DashboardAttention,
   Matrix,
@@ -28,6 +30,19 @@ export const settingsApi = {
 
   update: (passport_top_n: number): Promise<AppSettings> =>
     api.patch<AppSettings>("/v1/settings", { passport_top_n }).then((r) => r.data),
+};
+
+/**
+ * Сравнение договоров (спека 2026-08-17 §2.1–§2.6).
+ *
+ * Стоит рядом с матрицей и паспортом, а не в `domain.ts`: транспортный файл
+ * соответствует пространству имён API, а эндпоинт живёт под `/v1/analytics/`.
+ * `domain.ts` держит договоры, сметы, каталог и нормативы — вызов аналитики
+ * там ломал бы это соответствие.
+ */
+export const comparisonApi = {
+  get: (params: ComparisonParams): Promise<Comparison> =>
+    api.get<Comparison>("/v1/analytics/comparison", { params }).then((r) => r.data),
 };
 
 export const analyticsApi = {
@@ -108,6 +123,19 @@ export const reportsApi = {
         params: { contract_id: contractId },
         responseType: "blob",
       })
+      .then((r) => r.data),
+
+  /**
+   * Выгрузка сравнения договоров — ТРЕТИЙ файл §7.6 (`AGENTS.md` v6.8).
+   *
+   * Параметры — те же, что у экрана (§2.6, §2.3): выборка (`ids` либо `all=1`
+   * с фильтрами) и режим показа НДС. Иначе лист отвечал бы на другой вопрос,
+   * чем открытая страница, а спека §2.7 требует один агрегат на оба
+   * представления.
+   */
+  comparison: (params: ComparisonParams): Promise<Blob> =>
+    api
+      .get<Blob>("/v1/reports/comparison", { params, responseType: "blob" })
       .then((r) => r.data),
 
   bankComparison: (params: BankComparisonParams): Promise<Blob> =>

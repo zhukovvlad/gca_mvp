@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import type { AxiosError } from "axios";
 
 import { adminApi } from "./api/admin";
-import { analyticsApi, reportsApi, settingsApi } from "./api/analytics";
+import { analyticsApi, comparisonApi, reportsApi, settingsApi } from "./api/analytics";
 import {
   catalogApi,
   contractsApi,
@@ -21,6 +21,7 @@ import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   BankComparisonParams,
   ClearCategoryOverrideInput,
+  ComparisonParams,
   ContractInput,
   ContractorInput,
   Decimal,
@@ -750,6 +751,23 @@ export function useMatrixCell(
   });
 }
 
+/**
+ * Сравнение договоров по статьям классификатора (спека 2026-08-17, задача 8).
+ *
+ * `enabled` по умолчанию `true`, но страница обязана передать `false`, пока
+ * в адресе нет ни `ids`, ни `all=1` (§2.6): без выборки эндпоинт отвечает 400
+ * («выборка не задана»), а безусловный хук штатно генерировал бы этот отказ
+ * при каждом заходе на голый `/compare` — тот же приём, что у
+ * `useDashboardAttention`.
+ */
+export function useComparison(params: ComparisonParams, enabled = true) {
+  return useQuery({
+    queryKey: qk.comparison.get(params),
+    queryFn: () => comparisonApi.get(params),
+    enabled,
+  });
+}
+
 // ---------------------------------------------------------------------------
 //  Выгрузки §7.6
 // ---------------------------------------------------------------------------
@@ -803,6 +821,26 @@ export function useContractSummaryReport() {
     mutationFn: async ({ contractId, filename }: { contractId: number; filename: string }) => {
       const blob = await reportsApi.contractSummary(contractId);
       saveBlob(blob, filename);
+      return blob;
+    },
+    onError: toastReportError,
+  });
+}
+
+/**
+ * Выгрузка сравнения договоров в Excel — третий отчёт §7.6 (`AGENTS.md` v6.8).
+ *
+ * Живёт рядом с двумя другими выгрузками и по той же схеме: `blob` →
+ * `saveBlob`. Кнопка стоит НА СТРАНИЦЕ СРАВНЕНИЯ, а не на экране отчётов, и
+ * это не вкусовое решение: выгрузке нужна выборка договоров, а `ReportsPage`
+ * её дать не может — там есть период и класс, но не набор договоров (§2.6).
+ * Без кнопки именно здесь третий отчёт был бы недостижим из интерфейса.
+ */
+export function useComparisonReport() {
+  return useMutation({
+    mutationFn: async (params: ComparisonParams) => {
+      const blob = await reportsApi.comparison(params);
+      saveBlob(blob, "Сравнение договоров.xlsx");
       return blob;
     },
     onError: toastReportError,

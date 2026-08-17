@@ -15,12 +15,14 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from auth import require_admin
 from crud import analytics as crud_analytics
+from crud import comparison as crud_comparison
 from crud import dashboard as crud_dashboard
 from crud import project_passport as crud_project_passport
 from crud.common import DomainError
@@ -140,5 +142,57 @@ def get_project_passport(contract_id: int, db: Session = Depends(get_db)):
     """
     try:
         return decimal_json(crud_project_passport.get_project_passport(db, contract_id))
+    except DomainError as e:
+        _raise(e)
+
+
+@router.get("/comparison")
+def get_comparison(
+    ids: str | None = Query(default=None, description="Список id договоров через запятую: 1,2,4"),
+    all_: bool = Query(default=False, alias="all", description="Сравнить всё по текущему фильтру"),
+    q: str | None = Query(default=None),
+    object_id: int | None = Query(default=None),
+    contractor_id: int | None = Query(default=None),
+    rate_class_id: int | None = Query(default=None),
+    vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
+    single_rate: Decimal | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Сравнение договоров по статьям классификатора (спека 2026-08-17 §2.1-§2.6).
+
+    Чтение — доступно `member` (§2.9 спеки, §3 AGENTS.md: аналитика есть чтение),
+    поэтому `require_admin` здесь нет.
+
+    Выборка — ровно ДВЕ формы (§2.6), обе разрешает `crud.comparison.
+    resolve_selection`: `ids=1,2,4` — явный список, либо `all=1` вместе с теми
+    же четырьмя фильтрами списка договоров (`q`, `object_id`, `contractor_id`,
+    `rate_class_id` — контракт `routers.contracts.list_contracts`, DoD 22).
+    Обе формы разом и ни одной — обе ошибки 400, неизвестный `id` — 404;
+    правило и его причина живут в докстроке `resolve_selection`, здесь не
+    дублируются.
+
+    **`page`/`page_size` НЕ принимаются.** Это решение, а не недосмотр:
+    сравнение берёт выборку целиком, а не страницу списка (§2.6) — FastAPI
+    просто не видит этих параметров в адресе и ничего не режет.
+
+    `vat_mode` по умолчанию — «своя ставка» (§2.3); `single_rate` действует
+    только в режиме «единая» и без него подставляется предвыбор
+    (`build_comparison`, DoD 8ж).
+    """
+    try:
+        contract_ids = crud_comparison.resolve_selection(
+            db,
+            ids=crud_comparison.parse_ids_param(ids),
+            use_filter=all_,
+            q=q,
+            object_id=object_id,
+            contractor_id=contractor_id,
+            rate_class_id=rate_class_id,
+        )
+        return decimal_json(
+            crud_comparison.build_comparison(
+                db, contract_ids, vat_mode=vat_mode, single_rate=single_rate
+            )
+        )
     except DomainError as e:
         _raise(e)

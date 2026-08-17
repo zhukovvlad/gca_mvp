@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,6 +53,11 @@ const ALL_CLASSES = "all";
  * Заведение договора — право `admin` (решение §6.2), поэтому у `member` кнопки нет.
  * Это не единственная защита: сервер отвечает 403 независимо от того, что
  * нарисовано на экране.
+ *
+ * Выбор договоров для сравнения (спека сравнения §2.6, §2.9) — ЧТЕНИЕ, поэтому
+ * галочки и обе кнопки видны `admin` и `member` одинаково; это не то же
+ * правило, что у «Новый договор» выше. Маршрут `/compare` заводит задача 8 —
+ * здесь только собирается адрес.
  */
 export default function ContractsPage() {
   const { data: user } = useCurrentUser();
@@ -62,6 +68,7 @@ export default function ContractsPage() {
   const [page, setPage] = useState(1);
   const [formOpen, setFormOpen] = useState(false);
   const [toDelete, setToDelete] = useState<ContractRow | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const search = useDebounce(searchInput, 300);
   const classesQ = useRateClasses();
@@ -73,6 +80,39 @@ export default function ContractsPage() {
   });
 
   const data = contractsQ.data;
+
+  function toggleSelected(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const compareSelectedHref = `/compare?ids=${[...selectedIds].join(",")}`;
+
+  // Текущие фильтры экрана, а не полный контракт эндпоинта (спека §2.6): здесь
+  // нет полей object_id/contractor_id, а `page`/`page_size` намеренно не
+  // переносятся — сравнение берёт всю выборку, а не страницу списка.
+  //
+  // Значения берутся из состояния ВВОДА, а не из дебаунсенного `search`: адрес
+  // несёт то, что человек НАБРАЛ, а не то, что список успел применить. Внутри
+  // окна debounce (300 мс) это расходится: список ещё показывает прежнюю выборку,
+  // а ссылка уже несёт новый `q`. Выбрано намеренно — клик сразу после ввода
+  // должен сравнивать по набранному фильтру, а не по устаревшему. (Прежний
+  // комментарий обосновывал этот же выбор доводом «адрес отражает видимое»,
+  // который поддерживает ПРОТИВОПОЛОЖНОЕ, — замечание финального ревью.)
+  //
+  // Выбор галочками живёт по id и потому переживает смену фильтра и страницы:
+  // «Сравнить выбранные (N)» может включать договоры, не видимые на экране.
+  // Это тоже намеренно — выбор явный, и молча терять его при правке фильтра было
+  // бы хуже; цена в том, что число на кнопке шире того, что видно.
+  const compareAllParams = new URLSearchParams();
+  if (searchInput.trim()) compareAllParams.set("q", searchInput.trim());
+  if (rateClassId !== ALL_CLASSES) compareAllParams.set("rate_class_id", rateClassId);
+  compareAllParams.set("all", "1");
+  const compareAllHref = `/compare?${compareAllParams.toString()}`;
 
   return (
     <div className="container-page py-8">
@@ -134,6 +174,21 @@ export default function ContractsPage() {
         </Select>
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {selectedIds.size > 0 ? (
+          <Button variant="outline" render={<Link to={compareSelectedHref} />}>
+            Сравнить выбранные ({selectedIds.size})
+          </Button>
+        ) : (
+          <Button variant="outline" disabled>
+            Сравнить выбранные (0)
+          </Button>
+        )}
+        <Button variant="outline" render={<Link to={compareAllHref} />}>
+          Сравнить всё по фильтру
+        </Button>
+      </div>
+
       <div className="mt-4">
         {contractsQ.isPending && (
           <Surface padding="none">
@@ -166,6 +221,7 @@ export default function ContractsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10" />
                     <TableHead>Номер</TableHead>
                     <TableHead>Объект</TableHead>
                     <TableHead>Подрядчик</TableHead>
@@ -179,6 +235,13 @@ export default function ContractsPage() {
                 <TableBody>
                   {data.items.map((contract) => (
                     <TableRow key={contract.id}>
+                      <TableCell>
+                        <Checkbox
+                          aria-label={`Выбрать «${contract.contract_number}»`}
+                          checked={selectedIds.has(contract.id)}
+                          onCheckedChange={() => toggleSelected(contract.id)}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium">
                         <Link
                           to={`/contracts/${contract.id}`}
