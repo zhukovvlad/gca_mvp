@@ -14,9 +14,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatDate, formatSharePercent, roundDecimalPercent } from "@/lib/format";
+import { formatDate, formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useComparison, useComparisonReport } from "@/services/queries";
+import { type DeviationTone, deviationTone } from "./deviationTone";
 import type {
   Comparison,
   ComparisonBucket,
@@ -157,43 +158,6 @@ function ComparisonAmountCell({ cell }: { cell: ComparisonBucketCell }) {
 }
 
 /**
- * Полоса подсветки (спека §2.5, правило 6): ±10&nbsp;% нейтральны — эта
- * граница дана спекой дословно. Вторая граница спекой ЧИСЛОМ не задана —
- * макет иллюстрирует две ступени статичной вёрсткой, а не формулой (его
- * `<script>` пересчитывает только цифры, не CSS-классы), поэтому 30&nbsp;%
- * ниже — решение задачи 8, а не значение из спеки. При появлении явного
- * числа в спеке константу нужно заменить, а не подгонять эту реализацию
- * под неё задним числом.
- *
- * **Ступень выбирается по ПОКАЗАННОМУ числу, а не по сырому значению**, и это
- * не экономия: ячейка, на которой написано «+10&nbsp;%», никогда не окрашена, а
- * «+11&nbsp;%» окрашена всегда — цвет не расходится с цифрой, которую читает
- * человек. Отсюда и разбор величины из текста `roundDecimalPercent`: он строит
- * его из `BigInt` без разделителей разрядов, поэтому цифры вынимаются
- * однозначно; появись там группировка, эту связь придётся пересмотреть, а не
- * латать регулярку. Несовпадение с `DECIMAL_RE` даёт `sign === 0` и уходит в
- * нейтральную ветку до разбора — мусорная строка не окрасит ячейку.
- */
-const NEUTRAL_BAND_PCT = 10;
-const HIGH_BAND_PCT = 30;
-
-type DeviationTone = "flat" | "up-lo" | "up-hi" | "dn-lo" | "dn-hi";
-
-function deviationTone(value: string | null): { text: string; tone: DeviationTone } | null {
-  const rounded = roundDecimalPercent(value, 0);
-  if (rounded === null) return null;
-  const magnitude = Number.parseInt(rounded.text.replace(/[^0-9]/g, ""), 10);
-  if (rounded.sign === 0 || magnitude <= NEUTRAL_BAND_PCT) {
-    return { text: rounded.text, tone: "flat" };
-  }
-  const hi = magnitude > HIGH_BAND_PCT;
-  return {
-    text: rounded.text,
-    tone: rounded.sign > 0 ? (hi ? "up-hi" : "up-lo") : hi ? "dn-hi" : "dn-lo",
-  };
-}
-
-/**
  * Тон говорит «выше/ниже медианы», НЕ «плохо/хорошо» (спека §2.5, правило 7)
  * — само по себе сочетание цветов этого не скажет, поэтому `title` рядом
  * произносит это словами (см. `ComparisonPerSqmCell`), а не только легенда
@@ -216,7 +180,21 @@ function ComparisonPerSqmCell({
   contractId: number;
   cell: ComparisonBucketCell;
 }) {
-  const deviation = deviationTone(cell.deviation_pct);
+  /*
+    Бейдж отклонения НЕ рисуется на визуально пустой ячейке (§2.5 правило 3:
+    «пустые ячейки не входят ни в медиану, ни в подсветку»). Случай достижим
+    ровно один: режим «своя ставка» и `display_rate_undefined` — агрегат
+    осознанно гасит только показ, оставляя `net_per_sqm` и `deviation_pct`
+    живыми, потому что медиана считается по нетто в любом режиме (DoD 10).
+    Оставь бейдж — и рядом с прочерком стоял бы цветной «+33 %»: цвет без
+    числа, то есть та самая «видимость анализа без анализа», которой спека
+    боится в правиле 5.
+
+    Подавление — ЧИСТО показ: ни медиана, ни отклонения соседних колонок не
+    меняются, поэтому резолюция противоречия (devlog §5.6) остаётся в силе.
+    Найдено финальным ревью ветки; закреплено фронтенд-тестом с подменой ответа.
+  */
+  const deviation = cell.shown_per_sqm === null ? null : deviationTone(cell.deviation_pct);
   return (
     <div className="flex items-baseline justify-end gap-1.5">
       {cell.shown_per_sqm === null ? (
@@ -449,6 +427,22 @@ function ComparisonTotalsRow({
     <tr data-testid="comparison-row-totals" className="border-t-2 border-fg bg-surface-sunken font-semibold">
       <th scope="row" className="sticky left-0 z-10 bg-surface-sunken px-3 py-2 text-left align-top">
         Итого по договору
+        {/*
+          Заметка об отсутствии медианы нужна и здесь: итоговая строка получает
+          медиану наравне с прочими (она отвечает на вопрос «который объект дороже
+          в целом»), а значит и правило §2.5 п.5 к ней применимо. Прежде заметки
+          не было только у неё — несогласованность показа, замеченная финальным
+          ревью: строка молча оставалась без подсветки.
+        */}
+        {comparison.totals_medians[bucket].comparable_count < 3 && (
+          <span
+            data-testid="comparison-nomedian-totals"
+            title="Сопоставимых значений меньше трёх — медиана не считается, подсветки в строке нет (спека §2.5, правило 5)."
+            className="ml-1.5 text-2xs font-normal text-fg-tertiary"
+          >
+            меньше трёх сопоставимых
+          </span>
+        )}
       </th>
       {comparison.columns.map((column) => {
         const cell = byContract.get(column.contract_id);

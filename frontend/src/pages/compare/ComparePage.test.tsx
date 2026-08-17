@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
+import { useLocation } from "react-router-dom";
 
 import ComparePage from "./ComparePage";
+import { deviationTone } from "./deviationTone";
 import { sampleComparison } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 
 /**
@@ -24,6 +28,16 @@ import { renderWithProviders } from "@/test/utils";
  */
 
 const SELECTION = "ids=204,203,202,201";
+
+/**
+ * Пробник адреса: harness рендерит под `MemoryRouter`, поэтому `window.location`
+ * правок роутера НЕ видит, и утверждение о ЗАПИСИ в URL иначе не построить.
+ * Читает адрес изнутри роутера и выкладывает его в DOM.
+ */
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="location-search">{location.search}</span>;
+}
 
 function renderCompare(query = SELECTION, initialUser?: Parameters<typeof renderWithProviders>[1]) {
   return renderWithProviders(<ComparePage />, {
@@ -97,6 +111,32 @@ describe("Сравнение договоров — НДС и ставка в UR
     expect(screen.getByRole("button", { name: "Единая" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Своя ставка" })).toHaveAttribute("aria-pressed", "false");
     expect(await screen.findByText("22,00 %")).toBeInTheDocument();
+  });
+
+  it("клик по режиму ПИШЕТ его в адрес и сбрасывает ставку единой", async () => {
+    // Восстановление из адреса проверено выше, но «ссылка обязана воспроизводить
+    // увиденное» держится на ЗАПИСИ. Без этого теста подмена `setSearchParams` на
+    // локальный `useState` оставила бы всё зелёным (замечание финального ревью).
+    renderWithProviders(
+      <>
+        <ComparePage />
+        <LocationProbe />
+      </>,
+      { initialRoute: `/compare?${SELECTION}&vat_mode=single&single_rate=22.00` }
+    );
+    await screen.findByTestId("comparison-caption");
+
+    await userEvent.click(screen.getByRole("button", { name: "Без НДС" }));
+
+    await waitFor(() => {
+      const params = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+      expect(params.get("vat_mode")).toBe("net");
+      // Ставка единой обязана уйти из адреса вместе с режимом: оставленная, она
+      // при возврате в «Единую» восстановила бы ставку, которую человек не выбирал.
+      expect(params.get("single_rate")).toBeNull();
+      // Выборка при этом сохраняется — иначе страница потеряла бы, что сравнивать.
+      expect(params.get("ids")).toBe("204,203,202,201");
+    });
   });
 
   it("по умолчанию (без vat_mode в адресе) активна «Своя ставка»", async () => {
@@ -191,6 +231,88 @@ describe("Сравнение договоров — первая колонка 
 
     const bodyCell = screen.getByTestId("comparison-row-1").querySelector("th");
     expect(bodyCell?.className).toContain("sticky");
+  });
+});
+
+describe("Сравнение договоров — пороги подсветки закреплены (§2.5 правило 6)", () => {
+  // Носителем порогов обязан быть тест: полоса ±10 % дана спекой дословно, а
+  // вторая ступень (30 %) — решение реализации. Прежде замена любой из констант
+  // на любое число оставляла набор зелёным, а ступень низкой интенсивности не
+  // рендерилась ни в одном тесте (замечание финального ревью).
+  it.each([
+    ["0", "flat"],
+    ["10", "flat"],
+    ["-10", "flat"],
+    ["11", "up-lo"],
+    ["-11", "dn-lo"],
+    ["30", "up-lo"],
+    ["-30", "dn-lo"],
+    ["31", "up-hi"],
+    ["-31", "dn-hi"],
+  ])("отклонение %s даёт ступень %s", (value, tone) => {
+    expect(deviationTone(value)?.tone).toBe(tone);
+  });
+
+  it("ступень выбирается по ПОКАЗАННОМУ числу, а не по сырому", () => {
+    // 10,4 показывается как «+10 %» и потому нейтрально; 10,6 показывается как
+    // «+11 %» и потому окрашено. Цвет не расходится с цифрой, которую видит
+    // человек, — это и есть основание разбора величины из округлённого текста.
+    expect(deviationTone("10.4")?.tone).toBe("flat");
+    expect(deviationTone("10.6")?.tone).toBe("up-lo");
+  });
+
+  it("отсутствующее отклонение не даёт ступени вовсе", () => {
+    expect(deviationTone(null)).toBeNull();
+  });
+});
+
+describe("Сравнение договоров — подсветка не рисуется на пустой ячейке (§2.5 правило 3)", () => {
+  it("ячейка «— (ставка показа не определена)» не получает цветного бейджа", async () => {
+    // Единственный достижимый случай: агрегат осознанно гасит ПОКАЗ, оставляя
+    // нетто-ось и `deviation_pct` живыми (иначе медиана зависела бы от режима,
+    // DoD 10). Общая фикстура его не моделирует — её `blankedBucket` несёт
+    // `deviation_pct: null`, то есть различить поведение на ней нельзя.
+    // Поэтому ответ подменяется точечно.
+    const blankedButDeviating = {
+      net: "1000000.00",
+      shown: null,
+      net_per_sqm: "1000.00",
+      shown_per_sqm: null,
+      state: "value",
+      deviation_pct: "33.33",
+      incomplete_reasons: ["display_rate_undefined"],
+    };
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json({
+          ...sampleComparison,
+          vat_mode: "own",
+          rows: sampleComparison.rows.map((row) =>
+            row.code === "1"
+              ? {
+                  ...row,
+                  cells: row.cells.map((cell, index) =>
+                    index === 0 ? { ...cell, total: blankedButDeviating } : cell
+                  ),
+                }
+              : row
+          ),
+        })
+      )
+    );
+
+    renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    const contractId = sampleComparison.columns[0].contract_id;
+    const amount = screen.getByTestId(`comparison-cell-1-${contractId}`);
+    expect(amount.textContent).toContain("ставка показа не определена");
+
+    // Предпосылка: отклонение в данных ЕСТЬ — иначе тест проверял бы его
+    // отсутствие в ответе, а не подавление бейджа на пустой ячейке.
+    expect(blankedButDeviating.deviation_pct).not.toBeNull();
+    expect(screen.getByTestId(`comparison-persqm-1-${contractId}`).textContent).toBe("—");
+    expect(screen.queryByTestId(`comparison-deviation-1-${contractId}`)).not.toBeInTheDocument();
   });
 });
 

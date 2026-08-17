@@ -134,6 +134,53 @@ def test_unpriced_row_is_its_own_reason(db_session, factories):
 #  Step 6: собственные деньги — точное равенство, без вычитания
 # ---------------------------------------------------------------------------
 
+def test_not_finite_row_is_its_own_reason_and_does_not_fake_unpriced(db_session, factories):
+    """Нефинитная сумма даёт `not_finite_rows` и НЕ даёт «без цены» (DoD 8а).
+
+    Найдено финальным ревью ветки. `rows_with_amount` в VIEW (миграция 0012)
+    исключает `NaN`/`±Infinity` наравне с `NULL`, поэтому наивное условие
+    `rows_priced < rows` из буквы спеки §2.1.3 п.1 срабатывает и на строке, у
+    которой цена ЕСТЬ, — ячейка получала бы вторую, ЛОЖНУЮ причину «без цены»
+    при нуле строк без цены. Экран и лист называют причины словами, и читатель
+    искал бы непроставленную цену, которой нет.
+
+    Приём посева нефинитной суммы — тот же, что в `test_category_totals_view.py`
+    и `test_dashboard_api.py`: «на стенде таких данных нет» — ровно тот довод,
+    которым спека ТРЕБУЕТ искусственную фикстуру, а не отказ от проверки.
+    """
+    estimate = factories.EstimateFactory.create()
+    proposal = fx.make_proposal(factories, estimate=estimate)
+    fx.seed_chapter_with_positions(db_session, factories, proposal=proposal,
+                                   code="1", amounts=["100.00", "NaN"])
+
+    rows = [r for r in _view_rows(db_session, estimate.id) if r.source == "positions"]
+    assert rows[0].rows_not_finite == 1, "предпосылка: VIEW увидел нефинитную строку"
+    assert rows[0].rows_with_amount == 1, (
+        "предпосылка: VIEW НЕ считает нефинитную строку расценённой — именно из-за "
+        "этого наивное `rows_priced < rows` и давало ложную причину"
+    )
+
+    cid = fx.category_id(db_session, "1")
+    rollup = cmp.load_rollups(db_session, [estimate.contract_id])[estimate.contract_id][0]
+
+    assert rollup.reasons[cid] == frozenset({"not_finite_rows"}), (
+        "строк без цены здесь НОЛЬ: у обеих позиций цена есть, одна нефинитна"
+    )
+
+
+def test_unpriced_and_not_finite_are_reported_together_when_both_present(db_session, factories):
+    """Обе причины разом, когда обе настоящие: одна строка без цены, одна нефинитная."""
+    estimate = factories.EstimateFactory.create()
+    proposal = fx.make_proposal(factories, estimate=estimate)
+    fx.seed_chapter_with_positions(db_session, factories, proposal=proposal,
+                                   code="1", amounts=["100.00", None, "NaN"])
+
+    cid = fx.category_id(db_session, "1")
+    rollup = cmp.load_rollups(db_session, [estimate.contract_id])[estimate.contract_id][0]
+
+    assert rollup.reasons[cid] == frozenset({"unpriced_rows", "not_finite_rows"})
+
+
 def test_own_net_sums_two_sources_exactly(db_session, factories):
     """own = positions + additional_works, ТОЧНОЕ равенство (спека §2.1).
 

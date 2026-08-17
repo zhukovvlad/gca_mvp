@@ -382,6 +382,53 @@ def test_rate_options_and_preselection(db_session, factories):
     assert preselected == Decimal("22"), "три ставки, каждая по разу -> ничья -> бо́льшая"
 
 
+def test_preselection_takes_the_most_frequent_rate_not_simply_the_largest(db_session, factories):
+    """Предвыбор — САМАЯ ЧАСТАЯ ставка, и «бо́льшая» лишь разрешает ничью (§2.3.2).
+
+    Найдено финальным ревью ветки: во всех прежних тестах предвыбора самая частая
+    и бо́льшая СОВПАДАЛИ, поэтому подмена всего правила на `max(rates)` оставляла
+    набор зелёным — охранялась половина правила, и не главная. Здесь 20
+    встречается дважды против одного 22, то есть частота и максимум расходятся.
+    """
+    a = fx.contract_with_area(db_session, factories, {"1": ["100.00"]}, vat_rate=Decimal("20"))
+    b = fx.contract_with_area(db_session, factories, {"1": ["100.00"]}, vat_rate=Decimal("20"))
+    c = fx.contract_with_area(db_session, factories, {"1": ["100.00"]}, vat_rate=Decimal("22"))
+
+    options, preselected = cmp.rate_options(db_session, [a, b, c])
+
+    assert options == [Decimal("20"), Decimal("22")], "предпосылка: в списке ОБЕ ставки"
+    assert preselected == Decimal("20"), (
+        "20 встречается дважды, 22 — один раз: побеждает частота, а не величина"
+    )
+
+
+def test_zero_median_leaves_the_row_without_deviations_instead_of_failing(db_session, factories):
+    """Медиана-ноль не роняет агрегат делением на ноль (замечание финального ревью).
+
+    Нули исключены из ВХОДА медианы (§2.5 правило 4), но сама она может выйти
+    нулём: при чётном числе сопоставимых с парой средних `-x` и `+x`.
+    Отрицательное нетто представимо — знак `position_items.total_cost_total`
+    схемой не ограничен. Раньше это давало `DivisionByZero` и 500.
+    """
+    ids = [
+        fx.contract_with_area(db_session, factories, {"1": ["-1200.00"]}),
+        fx.contract_with_area(db_session, factories, {"1": ["-1200.00"]}),
+        fx.contract_with_area(db_session, factories, {"1": ["1200.00"]}),
+        fx.contract_with_area(db_session, factories, {"1": ["1200.00"]}),
+    ]
+    db_session.flush()
+
+    agg = cmp.build_comparison(db_session, ids, vat_mode="net")
+    median = _medians(agg, code="1", bucket="total")
+
+    assert median.comparable_count == 4, "предпосылка: четыре сопоставимых значения"
+    assert median.value == 0, "предпосылка: медиана действительно НОЛЬ, иначе тест пуст"
+    for contract_id in ids:
+        assert _cells(agg, code="1")[contract_id].total.deviation_pct is None, (
+            "отклонение от нуля не определено — строка остаётся без подсветки, а не 500"
+        )
+
+
 def test_rate_options_preselection_falls_back_to_base_rates_when_no_display_rate(db_session, factories):
     """Край DoD 8ж: ставка показа не определена НИ У ОДНОЙ сметы выборки ->
     предвыбор считается по известным базовым ставкам групп, список непуст.
@@ -451,6 +498,12 @@ def test_two_positive_two_zero_one_absent_has_no_median(db_session, factories):
     cells = _cells(agg, code="1")
 
     assert cells[absent].total.state == cmp.ABSENT, "предпосылка: статьи 1 у absent нет вовсе"
+    # DoD 5а целиком: статьи нет НИ В ОДНОЙ смете договора -> прочерк во ВСЕХ ТРЁХ
+    # корзинах, а не только в «Итого» (замечание финального ревью: прежде
+    # утверждалась одна корзина, и апгрейд ABSENT->ZERO в базовой мог бы сработать
+    # незамеченным).
+    assert cells[absent].base.state == cmp.ABSENT
+    assert cells[absent].amendments.state == cmp.ABSENT
     assert cells[z1].total.state == cmp.ZERO and cells[z2].total.state == cmp.ZERO, (
         "предпосылка: у z1/z2 статья есть и расценена в ноль"
     )
