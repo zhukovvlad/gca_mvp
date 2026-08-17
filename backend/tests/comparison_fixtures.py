@@ -85,6 +85,21 @@ def seed_unallocated_positions(db, factories, *, proposal, amounts):
     return items
 
 
+def contract_with(db, factories, categories: dict[str, list[str]]) -> int:
+    """Договор с одной сметой и предложением, статьи заданы словарём код -> суммы.
+
+    Для задачи 3 (союз строк, состояния ячеек): каждая статья получает свой
+    раздел с позициями на указанные суммы, ставка НДС фиксирована (`VAT_20`).
+    Возвращает `contract_id`, а не сам договор — тестам этого слоя нужен только
+    идентификатор для `load_rollups`.
+    """
+    estimate = factories.EstimateFactory.create()
+    proposal = make_proposal(factories, estimate=estimate)
+    for code, amounts in categories.items():
+        seed_chapter_with_positions(db, factories, proposal=proposal, code=code, amounts=amounts)
+    return estimate.contract_id
+
+
 def seed_additional_work(db, factories, *, proposal, code, amount, ordinal=1):
     """Разрешённая допработа со статьёй.
 

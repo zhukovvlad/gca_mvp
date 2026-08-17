@@ -62,12 +62,35 @@ from services.category_rollup import (
 __all__ = [
     "SOURCE_ADDITIONAL_WORKS",
     "SOURCE_POSITIONS",
+    "ABSENT",
+    "ZERO",
+    "VALUE",
+    "OWN_ROW_TITLE",
+    "UNALLOCATED_ROW_TITLE",
     "net_of",
     "DirectBranch",
     "EstimateRollup",
     "load_rollups",
     "own_net",
+    "RowRef",
+    "CellNet",
+    "build_rows",
+    "cell_net",
+    "cells_for",
 ]
+
+#: Состояния ячейки сравнения (спека §2.1.2): статьи нет ("absent") — не то же
+#: самое, что статья есть и расценена в ноль ("zero"). "value" — есть число
+#: (в т.ч. когда ячейка неполна и число погашено `incomplete_reasons`, спека
+#: §2.1.3 — тогда `net is None`, но состояние всё равно не ABSENT).
+ABSENT = "absent"
+ZERO = "zero"
+VALUE = "value"
+
+#: Заголовки синтетических строк (спека §2.1, §2.1.4). Названы здесь, а не в
+#: `RowRef`, потому что оба заголовка — константы одного словаря экрана.
+OWN_ROW_TITLE = "Без подстатьи"
+UNALLOCATED_ROW_TITLE = "Нераспределённое"
 
 
 def net_of(gross: Decimal, base: Decimal) -> Decimal:
@@ -98,7 +121,14 @@ class DirectBranch:
 
 @dataclass(frozen=True)
 class EstimateRollup:
-    """Роллап одной сметы: дерево, прямые суммы по источникам, причины неполноты."""
+    """Роллап одной сметы: дерево, прямые суммы по источникам, причины неполноты.
+
+    `reasons` — причины ПОДДЕРЕВА (задача 2). `own_reasons` и
+    `unallocated_reasons` — отдельный словарь причин: собственная строка узла
+    («Без подстатьи») и остаток («Нераспределённое») не являются поддеревом, и
+    подмешивать им причины детей значило бы гасить «Без подстатьи» чужой
+    неполнотой (задача 3, спека §2.1.3).
+    """
 
     estimate_id: int
     contract_id: int
@@ -108,6 +138,8 @@ class EstimateRollup:
     direct: dict[int, dict[str, DirectBranch]]
     unallocated: dict[str, DirectBranch]
     reasons: dict[int, frozenset[str]]
+    own_reasons: dict[int, frozenset[str]]
+    unallocated_reasons: frozenset[str]
 
 
 def own_net(rollup: EstimateRollup, category_id: int) -> Decimal | None:
@@ -295,16 +327,23 @@ _Counts = tuple[int, int, int, int]
 _ZERO_COUNTS: _Counts = (0, 0, 0, 0)
 
 
+def _counts_from_branches(branches: dict[str, DirectBranch]) -> _Counts:
+    """Счётчики одного узла из ЕГО ветвей источников (обе, без свёртки поддерева).
+
+    Общий примитив для «своих» счётчиков категории (`_own_counts`) и для
+    «Нераспределённого» (задача 3) — оба читают ровно эти четыре счётчика из
+    словаря `source -> DirectBranch`, разницы между ними в подсчёте нет.
+    """
+    rows = sum(branch.rows for branch in branches.values())
+    rows_priced = sum(branch.rows_priced for branch in branches.values())
+    rows_not_finite = sum(branch.rows_not_finite for branch in branches.values())
+    rows_vat_base_unknown = sum(branch.rows_vat_base_unknown for branch in branches.values())
+    return (rows, rows_priced, rows_not_finite, rows_vat_base_unknown)
+
+
 def _own_counts(direct: dict[int, dict[str, DirectBranch]]) -> dict[int, _Counts]:
     """Счётчики СОБСТВЕННОЙ (не поддерева) статьи — из обеих её ветвей."""
-    result: dict[int, _Counts] = {}
-    for category_id, branches in direct.items():
-        rows = sum(branch.rows for branch in branches.values())
-        rows_priced = sum(branch.rows_priced for branch in branches.values())
-        rows_not_finite = sum(branch.rows_not_finite for branch in branches.values())
-        rows_vat_base_unknown = sum(branch.rows_vat_base_unknown for branch in branches.values())
-        result[category_id] = (rows, rows_priced, rows_not_finite, rows_vat_base_unknown)
-    return result
+    return {category_id: _counts_from_branches(branches) for category_id, branches in direct.items()}
 
 
 def _fold_subtree_counts(
@@ -355,19 +394,26 @@ def _fold_subtree_counts(
     return result
 
 
+def _reasons_from_one(counts: _Counts) -> frozenset[str]:
+    """Причины неполноты §2.1.3 из ОДНОГО набора счётчиков, СПИСКОМ.
+
+    Причины совмещаются, а не приоритезируются (DoD 8д) — множество, а не
+    первая сработавшая проверка.
+    """
+    rows, rows_priced, rows_not_finite, rows_vat_base_unknown = counts
+    codes: set[str] = set()
+    if rows_priced < rows:
+        codes.add("unpriced_rows")
+    if rows_not_finite > 0:
+        codes.add("not_finite_rows")
+    if rows_vat_base_unknown > 0:
+        codes.add("vat_base_unknown")
+    return frozenset(codes)
+
+
 def _reasons_from_counts(totals: dict[int, _Counts]) -> dict[int, frozenset[str]]:
-    """Причины неполноты §2.1.3, СПИСКОМ — совмещаются, не приоритезируются."""
-    reasons: dict[int, frozenset[str]] = {}
-    for category_id, (rows, rows_priced, rows_not_finite, rows_vat_base_unknown) in totals.items():
-        codes: set[str] = set()
-        if rows_priced < rows:
-            codes.add("unpriced_rows")
-        if rows_not_finite > 0:
-            codes.add("not_finite_rows")
-        if rows_vat_base_unknown > 0:
-            codes.add("vat_base_unknown")
-        reasons[category_id] = frozenset(codes)
-    return reasons
+    """Причины неполноты §2.1.3 для КАЖДОЙ статьи словаря счётчиков."""
+    return {category_id: _reasons_from_one(counts) for category_id, counts in totals.items()}
 
 
 def _direct_totals_view(direct: dict[int, dict[str, DirectBranch]]) -> dict[int, dict[str, DirectTotals]]:
@@ -435,6 +481,12 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
         own_counts = _own_counts(direct)
         subtree_counts = _fold_subtree_counts(categories, own_counts)
         reasons = _reasons_from_counts(subtree_counts)
+        # Причины СОБСТВЕННОЙ строки узла («Без подстатьи») и остатка
+        # («Нераспределённое») — из их же счётчиков, а не из поддерева
+        # (задача 3): это разные строки экрана, и подмешивать им чужую
+        # неполноту значило бы гасить «Без подстатьи» проблемой ребёнка.
+        own_reasons = _reasons_from_counts(own_counts)
+        unallocated_reasons = _reasons_from_one(_counts_from_branches(unallocated))
 
         tree = build_tree(categories, _direct_totals_view(direct))
 
@@ -451,7 +503,318 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
             direct=direct,
             unallocated=unallocated,
             reasons=reasons,
+            own_reasons=own_reasons,
+            unallocated_reasons=unallocated_reasons,
         )
         result.setdefault(estimate.contract_id, []).append(rollup)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+#  Союз узлов выборки, состояния ячеек, синтетические строки (спека §2.1)
+# ---------------------------------------------------------------------------
+#
+# Это следующий слой поверх `load_rollups`, а не отдельный проход по базе:
+# всё, что ему нужно, уже лежит в деревьях и словарях `EstimateRollup`.
+#
+# «Союз» — не одно дерево, а СЛИЯНИЕ структуры деревьев ВСЕХ роллапов выборки.
+# `build_tree` строит дерево одной сметы и обрезает не-корневые узлы с нулём
+# строк (`services.category_rollup._build_node`, `visible_children`); корни же
+# присутствуют в дереве ВСЕГДА, даже с нулём строк (общий скелет паспорта). Из
+# этого следует всё, что ниже:
+#
+#   * не-корневой узел, встреченный хоть в ОДНОМ дереве выборки, уже по
+#     построению `build_tree` имеет там `rows > 0` — значит он «в союзе» самим
+#     фактом появления; отдельно проверять нечего;
+#   * корень нужно проверять явно: он встречается всегда, но может быть с
+#     `rows == 0` во всех деревьях выборки — тогда он в союз не попадает
+#     (спека §2.1.1, задача 3 план — «пустой у всех корень тоже выпадает»).
+#
+# Поэтому «в союзе» сводится к одной проверке: `node.rows > 0` хоть у одного
+# встреченного экземпляра узла, независимо от того, корень это или нет.
+
+@dataclass(frozen=True)
+class RowRef:
+    """Строка сравнения: статья классификатора либо синтетическая строка.
+
+    `level` — глубина+1 (корни статей — уровень 1), теми же единицами, что
+    порядок раскрытия у паспорта. `parent_code` — код родителя либо `None`
+    (у корня и у «Нераспределённого»).
+    """
+
+    kind: str  # "category" | "own" | "unallocated"
+    category_id: int | None
+    code: str
+    title: str
+    level: int
+    parent_code: str | None
+
+
+@dataclass(frozen=True)
+class CellNet:
+    """Ячейка сравнения ОДНОГО договора над ОДНОЙ строкой (спека §2.1.2, §2.1.3).
+
+    У `net is None` РОВНО ДВЕ причины, и различает их `state`, а не сам `None`:
+
+    * `state == ABSENT` — статьи нет в сметах договора; причин при этом нет
+      вовсе (там, где статьи нет, нечему быть неполным);
+    * `state == VALUE` при непустых `incomplete_reasons` — статья есть, но
+      число погашено: ячейка пуста ЦЕЛИКОМ, частичная сумма не просачивается
+      никогда (спека §2.1.3, единица неполноты — ячейка).
+
+    Смешивать их нельзя — это и есть требование §2.1.2 «прочерк и ноль (и
+    погашенное число) суть разные факты»; UI подписывает их по-разному.
+    При непустых причинах `net` всегда `None`, но обратное неверно.
+    """
+
+    net: Decimal | None
+    state: str
+    incomplete_reasons: frozenset[str]
+
+
+class _UnionNode:
+    """Рабочий узел слияния деревьев выборки — накопитель, не результат.
+
+    `ever_has_rows` — встречен ли этот узел хоть в ОДНОМ дереве выборки с
+    `rows > 0` (для не-корневых это гарантировано самим фактом появления в
+    `node.children`, для корней — нет, проверяется явно). `child_ids` —
+    ОБЪЕДИНЕНИЕ детей узла по всем деревьям, где он встречен: у разных смет
+    выборки под одним узлом могут быть видны разные дети.
+    """
+
+    __slots__ = ("ref", "ever_has_rows", "child_ids")
+
+    def __init__(self, ref: CategoryRef) -> None:
+        self.ref = ref
+        self.ever_has_rows = False
+        self.child_ids: set[int] = set()
+
+
+def _collect_union_nodes(rollups: dict[int, list[EstimateRollup]]) -> dict[int, _UnionNode]:
+    """Слить структуру деревьев ВСЕХ роллапов выборки в один граф узлов."""
+    nodes: dict[int, _UnionNode] = {}
+
+    def visit(node: CategoryNode) -> None:
+        entry = nodes.get(node.ref.id)
+        if entry is None:
+            entry = _UnionNode(node.ref)
+            nodes[node.ref.id] = entry
+        if node.rows > 0:
+            entry.ever_has_rows = True
+        for child in node.children:
+            entry.child_ids.add(child.ref.id)
+            visit(child)
+
+    for contract_rollups in rollups.values():
+        for rollup in contract_rollups:
+            for root in rollup.tree:
+                visit(root)
+
+    return nodes
+
+
+def _categories_with_direct_rows(rollups: dict[int, list[EstimateRollup]]) -> set[int]:
+    """Статьи, у которых хоть у ОДНОГО договора выборки есть прямые строки.
+
+    Счётчик, не сумма (план задача 3, правило 3): нулевая прямая сумма при
+    непустом счётчике — тоже факт присутствия «Без подстатьи».
+    """
+    result: set[int] = set()
+    for contract_rollups in rollups.values():
+        for rollup in contract_rollups:
+            for category_id, branches in rollup.direct.items():
+                if sum(branch.rows for branch in branches.values()) > 0:
+                    result.add(category_id)
+    return result
+
+
+def _has_unallocated_rows(rollups: dict[int, list[EstimateRollup]]) -> bool:
+    """Остаток непуст хоть у ОДНОГО договора выборки (правило 4)."""
+    for contract_rollups in rollups.values():
+        for rollup in contract_rollups:
+            if sum(branch.rows for branch in rollup.unallocated.values()) > 0:
+                return True
+    return False
+
+
+def build_rows(rollups: dict[int, list[EstimateRollup]]) -> list[RowRef]:
+    """Союз узлов ВЫБОРКИ в порядке `sort_order`, с синтетическими строками.
+
+    Порядок (фиксирован планом задачи 3, совпадает с чтением
+    `CategoryTable.tsx` паспорта): для каждой статьи — её строка, затем ВСЕ её
+    потомки (тем же правилом рекурсивно), затем строка «Без подстатьи» этой
+    статьи — ПОСЛЕДНЕЙ среди её содержимого. «Нераспределённое» — последняя
+    строка всей таблицы.
+    """
+    nodes = _collect_union_nodes(rollups)
+    union_ids = {category_id for category_id, entry in nodes.items() if entry.ever_has_rows}
+    direct_rows_ids = _categories_with_direct_rows(rollups)
+
+    rows: list[RowRef] = []
+
+    def visit(category_id: int, level: int, parent_code: str | None) -> None:
+        entry = nodes[category_id]
+        ref = entry.ref
+        rows.append(RowRef(
+            kind="category", category_id=ref.id, code=ref.code, title=ref.title,
+            level=level, parent_code=parent_code,
+        ))
+
+        children = sorted(
+            (child_id for child_id in entry.child_ids if child_id in union_ids),
+            key=lambda child_id: nodes[child_id].ref.sort_order,
+        )
+        for child_id in children:
+            visit(child_id, level + 1, ref.code)
+
+        if ref.id in direct_rows_ids and children:
+            rows.append(RowRef(
+                kind="own", category_id=ref.id, code=f"{ref.code}::own",
+                title=OWN_ROW_TITLE, level=level + 1, parent_code=ref.code,
+            ))
+
+    roots = sorted(
+        (category_id for category_id, entry in nodes.items()
+         if entry.ref.parent_id is None and category_id in union_ids),
+        key=lambda category_id: nodes[category_id].ref.sort_order,
+    )
+    for root_id in roots:
+        visit(root_id, level=1, parent_code=None)
+
+    if _has_unallocated_rows(rollups):
+        rows.append(RowRef(
+            kind="unallocated", category_id=None, code="::unallocated",
+            title=UNALLOCATED_ROW_TITLE, level=1, parent_code=None,
+        ))
+
+    return rows
+
+
+def _find_node(tree: Sequence[CategoryNode], category_id: int) -> CategoryNode | None:
+    """Найти узел статьи в дереве ОДНОЙ сметы (или `None`, если его там нет)."""
+    for node in tree:
+        if node.ref.id == category_id:
+            return node
+        found = _find_node(node.children, category_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _resolve_cell(total_rows: int, reasons: frozenset[str], net_parts: list[Decimal]) -> CellNet:
+    """Общая развязка состояния ячейки из накопленных счётчика/причин/сумм.
+
+    `ABSENT`, если строки не было ни у одной сметы договора. Иначе: причины
+    непусты -> ячейка гасится ЦЕЛИКОМ (`net=None`, спека §2.1.3); причин нет ->
+    число, `ZERO`, если оно равно нулю, иначе `VALUE`.
+
+    Суммирование — ТЕМ ЖЕ приёмом, что `own_net` (не встроенный `sum`,
+    начинающий с `0`): сложение `Decimal` округляется по АМБИЕНТНОМУ контексту
+    (умолчание — 28 значащих цифр), а `money.vat.gross_to_net` считает в своём,
+    более точном `_VAT_CONTEXT`. `0 + x` под чужим контекстом тихо срезал бы
+    точность первого слагаемого даже там, где складывать было нечего.
+    """
+    if total_rows == 0:
+        return CellNet(net=None, state=ABSENT, incomplete_reasons=frozenset())
+    if reasons:
+        return CellNet(net=None, state=VALUE, incomplete_reasons=reasons)
+    if not net_parts:
+        # НЕДОСТИЖИМО по инварианту VIEW, и потому не «на всякий случай», а
+        # громкий отказ. Строки есть, причин нет — значит все строки расценены
+        # (иначе была бы `unpriced_rows`) и база НДС известна у каждой группы
+        # (иначе `vat_base_unknown`), а тогда слагаемое существует: `amount is
+        # None` в VIEW равносильно `rows_with_amount == 0`.
+        # Подставить здесь ноль было бы худшим из ответов: ячейка получила бы
+        # состояние ZERO, то есть сказала бы «статья есть и стоит ноль» там,
+        # где сумма НЕИЗВЕСТНА, — ровно та подмена, которую §2.1.2 запрещает.
+        # Форма отказа — как у `worker_database_url` в conftest: громкий
+        # RuntimeError вместо тихого фолбэка.
+        raise RuntimeError(
+            f"строки есть ({total_rows}), причин неполноты нет, а слагаемых нет — "
+            "нарушен инвариант VIEW «amount is None ⟺ rows_with_amount == 0»"
+        )
+    net = net_parts[0]
+    for value in net_parts[1:]:
+        net += value
+    return CellNet(net=net, state=ZERO if net == 0 else VALUE, incomplete_reasons=frozenset())
+
+
+def _cell_for_category(rollups: Sequence[EstimateRollup], category_id: int) -> CellNet:
+    """Ячейка статьи: суммируется по ВСЕМ сметам договора (§2.1.3, поддерево)."""
+    total_rows = 0
+    reasons: set[str] = set()
+    net_parts: list[Decimal] = []
+    for rollup in rollups:
+        node = _find_node(rollup.tree, category_id)
+        if node is not None:
+            total_rows += node.rows
+            if node.total is not None:
+                net_parts.append(node.total)
+        reasons |= rollup.reasons.get(category_id, frozenset())
+    return _resolve_cell(total_rows, frozenset(reasons), net_parts)
+
+
+def _cell_for_own(rollups: Sequence[EstimateRollup], parent_id: int) -> CellNet:
+    """Ячейка «Без подстатьи»: суммируются СВОИ (не поддерева) деньги статьи."""
+    total_rows = 0
+    reasons: set[str] = set()
+    net_parts: list[Decimal] = []
+    for rollup in rollups:
+        branches = rollup.direct.get(parent_id, {})
+        total_rows += sum(branch.rows for branch in branches.values())
+        reasons |= rollup.own_reasons.get(parent_id, frozenset())
+        value = own_net(rollup, parent_id)
+        if value is not None:
+            net_parts.append(value)
+    return _resolve_cell(total_rows, frozenset(reasons), net_parts)
+
+
+def _cell_for_unallocated(rollups: Sequence[EstimateRollup]) -> CellNet:
+    """Ячейка «Нераспределённое»: суммируется остаток по всем сметам договора."""
+    total_rows = 0
+    reasons: set[str] = set()
+    net_parts: list[Decimal] = []
+    for rollup in rollups:
+        branches = rollup.unallocated
+        total_rows += sum(branch.rows for branch in branches.values())
+        reasons |= rollup.unallocated_reasons
+        for branch in branches.values():
+            if branch.net is not None:
+                net_parts.append(branch.net)
+    return _resolve_cell(total_rows, frozenset(reasons), net_parts)
+
+
+def cell_net(rollups: Sequence[EstimateRollup], row: RowRef) -> CellNet:
+    """Ячейка ОДНОГО договора над ОДНОЙ строкой — примитив для корзин задачи 4.
+
+    Принимает роллапы ОДНОГО договора и не предполагает, что это ВСЕ его
+    сметы: задача 4 передаст сюда сметы одной корзины (ДГП либо ДС), эта
+    функция не завязана на то, что видела все сметы контракта разом.
+    """
+    if row.kind == "category":
+        return _cell_for_category(rollups, row.category_id)
+    if row.kind == "own":
+        return _cell_for_own(rollups, row.category_id)
+    if row.kind == "unallocated":
+        return _cell_for_unallocated(rollups)
+    raise ValueError(f"неизвестный вид строки: {row.kind!r}")
+
+
+def cells_for(rollups: dict[int, list[EstimateRollup]], *, code: str) -> dict[int, CellNet]:
+    """Ячейки ОДНОЙ строки (по коду) для ВСЕХ договоров выборки.
+
+    `code` — код статьи либо синтетический код (`"<код>::own"`,
+    `"::unallocated"`). Строка ищется через `build_rows`, чтобы не заводить
+    вторую, отдельную логику резолюции кода в `RowRef` — здесь она была бы
+    ровно той же самой.
+    """
+    rows = build_rows(rollups)
+    matches = [row for row in rows if row.code == code]
+    if not matches:
+        raise ValueError(f"строки с кодом {code!r} нет в союзе этой выборки")
+    row = matches[0]
+    return {
+        contract_id: cell_net(contract_rollups, row)
+        for contract_id, contract_rollups in rollups.items()
+    }
