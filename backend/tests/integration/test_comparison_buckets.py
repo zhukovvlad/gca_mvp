@@ -202,6 +202,86 @@ def test_deviations_are_identical_in_all_three_modes(db_session, factories):
 
 
 # ---------------------------------------------------------------------------
+#  DoD 6 и DoD 7 — сами суммы режимов, а не только их отклонения
+# ---------------------------------------------------------------------------
+#
+# Добавлены при приёмке (задача 9): сверка «требование спеки → тест» показала,
+# что оба пункта остались без исполняющего теста. Отклонения проверялись
+# (DoD 10), удельные величины проверялись (DoD 4 шага плана), а САМИ суммы
+# режимов «своя» и «единая» — нет: ближайшие тесты трогали одну колонку либо
+# одну корзину. Это ровно тот случай, о котором предупреждает §12 AGENTS.md —
+# покрытие сверялось по памяти, и три требования спеки остались без теста при
+# верной реализации.
+
+def test_own_mode_restates_each_column_into_its_own_rate(db_session, factories):
+    """DoD 6: колонка со ставкой 16 % и колонка со ставкой 22 % показывают суммы,
+    пересчитанные КАЖДАЯ В СВОЮ (§2.3, `restate_gross` на смету).
+
+    Утверждение — на сами суммы, а не на их отношение к медиане: колонка могла
+    бы быть приведена к чужой ставке, и все отклонения (они считаются по нетто)
+    остались бы верными, то есть DoD 10 этого не поймал бы.
+    """
+    a = fx.contract_with_area(db_session, factories, {"1": ["1160.00"]}, vat_rate=Decimal("16"))
+    b = fx.contract_with_area(db_session, factories, {"1": ["1220.00"]}, vat_rate=Decimal("22"))
+    db_session.flush()
+
+    rollups = cmp.load_rollups(db_session, [a, b])
+    rate_of = {cid: rs[0].display_rate for cid, rs in rollups.items()}
+    assert rate_of[a] == Decimal("16") and rate_of[b] == Decimal("22"), (
+        "предпосылка: у колонок РАЗНЫЕ ставки показа, иначе тест не различает "
+        "«каждая в свою» от «все в одну»"
+    )
+
+    agg = cmp.build_comparison(db_session, [a, b], vat_mode=cmp.VAT_MODE_OWN)
+    cells = _cells(agg, code="1")
+
+    for contract_id in (a, b):
+        cell = cells[contract_id].total
+        assert cell.shown == cmp.net_to_gross(cell.net, rate_of[contract_id]), (
+            f"сумма договора {contract_id} обязана быть приведена к ЕГО ставке"
+        )
+
+    # И множители действительно разные — иначе равенства выше выполнялись бы
+    # тождественно при любой ошибке приведения.
+    assert cells[a].total.shown != cells[b].total.shown
+
+
+def test_single_mode_applies_one_and_the_same_multiplier_to_every_cell(db_session, factories):
+    """DoD 7: в режиме «единая» ВСЕ колонки приведены к выбранной ставке, и
+    отношение к режиму «нетто» — ОДИН И ТОТ ЖЕ множитель для всех ячеек (§2.3).
+
+    Предпосылка: у договоров выборки РАЗНЫЕ базовые ставки. Без неё тест прошёл
+    бы и на реализации, которая просто не трогает суммы: при одной базе «единая»
+    ставка совпала бы с ней, и множитель оказался бы единицей у всех.
+    """
+    a = fx.contract_with_area(db_session, factories, {"1": ["1160.00"]}, vat_rate=Decimal("16"))
+    b = fx.contract_with_area(db_session, factories, {"1": ["1220.00"]}, vat_rate=Decimal("22"))
+    db_session.flush()
+
+    bases = {rate for rs in cmp.load_rollups(db_session, [a, b]).values() for rate in rs[0].base_rates}
+    assert bases == {Decimal("16"), Decimal("22")}, "предпосылка: базовые ставки РАЗНЫЕ"
+
+    single = Decimal("20")
+    net_agg = cmp.build_comparison(db_session, [a, b], vat_mode=cmp.VAT_MODE_NET)
+    single_agg = cmp.build_comparison(
+        db_session, [a, b], vat_mode=cmp.VAT_MODE_SINGLE, single_rate=single
+    )
+    net_cells = _cells(net_agg, code="1")
+    single_cells = _cells(single_agg, code="1")
+
+    ratios = set()
+    for contract_id in (a, b):
+        net_shown = net_cells[contract_id].total.shown
+        single_shown = single_cells[contract_id].total.shown
+        assert single_shown == cmp.net_to_gross(net_shown, single), (
+            f"договор {contract_id} не приведён к выбранной единой ставке"
+        )
+        ratios.add(single_shown / net_shown)
+
+    assert len(ratios) == 1, f"множитель обязан быть ОДИН для всех ячеек, получено {ratios}"
+
+
+# ---------------------------------------------------------------------------
 #  Step 4: shown_per_sqm следует режиму, net_per_sqm (вход медианы) — нет
 # ---------------------------------------------------------------------------
 

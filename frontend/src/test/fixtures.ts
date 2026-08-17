@@ -1502,7 +1502,12 @@ const comparisonRowUnallocated: ComparisonRow = {
 };
 
 const comparisonTotalsCells: ComparisonCell[] = [
-  comparisonCellFromTotal(204, valueBucket("1750000.00", "2100000.00", null)),
+  // Сумма НАМЕРЕННО с длинным хвостом, как её и отдаёт агрегат: он не квантует
+  // деньги (иначе `ДГП + ДС = Итого` разошлось бы на копейку, DoD 5), а нетто —
+  // частное от `gross_to_net`, почти никогда не представимое конечной дробью.
+  // Круглые значения здесь скрыли настоящий дефект показа: на стенде экран
+  // печатал «14 011 951 126,949999999999999982 ₽». Не заменять на круглое.
+  comparisonCellFromTotal(204, valueBucket("1750000.00", "2100000.949999999999999982", null)),
   comparisonCellFromTotal(
     203,
     valueBucket("76241000.00", "91489200.00", { net: "1006.66", shown: "1207.99" }, "-33.11")
