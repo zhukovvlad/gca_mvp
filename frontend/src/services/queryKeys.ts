@@ -1,5 +1,10 @@
 import type { ContractListParams } from "./api/domain";
-import type { MatrixParams, RateStandardParams, ReviewQueueParams } from "@/types/domain";
+import type {
+  ComparisonParams,
+  MatrixParams,
+  RateStandardParams,
+  ReviewQueueParams,
+} from "@/types/domain";
 
 /**
  * Ключи TanStack Query — централизованно, чтобы инвалидация не гадала.
@@ -105,5 +110,11 @@ export const qk = {
     list: (params?: MatrixParams) => ["matrix", "list", params ?? {}] as const,
     cell: (contractId: number, catalogPositionId: number) =>
       ["matrix", "cell", contractId, catalogPositionId] as const,
+  },
+
+  /** Сравнение договоров по статьям классификатора (спека 2026-08-17, задача 8). */
+  comparison: {
+    all: ["comparison"] as const,
+    get: (params?: ComparisonParams) => ["comparison", "get", params ?? {}] as const,
   },
 };

@@ -967,3 +967,181 @@ export interface DashboardAttention {
   objects_without_area: number;
   failed_imports_30d: number;
 }
+
+// ---------------------------------------------------------------------------
+//  Сравнение договоров (спека 2026-08-17, задача 8)
+// ---------------------------------------------------------------------------
+//
+// Форма — зеркало `backend/crud/comparison.py::build_comparison` (см. также
+// `_cell_entry`, `_bucket_cell_dict`, `_median_dict`, `_load_columns`): ключи
+// и вложенность как в ответе сервера, менять нельзя.
+//
+// Деньги — decimal-СТРОКИ (`Decimal`), НЕ `number` (§3): `net`, `shown`,
+// `net_per_sqm`, `shown_per_sqm`, `deviation_pct`, `value` медианы,
+// `area_total_sp`, три `*_pct` условия договора, `single_rate`,
+// `rate_options`, `rate_preselected`. Приводить их к `number` нельзя нигде —
+// только на слое показа (`MoneyCell`/`roundDecimalPercent`).
+
+export type ComparisonVatMode = "own" | "single" | "net";
+
+/** Три корзины спеки §2.2: базовый договор, допсоглашения, итог. */
+export type ComparisonBucket = "base" | "amendments" | "total";
+
+export type ComparisonRowKind = "category" | "own" | "unallocated";
+
+/**
+ * Состояние ячейки (спека §2.1.2): `absent` — статьи нет ни в одной смете
+ * договора (прочерк); `zero` — статья есть и расценена в ноль (число «0»);
+ * `value` — статья есть. `value` НЕ означает «число показано»: при непустых
+ * `incomplete_reasons` та же ячейка несёт `shown: null` — состояние отвечает
+ * за НЕТТО (`net`), а не за то, что видит человек в выбранном режиме показа
+ * (`backend/crud/comparison.py::_build_bucket_cell` — `state=axis.state`
+ * берётся до применения режима).
+ */
+export type ComparisonCellState = "absent" | "zero" | "value";
+
+/**
+ * Причины неполноты ячейки (спека §2.1.3, §2.3.2). Совмещаются — ячейка
+ * может нести несколько сразу, сервер отдаёт список отсортированным
+ * (`sorted()`, `_bucket_cell_dict`). `display_rate_undefined` возникает
+ * только в режиме «своя ставка».
+ */
+export type ComparisonIncompleteReason =
+  | "unpriced_rows"
+  | "not_finite_rows"
+  | "vat_base_unknown"
+  | "display_rate_undefined";
+
+/**
+ * Ячейка ОДНОЙ корзины ОДНОГО договора над ОДНОЙ строкой (спека §2.2, §2.3).
+ *
+ * ДВЕ удельные величины: `net_per_sqm` — вход медианы, не зависит от режима
+ * показа; `shown_per_sqm` — то, что видит человек, следует режиму. Путать их
+ * нельзя (план, задача 4): показ обязан читать `shown_per_sqm`, медиана и
+ * подсветка всегда считаются по `net_per_sqm` на сервере (спека §2.5 правило
+ * 2) — на клиенте `net_per_sqm` не участвует ни в чём, кроме диагностики.
+ */
+export interface ComparisonBucketCell {
+  net: Decimal | null;
+  shown: Decimal | null;
+  net_per_sqm: Decimal | null;
+  shown_per_sqm: Decimal | null;
+  state: ComparisonCellState;
+  /** `null`, если строка не входит в медиану ЭТОЙ корзины (§2.5 правила 3-5). */
+  deviation_pct: Decimal | null;
+  incomplete_reasons: ComparisonIncompleteReason[];
+}
+
+/** Ячейка договора над строкой — ВСЕ ТРИ корзины сразу (спека §2.2, §2.7). */
+export interface ComparisonCell {
+  contract_id: number;
+  base: ComparisonBucketCell;
+  amendments: ComparisonBucketCell;
+  total: ComparisonBucketCell;
+}
+
+/**
+ * Медиана строки/корзины (спека §2.5). `value: null` — сопоставимых меньше
+ * трёх (правило 5, DoD 11); `comparable_count` и `contract_ids` приходят
+ * ВСЕГДА, даже тогда — экрану нужно число, чтобы сказать «сопоставимых
+ * меньше трёх», а не просто молчать.
+ */
+export interface ComparisonMedian {
+  value: Decimal | null;
+  comparable_count: number;
+  contract_ids: number[];
+}
+
+/** Шапка колонки — договор выборки, отсортированные `signed_date DESC, id DESC` (спека §2.1). */
+export interface ComparisonColumn {
+  contract_id: number;
+  contract_number: string;
+  object_title: string;
+  contractor_title: string;
+  rate_class_title: string;
+  signed_date: string;
+  /** `null` — ТЭП объекта не заведены; ₽/м² договора — прочерк (спека §2.4). */
+  area_total_sp: Decimal | null;
+  advance_pct: Decimal | null;
+  bank_guarantee_pct: Decimal | null;
+  retention_pct: Decimal | null;
+  /**
+   * Подпись состава колонки в режиме «своя ставка» (спека §2.3.2) — например
+   * «20 %», «ДГП 20 % · ДС 20 %» либо «ДГП 20 % · ДС №1 20 %, №2 22 %».
+   * Печатается ВСЕГДА (AGENTS.md §10 v6.8: состав объявляется на поверхности,
+   * не только в подсказке), а не только в режиме «своя ставка».
+   */
+  composition_caption: string;
+}
+
+/**
+ * Строка сравнения — статья классификатора либо синтетическая строка
+ * (спека §2.1, §2.1.1, §2.1.4). Список ПЛОСКИЙ, уже в порядке чтения дерева:
+ * статья, все её потомки, затем её строка «Без подстатьи» (`kind: "own"`)
+ * последней; «Нераспределённое» (`kind: "unallocated"`) — последняя строка
+ * всей таблицы. `level`/`parent_code` восстанавливают иерархию на клиенте —
+ * тем же способом, что `CategoryTable.tsx` паспорта восстанавливает дерево
+ * из `parent_id`, только по коду вместо числового id (own-строка кода не
+ * несёт своего числового узла классификатора).
+ */
+export interface ComparisonRow {
+  kind: ComparisonRowKind;
+  category_id: number | null;
+  code: string;
+  title: string;
+  /** Глубина+1: корни статей — уровень 1 (та же единица, что у паспорта). */
+  level: number;
+  /** Код родителя; `null` у корня и у «Нераспределённого». */
+  parent_code: string | null;
+  /** В ТОМ ЖЕ порядке, что `columns`; `contract_id` на каждой ячейке — для сверки без опоры на порядок. */
+  cells: ComparisonCell[];
+  medians: Record<ComparisonBucket, ComparisonMedian>;
+}
+
+/**
+ * Ответ `GET /v1/analytics/comparison` (спека 2026-08-17, план — задача 5).
+ *
+ * Один агрегат на экран и Excel-лист (спека §2.7) — тип общий для обоих
+ * потребителей на бэкенде, но фронт вызывает только экранный путь.
+ */
+export interface Comparison {
+  vat_mode: ComparisonVatMode;
+  /**
+   * Ставка, в которой ФАКТИЧЕСКИ показаны числа режима «единая» — предвыбор
+   * сервера, если запрос его не задал (DoD 8ж). Читать нужно ЭТО поле, а не
+   * то, что ушло в запросе: ссылка без ставки обязана открыться с числами.
+   */
+  single_rate: Decimal | null;
+  rate_options: Decimal[];
+  rate_preselected: Decimal | null;
+  /**
+   * Подпись налогового состава денег (AGENTS.md §10 v6.8) — печатается на
+   * поверхности всегда, а не только в подсказке (тултип объясняет расчёт, а
+   * не заменяет объявление состава).
+   */
+  caption: string;
+  columns: ComparisonColumn[];
+  rows: ComparisonRow[];
+  totals: ComparisonCell[];
+  totals_medians: Record<ComparisonBucket, ComparisonMedian>;
+}
+
+/**
+ * Параметры запроса (спека §2.3, §2.6). Выборка передаётся СТРОКАМИ как в
+ * URL — `ids` через запятую либо `all` вместе с фильтрами списка договоров
+ * (тот же контракт, что `routers.contracts.list_contracts`): страница
+ * сравнения лишь ПЕРЕДАЁТ то, что уже собрал `ContractsPage` в адресе, не
+ * разбирая числа туда и обратно. `page`/`page_size` намеренно отсутствуют —
+ * сравнение берёт выборку целиком (§2.6).
+ */
+export interface ComparisonParams {
+  ids?: string;
+  all?: string;
+  q?: string;
+  object_id?: string;
+  contractor_id?: string;
+  rate_class_id?: string;
+  vat_mode?: ComparisonVatMode;
+  /** Действует только в режиме `single`; без него сервер подставляет `rate_preselected`. */
+  single_rate?: string;
+}
