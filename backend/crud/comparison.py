@@ -40,7 +40,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
 
@@ -167,12 +167,16 @@ class EstimateRollup:
     подмешивать им причины детей значило бы гасить «Без подстатьи» чужой
     неполнотой (задача 3, спека §2.1.3).
 
-    `base_rates` (задача 4) — известные (не NULL) базы НДС групп VIEW этой
-    сметы, СОБСТВЕННЫЙ обход, не производная от `direct`/`unallocated`:
-    `rate_options` (спека §2.3, второй набор) нужен резерв списка ставок
-    ИМЕННО из баз групп, включая группы смет без определённой ставки показа.
-    Без этого поля `rate_options` пришлось бы второй раз читать VIEW, ломая
-    единый путь чтения (план, «Архитектура»).
+    `base_rate_counts` (задача 4) — известные (не NULL) базы НДС групп VIEW этой
+    сметы **со числом групп на каждую**, СОБСТВЕННЫЙ обход, не производная от
+    `direct`/`unallocated`: `rate_options` (спека §2.3, второй набор) нужен
+    резерв списка ставок ИМЕННО из баз групп, включая группы смет без
+    определённой ставки показа. Без этого поля `rate_options` пришлось бы второй
+    раз читать VIEW, ломая единый путь чтения (план, «Архитектура»).
+
+    Именно СЧЁТЧИК, а не множество: §2.3.2 говорит «самая частая базовая ставка
+    ГРУПП», и множество эту частоту стирало бы, отдавая по одному голосу на смету
+    (внешнее ревью, P2 — см. `_collect_base_rates`).
     """
 
     estimate_id: int
@@ -185,7 +189,7 @@ class EstimateRollup:
     reasons: dict[int, frozenset[str]]
     own_reasons: dict[int, frozenset[str]]
     unallocated_reasons: frozenset[str]
-    base_rates: frozenset[Decimal]
+    base_rate_counts: dict[Decimal, int]
 
 
 def own_net(rollup: EstimateRollup, category_id: int) -> Decimal | None:
@@ -343,17 +347,25 @@ class _Acc:
         )
 
 
-def _collect_base_rates(view_rows: Sequence[sa.Row]) -> dict[int, set[Decimal]]:
-    """Известные (не NULL) базы НДС групп VIEW, по смете (задача 4, `rate_options`).
+def _collect_base_rates(view_rows: Sequence[sa.Row]) -> dict[int, dict[Decimal, int]]:
+    """Известные (не NULL) базы НДС ГРУПП VIEW, по смете (задача 4, `rate_options`).
 
     Отдельный обход строк VIEW, а не побочный эффект `_accumulate`:
-    `EstimateRollup.base_rates` — вход `rate_options`, и не должен зависеть от
-    того, как накапливаются деньги (сумма/причины) в той функции.
+    `EstimateRollup.base_rate_counts` — вход `rate_options`, и не должен зависеть
+    от того, как накапливаются деньги (сумма/причины) в той функции.
+
+    **Считаются ГРУППЫ, а не различные ставки сметы** (внешнее ревью, P2).
+    Прежде ставки сворачивались в `set`, то есть смета отдавала один голос за
+    каждую свою ставку независимо от того, сколькими группами она представлена, —
+    и предвыбор противоречил §2.3.2, который говорит «самая частая базовая ставка
+    ГРУПП». Замер расхождения: 20 % у ста групп одной сметы против 22 % у одной
+    группы каждой из двух смет давали 22 %, тогда как частота групп — 100 против 2.
     """
-    result: dict[int, set[Decimal]] = defaultdict(set)
+    result: dict[int, dict[Decimal, int]] = defaultdict(dict)
     for row in view_rows:
         if row.vat_rate_base is not None:
-            result[row.estimate_id].add(row.vat_rate_base)
+            by_rate = result[row.estimate_id]
+            by_rate[row.vat_rate_base] = by_rate.get(row.vat_rate_base, 0) + 1
     return result
 
 
@@ -582,7 +594,7 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
             reasons=reasons,
             own_reasons=own_reasons,
             unallocated_reasons=unallocated_reasons,
-            base_rates=frozenset(base_rates_by_estimate.get(estimate.id, ())),
+            base_rate_counts=dict(base_rates_by_estimate.get(estimate.id, {})),
         )
         result.setdefault(estimate.contract_id, []).append(rollup)
 
@@ -1355,10 +1367,20 @@ def _mode_then_larger(rates: Sequence[Decimal]) -> Decimal | None:
     """Самая частая ставка из списка, при равенстве частот — бо́льшая (§2.3.2)."""
     if not rates:
         return None
-    counts = Counter(rates)
+    return _mode_then_larger_weighted(Counter(rates))
+
+
+def _mode_then_larger_weighted(counts: Mapping[Decimal, int]) -> Decimal | None:
+    """То же правило, но частоты УЖЕ посчитаны (§2.3.2).
+
+    Нужна отдельная форма потому, что у баз групп частота приходит числом групп,
+    а не длиной списка: разворачивать сто групп в список из ста элементов только
+    чтобы позвать `Counter`, значило бы считать то, что уже посчитано.
+    """
+    if not counts:
+        return None
     top = max(counts.values())
-    candidates = [rate for rate, count in counts.items() if count == top]
-    return max(candidates)
+    return max(rate for rate, count in counts.items() if count == top)
 
 
 def _rate_options_from_rollups(
@@ -1375,19 +1397,26 @@ def _rate_options_from_rollups(
     определён именно в том углу, ради которого резерв заводился).
     """
     display_rates: list[Decimal] = []
-    base_rate_values: list[Decimal] = []
+    base_rate_counts: dict[Decimal, int] = {}
     all_rates: set[Decimal] = set()
     for contract_rollups in rollups.values():
         for rollup in contract_rollups:
             if rollup.display_rate is not None:
                 display_rates.append(rollup.display_rate)
                 all_rates.add(rollup.display_rate)
-            for rate in rollup.base_rates:
-                base_rate_values.append(rate)
+            for rate, groups in rollup.base_rate_counts.items():
+                # Складываются ГРУППЫ, а не факт присутствия ставки в смете:
+                # §2.3.2 говорит «самая частая базовая ставка ГРУПП» (внешнее
+                # ревью, P2). Смета из ста групп по 20 % весит сто, а не один.
+                base_rate_counts[rate] = base_rate_counts.get(rate, 0) + groups
                 all_rates.add(rate)
 
     options = sorted(all_rates)
-    preselected = _mode_then_larger(display_rates) if display_rates else _mode_then_larger(base_rate_values)
+    preselected = (
+        _mode_then_larger(display_rates)
+        if display_rates
+        else _mode_then_larger_weighted(base_rate_counts)
+    )
     return options, preselected
 
 
@@ -1395,7 +1424,7 @@ def rate_options(db: Session, contract_ids: Sequence[int]) -> tuple[list[Decimal
     """Список ставок и предвыбор для режима «единая ставка» (спека §2.3).
 
     Тонкая обёртка над `load_rollups`: `EstimateRollup` уже несёт всё нужное
-    (`display_rate`, `base_rates`), второго обращения к VIEW здесь нет.
+    (`display_rate`, `base_rate_counts`), второго обращения к VIEW здесь нет.
     """
     return _rate_options_from_rollups(load_rollups(db, contract_ids))
 
@@ -1546,6 +1575,26 @@ def build_comparison(
     этому полю, и вернуть здесь `None` значило бы подписать неправду.
     """
     contract_ids = list(contract_ids)
+    if single_rate is not None and not (0 <= single_rate <= 100):
+        # Границы — те же, что схема держит на `estimates.vat_rate_target` и
+        # `vat_rate_base_override` (`CHECK … >= 0 AND <= 100`, миграция 0012):
+        # ставка показа, приходящая из адреса, не имеет права быть шире той,
+        # которую можно назначить смете.
+        #
+        # Проверка здесь, а не `Query(ge=0, le=100)` в роутерах, по двум причинам:
+        # маршрутов ДВА (экран и выгрузка), и они обязаны отвечать одинаково, а
+        # `Query`-границы дали бы 422 против нашего 400 на соседних ошибках того
+        # же класса (`vat_mode`, `ids`).
+        #
+        # Найдено внешним ревью (P2): без границ ручной адрес с `single_rate=-100`
+        # обнулял ВСЕ суммы (`net_to_gross` умножает на `(100 + ставка)/100`), а
+        # ниже −100 % делал их отрицательными — и на экране, и в xlsx. URL
+        # объявлен частью публичного состояния страницы (§2.3), значит он и есть
+        # вход, который надо проверять.
+        raise DomainError(
+            400,
+            f"Ставка НДС {single_rate} вне допустимого диапазона 0…100.",
+        )
     if vat_mode not in (VAT_MODE_OWN, VAT_MODE_SINGLE, VAT_MODE_NET):
         # Проверка на входе, а не внутри сборки ячейки: неизвестный режим —
         # это ошибка запроса (400), и узнать о ней надо до того, как агрегат

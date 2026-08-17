@@ -258,7 +258,11 @@ def test_single_mode_applies_one_and_the_same_multiplier_to_every_cell(db_sessio
     b = fx.contract_with_area(db_session, factories, {"1": ["1220.00"]}, vat_rate=Decimal("22"))
     db_session.flush()
 
-    bases = {rate for rs in cmp.load_rollups(db_session, [a, b]).values() for rate in rs[0].base_rates}
+    bases = {
+        rate
+        for rs in cmp.load_rollups(db_session, [a, b]).values()
+        for rate in rs[0].base_rate_counts
+    }
     assert bases == {Decimal("16"), Decimal("22")}, "предпосылка: базовые ставки РАЗНЫЕ"
 
     single = Decimal("20")
@@ -427,6 +431,52 @@ def test_zero_median_leaves_the_row_without_deviations_instead_of_failing(db_ses
         assert _cells(agg, code="1")[contract_id].total.deviation_pct is None, (
             "отклонение от нуля не определено — строка остаётся без подсветки, а не 500"
         )
+
+
+def test_base_rate_preselection_counts_groups_not_estimates(db_session, factories):
+    """Резервный предвыбор считает частоту ГРУПП VIEW, а не смет (§2.3.2, P2).
+
+    Найдено внешним ревью. Ставки внутри сметы сворачивались в `set`, поэтому
+    смета отдавала ОДИН голос за каждую свою ставку независимо от числа групп, и
+    правило «самая частая базовая ставка ГРУПП» нарушалось.
+
+    Фикстура строит ровно то расхождение, на котором два чтения дают разные
+    ответы: у первой сметы ТРИ группы по 20 %, у второй и третьей — по одной
+    группе 22 %. По группам 20 % ведёт 3:2. По сметам счёт обратный — 1 против 2
+    в пользу 22 %, — то есть прежняя реализация отвечала 22 %. Ставки показа у
+    всех трёх смет не определены, иначе сработал бы первый набор, а не резерв.
+    """
+    many_groups = fx.contract_with_undefined_display_rate(
+        db_session, factories, base_rate=Decimal("20"), codes=["1", "2", "3"]
+    )
+    one_group_a = fx.contract_with_undefined_display_rate(
+        db_session, factories, base_rate=Decimal("22"), codes=["1"]
+    )
+    one_group_b = fx.contract_with_undefined_display_rate(
+        db_session, factories, base_rate=Decimal("22"), codes=["1"]
+    )
+    ids = [many_groups, one_group_a, one_group_b]
+
+    rollups = cmp.load_rollups(db_session, ids)
+    counts: dict[Decimal, int] = {}
+    for contract_rollups in rollups.values():
+        for rollup in contract_rollups:
+            assert rollup.display_rate is None, (
+                "предпосылка: ставка показа не определена ни у одной сметы, иначе "
+                "предвыбор считался бы по первому набору, а не по резерву"
+            )
+            for rate, groups in rollup.base_rate_counts.items():
+                counts[rate] = counts.get(rate, 0) + groups
+    assert counts == {Decimal("20"): 3, Decimal("22"): 2}, (
+        f"предпосылка: групп 20 % больше, чем 22 %, но смет с 22 % больше — {counts}"
+    )
+
+    options, preselected = cmp.rate_options(db_session, ids)
+
+    assert options == [Decimal("20"), Decimal("22")]
+    assert preselected == Decimal("20"), (
+        "побеждает частота ГРУПП (3 против 2), а не число смет и не бо́льшая ставка"
+    )
 
 
 def test_rate_options_preselection_falls_back_to_base_rates_when_no_display_rate(db_session, factories):

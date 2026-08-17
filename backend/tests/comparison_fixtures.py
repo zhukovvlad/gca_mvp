@@ -147,6 +147,44 @@ def contract_with_disagreeing_rates(
     return contract.id
 
 
+def contract_with_undefined_display_rate(
+    db, factories, *, base_rate, codes, area_aboveground="50000", area_underground="50000",
+):
+    """Смета с ЗАДАННЫМ числом групп одной базовой ставки и БЕЗ определённой
+    ставки показа.
+
+    Нужна ровно для одного различения (внешнее ревью, P2): резервный предвыбор
+    обязан считать частоту ГРУПП VIEW, а не смет, и отличить два чтения можно
+    только там, где у одной сметы групп больше, чем смет у конкурирующей ставки.
+    `contract_with_disagreeing_rates` для этого не годится — там на каждую ставку
+    ровно одна статья, то есть одна группа.
+
+    Ставку показа гасит ВТОРОЕ предложение с `vat_rate = None`, а не расхождение
+    ставок: `effective_display_rate` возвращает `None`, как только среди
+    заявленных есть неизвестная, и такое предложение НЕ добавляет своей ставки в
+    счётчик — его группы приходят с `vat_rate_base = NULL` (а строк у него и нет
+    вовсе). Расхождением гасить нельзя: вторая ставка попала бы в счёт групп и
+    смазала бы то самое различение, ради которого фикстура и написана.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    estimate = factories.EstimateFactory.create(contract=contract)
+
+    priced = make_proposal(factories, estimate=estimate, vat_rate=base_rate, lot_key="lot_priced")
+    for code in codes:
+        seed_chapter_with_positions(db, factories, proposal=priced, code=code, amounts=["100.00"])
+
+    # Предложение без строк и без заявленной ставки: гасит ставку показа сметы,
+    # но в VIEW не попадает и потому в счётчик групп не вносит ничего.
+    make_proposal(factories, estimate=estimate, vat_rate=None, lot_key="lot_no_rate")
+
+    db.flush()
+    return contract.id
+
+
 def contract_with_amendment(
     db, factories, *, base_rate, amd_rate, base, amd,
     area_aboveground="50000", area_underground="50000",

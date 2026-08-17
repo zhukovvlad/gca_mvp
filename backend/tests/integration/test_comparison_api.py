@@ -218,6 +218,52 @@ def test_unknown_vat_mode_is_400(client, factories, db_session):
 #  vat_mode по умолчанию — «своя ставка»
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("rate", ["-100", "-0.01", "100.01", "1000"])
+@pytest.mark.parametrize(
+    "url", ["/api/v1/analytics/comparison", "/api/v1/reports/comparison"]
+)
+def test_single_rate_outside_zero_hundred_is_400_on_both_routes(
+    client, factories, db_session, url, rate
+):
+    """Ставка показа вне 0…100 — отказ, и ОДИНАКОВЫЙ у экрана и у выгрузки.
+
+    Найдено внешним ревью (P2). Без границ ручной адрес с `single_rate=-100`
+    обнулял все суммы (`net_to_gross` умножает на `(100 + ставка)/100`), а ниже
+    −100 % делал их отрицательными — включая xlsx. Границы те же, что схема
+    держит на `estimates.vat_rate_target`: ставка из адреса не может быть шире
+    назначаемой смете.
+
+    Оба маршрута проверяются ОДНИМ тестом намеренно: выборку и режим они уже
+    делят одним правилом, и разойтись в ответе на негодную ставку им нельзя.
+    """
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(f"{url}?ids={contract.id}&vat_mode=single&single_rate={rate}")
+
+    assert resp.status_code == 400, resp.text
+    assert "0…100" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "url", ["/api/v1/analytics/comparison", "/api/v1/reports/comparison"]
+)
+def test_single_rate_at_the_boundaries_is_accepted(client, factories, db_session, url):
+    """0 и 100 — законные ставки, отказ обязан быть строго ВНЕ диапазона.
+
+    Без этой пары предыдущий тест прошёл бы и на реализации, отвергающей всё
+    подряд: «отказано» само по себе не доказывает, что граница на месте.
+    """
+    contract_id = contract_with_area(
+        db_session, factories, {"1": ["1000.00"]}, vat_rate=Decimal("20")
+    )
+    db_session.commit()
+
+    for rate in ("0", "100"):
+        resp = client.get(f"{url}?ids={contract_id}&vat_mode=single&single_rate={rate}")
+        assert resp.status_code == 200, f"{rate}: {resp.text}"
+
+
 def test_vat_mode_defaults_to_own(client, factories, db_session):
     """Отсутствующий `vat_mode` — «своя ставка» (спека §2.3, план — задача 5)."""
     contract = factories.ContractFactory.create()
