@@ -146,19 +146,6 @@ def get_project_passport(contract_id: int, db: Session = Depends(get_db)):
         _raise(e)
 
 
-def _parse_comparison_ids(ids: str) -> list[int]:
-    """`ids=1,2,4` → `[1, 2, 4]`. Нечисловой элемент — 400 с самим значением
-    в сообщении, а не 422-трасса валидатора (спека §2.6, план — задача 5):
-    строка приходит из адреса, который человек мог набрать руками.
-    """
-    try:
-        return [int(part.strip()) for part in ids.split(",") if part.strip() != ""]
-    except ValueError:
-        raise HTTPException(
-            400, f"`ids` должен быть списком чисел через запятую, а не {ids!r}."
-        ) from None
-
-
 @router.get("/comparison")
 def get_comparison(
     ids: str | None = Query(default=None, description="Список id договоров через запятую: 1,2,4"),
@@ -192,11 +179,10 @@ def get_comparison(
     только в режиме «единая» и без него подставляется предвыбор
     (`build_comparison`, DoD 8ж).
     """
-    parsed_ids = _parse_comparison_ids(ids) if ids is not None else None
     try:
         contract_ids = crud_comparison.resolve_selection(
             db,
-            ids=parsed_ids,
+            ids=crud_comparison.parse_ids_param(ids),
             use_filter=all_,
             q=q,
             object_id=object_id,
