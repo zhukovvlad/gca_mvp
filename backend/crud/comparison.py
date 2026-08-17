@@ -39,17 +39,19 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
-from decimal import Decimal
+from dataclasses import dataclass, replace
+from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from crud.common import DomainError, iso
 from crud.project_passport import CATEGORY_TOTALS
-from models import Estimate, Lot, Proposal, WorkCategory
-from money.vat import effective_display_rate, gross_to_net
+from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass, WorkCategory
+from money.vat import effective_display_rate, gross_to_net, net_to_gross
+from parser.summary_block import ARITHMETIC_PRECISION
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -67,7 +69,15 @@ __all__ = [
     "VALUE",
     "OWN_ROW_TITLE",
     "UNALLOCATED_ROW_TITLE",
+    "BUCKET_BASE",
+    "BUCKET_AMENDMENTS",
+    "BUCKET_TOTAL",
+    "VAT_MODE_OWN",
+    "VAT_MODE_SINGLE",
+    "VAT_MODE_NET",
+    "REASON_DISPLAY_RATE_UNDEFINED",
     "net_of",
+    "net_to_gross",
     "DirectBranch",
     "EstimateRollup",
     "load_rollups",
@@ -77,6 +87,10 @@ __all__ = [
     "build_rows",
     "cell_net",
     "cells_for",
+    "BucketCell",
+    "Cell",
+    "build_comparison",
+    "rate_options",
 ]
 
 #: Состояния ячейки сравнения (спека §2.1.2): статьи нет ("absent") — не то же
@@ -91,6 +105,30 @@ VALUE = "value"
 #: `RowRef`, потому что оба заголовка — константы одного словаря экрана.
 OWN_ROW_TITLE = "Без подстатьи"
 UNALLOCATED_ROW_TITLE = "Нераспределённое"
+
+#: Три корзины сравнения (спека §2.2): базовый договор, допсоглашения, итог.
+BUCKET_BASE = "base"
+BUCKET_AMENDMENTS = "amendments"
+BUCKET_TOTAL = "total"
+
+#: Три режима показа НДС (спека §2.3). Ось сравнения (нетто) от режима не
+#: зависит НИКОГДА (AGENTS.md §10, спека §2.5 правило 2) — режим определяет
+#: только множитель, применяемый к готовому нетто на границе показа.
+VAT_MODE_OWN = "own"
+VAT_MODE_SINGLE = "single"
+VAT_MODE_NET = "net"
+
+#: Причина неполноты, зависящая от режима показа — единственная из четырёх
+#: (спека §2.1.3 п.4, §2.3.2). Гасит `shown`/`shown_per_sqm` ЯЧЕЙКИ корзины,
+#: а не `net`/`net_per_sqm`: ось сравнения остаётся вычислимой и в режиме
+#: «своя ставка» (иначе медиана «своей ставки» разошлась бы с медианой
+#: «нетто», а DoD 10 требует их тождества).
+REASON_DISPLAY_RATE_UNDEFINED = "display_rate_undefined"
+
+#: Контекст деления для ₽/м² и медианы — тот же приём и тот же
+#: `ARITHMETIC_PRECISION`, что `money.vat._VAT_CONTEXT`: явные трапы БЕЗ
+#: `Inexact` (деление почти никогда не представимо конечной десятичной дробью).
+_DIV_CONTEXT = Context(prec=ARITHMETIC_PRECISION, traps=[Overflow, DivisionByZero, InvalidOperation])
 
 
 def net_of(gross: Decimal, base: Decimal) -> Decimal:
@@ -128,6 +166,13 @@ class EstimateRollup:
     («Без подстатьи») и остаток («Нераспределённое») не являются поддеревом, и
     подмешивать им причины детей значило бы гасить «Без подстатьи» чужой
     неполнотой (задача 3, спека §2.1.3).
+
+    `base_rates` (задача 4) — известные (не NULL) базы НДС групп VIEW этой
+    сметы, СОБСТВЕННЫЙ обход, не производная от `direct`/`unallocated`:
+    `rate_options` (спека §2.3, второй набор) нужен резерв списка ставок
+    ИМЕННО из баз групп, включая группы смет без определённой ставки показа.
+    Без этого поля `rate_options` пришлось бы второй раз читать VIEW, ломая
+    единый путь чтения (план, «Архитектура»).
     """
 
     estimate_id: int
@@ -140,6 +185,7 @@ class EstimateRollup:
     reasons: dict[int, frozenset[str]]
     own_reasons: dict[int, frozenset[str]]
     unallocated_reasons: frozenset[str]
+    base_rates: frozenset[Decimal]
 
 
 def own_net(rollup: EstimateRollup, category_id: int) -> Decimal | None:
@@ -295,6 +341,20 @@ class _Acc:
             rows_not_finite=self.rows_not_finite,
             rows_vat_base_unknown=self.rows_vat_base_unknown,
         )
+
+
+def _collect_base_rates(view_rows: Sequence[sa.Row]) -> dict[int, set[Decimal]]:
+    """Известные (не NULL) базы НДС групп VIEW, по смете (задача 4, `rate_options`).
+
+    Отдельный обход строк VIEW, а не побочный эффект `_accumulate`:
+    `EstimateRollup.base_rates` — вход `rate_options`, и не должен зависеть от
+    того, как накапливаются деньги (сумма/причины) в той функции.
+    """
+    result: dict[int, set[Decimal]] = defaultdict(set)
+    for row in view_rows:
+        if row.vat_rate_base is not None:
+            result[row.estimate_id].add(row.vat_rate_base)
+    return result
 
 
 def _accumulate(view_rows: Sequence[sa.Row]) -> dict[int, dict[int | None, dict[str, _Acc]]]:
@@ -463,6 +523,7 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
     declared_rates = _load_declared_rates(db, estimate_ids)
     view_rows = _load_view_rows(db, estimate_ids)
     accumulated = _accumulate(view_rows)
+    base_rates_by_estimate = _collect_base_rates(view_rows)
 
     for estimate in estimates:
         by_category = accumulated.get(estimate.id, {})
@@ -505,6 +566,7 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
             reasons=reasons,
             own_reasons=own_reasons,
             unallocated_reasons=unallocated_reasons,
+            base_rates=frozenset(base_rates_by_estimate.get(estimate.id, ())),
         )
         result.setdefault(estimate.contract_id, []).append(rollup)
 
@@ -817,4 +879,622 @@ def cells_for(rollups: dict[int, list[EstimateRollup]], *, code: str) -> dict[in
     return {
         contract_id: cell_net(contract_rollups, row)
         for contract_id, contract_rollups in rollups.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Корзины, режимы НДС, медианы (спека §2.2, §2.3, §2.5) — задача 4
+# ---------------------------------------------------------------------------
+#
+# Слой поверх задач 2-3: КАЖДАЯ строка (статья, «Без подстатьи»,
+# «Нераспределённое») и «Итого по договору» считаются СРАЗУ для трёх корзин
+# (ДГП/ДС/Итого) — экран выбирает представление, Excel (задача 6) получает
+# готовые три с отдельными медианами (план, «интерфейс, исправленный по
+# ревью»). Медиана всегда по нетто (AGENTS.md §10, спека §2.5 правило 2),
+# поэтому режим показа влияет только на `shown`/`shown_per_sqm`, никогда на
+# `net`/`net_per_sqm`/`deviation_pct` — это и даёт тождество DoD 10.
+
+
+@dataclass(frozen=True)
+class BucketCell:
+    """Ячейка ОДНОЙ корзины ОДНОГО договора над ОДНОЙ строкой (спека §2.2, §2.3).
+
+    ДВЕ удельные величины вместо одной (ревью плана): `net_per_sqm` — вход
+    медианы, не зависящий от режима; `shown_per_sqm` — то, что видит человек,
+    следует режиму показа. Одно поле заставило бы клиента либо досчитывать
+    часть агрегата на своей стороне, либо показывать нетто рядом с валовой
+    суммой.
+    """
+
+    net: Decimal | None
+    shown: Decimal | None
+    net_per_sqm: Decimal | None
+    shown_per_sqm: Decimal | None
+    state: str
+    deviation_pct: Decimal | None
+    incomplete_reasons: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Cell:
+    """Ячейка договора над строкой — ВСЕ ТРИ корзины сразу (спека §2.2).
+
+    Один агрегат считает три корзины разом, а не выбранную режимом
+    представления — иначе Excel не мог бы получить их одним и тем же расчётом,
+    что спека §2.7 требует явно («один агрегат — два представления»).
+    """
+
+    base: BucketCell
+    amendments: BucketCell
+    total: BucketCell
+
+
+@dataclass(frozen=True)
+class _MedianResult:
+    """Медиана строки/корзины и метаданные, нужные экрану (план, задача 4).
+
+    `comparable_count` и `contract_ids` отдаются ВСЕГДА, даже когда
+    `value is None` (меньше трёх сопоставимых, спека §2.5 правило 5): экрану
+    нужно число, чтобы написать «сопоставимых меньше трёх», а не просто
+    скрыть подсветку молча.
+    """
+
+    value: Decimal | None
+    comparable_count: int
+    contract_ids: list[int]
+
+
+def _split_buckets(rollups: Sequence[EstimateRollup]) -> dict[str, list[EstimateRollup]]:
+    """Разложить сметы ОДНОГО договора по корзинам (спека §2.2).
+
+    `base` — сметы без допсоглашения (`amendment_no IS NULL`); `amendments` —
+    сметы допсоглашений; `total` — все сметы разом. DoD 5 (база + допы = итог)
+    следует из этого разбиения по построению: `total` — это буквально
+    конкатенация `base` и `amendments`, не отдельный проход по договору.
+    """
+    base = [rollup for rollup in rollups if rollup.amendment_no is None]
+    amendments = [rollup for rollup in rollups if rollup.amendment_no is not None]
+    return {BUCKET_BASE: base, BUCKET_AMENDMENTS: amendments, BUCKET_TOTAL: list(rollups)}
+
+
+def _upgrade_absent_to_zero(bucket_axis: CellNet, contract_axis: CellNet) -> CellNet:
+    """Прочерк корзины при непустом договоре в целом — это НОЛЬ (спека §2.2).
+
+    Присутствие статьи решается на уровне ДОГОВОРА (`contract_axis`, уже
+    вычислена по ВСЕМ сметам — корзина «Итого»), нулевость — на уровне
+    КОРЗИНЫ. Статьи нет ни в одной смете договора -> прочерк во всех трёх
+    корзинах (обе оси ABSENT, апгрейд не срабатывает). Статья в договоре
+    есть, а в этой корзине её нет (бакет пуст) -> ноль, а не прочерк.
+    """
+    if bucket_axis.state == ABSENT and contract_axis.state != ABSENT:
+        return CellNet(net=Decimal("0"), state=ZERO, incomplete_reasons=frozenset())
+    return bucket_axis
+
+
+def _grand_total_cell(rollups: Sequence[EstimateRollup]) -> CellNet:
+    """Ячейка «Итого по договору»: сумма ВСЕХ статей плюс «Нераспределённое»
+    (спека §2.1.4, DoD 5в — остаток обязан войти в итог, иначе деньги исчезают
+    из таблицы молча).
+
+    Корни `rollup.tree` — ВСЕГДА полный, непересекающийся раздел
+    классификатора (`build_tree` возвращает их безусловно, задача 2), а
+    `rollup.reasons` уже свёрнут ПО ПОДДЕРЕВУ (`_fold_subtree_counts`) —
+    значит объединение причин и строк по одним лишь корням покрывает ВЕСЬ
+    учтённый список статей без повторного обхода дерева. Форма — зеркало
+    `_cell_for_category`/`_cell_for_unallocated`: тот же примитив
+    `_resolve_cell`, те же гарантии (накопление НЕ через builtin `sum`,
+    неизвестное слагаемое пропускается, а не подставляется нулём).
+    """
+    total_rows = 0
+    reasons: set[str] = set()
+    net_parts: list[Decimal] = []
+    for rollup in rollups:
+        for root in rollup.tree:
+            total_rows += root.rows
+            if root.total is not None:
+                net_parts.append(root.total)
+            reasons |= rollup.reasons.get(root.ref.id, frozenset())
+        total_rows += sum(branch.rows for branch in rollup.unallocated.values())
+        reasons |= rollup.unallocated_reasons
+        for branch in rollup.unallocated.values():
+            if branch.net is not None:
+                net_parts.append(branch.net)
+    return _resolve_cell(total_rows, frozenset(reasons), net_parts)
+
+
+def _single_rollup_axis(rollup: EstimateRollup, row: RowRef | None) -> CellNet:
+    """Нетто-ячейка ОДНОЙ сметы над строкой (`row is None` — «Итого»).
+
+    Примитив режима «своя ставка» (§2.3.2): пересчёт в ставку показа
+    делается НА СМЕТУ до суммирования в корзину, поэтому нужно нетто именно
+    одной сметы, а не готовой суммы бакета — «ставки корзины» не существует.
+    """
+    if row is None:
+        return _grand_total_cell([rollup])
+    return cell_net([rollup], row)
+
+
+def _own_mode_shown(
+    bucket_rollups: Sequence[EstimateRollup], row: RowRef | None
+) -> tuple[Decimal | None, bool]:
+    """Валовая сумма в режиме «своя ставка»: множитель НА КАЖДУЮ смету ДО
+    суммы в корзину (спека §2.3.2) — у корзины ДС может быть несколько смет
+    (ДС №1, №2) с разными ставками, и «ставки корзины» не существует.
+
+    Возвращает `(сумма | None, гасит_ли_причина)`. Причина
+    `display_rate_undefined` гасит ЯЧЕЙКУ, а не столбец (третий круг ревью):
+    смета БЕЗ определённой ставки показа гасит, только если она НЕПУСТА по
+    этой строке (`state != ABSENT`, т.е. реально вносит в неё строки) — смета
+    из другой корзины сюда вообще не попадает (другой список `bucket_rollups`),
+    а смета без строк по этой статье пропускается (`continue`) до проверки
+    ставки, поэтому не гасит ничего.
+    """
+    has_undefined = False
+    parts: list[Decimal] = []
+    for rollup in bucket_rollups:
+        single = _single_rollup_axis(rollup, row)
+        if single.state == ABSENT:
+            continue
+        if rollup.display_rate is None:
+            has_undefined = True
+            continue
+        if single.net is not None:
+            parts.append(net_to_gross(single.net, rollup.display_rate))
+    if has_undefined:
+        return None, True
+    if not parts:
+        return Decimal("0"), False
+    total = parts[0]
+    for value in parts[1:]:
+        total += value
+    return total, False
+
+
+def _build_bucket_cell(
+    axis: CellNet,
+    bucket_rollups: Sequence[EstimateRollup],
+    row: RowRef | None,
+    *,
+    vat_mode: str,
+    single_rate: Decimal | None,
+    area_total_sp: Decimal | None,
+) -> BucketCell:
+    """Собрать `BucketCell` из готовой нетто-оси и режима показа.
+
+    `deviation_pct` здесь всегда `None`: отклонение — свойство СТРОКИ (нужны
+    значения ВСЕХ договоров выборки разом), проставляется один раз позже
+    (`_apply_deviation`), а не ячейкой поодиночке.
+    """
+    net = axis.net
+    reasons = set(axis.incomplete_reasons)
+
+    shown: Decimal | None
+    if net is None:
+        shown = None
+    elif vat_mode == VAT_MODE_NET:
+        shown = net
+    elif vat_mode == VAT_MODE_SINGLE:
+        shown = None if single_rate is None else net_to_gross(net, single_rate)
+    elif vat_mode == VAT_MODE_OWN:
+        shown_value, undefined = _own_mode_shown(bucket_rollups, row)
+        if undefined:
+            reasons.add(REASON_DISPLAY_RATE_UNDEFINED)
+            shown = None
+        else:
+            shown = shown_value
+    else:
+        raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+
+    net_per_sqm: Decimal | None = None
+    if net is not None and area_total_sp is not None:
+        with localcontext(_DIV_CONTEXT):
+            net_per_sqm = net / area_total_sp
+
+    shown_per_sqm: Decimal | None = None
+    if shown is not None and area_total_sp is not None:
+        with localcontext(_DIV_CONTEXT):
+            shown_per_sqm = shown / area_total_sp
+
+    return BucketCell(
+        net=net,
+        shown=shown,
+        net_per_sqm=net_per_sqm,
+        shown_per_sqm=shown_per_sqm,
+        state=axis.state,
+        deviation_pct=None,
+        incomplete_reasons=frozenset(reasons),
+    )
+
+
+def _compute_median(cells: dict[int, BucketCell], ordered_ids: Sequence[int]) -> _MedianResult:
+    """Медиана строки/корзины по `net_per_sqm` (спека §2.5, правила 1-5).
+
+    Исключены: пустые ячейки (`net_per_sqm is None` — нет ТЭП либо нет числа
+    вовсе) и нулевые (`net_per_sqm == 0` — «работ нет либо учтены в другой
+    статье», не «дёшево», правило 4). Меньше трёх сопоставимых -> `value is
+    None` (правило 5, DoD 11): подсветки в строке нет вовсе, но счётчик и
+    список id всё равно возвращаются — экрану нужно число для «сопоставимых
+    меньше трёх», а не молчаливо пустая строка.
+    """
+    comparable = [
+        (contract_id, cells[contract_id].net_per_sqm)
+        for contract_id in ordered_ids
+        if cells[contract_id].net_per_sqm is not None and cells[contract_id].net_per_sqm != 0
+    ]
+    ids = [contract_id for contract_id, _ in comparable]
+    if len(comparable) < 3:
+        return _MedianResult(value=None, comparable_count=len(comparable), contract_ids=ids)
+
+    values = sorted(value for _, value in comparable)
+    mid = len(values) // 2
+    if len(values) % 2 == 1:
+        median = values[mid]
+    else:
+        with localcontext(_DIV_CONTEXT):
+            median = (values[mid - 1] + values[mid]) / Decimal(2)
+    return _MedianResult(value=median, comparable_count=len(comparable), contract_ids=ids)
+
+
+def _apply_deviation(
+    cells: dict[int, BucketCell], median: _MedianResult
+) -> dict[int, BucketCell]:
+    """Проставить `deviation_pct` сопоставимым ячейкам от готовой медианы.
+
+    Точная `Decimal`-арифметика, БЕЗ округления (AGENTS.md §3; `money/vat.py`
+    — округление живёт на границе показа, не в агрегате). Ячейки вне
+    `median.contract_ids` (пустые, нулевые, отсутствующие) отклонения не
+    получают: «Нераспределённое» и подобные им сюда просто не передаются
+    (вызывающий код решает это заранее, до вызова медианы), а ноль/прочерк в
+    ЭТОЙ строке уже отфильтрован `_compute_median`.
+    """
+    if median.value is None:
+        return cells
+    result = dict(cells)
+    for contract_id in median.contract_ids:
+        cell = result[contract_id]
+        with localcontext(_DIV_CONTEXT):
+            deviation = (cell.net_per_sqm / median.value - Decimal(1)) * 100
+        result[contract_id] = replace(cell, deviation_pct=deviation)
+    return result
+
+
+def _median_dict(median: _MedianResult) -> dict:
+    return {
+        "value": median.value,
+        "comparable_count": median.comparable_count,
+        "contract_ids": median.contract_ids,
+    }
+
+
+def _bucket_cell_dict(cell: BucketCell) -> dict:
+    return {
+        "net": cell.net,
+        "shown": cell.shown,
+        "net_per_sqm": cell.net_per_sqm,
+        "shown_per_sqm": cell.shown_per_sqm,
+        "state": cell.state,
+        "deviation_pct": cell.deviation_pct,
+        "incomplete_reasons": sorted(cell.incomplete_reasons),
+    }
+
+
+def _cell_entry(contract_id: int, by_bucket: dict[str, dict[int, BucketCell]]) -> dict:
+    """Ячейка договора над строкой/«Итого» — ОДНА форма для `rows[].cells[]`
+    и `totals[]` (интерфейс задачи 4: единообразно, `contract_id` на каждой
+    ячейке — планировщик экрана не обязан помнить порядок колонок отдельно)."""
+    return {
+        "contract_id": contract_id,
+        BUCKET_BASE: _bucket_cell_dict(by_bucket[BUCKET_BASE][contract_id]),
+        BUCKET_AMENDMENTS: _bucket_cell_dict(by_bucket[BUCKET_AMENDMENTS][contract_id]),
+        BUCKET_TOTAL: _bucket_cell_dict(by_bucket[BUCKET_TOTAL][contract_id]),
+    }
+
+
+def _row_cells(
+    bucket_rollups: dict[int, dict[str, list[EstimateRollup]]],
+    ordered_ids: Sequence[int],
+    area_by_contract: dict[int, Decimal | None],
+    row: RowRef | None,
+    *,
+    vat_mode: str,
+    single_rate: Decimal | None,
+    skip_median: bool,
+) -> tuple[dict[str, dict[int, BucketCell]], dict[str, _MedianResult]]:
+    """Ячейки и медианы ОДНОЙ строки (`row is None` — «Итого по договору») по
+    трём корзинам сразу. Общий проход для строк дерева и для грандтотала —
+    в обоих случаях один и тот же порядок действий: ось по договору в целом
+    (для ABSENT/ZERO, §2.2), ось по каждой корзине с апгрейдом, показ, потом
+    медиана НА ВСЮ строку разом (нужны значения всех договоров сразу).
+    """
+    by_bucket: dict[str, dict[int, BucketCell]] = {
+        BUCKET_BASE: {}, BUCKET_AMENDMENTS: {}, BUCKET_TOTAL: {},
+    }
+
+    def axis_for(rollups_seq: Sequence[EstimateRollup]) -> CellNet:
+        if row is None:
+            return _grand_total_cell(rollups_seq)
+        return cell_net(rollups_seq, row)
+
+    for contract_id in ordered_ids:
+        buckets = bucket_rollups[contract_id]
+        contract_axis = axis_for(buckets[BUCKET_TOTAL])
+        area = area_by_contract.get(contract_id)
+        for bucket_name in (BUCKET_BASE, BUCKET_AMENDMENTS, BUCKET_TOTAL):
+            bucket_list = buckets[bucket_name]
+            if bucket_name == BUCKET_TOTAL:
+                axis = contract_axis
+            else:
+                axis = _upgrade_absent_to_zero(axis_for(bucket_list), contract_axis)
+            by_bucket[bucket_name][contract_id] = _build_bucket_cell(
+                axis, bucket_list, row,
+                vat_mode=vat_mode, single_rate=single_rate, area_total_sp=area,
+            )
+
+    medians: dict[str, _MedianResult] = {}
+    for bucket_name in (BUCKET_BASE, BUCKET_AMENDMENTS, BUCKET_TOTAL):
+        if skip_median:
+            medians[bucket_name] = _MedianResult(value=None, comparable_count=0, contract_ids=[])
+            continue
+        median = _compute_median(by_bucket[bucket_name], ordered_ids)
+        by_bucket[bucket_name] = _apply_deviation(by_bucket[bucket_name], median)
+        medians[bucket_name] = median
+
+    return by_bucket, medians
+
+
+def _format_rate(rate: Decimal) -> str:
+    """Ставка НДС для подписи, без хвостовых нулей (`20`, не `20.00`).
+
+    `Decimal.normalize()` на целом значении ("20") даёт "2E+1" — экспоненциальную
+    запись, которую `to_integral_value()` не убирает; `str(int(...))` и
+    `format(..., "f")` — единственные пути, обходящие это без побочных эффектов.
+    """
+    normalized = rate.normalize()
+    if normalized == normalized.to_integral_value():
+        return str(int(normalized))
+    return format(normalized, "f")
+
+
+def _rate_label(rate: Decimal | None) -> str:
+    if rate is None:
+        return "ставка не определена"
+    return f"{_format_rate(rate)} %"
+
+
+def _mode_caption(vat_mode: str, single_rate: Decimal | None) -> str:
+    """Подпись состава денег НА ПОВЕРХНОСТИ (AGENTS.md §10 v6.8, спека §2.3.1).
+
+    Netto объявляет состав явно; «единая» и «своя» ставка ДОПОЛНИТЕЛЬНО
+    обязаны сказать, что отклонения посчитаны без НДС (спека §2.5 правило 2)
+    — иначе подсветка читалась бы как разница цен там, где на деле разница
+    ставок НДС.
+    """
+    if vat_mode == VAT_MODE_NET:
+        return "Суммы показаны без НДС (нетто)."
+    if vat_mode == VAT_MODE_SINGLE:
+        rate_text = "не выбрана" if single_rate is None else _rate_label(single_rate)
+        return (
+            f"Суммы пересчитаны в единую ставку НДС ({rate_text}). "
+            "Отклонения от медианы посчитаны без НДС."
+        )
+    if vat_mode == VAT_MODE_OWN:
+        return (
+            "Каждый договор показан в своей действующей ставке НДС. "
+            "Отклонения от медианы посчитаны без НДС."
+        )
+    raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+
+
+def _composition_caption(rollups: Sequence[EstimateRollup]) -> str:
+    """Подпись состава колонки в режиме «своя ставка» (спека §2.3.2, DoD 8б/8в).
+
+    Три уровня свёртки, от самого свёрнутого к самому подробному: полное
+    совпадение ВСЕХ смет договора -> одна ставка («20 %»); ставки ДС
+    совпадают между собой (но не обязательно со ставкой ДГП) -> «ДГП 20 % ·
+    ДС 20 %»; ставки ДС расходятся -> перечислить каждую по номеру («ДС №1
+    20 %, №2 22 %»). Смета БЕЗ определённой ставки показа обязана быть видна
+    словами — правило спеки названо явно, а не выведено по умолчанию.
+    """
+    if not rollups:
+        return "смет нет"
+
+    all_rates = [rollup.display_rate for rollup in rollups]
+    if all(rate is not None for rate in all_rates) and len(set(all_rates)) == 1:
+        return _rate_label(all_rates[0])
+
+    base = [rollup for rollup in rollups if rollup.amendment_no is None]
+    amendments = sorted(
+        (rollup for rollup in rollups if rollup.amendment_no is not None),
+        key=lambda rollup: rollup.amendment_no,
+    )
+
+    parts: list[str] = []
+    if base:
+        base_rates = {rollup.display_rate for rollup in base}
+        if len(base_rates) == 1:
+            parts.append(f"ДГП {_rate_label(next(iter(base_rates)))}")
+        else:
+            parts.append("ДГП " + ", ".join(_rate_label(rollup.display_rate) for rollup in base))
+    if amendments:
+        amd_rates = {rollup.display_rate for rollup in amendments}
+        if len(amd_rates) == 1:
+            parts.append(f"ДС {_rate_label(next(iter(amd_rates)))}")
+        else:
+            enumerated = ", ".join(
+                f"№{rollup.amendment_no} {_rate_label(rollup.display_rate)}" for rollup in amendments
+            )
+            parts.append(f"ДС {enumerated}")
+    return " · ".join(parts) if parts else "смет нет"
+
+
+def _mode_then_larger(rates: Sequence[Decimal]) -> Decimal | None:
+    """Самая частая ставка из списка, при равенстве частот — бо́льшая (§2.3.2)."""
+    if not rates:
+        return None
+    counts = Counter(rates)
+    top = max(counts.values())
+    candidates = [rate for rate, count in counts.items() if count == top]
+    return max(candidates)
+
+
+def _rate_options_from_rollups(
+    rollups: dict[int, list[EstimateRollup]]
+) -> tuple[list[Decimal], Decimal | None]:
+    """Список ставок и предвыбор — чистая функция над роллапами (спека §2.3.2).
+
+    Список — союз определённых ставок показа и известных баз групп (второе
+    множество — резерв, гарантирующий непустой список, когда ставка показа не
+    определена ни у одной сметы выборки). Частота для предвыбора считается
+    ТОЛЬКО по ставкам показа; базы групп в подсчёт не идут и становятся
+    основанием предвыбора лишь тогда, когда определённых ставок показа нет
+    вовсе (спека §2.3.2, пятый круг ревью — иначе предвыбор был бы не
+    определён именно в том углу, ради которого резерв заводился).
+    """
+    display_rates: list[Decimal] = []
+    base_rate_values: list[Decimal] = []
+    all_rates: set[Decimal] = set()
+    for contract_rollups in rollups.values():
+        for rollup in contract_rollups:
+            if rollup.display_rate is not None:
+                display_rates.append(rollup.display_rate)
+                all_rates.add(rollup.display_rate)
+            for rate in rollup.base_rates:
+                base_rate_values.append(rate)
+                all_rates.add(rate)
+
+    options = sorted(all_rates)
+    preselected = _mode_then_larger(display_rates) if display_rates else _mode_then_larger(base_rate_values)
+    return options, preselected
+
+
+def rate_options(db: Session, contract_ids: Sequence[int]) -> tuple[list[Decimal], Decimal | None]:
+    """Список ставок и предвыбор для режима «единая ставка» (спека §2.3).
+
+    Тонкая обёртка над `load_rollups`: `EstimateRollup` уже несёт всё нужное
+    (`display_rate`, `base_rates`), второго обращения к VIEW здесь нет.
+    """
+    return _rate_options_from_rollups(load_rollups(db, contract_ids))
+
+
+def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
+    """Шапки колонок выборки, в порядке `signed_date DESC`, затем `id DESC`
+    (спека §2.1, DoD 3) — от новых договоров к старым."""
+    if not contract_ids:
+        return []
+    rows = db.execute(
+        sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
+        .join(ObjectModel, ObjectModel.id == Contract.object_id)
+        .join(Contractor, Contractor.id == Contract.contractor_id)
+        .join(RateClass, RateClass.id == Contract.rate_class_id)
+        .where(Contract.id.in_(contract_ids))
+        .order_by(Contract.signed_date.desc(), Contract.id.desc())
+    ).all()
+    return [
+        {
+            "contract_id": contract.id,
+            "contract_number": contract.contract_number,
+            "object_title": obj.title,
+            "contractor_title": contractor_title,
+            "rate_class_title": rate_class_title,
+            "signed_date": iso(contract.signed_date),
+            "area_total_sp": obj.area_total_sp,
+            "advance_pct": contract.advance_pct,
+            "bank_guarantee_pct": contract.bank_guarantee_pct,
+            "retention_pct": contract.retention_pct,
+        }
+        for contract, obj, contractor_title, rate_class_title in rows
+    ]
+
+
+def build_comparison(
+    db: Session,
+    contract_ids: Sequence[int],
+    *,
+    vat_mode: str,
+    single_rate: Decimal | None = None,
+) -> dict:
+    """Полный агрегат сравнения: колонки, строки, ячейки по ТРЁМ корзинам,
+    медианы, подписи (спека §2.1-§2.5, план — задача 4).
+
+    Считает ВСЕ ТРИ корзины разом, независимо от `vat_mode` (который влияет
+    только на показ, не на то, что вообще посчитано) — экран берёт одно
+    представление, Excel (задача 6) получает все три сразу с отдельными
+    медианами (спека §2.7 «один агрегат — два представления»).
+
+    **Режим «единая ставка» без явной ставки открывается на ПРЕДВЫБОРЕ.** DoD 8ж
+    требует, чтобы этот режим открывался с числами, а ссылка на страницу вправе
+    не нести ставку вовсе (§2.3: режим и ставка живут в URL, но URL приходит и
+    от человека). Без подстановки весь лист стал бы пустым — причём пустым БЕЗ
+    причины, потому что `incomplete_reasons` тут нечего сказать: данные-то в
+    порядке. Отдаваемый `single_rate` — ставка, в которой числа ДЕЙСТВИТЕЛЬНО
+    показаны, а не та, что пришла в запросе: экран и лист подписывают состав по
+    этому полю, и вернуть здесь `None` значило бы подписать неправду.
+    """
+    contract_ids = list(contract_ids)
+    if vat_mode not in (VAT_MODE_OWN, VAT_MODE_SINGLE, VAT_MODE_NET):
+        # Проверка на входе, а не внутри сборки ячейки: неизвестный режим —
+        # это ошибка запроса (400), и узнать о ней надо до того, как агрегат
+        # проделает всю работу и упадёт `ValueError`-ом на подписи, то есть 500.
+        raise DomainError(400, f"Неизвестный режим показа НДС: {vat_mode!r}.")
+
+    rollups = load_rollups(db, contract_ids)
+    columns_meta = _load_columns(db, contract_ids)
+    ordered_ids = [column["contract_id"] for column in columns_meta]
+
+    rate_opts, rate_preselected = _rate_options_from_rollups(rollups)
+    effective_single_rate = single_rate
+    if vat_mode == VAT_MODE_SINGLE and effective_single_rate is None:
+        effective_single_rate = rate_preselected
+
+    bucket_rollups = {
+        contract_id: _split_buckets(rollups.get(contract_id, [])) for contract_id in ordered_ids
+    }
+    area_by_contract = {
+        column["contract_id"]: column["area_total_sp"] for column in columns_meta
+    }
+
+    rows_ref = build_rows(rollups)
+    rows_out = []
+    for row in rows_ref:
+        by_bucket, medians = _row_cells(
+            bucket_rollups, ordered_ids, area_by_contract, row,
+            vat_mode=vat_mode, single_rate=effective_single_rate,
+            skip_median=row.kind == "unallocated",
+        )
+        rows_out.append({
+            "kind": row.kind,
+            "category_id": row.category_id,
+            "code": row.code,
+            "title": row.title,
+            "level": row.level,
+            "parent_code": row.parent_code,
+            "cells": [_cell_entry(contract_id, by_bucket) for contract_id in ordered_ids],
+            "medians": {bucket: _median_dict(medians[bucket]) for bucket in medians},
+        })
+
+    totals_by_bucket, totals_medians = _row_cells(
+        bucket_rollups, ordered_ids, area_by_contract, None,
+        vat_mode=vat_mode, single_rate=effective_single_rate, skip_median=False,
+    )
+
+    columns = [
+        {
+            **column,
+            "composition_caption": _composition_caption(rollups.get(column["contract_id"], [])),
+        }
+        for column in columns_meta
+    ]
+
+    return {
+        "vat_mode": vat_mode,
+        "single_rate": effective_single_rate,
+        "rate_options": rate_opts,
+        "rate_preselected": rate_preselected,
+        "caption": _mode_caption(vat_mode, effective_single_rate),
+        "columns": columns,
+        "rows": rows_out,
+        "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
+        "totals_medians": {
+            bucket: _median_dict(totals_medians[bucket]) for bucket in totals_medians
+        },
     }

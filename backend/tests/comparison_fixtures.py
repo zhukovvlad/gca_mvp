@@ -100,6 +100,84 @@ def contract_with(db, factories, categories: dict[str, list[str]]) -> int:
     return estimate.contract_id
 
 
+def contract_with_area(
+    db, factories, categories: dict[str, list[str]], *,
+    vat_rate=VAT_20, area_aboveground="50000", area_underground="50000",
+):
+    """Как `contract_with`, но объект несёт ТЭП и ставка НДС параметризована.
+
+    ₽/м² и медиана (спека §2.4, §2.5) вычислимы только при известной
+    `objects.area_total_sp`; без явного её задания тесты медианы стали бы
+    проверять «нет ТЭП», думая, что проверяют разброс цен.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    estimate = factories.EstimateFactory.create(contract=contract)
+    proposal = make_proposal(factories, estimate=estimate, vat_rate=vat_rate)
+    for code, amounts in categories.items():
+        seed_chapter_with_positions(db, factories, proposal=proposal, code=code, amounts=amounts)
+    db.flush()
+    return contract.id
+
+
+def contract_with_disagreeing_rates(
+    db, factories, *, rates: list[Decimal], area_aboveground="50000", area_underground="50000",
+):
+    """Одна смета, НЕСКОЛЬКО предложений с РАЗНЫМИ ставками -> `effective_display_rate`
+    не определён (разногласие заявленных ставок, спека §2.3.2).
+
+    Каждая ставка получает СВОЮ статью с деньгами: предложение без строк не
+    попадает в VIEW вовсе, и его база НДС не вошла бы в `EstimateRollup.base_rates`
+    (задача 4, резерв списка ставок §2.3).
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    estimate = factories.EstimateFactory.create(contract=contract)
+    codes = ["1", "2", "3", "4"][: len(rates)]
+    for index, (rate, code) in enumerate(zip(rates, codes, strict=True)):
+        proposal = make_proposal(factories, estimate=estimate, vat_rate=rate, lot_key=f"lot_{index}")
+        seed_chapter_with_positions(db, factories, proposal=proposal, code=code, amounts=["100.00"])
+    db.flush()
+    return contract.id
+
+
+def contract_with_amendment(
+    db, factories, *, base_rate, amd_rate, base, amd,
+    area_aboveground="50000", area_underground="50000",
+):
+    """Договор с базовой сметой и ОДНИМ допсоглашением, у каждого своя `vat_rate`.
+
+    Допсоглашений в системе НЕТ ни одного (спека §6): весь путь корзин
+    (ДГП/ДС/Итого) на живых данных не исполняется, и этот сборщик — единственный
+    источник данных для задачи 4. Обе сметы кладут деньги в статью "1"; объект
+    несёт ТЭП по умолчанию, чтобы медиана была вычислима без отдельной
+    подготовки в каждом тесте.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(object=obj)
+    base_estimate = factories.EstimateFactory.create(contract=contract, amendment_no=None)
+    amd_estimate = factories.EstimateFactory.create(contract=contract, amendment_no=1)
+
+    base_proposal = make_proposal(factories, estimate=base_estimate, vat_rate=base_rate)
+    amd_proposal = make_proposal(
+        factories, estimate=amd_estimate, vat_rate=amd_rate, lot_key="amendment"
+    )
+
+    seed_chapter_with_positions(db, factories, proposal=base_proposal, code="1", amounts=[base])
+    seed_chapter_with_positions(db, factories, proposal=amd_proposal, code="1", amounts=[amd])
+    db.flush()
+    return contract
+
+
 def seed_additional_work(db, factories, *, proposal, code, amount, ordinal=1):
     """Разрешённая допработа со статьёй.
 
