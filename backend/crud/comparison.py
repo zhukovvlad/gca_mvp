@@ -1376,6 +1376,74 @@ def rate_options(db: Session, contract_ids: Sequence[int]) -> tuple[list[Decimal
     return _rate_options_from_rollups(load_rollups(db, contract_ids))
 
 
+# ---------------------------------------------------------------------------
+#  Разрешение выборки: `ids` либо фильтр (спека §2.6)
+# ---------------------------------------------------------------------------
+
+def resolve_selection(
+    db: Session,
+    *,
+    ids: Sequence[int] | None = None,
+    use_filter: bool = False,
+    q: str | None = None,
+    object_id: int | None = None,
+    contractor_id: int | None = None,
+    rate_class_id: int | None = None,
+) -> list[int]:
+    """Договоры выборки по одной из ДВУХ форм входа (спека §2.6).
+
+    Живёт здесь, а не в роутере, потому что форм входа две, а эндпоинтов —
+    тоже два (сравнение и выгрузка листа): вторая копия этого правила означала
+    бы, что экран и файл могут сравнивать РАЗНЫЕ множества договоров, а спека
+    §2.7 требует ровно обратного — один агрегат на оба представления.
+
+    Фильтры не переписаны, а взяты у списка договоров
+    (`crud.contracts.filtered_contract_ids`, тот же `apply_contract_filters`):
+    DoD 1 требует, чтобы обе формы давали одинаковый ответ на одинаковом
+    множестве, и со второй копией условий это держалось бы на совпадении.
+    `page`/`page_size` не переносятся — сравнение берёт всю выборку.
+
+    Отсутствующий id — ОТКАЗ 404 с его номером, а не молчаливое выпадение
+    колонки: `Contract.id.in_(...)` сам по себе просто не нашёл бы её, и
+    страница сравнила бы меньше договоров, чем просил человек, ничего об этом не
+    сказав. Пустой результат ФИЛЬТРА, напротив, — законный ответ: договоров под
+    фильтр может не быть, и сказать об этом надо пустой таблицей, а не ошибкой.
+    """
+    from crud import contracts as crud_contracts
+
+    if use_filter and ids:
+        raise DomainError(
+            400,
+            "Выборка задана дважды: и списком договоров, и фильтром. "
+            "Оставьте одну форму — либо `ids`, либо `all=1` с фильтрами.",
+        )
+    if use_filter:
+        return crud_contracts.filtered_contract_ids(
+            db, q=q, object_id=object_id, contractor_id=contractor_id,
+            rate_class_id=rate_class_id,
+        )
+    if not ids:
+        raise DomainError(
+            400,
+            "Выборка не задана: передайте `ids` со списком договоров либо "
+            "`all=1` для выборки по фильтру.",
+        )
+
+    # Порядок здесь не важен (колонки упорядочивает `_load_columns` по
+    # signed_date/id), но дубликаты убрать обязательно: повторённый id дал бы
+    # вторую колонку того же договора.
+    unique = list(dict.fromkeys(ids))
+    existing = set(
+        db.execute(sa.select(Contract.id).where(Contract.id.in_(unique))).scalars().all()
+    )
+    missing = [contract_id for contract_id in unique if contract_id not in existing]
+    if missing:
+        raise DomainError(
+            404, "Договоры не найдены: " + ", ".join(str(value) for value in missing) + "."
+        )
+    return unique
+
+
 def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
     """Шапки колонок выборки, в порядке `signed_date DESC`, затем `id DESC`
     (спека §2.1, DoD 3) — от новых договоров к старым."""
