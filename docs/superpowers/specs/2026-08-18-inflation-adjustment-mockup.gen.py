@@ -238,6 +238,13 @@ h2 {{ font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0
 .seg button[aria-pressed="true"] {{ background:var(--action); color:var(--action-text);
   font-weight:600; }}
 .seg button:focus-visible {{ outline:2px solid var(--accent); outline-offset:-2px; }}
+.seg button:disabled {{ cursor:not-allowed; color:var(--fg4); background:var(--sunken); }}
+.jsonbox {{ margin:11px 0 0; padding:10px 13px; background:var(--sunken);
+  border:1px solid var(--bd-subtle); border-radius:9px; overflow-x:auto;
+  font-size:12px; line-height:1.45; }}
+.jsonbox code {{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color:var(--fg2); white-space:pre; }}
+#urlbar {{ font-size:11.5px; }}
 select, input[type=text], input[type=month] {{ font:inherit; font-size:12.5px; color:var(--fg);
   background:var(--surface); border:1px solid var(--bd); border-radius:8px; padding:6px 9px; }}
 select:disabled, input:disabled {{ color:var(--fg4); background:var(--sunken); }}
@@ -331,9 +338,9 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
 
   <section>
     <h2>Переключатель и подпись</h2>
-    <p class="secsub">Два новых элемента управления рядом с существующими. По
-    умолчанию приведение выключено, и страница отвечает как до фичи —
-    посимвольно.</p>
+    <p class="secsub">Три новых элемента управления рядом с существующими: режим,
+    ряд и целевой месяц. По умолчанию приведение выключено, и страница отвечает
+    как до фичи — посимвольно.</p>
     <div class="card card-pad">
       <div class="controls">
         <span class="ctl"><span class="ctl-lbl">Показатель</span>
@@ -347,29 +354,38 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
             <button type="button" aria-pressed="false">Единая</button>
             <button type="button" aria-pressed="true">Без НДС</button>
           </span></span>
+        <span class="ctl"><span class="ctl-lbl">Ряд</span>
+          <select id="seriesSel">
+            <option value="">Выберите ряд</option>
+            <option value="1">{E(SERIES_NAME)}</option>
+            <option value="2">Внутренняя оценка ПЭО</option>
+          </select></span>
         <span class="ctl"><span class="ctl-lbl">Инфляция</span>
           <span class="seg" role="group" aria-label="Приведение">
             <button type="button" id="offBtn" aria-pressed="true">Номинал</button>
-            <button type="button" id="onBtn" aria-pressed="false">Привести</button>
+            <button type="button" id="onBtn" aria-pressed="false" disabled>Привести</button>
           </span></span>
-        <span class="ctl"><span class="ctl-lbl">Ряд</span>
-          <select id="seriesSel" disabled>
-            <option>{E(SERIES_NAME)}</option>
-            <option>Внутренняя оценка ПЭО</option>
-          </select></span>
         <span class="ctl"><span class="ctl-lbl">В ценах</span>
-          <input type="month" id="monthInp" value="2026-08" disabled></span>
+          <input type="month" id="monthInp" value="" disabled></span>
         <button class="btn" type="button">Выгрузить в Excel</button>
       </div>
       <p class="axisnote" id="axisnote"></p>
+      <p class="axisnote" style="margin-top:6px"><span class="hint">Адрес
+      страницы:</span> <code id="urlbar"></code></p>
     </div>
+    <p class="axisnote bound" style="margin-top:12px">Умолчательного ряда
+    <b>нет</b>, и это не придирка: на нём держится ответ <code>400</code> для
+    месяца без ряда (§2.12). Поэтому «Привести» недоступно, пока ряд не выбран, а
+    сам выбор ряда числа ещё не меняет. Поле месяца до первого ответа сервера
+    <b>пусто</b> — текущий месяц определяет сервер в названной таймзоне, клиенту
+    это запрещено (§2.7).</p>
   </section>
 
   <section>
     <h2>Таблица</h2>
-    <p class="secsub">Нажмите «Привести» — колонки, медиана и подсветка
-    пересчитываются. Коэффициент каждого договора показан в его шапке: он свой у
-    каждой сметы, а не один на выборку.</p>
+    <p class="secsub">Выберите ряд выше, затем нажмите «Привести» — колонки,
+    медиана и подсветка пересчитываются. Коэффициент каждого договора показан в
+    его шапке: он свой у каждой сметы, а не один на выборку.</p>
     <div class="scroller">
       <table class="cmp">
         <thead>
@@ -446,14 +462,26 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
         коэффициентов за <b>2024, 2025</b>. Показаны номинальные суммы — рубли
         разных лет. Заполните недостающие годы в разделе «Нормативы → Индексы
         инфляции».<br>
-        <span class="hint">Ответ API: <code>422</code>,
-        <code>{{"code":"missing_inflation_years","missing_years":[2024,2025]}}</code>.
-        Параметры остались в адресе: <code>?inflation_series_id=1&amp;target_month=2026-08</code>
-        — видно, что именно не сработало.</span></span>
+        <span class="hint">Ответ API — <code>422</code>:</span></span>
       </div>
-      <p class="axisnote">Тот же отказ и та же формулировка на листе Excel.
-      Второй код — <code>amendment_date_missing</code>, когда у допсоглашения нет
-      собственной даты: дату базового договора подставлять нельзя.</p>
+      <pre class="jsonbox"><code>{{
+ "detail": {{
+  "code": "missing_inflation_years",
+  "message": "Не заданы коэффициенты за годы: 2024, 2025.",
+  "missing_years": [2024, 2025]
+ }}
+}}</code></pre>
+      <p class="axisnote">Параметры остались в адресе:
+      <code>?inflation_series_id=1&amp;target_month=2026-08</code> — видно, что
+      именно не сработало, и недостающие годы можно завести не угадывая.</p>
+      <p class="axisnote"><b>Выгрузка отвечает тем же структурированным
+      <code>422</code>; файла не возникает вовсе</b> — «отказ на листе Excel»
+      невозможен, потому что при отказе лист не собирается. Интерфейс показывает
+      то же сообщение, что экран. Печать использованных коэффициентов (§2.10)
+      относится только к успешной выгрузке.</p>
+      <p class="axisnote">Второй код — <code>amendment_date_missing</code>, когда
+      у допсоглашения нет собственной даты: дату базового договора подставлять
+      нельзя.</p>
     </div>
   </section>
 
@@ -549,7 +577,14 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
 const DATA = {PAYLOAD};
 const NOTE_OFF = 'Ось сравнения — <b>нетто</b>. Приведение выключено: суммы в рублях года подписания каждого договора.';
 const NOTE_ON = 'Ось сравнения — <b>нетто</b>, цены приведены к <b>{TARGET_LABEL}</b> по ряду «{E(SERIES_NAME)}». 2026 год — прогноз.';
+// Месяц, который вернул бы СЕРВЕР. Клиент его не вычисляет: до ответа поле пусто.
+const SERVER_MONTH = '2026-08';
 let on = false;
+
+const sel = document.getElementById('seriesSel');
+const monthInp = document.getElementById('monthInp');
+const onBtn = document.getElementById('onBtn');
+const offBtn = document.getElementById('offBtn');
 
 function render() {{
   const key = on ? 'adj' : 'nom';
@@ -566,13 +601,43 @@ function render() {{
   }});
   document.querySelectorAll('[data-kf]').forEach(el => {{ el.style.visibility = on ? 'visible' : 'hidden'; }});
   document.getElementById('axisnote').innerHTML = on ? NOTE_ON : NOTE_OFF;
-  document.getElementById('onBtn').setAttribute('aria-pressed', String(on));
-  document.getElementById('offBtn').setAttribute('aria-pressed', String(!on));
-  document.getElementById('seriesSel').disabled = !on;
-  document.getElementById('monthInp').disabled = !on;
+
+  const hasSeries = sel.value !== '';
+  onBtn.setAttribute('aria-pressed', String(on));
+  offBtn.setAttribute('aria-pressed', String(!on));
+  // «Привести» недоступно без ряда: умолчательного ряда не существует.
+  onBtn.disabled = !hasSeries;
+  // Месяц имеет смысл только вместе с рядом (иначе сервер ответил бы 400).
+  monthInp.disabled = !hasSeries;
+
+  const params = [];
+  if (on) {{
+    params.push('inflation_series_id=' + sel.value);
+    if (monthInp.value) params.push('target_month=' + monthInp.value);
+  }}
+  document.getElementById('urlbar').textContent =
+    '/compare?ids=5,6,4,11,10&vat_mode=net' + (params.length ? '&' + params.join('&') : '');
 }}
-document.getElementById('onBtn').addEventListener('click', () => {{ on = true; render(); }});
-document.getElementById('offBtn').addEventListener('click', () => {{ on = false; render(); }});
+
+sel.addEventListener('change', () => {{
+  // Выбор ряда сам числа НЕ меняет — только открывает «Привести».
+  if (!sel.value) {{ on = false; monthInp.value = ''; }}
+  render();
+}});
+onBtn.addEventListener('click', () => {{
+  if (!sel.value) return;
+  on = true;
+  // Сервер разрешил текущий месяц и вернул его; клиент записывает в поле и URL.
+  if (!monthInp.value) monthInp.value = SERVER_MONTH;
+  render();
+}});
+offBtn.addEventListener('click', () => {{
+  on = false;
+  // Возврат к номиналу убирает инфляционные параметры из адреса.
+  monthInp.value = '';
+  render();
+}});
+monthInp.addEventListener('change', () => {{ if (on) render(); }});
 render();
 </script>
 """

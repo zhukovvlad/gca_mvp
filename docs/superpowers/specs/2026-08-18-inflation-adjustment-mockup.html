@@ -101,6 +101,13 @@ h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 
 .seg button[aria-pressed="true"] { background:var(--action); color:var(--action-text);
   font-weight:600; }
 .seg button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.seg button:disabled { cursor:not-allowed; color:var(--fg4); background:var(--sunken); }
+.jsonbox { margin:11px 0 0; padding:10px 13px; background:var(--sunken);
+  border:1px solid var(--bd-subtle); border-radius:9px; overflow-x:auto;
+  font-size:12px; line-height:1.45; }
+.jsonbox code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color:var(--fg2); white-space:pre; }
+#urlbar { font-size:11.5px; }
 select, input[type=text], input[type=month] { font:inherit; font-size:12.5px; color:var(--fg);
   background:var(--surface); border:1px solid var(--bd); border-radius:8px; padding:6px 9px; }
 select:disabled, input:disabled { color:var(--fg4); background:var(--sunken); }
@@ -195,9 +202,9 @@ table.mini td.wide { font-variant-numeric:normal; }
 
   <section>
     <h2>Переключатель и подпись</h2>
-    <p class="secsub">Два новых элемента управления рядом с существующими. По
-    умолчанию приведение выключено, и страница отвечает как до фичи —
-    посимвольно.</p>
+    <p class="secsub">Три новых элемента управления рядом с существующими: режим,
+    ряд и целевой месяц. По умолчанию приведение выключено, и страница отвечает
+    как до фичи — посимвольно.</p>
     <div class="card card-pad">
       <div class="controls">
         <span class="ctl"><span class="ctl-lbl">Показатель</span>
@@ -211,29 +218,38 @@ table.mini td.wide { font-variant-numeric:normal; }
             <button type="button" aria-pressed="false">Единая</button>
             <button type="button" aria-pressed="true">Без НДС</button>
           </span></span>
+        <span class="ctl"><span class="ctl-lbl">Ряд</span>
+          <select id="seriesSel">
+            <option value="">Выберите ряд</option>
+            <option value="1">Росстат, ИПЦ, декабрь к декабрю</option>
+            <option value="2">Внутренняя оценка ПЭО</option>
+          </select></span>
         <span class="ctl"><span class="ctl-lbl">Инфляция</span>
           <span class="seg" role="group" aria-label="Приведение">
             <button type="button" id="offBtn" aria-pressed="true">Номинал</button>
-            <button type="button" id="onBtn" aria-pressed="false">Привести</button>
+            <button type="button" id="onBtn" aria-pressed="false" disabled>Привести</button>
           </span></span>
-        <span class="ctl"><span class="ctl-lbl">Ряд</span>
-          <select id="seriesSel" disabled>
-            <option>Росстат, ИПЦ, декабрь к декабрю</option>
-            <option>Внутренняя оценка ПЭО</option>
-          </select></span>
         <span class="ctl"><span class="ctl-lbl">В ценах</span>
-          <input type="month" id="monthInp" value="2026-08" disabled></span>
+          <input type="month" id="monthInp" value="" disabled></span>
         <button class="btn" type="button">Выгрузить в Excel</button>
       </div>
       <p class="axisnote" id="axisnote"></p>
+      <p class="axisnote" style="margin-top:6px"><span class="hint">Адрес
+      страницы:</span> <code id="urlbar"></code></p>
     </div>
+    <p class="axisnote bound" style="margin-top:12px">Умолчательного ряда
+    <b>нет</b>, и это не придирка: на нём держится ответ <code>400</code> для
+    месяца без ряда (§2.12). Поэтому «Привести» недоступно, пока ряд не выбран, а
+    сам выбор ряда числа ещё не меняет. Поле месяца до первого ответа сервера
+    <b>пусто</b> — текущий месяц определяет сервер в названной таймзоне, клиенту
+    это запрещено (§2.7).</p>
   </section>
 
   <section>
     <h2>Таблица</h2>
-    <p class="secsub">Нажмите «Привести» — колонки, медиана и подсветка
-    пересчитываются. Коэффициент каждого договора показан в его шапке: он свой у
-    каждой сметы, а не один на выборку.</p>
+    <p class="secsub">Выберите ряд выше, затем нажмите «Привести» — колонки,
+    медиана и подсветка пересчитываются. Коэффициент каждого договора показан в
+    его шапке: он свой у каждой сметы, а не один на выборку.</p>
     <div class="scroller">
       <table class="cmp">
         <thead>
@@ -310,14 +326,26 @@ table.mini td.wide { font-variant-numeric:normal; }
         коэффициентов за <b>2024, 2025</b>. Показаны номинальные суммы — рубли
         разных лет. Заполните недостающие годы в разделе «Нормативы → Индексы
         инфляции».<br>
-        <span class="hint">Ответ API: <code>422</code>,
-        <code>{"code":"missing_inflation_years","missing_years":[2024,2025]}</code>.
-        Параметры остались в адресе: <code>?inflation_series_id=1&amp;target_month=2026-08</code>
-        — видно, что именно не сработало.</span></span>
+        <span class="hint">Ответ API — <code>422</code>:</span></span>
       </div>
-      <p class="axisnote">Тот же отказ и та же формулировка на листе Excel.
-      Второй код — <code>amendment_date_missing</code>, когда у допсоглашения нет
-      собственной даты: дату базового договора подставлять нельзя.</p>
+      <pre class="jsonbox"><code>{
+ "detail": {
+  "code": "missing_inflation_years",
+  "message": "Не заданы коэффициенты за годы: 2024, 2025.",
+  "missing_years": [2024, 2025]
+ }
+}</code></pre>
+      <p class="axisnote">Параметры остались в адресе:
+      <code>?inflation_series_id=1&amp;target_month=2026-08</code> — видно, что
+      именно не сработало, и недостающие годы можно завести не угадывая.</p>
+      <p class="axisnote"><b>Выгрузка отвечает тем же структурированным
+      <code>422</code>; файла не возникает вовсе</b> — «отказ на листе Excel»
+      невозможен, потому что при отказе лист не собирается. Интерфейс показывает
+      то же сообщение, что экран. Печать использованных коэффициентов (§2.10)
+      относится только к успешной выгрузке.</p>
+      <p class="axisnote">Второй код — <code>amendment_date_missing</code>, когда
+      у допсоглашения нет собственной даты: дату базового договора подставлять
+      нельзя.</p>
     </div>
   </section>
 
@@ -413,7 +441,14 @@ table.mini td.wide { font-variant-numeric:normal; }
 const DATA = {"cols": [{"id": 5, "no": "12-СИТ-МР"}, {"id": 6, "no": "Д-2026-27002"}, {"id": 4, "no": "СДП-1-МР"}, {"id": 11, "no": "ВЕР1-ГП"}, {"id": 10, "no": "ДГП-3С10"}], "rows": [{"code": "1", "title": "Подготовительные работы, содержание площадки", "nom": {"5": {"v": "16 375", "d": "+16 %", "t": "up-lo"}, "6": {"v": "29 634", "d": "+110 %", "t": "up-hi"}, "4": {"v": "14 093", "d": "0 %", "t": "flat"}, "11": {"v": "9 748", "d": "-31 %", "t": "dn-hi"}, "10": {"v": "12 055", "d": "-14 %", "t": "dn-lo"}}, "adj": {"5": {"v": "16 454", "d": "+5 %", "t": "flat"}, "6": {"v": "29 923", "d": "+91 %", "t": "up-hi"}, "4": {"v": "15 658", "d": "0 %", "t": "flat"}, "11": {"v": "11 311", "d": "-28 %", "t": "dn-lo"}, "10": {"v": "14 158", "d": "-10 %", "t": "flat"}}, "mn": "14 093", "ma": "15 658"}, {"code": "2", "title": "Котлован", "nom": {"5": {"v": "456", "d": "0 %", "t": "flat"}, "6": {"v": "1 402", "d": "+208 %", "t": "up-hi"}, "4": {"v": "348", "d": "-24 %", "t": "dn-lo"}, "11": {"v": "279", "d": "-39 %", "t": "dn-hi"}, "10": {"v": "501", "d": "+10 %", "t": "flat"}}, "adj": {"5": {"v": "458", "d": "0 %", "t": "flat"}, "6": {"v": "1 416", "d": "+209 %", "t": "up-hi"}, "4": {"v": "387", "d": "-16 %", "t": "dn-lo"}, "11": {"v": "324", "d": "-29 %", "t": "dn-lo"}, "10": {"v": "588", "d": "+28 %", "t": "up-lo"}}, "mn": "456", "ma": "458"}, {"code": "3", "title": "Устройство гидроизоляции подземной части", "nom": {"5": {"v": "1 437", "d": "+63 %", "t": "up-hi"}, "6": {"v": "813", "d": "-8 %", "t": "flat"}, "4": {"v": "1 350", "d": "+53 %", "t": "up-hi"}, "11": {"v": "884", "d": "0 %", "t": "flat"}, "10": {"v": "464", "d": "-47 %", "t": "dn-hi"}}, "adj": {"5": {"v": "1 444", "d": "+41 %", "t": "up-hi"}, "6": {"v": "821", "d": "-20 %", "t": "dn-lo"}, "4": {"v": "1 499", "d": "+46 %", "t": "up-hi"}, "11": {"v": "1 025", "d": "0 %", "t": "flat"}, "10": {"v": "545", "d": "-47 %", "t": "dn-hi"}}, "mn": "884", "ma": "1 025"}, {"code": "4", "title": "Конструктивные решения", "nom": {"5": {"v": "30 861", "d": "+30 %", "t": "up-lo"}, "6": {"v": "34 696", "d": "+46 %", "t": "up-hi"}, "4": {"v": "23 662", "d": "-1 %", "t": "flat"}, "11": {"v": "23 783", "d": "0 %", "t": "flat"}, "10": {"v": "18 485", "d": "-22 %", "t": "dn-lo"}}, "adj": {"5": {"v": "31 012", "d": "+12 %", "t": "up-lo"}, "6": {"v": "35 035", "d": "+27 %", "t": "up-lo"}, "4": {"v": "26 289", "d": "-5 %", "t": "flat"}, "11": {"v": "27 596", "d": "0 %", "t": "flat"}, "10": {"v": "21 709", "d": "-21 %", "t": "dn-lo"}}, "mn": "23 783", "ma": "27 596"}, {"code": "5", "title": "Общестроительные работы (без отделки)", "nom": {"5": {"v": "2 006", "d": "-7 %", "t": "flat"}, "6": {"v": "2 685", "d": "+24 %", "t": "up-lo"}, "4": {"v": "2 297", "d": "+6 %", "t": "flat"}, "11": {"v": "2 157", "d": "0 %", "t": "flat"}, "10": {"v": "1 847", "d": "-14 %", "t": "dn-lo"}}, "adj": {"5": {"v": "2 015", "d": "-19 %", "t": "dn-lo"}, "6": {"v": "2 711", "d": "+8 %", "t": "flat"}, "4": {"v": "2 552", "d": "+2 %", "t": "flat"}, "11": {"v": "2 503", "d": "0 %", "t": "flat"}, "10": {"v": "2 170", "d": "-13 %", "t": "dn-lo"}}, "mn": "2 157", "ma": "2 503"}, {"code": "6", "title": "Фасадные работы", "nom": {"5": {"v": "43 335", "d": "+13 %", "t": "up-lo"}, "6": {"v": "58 091", "d": "+51 %", "t": "up-hi"}, "4": {"v": "33 383", "d": "-13 %", "t": "dn-lo"}, "11": {"v": "28 667", "d": "-25 %", "t": "dn-lo"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": "43 546", "d": "+8 %", "t": "flat"}, "6": {"v": "58 658", "d": "+45 %", "t": "up-hi"}, "4": {"v": "37 089", "d": "-8 %", "t": "flat"}, "11": {"v": "33 264", "d": "-17 %", "t": "dn-lo"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": "38 359", "ma": "40 318"}, {"code": "7", "title": "Кровля", "nom": {"5": {"v": "2 147", "d": "+57 %", "t": "up-hi"}, "6": {"v": "937", "d": "-31 %", "t": "dn-hi"}, "4": {"v": "1 580", "d": "+16 %", "t": "up-lo"}, "11": {"v": "1 148", "d": "-16 %", "t": "dn-lo"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": "2 158", "d": "+40 %", "t": "up-hi"}, "6": {"v": "947", "d": "-39 %", "t": "dn-hi"}, "4": {"v": "1 755", "d": "+14 %", "t": "up-lo"}, "11": {"v": "1 333", "d": "-14 %", "t": "dn-lo"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": "1 364", "ma": "1 544"}, {"code": "8", "title": "Отделочные работы (паркинг, надземная часть МОП)", "nom": {"5": {"v": "13 980", "d": "+20 %", "t": "up-lo"}, "6": {"v": "17 547", "d": "+50 %", "t": "up-hi"}, "4": {"v": "8 315", "d": "-29 %", "t": "dn-lo"}, "11": {"v": "9 433", "d": "-19 %", "t": "dn-lo"}, "10": {"v": "11 685", "d": "0 %", "t": "flat"}}, "adj": {"5": {"v": "14 048", "d": "+2 %", "t": "flat"}, "6": {"v": "17 718", "d": "+29 %", "t": "up-lo"}, "4": {"v": "9 238", "d": "-33 %", "t": "dn-hi"}, "11": {"v": "10 945", "d": "-20 %", "t": "dn-lo"}, "10": {"v": "13 723", "d": "0 %", "t": "flat"}}, "mn": "11 685", "ma": "13 723"}, {"code": "9", "title": "Лифты, подъемники", "nom": {"5": {"v": "3 394", "d": "-11 %", "t": "dn-lo"}, "6": {"v": "17 147", "d": "+348 %", "t": "up-hi"}, "4": {"v": "2 421", "d": "-37 %", "t": "dn-hi"}, "11": {"v": "3 824", "d": "0 %", "t": "flat"}, "10": {"v": "4 246", "d": "+11 %", "t": "up-lo"}}, "adj": {"5": {"v": "3 411", "d": "-23 %", "t": "dn-lo"}, "6": {"v": "17 314", "d": "+290 %", "t": "up-hi"}, "4": {"v": "2 689", "d": "-39 %", "t": "dn-hi"}, "11": {"v": "4 437", "d": "0 %", "t": "flat"}, "10": {"v": "4 987", "d": "+12 %", "t": "up-lo"}}, "mn": "3 824", "ma": "4 437"}, {"code": "10", "title": "ВИС - механические системы", "nom": {"5": {"v": "14 973", "d": "+19 %", "t": "up-lo"}, "6": {"v": "19 307", "d": "+53 %", "t": "up-hi"}, "4": {"v": "12 128", "d": "-4 %", "t": "flat"}, "11": {"v": "12 590", "d": "0 %", "t": "flat"}, "10": {"v": "10 802", "d": "-14 %", "t": "dn-lo"}}, "adj": {"5": {"v": "15 046", "d": "+3 %", "t": "flat"}, "6": {"v": "19 495", "d": "+33 %", "t": "up-hi"}, "4": {"v": "13 475", "d": "-8 %", "t": "flat"}, "11": {"v": "14 609", "d": "0 %", "t": "flat"}, "10": {"v": "12 686", "d": "-13 %", "t": "dn-lo"}}, "mn": "12 590", "ma": "14 609"}, {"code": "11", "title": "ВИС - Электрические и слаботочные системы", "nom": {"5": {"v": "8 929", "d": "0 %", "t": "flat"}, "6": {"v": "14 289", "d": "+61 %", "t": "up-hi"}, "4": {"v": "8 867", "d": "0 %", "t": "flat"}, "11": {"v": "7 671", "d": "-14 %", "t": "dn-lo"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": "8 973", "d": "-5 %", "t": "flat"}, "6": {"v": "14 428", "d": "+53 %", "t": "up-hi"}, "4": {"v": "9 851", "d": "+5 %", "t": "flat"}, "11": {"v": "8 901", "d": "-5 %", "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": "8 898", "ma": "9 412"}, {"code": "12", "title": "Благоустройство, дороги", "nom": {"5": {"v": "2 444", "d": "+10 %", "t": "flat"}, "6": {"v": "3 397", "d": "+53 %", "t": "up-hi"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "1 933", "d": "-13 %", "t": "dn-lo"}, "10": {"v": "2 008", "d": "-10 %", "t": "flat"}}, "adj": {"5": {"v": "2 455", "d": "+2 %", "t": "flat"}, "6": {"v": "3 430", "d": "+43 %", "t": "up-hi"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "2 243", "d": "-7 %", "t": "flat"}, "10": {"v": "2 358", "d": "-2 %", "t": "flat"}}, "mn": "2 226", "ma": "2 407"}, {"code": "13", "title": "ТХ", "nom": {"5": {"v": "430", "d": "+110 %", "t": "up-hi"}, "6": {"v": "391", "d": "+91 %", "t": "up-hi"}, "4": {"v": "198", "d": "-4 %", "t": "flat"}, "11": {"v": "155", "d": "-24 %", "t": "dn-lo"}, "10": {"v": "205", "d": "0 %", "t": "flat"}}, "adj": {"5": {"v": "432", "d": "+79 %", "t": "up-hi"}, "6": {"v": "395", "d": "+64 %", "t": "up-hi"}, "4": {"v": "220", "d": "-9 %", "t": "flat"}, "11": {"v": "180", "d": "-25 %", "t": "dn-lo"}, "10": {"v": "241", "d": "0 %", "t": "flat"}}, "mn": "205", "ma": "241"}, {"code": "14", "title": "MR-base", "nom": {"5": {"v": null, "d": null, "t": "flat"}, "6": {"v": null, "d": null, "t": "flat"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "11 535", "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": null, "d": null, "t": "flat"}, "6": {"v": null, "d": null, "t": "flat"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "13 384", "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": null, "ma": null}, {"code": "16", "title": "Разработка рабочей документации", "nom": {"5": {"v": "2 374", "d": "+12 %", "t": "up-lo"}, "6": {"v": "3 339", "d": "+57 %", "t": "up-hi"}, "4": {"v": "2 121", "d": "0 %", "t": "flat"}, "11": {"v": "1 673", "d": "-21 %", "t": "dn-lo"}, "10": {"v": "1 757", "d": "-17 %", "t": "dn-lo"}}, "adj": {"5": {"v": "2 386", "d": "+1 %", "t": "flat"}, "6": {"v": "3 371", "d": "+43 %", "t": "up-hi"}, "4": {"v": "2 357", "d": "0 %", "t": "flat"}, "11": {"v": "1 941", "d": "-18 %", "t": "dn-lo"}, "10": {"v": "2 063", "d": "-12 %", "t": "dn-lo"}}, "mn": "2 121", "ma": "2 357"}, {"code": "20", "title": "MR - SHELL & CORE", "nom": {"5": {"v": "875", "d": null, "t": "flat"}, "6": {"v": null, "d": null, "t": "flat"}, "4": {"v": null, "d": null, "t": "flat"}, "11": {"v": null, "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": "879", "d": null, "t": "flat"}, "6": {"v": null, "d": null, "t": "flat"}, "4": {"v": null, "d": null, "t": "flat"}, "11": {"v": null, "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": null, "ma": null}, {"code": "99", "title": "Прочее", "nom": {"5": {"v": "103", "d": null, "t": "flat"}, "6": {"v": "214", "d": null, "t": "flat"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "0", "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "adj": {"5": {"v": "103", "d": null, "t": "flat"}, "6": {"v": "216", "d": null, "t": "flat"}, "4": {"v": "0", "d": null, "t": "flat"}, "11": {"v": "0", "d": null, "t": "flat"}, "10": {"v": null, "d": null, "t": "flat"}}, "mn": null, "ma": null}]};
 const NOTE_OFF = 'Ось сравнения — <b>нетто</b>. Приведение выключено: суммы в рублях года подписания каждого договора.';
 const NOTE_ON = 'Ось сравнения — <b>нетто</b>, цены приведены к <b>август 2026</b> по ряду «Росстат, ИПЦ, декабрь к декабрю». 2026 год — прогноз.';
+// Месяц, который вернул бы СЕРВЕР. Клиент его не вычисляет: до ответа поле пусто.
+const SERVER_MONTH = '2026-08';
 let on = false;
+
+const sel = document.getElementById('seriesSel');
+const monthInp = document.getElementById('monthInp');
+const onBtn = document.getElementById('onBtn');
+const offBtn = document.getElementById('offBtn');
 
 function render() {
   const key = on ? 'adj' : 'nom';
@@ -430,13 +465,43 @@ function render() {
   });
   document.querySelectorAll('[data-kf]').forEach(el => { el.style.visibility = on ? 'visible' : 'hidden'; });
   document.getElementById('axisnote').innerHTML = on ? NOTE_ON : NOTE_OFF;
-  document.getElementById('onBtn').setAttribute('aria-pressed', String(on));
-  document.getElementById('offBtn').setAttribute('aria-pressed', String(!on));
-  document.getElementById('seriesSel').disabled = !on;
-  document.getElementById('monthInp').disabled = !on;
+
+  const hasSeries = sel.value !== '';
+  onBtn.setAttribute('aria-pressed', String(on));
+  offBtn.setAttribute('aria-pressed', String(!on));
+  // «Привести» недоступно без ряда: умолчательного ряда не существует.
+  onBtn.disabled = !hasSeries;
+  // Месяц имеет смысл только вместе с рядом (иначе сервер ответил бы 400).
+  monthInp.disabled = !hasSeries;
+
+  const params = [];
+  if (on) {
+    params.push('inflation_series_id=' + sel.value);
+    if (monthInp.value) params.push('target_month=' + monthInp.value);
+  }
+  document.getElementById('urlbar').textContent =
+    '/compare?ids=5,6,4,11,10&vat_mode=net' + (params.length ? '&' + params.join('&') : '');
 }
-document.getElementById('onBtn').addEventListener('click', () => { on = true; render(); });
-document.getElementById('offBtn').addEventListener('click', () => { on = false; render(); });
+
+sel.addEventListener('change', () => {
+  // Выбор ряда сам числа НЕ меняет — только открывает «Привести».
+  if (!sel.value) { on = false; monthInp.value = ''; }
+  render();
+});
+onBtn.addEventListener('click', () => {
+  if (!sel.value) return;
+  on = true;
+  // Сервер разрешил текущий месяц и вернул его; клиент записывает в поле и URL.
+  if (!monthInp.value) monthInp.value = SERVER_MONTH;
+  render();
+});
+offBtn.addEventListener('click', () => {
+  on = false;
+  // Возврат к номиналу убирает инфляционные параметры из адреса.
+  monthInp.value = '';
+  render();
+});
+monthInp.addEventListener('change', () => { if (on) render(); });
 render();
 </script>
 
