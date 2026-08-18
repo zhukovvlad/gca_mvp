@@ -328,22 +328,22 @@ def normalized(data: dict) -> dict:
     """Ответ с позиционными идентификаторами вместо сквозных id."""
 ```
 
-- [ ] **Step 1:** фикстура `baseline_selection` — три договора, у каждого одна
+- [x] **Step 1:** фикстура `baseline_selection` — три договора, у каждого одна
       смета; номера `ГП-Б1/Б2/Б3`, `signed_date` 2024-05-28 / 2025-02-20 /
       2026-07-06 (разбег стенда, спека §1.1), `data_prepared_on_date` тот же,
       площади 50000+50000, суммы по статьям «1», «2», «4» разные.
-- [ ] **Step 2:** тест снимает `build_comparison(db, ids, vat_mode="own")`,
+- [x] **Step 2:** тест снимает `build_comparison(db, ids, vat_mode="own")`,
       нормализует и сравнивает с golden-файлом; при отсутствии файла — падает с
       внятным текстом «снимок не заведён», а не создаёт его молча.
-- [ ] **Step 3:** второй тест — дамп листа: `build_comparison_sheet(data,
+- [x] **Step 3:** второй тест — дамп листа: `build_comparison_sheet(data,
       generated_at=dt.date(2026, 8, 18))` открывается `openpyxl.load_workbook`
       из `io.BytesIO`, в дамп идут по каждой непустой ячейке `coordinate`,
       `value`, `number_format`, `data_type`, `font.bold`. **Байты не
       сравниваются** (DoD 1: XLSX — ZIP, метаданные архива расходятся).
-- [ ] **Step 4:** сгенерировать оба golden-файла (одноразовым прогоном с
+- [x] **Step 4:** сгенерировать оба golden-файла (одноразовым прогоном с
       `--golden-write` либо ручной записью результата), закоммитить вместе с
       тестом.
-- [ ] **Step 5:** прогнать `pytest tests/integration/test_comparison_baseline.py -v`
+- [x] **Step 5:** прогнать `pytest tests/integration/test_comparison_baseline.py -v`
       — обязан быть зелёным ДО всех правок.
 
 **Утверждения с числами:** в снимке три колонки; `columns[0].contract_number ==

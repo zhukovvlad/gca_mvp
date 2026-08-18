@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -234,3 +235,64 @@ def seed_additional_work(db, factories, *, proposal, code, amount, ordinal=1):
     db.add(work)
     db.flush()
     return work
+
+
+# ---------------------------------------------------------------------------
+#  Golden-снимок дофичевого сравнения (план поправки на инфляцию, задача 1)
+# ---------------------------------------------------------------------------
+
+#: Номер, дата (она же дата подготовки сметы) и суммы по статьям.
+#: Даты повторяют разбег стенда 28.05.2024 … 06.07.2026 (спека инфляции §1.1) —
+#: снимок обязан быть снят на той выборке, к которой фича и применяется.
+#: Статья «4» второго договора несёт сумму, НЕ делящуюся на 1.2 нацело: без неё
+#: снимок не закрепил бы форму периодической дроби в нетто, а именно её умножение
+#: на коэффициент задевает первым.
+_BASELINE_CONTRACTS = (
+    ("ГП-Б1", dt.date(2024, 5, 28), {
+        "1": ["1200000.00", "300000.00"], "2": ["450000.00"], "4": ["72000.00"],
+    }),
+    ("ГП-Б2", dt.date(2025, 2, 20), {
+        "1": ["1440000.00"], "2": ["504000.00"], "4": ["95000.00"],
+    }),
+    ("ГП-Б3", dt.date(2026, 7, 6), {
+        "1": ["1656000.00"], "2": ["528000.00"], "4": ["108000.00"],
+    }),
+)
+
+
+def baseline_selection(db, factories) -> list[int]:
+    """Три договора с ЯВНЫМИ номерами, датами, площадями и суммами.
+
+    Всё, что доезжает до ответа, задано явно. Фабрики выдают `contract_number`,
+    название объекта, подрядчика и класса ГЛОБАЛЬНОЙ последовательностью
+    (`factories.py:86,93,114`), а все четыре значения лежат в `columns[]` — снимок,
+    снятый с умолчаний, разъехался бы от порядка тестов, то есть краснел бы по
+    причине, не связанной ни с одной правкой кода.
+
+    `signed_date` и `data_prepared_on_date` совпадают намеренно: правило периода
+    сметы (спека §2.2) выбирает между ними, и на этой выборке выбор не наблюдаем —
+    её задача проверять НЕИЗМЕННОСТЬ дофичевого ответа, а не приведение.
+    """
+    contract_ids = []
+    for index, (number, signed_date, categories) in enumerate(_BASELINE_CONTRACTS, start=1):
+        obj = factories.ObjectFactory.create(
+            title=f"Объект Б{index}",
+            area_aboveground_sp=Decimal("50000"),
+            area_underground_sp=Decimal("50000"),
+        )
+        contract = factories.ContractFactory.create(
+            object=obj,
+            contractor=factories.ContractorFactory.create(title=f"Подрядчик Б{index}"),
+            rate_class=factories.RateClassFactory.create(title=f"Класс Б{index}"),
+            contract_number=number,
+            signed_date=signed_date,
+        )
+        estimate = factories.EstimateFactory.create(
+            contract=contract, data_prepared_on_date=signed_date
+        )
+        proposal = make_proposal(factories, estimate=estimate, vat_rate=VAT_20)
+        for code, amounts in categories.items():
+            seed_chapter_with_positions(db, factories, proposal=proposal, code=code, amounts=amounts)
+        contract_ids.append(contract.id)
+    db.flush()
+    return contract_ids

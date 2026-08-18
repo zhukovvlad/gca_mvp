@@ -1,0 +1,544 @@
+{
+  "vat_mode": "own",
+  "single_rate": null,
+  "rate_options": [
+    "20"
+  ],
+  "rate_preselected": "20",
+  "caption": "Каждый договор показан в своей действующей ставке НДС. Отклонения от медианы посчитаны без НДС.",
+  "columns": [
+    {
+      "contract_id": 0,
+      "contract_number": "ГП-Б3",
+      "object_title": "Объект Б3",
+      "contractor_title": "Подрядчик Б3",
+      "rate_class_title": "Класс Б3",
+      "signed_date": "2026-07-06",
+      "area_total_sp": "100000",
+      "advance_pct": null,
+      "bank_guarantee_pct": null,
+      "retention_pct": null,
+      "composition_caption": "20 %"
+    },
+    {
+      "contract_id": 1,
+      "contract_number": "ГП-Б2",
+      "object_title": "Объект Б2",
+      "contractor_title": "Подрядчик Б2",
+      "rate_class_title": "Класс Б2",
+      "signed_date": "2025-02-20",
+      "area_total_sp": "100000",
+      "advance_pct": null,
+      "bank_guarantee_pct": null,
+      "retention_pct": null,
+      "composition_caption": "20 %"
+    },
+    {
+      "contract_id": 2,
+      "contract_number": "ГП-Б1",
+      "object_title": "Объект Б1",
+      "contractor_title": "Подрядчик Б1",
+      "rate_class_title": "Класс Б1",
+      "signed_date": "2024-05-28",
+      "area_total_sp": "100000",
+      "advance_pct": null,
+      "bank_guarantee_pct": null,
+      "retention_pct": null,
+      "composition_caption": "20 %"
+    }
+  ],
+  "rows": [
+    {
+      "kind": "category",
+      "category_id": 1,
+      "code": "1",
+      "title": "Подготовительные работы, содержание площадки",
+      "level": 1,
+      "parent_code": null,
+      "cells": [
+        {
+          "contract_id": 0,
+          "base": {
+            "net": "1380000.00",
+            "shown": "1656000.00",
+            "net_per_sqm": "13.80",
+            "shown_per_sqm": "16.56",
+            "state": "value",
+            "deviation_pct": "10.400",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "1380000.00",
+            "shown": "1656000.00",
+            "net_per_sqm": "13.80",
+            "shown_per_sqm": "16.56",
+            "state": "value",
+            "deviation_pct": "10.400",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 1,
+          "base": {
+            "net": "1200000.00",
+            "shown": "1440000.00",
+            "net_per_sqm": "12.00",
+            "shown_per_sqm": "14.40",
+            "state": "value",
+            "deviation_pct": "-4.00",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "1200000.00",
+            "shown": "1440000.00",
+            "net_per_sqm": "12.00",
+            "shown_per_sqm": "14.40",
+            "state": "value",
+            "deviation_pct": "-4.00",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 2,
+          "base": {
+            "net": "1250000.00",
+            "shown": "1500000.00",
+            "net_per_sqm": "12.50",
+            "shown_per_sqm": "15.00",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "1250000.00",
+            "shown": "1500000.00",
+            "net_per_sqm": "12.50",
+            "shown_per_sqm": "15.00",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          }
+        }
+      ],
+      "medians": {
+        "base": {
+          "value": "12.50",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        },
+        "amendments": {
+          "value": null,
+          "comparable_count": 0,
+          "contract_ids": []
+        },
+        "total": {
+          "value": "12.50",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "kind": "category",
+      "category_id": 13,
+      "code": "2",
+      "title": "Котлован",
+      "level": 1,
+      "parent_code": null,
+      "cells": [
+        {
+          "contract_id": 0,
+          "base": {
+            "net": "440000.00",
+            "shown": "528000.00",
+            "net_per_sqm": "4.40",
+            "shown_per_sqm": "5.28",
+            "state": "value",
+            "deviation_pct": "4.761904761904761904761904761904761904761904761904761904761904761904761904761904761904761904761904800",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "440000.00",
+            "shown": "528000.00",
+            "net_per_sqm": "4.40",
+            "shown_per_sqm": "5.28",
+            "state": "value",
+            "deviation_pct": "4.761904761904761904761904761904761904761904761904761904761904761904761904761904761904761904761904800",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 1,
+          "base": {
+            "net": "420000.00",
+            "shown": "504000.00",
+            "net_per_sqm": "4.20",
+            "shown_per_sqm": "5.04",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "420000.00",
+            "shown": "504000.00",
+            "net_per_sqm": "4.20",
+            "shown_per_sqm": "5.04",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 2,
+          "base": {
+            "net": "375000.00",
+            "shown": "450000.00",
+            "net_per_sqm": "3.75",
+            "shown_per_sqm": "4.50",
+            "state": "value",
+            "deviation_pct": "-10.71428571428571428571428571428571428571428571428571428571428571428571428571428571428571428571428571",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "375000.00",
+            "shown": "450000.00",
+            "net_per_sqm": "3.75",
+            "shown_per_sqm": "4.50",
+            "state": "value",
+            "deviation_pct": "-10.71428571428571428571428571428571428571428571428571428571428571428571428571428571428571428571428571",
+            "incomplete_reasons": []
+          }
+        }
+      ],
+      "medians": {
+        "base": {
+          "value": "4.20",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        },
+        "amendments": {
+          "value": null,
+          "comparable_count": 0,
+          "contract_ids": []
+        },
+        "total": {
+          "value": "4.20",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    },
+    {
+      "kind": "category",
+      "category_id": 26,
+      "code": "4",
+      "title": "Конструктивные решения",
+      "level": 1,
+      "parent_code": null,
+      "cells": [
+        {
+          "contract_id": 0,
+          "base": {
+            "net": "90000.00",
+            "shown": "108000.00",
+            "net_per_sqm": "0.90",
+            "shown_per_sqm": "1.08",
+            "state": "value",
+            "deviation_pct": "13.68421052631578947368421052152908587257617728531855955698824901589152937746027117654786319933088300",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "90000.00",
+            "shown": "108000.00",
+            "net_per_sqm": "0.90",
+            "shown_per_sqm": "1.08",
+            "state": "value",
+            "deviation_pct": "13.68421052631578947368421052152908587257617728531855955698824901589152937746027117654786319933088300",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 1,
+          "base": {
+            "net": "79166.66666666666666666666667",
+            "shown": "95000.000000000000000000000004",
+            "net_per_sqm": "0.7916666666666666666666666667",
+            "shown_per_sqm": "0.95000000000000000000000000004",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "79166.66666666666666666666667",
+            "shown": "95000.000000000000000000000004",
+            "net_per_sqm": "0.7916666666666666666666666667",
+            "shown_per_sqm": "0.95000000000000000000000000004",
+            "state": "value",
+            "deviation_pct": "0",
+            "incomplete_reasons": []
+          }
+        },
+        {
+          "contract_id": 2,
+          "base": {
+            "net": "60000.00",
+            "shown": "72000.00",
+            "net_per_sqm": "0.60",
+            "shown_per_sqm": "0.72",
+            "state": "value",
+            "deviation_pct": "-24.21052631578947368421052631898060941828254847645429362867450065607231374835981921563475786711274468",
+            "incomplete_reasons": []
+          },
+          "amendments": {
+            "net": "0",
+            "shown": "0",
+            "net_per_sqm": "0",
+            "shown_per_sqm": "0",
+            "state": "zero",
+            "deviation_pct": null,
+            "incomplete_reasons": []
+          },
+          "total": {
+            "net": "60000.00",
+            "shown": "72000.00",
+            "net_per_sqm": "0.60",
+            "shown_per_sqm": "0.72",
+            "state": "value",
+            "deviation_pct": "-24.21052631578947368421052631898060941828254847645429362867450065607231374835981921563475786711274468",
+            "incomplete_reasons": []
+          }
+        }
+      ],
+      "medians": {
+        "base": {
+          "value": "0.7916666666666666666666666667",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        },
+        "amendments": {
+          "value": null,
+          "comparable_count": 0,
+          "contract_ids": []
+        },
+        "total": {
+          "value": "0.7916666666666666666666666667",
+          "comparable_count": 3,
+          "contract_ids": [
+            0,
+            1,
+            2
+          ]
+        }
+      }
+    }
+  ],
+  "totals": [
+    {
+      "contract_id": 0,
+      "base": {
+        "net": "1910000.00",
+        "shown": "2292000.00",
+        "net_per_sqm": "19.10",
+        "shown_per_sqm": "22.92",
+        "state": "value",
+        "deviation_pct": "12.40804315841098577734183421041529315185659916089419632949185028899331061090844603639198621108517690",
+        "incomplete_reasons": []
+      },
+      "amendments": {
+        "net": "0",
+        "shown": "0",
+        "net_per_sqm": "0",
+        "shown_per_sqm": "0",
+        "state": "zero",
+        "deviation_pct": null,
+        "incomplete_reasons": []
+      },
+      "total": {
+        "net": "1910000.00",
+        "shown": "2292000.00",
+        "net_per_sqm": "19.10",
+        "shown_per_sqm": "22.92",
+        "state": "value",
+        "deviation_pct": "12.40804315841098577734183421041529315185659916089419632949185028899331061090844603639198621108517690",
+        "incomplete_reasons": []
+      }
+    },
+    {
+      "contract_id": 1,
+      "base": {
+        "net": "1699166.666666666666666666667",
+        "shown": "2039000.0000000000000000000004",
+        "net_per_sqm": "16.99166666666666666666666667",
+        "shown_per_sqm": "20.390000000000000000000000004",
+        "state": "value",
+        "deviation_pct": "0",
+        "incomplete_reasons": []
+      },
+      "amendments": {
+        "net": "0",
+        "shown": "0",
+        "net_per_sqm": "0",
+        "shown_per_sqm": "0",
+        "state": "zero",
+        "deviation_pct": null,
+        "incomplete_reasons": []
+      },
+      "total": {
+        "net": "1699166.666666666666666666667",
+        "shown": "2039000.0000000000000000000004",
+        "net_per_sqm": "16.99166666666666666666666667",
+        "shown_per_sqm": "20.390000000000000000000000004",
+        "state": "value",
+        "deviation_pct": "0",
+        "incomplete_reasons": []
+      }
+    },
+    {
+      "contract_id": 2,
+      "base": {
+        "net": "1685000.00",
+        "shown": "2022000.00",
+        "net_per_sqm": "16.85",
+        "shown_per_sqm": "20.22",
+        "state": "value",
+        "deviation_pct": "-0.8337420304070622854340363117540476644615866041326069030399121796053778118425489155390069289641240200",
+        "incomplete_reasons": []
+      },
+      "amendments": {
+        "net": "0",
+        "shown": "0",
+        "net_per_sqm": "0",
+        "shown_per_sqm": "0",
+        "state": "zero",
+        "deviation_pct": null,
+        "incomplete_reasons": []
+      },
+      "total": {
+        "net": "1685000.00",
+        "shown": "2022000.00",
+        "net_per_sqm": "16.85",
+        "shown_per_sqm": "20.22",
+        "state": "value",
+        "deviation_pct": "-0.8337420304070622854340363117540476644615866041326069030399121796053778118425489155390069289641240200",
+        "incomplete_reasons": []
+      }
+    }
+  ],
+  "totals_medians": {
+    "base": {
+      "value": "16.99166666666666666666666667",
+      "comparable_count": 3,
+      "contract_ids": [
+        0,
+        1,
+        2
+      ]
+    },
+    "amendments": {
+      "value": null,
+      "comparable_count": 0,
+      "contract_ids": []
+    },
+    "total": {
+      "value": "16.99166666666666666666666667",
+      "comparable_count": 3,
+      "contract_ids": [
+        0,
+        1,
+        2
+      ]
+    }
+  }
+}
