@@ -99,8 +99,6 @@ _load_view_rows ──┘        │
 
 ### Форма отказа
 
-### Форма отказа
-
 ```
 crud/… ── DomainError(422, message, code=…, context={…})
                    │
@@ -661,10 +659,21 @@ def resolve_inflation(db, contract_ids, *, series_id: int,
 
 **Отказы — `DomainError(422, message, code=…, context=…)`:**
 
-| Код | Когда | Контекст |
-|---|---|---|
-| `missing_inflation_years` | покрытия не хватает | `{"missing_years": [int]}` (по возрастанию) |
-| `amendment_date_missing` | у ДС нет своей `data_prepared_on_date` | `{"estimate_ids": [int]}` |
+| Код | Когда | Контекст | `message` |
+|---|---|---|---|
+| `missing_inflation_years` | покрытия не хватает | `{"missing_years": [int]}` (по возрастанию) | «Не заданы коэффициенты за годы: 2024, 2026.» |
+| `amendment_date_missing` | у ДС нет своей `data_prepared_on_date` | `{"estimate_ids": [int]}` | «У допсоглашений нет собственной даты: ГП-0007 ДС №1, ГП-0009 ДС №2.» |
+
+**`estimate_ids` — машинный контекст, человеку его показывать нельзя, и в
+`message` он не попадает.** Номер ДС сам по себе тоже не опознаёт смету: «ДС №1»
+есть у каждого второго договора выборки. Поэтому человеческую формулировку
+собирает **сервер** и кладёт в `message` — пару «номер договора + номер ДС», а
+`resolve_inflation` для этого уже читает `Contract` ради `signed_date`, так что
+`contract_number` достаётся бесплатно. Баннер печатает `message` дословно и
+ничего не форматирует сам: вторая сборка того же текста на клиенте разошлась бы
+с серверной — тот же довод, которым §2.12 требует одной функции трансляции.
+Тест утверждает, что в `message` есть номер договора и номер ДС, а `estimate_ids`
+совпадает со списком смет-нарушителей.
 
 - [ ] **Step 1:** фикстуры: `series_with_years(db, name, {2024: "1.075", …})` и
       `contract_with_amendment_dates(...)` — базовая смета и ДС с ЯВНЫМИ
@@ -842,9 +851,14 @@ def build_comparison(db, contract_ids, *, vat_mode, single_rate=None,
 - Test: `frontend/src/services/apiErrors.test.ts` (дописать)
 
 - [ ] **Step 1:** типы `InflationSeries`, `InflationSeriesValue`,
-      `InflationSeriesInput`, `InflationSeriesPatch`, `ComparisonInflation`;
+      `InflationSeriesInput`, `InflationSeriesPatch`, `ComparisonInflation`,
+      `ComparisonInflationFactor` (`{label: string; coefficient: string}`);
       `Comparison.inflation?`, `ComparisonColumn.inflation_coefficient?`,
-      `ComparisonParams.inflation_series_id?`/`target_month?`.
+      **`ComparisonColumn.inflation_factors?`** (приходит только при
+      расходящихся коэффициентах, задача 8; читает чип задачи 14),
+      `ComparisonParams.inflation_series_id?`/`target_month?`. Плюс типы
+      контекста отказов под `apiErrorContext<T>`:
+      `{missing_years: number[]}` и `{estimate_ids: number[]}`.
 - [ ] **Step 2:** `inflationSeriesApi` в `services/api/domain.ts` (там же, где
       нормативы), ключи в `queryKeys.ts`, хуки `useInflationSeries`,
       `useInflationSeriesValues`, `useCreateInflationSeries`,
@@ -977,10 +991,14 @@ export function coefficientLevel(raw: string): CoefficientLevel
 - [ ] **Step 5:** `InflationRefusalBanner` — общий каркас, **два разных текста
       по коду отказа, и кнопка только у одного из них**:
 
-      | Код | Текст | Кнопка |
+      | Код | Что печатает баннер | Кнопка |
       |---|---|---|
-      | `missing_inflation_years` | «в ряду «…» нет коэффициентов за 2024, 2025» | «Заполнить недостающие годы» — открывает то же окно на этих годах |
-      | `amendment_date_missing` | «у допсоглашений <номера> нет собственной даты; дату договора подставлять нельзя» | **нет** — правкой ряда это не лечится |
+      | `missing_inflation_years` | `message` сервера + название выбранного ряда (оно у клиента уже есть — из списка выбора) | «Заполнить недостающие годы» — открывает то же окно на годах из `missing_years` |
+      | `amendment_date_missing` | **`message` сервера дословно** — он уже называет договоры и номера ДС; `estimate_ids` человеку не показывается | **нет** — правкой ряда это не лечится |
+
+      Номера ДС баннер **не собирает сам**: в контексте лежат `estimate_ids`, а
+      «ДС №1» без номера договора ничего не опознаёт (задача 7). Человеческую
+      формулировку собрал сервер, клиент её печатает.
 
       Предлагать «заполнить годы» там, где не хватает даты ДС, значит звать
       человека делать работу, которая ничего не исправит. Оба случая: номинальный
