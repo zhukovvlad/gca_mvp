@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from auth import require_admin
@@ -28,12 +28,9 @@ from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from database import get_db
 from responses import decimal_json
+from routers.domain_errors import raise_domain_error
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
-
-
-def _raise(err: DomainError):
-    raise HTTPException(err.status_code, err.detail)
 
 
 @router.get("/passport/{contract_id}")
@@ -47,7 +44,7 @@ def get_passport(contract_id: int, db: Session = Depends(get_db)):
     try:
         return decimal_json(crud_analytics.get_passport(db, contract_id))
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/matrix")
@@ -98,7 +95,7 @@ def get_matrix_cell(
             )
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/dashboard")
@@ -143,7 +140,7 @@ def get_project_passport(contract_id: int, db: Session = Depends(get_db)):
     try:
         return decimal_json(crud_project_passport.get_project_passport(db, contract_id))
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/comparison")
@@ -195,4 +192,4 @@ def get_comparison(
             )
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)

@@ -31,13 +31,14 @@ import logging
 from decimal import Decimal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from crud import comparison as crud_comparison
 from crud import reports as crud_reports
 from crud.common import DomainError
 from database import get_db
+from routers.domain_errors import raise_domain_error
 from services.excel_comparison import build_comparison_sheet
 from services.excel_reports import build_bank_comparison, build_contract_summary
 
@@ -46,10 +47,6 @@ router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 log = logging.getLogger(__name__)
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-def _raise(err: DomainError):
-    raise HTTPException(err.status_code, err.detail)
 
 
 def _xlsx(content: bytes, filename: str) -> Response:
@@ -81,7 +78,7 @@ def contract_summary(
     try:
         data = crud_reports.contract_summary(db, contract_id)
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
     content = build_contract_summary(data, generated_at=dt.date.today())
     number = _safe_filename_part(data["header"]["contract_number"])
     log.info("report_contract_summary contract=%s rows=%s", contract_id, len(data["rows"]))
@@ -168,7 +165,7 @@ def comparison_report(
             db, contract_ids, vat_mode=vat_mode, single_rate=single_rate,
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
     content = build_comparison_sheet(data, generated_at=dt.date.today())
     log.info("report_comparison contracts=%s rows=%s", len(contract_ids), len(data["rows"]))

@@ -483,16 +483,16 @@ def raise_domain_error(err: DomainError) -> NoReturn:
     Карты «код → статус» НЕТ: статус несёт сама ошибка (спека §2.12)."""
 ```
 
-- [ ] **Step 1:** расширить `DomainError`, не трогая существующие вызовы.
-- [ ] **Step 2:** завести `routers/domain_errors.py`.
-- [ ] **Step 3:** удалить `_raise` из `analytics.py:35` и `reports.py:51`,
+- [x] **Step 1:** расширить `DomainError`, не трогая существующие вызовы.
+- [x] **Step 2:** завести `routers/domain_errors.py`.
+- [x] **Step 3:** удалить `_raise` из `analytics.py:35` и `reports.py:51`,
       импортировать общий; проверить, что других определений `_raise` в
       `routers/` не осталось (`grep -n "def _raise" routers/`).
-- [ ] **Step 4:** тесты: строковый отказ не изменился; кодированный отказ даёт
+- [x] **Step 4:** тесты: строковый отказ не изменился; кодированный отказ даёт
       `{"detail": {"code", "message", "missing_years"}}`; ключи `context` лежат
       РЯДОМ с `code`, а не вложенным узлом; `analytics.raise_domain_error is
       reports.raise_domain_error` — трансляция в одном экземпляре (DoD 23).
-- [ ] **Step 5:** прогнать весь набор сравнения — существующие 400/404 обязаны
+- [x] **Step 5:** прогнать весь набор сравнения — существующие 400/404 обязаны
       остаться прежними (DoD 22).
 
 **Коммит:** `feat(errors): DomainError получает code/context, трансляция одна на три роутера`
