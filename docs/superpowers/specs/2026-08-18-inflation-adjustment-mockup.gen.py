@@ -22,28 +22,57 @@ from crud import comparison as cc
 
 ENGINE = sa.create_engine("postgresql+psycopg://postgres@localhost:5459/gca_dev")
 
-K = {2024: D("1.075"), 2025: D("1.083"), 2026: D("1.060")}
 TARGET = (2026, 8)
 TARGET_LABEL = "август 2026"
-SERIES_NAME = "Росстат, ИПЦ, декабрь к декабрю"
+
+#: ДВА ряда с РАЗНЫМИ коэффициентами. Одинаковые значения были бы ложью того же
+#: рода, что захардкоженная подпись: селектор менял бы название, не меняя чисел.
+#: Значения иллюстративны — ряда в схеме нет, его заводит миграция 0014.
+SERIES = [
+    {
+        "id": 1,
+        "name": "Росстат, ИПЦ, декабрь к декабрю",
+        "src": "Росстат, бюллетень 01.2026",
+        "updated": "12.01.2026",
+        "k": {2024: (D("1.075"), False), 2025: (D("1.083"), False), 2026: (D("1.060"), True)},
+    },
+    {
+        "id": 2,
+        "name": "Внутренняя оценка ПЭО",
+        "src": "смета строительных ресурсов, ПЭО",
+        "updated": "04.08.2026",
+        "k": {2024: (D("1.112"), False), 2025: (D("1.124"), False), 2026: (D("1.090"), True)},
+    },
+]
 
 NEUTRAL_BAND, HIGH_BAND = 10, 30
 
 
-def expo(y, m):
-    e = {t: F(1) for t in sorted(K) if t < y}
+def expo(y, m, years):
+    e = {t: F(1) for t in sorted(years) if t < y}
     e[y] = F(m, 12)
     return e
 
 
-def factor(src):
-    a, b = expo(*src), expo(*TARGET)
+def required_years(src, years):
+    """Годы с НЕНУЛЕВЫМ показателем степени — §2.5, не сплошной диапазон."""
+    a, b = expo(*src, years), expo(*TARGET, years)
+    return {t: b.get(t, F(0)) - a.get(t, F(0))
+            for t in sorted(set(a) | set(b))
+            if b.get(t, F(0)) - a.get(t, F(0)) != 0}
+
+
+def factor(src, series):
     out = D(1)
-    for t in sorted(set(a) | set(b)):
-        d = b.get(t, F(0)) - a.get(t, F(0))
-        if d:
-            out *= K[t] ** (D(d.numerator) / D(d.denominator))
+    for t, d in required_years(src, series["k"]).items():
+        out *= series["k"][t][0] ** (D(d.numerator) / D(d.denominator))
     return out
+
+
+def growth(coef):
+    """Коэффициент → читаемый уровень: 1.083 → «+8,3 %»."""
+    p = ((coef - 1) * 100).quantize(D("0.1"))
+    return f"{'+' if p > 0 else ''}{p} %".replace(".", ",")
 
 
 def median_of(vals):
@@ -97,41 +126,55 @@ with Session(ENGINE) as db, localcontext() as ctx:
             "obj": c["object_title"],
             "signed": sd,
             "area": c.get("area_total_sp"),
-            "f": factor((sd.year, sd.month)),
-            "years": sorted(t for t, e in
-                            ((t, expo(*TARGET).get(t, F(0)) - expo(sd.year, sd.month).get(t, F(0)))
-                             for t in K) if e),
+            "f": {s["id"]: factor((sd.year, sd.month), s) for s in SERIES},
         })
+
+    def pack(vals, med):
+        out = {}
+        for c in cols:
+            v = vals.get(c["id"])
+            dv = ((v / med - 1) * 100) if (v and med and med > 0 and v > 0) else None
+            out[str(c["id"])] = {"v": money(v), "d": pct(dv), "t": tone(dv)}
+        return out
 
     rows = []
     for row in data["rows"]:
         if row["level"] != 1:
             continue
-        nom = {}
-        for cell in row["cells"]:
-            nom[cell["contract_id"]] = cell["total"]["net_per_sqm"]
+        nom = {cell["contract_id"]: cell["total"]["net_per_sqm"] for cell in row["cells"]}
         if not any(v is not None for v in nom.values()):
             continue
-        adj = {c["id"]: (nom[c["id"]] * c["f"] if nom.get(c["id"]) is not None else None) for c in cols}
-        mn, ma = median_of(nom.values()), median_of(adj.values())
-
-        def pack(vals, med):
-            out = {}
-            for c in cols:
-                v = vals.get(c["id"])
-                dv = ((v / med - 1) * 100) if (v and med and med > 0 and v > 0) else None
-                out[str(c["id"])] = {"v": money(v), "d": pct(dv), "t": tone(dv)}
-            return out
-
+        mn = median_of(nom.values())
+        adj, med_adj = {}, {}
+        for s in SERIES:
+            a = {c["id"]: (nom[c["id"]] * c["f"][s["id"]] if nom.get(c["id"]) is not None else None)
+                 for c in cols}
+            m = median_of(a.values())
+            adj[str(s["id"])] = pack(a, m)
+            med_adj[str(s["id"])] = money(m)
         rows.append({
             "code": row["code"], "title": row["title"],
-            "nom": pack(nom, mn), "adj": pack(adj, ma),
-            "mn": money(mn), "ma": money(ma),
+            "nom": pack(nom, mn), "adj": adj,
+            "mn": money(mn), "ma": med_adj,
         })
+
+# Требуемые годы — объединение по всем сметам выборки (§2.5).
+REQ_YEARS = sorted({y for c in cols for y in required_years((c["signed"].year, c["signed"].month),
+                                                            SERIES[0]["k"])})
 
 PAYLOAD = json.dumps({
     "cols": [{"id": c["id"], "no": c["no"]} for c in cols],
     "rows": rows,
+    "series": [{
+        "id": str(s["id"]),
+        "name": s["name"],
+        "src": s["src"],
+        "updated": s["updated"],
+        "years": [{"y": y, "g": growth(s["k"][y][0]), "fc": s["k"][y][1]} for y in REQ_YEARS],
+        "factors": {str(c["id"]): {"g": growth(c["f"][s["id"]]),
+                                  "k": str(c["f"][s["id"]].quantize(D("1.0000")))}
+                    for c in cols},
+    } for s in SERIES],
 }, ensure_ascii=False)
 
 E = html.escape
@@ -146,7 +189,7 @@ def col_head():
             f'<span class="cobj">{E(c["obj"])}</span>'
             f'<span class="csigned">подписан {c["signed"].strftime("%d.%m.%Y")}</span>'
             f'<span class="area">{area} м²</span>'
-            f'<span class="kf" data-kf>× {c["f"].quantize(D("1.0000"))}</span></span></th>')
+            f'<span class="kf" data-kf="{c["id"]}"></span></span></th>')
     return "".join(out)
 
 
@@ -245,6 +288,24 @@ h2 {{ font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0
 .jsonbox code {{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--fg2); white-space:pre; }}
 #urlbar {{ font-size:11.5px; }}
+.group {{ margin:16px 0 0; border:1px solid var(--accent-bd); border-radius:10px;
+  background:var(--accent-soft); padding:12px 15px 14px; }}
+.group legend {{ font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--accent-text); font-weight:700; padding:0 6px; }}
+.group .ctl-lbl {{ color:var(--accent-text); opacity:.85; }}
+.levels {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 14px;
+  margin-top:13px; padding-top:11px; border-top:1px solid var(--accent-bd);
+  font-size:12.5px; color:var(--accent-text); }}
+/* `display:flex` перебивает браузерное `[hidden]{{display:none}}` — без этой
+   строки пустая полоса всё равно занимает место бордюром и отступом. */
+.levels[hidden] {{ display:none; }}
+.levels .lv-lbl {{ font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
+  font-weight:700; opacity:.8; }}
+.yr {{ font-variant-numeric:tabular-nums; white-space:nowrap; }}
+.yr b {{ font-weight:600; }}
+.yr .fc {{ font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
+  opacity:.75; }}
+.levels .meta {{ margin-left:auto; font-size:11.5px; opacity:.8; white-space:nowrap; }}
 select, input[type=text], input[type=month] {{ font:inherit; font-size:12.5px; color:var(--fg);
   background:var(--surface); border:1px solid var(--bd); border-radius:8px; padding:6px 9px; }}
 select:disabled, input:disabled {{ color:var(--fg4); background:var(--sunken); }}
@@ -338,9 +399,10 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
 
   <section>
     <h2>Переключатель и подпись</h2>
-    <p class="secsub">Три новых элемента управления рядом с существующими: режим,
-    ряд и целевой месяц. По умолчанию приведение выключено, и страница отвечает
-    как до фичи — посимвольно.</p>
+    <p class="secsub">Приведение — <b>отдельная группа</b> элементов управления, а
+    не три поля вперемешку с существующими: ряд без режима и месяца ничего не
+    значит, и стоять он должен внутри группы, а не между «НДС» и «Инфляцией». По
+    умолчанию приведение выключено, и страница отвечает как до фичи — посимвольно.</p>
     <div class="card card-pad">
       <div class="controls">
         <span class="ctl"><span class="ctl-lbl">Показатель</span>
@@ -354,21 +416,28 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
             <button type="button" aria-pressed="false">Единая</button>
             <button type="button" aria-pressed="true">Без НДС</button>
           </span></span>
-        <span class="ctl"><span class="ctl-lbl">Ряд</span>
-          <select id="seriesSel">
-            <option value="">Выберите ряд</option>
-            <option value="1">{E(SERIES_NAME)}</option>
-            <option value="2">Внутренняя оценка ПЭО</option>
-          </select></span>
-        <span class="ctl"><span class="ctl-lbl">Инфляция</span>
-          <span class="seg" role="group" aria-label="Приведение">
-            <button type="button" id="offBtn" aria-pressed="true">Номинал</button>
-            <button type="button" id="onBtn" aria-pressed="false" disabled>Привести</button>
-          </span></span>
-        <span class="ctl"><span class="ctl-lbl">В ценах</span>
-          <input type="month" id="monthInp" value="" disabled></span>
-        <button class="btn" type="button">Выгрузить в Excel</button>
+        <button class="btn" type="button" style="margin-left:auto">Выгрузить в Excel</button>
       </div>
+
+      <fieldset class="group">
+        <legend>Поправка на инфляцию</legend>
+        <div class="controls">
+          <span class="ctl"><span class="ctl-lbl">Режим</span>
+            <span class="seg" role="group" aria-label="Приведение">
+              <button type="button" id="offBtn" aria-pressed="true">Номинал</button>
+              <button type="button" id="onBtn" aria-pressed="false" disabled>Привести</button>
+            </span></span>
+          <span class="ctl"><span class="ctl-lbl">Ряд индексов</span>
+            <select id="seriesSel">
+              <option value="">Выберите ряд</option>
+              {"".join(f'<option value="{s["id"]}">{E(s["name"])}</option>' for s in SERIES)}
+            </select></span>
+          <span class="ctl"><span class="ctl-lbl">В ценах</span>
+            <input type="month" id="monthInp" value="" disabled></span>
+        </div>
+        <div id="levels" class="levels" hidden></div>
+      </fieldset>
+
       <p class="axisnote" id="axisnote"></p>
       <p class="axisnote" style="margin-top:6px"><span class="hint">Адрес
       страницы:</span> <code id="urlbar"></code></p>
@@ -458,7 +527,7 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
     <div class="card card-pad">
       <div class="banner">
         <span class="bi">!</span>
-        <span><b>Приведение не применено.</b> В ряду «{E(SERIES_NAME)}» нет
+        <span><b>Приведение не применено.</b> В ряду «{E(SERIES[0]["name"])}» нет
         коэффициентов за <b>2024, 2025</b>. Показаны номинальные суммы — рубли
         разных лет. Заполните недостающие годы в разделе «Нормативы → Индексы
         инфляции».<br>
@@ -496,9 +565,9 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
         <table class="mini">
           <thead><tr><th class="wide">Название</th><th>Годы</th><th></th></tr></thead>
           <tbody>
-            <tr><td class="wide"><b>{E(SERIES_NAME)}</b></td><td>2024–2026</td>
+            <tr><td class="wide"><b>{E(SERIES[0]["name"])}</b></td><td>2024–2026</td>
                 <td><span class="pill">активен</span></td></tr>
-            <tr><td class="wide">Внутренняя оценка ПЭО</td><td>2025–2026</td>
+            <tr><td class="wide">{E(SERIES[1]["name"])}</td><td>2024–2026</td>
                 <td><span class="pill">активен</span></td></tr>
             <tr><td class="wide">ИПЦ, среднегодовой <span class="hint">не подходит
                 формуле</span></td><td>2024–2025</td>
@@ -512,12 +581,14 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
       <div class="card card-pad">
         <h3>Годы выбранного ряда</h3>
         <table class="mini">
-          <thead><tr><th>Год</th><th>Коэффициент</th><th class="wide">Источник</th><th></th></tr></thead>
+          <thead><tr><th>Год</th><th>Коэффициент</th><th>Уровень</th><th class="wide">Источник</th><th></th></tr></thead>
           <tbody>
-            <tr><td>2024</td><td>1.0750</td><td class="wide">Росстат, бюллетень 01.2025</td><td></td></tr>
-            <tr><td>2025</td><td>1.0830</td><td class="wide">Росстат, бюллетень 01.2026</td><td></td></tr>
-            <tr><td>2026</td><td>1.0600</td><td class="wide">оценка на 08.2026</td>
-                <td><span class="pill fc">прогноз</span></td></tr>
+            {"".join(
+              f'<tr><td>{y}</td><td>{SERIES[0]["k"][y][0].quantize(D("1.0000"))}</td>'
+              f'<td>{growth(SERIES[0]["k"][y][0])}</td>'
+              f'<td class="wide">{E(SERIES[0]["src"])}</td>'
+              f'<td>{"<span class=" + chr(34) + "pill fc" + chr(34) + ">прогноз</span>" if SERIES[0]["k"][y][1] else ""}</td></tr>'
+              for y in REQ_YEARS)}
           </tbody>
         </table>
         <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px">
@@ -558,9 +629,12 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
       <div class="card card-pad">
         <h3>Иллюстративное</h3>
         <ul class="tight">
-          <li><b>Коэффициенты ряда</b> — 1.075 / 1.083 / 1.060. Ряда в системе
-          нет, это первая миграция фичи; числа взяты для примера и на макете
-          помечены.</li>
+          <li><b>Коэффициенты обоих рядов.</b> «Росстат» —
+          {" / ".join(growth(SERIES[0]["k"][y][0]) for y in REQ_YEARS)}; «ПЭО» —
+          {" / ".join(growth(SERIES[1]["k"][y][0]) for y in REQ_YEARS)}. Ряда в
+          системе нет, его заводит миграция 0014; числа взяты для примера и
+          помечены. Значения у рядов РАЗНЫЕ намеренно: одинаковые означали бы, что
+          селектор меняет подпись, не меняя чисел.</li>
           <li><b>Названия рядов</b> — образцы формулировок, а не заведённые
           записи.</li>
           <li><b>Корзины ДГП / ДС / Итого</b> не показаны: допсоглашений на
@@ -576,10 +650,15 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
 <script>
 const DATA = {PAYLOAD};
 const NOTE_OFF = 'Ось сравнения — <b>нетто</b>. Приведение выключено: суммы в рублях года подписания каждого договора.';
-const NOTE_ON = 'Ось сравнения — <b>нетто</b>, цены приведены к <b>{TARGET_LABEL}</b> по ряду «{E(SERIES_NAME)}». 2026 год — прогноз.';
+// Подпись СТРОИТСЯ из выбранного ряда, а не зашита: захардкоженное название
+// утверждало бы неправду о том, каким индексом построены числа.
+const noteOn = (s) => 'Ось сравнения — <b>нетто</b>, цены приведены к <b>{TARGET_LABEL}</b> по ряду «' +
+  s.name + '»' + (s.years.some(y => y.fc) ? ', ' + s.years.filter(y => y.fc).map(y => y.y).join(' и ') +
+  ' год — прогноз' : '') + '.';
 // Месяц, который вернул бы СЕРВЕР. Клиент его не вычисляет: до ответа поле пусто.
 const SERVER_MONTH = '2026-08';
 let on = false;
+const seriesById = (id) => DATA.series.find(s => s.id === id) || null;
 
 const sel = document.getElementById('seriesSel');
 const monthInp = document.getElementById('monthInp');
@@ -587,20 +666,43 @@ const onBtn = document.getElementById('onBtn');
 const offBtn = document.getElementById('offBtn');
 
 function render() {{
-  const key = on ? 'adj' : 'nom';
+  const s = seriesById(sel.value);
   document.querySelectorAll('td[data-cell]').forEach(td => {{
-    const r = DATA.rows[+td.dataset.ri], c = r[key][td.dataset.cid];
+    const r = DATA.rows[+td.dataset.ri];
+    const c = on && s ? r.adj[s.id][td.dataset.cid] : r.nom[td.dataset.cid];
     const span = td.querySelector('.pmv');
     if (!c || c.v === null) {{ span.innerHTML = '<span class="dash">—</span>'; return; }}
     const dev = c.d === null ? '' : ' <span class="dev ' + c.t + '">' + c.d.replace('-', '\\u2212') + '</span>';
     span.innerHTML = c.v + dev;
   }});
   document.querySelectorAll('td[data-med]').forEach(td => {{
-    const r = DATA.rows[+td.dataset.med], v = on ? r.ma : r.mn;
+    const r = DATA.rows[+td.dataset.med];
+    const v = on && s ? r.ma[s.id] : r.mn;
     td.textContent = v === null ? '—' : v;
   }});
-  document.querySelectorAll('[data-kf]').forEach(el => {{ el.style.visibility = on ? 'visible' : 'hidden'; }});
-  document.getElementById('axisnote').innerHTML = on ? NOTE_ON : NOTE_OFF;
+  // Коэффициент колонки — УРОВЕНЬ в процентах: его и читает человек.
+  // Сам множитель остаётся в подсказке, чтобы арифметика была проверяема.
+  document.querySelectorAll('[data-kf]').forEach(el => {{
+    if (!on || !s) {{ el.hidden = true; el.textContent = ''; el.removeAttribute('title'); return; }}
+    const f = s.factors[el.dataset.kf];
+    el.hidden = false;
+    el.textContent = f.g;
+    el.title = 'множитель × ' + f.k;
+  }});
+  document.getElementById('axisnote').innerHTML = on && s ? noteOn(s) : NOTE_OFF;
+
+  // Уровень инфляции по годам — иначе с экрана не понять, из чего вышла поправка.
+  const box = document.getElementById('levels');
+  if (s) {{
+    box.hidden = false;
+    box.innerHTML = '<span class="lv-lbl">Ряд по годам</span>' +
+      s.years.map(y => '<span class="yr">' + y.y + ' <b>' + y.g + '</b>' +
+        (y.fc ? ' <span class="fc">прогноз</span>' : '') + '</span>').join('') +
+      '<span class="meta">' + s.src + ' · правлен ' + s.updated + '</span>';
+  }} else {{
+    box.hidden = true;
+    box.innerHTML = '';
+  }}
 
   const hasSeries = sel.value !== '';
   onBtn.setAttribute('aria-pressed', String(on));
