@@ -1,0 +1,622 @@
+"""Генератор макета экрана сравнения с поправкой на инфляцию.
+
+Числа берутся из стенда `gca_dev` через тот же `build_comparison`, что кормит
+настоящую страницу, — ни одно значение не переписывается руками. Коэффициенты
+ряда ИЛЛЮСТРАТИВНЫ (ряда в системе нет) и помечены на макете.
+
+Выход: два файла из одного содержимого.
+  * standalone HTML для репозитория (конвенция макета сравнения);
+  * контентная версия для публикации артефактом (без doctype/html/head/body).
+"""
+import datetime as dt
+import html
+import json
+import sys
+from decimal import Decimal as D, localcontext
+from fractions import Fraction as F
+
+import sqlalchemy as sa
+from sqlalchemy.orm import Session
+
+from crud import comparison as cc
+
+ENGINE = sa.create_engine("postgresql+psycopg://postgres@localhost:5459/gca_dev")
+
+K = {2024: D("1.075"), 2025: D("1.083"), 2026: D("1.060")}
+TARGET = (2026, 8)
+TARGET_LABEL = "август 2026"
+SERIES_NAME = "Росстат, ИПЦ, декабрь к декабрю"
+
+NEUTRAL_BAND, HIGH_BAND = 10, 30
+
+
+def expo(y, m):
+    e = {t: F(1) for t in sorted(K) if t < y}
+    e[y] = F(m, 12)
+    return e
+
+
+def factor(src):
+    a, b = expo(*src), expo(*TARGET)
+    out = D(1)
+    for t in sorted(set(a) | set(b)):
+        d = b.get(t, F(0)) - a.get(t, F(0))
+        if d:
+            out *= K[t] ** (D(d.numerator) / D(d.denominator))
+    return out
+
+
+def median_of(vals):
+    vs = sorted(v for v in vals if v is not None and v > 0)
+    if len(vs) < 3:
+        return None
+    mid = len(vs) // 2
+    return vs[mid] if len(vs) % 2 else (vs[mid - 1] + vs[mid]) / D(2)
+
+
+def money(v):
+    if v is None:
+        return None
+    q = v.quantize(D("1"))
+    return f"{q:,}".replace(",", " ")
+
+
+def pct(v):
+    """Знак у нуля не ставится: ячейка «−0 %» читалась бы как снижение."""
+    if v is None:
+        return None
+    r = v.quantize(D("1"))
+    if r == 0:
+        return "0 %"
+    return f"{'+' if r > 0 else ''}{r} %"
+
+
+def tone(v):
+    if v is None:
+        return "flat"
+    mag = abs(v.quantize(D("1")))
+    if mag <= NEUTRAL_BAND:
+        return "flat"
+    hi = mag > HIGH_BAND
+    up = v > 0
+    return ("up-" if up else "dn-") + ("hi" if hi else "lo")
+
+
+with Session(ENGINE) as db, localcontext() as ctx:
+    ctx.prec = 34
+    ids = [r[0] for r in db.execute(sa.text("SELECT id FROM contracts ORDER BY signed_date"))]
+    data = cc.build_comparison(db, ids, vat_mode=cc.VAT_MODE_NET)
+
+    cols = []
+    for c in data["columns"]:
+        sd = c["signed_date"]
+        sd = dt.date.fromisoformat(sd) if isinstance(sd, str) else sd
+        cols.append({
+            "id": c["contract_id"],
+            "no": c["contract_number"],
+            "obj": c["object_title"],
+            "signed": sd,
+            "area": c.get("area_total_sp"),
+            "f": factor((sd.year, sd.month)),
+            "years": sorted(t for t, e in
+                            ((t, expo(*TARGET).get(t, F(0)) - expo(sd.year, sd.month).get(t, F(0)))
+                             for t in K) if e),
+        })
+
+    rows = []
+    for row in data["rows"]:
+        if row["level"] != 1:
+            continue
+        nom = {}
+        for cell in row["cells"]:
+            nom[cell["contract_id"]] = cell["total"]["net_per_sqm"]
+        if not any(v is not None for v in nom.values()):
+            continue
+        adj = {c["id"]: (nom[c["id"]] * c["f"] if nom.get(c["id"]) is not None else None) for c in cols}
+        mn, ma = median_of(nom.values()), median_of(adj.values())
+
+        def pack(vals, med):
+            out = {}
+            for c in cols:
+                v = vals.get(c["id"])
+                dv = ((v / med - 1) * 100) if (v and med and med > 0 and v > 0) else None
+                out[str(c["id"])] = {"v": money(v), "d": pct(dv), "t": tone(dv)}
+            return out
+
+        rows.append({
+            "code": row["code"], "title": row["title"],
+            "nom": pack(nom, mn), "adj": pack(adj, ma),
+            "mn": money(mn), "ma": money(ma),
+        })
+
+PAYLOAD = json.dumps({
+    "cols": [{"id": c["id"], "no": c["no"]} for c in cols],
+    "rows": rows,
+}, ensure_ascii=False)
+
+E = html.escape
+
+
+def col_head():
+    out = []
+    for c in cols:
+        area = f"{c['area']:,}".replace(",", " ") if c["area"] else "площадь не задана"
+        out.append(
+            f'<th class="chead" scope="col"><span class="rh2"><span class="cno">{E(c["no"])}</span>'
+            f'<span class="cobj">{E(c["obj"])}</span>'
+            f'<span class="csigned">подписан {c["signed"].strftime("%d.%m.%Y")}</span>'
+            f'<span class="area">{area} м²</span>'
+            f'<span class="kf" data-kf>× {c["f"].quantize(D("1.0000"))}</span></span></th>')
+    return "".join(out)
+
+
+def body_rows():
+    out = []
+    for i, r in enumerate(rows):
+        cells = "".join(
+            f'<td class="num" data-cell="{r["nom"][str(c["id"])] is not None and 1 or 1}" '
+            f'data-cid="{c["id"]}" data-ri="{i}"><span class="pmv"></span></td>'
+            for c in cols)
+        out.append(
+            f'<tr><th class="rowhead" scope="row"><span class="rh">'
+            f'<span class="code">{E(r["code"] or "")}</span>'
+            f'<span class="title">{E(r["title"])}</span></span></th>'
+            f'<td class="num med" data-med="{i}"></td>{cells}</tr>')
+    return "".join(out)
+
+
+CONTENT = f"""<title>Приведение к ценам месяца</title>
+<style>
+:root {{
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --up-lo:#F3E3D5; --up-hi:#E8C8A8; --up-fg:#6B3915;
+  --dn-lo:#DCE8E0; --dn-hi:#C9D9CD; --dn-fg:#2F4A38;
+  --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.28);
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}}
+@media (prefers-color-scheme:dark) {{
+  :root:not([data-theme="light"]) {{
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+    --up-lo:#3A2A1C; --up-hi:#4E3620; --up-fg:#E8C8A8;
+    --dn-lo:#25302A; --dn-hi:#2F4038; --dn-fg:#B8C4BB;
+    --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.6);
+  }}
+}}
+:root[data-theme="dark"] {{
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  --up-lo:#3A2A1C; --up-hi:#4E3620; --up-fg:#E8C8A8;
+  --dn-lo:#25302A; --dn-hi:#2F4038; --dn-fg:#B8C4BB;
+  --shadow-sticky:6px 0 10px -8px rgba(0,0,0,.6);
+}}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }}
+.wrap {{ max-width:1280px; margin:0 auto; padding:28px 20px 72px; }}
+.mockbar {{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }}
+.mockbar strong {{ color:var(--fg); font-weight:600; }}
+h1 {{ font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }}
+.sub {{ color:var(--fg2); margin:0 0 34px; max-width:66ch; }}
+section {{ margin-bottom:40px; }}
+h2 {{ font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px;
+  text-wrap:balance; }}
+.secsub {{ color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:72ch; }}
+.card {{ background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px; }}
+.card-pad {{ padding:15px 17px; }}
+.controls {{ display:flex; flex-wrap:wrap; align-items:flex-end; gap:18px; }}
+.ctl {{ display:flex; flex-direction:column; gap:5px; }}
+.ctl-lbl {{ font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--fg3); font-weight:600; }}
+.seg {{ display:inline-flex; border:1px solid var(--bd); border-radius:8px; overflow:hidden; }}
+.seg button {{ all:unset; cursor:pointer; padding:6px 12px; font-size:12.5px; color:var(--fg2);
+  background:var(--surface); }}
+.seg button + button {{ border-left:1px solid var(--bd-subtle); }}
+.seg button[aria-pressed="true"] {{ background:var(--action); color:var(--action-text);
+  font-weight:600; }}
+.seg button:focus-visible {{ outline:2px solid var(--accent); outline-offset:-2px; }}
+select, input[type=text], input[type=month] {{ font:inherit; font-size:12.5px; color:var(--fg);
+  background:var(--surface); border:1px solid var(--bd); border-radius:8px; padding:6px 9px; }}
+select:disabled, input:disabled {{ color:var(--fg4); background:var(--sunken); }}
+.btn {{ all:unset; cursor:pointer; padding:6px 13px; border:1px solid var(--bd);
+  border-radius:8px; font-size:12.5px; color:var(--fg2); background:var(--surface); }}
+.btn.primary {{ background:var(--action); color:var(--action-text); border-color:var(--action);
+  font-weight:600; }}
+.btn:focus-visible {{ outline:2px solid var(--accent); outline-offset:2px; }}
+.axisnote {{ font-size:12.5px; color:var(--fg2); margin:11px 0 0; }}
+.axisnote b {{ color:var(--fg); font-weight:600; }}
+.pill {{ display:inline-block; font-size:11px; padding:1px 7px; border-radius:999px;
+  border:1px solid var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); }}
+.pill.fc {{ border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }}
+.pill.arch {{ border-color:var(--neutral-bd); background:var(--neutral-soft);
+  color:var(--neutral-text); }}
+.banner {{ display:flex; gap:11px; align-items:flex-start; border:1px solid var(--warn-bd);
+  background:var(--warn-soft); color:var(--warn-text); border-radius:10px; padding:11px 14px;
+  font-size:13px; }}
+.banner .bi {{ font-weight:700; flex:0 0 auto; }}
+.banner code {{ background:rgba(0,0,0,.06); padding:0 4px; border-radius:3px; }}
+.scroller {{ overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px;
+  background:var(--surface); }}
+table.cmp {{ border-collapse:separate; border-spacing:0; font-size:13px; min-width:100%; }}
+table.cmp th, table.cmp td {{ padding:7px 12px; }}
+table.cmp thead th {{ background:var(--sechead); vertical-align:top; text-align:left;
+  border-bottom:1px solid var(--bd-subtle); }}
+.chead {{ border-left:1px solid var(--bd-subtle); }}
+.rh2 {{ display:flex; flex-direction:column; gap:1px; }}
+.cno {{ font-weight:600; font-size:13.5px; white-space:nowrap; }}
+.cobj, .csigned, .area {{ font-size:12px; color:var(--fg2); white-space:nowrap; }}
+.csigned, .area {{ color:var(--fg3); font-size:11.5px; }}
+.area {{ font-variant-numeric:tabular-nums; }}
+.kf {{ font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--accent-text);
+  background:var(--accent-soft); border:1px solid var(--accent-bd); border-radius:4px;
+  padding:0 5px; margin-top:4px; align-self:flex-start; white-space:nowrap; }}
+th.rowhead {{ position:sticky; left:0; z-index:2; background:var(--surface); text-align:left;
+  font-weight:400; min-width:330px; max-width:330px; box-shadow:var(--shadow-sticky); }}
+thead th.rowhead {{ background:var(--sechead); z-index:4; }}
+.rh {{ display:flex; align-items:baseline; gap:7px; }}
+.code {{ color:var(--fg3); font-size:11.5px; font-variant-numeric:tabular-nums; min-width:22px; }}
+.title {{ color:var(--fg); font-weight:500; }}
+table.cmp tbody td, table.cmp tbody th.rowhead {{ border-bottom:1px solid var(--bd-subtle); }}
+table.cmp tbody tr:hover td, table.cmp tbody tr:hover th.rowhead {{ background:var(--hover); }}
+.num {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }}
+.num.med {{ color:var(--fg2); border-left:1px solid var(--bd-subtle);
+  background:var(--sunken); }}
+td.num[data-cid] {{ border-left:1px solid var(--bd-subtle); }}
+.dev {{ display:inline-block; margin-left:7px; font-size:11px; padding:1px 5px; border-radius:4px;
+  font-variant-numeric:tabular-nums; }}
+.dev.flat {{ color:var(--fg4); }}
+.dev.up-lo {{ background:var(--up-lo); color:var(--up-fg); }}
+.dev.up-hi {{ background:var(--up-hi); color:var(--up-fg); font-weight:600; }}
+.dev.dn-lo {{ background:var(--dn-lo); color:var(--dn-fg); }}
+.dev.dn-hi {{ background:var(--dn-hi); color:var(--dn-fg); font-weight:600; }}
+.dash {{ color:var(--fg4); }}
+.grid2 {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+@media (max-width:920px) {{ .grid2 {{ grid-template-columns:1fr; }} }}
+h3 {{ font-size:11.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg3);
+  margin:0 0 9px; font-weight:600; }}
+ul.tight {{ margin:0; padding-left:18px; color:var(--fg2); }}
+ul.tight li {{ margin-bottom:6px; }}
+ul.tight b {{ color:var(--fg); font-weight:600; }}
+table.mini {{ border-collapse:collapse; width:100%; font-size:12.5px; }}
+table.mini th {{ text-align:left; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--fg3); font-weight:600; padding:0 10px 6px 0; }}
+table.mini td {{ padding:6px 10px 6px 0; border-top:1px solid var(--bd-subtle);
+  font-variant-numeric:tabular-nums; }}
+table.mini td.wide {{ font-variant-numeric:normal; }}
+.decode {{ font-size:12px; margin-top:5px; }}
+.decode.ok {{ color:var(--accent-text); }}
+.decode.bad {{ color:var(--warn-text); font-weight:600; }}
+.field {{ display:flex; flex-direction:column; gap:3px; }}
+.hint {{ font-size:11.5px; color:var(--fg3); }}
+.bound {{ border-left:3px solid var(--warn); padding-left:13px; }}
+@media (prefers-reduced-motion:reduce) {{ * {{ transition:none !important; }} }}
+</style>
+
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет.</strong>
+    <span>Числа — стенд <code>gca_dev</code> на 18.08.2026, тем же
+    <code>build_comparison</code>, что кормит настоящую страницу.</span>
+    <span class="pill fc">коэффициенты ряда иллюстративны</span>
+  </div>
+
+  <h1>Приведение к ценам месяца</h1>
+  <p class="sub">Как поправка на инфляцию ложится на существующий экран сравнения
+  договоров. Спека — <code>2026-08-18-inflation-adjustment-design.md</code>; макет
+  не имеет права с ней расходиться.</p>
+
+  <section>
+    <h2>Переключатель и подпись</h2>
+    <p class="secsub">Два новых элемента управления рядом с существующими. По
+    умолчанию приведение выключено, и страница отвечает как до фичи —
+    посимвольно.</p>
+    <div class="card card-pad">
+      <div class="controls">
+        <span class="ctl"><span class="ctl-lbl">Показатель</span>
+          <span class="seg" role="group" aria-label="Показатель">
+            <button type="button" aria-pressed="false">Сумма</button>
+            <button type="button" aria-pressed="true">₽/м²</button>
+          </span></span>
+        <span class="ctl"><span class="ctl-lbl">НДС</span>
+          <span class="seg" role="group" aria-label="Режим НДС">
+            <button type="button" aria-pressed="false">Своя ставка</button>
+            <button type="button" aria-pressed="false">Единая</button>
+            <button type="button" aria-pressed="true">Без НДС</button>
+          </span></span>
+        <span class="ctl"><span class="ctl-lbl">Инфляция</span>
+          <span class="seg" role="group" aria-label="Приведение">
+            <button type="button" id="offBtn" aria-pressed="true">Номинал</button>
+            <button type="button" id="onBtn" aria-pressed="false">Привести</button>
+          </span></span>
+        <span class="ctl"><span class="ctl-lbl">Ряд</span>
+          <select id="seriesSel" disabled>
+            <option>{E(SERIES_NAME)}</option>
+            <option>Внутренняя оценка ПЭО</option>
+          </select></span>
+        <span class="ctl"><span class="ctl-lbl">В ценах</span>
+          <input type="month" id="monthInp" value="2026-08" disabled></span>
+        <button class="btn" type="button">Выгрузить в Excel</button>
+      </div>
+      <p class="axisnote" id="axisnote"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Таблица</h2>
+    <p class="secsub">Нажмите «Привести» — колонки, медиана и подсветка
+    пересчитываются. Коэффициент каждого договора показан в его шапке: он свой у
+    каждой сметы, а не один на выборку.</p>
+    <div class="scroller">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th class="rowhead" scope="col">Статья классификатора</th>
+            <th class="num med" scope="col">Медиана</th>
+            {col_head()}
+          </tr>
+        </thead>
+        <tbody id="tb">{body_rows()}</tbody>
+      </table>
+    </div>
+    <p class="axisnote" style="margin-top:11px">17 корневых статей с данными.
+    Дерево трёхуровневое — здесь показан только первый уровень, чтобы макет
+    оставался читаемым.</p>
+  </section>
+
+  <section>
+    <h2>Что видно на этих числах</h2>
+    <p class="secsub">Главное — не то, что суммы выросли, а то, что меняется
+    порядок договоров относительно медианы.</p>
+    <div class="grid2">
+      <div class="card card-pad">
+        <h3>Смена знака отклонения</h3>
+        <p style="margin:0 0 9px; color:var(--fg2); font-size:13px">Статья
+        <b>«ВИС — Электрические и слаботочные системы»</b>: два договора
+        меняются местами относительно медианы.</p>
+        <table class="mini">
+          <thead><tr><th class="wide">Договор</th><th>Номинал</th><th>Приведено</th></tr></thead>
+          <tbody>
+            <tr><td class="wide">12-СИТ-МР <span class="hint">июль 2026</span></td>
+                <td><span class="dev flat">0 %</span></td>
+                <td><span class="dev flat">−5 %</span></td></tr>
+            <tr><td class="wide">СДП-1-МР <span class="hint">февраль 2025</span></td>
+                <td><span class="dev flat">0 %</span></td>
+                <td><span class="dev flat">+5 %</span></td></tr>
+          </tbody>
+        </table>
+        <p class="axisnote" style="margin-top:9px">Сегодня страница показывает
+        договор 2026 года чуть дороже медианы, а 2025 года — чуть дешевле. После
+        приведения наоборот. Точные величины: +0,4 % → −4,7 % и −0,4 % → +4,7 %.</p>
+      </div>
+      <div class="card card-pad">
+        <h3>Размер сдвига по статьям</h3>
+        <p style="margin:0 0 9px; color:var(--fg2); font-size:13px">Максимальное
+        изменение отклонения внутри статьи, п.п.</p>
+        <table class="mini">
+          <thead><tr><th class="wide">Статья</th><th>Сдвиг</th></tr></thead>
+          <tbody>
+            <tr><td class="wide">Лифты, подъемники</td><td>58,2</td></tr>
+            <tr><td class="wide">ТХ</td><td>30,3</td></tr>
+            <tr><td class="wide">Устройство гидроизоляции подземной части</td><td>21,8</td></tr>
+            <tr><td class="wide">Отделочные работы</td><td>21,1</td></tr>
+            <tr><td class="wide">ВИС — механические системы</td><td>19,9</td></tr>
+          </tbody>
+        </table>
+        <p class="axisnote" style="margin-top:9px">Разброс подписания на стенде —
+        28.05.2024 … 06.07.2026. Коэффициенты приведения к августу 2026 идут от
+        1.0049 до 1.1744, то есть самый ранний договор дорожает на 17,4 %.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Отказ вместо половинчатого приведения</h2>
+    <p class="secsub">Если в выбранном ряду не хватает года, приведение не
+    включается вовсе. Половинчатой таблицы не бывает: погасить колонку самого
+    раннего договора значило бы убрать ровно тот договор, ради которого
+    приведение включали.</p>
+    <div class="card card-pad">
+      <div class="banner">
+        <span class="bi">!</span>
+        <span><b>Приведение не применено.</b> В ряду «{E(SERIES_NAME)}» нет
+        коэффициентов за <b>2024, 2025</b>. Показаны номинальные суммы — рубли
+        разных лет. Заполните недостающие годы в разделе «Нормативы → Индексы
+        инфляции».<br>
+        <span class="hint">Ответ API: <code>422</code>,
+        <code>{{"code":"missing_inflation_years","missing_years":[2024,2025]}}</code>.
+        Параметры остались в адресе: <code>?inflation_series_id=1&amp;target_month=2026-08</code>
+        — видно, что именно не сработало.</span></span>
+      </div>
+      <p class="axisnote">Тот же отказ и та же формулировка на листе Excel.
+      Второй код — <code>amendment_date_missing</code>, когда у допсоглашения нет
+      собственной даты: дату базового договора подставлять нельзя.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран ряда индексов</h2>
+    <p class="secsub">Раздел «Нормативы», право <code>admin</code>. Справочник
+    создаётся пустым — безымянных «официального» и «неофициального» рядов не
+    бывает, название несёт конкретный показатель.</p>
+    <div class="grid2">
+      <div class="card card-pad">
+        <h3>Ряды</h3>
+        <table class="mini">
+          <thead><tr><th class="wide">Название</th><th>Годы</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="wide"><b>{E(SERIES_NAME)}</b></td><td>2024–2026</td>
+                <td><span class="pill">активен</span></td></tr>
+            <tr><td class="wide">Внутренняя оценка ПЭО</td><td>2025–2026</td>
+                <td><span class="pill">активен</span></td></tr>
+            <tr><td class="wide">ИПЦ, среднегодовой <span class="hint">не подходит
+                формуле</span></td><td>2024–2025</td>
+                <td><span class="pill arch">в архиве</span></td></tr>
+          </tbody>
+        </table>
+        <p class="axisnote" style="margin-top:9px">Архивный ряд читается по старой
+        ссылке, но в выборе не предлагается, и править его годы нельзя —
+        <code>409</code>, пока не вернут в активные.</p>
+      </div>
+      <div class="card card-pad">
+        <h3>Годы выбранного ряда</h3>
+        <table class="mini">
+          <thead><tr><th>Год</th><th>Коэффициент</th><th class="wide">Источник</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>2024</td><td>1.0750</td><td class="wide">Росстат, бюллетень 01.2025</td><td></td></tr>
+            <tr><td>2025</td><td>1.0830</td><td class="wide">Росстат, бюллетень 01.2026</td><td></td></tr>
+            <tr><td>2026</td><td>1.0600</td><td class="wide">оценка на 08.2026</td>
+                <td><span class="pill fc">прогноз</span></td></tr>
+          </tbody>
+        </table>
+        <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px">
+          <div class="field">
+            <span class="ctl-lbl">Коэффициент изменения цен, декабрь к декабрю</span>
+            <input type="text" value="1.083" style="max-width:150px" readonly>
+            <span class="decode ok">Рост 8,3 %</span>
+          </div>
+          <div class="field bound">
+            <span class="ctl-lbl">То же поле, если ввести прирост вместо коэффициента</span>
+            <input type="text" value="0.083" style="max-width:150px" readonly>
+            <span class="decode bad">Снижение 91,7 %</span>
+            <span class="hint">Расшифровка и есть защита: схема приняла бы
+            <code>0.083</code> — условие только «больше нуля», — и посчитала бы
+            дефляцию молча. Искусственного диапазона нет: порог отверг бы
+            законный год высокой инфляции.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Что макет показывает честно</h2>
+    <div class="grid2">
+      <div class="card card-pad">
+        <h3>Настоящее</h3>
+        <ul class="tight">
+          <li><b>Все суммы, площади и отклонения</b> — стенд <code>gca_dev</code>,
+          пять договоров, тот же агрегат, что у страницы.</li>
+          <li><b>Даты подписания</b> и выведенные из них коэффициенты.</li>
+          <li><b>Пороги подсветки</b> — ≤10 % нейтрально, 10–30 % и свыше 30 %
+          две ступени, как в <code>deviationTone.ts</code>.</li>
+          <li><b>Ось нетто</b>: медиана и отклонения считаются по нетто в любом
+          режиме показа.</li>
+        </ul>
+      </div>
+      <div class="card card-pad">
+        <h3>Иллюстративное</h3>
+        <ul class="tight">
+          <li><b>Коэффициенты ряда</b> — 1.075 / 1.083 / 1.060. Ряда в системе
+          нет, это первая миграция фичи; числа взяты для примера и на макете
+          помечены.</li>
+          <li><b>Названия рядов</b> — образцы формулировок, а не заведённые
+          записи.</li>
+          <li><b>Корзины ДГП / ДС / Итого</b> не показаны: допсоглашений на
+          стенде ноль, и приведение на смету на этих данных численно совпадает с
+          приведением на договор.</li>
+          <li><b>Второй и третий уровень дерева</b> статей свёрнут.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const DATA = {PAYLOAD};
+const NOTE_OFF = 'Ось сравнения — <b>нетто</b>. Приведение выключено: суммы в рублях года подписания каждого договора.';
+const NOTE_ON = 'Ось сравнения — <b>нетто</b>, цены приведены к <b>{TARGET_LABEL}</b> по ряду «{E(SERIES_NAME)}». 2026 год — прогноз.';
+let on = false;
+
+function render() {{
+  const key = on ? 'adj' : 'nom';
+  document.querySelectorAll('td[data-cell]').forEach(td => {{
+    const r = DATA.rows[+td.dataset.ri], c = r[key][td.dataset.cid];
+    const span = td.querySelector('.pmv');
+    if (!c || c.v === null) {{ span.innerHTML = '<span class="dash">—</span>'; return; }}
+    const dev = c.d === null ? '' : ' <span class="dev ' + c.t + '">' + c.d.replace('-', '\\u2212') + '</span>';
+    span.innerHTML = c.v + dev;
+  }});
+  document.querySelectorAll('td[data-med]').forEach(td => {{
+    const r = DATA.rows[+td.dataset.med], v = on ? r.ma : r.mn;
+    td.textContent = v === null ? '—' : v;
+  }});
+  document.querySelectorAll('[data-kf]').forEach(el => {{ el.style.visibility = on ? 'visible' : 'hidden'; }});
+  document.getElementById('axisnote').innerHTML = on ? NOTE_ON : NOTE_OFF;
+  document.getElementById('onBtn').setAttribute('aria-pressed', String(on));
+  document.getElementById('offBtn').setAttribute('aria-pressed', String(!on));
+  document.getElementById('seriesSel').disabled = !on;
+  document.getElementById('monthInp').disabled = !on;
+}}
+document.getElementById('onBtn').addEventListener('click', () => {{ on = true; render(); }});
+document.getElementById('offBtn').addEventListener('click', () => {{ on = false; render(); }});
+render();
+</script>
+"""
+
+STANDALONE = f"""<!--
+  Макет экрана сравнения с поправкой на инфляцию (маршрут `/compare`), гейт 2
+  фичи `feat/inflation-adjustment`. Заведён 2026-08-18.
+
+  ЧТО ЭТО. Форма, в которой поправка ложится на существующий экран. Спека, от
+  которой макет не имеет права расходиться:
+  `2026-08-18-inflation-adjustment-design.md`.
+
+  ДАННЫЕ НАСТОЯЩИЕ — стенд `gca_dev` на 18.08.2026: 5 договоров, 17 корневых
+  статей с данными, суммы и отклонения получены тем же `build_comparison`, что
+  кормит страницу. Макет СГЕНЕРИРОВАН скриптом из базы: ни одно число не
+  переписано руками, потому что именно на переписывании числа и расходятся.
+
+  ЧТО ИЛЛЮСТРАТИВНО И ПОМЕЧЕНО НА САМОМ МАКЕТЕ: коэффициенты ряда
+  (1.075 / 1.083 / 1.060) — ряда в схеме ещё нет, его заводит миграция 0014;
+  названия рядов; состояние отказа собрано вручную, потому что на стенде ряд
+  полон по построению.
+
+  ЧЕГО В МАКЕТЕ НЕТ: корзин ДГП/ДС/Итого (допсоглашений ноль, и приведение на
+  смету на этих данных совпадает с приведением на договор), второго и третьего
+  уровня дерева статей.
+
+  Палитра, шрифтовые стеки и классы таблицы взяты из
+  `2026-08-17-contract-comparison-mockup.html` без изменений — это тот же экран.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{CONTENT}
+</body>
+</html>
+"""
+
+out_repo, out_art = sys.argv[1], sys.argv[2]
+with open(out_repo, "w", encoding="utf-8") as fh:
+    fh.write(STANDALONE.replace("<title>", "<title>").replace("</style>\n\n<div", "</style>\n</head>\n<body>\n<div"))
+with open(out_art, "w", encoding="utf-8") as fh:
+    fh.write(CONTENT)
+print("rows:", len(rows), "cols:", len(cols))
+print("repo:", out_repo)
+print("artifact:", out_art)
