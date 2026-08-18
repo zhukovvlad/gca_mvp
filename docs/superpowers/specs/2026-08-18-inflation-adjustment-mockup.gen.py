@@ -32,14 +32,20 @@ SERIES = [
     {
         "id": 1,
         "name": "Росстат, ИПЦ, декабрь к декабрю",
-        "src": "Росстат, бюллетень 01.2026",
+        # `note` — примечание РЯДА, его и показывает экран сравнения.
+        "note": "официальная публикация, по РФ",
+        # `src` — источник ГОДА, он остаётся в БД и печатается на листе.
+        "src": {2024: "бюллетень 01.2025", 2025: "бюллетень 01.2026",
+                2026: "оценка на 08.2026"},
         "updated": "12.01.2026",
         "k": {2024: (D("1.075"), False), 2025: (D("1.083"), False), 2026: (D("1.060"), True)},
     },
     {
         "id": 2,
         "name": "Внутренняя оценка ПЭО",
-        "src": "смета строительных ресурсов, ПЭО",
+        "note": "смета строительных ресурсов",
+        "src": {2024: "расчёт ПЭО 02.2025", 2025: "расчёт ПЭО 02.2026",
+                2026: "прогноз ПЭО 08.2026"},
         "updated": "04.08.2026",
         "k": {2024: (D("1.112"), False), 2025: (D("1.124"), False), 2026: (D("1.090"), True)},
     },
@@ -168,7 +174,7 @@ PAYLOAD = json.dumps({
     "series": [{
         "id": str(s["id"]),
         "name": s["name"],
-        "src": s["src"],
+        "note": s["note"],
         "updated": s["updated"],
         "years": [{"y": y, "g": growth(s["k"][y][0]), "fc": s["k"][y][1]} for y in REQ_YEARS],
         "factors": {str(c["id"]): {"g": growth(c["f"][s["id"]]),
@@ -299,6 +305,32 @@ h2 {{ font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0
 /* `display:flex` перебивает браузерное `[hidden]{{display:none}}` — без этой
    строки пустая полоса всё равно занимает место бордюром и отступом. */
 .levels[hidden] {{ display:none; }}
+.btn.sm {{ padding:3px 10px; font-size:11.5px; }}
+.btn:disabled {{ cursor:not-allowed; color:var(--fg4); background:var(--sunken); }}
+/* Приближение shadcn-диалога проекта (`components/ui/dialog.tsx` на @base-ui):
+   затемнение, карточка по центру, шапка с заголовком и описанием, подвал с
+   кнопками справа. Здесь это нативный <dialog> — макет не тянет React. */
+.dlg {{ border:none; padding:0; background:transparent; max-width:min(680px, calc(100vw - 32px));
+  width:100%; color:var(--fg); }}
+.dlg::backdrop {{ background:rgba(20,22,28,.55); }}
+.dlgform {{ background:var(--surface); border:1px solid var(--bd); border-radius:14px;
+  box-shadow:0 18px 48px -16px rgba(0,0,0,.4); display:flex; flex-direction:column;
+  max-height:calc(100vh - 64px); }}
+.dlghead {{ display:flex; align-items:flex-start; gap:14px; padding:18px 20px 14px;
+  border-bottom:1px solid var(--bd-subtle); }}
+.dlghead h4 {{ font-family:var(--font-serif); font-size:19px; font-weight:600; margin:0 0 4px; }}
+.dlgsub {{ margin:0; font-size:12.5px; color:var(--fg2); max-width:60ch; }}
+.xbtn {{ all:unset; cursor:pointer; margin-left:auto; color:var(--fg3); font-size:15px;
+  line-height:1; padding:3px 6px; border-radius:6px; }}
+.xbtn:hover {{ color:var(--fg); background:var(--hover); }}
+.xbtn:focus-visible {{ outline:2px solid var(--accent); outline-offset:1px; }}
+.dlgbody {{ padding:16px 20px; overflow-y:auto; display:flex; flex-direction:column; gap:14px; }}
+.dlgfoot {{ display:flex; justify-content:flex-end; gap:9px; padding:13px 20px;
+  border-top:1px solid var(--bd-subtle); background:var(--sunken);
+  border-radius:0 0 14px 14px; }}
+.dlgyears input[type=text] {{ width:100%; }}
+.dlgyears .kin {{ max-width:110px; font-variant-numeric:tabular-nums; }}
+.dlgyears td {{ vertical-align:middle; }}
 .levels .lv-lbl {{ font-size:10.5px; letter-spacing:.07em; text-transform:uppercase;
   font-weight:700; opacity:.8; }}
 .yr {{ font-variant-numeric:tabular-nums; white-space:nowrap; }}
@@ -559,56 +591,96 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
     <p class="secsub">Раздел «Нормативы», право <code>admin</code>. Справочник
     создаётся пустым — безымянных «официального» и «неофициального» рядов не
     бывает, название несёт конкретный показатель.</p>
-    <div class="grid2">
-      <div class="card card-pad">
-        <h3>Ряды</h3>
-        <table class="mini">
-          <thead><tr><th class="wide">Название</th><th>Годы</th><th></th></tr></thead>
-          <tbody>
-            <tr><td class="wide"><b>{E(SERIES[0]["name"])}</b></td><td>2024–2026</td>
-                <td><span class="pill">активен</span></td></tr>
-            <tr><td class="wide">{E(SERIES[1]["name"])}</td><td>2024–2026</td>
-                <td><span class="pill">активен</span></td></tr>
-            <tr><td class="wide">ИПЦ, среднегодовой <span class="hint">не подходит
-                формуле</span></td><td>2024–2025</td>
-                <td><span class="pill arch">в архиве</span></td></tr>
-          </tbody>
-        </table>
-        <p class="axisnote" style="margin-top:9px">Архивный ряд читается по старой
-        ссылке, но в выборе не предлагается, и править его годы нельзя —
-        <code>409</code>, пока не вернут в активные.</p>
-      </div>
-      <div class="card card-pad">
-        <h3>Годы выбранного ряда</h3>
-        <table class="mini">
-          <thead><tr><th>Год</th><th>Коэффициент</th><th>Уровень</th><th class="wide">Источник</th><th></th></tr></thead>
-          <tbody>
-            {"".join(
-              f'<tr><td>{y}</td><td>{SERIES[0]["k"][y][0].quantize(D("1.0000"))}</td>'
-              f'<td>{growth(SERIES[0]["k"][y][0])}</td>'
-              f'<td class="wide">{E(SERIES[0]["src"])}</td>'
-              f'<td>{"<span class=" + chr(34) + "pill fc" + chr(34) + ">прогноз</span>" if SERIES[0]["k"][y][1] else ""}</td></tr>'
-              for y in REQ_YEARS)}
-          </tbody>
-        </table>
-        <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px">
-          <div class="field">
-            <span class="ctl-lbl">Коэффициент изменения цен, декабрь к декабрю</span>
-            <input type="text" value="1.083" style="max-width:150px" readonly>
-            <span class="decode ok">Рост 8,3 %</span>
+    <div class="card card-pad">
+      <h3>Ряды</h3>
+      <table class="mini">
+        <thead><tr><th class="wide">Название</th><th>Годы</th><th>Состояние</th><th></th></tr></thead>
+        <tbody>
+          <tr><td class="wide"><b>{E(SERIES[0]["name"])}</b>
+              <span class="hint">{E(SERIES[0]["note"])}</span></td>
+              <td>2024–2026</td><td><span class="pill">активен</span></td>
+              <td><button class="btn sm editBtn" type="button">Изменить</button></td></tr>
+          <tr><td class="wide">{E(SERIES[1]["name"])}
+              <span class="hint">{E(SERIES[1]["note"])}</span></td>
+              <td>2024–2026</td><td><span class="pill">активен</span></td>
+              <td><button class="btn sm editBtn" type="button">Изменить</button></td></tr>
+          <tr><td class="wide">ИПЦ, среднегодовой <span class="hint">не подходит
+              формуле</span></td><td>2024–2025</td>
+              <td><span class="pill arch">в архиве</span></td>
+              <td><button class="btn sm" type="button" disabled
+                  title="архивный ряд правке недоступен — сначала вернуть в активные">Изменить</button></td></tr>
+        </tbody>
+      </table>
+      <p class="axisnote">Правка — <b>модальным окном</b>, как уже сделано на этом
+      экране для ставок (`RateStandardFormDialog`, `ReapproveDialog`). Нажмите
+      «Изменить» у первого ряда. Архивный ряд читается по старой ссылке, но в
+      выборе не предлагается и правке недоступен — <code>409</code>, пока не
+      вернут в активные.</p>
+    </div>
+
+    <dialog id="dlg" class="dlg">
+      <form method="dialog" class="dlgform">
+        <div class="dlghead">
+          <div>
+            <h4>Ряд индексов инфляции</h4>
+            <p class="dlgsub">Коэффициенты — декабрь к декабрю. Значения правятся
+            на месте: версий у ряда нет, поэтому правка меняет числа на уже
+            открытых сравнениях, а дата правки видна на поверхности.</p>
           </div>
+          <button class="xbtn" type="submit" value="cancel" aria-label="Закрыть">✕</button>
+        </div>
+
+        <div class="dlgbody">
+          <div class="field">
+            <label class="ctl-lbl" for="f-name">Название</label>
+            <input id="f-name" type="text" value="{E(SERIES[0]["name"])}">
+            <span class="hint">Несёт конкретный показатель, а не «официальный»:
+            читатель обязан понять, чем приведены числа.</span>
+          </div>
+          <div class="field">
+            <label class="ctl-lbl" for="f-note">Примечание</label>
+            <input id="f-note" type="text" value="{E(SERIES[0]["note"])}">
+            <span class="hint">Показывается на экране сравнения рядом с уровнями.</span>
+          </div>
+
+          <table class="mini dlgyears">
+            <thead><tr><th>Год</th><th>Коэффициент</th><th>Уровень</th>
+              <th class="wide">Источник</th><th>Прогноз</th></tr></thead>
+            <tbody>
+              {"".join(
+                f'<tr><td>{y}</td>'
+                f'<td><input class="kin" type="text" inputmode="decimal" '
+                f'value="{SERIES[0]["k"][y][0].quantize(D("1.0000"))}"></td>'
+                f'<td class="decode ok" data-dec>{growth(SERIES[0]["k"][y][0])}</td>'
+                f'<td class="wide"><input type="text" value="{E(SERIES[0]["src"][y])}"></td>'
+                f'<td style="text-align:center"><input type="checkbox" '
+                f'{"checked" if SERIES[0]["k"][y][1] else ""}></td></tr>'
+                for y in REQ_YEARS)}
+            </tbody>
+          </table>
+          <p class="hint">Источник обязателен у каждого года: на вопрос «откуда
+          8,3 %» надо чем-то отвечать (§1 п. 4). На экране сравнения он не
+          показывается — там достаточно примечания ряда, — но печатается на листе
+          выгрузки.</p>
+
           <div class="field bound">
-            <span class="ctl-lbl">То же поле, если ввести прирост вместо коэффициента</span>
-            <input type="text" value="0.083" style="max-width:150px" readonly>
-            <span class="decode bad">Снижение 91,7 %</span>
+            <label class="ctl-lbl" for="f-bad">Проверьте: тот же ввод, если спутать
+            коэффициент с приростом</label>
+            <input id="f-bad" class="kin" type="text" inputmode="decimal" value="0.083">
+            <span class="decode bad" data-dec>Снижение 91,7 %</span>
             <span class="hint">Расшифровка и есть защита: схема приняла бы
             <code>0.083</code> — условие только «больше нуля», — и посчитала бы
-            дефляцию молча. Искусственного диапазона нет: порог отверг бы
-            законный год высокой инфляции.</span>
+            дефляцию на 91,7 % молча. Искусственного диапазона нет: порог отверг
+            бы законный год высокой инфляции.</span>
           </div>
         </div>
-      </div>
-    </div>
+
+        <div class="dlgfoot">
+          <button class="btn" type="submit" value="cancel">Отмена</button>
+          <button class="btn primary" type="submit" value="save">Сохранить</button>
+        </div>
+      </form>
+    </dialog>
   </section>
 
   <section>
@@ -698,7 +770,7 @@ function render() {{
     box.innerHTML = '<span class="lv-lbl">Ряд по годам</span>' +
       s.years.map(y => '<span class="yr">' + y.y + ' <b>' + y.g + '</b>' +
         (y.fc ? ' <span class="fc">прогноз</span>' : '') + '</span>').join('') +
-      '<span class="meta">' + s.src + ' · правлен ' + s.updated + '</span>';
+      '<span class="meta">' + (s.note ? s.note + ' · ' : '') + 'правлен ' + s.updated + '</span>';
   }} else {{
     box.hidden = true;
     box.innerHTML = '';
@@ -740,6 +812,39 @@ offBtn.addEventListener('click', () => {{
   render();
 }});
 monthInp.addEventListener('change', () => {{ if (on) render(); }});
+
+// --- модальное окно правки ряда
+const dlg = document.getElementById('dlg');
+// Правятся ОБА ряда — и официальный, и кастомный: право у admin одно на все ряды.
+document.querySelectorAll('.editBtn').forEach(b =>
+  b.addEventListener('click', () => dlg.showModal()));
+
+// Живая расшифровка коэффициента внутри диалога: 1.083 -> «Рост 8,3 %».
+// Считается по ВВЕДЁННОМУ значению, а не по сохранённому, — иначе она не защита.
+function decode(input) {{
+  const cell = input.closest('tr')
+    ? input.closest('tr').querySelector('[data-dec]')
+    : input.parentElement.querySelector('[data-dec]');
+  if (!cell) return;
+  const raw = input.value.trim().replace(',', '.');
+  const v = Number(raw);
+  if (!raw || !isFinite(v) || v <= 0) {{
+    cell.textContent = '—';
+    cell.className = 'decode';
+    return;
+  }}
+  const p = (v - 1) * 100;
+  const abs = Math.abs(p).toFixed(1).replace('.', ',');
+  cell.textContent = (p >= 0 ? 'Рост ' : 'Снижение ') + abs + ' %';
+  // Красным помечается не «снижение», а невероятный уровень: спутанный прирост
+  // даёт минус девяносто процентов, и это должно бросаться в глаза.
+  cell.className = 'decode ' + (p < -50 || p > 100 ? 'bad' : 'ok');
+}}
+document.querySelectorAll('.kin').forEach(inp => {{
+  inp.addEventListener('input', () => decode(inp));
+  decode(inp);
+}});
+
 render();
 </script>
 """
