@@ -395,9 +395,9 @@ def current_period(tz_name: str = BUSINESS_TIMEZONE) -> YearMonth: ...
     # datetime.now(ZoneInfo(tz_name)) — НЕ локальные часы процесса
 ```
 
-- [ ] **Step 1:** написать тесты по числам ниже, убедиться, что они красные.
-- [ ] **Step 2:** реализовать модуль.
-- [ ] **Step 3:** прогнать `pytest tests/unit/test_money_inflation.py -v`.
+- [x] **Step 1:** написать тесты по числам ниже, убедиться, что они красные.
+- [x] **Step 2:** реализовать модуль.
+- [x] **Step 3:** прогнать `pytest tests/unit/test_money_inflation.py -v`.
 
 **Утверждения с числами** (пересчитаны замером 2026-08-18 при `k(2024)=1.075`,
 `k(2025)=1.083`, `k(2026)=1.060`, `prec=34`):
