@@ -1,0 +1,367 @@
+"""Справочник рядов индексов инфляции: CRUD и правка одной транзакцией
+(спека `2026-08-18-inflation-adjustment-design.md` §2.10, §2.12; план, задача 5).
+
+Ряд **общий и без версий**, поэтому «исправлен наполовину» здесь означает не
+испорченную форму, а неверные числа у всех, кто в этот момент смотрит сравнение.
+Отсюда два требования, которые и стерегут тесты этого файла: запись — одна
+транзакция на всё окно правки, а `updated_at` двигается тогда и только тогда,
+когда что-то действительно изменилось.
+
+**Метки времени проверяются на `committing_db`, а не на `db_session`.** Замер
+2026-08-18 на `gca_test`: `now()` внутри одной транзакции возвращает ОДНО И ТО ЖЕ
+значение до и после savepoint-commit'а (различается только `clock_timestamp()`).
+В транзакционной фикстуре поэтому «сдвинулась» недоказуемо, а «не сдвинулась» —
+вакуозно зелено (§12, инсайт про ложные предпосылки).
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+import sqlalchemy as sa
+
+from crud import inflation_series as crud
+from crud.common import DomainError
+from models import InflationIndexValue, InflationSeries
+
+pytestmark = pytest.mark.integration
+
+SERIES_NAME = "Росстат, ИПЦ, декабрь к декабрю"
+OTHER_NAME = "Внутренняя оценка ПЭО"
+
+
+def year(year_: int, coefficient: str, source: str = "бюллетень 01.2026", *, forecast=False):
+    """Год ряда — ВСЕГДА тремя полями: это описание года целиком, а не подкрутка."""
+    return {
+        "year": year_,
+        "coefficient": Decimal(coefficient),
+        "source": source,
+        "is_forecast": forecast,
+    }
+
+
+#: Отличает «годы не заданы, возьми умолчание» от «годов НЕТ ни одного»: `or`
+#: здесь недопустим — пустой список фальшив, и тест атомарности начинался бы с
+#: ряда, в котором год уже есть, то есть проверял бы не то, что написано.
+_DEFAULT_YEARS = object()
+
+
+def make_series(
+    db, *, name=SERIES_NAME, note="официальная публикация, по РФ", years=_DEFAULT_YEARS
+) -> dict:
+    if years is _DEFAULT_YEARS:
+        years = [year(2025, "1.083")]
+    return crud.create_series(db, name=name, note=note, values=list(years))
+
+
+def stored_years(db, series_id: int) -> dict[int, tuple]:
+    """Тройки годов ПРЯМО ИЗ БАЗЫ, минуя возвращаемые словари."""
+    rows = db.execute(
+        sa.select(
+            InflationIndexValue.year,
+            InflationIndexValue.coefficient,
+            InflationIndexValue.source,
+            InflationIndexValue.is_forecast,
+        ).where(InflationIndexValue.series_id == series_id)
+    ).all()
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+#  Создание и чтение
+# ---------------------------------------------------------------------------
+
+def test_create_series_writes_name_note_and_years(db_session):
+    created = make_series(db_session, years=[year(2024, "1.075"), year(2026, "1.060", forecast=True)])
+
+    assert created["name"] == SERIES_NAME
+    assert created["note"] == "официальная публикация, по РФ"
+    assert created["is_active"] is True
+    # Охват годов показывается в списке рядов (§2.12), поэтому он и в словаре.
+    assert (created["year_from"], created["year_to"]) == (2024, 2026)
+
+    values = crud.list_values(db_session, created["id"])
+    assert [item["year"] for item in values] == [2024, 2026]
+    assert values[1]["is_forecast"] is True
+
+
+def test_create_series_rejects_blank_name(db_session):
+    with pytest.raises(DomainError) as exc:
+        make_series(db_session, name="   ")
+    assert exc.value.status_code == 422
+
+
+def test_duplicate_series_name_is_a_conflict(db_session):
+    make_series(db_session)
+    with pytest.raises(DomainError) as exc:
+        make_series(db_session, name=SERIES_NAME)
+    assert exc.value.status_code == 409
+
+
+def test_unknown_series_is_404(db_session):
+    with pytest.raises(DomainError) as exc:
+        crud.get_series_dict(db_session, 10**9)
+    assert exc.value.status_code == 404
+
+    with pytest.raises(DomainError) as exc:
+        crud.list_values(db_session, 10**9)
+    assert exc.value.status_code == 404
+
+
+def test_archived_series_is_hidden_from_the_list_but_readable_by_id(db_session):
+    """Архивный ряд не предлагается для нового выбора, но старая ссылка обязана
+    работать (§2.10) — два разных утверждения, оба проверяются."""
+    active = make_series(db_session)
+    archived = make_series(db_session, name=OTHER_NAME, years=[year(2025, "1.120")])
+    crud.update_series(db_session, archived["id"], is_active=False)
+
+    default_ids = [item["id"] for item in crud.list_series(db_session)]
+    assert default_ids == [active["id"]]
+
+    with_archived = [item["id"] for item in crud.list_series(db_session, include_archived=True)]
+    assert sorted(with_archived) == sorted([active["id"], archived["id"]])
+
+    assert crud.get_series_dict(db_session, archived["id"])["is_active"] is False
+    assert [item["year"] for item in crud.list_values(db_session, archived["id"])] == [2025]
+
+
+# ---------------------------------------------------------------------------
+#  Форма года и повтор года
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("missing", ["coefficient", "source", "is_forecast"])
+def test_incomplete_year_is_rejected(db_session, missing):
+    """Год задаётся ВСЕМИ ТРЕМЯ полями: неполный отвергается (DoD 27).
+
+    Иначе `updated_at` года двигался бы правкой, которая описывает год не
+    целиком, а лист утверждал бы, что коэффициент исправлен.
+    """
+    series = make_series(db_session)
+    incomplete = year(2026, "1.060")
+    del incomplete[missing]
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], values=[incomplete])
+    assert exc.value.status_code == 422
+    assert 2026 not in stored_years(db_session, series["id"])
+
+
+@pytest.mark.parametrize("coefficient", ["0", "-1"])
+def test_non_positive_coefficient_is_rejected_by_the_domain(db_session, coefficient):
+    """`coefficient > 0` проверяет ДОМЕН, а не схема запроса (Global Constraints).
+
+    В схеме `gt=0` запрещён явно: он увёл бы отказ из CRUD и обессмыслил тест
+    атомарности ниже.
+    """
+    series = make_series(db_session)
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], values=[year(2026, coefficient)])
+    assert exc.value.status_code == 422
+    assert 2026 not in stored_years(db_session, series["id"])
+
+
+def test_duplicate_year_in_the_payload_is_rejected_before_any_write(db_session):
+    """Повтор года — `422` с кодом и перечнем, ДО записи (DoD 29).
+
+    Проверяется тем, что в базе после отказа не изменилось НИЧЕГО: иначе защита
+    свелась бы к конфликту уникального индекса, то есть к ошибке базы вместо
+    внятного ответа, и зависела бы от порядка — победил бы первый или последний.
+    """
+    series = make_series(db_session, years=[year(2025, "1.083")])
+    before = stored_years(db_session, series["id"])
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(
+            db_session,
+            series["id"],
+            name="Новое название",
+            values=[year(2026, "1.060"), year(2026, "1.070"), year(2027, "1.040")],
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.code == "duplicate_year"
+    assert exc.value.context == {"years": [2026]}
+
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["name"] == SERIES_NAME
+    assert stored_years(db_session, series["id"]) == before
+
+
+def test_years_not_listed_in_the_body_remain(db_session):
+    """`PATCH`, а не `PUT`: `DELETE` запрещён, и умолчание не удаляет годы (DoD 27)."""
+    series = make_series(db_session, years=[year(2024, "1.075"), year(2025, "1.083")])
+
+    crud.update_series(db_session, series["id"], values=[year(2026, "1.060")])
+
+    assert sorted(stored_years(db_session, series["id"])) == [2024, 2025, 2026]
+
+
+def test_existing_year_is_updated_in_place(db_session):
+    series = make_series(db_session, years=[year(2025, "1.083")])
+
+    crud.update_series(
+        db_session, series["id"],
+        values=[year(2025, "1.0915", source="уточнение бюллетеня 03.2026", forecast=True)],
+    )
+
+    stored = stored_years(db_session, series["id"])[2025]
+    assert stored[0] == Decimal("1.0915")
+    assert stored[1] == "уточнение бюллетеня 03.2026"
+    assert stored[2] is True
+
+
+# ---------------------------------------------------------------------------
+#  Архивный ряд: заморожен, но обратим (DoD 28)
+# ---------------------------------------------------------------------------
+
+def _archived(db) -> dict:
+    series = make_series(db)
+    crud.update_series(db, series["id"], is_active=False)
+    return series
+
+
+def test_unfreeze_alone_returns_the_series_to_active(db_session):
+    """Без этого случая архивация была бы НЕОБРАТИМОЙ (DoD 28)."""
+    series = _archived(db_session)
+
+    updated = crud.update_series(db_session, series["id"], is_active=True)
+
+    assert updated["is_active"] is True
+
+
+def test_unfreeze_together_with_edits_is_a_conflict(db_session):
+    """Совмещённая расконсервация запрещена намеренно: иначе «заморожен»
+    проверялось бы внутри той же транзакции, которая размораживает, и правило
+    перестало бы быть проверяемым."""
+    series = _archived(db_session)
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], is_active=True, name="Другое имя")
+    assert exc.value.status_code == 409
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], is_active=True, values=[year(2026, "1.060")])
+    assert exc.value.status_code == 409
+
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["is_active"] is False
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"name": "Другое имя"},
+        {"note": "другое примечание"},
+        {"values": [{"year": 2026, "coefficient": Decimal("1.060"),
+                     "source": "бюллетень", "is_forecast": True}]},
+        {"is_active": False},
+    ],
+)
+def test_any_edit_of_an_archived_series_is_a_conflict(db_session, patch):
+    series = _archived(db_session)
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], **patch)
+    assert exc.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+#  Атомарность правки (DoD 26): шаг 3 плана
+# ---------------------------------------------------------------------------
+
+def test_patch_with_a_broken_second_year_applies_nothing(db_session):
+    """Первый год валиден, второй нет — не применяется НИ ОДНОГО, и `name` тоже.
+
+    **Почему именно пустой `source`, а не `coefficient = "-1"`:** отказ обязан
+    случиться ВНУТРИ CRUD, после того как первый год уже применён. Правило
+    «непусто после `btrim`» естественным образом не выражается в pydantic
+    (`min_length=1` пропускает пробел), тогда как положительность коэффициента
+    кто-нибудь однажды продублирует в схеме `gt=0` — и тест станет вакуозным, не
+    изменив ни строчки в самом тесте.
+
+    Состояние читается ПОСЛЕ `expire_all()`: identity map вернул бы объект из
+    памяти сессии, и тест проверил бы кэш, а не базу.
+    """
+    series = make_series(db_session, years=[])
+    assert stored_years(db_session, series["id"]) == {}
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(
+            db_session,
+            series["id"],
+            name="Ряд с исправленным названием",
+            values=[
+                year(2025, "1.0830", source="бюллетень 01.2026"),
+                year(2026, "1.060", source="   "),
+            ],
+        )
+
+    assert exc.value.status_code == 422
+    # `detail` — СТРОКА доменного отказа, а не список pydantic: если проверка
+    # уедет в схему запроса, тест покраснеет вместо того, чтобы тихо перестать
+    # сторожить.
+    assert isinstance(exc.value.detail, str)
+
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["name"] == SERIES_NAME
+    assert stored_years(db_session, series["id"]) == {}
+
+
+# ---------------------------------------------------------------------------
+#  Метки времени (DoD 37): только на committing_db
+# ---------------------------------------------------------------------------
+
+def _stamps(db, series_id: int) -> tuple:
+    """Метка ряда и метки его годов, прочитанные заново из базы."""
+    db.expire_all()
+    series_stamp = db.execute(
+        sa.select(InflationSeries.updated_at).where(InflationSeries.id == series_id)
+    ).scalar_one()
+    year_stamps = dict(
+        db.execute(
+            sa.select(InflationIndexValue.year, InflationIndexValue.updated_at)
+            .where(InflationIndexValue.series_id == series_id)
+        ).all()
+    )
+    return series_stamp, year_stamps
+
+
+def test_updated_at_moves_only_when_something_actually_changed(committing_db):
+    """Оба направления (DoD 37).
+
+    Сдвиг без изменений соврал бы на полосе уровней, что ряд правили; отсутствие
+    сдвига при изменении лишило бы компромисс §2.10 («ссылка не гарантирует
+    исторического результата») единственного носителя на поверхности.
+
+    Фикстура именно `committing_db`: каждый вызов CRUD коммитит, то есть идёт
+    своей транзакцией, и `now()` между ними РАЗНАЯ. В `db_session` обе половины
+    утверждения были бы недоказуемы.
+    """
+    series = make_series(
+        committing_db, years=[year(2024, "1.075"), year(2025, "1.083")]
+    )
+    series_id = series["id"]
+    base_series, base_years = _stamps(committing_db, series_id)
+
+    # 1. Запрос, повторяющий текущее состояние ЦЕЛИКОМ, не двигает ничего.
+    crud.update_series(
+        committing_db, series_id,
+        name=SERIES_NAME, note="официальная публикация, по РФ",
+        values=[year(2024, "1.075"), year(2025, "1.083")],
+    )
+    same_series, same_years = _stamps(committing_db, series_id)
+    assert same_series == base_series
+    assert same_years == base_years
+
+    # 2. Правка ОДНОГО года двигает и его метку, и метку ряда; сосед не тронут.
+    crud.update_series(committing_db, series_id, values=[year(2025, "1.0915")])
+    after_year, year_stamps = _stamps(committing_db, series_id)
+    assert year_stamps[2025] > base_years[2025]
+    assert year_stamps[2024] == base_years[2024]
+    assert after_year > base_series
+
+    # 3. Правка поля ряда двигает метку ряда, годы остаются на месте.
+    crud.update_series(committing_db, series_id, note="уточнённое примечание")
+    after_note, note_years = _stamps(committing_db, series_id)
+    assert after_note > after_year
+    assert note_years == year_stamps
