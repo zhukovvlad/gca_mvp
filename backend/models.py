@@ -1106,3 +1106,79 @@ class AppSettings(Base):
             name="ck_app_settings_passport_top_n",
         ),
     )
+
+
+class InflationSeries(Base):
+    """Именованный ряд годовых индексов инфляции (спека инфляции §2.6, §2.11).
+
+    Название несёт КОНКРЕТНЫЙ показатель — «Росстат, ИПЦ, декабрь к декабрю», а
+    не «официальный»: у названного ряда подпись на поверхности выходит из данных,
+    тогда как булево поле потребовало бы зашить две подписи в код. Побочно
+    снимается вопрос об агентстве и стране — второй официальный ряд по другой
+    стране есть ещё одна строка справочника, а не правка кода.
+
+    `note` — примечание ряда; именно оно показывается на полосе уровней `/compare`
+    (§2.12), тогда как источники ПО ГОДАМ на экране не показываются и печатаются
+    только на листе выгрузки.
+
+    Удаления нет (§2.10): ненужный ряд архивируется `is_active = false` и остаётся
+    читаемым по старой ссылке, но не предлагается для нового выбора. Версионности
+    у ряда тоже нет — компромисс назван в спеке и вынесен на поверхность датой
+    `updated_at`.
+
+    Выражения `CHECK` дублируют миграцию 0014 намеренно; parity-тесты
+    `test_schema_constraints.py` ловят расхождение — `alembic check` его не видит.
+    """
+    __tablename__ = "inflation_series"
+
+    id = Column(BigInteger, primary_key=True)
+    name = Column(Text, nullable=False)
+    note = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default=sa_text("true"))
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_inflation_series_name"),
+        CheckConstraint("btrim(name) <> ''", name="ck_inflation_series_name_not_blank"),
+    )
+
+
+class InflationIndexValue(Base):
+    """Значение ряда за один год: `k(y)` — декабрь года `y` к декабрю `y−1`.
+
+    Цепной коэффициент, а не уровень цен (§2.3): число сверяется с публикацией
+    напрямую, поэтому опечатку видно глазами, и правка одного года не трогает
+    соседние. Обратная сторона названа вслух — правка одного звена сдвигает все
+    последующие годы, и это верное поведение.
+
+    `source` обязателен и непуст: вопрос «откуда 8,3 %» (§1 п. 4 `AGENTS.md`)
+    задают к артефакту защиты перед банком, то есть к листу выгрузки, где источник
+    и печатается.
+
+    `is_forecast` — год, ещё не завершившийся: коэффициент за 2026-й станет фактом
+    только в конце года, а цель по умолчанию именно в нём (§2.7). Поверхность
+    называет год прогнозным; автоматической экстраполяции нет — число, выдуманное
+    кодом, некому подписать.
+
+    Непрерывность ряда схемой НЕ проверяется (§2.9): покрытие считается при чтении
+    объединением требуемых годов выборки, и это точнее любого запрета пропусков.
+    """
+    __tablename__ = "inflation_index_values"
+
+    id = Column(BigInteger, primary_key=True)
+    # `ondelete` не задан: `DELETE` не предусмотрен ни для рядов, ни для значений
+    # (§2.10), и каскад описывал бы удаление, которого в контракте нет.
+    series_id = Column(BigInteger, ForeignKey("inflation_series.id"), nullable=False)
+    year = Column(Integer, nullable=False)
+    coefficient = Column(Numeric, nullable=False)
+    is_forecast = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    source = Column(Text, nullable=False)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("series_id", "year", name="uq_inflation_index_values_series_year"),
+        CheckConstraint("coefficient > 0", name="ck_inflation_index_values_coefficient_positive"),
+        CheckConstraint("btrim(source) <> ''", name="ck_inflation_index_values_source_not_blank"),
+    )

@@ -440,17 +440,17 @@ NOT NULL → inflation_series` (`ondelete` не задаётся — `DELETE` з
 `is_forecast bool NOT NULL DEFAULT false`, `source text NOT NULL CHECK (btrim(source) <> '')`,
 `UNIQUE (series_id, year)`, `created_at`, `updated_at`.
 
-- [ ] **Step 1:** миграция (`revision = "0014"`, `down_revision = "0013"`),
+- [x] **Step 1:** миграция (`revision = "0014"`, `down_revision = "0013"`),
       `downgrade` роняет обе таблицы. Выражения CHECK продублировать константами
       в шапке — как в 0013: миграция обязана быть неизменной во времени.
-- [ ] **Step 2:** модели поверх, `__table_args__` повторяют CHECK/UNIQUE
+- [x] **Step 2:** модели поверх, `__table_args__` повторяют CHECK/UNIQUE
       дословно (за расхождение отвечают parity-тесты, `alembic check` выражений
       не сравнивает).
-- [ ] **Step 3:** справочник создаётся **пустым** — никаких `INSERT` в миграции.
-- [ ] **Step 4:** parity-тесты: пустое `name` после `btrim` отвергнуто, пустой
+- [x] **Step 3:** справочник создаётся **пустым** — никаких `INSERT` в миграции.
+- [x] **Step 4:** parity-тесты: пустое `name` после `btrim` отвергнуто, пустой
       `source` отвергнут, `coefficient = 0` и `-1` отвергнуты, два одинаковых
       года в одном ряду отвергнуты, тот же год в РАЗНЫХ рядах разрешён.
-- [ ] **Step 5:** `just db-test-check` (`alembic check`) и прогон
+- [x] **Step 5:** `just db-test-check` (`alembic check`) и прогон
       `test_schema_constraints.py`; проверить `alembic downgrade -1` и обратно.
 
 **Утверждения:** после `upgrade` `select count(*) from inflation_series` = 0;
