@@ -306,6 +306,10 @@ h2 {{ font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0
    строки пустая полоса всё равно занимает место бордюром и отступом. */
 .levels[hidden] {{ display:none; }}
 .btn.sm {{ padding:3px 10px; font-size:11.5px; }}
+.lnk {{ all:unset; cursor:pointer; text-decoration:underline; text-underline-offset:2px;
+  font-size:11.5px; color:inherit; }}
+.lnk:hover {{ text-decoration-thickness:2px; }}
+.lnk:focus-visible {{ outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }}
 .btn:disabled {{ cursor:not-allowed; color:var(--fg4); background:var(--sunken); }}
 /* Приближение shadcn-диалога проекта (`components/ui/dialog.tsx` на @base-ui):
    затемнение, карточка по центру, шапка с заголовком и описанием, подвал с
@@ -474,6 +478,14 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
       <p class="axisnote" style="margin-top:6px"><span class="hint">Адрес
       страницы:</span> <code id="urlbar"></code></p>
     </div>
+    <p class="axisnote" style="margin-top:12px"><b>«Изменить ряд» в полосе уровней и
+    «Заполнить недостающие годы» в баннере отказа открывают ТО ЖЕ окно, что экран
+    нормативов</b> — не вторую форму. Обе кнопки видны только роли
+    <code>admin</code>: <code>member</code> ряд читает и приведение применяет, но не
+    правит (§2.12), и показывать ему контрол, падающий в 403, нечестно. Рамку
+    держит описание окна: ряд общий, версий у него нет, правка меняет числа у всех
+    на уже открытых сравнениях. После сохранения сравнение перезапрашивается — иначе
+    на экране остались бы числа по прежнему ряду.</p>
     <p class="axisnote bound" style="margin-top:12px">Умолчательного ряда
     <b>нет</b>, и это не придирка: на нём держится ответ <code>400</code> для
     месяца без ряда (§2.12). Поэтому «Привести» недоступно, пока ряд не выбран, а
@@ -572,6 +584,11 @@ table.mini td.wide {{ font-variant-numeric:normal; }}
   "missing_years": [2024, 2025]
  }}
 }}</code></pre>
+      <p class="axisnote" style="margin-top:12px">
+        <button class="btn primary editBtn" type="button">Заполнить недостающие годы</button>
+        <span class="hint" style="margin-left:9px">Открывает то же окно на годах,
+        которых не хватает, — раньше баннер лишь отправлял искать их в другом
+        разделе.</span></p>
       <p class="axisnote">Параметры остались в адресе:
       <code>?inflation_series_id=1&amp;target_month=2026-08</code> — видно, что
       именно не сработало, и недостающие годы можно завести не угадывая.</p>
@@ -770,7 +787,8 @@ function render() {{
     box.innerHTML = '<span class="lv-lbl">Ряд по годам</span>' +
       s.years.map(y => '<span class="yr">' + y.y + ' <b>' + y.g + '</b>' +
         (y.fc ? ' <span class="fc">прогноз</span>' : '') + '</span>').join('') +
-      '<span class="meta">' + (s.note ? s.note + ' · ' : '') + 'правлен ' + s.updated + '</span>';
+      '<span class="meta">' + (s.note ? s.note + ' · ' : '') + 'правлен ' + s.updated +
+      ' <button class="lnk editBtn" type="button">Изменить ряд</button></span>';
   }} else {{
     box.hidden = true;
     box.innerHTML = '';
@@ -816,8 +834,12 @@ monthInp.addEventListener('change', () => {{ if (on) render(); }});
 // --- модальное окно правки ряда
 const dlg = document.getElementById('dlg');
 // Правятся ОБА ряда — и официальный, и кастомный: право у admin одно на все ряды.
-document.querySelectorAll('.editBtn').forEach(b =>
-  b.addEventListener('click', () => dlg.showModal()));
+// Делегирование на документ, а не перебор узлов: кнопка в полосе уровней
+// перерисовывается вместе с полосой, и слушатель на снятом узле бы потерялся.
+document.addEventListener('click', (e) => {{
+  const b = e.target.closest('.editBtn');
+  if (b && !b.disabled) dlg.showModal();
+}});
 
 // Живая расшифровка коэффициента внутри диалога: 1.083 -> «Рост 8,3 %».
 // Считается по ВВЕДЁННОМУ значению, а не по сохранённому, — иначе она не защита.
