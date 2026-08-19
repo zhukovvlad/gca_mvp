@@ -40,12 +40,21 @@ import type { InflationSeries, InflationSeriesValueInput } from "@/types/domain"
  * архивном ряде (его нет в списке для выбора), потом на порядке завершения запросов,
  * — и оба раза причина была одна: `undefined ?? null`.
  *
- * `mode: "edit"` с `series: null` означает «правим, но объект ещё не получен» — окно
- * показывает загрузку, а НЕ форму создания.
+ * `mode: "edit"` без объекта означает «правим, но объект ещё не получен» — окно
+ * показывает загрузку либо отказ, а НЕ форму создания.
+ *
+ * **`reason` обязателен, и это продолжение того же урока.** Первая правка развела
+ * «создаём» и «объект не получен», но «не получен» осталось ОДНИМ значением на два
+ * разных факта: запрос списка ещё идёт — и запрос списка упал. Пока они не
+ * различались, упавший список оставлял окно на «Загружаем…» навсегда: `data`
+ * никогда не появится, а ждать нечего. Вызывающий знает, какой из двух фактов
+ * настал, и обязан его назвать — вывести это из `series === null` нельзя, как
+ * нельзя было вывести режим.
  */
 export type InflationSeriesTarget =
   | { mode: "create" }
-  | { mode: "edit"; series: InflationSeries | null };
+  | { mode: "edit"; series: InflationSeries }
+  | { mode: "edit"; series: null; reason: "pending" | "failed" };
 
 interface InflationSeriesDialogProps {
   open: boolean;
@@ -126,6 +135,19 @@ export function InflationSeriesDialog({
   // уже пришли. Промах поиска больше не может превратиться в создание: режим задан
   // снаружи, и при `mode: "edit"` без объекта окно показывает загрузку.
   const ready = target.mode === "create" || (series !== null && values.data !== undefined);
+  /*
+    ТРЕТЬЕ состояние окна, а не два. `ready` отвечает только на «данные есть»;
+    терминальная ошибка от ожидания им не отличается, и без отдельной ветки окно
+    висит на «Загружаем ряд и его годы…» бесконечно. Оба пути ошибки — свои:
+
+    * ряд не получен и получен не будет (`reason: "failed"`) — упал запрос СПИСКА,
+      и знает об этом только вызывающий;
+    * ряд получен, а его ГОДЫ нет (`values.isError`) — запросом годов владеет само
+      окно, поэтому этот путь оно читает само. Ревью назвало только первый.
+  */
+  const failed =
+    target.mode === "edit" &&
+    (target.series === null ? target.reason === "failed" : values.isError);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -136,7 +158,23 @@ export function InflationSeriesDialog({
           начальные значения задаёт `useState`: эффект, сбрасывающий поля, вызвал
           бы каскадный рендер (тот же приём, что в `ReapproveDialog`).
         */}
-        {open && ready ? (
+        {open && failed ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Ряд индексов инфляции</DialogTitle>
+              <DialogDescription>
+                Не удалось загрузить ряд и его годы. Форма не открыта намеренно: она
+                показала бы ряд без сохранённых годов, и правка выглядела бы как их
+                потеря. Закройте окно и попробуйте снова.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Закрыть
+              </Button>
+            </DialogFooter>
+          </>
+        ) : open && ready ? (
           <InflationSeriesForm
             key={series?.id ?? "new"}
             series={series}

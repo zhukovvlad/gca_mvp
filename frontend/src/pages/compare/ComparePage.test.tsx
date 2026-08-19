@@ -636,6 +636,109 @@ describe("ComparePage: поправка на инфляцию", () => {
     expect(screen.queryByTestId("inflation-refusal")).not.toBeInTheDocument();
   });
 
+  it("отказ ПЛЮС падение номинального запроса: баннер причины и явное состояние", async () => {
+    /*
+     * Третий круг внешнего ревью. Экран делает второй, номинальный запрос — и он
+     * тоже умеет падать. Пока баннер жил внутри блока `comparison &&`, эта пара
+     * давала страницу с ОДНИМ ЗАГОЛОВКОМ: чисел нет, общий EmptyState подавлен
+     * условием `!refused`, скелета нет — `nominalQ` не в `isPending`, а в `isError`.
+     * Молчание здесь хуже любого текста: причина отказа приведения ИЗВЕСТНА из
+     * первого ответа и от чисел не зависит.
+     *
+     * Хендлер различает запросы по наличию инфляционных параметров: первый обязан
+     * ответить штатным `422`, второй — сбоем.
+     */
+    server.use(
+      http.get("/api/v1/analytics/comparison", ({ request }) => {
+        if (new URL(request.url).searchParams.get("inflation_series_id")) {
+          return HttpResponse.json(
+            {
+              detail: {
+                code: "missing_inflation_years",
+                message: "Не заданы коэффициенты за годы: 2024, 2026.",
+                missing_years: [2024, 2026],
+              },
+            },
+            { status: 422 }
+          );
+        }
+        return new HttpResponse(null, { status: 500 });
+      })
+    );
+    await renderCompareRaw(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    // Отсутствие чисел названо ОТДЕЛЬНО: это второй факт, а не тот же самый. Ждать
+    // приходится именно его: баннер появляется раньше — на отказе ПЕРВОГО запроса,
+    // когда номинальный ещё в полёте и на экране законно стоит скелет.
+    expect(await screen.findByText("Номинальные числа получить не удалось")).toBeInTheDocument();
+    const banner = screen.getByTestId("inflation-refusal");
+    expect(banner).toHaveTextContent("Не заданы коэффициенты за годы: 2024, 2026.");
+    // Общий «не удалось загрузить сравнение» по-прежнему подавлен: отказ штатный, и
+    // два сообщения об одном событии оставили бы читателя выбирать, какому верить.
+    expect(screen.queryByText("Не удалось загрузить сравнение")).not.toBeInTheDocument();
+    // Баннер ОДИН: точек монтирования две, но условия взаимоисключающие.
+    expect(screen.getAllByTestId("inflation-refusal")).toHaveLength(1);
+    // Ошибочные параметры остаются в адресе и здесь (§2.9).
+    expect(search()).toContain("inflation_series_id=1");
+  });
+
+  it("баннер отказа при ПОКАЗАННЫХ числах остаётся ровно одним узлом", async () => {
+    /*
+     * Парный к предыдущему, и он про механизм: баннер — один элемент с ДВУМЯ точками
+     * монтирования (числа есть / чисел нет). Условия взаимоисключающие, и если кто-то
+     * их разведёт, баннер удвоится — читатель увидит два одинаковых предупреждения.
+     */
+    handlerState.inflationOutcome = "missing-years";
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    await waitFor(() => expect(screen.getAllByTestId("inflation-refusal")).toHaveLength(1));
+    expect(screen.queryByText("Номинальные числа получить не удалось")).not.toBeInTheDocument();
+  });
+
+  it("упавший список рядов: селектор называет ряд из ответа, а не «Выберите ряд»", async () => {
+    /*
+     * Находка сверх двух названных ревью. Список рядов — отдельный запрос, и на его
+     * падении `find` промахивался: селектор печатал «Выберите ряд» при работающем
+     * приведении, то есть говорил неправду о том, чем приведены показанные числа, —
+     * дефект того же рода, что захардкоженное название в подписи оси (DoD 31).
+     * Название при этом ИЗВЕСТНО: его вернул сервер вместе с числами.
+     *
+     * Второе утверждение — про молчание: пустой список опций без объяснения читается
+     * как «рядов не заведено».
+     */
+    server.use(
+      http.get("/api/v1/inflation-series", () => new HttpResponse(null, { status: 500 }))
+    );
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    const trigger = screen.getByLabelText("Ряд индексов");
+    await waitFor(() => expect(trigger).toHaveTextContent("Росстат, ИПЦ, декабрь к декабрю"));
+    expect(trigger).not.toHaveTextContent("Выберите ряд");
+    expect(screen.getByText(/Список рядов не загрузился/)).toBeInTheDocument();
+    // Приведение продолжает работать: считает его сервер, и список ему не нужен.
+    expect(screen.getByTestId("inflation-levels")).toBeInTheDocument();
+  });
+
+  it("упавший список рядов: окно правки даёт отказ, а не бесконечную загрузку", async () => {
+    /*
+     * Тот же упавший запрос, вторая его жертва — и это ПРИЧИНА находки ревью про
+     * окно. Режим окна уже не зависел от промаха поиска, но «объект не получен» и
+     * «объект не будет получен» оставались одним значением, поэтому окно обещало
+     * загрузку, которая никогда не кончится.
+     */
+    server.use(
+      http.get("/api/v1/inflation-series", () => new HttpResponse(null, { status: 500 }))
+    );
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+    await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
+
+    expect(await screen.findByText(/Не удалось загрузить ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText(/Загружаем ряд и его годы/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+  });
+
   it("отказ по дате ДС: кнопки НЕТ — правкой ряда это не лечится", async () => {
     /*
      * Предлагать «заполнить годы» там, где не хватает даты ДС, значит звать

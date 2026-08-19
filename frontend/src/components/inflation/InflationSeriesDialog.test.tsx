@@ -233,7 +233,7 @@ describe("InflationSeriesDialog", () => {
     renderWithProviders(
       <InflationSeriesDialog
         open
-        target={{ mode: "edit", series: null }}
+        target={{ mode: "edit", series: null, reason: "pending" }}
         onOpenChange={vi.fn()}
       />
     );
@@ -241,6 +241,61 @@ describe("InflationSeriesDialog", () => {
     expect(await screen.findByText(/Загружаем ряд и его годы/)).toBeInTheDocument();
     expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
+  });
+
+  it("упавший запрос СПИСКА даёт отказ, а не бесконечную загрузку", async () => {
+    /*
+     * Третий круг внешнего ревью. `ready` отвечал только на «данные есть», поэтому
+     * терминальная ошибка не отличалась от ожидания: `data` не появится никогда, а
+     * окно обещало, что оно ещё грузится. Различить это само окно не может — запрос
+     * списка принадлежит вызывающему, — поэтому причину отсутствия объекта заявляет
+     * он, тем же приёмом, каким заявляет режим.
+     */
+    serveValues();
+    const onOpenChange = vi.fn();
+    renderWithProviders(
+      <InflationSeriesDialog
+        open
+        target={{ mode: "edit", series: null, reason: "failed" }}
+        onOpenChange={onOpenChange}
+      />
+    );
+
+    expect(await screen.findByText(/Не удалось загрузить ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText(/Загружаем ряд и его годы/)).not.toBeInTheDocument();
+    // Формы нет ни в виде правки, ни в виде создания: она показала бы ряд без годов.
+    expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
+    expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("упавший запрос ГОДОВ ряда тоже даёт отказ — ревью его не назвало", async () => {
+    /*
+     * ВТОРОЙ путь того же выражения, и он отличается от первого владельцем запроса:
+     * годы ряда запрашивает само окно, поэтому `values.isError` оно обязано читать
+     * само, а не ждать пропа. Объект ряда здесь ПОЛУЧЕН — то есть первое условие
+     * `ready` выполнено, и без этой ветки окно висело бы на «Загружаем…» при живом
+     * ряде на экране.
+     */
+    server.use(
+      http.get("/api/v1/inflation-series/:id/values", () => new HttpResponse(null, { status: 500 }))
+    );
+    renderWithProviders(
+      <InflationSeriesDialog
+        open
+        target={{ mode: "edit", series: ACTIVE_SERIES }}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText(/Не удалось загрузить ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText(/Загружаем ряд и его годы/)).not.toBeInTheDocument();
+    // Пустая форма с сохранёнными годами, которых не видно, — хуже отказа: правка
+    // выглядела бы как их потеря.
+    expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Сохранить" })).not.toBeInTheDocument();
   });
 
   it("год добавленной строки редактируется целиком, не теряя фокус", async () => {

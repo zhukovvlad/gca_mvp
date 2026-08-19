@@ -73,6 +73,30 @@ describe("InflationSeriesTab", () => {
     expect(screen.queryByText(/Рядов индексов пока нет/)).not.toBeInTheDocument();
   });
 
+  it("упавший запрос списка — НЕ пустой справочник и НЕ приглашение создать ряд", async () => {
+    /*
+     * Третий круг внешнего ревью, находка сверх двух названных. `series.data ?? []`
+     * уводил отказ в ту же ветку, что пустоту, и экран УТВЕРЖДАЛ «Рядов индексов
+     * пока нет» при живом справочнике — то есть говорил неправду и звал завести
+     * первый ряд. Кончилось бы это дубликатом либо `409` по занятому названию.
+     *
+     * Парный к тесту пустого справочника выше: он проверяет, что настоящая пустота
+     * по-прежнему доводит до создания, — иначе эта правка спрятала бы состояние
+     * сразу после миграции (§2.6).
+     */
+    server.use(
+      http.get("/api/v1/inflation-series", () => new HttpResponse(null, { status: 500 }))
+    );
+    renderWithProviders(<InflationSeriesTab />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Не удалось загрузить ряды индексов/)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/Рядов индексов пока нет/)).not.toBeInTheDocument();
+    // Кнопки создания нет ни одной: создание — единственное опасное действие здесь.
+    expect(screen.queryByRole("button", { name: "Создать ряд" })).not.toBeInTheDocument();
+  });
+
   it("«Изменить» открывает ТОТ ЖЕ InflationSeriesDialog", async () => {
     await renderTab();
 

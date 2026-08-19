@@ -23,7 +23,10 @@ import {
   InflationRefusalBanner,
   MISSING_YEARS_CODE,
 } from "@/components/inflation/InflationRefusalBanner";
-import { InflationSeriesDialog } from "@/components/inflation/InflationSeriesDialog";
+import {
+  InflationSeriesDialog,
+  type InflationSeriesTarget,
+} from "@/components/inflation/InflationSeriesDialog";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { coefficientLevel } from "@/lib/inflation";
 import {
@@ -633,6 +636,13 @@ export default function ComparePage() {
   const nominalQ = useComparison(nominalParams, hasSelection && refused);
 
   const comparison = refused ? nominalQ.data : comparisonQ.data;
+  /*
+    Номинальный запрос — тоже запрос, и он тоже умеет падать. Кодированного отказа
+    он вернуть не может (инфляционных параметров в нём нет), поэтому его ошибка
+    всегда «неизвестный сбой», и состояние ей нужно ОТДЕЛЬНОЕ от общего EmptyState:
+    причина отказа приведения при этом известна и названа баннером.
+  */
+  const nominalFailed = refused && nominalQ.isError;
 
   /*
     Выгрузка листа — ТРЕТИЙ отчёт §7.6, и кнопка ему нужна именно здесь.
@@ -743,6 +753,51 @@ export default function ComparePage() {
     setSearchParams(next, { replace: true });
   }, [resolvedMonth, targetMonthParam, searchParams, setSearchParams]);
 
+  /*
+    Баннер отказа НЕ ЗАВИСИТ ОТ ЧИСЕЛ, и поэтому он — элемент, а не кусок разметки
+    внутри блока `comparison &&`. Причина отказа лежит в ответе на ПЕРВЫЙ запрос и
+    известна даже тогда, когда номинальный запрос за числами тоже упал. Пока баннер
+    жил только вместе с таблицей, эта пара давала страницу с одним заголовком:
+    `comparison` пуст, общий EmptyState подавлен условием `!refused`, а скелета нет,
+    потому что `nominalQ` не в `isPending`, а в `isError`. Молчание здесь хуже любого
+    текста — человек видел заголовок и ничего больше. Найдено внешним ревью.
+
+    Один элемент, ДВЕ точки монтирования, условия взаимоисключающие (`comparison`
+    либо есть, либо нет), поэтому в DOM баннер ровно один — это утверждается тестом.
+    Место рядом с полосой уровней сохранено намеренно: когда числа показаны, баннер
+    объясняет выключенный переключатель, а он стоит там.
+  */
+  const refusalBanner =
+    refused && refusalCode ? (
+      <InflationRefusalBanner
+        code={refusalCode}
+        message={apiErrorDetail(comparisonQ.error) ?? "Причина не названа."}
+        seriesName={seriesListQ.data?.find((row) => row.id === selectedSeriesId)?.name}
+        missingYears={
+          apiErrorContext<{ missing_years?: number[] }>(comparisonQ.error)?.missing_years
+        }
+        canEdit={Boolean(canEditSeries)}
+        onFillMissingYears={(years) => {
+          // ТОТ ЖЕ компонент окна, что у полосы и у экрана нормативов, и тот же его
+          // экземпляр на этой странице (DoD 34).
+          setDialogMissingYears(years);
+          setEditingSeries(selectedSeriesId);
+        }}
+      />
+    ) : null;
+
+  /*
+    Объект правки и ПРИЧИНА его отсутствия — одно вычисление на одну точку вызова.
+    «Не нашли» здесь законно двумя разными способами, и окно обязано различать их:
+    запрос списка ещё идёт (`pending`) — либо он упал, либо завершился без этого
+    ряда (`failed`), и тогда ждать нечего. Прежде оба уводились в один `null`, и
+    упавший список оставлял окно на «Загружаем…» навсегда.
+  */
+  const editedSeriesRow = seriesListQ.data?.find((row) => row.id === editingSeries) ?? null;
+  const dialogTarget: InflationSeriesTarget = editedSeriesRow
+    ? { mode: "edit", series: editedSeriesRow }
+    : { mode: "edit", series: null, reason: seriesListQ.isPending ? "pending" : "failed" };
+
   if (!hasSelection) {
     return (
       <div className="container-page py-8">
@@ -793,6 +848,30 @@ export default function ComparePage() {
       )}
 
       {/*
+        ВТОРАЯ точка монтирования баннера — на случай, когда чисел нет вовсе. Причина
+        отказа приведения известна из первого ответа и обязана быть названа, даже
+        если номинальный запрос за числами тоже упал. Условие взаимоисключающее с
+        точкой внутри блока чисел, поэтому баннер в DOM ровно один.
+      */}
+      {!comparison && refusalBanner}
+
+      {/*
+        Отказ приведения И падение номинального запроса — ДВА разных факта, и второй
+        не отменяет первого. Общий EmptyState здесь не годится: он сказал бы «не
+        удалось загрузить сравнение», умолчав о том, что приведение отказано штатно и
+        по названной причине, — то есть повторил бы дефект второго круга ревью с
+        обратным знаком. Кнопка «Заполнить недостающие годы» в баннере выше при этом
+        живая: правка ряда перезапросит и сравнение (DoD 36).
+      */}
+      {nominalFailed && (
+        <EmptyState
+          className="mt-6"
+          title="Номинальные числа получить не удалось"
+          description="Причина отказа приведения названа выше, а сами суммы не загрузились. Обновите страницу: выбранные ряд и месяц остались в адресе."
+        />
+      )}
+
+      {/*
         ОДИН экземпляр окна на всю страницу: и полоса уровней, и баннер отказа
         управляют им, а не заводят каждый свой. Два экземпляра разошлись бы
         состоянием — открытие из баннера обязано давать то же окно, что открытие из
@@ -804,18 +883,16 @@ export default function ComparePage() {
           Режим ЗДЕСЬ всегда «правка»: и полоса уровней, и баннер отказа открывают
           окно по УЖЕ ВЫБРАННОМУ ряду, создания с этой страницы нет вовсе.
 
-          `series` при этом может быть `null` — список рядов идёт своим запросом и
-          может ещё не разрешиться (или упасть), когда сравнение уже пришло. Прежняя
-          редакция сворачивала это в `?? null`, и такой промах молча становился
-          режимом создания: admin, думая что правит ряд, открывал пустую форму
-          «Новый ряд индексов». Первое исправление закрыло только случай архивного
-          ряда, то есть один порядок завершения запросов; теперь режим не зависит от
-          порядка вовсе. Найдено внешним ревью дважды.
+          Объект ряда и причина его отсутствия считаются выше: список рядов идёт
+          своим запросом и может ещё не разрешиться либо упасть, когда сравнение уже
+          пришло. Прежняя редакция сворачивала это в `?? null`, и такой промах молча
+          становился режимом создания: admin, думая что правит ряд, открывал пустую
+          форму «Новый ряд индексов». Первое исправление закрыло только случай
+          архивного ряда, второе — порядок завершения запросов, а упавший список
+          по-прежнему оставлял окно в бесконечной загрузке. Найдено внешним ревью
+          трижды, и каждый раз причина была одна: одно значение на два состояния.
         */
-        target={{
-          mode: "edit",
-          series: seriesListQ.data?.find((row) => row.id === editingSeries) ?? null,
-        }}
+        target={dialogTarget}
         missingYears={dialogMissingYears}
         onOpenChange={(open) => {
           if (!open) {
@@ -840,6 +917,9 @@ export default function ComparePage() {
             <InflationControls
               series={seriesListQ.data ?? []}
               selectedSeriesId={selectedSeriesId}
+              // Запасное название — из ОТВЕТА СРАВНЕНИЯ, не собранное клиентом.
+              selectedSeriesName={comparison.inflation?.series_name}
+              listFailed={seriesListQ.isError}
               enabled={Boolean(seriesIdParam) && !refused}
               targetMonth={targetMonthParam ?? ""}
               onSelectSeries={selectSeries}
@@ -865,25 +945,7 @@ export default function ComparePage() {
             />
           )}
 
-          {refused && refusalCode && (
-            <InflationRefusalBanner
-              code={refusalCode}
-              message={apiErrorDetail(comparisonQ.error) ?? "Причина не названа."}
-              seriesName={
-                seriesListQ.data?.find((row) => row.id === selectedSeriesId)?.name
-              }
-              missingYears={
-                apiErrorContext<{ missing_years?: number[] }>(comparisonQ.error)?.missing_years
-              }
-              canEdit={Boolean(canEditSeries)}
-              onFillMissingYears={(years) => {
-                // ТОТ ЖЕ компонент окна, что у полосы и у экрана нормативов, и тот
-                // же его экземпляр на этой странице (DoD 34).
-                setDialogMissingYears(years);
-                setEditingSeries(selectedSeriesId);
-              }}
-            />
-          )}
+          {refusalBanner}
 
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
