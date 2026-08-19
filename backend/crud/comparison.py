@@ -611,8 +611,23 @@ def resolve_inflation(
     `load_rollups` держит инвариант «ровно четыре запроса на любую выборку», и
     запрос внутри него этот инвариант уронил бы.
 
-    Три запроса: ряд по `id` (он же даёт `404`), значения ряда, даты смет
-    (`Estimate ⋈ Contract`).
+    **Два запроса, и первый из них ОДИН НА ДВА ВХОДА намеренно.** Ряд читается
+    вместе со своими годами (`LEFT JOIN`), а не двумя `SELECT`-ами: в
+    `READ COMMITTED` каждый оператор берёт свой снимок, и параллельный `PATCH`,
+    закоммиченный между двумя чтениями, отдал бы СТАРЫЕ `series_name`/`series_note`/
+    `series_updated_at` вместе с УЖЕ НОВЫМИ коэффициентами. Лист выгрузки печатает и
+    то и другое рядом, а `series_updated_at` — единственный носитель компромисса
+    §2.10 («ссылка не гарантирует исторического результата»), поэтому смешанное
+    наблюдение соврало бы читателю о том, какая редакция ряда дала числа.
+
+    Атомарная ЗАПИСЬ задачи 5 этого не закрывает: она гарантирует, что не
+    существует состояния «половина ряда записана», но не гарантирует, что два
+    независимых `SELECT` увидят одно и то же состояние. Найдено внешним ревью;
+    тем же доводом уже был закрыт разъезд двух чтений СМЕТ — там громким
+    `RuntimeError`, потому что читатели лежат в разных функциях, а здесь читатель
+    один, и одного оператора достаточно.
+
+    Второй запрос — даты смет (`Estimate ⋈ Contract`).
 
     Raises:
         DomainError 404: ряда нет. Архивный ряд по явному `id` ЧИТАЕТСЯ и
@@ -622,16 +637,39 @@ def resolve_inflation(
             недостающие годы по возрастанию. Номинальные числа при этом НЕ
             выдаются как результат приведения (§2.9).
     """
-    series = db.get(InflationSeries, series_id)
-    if series is None:
+    # `LEFT JOIN`, а не `INNER`: ряд без единого года — законное состояние
+    # (годы вводят вразнобой, §2.9), и он обязан отличаться от несуществующего.
+    # Ни одной строки — `404`; одна строка с `year IS NULL` — ряд есть, годов нет.
+    #
+    # `db.get` здесь не годится ещё и по второй причине: он отдаёт объект из
+    # identity map БЕЗ запроса, если тот уже загружен, и число запросов зависело
+    # бы от того, грелась сессия или нет, — то есть бюджет из теста не совпадал бы
+    # с бюджетом в проде.
+    series_rows = db.execute(
+        sa.select(
+            InflationSeries.name,
+            InflationSeries.note,
+            InflationSeries.updated_at,
+            InflationIndexValue.year,
+            InflationIndexValue.coefficient,
+            InflationIndexValue.source,
+            InflationIndexValue.is_forecast,
+            InflationIndexValue.updated_at.label("year_updated_at"),
+        )
+        .join(
+            InflationIndexValue,
+            InflationIndexValue.series_id == InflationSeries.id,
+            isouter=True,
+        )
+        .where(InflationSeries.id == series_id)
+    ).all()
+    if not series_rows:
         raise DomainError(404, f"Ряд индексов {series_id} не найден.")
 
-    values = {
-        value.year: value
-        for value in db.execute(
-            sa.select(InflationIndexValue).where(InflationIndexValue.series_id == series_id)
-        ).scalars().all()
-    }
+    series_name = series_rows[0].name
+    series_note = series_rows[0].note
+    series_updated_at = series_rows[0].updated_at
+    values = {row.year: row for row in series_rows if row.year is not None}
 
     rows = db.execute(
         sa.select(
@@ -696,20 +734,20 @@ def resolve_inflation(
             "coefficient": values[year].coefficient,
             "source": values[year].source,
             "is_forecast": values[year].is_forecast,
-            "updated_at": iso(values[year].updated_at),
+            "updated_at": iso(values[year].year_updated_at),
         }
         for year in sorted(required)
     ]
 
     return InflationPlan(
-        series_id=series.id,
-        series_name=series.name,
-        series_note=series.note,
+        series_id=series_id,
+        series_name=series_name,
+        series_note=series_note,
         # Дата правки ряда обязана приходить в ЭТОМ ответе, а не вторым запросом к
         # списку выбора: по прямой ссылке ряд может оказаться архивным, а в списке
         # архивных нет — полоса уровней осталась бы без примечания и без даты
         # (§2.12, DoD 38).
-        series_updated_at=iso(series.updated_at),
+        series_updated_at=iso(series_updated_at),
         target_month=f"{target_month.year:04d}-{target_month.month:02d}",
         # Прогнозным приведение называется по ИСПОЛЬЗОВАННЫМ годам: прогнозный
         # год, который не понадобился, флага не поднимает — иначе подпись
@@ -1678,12 +1716,20 @@ def _column_inflation(
 
     Поле `inflation_factors` появляется ТОЛЬКО при расхождении: в номинальном
     ответе и в согласном случае лишнего ключа нет.
+
+    **Колонка БЕЗ СМЕТ не получает инфляционных ключей вовсе — ни одного.**
+    Договор с заведённой карточкой и ещё не загруженной сметой законно попадает в
+    выборку (`load_rollups`: «договор без смет получает пустой список»), и
+    `inflation_coefficient: null` у него читался бы клиентом как «сметы приведены
+    РАЗНЫМИ множителями»: именно так `null` и определён выше. Чип сказал бы
+    «разные», подсказка осталась бы пустой — то есть колонка без единой суммы была
+    бы подписана расхождением, которого нет. Найдено внешним ревью.
     """
     factors = [
         (rollup, plan.factor_by_estimate[rollup.estimate_id]) for rollup in rollups
     ]
     if not factors:
-        return {"inflation_coefficient": None}
+        return {}
     distinct = {factor for _rollup, factor in factors}
     if len(distinct) == 1:
         return {"inflation_coefficient": next(iter(distinct))}

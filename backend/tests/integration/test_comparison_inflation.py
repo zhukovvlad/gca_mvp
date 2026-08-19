@@ -24,7 +24,9 @@ import pytest
 import sqlalchemy as sa
 
 from crud import comparison as cmp
+from crud import inflation_series as crud_series
 from crud.common import DomainError
+from models import InflationIndexValue, InflationSeries
 from money.inflation import YearMonth, adjust_amount
 from money.vat import quantize_money
 from tests import comparison_fixtures as fx
@@ -725,12 +727,22 @@ def test_estimate_without_a_factor_fails_loudly(db_session, factories):
         cmp.load_rollups(db_session, ids, adjustment={-1: Decimal("1.1")})
 
 
-def test_query_budget_is_five_without_adjustment_and_eight_with_it(db_session, factories):
+def test_query_budget_is_five_without_adjustment_and_seven_with_it(db_session, factories):
     """Абсолютный бюджет запросов, а не «не растёт с выборкой» (решение плана №4).
 
-    Пять без приведения: четыре в `load_rollups` плюс `_load_columns`. Восемь с
-    ним: те же пять плюс три у `resolve_inflation` — ряд по id, значения ряда,
-    даты смет. Число утверждается точным: «не растёт» пропустило бы лишний
+    Пять без приведения: четыре в `load_rollups` плюс `_load_columns`. **СЕМЬ** с
+    ним: те же пять плюс два у `resolve_inflation` — ряд ВМЕСТЕ со своими годами
+    одним оператором и даты смет.
+
+    **План обещал восемь, и расхождение объяснено, а не подогнано.** Восьмым был
+    отдельный `SELECT` строки ряда; он убран по замечанию внешнего ревью, потому
+    что два независимых `SELECT` в `READ COMMITTED` могут наблюдать полуприменённую
+    правку — старое название ряда рядом с новыми коэффициентами (замер в
+    `test_two_separate_selects_can_observe_a_half_applied_edit`). Правка теста
+    вместе с обоснованием — то, что план и предписывает на этот случай; молча
+    менять число нельзя.
+
+    Число утверждается точным: «не растёт с выборкой» пропустило бы лишний
     запрос, добавленный один раз на всю выборку.
     """
     series_id = _series(db_session)
@@ -745,7 +757,7 @@ def test_query_budget_is_five_without_adjustment_and_eight_with_it(db_session, f
             db_session, ids, vat_mode=cmp.VAT_MODE_OWN,
             inflation_series_id=series_id, target_month=TARGET_AUG_2026,
         )
-    assert adjusted.total == 8
+    assert adjusted.total == 7
 
 
 # ---------------------------------------------------------------------------
@@ -946,3 +958,134 @@ def test_nominal_request_over_http_is_unchanged(client, db_session, factories):
     assert "inflation" not in body
     for column in body["columns"]:
         assert "inflation_coefficient" not in column
+
+
+# ---------------------------------------------------------------------------
+#  Атомарность НАБЛЮДЕНИЯ ряда и колонка без смет (внешнее ревью 2026-08-19)
+# ---------------------------------------------------------------------------
+
+def test_two_separate_selects_can_observe_a_half_applied_edit(
+    committing_db, committing_session_factory
+):
+    """ЗАМЕР предпосылки, а не рассуждение: два `SELECT` в READ COMMITTED
+    действительно расходятся через параллельный коммит.
+
+    Этот тест не проверяет наш код — он проверяет, что опасность, из-за которой
+    ряд читается ОДНИМ оператором, существует. Без замера правило «читать одним
+    запросом» было бы верой: предпосылка, способная тихо оказаться ложной,
+    проверяется внутри самого теста (§12, ложные предпосылки).
+
+    Сценарий буквально тот, что назвало ревью: читаем строку ряда, сосед коммитит
+    `PATCH` целиком, читаем годы — и получаем СТАРОЕ название рядом с НОВЫМ
+    коэффициентом.
+    """
+    series_id = fx.series_with_years(
+        committing_db, "Ряд до правки", {2025: "1.083"}, note="старое примечание"
+    )
+    committing_db.commit()
+
+    # Первый SELECT: только строка ряда.
+    name_before = committing_db.execute(
+        sa.select(InflationSeries.name).where(InflationSeries.id == series_id)
+    ).scalar_one()
+
+    # Соседняя сессия правит ряд ЦЕЛИКОМ и коммитит — атомарно, как задача 5.
+    neighbour = committing_session_factory()
+    try:
+        crud_series.update_series(
+            neighbour, series_id,
+            name="Ряд после правки",
+            values=[{
+                "year": 2025, "coefficient": Decimal("1.500"),
+                "source": "исправленный источник", "is_forecast": False,
+            }],
+        )
+    finally:
+        neighbour.close()
+
+    # Второй SELECT в ТОЙ ЖЕ транзакции читателя: снимок уже другой.
+    coefficient_after = committing_db.execute(
+        sa.select(InflationIndexValue.coefficient).where(
+            InflationIndexValue.series_id == series_id
+        )
+    ).scalar_one()
+
+    assert name_before == "Ряд до правки"
+    assert coefficient_after == Decimal("1.500")
+    # Вот оно, смешанное наблюдение: старое имя и новый коэффициент в одном чтении.
+    # Именно его и делает непредставимым один оператор в `resolve_inflation`.
+
+
+def test_resolve_inflation_reads_the_series_and_its_years_in_one_statement(
+    db_session, factories
+):
+    """МЕХАНИЗМ: ряд и годы приходят ОДНИМ оператором, поэтому снимок один.
+
+    Два запроса на всю функцию: ряд вместе с годами и даты смет. Утверждение
+    числом, а не чтением кода: разделение обратно на два `SELECT` — самая
+    правдоподобная будущая правка («так же читается, зачем join»), и оно обязано
+    ронять тест.
+    """
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    with _count_queries(db_session) as counter:
+        cmp.resolve_inflation(
+            db_session, ids, series_id=series_id, target_month=TARGET_AUG_2026
+        )
+
+    assert counter.total == 2
+
+
+def test_series_without_years_is_told_apart_from_a_missing_series(db_session, factories):
+    """Ряд без единого года — законное состояние, и от `404` он обязан отличаться.
+
+    `LEFT JOIN` даёт на такой ряд одну строку с `year IS NULL`; `INNER` вернул бы
+    ноль строк, и живой пустой ряд стал бы «не найден». Годы вводят вразнобой
+    (§2.9), поэтому пустой ряд встречается сразу после создания.
+    """
+    empty_id = fx.series_with_years(db_session, "Ряд без годов", {})
+    contract_id = fx.contract_with_dates(
+        db_session, factories, MONEY, signed_date=dt.date(2026, 8, 15)
+    )
+
+    plan = cmp.resolve_inflation(
+        db_session, [contract_id], series_id=empty_id, target_month=TARGET_AUG_2026
+    )
+    assert plan.series_name == "Ряд без годов"
+    assert plan.used_years == []
+
+    with pytest.raises(DomainError) as exc:
+        cmp.resolve_inflation(
+            db_session, [contract_id], series_id=10**9, target_month=TARGET_AUG_2026
+        )
+    assert exc.value.status_code == 404
+
+
+def test_contract_without_estimates_gets_no_inflation_keys_at_all(db_session, factories):
+    """Колонка БЕЗ СМЕТ не получает ни одного инфляционного ключа.
+
+    Договор с заведённой карточкой и ещё не загруженной сметой законно попадает в
+    выборку. `inflation_coefficient: null` у него читался бы клиентом как «сметы
+    приведены РАЗНЫМИ множителями» — именно так `null` и определён контрактом, —
+    и чип сказал бы «разные» при пустой подсказке: колонка без единой суммы
+    оказалась бы подписана расхождением, которого нет. Найдено внешним ревью.
+    """
+    series_id = _series(db_session)
+    with_money = fx.contract_with_dates(
+        db_session, factories, MONEY, signed_date=dt.date(2026, 7, 6)
+    )
+    empty = factories.ContractFactory.create(signed_date=dt.date(2026, 7, 7)).id
+    db_session.flush()
+
+    data = cmp.build_comparison(
+        db_session, [with_money, empty], vat_mode=cmp.VAT_MODE_OWN,
+        inflation_series_id=series_id, target_month=TARGET_AUG_2026,
+    )
+
+    columns = {column["contract_id"]: column for column in data["columns"]}
+    assert "inflation_coefficient" not in columns[empty]
+    assert "inflation_factors" not in columns[empty]
+    # У колонки со сметой множитель на месте — иначе тест был бы зелен и на
+    # реализации, которая не приводит вообще ничего.
+    assert columns[with_money]["inflation_coefficient"] == FACTOR_JUL_2026
