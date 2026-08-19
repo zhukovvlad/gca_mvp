@@ -1,0 +1,370 @@
+import { useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { normalizeDecimalInput } from "@/lib/decimal";
+import { coefficientLevel } from "@/lib/inflation";
+import {
+  useCreateInflationSeries,
+  useInflationSeriesValues,
+  useUpdateInflationSeries,
+} from "@/services/queries";
+import type { InflationSeries, InflationSeriesValueInput } from "@/types/domain";
+
+interface InflationSeriesDialogProps {
+  open: boolean;
+  /** `null` — режим СОЗДАНИЯ. Тот же компонент, а не вторая форма. */
+  series: InflationSeries | null;
+  /**
+   * Годы, которых не хватило приведению. Вход из баннера отказа открывает окно с
+   * уже добавленными пустыми строками этих годов: система знает и ряд, и годы, и
+   * отправлять человека набирать их руками значило бы перекладывать на него
+   * работу, которую она сделала сама (§2.9).
+   */
+  missingYears?: number[];
+  onOpenChange: (open: boolean) => void;
+}
+
+/** Стартовый год у пустой формы — первый год разбега договоров стенда. */
+const FIRST_YEAR_SUGGESTION = 2024;
+
+interface YearRow extends InflationSeriesValueInput {
+  /** Уже сохранённый год нельзя убрать из формы: `DELETE` запрещён (§2.10). */
+  persisted: boolean;
+}
+
+/**
+ * Окно правки ряда индексов инфляции — ОДИН компонент на ТРИ входа (спека §2.12,
+ * DoD 34): строка ряда на экране нормативов, полоса уровней на `/compare` и баннер
+ * отказа. Вторая форма разошлась бы с первой — тот же довод, которым §2.12 требует
+ * одной функции трансляции отказа.
+ *
+ * **Почему входы с `/compare` вообще нужны:** аналитик видит уровни там же, где
+ * числа, и отправлять его в другой раздел за правкой значит рвать задачу пополам.
+ * **Почему они требуют осторожности:** ряд ОБЩИЙ, версий у него нет, и правка меняет
+ * числа у всех, кто в этот момент смотрит сравнение. Кнопка рядом с числами
+ * приглашает подкрутить индекс «под свою выборку» — то самое желание, которое
+ * вынесено в границу «персональный гипотетический ряд» (§4). Рамку держит ЭТОТ
+ * текст в окне, поэтому окно и обязано быть тем же, а не облегчённой формой на
+ * месте.
+ */
+export function InflationSeriesDialog({
+  open,
+  series,
+  missingYears,
+  onOpenChange,
+}: InflationSeriesDialogProps) {
+  const values = useInflationSeriesValues(series?.id ?? null);
+  const ready = series === null || values.data !== undefined;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-3xl">
+        {/*
+          Форма — отдельный компонент, и в дереве её нет, пока окно закрыто либо
+          годы ещё не пришли. Значит на каждое открытие она монтируется заново, а
+          начальные значения задаёт `useState`: эффект, сбрасывающий поля, вызвал
+          бы каскадный рендер (тот же приём, что в `ReapproveDialog`).
+        */}
+        {open && ready ? (
+          <InflationSeriesForm
+            key={series?.id ?? "new"}
+            series={series}
+            savedYears={values.data ?? []}
+            missingYears={missingYears ?? []}
+            onOpenChange={onOpenChange}
+          />
+        ) : (
+          <DialogHeader>
+            <DialogTitle>Ряд индексов инфляции</DialogTitle>
+            <DialogDescription>Загружаем годы ряда…</DialogDescription>
+          </DialogHeader>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InflationSeriesForm({
+  series,
+  savedYears,
+  missingYears,
+  onOpenChange,
+}: {
+  series: InflationSeries | null;
+  savedYears: InflationSeriesValueInput[];
+  missingYears: number[];
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [name, setName] = useState(series?.name ?? "");
+  const [note, setNote] = useState(series?.note ?? "");
+  const [rows, setRows] = useState<YearRow[]>(() => initialRows(savedYears, missingYears));
+
+  const create = useCreateInflationSeries();
+  const update = useUpdateInflationSeries();
+  const pending = create.isPending || update.isPending;
+
+  const archived = series !== null && !series.is_active;
+  // Неполная строка блокирует «Сохранить», а не уезжает на сервер молча: сервер
+  // отверг бы её `422` (год задаётся ТРЕМЯ полями), но человек уже нажал кнопку и
+  // получил бы отказ вместо подсказки. Это проверка ФОРМЫ; доменную она не
+  // дублирует — год без источника отвергает домен, и его тест живёт на бэкенде.
+  const incomplete = rows.some(
+    (row) => !Number.isInteger(row.year) || row.year < 1000 ||
+      !row.coefficient.trim() || !row.source.trim()
+  );
+  const canSubmit = name.trim() !== "" && !incomplete && !archived && !pending;
+
+  function patchRow(index: number, patch: Partial<YearRow>) {
+    setRows((current) =>
+      current.map((row, position) => (position === index ? { ...row, ...patch } : row))
+    );
+  }
+
+  function addRow() {
+    setRows((current) => [
+      ...current,
+      { year: nextYear(current), coefficient: "", source: "", is_forecast: false, persisted: false },
+    ]);
+  }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    // Годы уходят В ТОМ ЖЕ ЗАПРОСЕ, что название и примечание: отправлять их
+    // порознь значило бы допустить ряд, исправленный наполовину, — а он общий и
+    // без версий, так что «наполовину» означает неверные числа у всех, кто в
+    // этот момент смотрит сравнение (§2.12).
+    const values: InflationSeriesValueInput[] = rows.map((row) => ({
+      year: Number(row.year),
+      coefficient: normalizeDecimalInput(row.coefficient),
+      source: row.source.trim(),
+      is_forecast: row.is_forecast,
+    }));
+    try {
+      if (series === null) {
+        await create.mutateAsync({ name: name.trim(), note: note.trim() || null, values });
+      } else {
+        await update.mutateAsync({
+          id: series.id,
+          input: { name: name.trim(), note: note.trim() || null, values },
+        });
+      }
+      onOpenChange(false);
+    } catch {
+      // Отказ уже в тосте: занятое название, повтор года, архивный ряд.
+    }
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{series === null ? "Новый ряд индексов" : "Изменить ряд индексов"}</DialogTitle>
+        <DialogDescription>
+          Ряд общий: правка немедленно меняет числа у всех, кто смотрит сравнение, и
+          версий у ряда нет — прежний расчёт останется только в уже выгруженных файлах.
+          Подкручивать индекс под свою выборку нельзя.
+          {archived && " Ряд в архиве: сначала верните его в активные, потом правьте."}
+        </DialogDescription>
+      </DialogHeader>
+
+      <form onSubmit={handleSubmit} className="grid gap-4">
+        <div className="grid gap-2">
+          <Label htmlFor="inflation-series-name">Название</Label>
+          <Input
+            id="inflation-series-name"
+            value={name}
+            placeholder="Росстат, ИПЦ, декабрь к декабрю"
+            onChange={(event) => setName(event.target.value)}
+          />
+          <p className="text-xs text-fg-tertiary">
+            Название несёт конкретный показатель, а не «официальный»: им подписывается
+            ось сравнения.
+          </p>
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="inflation-series-note">Примечание</Label>
+          <Input
+            id="inflation-series-note"
+            value={note}
+            placeholder="официальная публикация, по РФ"
+            onChange={(event) => setNote(event.target.value)}
+          />
+        </div>
+
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Год</TableHead>
+              <TableHead>Коэффициент</TableHead>
+              <TableHead>Уровень</TableHead>
+              <TableHead>Источник</TableHead>
+              <TableHead>Прогноз</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row, index) => {
+              // Расшифровка считается по ВВОДИМОМУ значению, а не по сохранённому:
+              // иначе она не защита (§2.4, DoD 25).
+              const level = coefficientLevel(row.coefficient);
+              return (
+                <TableRow key={`${row.year}-${index}`}>
+                  <TableCell>
+                    <Input
+                      aria-label={`Год строки ${index + 1}`}
+                      inputMode="numeric"
+                      className="w-20"
+                      value={row.year}
+                      disabled={row.persisted}
+                      onChange={(event) =>
+                        patchRow(index, { year: Number(event.target.value) || 0 })
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      aria-label={`Коэффициент за ${row.year}`}
+                      inputMode="decimal"
+                      className="w-28"
+                      placeholder="1.083"
+                      value={row.coefficient}
+                      onChange={(event) => patchRow(index, { coefficient: event.target.value })}
+                    />
+                  </TableCell>
+                  <TableCell
+                    data-testid={`level-${row.year}`}
+                    className={
+                      level.tone === "bad"
+                        ? "text-danger-text font-medium"
+                        : level.tone === "ok"
+                          ? "text-fg-secondary"
+                          : "text-fg-tertiary"
+                    }
+                  >
+                    {level.text}
+                  </TableCell>
+                  <TableCell>
+                    <Input
+                      aria-label={`Источник за ${row.year}`}
+                      value={row.source}
+                      placeholder="бюллетень 01.2026"
+                      onChange={(event) => patchRow(index, { source: event.target.value })}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`Прогноз за ${row.year}`}
+                      checked={row.is_forecast}
+                      onCheckedChange={(checked) =>
+                        patchRow(index, { is_forecast: checked === true })
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    {/*
+                      Убрать можно ТОЛЬКО несохранённую строку: удаления годов не
+                      существует (§2.10), и кнопка у сохранённого года обещала бы
+                      операцию, которой нет. Год, убранный из формы, просто не
+                      уйдёт в запрос — а сохранённый останется в ряду.
+                    */}
+                    {!row.persisted && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label={`Убрать строку ${row.year}`}
+                        onClick={() =>
+                          setRows((current) => current.filter((_, position) => position !== index))
+                        }
+                      >
+                        Убрать
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+
+        {/*
+          Строка «добавить год» макетом не показана, но без неё вход «Заполнить
+          недостающие годы» нечем исполнить: недостающих годов в ряду по
+          определению ещё нет (решение плана №3).
+        */}
+        <div>
+          <Button type="button" variant="outline" onClick={addRow} disabled={archived}>
+            Добавить год
+          </Button>
+        </div>
+
+        <p className="text-xs text-fg-tertiary">
+          Коэффициент изменения цен, декабрь к декабрю. Например: 1.083 означает рост на
+          8,3 %.
+        </p>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Отмена
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
+            Сохранить
+          </Button>
+        </DialogFooter>
+      </form>
+    </>
+  );
+}
+
+function initialRows(
+  savedYears: InflationSeriesValueInput[],
+  missingYears: number[]
+): YearRow[] {
+  const saved: YearRow[] = savedYears.map((value) => ({
+    year: value.year,
+    coefficient: value.coefficient,
+    source: value.source,
+    is_forecast: value.is_forecast,
+    persisted: true,
+  }));
+  const known = new Set(saved.map((row) => row.year));
+  const added: YearRow[] = missingYears
+    .filter((year) => !known.has(year))
+    .sort((left, right) => left - right)
+    .map((year) => ({
+      year,
+      coefficient: "",
+      source: "",
+      is_forecast: false,
+      persisted: false,
+    }));
+  return [...saved, ...added];
+}
+
+function nextYear(rows: YearRow[]): number {
+  // Год новой строки — следующий за максимальным: годы вводят подряд. Клиентские
+  // часы для этого не годятся (`Date.now()` — часы читателя, §2.7), поэтому у
+  // пустой формы стартовое значение просто ЗАДАНО; это отправная точка, которую
+  // человек правит, а не утверждение о текущем годе.
+  const years = rows.map((row) => Number(row.year)).filter((year) => Number.isFinite(year));
+  return years.length > 0 ? Math.max(...years) + 1 : FIRST_YEAR_SUGGESTION;
+}
