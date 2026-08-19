@@ -383,6 +383,10 @@ def client(db_session) -> Iterator:
 _DOMAIN_TABLES = (
     "matching_cache",
     "rate_standards",
+    # Ряды индексов инфляции: без чистки committing-тесты правки ряда оставляли
+    # бы их в базе, и соседние тесты видели бы чужой справочник.
+    "inflation_index_values",
+    "inflation_series",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

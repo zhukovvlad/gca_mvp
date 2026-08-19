@@ -28,6 +28,8 @@ from models import (
     EstimateAdditionalWork,
     EstimateRawData,
     ImportJobStatus,
+    InflationIndexValue,
+    InflationSeries,
     Lot,
     MatchingCache,
     MatchSource,
@@ -1887,3 +1889,98 @@ def test_category_totals_view_groups_by_proposal(db_session):
         )
     }
     assert {"proposal_id", "vat_rate_base"} <= columns
+
+
+# ---------------------------------------------------------------------------
+#  Миграция 0014: справочник рядов индексов инфляции и значения по годам
+# ---------------------------------------------------------------------------
+
+class TestInflationSeriesSchema:
+    """Ограничения обеих таблиц ряда (спека инфляции §2.11; план, задача 3).
+
+    Parity-тесты, а не чтение кода: `alembic check` сравнивает состав таблиц и
+    колонок, но НЕ выражения `CHECK`, поэтому расхождение миграции с `models.py`
+    ловится только прогоном по конкретному входу.
+    """
+
+    def _series(self, db, name: str = "Росстат, ИПЦ, декабрь к декабрю") -> int:
+        return db.execute(
+            sa.text(
+                "insert into inflation_series (name, note) values (:name, null) returning id"
+            ),
+            {"name": name},
+        ).scalar_one()
+
+    def _insert_value(self, db, series_id: int, **fields):
+        payload = {
+            "series_id": series_id,
+            "year": 2025,
+            "coefficient": Decimal("1.083"),
+            "is_forecast": False,
+            "source": "бюллетень 01.2026",
+            **fields,
+        }
+        db.execute(
+            sa.text(
+                "insert into inflation_index_values "
+                "(series_id, year, coefficient, is_forecast, source) values "
+                "(:series_id, :year, :coefficient, :is_forecast, :source)"
+            ),
+            payload,
+        )
+
+    def test_reference_is_created_empty(self, db_session):
+        """Справочник создаётся ПУСТЫМ: безымянные «официальный» и
+        «неофициальный» без методики и источника не заводятся (§2.6)."""
+        assert db_session.execute(
+            sa.select(sa.func.count()).select_from(InflationSeries)
+        ).scalar_one() == 0
+
+    def test_blank_name_after_btrim_is_rejected(self, db_session):
+        with rejected(db_session, contains="ck_inflation_series_name_not_blank"):
+            self._series(db_session, "   ")
+
+    def test_duplicate_series_name_is_rejected(self, db_session):
+        self._series(db_session, "Один и тот же ряд")
+        db_session.flush()
+        with rejected(db_session, contains="uq_inflation_series_name"):
+            self._series(db_session, "Один и тот же ряд")
+
+    def test_blank_source_after_btrim_is_rejected(self, db_session):
+        """Источник ГОДА обязан быть содержательным: `NOT NULL` без проверки на
+        пустоту принял бы ряд, который нельзя защитить заявленным способом
+        (§1 п. 4, §2.11)."""
+        series_id = self._series(db_session)
+        with rejected(db_session, contains="ck_inflation_index_values_source_not_blank"):
+            self._insert_value(db_session, series_id, source="   ")
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_non_positive_coefficient_is_rejected(self, db_session, value):
+        series_id = self._series(db_session)
+        with rejected(db_session, contains="ck_inflation_index_values_coefficient_positive"):
+            self._insert_value(db_session, series_id, coefficient=Decimal(value))
+
+    def test_same_year_twice_in_one_series_is_rejected(self, db_session):
+        series_id = self._series(db_session)
+        self._insert_value(db_session, series_id, year=2025)
+        db_session.flush()
+        with rejected(db_session, contains="uq_inflation_index_values_series_year"):
+            self._insert_value(db_session, series_id, year=2025)
+
+    def test_same_year_in_different_series_is_allowed(self, db_session):
+        """Два ряда за один год — норма: рядов несколько по построению (§2.6),
+        и уникальность объявлена ПАРОЙ, а не годом."""
+        first = self._series(db_session, "Росстат, ИПЦ, декабрь к декабрю")
+        second = self._series(db_session, "Внутренняя оценка ПЭО")
+        self._insert_value(db_session, first, year=2025, coefficient=Decimal("1.083"))
+        self._insert_value(db_session, second, year=2025, coefficient=Decimal("1.120"))
+        db_session.flush()
+        assert db_session.execute(
+            sa.select(sa.func.count()).select_from(InflationIndexValue)
+        ).scalar_one() == 2
+
+    def test_value_of_an_unknown_series_is_rejected(self, db_session):
+        """`DELETE` ряда не предусмотрен вовсе (§2.10), поэтому `ondelete` у
+        внешнего ключа не задан — но сам ключ обязан держать ссылку."""
+        with rejected(db_session, contains="fk_inflation_index_values_series_id"):
+            self._insert_value(db_session, 10**9)

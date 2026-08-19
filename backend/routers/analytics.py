@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from auth import require_admin
@@ -28,12 +28,9 @@ from crud import project_passport as crud_project_passport
 from crud.common import DomainError
 from database import get_db
 from responses import decimal_json
+from routers.domain_errors import raise_domain_error
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
-
-
-def _raise(err: DomainError):
-    raise HTTPException(err.status_code, err.detail)
 
 
 @router.get("/passport/{contract_id}")
@@ -47,7 +44,7 @@ def get_passport(contract_id: int, db: Session = Depends(get_db)):
     try:
         return decimal_json(crud_analytics.get_passport(db, contract_id))
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/matrix")
@@ -98,7 +95,7 @@ def get_matrix_cell(
             )
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/dashboard")
@@ -143,7 +140,7 @@ def get_project_passport(contract_id: int, db: Session = Depends(get_db)):
     try:
         return decimal_json(crud_project_passport.get_project_passport(db, contract_id))
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
 
 @router.get("/comparison")
@@ -156,6 +153,13 @@ def get_comparison(
     rate_class_id: int | None = Query(default=None),
     vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
     single_rate: Decimal | None = Query(default=None),
+    inflation_series_id: int | None = Query(
+        default=None, description="Ряд индексов инфляции; без него приведения нет"
+    ),
+    target_month: str | None = Query(
+        default=None,
+        description="Целевой ценовой уровень, YYYY-MM; по умолчанию текущий месяц",
+    ),
     db: Session = Depends(get_db),
 ):
     """Сравнение договоров по статьям классификатора (спека 2026-08-17 §2.1-§2.6).
@@ -178,6 +182,14 @@ def get_comparison(
     `vat_mode` по умолчанию — «своя ставка» (§2.3); `single_rate` действует
     только в режиме «единая» и без него подставляется предвыбор
     (`build_comparison`, DoD 8ж).
+
+    **Приведение к ценовому уровню — два параметра, таблица их сочетаний целиком
+    в спеке инфляции §2.12.** Ни одного — дофичевый ответ, посимвольно. Ряд без
+    месяца — сервер разрешает ТЕКУЩИЙ месяц в названной бизнес-таймзоне и
+    ВОЗВРАЩАЕТ его в блоке `inflation`. Месяц без ряда — `400`: умолчательного
+    ряда не существует, справочник создаётся пустым и рядов может быть несколько.
+    Оба решения приняты в `build_comparison`, а не здесь: маршрутов ДВА, и они
+    обязаны отвечать одинаково.
     """
     try:
         contract_ids = crud_comparison.resolve_selection(
@@ -191,8 +203,10 @@ def get_comparison(
         )
         return decimal_json(
             crud_comparison.build_comparison(
-                db, contract_ids, vat_mode=vat_mode, single_rate=single_rate
+                db, contract_ids, vat_mode=vat_mode, single_rate=single_rate,
+                inflation_series_id=inflation_series_id,
+                target_month=crud_comparison.parse_target_month_param(target_month),
             )
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)

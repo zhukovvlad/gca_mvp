@@ -8,6 +8,10 @@
 import api from "@/lib/api";
 import type { ID } from "@/types/common";
 import type {
+  InflationSeries,
+  InflationSeriesInput,
+  InflationSeriesPatch,
+  InflationSeriesValue,
   BatchKindResult,
   CatalogPositionRow,
   ContractCard,
@@ -201,6 +205,28 @@ export const reviewApi = {
 // ---------------------------------------------------------------------------
 //  Нормативы
 // ---------------------------------------------------------------------------
+
+/**
+ * Ряды индексов инфляции (спека 2026-08-18 §2.12). `DELETE` нет нигде: ошибочное
+ * значение исправляется правкой, ненужный ряд архивируется через `is_active`.
+ */
+export const inflationSeriesApi = {
+  list: (includeArchived = false): Promise<InflationSeries[]> =>
+    api
+      .get<InflationSeries[]>("/v1/inflation-series", {
+        params: includeArchived ? { include_archived: 1 } : undefined,
+      })
+      .then((r) => r.data),
+
+  values: (id: ID): Promise<InflationSeriesValue[]> =>
+    api.get<InflationSeriesValue[]>(`/v1/inflation-series/${id}/values`).then((r) => r.data),
+
+  create: (input: InflationSeriesInput): Promise<InflationSeries> =>
+    api.post<InflationSeries>("/v1/inflation-series", input).then((r) => r.data),
+
+  update: (id: ID, input: InflationSeriesPatch): Promise<InflationSeries> =>
+    api.patch<InflationSeries>(`/v1/inflation-series/${id}`, input).then((r) => r.data),
+};
 
 export const rateStandardsApi = {
   list: (params?: RateStandardParams): Promise<Paginated<RateStandard>> =>

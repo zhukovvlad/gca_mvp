@@ -24,6 +24,7 @@ from routers import contracts as contracts_router
 from routers import estimate_vat as estimate_vat_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
+from routers import inflation_series as inflation_series_router
 from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import reports as reports_router
@@ -156,6 +157,11 @@ app.include_router(contracts_router.router, dependencies=_auth_dep)
 app.include_router(catalog_router.router, dependencies=_auth_dep)
 # Нормативы — изменение под admin по букве §3, не по решению фазы 5.
 app.include_router(rate_standards_router.router, dependencies=_auth_dep)
+# Ряды индексов инфляции — рядом с нормативами и по тому же праву: значение
+# ряда немедленно меняет числа у всех, а §3 закрепляет за admin всё, что
+# меняет расчёт для всех. Чтение — и `member`: без него он не увидел бы
+# названия ряда, которым приведены показанные ему числа (спека инфляции §2.10).
+app.include_router(inflation_series_router.router, dependencies=_auth_dep)
 # Ручной матчинг — право `member` тоже (§3), поэтому только аутентификация.
 app.include_router(review_router.router, dependencies=_auth_dep)
 # Ручной разнос разделов по статьям — тоже `member` (§3, спека разноса §2.7).

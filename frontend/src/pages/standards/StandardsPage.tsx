@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 
 import { Pager } from "@/components/domain/Pager";
+import { InflationSeriesTab } from "@/components/standards/InflationSeriesTab";
 import { RateClassesTab } from "@/components/standards/RateClassesTab";
 import { RateStandardFormDialog } from "@/components/standards/RateStandardFormDialog";
 import { ReapproveDialog } from "@/components/standards/ReapproveDialog";
@@ -111,6 +112,7 @@ export default function StandardsPage() {
         <TabsList>
           <TabsTrigger value="rates">Ставки</TabsTrigger>
           <TabsTrigger value="classes">Классы объектов</TabsTrigger>
+          <TabsTrigger value="inflation">Индексы инфляции</TabsTrigger>
         </TabsList>
 
         <TabsContent value="rates" className="mt-4">
@@ -280,6 +282,15 @@ export default function StandardsPage() {
 
         <TabsContent value="classes" className="mt-4">
           <RateClassesTab />
+        </TabsContent>
+
+        {/*
+          Ряды индексов инфляции (AGENTS.md §7 п. 3, v6.10). Экран целиком под
+          `RequireAdmin`, поэтому «кнопок правки нет у member» проверяется НЕ здесь,
+          а на `/compare` — там `member` бывает.
+        */}
+        <TabsContent value="inflation" className="mt-4">
+          <InflationSeriesTab />
         </TabsContent>
       </Tabs>
 

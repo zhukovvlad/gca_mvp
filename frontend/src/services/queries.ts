@@ -5,6 +5,7 @@ import type { AxiosError } from "axios";
 import { adminApi } from "./api/admin";
 import { analyticsApi, comparisonApi, reportsApi, settingsApi } from "./api/analytics";
 import {
+  inflationSeriesApi,
   catalogApi,
   contractsApi,
   estimatesApi,
@@ -19,6 +20,8 @@ import { qk } from "./queryKeys";
 import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
+  InflationSeriesInput,
+  InflationSeriesPatch,
   BankComparisonParams,
   ClearCategoryOverrideInput,
   ComparisonParams,
@@ -54,6 +57,33 @@ interface ValidationIssue {
  * ровно те подсказки, которые нужны в момент ошибки — «сумму передавайте
  * строкой», «поле не может быть null», «в пакете не больше 200 строк».
  */
+/**
+ * Кодированный доменный отказ: `detail` объектом (спека инфляции §2.12).
+ *
+ * ТРЕТЬЯ форма `detail`, и без её разбора тост печатал бы `[object Object]`:
+ * ветвление по типу здесь не украшение, а условие того, что человек вообще
+ * увидит причину.
+ */
+interface CodedDetail {
+  code: string;
+  message: string;
+  [key: string]: unknown;
+}
+
+function codedDetail(err: unknown): CodedDetail | undefined {
+  const detail = (err as AxiosError<{ detail?: unknown }>)?.response?.data?.detail;
+  if (
+    detail !== null &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    typeof (detail as CodedDetail).code === "string" &&
+    typeof (detail as CodedDetail).message === "string"
+  ) {
+    return detail as CodedDetail;
+  }
+  return undefined;
+}
+
 export function apiErrorDetail(err: unknown): string | undefined {
   const detail = (err as AxiosError<{ detail?: string | ValidationIssue[] }>)?.response?.data
     ?.detail;
@@ -66,7 +96,32 @@ export function apiErrorDetail(err: unknown): string | undefined {
       .filter(Boolean);
     if (messages.length > 0) return messages.join("; ");
   }
+
+  const coded = codedDetail(err);
+  if (coded) return coded.message;
+
   return undefined;
+}
+
+/**
+ * Машинный код отказа — по нему экран выбирает ПОВЕДЕНИЕ, а не только текст.
+ *
+ * Разные коды дают разные баннеры: у `missing_inflation_years` есть кнопка
+ * «Заполнить недостающие годы», у `amendment_date_missing` кнопки НЕТ — правкой
+ * ряда это не лечится, и предлагать её значило бы звать человека делать работу,
+ * которая ничего не исправит (§2.9).
+ */
+export function apiErrorCode(err: unknown): string | undefined {
+  return codedDetail(err)?.code;
+}
+
+/**
+ * Контекст отказа — ключи лежат РЯДОМ с `code` и `message`, а не вложенным узлом
+ * (§2.12), поэтому весь объект и есть контекст.
+ */
+export function apiErrorContext<T>(err: unknown): T | undefined {
+  const coded = codedDetail(err);
+  return coded === undefined ? undefined : (coded as unknown as T);
 }
 
 export function apiErrorStatus(err: unknown): number | undefined {
@@ -805,6 +860,17 @@ async function reportErrorMessage(err: unknown): Promise<string> {
       const parsed = JSON.parse(await data.text());
       const detail = (parsed as { detail?: unknown })?.detail;
       if (typeof detail === "string" && detail) return detail;
+      // Кодированный отказ приходит и в блоб-пути: выгрузка сравнения отвечает
+      // тем же структурированным 422, что экран (DoD 11), и без этой ветки
+      // человек увидел бы общее «Не удалось построить файл отчёта» вместо
+      // перечня недостающих годов.
+      if (
+        detail !== null &&
+        typeof detail === "object" &&
+        typeof (detail as { message?: unknown }).message === "string"
+      ) {
+        return (detail as { message: string }).message;
+      }
     } catch {
       // Тело не JSON — значит объяснения нет, идём к общему сообщению ниже.
     }
@@ -855,5 +921,58 @@ export function useBankComparisonReport() {
       return blob;
     },
     onError: toastReportError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Ряды индексов инфляции (спека 2026-08-18 §2.10, §2.12)
+// ---------------------------------------------------------------------------
+
+export function useInflationSeries(includeArchived = false) {
+  return useQuery({
+    queryKey: qk.inflationSeries.list(includeArchived),
+    queryFn: () => inflationSeriesApi.list(includeArchived),
+  });
+}
+
+export function useInflationSeriesValues(id: number | null) {
+  return useQuery({
+    queryKey: qk.inflationSeries.values(id ?? 0),
+    queryFn: () => inflationSeriesApi.values(id as number),
+    enabled: id !== null,
+  });
+}
+
+export function useCreateInflationSeries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: InflationSeriesInput) => inflationSeriesApi.create(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.inflationSeries.all });
+      toast.success("Ряд индексов создан");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Правка ряда — ОДИН запрос на всё окно (§2.12).
+ *
+ * Инвалидирует и `qk.comparison.all`: после сохранения сравнение обязано
+ * перезапроситься (DoD 36). Иначе на экране остались бы числа по прежним
+ * коэффициентам при уже новой подписи — ровно то расхождение подписи с числами,
+ * против которого написан §2.8.
+ */
+export function useUpdateInflationSeries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: InflationSeriesPatch }) =>
+      inflationSeriesApi.update(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.inflationSeries.all });
+      qc.invalidateQueries({ queryKey: qk.comparison.all });
+      toast.success("Ряд индексов сохранён");
+    },
+    onError: toastApiError,
   });
 }

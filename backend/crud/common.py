@@ -26,14 +26,37 @@ MAX_PAGE_SIZE = 100
 class DomainError(Exception):
     """Отказ доменной операции. Текст показывается человеку.
 
+    Расширен ОБРАТНО СОВМЕСТИМО двумя необязательными полями (спека инфляции
+    §2.12). При `code is None` трансляция остаётся прежней до символа — иначе
+    фича меняла бы отказы, которых не касается (условие DoD 1).
+
+    О форме HTTP-ответа этот класс не знает: FastAPI не импортируется в `crud/`
+    нигде, и трансляция живёт в `routers/domain_errors.py`.
+
     Attributes:
         status_code: рекомендованный HTTP-статус (400/404/409/422).
         detail: понятное сообщение — оно доезжает до тоста на экране.
+        code: машинный код состояния; по нему клиент выбирает поведение —
+            например, кнопку «Заполнить недостающие годы» у одного кода и её
+            ОТСУТСТВИЕ у другого, который правкой ряда не лечится.
+        context: машинные ключи состояния (`missing_years`, `estimate_ids`,
+            `years`). Человеку они не показываются: человеческую формулировку
+            собирает домен и кладёт в `detail`.
     """
 
-    def __init__(self, status_code: int, detail: str):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        code: str | None = None,
+        context: dict | None = None,
+    ):
         self.status_code = status_code
         self.detail = detail
+        self.code = code
+        # Всегда словарь, а не `None`: транслятору иначе пришлось бы различать два
+        # пустых состояния, а различия между ними нет.
+        self.context: dict = dict(context) if context else {}
         super().__init__(detail)
 
 

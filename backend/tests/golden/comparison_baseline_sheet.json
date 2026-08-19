@@ -1,0 +1,1031 @@
+[
+  {
+    "coordinate": "A1",
+    "value": "СРАВНЕНИЕ ДОГОВОРОВ ПО СТАТЬЯМ",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "A2",
+    "value": "Каждый договор показан в своей действующей ставке НДС. Отклонения от медианы посчитаны без НДС.",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "A3",
+    "value": "Выборка: 3 договор(ов): ГП-Б3, ГП-Б2, ГП-Б1",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "A4",
+    "value": "Сформирован: 18.08.2026",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "B6",
+    "value": "ГП-Б3 — Объект Б3 (20 %)",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "K6",
+    "value": "ГП-Б2 — Объект Б2 (20 %)",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "T6",
+    "value": "ГП-Б1 — Объект Б1 (20 %)",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "A7",
+    "value": "Статья",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "B7",
+    "value": "ДГП · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "C7",
+    "value": "ДГП · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "D7",
+    "value": "ДГП · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "E7",
+    "value": "ДС · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "F7",
+    "value": "ДС · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "G7",
+    "value": "ДС · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "H7",
+    "value": "Итого · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "I7",
+    "value": "Итого · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "J7",
+    "value": "Итого · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "K7",
+    "value": "ДГП · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "L7",
+    "value": "ДГП · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "M7",
+    "value": "ДГП · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "N7",
+    "value": "ДС · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "O7",
+    "value": "ДС · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "P7",
+    "value": "ДС · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "Q7",
+    "value": "Итого · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "R7",
+    "value": "Итого · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "S7",
+    "value": "Итого · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "T7",
+    "value": "ДГП · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "U7",
+    "value": "ДГП · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "V7",
+    "value": "ДГП · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "W7",
+    "value": "ДС · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "X7",
+    "value": "ДС · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "Y7",
+    "value": "ДС · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "Z7",
+    "value": "Итого · Сумма",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "AA7",
+    "value": "Итого · ₽/м²",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "AB7",
+    "value": "Итого · Откл., %",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "A8",
+    "value": "Подготовительные работы, содержание площадки",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "B8",
+    "value": 1656000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "C8",
+    "value": 16.56,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "D8",
+    "value": 10.4,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "E8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "F8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "G8",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "H8",
+    "value": 1656000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "I8",
+    "value": 16.56,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "J8",
+    "value": 10.4,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "K8",
+    "value": 1440000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "L8",
+    "value": 14.4,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "M8",
+    "value": -4,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "N8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "O8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "P8",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Q8",
+    "value": 1440000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "R8",
+    "value": 14.4,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "S8",
+    "value": -4,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "T8",
+    "value": 1500000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "U8",
+    "value": 15,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "V8",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "W8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "X8",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "Y8",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Z8",
+    "value": 1500000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AA8",
+    "value": 15,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AB8",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "A9",
+    "value": "Котлован",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "B9",
+    "value": 528000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "C9",
+    "value": 5.28,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "D9",
+    "value": 4.761904761904762,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "E9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "F9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "G9",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "H9",
+    "value": 528000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "I9",
+    "value": 5.28,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "J9",
+    "value": 4.761904761904762,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "K9",
+    "value": 504000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "L9",
+    "value": 5.04,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "M9",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "N9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "O9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "P9",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Q9",
+    "value": 504000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "R9",
+    "value": 5.04,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "S9",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "T9",
+    "value": 450000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "U9",
+    "value": 4.5,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "V9",
+    "value": -10.71428571428571,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "W9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "X9",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "Y9",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Z9",
+    "value": 450000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AA9",
+    "value": 4.5,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AB9",
+    "value": -10.71428571428571,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "A10",
+    "value": "Конструктивные решения",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "B10",
+    "value": 108000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "C10",
+    "value": 1.08,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "D10",
+    "value": 13.68421052631579,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "E10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "F10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "G10",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "H10",
+    "value": 108000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "I10",
+    "value": 1.08,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "J10",
+    "value": 13.68421052631579,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "K10",
+    "value": 95000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "L10",
+    "value": 0.95,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "M10",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "N10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "O10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "P10",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Q10",
+    "value": 95000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "R10",
+    "value": 0.95,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "S10",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "T10",
+    "value": 72000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "U10",
+    "value": 0.72,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "V10",
+    "value": -24.21052631578947,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "W10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "X10",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "Y10",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": false
+  },
+  {
+    "coordinate": "Z10",
+    "value": 72000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AA10",
+    "value": 0.72,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "AB10",
+    "value": -24.21052631578947,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": false
+  },
+  {
+    "coordinate": "A11",
+    "value": "ИТОГО ПО ДОГОВОРУ",
+    "number_format": "General",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "B11",
+    "value": 2292000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "C11",
+    "value": 22.92,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "D11",
+    "value": 12.40804315841098,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "E11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "F11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "G11",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "H11",
+    "value": 2292000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "I11",
+    "value": 22.92,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "J11",
+    "value": 12.40804315841098,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "K11",
+    "value": 2039000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "L11",
+    "value": 20.39,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "M11",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "N11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "O11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "P11",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "Q11",
+    "value": 2039000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "R11",
+    "value": 20.39,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "S11",
+    "value": 0,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "T11",
+    "value": 2022000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "U11",
+    "value": 20.22,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "V11",
+    "value": -0.8337420304070623,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "W11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "X11",
+    "value": 0,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "Y11",
+    "value": "—",
+    "number_format": "@",
+    "data_type": "s",
+    "bold": true
+  },
+  {
+    "coordinate": "Z11",
+    "value": 2022000,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "AA11",
+    "value": 20.22,
+    "number_format": "#,##0.00",
+    "data_type": "n",
+    "bold": true
+  },
+  {
+    "coordinate": "AB11",
+    "value": -0.8337420304070623,
+    "number_format": "+0.0;-0.0;0.0",
+    "data_type": "n",
+    "bold": true
+  }
+]

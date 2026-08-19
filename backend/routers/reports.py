@@ -31,13 +31,14 @@ import logging
 from decimal import Decimal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from crud import comparison as crud_comparison
 from crud import reports as crud_reports
 from crud.common import DomainError
 from database import get_db
+from routers.domain_errors import raise_domain_error
 from services.excel_comparison import build_comparison_sheet
 from services.excel_reports import build_bank_comparison, build_contract_summary
 
@@ -46,10 +47,6 @@ router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 log = logging.getLogger(__name__)
 
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-def _raise(err: DomainError):
-    raise HTTPException(err.status_code, err.detail)
 
 
 def _xlsx(content: bytes, filename: str) -> Response:
@@ -81,7 +78,7 @@ def contract_summary(
     try:
         data = crud_reports.contract_summary(db, contract_id)
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
     content = build_contract_summary(data, generated_at=dt.date.today())
     number = _safe_filename_part(data["header"]["contract_number"])
     log.info("report_contract_summary contract=%s rows=%s", contract_id, len(data["rows"]))
@@ -144,6 +141,13 @@ def comparison_report(
     rate_class_id: int | None = Query(default=None),
     vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
     single_rate: Decimal | None = Query(default=None),
+    inflation_series_id: int | None = Query(
+        default=None, description="Ряд индексов инфляции; без него приведения нет"
+    ),
+    target_month: str | None = Query(
+        default=None,
+        description="Целевой ценовой уровень, YYYY-MM; по умолчанию текущий месяц",
+    ),
     db: Session = Depends(get_db),
 ):
     """Выгрузка сравнения договоров в Excel (§7.6, отчёт «в»; спека §2.7, §2.8).
@@ -158,6 +162,12 @@ def comparison_report(
     `vat_mode`/`single_rate` — тот же режим показа НДС, что и на экране (§2.3);
     лист печатает подпись состава, поэтому неверный режим — отказ 400 из
     `build_comparison`, а не тихая подмена на умолчание.
+
+    **Приведение — те же два параметра, что у экрана**, и отказ у них тот же
+    структурированный `422` (§2.9). При отказе лист НЕ собирается, поэтому файла с
+    ошибкой не существует вовсе: ранняя редакция спеки обещала «тот же отказ и ту
+    же формулировку на листе Excel» — обещание невыполнимое, и здесь его нет.
+    Проверяется отсутствием вложения, а не содержимым листа.
     """
     try:
         contract_ids = crud_comparison.resolve_selection(
@@ -166,9 +176,11 @@ def comparison_report(
         )
         data = crud_comparison.build_comparison(
             db, contract_ids, vat_mode=vat_mode, single_rate=single_rate,
+            inflation_series_id=inflation_series_id,
+            target_month=crud_comparison.parse_target_month_param(target_month),
         )
     except DomainError as e:
-        _raise(e)
+        raise_domain_error(e)
 
     content = build_comparison_sheet(data, generated_at=dt.date.today())
     log.info("report_comparison contracts=%s rows=%s", len(contract_ids), len(data["rows"]))

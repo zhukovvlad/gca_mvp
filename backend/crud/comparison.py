@@ -49,7 +49,27 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError, iso
 from crud.project_passport import CATEGORY_TOTALS
-from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass, WorkCategory
+from models import (
+    Contract,
+    Contractor,
+    Estimate,
+    InflationIndexValue,
+    InflationSeries,
+    Lot,
+    ObjectModel,
+    Proposal,
+    RateClass,
+    WorkCategory,
+)
+from money.inflation import (
+    YearMonth,
+    adjust_amount,
+    coefficient,
+    current_period,
+    parse_target_month,
+    required_years,
+    year_exponents,
+)
 from money.vat import effective_display_rate, gross_to_net, net_to_gross
 from parser.summary_block import ARITHMETIC_PRECISION
 from services.category_rollup import (
@@ -62,6 +82,9 @@ from services.category_rollup import (
 )
 
 __all__ = [
+    "InflationPlan",
+    "parse_target_month_param",
+    "resolve_inflation",
     "SOURCE_ADDITIONAL_WORKS",
     "SOURCE_POSITIONS",
     "ABSENT",
@@ -527,15 +550,265 @@ def _direct_totals_view(direct: dict[int, dict[str, DirectBranch]]) -> dict[int,
 
 
 # ---------------------------------------------------------------------------
+#  Приведение к ценовому уровню (спека 2026-08-18 §2.2, §2.5, §2.9)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class InflationPlan:
+    """План приведения выборки: метаданные ряда и коэффициент НА СМЕТУ.
+
+    Коэффициент на смету, а не на договор (§2.2): дельта ДС подписана позже базы,
+    иногда на годы, и это разные рубли внутри одного договора. Следствие, видимое
+    на экране, — корзина «Итого» становится суммой раздельно приведённых ДГП и
+    каждого ДС, а не приведением одной суммы.
+    """
+
+    series_id: int
+    series_name: str
+    series_note: str | None
+    series_updated_at: str | None
+    target_month: str
+    has_forecast: bool
+    used_years: list[dict]
+    factor_by_estimate: dict[int, Decimal]
+
+
+def _estimate_period(amendment_no: int | None, prepared_on, signed_date) -> YearMonth | None:
+    """Ценовой период сметы (§2.2). `None` — период не выводится.
+
+    Базовая смета (`amendment_no IS NULL`) — `COALESCE(data_prepared_on_date,
+    signed_date)`; допсоглашение — ТОЛЬКО `data_prepared_on_date`.
+
+    Фолбэк на дату договора для базовой сметы верен: дата исходной сметы и есть
+    дата подписания договора. Для ДС он **ЗАПРЕЩЁН** — это дата базы, и
+    коэффициент вышел бы молча неверным, то есть страница показала бы приведённые
+    числа, посчитанные не по тому периоду. Молчаливость и делает случай опасным:
+    ошибка выглядела бы как разница цен, ради показа которой приведение включают.
+
+    `Contract.signed_date` объявлен `NOT NULL`, поэтому у базовой сметы период
+    выводится всегда — `None` возвращается только для ДС.
+    """
+    chosen = (prepared_on or signed_date) if amendment_no is None else prepared_on
+    return None if chosen is None else YearMonth(chosen.year, chosen.month)
+
+
+def _amendment_label(contract_number: str, amendment_no: int) -> str:
+    return f"{contract_number} ДС №{amendment_no}"
+
+
+def resolve_inflation(
+    db: Session,
+    contract_ids: Sequence[int],
+    *,
+    series_id: int,
+    target_month: YearMonth,
+) -> InflationPlan:
+    """Периоды смет, покрытие ВЫБОРКИ и коэффициент на смету.
+
+    Функция НЕ встроена в `load_rollups` по двум причинам. Первая: покрытие
+    проверяется по объединению требуемых годов ВСЕЙ выборки (§2.5), то есть
+    решение принимается до того, как хоть одна сумма умножена. Вторая:
+    `load_rollups` держит инвариант «ровно четыре запроса на любую выборку», и
+    запрос внутри него этот инвариант уронил бы.
+
+    **Два запроса, и первый из них ОДИН НА ДВА ВХОДА намеренно.** Ряд читается
+    вместе со своими годами (`LEFT JOIN`), а не двумя `SELECT`-ами: в
+    `READ COMMITTED` каждый оператор берёт свой снимок, и параллельный `PATCH`,
+    закоммиченный между двумя чтениями, отдал бы СТАРЫЕ `series_name`/`series_note`/
+    `series_updated_at` вместе с УЖЕ НОВЫМИ коэффициентами. Лист выгрузки печатает и
+    то и другое рядом, а `series_updated_at` — единственный носитель компромисса
+    §2.10 («ссылка не гарантирует исторического результата»), поэтому смешанное
+    наблюдение соврало бы читателю о том, какая редакция ряда дала числа.
+
+    Атомарная ЗАПИСЬ задачи 5 этого не закрывает: она гарантирует, что не
+    существует состояния «половина ряда записана», но не гарантирует, что два
+    независимых `SELECT` увидят одно и то же состояние. Найдено внешним ревью;
+    тем же доводом уже был закрыт разъезд двух чтений СМЕТ — там громким
+    `RuntimeError`, потому что читатели лежат в разных функциях, а здесь читатель
+    один, и одного оператора достаточно.
+
+    Второй запрос — даты смет (`Estimate ⋈ Contract`).
+
+    Raises:
+        DomainError 404: ряда нет. Архивный ряд по явному `id` ЧИТАЕТСЯ и
+            приведение по нему считается — старая ссылка обязана работать (§2.10).
+        DomainError 422 `amendment_date_missing`: у ДС нет собственной даты.
+        DomainError 422 `missing_inflation_years`: покрытия не хватает; в контексте
+            недостающие годы по возрастанию. Номинальные числа при этом НЕ
+            выдаются как результат приведения (§2.9).
+    """
+    # `LEFT JOIN`, а не `INNER`: ряд без единого года — законное состояние
+    # (годы вводят вразнобой, §2.9), и он обязан отличаться от несуществующего.
+    # Ни одной строки — `404`; одна строка с `year IS NULL` — ряд есть, годов нет.
+    #
+    # `db.get` здесь не годится ещё и по второй причине: он отдаёт объект из
+    # identity map БЕЗ запроса, если тот уже загружен, и число запросов зависело
+    # бы от того, грелась сессия или нет, — то есть бюджет из теста не совпадал бы
+    # с бюджетом в проде.
+    series_rows = db.execute(
+        sa.select(
+            InflationSeries.name,
+            InflationSeries.note,
+            InflationSeries.updated_at,
+            InflationIndexValue.year,
+            InflationIndexValue.coefficient,
+            InflationIndexValue.source,
+            InflationIndexValue.is_forecast,
+            InflationIndexValue.updated_at.label("year_updated_at"),
+        )
+        .join(
+            InflationIndexValue,
+            InflationIndexValue.series_id == InflationSeries.id,
+            isouter=True,
+        )
+        .where(InflationSeries.id == series_id)
+    ).all()
+    if not series_rows:
+        raise DomainError(404, f"Ряд индексов {series_id} не найден.")
+
+    series_name = series_rows[0].name
+    series_note = series_rows[0].note
+    series_updated_at = series_rows[0].updated_at
+    values = {row.year: row for row in series_rows if row.year is not None}
+
+    rows = db.execute(
+        sa.select(
+            Estimate.id,
+            Estimate.amendment_no,
+            Estimate.data_prepared_on_date,
+            Contract.signed_date,
+            Contract.contract_number,
+        )
+        .join(Contract, Contract.id == Estimate.contract_id)
+        .where(Estimate.contract_id.in_(list(contract_ids)))
+        .order_by(Contract.contract_number, Estimate.amendment_no.nulls_first(), Estimate.id)
+    ).all()
+
+    period_by_estimate: dict[int, YearMonth] = {}
+    undated: list[tuple[int, str]] = []
+    for estimate_id, amendment_no, prepared_on, signed_date, contract_number in rows:
+        period = _estimate_period(amendment_no, prepared_on, signed_date)
+        if period is None:
+            undated.append((estimate_id, _amendment_label(contract_number, amendment_no)))
+            continue
+        period_by_estimate[estimate_id] = period
+
+    if undated:
+        # `estimate_ids` — МАШИННЫЙ контекст, человеку он не показывается: номер
+        # сметы ему ни о чём не говорит. Человеческую формулировку собирает
+        # сервер, потому что «ДС №1» без номера договора не опознаёт смету — он
+        # есть у каждого второго договора выборки. Баннер печатает `message`
+        # дословно и ничего не собирает сам (§2.12).
+        listed = ", ".join(label for _estimate_id, label in undated)
+        raise DomainError(
+            422,
+            f"У допсоглашений нет собственной даты подготовки: {listed}. "
+            "Дата договора для допсоглашения не подходит — это дата базовой сметы.",
+            code="amendment_date_missing",
+            context={"estimate_ids": sorted(estimate_id for estimate_id, _label in undated)},
+        )
+
+    required: set[int] = set()
+    for period in period_by_estimate.values():
+        required.update(required_years(period, target_month))
+
+    missing = sorted(year for year in required if year not in values)
+    if missing:
+        listed = ", ".join(str(year) for year in missing)
+        raise DomainError(
+            422,
+            f"Не заданы коэффициенты за годы: {listed}.",
+            code="missing_inflation_years",
+            context={"missing_years": missing},
+        )
+
+    coefficients = {year: values[year].coefficient for year in required}
+    factor_by_estimate = {
+        estimate_id: coefficient(year_exponents(period, target_month), coefficients)
+        for estimate_id, period in period_by_estimate.items()
+    }
+
+    used_years = [
+        {
+            "year": year,
+            "coefficient": values[year].coefficient,
+            "source": values[year].source,
+            "is_forecast": values[year].is_forecast,
+            "updated_at": iso(values[year].year_updated_at),
+        }
+        for year in sorted(required)
+    ]
+
+    return InflationPlan(
+        series_id=series_id,
+        series_name=series_name,
+        series_note=series_note,
+        # Дата правки ряда обязана приходить в ЭТОМ ответе, а не вторым запросом к
+        # списку выбора: по прямой ссылке ряд может оказаться архивным, а в списке
+        # архивных нет — полоса уровней осталась бы без примечания и без даты
+        # (§2.12, DoD 38).
+        series_updated_at=iso(series_updated_at),
+        target_month=f"{target_month.year:04d}-{target_month.month:02d}",
+        # Прогнозным приведение называется по ИСПОЛЬЗОВАННЫМ годам: прогнозный
+        # год, который не понадобился, флага не поднимает — иначе подпись
+        # называла бы прогнозом расчёт по фактам.
+        has_forecast=any(values[year].is_forecast for year in required),
+        used_years=used_years,
+        factor_by_estimate=factor_by_estimate,
+    )
+
+
+# ---------------------------------------------------------------------------
 #  Публичная сборка
 # ---------------------------------------------------------------------------
 
-def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[EstimateRollup]]:
+def _adjusted_branch(branch: DirectBranch, factor: Decimal) -> DirectBranch:
+    """Ветвь с приведённой нетто-суммой. ЕДИНСТВЕННОЕ место умножения.
+
+    Счётчики строк и причины неполноты не трогаются: инфляция не делает ячейку
+    полнее или беднее. `net is None` остаётся `None` — приводить нечего, и
+    подстановка нуля превратила бы «нет числа» в «ноль рублей», то есть в
+    «работ нет либо учтены в другой статье» (§2.9). Ноль остаётся нулём,
+    `NaN`/`Infinity` пролетают умножением насквозь (замерено: под контекстом
+    `prec=34` с трапами они не сигналят).
+    """
+    if branch.net is None:
+        return branch
+    return replace(branch, net=adjust_amount(branch.net, factor))
+
+
+def _estimate_label(rollup: EstimateRollup) -> str:
+    """«ДГП» либо «ДС №N» — ТОТ ЖЕ словарь, которым говорит `_composition_caption`.
+
+    Функция отдельная, а не общая с ним: подпись состава НДС группирует сметы
+    («ДГП 20 % · ДС 20 %»), а разбивка множителей перечисляет каждую, и общий
+    хелпер поменял бы вывод подписи состава. Слова обязаны совпадать — шапка
+    колонки говорит о сметах теми же словами, что подпись под ней.
+    """
+    return "ДГП" if rollup.amendment_no is None else f"ДС №{rollup.amendment_no}"
+
+
+def load_rollups(
+    db: Session,
+    contract_ids: Sequence[int],
+    *,
+    adjustment: Mapping[int, Decimal] | None = None,
+) -> dict[int, list[EstimateRollup]]:
     """Роллапы всех смет выборки, ОДНИМ запросом к каждому из четырёх входов.
 
     Ключ результата — `contract_id`; договор без смет получает пустой список
     (а не отсутствует в словаре — вызывающему коду не придётся гадать про
     KeyError на договоре, который есть в выборке, но ещё не разобран).
+
+    `adjustment` — коэффициент приведения НА СМЕТУ (`resolve_inflation`). Умножение
+    происходит здесь и только здесь, ДО `build_tree`: приводить позже пришлось бы
+    в `cell_net`, `_grand_total_cell`, `_own_mode_shown` и `_single_rollup_axis`,
+    то есть в четырёх независимых сумматорах, и каждый стал бы отдельным шансом
+    забыть. Умножение до дерева даёт приведённое дерево, и весь слой ячеек
+    работает без единой правки.
+
+    Порядок «нетто → инфляция → ставка показа» выполняется по построению:
+    `net_to_gross` вызывается уже над приведённой нетто-суммой.
     """
     contract_ids = list(contract_ids)
     result: dict[int, list[EstimateRollup]] = {contract_id: [] for contract_id in contract_ids}
@@ -554,12 +827,37 @@ def load_rollups(db: Session, contract_ids: Sequence[int]) -> dict[int, list[Est
     base_rates_by_estimate = _collect_base_rates(view_rows)
 
     for estimate in estimates:
+        factor: Decimal | None = None
+        if adjustment:
+            factor = adjustment.get(estimate.id)
+            if factor is None:
+                # Громко, а не молча: `resolve_inflation` и этот запрос читают
+                # сметы ПОРОЗНЬ, и в READ COMMITTED каждый оператор берёт свой
+                # снимок даже внутри одной транзакции. Смета, которой нет в плане,
+                # осталась бы НЕПРИВЕДЁННОЙ и смешалась с приведёнными — то есть
+                # итог соврал бы, оставаясь правдоподобным. Та же форма, что у
+                # `_resolve_cell` на нарушении инварианта VIEW.
+                raise RuntimeError(
+                    f"Смета {estimate.id} договора {estimate.contract_id} не получила "
+                    "коэффициента приведения: план приведения и выборка смет "
+                    "разошлись."
+                )
+
         by_category = accumulated.get(estimate.id, {})
 
         direct: dict[int, dict[str, DirectBranch]] = {}
         unallocated: dict[str, DirectBranch] = {}
         for category_id, by_source in by_category.items():
             frozen_branches = {source: acc.freeze() for source, acc in by_source.items()}
+            if factor is not None:
+                # Приводится КАЖДАЯ ветвь до разделения на `direct` и
+                # `unallocated`: иначе дерево приведётся, а остаток останется
+                # номинальным и молча смешается с приведённым в «Итого по
+                # договору» — они складываются вместе.
+                frozen_branches = {
+                    source: _adjusted_branch(branch, factor)
+                    for source, branch in frozen_branches.items()
+                }
             if category_id is None:
                 # «Нераспределённое» — вынимается ДО build_tree, он его не пускает
                 # (спека §2.1.4, план п. 6 требований).
@@ -1297,28 +1595,69 @@ def _rate_label(rate: Decimal | None) -> str:
     return f"{_format_rate(rate)} %"
 
 
-def _mode_caption(vat_mode: str, single_rate: Decimal | None) -> str:
+#: Месяцы в ДАТЕЛЬНОМ падеже: подпись читается «цены приведены К августу 2026».
+#: Словарь, а не `locale`: локаль процесса — внешнее состояние, и подпись,
+#: зависящая от неё, менялась бы от машины к машине.
+_MONTHS_DATIVE = (
+    "январю", "февралю", "марту", "апрелю", "маю", "июню",
+    "июлю", "августу", "сентябрю", "октябрю", "ноябрю", "декабрю",
+)
+
+
+def _inflation_sentence(plan: InflationPlan) -> str:
+    """Предложение о приведении для подписи оси (§2.12, DoD 31).
+
+    Название ряда берётся ИЗ ПЛАНА. Захардкоженное было бы дефектом того же рода,
+    что подсветка по чужой медиане: подпись утверждала бы неправду о том, каким
+    индексом построены числа. Это реальный дефект макета — там подпись при
+    выбранном «Внутренняя оценка ПЭО» говорила «по ряду „Росстат, ИПЦ“» (§7 спеки).
+    """
+    year, month = plan.target_month.split("-")
+    when = f"{_MONTHS_DATIVE[int(month) - 1]} {year}"
+    sentence = f"Цены приведены к {when} по ряду «{plan.series_name}»"
+    forecast_years = [
+        str(item["year"]) for item in plan.used_years if item["is_forecast"]
+    ]
+    if forecast_years:
+        listed = ", ".join(forecast_years)
+        sentence += f"; {listed} — прогноз"
+    return sentence + "."
+
+
+def _mode_caption(
+    vat_mode: str, single_rate: Decimal | None, plan: InflationPlan | None = None
+) -> str:
     """Подпись состава денег НА ПОВЕРХНОСТИ (AGENTS.md §10 v6.8, спека §2.3.1).
 
     Netto объявляет состав явно; «единая» и «своя» ставка ДОПОЛНИТЕЛЬНО
     обязаны сказать, что отклонения посчитаны без НДС (спека §2.5 правило 2)
     — иначе подсветка читалась бы как разница цен там, где на деле разница
     ставок НДС.
+
+    Ценовой уровень — ВТОРАЯ ось той же подписи (AGENTS.md §10 v6.10): ряд и месяц
+    объявляются на самой поверхности тем же правилом, каким объявляется налоговый
+    состав. Собирает подпись сервер, а не клиент: она печатается и на листе, и
+    вторая её сборка на фронте была бы ровно тем расхождением, против которого
+    §2.12 требует одной функции.
     """
     if vat_mode == VAT_MODE_NET:
-        return "Суммы показаны без НДС (нетто)."
-    if vat_mode == VAT_MODE_SINGLE:
+        caption = "Суммы показаны без НДС (нетто)."
+    elif vat_mode == VAT_MODE_SINGLE:
         rate_text = "не выбрана" if single_rate is None else _rate_label(single_rate)
-        return (
+        caption = (
             f"Суммы пересчитаны в единую ставку НДС ({rate_text}). "
             "Отклонения от медианы посчитаны без НДС."
         )
-    if vat_mode == VAT_MODE_OWN:
-        return (
+    elif vat_mode == VAT_MODE_OWN:
+        caption = (
             "Каждый договор показан в своей действующей ставке НДС. "
             "Отклонения от медианы посчитаны без НДС."
         )
-    raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+    else:
+        raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+    if plan is None:
+        return caption
+    return f"{caption} {_inflation_sentence(plan)}"
 
 
 def _composition_caption(rollups: Sequence[EstimateRollup]) -> str:
@@ -1361,6 +1700,50 @@ def _composition_caption(rollups: Sequence[EstimateRollup]) -> str:
             )
             parts.append(f"ДС {enumerated}")
     return " · ".join(parts) if parts else "смет нет"
+
+
+def _column_inflation(
+    rollups: Sequence[EstimateRollup], plan: InflationPlan
+) -> dict:
+    """Множитель колонки: одно число либо «разные» плюс разбивка (решение плана №1).
+
+    `inflation_coefficient` несёт значение ТОЛЬКО если все сметы договора получили
+    один и тот же коэффициент; иначе `None`, а разбивка уезжает отдельным полем и
+    живёт в подсказке чипа. Без разбивки чип «разные» отправлял бы читателя
+    смотреть корзины, а корзины множителей не показывают — арифметика колонки
+    перестала бы быть проверяемой, чего DoD 33 требует прямо. Врать одним числом
+    нельзя, вторая ось чипов удвоила бы шапку.
+
+    Поле `inflation_factors` появляется ТОЛЬКО при расхождении: в номинальном
+    ответе и в согласном случае лишнего ключа нет.
+
+    **Колонка БЕЗ СМЕТ не получает инфляционных ключей вовсе — ни одного.**
+    Договор с заведённой карточкой и ещё не загруженной сметой законно попадает в
+    выборку (`load_rollups`: «договор без смет получает пустой список»), и
+    `inflation_coefficient: null` у него читался бы клиентом как «сметы приведены
+    РАЗНЫМИ множителями»: именно так `null` и определён выше. Чип сказал бы
+    «разные», подсказка осталась бы пустой — то есть колонка без единой суммы была
+    бы подписана расхождением, которого нет. Найдено внешним ревью.
+    """
+    factors = [
+        (rollup, plan.factor_by_estimate[rollup.estimate_id]) for rollup in rollups
+    ]
+    if not factors:
+        return {}
+    distinct = {factor for _rollup, factor in factors}
+    if len(distinct) == 1:
+        return {"inflation_coefficient": next(iter(distinct))}
+    ordered = sorted(
+        factors,
+        key=lambda pair: (pair[0].amendment_no is not None, pair[0].amendment_no or 0),
+    )
+    return {
+        "inflation_coefficient": None,
+        "inflation_factors": [
+            {"label": _estimate_label(rollup), "coefficient": factor}
+            for rollup, factor in ordered
+        ],
+    }
 
 
 def _mode_then_larger(rates: Sequence[Decimal]) -> Decimal | None:
@@ -1432,6 +1815,29 @@ def rate_options(db: Session, contract_ids: Sequence[int]) -> tuple[list[Decimal
 # ---------------------------------------------------------------------------
 #  Разрешение выборки: `ids` либо фильтр (спека §2.6)
 # ---------------------------------------------------------------------------
+
+def parse_target_month_param(raw: str | None) -> YearMonth | None:
+    """`"2026-08"` → `YearMonth(2026, 8)`; `None` → `None` (цель не задана).
+
+    Живёт РЯДОМ с `parse_ids_param` и по той же причине: роутеров два — экран
+    сравнения и выгрузка листа, — и формат параметра у них обязан быть один. Две
+    копии разбора `ids` на этом проекте уже расходились, и один адрес получал два
+    разных ответа в зависимости от того, куда его послали.
+
+    День не принимается вовсе: он игнорируется по §2.4 спеки инфляции, и принять
+    его значило бы обещать точность, которой нет. Отказ — `DomainError(400)` с
+    самим значением в тексте, а не 422-трасса валидатора: строка приходит из
+    адреса, который человек мог набрать руками.
+    """
+    if raw is None:
+        return None
+    try:
+        return parse_target_month(raw)
+    except ValueError:
+        raise DomainError(
+            400, f"`target_month` ожидается в формате YYYY-MM, а не {raw!r}."
+        ) from None
+
 
 def parse_ids_param(raw: str | None) -> list[int] | None:
     """`"1,2,4"` → `[1, 2, 4]`; `None` → `None` (форма выборки не задана).
@@ -1556,6 +1962,8 @@ def build_comparison(
     *,
     vat_mode: str,
     single_rate: Decimal | None = None,
+    inflation_series_id: int | None = None,
+    target_month: YearMonth | None = None,
 ) -> dict:
     """Полный агрегат сравнения: колонки, строки, ячейки по ТРЁМ корзинам,
     медианы, подписи (спека §2.1-§2.5, план — задача 4).
@@ -1601,7 +2009,34 @@ def build_comparison(
         # проделает всю работу и упадёт `ValueError`-ом на подписи, то есть 500.
         raise DomainError(400, f"Неизвестный режим показа НДС: {vat_mode!r}.")
 
-    rollups = load_rollups(db, contract_ids)
+    if target_month is not None and inflation_series_id is None:
+        # Умолчательного ряда не существует: справочник создаётся пустым, и рядов
+        # может быть несколько (§2.12). Проверка здесь, а не в роутерах, по той же
+        # причине, что у границ `single_rate`: маршрутов ДВА, и они обязаны
+        # отвечать одинаково.
+        raise DomainError(
+            400,
+            "Целевой месяц задан без ряда индексов: умолчательного ряда не "
+            "существует, выберите ряд явно.",
+        )
+
+    plan: InflationPlan | None = None
+    if inflation_series_id is not None:
+        # Месяц по умолчанию — ТЕКУЩИЙ, и разрешает его СЕРВЕР в названной
+        # бизнес-таймзоне (§2.7): `Date.now()` на клиенте — часы читателя, два
+        # человека получили бы два ответа, и ни один не воспроизводим. Разрешение
+        # живёт здесь, а не в роутерах, чтобы у экрана и листа не оказалось двух
+        # представлений о «сейчас».
+        plan = resolve_inflation(
+            db,
+            contract_ids,
+            series_id=inflation_series_id,
+            target_month=target_month if target_month is not None else current_period(),
+        )
+
+    rollups = load_rollups(
+        db, contract_ids, adjustment=plan.factor_by_estimate if plan else None
+    )
     columns_meta = _load_columns(db, contract_ids)
     ordered_ids = [column["contract_id"] for column in columns_meta]
 
@@ -1645,16 +2080,24 @@ def build_comparison(
         {
             **column,
             "composition_caption": _composition_caption(rollups.get(column["contract_id"], [])),
+            # Инфляционные ключи появляются ТОЛЬКО при сосчитанном приведении:
+            # `inflation_coefficient: null` в номинальном ответе — уже нарушение
+            # DoD 1 («ответ не меняется НИ ОДНИМ ключом»).
+            **(
+                _column_inflation(rollups.get(column["contract_id"], []), plan)
+                if plan is not None
+                else {}
+            ),
         }
         for column in columns_meta
     ]
 
-    return {
+    result = {
         "vat_mode": vat_mode,
         "single_rate": effective_single_rate,
         "rate_options": rate_opts,
         "rate_preselected": rate_preselected,
-        "caption": _mode_caption(vat_mode, effective_single_rate),
+        "caption": _mode_caption(vat_mode, effective_single_rate, plan),
         "columns": columns,
         "rows": rows_out,
         "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
@@ -1662,3 +2105,14 @@ def build_comparison(
             bucket: _median_dict(totals_medians[bucket]) for bucket in totals_medians
         },
     }
+    if plan is not None:
+        result["inflation"] = {
+            "series_id": plan.series_id,
+            "series_name": plan.series_name,
+            "series_note": plan.series_note,
+            "series_updated_at": plan.series_updated_at,
+            "target_month": plan.target_month,
+            "has_forecast": plan.has_forecast,
+            "used_years": plan.used_years,
+        }
+    return result

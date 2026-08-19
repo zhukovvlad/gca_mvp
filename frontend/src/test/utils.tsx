@@ -18,7 +18,7 @@ export function createTestQueryClient(): QueryClient {
 }
 
 /** Дефолтный пользователь для тестов — admin. */
-const DEFAULT_TEST_USER: User = {
+export const DEFAULT_TEST_USER: User = {
   id: 1,
   email: "test@example.com",
   role: "admin",

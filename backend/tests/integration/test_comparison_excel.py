@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 
 from crud import comparison as cmp
 from models import UserRole, WorkCategory
+from money.inflation import YearMonth
 from services.excel_comparison import _BUCKET_ORDER, _COLS_PER_CONTRACT, build_comparison_sheet
 from tests import comparison_fixtures as fx
 
@@ -470,3 +471,152 @@ class TestComparisonReportEndpoint:
             params={"ids": str(contract_id), "vat_mode": "net"},
         )
         assert response.status_code == 200, response.text
+
+
+# ---------------------------------------------------------------------------
+#  Лист выгрузки печатает ряд (спека инфляции §2.10, §2.12; план, задача 10)
+# ---------------------------------------------------------------------------
+
+def _inflation_sheet(db, factories, *, note=None, forecast=(2026,)):
+    """Лист по приведённому агрегату и сам агрегат — парой, чтобы тест сравнивал
+    напечатанное с тем, что пришло в словаре, а не с пересчитанным заново."""
+    series_id = fx.series_with_years(
+        db, "Росстат, ИПЦ, декабрь к декабрю",
+        {2024: "1.0750", 2025: "1.0830", 2026: "1.0600"},
+        note=note, forecast=forecast, source="бюллетень 01.2026",
+    )
+    ids = [
+        fx.contract_with_dates(
+            db, factories, {"1": ["1200000.00"]}, signed_date=signed_date
+        )
+        for signed_date in (dt.date(2024, 5, 28), dt.date(2026, 7, 6))
+    ]
+    data = cmp.build_comparison(
+        db, ids, vat_mode=cmp.VAT_MODE_OWN,
+        inflation_series_id=series_id, target_month=YearMonth(2026, 8),
+    )
+    return data, _sheet_from(data)
+
+
+def test_sheet_prints_the_series_and_the_target_month(db_session, factories):
+    """Ряд и целевой месяц — на самом листе (DoD 13)."""
+    _data, ws = _inflation_sheet(db_session, factories)
+    text = _text_of(ws)
+
+    assert "Цены приведены к: август 2026" in text
+    assert "Росстат, ИПЦ, декабрь к декабрю" in text
+
+
+def test_sheet_prints_five_facts_for_every_used_year(db_session, factories):
+    """Пять фактов на КАЖДЫЙ использованный год (DoD 13).
+
+    Версионности у ряда нет (§2.10): воспроизводимость лежит на файле, и год без
+    источника либо без даты правки эту роль не исполнил бы.
+    """
+    data, ws = _inflation_sheet(db_session, factories)
+    text = _text_of(ws)
+
+    assert [item["year"] for item in data["inflation"]["used_years"]] == [2024, 2025, 2026]
+    for item in data["inflation"]["used_years"]:
+        line = next(
+            (row for row in _text_of(ws).splitlines() if row.startswith(f"{item['year']} · ")),
+            None,
+        )
+        assert line is not None, f"строки года {item['year']} на листе нет"
+        assert format(item["coefficient"], "f") in line
+        assert item["source"] in line
+        assert ("прогноз" if item["is_forecast"] else "факт") in line
+        assert "правлен " in line
+
+    # Прогнозный год назван прогнозом, фактический — фактом, и это РАЗНЫЕ слова
+    # в одном и том же месте строки (DoD 14).
+    assert "2026 · 1.0600 · бюллетень 01.2026 · прогноз" in text
+    assert "2024 · 1.0750 · бюллетень 01.2026 · факт" in text
+
+
+def test_sheet_prints_the_year_source_which_the_screen_does_not(db_session, factories):
+    """Источник ГОДА есть на листе (DoD 32, половина про лист).
+
+    Парная половина — «на экране сравнения его нет» — живёт в тесте экрана
+    (задача 14): здесь её проверить нечем, а утверждать обе стороны в одном месте
+    значило бы утверждать про экран из теста про файл.
+    """
+    data, ws = _inflation_sheet(db_session, factories)
+
+    assert "бюллетень 01.2026" in _text_of(ws)
+    # Примечание ряда — наоборот, дело экрана: на листе его нет.
+    assert data["inflation"]["series_note"] is None
+
+
+def test_sheet_prints_the_series_note_nowhere_but_keeps_the_screen_field(
+    db_session, factories
+):
+    """Примечание ряда приходит в агрегате (его показывает полоса уровней), а на
+    лист не печатается: состав листа и экрана РАЗНЫЙ, и это разделение, а не дубль."""
+    data, ws = _inflation_sheet(db_session, factories, note="официальная публикация, по РФ")
+    text = _text_of(ws)
+
+    assert data["inflation"]["series_note"] == "официальная публикация, по РФ"
+    assert "официальная публикация" not in text
+    # Блок приведения при этом НАПЕЧАТАН, и признак берётся из самого блока:
+    # название ряда попадает на лист ещё и через подпись оси, поэтому по нему
+    # различить «блок есть» и «блока нет» нельзя — замерено снятием 2026-08-19,
+    # тест оставался зелёным. «правлен ДД.ММ.ГГГГ» печатает только блок.
+    assert "правлен " in text
+
+
+def test_sheet_without_inflation_is_unchanged_cell_by_cell(db_session, factories):
+    """Без блока `inflation` лист не меняется НИ НА ОДНУ ячейку (DoD 1).
+
+    Сравниваются координаты и значения всех непустых ячеек, а не байты: XLSX —
+    ZIP-контейнер, его байты расходятся метаданными архива при идентичном
+    содержимом. Тот же приём, что у golden-снимка задачи 1; здесь он повторён на
+    той же выборке до и после включения приведения, чтобы отличить «лист не
+    изменился» от «снимок не заведён».
+    """
+    ids = [
+        fx.contract_with_dates(
+            db_session, factories, {"1": ["1200000.00"]}, signed_date=signed_date
+        )
+        for signed_date in (dt.date(2024, 5, 28), dt.date(2026, 7, 6))
+    ]
+    nominal = cmp.build_comparison(db_session, ids, vat_mode=cmp.VAT_MODE_OWN)
+
+    first = _cells(_sheet_from(nominal))
+    second = _cells(_sheet_from(nominal))
+    assert first == second
+
+    series_id = fx.series_with_years(
+        db_session, "Ряд для сравнения листов", {2024: "1.075", 2025: "1.083", 2026: "1.060"}
+    )
+    adjusted = cmp.build_comparison(
+        db_session, ids, vat_mode=cmp.VAT_MODE_OWN,
+        inflation_series_id=series_id, target_month=YearMonth(2026, 8),
+    )
+    # Лист с приведением обязан отличаться, и отличаться ИМЕННО блоком: числа в
+    # нём другие сами по себе, поэтому одного `!=` не хватает — оно осталось бы
+    # зелёным и при неработающем блоке (проверено снятием 2026-08-19).
+    adjusted_text = _text_of(_sheet_from(adjusted))
+    assert _cells(_sheet_from(adjusted)) != first
+    assert "Ряд для сравнения листов" in adjusted_text
+    assert "Цены приведены к: август 2026" in adjusted_text
+
+
+def test_sheet_says_so_when_no_year_was_needed(db_session, factories):
+    """Цель совпала с месяцем сметы: годов нет, но лист об этом ГОВОРИТ (DoD 5).
+
+    Молчание читалось бы как «ряд не доехал до листа», хотя приведение включено и
+    сосчитано.
+    """
+    series_id = fx.series_with_years(db_session, "Ряд без нужных годов", {})
+    contract_id = fx.contract_with_dates(
+        db_session, factories, {"1": ["1200000.00"]}, signed_date=dt.date(2026, 8, 15)
+    )
+    data = cmp.build_comparison(
+        db_session, [contract_id], vat_mode=cmp.VAT_MODE_OWN,
+        inflation_series_id=series_id, target_month=YearMonth(2026, 8),
+    )
+
+    text = _text_of(_sheet_from(data))
+    assert "Цены приведены к: август 2026" in text
+    assert "не потребовались" in text

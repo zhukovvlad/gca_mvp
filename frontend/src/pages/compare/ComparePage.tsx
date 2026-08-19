@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
 
@@ -16,7 +16,27 @@ import {
 } from "@/components/ui/select";
 import { formatDate, formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useComparison, useComparisonReport } from "@/services/queries";
+import { InflationControls } from "@/components/inflation/InflationControls";
+import { InflationLevelsBar } from "@/components/inflation/InflationLevelsBar";
+import {
+  AMENDMENT_DATE_CODE,
+  InflationRefusalBanner,
+  MISSING_YEARS_CODE,
+} from "@/components/inflation/InflationRefusalBanner";
+import {
+  InflationSeriesDialog,
+  type InflationSeriesTarget,
+} from "@/components/inflation/InflationSeriesDialog";
+import { useCurrentUser } from "@/hooks/useAuth";
+import { coefficientLevel } from "@/lib/inflation";
+import {
+  apiErrorCode,
+  apiErrorContext,
+  apiErrorDetail,
+  useComparison,
+  useComparisonReport,
+  useInflationSeries,
+} from "@/services/queries";
 import { type DeviationTone, deviationTone } from "./deviationTone";
 import type {
   Comparison,
@@ -287,6 +307,51 @@ function ComparisonColumnHeader({
           {column.composition_caption}
         </div>
       )}
+      <InflationChip column={column} />
+    </div>
+  );
+}
+
+/**
+ * Чип приведения в шапке колонки (спека §2.12, DoD 33).
+ *
+ * Коэффициент показан УРОВНЕМ (`+17,4 %`), множитель — в подсказке: человек думает
+ * в процентах инфляции, а множитель нужен, чтобы арифметику можно было проверить,
+ * но читается он хуже.
+ *
+ * `inflation_coefficient === null` означает «сметы договора приведены РАЗНЫМИ
+ * множителями»; тогда в подсказке лежит их перечень из `inflation_factors`. Чип
+ * без разбивки отправлял бы читателя смотреть корзины, а корзины множителей не
+ * показывают — арифметика колонки перестала бы быть проверяемой.
+ *
+ * Ключей нет вовсе, если приведение не считалось ЛИБО у колонки нет смет: у пустого
+ * договора множителя не существует, и «разные» о нём было бы неправдой.
+ */
+function InflationChip({ column }: { column: ComparisonColumn }) {
+  if (!("inflation_coefficient" in column)) return null;
+
+  const coefficient = column.inflation_coefficient ?? null;
+  if (coefficient !== null) {
+    const level = coefficientLevel(coefficient);
+    return (
+      <div
+        data-testid={`inflation-chip-${column.contract_id}`}
+        title={`множитель × ${coefficient}`}
+        className="mt-1 inline-block rounded bg-accent-soft px-1.5 text-2xs text-accent-text"
+      >
+        {level.level}
+      </div>
+    );
+  }
+
+  const factors = column.inflation_factors ?? [];
+  return (
+    <div
+      data-testid={`inflation-chip-${column.contract_id}`}
+      title={factors.map((factor) => `${factor.label} × ${factor.coefficient}`).join(" · ")}
+      className="mt-1 inline-block rounded bg-surface-sunken px-1.5 text-2xs text-fg-secondary"
+    >
+      разные
     </div>
   );
 }
@@ -491,8 +556,44 @@ export default function ComparePage() {
   const vatMode = (searchParams.get("vat_mode") as ComparisonVatMode | null) ?? "own";
   const singleRateParam = searchParams.get("single_rate") ?? undefined;
 
+  // Приведение живёт в URL: ссылка воспроизводит ПАРАМЕТРЫ расчёта (§2.10).
+  const seriesIdParam = searchParams.get("inflation_series_id") ?? undefined;
+  const targetMonthParam = searchParams.get("target_month") ?? undefined;
+
   const [bucket, setBucket] = useState<ComparisonBucket>("total");
   const [expandedCodes, setExpandedCodes] = useState<Set<string>>(() => new Set());
+
+  /*
+    Выбранный ряд — состояние СТРАНИЦЫ, а не URL, пока приведение не включено:
+    §2.12 требует, чтобы выбор ряда сам числа не менял и в адрес не попадал.
+    Начальное значение берётся из URL — прямое открытие ссылки обязано показать
+    выбранный ряд в селекторе, даже если приведение по нему отказало.
+  */
+  const [selectedSeriesId, setSelectedSeriesId] = useState<number | null>(
+    seriesIdParam ? Number(seriesIdParam) : null
+  );
+  const [editingSeries, setEditingSeries] = useState<number | null>(null);
+  const [dialogMissingYears, setDialogMissingYears] = useState<number[] | undefined>(undefined);
+
+  const { data: currentUser } = useCurrentUser();
+  const canEditSeries = currentUser?.role === "admin";
+  /*
+    Список запрашивается С АРХИВНЫМИ, а «не предлагаются для нового выбора» (§2.10)
+    делает уже сам селектор, отбрасывая неактивные из ОПЦИЙ.
+
+    Причина не в экономии запроса. Архивный ряд по прямой ссылке — поддержанный
+    путь (DoD 20): приведение по нему считается, полоса уровней рисуется. Пока
+    список шёл без архивных, `find` по нему возвращал `undefined`, а `undefined ??
+    null` в контракте окна означает РЕЖИМ СОЗДАНИЯ: клик admin'а по «Изменить ряд»
+    открывал «Новый ряд индексов» с пустыми полями, и человек, думая что правит,
+    заводил дубликат либо упирался в 409 по занятому имени. Найдено финальным ревью
+    ветки.
+
+    С архивными в списке окно получает настоящий объект с `is_active: false` и
+    показывает своё же состояние «сначала верните в активные» с выключенным
+    сохранением.
+  */
+  const seriesListQ = useInflationSeries(true);
 
   const hasSelection = Boolean(idsParam) || allParam === "1";
 
@@ -506,12 +607,42 @@ export default function ComparePage() {
       rate_class_id: rateClassIdParam,
       vat_mode: vatMode,
       single_rate: vatMode === "single" ? singleRateParam : undefined,
+      inflation_series_id: seriesIdParam,
+      target_month: targetMonthParam,
     }),
-    [idsParam, allParam, qParam, objectIdParam, contractorIdParam, rateClassIdParam, vatMode, singleRateParam]
+    [
+      idsParam, allParam, qParam, objectIdParam, contractorIdParam, rateClassIdParam,
+      vatMode, singleRateParam, seriesIdParam, targetMonthParam,
+    ]
   );
 
   const comparisonQ = useComparison(params, hasSelection);
-  const comparison = comparisonQ.data;
+
+  /*
+    ОТКАЗ ПРИВЕДЕНИЯ: экран показывает НОМИНАЛЬНЫЙ вариант с баннером, а параметры
+    URL сохраняет (§2.9) — пользователь обязан видеть, какой ряд и какая цель не
+    сработали, чтобы заполнить недостающие годы.
+
+    Номинальный запрос идёт ВТОРЫМ и только при отказе: делать его всегда значило бы
+    удваивать нагрузку ради случая, который на исправном ряде не наступает.
+  */
+  const refusalCode = apiErrorCode(comparisonQ.error);
+  const refused =
+    refusalCode === MISSING_YEARS_CODE || refusalCode === AMENDMENT_DATE_CODE;
+  const nominalParams = useMemo<ComparisonParams>(
+    () => ({ ...params, inflation_series_id: undefined, target_month: undefined }),
+    [params]
+  );
+  const nominalQ = useComparison(nominalParams, hasSelection && refused);
+
+  const comparison = refused ? nominalQ.data : comparisonQ.data;
+  /*
+    Номинальный запрос — тоже запрос, и он тоже умеет падать. Кодированного отказа
+    он вернуть не может (инфляционных параметров в нём нет), поэтому его ошибка
+    всегда «неизвестный сбой», и состояние ей нужно ОТДЕЛЬНОЕ от общего EmptyState:
+    причина отказа приведения при этом известна и названа баннером.
+  */
+  const nominalFailed = refused && nominalQ.isError;
 
   /*
     Выгрузка листа — ТРЕТИЙ отчёт §7.6, и кнопка ему нужна именно здесь.
@@ -550,6 +681,147 @@ export default function ComparePage() {
     setSearchParams(next, { replace: true });
   }
 
+  /**
+   * Включение и выключение приведения — тем же приёмом, что `updateVatMode`.
+   *
+   * Месяц в URL НЕ пишется при включении: его разрешает сервер в названной
+   * таймзоне и возвращает в ответе (§2.7), после чего эффект ниже кладёт его в
+   * адрес. `Date.now()` на клиенте не используется — это часы читателя, и два
+   * человека получили бы два ответа.
+   */
+  function toggleInflation(enabled: boolean) {
+    const next = new URLSearchParams(searchParams);
+    if (enabled && selectedSeriesId !== null) {
+      next.set("inflation_series_id", String(selectedSeriesId));
+    } else {
+      // Возврат к номиналу ЧИСТИТ адрес: оставленные параметры означали бы, что
+      // приведение всё ещё выбрано, при номинальных числах на экране.
+      next.delete("inflation_series_id");
+      next.delete("target_month");
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  function selectSeries(id: number | null) {
+    setSelectedSeriesId(id);
+    const next = new URLSearchParams(searchParams);
+    if (id === null) {
+      // Сброс ряда в placeholder выключает приведение: приводить стало нечем.
+      next.delete("inflation_series_id");
+      next.delete("target_month");
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    /*
+      Если приведение УЖЕ включено, смена ряда применяется немедленно — так решает
+      согласованный макет (§7 спеки, замер «смена ряда меняет числа, а не только
+      подпись»). Прежняя редакция оставляла адрес нетронутым, и жило состояние «в
+      селекторе один ряд, на всей остальной поверхности другой»: применить новый
+      можно было только повторным кликом по уже нажатой «Привести», а нажатая
+      кнопка к клику не приглашает. Таблица состояний §2.12 этот переход не
+      описывает — решает макет. Найдено финальным ревью ветки.
+
+      Целевой месяц СОХРАНЯЕТСЯ: его выбрал человек либо разрешил сервер, и
+      сбрасывать его при смене ряда значило бы терять его решение. Если у нового
+      ряда нужных годов нет — придёт штатный отказ с перечнем.
+    */
+    if (seriesIdParam) {
+      next.set("inflation_series_id", String(id));
+      setSearchParams(next, { replace: true });
+    }
+  }
+
+  function updateTargetMonth(month: string) {
+    const next = new URLSearchParams(searchParams);
+    if (month) next.set("target_month", month);
+    else next.delete("target_month");
+    if (selectedSeriesId !== null) next.set("inflation_series_id", String(selectedSeriesId));
+    setSearchParams(next, { replace: true });
+  }
+
+  /*
+    Разрешённый сервером месяц клиент немедленно записывает в URL (§2.12): без этого
+    ссылка воспроизводила бы «текущий месяц», то есть меняла бы числа со временем.
+    Условие сравнивает с тем, что уже в адресе, — иначе эффект переписывал бы адрес
+    на каждом рендере.
+  */
+  const resolvedMonth = comparison?.inflation?.target_month;
+  useEffect(() => {
+    if (!resolvedMonth || targetMonthParam === resolvedMonth) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("target_month", resolvedMonth);
+    setSearchParams(next, { replace: true });
+  }, [resolvedMonth, targetMonthParam, searchParams, setSearchParams]);
+
+  /*
+    Баннер отказа НЕ ЗАВИСИТ ОТ ЧИСЕЛ, и поэтому он — элемент, а не кусок разметки
+    внутри блока `comparison &&`. Причина отказа лежит в ответе на ПЕРВЫЙ запрос и
+    известна даже тогда, когда номинальный запрос за числами тоже упал. Пока баннер
+    жил только вместе с таблицей, эта пара давала страницу с одним заголовком:
+    `comparison` пуст, общий EmptyState подавлен условием `!refused`, а скелета нет,
+    потому что `nominalQ` не в `isPending`, а в `isError`. Молчание здесь хуже любого
+    текста — человек видел заголовок и ничего больше. Найдено внешним ревью.
+
+    Один элемент, ДВЕ точки монтирования, условия взаимоисключающие (`comparison`
+    либо есть, либо нет), поэтому в DOM баннер ровно один — это утверждается тестом.
+    Место рядом с полосой уровней сохранено намеренно: когда числа показаны, баннер
+    объясняет выключенный переключатель, а он стоит там.
+  */
+  const refusalBanner =
+    refused && refusalCode ? (
+      <InflationRefusalBanner
+        code={refusalCode}
+        message={apiErrorDetail(comparisonQ.error) ?? "Причина не названа."}
+        seriesName={seriesListQ.data?.find((row) => row.id === selectedSeriesId)?.name}
+        missingYears={
+          apiErrorContext<{ missing_years?: number[] }>(comparisonQ.error)?.missing_years
+        }
+        canEdit={Boolean(canEditSeries)}
+        onFillMissingYears={(years) => {
+          // ТОТ ЖЕ компонент окна, что у полосы и у экрана нормативов, и тот же его
+          // экземпляр на этой странице (DoD 34).
+          setDialogMissingYears(years);
+          setEditingSeries(selectedSeriesId);
+        }}
+      />
+    ) : null;
+
+  /*
+    Объект правки и ПРИЧИНА его отсутствия — одно вычисление на одну точку вызова.
+    «Не нашли» здесь законно двумя разными способами, и окно обязано различать их:
+    запрос списка ещё идёт (`pending`) — либо он упал, либо завершился без этого
+    ряда (`failed`), и тогда ждать нечего. Прежде оба уводились в один `null`, и
+    упавший список оставлял окно на «Загружаем…» навсегда.
+  */
+  const editedSeriesRow = seriesListQ.data?.find((row) => row.id === editingSeries) ?? null;
+
+  function buildDialogTarget(): InflationSeriesTarget {
+    if (editedSeriesRow) return { mode: "edit", series: editedSeriesRow };
+    /*
+      Одного `isPending` достаточно и на ПОВТОР после отказа: запрос, ни разу не
+      отдавший данных, при новом `fetch` сам возвращается в `pending` с погашенной
+      ошибкой (`fetchState()` в `@tanstack/query-core` при `data === undefined`).
+      Добавленное сюда `|| isFetching` было мёртвым — снятие не роняло ни одного
+      теста; вторая проверка того же факта читалась бы как защита, не будучи ею.
+    */
+    if (seriesListQ.isPending) return { mode: "edit", series: null, reason: "pending" };
+    /*
+      Отказ объявляется ВМЕСТЕ со способом его снять. Список рядов принадлежит этой
+      странице: окно не может перезапросить его ничем, и закрытие с повторным
+      открытием тоже — запрос смонтирован здесь, `refetchOnWindowFocus` выключен, а
+      `staleTime` минута. Пока способа не было, окно звало «попробовать снова», не
+      имея чем. Найдено третьим кругом ревью.
+    */
+    return {
+      mode: "edit",
+      series: null,
+      reason: "failed",
+      onRetry: () => void seriesListQ.refetch(),
+    };
+  }
+
+  const dialogTarget = buildDialogTarget();
+
   if (!hasSelection) {
     return (
       <div className="container-page py-8">
@@ -580,15 +852,79 @@ export default function ComparePage() {
         }
       />
 
-      {comparisonQ.isPending && <Skeleton className="mt-6 h-64 w-full" />}
+      {(comparisonQ.isPending || (refused && nominalQ.isPending)) && (
+        <Skeleton className="mt-6 h-64 w-full" />
+      )}
 
-      {comparisonQ.isError && (
+      {/*
+        Общий «не загрузилось» — ТОЛЬКО на неизвестной ошибке. Штатный доменный отказ
+        приведения ошибкой загрузки не является: сравнение показано, номинальное, и
+        причину называет баннер. Прежняя редакция рисовала оба разом, и поверхность
+        сама себе противоречила — «не удалось загрузить» над загруженной таблицей.
+        Найдено внешним ревью.
+      */}
+      {comparisonQ.isError && !refused && (
         <EmptyState
           className="mt-6"
           title="Не удалось загрузить сравнение"
           description="Обновите страницу или проверьте выборку в адресе."
         />
       )}
+
+      {/*
+        ВТОРАЯ точка монтирования баннера — на случай, когда чисел нет вовсе. Причина
+        отказа приведения известна из первого ответа и обязана быть названа, даже
+        если номинальный запрос за числами тоже упал. Условие взаимоисключающее с
+        точкой внутри блока чисел, поэтому баннер в DOM ровно один.
+      */}
+      {!comparison && refusalBanner}
+
+      {/*
+        Отказ приведения И падение номинального запроса — ДВА разных факта, и второй
+        не отменяет первого. Общий EmptyState здесь не годится: он сказал бы «не
+        удалось загрузить сравнение», умолчав о том, что приведение отказано штатно и
+        по названной причине, — то есть повторил бы дефект второго круга ревью с
+        обратным знаком. Кнопка «Заполнить недостающие годы» в баннере выше при этом
+        живая: правка ряда перезапросит и сравнение (DoD 36).
+      */}
+      {nominalFailed && (
+        <EmptyState
+          className="mt-6"
+          title="Номинальные числа получить не удалось"
+          description="Причина отказа приведения названа выше, а сами суммы не загрузились. Обновите страницу: выбранные ряд и месяц остались в адресе."
+        />
+      )}
+
+      {/*
+        ОДИН экземпляр окна на всю страницу: и полоса уровней, и баннер отказа
+        управляют им, а не заводят каждый свой. Два экземпляра разошлись бы
+        состоянием — открытие из баннера обязано давать то же окно, что открытие из
+        полосы (DoD 34).
+      */}
+      <InflationSeriesDialog
+        open={editingSeries !== null}
+        /*
+          Режим ЗДЕСЬ всегда «правка»: и полоса уровней, и баннер отказа открывают
+          окно по УЖЕ ВЫБРАННОМУ ряду, создания с этой страницы нет вовсе.
+
+          Объект ряда и причина его отсутствия считаются выше: список рядов идёт
+          своим запросом и может ещё не разрешиться либо упасть, когда сравнение уже
+          пришло. Прежняя редакция сворачивала это в `?? null`, и такой промах молча
+          становился режимом создания: admin, думая что правит ряд, открывал пустую
+          форму «Новый ряд индексов». Первое исправление закрыло только случай
+          архивного ряда, второе — порядок завершения запросов, а упавший список
+          по-прежнему оставлял окно в бесконечной загрузке. Найдено внешним ревью
+          трижды, и каждый раз причина была одна: одно значение на два состояния.
+        */
+        target={dialogTarget}
+        missingYears={dialogMissingYears}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingSeries(null);
+            setDialogMissingYears(undefined);
+          }
+        }}
+      />
 
       {comparison && (
         <>
@@ -600,6 +936,40 @@ export default function ComparePage() {
           <p data-testid="comparison-caption" className="mt-4 text-sm text-fg-secondary">
             {comparison.caption}
           </p>
+
+          <div className="mt-4">
+            <InflationControls
+              series={seriesListQ.data ?? []}
+              selectedSeriesId={selectedSeriesId}
+              // Запасное название — из ОТВЕТА СРАВНЕНИЯ, не собранное клиентом.
+              selectedSeriesName={comparison.inflation?.series_name}
+              listFailed={seriesListQ.isError}
+              enabled={Boolean(seriesIdParam) && !refused}
+              targetMonth={targetMonthParam ?? ""}
+              onSelectSeries={selectSeries}
+              onToggle={toggleInflation}
+              onChangeMonth={updateTargetMonth}
+            />
+          </div>
+
+          {/*
+            Полоса уровней не отрисовывается, пока приведение не сосчитано, — а не
+            скрывается атрибутом `hidden`: в макете `display:flex` перебивал
+            браузерное `[hidden] { display:none }`, и полоса продолжала занимать
+            место. Отсутствующий узел этой ловушки не имеет вовсе.
+          */}
+          {comparison.inflation && (
+            <InflationLevelsBar
+              inflation={comparison.inflation}
+              canEdit={Boolean(canEditSeries)}
+              onEdit={() => {
+                setDialogMissingYears(undefined);
+                setEditingSeries(comparison.inflation!.series_id);
+              }}
+            />
+          )}
+
+          {refusalBanner}
 
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
