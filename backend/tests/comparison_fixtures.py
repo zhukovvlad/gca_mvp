@@ -414,3 +414,35 @@ def archive_series(db, series_id: int) -> None:
         .values(is_active=False)
     )
     db.flush()
+
+
+def contract_with_money_everywhere(
+    db, factories, *, signed_date: dt.date, gross: str = "1200000.00",
+    prepared_on: dt.date | None = None, vat_rate=VAT_20,
+    area_aboveground="50000", area_underground="50000",
+) -> int:
+    """Договор, у которого деньги лежат В ТРЁХ МЕСТАХ сразу, по `gross` в каждом.
+
+    Три места: подстатья «1.1» (поддерево статьи «1»), собственные деньги статьи
+    «1» (строка «Без подстатьи») и позиции без раздела («Нераспределённое»).
+
+    Нужны именно три, потому что единственная точка умножения на коэффициент
+    инфляции иначе проверялась бы ОДНОЙ ветвью данных: приведённое дерево и
+    неприведённый остаток молча сложились бы в «Итого по договору», и итог соврал
+    бы ровно на разницу (план, задача 8 шаг 2).
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(object=obj, signed_date=signed_date)
+    estimate = factories.EstimateFactory.create(
+        contract=contract, data_prepared_on_date=prepared_on
+    )
+    proposal = make_proposal(factories, estimate=estimate, vat_rate=vat_rate)
+
+    seed_chapter_with_positions(db, factories, proposal=proposal, code="1.1", amounts=[gross])
+    seed_chapter_with_positions(db, factories, proposal=proposal, code="1", amounts=[gross])
+    seed_unallocated_positions(db, factories, proposal=proposal, amounts=[gross])
+    db.flush()
+    return contract.id
