@@ -101,7 +101,20 @@ export function InflationControls({
             }
           >
             <SelectTrigger id="inflation-series-select" className="w-64">
-              <SelectValue placeholder="Выберите ряд" />
+              {/*
+                `SelectValue` РЕНДЕР-ФУНКЦИЕЙ, а не `placeholder`-ом: без неё
+                триггер печатает сырое значение, то есть `id` ряда — «1» вместо
+                названия. Это идиома проекта (`ContractsPage`, селектор класса), и
+                дефект нашёлся только замером в браузере: компонентный тест кликал
+                по опции и не смотрел, что показывает сам триггер.
+              */}
+              <SelectValue>
+                {(raw) =>
+                  !raw || raw === NO_SERIES
+                    ? "Выберите ряд"
+                    : (series.find((row) => String(row.id) === raw)?.name ?? "Выберите ряд")
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NO_SERIES}>Выберите ряд</SelectItem>
