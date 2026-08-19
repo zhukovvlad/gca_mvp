@@ -279,7 +279,9 @@ def _apply_series_fields(series: InflationSeries, *, name, note, is_active) -> b
     return changed
 
 
-def _apply_archived_rules(series: InflationSeries, *, name, note, is_active, values) -> None:
+def _apply_archived_rules(
+    series: InflationSeries, *, name, note, is_active, values_given: bool
+) -> None:
     """Архивный ряд заморожен, но обратим (§2.10, DoD 28).
 
     Только `is_active: true` в одиночку — размораживает; вместе с полями или
@@ -289,6 +291,17 @@ def _apply_archived_rules(series: InflationSeries, *, name, note, is_active, val
     проверялось бы внутри той же транзакции, которая размораживает, и правило
     перестало бы быть проверяемым. Сначала вернуть ряд в активные, потом править —
     два шага, каждый со своим смыслом.
+
+    **`values: []` — это ПЕРЕДАННОЕ поле, а не его отсутствие**, и потому даёт
+    `409` наравне с непустым списком. Первая редакция реализации считала пустой
+    список отсутствием правок: по смыслу правил ноль, по букве спеки поле в теле
+    есть. Спека — источник истины по фиче (§9.2 `AGENTS.md`), и относить такое
+    решение к докстрингу нельзя: гейт 2 переоткрывается решением пользователя, а
+    не комментарием в коде. Найдено внешним ревью.
+
+    `values: null` от опущенного поля НЕ отличается — это обычная семантика
+    `PATCH` для необязательного поля, и различать их значило бы требовать от
+    клиента знать разницу между «не присылал» и «прислал пустоту».
 
     `409` выбран по прецеденту: у `category_overrides` тем же кодом отвечает
     `structure_disabled` — «объект выключен», случай того же рода.
@@ -300,10 +313,7 @@ def _apply_archived_rules(series: InflationSeries, *, name, note, is_active, val
         and bool(is_active) is True
         and name is UNSET
         and note is UNSET
-        # Пустой список годов — это отсутствие правок, а не правка: отвечать на
-        # него `409` значило бы отличать `values: []` от опущенного поля там, где
-        # разницы нет.
-        and not values
+        and not values_given
     )
     if unfreeze_only:
         return
@@ -370,7 +380,11 @@ def update_series(
         _reject_duplicate_years(payload_values)
         series = _get_for_update(db, series_id)
         _apply_archived_rules(
-            series, name=name, note=note, is_active=is_active, values=payload_values
+            series, name=name, note=note, is_active=is_active,
+            # Именно `values is not None`, а не `payload_values`: список годов
+            # мог прийти ПУСТЫМ, и для правила архивного ряда это переданное
+            # поле, а не его отсутствие.
+            values_given=values is not None,
         )
         if name is not UNSET:
             _require_name_available(

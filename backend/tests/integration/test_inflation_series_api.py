@@ -247,6 +247,38 @@ def test_unfreeze_together_with_edits_is_a_conflict(db_session):
     assert crud.get_series_dict(db_session, series["id"])["is_active"] is False
 
 
+def test_unfreeze_with_an_empty_values_list_is_a_conflict(db_session):
+    """`values: []` — ПЕРЕДАННОЕ поле, а не его отсутствие (спека §2.12, DoD 28).
+
+    По смыслу правок в пустом списке ноль, но по букве спеки поле в теле есть, и
+    расконсервация обязана идти ОТДЕЛЬНЫМ запросом. Правило закреплено тестом
+    именно потому, что первая редакция реализации трактовала пустой список как
+    отсутствие поля: такое решение переоткрывает гейт 2 и docstring-ом не
+    принимается.
+
+    Парой к этому тесту идёт `test_unfreeze_alone_returns_the_series_to_active`:
+    там `values` не передаётся вовсе, и ряд размораживается. Два утверждения на
+    одно различение — иначе непонятно, что именно ловит `409`.
+    """
+    series = _archived(db_session)
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, series["id"], is_active=True, values=[])
+    assert exc.value.status_code == 409
+
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["is_active"] is False
+
+
+def test_unfreeze_with_values_none_is_the_same_as_not_sending_it(db_session):
+    """`values: null` от опущенного поля не отличается — обычная семантика `PATCH`."""
+    series = _archived(db_session)
+
+    assert crud.update_series(
+        db_session, series["id"], is_active=True, values=None
+    )["is_active"] is True
+
+
 @pytest.mark.parametrize(
     "patch",
     [
@@ -297,10 +329,17 @@ def test_patch_with_a_broken_second_year_applies_nothing(db_session):
         )
 
     assert exc.value.status_code == 422
-    # `detail` — СТРОКА доменного отказа, а не список pydantic: если проверка
-    # уедет в схему запроса, тест покраснеет вместо того, чтобы тихо перестать
-    # сторожить.
-    assert isinstance(exc.value.detail, str)
+    # Кода у отказа нет — это обычный доменный отказ, а не одно из кодированных
+    # состояний фичи.
+    assert exc.value.code is None
+    #
+    # УТВЕРЖДЕНИЯ «`detail` — строка, а не список pydantic» ЗДЕСЬ НЕТ НАМЕРЕННО.
+    # На этом уровне схема запроса не исполняется вовсе, поэтому `isinstance(...,
+    # str)` остался бы зелёным при любой будущей схеме — то есть читался бы как
+    # живая защита, будучи мёртвой (§12, инсайт про снятие защиты, слой 7).
+    # Настоящая проверка возможна только через HTTP и живёт в задаче 6:
+    # `PATCH` с пустым `source` обязан вернуть 422 со СТРОКОВЫМ `detail`, а не
+    # список ошибок pydantic. Найдено внешним ревью.
 
     db_session.expire_all()
     assert crud.get_series_dict(db_session, series["id"])["name"] == SERIES_NAME
