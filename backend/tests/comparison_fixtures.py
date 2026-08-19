@@ -24,7 +24,12 @@ from decimal import Decimal
 
 import sqlalchemy as sa
 
-from models import EstimateAdditionalWork, WorkCategory
+from models import (
+    EstimateAdditionalWork,
+    InflationIndexValue,
+    InflationSeries,
+    WorkCategory,
+)
 
 VAT_20 = Decimal("20")
 VAT_22 = Decimal("22")
@@ -296,3 +301,116 @@ def baseline_selection(db, factories) -> list[int]:
         contract_ids.append(contract.id)
     db.flush()
     return contract_ids
+
+
+# ---------------------------------------------------------------------------
+#  Поправка на инфляцию (спека 2026-08-18; план, задачи 7–8)
+# ---------------------------------------------------------------------------
+
+def series_with_years(
+    db, name: str, years: dict[int, str], *, note: str | None = None,
+    forecast: tuple[int, ...] = (), source: str = "бюллетень 01.2026",
+) -> int:
+    """Ряд индексов с ЯВНЫМИ годами. Возвращает `series_id`.
+
+    Пишется прямо моделями, а НЕ через `crud.inflation_series`: фикстура,
+    проходящая через проверяемый код, делает предпосылку теста его же следствием
+    (§12, ложные предпосылки). Здесь нужен просто ряд в базе.
+    """
+    series = InflationSeries(name=name, note=note)
+    db.add(series)
+    db.flush()
+    for year, coefficient in sorted(years.items()):
+        db.add(
+            InflationIndexValue(
+                series_id=series.id, year=year, coefficient=Decimal(coefficient),
+                source=source, is_forecast=year in forecast,
+            )
+        )
+    db.flush()
+    return series.id
+
+
+def contract_with_dates(
+    db, factories, categories: dict[str, list[str]], *,
+    signed_date: dt.date, prepared_on: dt.date | None = None,
+    contract_number: str | None = None, vat_rate=VAT_20,
+    area_aboveground="50000", area_underground="50000",
+) -> int:
+    """Как `contract_with_area`, но даты договора и сметы заданы ЯВНО.
+
+    Приведение считается по периоду СМЕТЫ (спека §2.2), а `contract_with_area`
+    оставляет обе даты на умолчаниях фабрик (2025-03-01 и 2025-04-01) — на них
+    все договоры выборки попали бы в один год, и коэффициенты перестали бы
+    различаться, то есть тест приведения проверял бы совпадение единиц.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(
+        object=obj,
+        signed_date=signed_date,
+        **({"contract_number": contract_number} if contract_number else {}),
+    )
+    estimate = factories.EstimateFactory.create(
+        contract=contract, data_prepared_on_date=prepared_on
+    )
+    proposal = make_proposal(factories, estimate=estimate, vat_rate=vat_rate)
+    for code, amounts in categories.items():
+        seed_chapter_with_positions(db, factories, proposal=proposal, code=code, amounts=amounts)
+    db.flush()
+    return contract.id
+
+
+def contract_with_amendment_dates(
+    db, factories, *, signed_date: dt.date,
+    base_prepared: dt.date | None, amd_prepared: dt.date | None,
+    base: str = "1200000.00", amd: str = "600000.00",
+    contract_number: str | None = None, amendment_no: int = 1,
+    vat_rate=VAT_20, area_aboveground="50000", area_underground="50000",
+):
+    """Договор с ДГП и ОДНИМ ДС, у каждой сметы своя `data_prepared_on_date`.
+
+    Отличие от `contract_with_amendment`: там дат нет вовсе, а здесь они и есть
+    предмет проверки. `amd_prepared=None` воспроизводит случай DoD 8 — у ДС нет
+    собственной даты, и дата договора для него ЗАПРЕЩЕНА: это дата базы, и
+    коэффициент вышел бы молча неверным (§2.2).
+
+    Обе сметы кладут деньги в статью «1», чтобы корзины ДГП/ДС/Итого были
+    сопоставимы построчно.
+    """
+    obj = factories.ObjectFactory.create(
+        area_aboveground_sp=Decimal(area_aboveground),
+        area_underground_sp=Decimal(area_underground),
+    )
+    contract = factories.ContractFactory.create(
+        object=obj,
+        signed_date=signed_date,
+        **({"contract_number": contract_number} if contract_number else {}),
+    )
+    base_estimate = factories.EstimateFactory.create(
+        contract=contract, amendment_no=None, data_prepared_on_date=base_prepared
+    )
+    amd_estimate = factories.EstimateFactory.create(
+        contract=contract, amendment_no=amendment_no, data_prepared_on_date=amd_prepared
+    )
+    base_proposal = make_proposal(factories, estimate=base_estimate, vat_rate=vat_rate)
+    amd_proposal = make_proposal(
+        factories, estimate=amd_estimate, vat_rate=vat_rate, lot_key="amendment"
+    )
+    seed_chapter_with_positions(db, factories, proposal=base_proposal, code="1", amounts=[base])
+    seed_chapter_with_positions(db, factories, proposal=amd_proposal, code="1", amounts=[amd])
+    db.flush()
+    return contract, base_estimate, amd_estimate
+
+
+def archive_series(db, series_id: int) -> None:
+    """Убрать ряд в архив. Прямым `UPDATE`, а не через CRUD: тесту нужен факт
+    «ряд архивный», а не поведение правки (§12, ложные предпосылки)."""
+    db.execute(
+        sa.update(InflationSeries)
+        .where(InflationSeries.id == series_id)
+        .values(is_active=False)
+    )
+    db.flush()

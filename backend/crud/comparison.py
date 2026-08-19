@@ -49,7 +49,19 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError, iso
 from crud.project_passport import CATEGORY_TOTALS
-from models import Contract, Contractor, Estimate, Lot, ObjectModel, Proposal, RateClass, WorkCategory
+from models import (
+    Contract,
+    Contractor,
+    Estimate,
+    InflationIndexValue,
+    InflationSeries,
+    Lot,
+    ObjectModel,
+    Proposal,
+    RateClass,
+    WorkCategory,
+)
+from money.inflation import YearMonth, coefficient, required_years, year_exponents
 from money.vat import effective_display_rate, gross_to_net, net_to_gross
 from parser.summary_block import ARITHMETIC_PRECISION
 from services.category_rollup import (
@@ -524,6 +536,177 @@ def _direct_totals_view(direct: dict[int, dict[str, DirectBranch]]) -> dict[int,
         }
         for category_id, branches in direct.items()
     }
+
+
+# ---------------------------------------------------------------------------
+#  Приведение к ценовому уровню (спека 2026-08-18 §2.2, §2.5, §2.9)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class InflationPlan:
+    """План приведения выборки: метаданные ряда и коэффициент НА СМЕТУ.
+
+    Коэффициент на смету, а не на договор (§2.2): дельта ДС подписана позже базы,
+    иногда на годы, и это разные рубли внутри одного договора. Следствие, видимое
+    на экране, — корзина «Итого» становится суммой раздельно приведённых ДГП и
+    каждого ДС, а не приведением одной суммы.
+    """
+
+    series_id: int
+    series_name: str
+    series_note: str | None
+    series_updated_at: str | None
+    target_month: str
+    has_forecast: bool
+    used_years: list[dict]
+    factor_by_estimate: dict[int, Decimal]
+
+
+def _estimate_period(amendment_no: int | None, prepared_on, signed_date) -> YearMonth | None:
+    """Ценовой период сметы (§2.2). `None` — период не выводится.
+
+    Базовая смета (`amendment_no IS NULL`) — `COALESCE(data_prepared_on_date,
+    signed_date)`; допсоглашение — ТОЛЬКО `data_prepared_on_date`.
+
+    Фолбэк на дату договора для базовой сметы верен: дата исходной сметы и есть
+    дата подписания договора. Для ДС он **ЗАПРЕЩЁН** — это дата базы, и
+    коэффициент вышел бы молча неверным, то есть страница показала бы приведённые
+    числа, посчитанные не по тому периоду. Молчаливость и делает случай опасным:
+    ошибка выглядела бы как разница цен, ради показа которой приведение включают.
+
+    `Contract.signed_date` объявлен `NOT NULL`, поэтому у базовой сметы период
+    выводится всегда — `None` возвращается только для ДС.
+    """
+    chosen = (prepared_on or signed_date) if amendment_no is None else prepared_on
+    return None if chosen is None else YearMonth(chosen.year, chosen.month)
+
+
+def _amendment_label(contract_number: str, amendment_no: int) -> str:
+    return f"{contract_number} ДС №{amendment_no}"
+
+
+def resolve_inflation(
+    db: Session,
+    contract_ids: Sequence[int],
+    *,
+    series_id: int,
+    target_month: YearMonth,
+) -> InflationPlan:
+    """Периоды смет, покрытие ВЫБОРКИ и коэффициент на смету.
+
+    Функция НЕ встроена в `load_rollups` по двум причинам. Первая: покрытие
+    проверяется по объединению требуемых годов ВСЕЙ выборки (§2.5), то есть
+    решение принимается до того, как хоть одна сумма умножена. Вторая:
+    `load_rollups` держит инвариант «ровно четыре запроса на любую выборку», и
+    запрос внутри него этот инвариант уронил бы.
+
+    Три запроса: ряд по `id` (он же даёт `404`), значения ряда, даты смет
+    (`Estimate ⋈ Contract`).
+
+    Raises:
+        DomainError 404: ряда нет. Архивный ряд по явному `id` ЧИТАЕТСЯ и
+            приведение по нему считается — старая ссылка обязана работать (§2.10).
+        DomainError 422 `amendment_date_missing`: у ДС нет собственной даты.
+        DomainError 422 `missing_inflation_years`: покрытия не хватает; в контексте
+            недостающие годы по возрастанию. Номинальные числа при этом НЕ
+            выдаются как результат приведения (§2.9).
+    """
+    series = db.get(InflationSeries, series_id)
+    if series is None:
+        raise DomainError(404, f"Ряд индексов {series_id} не найден.")
+
+    values = {
+        value.year: value
+        for value in db.execute(
+            sa.select(InflationIndexValue).where(InflationIndexValue.series_id == series_id)
+        ).scalars().all()
+    }
+
+    rows = db.execute(
+        sa.select(
+            Estimate.id,
+            Estimate.amendment_no,
+            Estimate.data_prepared_on_date,
+            Contract.signed_date,
+            Contract.contract_number,
+        )
+        .join(Contract, Contract.id == Estimate.contract_id)
+        .where(Estimate.contract_id.in_(list(contract_ids)))
+        .order_by(Contract.contract_number, Estimate.amendment_no.nulls_first(), Estimate.id)
+    ).all()
+
+    period_by_estimate: dict[int, YearMonth] = {}
+    undated: list[tuple[int, str]] = []
+    for estimate_id, amendment_no, prepared_on, signed_date, contract_number in rows:
+        period = _estimate_period(amendment_no, prepared_on, signed_date)
+        if period is None:
+            undated.append((estimate_id, _amendment_label(contract_number, amendment_no)))
+            continue
+        period_by_estimate[estimate_id] = period
+
+    if undated:
+        # `estimate_ids` — МАШИННЫЙ контекст, человеку он не показывается: номер
+        # сметы ему ни о чём не говорит. Человеческую формулировку собирает
+        # сервер, потому что «ДС №1» без номера договора не опознаёт смету — он
+        # есть у каждого второго договора выборки. Баннер печатает `message`
+        # дословно и ничего не собирает сам (§2.12).
+        listed = ", ".join(label for _estimate_id, label in undated)
+        raise DomainError(
+            422,
+            f"У допсоглашений нет собственной даты подготовки: {listed}. "
+            "Дата договора для допсоглашения не подходит — это дата базовой сметы.",
+            code="amendment_date_missing",
+            context={"estimate_ids": sorted(estimate_id for estimate_id, _label in undated)},
+        )
+
+    required: set[int] = set()
+    for period in period_by_estimate.values():
+        required.update(required_years(period, target_month))
+
+    missing = sorted(year for year in required if year not in values)
+    if missing:
+        listed = ", ".join(str(year) for year in missing)
+        raise DomainError(
+            422,
+            f"Не заданы коэффициенты за годы: {listed}.",
+            code="missing_inflation_years",
+            context={"missing_years": missing},
+        )
+
+    coefficients = {year: values[year].coefficient for year in required}
+    factor_by_estimate = {
+        estimate_id: coefficient(year_exponents(period, target_month), coefficients)
+        for estimate_id, period in period_by_estimate.items()
+    }
+
+    used_years = [
+        {
+            "year": year,
+            "coefficient": values[year].coefficient,
+            "source": values[year].source,
+            "is_forecast": values[year].is_forecast,
+            "updated_at": iso(values[year].updated_at),
+        }
+        for year in sorted(required)
+    ]
+
+    return InflationPlan(
+        series_id=series.id,
+        series_name=series.name,
+        series_note=series.note,
+        # Дата правки ряда обязана приходить в ЭТОМ ответе, а не вторым запросом к
+        # списку выбора: по прямой ссылке ряд может оказаться архивным, а в списке
+        # архивных нет — полоса уровней осталась бы без примечания и без даты
+        # (§2.12, DoD 38).
+        series_updated_at=iso(series.updated_at),
+        target_month=f"{target_month.year:04d}-{target_month.month:02d}",
+        # Прогнозным приведение называется по ИСПОЛЬЗОВАННЫМ годам: прогнозный
+        # год, который не понадобился, флага не поднимает — иначе подпись
+        # называла бы прогнозом расчёт по фактам.
+        has_forecast=any(values[year].is_forecast for year in required),
+        used_years=used_years,
+        factor_by_estimate=factor_by_estimate,
+    )
 
 
 # ---------------------------------------------------------------------------
