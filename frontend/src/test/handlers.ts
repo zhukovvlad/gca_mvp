@@ -11,6 +11,8 @@ import {
   sampleRunningJob,
   sampleObjects,
   sampleRateClasses,
+  sampleInflationSeries,
+  sampleInflationValues,
   sampleRateStandards,
   sampleReviewQueue,
   sampleAppSettings,
@@ -22,6 +24,7 @@ import {
   sampleProjectPassport,
 } from "./fixtures";
 import type {
+  InflationSeries,
   ComparisonVatMode,
   EstimateRow,
   ImportJobStatus,
@@ -100,6 +103,11 @@ interface HandlerState {
    * Доказывает счётчик вызовов и утверждение «ровно 0».
    */
   attentionRequests: number;
+  /** Ряды индексов: состояние, потому что тесты проверяют переходы архивации. */
+  inflationSeries: InflationSeries[];
+  /** Последнее тело запроса рядов — по нему тест видит, что ушло ОДНИМ запросом. */
+  lastInflationBody: unknown;
+  inflationPatches: number;
   /** Исход диагностик: обычный набор либо «всё сходится» (макет, панель ok). */
   attentionOutcome: "issues" | "clean";
 }
@@ -121,6 +129,9 @@ export const handlerState: HandlerState = {
   contractCardFails: false,
   attentionRequests: 0,
   attentionOutcome: "issues",
+  inflationSeries: sampleInflationSeries,
+  lastInflationBody: null,
+  inflationPatches: 0,
 };
 
 export function resetHandlerState() {
@@ -637,6 +648,74 @@ export const handlers = [
   }),
 
   // --- Нормативы ---
+  // --- Ряды индексов инфляции (спека 2026-08-18 §2.12) ----------------------
+  //
+  // Состояние живёт в `handlerState.inflationSeries`, потому что тесты вкладки
+  // проверяют ПЕРЕХОДЫ: «В архив» обязан увести ряд из активных, а «Вернуть в
+  // активные» — вернуть. На неизменяемой фикстуре второй шаг был бы недоказуем.
+  http.get("/api/v1/inflation-series", ({ request }) => {
+    const includeArchived = new URL(request.url).searchParams.get("include_archived");
+    const rows = handlerState.inflationSeries;
+    return HttpResponse.json(includeArchived ? rows : rows.filter((row) => row.is_active));
+  }),
+
+  http.get("/api/v1/inflation-series/:id/values", ({ params }) =>
+    HttpResponse.json(sampleInflationValues[Number(params.id)] ?? [])
+  ),
+
+  http.post("/api/v1/inflation-series", async ({ request }) => {
+    const body = (await request.json()) as {
+      name: string;
+      note: string | null;
+      values: { year: number }[];
+    };
+    handlerState.lastInflationBody = body;
+    const years = body.values.map((value) => value.year);
+    const created: InflationSeries = {
+      id: 90 + handlerState.inflationSeries.length,
+      name: body.name,
+      note: body.note,
+      is_active: true,
+      year_from: years.length > 0 ? Math.min(...years) : null,
+      year_to: years.length > 0 ? Math.max(...years) : null,
+      value_count: years.length,
+      created_at: "2026-08-19T12:00:00+03:00",
+      updated_at: "2026-08-19T12:00:00+03:00",
+    };
+    handlerState.inflationSeries = [...handlerState.inflationSeries, created];
+    return HttpResponse.json(created, { status: 201 });
+  }),
+
+  http.patch("/api/v1/inflation-series/:id", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastInflationBody = body;
+    handlerState.inflationPatches += 1;
+    const id = Number(params.id);
+    const target = handlerState.inflationSeries.find((row) => row.id === id);
+    if (!target) return new HttpResponse(null, { status: 404 });
+    // Архивный ряд правится ТОЛЬКО телом `{is_active: true}` в одиночку (§2.10):
+    // хендлер повторяет это правило, иначе тест двух шагов проходил бы и на
+    // клиенте, который шлёт разморозку вместе с правкой.
+    const unfreezeOnly =
+      body.is_active === true && Object.keys(body).length === 1;
+    if (!target.is_active && !unfreezeOnly) {
+      return HttpResponse.json(
+        { detail: `Ряд «${target.name}» в архиве и не правится.` },
+        { status: 409 }
+      );
+    }
+    const updated: InflationSeries = {
+      ...target,
+      ...(typeof body.name === "string" ? { name: body.name } : {}),
+      ...("note" in body ? { note: (body.note as string | null) ?? null } : {}),
+      ...(typeof body.is_active === "boolean" ? { is_active: body.is_active } : {}),
+    };
+    handlerState.inflationSeries = handlerState.inflationSeries.map((row) =>
+      row.id === id ? updated : row
+    );
+    return HttpResponse.json(updated);
+  }),
+
   http.get("/api/v1/rate-standards", ({ request }) => {
     const url = new URL(request.url);
     const onDate = url.searchParams.get("on_date");

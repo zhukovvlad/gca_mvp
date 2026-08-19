@@ -1,6 +1,8 @@
 import type { AdminUser } from "@/types/admin";
 import type {
   AppSettings,
+  InflationSeries,
+  InflationSeriesValue,
   Comparison,
   ComparisonBucketCell,
   ComparisonCell,
@@ -1538,4 +1540,74 @@ export const sampleComparison: Comparison = {
     amendments: { value: null, comparable_count: 0, contract_ids: [] },
     total: { value: "1501.88", comparable_count: 3, contract_ids: [203, 202, 201] },
   },
+};
+
+
+// ---------------------------------------------------------------------------
+//  Ряды индексов инфляции (спека 2026-08-18 §2.6, §2.12)
+// ---------------------------------------------------------------------------
+//
+//  Два активных ряда и один архивный. Два активных нужны не для полноты: у них
+//  РАЗНЫЕ коэффициенты, потому что одинаковые означали бы, что селектор меняет
+//  подпись, не меняя чисел, — та же ложь, только незаметнее (дефект макета, §7
+//  спеки). Архивный нужен, чтобы проверять обратимость архивации и то, что в
+//  селектор выбора он не попадает.
+
+export const sampleInflationSeries: InflationSeries[] = [
+  {
+    id: 1,
+    name: "Росстат, ИПЦ, декабрь к декабрю",
+    note: "официальная публикация, по РФ",
+    is_active: true,
+    year_from: 2024,
+    year_to: 2026,
+    value_count: 3,
+    created_at: "2026-01-12T10:00:00+03:00",
+    updated_at: "2026-01-12T10:00:00+03:00",
+  },
+  {
+    id: 2,
+    name: "Внутренняя оценка ПЭО",
+    note: "смета строительных ресурсов",
+    is_active: true,
+    year_from: 2024,
+    year_to: 2026,
+    value_count: 3,
+    created_at: "2026-08-04T09:30:00+03:00",
+    updated_at: "2026-08-04T09:30:00+03:00",
+  },
+  {
+    id: 3,
+    name: "Ряд 2024 года, выведен из обращения",
+    note: null,
+    is_active: false,
+    year_from: 2024,
+    year_to: 2024,
+    value_count: 1,
+    created_at: "2024-02-01T09:00:00+03:00",
+    updated_at: "2024-02-01T09:00:00+03:00",
+  },
+];
+
+export const sampleInflationValues: Record<number, InflationSeriesValue[]> = {
+  1: [
+    { year: 2024, coefficient: "1.0750", source: "бюллетень 01.2025", is_forecast: false,
+      created_at: "2026-01-12T10:00:00+03:00", updated_at: "2026-01-12T10:00:00+03:00" },
+    { year: 2025, coefficient: "1.0830", source: "бюллетень 01.2026", is_forecast: false,
+      created_at: "2026-01-12T10:00:00+03:00", updated_at: "2026-01-12T10:00:00+03:00" },
+    { year: 2026, coefficient: "1.0600", source: "прогноз Минэка 12.2025", is_forecast: true,
+      created_at: "2026-01-12T10:00:00+03:00", updated_at: "2026-01-12T10:00:00+03:00" },
+  ],
+  2: [
+    { year: 2024, coefficient: "1.1200", source: "внутренний расчёт", is_forecast: false,
+      created_at: "2026-08-04T09:30:00+03:00", updated_at: "2026-08-04T09:30:00+03:00" },
+    { year: 2025, coefficient: "1.1500", source: "внутренний расчёт", is_forecast: false,
+      created_at: "2026-08-04T09:30:00+03:00", updated_at: "2026-08-04T09:30:00+03:00" },
+    { year: 2026, coefficient: "1.0900", source: "внутренний расчёт", is_forecast: true,
+      created_at: "2026-08-04T09:30:00+03:00", updated_at: "2026-08-04T09:30:00+03:00" },
+  ],
+  3: [
+    { year: 2024, coefficient: "1.0800", source: "архивная публикация", is_forecast: false,
+      created_at: "2024-02-01T09:00:00+03:00", updated_at: "2024-02-01T09:00:00+03:00" },
+  ],
 };
