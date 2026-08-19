@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
@@ -6,10 +6,10 @@ import { useLocation } from "react-router-dom";
 
 import ComparePage from "./ComparePage";
 import { deviationTone } from "./deviationTone";
-import { sampleComparison } from "@/test/fixtures";
+import { sampleComparison, sampleInflationSeries } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { DEFAULT_TEST_USER, renderWithProviders } from "@/test/utils";
 
 /**
  * Страница сравнения договоров (спека 2026-08-17, план — задача 8).
@@ -373,3 +373,314 @@ describe("Сравнение договоров — права (спека §2.9
     expect(screen.getByText("Земляные работы")).toBeInTheDocument();
   });
 });
+
+
+// ---------------------------------------------------------------------------
+//  Поправка на инфляцию на /compare (спека 2026-08-18 §2.9, §2.12; задача 14)
+// ---------------------------------------------------------------------------
+
+describe("ComparePage: поправка на инфляцию", () => {
+  const SELECTION = "/compare?ids=201,202,203";
+
+  beforeEach(() => {
+    handlerState.inflationOutcome = "adjusted";
+    handlerState.inflationRequests = 0;
+    handlerState.inflationSeries = sampleInflationSeries;
+    handlerState.lastInflationBody = null;
+  });
+
+  /**
+   * Рендер страницы вместе с `LocationProbe`: маршрутизатор тестов — `MemoryRouter`,
+   * и `window.location` он не трогает вовсе. Утверждения про адрес поэтому читают
+   * состояние роутера, а не глобальный объект, — иначе они были бы зелёными на
+   * пустой строке, то есть не проверяли бы ничего (замерено красным прогоном).
+   */
+  async function renderCompare(route = SELECTION, role?: "admin" | "member") {
+    renderWithProviders(
+      <>
+        <ComparePage />
+        <LocationProbe />
+      </>,
+      role
+        ? { initialRoute: route, initialUser: { ...DEFAULT_TEST_USER, role } }
+        : { initialRoute: route }
+    );
+    await waitFor(() => expect(screen.getByTestId("comparison-caption")).toBeInTheDocument());
+  }
+
+  function search(): string {
+    return screen.getByTestId("location-search").textContent ?? "";
+  }
+
+  it("умолчательного ряда нет: «Привести» недоступно, месяц пуст и заблокирован", async () => {
+    /*
+     * Состояние из таблицы §2.12, первая строка. Умолчательный ряд обессмыслил бы
+     * `400` контракта: справочник создаётся пустым, и рядов может быть несколько.
+     */
+    await renderCompare();
+
+    expect(screen.getByRole("button", { name: "Привести" })).toBeDisabled();
+    const month = screen.getByLabelText("В ценах");
+    expect(month).toBeDisabled();
+    expect(month).toHaveValue("");
+    expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
+  });
+
+  it("выбор ряда сам числа не меняет и в адрес не попадает", async () => {
+    /*
+     * Вторая строка таблицы §2.12. Если выбор ряда уже менял бы числа, кнопка
+     * «Привести» ничего не значила бы, а ссылка начала бы приводить без спроса.
+     */
+    await renderCompare();
+    const before = screen.getByTestId("comparison-caption").textContent;
+
+    await selectSeries("Росстат, ИПЦ, декабрь к декабрю");
+
+    expect(screen.getByRole("button", { name: "Привести" })).toBeEnabled();
+    expect(screen.getByTestId("comparison-caption").textContent).toBe(before);
+    expect(search()).not.toContain("inflation_series_id");
+    expect(handlerState.inflationRequests).toBe(0);
+  });
+
+  it("включение пишет ряд и РАЗРЕШЁННЫЙ СЕРВЕРОМ месяц в адрес", async () => {
+    /*
+     * Месяц приходит от сервера (§2.7): `Date.now()` на клиенте — часы читателя, и
+     * два человека получили бы два ответа. Тест поэтому утверждает, что в адресе
+     * оказался ИМЕННО серверный месяц, а не какой-нибудь.
+     */
+    await renderCompare();
+    await selectSeries("Росстат, ИПЦ, декабрь к декабрю");
+    await userEvent.click(screen.getByRole("button", { name: "Привести" }));
+
+    await waitFor(() => expect(search()).toContain("target_month=2026-08"));
+    expect(search()).toContain("inflation_series_id=1");
+
+    /*
+     * Смена параметров меняет ключ запроса, и до ответа страница показывает
+     * skeleton — вместе с группой приведения. Поведение ДОФИЧЕВОЕ: так же ведёт себя
+     * переключение режима НДС. Поэтому поле месяца ждём, а не читаем сразу: без
+     * ожидания тест ловил бы момент загрузки и падал бы на отсутствии узла
+     * (замерено красным прогоном).
+     */
+    await waitFor(() => expect(screen.getByLabelText("В ценах")).toHaveValue("2026-08"));
+    expect(screen.getByRole("button", { name: "Привести" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  });
+
+  it("возврат к номиналу ЧИСТИТ адрес и убирает полосу уровней", async () => {
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-levels")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: "Номинал" }));
+
+    await waitFor(() => expect(search()).not.toContain("inflation_series_id"));
+    expect(search()).not.toContain("target_month");
+    expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("В ценах")).toHaveValue("");
+  });
+
+  it("полоса уровней показывает примечание ряда, а источники годов — НЕТ (DoD 32)", async () => {
+    /*
+     * Парная половина этого утверждения — «источник печатается на листе» — живёт в
+     * бэкендовом тесте листа. Здесь проверяется ровно экранная сторона: три
+     * источника рядом с тремя процентами превратили бы ориентирующую строку в
+     * таблицу.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+
+    expect(bar).toHaveTextContent("официальная публикация, по РФ");
+    expect(bar).toHaveTextContent("2024 +7,5%");
+    expect(bar).toHaveTextContent("2026 +6,0%");
+    expect(bar).toHaveTextContent("прогноз");
+    expect(bar).toHaveTextContent("правлен 12.01.2026");
+    expect(bar).not.toHaveTextContent("бюллетень");
+    expect(bar).not.toHaveTextContent("прогноз Минэка");
+  });
+
+  it("чип колонки показывает УРОВЕНЬ, множитель — в подсказке (DoD 33)", async () => {
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-chip-202")).toBeInTheDocument());
+
+    const chip = screen.getByTestId("inflation-chip-202");
+    expect(chip).toHaveTextContent("+17,4%");
+    expect(chip).toHaveAttribute("title", "множитель × 1.1744");
+  });
+
+  it("расходящиеся множители дают «разные» и ПЕРЕЧЕНЬ в подсказке (DoD 33)", async () => {
+    /*
+     * Утверждается СОДЕРЖИМОЕ подсказки, а не факт её наличия: чип без разбивки
+     * отправлял бы читателя смотреть корзины, а корзины множителей не показывают —
+     * арифметика колонки перестала бы быть проверяемой.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-chip-204")).toBeInTheDocument());
+
+    // 204 — ПЕРВАЯ колонка выборки (`signed_date DESC`), и расхождение множителей
+    // фикстура кладёт именно на неё: порядок колонок задаёт сервер, и тест обязан
+    // брать тот же, а не угаданный.
+    const chip = screen.getByTestId("inflation-chip-204");
+    expect(chip).toHaveTextContent("разные");
+    expect(chip).toHaveAttribute("title", "ДГП × 1.1744 · ДС №1 × 1.0000");
+  });
+
+  it("смена ряда меняет И подпись, И числа (DoD 31)", async () => {
+    /*
+     * Оба утверждения в одном тесте намеренно: подпись, следующая за выбором при
+     * одинаковых числах, означала бы, что селектор меняет надпись, не меняя
+     * расчёта, — та же ложь, только незаметнее. Это реальный дефект макета (§7).
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-chip-202")).toBeInTheDocument());
+
+    const firstCaption = screen.getByTestId("comparison-caption").textContent ?? "";
+    const firstChip = screen.getByTestId("inflation-chip-202").getAttribute("title");
+    expect(firstCaption).toContain("Росстат, ИПЦ, декабрь к декабрю");
+
+    await selectSeries("Внутренняя оценка ПЭО");
+    await userEvent.click(screen.getByRole("button", { name: "Привести" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-caption").textContent).toContain(
+        "Внутренняя оценка ПЭО"
+      )
+    );
+    expect(screen.getByTestId("comparison-caption").textContent).not.toContain("Росстат");
+    expect(screen.getByTestId("inflation-chip-202").getAttribute("title")).not.toBe(firstChip);
+  });
+
+  it("отказ по недостающим годам: баннер с кнопкой, номинальные числа, адрес сохранён", async () => {
+    handlerState.inflationOutcome = "missing-years";
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    const banner = await waitFor(() => screen.getByTestId("inflation-refusal"));
+    expect(banner).toHaveTextContent("Не заданы коэффициенты за годы: 2024, 2026.");
+    expect(banner).toHaveTextContent("Росстат, ИПЦ, декабрь к декабрю");
+    expect(
+      within(banner).getByRole("button", { name: "Заполнить недостающие годы" })
+    ).toBeInTheDocument();
+
+    // Ошибочные параметры URL СОХРАНЕНЫ: человек обязан видеть, что не сработало.
+    expect(search()).toContain("inflation_series_id=1");
+    expect(search()).toContain("target_month=2026-08");
+    // Переключатель визуально выключен, числа номинальные, полосы уровней нет.
+    expect(screen.getByRole("button", { name: "Номинал" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("inflation-chip-202")).not.toBeInTheDocument();
+  });
+
+  it("отказ по дате ДС: кнопки НЕТ — правкой ряда это не лечится", async () => {
+    /*
+     * Предлагать «заполнить годы» там, где не хватает даты ДС, значит звать
+     * человека делать работу, которая ничего не исправит (§2.9). Отсутствие кнопки
+     * — самостоятельное требование, а не следствие текста.
+     */
+    handlerState.inflationOutcome = "amendment-date";
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    const banner = await waitFor(() => screen.getByTestId("inflation-refusal"));
+    expect(banner).toHaveTextContent("У допсоглашений нет собственной даты подготовки");
+    expect(banner).toHaveTextContent("ГП-0007 ДС №1");
+    expect(
+      within(banner).queryByRole("button", { name: "Заполнить недостающие годы" })
+    ).not.toBeInTheDocument();
+    // Машинный контекст человеку не показывается.
+    expect(banner).not.toHaveTextContent("estimate_ids");
+  });
+
+  it("member видит ряд и приведение, но кнопок правки у него НЕТ (DoD 35)", async () => {
+    /*
+     * Проверяется ОТСУТСТВИЕМ узла, а не его заблокированностью: показывать
+     * контрол, который упадёт в 403, нечестно (§2.10).
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`, "member");
+
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+    expect(bar).toHaveTextContent("Росстат, ИПЦ, декабрь к декабрю");
+    expect(within(bar).queryByRole("button", { name: "Изменить ряд" })).not.toBeInTheDocument();
+
+    handlerState.inflationOutcome = "missing-years";
+  });
+
+  it("member не получает кнопку и в баннере отказа (DoD 35)", async () => {
+    handlerState.inflationOutcome = "missing-years";
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`, "member");
+
+    const banner = await waitFor(() => screen.getByTestId("inflation-refusal"));
+    expect(
+      within(banner).queryByRole("button", { name: "Заполнить недостающие годы" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("два входа в окно правки дают ОДИН экземпляр (DoD 34)", async () => {
+    /*
+     * Счётчик `dialog` в DOM здесь — проверка «двух окон одновременно не бывает», а
+     * НЕ доказательство переиспользования: один узел возможен и при двух независимо
+     * написанных формах. Доказательство — то, что оба входа открывают компонент с
+     * ОДНИМ И ТЕМ ЖЕ состоянием, и вход из баннера приносит в него недостающие годы.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+
+    await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
+    await waitFor(() => expect(screen.getByText("Изменить ряд индексов")).toBeInTheDocument());
+    expect(document.querySelectorAll("[role=dialog]")).toHaveLength(1);
+    // Из полосы окно открывается БЕЗ недостающих годов: их некому передать.
+    expect(screen.queryByLabelText("Коэффициент за 2027")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+
+    handlerState.inflationOutcome = "missing-years";
+    await userEvent.click(screen.getByRole("button", { name: "Номинал" }));
+    await userEvent.click(screen.getByRole("button", { name: "Привести" }));
+
+    const banner = await waitFor(() => screen.getByTestId("inflation-refusal"));
+    await userEvent.click(
+      within(banner).getByRole("button", { name: "Заполнить недостающие годы" })
+    );
+
+    await waitFor(() => expect(screen.getByText("Изменить ряд индексов")).toBeInTheDocument());
+    expect(document.querySelectorAll("[role=dialog]")).toHaveLength(1);
+  });
+
+  it("после сохранения ряда сравнение перезапрашивается (DoD 36)", async () => {
+    /*
+     * Иначе на экране остались бы числа по прежним коэффициентам при уже новой
+     * подписи — ровно то расхождение подписи с числами, против которого написан
+     * §2.8.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+    const requestsBefore = handlerState.inflationRequests;
+
+    await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
+    await waitFor(() => expect(screen.getByLabelText("Коэффициент за 2024")).toBeInTheDocument());
+
+    const field = screen.getByLabelText("Коэффициент за 2024");
+    await userEvent.clear(field);
+    await userEvent.type(field, "1.0800");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => expect(handlerState.inflationRequests).toBeGreaterThan(requestsBefore));
+  });
+
+  it("сброс ряда в placeholder выключает приведение", async () => {
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-levels")).toBeInTheDocument());
+
+    await selectSeries("Выберите ряд");
+
+    await waitFor(() => expect(search()).not.toContain("inflation_series_id"));
+    expect(screen.getByRole("button", { name: "Привести" })).toBeDisabled();
+    expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
+  });
+});
+
+async function selectSeries(name: string) {
+  await userEvent.click(screen.getByLabelText("Ряд индексов"));
+  await userEvent.click(await screen.findByRole("option", { name }));
+}

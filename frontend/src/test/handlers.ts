@@ -1,5 +1,7 @@
 import { http, HttpResponse } from "msw";
 
+import { multiplyDecimalStrings } from "@/lib/decimal";
+
 import {
   sampleAdminUsers,
   sampleComparison,
@@ -24,6 +26,8 @@ import {
   sampleProjectPassport,
 } from "./fixtures";
 import type {
+  Comparison,
+  ComparisonBucketCell,
   InflationSeries,
   ComparisonVatMode,
   EstimateRow,
@@ -103,6 +107,14 @@ interface HandlerState {
    * Доказывает счётчик вызовов и утверждение «ровно 0».
    */
   attentionRequests: number;
+  /**
+   * Исход приведения: числа, либо один из двух кодов отказа. Управляемый, потому
+   * что при отказе экран делает ВТОРОЙ, номинальный запрос (§2.9), и различить их
+   * на неуправляемом хендлере было бы нечем.
+   */
+  inflationOutcome: "adjusted" | "missing-years" | "amendment-date";
+  /** Сколько раз запрашивалось приведение — по нему видно перезапрос после правки. */
+  inflationRequests: number;
   /** Ряды индексов: состояние, потому что тесты проверяют переходы архивации. */
   inflationSeries: InflationSeries[];
   /** Последнее тело запроса рядов — по нему тест видит, что ушло ОДНИМ запросом. */
@@ -129,6 +141,8 @@ export const handlerState: HandlerState = {
   contractCardFails: false,
   attentionRequests: 0,
   attentionOutcome: "issues",
+  inflationOutcome: "adjusted",
+  inflationRequests: 0,
   inflationSeries: sampleInflationSeries,
   lastInflationBody: null,
   inflationPatches: 0,
@@ -298,6 +312,85 @@ function jobPayload(status: ImportJobStatus) {
     // смета в БД ещё не лежит (§5).
     estimate_id: status === "done" ? 500 : null,
     error_text: status === "error" ? "Не удалось разобрать файл." : null,
+  };
+}
+
+/**
+ * Приведённый агрегат сравнения — из номинального, УМНОЖЕНИЕМ (спека §2.5).
+ *
+ * Множители у двух рядов РАЗНЫЕ намеренно: одинаковые означали бы, что селектор
+ * меняет подпись, не меняя чисел, — та же ложь, только незаметнее (дефект макета,
+ * §7 спеки). Поэтому тест «смена ряда меняет и подпись, и числа» на этой фикстуре
+ * доказуем.
+ *
+ * Первая колонка получает РАСХОЖДЕНИЕ множителей (`inflation_coefficient: null`
+ * плюс `inflation_factors`): случай «в договоре ДГП 2024 года и ДС 2026-го» на
+ * стенде не воспроизводится вовсе — допсоглашений там ноль, — и без фикстуры чип
+ * «разные» остался бы непроверенным.
+ */
+function adjustedComparison(
+  base: Comparison,
+  seriesId: number,
+  targetMonth: string | null
+): Comparison {
+  const factor = seriesId === 2 ? "1.2670" : "1.1744";
+  const seriesName =
+    sampleInflationSeries.find((row) => row.id === seriesId)?.name ?? "неизвестный ряд";
+  const month = targetMonth ?? "2026-08";
+
+  const scale = (value: string | null): string | null =>
+    value === null ? null : multiplyDecimalStrings(value, factor);
+
+  const scaleCell = (cell: ComparisonBucketCell): ComparisonBucketCell => ({
+    ...cell,
+    net: scale(cell.net),
+    shown: scale(cell.shown),
+    net_per_sqm: scale(cell.net_per_sqm),
+    shown_per_sqm: scale(cell.shown_per_sqm),
+  });
+
+  const scaleCells = (cells: Comparison["totals"]): Comparison["totals"] =>
+    cells.map((cell) => ({
+      ...cell,
+      base: scaleCell(cell.base),
+      amendments: scaleCell(cell.amendments),
+      total: scaleCell(cell.total),
+    }));
+
+  return {
+    ...base,
+    caption: `${base.caption} Цены приведены к августу 2026 по ряду «${seriesName}».`,
+    columns: base.columns.map((column, index) =>
+      index === 0
+        ? {
+            ...column,
+            inflation_coefficient: null,
+            inflation_factors: [
+              { label: "ДГП", coefficient: factor },
+              { label: "ДС №1", coefficient: "1.0000" },
+            ],
+          }
+        : { ...column, inflation_coefficient: factor }
+    ),
+    rows: base.rows.map((row) => ({
+      ...row,
+      cells: scaleCells(row.cells),
+      medians: {
+        base: { ...row.medians.base, value: scale(row.medians.base.value) },
+        amendments: { ...row.medians.amendments, value: scale(row.medians.amendments.value) },
+        total: { ...row.medians.total, value: scale(row.medians.total.value) },
+      },
+    })),
+    totals: scaleCells(base.totals),
+    inflation: {
+      series_id: seriesId,
+      series_name: seriesName,
+      series_note: sampleInflationSeries.find((row) => row.id === seriesId)?.note ?? null,
+      series_updated_at: "2026-01-12T10:00:00+03:00",
+      target_month: month,
+      has_forecast: true,
+      used_years: sampleInflationValues[seriesId] ?? [],
+    },
   };
 }
 
@@ -879,11 +972,49 @@ export const handlers = [
     const singleRateParam = url.searchParams.get("single_rate");
     const singleRate =
       vatMode === "single" ? (singleRateParam ?? sampleComparison.rate_preselected) : null;
-    return HttpResponse.json({
+
+    const seriesId = url.searchParams.get("inflation_series_id");
+    const base = {
       ...sampleComparison,
       vat_mode: vatMode,
       single_rate: singleRate,
-    });
+    };
+    if (!seriesId) return HttpResponse.json(base);
+
+    handlerState.inflationRequests += 1;
+
+    // Отказ приведения — структурированный `422` с кодом и контекстом (§2.12).
+    // Управляется `handlerState.inflationOutcome`, потому что экран обязан
+    // показать НОМИНАЛЬНЫЙ вариант с баннером, а это второй запрос: на
+    // неуправляемом хендлере отличить его от первого было бы нечем.
+    if (handlerState.inflationOutcome === "missing-years") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "missing_inflation_years",
+            message: "Не заданы коэффициенты за годы: 2024, 2026.",
+            missing_years: [2024, 2026],
+          },
+        },
+        { status: 422 }
+      );
+    }
+    if (handlerState.inflationOutcome === "amendment-date") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "amendment_date_missing",
+            message: "У допсоглашений нет собственной даты подготовки: ГП-0007 ДС №1.",
+            estimate_ids: [7],
+          },
+        },
+        { status: 422 }
+      );
+    }
+
+    return HttpResponse.json(
+      adjustedComparison(base, Number(seriesId), url.searchParams.get("target_month"))
+    );
   }),
 
   // --- Выгрузки §7.6 ---
