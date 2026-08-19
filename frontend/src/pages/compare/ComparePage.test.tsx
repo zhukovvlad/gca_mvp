@@ -691,6 +691,93 @@ describe("ComparePage: поправка на инфляцию", () => {
     await waitFor(() => expect(handlerState.inflationRequests).toBeGreaterThan(requestsBefore));
   });
 
+  it("архивный ряд по ссылке открывает окно ПРАВКИ, а не создания", async () => {
+    /*
+     * Найдено финальным ревью ветки. Архивный ряд по прямой ссылке — поддержанный
+     * путь (§2.10, DoD 20): приведение по нему считается, полоса рисуется. Пока
+     * список рядов шёл БЕЗ архивных, поиск по нему давал `undefined`, а `undefined
+     * ?? null` в контракте окна означает РЕЖИМ СОЗДАНИЯ: admin, думая что правит
+     * ряд, заводил дубликат либо упирался в 409 по занятому имени.
+     *
+     * Ряд 3 в фикстурах архивный.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=3&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+
+    await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
+
+    await waitFor(() => expect(screen.getByText("Изменить ряд индексов")).toBeInTheDocument());
+    expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+    // Окно показывает своё же состояние «заморожен» и не даёт сохранить.
+    expect(screen.getByText(/сначала верните его в активные/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+  });
+
+  it("архивный ряд не предлагается в опциях, но выбранный виден в селекторе", async () => {
+    /*
+     * Два утверждения об одном списке: «не предлагаются для нового выбора» (§2.10) и
+     * «селектор не может не показывать то, что в нём стоит». Второе — следствие
+     * первого, доведённое до конца: убрать выбранный архивный из опций значило бы
+     * оставить триггер с названием, которого в списке нет.
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=3&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-levels")).toBeInTheDocument());
+
+    expect(screen.getByLabelText("Ряд индексов")).toHaveTextContent(
+      "Ряд 2024 года, выведен из обращения"
+    );
+
+    await userEvent.click(screen.getByLabelText("Ряд индексов"));
+    const options = await screen.findAllByRole("option");
+    const labels = options.map((option) => option.textContent ?? "");
+    // Выбранный архивный — есть, и помечен; второго архивного в фикстурах нет.
+    expect(labels.some((label) => label.includes("(в архиве)"))).toBe(true);
+    expect(labels.filter((label) => label.includes("(в архиве)"))).toHaveLength(1);
+  });
+
+  it("смена ряда при ВКЛЮЧЁННОМ приведении применяется сразу", async () => {
+    /*
+     * Найдено финальным ревью ветки. Прежняя редакция оставляла адрес нетронутым, и
+     * жило состояние «в селекторе один ряд, на всей остальной поверхности другой»:
+     * применить новый можно было только повторным кликом по уже НАЖАТОЙ «Привести»,
+     * а нажатая кнопка к клику не приглашает. Так решает согласованный макет (§7
+     * спеки: «смена ряда меняет числа, а не только подпись»).
+     */
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    await waitFor(() => expect(screen.getByTestId("inflation-chip-202")).toBeInTheDocument());
+    const firstChip = screen.getByTestId("inflation-chip-202").getAttribute("title");
+
+    await selectSeries("Внутренняя оценка ПЭО");
+
+    // Ни одного лишнего клика: адрес, подпись и числа следуют за селектором.
+    await waitFor(() => expect(search()).toContain("inflation_series_id=2"));
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-caption").textContent).toContain(
+        "Внутренняя оценка ПЭО"
+      )
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("inflation-chip-202").getAttribute("title")).not.toBe(firstChip)
+    );
+    // Целевой месяц СОХРАНЁН: его выбрал человек либо разрешил сервер.
+    expect(search()).toContain("target_month=2026-08");
+  });
+
+  it("смена ряда при ВЫКЛЮЧЕННОМ приведении по-прежнему числа не меняет", async () => {
+    /*
+     * Парой к предыдущему: правка §4 не имеет права включить приведение сама.
+     * Вторая строка таблицы §2.12 остаётся в силе — выбор ряда сам числа не меняет.
+     */
+    await renderCompare();
+    await selectSeries("Росстат, ИПЦ, декабрь к декабрю");
+    const before = screen.getByTestId("comparison-caption").textContent;
+
+    await selectSeries("Внутренняя оценка ПЭО");
+
+    expect(search()).not.toContain("inflation_series_id");
+    expect(screen.getByTestId("comparison-caption").textContent).toBe(before);
+  });
+
   it("сброс ряда в placeholder выключает приведение", async () => {
     await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
     await waitFor(() => expect(screen.getByTestId("inflation-levels")).toBeInTheDocument());

@@ -11,6 +11,11 @@ import {
 import type { InflationSeries } from "@/types/domain";
 
 interface InflationControlsProps {
+  /**
+   * ВСЕ ряды, включая архивные. Архивные не попадают в ОПЦИИ (§2.10), но обязаны
+   * быть здесь: по прямой ссылке выбранным может оказаться архивный, и без него
+   * триггер не смог бы назвать ряд, которым приведены показанные числа.
+   */
   series: InflationSeries[];
   /** Выбранный ряд. `null` — «Выберите ряд»: умолчательного ряда не существует. */
   selectedSeriesId: number | null;
@@ -118,11 +123,19 @@ export function InflationControls({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NO_SERIES}>Выберите ряд</SelectItem>
-              {series.map((row) => (
-                <SelectItem key={row.id} value={String(row.id)}>
-                  {row.name}
-                </SelectItem>
-              ))}
+              {/*
+                Архивные ряды в опциях НЕ предлагаются (§2.10) — кроме уже
+                выбранного: он пришёл по ссылке, и убрать его из списка значило бы
+                показать селектор, в котором нет того, что в нём стоит.
+              */}
+              {series
+                .filter((row) => row.is_active || row.id === selectedSeriesId)
+                .map((row) => (
+                  <SelectItem key={row.id} value={String(row.id)}>
+                    {row.name}
+                    {!row.is_active && " (в архиве)"}
+                  </SelectItem>
+                ))}
             </SelectContent>
           </Select>
         </div>

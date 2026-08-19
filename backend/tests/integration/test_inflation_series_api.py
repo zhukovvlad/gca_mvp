@@ -555,3 +555,74 @@ def test_blank_source_over_http_is_a_string_detail_not_a_pydantic_list(
     db_session.expire_all()
     assert crud.get_series_dict(db_session, series["id"])["name"] == SERIES_NAME
     assert stored_years(db_session, series["id"]) == {}
+
+
+def test_delete_is_not_available_for_series_or_values(admin_client, db_session):
+    """`DELETE` не заведён НИГДЕ — ни для рядов, ни для значений (§2.10, DoD 16).
+
+    Утверждение проверяется запросом, а не отсутствием кода: «маршрута нет» и
+    «маршрут есть, но мы его не заметили» по чтению неотличимы, а разница видна
+    только ответу. Ошибочное значение исправляется правкой, ненужный ряд
+    архивируется — и то и другое обратимо, тогда как удаление ряда унесло бы и
+    воспроизводимость уже выгруженных файлов, которые на него ссылаются.
+
+    Ожидается `405`: путь существует, метод не поддержан. `404` означал бы, что
+    маршрута нет вовсе, и тест перестал бы отличать «удаление запрещено» от
+    «опечатка в адресе».
+    """
+    series = make_series(db_session)
+
+    assert admin_client.delete(f"{URL}/{series['id']}").status_code == 405
+    assert admin_client.delete(f"{URL}/{series['id']}/values").status_code == 405
+    assert admin_client.delete(URL).status_code == 405
+
+    # Ряд на месте: отказ метода ничего не тронул.
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["is_active"] is True
+
+
+def test_name_taken_race_answers_409_not_500(db_session, monkeypatch):
+    """Гонка по занятому названию отвечает `409`, а не `500`.
+
+    Синхронная проверка «название занято» неполна по построению — её собственный
+    докстринг это и говорит: между проверкой и записью вклинивается параллельный
+    запрос. Констрейнт гонку закрывает, но БЕЗ трансляции наружу уходит сырой
+    `IntegrityError`, то есть человек получает `500` вместо внятного «название
+    занято».
+
+    Гонка воспроизводится подменой синхронной проверки на пустую: настоящий
+    параллельный коммит в одной транзакции теста не поставить, а проверяется здесь
+    не он, а то, что нарушение уникальности ПЕРЕВЕДЕНО. Переименование выпускает
+    `UPDATE` только на коммите, поэтому дефект и жил ровно в том, что `commit`
+    стоял ВНЕ транслятора (найдено финальным ревью ветки).
+    """
+    first = make_series(db_session, name=SERIES_NAME)
+    second = make_series(db_session, name=OTHER_NAME, years=[year(2025, "1.120")])
+    assert first["id"] != second["id"]
+
+    monkeypatch.setattr(crud, "_require_name_available", lambda *args, **kwargs: None)
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(db_session, second["id"], name=SERIES_NAME)
+
+    assert exc.value.status_code == 409
+    assert "название" in exc.value.detail.lower()
+
+    # Ряд не переименован: откат транслятора вернул состояние.
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, second["id"])["name"] == OTHER_NAME
+
+
+def test_name_taken_race_answers_409_also_when_years_come_along(db_session, monkeypatch):
+    """То же с годами в теле: `flush` годов происходит раньше коммита, и без
+    трансляции вокруг ВСЕГО окна ответ разошёлся бы между двумя формами запроса."""
+    make_series(db_session, name=SERIES_NAME)
+    second = make_series(db_session, name=OTHER_NAME, years=[year(2025, "1.120")])
+
+    monkeypatch.setattr(crud, "_require_name_available", lambda *args, **kwargs: None)
+
+    with pytest.raises(DomainError) as exc:
+        crud.update_series(
+            db_session, second["id"], name=SERIES_NAME, values=[year(2026, "1.060")]
+        )
+    assert exc.value.status_code == 409

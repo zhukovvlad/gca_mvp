@@ -375,33 +375,44 @@ def update_series(
     запрещён (§2.10).
     """
     payload_values = list(values or [])
-    with translating_integrity(db, _NAME_TAKEN), rollback_on_domain_error(db):
-        # ДО мутаций: повтор года обязан отказать, не изменив ничего (DoD 29).
-        _reject_duplicate_years(payload_values)
-        series = _get_for_update(db, series_id)
-        _apply_archived_rules(
-            series, name=name, note=note, is_active=is_active,
-            # Именно `values is not None`, а не `payload_values`: список годов
-            # мог прийти ПУСТЫМ, и для правила архивного ряда это переданное
-            # поле, а не его отсутствие.
-            values_given=values is not None,
-        )
-        if name is not UNSET:
-            _require_name_available(
-                db, require_text(name, "Название ряда"), exclude_id=series_id
+    # Трансляция обёрнута вокруг ВСЕГО окна, включая `commit`, — той же формой, что
+    # в `create_series`. Первая редакция оставляла `commit` СНАРУЖИ, и это был
+    # настоящий дефект: переименование выпускает `UPDATE` только на коммите, поэтому
+    # нарушение уникальности названия уходило мимо транслятора сырым
+    # `IntegrityError`, то есть отвечало `500` вместо `409`. Синхронная проверка
+    # `_require_name_available` этого не закрывает — её собственный докстринг и
+    # говорит, что между проверкой и записью вклинивается параллельный запрос.
+    # Найдено финальным ревью ветки.
+    with translating_integrity(db, _NAME_TAKEN):
+        with rollback_on_domain_error(db):
+            # ДО мутаций: повтор года обязан отказать, не изменив ничего (DoD 29).
+            _reject_duplicate_years(payload_values)
+            series = _get_for_update(db, series_id)
+            _apply_archived_rules(
+                series, name=name, note=note, is_active=is_active,
+                # Именно `values is not None`, а не `payload_values`: список годов
+                # мог прийти ПУСТЫМ, и для правила архивного ряда это переданное
+                # поле, а не его отсутствие.
+                values_given=values is not None,
             )
-        changed = _apply_series_fields(series, name=name, note=note, is_active=is_active)
-        # Порядок тела сохраняется: годы применяются в том порядке, в котором
-        # пришли, — так отказ на втором годе застаёт первый уже применённым, и
-        # именно это состояние обязан снять откат.
-        for item in payload_values:
-            changed |= _apply_year(db, series, item)
-        if changed:
-            # Метка ряда двигается ЯВНО: правка одного только года не делает
-            # строку ряда «грязной», и `onupdate` по ней не сработал бы —
-            # полоса уровней осталась бы с прежней датой при изменившихся числах.
-            series.updated_at = sa.func.now()
-    db.commit()
+            if name is not UNSET:
+                _require_name_available(
+                    db, require_text(name, "Название ряда"), exclude_id=series_id
+                )
+            changed = _apply_series_fields(series, name=name, note=note, is_active=is_active)
+            # Порядок тела сохраняется: годы применяются в том порядке, в котором
+            # пришли, — так отказ на втором годе застаёт первый уже применённым, и
+            # именно это состояние обязан снять откат.
+            for item in payload_values:
+                changed |= _apply_year(db, series, item)
+            if changed:
+                # Метка ряда двигается ЯВНО: правка одного только года не делает
+                # строку ряда «грязной», и `onupdate` по ней не сработал бы —
+                # полоса уровней осталась бы с прежней датой при изменившихся числах.
+                series.updated_at = sa.func.now()
+        # ОДИН commit на всё окно правки — по-прежнему один, просто внутри
+        # транслятора.
+        db.commit()
     log.info("inflation_series_updated id=%s changed=%s", series_id, changed)
     return get_series_dict(db, series_id)
 
