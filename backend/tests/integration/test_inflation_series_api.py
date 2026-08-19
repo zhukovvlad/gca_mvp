@@ -404,3 +404,154 @@ def test_updated_at_moves_only_when_something_actually_changed(committing_db):
     after_note, note_years = _stamps(committing_db, series_id)
     assert after_note > after_year
     assert note_years == year_stamps
+
+
+# ---------------------------------------------------------------------------
+#  HTTP: маршруты, права, форма чисел (план, задача 6)
+# ---------------------------------------------------------------------------
+
+URL = "/api/v1/inflation-series"
+
+
+def _body(**over) -> dict:
+    """Тело года В ФОРМЕ JSON: коэффициент СТРОКОЙ, как требует §3."""
+    payload = {
+        "year": 2025, "coefficient": "1.083",
+        "source": "бюллетень 01.2026", "is_forecast": False,
+    }
+    payload.update(over)
+    return payload
+
+
+def test_member_reads_series_and_values(member_client, db_session):
+    """`member` читает ряды и годы: без этого он не увидел бы даже названия ряда,
+    которым приведены показанные ему числа (§2.10)."""
+    series = make_series(db_session)
+
+    listed = member_client.get(URL)
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [series["id"]]
+
+    values = member_client.get(f"{URL}/{series['id']}/values")
+    assert values.status_code == 200
+    assert [item["year"] for item in values.json()] == [2025]
+
+
+def test_member_cannot_write_or_archive(member_client, db_session):
+    """Запись и архивация — `admin` (DoD 30). Архивация проверяется ОТДЕЛЬНО:
+    это `PATCH` без правки полей, и право на неё легко потерять из вида."""
+    series = make_series(db_session)
+
+    created = member_client.post(URL, json={"name": "Ряд от member", "values": []})
+    assert created.status_code == 403
+
+    patched = member_client.patch(f"{URL}/{series['id']}", json={"note": "правка"})
+    assert patched.status_code == 403
+
+    archived = member_client.patch(f"{URL}/{series['id']}", json={"is_active": False})
+    assert archived.status_code == 403
+
+
+def test_admin_creates_series_and_coefficient_comes_back_as_a_string(admin_client):
+    """Создание ряда через API — обязательный путь: справочник создан пустым (§2.6)."""
+    created = admin_client.post(
+        URL,
+        json={"name": SERIES_NAME, "note": "официальная публикация", "values": [_body()]},
+    )
+    assert created.status_code == 201
+    series_id = created.json()["id"]
+
+    values = admin_client.get(f"{URL}/{series_id}/values").json()
+    # Прогон по конкретному входу, а не чтение кода: `Decimal` без `decimal_json`
+    # уехал бы float-ом (§3, DoD 24).
+    assert values[0]["coefficient"] == "1.083"
+    assert isinstance(values[0]["coefficient"], str)
+
+
+def test_float_coefficient_is_rejected_and_string_is_accepted(admin_client):
+    """`float` на входе отвергается, строка принимается (DoD 24).
+
+    Проверяется прогоном по конкретному входу: валидатор с ИМЕНЕМ, совпавшим с
+    чужим, схлопнулся бы молча, и по коду это неотличимо (§11).
+    """
+    rejected_ = admin_client.post(
+        URL, json={"name": "Ряд с float", "values": [_body(coefficient=1.083)]}
+    )
+    assert rejected_.status_code == 422
+
+    accepted = admin_client.post(
+        URL, json={"name": "Ряд со строкой", "values": [_body(coefficient="1.083")]}
+    )
+    assert accepted.status_code == 201
+
+
+def test_archived_series_is_absent_from_the_list_and_present_with_the_flag(
+    admin_client, db_session
+):
+    series = make_series(db_session)
+    assert admin_client.patch(
+        f"{URL}/{series['id']}", json={"is_active": False}
+    ).status_code == 200
+
+    assert admin_client.get(URL).json() == []
+    with_archived = admin_client.get(URL, params={"include_archived": 1}).json()
+    assert [item["id"] for item in with_archived] == [series["id"]]
+
+    # Старая ссылка обязана работать (§2.10): значения архивного читаются.
+    assert admin_client.get(f"{URL}/{series['id']}/values").status_code == 200
+
+
+def test_unknown_series_over_http_is_404(admin_client):
+    assert admin_client.get(f"{URL}/{10**9}/values").status_code == 404
+    assert admin_client.patch(f"{URL}/{10**9}", json={"note": "x"}).status_code == 404
+
+
+def test_duplicate_year_over_http_carries_the_structured_detail(admin_client):
+    """Кодированный отказ доезжает до клиента ОБЪЕКТОМ (DoD 21, §2.12).
+
+    Утверждается словарь целиком: вложенный `{"context": {...}}` прошёл бы
+    проверку «`years` где-то есть», оставаясь другим контрактом.
+    """
+    response = admin_client.post(
+        URL,
+        json={
+            "name": "Ряд с дублем года",
+            "values": [_body(year=2025), _body(year=2025, coefficient="1.090")],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "duplicate_year",
+        "message": "Год встречается в запросе дважды: 2025.",
+        "years": [2025],
+    }
+
+
+def test_blank_source_over_http_is_a_string_detail_not_a_pydantic_list(
+    admin_client, db_session
+):
+    """Перенесено из задачи 5, шаг 3 (уточнение плана 2026-08-19).
+
+    На уровне CRUD это утверждение ВАКУОЗНО — схема запроса там не исполняется
+    вовсе. Здесь она исполняется, поэтому уход доменного правила «источник непуст
+    после `btrim`» в схему роняет тест: pydantic отвечает СПИСКОМ ошибок, а
+    доменный отказ — строкой. Именно этим тест и сторожит границу «в схеме форма,
+    в домене правило».
+    """
+    series = make_series(db_session, years=[])
+
+    response = admin_client.patch(
+        f"{URL}/{series['id']}",
+        json={"name": "Ряд с исправленным названием",
+              "values": [_body(year=2025), _body(year=2026, source="   ")]},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, str), f"ожидалась строка доменного отказа, получено {detail!r}"
+
+    # Та же атомарность, но уже через HTTP: ни года, ни нового названия.
+    db_session.expire_all()
+    assert crud.get_series_dict(db_session, series["id"])["name"] == SERIES_NAME
+    assert stored_years(db_session, series["id"]) == {}
