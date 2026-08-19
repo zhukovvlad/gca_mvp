@@ -63,7 +63,7 @@ async function openWithSeries(series: InflationSeries | null, missingYears?: num
   renderWithProviders(
     <InflationSeriesDialog
       open
-      series={series}
+      target={series === null ? { mode: "create" } : { mode: "edit", series }}
       missingYears={missingYears}
       onOpenChange={onOpenChange}
     />
@@ -181,7 +181,7 @@ describe("InflationSeriesDialog", () => {
     renderWithProviders(
       <InflationSeriesDialog
         open
-        series={ACTIVE_SERIES}
+        target={{ mode: "edit", series: ACTIVE_SERIES }}
         missingYears={[2026, 2024]}
         onOpenChange={vi.fn()}
       />
@@ -219,6 +219,65 @@ describe("InflationSeriesDialog", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Добавить год" }));
     expect(screen.getByRole("button", { name: "Убрать строку 2026" })).toBeInTheDocument();
+  });
+
+  it("режим ПРАВКИ без полученного объекта показывает загрузку, а НЕ форму создания", async () => {
+    /*
+     * Найдено внешним ревью, дважды. Прежний контракт различал режимы по
+     * `series === null`, и любой промах поиска молча становился созданием. Промах
+     * ЗАКОНЕН: список рядов — отдельный запрос, он может ещё не разрешиться, когда
+     * сравнение уже пришло, или упасть вовсе. `admin`, думая что правит ряд,
+     * открывал бы пустую форму «Новый ряд индексов» и заводил дубликат.
+     */
+    serveValues();
+    renderWithProviders(
+      <InflationSeriesDialog
+        open
+        target={{ mode: "edit", series: null }}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText(/Загружаем ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
+  });
+
+  it("год добавленной строки редактируется целиком, не теряя фокус", async () => {
+    /*
+     * Ключом строки был сам год, и при первом введённом символе React размонтировал
+     * строку — поле теряло фокус, ввести год целиком было невозможно. Прежние тесты
+     * этого не поймали: они нажимали «Добавить год» и правили только коэффициент с
+     * источником, оставляя год посчитанным. Найдено внешним ревью.
+     */
+    serveValues();
+    await openWithSeries(ACTIVE_SERIES);
+
+    await userEvent.click(screen.getByRole("button", { name: "Добавить год" }));
+    // Добавленная строка получает следующий год за максимальным — 2026.
+    const yearField = screen.getByLabelText("Год строки 3");
+    await userEvent.clear(yearField);
+    await userEvent.type(yearField, "2031");
+
+    expect(yearField).toHaveValue("2031");
+    // Строка не пересоздалась: фокус остался в поле, куда шёл ввод.
+    expect(yearField).toHaveFocus();
+    // Соседние поля той же строки на месте и связаны с новым годом.
+    expect(screen.getByLabelText("Коэффициент за 2031")).toBeInTheDocument();
+  });
+
+  it("пустой год блокирует сохранение, а не превращается в ноль", async () => {
+    // `Number("") || 0` показывал «0» сразу после стирания, то есть стереть год и
+    // набрать другой было нельзя.
+    serveValues();
+    await openWithSeries(ACTIVE_SERIES);
+
+    await userEvent.click(screen.getByRole("button", { name: "Добавить год" }));
+    const yearField = screen.getByLabelText("Год строки 3");
+    await userEvent.clear(yearField);
+
+    expect(yearField).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
   });
 
   it("окно в DOM одно, сколько бы входов его ни открывало (DoD 34)", async () => {

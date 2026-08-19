@@ -412,6 +412,17 @@ describe("ComparePage: поправка на инфляцию", () => {
     return screen.getByTestId("location-search").textContent ?? "";
   }
 
+  /** Рендер БЕЗ ожидания подписи: при неизвестной ошибке её не будет вовсе. */
+  function renderCompareRaw(route: string) {
+    renderWithProviders(
+      <>
+        <ComparePage />
+        <LocationProbe />
+      </>,
+      { initialRoute: route }
+    );
+  }
+
   it("умолчательного ряда нет: «Привести» недоступно, месяц пуст и заблокирован", async () => {
     /*
      * Состояние из таблицы §2.12, первая строка. Умолчательный ряд обессмыслил бы
@@ -595,6 +606,34 @@ describe("ComparePage: поправка на инфляцию", () => {
     );
     expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
     expect(screen.queryByTestId("inflation-chip-202")).not.toBeInTheDocument();
+  });
+
+  it("штатный отказ НЕ показывает общий «не удалось загрузить»", async () => {
+    /*
+     * Найдено внешним ревью. Доменный отказ приведения ошибкой загрузки не
+     * является: сравнение показано, номинальное, и причину называет баннер. Пока
+     * общий `EmptyState` рисовался по `isError`, поверхность сама себе
+     * противоречила — «не удалось загрузить сравнение» над загруженной таблицей, и
+     * читатель не знал, каким из двух сообщений верить.
+     */
+    handlerState.inflationOutcome = "missing-years";
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    await waitFor(() => expect(screen.getByTestId("inflation-refusal")).toBeInTheDocument());
+    expect(screen.queryByText("Не удалось загрузить сравнение")).not.toBeInTheDocument();
+    // Таблица на месте: показаны номинальные числа, а не пустое состояние.
+    expect(screen.getByTestId("comparison-caption")).toBeInTheDocument();
+  });
+
+  it("НЕИЗВЕСТНАЯ ошибка загрузки по-прежнему даёт общий EmptyState", async () => {
+    // Парой к предыдущему: правка не имеет права спрятать настоящий сбой.
+    server.use(
+      http.get("/api/v1/analytics/comparison", () => new HttpResponse(null, { status: 500 }))
+    );
+    await renderCompareRaw(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    expect(await screen.findByText("Не удалось загрузить сравнение")).toBeInTheDocument();
+    expect(screen.queryByTestId("inflation-refusal")).not.toBeInTheDocument();
   });
 
   it("отказ по дате ДС: кнопки НЕТ — правкой ряда это не лечится", async () => {

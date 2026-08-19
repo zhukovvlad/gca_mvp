@@ -29,10 +29,27 @@ import {
 } from "@/services/queries";
 import type { InflationSeries, InflationSeriesValueInput } from "@/types/domain";
 
+/**
+ * Что правит окно. Режим ЗАЯВЛЯЕТСЯ вызывающим, а не выводится из того, нашёлся ли
+ * ряд в списке.
+ *
+ * Прежний контракт («`series === null` — создание») сворачивал два разных состояния
+ * в одно значение, и промах поиска молча становился режимом создания. Промах при
+ * этом ЗАКОНЕН: список рядов — отдельный запрос, он может ещё не разрешиться, когда
+ * сравнение уже пришло, или упасть вовсе. Дефект нашёлся дважды — сначала на
+ * архивном ряде (его нет в списке для выбора), потом на порядке завершения запросов,
+ * — и оба раза причина была одна: `undefined ?? null`.
+ *
+ * `mode: "edit"` с `series: null` означает «правим, но объект ещё не получен» — окно
+ * показывает загрузку, а НЕ форму создания.
+ */
+export type InflationSeriesTarget =
+  | { mode: "create" }
+  | { mode: "edit"; series: InflationSeries | null };
+
 interface InflationSeriesDialogProps {
   open: boolean;
-  /** `null` — режим СОЗДАНИЯ. Тот же компонент, а не вторая форма. */
-  series: InflationSeries | null;
+  target: InflationSeriesTarget;
   /**
    * Годы, которых не хватило приведению. Вход из баннера отказа открывает окно с
    * уже добавленными пустыми строками этих годов: система знает и ряд, и годы, и
@@ -46,9 +63,40 @@ interface InflationSeriesDialogProps {
 /** Стартовый год у пустой формы — первый год разбега договоров стенда. */
 const FIRST_YEAR_SUGGESTION = 2024;
 
-interface YearRow extends InflationSeriesValueInput {
+/**
+ * Год в ФОРМЕ может быть незаполненным, поэтому здесь он `number | null`, а не
+ * `number`, как в теле запроса. `Number("") || 0` превращал пустое поле в ноль —
+ * то есть ввести год заново, стерев прежний, было нельзя: поле сразу показывало «0».
+ */
+type FormYear = number | null;
+
+function parseYear(raw: string): FormYear {
+  const digits = raw.replace(/\D/g, "");
+  return digits === "" ? null : Number(digits);
+}
+
+interface YearRow extends Omit<InflationSeriesValueInput, "year"> {
+  year: FormYear;
+  /**
+   * Ключ строки для React, выданный ОДИН раз при её появлении.
+   *
+   * Ключом НЕ может быть год: он редактируемый, и при первом же введённом символе
+   * ключ менялся бы, React размонтировал строку, а поле теряло фокус — ввести год
+   * целиком становилось невозможно. Тесты этого не поймали, потому что нажимали
+   * «Добавить год» и правили только коэффициент с источником, а сам год оставляли
+   * посчитанным. Найдено внешним ревью.
+   */
+  key: string;
   /** Уже сохранённый год нельзя убрать из формы: `DELETE` запрещён (§2.10). */
   persisted: boolean;
+}
+
+/** Счётчик ключей строк. Монотонный, чтобы ключ не повторился после удаления. */
+let rowKeySeq = 0;
+
+function nextRowKey(): string {
+  rowKeySeq += 1;
+  return `row-${rowKeySeq}`;
 }
 
 /**
@@ -68,12 +116,16 @@ interface YearRow extends InflationSeriesValueInput {
  */
 export function InflationSeriesDialog({
   open,
-  series,
+  target,
   missingYears,
   onOpenChange,
 }: InflationSeriesDialogProps) {
+  const series = target.mode === "edit" ? target.series : null;
   const values = useInflationSeriesValues(series?.id ?? null);
-  const ready = series === null || values.data !== undefined;
+  // Форма готова, когда это создание — либо когда правка И объект ряда, И его годы
+  // уже пришли. Промах поиска больше не может превратиться в создание: режим задан
+  // снаружи, и при `mode: "edit"` без объекта окно показывает загрузку.
+  const ready = target.mode === "create" || (series !== null && values.data !== undefined);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -95,7 +147,7 @@ export function InflationSeriesDialog({
         ) : (
           <DialogHeader>
             <DialogTitle>Ряд индексов инфляции</DialogTitle>
-            <DialogDescription>Загружаем годы ряда…</DialogDescription>
+            <DialogDescription>Загружаем ряд и его годы…</DialogDescription>
           </DialogHeader>
         )}
       </DialogContent>
@@ -128,7 +180,8 @@ function InflationSeriesForm({
   // получил бы отказ вместо подсказки. Это проверка ФОРМЫ; доменную она не
   // дублирует — год без источника отвергает домен, и его тест живёт на бэкенде.
   const incomplete = rows.some(
-    (row) => !Number.isInteger(row.year) || row.year < 1000 ||
+    (row) =>
+      row.year === null || !Number.isInteger(row.year) || row.year < 1000 ||
       !row.coefficient.trim() || !row.source.trim()
   );
   const canSubmit = name.trim() !== "" && !incomplete && !archived && !pending;
@@ -142,7 +195,14 @@ function InflationSeriesForm({
   function addRow() {
     setRows((current) => [
       ...current,
-      { year: nextYear(current), coefficient: "", source: "", is_forecast: false, persisted: false },
+      {
+        key: nextRowKey(),
+        year: nextYear(current),
+        coefficient: "",
+        source: "",
+        is_forecast: false,
+        persisted: false,
+      },
     ]);
   }
 
@@ -228,17 +288,15 @@ function InflationSeriesForm({
               // иначе она не защита (§2.4, DoD 25).
               const level = coefficientLevel(row.coefficient);
               return (
-                <TableRow key={`${row.year}-${index}`}>
+                <TableRow key={row.key}>
                   <TableCell>
                     <Input
                       aria-label={`Год строки ${index + 1}`}
                       inputMode="numeric"
                       className="w-20"
-                      value={row.year}
+                      value={row.year === null ? "" : row.year}
                       disabled={row.persisted}
-                      onChange={(event) =>
-                        patchRow(index, { year: Number(event.target.value) || 0 })
-                      }
+                      onChange={(event) => patchRow(index, { year: parseYear(event.target.value) })}
                     />
                   </TableCell>
                   <TableCell>
@@ -340,6 +398,7 @@ function initialRows(
   missingYears: number[]
 ): YearRow[] {
   const saved: YearRow[] = savedYears.map((value) => ({
+    key: nextRowKey(),
     year: value.year,
     coefficient: value.coefficient,
     source: value.source,
@@ -351,6 +410,7 @@ function initialRows(
     .filter((year) => !known.has(year))
     .sort((left, right) => left - right)
     .map((year) => ({
+      key: nextRowKey(),
       year,
       coefficient: "",
       source: "",
@@ -365,6 +425,10 @@ function nextYear(rows: YearRow[]): number {
   // часы для этого не годятся (`Date.now()` — часы читателя, §2.7), поэтому у
   // пустой формы стартовое значение просто ЗАДАНО; это отправная точка, которую
   // человек правит, а не утверждение о текущем годе.
-  const years = rows.map((row) => Number(row.year)).filter((year) => Number.isFinite(year));
+  // `null` (незаполненный год) в максимум не входит: `Number(null)` дал бы 0, и
+  // следующая добавленная строка предложила бы «1».
+  const years = rows
+    .map((row) => row.year)
+    .filter((year): year is number => year !== null && Number.isFinite(year));
   return years.length > 0 ? Math.max(...years) + 1 : FIRST_YEAR_SUGGESTION;
 }

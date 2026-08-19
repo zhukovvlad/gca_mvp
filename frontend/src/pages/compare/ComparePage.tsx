@@ -773,9 +773,18 @@ export default function ComparePage() {
         }
       />
 
-      {comparisonQ.isPending && <Skeleton className="mt-6 h-64 w-full" />}
+      {(comparisonQ.isPending || (refused && nominalQ.isPending)) && (
+        <Skeleton className="mt-6 h-64 w-full" />
+      )}
 
-      {comparisonQ.isError && (
+      {/*
+        Общий «не загрузилось» — ТОЛЬКО на неизвестной ошибке. Штатный доменный отказ
+        приведения ошибкой загрузки не является: сравнение показано, номинальное, и
+        причину называет баннер. Прежняя редакция рисовала оба разом, и поверхность
+        сама себе противоречила — «не удалось загрузить» над загруженной таблицей.
+        Найдено внешним ревью.
+      */}
+      {comparisonQ.isError && !refused && (
         <EmptyState
           className="mt-6"
           title="Не удалось загрузить сравнение"
@@ -791,7 +800,22 @@ export default function ComparePage() {
       */}
       <InflationSeriesDialog
         open={editingSeries !== null}
-        series={seriesListQ.data?.find((row) => row.id === editingSeries) ?? null}
+        /*
+          Режим ЗДЕСЬ всегда «правка»: и полоса уровней, и баннер отказа открывают
+          окно по УЖЕ ВЫБРАННОМУ ряду, создания с этой страницы нет вовсе.
+
+          `series` при этом может быть `null` — список рядов идёт своим запросом и
+          может ещё не разрешиться (или упасть), когда сравнение уже пришло. Прежняя
+          редакция сворачивала это в `?? null`, и такой промах молча становился
+          режимом создания: admin, думая что правит ряд, открывал пустую форму
+          «Новый ряд индексов». Первое исправление закрыло только случай архивного
+          ряда, то есть один порядок завершения запросов; теперь режим не зависит от
+          порядка вовсе. Найдено внешним ревью дважды.
+        */
+        target={{
+          mode: "edit",
+          series: seriesListQ.data?.find((row) => row.id === editingSeries) ?? null,
+        }}
         missingYears={dialogMissingYears}
         onOpenChange={(open) => {
           if (!open) {
