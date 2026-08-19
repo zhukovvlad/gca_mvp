@@ -739,6 +739,56 @@ describe("ComparePage: поправка на инфляцию", () => {
     expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
   });
 
+  it("«Повторить» перезапрашивает СПИСОК, которым владеет страница, и доводит до формы", async () => {
+    /*
+     * Найдено третьим кругом ревью, отдельным замечанием: окно звало «закройте и
+     * попробуйте снова», а закрытие ничего не перезапрашивает — список рядов
+     * смонтирован на СТРАНИЦЕ, `refetchOnWindowFocus` выключен, `staleTime` минута.
+     * Обещание было неисполнимо, и это тот же класс, что весь этот круг: поверхность
+     * утверждала то, чего не умеет.
+     *
+     * Тест доказывает РАБОТУ, а не наличие кнопки: список отвечает `500` один раз, и
+     * форма может появиться только если повтор действительно ушёл на сервер. Он же
+     * закрепляет, что повтор идёт через владельца запроса: своим `refetch` окно
+     * список не достаёт.
+     */
+    let attempts = 0;
+    // Второй ответ за воротами: пока повтор в полёте, окно обязано показывать
+    // загрузку. Статус упавшего запроса при перезапросе остаётся `error`, поэтому по
+    // одному `isPending` окно продолжало бы утверждать отказ во время загрузки.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/v1/inflation-series", async () => {
+        attempts += 1;
+        if (attempts === 1) return new HttpResponse(null, { status: 500 });
+        await gate;
+        return HttpResponse.json(handlerState.inflationSeries);
+      })
+    );
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+    await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
+    await screen.findByText(/Не удалось загрузить ряд и его годы/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
+    expect(await screen.findByText(/Загружаем ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить ряд и его годы/)).not.toBeInTheDocument();
+    release();
+
+    // Окно доезжает до настоящей формы правки — с названием ряда и его годами.
+    expect(await screen.findByText("Изменить ряд индексов")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Коэффициент за 2024")).toBeInTheDocument();
+    expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+    expect(attempts).toBe(2);
+    // Сообщение у селектора уходит вместе с отказом: список загружен.
+    expect(screen.queryByText(/Список рядов не загрузился/)).not.toBeInTheDocument();
+  });
+
   it("отказ по дате ДС: кнопки НЕТ — правкой ряда это не лечится", async () => {
     /*
      * Предлагать «заполнить годы» там, где не хватает даты ДС, значит звать

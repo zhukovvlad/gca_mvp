@@ -50,11 +50,20 @@ import type { InflationSeries, InflationSeriesValueInput } from "@/types/domain"
  * никогда не появится, а ждать нечего. Вызывающий знает, какой из двух фактов
  * настал, и обязан его назвать — вывести это из `series === null` нельзя, как
  * нельзя было вывести режим.
+ *
+ * **Вместе с отказом вызывающий обязан дать `onRetry`, и это тоже не украшение.**
+ * Запросом списка владеет он, поэтому повторить его окно не может ничем: закрытие и
+ * повторное открытие оставляют упавший запрос как есть — он смонтирован на СТРАНИЦЕ,
+ * `refetchOnWindowFocus` выключен, `staleTime` минута. Прежняя редакция звала
+ * «попробовать снова», не имея чем, — то есть обещала действие, которого нет. Тип
+ * требует способ восстановления рядом с объявлением отказа: иначе следующий
+ * вызывающий снова объявит отказ без выхода из него. Найдено третьим кругом ревью.
  */
 export type InflationSeriesTarget =
   | { mode: "create" }
   | { mode: "edit"; series: InflationSeries }
-  | { mode: "edit"; series: null; reason: "pending" | "failed" };
+  | { mode: "edit"; series: null; reason: "pending" }
+  | { mode: "edit"; series: null; reason: "failed"; onRetry: () => void };
 
 interface InflationSeriesDialogProps {
   open: boolean;
@@ -146,8 +155,27 @@ export function InflationSeriesDialog({
       окно, поэтому этот путь оно читает само. Ревью назвало только первый.
   */
   const failed =
-    target.mode === "edit" &&
-    (target.series === null ? target.reason === "failed" : values.isError);
+    target.mode === "edit" && (target.series === null ? target.reason === "failed" : values.isError);
+
+  /*
+    Кто владеет упавшим запросом, тот и повторяет его. У списка это вызывающий — он
+    отдаёт `onRetry` вместе с самим объявлением отказа; у годов ряда владелец — окно,
+    и `refetch` оно зовёт своим. Обе ветки ведут в ОДНУ кнопку: человеку всё равно,
+    чей это запрос, ему нужно, чтобы «Повторить» повторяло.
+
+    Пока повтор идёт, окно показывает загрузку, а не продолжает утверждать отказ, — и
+    добавлять к `isError` проверку `isFetching` для этого НЕ НАДО. У запроса, который
+    ни разу не отдал данных, любой новый `fetch` сам сбрасывает `status` в `pending` и
+    гасит `error`: `fetchState()` в `@tanstack/query-core` делает это при
+    `data === undefined`. Проверено снятием — добавленное условие не роняло ни одного
+    теста, то есть было мёртвой защитой, читающейся как живая (§11 `AGENTS.md`).
+    Промежуточное состояние при этом закреплено тестом на воротах: оно обещано
+    поверхностью, и чьё оно, читателю неважно.
+  */
+  const retry =
+    target.mode === "edit" && target.series === null && target.reason === "failed"
+      ? target.onRetry
+      : () => void values.refetch();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -165,12 +193,21 @@ export function InflationSeriesDialog({
               <DialogDescription>
                 Не удалось загрузить ряд и его годы. Форма не открыта намеренно: она
                 показала бы ряд без сохранённых годов, и правка выглядела бы как их
-                потеря. Закройте окно и попробуйте снова.
+                потеря.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Закрыть
+              </Button>
+              {/*
+                «Повторить» повторяет НАСТОЯЩИЙ запрос, а не закрывает окно с надеждой.
+                Прежний текст звал закрыть и попробовать снова — для годов ряда это
+                сработало бы (запрос выключается вместе с окном), а для списка нет: он
+                живёт на странице и переоткрытием окна не перезапрашивается.
+              */}
+              <Button type="button" onClick={retry}>
+                Повторить
               </Button>
             </DialogFooter>
           </>

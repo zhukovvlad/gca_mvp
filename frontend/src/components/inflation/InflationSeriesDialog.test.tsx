@@ -253,10 +253,11 @@ describe("InflationSeriesDialog", () => {
      */
     serveValues();
     const onOpenChange = vi.fn();
+    const onRetry = vi.fn();
     renderWithProviders(
       <InflationSeriesDialog
         open
-        target={{ mode: "edit", series: null, reason: "failed" }}
+        target={{ mode: "edit", series: null, reason: "failed", onRetry }}
         onOpenChange={onOpenChange}
       />
     );
@@ -266,6 +267,16 @@ describe("InflationSeriesDialog", () => {
     // Формы нет ни в виде правки, ни в виде создания: она показала бы ряд без годов.
     expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
     expect(screen.queryByText("Новый ряд индексов")).not.toBeInTheDocument();
+
+    /*
+     * «Повторить» отдаётся ВЛАДЕЛЬЦУ запроса: список рядов принадлежит вызывающему, и
+     * окно повторить его не может ничем — ни своим `refetch`, ни закрытием. Прежний
+     * текст звал закрыть окно и попробовать снова, чего закрытие не делает.
+     */
+    await userEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    // Повтор не закрывает окно: закрытие само по себе ничего не перезапрашивает.
+    expect(onOpenChange).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -296,6 +307,56 @@ describe("InflationSeriesDialog", () => {
     // выглядела бы как их потеря.
     expect(screen.queryByLabelText("Название")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сохранить" })).not.toBeInTheDocument();
+  });
+
+  it("«Повторить» на упавших ГОДАХ действительно перезапрашивает и доводит до формы", async () => {
+    /*
+     * Утверждение не про наличие кнопки, а про то, что она РАБОТАЕТ: хендлер отвечает
+     * `500` ровно один раз, и форма может появиться только если повтор действительно
+     * ушёл на сервер. Кнопка, которая молча ничего не делает, — свой собственный
+     * дефект, и именно им был прежний текст «закройте окно и попробуйте снова».
+     *
+     * Здесь запросом владеет само окно, поэтому повтор — его собственный `refetch`;
+     * парный случай (владеет вызывающий) закреплён тестом выше и на `/compare`.
+     */
+    let attempts = 0;
+    /*
+     * Второй ответ ЗАДЕРЖАН воротами, а не таймером: пока повтор в полёте, окно
+     * обязано показывать загрузку, а не продолжать утверждать «не удалось загрузить»
+     * — иначе кнопка нажимается в экран, который говорит, что она не сработала.
+     * Ворота вместо задержки, потому что утверждение о промежуточном состоянии,
+     * стоящее на угаданном времени, — ложная предпосылка (`AGENTS.md` §12).
+     */
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/v1/inflation-series/:id/values", async () => {
+        attempts += 1;
+        if (attempts === 1) return new HttpResponse(null, { status: 500 });
+        await gate;
+        return HttpResponse.json(SAVED_VALUES);
+      })
+    );
+    renderWithProviders(
+      <InflationSeriesDialog
+        open
+        target={{ mode: "edit", series: ACTIVE_SERIES }}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Не удалось загрузить ряд и его годы/);
+    await userEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
+    expect(await screen.findByText(/Загружаем ряд и его годы/)).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить ряд и его годы/)).not.toBeInTheDocument();
+
+    release();
+    expect(await screen.findByLabelText("Коэффициент за 2024")).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить ряд и его годы/)).not.toBeInTheDocument();
+    expect(attempts).toBe(2);
   });
 
   it("год добавленной строки редактируется целиком, не теряя фокус", async () => {

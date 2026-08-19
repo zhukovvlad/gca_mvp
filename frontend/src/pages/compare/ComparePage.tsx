@@ -794,9 +794,33 @@ export default function ComparePage() {
     упавший список оставлял окно на «Загружаем…» навсегда.
   */
   const editedSeriesRow = seriesListQ.data?.find((row) => row.id === editingSeries) ?? null;
-  const dialogTarget: InflationSeriesTarget = editedSeriesRow
-    ? { mode: "edit", series: editedSeriesRow }
-    : { mode: "edit", series: null, reason: seriesListQ.isPending ? "pending" : "failed" };
+
+  function buildDialogTarget(): InflationSeriesTarget {
+    if (editedSeriesRow) return { mode: "edit", series: editedSeriesRow };
+    /*
+      Одного `isPending` достаточно и на ПОВТОР после отказа: запрос, ни разу не
+      отдавший данных, при новом `fetch` сам возвращается в `pending` с погашенной
+      ошибкой (`fetchState()` в `@tanstack/query-core` при `data === undefined`).
+      Добавленное сюда `|| isFetching` было мёртвым — снятие не роняло ни одного
+      теста; вторая проверка того же факта читалась бы как защита, не будучи ею.
+    */
+    if (seriesListQ.isPending) return { mode: "edit", series: null, reason: "pending" };
+    /*
+      Отказ объявляется ВМЕСТЕ со способом его снять. Список рядов принадлежит этой
+      странице: окно не может перезапросить его ничем, и закрытие с повторным
+      открытием тоже — запрос смонтирован здесь, `refetchOnWindowFocus` выключен, а
+      `staleTime` минута. Пока способа не было, окно звало «попробовать снова», не
+      имея чем. Найдено третьим кругом ревью.
+    */
+    return {
+      mode: "edit",
+      series: null,
+      reason: "failed",
+      onRetry: () => void seriesListQ.refetch(),
+    };
+  }
+
+  const dialogTarget = buildDialogTarget();
 
   if (!hasSelection) {
     return (
