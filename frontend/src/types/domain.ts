@@ -982,6 +982,122 @@ export interface DashboardAttention {
 // `rate_options`, `rate_preselected`. Приводить их к `number` нельзя нигде —
 // только на слое показа (`MoneyCell`/`roundDecimalPercent`).
 
+// ---------------------------------------------------------------------------
+//  Поправка на инфляцию (спека 2026-08-18 §2.6, §2.11, §2.12)
+// ---------------------------------------------------------------------------
+//
+//  `coefficient` — decimal-СТРОКА (`Decimal`), как все numeric проекта (§3
+//  AGENTS.md). Приводить его к `number` нельзя нигде: в JS `number` это
+//  IEEE-754 double, а коэффициент участвует в расчёте, который защищают перед
+//  банком. Расшифровка уровня считается точной арифметикой строк
+//  (`lib/inflation.ts`), а не через `Number()`.
+
+/** Ряд индексов инфляции — именованный показатель, а не «официальный» (§2.6). */
+export interface InflationSeries {
+  id: number;
+  name: string;
+  /** Примечание ряда. Именно ЕГО показывает полоса уровней на `/compare` (§2.12). */
+  note: string | null;
+  is_active: boolean;
+  /** Охват годов: `null` у ряда без значений — он законен, годы вводят вразнобой. */
+  year_from: number | null;
+  year_to: number | null;
+  value_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Значение ряда за один год: `k(y)` — декабрь года `y` к декабрю `y−1` (§2.3). */
+export interface InflationSeriesValue {
+  year: number;
+  coefficient: Decimal;
+  /** Источник ГОДА. Печатается на листе выгрузки, на экране сравнения НЕ показывается. */
+  source: string;
+  is_forecast: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Год в теле запроса — ВСЕ ТРИ поля обязательны: это описание года целиком (§2.12). */
+export interface InflationSeriesValueInput {
+  year: number;
+  coefficient: Decimal;
+  source: string;
+  is_forecast: boolean;
+}
+
+export interface InflationSeriesInput {
+  name: string;
+  note?: string | null;
+  values: InflationSeriesValueInput[];
+}
+
+/**
+ * Тело `PATCH`. Годы, не перечисленные в `values`, ОСТАЮТСЯ — это `PATCH`, а
+ * `DELETE` запрещён (§2.10).
+ *
+ * `{ is_active: true }` в ОДИНОЧКУ размораживает архивный ряд; вместе с полями
+ * либо с `values` (даже пустым массивом) сервер отвечает `409`. Поэтому кнопки
+ * «Вернуть в активные» и «Изменить» — два разных запроса, а не один.
+ */
+export interface InflationSeriesPatch {
+  name?: string;
+  note?: string | null;
+  is_active?: boolean;
+  values?: InflationSeriesValueInput[];
+}
+
+/** Использованный год приведения: пять фактов, из которых лист печатает все (§2.10). */
+export interface ComparisonInflationYear {
+  year: number;
+  coefficient: Decimal;
+  source: string;
+  is_forecast: boolean;
+  updated_at: string | null;
+}
+
+/**
+ * Метаданные сосчитанного приведения. Приходят ТОЛЬКО когда приведение
+ * посчитано: `"inflation": null` в номинальном ответе был бы нарушением
+ * инварианта «без приведения ответ не меняется ни одним ключом» (DoD 1).
+ *
+ * `series_note` и `series_updated_at` обязаны приходить ЗДЕСЬ, а не вторым
+ * запросом к списку рядов: по прямой ссылке ряд может оказаться архивным, а в
+ * списке для выбора архивных нет — второй запрос их бы не нашёл, и полоса
+ * уровней осталась бы без примечания и без даты правки (§2.12).
+ */
+export interface ComparisonInflation {
+  series_id: number;
+  series_name: string;
+  series_note: string | null;
+  series_updated_at: string | null;
+  /** `YYYY-MM`. Разрешает СЕРВЕР в названной таймзоне; клиент пишет его в URL (§2.7). */
+  target_month: string;
+  has_forecast: boolean;
+  /** Пустой массив — законное состояние: цель совпала с месяцем сметы (DoD 5). */
+  used_years: ComparisonInflationYear[];
+}
+
+/** Множитель одной сметы договора — для чипа «разные» и его подсказки (решение плана №1). */
+export interface ComparisonInflationFactor {
+  /** «ДГП» либо «ДС №1» — тот же словарь, которым говорит `composition_caption`. */
+  label: string;
+  coefficient: Decimal;
+}
+
+/**
+ * Контекст отказов приведения (спека §2.12). Ключи лежат РЯДОМ с `code` и
+ * `message`, а не вложенным узлом, поэтому тип описывает именно их.
+ */
+export interface MissingInflationYearsContext {
+  missing_years: number[];
+}
+
+export interface AmendmentDateMissingContext {
+  /** МАШИННЫЙ контекст: человеку не показывается. Формулировку собрал сервер. */
+  estimate_ids: number[];
+}
+
 export type ComparisonVatMode = "own" | "single" | "net";
 
 /** Три корзины спеки §2.2: базовый договор, допсоглашения, итог. */
@@ -1082,6 +1198,18 @@ export interface ComparisonColumn {
    * копированием и дороже отсутствующего.
    */
   composition_caption: string;
+  /**
+   * Множитель приведения колонки — УРОВНЕМ его показывает чип, множитель уезжает
+   * в подсказку (§2.12, DoD 33).
+   *
+   * Приходит только при сосчитанном приведении. `null` означает «сметы договора
+   * приведены РАЗНЫМИ множителями» — тогда рядом приходит `inflation_factors` с
+   * разбивкой, и чип показывает «разные». Без разбивки арифметика колонки
+   * перестала бы быть проверяемой: корзины множителей не показывают.
+   */
+  inflation_coefficient?: Decimal | null;
+  /** Приходит ТОЛЬКО когда коэффициенты смет расходятся (решение плана №1). */
+  inflation_factors?: ComparisonInflationFactor[];
 }
 
 /**
@@ -1134,6 +1262,8 @@ export interface Comparison {
   rows: ComparisonRow[];
   totals: ComparisonCell[];
   totals_medians: Record<ComparisonBucket, ComparisonMedian>;
+  /** Есть ТОЛЬКО при сосчитанном приведении (спека инфляции §2.12, DoD 1). */
+  inflation?: ComparisonInflation;
 }
 
 /**
@@ -1154,4 +1284,15 @@ export interface ComparisonParams {
   vat_mode?: ComparisonVatMode;
   /** Действует только в режиме `single`; без него сервер подставляет `rate_preselected`. */
   single_rate?: string;
+  /**
+   * Ряд индексов инфляции. Без него приведения нет вовсе; `target_month` без
+   * него — `400` (умолчательного ряда не существует, §2.12).
+   */
+  inflation_series_id?: string;
+  /**
+   * Целевой ценовой уровень, `YYYY-MM`. Пустой при выбранном ряде читается как
+   * «текущий месяц, разрешит сервер»: клиент `Date.now()` не использует — это
+   * часы читателя, и два человека получили бы два ответа (§2.7).
+   */
+  target_month?: string;
 }

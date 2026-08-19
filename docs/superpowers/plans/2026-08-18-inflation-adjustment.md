@@ -902,7 +902,7 @@ def build_comparison(db, contract_ids, *, vat_mode, single_rate=None,
   `services/queryKeys.ts`, `services/queries.ts`
 - Test: `frontend/src/services/apiErrors.test.ts` (дописать)
 
-- [ ] **Step 1:** типы `InflationSeries`, `InflationSeriesValue`,
+- [x] **Step 1:** типы `InflationSeries`, `InflationSeriesValue`,
       `InflationSeriesInput`, `InflationSeriesPatch`, `ComparisonInflation`,
       `ComparisonInflationFactor` (`{label: string; coefficient: string}`);
       `Comparison.inflation?`, `ComparisonColumn.inflation_coefficient?`,
@@ -911,17 +911,17 @@ def build_comparison(db, contract_ids, *, vat_mode, single_rate=None,
       `ComparisonParams.inflation_series_id?`/`target_month?`. Плюс типы
       контекста отказов под `apiErrorContext<T>`:
       `{missing_years: number[]}` и `{estimate_ids: number[]}`.
-- [ ] **Step 2:** `inflationSeriesApi` в `services/api/domain.ts` (там же, где
+- [x] **Step 2:** `inflationSeriesApi` в `services/api/domain.ts` (там же, где
       нормативы), ключи в `queryKeys.ts`, хуки `useInflationSeries`,
       `useInflationSeriesValues`, `useCreateInflationSeries`,
       `useUpdateInflationSeries` (последний инвалидирует и `qk.comparison.all`
       — DoD 36).
-- [ ] **Step 3:** `apiErrorDetail` учит **третью** форму `detail` — объект:
+- [x] **Step 3:** `apiErrorDetail` учит **третью** форму `detail` — объект:
       возвращает `detail.message`. Без этого тост печатал бы `[object Object]`.
       Рядом — `apiErrorCode(err)` и `apiErrorContext<T>(err)`.
-- [ ] **Step 4:** `reportErrorMessage` (блоб-путь выгрузки) — то же ветвление:
+- [x] **Step 4:** `reportErrorMessage` (блоб-путь выгрузки) — то же ветвление:
       сегодня он берёт только `typeof detail === "string"`.
-- [ ] **Step 5:** тесты на все три формы `detail`; прогон
+- [x] **Step 5:** тесты на все три формы `detail`; прогон
       `npx vitest run src/services` из `frontend/`.
 
 **Коммит:** `feat(inflation): контракт рядов на фронте, объектная форма detail`

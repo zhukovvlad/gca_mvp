@@ -112,6 +112,14 @@ export const qk = {
       ["matrix", "cell", contractId, catalogPositionId] as const,
   },
 
+  /** Ряды индексов инфляции (спека 2026-08-18 §2.12). */
+  inflationSeries: {
+    all: ["inflation-series"] as const,
+    list: (includeArchived = false) =>
+      ["inflation-series", "list", includeArchived] as const,
+    values: (id: number) => ["inflation-series", "values", id] as const,
+  },
+
   /** Сравнение договоров по статьям классификатора (спека 2026-08-17, задача 8). */
   comparison: {
     all: ["comparison"] as const,
