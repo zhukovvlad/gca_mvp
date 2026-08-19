@@ -191,11 +191,17 @@ def _now_in(zone: ZoneInfo) -> dt.datetime:
     return dt.datetime.now(tz=zone)
 
 
-def current_period(tz_name: str = BUSINESS_TIMEZONE) -> YearMonth:
+def current_period(tz_name: str | None = None) -> YearMonth:
     """Текущий ценовой период в названной зоне (§2.7).
 
     Разрешается на СЕРВЕРЕ и возвращается клиенту: `Date.now()` в браузере — часы
     читателя, два человека получили бы два ответа, и ни один не воспроизводим.
+
+    Зона читается ВНУТРИ вызова, а не связывается значением по умолчанию в
+    сигнатуре. Разница не стилистическая: значение по умолчанию вычисляется один
+    раз при определении функции, и подмена `BUSINESS_TIMEZONE` — та самая, которой
+    DoD 18 проверяет, что зона вообще читается, — не действовала бы вовсе. Тест на
+    зону тогда был бы зелёным при любой реализации.
     """
-    moment = _now_in(ZoneInfo(tz_name))
+    moment = _now_in(ZoneInfo(tz_name or BUSINESS_TIMEZONE))
     return YearMonth(moment.year, moment.month)

@@ -141,6 +141,13 @@ def comparison_report(
     rate_class_id: int | None = Query(default=None),
     vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
     single_rate: Decimal | None = Query(default=None),
+    inflation_series_id: int | None = Query(
+        default=None, description="Ряд индексов инфляции; без него приведения нет"
+    ),
+    target_month: str | None = Query(
+        default=None,
+        description="Целевой ценовой уровень, YYYY-MM; по умолчанию текущий месяц",
+    ),
     db: Session = Depends(get_db),
 ):
     """Выгрузка сравнения договоров в Excel (§7.6, отчёт «в»; спека §2.7, §2.8).
@@ -155,6 +162,12 @@ def comparison_report(
     `vat_mode`/`single_rate` — тот же режим показа НДС, что и на экране (§2.3);
     лист печатает подпись состава, поэтому неверный режим — отказ 400 из
     `build_comparison`, а не тихая подмена на умолчание.
+
+    **Приведение — те же два параметра, что у экрана**, и отказ у них тот же
+    структурированный `422` (§2.9). При отказе лист НЕ собирается, поэтому файла с
+    ошибкой не существует вовсе: ранняя редакция спеки обещала «тот же отказ и ту
+    же формулировку на листе Excel» — обещание невыполнимое, и здесь его нет.
+    Проверяется отсутствием вложения, а не содержимым листа.
     """
     try:
         contract_ids = crud_comparison.resolve_selection(
@@ -163,6 +176,8 @@ def comparison_report(
         )
         data = crud_comparison.build_comparison(
             db, contract_ids, vat_mode=vat_mode, single_rate=single_rate,
+            inflation_series_id=inflation_series_id,
+            target_month=crud_comparison.parse_target_month_param(target_month),
         )
     except DomainError as e:
         raise_domain_error(e)

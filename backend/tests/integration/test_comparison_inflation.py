@@ -746,3 +746,203 @@ def test_query_budget_is_five_without_adjustment_and_eight_with_it(db_session, f
             inflation_series_id=series_id, target_month=TARGET_AUG_2026,
         )
     assert adjusted.total == 8
+
+
+# ---------------------------------------------------------------------------
+#  HTTP: параметры у обоих маршрутов (план, задача 9)
+# ---------------------------------------------------------------------------
+
+SCREEN_URL = "/api/v1/analytics/comparison"
+REPORT_URL = "/api/v1/reports/comparison"
+XLSX_MEDIA = "spreadsheetml"
+
+
+def _params(ids: list[int], **over) -> dict:
+    params = {"ids": ",".join(str(i) for i in ids), "vat_mode": cmp.VAT_MODE_OWN}
+    params.update(over)
+    return params
+
+
+def test_both_routes_accept_the_two_parameters(client, db_session, factories):
+    """Экран и лист принимают ОДИНАКОВЫЕ параметры, и оба приводят числа (§2.12)."""
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+    params = _params(ids, inflation_series_id=series_id, target_month="2026-08")
+
+    screen = client.get(SCREEN_URL, params=params)
+    assert screen.status_code == 200
+    assert screen.json()["inflation"]["target_month"] == "2026-08"
+
+    report = client.get(REPORT_URL, params=params)
+    assert report.status_code == 200
+    assert XLSX_MEDIA in report.headers["content-type"]
+
+
+@pytest.mark.parametrize("url", [SCREEN_URL, REPORT_URL])
+@pytest.mark.parametrize("raw", ["2026-8", "2026-08-15", "август", "2026"])
+def test_malformed_target_month_is_400_on_both_routes(
+    client, db_session, factories, url, raw
+):
+    """Неверный формат месяца — 400 с самим значением в тексте: строка приходит из
+    адреса, который человек мог набрать руками."""
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    response = client.get(
+        url, params=_params(ids, inflation_series_id=series_id, target_month=raw)
+    )
+
+    assert response.status_code == 400
+    assert raw in response.json()["detail"]
+
+
+@pytest.mark.parametrize("url", [SCREEN_URL, REPORT_URL])
+def test_month_without_a_series_is_400_on_both_routes(client, db_session, factories, url):
+    """Умолчательного ряда не существует (§2.12, DoD 19)."""
+    ids = _selection_of_three(db_session, factories)
+    response = client.get(url, params=_params(ids, target_month="2026-08"))
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("url", [SCREEN_URL, REPORT_URL])
+def test_unknown_series_is_404_on_both_routes(client, db_session, factories, url):
+    ids = _selection_of_three(db_session, factories)
+    response = client.get(url, params=_params(ids, inflation_series_id=10**9))
+    assert response.status_code == 404
+
+
+def test_archived_series_by_explicit_id_answers_200_and_adjusts(
+    client, db_session, factories
+):
+    """Два РАЗНЫХ утверждения (DoD 20): архивный ряд по явному id отвечает 200 И
+    приведение по нему считается — а в списке для выбора его нет.
+
+    Одного утверждения не хватило бы: 200 с номинальными числами выглядел бы как
+    работающая старая ссылка, будучи молчаливым отказом приводить.
+    """
+    series_id = _series(db_session)
+    fx.archive_series(db_session, series_id)
+    ids = _selection_of_three(db_session, factories)
+
+    response = client.get(
+        SCREEN_URL,
+        params=_params(ids, inflation_series_id=series_id, target_month="2026-08"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["inflation"]["series_id"] == series_id
+    assert all(column["inflation_coefficient"] != "1" for column in body["columns"])
+
+    listed = client.get("/api/v1/inflation-series").json()
+    assert series_id not in [item["id"] for item in listed]
+
+
+def test_report_refusal_carries_the_structured_422_and_no_attachment(
+    client, db_session, factories
+):
+    """Выгрузка при отказе: тот же структурированный 422, файла НЕТ (DoD 11).
+
+    Проверяется отсутствием вложения и типом ответа, а НЕ содержимым листа: при
+    отказе лист не собирается вовсе, поэтому листа с ошибкой не существует —
+    ранняя редакция спеки обещала обратное, и обещание было невыполнимым.
+    """
+    series_id = _series(db_session, {2025: "1.083"})
+    ids = _selection_of_three(db_session, factories)
+
+    response = client.get(
+        REPORT_URL,
+        params=_params(ids, inflation_series_id=series_id, target_month="2026-08"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "missing_inflation_years"
+    assert response.json()["detail"]["missing_years"] == [2024, 2026]
+    assert XLSX_MEDIA not in response.headers["content-type"]
+    assert "content-disposition" not in {key.lower() for key in response.headers}
+
+
+def test_screen_and_report_return_an_identical_detail_object(
+    client, db_session, factories
+):
+    """Экран и лист на ОДНОМ входе дают идентичный объект отказа (DoD 23).
+
+    Утверждается равенство объектов целиком, а не только кода: трансляция одна, и
+    расхождение в контексте означало бы, что клиент получает разные контракты в
+    зависимости от того, куда послал запрос.
+    """
+    series_id = _series(db_session, {2025: "1.083"})
+    ids = _selection_of_three(db_session, factories)
+    params = _params(ids, inflation_series_id=series_id, target_month="2026-08")
+
+    screen = client.get(SCREEN_URL, params=params)
+    report = client.get(REPORT_URL, params=params)
+
+    assert screen.status_code == report.status_code == 422
+    assert screen.json()["detail"] == report.json()["detail"]
+
+
+def test_amendment_refusal_is_the_same_object_on_both_routes(
+    client, db_session, factories
+):
+    """То же для второго кода: amendment_date_missing (DoD 21, 23)."""
+    series_id = _series(db_session)
+    contract, _base, amendment = fx.contract_with_amendment_dates(
+        db_session, factories,
+        signed_date=dt.date(2025, 2, 20),
+        base_prepared=dt.date(2025, 2, 20),
+        amd_prepared=None,
+        contract_number="ГП-ДС-HTTP",
+    )
+    params = _params([contract.id], inflation_series_id=series_id, target_month="2026-08")
+
+    screen = client.get(SCREEN_URL, params=params)
+    report = client.get(REPORT_URL, params=params)
+
+    assert screen.status_code == report.status_code == 422
+    assert screen.json()["detail"] == report.json()["detail"]
+    detail = screen.json()["detail"]
+    assert detail["code"] == "amendment_date_missing"
+    assert detail["estimate_ids"] == [amendment.id]
+    assert "ГП-ДС-HTTP" in detail["message"]
+
+
+def test_series_without_month_returns_the_resolved_current_month(
+    client, db_session, factories, monkeypatch
+):
+    """Ряд без месяца: сервер возвращает РАЗРЕШЁННЫЙ месяц (DoD 18, 19).
+
+    Момент фиксируется подменой шва `_now_in` и выбран у границы месяца — там, где
+    зоны расходятся датой. Без фиксации момента тест был бы зелен и при
+    игнорируемой зоне: зоны расходятся МЕСЯЦЕМ только у этой границы.
+    """
+    import money.inflation as inflation_module
+
+    moment = dt.datetime(2026, 8, 31, 20, 0, tzinfo=dt.UTC)
+    monkeypatch.setattr(inflation_module, "_now_in", lambda zone: moment.astimezone(zone))
+
+    series_id = _series(
+        db_session, {2024: "1.075", 2025: "1.083", 2026: "1.060", 2027: "1.050"}
+    )
+    ids = _selection_of_three(db_session, factories)
+
+    monkeypatch.setattr(inflation_module, "BUSINESS_TIMEZONE", "Pacific/Kiritimati")
+    ahead = client.get(SCREEN_URL, params=_params(ids, inflation_series_id=series_id))
+
+    monkeypatch.setattr(inflation_module, "BUSINESS_TIMEZONE", "Pacific/Niue")
+    behind = client.get(SCREEN_URL, params=_params(ids, inflation_series_id=series_id))
+
+    assert ahead.status_code == behind.status_code == 200
+    assert ahead.json()["inflation"]["target_month"] == "2026-09"
+    assert behind.json()["inflation"]["target_month"] == "2026-08"
+
+
+def test_nominal_request_over_http_is_unchanged(client, db_session, factories):
+    """Ни одного параметра — ни одного инфляционного ключа в ответе (DoD 1, 19)."""
+    ids = _selection_of_three(db_session, factories)
+
+    body = client.get(SCREEN_URL, params=_params(ids)).json()
+
+    assert "inflation" not in body
+    for column in body["columns"]:
+        assert "inflation_coefficient" not in column

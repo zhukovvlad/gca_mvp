@@ -66,6 +66,7 @@ from money.inflation import (
     adjust_amount,
     coefficient,
     current_period,
+    parse_target_month,
     required_years,
     year_exponents,
 )
@@ -81,6 +82,9 @@ from services.category_rollup import (
 )
 
 __all__ = [
+    "InflationPlan",
+    "parse_target_month_param",
+    "resolve_inflation",
     "SOURCE_ADDITIONAL_WORKS",
     "SOURCE_POSITIONS",
     "ABSENT",
@@ -1765,6 +1769,29 @@ def rate_options(db: Session, contract_ids: Sequence[int]) -> tuple[list[Decimal
 # ---------------------------------------------------------------------------
 #  Разрешение выборки: `ids` либо фильтр (спека §2.6)
 # ---------------------------------------------------------------------------
+
+def parse_target_month_param(raw: str | None) -> YearMonth | None:
+    """`"2026-08"` → `YearMonth(2026, 8)`; `None` → `None` (цель не задана).
+
+    Живёт РЯДОМ с `parse_ids_param` и по той же причине: роутеров два — экран
+    сравнения и выгрузка листа, — и формат параметра у них обязан быть один. Две
+    копии разбора `ids` на этом проекте уже расходились, и один адрес получал два
+    разных ответа в зависимости от того, куда его послали.
+
+    День не принимается вовсе: он игнорируется по §2.4 спеки инфляции, и принять
+    его значило бы обещать точность, которой нет. Отказ — `DomainError(400)` с
+    самим значением в тексте, а не 422-трасса валидатора: строка приходит из
+    адреса, который человек мог набрать руками.
+    """
+    if raw is None:
+        return None
+    try:
+        return parse_target_month(raw)
+    except ValueError:
+        raise DomainError(
+            400, f"`target_month` ожидается в формате YYYY-MM, а не {raw!r}."
+        ) from None
+
 
 def parse_ids_param(raw: str | None) -> list[int] | None:
     """`"1,2,4"` → `[1, 2, 4]`; `None` → `None` (форма выборки не задана).
