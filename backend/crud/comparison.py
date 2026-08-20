@@ -104,6 +104,7 @@ __all__ = [
     "DirectBranch",
     "EstimateRollup",
     "load_rollups",
+    "apply_adjustment",
     "own_net",
     "RowRef",
     "CellNet",
@@ -777,6 +778,62 @@ def _adjusted_branch(branch: DirectBranch, factor: Decimal) -> DirectBranch:
     return replace(branch, net=adjust_amount(branch.net, factor))
 
 
+def apply_adjustment(
+    rollups: dict[int, list[EstimateRollup]],
+    factor_by_estimate: Mapping[int, Decimal],
+    *,
+    categories: Sequence[CategoryRef],
+) -> dict[int, list[EstimateRollup]]:
+    """Наложить коэффициенты приведения на УЖЕ ПРОЧИТАННЫЕ роллапы (задача 6).
+
+    Вынесена из `load_rollups`, чтобы `build_comparison` мог читать сметы
+    РОВНО ОДИН РАЗ (номинал) и накладывать умножение поверх готового чтения —
+    диаграмме нужны и приведённое, и номинальное значение одновременно, а
+    второе чтение с `adjustment=` разошлось бы с первым составом смет в
+    `READ COMMITTED` (см. докстроку `load_rollups` ниже).
+
+    Чистая функция: без `db`. `categories` приходит параметром — это тот же
+    справочник, которым уже была построена `rollup.tree`, нужен заново, чтобы
+    пересобрать дерево НАД приведёнными ветвями (`tree` производно от
+    `direct`, задача 2).
+
+    Приводится КАЖДАЯ ветвь до разделения на `direct`/`unallocated` — как и
+    раньше внутри `load_rollups`: иначе дерево приведётся, а остаток
+    («Нераспределённое») останется номинальным и молча смешается с
+    приведённым в «Итого по договору».
+
+    `RuntimeError` на смету без коэффициента — та же громкая защита, что была
+    в `load_rollups`: молчаливое отсутствие смешало бы номинал с приведённым,
+    и итог соврал бы, оставаясь правдоподобным.
+    """
+    result: dict[int, list[EstimateRollup]] = {}
+    for contract_id, contract_rollups in rollups.items():
+        adjusted: list[EstimateRollup] = []
+        for rollup in contract_rollups:
+            factor = factor_by_estimate.get(rollup.estimate_id)
+            if factor is None:
+                raise RuntimeError(
+                    f"Смета {rollup.estimate_id} договора {rollup.contract_id} не получила "
+                    "коэффициента приведения: план приведения и выборка смет "
+                    "разошлись."
+                )
+            direct = {
+                category_id: {
+                    source: _adjusted_branch(branch, factor)
+                    for source, branch in branches.items()
+                }
+                for category_id, branches in rollup.direct.items()
+            }
+            unallocated = {
+                source: _adjusted_branch(branch, factor)
+                for source, branch in rollup.unallocated.items()
+            }
+            tree = build_tree(categories, _direct_totals_view(direct))
+            adjusted.append(replace(rollup, tree=tree, direct=direct, unallocated=unallocated))
+        result[contract_id] = adjusted
+    return result
+
+
 def _estimate_label(rollup: EstimateRollup) -> str:
     """«ДГП» либо «ДС №N» — ТОТ ЖЕ словарь, которым говорит `_composition_caption`.
 
@@ -793,6 +850,7 @@ def load_rollups(
     contract_ids: Sequence[int],
     *,
     adjustment: Mapping[int, Decimal] | None = None,
+    categories: Sequence[CategoryRef] | None = None,
 ) -> dict[int, list[EstimateRollup]]:
     """Роллапы всех смет выборки, ОДНИМ запросом к каждому из четырёх входов.
 
@@ -800,12 +858,14 @@ def load_rollups(
     (а не отсутствует в словаре — вызывающему коду не придётся гадать про
     KeyError на договоре, который есть в выборке, но ещё не разобран).
 
-    `adjustment` — коэффициент приведения НА СМЕТУ (`resolve_inflation`). Умножение
-    происходит здесь и только здесь, ДО `build_tree`: приводить позже пришлось бы
-    в `cell_net`, `_grand_total_cell`, `_own_mode_shown` и `_single_rollup_axis`,
-    то есть в четырёх независимых сумматорах, и каждый стал бы отдельным шансом
-    забыть. Умножение до дерева даёт приведённое дерево, и весь слой ячеек
-    работает без единой правки.
+    `adjustment` — коэффициент приведения НА СМЕТУ (`resolve_inflation`).
+    Умножение больше не живёт здесь: `apply_adjustment` (задача 6) — ЕДИНСТВЕННОЕ
+    место умножения, и эта функция лишь ДЕЛЕГИРУЕТ в неё, накладывая коэффициенты
+    на уже собранный номинальный результат ПОСЛЕ того, как он полностью собран, но
+    ДО возврата вызывающему коду — снаружи поведение не отличить от прежнего.
+    Делегирование, а не дублирование: `apply_adjustment` нужна отдельно и
+    `build_comparison`, которому вдобавок нужен и номинал (диаграмме — оба числа
+    разом), а два места умножения однажды разошлись бы в правке.
 
     Порядок «нетто → инфляция → ставка показа» выполняется по построению:
     `net_to_gross` вызывается уже над приведённой нетто-суммой.
@@ -815,7 +875,15 @@ def load_rollups(
     if not contract_ids:
         return result
 
-    categories = _load_categories(db)
+    # `categories` можно передать снаружи, и это НЕ микрооптимизация: справочник
+    # статей нужен и здесь (собрать дерево), и `apply_adjustment` (пересобрать его
+    # над приведёнными ветвями). Без параметра путь приведения читал бы один и тот
+    # же статический справочник ДВАЖДЫ, то есть фича диаграммы подняла бы бюджет
+    # запросов закрытой фичи инфляции с 7 до 8 — за перечитывание того, что уже
+    # лежит в памяти. Умолчание `None` оставляет прежнее поведение всем остальным
+    # вызовам (их два десятка), ни один из них править не нужно.
+    if categories is None:
+        categories = _load_categories(db)
     estimates = _load_estimates(db, contract_ids)
     if not estimates:
         return result
@@ -827,37 +895,12 @@ def load_rollups(
     base_rates_by_estimate = _collect_base_rates(view_rows)
 
     for estimate in estimates:
-        factor: Decimal | None = None
-        if adjustment:
-            factor = adjustment.get(estimate.id)
-            if factor is None:
-                # Громко, а не молча: `resolve_inflation` и этот запрос читают
-                # сметы ПОРОЗНЬ, и в READ COMMITTED каждый оператор берёт свой
-                # снимок даже внутри одной транзакции. Смета, которой нет в плане,
-                # осталась бы НЕПРИВЕДЁННОЙ и смешалась с приведёнными — то есть
-                # итог соврал бы, оставаясь правдоподобным. Та же форма, что у
-                # `_resolve_cell` на нарушении инварианта VIEW.
-                raise RuntimeError(
-                    f"Смета {estimate.id} договора {estimate.contract_id} не получила "
-                    "коэффициента приведения: план приведения и выборка смет "
-                    "разошлись."
-                )
-
         by_category = accumulated.get(estimate.id, {})
 
         direct: dict[int, dict[str, DirectBranch]] = {}
         unallocated: dict[str, DirectBranch] = {}
         for category_id, by_source in by_category.items():
             frozen_branches = {source: acc.freeze() for source, acc in by_source.items()}
-            if factor is not None:
-                # Приводится КАЖДАЯ ветвь до разделения на `direct` и
-                # `unallocated`: иначе дерево приведётся, а остаток останется
-                # номинальным и молча смешается с приведённым в «Итого по
-                # договору» — они складываются вместе.
-                frozen_branches = {
-                    source: _adjusted_branch(branch, factor)
-                    for source, branch in frozen_branches.items()
-                }
             if category_id is None:
                 # «Нераспределённое» — вынимается ДО build_tree, он его не пускает
                 # (спека §2.1.4, план п. 6 требований).
@@ -896,6 +939,11 @@ def load_rollups(
         )
         result.setdefault(estimate.contract_id, []).append(rollup)
 
+    if adjustment:
+        # Истинностная проверка, а не `is not None`: пустой словарь исторически
+        # (до вынесения умножения в `apply_adjustment`) означал «приведения нет» —
+        # так же молча, как и `None`, а не «ни одна смета не получила коэффициент».
+        return apply_adjustment(result, adjustment, categories=categories)
     return result
 
 
@@ -1500,6 +1548,41 @@ def _median_dict(median: _MedianResult) -> dict:
     }
 
 
+def _shown_per_sqm_axis_defined(vat_mode: str) -> bool:
+    """Есть ли у режима показа ЕДИНАЯ ось `shown_per_sqm` (спека §2.5, §2.10).
+
+    Единая ось есть при `net` и `single` (одна ставка показа на всю выборку) и
+    её НЕТ при `own` (у каждого договора своя ставка — общей линии не
+    существует). Предикат — ОДНО место для условия «own -> без единой оси»,
+    переиспользуемое `_totals_median_dict` (медиана приведённая, было до
+    задачи 6) и `_nominal_median_dict` (медиана номинальная, задача 6). План
+    требует ПЕРЕИСПОЛЬЗОВАТЬ правило, а не повторить («Архитектура → Медиана в
+    ставке показа»):
+    без выноса они разошлись бы по двум местам с одним и тем же `if vat_mode
+    == ...`, что план запрещает прямо.
+    """
+    if vat_mode == VAT_MODE_OWN:
+        return False
+    if vat_mode in (VAT_MODE_NET, VAT_MODE_SINGLE):
+        return True
+    # Громко, как и на ячейке (`_build_bucket_cell`): молчаливое отсутствие
+    # ключа при неизвестном режиме клиент прочитал бы как «своя ставка».
+    raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+
+
+def _shown_per_sqm_value(
+    value: Decimal | None, *, vat_mode: str, single_rate: Decimal | None
+) -> Decimal | None:
+    """Значение линии `shown_per_sqm` медианы «Итого», когда ось определена
+    (`_shown_per_sqm_axis_defined` уже вернул `True`). Общий для приведённой и
+    номинальной медианы (задача 6) — избегает второй копии одного и того же
+    `net_to_gross`-пересчёта.
+    """
+    if vat_mode == VAT_MODE_NET:
+        return value
+    return None if value is None or single_rate is None else net_to_gross(value, single_rate)
+
+
 def _totals_median_dict(
     median: _MedianResult, *, vat_mode: str, single_rate: Decimal | None
 ) -> dict:
@@ -1514,9 +1597,9 @@ def _totals_median_dict(
 
     Присутствие ключа и его значение отвечают на РАЗНЫЕ вопросы:
 
-    * присутствие — допускает ли режим НДС единую ось показа: ключ ЕСТЬ при
-      `net` и `single` (там ставка показа одна на всю выборку), и его НЕТ при
-      `own` (там у каждого договора своя ставка, единой оси не существует);
+    * присутствие — допускает ли режим НДС единую ось показа
+      (`_shown_per_sqm_axis_defined`): ключ ЕСТЬ при `net` и `single`, и его
+      НЕТ при `own`;
     * значение — есть ли медиана вообще: `None`, когда сопоставимых меньше
       трёх — то же правило, что у `value` (§2.5 правило 5).
 
@@ -1531,20 +1614,32 @@ def _totals_median_dict(
     параметром запроса линия медианы пропала бы там, где обязана быть.
     """
     out = _median_dict(median)
-    if vat_mode == VAT_MODE_NET:
-        out["shown_per_sqm"] = median.value
-    elif vat_mode == VAT_MODE_SINGLE:
-        out["shown_per_sqm"] = (
-            None
-            if median.value is None or single_rate is None
-            else net_to_gross(median.value, single_rate)
+    if _shown_per_sqm_axis_defined(vat_mode):
+        out["shown_per_sqm"] = _shown_per_sqm_value(
+            median.value, vat_mode=vat_mode, single_rate=single_rate
         )
-    elif vat_mode == VAT_MODE_OWN:
-        pass   # ключа НЕТ вовсе: единой ставки показа не существует
-    else:
-        # Громко, как и на ячейке (`_build_bucket_cell`): молчаливое отсутствие
-        # ключа при неизвестном режиме клиент прочитал бы как «своя ставка».
-        raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+    return out
+
+
+def _nominal_median_dict(
+    median: _MedianResult, *, vat_mode: str, single_rate: Decimal | None
+) -> dict:
+    """Номинальная медиана «Итого» (задача 6): `{value, shown_per_sqm?}` — форма
+    из §2.10 спеки.
+
+    Форма — ПОДМНОЖЕСТВО `_totals_median_dict`: без `comparable_count` и
+    `contract_ids` (те у номинала не нужны — экран берёт их у ПРИВЕДЁННОЙ
+    медианы, номинал ей не более чем сопровождает). Присутствие
+    `shown_per_sqm` подчиняется ТОМУ ЖЕ предикату `_shown_per_sqm_axis_defined`
+    и тому же `_shown_per_sqm_value` — задача 6 переиспользует правило
+    режимов НДС, а не заводит вторую его копию (план, «Архитектура → Медиана в
+    ставке показа», последний абзац).
+    """
+    out: dict = {"value": median.value}
+    if _shown_per_sqm_axis_defined(vat_mode):
+        out["shown_per_sqm"] = _shown_per_sqm_value(
+            median.value, vat_mode=vat_mode, single_rate=single_rate
+        )
     return out
 
 
@@ -1570,6 +1665,47 @@ def _cell_entry(contract_id: int, by_bucket: dict[str, dict[int, BucketCell]]) -
         BUCKET_AMENDMENTS: _bucket_cell_dict(by_bucket[BUCKET_AMENDMENTS][contract_id]),
         BUCKET_TOTAL: _bucket_cell_dict(by_bucket[BUCKET_TOTAL][contract_id]),
     }
+
+
+def _nominal_bucket_cell_dict(cell: BucketCell) -> dict:
+    """Денежное подмножество ячейки «Итого» для номинала (спека §2.10):
+    РОВНО четыре денежные величины, БЕЗ `state` и `deviation_pct`.
+
+    `deviation_pct` не входит намеренно: отклонение считается от медианы
+    ТЕКУЩЕГО (приведённого либо номинального-по-умолчанию) состояния, и
+    номинальное отклонение было бы вторым ответом на тот же вопрос «насколько
+    дороже медианы», которого спека не просит. `state` не входит по той же
+    причине, что и остальные метаданные ячейки: диаграмме нужны только деньги,
+    состояние она уже знает из ОСНОВНОЙ (приведённой) ячейки того же бакета.
+    """
+    return {
+        "net": cell.net,
+        "shown": cell.shown,
+        "net_per_sqm": cell.net_per_sqm,
+        "shown_per_sqm": cell.shown_per_sqm,
+    }
+
+
+def _totals_cell_entry(
+    contract_id: int,
+    by_bucket: dict[str, dict[int, BucketCell]],
+    nominal_by_bucket: dict[str, dict[int, BucketCell]] | None,
+) -> dict:
+    """Ячейка «Итого» — `_cell_entry` ПЛЮС номинал (задача 6, DoD 17).
+
+    ОТДЕЛЬНАЯ функция, а не флаг внутри `_cell_entry`: тот сериализатор общий
+    со строками дерева (`rows[].cells[]`, `_row_cells`/`_bucket_cell_dict`), и
+    добавление номинала туда утекло бы во все 253 строки, что DoD 17 запрещает
+    прямо. `nominal_by_bucket is None` — приведения не было (DoD 13): ключ
+    `nominal` не появляется вовсе, а не `null`.
+    """
+    entry = _cell_entry(contract_id, by_bucket)
+    if nominal_by_bucket is not None:
+        for bucket_name in (BUCKET_BASE, BUCKET_AMENDMENTS, BUCKET_TOTAL):
+            entry[bucket_name]["nominal"] = _nominal_bucket_cell_dict(
+                nominal_by_bucket[bucket_name][contract_id]
+            )
+    return entry
 
 
 def _row_cells(
@@ -2218,9 +2354,24 @@ def build_comparison(
             target_month=target_month if target_month is not None else current_period(),
         )
 
-    rollups = load_rollups(
-        db, contract_ids, adjustment=plan.factor_by_estimate if plan else None
-    )
+    # Одно чтение, а не два: `load_rollups` без `adjustment=` даёт НОМИНАЛ, и
+    # диаграмме (задача 6) нужен именно он — параллельно с приведённым деревом,
+    # а не вместо него. Второе чтение с `adjustment=` развело бы состав смет
+    # между двумя снимками READ COMMITTED (докстрока `load_rollups`).
+    #
+    # Справочник статей нужен ДВАЖДЫ на пути приведения — собрать номинальное
+    # дерево и пересобрать его над приведёнными ветвями, — поэтому читается ОДИН
+    # раз здесь и передаётся в оба места. Иначе фича диаграммы подняла бы бюджет
+    # запросов закрытой фичи инфляции с 7 до 8, перечитывая статический
+    # справочник. Без плана параметр не нужен вовсе: `load_rollups` берёт
+    # справочник сама, и дофичевый путь остаётся при своих 5 запросах.
+    shared_categories = _load_categories(db) if plan is not None else None
+    nominal_rollups = load_rollups(db, contract_ids, categories=shared_categories)
+    rollups = nominal_rollups
+    if plan is not None:
+        rollups = apply_adjustment(
+            nominal_rollups, plan.factor_by_estimate, categories=shared_categories
+        )
 
     # Фасет строится из ОДНОГО запроса `_load_columns` по надмножеству (facet_ids,
     # если сужение было, иначе сама выборка) — второго обращения к RateClass
@@ -2288,6 +2439,22 @@ def build_comparison(
         vat_mode=vat_mode, single_rate=effective_single_rate, skip_median=False,
     )
 
+    # Номинальная ветвь «Итого» (спека §2.8) — ОДИН дополнительный проход
+    # НАД номинальными роллапами, той же формы, что и приведённый выше: строки
+    # дерева номинал не получают вовсе (§2.8, DoD 17), поэтому обхода по 253
+    # узлам здесь нет и не должно быть.
+    nominal_totals_by_bucket: dict[str, dict[int, BucketCell]] | None = None
+    nominal_totals_medians: dict[str, _MedianResult] | None = None
+    if plan is not None:
+        nominal_bucket_rollups = {
+            contract_id: _split_buckets(nominal_rollups.get(contract_id, []))
+            for contract_id in ordered_ids
+        }
+        nominal_totals_by_bucket, nominal_totals_medians = _row_cells(
+            nominal_bucket_rollups, ordered_ids, area_by_contract, None,
+            vat_mode=vat_mode, single_rate=effective_single_rate, skip_median=False,
+        )
+
     columns = [
         {
             **column,
@@ -2313,7 +2480,10 @@ def build_comparison(
         "columns": columns,
         "available_rate_classes": available_rate_classes,
         "rows": rows_out,
-        "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
+        "totals": [
+            _totals_cell_entry(contract_id, totals_by_bucket, nominal_totals_by_bucket)
+            for contract_id in ordered_ids
+        ],
         "totals_medians": {
             bucket: _totals_median_dict(
                 totals_medians[bucket], vat_mode=vat_mode, single_rate=effective_single_rate
@@ -2321,6 +2491,15 @@ def build_comparison(
             for bucket in totals_medians
         },
     }
+    if nominal_totals_medians is not None:
+        # Ключ `nominal` — ТОЛЬКО при сосчитанном приведении (DoD 13, как и у
+        # ячеек `totals[]` выше): без плана номинал и приведённое совпадают, и
+        # второй копии тех же чисел контракт не вводит.
+        for bucket, median_dict in result["totals_medians"].items():
+            median_dict["nominal"] = _nominal_median_dict(
+                nominal_totals_medians[bucket],
+                vat_mode=vat_mode, single_rate=effective_single_rate,
+            )
     if plan is not None:
         result["inflation"] = {
             "series_id": plan.series_id,
