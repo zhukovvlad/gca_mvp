@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from crud import comparison as cc
 from money.inflation import YearMonth
+from money.vat import net_to_gross
 
 ENGINE = sa.create_engine("postgresql+psycopg://postgres@localhost:5459/gca_dev")
 
@@ -299,7 +300,7 @@ with Session(ENGINE) as db, localcontext() as ctx:
 
     # --- МЕДИАНЫ И ОТКЛОНЕНИЯ: по нетто, значит от режима показа НДС не
     #     зависят; от ряда и от ВЫБОРКИ зависят. Отсюда запрос на подмножество.
-    stat, medraw = {}, {}
+    stat, medraw, medraw_s = {}, {}, {}
     for skey, ids in subsets.items():
         for state in STATES:
             d = ask(ids, "net", state)
@@ -315,8 +316,16 @@ with Session(ENGINE) as db, localcontext() as ctx:
                         "t": tone(c["total"]["deviation_pct"])} for c in r["cells"]},
                 }
             tm = d["totals_medians"]["total"]
+            # Медиана в СТАВКЕ ПОКАЗА. В режиме «Единая» все договоры подняты
+            # ОДНИМ множителем (`net_to_gross(net, single_rate)`, comparison.py),
+            # поэтому медиана выражается в той же ставке тем же множителем, а
+            # отношение «столбец / медиана» сохраняется — линия согласована с
+            # плашками отклонений по построению. Считается той же функцией, что
+            # у сервера: вторая формула разошлась бы с первой.
+            ms = None if tm["value"] is None else net_to_gross(tm["value"], SINGLE_RATE)
             out["T"] = {
                 "m": fmt_value(tm["value"], "sqm"),
+                "ms": fmt_value(ms, "sqm"),
                 "cc": tm["comparable_count"],
                 "c": {str(t["contract_id"]): {
                     "d": pct(t["total"]["deviation_pct"]),
@@ -324,6 +333,7 @@ with Session(ENGINE) as db, localcontext() as ctx:
             }
             stat[k] = out
             medraw[k] = float(tm["value"]) if tm["value"] is not None else None
+            medraw_s[k] = float(ms) if ms is not None else None
 
     # --- ВЕРХ ОСИ: единственное, что клиент делит. Считается сразу по
     #     номиналу И по выбранному ряду, чтобы «Привести» РАСТИЛО столбцы,
@@ -340,9 +350,10 @@ with Session(ENGINE) as db, localcontext() as ctx:
                             v = raw[src][str(cid)]
                             if v is not None:
                                 pool.append(D(str(v)))
-                    if ind == "sqm" and vat == "net":
+                    if ind == "sqm" and vat in ("net", "single"):
+                        src_med = medraw if vat == "net" else medraw_s
                         for s2 in {"-", state}:
-                            mr = medraw[f"{s2}|{skey}"]
+                            mr = src_med[f"{s2}|{skey}"]
                             if mr is not None:
                                 pool.append(D(str(mr)))
                     t, ticks = nice_axis(max(pool)) if pool else (D(1), [D(0)])
@@ -363,7 +374,8 @@ PAYLOAD = json.dumps({
     "classes": [{"i": i, "t": t, "id": class_ids[i]} for i, t in enumerate(class_titles)],
     "rows": rows_ref,
     "series": series_meta,
-    "vals": vals, "raw": raw, "stat": stat, "medraw": medraw, "top": top,
+    "vals": vals, "raw": raw, "stat": stat,
+    "medraw": medraw, "medrawS": medraw_s, "top": top,
     "caps": caps, "kf": kf, "syears": syears,
     "months": [{"v": m["v"], "dat": m["dat"]} for m in MONTHS],
     "defMonth": DEFAULT_MONTH,
@@ -422,7 +434,7 @@ def table_body():
             f'<tr><th class="rowhead" scope="row"><span class="rh">'
             f'<span class="code">{E(r["code"] or "")}</span>'
             f'<span class="title">{E(r["title"])}</span></span></th>'
-            f'<td class="num med" data-med="{i}"></td>{cells}</tr>')
+            f'{cells}</tr>')
     return "".join(out)
 
 
@@ -758,9 +770,14 @@ function render() {
   document.getElementById('unitlab').textContent = ind === 'sqm' ? '₽/м²' : '₽';
 
   // --- медиана: только там, где ось и медиана в ОДНИХ деньгах
-  const medOk = ind === 'sqm' && vat === 'net';
-  const mv = medOk ? D.medraw[statKey()] : null;
-  const mn = medOk ? D.medraw[nomKey()] : null;
+  // Линия медианы есть там, где ось столбцов ОДНОЗНАЧНА: нетто и единая ставка.
+  // В «Своей ставке» каждый столбец поднят своим множителем, и любая одна линия
+  // противоречила бы плашкам отклонений, которые считаны по нетто.
+  const medOk = ind === 'sqm' && (vat === 'net' || vat === 'single');
+  const medSrc = vat === 'single' ? D.medrawS : D.medraw;
+  const medLbl = (st2) => vat === 'single' ? st2.T.ms : st2.T.m;
+  const mv = medOk ? medSrc[statKey()] : null;
+  const mn = medOk ? medSrc[nomKey()] : null;
   const line = (el, raw) => {
     if (raw === null || raw === undefined) { el.hidden = true; return false; }
     el.hidden = false;
@@ -768,10 +785,11 @@ function render() {
     return true;
   };
   if (line(medA, mv))
-    gparts.push('<span class="gm" style="bottom:' + pct(mv) + '">медиана ' + st.T.m + '</span>');
+    gparts.push('<span class="gm" style="bottom:' + pct(mv) + '">медиана ' +
+      medLbl(st) + '</span>');
   if (line(medN, live ? mn : null))
     gparts.push('<span class="gm ghost" style="bottom:' + pct(mn) + '">номинал ' +
-      stN.T.m + '</span>');
+      medLbl(stN) + '</span>');
   gutter.innerHTML = gparts.join('');
 
   // --- столбцы
@@ -838,7 +856,9 @@ function render() {
     items.push('<span class="li"><span class="sw nom"></span>номинал: цены подписания</span>');
   }
   if (mv !== null && mv !== undefined)
-    items.push('<span class="li"><span class="sw med"></span>медиана выборки (нетто, ₽/м²)</span>');
+    items.push('<span class="li"><span class="sw med"></span>медиана выборки ' +
+      (vat === 'single' ? '(в ставке показа ' + D.singleRate + ' %, ₽/м²)'
+                        : '(нетто, ₽/м²)') + '</span>');
   legend.innerHTML = items.join('');
   legend.hidden = items.length === 0;
 
@@ -846,8 +866,9 @@ function render() {
   const medcap = document.getElementById('medcap');
   medcap.hidden = mv === null || mv === undefined;
   if (!medcap.hidden) {
-    medcap.textContent = 'Медиана выборки — ' + st.T.m + ' ₽/м²' +
-      (live && stN.T.m ? '; в номинале — ' + stN.T.m : '');
+    medcap.textContent = 'Медиана выборки — ' + medLbl(st) + ' ₽/м²' +
+      (vat === 'single' ? ' в ставке показа ' + D.singleRate + ' %' : ' нетто') +
+      (live && medLbl(stN) ? '; в номинале — ' + medLbl(stN) : '');
   }
 
   // --- подписи под диаграммой
@@ -860,11 +881,12 @@ function render() {
       'цены. Плашки под столбцами — отклонения по <b>₽/м²</b>, и подписаны так ' +
       'прямо: процент от медианы рядом с суммой прочитался бы как «дороже ' +
       'медианы суммы», чего он не значит.';
-  } else if (vat !== 'net') {
+  } else if (vat === 'own') {
     note.hidden = false;
-    note.innerHTML = 'Линии медианы нет: медиана считается по <b>нетто</b>, а столбцы ' +
-      'показаны в валовых суммах. Отклонения под столбцами — по-прежнему ' +
-      'нетто-отклонения, они от режима показа не зависят.';
+    note.innerHTML = 'Линии медианы нет: в режиме «Своя ставка» каждый столбец ' +
+      'поднят <b>своим</b> множителем, поэтому любая одна линия противоречила бы ' +
+      'плашкам отклонений — они считаны по нетто и от режима показа не зависят. ' +
+      'В «Единой» ставка одна на всех, и линия есть.';
   } else note.hidden = true;
 
   // --- выборка меньше трёх сопоставимых: медианы у сервера нет вовсе
@@ -888,8 +910,6 @@ function render() {
   });
   D.rows.forEach((r, i) => {
     const row = st[r.code];
-    const mcell = document.querySelector('[data-med="' + i + '"]');
-    mcell.innerHTML = row && row.m ? row.m : '<span class="dash">—</span>';
     D.cols.forEach(c => {
       const td = document.querySelector('[data-cd="' + c.id + '"][data-ri="' + i + '"]');
       const v = ((live ? D.vals[vk] : D.vals[nvk])[r.code] || {})[c.id];
@@ -1160,14 +1180,17 @@ CONTENT = f"""<title>Диаграмма стоимости договоров</t
   <section>
     <h2>Таблица статей</h2>
     <p class="secsub">Та же таблица, что и сегодня: корневые статьи
-    классификатора, медиана по нетто, отклонение в каждой ячейке. Фильтр по
-    классам убирает колонку целиком — и медиана строки пересчитывается.</p>
+    классификатора, ₽/м² и отклонение в каждой ячейке. Колонки «Медиана» на
+    настоящем экране НЕТ — медиана участвует счётчиком «меньше трёх
+    сопоставимых» и окраской отклонений, но числом не показана; в первой
+    редакции макета она была унаследована от макета инфляции и убрана. Фильтр по
+    классам убирает колонку договора целиком, и отклонения строки
+    пересчитываются.</p>
     <div class="scroller">
       <table class="cmp">
         <thead>
           <tr>
             <th class="rowhead" scope="col">Статья классификатора</th>
-            <th class="num med" scope="col">Медиана</th>
             {table_head()}
           </tr>
         </thead>
