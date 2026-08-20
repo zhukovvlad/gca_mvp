@@ -104,8 +104,8 @@
 |---|---|---|
 | `backend/crud/contracts.py` | `apply_contract_filters` — класс списком | 2 |
 | `backend/crud/comparison.py` | `resolve_selection`, `_median_dict`, `build_comparison`, facet | 3–6 |
-| `backend/routers/analytics.py` | `get_comparison` — параметр списком | 7 |
-| `backend/routers/reports.py` | `comparison_report` — тот же контракт | 7 |
+| `backend/routers/analytics.py` | `Selection` вместо списка (4), затем разбор адреса (7) | 4, 7 |
+| `backend/routers/reports.py` | то же, один контракт выборки на оба маршрута | 4, 7 |
 | `backend/tests/comparison_fixtures.py` | фикстура на общий класс | 4 |
 | `backend/tests/integration/test_comparison_selection.py` | сужение и коррекция 400 | 3 |
 | `backend/tests/integration/test_comparison_facet.py` | **новый** — facet | 4 |
@@ -116,6 +116,9 @@
 | `frontend/src/services/api/analytics.ts` | `ComparisonParams` | 8 |
 | `frontend/src/pages/compare/ComparePage.tsx` | ставка в URL, чипы, врезка диаграммы | 9, 10, 11 |
 | `frontend/src/pages/compare/ContractCostChart.tsx` | **новый** — диаграмма | 11 |
+| `frontend/src/pages/compare/costChartData.ts` | **новый** — чистые функции данных и оси | 11 |
+| `frontend/src/pages/compare/costChartData.test.ts` | **новый** — геометрия числами | 11 |
+| `frontend/src/pages/compare/ContractCostChart.test.tsx` | **новый** — линии, корзина, прокрутка | 11 |
 | `frontend/src/pages/compare/ComparePage.test.tsx` | поведение экрана | 12 |
 | `frontend/src/test/fixtures.ts`, `handlers.ts` | новые поля в фикстурах | 8 |
 | `AGENTS.md` | §7 п. 7, §11 | 13 |
@@ -132,9 +135,12 @@
 `_column_inflation`, `InflationPlan`, `_mode_caption` — все в
 `backend/crud/comparison.py`. `apply_contract_filters`, `filtered_contract_ids`,
 `_contracts_select`, `CONTRACT_LIST_ORDER` — `backend/crud/contracts.py`.
-`net_to_gross` — `backend/money/vat.py`. `get_comparison` —
-`backend/routers/analytics.py:147`. `comparison_report` —
-`backend/routers/reports.py:135`.
+`net_to_gross` — `backend/money/vat.py`. `parse_ids_param` —
+`backend/crud/comparison.py`. `get_comparison` —
+`backend/routers/analytics.py:147`, вызов `resolve_selection` — `:195`.
+`comparison_report` — `backend/routers/reports.py:135`, вызов — `:173`.
+`ComparisonParams.rate_class_id` — `src/types/domain.ts:1283`, УЖЕ есть как
+`string`.
 
 **Фикстуры и тесты, существуют.** `baseline_selection`, `contract_with`,
 `contract_with_area`, `contract_with_disagreeing_rates`, `series_with_years`,
@@ -171,7 +177,9 @@
 | `contracts_sharing_a_rate_class` (фикстура) | `comparison_fixtures.py` | 4 |
 | `test_comparison_facet.py`, `test_comparison_medians.py` | тесты | 4, 5 |
 | `ComparisonRateClassFacet` (тип) | `domain.ts` | 8 |
+| `_totals_median_dict` | `crud/comparison.py` | 5 |
 | `ContractCostChart` | `pages/compare/` | 11 |
+| `buildCostChartBars`, `costChartAxisTop` | `pages/compare/costChartData.ts` | 11 |
 | эффект записи `single_rate` в адрес | `ComparePage.tsx` | 9 |
 
 ---
@@ -294,8 +302,10 @@ def resolve_selection(db, *, ids=None, use_filter=False, q=None,
 
 ## Task 4: facet `available_rate_classes` и `rate_class_id` колонки
 
-**Файлы:** `backend/crud/comparison.py`, `backend/tests/comparison_fixtures.py`,
-`backend/tests/integration/test_comparison_facet.py` (новый).
+**Файлы:** `backend/crud/comparison.py`, `backend/routers/analytics.py`,
+`backend/routers/reports.py`, `backend/tests/comparison_fixtures.py`,
+`backend/tests/integration/test_comparison_facet.py` (новый),
+`backend/tests/integration/test_comparison_selection.py`.
 
 Facet считается по выборке ДО сужения классами и ПОСЛЕ остальных фильтров —
 значит `resolve_selection` обязан вернуть ДВА множества: полное и суженное. Это
@@ -308,6 +318,16 @@ class Selection:
     facet_ids: list[int]           # до сужения классами, после остальных фильтров
 ```
 
+**Смена типа возврата ломает ОБА роутера в этой же задаче, и они правятся
+здесь.** Сегодня и `analytics.py:195`, и `reports.py:173` делают
+`contract_ids = resolve_selection(...)` и передают результат прямо в
+`build_comparison`. Оставить их на следующую задачу нельзя: промежуточный
+`just ci` упадёт, а Global Constraint 8 требует зелёного `ci` на каждом коммите.
+
+Интерфейс передачи: `build_comparison(db, selection, …)` принимает `Selection`, а
+не список. Обёртка «принимает и то, и другое» отвергнута — она пережила бы фичу и
+осталась второй формой вызова навсегда.
+
 `available_rate_classes` строится по `facet_ids` из того же join-а, что и
 колонки (решение плана 3), порядок — по `title` (§2.7).
 
@@ -317,6 +337,10 @@ class Selection:
 проверяется.
 
 - [ ] `Selection` и правка `resolve_selection`.
+- [ ] `build_comparison` принимает `Selection`.
+- [ ] `analytics.py:195` и `reports.py:173` — оба переведены на `Selection`.
+- [ ] Существующие тесты `test_comparison_selection.py`, читающие возврат как
+      список, переведены на `Selection` в этом же коммите.
 - [ ] Фикстура на два договора одного класса и один другого.
 - [ ] `available_rate_classes` в ответе; порядок по `title`.
 - [ ] `rate_class_id` в колонке; значение — снимок из договора.
@@ -341,11 +365,19 @@ class Selection:
 **Файлы:** `backend/crud/comparison.py`,
 `backend/tests/integration/test_comparison_medians.py` (новый).
 
+**`_median_dict` НЕ трогаем.** Она вызывается из двух мест —
+`comparison.py:2071` для `rows[].medians` и `:2105` для `totals_medians`, — и
+правка внутри неё добавила бы `shown_per_sqm` в медианы всех 253 строк, чего
+контракт спеки не вводит (§2.10 называет только `totals_medians`). Это тот же
+довод, по которому номинал живёт только в «Итого».
+
+Поэтому заводится ОТДЕЛЬНЫЙ сериализатор итоговой медианы. Отдельная функция, а
+не флаг: флаг пришлось бы передавать через `_row_cells`, и однажды он приедет в
+строки «за компанию».
+
 ```python
-def _median_dict(median, *, vat_mode, single_rate) -> dict:
-    out = {"value": median.value,
-           "comparable_count": median.comparable_count,
-           "contract_ids": median.contract_ids}
+def _totals_median_dict(median, *, vat_mode, single_rate) -> dict:   # заводится здесь
+    out = _median_dict(median)                      # общая часть — одна
     if vat_mode == VAT_MODE_NET:
         out["shown_per_sqm"] = median.value
     elif vat_mode == VAT_MODE_SINGLE:
@@ -355,7 +387,9 @@ def _median_dict(median, *, vat_mode, single_rate) -> dict:
     return out
 ```
 
-- [ ] Правка `_median_dict` и всех её вызовов (строки и «Итого»).
+- [ ] `_totals_median_dict`; вызов только на `:2105`.
+- [ ] Тест: `rows[].medians` ключа `shown_per_sqm` НЕ несут — негативный,
+      снятие обязано ронять.
 - [ ] Тест: при `net` `shown_per_sqm == value`.
 - [ ] Тест: при `single` `shown_per_sqm == net_to_gross(value, rate)` —
       утверждением о числе: медиана нетто стенда 129 800 при ставке 20 % даёт
@@ -399,6 +433,8 @@ adjusted = (apply_adjustment(rollups, plan.factor_by_estimate)   # заводи�
       коэффициент колонки определён (DoD 14).
 - [ ] Тест: при РАЗНЫХ коэффициентах ДГП и ДС номинал «Итого» верен —
       на `contract_with_amendment_dates` (DoD 15).
+- [ ] Тест: `totals_medians[bucket].nominal` равна медиане ТОГО ЖЕ запроса без
+      ряда — сравнением двух ответов, а не пересчётом (DoD 16).
 - [ ] Тест: `rows` номинала не несут — утверждением об отсутствии ключа
       (DoD 17).
 - [ ] Обновить эталон задачи 1: диффа быть НЕ должно (без приведения ответ не
@@ -415,12 +451,17 @@ adjusted = (apply_adjustment(rollups, plan.factor_by_estimate)   # заводи�
 `backend/tests/integration/test_comparison_api.py`,
 `test_comparison_excel.py`.
 
-`rate_class_id` становится строкой «через запятую» — как `ids`, и разбирается в
-роутере (решение плана 1). Оба маршрута обязаны принимать одинаково: §2.7 спеки
-сравнения требует один контракт выборки на экран и лист.
+Задача 4 уже перевела оба роутера на `Selection`; здесь остаётся **только
+разбор адреса**.
 
-- [ ] Разбор списка в `get_comparison`.
-- [ ] То же в `comparison_report`, тем же хелпером.
+`rate_class_id` становится строкой «через запятую» — как `ids`, и разбирается в
+роутере (решение плана 1). Разбор — рядом с существующим
+`crud.comparison.parse_ids_param`, тем же приёмом и с той же формой отказа:
+второй способ разбирать список id в одном модуле разъедется.
+
+- [ ] Хелпер разбора рядом с `parse_ids_param`, один на оба маршрута.
+- [ ] Подключён в `get_comparison`.
+- [ ] Подключён в `comparison_report`.
 - [ ] Тест: `?ids=…&rate_class_id=2,3` — 200 и меньше колонок (DoD 1).
 - [ ] Тест: одиночный `rate_class_id=2` — прежняя семантика (DoD 5).
 - [ ] Тест: `?ids=…&q=…` — 400 (DoD 3), на уровне HTTP.
@@ -450,7 +491,9 @@ export interface ComparisonRateClassFacet {
 присутствия из §2.8, и `tsc` заставит клиента проверить поле перед отрисовкой.
 
 - [ ] Типы.
-- [ ] `ComparisonParams.rate_class_id`.
+- [ ] `ComparisonParams.rate_class_id` **уже существует** как `string`
+      (`domain.ts:1283`) — поле не заводится, расширяется его СЕМАНТИКА до
+      строки со списком; правка идёт в докстроку, а не в объявление.
 - [ ] Фикстуры и MSW-обработчики с новыми полями.
 - [ ] `just ci` (здесь важен `tsc`).
 
@@ -497,14 +540,32 @@ export interface ComparisonRateClassFacet {
 
 ## Task 11: фронт — диаграмма
 
-**Файл:** `frontend/src/pages/compare/ContractCostChart.tsx` (новый).
+**Файлы:** `frontend/src/pages/compare/ContractCostChart.tsx` (новый),
+`frontend/src/pages/compare/costChartData.ts` (новый),
+`frontend/src/pages/compare/costChartData.test.ts` (новый).
+
+**Данные и верх оси считают ЧИСТЫЕ функции, вынесенные из компонента** —
+`buildCostChartBars` и `costChartAxisTop` (оба заводятся здесь). Причина
+прямая: DoD 19–21 и 28–28а требуют проверки утверждением о числе, а не глазами
+по SVG. Через отрисованный `<BarChart>` эти пункты пришлось бы проверять
+разбором путей, то есть глазами инструмента.
+
+Оговорка к Global Constraint 1: чистые функции получают уже готовые decimal-
+строки и **не считают деньги** — они выбирают, что показать, и переводят в
+`number` только высоты и верх оси. Тот же единственный случай, что
+`geometryValue` у `StructureRing`.
 
 `<BarChart>` из recharts под `ChartContainer`. Поверх штатных примитивов:
 
 - сплошной `<Bar>` — приведённое (или номинал, когда приведения нет);
-- промежуток к номиналу — второй `<Bar>` со `stackId` и штрихованным
-  `<pattern>`; при снижении он рисуется от приведённого вверх, при росте — от
-  номинала вверх;
+- промежуток к номиналу — **range-bar**, то есть `<Bar>` со значением
+  `[min(номинал, приведённое), max(номинал, приведённое)]`, поверх сплошного и
+  со штрихованным `<pattern>`. **Не `stackId`:** стек начинается от верха
+  предыдущего столбца, поэтому при РОСТЕ штриховка легла бы НАД приведённым
+  значением, тогда как она обязана лежать между номиналом и приведённым.
+  Range-bar даёт ровно нужный интервал в обе стороны одной формулой. Проверено:
+  `recharts@3.8.1`, `types/cartesian/Bar.d.ts:22` — `value: number | [number,
+  number]`;
 - риска номинала — `<ReferenceDot>`/`<ReferenceLine>` на столбец;
 - медиана — `<ReferenceLine y={shown_per_sqm}>`, только при единице ₽/м² и
   ненулевом поле; вторая, точечная — номинальная медиана при приведении;
@@ -513,6 +574,12 @@ export interface ComparisonRateClassFacet {
 
 Геометрия столбцов — работа recharts (Global Constraint 1).
 
+- [ ] `buildCostChartBars` и `costChartAxisTop` — чистые, без запросов.
+- [ ] `costChartData.test.ts`: порядок столбцов (DoD 18); геометрия обоих знаков
+      (DoD 19–21) — числами, включая случай, где промежуток меньше пикселя;
+      верх оси вмещает столбцы, риски, призраки и обе линии (DoD 28); ось по
+      применённому состоянию — 150 000 в номинале и 200 000 после приведения на
+      выборке без «люкса» (DoD 28а).
 - [ ] Компонент, порядок столбцов от старых к новым (DoD 18).
 - [ ] Симметричное изображение поправки (DoD 19, 20, 21).
 - [ ] Медиана по правилу §2.4 (DoD 22, 22а, 22в) и её отсутствие с объяснением
@@ -522,6 +589,11 @@ export interface ComparisonRateClassFacet {
 - [ ] Ось от нуля и по применённому состоянию (DoD 28, 28а).
 - [ ] Прокрутка и минимальная ширина столбца (DoD 29).
 - [ ] Договор без суммы занимает место с причиной (DoD 25).
+- [ ] `ContractCostChart.test.tsx`: линия медианы есть в `net` и `single`, нет в
+      `own` (DoD 22); нет на оси сумм при пришедшем поле (DoD 22г); две линии при
+      приведении (DoD 23); объяснение вместо линии при менее чем трёх
+      сопоставимых (DoD 24); следование корзине (DoD 27); прокрутка и
+      минимальная ширина столбца (DoD 29).
 - [ ] `just ci`.
 
 **DoD:** 18–29.
@@ -532,7 +604,10 @@ export interface ComparisonRateClassFacet {
 
 **Файл:** `ComparePage.test.tsx`.
 
-- [ ] Приведение по умолчанию выключено, `nominal` не запрашивается (DoD 32).
+- [ ] Приведение по умолчанию выключено: без инфляционных параметров в адресе
+      ответ не несёт ключей `nominal`, и экран показывает номинальные числа
+      (DoD 32). Клиент `nominal` не «запрашивает» — поле появляется в ответе при
+      применённом приведении.
 - [ ] Диаграмма не ломается на выборке без сумм.
 - [ ] Диаграмма не ломается при менее чем трёх сопоставимых.
 - [ ] `just ci`.
