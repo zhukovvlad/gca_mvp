@@ -444,7 +444,21 @@ class TestComparisonReportEndpoint:
         disposition = unquote(response.headers["content-disposition"])
         assert "Сравнение договоров.xlsx" in disposition
 
-    def test_both_endpoints_answer_a_broken_ids_the_same_way(self, client):
+    @pytest.mark.parametrize(
+        "params",
+        [
+            pytest.param({"ids": "1,abc,3"}, id="broken-ids"),
+            pytest.param({"ids": "1", "rate_class_id": "2,abc"}, id="broken-rate-class-id"),
+            # Форма `all=1`, а не `ids`: у `ids` раньше сработала бы проверка
+            # существования (404 «Договоры не найдены»), потому что порядок
+            # отказов в `resolve_selection` — двусмысленность, потом форма, и
+            # только потом сужение. Разбор адреса при этом опережает всё: он
+            # живёт в роутере, до резолвера, — поэтому случай `2,abc` выше
+            # спокойно обходится несуществующим id.
+            pytest.param({"all": "1", "rate_class_id": ""}, id="empty-rate-class-id"),
+        ],
+    )
+    def test_both_endpoints_answer_a_broken_param_the_same_way(self, client, params):
         """Один контракт выборки на два эндпоинта (спека §2.6, §2.7).
 
         Разбор `ids` был реализован ДВАЖДЫ — в роутере экрана и в роутере
@@ -452,14 +466,61 @@ class TestComparisonReportEndpoint:
         ответа в зависимости от того, куда его послали. Теперь разбор один
         (`crud.comparison.parse_ids_param`), и тест это стережёт: разойдись они
         снова — статусы или текст перестанут совпадать.
-        """
-        screen = client.get("/api/v1/analytics/comparison", params={"ids": "1,abc,3"})
-        sheet = client.get("/api/v1/reports/comparison", params={"ids": "1,abc,3"})
 
-        assert screen.status_code == 400
-        assert sheet.status_code == 400
+        **`rate_class_id` добавлен в тот же сторож** (задача 7): это ВТОРОЙ
+        разбираемый параметр адреса с тем же режимом отказа, и у него ровно тот
+        же способ разъехаться. Без него отказные пути маршрута ЛИСТА не были
+        покрыты вовсе — он проверялся только счастливым путём DoD 6.
+
+        Сравнивается `detail` ЦЕЛИКОМ, а не подстрокой: это заодно различает, из
+        какого места пришёл отказ, тогда как подстрока «abc» есть в сообщениях и
+        разбора адреса, и страховки фильтра.
+        """
+        screen = client.get("/api/v1/analytics/comparison", params=params)
+        sheet = client.get("/api/v1/reports/comparison", params=params)
+
+        assert screen.status_code == 400, screen.text
+        assert sheet.status_code == 400, sheet.text
         assert screen.json()["detail"] == sheet.json()["detail"]
-        assert "abc" in screen.json()["detail"]
+
+    def test_sheet_columns_match_the_screen_with_rate_class_id_filter(
+        self, client, factories, db_session
+    ):
+        """DoD 6 (задача 7): лист на ТЕХ ЖЕ параметрах, включая многозначный
+        `rate_class_id`, несёт тот же состав договоров, что экран (спека §2.7,
+        «один агрегат — два представления»).
+
+        Сравнивается состав колонок листа с составом колонок ответа
+        `/analytics/comparison` на одинаковом query-string, а не арифметика
+        внутри них — она уже покрыта DoD 19 выше.
+        """
+        class_a = factories.RateClassFactory.create()
+        class_b = factories.RateClassFactory.create()
+        other_class = factories.RateClassFactory.create()
+        kept_a = factories.ContractFactory.create(rate_class=class_a)
+        kept_b = factories.ContractFactory.create(rate_class=class_b)
+        excluded = factories.ContractFactory.create(rate_class=other_class)
+        db_session.commit()
+
+        query = (
+            f"ids={kept_a.id},{kept_b.id},{excluded.id}"
+            f"&rate_class_id={class_a.id},{class_b.id}"
+        )
+
+        screen = client.get(f"/api/v1/analytics/comparison?{query}")
+        sheet = client.get(f"/api/v1/reports/comparison?{query}")
+
+        assert screen.status_code == 200, screen.text
+        assert sheet.status_code == 200, sheet.text
+
+        screen_ids = {column["contract_id"] for column in screen.json()["columns"]}
+        assert screen_ids == {kept_a.id, kept_b.id}
+
+        ws = load_workbook(BytesIO(sheet.content)).active
+        text = _text_of(ws)
+        assert kept_a.contract_number in text
+        assert kept_b.contract_number in text
+        assert excluded.contract_number not in text
 
     def test_member_can_download_the_report(self, client, factories, db_session):
         contract_id = fx.contract_with_area(db_session, factories, {"1": ["100.00"]}, vat_rate=fx.VAT_20)

@@ -138,7 +138,9 @@ def comparison_report(
     q: str | None = Query(default=None),
     object_id: int | None = Query(default=None),
     contractor_id: int | None = Query(default=None),
-    rate_class_id: int | None = Query(default=None),
+    rate_class_id: str | None = Query(
+        default=None, description="Класс(ы) объекта для сужения выборки через запятую: 2,3"
+    ),
     vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
     single_rate: Decimal | None = Query(default=None),
     inflation_series_id: int | None = Query(
@@ -152,12 +154,21 @@ def comparison_report(
 ):
     """Выгрузка сравнения договоров в Excel (§7.6, отчёт «в»; спека §2.7, §2.8).
 
-    Выборка — ровно тем же контрактом, что у экрана сравнения (§2.6): `ids=1,2,4`
-    явным списком либо `all=1` с фильтром (`q`, `object_id`, `contractor_id`,
-    `rate_class_id`). Обе формы, включая их взаимоисключение и коды ошибок,
-    разрешает `crud.comparison.resolve_selection` — здесь её правила НЕ
-    повторяются: вторая копия рисковала бы разойтись с экраном в том, что
-    считается выборкой (спека §2.7, «один агрегат — два представления»).
+    Выборка — ровно тем же контрактом, что у экрана сравнения: `ids=1,2,4`
+    явным списком либо `all=1` с фильтром (`q`, `object_id`, `contractor_id`).
+    Обе формы, включая их взаимоисключение и коды ошибок, разрешает
+    `crud.comparison.resolve_selection` — здесь её правила НЕ повторяются:
+    вторая копия рисковала бы разойтись с экраном в том, что считается
+    выборкой (спека §2.7, «один агрегат — два представления»).
+
+    **`rate_class_id` — не форма выборки, а её СУЖЕНИЕ** (ревизия §2.6 спеки
+    диаграммы стоимости): применяется к обеим формам, законно сочетается с
+    `ids`, принимает список `2,3`. Разбирается тем же
+    `parse_rate_class_id_param`, что у экрана, и по той же причине, по которой
+    один на двоих `parse_ids_param`: два разбора одного параметра адреса уже
+    расходились на этом проекте, и один адрес получал два разных ответа в
+    зависимости от того, куда его послали. `ids` вместе с `q`/`object_id`/
+    `contractor_id` — 400, той же коррекцией.
 
     `vat_mode`/`single_rate` — тот же режим показа НДС, что и на экране (§2.3);
     лист печатает подпись состава, поэтому неверный режим — отказ 400 из
@@ -172,7 +183,8 @@ def comparison_report(
     try:
         selection = crud_comparison.resolve_selection(
             db, ids=crud_comparison.parse_ids_param(ids), use_filter=all_, q=q,
-            object_id=object_id, contractor_id=contractor_id, rate_class_id=rate_class_id,
+            object_id=object_id, contractor_id=contractor_id,
+            rate_class_id=crud_comparison.parse_rate_class_id_param(rate_class_id),
         )
         data = crud_comparison.build_comparison(
             db, selection.contract_ids, facet_ids=selection.facet_ids,

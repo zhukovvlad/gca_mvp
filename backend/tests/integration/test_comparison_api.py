@@ -330,3 +330,146 @@ def test_vat_mode_defaults_to_own(client, factories, db_session):
 
     assert resp.status_code == 200
     assert resp.json()["vat_mode"] == "own"
+
+
+# ---------------------------------------------------------------------------
+#  Задача 7 — `rate_class_id` списком на маршруте `/analytics/comparison`
+# ---------------------------------------------------------------------------
+
+def test_rate_class_id_list_narrows_the_ids_form(client, factories, db_session):
+    """DoD 1: `?ids=<все>&rate_class_id=<два из трёх>` — 200, колонок МЕНЬШЕ,
+    чем в `ids` (утверждение про сужение, а не про конкретное число)."""
+    class_a = factories.RateClassFactory.create()
+    class_b = factories.RateClassFactory.create()
+    class_c = factories.RateClassFactory.create()
+    kept_a = factories.ContractFactory.create(rate_class=class_a)
+    kept_b = factories.ContractFactory.create(rate_class=class_b)
+    excluded = factories.ContractFactory.create(rate_class=class_c)
+    db_session.commit()
+
+    every_id = f"{kept_a.id},{kept_b.id},{excluded.id}"
+    resp = client.get(
+        f"{COMPARISON_URL}?ids={every_id}&rate_class_id={class_a.id},{class_b.id}"
+    )
+
+    assert resp.status_code == 200, resp.text
+    column_ids = {column["contract_id"] for column in resp.json()["columns"]}
+    assert column_ids == {kept_a.id, kept_b.id}
+    assert len(column_ids) < len(every_id.split(","))
+
+
+def test_single_rate_class_id_keeps_the_old_semantics(client, factories, db_session):
+    """DoD 5: одиночный `rate_class_id=<id>` — прежняя семантика выборки, старый
+    URL остаётся валидным. Сверяется МНОЖЕСТВО договоров, а не весь ответ:
+    ответ пополнился `available_rate_classes` и колонкой `rate_class_id`."""
+    target_class = factories.RateClassFactory.create()
+    other_class = factories.RateClassFactory.create()
+    kept = factories.ContractFactory.create(rate_class=target_class)
+    excluded = factories.ContractFactory.create(rate_class=other_class)
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?all=1&rate_class_id={target_class.id}")
+
+    assert resp.status_code == 200, resp.text
+    column_ids = {column["contract_id"] for column in resp.json()["columns"]}
+    assert column_ids == {kept.id}
+    assert excluded.id not in column_ids
+
+
+def test_ids_with_q_is_400_over_http(client, factories, db_session):
+    """DoD 3 на уровне HTTP: `?ids=…&q=…` — 400 (правило живёт в
+    `resolve_selection`; здесь под контролем — что маршрут его действительно
+    применяет)."""
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?ids={contract.id}&q=что-то")
+
+    assert resp.status_code == 400
+
+
+def test_ids_with_object_id_is_400_over_http(client, factories, db_session):
+    """DoD 3 на уровне HTTP: `?ids=…&object_id=…` — 400."""
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?ids={contract.id}&object_id={contract.object_id}")
+
+    assert resp.status_code == 400
+
+
+def test_ids_with_contractor_id_is_400_over_http(client, factories, db_session):
+    """DoD 3 на уровне HTTP: `?ids=…&contractor_id=…` — 400."""
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(
+        f"{COMPARISON_URL}?ids={contract.id}&contractor_id={contract.contractor_id}"
+    )
+
+    assert resp.status_code == 400
+
+
+def test_empty_rate_class_id_is_400(client, factories, db_session):
+    """Пустой `rate_class_id=` (параметр есть, значение пустое) — 400, а не
+    «все классы»: пустое значение приходит от кода, а не от человека, и молча
+    трактовать его как «фильтра нет» значило бы прятать чужую ошибку.
+
+    Отказ приходит из `crud.contracts.apply_contract_filters` (задача 2) —
+    здесь проверяется, что текст говорит про ПУСТОЙ СПИСОК, а не что-то ещё."""
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?ids={contract.id}&rate_class_id=")
+
+    assert resp.status_code == 400, resp.text
+    assert "пустым списком" in resp.json()["detail"]
+
+
+def test_non_numeric_rate_class_id_element_is_400(client, factories, db_session):
+    """Нечисловой элемент `rate_class_id` — понятный 400 со значением в тексте.
+
+    **Утверждение о ТЕКСТЕ отказа обязательно, и вот почему.** Отказать здесь
+    могут ДВА разных места: разбор адреса (`parse_rate_class_id_param`) и
+    страховка `str | bytes` в `apply_contract_filters`. Оба отвечают 400, оба
+    называют значение, и первая редакция этого теста — `assert "abc" in detail` —
+    проходила при СНЯТОМ вызове парсера: соседняя защита маскировала снятую.
+    Замерено: снятие вызова парсера в обоих роутерах роняет 8 тестов, и этот в
+    их число НЕ входил (`docs/insights/verifying-guards.md`, слой 8 — вход
+    негативного теста обязан нарушать ровно одно ограничение, а различитель
+    обязан быть у каждой защиты свой).
+
+    Различитель парсера — начало сообщения: только он говорит от имени самого
+    параметра адреса. Общая обоим фраза «числом или списком чисел»
+    различителем быть не может.
+    """
+    contract = factories.ContractFactory.create()
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?ids={contract.id}&rate_class_id=2,abc")
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"].startswith("`rate_class_id`"), (
+        "отказ обязан прийти ИЗ РАЗБОРА АДРЕСА, а не от страховки фильтра: "
+        f"получено {resp.json()['detail']!r}"
+    )
+    assert "abc" in resp.json()["detail"], "отказ обязан называть само значение"
+
+
+def test_rate_class_id_list_works_with_all_param(client, factories, db_session):
+    """Многозначный `rate_class_id` вместе с `all=1` тоже работает — форма
+    `all=1` многозначность получила задачей 2, но через HTTP не проверялась."""
+    class_a = factories.RateClassFactory.create()
+    class_b = factories.RateClassFactory.create()
+    other_class = factories.RateClassFactory.create()
+    kept_a = factories.ContractFactory.create(rate_class=class_a)
+    kept_b = factories.ContractFactory.create(rate_class=class_b)
+    excluded = factories.ContractFactory.create(rate_class=other_class)
+    db_session.commit()
+
+    resp = client.get(f"{COMPARISON_URL}?all=1&rate_class_id={class_a.id},{class_b.id}")
+
+    assert resp.status_code == 200, resp.text
+    column_ids = {column["contract_id"] for column in resp.json()["columns"]}
+    assert column_ids == {kept_a.id, kept_b.id}
+    assert excluded.id not in column_ids

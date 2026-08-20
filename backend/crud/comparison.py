@@ -2046,6 +2046,33 @@ def parse_ids_param(raw: str | None) -> list[int] | None:
         ) from None
 
 
+def parse_rate_class_id_param(raw: str | None) -> list[int] | None:
+    """`"2,3"` → `[2, 3]`; `None` → `None` (сужения по классу нет, задача 7).
+
+    Живёт РЯДОМ с `parse_ids_param` и `parse_target_month_param`, и по той же
+    причине: маршрутов сравнения ДВА (экран и выгрузка листа), и формат
+    `rate_class_id` у них обязан быть один — иначе один и тот же адрес получал
+    бы два разных ответа в зависимости от того, куда его послали.
+
+    Нечисловой элемент — `DomainError(400)` с самим значением в тексте, а не
+    422-трасса валидатора: строка приходит из адреса, который человек мог
+    набрать руками.
+
+    Пустая строка (`rate_class_id=`) даёт пустой список, а не `None`: отказ на
+    пустом списке классов бросает `crud.contracts.apply_contract_filters` —
+    второй такой же отказ здесь заводить не нужно.
+    """
+    if raw is None:
+        return None
+    try:
+        return [int(part) for part in raw.split(",") if part.strip()]
+    except ValueError:
+        raise DomainError(
+            400,
+            f"`rate_class_id` должен быть числом или списком чисел через запятую, а не {raw!r}.",
+        ) from None
+
+
 @dataclass(frozen=True)
 class Selection:
     """Выборка сравнения: множество ДО и ПОСЛЕ сужения по классу ставки (задача 4).

@@ -150,7 +150,9 @@ def get_comparison(
     q: str | None = Query(default=None),
     object_id: int | None = Query(default=None),
     contractor_id: int | None = Query(default=None),
-    rate_class_id: int | None = Query(default=None),
+    rate_class_id: str | None = Query(
+        default=None, description="Класс(ы) объекта для сужения выборки через запятую: 2,3"
+    ),
     vat_mode: str = Query(default=crud_comparison.VAT_MODE_OWN),
     single_rate: Decimal | None = Query(default=None),
     inflation_series_id: int | None = Query(
@@ -167,13 +169,23 @@ def get_comparison(
     Чтение — доступно `member` (§2.9 спеки, §3 AGENTS.md: аналитика есть чтение),
     поэтому `require_admin` здесь нет.
 
-    Выборка — ровно ДВЕ формы (§2.6), обе разрешает `crud.comparison.
-    resolve_selection`: `ids=1,2,4` — явный список, либо `all=1` вместе с теми
-    же четырьмя фильтрами списка договоров (`q`, `object_id`, `contractor_id`,
-    `rate_class_id` — контракт `routers.contracts.list_contracts`, DoD 22).
-    Обе формы разом и ни одной — обе ошибки 400, неизвестный `id` — 404;
-    правило и его причина живут в докстроке `resolve_selection`, здесь не
-    дублируются.
+    Выборка — ровно ДВЕ формы, обе разрешает `crud.comparison.resolve_selection`:
+    `ids=1,2,4` — явный список, либо `all=1` вместе с ТРЕМЯ фильтрами списка
+    договоров (`q`, `object_id`, `contractor_id` — контракт
+    `routers.contracts.list_contracts`, DoD 22). Обе формы разом и ни одной —
+    обе ошибки 400, неизвестный `id` — 404; правило и его причина живут в
+    докстроке `resolve_selection`, здесь не дублируются.
+
+    **`rate_class_id` в это перечисление больше НЕ входит** — ревизия §2.6 спеки
+    диаграммы стоимости. Класс перестал быть ФОРМОЙ выборки и стал её СУЖЕНИЕМ:
+    применяется к обеим формам, законно сочетается с `ids`, принимает СПИСОК
+    (`2,3`). Со списком договоров он больше не связан контрактом — тот экран
+    сознательно остался на одиночном значении.
+
+    **`ids` вместе с `q`, `object_id` либо `contractor_id` отвечает 400** — это
+    коррекция, введённая той же ревизией. Прежде такие параметры при `ids`
+    МОЛЧА игнорировались: ссылка выглядела отфильтрованной, а ответ приходил по
+    полному перечислению.
 
     **`page`/`page_size` НЕ принимаются.** Это решение, а не недосмотр:
     сравнение берёт выборку целиком, а не страницу списка (§2.6) — FastAPI
@@ -199,7 +211,7 @@ def get_comparison(
             q=q,
             object_id=object_id,
             contractor_id=contractor_id,
-            rate_class_id=rate_class_id,
+            rate_class_id=crud_comparison.parse_rate_class_id_param(rate_class_id),
         )
         return decimal_json(
             crud_comparison.build_comparison(
