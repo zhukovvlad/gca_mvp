@@ -1862,6 +1862,26 @@ def parse_ids_param(raw: str | None) -> list[int] | None:
         ) from None
 
 
+@dataclass(frozen=True)
+class Selection:
+    """Выборка сравнения: множество ДО и ПОСЛЕ сужения по классу ставки (задача 4).
+
+    `contract_ids` — окончательная выборка, после сужения по классу; ей
+    продолжают пользоваться `rollups`, `resolve_inflation`, `build_rows` — всё,
+    что считает числа. `facet_ids` — то же множество, но ДО сужения (после
+    остальных фильтров): по нему строится фасет `available_rate_classes` —
+    чипы обязаны показывать классы выборки целиком, а не только тот, до
+    которого её сузили, иначе снятый чип не вернуть.
+
+    Когда сужения не было, оба множества совпадают по содержимому, но это два
+    РАЗНЫХ объекта-списка: `resolve_selection` возвращает копии, чтобы мутация
+    одного поля не могла случайно задеть другое.
+    """
+
+    contract_ids: list[int]
+    facet_ids: list[int]
+
+
 def resolve_selection(
     db: Session,
     *,
@@ -1871,7 +1891,7 @@ def resolve_selection(
     object_id: int | None = None,
     contractor_id: int | None = None,
     rate_class_id: int | Sequence[int] | None = None,
-) -> list[int]:
+) -> Selection:
     """Договоры выборки по одной из ДВУХ форм входа, суженные по классу (спека §2.6).
 
     Функция делает ТРИ дела по очереди: отвергает двусмысленность форм → выбирает
@@ -1880,6 +1900,10 @@ def resolve_selection(
     одинакового ответа на одинаковом множестве — с двумя копиями правила
     сужения это равенство держалось бы на совпадении реализаций, а не на
     построении, и первая же правка одной ветки развела бы формы.
+
+    Возвращает `Selection` — оба множества, до и после сужения (см. её
+    докстроку); `facet_ids` берётся ИМЕННО здесь, ДО шага сужения, потому что
+    после него надмножество для фасета уже потеряно.
 
     Живёт здесь, а не в роутере, потому что форм входа две, а эндпоинтов —
     тоже два (сравнение и выгрузка листа): вторая копия этого правила означала
@@ -1958,6 +1982,7 @@ def resolve_selection(
     # `in_` без join-ов на `objects`/`contractors` допустим здесь только потому,
     # что передаётся ОДИН фильтр — класс; `q` сюда не передаём, а
     # `apply_contract_filters` требует для `q` тех самых join-ов.
+    facet_ids = list(selected)
     if rate_class_id is not None:
         stmt = crud_contracts.apply_contract_filters(
             sa.select(Contract.id).where(Contract.id.in_(selected)),
@@ -1965,16 +1990,23 @@ def resolve_selection(
         )
         kept = set(db.execute(stmt).scalars())
         selected = [contract_id for contract_id in selected if contract_id in kept]
-    return selected
+    return Selection(contract_ids=list(selected), facet_ids=facet_ids)
 
 
 def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
     """Шапки колонок выборки, в порядке `signed_date DESC`, затем `id DESC`
-    (спека §2.1, DoD 3) — от новых договоров к старым."""
+    (спека §2.1, DoD 3) — от новых договоров к старым.
+
+    `rate_class_id` — СНИМОК из самого договора (`Contract.rate_class_id`), а не
+    текущий класс объекта (`ObjectModel.rate_class_id`, который лишь умолчание
+    для НОВЫХ договоров, §4 модели): переклассификация объекта прошлое не
+    меняет, и договор сравнивается в том классе, в котором его подписывали
+    (задача 4, DoD 12).
+    """
     if not contract_ids:
         return []
     rows = db.execute(
-        sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
+        sa.select(Contract, ObjectModel, Contractor.title, RateClass.id, RateClass.title)
         .join(ObjectModel, ObjectModel.id == Contract.object_id)
         .join(Contractor, Contractor.id == Contract.contractor_id)
         .join(RateClass, RateClass.id == Contract.rate_class_id)
@@ -1987,6 +2019,7 @@ def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
             "contract_number": contract.contract_number,
             "object_title": obj.title,
             "contractor_title": contractor_title,
+            "rate_class_id": rate_class_id,
             "rate_class_title": rate_class_title,
             "signed_date": iso(contract.signed_date),
             "area_total_sp": obj.area_total_sp,
@@ -1994,7 +2027,42 @@ def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
             "bank_guarantee_pct": contract.bank_guarantee_pct,
             "retention_pct": contract.retention_pct,
         }
-        for contract, obj, contractor_title, rate_class_title in rows
+        for contract, obj, contractor_title, rate_class_id, rate_class_title in rows
+    ]
+
+
+def _rate_class_facet(columns_meta: Sequence[dict]) -> list[dict]:
+    """`available_rate_classes` — чипы классов ставки по facet-множеству (задача 4, §4.4).
+
+    Строится из результата `_load_columns` (join уже дал `rate_class_id` и
+    `rate_class_title`) — второго запроса к `rate_classes` здесь нет и не
+    должно быть: `build_comparison` обязан звать `_load_columns` РОВНО один раз
+    на ответ, даже когда сужения не было.
+
+    `count` — число договоров этого класса в множестве, из которого построен
+    `columns_meta` (то есть ДО сужения по классу, если оно было).
+
+    Порядок — по `title`, а не по порядку колонок (`signed_date`): фасет есть
+    срез справочника классов, а не проекция текущей выборки, и чипы не имеют
+    права переставляться местами от того, что человек сузил или расширил набор
+    договоров.
+
+    Ключ сортировки — ПАРА `(title, id)`, а не один `title`. Уникальности
+    заголовка класса схема не держит, а при одинаковых заголовках сортировка по
+    одному ключу оставляла бы порядок на волю порядка строк запроса
+    (`signed_date DESC`) — то есть чипы-тёзки менялись бы местами именно от
+    смены набора договоров, чего DoD 11 и запрещает. Со `id` во втором ключе
+    порядок не зависит от выборки вовсе.
+    """
+    counts: dict[int, int] = {}
+    titles: dict[int, str] = {}
+    for column in columns_meta:
+        rate_class_id = column["rate_class_id"]
+        counts[rate_class_id] = counts.get(rate_class_id, 0) + 1
+        titles[rate_class_id] = column["rate_class_title"]
+    return [
+        {"id": rate_class_id, "title": titles[rate_class_id], "count": counts[rate_class_id]}
+        for rate_class_id in sorted(counts, key=lambda rid: (titles[rid], rid))
     ]
 
 
@@ -2002,6 +2070,7 @@ def build_comparison(
     db: Session,
     contract_ids: Sequence[int],
     *,
+    facet_ids: Sequence[int] | None = None,
     vat_mode: str,
     single_rate: Decimal | None = None,
     inflation_series_id: int | None = None,
@@ -2014,6 +2083,19 @@ def build_comparison(
     только на показ, не на то, что вообще посчитано) — экран берёт одно
     представление, Excel (задача 6) получает все три сразу с отдельными
     медианами (спека §2.7 «один агрегат — два представления»).
+
+    **`facet_ids` — надмножество для фасета `available_rate_classes` (задача 4,
+    §4.4).** Первый позиционный параметр НЕ меняет тип и остаётся списком: у
+    прямых вызовов `build_comparison(` десятки мест по всему проекту (включая
+    генераторы макетов в `docs/`, которых `just ci` не касается), и перевод
+    сигнатуры на новый тип сломал бы их молча. `facet_ids=None` означает
+    «сужения по классу не было» — тогда фасет считается по самим `contract_ids`
+    (умолчание не «фасета нет»: чипы нужны на первом открытии тоже, и множество
+    до сужения тогда совпадает с самой выборкой). Когда сужение было,
+    `facet_ids` — то самое надмножество ДО него (`Selection.facet_ids`
+    резолвера); `rollups`, `resolve_inflation`, `build_rows` продолжают
+    получать СУЖЕННЫЙ `contract_ids` — расширяется только источник шапок
+    колонок, иначе в ответ попали бы исключённые договоры.
 
     **Режим «единая ставка» без явной ставки открывается на ПРЕДВЫБОРЕ.** DoD 8ж
     требует, чтобы этот режим открывался с числами, а ссылка на страницу вправе
@@ -2079,7 +2161,35 @@ def build_comparison(
     rollups = load_rollups(
         db, contract_ids, adjustment=plan.factor_by_estimate if plan else None
     )
-    columns_meta = _load_columns(db, contract_ids)
+
+    # Фасет строится из ОДНОГО запроса `_load_columns` по надмножеству (facet_ids,
+    # если сужение было, иначе сама выборка) — второго обращения к RateClass
+    # не заводим (§4.4). `columns_meta` затем отфильтровывается до `contract_ids`
+    # с сохранением порядка запроса — колонки видят только суженную выборку.
+    facet_source_ids = list(facet_ids) if facet_ids is not None else contract_ids
+    facet_columns_meta = _load_columns(db, facet_source_ids)
+    available_rate_classes = _rate_class_facet(facet_columns_meta)
+    contract_id_set = set(contract_ids)
+    columns_meta = [
+        column for column in facet_columns_meta if column["contract_id"] in contract_id_set
+    ]
+    if facet_ids is not None and len(columns_meta) != len(contract_id_set):
+        # Громко, а не молча: `facet_ids` обязан быть НАДмножеством выборки.
+        # Не будь он таким, договор выпал бы из `columns_meta` — а значит и из
+        # `ordered_ids`, — но роллапы для него всё равно прочитались бы, и ответ
+        # показал бы выборку меньше запрошенной, ничего об этом не сказав. Ровно
+        # тот класс отказа, который `load_rollups` уже глушит `RuntimeError`-ом
+        # на смете без коэффициента.
+        #
+        # Проверка стоит ТОЛЬКО под `facet_ids is not None`: на старом пути
+        # (`facet_ids` не передан) источник шапок и есть сама выборка, и
+        # несуществующий id там по-прежнему просто не даёт колонки — так вели
+        # себя все прямые вызовы до этой фичи, и менять их поведение задача не
+        # бралась.
+        raise RuntimeError(
+            "facet_ids не покрывает contract_ids: "
+            f"колонок {len(columns_meta)} на {len(contract_id_set)} договоров выборки"
+        )
     ordered_ids = [column["contract_id"] for column in columns_meta]
 
     rate_opts, rate_preselected = _rate_options_from_rollups(rollups)
@@ -2141,6 +2251,7 @@ def build_comparison(
         "rate_preselected": rate_preselected,
         "caption": _mode_caption(vat_mode, effective_single_rate, plan),
         "columns": columns,
+        "available_rate_classes": available_rate_classes,
         "rows": rows_out,
         "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
         "totals_medians": {

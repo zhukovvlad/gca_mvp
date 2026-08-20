@@ -31,8 +31,20 @@ COMPARISON_URL = "/api/v1/analytics/comparison"
 
 def test_ids_and_filter_selection_agree(client, factories, db_session):
     """Обе формы выборки на одном множестве договоров дают одинаковый ответ
-    (DoD 1). Фикстура обязана доказать, что фильтр РЕАЛЬНО что-то исключил —
-    иначе совпадение было бы пустым утверждением."""
+    (DoD 1 сравнения, DoD 2 диаграммы). Фикстура обязана доказать, что фильтр
+    РЕАЛЬНО что-то исключил — иначе совпадение было бы пустым утверждением.
+
+    **Пара адресов исправлена ревизией §2.6, и это не ослабление теста.** Раньше
+    здесь стояло `?ids=A,B` против `?all=1&rate_class_id=X`, и это было верно,
+    пока класс был ФОРМОЙ выборки: второй адрес означал ровно «выборка = договоры
+    класса X». После ревизии класс — СУЖЕНИЕ, и второй адрес означает «все
+    договоры, суженные классом X». Выборки стали разными при одинаковом
+    результате, а `available_rate_classes` эту разницу показывает — он для того и
+    введён (снятый чип надо чем-то возвращать). Поэтому сравнивается пара из
+    DoD 2 диаграммы: `?ids=<всё>&rate_class_id=X` против `?all=1&rate_class_id=X`
+    — одинаковые выборки, одинаковое сужение. Утверждение при этом стало СИЛЬНЕЕ:
+    в равенство ответов целиком теперь входит и фасет.
+    """
     rate_class = factories.RateClassFactory.create()
     other_rate_class = factories.RateClassFactory.create()
 
@@ -41,7 +53,8 @@ def test_ids_and_filter_selection_agree(client, factories, db_session):
     excluded = factories.ContractFactory.create(rate_class=other_rate_class)
     db_session.commit()
 
-    ids_url = f"{COMPARISON_URL}?ids={included_1.id},{included_2.id}"
+    every_id = f"{included_1.id},{included_2.id},{excluded.id}"
+    ids_url = f"{COMPARISON_URL}?ids={every_id}&rate_class_id={rate_class.id}"
     filter_url = f"{COMPARISON_URL}?all=1&rate_class_id={rate_class.id}"
 
     resp_ids = client.get(ids_url)
@@ -56,6 +69,50 @@ def test_ids_and_filter_selection_agree(client, factories, db_session):
     filtered_column_ids = {column["contract_id"] for column in resp_filter.json()["columns"]}
     assert filtered_column_ids == {included_1.id, included_2.id}
     assert excluded.id not in filtered_column_ids
+
+    # Предпосылка формы `all=1`: в базе РОВНО эти три договора. Без замера
+    # равенство форм держалось бы на том, что чужая фикстура ничего не насеяла, —
+    # а `all=1` берёт всё, что есть, и с четвёртым договором надмножества форм
+    # разошлись бы, утащив за собой фасет.
+    assert sum(e["count"] for e in resp_filter.json()["available_rate_classes"]) == 3
+
+
+def test_narrower_enumeration_gives_a_narrower_facet(client, factories, db_session):
+    """Фасет отражает ФОРМУ выборки, а не только её результат.
+
+    `?ids=A,B` и `?all=1&rate_class_id=X` могут сойтись в колонках и разойтись в
+    фасете: у первого надмножество — само перечисление, у второго — вся база.
+    Это не дефект, а механизм обратимости: фасет помнит то, что сужение отсекло,
+    и помнить он может только в пределах заданной выборки. Перечислив два
+    договора, человек не спрашивал про третий, и предлагать чип его класса
+    неоткуда.
+
+    Тест заведён потому, что на этом споткнулись: прежняя редакция соседнего
+    теста сравнивала именно эту пару адресов и стала красной. Факт закреплён,
+    чтобы следующий читатель не «починил» его обратно.
+    """
+    rate_class = factories.RateClassFactory.create(title="Класс узкий")
+    other_rate_class = factories.RateClassFactory.create(title="Класс отсечённый")
+
+    included_1 = factories.ContractFactory.create(rate_class=rate_class)
+    included_2 = factories.ContractFactory.create(rate_class=rate_class)
+    excluded = factories.ContractFactory.create(rate_class=other_rate_class)
+    db_session.commit()
+
+    by_ids = client.get(f"{COMPARISON_URL}?ids={included_1.id},{included_2.id}").json()
+    by_filter = client.get(f"{COMPARISON_URL}?all=1&rate_class_id={rate_class.id}").json()
+
+    # Колонки совпадают: агрегат от формы выборки не зависит.
+    assert [column["contract_id"] for column in by_ids["columns"]] == [
+        column["contract_id"] for column in by_filter["columns"]
+    ]
+
+    # А фасеты — нет, и вот чем именно.
+    assert [entry["id"] for entry in by_ids["available_rate_classes"]] == [rate_class.id]
+    assert {entry["id"] for entry in by_filter["available_rate_classes"]} == {
+        rate_class.id, other_rate_class.id,
+    }
+    assert excluded.id not in {column["contract_id"] for column in by_filter["columns"]}
 
 
 # ---------------------------------------------------------------------------

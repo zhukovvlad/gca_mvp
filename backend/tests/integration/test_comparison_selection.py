@@ -41,7 +41,7 @@ def test_filter_form_selects_the_same_ids_as_the_contracts_list(db_session, fact
     _contract(db_session, factories, number="ГП-A-1", object_title="Башня")
     _contract(db_session, factories, number="ГП-B-2", object_title="Квартал")
 
-    selected = cmp.resolve_selection(db_session, use_filter=True, q="Башня")
+    selected = cmp.resolve_selection(db_session, use_filter=True, q="Башня").contract_ids
     listed = crud_contracts.list_contracts(db_session, q="Башня", page=1, page_size=100)
 
     assert [item["id"] for item in listed["items"]] == selected
@@ -53,7 +53,8 @@ def test_ids_form_takes_exactly_what_was_asked(db_session, factories):
     b = _contract(db_session, factories, number="ГП-D-2", object_title="Объект D")
     _contract(db_session, factories, number="ГП-E-3", object_title="Объект E")
 
-    assert sorted(cmp.resolve_selection(db_session, ids=[a.id, b.id])) == sorted([a.id, b.id])
+    selected = cmp.resolve_selection(db_session, ids=[a.id, b.id]).contract_ids
+    assert sorted(selected) == sorted([a.id, b.id])
 
 
 def test_unknown_id_is_named_not_silently_dropped(db_session, factories):
@@ -137,7 +138,9 @@ def test_ids_form_narrows_by_rate_class(db_session, factories):
     c.rate_class = class_c
     db_session.flush()
 
-    selected = cmp.resolve_selection(db_session, ids=[a.id, b.id, c.id], rate_class_id=class_a.id)
+    selected = cmp.resolve_selection(
+        db_session, ids=[a.id, b.id, c.id], rate_class_id=class_a.id
+    ).contract_ids
 
     assert selected == [a.id]
 
@@ -152,7 +155,9 @@ def test_all_form_narrows_by_rate_class(db_session, factories):
     b.rate_class = class_b
     db_session.flush()
 
-    selected = cmp.resolve_selection(db_session, use_filter=True, rate_class_id=class_a.id)
+    selected = cmp.resolve_selection(
+        db_session, use_filter=True, rate_class_id=class_a.id
+    ).contract_ids
 
     assert selected == [a.id]
 
@@ -172,10 +177,12 @@ def test_both_forms_agree_on_multivalued_rate_class(db_session, factories):
     c.rate_class = class_c
     db_session.flush()
 
-    by_filter = cmp.resolve_selection(db_session, use_filter=True, rate_class_id=[class_a.id, class_b.id])
+    by_filter = cmp.resolve_selection(
+        db_session, use_filter=True, rate_class_id=[class_a.id, class_b.id]
+    ).contract_ids
     by_ids = cmp.resolve_selection(
         db_session, ids=[a.id, b.id, c.id], rate_class_id=[class_a.id, class_b.id]
-    )
+    ).contract_ids
 
     assert set(by_filter) == {a.id, b.id}
     assert set(by_ids) == {a.id, b.id}
@@ -189,7 +196,9 @@ def test_rate_class_absent_from_selection_is_an_empty_selection_not_an_error(db_
     a.rate_class = class_present
     db_session.flush()
 
-    assert cmp.resolve_selection(db_session, ids=[a.id], rate_class_id=class_absent.id) == []
+    assert cmp.resolve_selection(
+        db_session, ids=[a.id], rate_class_id=class_absent.id
+    ).contract_ids == []
 
 
 def test_empty_rate_class_list_is_a_request_error_even_on_empty_selection(db_session):
@@ -206,7 +215,7 @@ def test_empty_rate_class_list_is_a_request_error_even_on_empty_selection(db_ses
     этот тест в дубль соседнего, ничего об этом не сказав
     (`docs/insights/false-test-premises.md`).
     """
-    assert cmp.resolve_selection(db_session, use_filter=True) == []
+    assert cmp.resolve_selection(db_session, use_filter=True).contract_ids == []
 
     with pytest.raises(DomainError) as raised:
         cmp.resolve_selection(db_session, use_filter=True, rate_class_id=[])
@@ -219,7 +228,9 @@ def test_filter_matching_nothing_is_an_empty_selection_not_an_error(db_session, 
     фильтр может не быть, и сказать об этом надо пустой таблицей."""
     _contract(db_session, factories, number="ГП-H-1", object_title="Объект H")
 
-    assert cmp.resolve_selection(db_session, use_filter=True, q="такого объекта нет") == []
+    assert cmp.resolve_selection(
+        db_session, use_filter=True, q="такого объекта нет"
+    ).contract_ids == []
 
 
 def test_empty_selection_builds_an_empty_aggregate(db_session):
@@ -237,7 +248,7 @@ def test_duplicate_ids_do_not_duplicate_columns(db_session, factories):
     """Повторённый id не даёт вторую колонку того же договора."""
     a = _contract(db_session, factories, number="ГП-I-1", object_title="Объект I")
 
-    selected = cmp.resolve_selection(db_session, ids=[a.id, a.id])
+    selected = cmp.resolve_selection(db_session, ids=[a.id, a.id]).contract_ids
     agg = cmp.build_comparison(db_session, selected, vat_mode="net")
 
     assert selected == [a.id]

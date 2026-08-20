@@ -192,7 +192,7 @@ def get_comparison(
     обязаны отвечать одинаково.
     """
     try:
-        contract_ids = crud_comparison.resolve_selection(
+        selection = crud_comparison.resolve_selection(
             db,
             ids=crud_comparison.parse_ids_param(ids),
             use_filter=all_,
@@ -203,7 +203,8 @@ def get_comparison(
         )
         return decimal_json(
             crud_comparison.build_comparison(
-                db, contract_ids, vat_mode=vat_mode, single_rate=single_rate,
+                db, selection.contract_ids, facet_ids=selection.facet_ids,
+                vat_mode=vat_mode, single_rate=single_rate,
                 inflation_series_id=inflation_series_id,
                 target_month=crud_comparison.parse_target_month_param(target_month),
             )
