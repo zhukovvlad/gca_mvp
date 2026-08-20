@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Sequence
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -116,7 +117,7 @@ def apply_contract_filters(
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
+    rate_class_id: int | Sequence[int] | None = None,
 ):
     """Наложить фильтры списка договоров (§7.1) на готовый `select`.
 
@@ -130,6 +131,18 @@ def apply_contract_filters(
 
     Требует, чтобы `stmt` уже нёс join-ы на `objects` и `contractors`: `q` ищет
     и по их названиям (`_contracts_select` их даёт).
+
+    **`rate_class_id` принимает и одиночное значение, и последовательность.**
+    Многозначность нужна сравнению договоров: там класс перестал быть ФОРМОЙ
+    выборки и стал её сужением (спека диаграммы §2.6), а чипы классов снимаются
+    по нескольку. Одиночное значение продолжает работать не для совместимости, а
+    потому, что список договоров (§7.1) той фичей не тронут и передаёт одно
+    число.
+
+    Пустая последовательность — отказ 400, а не «фильтра нет»: пустое значение
+    приходит от кода, а не от человека (никакой чип не снимается «в ничто» —
+    снять последний класс экран не даёт), и молча прочитать его как «все классы»
+    значило бы прятать чужую ошибку под видом ответа по полной выборке.
     """
     if q and q.strip():
         pattern = f"%{q.strip()}%"
@@ -146,7 +159,10 @@ def apply_contract_filters(
     if contractor_id is not None:
         stmt = stmt.where(Contract.contractor_id == contractor_id)
     if rate_class_id is not None:
-        stmt = stmt.where(Contract.rate_class_id == rate_class_id)
+        classes = [rate_class_id] if isinstance(rate_class_id, int) else list(rate_class_id)
+        if not classes:
+            raise DomainError(400, "Фильтр по классу объекта задан пустым списком.")
+        stmt = stmt.where(Contract.rate_class_id.in_(classes))
     return stmt
 
 
@@ -156,7 +172,7 @@ def filtered_contract_ids(
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
+    rate_class_id: int | Sequence[int] | None = None,
 ) -> list[int]:
     """Идентификаторы ВСЕХ договоров под фильтры списка, без пагинации.
 
