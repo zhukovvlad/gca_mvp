@@ -1500,6 +1500,49 @@ def _median_dict(median: _MedianResult) -> dict:
     }
 
 
+def _totals_median_dict(
+    median: _MedianResult, *, vat_mode: str, single_rate: Decimal | None
+) -> dict:
+    """Медиана «Итого» С ПОЛЕМ ставки показа (спека §2.10) — сериализатор
+    ОТДЕЛЬНЫЙ от `_median_dict`, а не флаг внутри неё.
+
+    Зовётся ТОЛЬКО в точке сборки `totals_medians`: `rows[].medians` продолжает
+    получать голый `_median_dict`, потому что спека называет поле показа только
+    у «Итого» (§2.10) — добавить его внутрь `_median_dict` значило бы протащить
+    новое поле во все 253 строки дерева, чего контракт не вводит, а флаг,
+    протянутый через `_row_cells`, однажды приехал бы в строку «за компанию».
+
+    Присутствие ключа и его значение отвечают на РАЗНЫЕ вопросы:
+
+    * присутствие — допускает ли режим НДС единую ось показа: ключ ЕСТЬ при
+      `net` и `single` (там ставка показа одна на всю выборку), и его НЕТ при
+      `own` (там у каждого договора своя ставка, единой оси не существует);
+    * значение — есть ли медиана вообще: `None`, когда сопоставимых меньше
+      трёх — то же правило, что у `value` (§2.5 правило 5).
+
+    В режиме `net` значение НАМЕРЕННО повторяет `value`: клиент читает ОДНО
+    поле во всех режимах, где ось однозначна, и не держит на своей стороне
+    второй копии правила о режимах НДС.
+
+    `single_rate` здесь обязан быть ЭФФЕКТИВНОЙ ставкой показа
+    (`effective_single_rate` вызывающего кода, ПОСЛЕ подстановки предвыбора),
+    а не голым параметром запроса: тот может быть `None` там, где столбцы уже
+    показывают числа (режим «единая» открылся на предвыборе, DoD 8ж) — и с
+    параметром запроса линия медианы пропала бы там, где обязана быть.
+    """
+    out = _median_dict(median)
+    if vat_mode == VAT_MODE_NET:
+        out["shown_per_sqm"] = median.value
+    elif vat_mode == VAT_MODE_SINGLE:
+        out["shown_per_sqm"] = (
+            None
+            if median.value is None or single_rate is None
+            else net_to_gross(median.value, single_rate)
+        )
+    # VAT_MODE_OWN — ключа НЕТ вовсе: единой ставки показа не существует.
+    return out
+
+
 def _bucket_cell_dict(cell: BucketCell) -> dict:
     return {
         "net": cell.net,
@@ -2255,7 +2298,10 @@ def build_comparison(
         "rows": rows_out,
         "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
         "totals_medians": {
-            bucket: _median_dict(totals_medians[bucket]) for bucket in totals_medians
+            bucket: _totals_median_dict(
+                totals_medians[bucket], vat_mode=vat_mode, single_rate=effective_single_rate
+            )
+            for bucket in totals_medians
         },
     }
     if plan is not None:
