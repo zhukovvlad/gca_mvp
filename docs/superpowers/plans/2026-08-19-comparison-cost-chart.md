@@ -324,9 +324,29 @@ class Selection:
 `build_comparison`. Оставить их на следующую задачу нельзя: промежуточный
 `just ci` упадёт, а Global Constraint 8 требует зелёного `ci` на каждом коммите.
 
-Интерфейс передачи: `build_comparison(db, selection, …)` принимает `Selection`, а
-не список. Обёртка «принимает и то, и другое» отвергнута — она пережила бы фичу и
-осталась второй формой вызова навсегда.
+**Сигнатура `build_comparison` при этом НЕ меняется.** Замер: прямых вызовов
+`build_comparison(` — **61 в 9 файлах** (`grep`, 20.08.2026): оба роутера, пять
+файлов интеграционных тестов, эталон и **два генератора макетов** — включая
+генератор макета закрытой фичи инфляции. Последнее решает вопрос само: генераторы
+лежат в `docs/`, `just ci` их не касается, и переход на новый тип сломал бы их
+МОЛЧА — узнали бы при следующей пересборке макета, месяцы спустя.
+
+Поэтому:
+
+```python
+def build_comparison(db, contract_ids, *, facet_ids=None, vat_mode, …):
+    ...
+```
+
+`Selection` остаётся типом возврата `resolve_selection` и **распаковывается в
+роутерах**. Это не поддержка двух типов и не совместимая обёртка: у
+`build_comparison` одна форма вызова, а новый параметр — обычный именованный.
+
+`facet_ids=None` означает «сужения не было», и facet считается по самим
+`contract_ids`. Умолчание не «нет facet»: facet обязан присутствовать всегда
+(Global Constraint 5), а когда никто не сужал, множество до сужения и есть
+выборка. Все 61 существующий вызов после этого продолжают работать и получают
+верный facet.
 
 `available_rate_classes` строится по `facet_ids` из того же join-а, что и
 колонки (решение плана 3), порядок — по `title` (§2.7).
@@ -337,10 +357,12 @@ class Selection:
 проверяется.
 
 - [ ] `Selection` и правка `resolve_selection`.
-- [ ] `build_comparison` принимает `Selection`.
-- [ ] `analytics.py:195` и `reports.py:173` — оба переведены на `Selection`.
-- [ ] Существующие тесты `test_comparison_selection.py`, читающие возврат как
-      список, переведены на `Selection` в этом же коммите.
+- [ ] `build_comparison(…, facet_ids=None)` — сигнатура списка сохранена.
+- [ ] `analytics.py:195` и `reports.py:173` распаковывают `Selection`.
+- [ ] Существующие тесты `test_comparison_selection.py`, читающие возврат
+      `resolve_selection` как список, переведены на `Selection` в этом же
+      коммите. Вызовы `build_comparison` в них НЕ трогаются — сигнатура та же.
+- [ ] Тест: `build_comparison` без `facet_ids` даёт facet по самой выборке.
 - [ ] Фикстура на два договора одного класса и один другого.
 - [ ] `available_rate_classes` в ответе; порядок по `title`.
 - [ ] `rate_class_id` в колонке; значение — снимок из договора.
@@ -542,7 +564,8 @@ export interface ComparisonRateClassFacet {
 
 **Файлы:** `frontend/src/pages/compare/ContractCostChart.tsx` (новый),
 `frontend/src/pages/compare/costChartData.ts` (новый),
-`frontend/src/pages/compare/costChartData.test.ts` (новый).
+`frontend/src/pages/compare/costChartData.test.ts` (новый),
+`frontend/src/pages/compare/ContractCostChart.test.tsx` (новый).
 
 **Данные и верх оси считают ЧИСТЫЕ функции, вынесенные из компонента** —
 `buildCostChartBars` и `costChartAxisTop` (оба заводятся здесь). Причина
@@ -566,6 +589,15 @@ export interface ComparisonRateClassFacet {
   Range-bar даёт ровно нужный интервал в обе стороны одной формулой. Проверено:
   `recharts@3.8.1`, `types/cartesian/Bar.d.ts:22` — `value: number | [number,
   number]`;
+- **совмещение полос по горизонтали задаётся явно.** Два `<Bar>` без общего
+  `stackId` recharts кладёт РЯДОМ, разными группами, с зазором `barGap` — по
+  умолчанию `4` (проверено: `types/chart/CartesianChart.d.ts:9`,
+  `barCategoryGap` там же `"10%"`). Без правки штриховка встала бы сбоку от
+  сплошного столбца. Механизм штатный: **одинаковый фиксированный `barSize={N}`
+  у обеих полос и `barGap={-N}` у графика** — вторая полоса смещается на
+  `N + (−N) = 0`, то есть ровно поверх первой; типы это допускают
+  (`barGap?: number | string`, `util/types.d.ts:1291`). Своей геометрии и
+  кастомного `shape` по-прежнему нет;
 - риска номинала — `<ReferenceDot>`/`<ReferenceLine>` на столбец;
 - медиана — `<ReferenceLine y={shown_per_sqm}>`, только при единице ₽/м² и
   ненулевом поле; вторая, точечная — номинальная медиана при приведении;
@@ -594,6 +626,14 @@ export interface ComparisonRateClassFacet {
       приведении (DoD 23); объяснение вместо линии при менее чем трёх
       сопоставимых (DoD 24); следование корзине (DoD 27); прокрутка и
       минимальная ширина столбца (DoD 29).
+- [ ] `ContractCostChart.test.tsx`: **`x` и `width` обеих полос совпадают** —
+      иначе штриховка уезжает сбоку, и это единственная проверка, которая ловит
+      потерянный `barGap`.
+- [ ] `ContractCostChart.test.tsx`: договор без суммы остаётся в ряду, с причиной
+      из `incomplete_reasons`, а не выпадает (DoD 25).
+- [ ] `ContractCostChart.test.tsx`: на оси сумм плашка отклонения подписана
+      «к медиане ₽/м²» — **негативный, снятие подписи обязано ронять тест**
+      (DoD 26).
 - [ ] `just ci`.
 
 **DoD:** 18–29.
@@ -608,6 +648,8 @@ export interface ComparisonRateClassFacet {
       ответ не несёт ключей `nominal`, и экран показывает номинальные числа
       (DoD 32). Клиент `nominal` не «запрашивает» — поле появляется в ответе при
       применённом приведении.
+- [ ] Таблица сравнения НЕ получает колонку «Медиана» — утверждением об
+      отсутствии (DoD 22в, Global Constraint 6).
 - [ ] Диаграмма не ломается на выборке без сумм.
 - [ ] Диаграмма не ломается при менее чем трёх сопоставимых.
 - [ ] `just ci`.
@@ -641,7 +683,7 @@ export interface ComparisonRateClassFacet {
 | DoD | Задача | DoD | Задача |
 |---|---|---|---|
 | 1 | 2, 3, 7 | 18–21 | 11 |
-| 2 | 3 | 22, 22а–22г | 5, 11 |
+| 2 | 3 | 22, 22а–22б, 22г | 5, 11 |
 | 3 | 3, 7 | 23 | 11 |
 | 4 | 3 | 24 | 5, 11 |
 | 5 | 2, 7 | 25 | 11 |
@@ -650,7 +692,7 @@ export interface ComparisonRateClassFacet {
 | 13–17 | 6 | 28, 28а | 11 |
 | | | 29 | 11 |
 | | | 30, 31 | 10 |
-| | | 32 | 12 |
+| | | 22в, 32 | 12 |
 | | | 33, 34 | 9 |
 
 ---
