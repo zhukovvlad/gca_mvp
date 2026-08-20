@@ -602,6 +602,25 @@ export interface ComparisonRateClassFacet {
 `ComparisonMedian`. Опциональность в типе — не украшение: она и есть правило
 присутствия из §2.8, и `tsc` заставит клиента проверить поле перед отрисовкой.
 
+> **Вопрос к плану, найденный ревью задачи 8 — решить на задаче 11.**
+> План предписывает положить `nominal` на `ComparisonBucketCell`, а
+> `shown_per_sqm` — на `ComparisonMedian`. Но это ОБЩИЕ типы: `ComparisonCell`
+> обслуживает и `rows[].cells`, и `totals`, а `ComparisonMedian` — и
+> `rows[].medians`, и `totals_medians`. Значит `tsc` разрешит прочитать
+> `row.medians.total.shown_per_sqm`, получить `undefined`, и линия молча не
+> нарисуется — то есть в половине точек чтения опциональность работает НЕ
+> правилом присутствия, а разрешением на бессмысленное чтение.
+>
+> Сервер этот раскол сделал явно: `_median_dict` против `_totals_median_dict`,
+> `_cell_entry` против `_totals_cell_entry`. TS-сторона его схлопывает.
+>
+> Лечится наследованием: `ComparisonTotalsMedian extends ComparisonMedian` с
+> новыми полями и `ComparisonTotalsBucketCell extends ComparisonBucketCell`,
+> используемые только в `Comparison.totals`/`totals_medians`. Тогда `tsc` начнёт
+> ловить чтение из строк — ровно та гарантия, которой мотивирована задача 8.
+> Не сделано на задаче 8, потому что это правка КОНТРАКТА сверх её чек-листа;
+> задача 11 — первое место, где раскол начинает работать.
+
 - [ ] Типы.
 - [ ] `ComparisonParams.rate_class_id` **уже существует** как `string`
       (`domain.ts:1283`) — поле не заводится, расширяется его СЕМАНТИКА до

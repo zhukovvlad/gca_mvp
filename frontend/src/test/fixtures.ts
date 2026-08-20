@@ -1321,7 +1321,8 @@ export const sampleComparisonColumns = [
     contract_number: "ДГП-204",
     object_title: "Объект D",
     contractor_title: "Подрядчик D",
-    rate_class_title: "Класс D",
+    rate_class_id: 1,
+    rate_class_title: "Класс A",
     signed_date: "2026-06-01",
     // ТЭП не заведены — ₽/м² договора обязан быть прочерком, не нулём (§2.4).
     area_total_sp: null,
@@ -1335,7 +1336,8 @@ export const sampleComparisonColumns = [
     contract_number: "ДГП-203",
     object_title: "Объект C",
     contractor_title: "Подрядчик C",
-    rate_class_title: "Класс C",
+    rate_class_id: 1,
+    rate_class_title: "Класс A",
     signed_date: "2026-01-01",
     area_total_sp: "75741.00",
     advance_pct: "30.00",
@@ -1348,7 +1350,8 @@ export const sampleComparisonColumns = [
     contract_number: "ДГП-202",
     object_title: "Объект B",
     contractor_title: "Подрядчик B",
-    rate_class_title: "Класс B",
+    rate_class_id: 1,
+    rate_class_title: "Класс A",
     signed_date: "2025-06-01",
     area_total_sp: "166756.90",
     advance_pct: null,
@@ -1361,7 +1364,8 @@ export const sampleComparisonColumns = [
     contract_number: "ДГП-201",
     object_title: "Объект A",
     contractor_title: "Подрядчик A",
-    rate_class_title: "Класс A",
+    rate_class_id: 2,
+    rate_class_title: "Класс B",
     signed_date: "2025-01-01",
     area_total_sp: "79692.37",
     advance_pct: null,
@@ -1533,6 +1537,13 @@ export const sampleComparison: Comparison = {
     "Суммы — каждая в своей ставке договора: договор виден таким, каким существует. " +
     "Отклонения посчитаны без НДС.",
   columns: sampleComparisonColumns,
+  // Классы РАЗНОГО размера намеренно: с равными `count` тест не заметил бы
+  // перепутанных местами полей фасета. Порядок — по `title` (спека §2.7), и он
+  // обязан совпадать с тем, что отдаёт сервер, а не с порядком колонок.
+  available_rate_classes: [
+    { id: 1, title: "Класс A", count: 3 },
+    { id: 2, title: "Класс B", count: 1 },
+  ],
   rows: [comparisonRow1, comparisonRow11, comparisonRow1Own, comparisonRow2, comparisonRowUnallocated],
   totals: comparisonTotalsCells,
   totals_medians: {

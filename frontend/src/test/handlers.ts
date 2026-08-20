@@ -28,6 +28,7 @@ import {
 import type {
   Comparison,
   ComparisonBucketCell,
+  ComparisonMedian,
   InflationSeries,
   ComparisonVatMode,
   EstimateRow,
@@ -316,6 +317,58 @@ function jobPayload(status: ImportJobStatus) {
 }
 
 /**
+ * Значение линии `shown_per_sqm` медианы «Итого» в режиме `single` — заранее
+ * посчитанная строка-константа (Global Constraint 1 плана: денежная
+ * арифметика в JS, включая `Number()` над деньгами, запрещена).
+ *
+ * Посчитано ВРУЧНУЮ для value медианы фикстуры `sampleComparison.totals_medians`
+ * ("1501.88") при ЭФФЕКТИВНОЙ ставке показа `rate_preselected` ("20.00" —
+ * подставляется обработчиком, когда запрос не задал `single_rate` своим
+ * значением): `net_to_gross(net, target) = net * (100 + target) / 100`
+ * (`backend/money/vat.py`), то есть 1501.88 * 120 / 100 = 180225.60 / 100 =
+ * 1802.2560.
+ *
+ * Годится ТОЛЬКО для этого значения медианы: если фикстура когда-нибудь
+ * изменит "1501.88", константу нужно пересчитать вручную ещё раз — здесь
+ * нет обратной проверки.
+ */
+const TOTALS_MEDIAN_SINGLE_SHOWN_PER_SQM = "1802.2560";
+
+/**
+ * Добавляет `shown_per_sqm` медиане «Итого» по правилу присутствия спеки
+ * диаграммы §2.8 (DoD 22б): ключ ЕСТЬ при `net` и `single`, ЕГО НЕТ при `own`.
+ * В режиме `net` значение равно самому `value` (сервер отражает нетто без
+ * пересчёта — `_shown_per_sqm_value`); в режиме `single` — заранее посчитанная
+ * константа выше, `null`, если `value` сам `null` (правило самосогласованности
+ * задачи: «значение `null`, только если `value` равно `null`»).
+ */
+function totalsMedianWithShownPerSqm(
+  median: ComparisonMedian,
+  vatMode: ComparisonVatMode
+): ComparisonMedian {
+  if (vatMode === "own") return median;
+  const shownPerSqm =
+    median.value === null
+      ? null
+      : vatMode === "net"
+        ? median.value
+        : TOTALS_MEDIAN_SINGLE_SHOWN_PER_SQM;
+  return { ...median, shown_per_sqm: shownPerSqm };
+}
+
+/** `totalsMedianWithShownPerSqm` над ВСЕМИ трёх корзинами `totals_medians`. */
+function totalsMediansWithMode(
+  medians: Comparison["totals_medians"],
+  vatMode: ComparisonVatMode
+): Comparison["totals_medians"] {
+  return {
+    base: totalsMedianWithShownPerSqm(medians.base, vatMode),
+    amendments: totalsMedianWithShownPerSqm(medians.amendments, vatMode),
+    total: totalsMedianWithShownPerSqm(medians.total, vatMode),
+  };
+}
+
+/**
  * Приведённый агрегат сравнения — из номинального, УМНОЖЕНИЕМ (спека §2.5).
  *
  * Множители у двух рядов РАЗНЫЕ намеренно: одинаковые означали бы, что селектор
@@ -327,6 +380,26 @@ function jobPayload(status: ImportJobStatus) {
  * плюс `inflation_factors`): случай «в договоре ДГП 2024 года и ДС 2026-го» на
  * стенде не воспроизводится вовсе — допсоглашений там ноль, — и без фикстуры чип
  * «разные» остался бы непроверенным.
+ *
+ * **Номинал (спека §2.8, §2.10, DoD 13/17)** приезжает ТОЛЬКО здесь — это
+ * единственный путь, где приведение вообще посчитано (`seriesId` задан). У
+ * `totals[]` номинал — денежное подмножество ИСХОДНОЙ (нескаленной) ячейки
+ * `base.totals[]`, БЕЗ `state`/`deviation_pct` (`_nominal_bucket_cell_dict`);
+ * строки дерева (`rows[].cells[]`) номинала не получают вовсе (DoD 17), и
+ * `scaleCells` их сериализатор НЕ трогает. У `totals_medians[bucket]` номинал —
+ * `{value, shown_per_sqm?}` той же, ДОНОМИНАЛЬНОЙ, медианы (`base.totals_medians`,
+ * которая уже несёт `shown_per_sqm` по правилу присутствия выше).
+ *
+ * **`totals_medians` ОБЯЗАН масштабироваться тем же `factor`, что и `totals`**
+ * (смежный дефект, найденный ревью: до этой правки медиана приезжала
+ * номинальной, то есть равной самой себе после приведения — столбцы сдвигались,
+ * линия медианы нет, что противоречит DoD 16 и обесценивает DoD 23). Множитель
+ * применяется к `value` И к `shown_per_sqm` одинаково: `net_to_gross` линеен по
+ * нетто (`net_to_gross(net·k, ставка) = net_to_gross(net, ставка)·k`), поэтому
+ * масштабирование обеих величин ОДНИМ И ТЕМ ЖЕ точным умножением строк
+ * (`multiplyDecimalStrings`, тот же приём, что у `scaleCell` ниже) даёт то же
+ * число, что дал бы пересчёт `net_to_gross` от уже приведённого нетто — без
+ * повторного деления и без второй захардкоженной константы.
  */
 function adjustedComparison(
   base: Comparison,
@@ -357,6 +430,43 @@ function adjustedComparison(
       total: scaleCell(cell.total),
     }));
 
+  /** Денежное подмножество НОМИНАЛЬНОЙ ячейки — вход `nominal` у `totals[]`. */
+  const nominalCellDict = (cell: ComparisonBucketCell) => ({
+    net: cell.net,
+    shown: cell.shown,
+    net_per_sqm: cell.net_per_sqm,
+    shown_per_sqm: cell.shown_per_sqm,
+  });
+
+  /** `scaleCell` ПЛЮС `nominal` — ТОЛЬКО для `totals[]` (DoD 17: строки его не несут). */
+  const scaleCellWithNominal = (cell: ComparisonBucketCell): ComparisonBucketCell => ({
+    ...scaleCell(cell),
+    nominal: nominalCellDict(cell),
+  });
+
+  const scaleTotalsCells = (cells: Comparison["totals"]): Comparison["totals"] =>
+    cells.map((cell) => ({
+      ...cell,
+      base: scaleCellWithNominal(cell.base),
+      amendments: scaleCellWithNominal(cell.amendments),
+      total: scaleCellWithNominal(cell.total),
+    }));
+
+  /** Денежное подмножество НОМИНАЛЬНОЙ медианы — вход `nominal` у `totals_medians`. */
+  const nominalMedianDict = (median: ComparisonMedian): { value: string | null; shown_per_sqm?: string | null } => {
+    const out: { value: string | null; shown_per_sqm?: string | null } = { value: median.value };
+    if (median.shown_per_sqm !== undefined) out.shown_per_sqm = median.shown_per_sqm;
+    return out;
+  };
+
+  /** Медиана «Итого» масштабированная ПЛЮС `nominal` доскаленной (см. докстроку выше). */
+  const scaleTotalsMedian = (median: ComparisonMedian): ComparisonMedian => ({
+    ...median,
+    value: scale(median.value),
+    ...(median.shown_per_sqm !== undefined ? { shown_per_sqm: scale(median.shown_per_sqm) } : {}),
+    nominal: nominalMedianDict(median),
+  });
+
   return {
     ...base,
     caption: `${base.caption} Цены приведены к августу 2026 по ряду «${seriesName}».`,
@@ -381,7 +491,12 @@ function adjustedComparison(
         total: { ...row.medians.total, value: scale(row.medians.total.value) },
       },
     })),
-    totals: scaleCells(base.totals),
+    totals: scaleTotalsCells(base.totals),
+    totals_medians: {
+      base: scaleTotalsMedian(base.totals_medians.base),
+      amendments: scaleTotalsMedian(base.totals_medians.amendments),
+      total: scaleTotalsMedian(base.totals_medians.total),
+    },
     inflation: {
       series_id: seriesId,
       series_name: seriesName,
@@ -974,10 +1089,14 @@ export const handlers = [
       vatMode === "single" ? (singleRateParam ?? sampleComparison.rate_preselected) : null;
 
     const seriesId = url.searchParams.get("inflation_series_id");
-    const base = {
+    const base: Comparison = {
       ...sampleComparison,
       vat_mode: vatMode,
       single_rate: singleRate,
+      // Правило присутствия §2.8/DoD 22б не зависит от приведения: ключ
+      // `shown_per_sqm` обязан появляться в `net`/`single` и без него — сам
+      // факт запроса приведения тут ни при чём (см. докстроку хелпера).
+      totals_medians: totalsMediansWithMode(sampleComparison.totals_medians, vatMode),
     };
     if (!seriesId) return HttpResponse.json(base);
 

@@ -2254,7 +2254,9 @@ def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
 
 
 def _rate_class_facet(columns_meta: Sequence[dict]) -> list[dict]:
-    """`available_rate_classes` — чипы классов ставки по facet-множеству (задача 4, §4.4).
+    """`available_rate_classes` — чипы классов ставки по facet-множеству.
+
+    Правило фасета — спека диаграммы стоимости §2.7 (задача 4).
 
     Строится из результата `_load_columns` (join уже дал `rate_class_id` и
     `rate_class_title`) — второго запроса к `rate_classes` здесь нет и не
@@ -2308,7 +2310,7 @@ def build_comparison(
     медианами (спека §2.7 «один агрегат — два представления»).
 
     **`facet_ids` — надмножество для фасета `available_rate_classes` (задача 4,
-    §4.4).** Первый позиционный параметр НЕ меняет тип и остаётся списком: у
+    решение плана 3).** Первый позиционный параметр НЕ меняет тип и остаётся списком: у
     прямых вызовов `build_comparison(` десятки мест по всему проекту (включая
     генераторы макетов в `docs/`, которых `just ci` не касается), и перевод
     сигнатуры на новый тип сломал бы их молча. `facet_ids=None` означает
@@ -2402,7 +2404,7 @@ def build_comparison(
 
     # Фасет строится из ОДНОГО запроса `_load_columns` по надмножеству (facet_ids,
     # если сужение было, иначе сама выборка) — второго обращения к RateClass
-    # не заводим (§4.4). `columns_meta` затем отфильтровывается до `contract_ids`
+    # не заводим (решение плана 3). `columns_meta` затем отфильтровывается до `contract_ids`
     # с сохранением порядка запроса — колонки видят только суженную выборку.
     facet_source_ids = list(facet_ids) if facet_ids is not None else contract_ids
     facet_columns_meta = _load_columns(db, facet_source_ids)
