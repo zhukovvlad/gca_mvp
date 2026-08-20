@@ -89,6 +89,131 @@ def test_no_form_at_all_is_a_request_error(db_session):
     assert raised.value.status_code == 400
 
 
+def test_ids_with_q_is_a_request_error(db_session, factories):
+    """`ids` вместе с `q` — та же двусмысленность, что `ids` вместе с `all=1`:
+    ссылка выглядит отфильтрованной, а ответ пришёл бы по полному перечислению."""
+    a = _contract(db_session, factories, number="ГП-K-1", object_title="Объект K")
+
+    with pytest.raises(DomainError) as raised:
+        cmp.resolve_selection(db_session, ids=[a.id], q="Объект")
+
+    assert raised.value.status_code == 400
+
+
+def test_ids_with_object_id_is_a_request_error(db_session, factories):
+    a = _contract(db_session, factories, number="ГП-L-1", object_title="Объект L")
+
+    with pytest.raises(DomainError) as raised:
+        cmp.resolve_selection(db_session, ids=[a.id], object_id=a.object_id)
+
+    assert raised.value.status_code == 400
+
+
+def test_ids_with_contractor_id_is_a_request_error(db_session, factories):
+    a = _contract(db_session, factories, number="ГП-M-1", object_title="Объект M")
+
+    with pytest.raises(DomainError) as raised:
+        cmp.resolve_selection(db_session, ids=[a.id], contractor_id=a.contractor_id)
+
+    assert raised.value.status_code == 400
+
+
+def test_ids_form_narrows_by_rate_class(db_session, factories):
+    """Сужение по классу в форме `ids`: перечисление отсекается, а не отвергается.
+
+    До ревизии §2.6 это сочетание было ошибкой 400 — класс был ФОРМОЙ выборки.
+    Теперь он её сужение. Обратимость сужения (полная выборка остаётся в адресе,
+    и снятый чип возвращает договор) — свойство КЛИЕНТА, здесь не проверяется:
+    резолвер про адрес ничего не знает.
+    """
+    class_a = factories.RateClassFactory.create()
+    class_b = factories.RateClassFactory.create()
+    class_c = factories.RateClassFactory.create()
+    a = _contract(db_session, factories, number="ГП-N-1", object_title="Объект N")
+    a.rate_class = class_a
+    b = _contract(db_session, factories, number="ГП-O-2", object_title="Объект O")
+    b.rate_class = class_b
+    c = _contract(db_session, factories, number="ГП-P-3", object_title="Объект P")
+    c.rate_class = class_c
+    db_session.flush()
+
+    selected = cmp.resolve_selection(db_session, ids=[a.id, b.id, c.id], rate_class_id=class_a.id)
+
+    assert selected == [a.id]
+
+
+def test_all_form_narrows_by_rate_class(db_session, factories):
+    """Сужение по классу в форме `all=1` — тем же шагом, что и у `ids`."""
+    class_a = factories.RateClassFactory.create()
+    class_b = factories.RateClassFactory.create()
+    a = _contract(db_session, factories, number="ГП-Q-1", object_title="Объект Q")
+    a.rate_class = class_a
+    b = _contract(db_session, factories, number="ГП-R-2", object_title="Объект R")
+    b.rate_class = class_b
+    db_session.flush()
+
+    selected = cmp.resolve_selection(db_session, use_filter=True, rate_class_id=class_a.id)
+
+    assert selected == [a.id]
+
+
+def test_both_forms_agree_on_multivalued_rate_class(db_session, factories):
+    """DoD 2: `all=1` и `ids` дают одно и то же множество при МНОГОЗНАЧНОМ классе.
+
+    Сверяются множества, а не порядок: у форм разный естественный порядок."""
+    class_a = factories.RateClassFactory.create()
+    class_b = factories.RateClassFactory.create()
+    class_c = factories.RateClassFactory.create()
+    a = _contract(db_session, factories, number="ГП-S-1", object_title="Объект S")
+    a.rate_class = class_a
+    b = _contract(db_session, factories, number="ГП-T-2", object_title="Объект T")
+    b.rate_class = class_b
+    c = _contract(db_session, factories, number="ГП-U-3", object_title="Объект U")
+    c.rate_class = class_c
+    db_session.flush()
+
+    by_filter = cmp.resolve_selection(db_session, use_filter=True, rate_class_id=[class_a.id, class_b.id])
+    by_ids = cmp.resolve_selection(
+        db_session, ids=[a.id, b.id, c.id], rate_class_id=[class_a.id, class_b.id]
+    )
+
+    assert set(by_filter) == {a.id, b.id}
+    assert set(by_ids) == {a.id, b.id}
+
+
+def test_rate_class_absent_from_selection_is_an_empty_selection_not_an_error(db_session, factories):
+    """Класс, которого в выборке нет, — пустая выборка, не ошибка и не 404 (DoD 4)."""
+    class_present = factories.RateClassFactory.create()
+    class_absent = factories.RateClassFactory.create()
+    a = _contract(db_session, factories, number="ГП-V-1", object_title="Объект V")
+    a.rate_class = class_present
+    db_session.flush()
+
+    assert cmp.resolve_selection(db_session, ids=[a.id], rate_class_id=class_absent.id) == []
+
+
+def test_empty_rate_class_list_is_a_request_error_even_on_empty_selection(db_session):
+    """`rate_class_id=[]` — отказ 400, даже когда сама выборка пуста.
+
+    Свойство неочевидное и легко теряемое: ранний выход по пустой выборке перед
+    шагом сужения — правка, которая просится сама («сужать нечего»), и она молча
+    проглотила бы испорченный параметр вместо отказа. Проверено снятием: с таким
+    выходом падает ровно этот тест и никакой другой.
+
+    **Пустота выборки — предпосылка, и она измеряется здесь же.** Без замера тест
+    остался бы зелёным, перестав проверять то, что обещает: `rate_class_id=[]`
+    роняет 400 при ЛЮБОЙ выборке, поэтому засеянный кем-то договор превратил бы
+    этот тест в дубль соседнего, ничего об этом не сказав
+    (`docs/insights/false-test-premises.md`).
+    """
+    assert cmp.resolve_selection(db_session, use_filter=True) == []
+
+    with pytest.raises(DomainError) as raised:
+        cmp.resolve_selection(db_session, use_filter=True, rate_class_id=[])
+
+    assert raised.value.status_code == 400
+
+
 def test_filter_matching_nothing_is_an_empty_selection_not_an_error(db_session, factories):
     """Пустой результат фильтра — законный ответ, а не ошибка: договоров под
     фильтр может не быть, и сказать об этом надо пустой таблицей."""

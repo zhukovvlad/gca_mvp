@@ -1870,9 +1870,16 @@ def resolve_selection(
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
+    rate_class_id: int | Sequence[int] | None = None,
 ) -> list[int]:
-    """Договоры выборки по одной из ДВУХ форм входа (спека §2.6).
+    """Договоры выборки по одной из ДВУХ форм входа, суженные по классу (спека §2.6).
+
+    Функция делает ТРИ дела по очереди: отвергает двусмысленность форм → выбирает
+    форму → сужает результат по классу. Сужение стоит ПОСЛЕ выбора формы, а не
+    внутри каждой из двух веток, потому что DoD 2 требует от обеих форм
+    одинакового ответа на одинаковом множестве — с двумя копиями правила
+    сужения это равенство держалось бы на совпадении реализаций, а не на
+    построении, и первая же правка одной ветки развела бы формы.
 
     Живёт здесь, а не в роутере, потому что форм входа две, а эндпоинтов —
     тоже два (сравнение и выгрузка листа): вторая копия этого правила означала
@@ -1880,10 +1887,18 @@ def resolve_selection(
     §2.7 требует ровно обратного — один агрегат на оба представления.
 
     Фильтры не переписаны, а взяты у списка договоров
-    (`crud.contracts.filtered_contract_ids`, тот же `apply_contract_filters`):
-    DoD 1 требует, чтобы обе формы давали одинаковый ответ на одинаковом
-    множестве, и со второй копией условий это держалось бы на совпадении.
-    `page`/`page_size` не переносятся — сравнение берёт всю выборку.
+    (`crud.contracts.filtered_contract_ids` и `apply_contract_filters`): DoD 1
+    требует, чтобы обе формы давали одинаковый ответ на одинаковом множестве, и
+    со второй копией условий это держалось бы на совпадении. `page`/`page_size`
+    не переносятся — сравнение берёт всю выборку.
+
+    **Коррекция 400.** Раньше отвергалось только сочетание `ids` и `all=1`; `q`,
+    `object_id`, `contractor_id` вместе с `ids` молча игнорировались — ссылка
+    выглядела отфильтрованной, а ответ приходил по полному перечислению. Теперь
+    `ids` вместе с любым из этих трёх — тоже отказ 400, тем же текстом, что и
+    отказ на `ids`+`all=1`: с точки зрения человека это одна и та же ошибка —
+    выборка задана дважды. `rate_class_id` в эту проверку НЕ входит: он больше
+    не форма выборки, а её сужение, и потому законно сочетается с `ids`.
 
     Отсутствующий id — ОТКАЗ 404 с его номером, а не молчаливое выпадение
     колонки: `Contract.id.in_(...)` сам по себе просто не нашёл бы её, и
@@ -1893,37 +1908,64 @@ def resolve_selection(
     """
     from crud import contracts as crud_contracts
 
-    if use_filter and ids:
+    other_filters = {"q": q, "object_id": object_id, "contractor_id": contractor_id}
+    named = [name for name, value in other_filters.items() if value not in (None, "")]
+    if ids and (use_filter or named):
         raise DomainError(
             400,
             "Выборка задана дважды: и списком договоров, и фильтром. "
             "Оставьте одну форму — либо `ids`, либо `all=1` с фильтрами.",
         )
     if use_filter:
-        return crud_contracts.filtered_contract_ids(
+        selected = crud_contracts.filtered_contract_ids(
             db, q=q, object_id=object_id, contractor_id=contractor_id,
+        )
+    else:
+        if not ids:
+            raise DomainError(
+                400,
+                "Выборка не задана: передайте `ids` со списком договоров либо "
+                "`all=1` для выборки по фильтру.",
+            )
+
+        # Порядок здесь не важен (колонки упорядочивает `_load_columns` по
+        # signed_date/id), но дубликаты убрать обязательно: повторённый id дал бы
+        # вторую колонку того же договора.
+        unique = list(dict.fromkeys(ids))
+        existing = set(
+            db.execute(sa.select(Contract.id).where(Contract.id.in_(unique))).scalars().all()
+        )
+        missing = [contract_id for contract_id in unique if contract_id not in existing]
+        if missing:
+            raise DomainError(
+                404, "Договоры не найдены: " + ", ".join(str(value) for value in missing) + "."
+            )
+        selected = unique
+
+    # Сужение по классу — ОДНО место на обе формы (см. докстроку).
+    #
+    # Условие `is not None`, а не безусловный проход: без сужения выборка уже
+    # готова, и лишний запрос лёг бы на КАЖДЫЙ дофичевый ответ — приведение и
+    # фильтр по классу по умолчанию выключены, то есть на самый частый путь.
+    # Пустой список классов при этом внутрь ПОПАДАЕТ (`[] is not None`), и
+    # уронить его обязана `apply_contract_filters`: отказ 400 не имеет права
+    # исчезать от того, что сужать было нечего.
+    #
+    # Никакого раннего выхода по пустому `selected` внутри ветви: `in_([])` —
+    # законный SQL, который тихо вернул бы пустоту, а 400 на пустом списке
+    # классов обязан прозвучать даже при пустой выборке.
+    #
+    # `in_` без join-ов на `objects`/`contractors` допустим здесь только потому,
+    # что передаётся ОДИН фильтр — класс; `q` сюда не передаём, а
+    # `apply_contract_filters` требует для `q` тех самых join-ов.
+    if rate_class_id is not None:
+        stmt = crud_contracts.apply_contract_filters(
+            sa.select(Contract.id).where(Contract.id.in_(selected)),
             rate_class_id=rate_class_id,
         )
-    if not ids:
-        raise DomainError(
-            400,
-            "Выборка не задана: передайте `ids` со списком договоров либо "
-            "`all=1` для выборки по фильтру.",
-        )
-
-    # Порядок здесь не важен (колонки упорядочивает `_load_columns` по
-    # signed_date/id), но дубликаты убрать обязательно: повторённый id дал бы
-    # вторую колонку того же договора.
-    unique = list(dict.fromkeys(ids))
-    existing = set(
-        db.execute(sa.select(Contract.id).where(Contract.id.in_(unique))).scalars().all()
-    )
-    missing = [contract_id for contract_id in unique if contract_id not in existing]
-    if missing:
-        raise DomainError(
-            404, "Договоры не найдены: " + ", ".join(str(value) for value in missing) + "."
-        )
-    return unique
+        kept = set(db.execute(stmt).scalars())
+        selected = [contract_id for contract_id in selected if contract_id in kept]
+    return selected
 
 
 def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
