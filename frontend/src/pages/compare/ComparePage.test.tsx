@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { useLocation } from "react-router-dom";
@@ -144,6 +144,156 @@ describe("Сравнение договоров — НДС и ставка в UR
     await screen.findByTestId("comparison-caption");
 
     expect(screen.getByRole("button", { name: "Своя ставка" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Действующая ставка показа в адресе
+//  (спека диаграммы стоимости §2.6, подраздел «Ставка показа не имеет права
+//   меняться от фильтра»; §2.10; DoD 33)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — действующая ставка показа в адресе", () => {
+  /** Запросы сравнения, дошедшие до мока: по ним видно, ЧТО отправил клиент. */
+  let requests: Record<string, string>[] = [];
+
+  beforeEach(() => {
+    requests = [];
+  });
+
+  /**
+   * Обработчик, повторяющий проводку СЕРВЕРА, а не общий мок.
+   *
+   * Копируется `effective_single_rate` (`backend/crud/comparison.py`): ответ
+   * отражает ПОЛУЧЕННУЮ ставку при любом режиме, а предвыбор подставляет
+   * только в «Единой» и только когда ставка не пришла. Копировать это важно:
+   * общий мок отдаёт `single_rate: null` вне «Единой» САМ, то есть держит
+   * рядом вторую защиту, и снятие клиентской проводки на нём ничего не уронило
+   * бы (`docs/insights/verifying-guards.md`, слой 8).
+   *
+   * `preselected` задаётся тестом, чтобы действующая ставка и предвыбор могли
+   * РАЗОЙТИСЬ: на фикстуре они совпадают, и тест на их совпадении не различает,
+   * какое из двух полей читает экран.
+   *
+   * Подпись состава помечена режимом и ставкой — это единственный сигнал
+   * ПРИМЕНЁННОГО ответа, а без него утверждение об отсутствии записи мерило бы
+   * старый кадр. Настоящий сервер подпись по режиму тоже различает
+   * (`_mode_caption`), общий мок — нет, и граница по времени вместо этого
+   * сигнала зависела бы от загрузки машины (devlog §4.3б).
+   */
+  function echoServerRate(preselected = "20.00") {
+    server.use(
+      http.get("/api/v1/analytics/comparison", ({ request }) => {
+        const url = new URL(request.url);
+        requests.push(Object.fromEntries(url.searchParams));
+        const mode = url.searchParams.get("vat_mode") ?? "own";
+        const asked = url.searchParams.get("single_rate");
+        const effective = asked ?? (mode === "single" ? preselected : null);
+        return HttpResponse.json({
+          ...sampleComparison,
+          vat_mode: mode,
+          rate_preselected: preselected,
+          single_rate: effective,
+          caption: `mode=${mode} rate=${effective ?? "none"}`,
+        });
+      })
+    );
+  }
+
+  function renderWithProbe(query: string) {
+    renderWithProviders(
+      <>
+        <ComparePage />
+        <LocationProbe />
+      </>,
+      { initialRoute: `/compare?${query}` }
+    );
+  }
+
+  function search(): URLSearchParams {
+    return new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+  }
+
+  /** Ждёт ПРИМЕНЁННОГО ответа: подпись состава несёт режим и ставку ответа. */
+  function appliedCaption(mode: string, rate: string) {
+    return screen.findByText(`mode=${mode} rate=${rate}`);
+  }
+
+  it("предпосылка: своей ставки в фикстуре нет, предвыбор — 20.00", () => {
+    // Обе величины тест ниже подразумевает. Фикстура правится, предпосылка
+    // молча меняется, и «дописал в адрес» стало бы «там уже было».
+    expect(sampleComparison.single_rate).toBeNull();
+    expect(sampleComparison.rate_preselected).toBe("20.00");
+  });
+
+  it("открытие «Единой» без ставки дописывает её в адрес (DoD 33)", async () => {
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Утверждается ЗНАЧЕНИЕ, а не факт появления параметра: «появился»
+    // прошло бы и при записи чего угодно.
+    await waitFor(() => expect(search().get("single_rate")).toBe("20.00"));
+  });
+
+  it("в адрес идёт ДЕЙСТВУЮЩАЯ ставка, а не предвыбор", async () => {
+    /*
+      Ставка в адресе и предвыбор РАЗВЕДЕНЫ: сервер показал числа в 22.00,
+      предвыбрал бы 20.00. Это и есть смысл записи — после неё предвыбор в игру
+      больше не входит (спека диаграммы стоимости §2.6, DoD 34). Сужения по
+      классу здесь нет: единственный контрол сужения — чипы классов, их заводит
+      задача 10, и переход через чип закрывается там.
+    */
+    echoServerRate("20.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single&single_rate=22.00`);
+
+    await appliedCaption("single", "22.00");
+    expect(search().get("single_rate")).toBe("22.00");
+    expect(requests.every((r) => r.single_rate === "22.00")).toBe(true);
+  });
+
+  it("выход из «Единой» не возвращает ставку в адрес", async () => {
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Дождаться, что эффект уже записал ставку — иначе переход в «Без НДС»
+    // ничего не отменял бы: параметра и не было изначально.
+    await waitFor(() => expect(search().get("single_rate")).toBe("20.00"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Без НДС" }));
+
+    // Уходит вместе с режимом — это делает `updateVatMode`.
+    await waitFor(() => expect(search().get("vat_mode")).toBe("net"));
+
+    /*
+      И НЕ ВОЗВРАЩАЕТСЯ. Утверждение об отсутствии требует границы, и граница
+      взята сигналом ПРИМЕНЁННОГО ответа, а не таймером: дописать параметр
+      обратно эффект может только после разбора ответа на новый запрос, а
+      подпись состава этот разбор и означает. Таймер здесь мерил бы сетевой
+      круг и на загруженной машине истекал бы раньше него — прогон стал бы
+      молча зелёным (devlog §4.3б).
+    */
+    await appliedCaption("net", "none");
+    // Плюс один такт: сам эффект сети не ждёт — он сработал бы уже на этом
+    // кадре, а `act` дожидается очереди обновлений детерминированно, не
+    // таймером. Достаточность проверена снятием (см. devlog).
+    await act(async () => {});
+    expect(search().get("single_rate")).toBeNull();
+  });
+
+  it("вне «Единой» клиент ставку серверу не отправляет", async () => {
+    /*
+      Пин на проводку, из которой эффект не имеет отдельного условия на режим:
+      `params` отдаёт `single_rate` ТОЛЬКО в «Единой». Обработчик здесь
+      отражает полученную ставку при любом режиме, как настоящий сервер, —
+      значит, начни клиент её отправлять, ответ вернул бы её, эффект записал бы
+      её в адрес, и человек увидел бы ставку, которой не выбирал.
+    */
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=net&single_rate=22.00`);
+
+    await appliedCaption("net", "none");
+    expect(requests.length).toBeGreaterThan(0);
+    expect(requests.every((r) => r.single_rate === undefined)).toBe(true);
   });
 });
 
