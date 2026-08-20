@@ -46,6 +46,10 @@ def test_list_of_rate_class_ids_selects_union(db_session, factories):
     class1 = factories.RateClassFactory.create()
     class2 = factories.RateClassFactory.create()
     class3 = factories.RateClassFactory.create()
+    # Предпосылка: классы РАЗНЫЕ. Стань фабрика `get_or_create` по `title` —
+    # «объединение» двух совпавших классов дало бы те же два договора, и тест
+    # прошёл бы вакуумно (`docs/insights/false-test-premises.md`).
+    assert len({class1.id, class2.id, class3.id}) == 3
 
     contract1 = factories.ContractFactory.create(rate_class=class1)
     contract2 = factories.ContractFactory.create(rate_class=class2)
@@ -72,3 +76,41 @@ def test_empty_rate_class_list_raises_domain_error_400(db_session, factories):
 
     assert raised.value.status_code == 400
     assert "пустым" in raised.value.detail.lower()
+
+
+def test_string_rate_class_id_is_a_request_error(db_session, factories):
+    """Строка вместо числа — отказ, а не выборка по символам.
+
+    Строка тоже последовательность, и `list("12")` даёт два СИМВОЛА: без отказа
+    фильтр ушёл бы в `IN ('1','2')` и вернул 200 по чужой выборке. Найдено
+    ревью; сегодня недостижимо через HTTP (формат адреса разбирает роутер), но
+    разбор строки вводится следующей задачей, и один недоделанный `parse` попал
+    бы сюда молча.
+    """
+    factories.ContractFactory.create()
+
+    with pytest.raises(DomainError) as raised:
+        crud_contracts.filtered_contract_ids(db_session, rate_class_id="12")
+
+    assert raised.value.status_code == 400
+
+
+def test_blank_search_term_means_no_filter(db_session, factories):
+    """Пробельный `q` — «фильтр не задан», и это ОДНО правило на весь модуль.
+
+    Замер до правки: `resolve_selection` считал заданным всё, что
+    `not in (None, "")`, поэтому `?ids=1,2&q=%20` отвечал 400 «выборка задана
+    дважды», а `?all=1&q=%20` — полной выборкой без фильтра. Один и тот же `q` в
+    одном модуле значил разное. Теперь пустоту решает
+    `normalized_search_term`, и оба места читают её.
+    """
+    factories.ContractFactory.create()
+    factories.ContractFactory.create()
+
+    assert crud_contracts.normalized_search_term("   ") is None
+    assert crud_contracts.normalized_search_term(None) is None
+    assert crud_contracts.normalized_search_term("  Башня  ") == "Башня"
+
+    everything = crud_contracts.filtered_contract_ids(db_session)
+    blank = crud_contracts.filtered_contract_ids(db_session, q="   ")
+    assert blank == everything, "пробельный `q` не имеет права сужать выборку"

@@ -146,9 +146,17 @@ def test_ids_form_narrows_by_rate_class(db_session, factories):
 
 
 def test_all_form_narrows_by_rate_class(db_session, factories):
-    """Сужение по классу в форме `all=1` — тем же шагом, что и у `ids`."""
+    """Форма `all=1` фильтрует по классу — регресс ДОФИЧЕВОГО поведения.
+
+    Этот тест НЕ доказывает, что сужение делается «тем же шагом», что у `ids`:
+    до фичи форма `all=1` уже фильтровала по классу, поэтому он остаётся зелёным
+    и при вырезанном общем шаге. Проверено снятием. Сторож решения «сужение в
+    одном месте» — соседний `test_both_forms_agree_on_multivalued_rate_class`,
+    и падает именно он.
+    """
     class_a = factories.RateClassFactory.create()
     class_b = factories.RateClassFactory.create()
+    assert class_a.id != class_b.id, "предпосылка: фабрика выдаёт РАЗНЫЕ классы"
     a = _contract(db_session, factories, number="ГП-Q-1", object_title="Объект Q")
     a.rate_class = class_a
     b = _contract(db_session, factories, number="ГП-R-2", object_title="Объект R")
@@ -169,6 +177,10 @@ def test_both_forms_agree_on_multivalued_rate_class(db_session, factories):
     class_a = factories.RateClassFactory.create()
     class_b = factories.RateClassFactory.create()
     class_c = factories.RateClassFactory.create()
+    # Предпосылка: три РАЗНЫХ класса. Стань фабрика `get_or_create` по `title` —
+    # объединение двух совпавших классов дало бы те же договоры, и тест прошёл бы
+    # вакуумно (`docs/insights/false-test-premises.md`).
+    assert len({class_a.id, class_b.id, class_c.id}) == 3
     a = _contract(db_session, factories, number="ГП-S-1", object_title="Объект S")
     a.rate_class = class_a
     b = _contract(db_session, factories, number="ГП-T-2", object_title="Объект T")
@@ -242,6 +254,9 @@ def test_empty_selection_builds_an_empty_aggregate(db_session):
     assert agg["totals"] == []
     assert agg["rate_options"] == []
     assert agg["rate_preselected"] is None
+    # Фасет присутствует ВСЕГДА (DoD 7), и пустая выборка — единственный случай,
+    # где «всегда» неочевидно: `_load_columns` тут выходит рано.
+    assert agg["available_rate_classes"] == []
 
 
 def test_duplicate_ids_do_not_duplicate_columns(db_session, factories):
@@ -263,3 +278,25 @@ def test_single_rate_survives_as_exact_decimal(db_session, factories):
 
     assert agg["single_rate"] == Decimal("20.5")
     assert isinstance(agg["single_rate"], Decimal)
+
+
+def test_blank_filters_do_not_count_as_a_second_form(db_session, factories):
+    """Пробельный `q` вместе с `ids` — НЕ двусмысленность (заведено ревью).
+
+    Признак «фильтр задан» обязан совпадать с признаком «фильтр применяется».
+    До правки они расходились: здесь заданным считалось всё, что
+    `not in (None, "")`, а применялось только непробельное — поэтому
+    `?ids=1,2&q=%20` отвечал 400 «выборка задана дважды», тогда как
+    `?all=1&q=%20` спокойно отдавал полную выборку. Пробел в адресе остаётся
+    после того, как человек стёр запрос, и отказывать на нём — врать про то, что
+    выборка задана дважды.
+    """
+    a = _contract(db_session, factories, number="ГП-W-1", object_title="Объект W")
+
+    assert cmp.resolve_selection(db_session, ids=[a.id], q="   ").contract_ids == [a.id]
+    assert cmp.resolve_selection(db_session, ids=[a.id], q="").contract_ids == [a.id]
+
+    # А непробельный `q` с `ids` — по-прежнему 400: правило сузилось, не исчезло.
+    with pytest.raises(DomainError) as raised:
+        cmp.resolve_selection(db_session, ids=[a.id], q="Объект")
+    assert raised.value.status_code == 400

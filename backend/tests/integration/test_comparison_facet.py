@@ -69,6 +69,13 @@ def test_facet_carries_all_classes_when_narrowed_to_one(db_session, factories):
     # А колонки при этом ДЕЙСТВИТЕЛЬНО сужены — фасет расширился, выборка нет.
     assert {column["contract_id"] for column in agg["columns"]} == set(contract_ids[:2])
 
+    # `count` отсечённого класса — НЕНУЛЕВОЙ. Утверждения о множестве id для этого
+    # недостаточно: начни `count` считаться по суженной выборке, id остался бы в
+    # фасете с нулём, тест был бы зелёным, а чип нарисовался бы как «(0)» —
+    # предложение снять фильтр, за которым нет ни одного договора.
+    excluded = next(e for e in agg["available_rate_classes"] if e["id"] == other_id)
+    assert excluded["count"] == 1
+
 
 def test_facet_computed_after_other_filters(db_session, factories):
     """Фасет считается ПОСЛЕ `q`/`object_id`/`contractor_id` (DoD 9).
@@ -188,3 +195,71 @@ def test_rate_class_id_column_is_a_snapshot_from_contract(db_session, factories)
     agg = cmp.build_comparison(db_session, [contract.id], vat_mode="net")
 
     assert agg["columns"][0]["rate_class_id"] == class_at_signing.id
+
+
+# ---------------------------------------------------------------------------
+#  Дырки в покрытии, найденные независимым ревью задачи 4
+# ---------------------------------------------------------------------------
+
+def test_facet_ids_not_covering_selection_is_a_programming_error(db_session, factories):
+    """Надмножество `facet_ids` держит КОД, а не соглашение.
+
+    Заведено ревью: защита была в коде и отсутствовала в CI. Её можно было
+    удалить, оставив `just ci` зелёным, — то есть защита, поставленная ровно
+    против МОЛЧАЛИВОГО дефекта, ушла бы сама молча (AGENTS.md §12).
+
+    Чем именно молчаливого: не покрой `facet_ids` выборку, договор выпал бы из
+    `columns_meta`, а с ним из `ordered_ids`, — но роллапы для него всё равно
+    прочитались бы, и ответ показал бы выборку МЕНЬШЕ запрошенной, ничего об этом
+    не сказав. Структурно такой ответ правильный: не хватает колонки, которую
+    никто не пересчитывает.
+
+    На обоих HTTP-путях условие недостижимо (`resolve_selection` строит
+    `facet_ids` надмножеством по построению), поэтому единственный его смысл —
+    сторожить прямые вызовы, а без теста этот смысл не живёт.
+    """
+    contract_ids, _shared_id, _other_id = fx.contracts_sharing_a_rate_class(db_session, factories)
+
+    with pytest.raises(RuntimeError):
+        cmp.build_comparison(db_session, contract_ids, facet_ids=contract_ids[:1], vat_mode="net")
+
+    # Обратный случай ОБЯЗАТЕЛЕН: без него тест зелёный и при безусловном
+    # `raise RuntimeError` — то есть не отличал бы защиту от поломки.
+    agg = cmp.build_comparison(
+        db_session, contract_ids[:1], facet_ids=contract_ids, vat_mode="net"
+    )
+    assert [column["contract_id"] for column in agg["columns"]] == contract_ids[:1]
+
+
+def test_empty_selection_still_carries_an_empty_facet(db_session):
+    """DoD 7 «ВСЕГДА» — в том единственном случае, где «всегда» неочевидно.
+
+    `_load_columns` имеет ранний `return []` на пустом входе; ровно из такой формы
+    однажды вырастает ранний выход и из `build_comparison`, а с ним пропадёт ключ.
+    """
+    agg = cmp.build_comparison(db_session, [], vat_mode="net")
+
+    assert "available_rate_classes" in agg
+    assert agg["available_rate_classes"] == []
+
+
+def test_narrowing_to_nothing_keeps_the_facet_of_the_wider_selection(db_session, factories):
+    """Сужение, выбравшее НОЛЬ договоров, фасет не обнуляет.
+
+    Это предельный случай обратимости, и он самый важный: именно здесь человек
+    обязан иметь возможность снять чип. Пустые колонки при непустом фасете —
+    законное состояние экрана, а не ошибка.
+    """
+    contract_ids, shared_id, other_id = fx.contracts_sharing_a_rate_class(db_session, factories)
+
+    agg = cmp.build_comparison(db_session, [], facet_ids=contract_ids, vat_mode="net")
+
+    assert agg["columns"] == []
+    # Сверяется отображение id → count, а не позиции в списке: порядок фасета —
+    # по `title`, и он к этому тесту отношения не имеет (его сторожит
+    # `test_facet_ordered_by_title_stable_and_independent_of_columns`). Первая
+    # редакция этого утверждения ждала `[2, 1]` и упала на `[1, 2]`, потому что
+    # «Класс другой» алфавитно раньше «Класс общий», — ошибка была в ожидании.
+    assert {e["id"]: e["count"] for e in agg["available_rate_classes"]} == {
+        shared_id: 2, other_id: 1,
+    }
