@@ -46,6 +46,22 @@ function renderCompare(query = SELECTION, initialUser?: Parameters<typeof render
   });
 }
 
+/** Рендер вместе с пробником адреса — для утверждений о ЗАПИСИ в URL. */
+function renderWithProbe(query = SELECTION) {
+  return renderWithProviders(
+    <>
+      <ComparePage />
+      <LocationProbe />
+    </>,
+    { initialRoute: `/compare?${query}` }
+  );
+}
+
+/** Адрес изнутри роутера: `window.location` под `MemoryRouter` правок не видит. */
+function locationSearch(): URLSearchParams {
+  return new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
+}
+
 describe("Сравнение договоров — предпосылки фикстуры", () => {
   it("строка «1» действительно имеет три сопоставимых значения (испытание подсветки)", () => {
     const row1 = sampleComparison.rows.find((r) => r.code === "1");
@@ -175,48 +191,47 @@ describe("Сравнение договоров — действующая ст�
    * РАЗОЙТИСЬ: на фикстуре они совпадают, и тест на их совпадении не различает,
    * какое из двух полей читает экран.
    *
-   * Подпись состава помечена режимом и ставкой — это единственный сигнал
-   * ПРИМЕНЁННОГО ответа, а без него утверждение об отсутствии записи мерило бы
-   * старый кадр. Настоящий сервер подпись по режиму тоже различает
+   * `narrowedPreselected` (когда задан) делает предвыбор ЗАВИСЯЩИМ от
+   * `rate_class_id` запроса — ровно то, что требует предпосылка DoD 34 (спека
+   * диаграммы стоимости §2.6, подраздел «Ставка показа не имеет права меняться
+   * от фильтра»): сужение по классу меняет состав выборки, а значит на
+   * настоящем сервере могло бы изменить и предвыбор. На общем моке предвыбор
+   * один и тот же всегда, и без этого параметра тест DoD 34 был бы вакуозен —
+   * снятие записи ставки ничего бы не поменяло.
+   *
+   * Подпись состава помечена режимом, ставкой И предвыбором — это единственный
+   * сигнал ПРИМЕНЁННОГО ответа, а без него утверждение об отсутствии записи
+   * мерило бы старый кадр. Предвыбор в подписи нужен отдельно от ставки: при
+   * сужении меняется именно он, тогда как ставка обязана остаться прежней, —
+   * то есть без него у СУЖЕННОГО кадра наблюдаемого признака нет вовсе. Настоящий сервер подпись по режиму тоже различает
    * (`_mode_caption`), общий мок — нет, и граница по времени вместо этого
    * сигнала зависела бы от загрузки машины (devlog §4.3б).
    */
-  function echoServerRate(preselected = "20.00") {
+  function echoServerRate(preselected = "20.00", narrowedPreselected?: string) {
     server.use(
       http.get("/api/v1/analytics/comparison", ({ request }) => {
         const url = new URL(request.url);
         requests.push(Object.fromEntries(url.searchParams));
         const mode = url.searchParams.get("vat_mode") ?? "own";
+        const narrowed = url.searchParams.get("rate_class_id") !== null;
+        const effectivePreselected =
+          narrowed && narrowedPreselected !== undefined ? narrowedPreselected : preselected;
         const asked = url.searchParams.get("single_rate");
-        const effective = asked ?? (mode === "single" ? preselected : null);
+        const effective = asked ?? (mode === "single" ? effectivePreselected : null);
         return HttpResponse.json({
           ...sampleComparison,
           vat_mode: mode,
-          rate_preselected: preselected,
+          rate_preselected: effectivePreselected,
           single_rate: effective,
-          caption: `mode=${mode} rate=${effective ?? "none"}`,
+          caption: `mode=${mode} rate=${effective ?? "none"} preselected=${effectivePreselected}`,
         });
       })
     );
   }
 
-  function renderWithProbe(query: string) {
-    renderWithProviders(
-      <>
-        <ComparePage />
-        <LocationProbe />
-      </>,
-      { initialRoute: `/compare?${query}` }
-    );
-  }
-
-  function search(): URLSearchParams {
-    return new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
-  }
-
   /** Ждёт ПРИМЕНЁННОГО ответа: подпись состава несёт режим и ставку ответа. */
-  function appliedCaption(mode: string, rate: string) {
-    return screen.findByText(`mode=${mode} rate=${rate}`);
+  function appliedCaption(mode: string, rate: string, preselected = "20.00") {
+    return screen.findByText(`mode=${mode} rate=${rate} preselected=${preselected}`);
   }
 
   it("предпосылка: своей ставки в фикстуре нет, предвыбор — 20.00", () => {
@@ -232,7 +247,7 @@ describe("Сравнение договоров — действующая ст�
 
     // Утверждается ЗНАЧЕНИЕ, а не факт появления параметра: «появился»
     // прошло бы и при записи чего угодно.
-    await waitFor(() => expect(search().get("single_rate")).toBe("20.00"));
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
   });
 
   it("в адрес идёт ДЕЙСТВУЮЩАЯ ставка, а не предвыбор", async () => {
@@ -247,7 +262,7 @@ describe("Сравнение договоров — действующая ст�
     renderWithProbe(`${SELECTION}&vat_mode=single&single_rate=22.00`);
 
     await appliedCaption("single", "22.00");
-    expect(search().get("single_rate")).toBe("22.00");
+    expect(locationSearch().get("single_rate")).toBe("22.00");
     expect(requests.every((r) => r.single_rate === "22.00")).toBe(true);
   });
 
@@ -257,12 +272,12 @@ describe("Сравнение договоров — действующая ст�
 
     // Дождаться, что эффект уже записал ставку — иначе переход в «Без НДС»
     // ничего не отменял бы: параметра и не было изначально.
-    await waitFor(() => expect(search().get("single_rate")).toBe("20.00"));
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
 
     await userEvent.click(screen.getByRole("button", { name: "Без НДС" }));
 
     // Уходит вместе с режимом — это делает `updateVatMode`.
-    await waitFor(() => expect(search().get("vat_mode")).toBe("net"));
+    await waitFor(() => expect(locationSearch().get("vat_mode")).toBe("net"));
 
     /*
       И НЕ ВОЗВРАЩАЕТСЯ. Утверждение об отсутствии требует границы, и граница
@@ -277,7 +292,7 @@ describe("Сравнение договоров — действующая ст�
     // кадре, а `act` дожидается очереди обновлений детерминированно, не
     // таймером. Достаточность проверена снятием (см. devlog).
     await act(async () => {});
-    expect(search().get("single_rate")).toBeNull();
+    expect(locationSearch().get("single_rate")).toBeNull();
   });
 
   it("вне «Единой» клиент ставку серверу не отправляет", async () => {
@@ -294,6 +309,237 @@ describe("Сравнение договоров — действующая ст�
     await appliedCaption("net", "none");
     expect(requests.length).toBeGreaterThan(0);
     expect(requests.every((r) => r.single_rate === undefined)).toBe(true);
+  });
+
+  it("предпосылка (DoD 34): сужение по классу меняет предвыбор ставки на моке", async () => {
+    /*
+      Без этого измерения тест перехода ниже был бы вакуозен: на общем моке
+      предвыбор один и тот же всегда, и снятие записи ставки задачи 9 ничего
+      не изменило бы. Здесь обработчик подменён так, что суженный запрос
+      (`rate_class_id` есть) предвыбрал бы 22.00, а не фикстурные 20.00
+      (см. предпосылку выше и devlog §3.6б) — измеряется РАЗЛИЧИЕ, а не
+      совпадение.
+    */
+    echoServerRate("20.00", "22.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single&rate_class_id=1`);
+
+    /*
+      Мерится ОТВЕТ, а не адрес. Через адрес предпосылка проверялась бы тем самым
+      эффектом, снятие которого обязан ловить тест перехода ниже: сняли эффект —
+      покраснели оба, и какое из двух утверждений сломалось, не различить
+      (docs/insights/false-test-premises.md). Подпись состава несёт предвыбор
+      ответа и от эффекта не зависит вовсе.
+    */
+    await appliedCaption("single", "22.00", "22.00");
+  });
+
+  it("сужение по классу НЕ меняет действующую ставку показа (DoD 34, переход из задачи 9)", async () => {
+    /*
+      Задача 9 закрыла адресную половину DoD 34 («после записи предвыбор в
+      игру больше не входит»), но без контрола сужения переход было нечем
+      водить (devlog §3.6б). Чип класса — этот контрол. Предпосылка выше
+      измерила, что предвыбор для суженной выборки ИНОЙ (22.00); значит если
+      бы клиент читал предвыбор заново после клика, адрес получил бы 22.00.
+      Он обязан остаться с ПЕРВОЙ ставкой — 20.00.
+    */
+    echoServerRate("20.00", "22.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Дождаться, что действующая ставка уже записана в адрес — ДО сужения.
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
+    requests.length = 0;
+
+    // Единственный контрол сужения — чип класса; снимаем «Класс B», сужая до
+    // «Класс A» (id 1). Дожидаемся ПРИМЕНЁННОГО ответа, а не таймера.
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "Класс объекта" })).getByRole("button", {
+        name: /Класс B/,
+      })
+    );
+
+    /*
+      Якорь — ПРИМЕНЁННЫЙ суженный кадр, а не отправленный запрос: `requests`
+      наполняется внутри обработчика, то есть ДО того, как ответ разобран, а
+      дописать ставку заново эффект может только после разбора. Утверждение об
+      отсутствии, поставленное на request-time, мерило бы кадр до клика — ровно
+      та ошибка, которую эта ветка уже разобрала и записала правилом
+      (devlog §4.6). `preselected=22.00` в подписи и означает суженный кадр:
+      предвыбор для него ИНОЙ, а ставка обязана остаться прежней.
+    */
+    await appliedCaption("single", "20.00", "22.00");
+    await act(async () => {});
+
+    expect(requests.find((r) => r.rate_class_id === "1")?.single_rate).toBe("20.00");
+    expect(locationSearch().get("single_rate")).toBe("20.00");
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Чипы классов объекта
+//  (спека диаграммы стоимости §2.6, §2.7; DoD 8, 30, 31)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — чипы классов объекта", () => {
+  /**
+   * Чип ищется ВНУТРИ своей группы, а не по всему экрану: задача 11 добавит
+   * рядом контролы диаграммы, и глобальный поиск по ярлыку класса стал бы
+   * двусмысленным — тест упал бы по причине, не связанной с чипами.
+   */
+  function chip(title: string): HTMLElement {
+    return within(screen.getByRole("group", { name: "Класс объекта" })).getByRole("button", {
+      name: new RegExp(title),
+    });
+  }
+
+  it("клик пишет в адрес id по возрастанию, а при полном наборе параметр исчезает (DoD 31)", async () => {
+    /*
+      Локальная подмена только `available_rate_classes`: у фикстуры их ДВА, а
+      с двумя список из нескольких id никогда не наблюдаем — любые два разом
+      это полный набор, и параметр обязан исчезнуть (DoD 31). Третий класс
+      заведён здесь ЛОКАЛЬНО, а не в `fixtures.ts` — общая фикстура держит
+      счётчики фасета согласованными с колонками договоров, а этому тесту
+      нужен только сам механизм чипов. Порядок ответа НАМЕРЕННО не по
+      возрастанию id (3, 1, 2) — так тест отличает «пишем порядок id», что
+      требует DoD 31, от «пишем порядок ответа», что требуют чипы (§2.7).
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json({
+          ...sampleComparison,
+          available_rate_classes: [
+            { id: 3, title: "Класс C", count: 1 },
+            { id: 1, title: "Класс A", count: 3 },
+            { id: 2, title: "Класс B", count: 1 },
+          ],
+        })
+      )
+    );
+
+    renderWithProbe();
+    await screen.findByTestId("comparison-caption");
+
+    // Порядок в DOM — порядок ОТВЕТА (C, A, B), а не алфавитный: чипы не
+    // имеют права переставляться сами (§2.7).
+    const group = screen.getByRole("group", { name: "Класс объекта" });
+    const chipLabels = within(group)
+      .getAllByRole("button")
+      .map((button) => button.textContent ?? "");
+    expect(chipLabels[0]).toContain("Класс C");
+    expect(chipLabels[1]).toContain("Класс A");
+    expect(chipLabels[2]).toContain("Класс B");
+
+    // На чипе стоит `count` фасета, а не id класса: числа в подмене намеренно
+    // РАЗНЫЕ (класс A — id 1, count 3), иначе тест не отличил бы одно от другого.
+    expect(within(chip("Класс A")).getByText("3")).toBeInTheDocument();
+
+    // Снимаем «Класс C» (id 3), затем «Класс A» (id 1) — в этом порядке
+    // кликов, НЕ по возрастанию id, чтобы отличить «сортируем адрес» от
+    // «пишем порядок кликов».
+    await userEvent.click(chip("Класс C"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("1,2"));
+
+    await userEvent.click(chip("Класс A"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("2"));
+
+    // Возврат класса A восстанавливает {1,2}, но набор ещё НЕ полный (класс C
+    // всё ещё снят) — список остаётся в адресе, отсортированный по id.
+    await userEvent.click(chip("Класс A"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("1,2"));
+
+    // И только возврат класса C даёт полный набор — параметр ИСЧЕЗАЕТ, а не
+    // записывается как «1,2,3»: ссылка становится посимвольно той же, что до
+    // фичи.
+    await userEvent.click(chip("Класс C"));
+    await waitFor(() => expect(locationSearch().has("rate_class_id")).toBe(false));
+  });
+
+  it("снятие последнего выбранного класса не срабатывает, запроса нет (DoD 30)", async () => {
+    let requestCount = 0;
+    server.use(
+      http.get("/api/v1/analytics/comparison", () => {
+        requestCount += 1;
+        return HttpResponse.json(sampleComparison);
+      })
+    );
+
+    renderWithProbe(`${SELECTION}&rate_class_id=1`);
+    await screen.findByTestId("comparison-caption");
+    const requestsAfterLoad = requestCount;
+
+    expect(locationSearch().get("rate_class_id")).toBe("1");
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    // Молчание контрола объяснено, а не просто случается: `aria-disabled` и
+    // подсказка. Именно `aria-disabled`, а не `disabled` — выключенную кнопку
+    // нельзя было бы нажать, и защита спряталась бы за DOM.
+    expect(classA).toHaveAttribute("aria-disabled", "true");
+    expect(classA).toHaveAttribute("title");
+
+    await userEvent.click(classA);
+
+    /*
+      Утверждение об ОТСУТСТВИИ (адрес не поехал, запроса не было) не имеет
+      наблюдаемого позитивного сигнала «применённого ответа» — самого ответа
+      здесь по определению не будет. `act` детерминированно доводит очередь
+      микрозадач/эффектов до конца ТЕКУЩЕГО кадра, а не мерит машину таймером
+      (devlog §4.6): если бы клик всё-таки отправлял запрос, доведённая до
+      конца очередь эффектов успела бы его инициировать до этой точки.
+    */
+    await act(async () => {});
+
+    expect(locationSearch().get("rate_class_id")).toBe("1");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    expect(requestCount).toBe(requestsAfterLoad);
+  });
+
+  it("снятие последнего ВИДИМОГО класса не срабатывает, даже когда адрес несёт класс вне фасета (DoD 30)", async () => {
+    /*
+      Присланная ссылка от другой выборки несёт `rate_class_id` с классом,
+      которого в фасете этой выборки нет: фасет считается по выборке (спека
+      диаграммы стоимости §2.7). Если бы выбранные считались прямо по адресу,
+      такой id шёл бы в счёт, снятие ЕДИНСТВЕННОГО видимого чипа проходило бы,
+      и в адресе оставался бы только фантом — то есть выборка из нуля
+      договоров, которую DoD 30 запрещает. Замерено на реализации без сечения:
+      адрес становился `rate_class_id=9`.
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () => HttpResponse.json(sampleComparison))
+    );
+    renderWithProbe(`${SELECTION}&rate_class_id=1,9`);
+    await screen.findByTestId("comparison-caption");
+
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    // Класс 9 в фасете отсутствует, поэтому чипа у него нет вовсе.
+    expect(within(screen.getByRole("group", { name: "Класс объекта" })).getAllByRole("button"))
+      .toHaveLength(sampleComparison.available_rate_classes.length);
+
+    await userEvent.click(classA);
+    await act(async () => {});
+
+    expect(locationSearch().get("rate_class_id")).toBe("1,9");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("чипы видны и после перезагрузки с сужением: снятый класс остаётся на экране (DoD 8 на клиенте)", async () => {
+    /*
+      Открываем адрес, где `rate_class_id=1` УЖЕ сужает выборку до «Класс A» —
+      как после перезагрузки суженной ссылки. Общий мок отдаёт
+      `available_rate_classes` фикстуры БЕЗ УЧЁТА `rate_class_id` (facet
+      считается ДО сужения классами, спека §2.7) — этим тест и опирается на
+      настоящую серверную семантику, а не на клиентское домысливание: «Класс
+      B» обязан остаться виден и доступен для возврата, иначе фильтр стал бы
+      необратимым.
+    */
+    renderCompare(`${SELECTION}&rate_class_id=1`);
+    await screen.findByTestId("comparison-caption");
+
+    const classB = chip("Класс B");
+    expect(classB).toBeInTheDocument();
+    expect(classB).toHaveAttribute("aria-pressed", "false");
+
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
   });
 });
 

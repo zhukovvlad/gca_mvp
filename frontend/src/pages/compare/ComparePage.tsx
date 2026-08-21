@@ -597,6 +597,19 @@ export default function ComparePage() {
 
   const hasSelection = Boolean(idsParam) || allParam === "1";
 
+  /*
+    Выбранные классы объекта читаются из адреса (спека диаграммы стоимости
+    §2.6, §2.7): параметра `rate_class_id` НЕТ — выбраны ВСЕ, и это кодируется
+    значением `null`, а не пустым множеством — «параметра нет» и «выбрано
+    пусто» РАЗНЫЕ состояния, различие несёт форма кода, а не дисциплина
+    (docs/insights/one-value-two-states.md). Пустой `rate_class_id=` сервер
+    отвергает 400-м, и клиент его не пишет никогда (см. `toggleRateClass`).
+  */
+  const selectedRateClassIds = useMemo<Set<number> | null>(() => {
+    if (rateClassIdParam === undefined) return null;
+    return new Set(rateClassIdParam.split(",").map(Number));
+  }, [rateClassIdParam]);
+
   const params = useMemo<ComparisonParams>(
     () => ({
       ids: idsParam,
@@ -657,6 +670,28 @@ export default function ComparePage() {
 
   const tree = useMemo(() => buildComparisonTree(comparison?.rows ?? []), [comparison?.rows]);
 
+  /*
+    ДЕЙСТВУЮЩЕЕ множество выбранных классов — одно на весь экран: по нему и
+    рисуются чипы, и решает `toggleRateClass`. Один предикат вместо двух: два
+    независимых «выбран ли класс» однажды разошлись бы, а расхождение выглядело
+    бы как нажатый чип, который не снимается, либо ненажатый, который снимается.
+
+    Адрес СЕЧЁТСЯ с фасетом, а не берётся как есть. Фасет считается по выборке
+    (спека диаграммы стоимости §2.7), поэтому присланная ссылка от ДРУГОЙ
+    выборки может называть класс, которого в этом фасете нет. Лишний id рядом с
+    настоящим на результат не влияет — сужать им нечего, — но в СЧЁТЕ выбранных
+    он участвовал бы, и защита DoD 30 обходилась бы: `rate_class_id=1,9`
+    считался бы двумя выбранными, снятие единственного видимого чипа проходило
+    бы, и в адресе оставалось бы `9`, то есть выборка из нуля договоров.
+    Замерено. Сечение заодно делает адрес каноническим: фантомный id уходит при
+    первой же записи, а не живёт в ссылке дальше.
+  */
+  const effectiveRateClassIds = useMemo<Set<number>>(() => {
+    const allIds = comparison?.available_rate_classes.map((rateClass) => rateClass.id) ?? [];
+    if (selectedRateClassIds === null) return new Set(allIds);
+    return new Set(allIds.filter((classId) => selectedRateClassIds.has(classId)));
+  }, [comparison?.available_rate_classes, selectedRateClassIds]);
+
   function toggle(code: string) {
     setExpandedCodes((prev) => {
       const next = new Set(prev);
@@ -679,6 +714,46 @@ export default function ComparePage() {
     next.set("vat_mode", "single");
     next.set("single_rate", rate);
     setSearchParams(next, { replace: true });
+  }
+
+  /**
+   * Переключает чип класса объекта (спека диаграммы стоимости §2.6, §2.7).
+   * Фильтр — перезапрос, а не скрытие столбцов: медиана и отклонения обязаны
+   * пересчитаться сервером по суженной выборке, значит клик всегда правит
+   * адрес, а не локальное состояние страницы.
+   *
+   * Снятие ПОСЛЕДНЕГО выбранного класса не срабатывает (DoD 30): выборка из
+   * нуля договоров — не состояние экрана, а отсутствие запроса, контрол не
+   * срабатывает.
+   *
+   * Запись — тем же приёмом, что `updateVatMode`/`updateSingleRate`: id по
+   * возрастанию (одна выборка — один адрес, независимо от порядка чипов), а
+   * при выборе ВСЕХ доступных классов параметр из адреса ИСЧЕЗАЕТ (DoD 31) —
+   * ссылка становится посимвольно той же, что до фичи.
+   */
+  function toggleRateClass(id: number) {
+    if (!comparison) return;
+    const allIds = comparison.available_rate_classes.map((rateClass) => rateClass.id);
+    const current = effectiveRateClassIds;
+    if (current.has(id) && current.size === 1) return; // DoD 30
+
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+
+    const nextParams = new URLSearchParams(searchParams);
+    const isFullSet = allIds.length === next.size && allIds.every((classId) => next.has(classId));
+    if (isFullSet) {
+      nextParams.delete("rate_class_id");
+    } else {
+      nextParams.set(
+        "rate_class_id",
+        Array.from(next)
+          .sort((a, b) => a - b)
+          .join(",")
+      );
+    }
+    setSearchParams(nextParams, { replace: true });
   }
 
   /**
@@ -1074,6 +1149,61 @@ export default function ComparePage() {
               </Select>
             </div>
           </div>
+
+          {/*
+            Чипы классов объекта — новый фильтр (спека диаграммы стоимости
+            §2.6, §2.7; DoD 30, 31). Источник — `available_rate_classes`, в
+            ПОРЯДКЕ ОТВЕТА: сервер уже упорядочил по `title`, и чипы не имеют
+            права переставляться, когда меняется набор договоров (§2.7).
+            Роль группы даёт сам `fieldset`/`legend` (как в макете) — заводить
+            рядом ещё один `role="group"` с тем же именем означало бы два
+            узла accessibility-дерева на одну группу; `aria-pressed` на каждой
+            кнопке — тот же приём, что у групп «Показатель»/«НДС» выше, чтобы
+            экран не выглядел собранным из двух разных наборов. Чип —
+            оформление поверх того же `Button`, а не новый примитив.
+          */}
+          <fieldset className="mt-4 rounded-lg border border-border-subtle bg-surface-sunken p-3">
+            <legend className="px-1 text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
+              Класс объекта
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {comparison.available_rate_classes.map((rateClass) => {
+                const isSelected = effectiveRateClassIds.has(rateClass.id);
+                /*
+                  Единственный выбранный чип не снимается (DoD 30), и молчание
+                  объяснено: `aria-disabled` с подсказкой, а НЕ `disabled` —
+                  выключенная кнопка спрятала бы защиту за DOM, и снятие защиты
+                  перестало бы что-либо ронять. Условие ТО ЖЕ, что в
+                  `toggleRateClass`, и оба читают одно множество.
+                */
+                const isLastSelected = isSelected && effectiveRateClassIds.size === 1;
+                return (
+                  <Button
+                    key={rateClass.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-pressed={isSelected}
+                    aria-disabled={isLastSelected || undefined}
+                    aria-label={`${rateClass.title}, договоров: ${rateClass.count}`}
+                    title={
+                      isLastSelected
+                        ? "Последний класс не снимается: сравнивать было бы нечего"
+                        : undefined
+                    }
+                    className={cn(
+                      "rounded-full",
+                      isSelected && "border-accent-text/30 bg-accent-soft text-accent-text"
+                    )}
+                    onClick={() => toggleRateClass(rateClass.id)}
+                  >
+                    {rateClass.title}
+                    <span className="tabular-nums text-fg-tertiary">{rateClass.count}</span>
+                  </Button>
+                );
+              })}
+            </div>
+          </fieldset>
 
           {/*
             Скролл в обе стороны сразу, первая колонка закреплена (DoD 17) —
