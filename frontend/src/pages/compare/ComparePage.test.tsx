@@ -5,9 +5,10 @@ import { HttpResponse, http } from "msw";
 import { useLocation } from "react-router-dom";
 
 import ComparePage from "./ComparePage";
+import type { Comparison } from "@/types/domain";
 import { deviationTone } from "./deviationTone";
 import { sampleComparison, sampleInflationSeries } from "@/test/fixtures";
-import { handlerState } from "@/test/handlers";
+import { handlerState, totalsMediansWithMode } from "@/test/handlers";
 import { server } from "@/test/server";
 import { DEFAULT_TEST_USER, renderWithProviders } from "@/test/utils";
 
@@ -541,6 +542,253 @@ describe("Сравнение договоров — чипы классов об
     const classA = chip("Класс A");
     expect(classA).toHaveAttribute("aria-pressed", "true");
   });
+
+  /*
+    Теста на фокус клавиатуры после клика по чипу здесь НЕТ, и это решение, а не
+    пропуск. Дефект измерен (клик снимает всю панель скелетоном, чип уходит из
+    DOM, фокус уезжает в `body`), прописанное лечение
+    `placeholderData: keepPreviousData` опробовано и ОТКЛОНЕНО: оно постоянно
+    ломает три существующих утверждения об адресе. Механизм, обоснование и
+    условие, при котором лечение станет возможным, — в `docs/TECH_DEBT.md`,
+    запись 16; замеры — в devlog фичи.
+    Заводить тест на поведение, которого сейчас нет, значило бы держать в наборе
+    постоянно красный тест либо утверждать неправду.
+  */
+});
+
+// ---------------------------------------------------------------------------
+//  Приведение по умолчанию выключено
+//  (спека диаграммы стоимости §2.8, §2.9; DoD 32; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — приведение по умолчанию выключено (DoD 32)", () => {
+  it("без инфляционных параметров в адресе: числа номинальные, ключей nominal нет, диаграмма/чипы/facet есть", async () => {
+    /*
+      DoD 32 говорит не «экран отвечает как до фичи», а ровно наоборот:
+      диаграмма, чипы классов и `available_rate_classes` появляются
+      НЕЗАВИСИМО от приведения. Здесь всё это проверяется на голом адресе —
+      без единого инфляционного параметра.
+    */
+    renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByRole("heading", { name: /Диаграмма стоимости/ })).toBeInTheDocument();
+    const classGroup = screen.getByRole("group", { name: "Класс объекта" });
+    expect(within(classGroup).getAllByRole("button")).toHaveLength(
+      sampleComparison.available_rate_classes.length
+    );
+
+    // Число — то самое НОМИНАЛЬНОЕ значение фикстуры (с длинным хвостом
+    // `gross_to_net`, тот же замер, что и в тесте округления ниже), а не
+    // какое-то приведённое.
+    expect(screen.getByTestId("comparison-cell-totals-204").textContent?.replace(/\s/g, " ")).toBe(
+      "2 100 000,95 ₽"
+    );
+
+    /*
+      Ключей `nominal` в ответе нет ни одного (DoD 13, наследуется DoD 32).
+      `costChartData.buildCostChartBars` производит `nominalValue` РОВНО из
+      `bucketCell.nominal` — не вычисляет его сам, — поэтому отсутствие ключа
+      наблюдаемо на экране как отсутствие абзаца «Промежуток к номиналу» и
+      точечной линии медианы номинала. Снято и проверено: временная вставка
+      `nominal` в ответ мока без `inflation_series_id` (`src/test/handlers.ts`)
+      делает оба узла видимыми и красит это утверждение в красный — см. отчёт
+      задачи.
+    */
+    expect(screen.queryByText(/Промежуток к номиналу/)).not.toBeInTheDocument();
+  });
+
+  it("без инфляционных параметров нет и НОМИНАЛЬНОЙ линии медианы — при том, что обычная есть", async () => {
+    /*
+      Вторая половина того же обещания, и ей нужен свой режим. В «Своей ставке»
+      (умолчание фикстуры) линии медианы не бывает ВООБЩЕ — поля
+      `shown_per_sqm` там нет по правилу присутствия (спека диаграммы стоимости
+      §2.8), — поэтому утверждение «номинальной линии нет», сделанное там,
+      выполняется само собой и не может упасть ни при какой вставке `nominal` в
+      ответ. Измерено: вставка `nominal` во все корзины и в медиану его не
+      роняла. Здесь режим «Без НДС», и предпосылка измеряется — обычная линия
+      ДОЛЖНА присутствовать, иначе отсутствие второй ничего не значит.
+    */
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByTestId("cost-chart-median-line")).toBeInTheDocument();
+    expect(screen.queryByTestId("cost-chart-median-line-nominal")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Медиана — на диаграмме, не в таблице
+//  (спека диаграммы стоимости §2.4; DoD 22в; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — медиана на диаграмме, а не в таблице (DoD 22в)", () => {
+  it("медиана есть на экране, в жёлобе диаграммы, но НЕ колонкой таблицы", async () => {
+    /*
+      Медиана — новая поверхность (спека диаграммы стоимости §2.4): на
+      сегодняшнем экране она числом не показана нигде, диаграмма — первое
+      место, где она появляется. Утверждение об отсутствии обязано различать
+      ТАБЛИЦУ и диаграмму, а не искать слово «медиана» по всему экрану —
+      тогда оно провалилось бы само по себе, потому что диаграмма печатает
+      его законно.
+
+      Режим «Без НДС» взят потому, что в «Своей ставке» (умолчание фикстуры)
+      поле `shown_per_sqm` у медианы «Итого» ОТСУТСТВУЕТ по правилу
+      присутствия (спека диаграммы стоимости §2.8) — линии не было бы, и
+      предпосылка «медиана есть на экране» была бы ложной без всякой связи с
+      этим тестом.
+    */
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    // Предпосылка, измеренная, а не подразумеваемая: сопоставимых у «Итого»
+    // действительно три и больше, и диаграмма ДЕЙСТВИТЕЛЬНО рисует линию.
+    expect(sampleComparison.totals_medians.total.comparable_count).toBeGreaterThanOrEqual(3);
+    expect(screen.getByTestId("cost-chart-median-line")).toHaveTextContent(/медиана/i);
+
+    // В таблице — нет: ни слова «медиана» где-либо внутри, ни колонки в шапке.
+    const table = screen.getByRole("table");
+    expect(within(table).queryByText(/медиана/i)).not.toBeInTheDocument();
+    const headers = within(table).getAllByRole("columnheader");
+    expect(headers.some((header) => /медиана/i.test(header.textContent ?? ""))).toBe(false);
+    // Шапка колонки договора — те же два столбца, что и до фичи: «Сумма»/«за м²».
+    expect(headers.filter((header) => header.textContent === "Сумма")).toHaveLength(
+      sampleComparison.columns.length
+    );
+    expect(headers.filter((header) => header.textContent === "за м²")).toHaveLength(
+      sampleComparison.columns.length
+    );
+  });
+});
+
+/**
+ * Связный ответ режима «Без НДС» из фикстуры «Своей ставки».
+ *
+ * Подменять один только `totals` нельзя: у ответа есть согласованные между собой
+ * поля — режим, подпись состава и правило присутствия `shown_per_sqm` у медиан
+ * КАЖДОЙ корзины (спека диаграммы стоимости §2.8, §2.10). Ответ, где адрес
+ * говорит `net`, а тело несёт `own`-подпись и медиану без поля, сервер не
+ * выдаёт, и тест на нём проверял бы кадр, которого не бывает. `vat_mode` в
+ * адресе при этом несущий: без него у медианы «Итого» поля нет, и половина
+ * утверждений о линии выполнялась бы сама собой.
+ */
+function netModeResponse(overrides: Partial<Comparison>): Comparison {
+  const base: Comparison = {
+    ...sampleComparison,
+    vat_mode: "net",
+    single_rate: null,
+    caption: "Суммы — без НДС. Отклонения посчитаны без НДС.",
+    ...overrides,
+  };
+  return { ...base, totals_medians: totalsMediansWithMode(base.totals_medians, "net") };
+}
+
+/** Медиана «Итого», которой нет вовсе: сопоставимых ноль. */
+const EMPTY_TOTAL_MEDIAN = { value: null, comparable_count: 0, contract_ids: [] };
+
+// ---------------------------------------------------------------------------
+//  Диаграмма не ломается на неполных выборках
+//  (спека диаграммы стоимости §2.4, §2.9; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — диаграмма не ломается на неполных выборках", () => {
+  it("выборка без сумм: таблица и диаграмма отрисовываются целиком, у каждой колонки — место и причина", async () => {
+    /*
+      Договор без суммы остаётся в ряду диаграммы с причиной из
+      `incomplete_reasons` (спека диаграммы стоимости §2.9) — здесь то же
+      самое верно для ВСЕЙ выборки разом, а не для одной колонки. Экран
+      обязан отрисоваться целиком: таблица (она читает `rows`, которые здесь
+      не трогаются) и диаграмма (она читает только `totals`, здесь погашенные).
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json(
+          netModeResponse({
+            totals: sampleComparison.totals.map((cell) => ({
+              ...cell,
+              total: {
+                net: null,
+                shown: null,
+                net_per_sqm: null,
+                shown_per_sqm: null,
+                state: "value",
+                deviation_pct: null,
+                incomplete_reasons: ["unpriced_rows"],
+              },
+            })),
+            totals_medians: { ...sampleComparison.totals_medians, total: EMPTY_TOTAL_MEDIAN },
+          })
+        )
+      )
+    );
+
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    // Таблица цела — дерево статей и итоговая строка на месте.
+    expect(screen.getByText("Земляные работы")).toBeInTheDocument();
+    expect(screen.getByTestId("comparison-row-totals")).toBeInTheDocument();
+
+    // Диаграмма цела: у КАЖДОЙ из четырёх колонок — место и причина, а не
+    // молчаливый пропуск (иначе выборка из четырёх выглядела бы как из нуля).
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.getByTestId(`cost-chart-nodata-${contractId}`)).toHaveTextContent(
+        "нет суммы: без цены"
+      );
+    }
+    // Медианы тоже нет — со своим объяснением, а не пустым местом.
+    expect(screen.getByTestId("cost-chart-median-note")).toBeInTheDocument();
+    expect(screen.queryByTestId("cost-chart-median-line")).not.toBeInTheDocument();
+  });
+
+  it("менее трёх сопоставимых: линии и плашек нет, объяснение есть, а столбцы и таблица целы", async () => {
+    /*
+      Отклонения ячеек тоже гасятся, и это не украшение фикстуры. Сервер при
+      медиане `null` оставляет `deviation_pct` пустым у ВСЕХ ячеек
+      (`_apply_deviation` в `backend/crud/comparison.py` возвращает ячейки
+      нетронутыми, когда медианы нет), поэтому ответ с живыми процентами при
+      мёртвой медиане сервер не выдаёт вовсе. Первая редакция этой фикстуры его
+      выдавала — и экран показывал плашки отклонений, которые DoD 24 запрещает
+      прямо, а тест этого не замечал, потому что про плашки не утверждал ничего.
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json(
+          netModeResponse({
+            totals: sampleComparison.totals.map((cell) => ({
+              ...cell,
+              total: { ...cell.total, deviation_pct: null },
+            })),
+            totals_medians: {
+              ...sampleComparison.totals_medians,
+              total: { value: null, shown_per_sqm: null, comparable_count: 2, contract_ids: [203, 202] },
+            },
+          })
+        )
+      )
+    );
+
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByTestId("comparison-row-totals")).toBeInTheDocument();
+    // Число «2» в объяснении — то самое, которым тест подменил `comparable_count`,
+    // а не угаданное значение.
+    expect(screen.getByTestId("cost-chart-median-note")).toHaveTextContent(
+      "Сопоставимых договоров в выборке 2"
+    );
+    expect(screen.queryByTestId("cost-chart-median-line")).not.toBeInTheDocument();
+    // И плашек отклонений нет ни у одного столбца — DoD 24 требует именно
+    // этого, а не только отсутствия линии: процент от медианы, которой нет,
+    // был бы отклонением ни от чего.
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.queryByTestId(`cost-chart-deviation-${contractId}`)).not.toBeInTheDocument();
+    }
+    // Столбцы всё равно нарисованы — данные не пропали вместе с медианой.
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.getByTestId(`cost-chart-column-${contractId}`)).toBeInTheDocument();
+    }
+  });
 });
 
 describe("Сравнение договоров — подпись налогового состава (AGENTS.md §10)", () => {
@@ -869,6 +1117,35 @@ describe("ComparePage: поправка на инфляцию", () => {
     expect(screen.getByRole("button", { name: "Привести" })).toBeEnabled();
     expect(screen.getByTestId("comparison-caption").textContent).toBe(before);
     expect(search()).not.toContain("inflation_series_id");
+    expect(handlerState.inflationRequests).toBe(0);
+  });
+
+  it("выбор ряда сам ось диаграммы не двигает (DoD 28а, вторая половина; план — задача 12)", async () => {
+    /*
+     * Пришло из задачи 11: она закрыла «ось строится по применённому состоянию»
+     * на чистой функции `costChartAxisTop` (спека диаграммы стоимости §2.2), но
+     * «выбор ряда сам по себе ничего не меняет» — свойство ЭКРАНА, а не той
+     * функции, и до сих пор не значилось ни в одном чек-листе (найдено ревью
+     * задачи 11). Соседний тест выше уже доказал это про числа и адрес; здесь —
+     * про засечки жёлоба, которых тот тест не касается вовсе.
+     */
+    await renderCompare();
+    const gutterBefore = screen.getByTestId("cost-chart-gutter");
+    const ticksBefore = Array.from(gutterBefore.querySelectorAll("span")).map(
+      (el) => `${el.style.bottom}|${el.textContent}`
+    );
+    // Предпосылка, измеренная: жёлоб ДЕЙСТВИТЕЛЬНО несёт засечки — иначе
+    // сравнение «до/после» сверяло бы два пустых списка и не проверяло бы
+    // ничего.
+    expect(ticksBefore.length).toBeGreaterThan(0);
+
+    await selectSeries("Росстат, ИПЦ, декабрь к декабрю");
+
+    const ticksAfter = Array.from(
+      screen.getByTestId("cost-chart-gutter").querySelectorAll("span")
+    ).map((el) => `${el.style.bottom}|${el.textContent}`);
+    expect(ticksAfter).toEqual(ticksBefore);
+    // И приведение при этом не считалось — та же ставка, что у соседнего теста.
     expect(handlerState.inflationRequests).toBe(0);
   });
 

@@ -357,7 +357,7 @@ function totalsMedianWithShownPerSqm(
 }
 
 /** `totalsMedianWithShownPerSqm` над ВСЕМИ трёх корзинами `totals_medians`. */
-function totalsMediansWithMode(
+export function totalsMediansWithMode(
   medians: Comparison["totals_medians"],
   vatMode: ComparisonVatMode
 ): Comparison["totals_medians"] {
