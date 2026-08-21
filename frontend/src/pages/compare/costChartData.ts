@@ -7,6 +7,7 @@ import type {
   ComparisonIncompleteReason,
   ComparisonInflationFactor,
   ComparisonMedian,
+  Decimal,
 } from "@/types/domain";
 
 /**
@@ -79,6 +80,20 @@ export interface CostChartBar {
   objectTitle: string;
   rateClassId: number;
   rateClassTitle: string;
+
+  /**
+   * Паспортные поля колонки — для подписи под столбцом и подсказки при
+   * наведении (макет, `.xdt` и `.tip`). Все четыре КОПИРУЮТСЯ из
+   * `ComparisonColumn` как есть: сервер их уже отдаёт, и второй источник тех же
+   * фактов у диаграммы завёлся бы только затем, чтобы однажды разойтись с
+   * таблицей на том же экране.
+   */
+  signedDate: string;
+  contractorTitle: string;
+  /** `null` — ТЭП объекта не заведены (спека сравнения §2.4): в подсказке строки площади тогда нет. */
+  areaTotalSp: Decimal | null;
+  /** Налоговый состав договора — «20 %», «ДГП 20 % · ДС 22 %» и т. п. */
+  compositionCaption: string;
 
   /**
    * Геометрия верха сплошной части — `Number(shownDecimal)`, `null`, когда
@@ -246,6 +261,10 @@ export function buildCostChartBars(
       objectTitle: column.object_title,
       rateClassId: column.rate_class_id,
       rateClassTitle: column.rate_class_title,
+      signedDate: column.signed_date,
+      contractorTitle: column.contractor_title,
+      areaTotalSp: column.area_total_sp,
+      compositionCaption: column.composition_caption,
       value,
       shownDecimal,
       nominalValue,

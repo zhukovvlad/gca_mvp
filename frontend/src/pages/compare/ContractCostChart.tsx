@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { Fragment, useId, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -17,9 +17,9 @@ import {
   SEGMENTED_ITEM_CLASS,
 } from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
-import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
 import { addDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney } from "@/lib/format";
+import { formatDate, formatDecimalMoney } from "@/lib/format";
 import { coefficientLevel } from "@/lib/inflation";
 import { MONTH_NAMES_RU } from "@/lib/constants";
 import { cn } from "@/lib/utils";
@@ -138,7 +138,22 @@ function formatTargetMonth(targetMonth: string): string {
   return name ? `${name.toLowerCase()} ${year}` : targetMonth;
 }
 
-const BAR_SIZE = 40;
+/**
+ * Ширина столбца — 78px, число из макета (`.bar { width: min(78px, 86%) }`).
+ *
+ * **Процентная половина правила у нас не может сработать ни разу, и поэтому не
+ * написана.** У столбца есть нижняя граница слота `COLUMN_WIDTH_PX = 104`
+ * (`.inner` шириной `bars.length * 104` под горизонтальной прокруткой), значит
+ * категория recharts никогда не уже 104px, а `86 % × 104 = 89.4 > 78` — верх
+ * всегда берёт пиксельный зажим. Писать вместо числа измеряемую долю значило бы
+ * завести `ResizeObserver`, три места пересчёта (`barSize`, `barGap` и половина
+ * риски номинала) и ветку, которая не исполняется.
+ *
+ * Прежнее значение 40px не имело обоснования и делало столбец в шесть раз уже
+ * своей подписи: замерено — 40px при слоте 247.6px, то есть 16 % против
+ * макетных 85 %.
+ */
+const BAR_SIZE = 78;
 const COLUMN_WIDTH_PX = 104;
 const PLOT_HEIGHT_PX = 300;
 
@@ -292,6 +307,124 @@ function resolveCoefficientChip(bar: CostChartBar): CoefficientChip | null {
   };
 }
 
+// ---------------------------------------------------------------------------
+//  Подсказка при наведении (макет, `.tip`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Единица в подсказке — суффиксом к числу: `formatCostChartValue` печатает
+ * величину, но не говорит, в чём она. Над столбцом это не нужно — там единица
+ * объявлена переключателем и засечками жёлоба, — а в подсказке рядом стоят
+ * площадь в м² и процент отклонения, и безымянное число читалось бы четвёртым
+ * видом величины.
+ */
+const UNIT_SUFFIX: Record<CostChartUnit, string> = { sqm: " ₽/м²", sum: " ₽" };
+
+function tooltipValue(decimal: string | null, unit: CostChartUnit): string {
+  const text = formatCostChartValue(decimal, unit);
+  return text === null ? "—" : text + UNIT_SUFFIX[unit];
+}
+
+/**
+ * Подсказка столбца — СВОЙ `content` у `<ChartTooltip>`, а не
+ * `ChartTooltipContent` из `@/components/ui/chart`.
+ *
+ * Причина не в оформлении: готовый `ChartTooltipContent` раскладывает payload
+ * ПО СЕРИЯМ — образец цвета, имя серии, значение. У нас серий две и обе
+ * служебные (`solid` — приведённое, `gapRange` — промежуток к номиналу), а
+ * человеку нужны не они, а факты договора: класс, номинал, коэффициент,
+ * отклонение, налоговый состав, площадь. Список пар из макета (`.tip dl`) —
+ * `<dl>`, и это его естественная разметка.
+ *
+ * **Ни одно число здесь не считается.** Всё — decimal-строки ответа через
+ * `formatCostChartValue`; отклонение и уровень коэффициента берут те же
+ * `deviationTone`/`coefficientLevel`, что чип под столбцом, поэтому подсказка не
+ * может разойтись с подписью, которую объясняет.
+ *
+ * Подсказка МЫШИНАЯ, и это осознанная граница: столбцы — прямоугольники SVG
+ * recharts, фокус на них не наводится. Клавиатуре и скринридеру те же числа
+ * доступны иначе — `sr-only`-строкой значения в подписи столбца и полной
+ * таблицей статей ниже на том же экране. Макет открывает подсказку и на
+ * `focus`, потому что там колонки — `div[tabindex]`; повторять это здесь значило
+ * бы завести второй, невидимый слой интерактивных узлов поверх графика.
+ */
+export function CostChartTooltip({
+  active,
+  label,
+  bars,
+  unit,
+}: {
+  active?: boolean;
+  label?: string | number;
+  bars: CostChartBar[];
+  unit: CostChartUnit;
+}) {
+  if (!active) return null;
+  // `label` — значение `dataKey` оси X, то есть `contractId`. Тип у recharts
+  // размытый, поэтому сличение по строке, а не приведением к числу.
+  const bar = bars.find((row) => String(row.contractId) === String(label));
+  if (!bar) return null;
+
+  const coefficient = resolveCoefficientChip(bar);
+  const deviation = bar.deviationPct === null ? null : deviationTone(bar.deviationPct);
+  // Номинал приходит ТОЛЬКО при приведении; без него приведённое и есть цены
+  // подписания, и особого случая у макета тут нет.
+  const nominalDecimal = bar.nominalDecimal ?? bar.shownDecimal;
+
+  const rows: [string, string][] = [
+    ["Класс объекта", bar.rateClassTitle],
+    ["В ценах подписания", tooltipValue(nominalDecimal, unit)],
+  ];
+  if (coefficient) {
+    rows.push([
+      "Коэффициент",
+      coefficient.kind === "mixed"
+        ? `разные (${coefficient.title})`
+        : /*
+            Множитель ОКРУГЛЁН до четырёх знаков, и округление — строковое
+            (`formatDecimalMoney` без валюты), а не через `Number()`: §3
+            AGENTS.md действует и на показ. Сервер отдаёт множитель полной
+            точности — замер на стенде дал
+            `0.9028265360528709543841903724151045`, тридцать четыре знака,
+            которые растягивали подсказку и ничего не сообщали. Точное значение
+            остаётся в подсказке чипа под столбцом.
+          */
+          `× ${formatDecimalMoney(bar.inflationCoefficient, "", 4)} (${coefficient.level})`,
+    ]);
+    rows.push([
+      coefficient.kind === "level" && coefficient.down ? "Приведено, снижение" : "Приведено, рост",
+      tooltipValue(bar.shownDecimal, unit),
+    ]);
+  }
+  rows.push(["Отклонение от медианы", deviation ? deviation.text : "—"]);
+  rows.push(["Ставка НДС договора", bar.compositionCaption]);
+  if (bar.areaTotalSp !== null) {
+    // Площадь — тем же форматом, что в шапке колонки таблицы (`MoneyCell` без
+    // валюты), и из той же decimal-строки: `Number()` здесь не нужен вовсе.
+    rows.push(["Площадь", `${formatDecimalMoney(bar.areaTotalSp, "", 2)} м²`]);
+  }
+
+  return (
+    <div
+      data-testid={`cost-chart-tooltip-${bar.contractId}`}
+      className="min-w-56 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs shadow-lg"
+    >
+      <div className="font-semibold text-fg">{bar.contractNumber}</div>
+      <div className="mb-1.5 text-2xs text-fg-tertiary">
+        {bar.objectTitle} · {bar.contractorTitle} · подписан {formatDate(bar.signedDate)}
+      </div>
+      <dl className="grid grid-cols-[auto_auto] justify-between gap-x-3.5 gap-y-0.5">
+        {rows.map(([term, value]) => (
+          <Fragment key={term}>
+            <dt className="text-fg-secondary">{term}</dt>
+            <dd className="m-0 text-right tabular-nums text-fg">{value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) {
   const coefficient = resolveCoefficientChip(bar);
 
@@ -314,6 +447,13 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
         {bar.value === null ? "нет суммы" : formatDecimalMoney(bar.shownDecimal, "₽", 2)}
       </span>
       <span className="text-xs font-semibold text-fg">{bar.contractNumber}</span>
+      {/*
+        Дата подписания (макет, `.xdt`) — между номером и классом. Без неё
+        горизонтальная ось диаграммы не подписана вовсе: столбцы идут ОТ СТАРЫХ
+        К НОВЫМ (DoD 18), то есть ось это время, а прочесть с экрана, какое
+        именно, было нельзя — порядок приходилось принимать на веру.
+      */}
+      <span className="text-2xs text-fg-tertiary">{formatDate(bar.signedDate)}</span>
       <span className="text-2xs text-fg-secondary">{bar.rateClassTitle}</span>
       {coefficient && (
         <span
@@ -522,6 +662,42 @@ export function ContractCostChart({
                 <CartesianGrid horizontal vertical={false} strokeDasharray="3 3" />
                 <XAxis dataKey="contractId" type="category" hide />
                 <YAxis domain={[0, axis.top]} ticks={axis.ticks} hide />
+                {/*
+                  `cursor={false}` — серую полосу под курсором recharts рисует во
+                  всю высоту полотна, и она перекрывала бы штриховку промежутка и
+                  риску номинала, то есть ровно то, ради чего диаграмма и
+                  сделана. Наведённый столбец называет заголовок подсказки; о
+                  том, почему подсветки самого столбца нет вовсе, — у `<Bar>`
+                  ниже.
+
+                  СНЯТИЕ ЭТОЙ СТРОКИ НЕ РОНЯЕТ НИ ОДНОГО ТЕСТА (замерено: 133
+                  зелёных без неё), и это не пропуск, а предел прогона:
+                  активность подсказки recharts решает по геометрии полотна, а в
+                  jsdom ширина графика ноль. Содержимое подсказки сторожат тесты
+                  `CostChartTooltip` напрямую, её появление — только замер в
+                  браузере (`docs/insights/unobservable-in-the-runner.md`).
+                */}
+                <ChartTooltip cursor={false} content={<CostChartTooltip bars={bars} unit={unit} />} />
+                {/*
+                  ПОДСВЕТКИ НАВЕДЁННОГО СТОЛБЦА НЕТ, и это не пропуск.
+
+                  Макет темнит сплошную часть (`.col:hover .seg-base`), и первая
+                  редакция повторила это пропом `activeBar` — он ломает
+                  двухслойное совмещение, на котором держится вся диаграмма.
+                  Замерено: `activeBar` заставляет recharts разносить серию на
+                  слои `recharts-active-bar`/`recharts-inactive-bar`, наведённый
+                  прямоугольник переезжает в активный слой, а при уходе курсора
+                  НЕ возвращается в неактивный — под `.recharts-bar` остаётся
+                  семь прямоугольников из восьми, а восьмой висит снаружи и
+                  закрашивает штриховку промежутка сплошным. Столбец, на который
+                  навели, терял шапку «номинал ↔ приведённое» до следующего
+                  перерендера. Найдено пользователем по снимку; снятие пропа
+                  возвращает все восемь прямоугольников на место в обоих
+                  состояниях (замер — devlog §4.17).
+
+                  Наведённый столбец называет сама подсказка — номером договора в
+                  заголовке.
+                */}
                 <Bar
                   dataKey="solid"
                   barSize={BAR_SIZE}

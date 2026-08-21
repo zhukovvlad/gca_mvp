@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ContractCostChart } from "./ContractCostChart";
+import { ContractCostChart, CostChartTooltip } from "./ContractCostChart";
+import { buildCostChartBars } from "./costChartData";
 import { REASON_LABELS } from "./labels";
 import type {
   Comparison,
@@ -931,5 +932,196 @@ describe("ContractCostChart — прокрутка", () => {
     // столбцами, молча.
     const chart = innerMany.querySelector('[data-slot="chart"]')!;
     expect(chart.className).toMatch(/\bw-full\b/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Подсказка при наведении и дата в подписи столбца (макет, `.tip` и `.xdt`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Подсказка утверждается ПРЯМЫМ рендером `CostChartTooltip`, а не наведением на
+ * столбец.
+ *
+ * Причина не в удобстве: подсказку показывает recharts, и решение «активна ли
+ * она» он принимает по геометрии полотна — в jsdom ширина графика ноль, ни одна
+ * категория под курсором не оказывается, и наведение не показало бы подсказку
+ * НИКОГДА. Тест через `userEvent.hover` был бы зелёным и при полностью
+ * вырезанном `<ChartTooltip>` — то есть проверял бы не то, о чём написан
+ * (`docs/insights/unobservable-in-the-runner.md`). Здесь проверяется СОДЕРЖИМОЕ
+ * подсказки, а её появление на наведении — замером в браузере.
+ */
+function renderTooltip(comparison: Comparison, contractId: number, unit: "sqm" | "sum" = "sqm") {
+  const bars = buildCostChartBars(comparison, "total", unit);
+  return render(<CostChartTooltip active label={String(contractId)} bars={bars} unit={unit} />);
+}
+
+/**
+ * Пары «термин → значение» из `<dl>` подсказки, в порядке разметки.
+ *
+ * Неразрывные пробелы `formatDecimalMoney` приведены к обычным: утверждения ниже
+ * о СОСТАВЕ подсказки, а какой именно пробел ставит разрядный разделитель —
+ * предмет тестов самого форматтера. Без приведения ожидание пришлось бы писать
+ * как `"203\u00A0890\u00A0₽/м²"`, и разница с фактическим текстом была бы
+ * в выводе теста невидимой — что и случилось на первом прогоне.
+ */
+function tooltipRows(): [string, string][] {
+  const text = (el: Element) => (el.textContent ?? "").replace(/\u00A0/g, " ");
+  const terms = [...document.querySelectorAll("dt")].map(text);
+  const values = [...document.querySelectorAll("dd")].map(text);
+  return terms.map((term, i) => [term, values[i]]);
+}
+
+describe("ContractCostChart — подсказка столбца", () => {
+  it("перечисляет паспортные факты договора, и без приведения строк коэффициента НЕТ", () => {
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14", rateClassTitle: "люкс" })],
+      totals: [
+        makeTotalsCell(
+          7,
+          makeBucketCell({ shown: "34000000000.00", shownPerSqm: "203890.00", deviationPct: "57.0" })
+        ),
+      ],
+    });
+    comparison.columns[0].area_total_sp = "166756.90";
+    renderTooltip(comparison, 7);
+
+    expect(screen.getByText("Д-7")).toBeInTheDocument();
+    expect(
+      screen.getByText("Объект 7 · Подрядчик 7 · подписан 14.03.2025")
+    ).toBeInTheDocument();
+    expect(tooltipRows()).toEqual([
+      ["Класс объекта", "люкс"],
+      ["В ценах подписания", "203 890 ₽/м²"],
+      ["Отклонение от медианы", "+57%"],
+      ["Ставка НДС договора", "20 %"],
+      ["Площадь", "166 756,90 м²"],
+    ]);
+  });
+
+  it("при приведении добавляет коэффициент и приведённое значение, множитель ОКРУГЛЁН", () => {
+    /*
+     * Множитель сервера — полной точности: на стенде пришло тридцать четыре
+     * знака. Округление здесь строковое (§3 AGENTS.md действует и на показ), и
+     * проверяется именно ОНО: без него в подсказке стояло бы
+     * «× 0.9028265360528709543841903724151045».
+     */
+    const comparison = makeComparison({
+      columns: [
+        makeColumn({
+          contractId: 7,
+          signedDate: "2025-03-14",
+          inflationCoefficient: "0.9028265360528709543841903724151045",
+        }),
+      ],
+      totals: [
+        makeTotalsCell(
+          7,
+          makeBucketCell({
+            shown: "30000000000.00",
+            shownPerSqm: "184077.00",
+            deviationPct: "48.0",
+            nominalShown: "34000000000.00",
+            nominalShownPerSqm: "203890.00",
+          })
+        ),
+      ],
+    });
+    renderTooltip(comparison, 7);
+
+    expect(tooltipRows()).toEqual([
+      ["Класс объекта", "бизнес"],
+      ["В ценах подписания", "203 890 ₽/м²"],
+      ["Коэффициент", "× 0,9028 (-9,7%)"],
+      ["Приведено, снижение", "184 077 ₽/м²"],
+      ["Отклонение от медианы", "+48%"],
+      ["Ставка НДС договора", "20 %"],
+    ]);
+  });
+
+  it("единица в значениях следует ОСИ, а не остаётся ₽/м²", () => {
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+      totals: [
+        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: "203890.00" })),
+      ],
+    });
+    renderTooltip(comparison, 7, "sum");
+
+    expect(tooltipRows()).toContainEqual(["В ценах подписания", "34,00 млрд ₽"]);
+  });
+
+  it("договор без суммы даёт ПРОЧЕРКИ, а не пустые значения", () => {
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+      totals: [
+        makeTotalsCell(7, makeBucketCell({ shown: null, shownPerSqm: null, state: "absent" })),
+      ],
+    });
+    renderTooltip(comparison, 7);
+
+    expect(tooltipRows()).toContainEqual(["В ценах подписания", "—"]);
+    expect(tooltipRows()).toContainEqual(["Отклонение от медианы", "—"]);
+  });
+
+  it("площади нет в подсказке, когда ТЭП объекта не заведены", () => {
+    /*
+     * Парой к первому тесту: там площадь есть и строка стоит. Строка с
+     * прочерком здесь была бы хуже отсутствия — «площадь неизвестна» и
+     * «площадь ноль» читались бы одинаково, а первое означает незаведённые ТЭП.
+     */
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+      totals: [
+        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: "203890.00" })),
+      ],
+    });
+    expect(comparison.columns[0].area_total_sp).toBeNull();
+    renderTooltip(comparison, 7);
+
+    expect(tooltipRows().map(([term]) => term)).not.toContain("Площадь");
+  });
+
+  it("подсказки нет вовсе, пока recharts не объявил категорию активной", () => {
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+      totals: [
+        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: "203890.00" })),
+      ],
+    });
+    const bars = buildCostChartBars(comparison, "total", "sqm");
+    render(<CostChartTooltip active={false} label="7" bars={bars} unit="sqm" />);
+
+    expect(document.querySelectorAll("dt")).toHaveLength(0);
+  });
+});
+
+describe("ContractCostChart — дата подписания в подписи столбца", () => {
+  it("подпись столбца несёт дату между номером и классом (макет, `.xdt`)", () => {
+    /*
+     * Ось столбцов — ВРЕМЯ (DoD 18: от старых договоров к новым), и без даты
+     * этот порядок с экрана не читается вовсе: подписи говорили номер и класс,
+     * то есть ровно то, что от порядка не зависит.
+     */
+    const comparison = makeComparison({
+      columns: [
+        makeColumn({ contractId: 1, signedDate: "2024-05-28" }),
+        makeColumn({ contractId: 2, signedDate: "2026-07-06" }),
+      ],
+      totals: [
+        makeTotalsCell(1, makeBucketCell({ shown: "100.00", shownPerSqm: "100.00" })),
+        makeTotalsCell(2, makeBucketCell({ shown: "200.00", shownPerSqm: "200.00" })),
+      ],
+    });
+    renderChart(comparison);
+
+    const first = screen.getByTestId("cost-chart-column-1");
+    expect(within(first).getByText("28.05.2024")).toBeInTheDocument();
+    expect(within(screen.getByTestId("cost-chart-column-2")).getByText("06.07.2026")).toBeInTheDocument();
+
+    // Порядок внутри подписи: номер → дата → класс.
+    const lines = [...first.querySelectorAll("span")].map((el) => el.textContent);
+    expect(lines.indexOf("Д-1")).toBeLessThan(lines.indexOf("28.05.2024"));
+    expect(lines.indexOf("28.05.2024")).toBeLessThan(lines.indexOf("бизнес"));
   });
 });
