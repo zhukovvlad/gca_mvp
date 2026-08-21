@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ContractCostChart } from "./ContractCostChart";
@@ -431,17 +431,18 @@ describe("ContractCostChart — геометрия столбца", () => {
     expect(a.getAttribute("width")).toBe(b.getAttribute("width"));
   });
 
-  it("деньги показаны с округлением до копеек, а точное значение уходит в подсказку", () => {
+  it("на оси ₽/м² деньги показаны ЦЕЛЫМИ рублями, а точное значение — в подсказке", () => {
     /*
       Дефект, найденный ПРОГОНОМ НА СТЕНДЕ, а не тестами: `formatDecimalMoney`
-      без `maxFractionDigits` печатает все знаки — так задумано, — и диаграмма
-      не просила округления. Настоящая медиана стенда оказалась периодической
-      дробью, и плашка печатала сотню знаков. Ни один тест этого не поймал,
-      потому что во ВСЕХ фикстурах стояли круглые суммы вида «50000.00», где
-      лишних знаков нет вовсе (`docs/insights/verifying-guards.md`, слой 12).
+      без `maxFractionDigits` печатает все знаки — так задумано, — и диаграмма не
+      просила округления. Настоящая медиана стенда оказалась периодической
+      дробью, и плашка печатала сотню знаков. Ни один тест этого не поймал:
+      во ВСЕХ фикстурах стояли круглые суммы вида «50000.00», где лишних знаков
+      нет вовсе (`docs/insights/verifying-guards.md`, слой 12).
 
-      Число ниже — стендовое, обрезанное до двадцати знаков: 129 799,975…
-      обязано показаться как 129 799,98, а целиком — только в подсказке.
+      Формат взят из согласованного макета (`fmt_value` его генератора): на
+      ₽/м² — целые рубли. Копейки там шум, и они же разгоняли плашку медианы
+      поверх подписи засечки — тоже замерено на стенде.
     */
     const PERIODIC = "129799.975056627364341352";
     const cell = makeBucketCell({
@@ -463,27 +464,140 @@ describe("ContractCostChart — геометрия столбца", () => {
     const { container } = renderChart(comparison);
 
     const chip = screen.getByTestId("cost-chart-median-line");
-    expect(chip).toHaveTextContent(/^медиана 129.799,98$/);
+    expect(chip).toHaveTextContent(/^медиана 129.800$/);
     // Разряды группируются НЕРАЗРЫВНЫМ пробелом, поэтому сравнение — регуляркой.
     expect(chip.getAttribute("title")).toMatch(/129.799,975056627364341352/);
 
     const nominalChip = screen.getByTestId("cost-chart-median-line-nominal");
-    expect(nominalChip).toHaveTextContent(/^номинал 115.480,68$/);
+    expect(nominalChip).toHaveTextContent(/^номинал 115.481$/);
     expect(nominalChip.getAttribute("title")).toMatch(/115.480,681111111111111111/);
 
-    // Подпись над столбцом — тоже округлённая. Подсказки у SVG-текста нет, и
+    // Подпись над столбцом — тем же правилом. Подсказки у SVG-текста нет, и
     // точное значение там взять негде: оно доступно в таблице того же экрана.
-    const label = [...container.querySelectorAll("svg text")].map((el) => el.textContent ?? "");
-    expect(label.some((t) => /^129.799,98$/.test(t))).toBe(true);
-    expect(label.some((t) => t.length > 15)).toBe(false);
-
-    // И текст для скринридера: он несёт то же округлённое число с валютой.
-    expect(screen.getByTestId("cost-chart-column-1")).toHaveTextContent(/129.799,98/);
+    const svgText = [...container.querySelectorAll("svg text")].map((el) => el.textContent ?? "");
+    expect(svgText.some((t) => /^129.800$/.test(t))).toBe(true);
+    expect(svgText.some((t) => t.length > 12)).toBe(false);
   });
 
-  it("подсказка с точным значением НЕ ставится, когда округление ничего не изменило", () => {
+  it("на оси сумм деньги показаны МИЛЛИАРДАМИ, а не полным числом рублей", async () => {
+    /*
+      Второе правило того же формата макета: сумма договора идёт миллиардами с
+      двумя знаками. Без него под столбцом стояло бы «34 123 456 789,00», и
+      подписи засечек оси — тоже. Деление на миллиард сделано точной арифметикой
+      строк, не `Number()`.
+    */
+    const cell = makeBucketCell({ shown: "34123456789.00", shownPerSqm: "100000.00" });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({ value: "50000.00", shownPerSqm: "50000.00" }),
+    });
+    const { container } = renderChart(comparison);
+
+    await userEvent.click(screen.getByRole("button", { name: "Сумма договора" }));
+
+    const svgText = [...container.querySelectorAll("svg text")].map((el) => el.textContent ?? "");
+    expect(svgText.some((t) => /^34,12 млрд$/.test(t))).toBe(true);
+    expect(svgText.some((t) => /34.123.456.789/.test(t))).toBe(false);
+  });
+
+  it("подсказка с точным значением НЕ ставится, когда показ ничего не потерял", () => {
     // Тот же контракт, что у `MoneyCell`: подсказка, повторяющая видимое, лишь
     // мешает. Первая редакция ставила её безусловно.
+    const cell = makeBucketCell({ shown: "100000", shownPerSqm: "100000" });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({ value: "50000", shownPerSqm: "50000" }),
+    });
+    renderChart(comparison);
+
+    expect(screen.getByTestId("cost-chart-median-line")).not.toHaveAttribute("title");
+  });
+
+  it("числа медианы дублируются ТЕКСТОМ: в жёлобе плашки накрывают друг друга", () => {
+    /*
+      Приём согласованного макета (`medcap`), пропущенный первой редакцией.
+      Замерено на стенде: при близких приведённой и номинальной медианах плашка
+      номинала полностью закрыла плашку текущей, и главное число экрана стало
+      невидимым. Строка ниже держит оба числа независимо от того, где стоят
+      плашки, — поэтому и порога «насколько близко» здесь нет.
+    */
+    const cell = makeBucketCell({
+      shown: "129484.00",
+      shownPerSqm: "129484.00",
+      nominalShown: "129800.00",
+      nominalShownPerSqm: "129800.00",
+    });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({
+        value: "129484.00",
+        shownPerSqm: "129484.00",
+        nominalValue: "129800.00",
+        nominalShownPerSqm: "129800.00",
+      }),
+    });
+    renderChart(comparison);
+
+    const caption = screen.getByTestId("cost-chart-median-caption");
+    expect(caption.textContent).toMatch(/129.484/);
+    expect(caption.textContent).toMatch(/в номинале — 129.800/);
+    expect(caption.textContent).toContain("нетто");
+
+    // Плашки при этом стоят почти вплотную — то самое состояние, из-за которого
+    // строка и понадобилась: разница позиций меньше высоты плашки.
+    const a = Number.parseFloat(screen.getByTestId("cost-chart-median-line").style.bottom);
+    const b = Number.parseFloat(screen.getByTestId("cost-chart-median-line-nominal").style.bottom);
+    expect(Math.abs(a - b)).toBeLessThan(3);
+  });
+
+  it("легенда объясняет промежуток, риску и медиану — образцами, а не одной строкой текста", () => {
+    /*
+      Легенда была потеряна целиком: макет рисует четыре метки с образцами, а
+      первая редакция компонента свела их к одной серой строке под полотном.
+      Видно это было только на живом экране — пока цвета не разрешались, там и
+      объяснять было нечего.
+
+      Проверяется СОСТАВ: приведение даёт три метки (приведённое, промежуток,
+      номинал) плюс медиану, и подпись приведения называет ряд и целевой месяц
+      ИЗ ОТВЕТА, а не из состояния экрана.
+    */
+    const cell = makeBucketCell({
+      shown: "103700.00",
+      shownPerSqm: "103700.00",
+      nominalShown: "100000.00",
+      nominalShownPerSqm: "100000.00",
+    });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({ value: "100000.00", shownPerSqm: "100000.00" }),
+    });
+    comparison.inflation = {
+      series_id: 2,
+      series_name: "Фактическая инфляция",
+      series_note: null,
+      series_updated_at: null,
+      target_month: "2026-08",
+      has_forecast: false,
+      used_years: [],
+    };
+    renderChart(comparison);
+
+    const legend = screen.getByTestId("cost-chart-legend");
+    const items = within(legend)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(items).toHaveLength(4);
+    expect(items[0]).toBe("приведено к ценам на август 2026 по ряду «Фактическая инфляция»");
+    expect(items[1]).toContain("промежуток к номиналу");
+    expect(items[2]).toContain("номинал: цены подписания");
+    expect(items[3]).toBe("медиана выборки (нетто, ₽/м²)");
+  });
+
+  it("без приведения легенда несёт ТОЛЬКО медиану: промежутка и риски на полотне нет", () => {
     const cell = makeBucketCell({ shown: "100000.00", shownPerSqm: "100000.00" });
     const comparison = makeComparison({
       columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
@@ -492,7 +606,29 @@ describe("ContractCostChart — геометрия столбца", () => {
     });
     renderChart(comparison);
 
-    expect(screen.getByTestId("cost-chart-median-line")).not.toHaveAttribute("title");
+    const items = within(screen.getByTestId("cost-chart-legend"))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toContain("медиана выборки");
+  });
+
+  it("в «Единой» легенда медианы называет СТАВКУ ПОКАЗА, а не нетто", async () => {
+    const cell = makeBucketCell({ shown: "100000.00", shownPerSqm: "100000.00" });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({ value: "50000.00", shownPerSqm: "60000.00" }),
+      vatMode: "single",
+    });
+    comparison.single_rate = "20.00";
+    renderChart(comparison);
+
+    expect(within(screen.getByTestId("cost-chart-legend")).getByText(/в ставке показа 20.00 %/)).toBeInTheDocument();
+
+    // А на оси сумм линии медианы нет вовсе — значит и метки её в легенде нет.
+    await userEvent.click(screen.getByRole("button", { name: "Сумма договора" }));
+    expect(screen.queryByTestId("cost-chart-legend")).not.toBeInTheDocument();
   });
 
   it("риска номинала нарисована НА ПОЛОТНЕ и стоит на уровне номинала, а не только в подписи", () => {

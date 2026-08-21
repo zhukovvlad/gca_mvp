@@ -14,12 +14,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { addDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney, formatNumber } from "@/lib/format";
+import { formatDecimalMoney } from "@/lib/format";
 import { coefficientLevel } from "@/lib/inflation";
+import { MONTH_NAMES_RU } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { Comparison, ComparisonBucket, ComparisonMedian } from "@/types/domain";
 
-import { buildCostChartBars, costChartAxisTop, type CostChartBar, type CostChartUnit } from "./costChartData";
+import {
+  buildCostChartBars,
+  costChartAxisTop,
+  costChartValueLosesDigits,
+  formatCostChartValue,
+  type CostChartBar,
+  type CostChartUnit,
+} from "./costChartData";
 import { deviationTone, type DeviationTone } from "./deviationTone";
 import { BUCKET_LABELS, REASON_LABELS } from "./labels";
 
@@ -104,6 +112,26 @@ import { BUCKET_LABELS, REASON_LABELS } from "./labels";
  * Три причины дают три РАЗНЫЕ подписи намеренно — свернуть их в одну означало
  * бы соврать о причине.
  */
+
+/** Образец штриховки для легенды: узор SVG в чипе не переиспользовать, поэтому CSS-градиент — тем же приёмом, что у кольца паспорта. */
+const HATCH_SWATCH =
+  "repeating-linear-gradient(45deg, var(--accent-primary-soft) 0 2px, var(--accent-primary-border) 2px 4px)";
+
+/**
+ * `YYYY-MM` → «август 2026», и подпись строится как «к ценам НА август 2026».
+ *
+ * Предлог «на» выбран не для красоты: он требует винительного падежа, а у всех
+ * двенадцати названий месяцев (мужской род, неодушевлённые) винительный совпадает
+ * с именительным — значит хватает общего `MONTH_NAMES_RU` и второй таблицы имён
+ * заводить не надо. Макет обходился двумя жёстко прописанными строками в
+ * дательном («августу 2026»), потому что месяцев в нём ровно два; настоящий экран
+ * принимает любой.
+ */
+function formatTargetMonth(targetMonth: string): string {
+  const [year, month] = targetMonth.split("-");
+  const name = MONTH_NAMES_RU[Number(month) - 1];
+  return name ? `${name.toLowerCase()} ${year}` : targetMonth;
+}
 
 const BAR_SIZE = 40;
 const COLUMN_WIDTH_PX = 104;
@@ -199,7 +227,7 @@ function NominalTick({ cx, cy }: DotProps) {
       x2={cx + half}
       y1={cy}
       y2={cy}
-      stroke="var(--accent-text)"
+      stroke="var(--accent-primary-text)"
       strokeWidth={2}
     />
   );
@@ -217,10 +245,9 @@ function NominalTick({ cx, cy }: DotProps) {
  * мешает. Первая редакция ставила её безусловно, и над «медиана 50 000,00»
  * висело «Точное значение: 50 000,00».
  */
-function exactTitle(decimal: string): string | undefined {
-  const shown = formatDecimalMoney(decimal, "", 2);
-  const exact = formatDecimalMoney(decimal, "");
-  return exact === shown ? undefined : `Точное значение: ${exact}`;
+function exactTitle(decimal: string, unit: CostChartUnit): string | undefined {
+  if (!costChartValueLosesDigits(decimal, unit)) return undefined;
+  return `Точное значение: ${formatDecimalMoney(decimal, "")}`;
 }
 
 /**
@@ -308,7 +335,7 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
           data-testid={`cost-chart-deviation-${bar.contractId}`}
           className={cn("rounded px-1 text-2xs tabular-nums", DEVIATION_TONE_CLASS[deviation.tone])}
         >
-          {unit === "sum" ? `к медиане ₽/м² ${deviation.text}` : deviation.text}
+          {unit === "sum" ? `к медиане ₽/м² ${deviation.text}` : `к медиане ${deviation.text}`}
         </span>
       ) : null}
     </div>
@@ -346,13 +373,30 @@ export function ContractCostChart({
         contractId: bar.contractId,
         solid: bar.value ?? undefined,
         gapRange: bar.gap ? ([bar.gap.from, bar.gap.to] as [number, number]) : undefined,
-        shownLabel: bar.value === null ? undefined : formatDecimalMoney(bar.shownDecimal, "", 2),
+        shownLabel: bar.value === null ? undefined : (formatCostChartValue(bar.shownDecimal, unit) ?? undefined),
       })),
-    [bars]
+    [bars, unit]
   );
 
   const innerWidth = bars.length * COLUMN_WIDTH_PX;
   const hasNominal = bars.some((bar) => bar.nominalValue !== null);
+  /*
+    Подписи легенды берутся из ОТВЕТА, а не собираются из состояния экрана: ряд
+    и целевой месяц называет блок `inflation`, который приходит только при
+    сосчитанном приведении, — то есть ровно тогда, когда легенда и нужна.
+  */
+  const adjustedCaption = comparison.inflation
+    ? `приведено к ценам на ${formatTargetMonth(comparison.inflation.target_month)} по ряду «${comparison.inflation.series_name}»`
+    : "приведено к ценовому уровню цели";
+  /** «нетто» либо «в ставке показа N %» — тот же различитель, что у метки легенды. */
+  const medianAxisSuffix =
+    comparison.vat_mode === "single" && comparison.single_rate !== null
+      ? ` в ставке показа ${comparison.single_rate} %`
+      : " нетто";
+  const medianAxisCaption =
+    unit === "sqm" && comparison.vat_mode === "single" && comparison.single_rate !== null
+      ? ` (в ставке показа ${comparison.single_rate} %, ₽/м²)`
+      : " (нетто, ₽/м²)";
 
   const pct = (value: number) => `${(value / axis.top) * 100}%`;
 
@@ -399,12 +443,12 @@ export function ContractCostChart({
           style={{ height: PLOT_HEIGHT_PX }}
         >
           {/*
-            Засечки — ЧИСЛА (геометрия оси), поэтому и форматируются числовым
-            `formatNumber`, а не денежным `formatDecimalMoney(String(tick))`:
-            прежняя редакция прогоняла число через денежный форматтер строкой, и
-            на мелких величинах это давало мусор — замерено, `top = 1` даёт
-            засечку `0.6000000000000001`. Деньги на диаграмме приходят строками
-            сервера и идут своим форматтером; шкала деньгами не является.
+            Засечки форматируются ТЕМ ЖЕ правилом, что значения столбцов
+            (`formatCostChartValue`): иначе шкала и подписи над столбцами
+            говорили бы в разных единицах — «34 123 456 789» на засечке против
+            «34,12 млрд» над столбцом. Округление до целых рубли/миллиардов
+            попутно съедает и мусор двоичного деления, из-за которого прежняя
+            редакция печатала `0.6000000000000001` при `top = 1`.
           */}
           {axis.ticks.map((tick) => (
             <span
@@ -412,27 +456,27 @@ export function ContractCostChart({
               className="absolute right-0 translate-y-1/2"
               style={{ bottom: pct(tick) }}
             >
-              {formatNumber(tick)}
+              {formatCostChartValue(String(tick), unit)}
             </span>
           ))}
           {median.kind === "line" && (
             <span
               data-testid="cost-chart-median-line"
-              title={exactTitle(median.line.decimal)}
+              title={exactTitle(median.line.decimal, unit)}
               className="absolute right-0 translate-y-1/2 rounded border border-accent-border bg-accent-soft px-1 text-accent-text"
               style={{ bottom: pct(median.line.value) }}
             >
-              медиана {formatDecimalMoney(median.line.decimal, "", 2)}
+              медиана {formatCostChartValue(median.line.decimal, unit)}
             </span>
           )}
           {median.kind === "line" && median.nominal && (
             <span
               data-testid="cost-chart-median-line-nominal"
-              title={exactTitle(median.nominal.decimal)}
+              title={exactTitle(median.nominal.decimal, unit)}
               className="absolute right-0 translate-y-1/2 rounded border border-border-subtle bg-surface-sunken px-1 text-fg-tertiary"
               style={{ bottom: pct(median.nominal.value) }}
             >
-              номинал {formatDecimalMoney(median.nominal.decimal, "", 2)}
+              номинал {formatCostChartValue(median.nominal.decimal, unit)}
             </span>
           )}
         </div>
@@ -457,8 +501,8 @@ export function ContractCostChart({
                   {/* Штриховка промежутка «номинал ↔ приведённое» — тот же приём
                       узора, что у «Нераспределённого» в `StructureRing`. */}
                   <pattern id={hatchId} width={7} height={7} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                    <rect width={7} height={7} fill="var(--accent-soft)" />
-                    <line x1={0} y1={0} x2={0} y2={7} stroke="var(--accent-border)" strokeWidth={3.4} />
+                    <rect width={7} height={7} fill="var(--accent-primary-soft)" />
+                    <line x1={0} y1={0} x2={0} y2={7} stroke="var(--accent-primary-border)" strokeWidth={3.4} />
                   </pattern>
                 </defs>
                 {/*
@@ -474,7 +518,7 @@ export function ContractCostChart({
                 <Bar
                   dataKey="solid"
                   barSize={BAR_SIZE}
-                  fill="var(--accent)"
+                  fill="var(--accent-primary)"
                   radius={[3, 3, 0, 0]}
                   isAnimationActive={false}
                 >
@@ -501,10 +545,10 @@ export function ContractCostChart({
                     )
                 )}
                 {median.kind === "line" && (
-                  <ReferenceLine y={median.line.value} stroke="var(--accent)" strokeDasharray="4 4" />
+                  <ReferenceLine y={median.line.value} stroke="var(--accent-primary)" strokeDasharray="4 4" />
                 )}
                 {median.kind === "line" && median.nominal && (
-                  <ReferenceLine y={median.nominal.value} stroke="var(--fg-tertiary)" strokeDasharray="1 3" />
+                  <ReferenceLine y={median.nominal.value} stroke="var(--text-tertiary)" strokeDasharray="1 3" />
                 )}
               </BarChart>
             </ChartContainer>
@@ -533,17 +577,77 @@ export function ContractCostChart({
         </div>
       </div>
 
+      {/*
+        Дубль чисел медианы ТЕКСТОМ — приём согласованного макета (`medcap` его
+        генератора), и он несущий, а не декоративный: жёлоб узкий, и когда
+        приведённая медиана оказывается близко к номинальной, плашки в нём
+        накрывают друг друга. Замерено на стенде при цели «январь 2025»: плашка
+        номинала полностью закрыла плашку текущей медианы, и число, по которому
+        читатель сличает столбцы, стало невидимым. Порога «насколько близко»
+        здесь нет намеренно — вместо ветки, которая однажды соврёт, числа
+        печатаются всегда.
+      */}
+      {median.kind === "line" && (
+        <p data-testid="cost-chart-median-caption" className="mt-2 text-2xs text-fg-secondary">
+          Медиана выборки — {formatCostChartValue(median.line.decimal, unit)} ₽/м²
+          {medianAxisSuffix}
+          {median.nominal
+            ? `; в номинале — ${formatCostChartValue(median.nominal.decimal, unit)}`
+            : ""}
+        </p>
+      )}
+
       {median.kind === "none" && (
         <p data-testid="cost-chart-median-note" className="mt-3 text-2xs text-fg-secondary">
           {MEDIAN_REASON_TEXT[median.reason](median.comparableCount)}
         </p>
       )}
 
-      {hasNominal && (
-        <p className="mt-2 text-2xs text-fg-tertiary">
-          Промежуток к номиналу: шапка внутри столбца — рост, призрак над столбцом — снижение. Риска — цены
-          подписания.
-        </p>
+      {/*
+        Легенда — как в согласованном макете: у каждой метки СВОЙ образец, а не
+        строка текста. Появляется только при приведении: без него на полотне нет
+        ни промежутка, ни риски, и объяснять было бы нечего. Знак поправки
+        легенда НЕ называет — знаки в выборке бывают разными одновременно, и его
+        говорит положение промежутка плюс чип под столбцом (спека диаграммы
+        стоимости §2.3, последний пункт).
+      */}
+      {(hasNominal || median.kind === "line") && (
+        <ul data-testid="cost-chart-legend" className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+          {hasNominal && (
+            <>
+              <li className="flex items-center gap-1.5 text-2xs text-fg-secondary">
+                <span
+                  className="inline-block size-2.5 rounded-sm"
+                  style={{ background: "var(--accent-primary)" }}
+                />
+                {adjustedCaption}
+              </li>
+              <li className="flex items-center gap-1.5 text-2xs text-fg-secondary">
+                <span
+                  className="inline-block size-2.5 rounded-sm border border-accent-border"
+                  style={{ backgroundImage: HATCH_SWATCH }}
+                />
+                промежуток к номиналу: шапка — рост, призрак над столбцом — снижение
+              </li>
+              <li className="flex items-center gap-1.5 text-2xs text-fg-secondary">
+                <span
+                  className="inline-block h-0 w-4 border-t-2"
+                  style={{ borderColor: "var(--accent-primary-text)" }}
+                />
+                номинал: цены подписания
+              </li>
+            </>
+          )}
+          {median.kind === "line" && (
+            <li className="flex items-center gap-1.5 text-2xs text-fg-secondary">
+              <span
+                className="inline-block h-0 w-4 border-t-2 border-dashed"
+                style={{ borderColor: "var(--accent-primary)" }}
+              />
+              медиана выборки{medianAxisCaption}
+            </li>
+          )}
+        </ul>
       )}
     </section>
   );

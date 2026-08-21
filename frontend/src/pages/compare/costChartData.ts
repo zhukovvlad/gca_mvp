@@ -1,3 +1,5 @@
+import { multiplyDecimalStrings } from "@/lib/decimal";
+import { formatDecimalMoney, roundDecimal } from "@/lib/format";
 import type {
   Comparison,
   ComparisonBucket,
@@ -112,6 +114,69 @@ export interface CostChartBar {
   state: ComparisonCellState;
   /** Причины неполноты (спека сравнения §2.1.3) — источник подписи «нет суммы: …» (спека диаграммы стоимости §2.9). */
   incompleteReasons: ComparisonIncompleteReason[];
+}
+
+/**
+ * Формат ЗНАЧЕНИЯ по единице диаграммы — тот же, что в согласованном макете
+ * (`fmt_value` генератора): ₽/м² — ЦЕЛЫЕ рубли, сумма договора — миллиарды с
+ * двумя знаками.
+ *
+ * Копейки на ₽/м² — шум: числа там шестизначные, а плашка медианы в жёлобе от
+ * них разрастается и накрывает подпись засечки (замерено на стенде). Сумма
+ * договора без миллиардов нечитаема вовсе: `34 123 456 789,00` под столбцом.
+ *
+ * Деление на миллиард сделано ТОЧНОЙ арифметикой строк
+ * (`multiplyDecimalStrings`), а не `Number()`: это показ денег, и §3 AGENTS.md
+ * здесь действует ровно так же, как в таблице. Единственное исключение фичи —
+ * геометрия, и она живёт выше, в `value`/`nominalValue`.
+ */
+export function formatCostChartValue(decimal: string | null, unit: CostChartUnit): string | null {
+  if (decimal === null) return null;
+  if (unit === "sqm") return groupWholeRubles(roundDecimal(decimal, 0));
+  const billions = multiplyDecimalStrings(decimal, "0.000000001");
+  if (billions === null) return formatDecimalMoney(decimal, "", 2);
+  return `${formatDecimalMoney(billions, "", 2)} млрд`;
+}
+
+/**
+ * Теряет ли ПОКАЗ значащие цифры — то есть нужна ли подсказка с точным числом.
+ *
+ * Сравниваются ЗНАЧЕНИЯ, а не форматы. Первая редакция сравнивала две
+ * отформатированные строки, и на оси ₽/м² они расходились всегда: показ даёт
+ * «50 000», а полная форма — «50 000,00», хотя не потеряно ничего. Подсказка
+ * висела над каждой плашкой, повторяя видимое, — ровно то, чего `MoneyCell`
+ * избегает по своей докстроке.
+ *
+ * Хвостовые нули срезаются с обеих сторон: `50000.00` и `50000` — одно значение,
+ * записанное по-разному.
+ */
+export function costChartValueLosesDigits(decimal: string, unit: CostChartUnit): boolean {
+  const digits = unit === "sqm" ? 0 : 2;
+  const scaled =
+    unit === "sqm" ? decimal : (multiplyDecimalStrings(decimal, "0.000000001") ?? decimal);
+  return trimTrailingZeros(scaled) !== trimTrailingZeros(roundDecimal(scaled, digits));
+}
+
+function trimTrailingZeros(decimal: string): string {
+  return decimal.includes(".") ? decimal.replace(/0+$/, "").replace(/\.$/, "") : decimal;
+}
+
+/**
+ * Разряды целого числа неразрывными пробелами.
+ *
+ * Своя, а не `formatDecimalMoney`: та по замыслу печатает копейки ВСЕГДА
+ * («Копейки показываем всегда» — её докстрока), потому что обслуживает денежные
+ * ячейки, где младший разряд может быть предметом торга. Ось диаграммы — не
+ * ячейка: там шестизначные числа, и копейки только разгоняют плашку медианы в
+ * жёлобе поверх подписи засечки. Точное значение при этом доступно в подсказке
+ * плашки и в таблице того же экрана.
+ *
+ * Группировка повторяет регулярку `formatDecimalMoney` — единственное, что здесь
+ * дублируется, и дублируется сознательно: вынести её значило бы завести третий
+ * денежный форматтер ради одной строки.
+ */
+function groupWholeRubles(whole: string): string {
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 /** Верх и засечки оси (спека диаграммы стоимости §2.2, §6; DoD 28, 28а). */
