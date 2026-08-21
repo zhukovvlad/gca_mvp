@@ -82,6 +82,19 @@ import { BUCKET_LABELS, REASON_LABELS } from "./labels";
  * Всё показываемое — decimal-строки сервера через `formatDecimalMoney`,
  * `coefficientLevel`, `deviationTone`.
  *
+ * **Показ округляется до копеек, и это осознанное решение вызывающего.**
+ * `formatDecimalMoney` без `maxFractionDigits` печатает ВСЕ знаки, и так
+ * задумано: ставка `1 075,35475` обязана показываться целиком. Здесь величины
+ * ВЫЧИСЛЕННЫЕ — частное на площадь и `net_to_gross`, — поэтому округление
+ * законно по тому же условию, по которому его берёт таблица этого же экрана
+ * (`ComparePage`, ячейки `MoneyCell … maxFractionDigits={2}`). Первая редакция
+ * не просила округления, и на стенде плашка медианы печатала сто знаков:
+ * настоящая медиана — периодическая дробь, а в фикстурах стояли круглые суммы.
+ * Точное значение уходит в `title` плашек — и ТОЛЬКО когда округление что-то
+ * изменило, как это делает `MoneyCell`. У подписи над столбцом и у текста для
+ * скринридера такого маршрута нет (SVG-текст подсказки не несёт), и точное
+ * число там взять негде — оно доступно в таблице ниже, на том же экране.
+ *
  * **Медиана — две причины отсутствия линии, а не одна (DoD 22, 22г, 24).**
  * `resolveMedianState` различает их по ФОРМЕ ответа, а не по `vat_mode`:
  * поля `shown_per_sqm` НЕТ ВООБЩЕ → «своя ставка», раскладка каждого столбца
@@ -197,6 +210,20 @@ function NominalTick({ cx, cy }: DotProps) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Подсказка с точным значением — ТОЛЬКО когда округление что-то изменило.
+ *
+ * Тот же контракт, что у `MoneyCell` (`src/components/ui-domain/MoneyCell.tsx`),
+ * и та же причина: подсказка, повторяющая видимое, ничего не сообщает и лишь
+ * мешает. Первая редакция ставила её безусловно, и над «медиана 50 000,00»
+ * висело «Точное значение: 50 000,00».
+ */
+function exactTitle(decimal: string): string | undefined {
+  const shown = formatDecimalMoney(decimal, "", 2);
+  const exact = formatDecimalMoney(decimal, "");
+  return exact === shown ? undefined : `Точное значение: ${exact}`;
+}
+
+/**
  * Чип поправки под столбцом: уровень коэффициента и его НАПРАВЛЕНИЕ.
  *
  * Направление берётся точной арифметикой строк — знак `k − 1` через
@@ -242,8 +269,8 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
   return (
     <div
       data-testid={`cost-chart-column-${bar.contractId}`}
-      style={{ width: COLUMN_WIDTH_PX }}
-      className="flex shrink-0 flex-col items-center gap-0.5 px-1 text-center"
+      style={{ minWidth: COLUMN_WIDTH_PX }}
+      className="flex flex-1 shrink-0 basis-0 flex-col items-center gap-0.5 px-1 text-center"
     >
       {/*
         Значение столбца доезжает до скринридера ТЕКСТОМ. `aria-label` на голом
@@ -252,7 +279,7 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
         доступном дереве нет вовсе.
       */}
       <span className="sr-only">
-        {bar.value === null ? "нет суммы" : formatDecimalMoney(bar.shownDecimal)}
+        {bar.value === null ? "нет суммы" : formatDecimalMoney(bar.shownDecimal, "₽", 2)}
       </span>
       <span className="text-xs font-semibold text-fg">{bar.contractNumber}</span>
       <span className="text-2xs text-fg-secondary">{bar.rateClassTitle}</span>
@@ -319,7 +346,7 @@ export function ContractCostChart({
         contractId: bar.contractId,
         solid: bar.value ?? undefined,
         gapRange: bar.gap ? ([bar.gap.from, bar.gap.to] as [number, number]) : undefined,
-        shownLabel: bar.value === null ? undefined : formatDecimalMoney(bar.shownDecimal, ""),
+        shownLabel: bar.value === null ? undefined : formatDecimalMoney(bar.shownDecimal, "", 2),
       })),
     [bars]
   );
@@ -391,19 +418,21 @@ export function ContractCostChart({
           {median.kind === "line" && (
             <span
               data-testid="cost-chart-median-line"
+              title={exactTitle(median.line.decimal)}
               className="absolute right-0 translate-y-1/2 rounded border border-accent-border bg-accent-soft px-1 text-accent-text"
               style={{ bottom: pct(median.line.value) }}
             >
-              медиана {formatDecimalMoney(median.line.decimal, "")}
+              медиана {formatDecimalMoney(median.line.decimal, "", 2)}
             </span>
           )}
           {median.kind === "line" && median.nominal && (
             <span
               data-testid="cost-chart-median-line-nominal"
+              title={exactTitle(median.nominal.decimal)}
               className="absolute right-0 translate-y-1/2 rounded border border-border-subtle bg-surface-sunken px-1 text-fg-tertiary"
               style={{ bottom: pct(median.nominal.value) }}
             >
-              номинал {formatDecimalMoney(median.nominal.decimal, "")}
+              номинал {formatDecimalMoney(median.nominal.decimal, "", 2)}
             </span>
           )}
         </div>
@@ -417,7 +446,7 @@ export function ContractCostChart({
           прогон на стенде (план, задача 14).
         */}
         <div data-testid="cost-chart-scroll" className="min-w-0 flex-1 overflow-x-auto">
-          <div data-testid="cost-chart-inner" style={{ width: innerWidth, minWidth: "100%" }}>
+          <div data-testid="cost-chart-inner" style={{ minWidth: innerWidth }}>
             <ChartContainer config={CHART_CONFIG} className="aspect-auto w-full" style={{ height: PLOT_HEIGHT_PX }}>
               <BarChart
                 data={chartData}
@@ -481,15 +510,21 @@ export function ContractCostChart({
             </ChartContainer>
 
             {/*
-              Зазора между подписями НЕТ намеренно. recharts раздаёт категории
-              РОВНО поровну по ширине полотна, поэтому подпись обязана быть
-              шириной ровно в полосу категории: `innerWidth / n`, то есть
-              `COLUMN_WIDTH_PX`. Любой `gap` добавляет `(n − 1) × зазор` к сумме
-              ширин, полоса подписей перестаёт совпадать с полотном, и подписи
-              уезжают вправо тем сильнее, чем правее столбец — при пяти
-              договорах последняя уехала бы на треть столбца.
+              recharts раздаёт категории РОВНО поровну по ширине полотна, поэтому
+              подпись обязана быть шириной в полосу категории — а полоса это
+              `ширина полотна / n`, и ширина полотна НЕ равна `COLUMN_WIDTH_PX × n`:
+              полотно тянется на всю доступную ширину, а пиксельная константа —
+              только НИЖНЯЯ граница (спека диаграммы стоимости §2.5: «у столбца
+              нижняя граница ширины»). Отсюда `w-full` у полосы и `flex-1 basis-0`
+              у подписи: делят то же, что полотно, и так же поровну.
+
+              Первая редакция утверждала здесь обратное — что ширина подписи и
+              есть `COLUMN_WIDTH_PX`, — и ставила её фиксированной. На стенде
+              подписи разъехались со столбцами на 645 px. Зазора между подписями
+              нет по отдельной причине: любой `gap` добавляет `(n − 1) × зазор` к
+              сумме ширин, и полоса перестаёт совпадать с полотном.
             */}
-            <div className="mt-2 flex" style={{ width: innerWidth }}>
+            <div className="mt-2 flex w-full">
               {bars.map((bar) => (
                 <ColumnLabel key={bar.contractId} bar={bar} unit={unit} />
               ))}

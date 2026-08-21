@@ -431,6 +431,70 @@ describe("ContractCostChart — геометрия столбца", () => {
     expect(a.getAttribute("width")).toBe(b.getAttribute("width"));
   });
 
+  it("деньги показаны с округлением до копеек, а точное значение уходит в подсказку", () => {
+    /*
+      Дефект, найденный ПРОГОНОМ НА СТЕНДЕ, а не тестами: `formatDecimalMoney`
+      без `maxFractionDigits` печатает все знаки — так задумано, — и диаграмма
+      не просила округления. Настоящая медиана стенда оказалась периодической
+      дробью, и плашка печатала сотню знаков. Ни один тест этого не поймал,
+      потому что во ВСЕХ фикстурах стояли круглые суммы вида «50000.00», где
+      лишних знаков нет вовсе (`docs/insights/verifying-guards.md`, слой 12).
+
+      Число ниже — стендовое, обрезанное до двадцати знаков: 129 799,975…
+      обязано показаться как 129 799,98, а целиком — только в подсказке.
+    */
+    const PERIODIC = "129799.975056627364341352";
+    const cell = makeBucketCell({
+      shown: "2100000.949999999999999999",
+      shownPerSqm: PERIODIC,
+      nominalShown: "2000000.5",
+      nominalShownPerSqm: "115480.681111111111111111",
+    });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({
+        value: PERIODIC,
+        shownPerSqm: PERIODIC,
+        nominalValue: "115480.681111111111111111",
+        nominalShownPerSqm: "115480.681111111111111111",
+      }),
+    });
+    const { container } = renderChart(comparison);
+
+    const chip = screen.getByTestId("cost-chart-median-line");
+    expect(chip).toHaveTextContent(/^медиана 129.799,98$/);
+    // Разряды группируются НЕРАЗРЫВНЫМ пробелом, поэтому сравнение — регуляркой.
+    expect(chip.getAttribute("title")).toMatch(/129.799,975056627364341352/);
+
+    const nominalChip = screen.getByTestId("cost-chart-median-line-nominal");
+    expect(nominalChip).toHaveTextContent(/^номинал 115.480,68$/);
+    expect(nominalChip.getAttribute("title")).toMatch(/115.480,681111111111111111/);
+
+    // Подпись над столбцом — тоже округлённая. Подсказки у SVG-текста нет, и
+    // точное значение там взять негде: оно доступно в таблице того же экрана.
+    const label = [...container.querySelectorAll("svg text")].map((el) => el.textContent ?? "");
+    expect(label.some((t) => /^129.799,98$/.test(t))).toBe(true);
+    expect(label.some((t) => t.length > 15)).toBe(false);
+
+    // И текст для скринридера: он несёт то же округлённое число с валютой.
+    expect(screen.getByTestId("cost-chart-column-1")).toHaveTextContent(/129.799,98/);
+  });
+
+  it("подсказка с точным значением НЕ ставится, когда округление ничего не изменило", () => {
+    // Тот же контракт, что у `MoneyCell`: подсказка, повторяющая видимое, лишь
+    // мешает. Первая редакция ставила её безусловно.
+    const cell = makeBucketCell({ shown: "100000.00", shownPerSqm: "100000.00" });
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, cell)],
+      totalMedian: makeMedian({ value: "50000.00", shownPerSqm: "50000.00" }),
+    });
+    renderChart(comparison);
+
+    expect(screen.getByTestId("cost-chart-median-line")).not.toHaveAttribute("title");
+  });
+
   it("риска номинала нарисована НА ПОЛОТНЕ и стоит на уровне номинала, а не только в подписи", () => {
     /*
       Дыра, найденная снятием: до этого теста весь SVG, кроме двух
@@ -671,62 +735,65 @@ describe("ContractCostChart — прокрутка", () => {
     const scrollOne = screen.getByTestId("cost-chart-scroll");
     expect(scrollOne.className).toMatch(/overflow-x-auto/);
     const innerOne = screen.getByTestId("cost-chart-inner");
-    const widthOne = Number.parseFloat(String(innerOne.style.width));
-    expect(widthOne).toBeGreaterThan(0);
+    const minWidthOne = Number.parseFloat(String(innerOne.style.minWidth));
+    expect(minWidthOne).toBeGreaterThan(0);
+    // Инлайновой `width` у полотна быть НЕ должно: именно она вместе с
+    // `minWidth: 100%` и убивала прокрутку — полотно всегда равнялось
+    // контейнеру, и `scrollWidth` не превышал `clientWidth` никогда.
+    expect(innerOne.style.width).toBe("");
 
     // Жёлоб оси — родной сиблинг прокручиваемого контейнера, а не его потомок.
     const gutterOne = screen.getByTestId("cost-chart-gutter");
     expect(scrollOne.contains(gutterOne)).toBe(false);
     expect(containerOne.contains(gutterOne)).toBe(true);
 
-    render(
-      <ContractCostChart
-        comparison={fiveColumns}
-        bucket="total"
-      />
-    );
+    render(<ContractCostChart comparison={fiveColumns} bucket="total" />);
     const innerMany = screen.getAllByTestId("cost-chart-inner").at(-1)!;
-    const widthMany = Number.parseFloat(String(innerMany.style.width));
+    const minWidthMany = Number.parseFloat(String(innerMany.style.minWidth));
+    expect(innerMany.style.width).toBe("");
 
-    // Нижняя граница ширины столбца: полотно на пяти договорах ЗАМЕТНО шире,
-    // чем на одном — иначе столбцы схлопнулись бы в волоски вместо прокрутки.
-    expect(widthMany).toBeGreaterThan(widthOne * 3);
-
-    // Ширина столбца — одна и та же у каждой подписи и ФИКСИРОВАННАЯ в
-    // пикселях, а не доля экрана: доля на большой выборке превратила бы
-    // столбцы в волоски вместо прокрутки.
-    const columnWidths = [1, 2, 3, 4, 5].map((id) => {
-      const el = screen.getAllByTestId(`cost-chart-column-${id}`).at(-1)!;
-      return Number.parseFloat(String(el.style.width));
-    });
-    expect(new Set(columnWidths).size).toBe(1);
-    expect(columnWidths[0]).toBeGreaterThan(0);
+    // Нижняя граница ширины полотна растёт с числом договоров — из неё и берётся
+    // прокрутка: без неё столбцы на большой выборке схлопнулись бы в волоски.
+    expect(minWidthMany).toBeGreaterThan(minWidthOne * 3);
 
     /*
-      И полоса подписей совпадает с полотном ПО ШИРИНЕ, до пикселя. recharts
-      раздаёт категории ровно поровну по ширине полотна, поэтому подпись обязана
-      быть шириной ровно в полосу категории. Любой зазор между подписями
-      добавляет `(n − 1) × зазор` к сумме их ширин, полоса перестаёт совпадать с
-      полотном, и подписи уезжают вправо тем сильнее, чем правее столбец. Так и
-      было в первой редакции: `gap-2` при пяти договорах давал 552 px против
-      520 px полотна, то есть последняя подпись стояла на треть столбца в
-      стороне от своего столбца. Утверждение ниже — единственное, что это
-      ловит: jsdom раскладку не считает, а совпадение объявленных ширин
-      проверить можно.
-    */
-    expect(columnWidths.reduce((sum, width) => sum + width, 0)).toBe(widthMany);
+      ПОДПИСИ ДЕЛЯТ ту же ширину, что полотно, и делят поровну: `flex-1
+      basis-0` у каждой, `w-full` у полосы, а пиксели в `minWidth` — только
+      нижняя граница. Фиксированную ширину подписи ставить НЕЛЬЗЯ, и это
+      измерено на стенде, а не выведено: полотно тянется на всю доступную
+      ширину, поэтому при фиксированных 104 px центр последней подписи оказался
+      на 645 px левее своего столбца. В jsdom объявленные ширины при этом
+      сходились — раскладку он не считает, — то есть прежняя редакция этого
+      теста была зелёной ровно на дефекте.
 
-    /*
-      И у самой полосы подписей НЕТ утилиты зазора. Это утверждение о КЛАССЕ, и
-      названо оно так прямо: сумма объявленных ширин выше зазора не видит вовсе
-      (он живёт в CSS, а jsdom раскладку не считает), поэтому возврат `gap-2`
-      прошёл бы мимо неё — измерено снятием. Та же граница наблюдаемости, что у
-      теста закрепления первой колонки таблицы: проверяется то, ЧЕМ раскладка
-      запрошена. Фактическое совпадение подписи со столбцом меряет прогон на
-      стенде (план, задача 14).
+      Отсюда форма утверждений ниже: проверяется то, ЧЕМ раскладка запрошена —
+      равная нижняя граница у всех подписей, `flex-1 basis-0`, отсутствие
+      зазора, `w-full` у полосы и отсутствие фиксированных ширин. Фактическое
+      совпадение центров меряет прогон на стенде (план, задача 14).
     */
-    const strip = screen.getAllByTestId("cost-chart-column-1").at(-1)!.parentElement!;
+    const columns = [1, 2, 3, 4, 5].map((id) => screen.getAllByTestId(`cost-chart-column-${id}`).at(-1)!);
+    const minWidths = columns.map((el) => Number.parseFloat(String(el.style.minWidth)));
+    expect(new Set(minWidths).size).toBe(1);
+    expect(minWidths[0]).toBeGreaterThan(0);
+    for (const el of columns) {
+      expect(el.className).toMatch(/\bflex-1\b/);
+      expect(el.className).toMatch(/\bbasis-0\b/);
+      expect(el.style.width).toBe("");
+    }
+
+    const strip = columns[0].parentElement!;
+    // `flex-1 basis-0` у подписей мертвы без `display:flex` у полосы: смени
+    // `flex` на `grid`, и каждая подпись растянется на всю ширину. Это несущая
+    // половина механизма, и в первой редакции этого утверждения не было.
     expect(strip.className).toMatch(/\bflex\b/);
+    expect(strip.className).toMatch(/\bw-full\b/);
     expect(strip.className).not.toMatch(/\bgap-/);
+    expect(strip.style.width).toBe("");
+
+    // И вторая половина связки: полотно тоже тянется на всю ширину `.inner`.
+    // Дай `ChartContainer` фиксированную ширину — и подписи снова разъедутся со
+    // столбцами, молча.
+    const chart = innerMany.querySelector('[data-slot="chart"]')!;
+    expect(chart.className).toMatch(/\bw-full\b/);
   });
 });
