@@ -29,6 +29,8 @@ import {
 } from "@/components/inflation/InflationSeriesDialog";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { coefficientLevel } from "@/lib/inflation";
+import { ContractCostChart } from "./ContractCostChart";
+import { BUCKET_LABELS, REASON_LABELS, VAT_MODE_LABELS } from "./labels";
 import {
   apiErrorCode,
   apiErrorContext,
@@ -78,25 +80,6 @@ import type {
  * незачем.
  */
 
-const BUCKET_LABELS: Record<ComparisonBucket, string> = {
-  total: "Итого",
-  base: "ДГП",
-  amendments: "ДС",
-};
-
-const VAT_MODE_LABELS: Record<ComparisonVatMode, string> = {
-  own: "Своя ставка",
-  single: "Единая",
-  net: "Без НДС",
-};
-
-/** Словарь причин неполноты (спека §2.1.3) — тот же смысл, что паспортная подпись, но список СОВМЕЩАЕТ все причины разом, а не выбирает старшую. */
-const REASON_LABELS: Record<ComparisonIncompleteReason, string> = {
-  unpriced_rows: "без цены",
-  not_finite_rows: "с ошибкой",
-  vat_base_unknown: "неизвестна база НДС",
-  display_rate_undefined: "ставка показа не определена",
-};
 
 // ---------------------------------------------------------------------------
 //  Дерево строк из плоского списка (спека §2.1.1)
@@ -1204,6 +1187,18 @@ export default function ComparePage() {
               })}
             </div>
           </fieldset>
+
+          {/*
+            Диаграмма стоимости (план, задача 11; спека диаграммы стоимости
+            §2.2) — НАД таблицей статей, ПОД панелью управления и чипами:
+            следует тем же переключателям (корзина — пропом, режим НДС и
+            приведение — читая готовый `comparison`), а единицу диаграммы
+            держит своим локальным состоянием (спека диаграммы стоимости §2.10
+            не заводит её в контракте адреса). Подписи причин неполноты берутся
+            из общего модуля `labels.ts` — того же, что у таблицы: спека
+            диаграммы стоимости §2.9 требует ОДИН словарь на экран.
+          */}
+          <ContractCostChart comparison={comparison} bucket={bucket} />
 
           {/*
             Скролл в обе стороны сразу, первая колонка закреплена (DoD 17) —
