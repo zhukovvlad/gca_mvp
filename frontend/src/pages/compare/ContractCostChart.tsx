@@ -11,6 +11,11 @@ import {
   type DotProps,
 } from "recharts";
 
+import {
+  SEGMENTED_GROUP_CLASS,
+  SEGMENTED_ITEM_ACTIVE_CLASS,
+  SEGMENTED_ITEM_CLASS,
+} from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { addDecimalStrings } from "@/lib/decimal";
@@ -409,11 +414,13 @@ export function ContractCostChart({
         <h2 id={headingId} className="text-sm font-semibold text-fg">
           Диаграмма стоимости — {BUCKET_LABELS[bucket]}
         </h2>
-        <div
-          role="group"
-          aria-label="Единица диаграммы"
-          className="inline-flex overflow-hidden rounded-lg border border-border"
-        >
+        {/*
+          Тот же сегментный переключатель, что «Показатель» и «НДС» в панели, и
+          то же оформление из `controlStyles`: своё «нажато» здесь означало бы,
+          что на экране два разных языка выбора — светло-зелёный у диаграммы и
+          тёмный у панели.
+        */}
+        <div role="group" aria-label="Единица диаграммы" className={SEGMENTED_GROUP_CLASS}>
           {(Object.keys(UNIT_LABELS) as CostChartUnit[]).map((value) => (
             <Button
               key={value}
@@ -421,7 +428,7 @@ export function ContractCostChart({
               variant="ghost"
               size="sm"
               aria-pressed={unit === value}
-              className={cn("rounded-none", unit === value && "bg-accent-soft text-accent-text")}
+              className={cn(SEGMENTED_ITEM_CLASS, unit === value && SEGMENTED_ITEM_ACTIVE_CLASS)}
               onClick={() => setUnit(value)}
             >
               {UNIT_LABELS[value]}

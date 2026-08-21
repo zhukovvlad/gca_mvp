@@ -32,26 +32,45 @@ interface InflationLevelsBarProps {
  * `[hidden] { display:none }`, и полоса продолжала занимать место бордюром и
  * отступом: `innerText` пуст, глазами почти не видно, а `isHidden()` возвращал
  * `false`. Отсутствующий узел этой ловушки не имеет вовсе.
+ *
+ * **Своей коробки у полосы НЕТ** (макет, `.levels`): она стоит внутри акцентной
+ * группы «Поправка на инфляцию» и продолжает её, а не спорит с ней. Приглушённая
+ * подложка с рамкой, которая была здесь раньше, на зелёном читалась как чужая
+ * вставка — вторая коробка внутри первой. Год с уровнем при этом получает СВОЮ
+ * белую плашку: годов бывает несколько, и без плашек строка сливалась в перечень,
+ * в котором не видно, где кончается один год и начинается следующий.
  */
 export function InflationLevelsBar({ inflation, canEdit, onEdit }: InflationLevelsBarProps) {
   return (
     <div
       data-testid="inflation-levels"
-      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2 text-2xs"
+      className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-2xs text-accent-text"
     >
-      <span className="font-medium text-fg">{inflation.series_name}</span>
+      {/*
+        Название ряда — в своём регистре. Макет ставит на это место капительный
+        ярлык «Ряд по годам», но здесь стоит имя ряда, и капитель превратила бы
+        «Росстат, ИПЦ, декабрь к декабрю» в крик.
+      */}
+      <span className="font-semibold">{inflation.series_name}</span>
 
       {inflation.used_years.length === 0 ? (
         // Пустой список — законное состояние (цель совпала с месяцем сметы, DoD 5),
         // и молчать о нём нельзя: читатель решил бы, что ряд не доехал до экрана.
-        <span className="text-fg-secondary">коэффициенты за годы не потребовались</span>
+        <span>коэффициенты за годы не потребовались</span>
       ) : (
         inflation.used_years.map((year) => {
           const level = coefficientLevel(year.coefficient);
           return (
-            <span key={year.year} className="text-fg-secondary">
-              {year.year} {level.level}
-              {year.is_forecast && <span className="ml-1 text-warning-text">прогноз</span>}
+            <span
+              key={year.year}
+              className="rounded-md border border-accent-border bg-surface px-1.5 py-px"
+            >
+              {year.year} <b className="font-semibold">{level.level}</b>
+              {year.is_forecast && (
+                <span className="ml-1.5 rounded-sm border border-warning-border bg-warning-soft px-1 text-warning-text">
+                  прогноз
+                </span>
+              )}
             </span>
           );
         })

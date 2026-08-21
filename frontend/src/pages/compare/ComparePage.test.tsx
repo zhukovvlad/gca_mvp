@@ -1659,6 +1659,86 @@ describe("ComparePage: поправка на инфляцию", () => {
   });
 });
 
+/**
+ * Сложение панели управления — то из макета, что проверяемо БЕЗ браузера.
+ *
+ * Цвета, подложки и «подпись над контролом» здесь не утверждаются намеренно:
+ * вычисленных стилей в jsdom нет, и утверждение о классах сказало бы лишь то,
+ * что классы написаны, — а не то, что они дали. Их замер живёт в прогоне на
+ * стенде. Проверяется ПОРЯДОК и ВЛОЖЕННОСТЬ: и то и другое несёт смысл (сначала
+ * что показываем, потом на чём, потом в каких ценах; полоса уровней объясняет
+ * коэффициенты группы, в которой стоит), и то и другое молча разъезжается при
+ * любой правке разметки экрана.
+ */
+describe("Сравнение договоров — сложение панели управления", () => {
+  /** `DOCUMENT_POSITION_FOLLOWING`: узел идёт ПОСЛЕ того, с которым сравнивают. */
+  const FOLLOWING = 4;
+
+  function panelBlocks() {
+    const bucketGroup = screen.getByRole("group", { name: "Показатель" });
+    const classGroup = screen.getByRole("group", { name: "Класс объекта" });
+    const inflationGroup = screen.getByRole("group", { name: "Поправка на инфляцию" });
+    const caption = screen.getByTestId("comparison-caption");
+    return { bucketGroup, classGroup, inflationGroup, caption };
+  }
+
+  it("порядок блоков: корзина → класс объекта → поправка → подпись состава", async () => {
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+    const { bucketGroup, classGroup, inflationGroup, caption } = panelBlocks();
+
+    expect(bucketGroup.compareDocumentPosition(classGroup) & FOLLOWING).toBeTruthy();
+    expect(classGroup.compareDocumentPosition(inflationGroup) & FOLLOWING).toBeTruthy();
+    expect(inflationGroup.compareDocumentPosition(caption) & FOLLOWING).toBeTruthy();
+  });
+
+  it("все четыре блока лежат в ОДНОЙ карточке, а диаграмма — уже вне неё", async () => {
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+    const { bucketGroup, classGroup, inflationGroup, caption } = panelBlocks();
+
+    /*
+      Карточка ищется как ближайший общий предок корзины и подписи, а не по
+      классу: утверждение «это один орган управления» — про вложенность, и
+      привязка к имени класса сломалась бы от переименования подложки, ничего
+      не сказав о самой сборке.
+    */
+    let card: HTMLElement | null = bucketGroup;
+    while (card && !card.contains(caption)) card = card.parentElement;
+    expect(card).not.toBeNull();
+
+    expect(card!.contains(classGroup)).toBe(true);
+    expect(card!.contains(inflationGroup)).toBe(true);
+
+    // Диаграмма следует ЗА панелью и в неё не входит (спека диаграммы §2.2).
+    const chart = screen.getByRole("region", { name: /Диаграмма стоимости/ });
+    expect(card!.contains(chart)).toBe(false);
+  });
+
+  it("полоса уровней стоит ВНУТРИ группы поправки, а не рядом с ней", async () => {
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+
+    expect(screen.getByRole("group", { name: "Поправка на инфляцию" }).contains(bar)).toBe(true);
+  });
+
+  it("у селектора единой ставки есть ВИДИМАЯ подпись, а не только имя для скринридера", async () => {
+    /*
+      Приставленный к группе «НДС» без подписи, селектор читался четвёртой
+      кнопкой режима: имя у него было только в `aria-label`. Утверждение идёт
+      через `getByLabelText` — оно проходит и по `aria-label`, поэтому рядом
+      стоит проверка, что подпись есть В ДОКУМЕНТЕ и связана с этим узлом.
+    */
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    const trigger = screen.getByLabelText("Единая ставка");
+    const label = screen.getByText("Единая ставка", { selector: "label" });
+    expect(label).toHaveAttribute("for", trigger.id);
+    expect(trigger.id).not.toBe("");
+  });
+});
+
 async function selectSeries(name: string) {
   await userEvent.click(screen.getByLabelText("Ряд индексов"));
   await userEvent.click(await screen.findByRole("option", { name }));

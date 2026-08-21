@@ -6,7 +6,17 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
+import { Surface } from "@/components/ui-domain/Surface";
+import {
+  CONTROLS_ROW_CLASS,
+  CONTROL_CELL_CLASS,
+  CONTROL_LABEL_CLASS,
+  SEGMENTED_GROUP_CLASS,
+  SEGMENTED_ITEM_ACTIVE_CLASS,
+  SEGMENTED_ITEM_CLASS,
+} from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -1033,15 +1043,165 @@ export default function ComparePage() {
       {comparison && (
         <>
           {/*
-            Подпись налогового состава денег (AGENTS.md §10 v6.8) —
-            печатается на поверхности, а не только в подсказке: тултип рядом
-            с ячейками объясняет расчёт, но не заменяет объявление состава.
-          */}
-          <p data-testid="comparison-caption" className="mt-4 text-sm text-fg-secondary">
-            {comparison.caption}
-          </p>
+            Панель управления — ОДНА карточка (макет, `.card.card-pad`). До этого
+            ряд корзин, чипы класса и группа поправки лежали прямо на фоне
+            страницы тремя отдельными блоками, и ничто не говорило, что это один
+            орган управления одной таблицей.
 
-          <div className="mt-4">
+            Порядок внутри — макетный, и он не косметический: сначала ЧТО
+            показываем (корзина и налоговый состав), затем НА ЧЁМ (сужение
+            выборки классом), затем В КАКИХ ЦЕНАХ (поправка). Поправка стояла
+            первой и читалась главным переключателем экрана, хотя выборки она не
+            меняет вовсе.
+          */}
+          <Surface padding="sm" className="mt-4">
+            <div className={CONTROLS_ROW_CLASS}>
+              <div className={CONTROL_CELL_CLASS}>
+                <span className={CONTROL_LABEL_CLASS}>Показатель</span>
+                <div role="group" aria-label="Показатель" className={SEGMENTED_GROUP_CLASS}>
+                  {(Object.keys(BUCKET_LABELS) as ComparisonBucket[]).map((value) => (
+                    <Button
+                      key={value}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={bucket === value}
+                      className={cn(
+                        SEGMENTED_ITEM_CLASS,
+                        bucket === value && SEGMENTED_ITEM_ACTIVE_CLASS
+                      )}
+                      onClick={() => setBucket(value)}
+                    >
+                      {BUCKET_LABELS[value]}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={CONTROL_CELL_CLASS}>
+                <span className={CONTROL_LABEL_CLASS}>НДС</span>
+                <div role="group" aria-label="Режим НДС" className={SEGMENTED_GROUP_CLASS}>
+                  {(Object.keys(VAT_MODE_LABELS) as ComparisonVatMode[]).map((mode) => (
+                    <Button
+                      key={mode}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={vatMode === mode}
+                      className={cn(
+                        SEGMENTED_ITEM_CLASS,
+                        vatMode === mode && SEGMENTED_ITEM_ACTIVE_CLASS
+                      )}
+                      onClick={() => updateVatMode(mode)}
+                    >
+                      {VAT_MODE_LABELS[mode]}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/*
+                Своя ячейка с ВИДИМОЙ подписью, а не селектор, приставленный к
+                группе «НДС». Приставленный, он читался как четвёртая кнопка
+                режима: имя у него было только в `aria-label`, то есть экран
+                называл его слепым, а глазам не называл никак. Связка —
+                `Label htmlFor` (идиома «Ряда индексов» в `InflationControls`), а
+                не `aria-label` рядом с подписью: два источника имени на один
+                узел однажды разойдутся.
+              */}
+              <div className={CONTROL_CELL_CLASS}>
+                <Label htmlFor="compare-single-rate" className={CONTROL_LABEL_CLASS}>
+                  Единая ставка
+                </Label>
+                <Select
+                  value={vatMode === "single" ? (singleRateParam ?? comparison.single_rate ?? "") : ""}
+                  onValueChange={(value) => {
+                    if (value) updateSingleRate(value);
+                  }}
+                >
+                  <SelectTrigger
+                    id="compare-single-rate"
+                    disabled={vatMode !== "single"}
+                    className="w-28"
+                  >
+                    <SelectValue>{(raw) => (raw ? formatSharePercent(raw) : "ставка")}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {comparison.rate_options.map((rate) => (
+                      <SelectItem key={rate} value={rate}>
+                        {formatSharePercent(rate)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/*
+              Чипы классов объекта — новый фильтр (спека диаграммы стоимости
+              §2.6, §2.7; DoD 30, 31). Источник — `available_rate_classes`, в
+              ПОРЯДКЕ ОТВЕТА: сервер уже упорядочил по `title`, и чипы не имеют
+              права переставляться, когда меняется набор договоров (§2.7).
+              Роль группы даёт сам `fieldset`/`legend` (как в макете) — заводить
+              рядом ещё один `role="group"` с тем же именем означало бы два
+              узла accessibility-дерева на одну группу; `aria-pressed` на каждой
+              кнопке — тот же приём, что у групп «Показатель»/«НДС» выше, чтобы
+              экран не выглядел собранным из двух разных наборов. Чип —
+              оформление поверх того же `Button`, а не новый примитив.
+            */}
+            <fieldset className="mt-4 rounded-lg border border-border-subtle bg-surface-sunken px-4 py-3">
+              <legend className={cn(CONTROL_LABEL_CLASS, "px-1.5")}>Класс объекта</legend>
+              <div className="flex flex-wrap gap-2">
+                {comparison.available_rate_classes.map((rateClass) => {
+                  const isSelected = effectiveRateClassIds.has(rateClass.id);
+                  /*
+                    Единственный выбранный чип не снимается (DoD 30), и молчание
+                    объяснено: `aria-disabled` с подсказкой, а НЕ `disabled` —
+                    выключенная кнопка спрятала бы защиту за DOM, и снятие защиты
+                    перестало бы что-либо ронять. Условие ТО ЖЕ, что в
+                    `toggleRateClass`, и оба читают одно множество.
+                  */
+                  const isLastSelected = isSelected && effectiveRateClassIds.size === 1;
+                  return (
+                    <Button
+                      key={rateClass.id}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-pressed={isSelected}
+                      aria-disabled={isLastSelected || undefined}
+                      aria-label={`${rateClass.title}, договоров: ${rateClass.count}`}
+                      title={
+                        isLastSelected
+                          ? "Последний класс не снимается: сравнивать было бы нечего"
+                          : undefined
+                      }
+                      className={cn(
+                        "rounded-full",
+                        isSelected && "border-accent-text/30 bg-accent-soft text-accent-text dark:bg-accent-soft"
+                      )}
+                      onClick={() => toggleRateClass(rateClass.id)}
+                    >
+                      {rateClass.title}
+                      {/*
+                        Счётчик выбранного чипа — акцентным цветом, а не приглушённым:
+                        на зелёной заливке `fg-tertiary` уходил в подложку, и число
+                        договоров у выбранного класса читалось хуже, чем у невыбранного.
+                      */}
+                      <span
+                        className={cn(
+                          "tabular-nums",
+                          isSelected ? "text-accent-text" : "text-fg-tertiary"
+                        )}
+                      >
+                        {rateClass.count}
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
+            </fieldset>
+
             <InflationControls
               series={seriesListQ.data ?? []}
               selectedSeriesId={selectedSeriesId}
@@ -1053,152 +1213,44 @@ export default function ComparePage() {
               onSelectSeries={selectSeries}
               onToggle={toggleInflation}
               onChangeMonth={updateTargetMonth}
-            />
-          </div>
+            >
+              {/*
+                Полоса уровней не отрисовывается, пока приведение не сосчитано, — а
+                не скрывается атрибутом `hidden`: в макете `display:flex` перебивал
+                браузерное `[hidden] { display:none }`, и полоса продолжала занимать
+                место. Отсутствующий узел этой ловушки не имеет вовсе.
 
-          {/*
-            Полоса уровней не отрисовывается, пока приведение не сосчитано, — а не
-            скрывается атрибутом `hidden`: в макете `display:flex` перебивал
-            браузерное `[hidden] { display:none }`, и полоса продолжала занимать
-            место. Отсутствующий узел этой ловушки не имеет вовсе.
-          */}
-          {comparison.inflation && (
-            <InflationLevelsBar
-              inflation={comparison.inflation}
-              canEdit={Boolean(canEditSeries)}
-              onEdit={() => {
-                setDialogMissingYears(undefined);
-                setEditingSeries(comparison.inflation!.series_id);
-              }}
-            />
-          )}
+                Стоит ВНУТРИ группы поправки (макет, `#levels` внутри
+                `fieldset.group`): полоса объясняет именно её коэффициенты, и
+                соседним блоком снаружи она объясняла бы их через границу.
+              */}
+              {comparison.inflation && (
+                <InflationLevelsBar
+                  inflation={comparison.inflation}
+                  canEdit={Boolean(canEditSeries)}
+                  onEdit={() => {
+                    setDialogMissingYears(undefined);
+                    setEditingSeries(comparison.inflation!.series_id);
+                  }}
+                />
+              )}
+            </InflationControls>
 
-          {refusalBanner}
+            {refusalBanner}
 
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
-                Показатель
-              </span>
-              <div
-                role="group"
-                aria-label="Показатель"
-                className="inline-flex overflow-hidden rounded-lg border border-border"
-              >
-                {(Object.keys(BUCKET_LABELS) as ComparisonBucket[]).map((value) => (
-                  <Button
-                    key={value}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-pressed={bucket === value}
-                    className={cn("rounded-none", bucket === value && "bg-accent-soft text-accent-text")}
-                    onClick={() => setBucket(value)}
-                  >
-                    {BUCKET_LABELS[value]}
-                  </Button>
-                ))}
-              </div>
-            </div>
+            {/*
+              Подпись налогового состава денег (AGENTS.md §10 v6.8) —
+              печатается на поверхности, а не только в подсказке: тултип рядом
+              с ячейками объясняет расчёт, но не заменяет объявление состава.
 
-            <div className="flex items-center gap-2">
-              <span className="text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
-                НДС
-              </span>
-              <div
-                role="group"
-                aria-label="Режим НДС"
-                className="inline-flex overflow-hidden rounded-lg border border-border"
-              >
-                {(Object.keys(VAT_MODE_LABELS) as ComparisonVatMode[]).map((mode) => (
-                  <Button
-                    key={mode}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-pressed={vatMode === mode}
-                    className={cn("rounded-none", vatMode === mode && "bg-accent-soft text-accent-text")}
-                    onClick={() => updateVatMode(mode)}
-                  >
-                    {VAT_MODE_LABELS[mode]}
-                  </Button>
-                ))}
-              </div>
-
-              <Select
-                value={vatMode === "single" ? (singleRateParam ?? comparison.single_rate ?? "") : ""}
-                onValueChange={(value) => {
-                  if (value) updateSingleRate(value);
-                }}
-              >
-                <SelectTrigger aria-label="Единая ставка" disabled={vatMode !== "single"} className="w-28">
-                  <SelectValue>{(raw) => (raw ? formatSharePercent(raw) : "ставка")}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {comparison.rate_options.map((rate) => (
-                    <SelectItem key={rate} value={rate}>
-                      {formatSharePercent(rate)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          {/*
-            Чипы классов объекта — новый фильтр (спека диаграммы стоимости
-            §2.6, §2.7; DoD 30, 31). Источник — `available_rate_classes`, в
-            ПОРЯДКЕ ОТВЕТА: сервер уже упорядочил по `title`, и чипы не имеют
-            права переставляться, когда меняется набор договоров (§2.7).
-            Роль группы даёт сам `fieldset`/`legend` (как в макете) — заводить
-            рядом ещё один `role="group"` с тем же именем означало бы два
-            узла accessibility-дерева на одну группу; `aria-pressed` на каждой
-            кнопке — тот же приём, что у групп «Показатель»/«НДС» выше, чтобы
-            экран не выглядел собранным из двух разных наборов. Чип —
-            оформление поверх того же `Button`, а не новый примитив.
-          */}
-          <fieldset className="mt-4 rounded-lg border border-border-subtle bg-surface-sunken p-3">
-            <legend className="px-1 text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
-              Класс объекта
-            </legend>
-            <div className="flex flex-wrap gap-2">
-              {comparison.available_rate_classes.map((rateClass) => {
-                const isSelected = effectiveRateClassIds.has(rateClass.id);
-                /*
-                  Единственный выбранный чип не снимается (DoD 30), и молчание
-                  объяснено: `aria-disabled` с подсказкой, а НЕ `disabled` —
-                  выключенная кнопка спрятала бы защиту за DOM, и снятие защиты
-                  перестало бы что-либо ронять. Условие ТО ЖЕ, что в
-                  `toggleRateClass`, и оба читают одно множество.
-                */
-                const isLastSelected = isSelected && effectiveRateClassIds.size === 1;
-                return (
-                  <Button
-                    key={rateClass.id}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    aria-pressed={isSelected}
-                    aria-disabled={isLastSelected || undefined}
-                    aria-label={`${rateClass.title}, договоров: ${rateClass.count}`}
-                    title={
-                      isLastSelected
-                        ? "Последний класс не снимается: сравнивать было бы нечего"
-                        : undefined
-                    }
-                    className={cn(
-                      "rounded-full",
-                      isSelected && "border-accent-text/30 bg-accent-soft text-accent-text"
-                    )}
-                    onClick={() => toggleRateClass(rateClass.id)}
-                  >
-                    {rateClass.title}
-                    <span className="tabular-nums text-fg-tertiary">{rateClass.count}</span>
-                  </Button>
-                );
-              })}
-            </div>
-          </fieldset>
+              Место — ПОСЛЕДНЯЯ строка панели (макет, `.axisnote` в карточке): она
+              объявляет состав тех чисел, которые собраны переключателями выше, и
+              прочитанная до них объявляла бы состав ещё не сделанного выбора.
+            */}
+            <p data-testid="comparison-caption" className="mt-4 text-xs text-fg-secondary">
+              {comparison.caption}
+            </p>
+          </Surface>
 
           {/*
             Диаграмма стоимости (план, задача 11; спека диаграммы стоимости
