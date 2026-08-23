@@ -18,7 +18,7 @@ import {
 } from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
-import { addDecimalStrings } from "@/lib/decimal";
+import { addDecimalStrings, compareDecimalStrings } from "@/lib/decimal";
 import { formatDate, formatDecimalMoney } from "@/lib/format";
 import { coefficientLevel } from "@/lib/inflation";
 import { MONTH_NAMES_RU } from "@/lib/constants";
@@ -335,20 +335,29 @@ function tooltipValue(decimal: string | null, unit: CostChartUnit): string {
  * внешним ревью PR. Знак множителя вообще не тот вопрос: строка говорит о том,
  * куда поехало ЗНАЧЕНИЕ, и отвечать на него обязаны значения.
  *
- * Сравнение — точной арифметикой строк (`addDecimalStrings`), а не `Number()`:
+ * Сравнение — `compareDecimalStrings`, точной арифметикой строк, а не `Number()`:
  * §3 AGENTS.md действует и на показ, а на близких величинах двоичное
  * представление решало бы исход.
  *
+ * **Сравнение, а не вычитание, и это второе исправление той же строки.** Первая
+ * редакция считала разность как `addDecimalStrings(shown, `-${nominal}`)` — то
+ * есть склеивала минус с текстом. На отрицательном номинале выходило `--100`,
+ * строка не проходила разбор, разность оказывалась `null`, и направление
+ * терялось ОДИНАКОВО и для роста (−100 → −80), и для снижения (−100 → −120).
+ * Найдено внешним ревью PR; отрицательные суммы достижимы —
+ * `position_items.total_cost_total` не ограничен снизу.
+ *
  * Равенство — ТРЕТЬЕ состояние, а не «рост»: множитель ровно 1 достижим, когда
  * цель совпала с месяцем сметы и коэффициенты за годы не потребовались
- * (DoD 5). Нейтральное «Приведено» и говорит ровно то, что известно.
+ * (DoD 5). Нейтральное «Приведено» и говорит ровно то, что известно; в него же
+ * попадает неразобранная величина — сказать о направлении тогда нечего.
  */
 function adjustedRowTerm(bar: CostChartBar): string {
   if (bar.nominalDecimal === null || bar.shownDecimal === null) return "Приведено";
-  const delta = addDecimalStrings(bar.shownDecimal, `-${bar.nominalDecimal}`);
-  if (delta === null) return "Приведено";
-  if (delta.startsWith("-")) return "Приведено, снижение";
-  return /^0(\.0*)?$/.test(delta) ? "Приведено" : "Приведено, рост";
+  const order = compareDecimalStrings(bar.shownDecimal, bar.nominalDecimal);
+  if (order === null) return "Приведено";
+  if (order < 0) return "Приведено, снижение";
+  return order > 0 ? "Приведено, рост" : "Приведено";
 }
 
 /**

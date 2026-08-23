@@ -1261,6 +1261,31 @@ describe("ContractCostChart — направление приведения в �
     expect(terms).not.toContain("Приведено, снижение");
   });
 
+  it("ОТРИЦАТЕЛЬНЫЙ номинал: рост читается как рост (−100 → −80)", () => {
+    /*
+     * Найдено внешним ревью PR. Прежняя редакция считала разность склейкой
+     * `-${nominal}`, на отрицательном номинале получала `--100`, и подпись
+     * сваливалась в нейтральное «Приведено» — одинаково для роста и снижения.
+     *
+     * Отрицательные суммы достижимы: `position_items.total_cost_total` объявлен
+     * `Numeric NULL` и ни одним `CheckConstraint` снизу не ограничен.
+     */
+    renderTooltip(mixedComparison("-80.00", "-100.00"), 7);
+
+    const terms = tooltipRows().map(([term]) => term);
+    expect(terms).toContain("Приведено, рост");
+    expect(terms).not.toContain("Приведено, снижение");
+    expect(terms).not.toContain("Приведено");
+  });
+
+  it("ОТРИЦАТЕЛЬНЫЙ номинал: снижение читается как снижение (−100 → −120)", () => {
+    renderTooltip(mixedComparison("-120.00", "-100.00"), 7);
+
+    const terms = tooltipRows().map(([term]) => term);
+    expect(terms).toContain("Приведено, снижение");
+    expect(terms).not.toContain("Приведено, рост");
+  });
+
   it("ОДИН множитель со снижением — подпись та же, и берётся из тех же чисел", () => {
     const comparison = makeComparison({
       columns: [
