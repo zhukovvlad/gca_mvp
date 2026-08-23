@@ -18,7 +18,7 @@ import {
 } from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
-import { addDecimalStrings, compareDecimalStrings } from "@/lib/decimal";
+import { compareDecimalStrings } from "@/lib/decimal";
 import { formatDate, formatDecimalMoney } from "@/lib/format";
 import { coefficientLevel } from "@/lib/inflation";
 import { MONTH_NAMES_RU } from "@/lib/constants";
@@ -273,16 +273,29 @@ function exactTitle(decimal: string, unit: CostChartUnit): string | undefined {
 /**
  * Чип поправки под столбцом: уровень коэффициента и его НАПРАВЛЕНИЕ.
  *
- * Направление берётся точной арифметикой строк — знак `k − 1` через
- * `addDecimalStrings`, — а НЕ разбором человеческого текста `coefficientLevel`.
- * Первая редакция читала `level.text.startsWith("Снижение")`: тон чипа тогда
- * зависел от формулировки в чужом модуле и молча перевернулся бы при её
- * правке, причём ни один тест этого бы не заметил. Разбор ЧИСЛА такого
- * свойства не имеет.
+ * Направление берётся точной арифметикой строк — `compareDecimalStrings(k, "1")`,
+ * — а НЕ разбором человеческого текста `coefficientLevel`. Первая редакция
+ * читала `level.text.startsWith("Снижение")`: тон чипа тогда зависел от
+ * формулировки в чужом модуле и молча перевернулся бы при её правке, причём ни
+ * один тест этого бы не заметил. Разбор ЧИСЛА такого свойства не имеет.
+ *
+ * **НАПРАВЛЕНИЙ ТРИ, а не два, и третье — не украшение.** Множитель ровно 1
+ * достижим: цель совпала с месяцем сметы, коэффициенты за годы не потребовались
+ * (DoD 5). Прежняя редакция держала `down: boolean`, и всё, что не снижение,
+ * красилось тоном роста — чип печатал нейтральное «поправка 0,0%» жёлтым, то
+ * есть текст говорил «без изменения», а цвет «выросло». Найдено внешним ревью
+ * PR, третьим кругом. Это ровно `docs/insights/one-value-two-states.md`: два
+ * состояния в булеве, третьему места нет, — и то же место я уже правил в
+ * подсказке (`adjustedRowTerm`), не заметив, что чип рядом болеет тем же.
+ *
+ * Различитель — строка `direction`, а не второй флаг: `up`/`down`/`flat` не
+ * умеют оказаться в невозможной паре, а два булева умеют.
  */
+type CoefficientDirection = "up" | "down" | "flat";
+
 type CoefficientChip =
   | { kind: "mixed"; title: string }
-  | { kind: "level"; level: string; down: boolean; title: string };
+  | { kind: "level"; level: string; direction: CoefficientDirection; title: string };
 
 function resolveCoefficientChip(bar: CostChartBar): CoefficientChip | null {
   if (bar.inflationCoefficient === undefined) return null;
@@ -298,14 +311,29 @@ function resolveCoefficientChip(bar: CostChartBar): CoefficientChip | null {
     };
   }
   const level = coefficientLevel(bar.inflationCoefficient);
-  const delta = addDecimalStrings(bar.inflationCoefficient, "-1");
+  // Неразобранный множитель — `flat`, а не «рост»: сказать о направлении нечего.
+  const order = compareDecimalStrings(bar.inflationCoefficient, "1");
+  const direction: CoefficientDirection =
+    order === null || order === 0 ? "flat" : order < 0 ? "down" : "up";
   return {
     kind: "level",
     level: level.level,
-    down: delta !== null && delta.startsWith("-"),
+    direction,
     title: `множитель × ${bar.inflationCoefficient}`,
   };
 }
+
+/**
+ * Тон чипа поправки. `flat` берёт ТУ ЖЕ приглушённую пару, что чип «разные»:
+ * оба случая означают одно — направления чип не объявляет, — и заводить под это
+ * третий цвет значило бы решать вопрос палитры там, где вопрос смысловой.
+ * Прецедент в проекте есть: `DEVIATION_TONE_CLASS.flat` тоже нейтрален.
+ */
+const COEFFICIENT_TONE_CLASS: Record<CoefficientDirection, string> = {
+  up: "bg-warning-soft text-warning-text",
+  down: "bg-accent-soft text-accent-text",
+  flat: "bg-surface-sunken text-fg-secondary",
+};
 
 // ---------------------------------------------------------------------------
 //  Подсказка при наведении (макет, `.tip`)
@@ -513,11 +541,9 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
           title={coefficient.title}
           className={cn(
             "rounded px-1 text-2xs",
-            coefficient.kind === "level" && coefficient.down
-              ? "bg-accent-soft text-accent-text"
-              : coefficient.kind === "level"
-                ? "bg-warning-soft text-warning-text"
-                : "bg-surface-sunken text-fg-secondary"
+            coefficient.kind === "level"
+              ? COEFFICIENT_TONE_CLASS[coefficient.direction]
+              : COEFFICIENT_TONE_CLASS.flat
           )}
         >
           {coefficient.kind === "mixed" ? "разные" : `поправка ${coefficient.level}`}

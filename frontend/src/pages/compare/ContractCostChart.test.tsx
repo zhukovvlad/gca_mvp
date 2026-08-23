@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ContractCostChart, CostChartTooltip } from "./ContractCostChart";
@@ -1310,5 +1310,110 @@ describe("ContractCostChart — направление приведения в �
     renderTooltip(comparison, 7);
 
     expect(tooltipRows().map(([term]) => term)).toContain("Приведено, снижение");
+  });
+});
+
+describe("ContractCostChart — тон чипа поправки", () => {
+  /**
+   * Чип поправки под столбцом печатает УРОВЕНЬ множителя и красится по его
+   * направлению. Направлений три, и до внешнего ревью третьего не было: всё, что
+   * не снижение, красилось тоном роста, поэтому нейтральное «поправка 0,0%»
+   * выходило жёлтым — текст говорил «без изменения», цвет «выросло».
+   *
+   * Тон утверждается КЛАССАМИ, и это осознанное исключение: вычисленных стилей в
+   * jsdom нет, а различие тонов здесь и есть предмет утверждения. Прецедент —
+   * `Dropzone.test.tsx` и подписи паспорта. Классы взяты не «какие есть», а
+   * попарно: у роста и снижения они обязаны РАЗЛИЧАТЬСЯ, а у «без изменения» и
+   * «разные» — совпадать, потому что оба означают «направления не объявляю».
+   */
+  function chipOf(coefficient: string | null, factors?: { label: string; coefficient: string }[]) {
+    const column = makeColumn({
+      contractId: 7,
+      signedDate: "2025-03-14",
+      inflationCoefficient: coefficient,
+    });
+    if (factors) column.inflation_factors = factors;
+    renderChart(
+      makeComparison({
+        columns: [column],
+        totals: [
+          makeTotalsCell(
+            7,
+            makeBucketCell({
+              shown: "184077.00",
+              shownPerSqm: "184077.00",
+              nominalShown: "203890.00",
+              nominalShownPerSqm: "203890.00",
+            })
+          ),
+        ],
+      })
+    );
+    return screen.getByTestId("cost-chart-coefficient-7");
+  }
+
+  it("множитель РОВНО 1: текст нейтральный и тон тоже, а не «рост»", () => {
+    /*
+     * Достижимо: цель совпала с месяцем сметы, коэффициенты за годы не
+     * потребовались (DoD 5) — сервер отдаёт множитель 1.
+     */
+    const chip = chipOf("1");
+
+    expect(chip).toHaveTextContent("поправка 0,0%");
+    expect(chip.className).toContain("bg-surface-sunken");
+    expect(chip.className).not.toContain("bg-warning-soft");
+    expect(chip.className).not.toContain("bg-accent-soft");
+  });
+
+  it("«1.0000» — тот же ноль, и тон тот же: сравнивается ЧИСЛО, не текст", () => {
+    // Как текст «1.0000» и «1» разные; лексикографика дала бы здесь другой тон.
+    const chip = chipOf("1.0000");
+
+    expect(chip).toHaveTextContent("поправка 0,0%");
+    expect(chip.className).toContain("bg-surface-sunken");
+  });
+
+  it("рост и снижение красятся РАЗНЫМИ тонами, и ни один не нейтральный", () => {
+    /*
+     * Парой к первому тесту: без этого утверждения все три направления могли бы
+     * получить нейтральный тон, и «третье состояние» съело бы два первых.
+     */
+    const up = chipOf("1.0800000000").className;
+    cleanup();
+    const down = chipOf("0.9100000000").className;
+
+    expect(up).toContain("bg-warning-soft");
+    expect(down).toContain("bg-accent-soft");
+    expect(up).not.toContain("bg-surface-sunken");
+    expect(down).not.toContain("bg-surface-sunken");
+    expect(up).not.toBe(down);
+  });
+
+  it("«разные» множители носят ТОТ ЖЕ нейтральный тон, что «без изменения»", () => {
+    /*
+     * Оба случая означают одно — направления чип не объявляет, — и разные цвета
+     * на них означали бы разницу, которой нет.
+     */
+    const flat = chipOf("1").className;
+    cleanup();
+    const mixed = chipOf(null, [
+      { label: "ДГП", coefficient: "1.0800000000" },
+      { label: "ДС №1", coefficient: "0.9100000000" },
+    ]).className;
+
+    expect(mixed).toContain("bg-surface-sunken");
+    expect(mixed).toBe(flat);
+  });
+
+  it("неразобранный множитель — нейтральный тон, а не «рост»", () => {
+    /*
+     * Сказать о направлении нечего, и жёлтый цвет сообщил бы направление,
+     * которого никто не считал. `coefficientLevel` на таком входе отдаёт пустой
+     * уровень, поэтому проверяется именно ТОН.
+     */
+    const chip = chipOf("не число");
+
+    expect(chip.className).toContain("bg-surface-sunken");
+    expect(chip.className).not.toContain("bg-warning-soft");
   });
 });
