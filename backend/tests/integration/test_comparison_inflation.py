@@ -742,6 +742,14 @@ def test_query_budget_is_five_without_adjustment_and_seven_with_it(db_session, f
     вместе с обоснованием — то, что план и предписывает на этот случай; молча
     менять число нельзя.
 
+    **Задача 6 это число НЕ подняла, и это решение, а не совпадение.** Вынесение
+    умножения в `apply_adjustment` (чистую, без `db`) потребовало справочника
+    статей во втором месте, и он читался бы дважды. Вместо правки числа
+    справочник читается ОДИН раз в `build_comparison` и передаётся и в
+    `load_rollups(categories=...)`, и в `apply_adjustment`. Поднять бюджет
+    закрытой фичи ради перечитывания того, что уже лежит в памяти, было бы
+    платой без покупки.
+
     Число утверждается точным: «не растёт с выборкой» пропустило бы лишний
     запрос, добавленный один раз на всю выборку.
     """
@@ -1089,3 +1097,209 @@ def test_contract_without_estimates_gets_no_inflation_keys_at_all(db_session, fa
     # У колонки со сметой множитель на месте — иначе тест был бы зелен и на
     # реализации, которая не приводит вообще ничего.
     assert columns[with_money]["inflation_coefficient"] == FACTOR_JUL_2026
+
+
+# ---------------------------------------------------------------------------
+#  Номинал в «Итого» и в медиане (план, задача 6)
+# ---------------------------------------------------------------------------
+
+def _keys_containing(node, needle: str) -> list[str]:
+    """Тот же приём, что в `test_comparison_baseline.py`: рекурсивный обход
+    ответа за ключами, содержащими `needle` — утверждение об ОТСУТСТВИИ ключа,
+    а не о его значении (`None` от отсутствия ключа не отличить иначе)."""
+    found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if needle in key:
+                found.append(key)
+            found.extend(_keys_containing(value, needle))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_keys_containing(item, needle))
+    return found
+
+
+def test_no_adjustment_no_nominal_key_at_all(db_session, factories):
+    """DoD 13: без приведения ключа `nominal` нет НИГДЕ в ответе.
+
+    Не `"nominal": null` — отсутствие ключа. Проверка рекурсивная по всему
+    дереву ответа (`_keys_containing`), потому что `nominal` мог бы просочиться
+    в `totals[]`, в `totals_medians` и — по ловушке DoD 17 — в `rows[]`.
+    """
+    ids = _selection_of_three(db_session, factories)
+
+    data = cmp.build_comparison(db_session, ids, vat_mode=cmp.VAT_MODE_OWN)
+
+    assert _keys_containing(data, "nominal") == []
+
+
+def test_nominal_shown_per_sqm_times_coefficient_equals_shown_per_sqm(db_session, factories):
+    """DoD 14: `nominal.shown_per_sqm × коэффициент == shown_per_sqm` «Итого»,
+    там, где коэффициент колонки определён (DoD 14).
+
+    Режим `net`, чтобы `shown_per_sqm` совпадал с `net_per_sqm` и умножение
+    проверялось напрямую, без слоя НДС. Утверждение — о КОНКРЕТНОМ числе
+    (`quantize_money`), а не о совпадении двух формул: `_selection_of_three`
+    кладёт деньги в каждый договор без допсоглашений, поэтому у всех трёх
+    колонок `inflation_coefficient` определён.
+    """
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    data = cmp.build_comparison(
+        db_session, ids, vat_mode=cmp.VAT_MODE_NET,
+        inflation_series_id=series_id, target_month=TARGET_AUG_2026,
+    )
+
+    coefficient_by_contract = {
+        column["contract_id"]: column["inflation_coefficient"] for column in data["columns"]
+    }
+    checked = 0
+    for total in data["totals"]:
+        contract_id = total["contract_id"]
+        coefficient = coefficient_by_contract[contract_id]
+        assert coefficient is not None
+        cell = total[cmp.BUCKET_TOTAL]
+
+        # Форма ячейки закреплена ЯВНО: ровно четыре денежные величины, без
+        # `state` и `deviation_pct`. Без этого утверждения самое естественное
+        # «упрощение» — переиспользовать `_bucket_cell_dict` для номинала —
+        # уехало бы в ответ дублем метаданных, и ни один тест не покраснел бы:
+        # эталон приведённый путь не покрывает по построению (он снят БЕЗ
+        # приведения).
+        assert set(cell["nominal"]) == {"net", "shown", "net_per_sqm", "shown_per_sqm"}
+
+        nominal_shown_per_sqm = cell["nominal"]["shown_per_sqm"]
+        assert nominal_shown_per_sqm is not None
+        # Ожидание считается `adjust_amount`, а НЕ выражением `nominal * coefficient`:
+        # агрегат умножает внутри `_INFLATION_CONTEXT`, а тест бежит в контексте по
+        # умолчанию, и произведение посчиталось бы амбиентным контекстом самого
+        # теста. Сегодня `quantize_money` расхождение гасит — но правило заведено
+        # ровно на такие «сегодня совпало» (докстрока `:454` этого же файла).
+        assert quantize_money(adjust_amount(nominal_shown_per_sqm, coefficient)) == (
+            quantize_money(cell["shown_per_sqm"])
+        )
+        checked += 1
+    assert checked == 3
+
+
+def test_nominal_total_is_correct_even_when_column_coefficient_is_undefined(db_session, factories):
+    """DoD 15: при РАЗНЫХ коэффициентах ДГП и ДС (`inflation_coefficient` колонки
+    — `null`) номинал «Итого» ВСЁ РАВНО верен — он не выводится из коэффициента
+    колонки, которого в этом случае и не существует.
+    """
+    series_id = _series(db_session)
+    contract, _base, _amd = fx.contract_with_amendment_dates(
+        db_session, factories,
+        signed_date=dt.date(2024, 12, 10),
+        base_prepared=dt.date(2024, 12, 10),
+        amd_prepared=dt.date(2025, 12, 20),
+    )
+
+    data = cmp.build_comparison(
+        db_session, [contract.id], vat_mode=cmp.VAT_MODE_NET,
+        inflation_series_id=series_id, target_month=YearMonth(2025, 12),
+    )
+
+    column = data["columns"][0]
+    # Предпосылка: коэффициенты ДГП (1.083) и ДС (1) разные, и разбивка на месте.
+    assert column["inflation_coefficient"] is None
+    assert column["inflation_factors"] == [
+        {"label": "ДГП", "coefficient": Decimal("1.083")},
+        {"label": "ДС №1", "coefficient": Decimal(1)},
+    ]
+
+    total = data["totals"][0][cmp.BUCKET_TOTAL]
+    # Номинал «Итого» — сумма НЕприведённых нетто ДГП и ДС (1 200 000 и 600 000
+    # гросс при ставке 20 % -> 1 000 000 и 500 000 нетто), независимо от того,
+    # что у колонки нет единого коэффициента вовсе.
+    assert total["nominal"]["net"] == Decimal("1000000") + Decimal("500000")
+
+
+def test_nominal_median_matches_the_same_query_without_a_series(db_session, factories):
+    """DoD 16: `totals_medians[bucket].nominal` равна медиане ТОГО ЖЕ запроса
+    БЕЗ ряда — сравнением двух ОТВЕТОВ, а не пересчётом (пересчёт был бы второй
+    копией формулы медианы в самом тесте).
+
+    Заодно проверяет ФОРМУ номинальной медианы (спека §2.10): `{value, shown_per_sqm?}`
+    и НИЧЕГО больше — ни `comparable_count`, ни `contract_ids`.
+    """
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    adjusted = cmp.build_comparison(
+        db_session, ids, vat_mode=cmp.VAT_MODE_NET,
+        inflation_series_id=series_id, target_month=TARGET_AUG_2026,
+    )
+    nominal_only = cmp.build_comparison(db_session, ids, vat_mode=cmp.VAT_MODE_NET)
+
+    checked = 0
+    for bucket in (cmp.BUCKET_BASE, cmp.BUCKET_AMENDMENTS, cmp.BUCKET_TOTAL):
+        expected = nominal_only["totals_medians"][bucket]
+        expected_subset = {"value": expected["value"]}
+        if "shown_per_sqm" in expected:
+            expected_subset["shown_per_sqm"] = expected["shown_per_sqm"]
+        assert adjusted["totals_medians"][bucket]["nominal"] == expected_subset
+        checked += 1
+    assert checked == 3
+
+
+def test_rows_do_not_carry_nominal(db_session, factories):
+    """DoD 17: строки дерева номинала не несут — ни в ячейках, ни в медианах.
+
+    Утверждение об отсутствии ключа, по ВСЕМ строкам и всем корзинам: ловушка
+    DoD 17 — `nominal`, добавленный внутрь `_cell_entry`/`_bucket_cell_dict` или
+    внутрь `_median_dict`, утёк бы во все 253 строки, а не только в «Итого».
+    """
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    data = cmp.build_comparison(
+        db_session, ids, vat_mode=cmp.VAT_MODE_NET,
+        inflation_series_id=series_id, target_month=TARGET_AUG_2026,
+    )
+
+    assert data["rows"], "ожидались строки дерева — иначе проверка пуста"
+    for row in data["rows"]:
+        for cell in row["cells"]:
+            for bucket in (cmp.BUCKET_BASE, cmp.BUCKET_AMENDMENTS, cmp.BUCKET_TOTAL):
+                assert "nominal" not in cell[bucket]
+        for bucket_median in row["medians"].values():
+            assert "nominal" not in bucket_median
+
+
+def test_apply_adjustment_fails_loudly_on_its_own(db_session, factories):
+    """`RuntimeError` на смету без коэффициента звучит и через `apply_adjustment`
+    НАПРЯМУЮ — не только через `load_rollups(adjustment=...)`:
+    `load_rollups` теперь лишь делегирует туда, и защита обязана жить в самой
+    функции умножения, а не в обёртке над ней.
+    """
+    ids = _selection_of_three(db_session, factories)
+    rollups = cmp.load_rollups(db_session, ids)
+    categories = cmp._load_categories(db_session)
+
+    with pytest.raises(RuntimeError):
+        cmp.apply_adjustment(rollups, {-1: Decimal("1.1")}, categories=categories)
+
+
+def test_nominal_median_has_no_shown_per_sqm_in_own_mode(db_session, factories):
+    """Номинальная медиана подчиняется ТОМУ ЖЕ правилу присутствия, что §2.10 у
+    приведённой: при `own` ключа `shown_per_sqm` внутри `nominal` НЕТ — единой
+    ставки показа не существует ни для номинала, ни для приведённого (задача 6,
+    спека §2.8). Негативная проверка.
+    """
+    series_id = _series(db_session)
+    ids = _selection_of_three(db_session, factories)
+
+    data = cmp.build_comparison(
+        db_session, ids, vat_mode=cmp.VAT_MODE_OWN,
+        inflation_series_id=series_id, target_month=TARGET_AUG_2026,
+    )
+
+    checked = 0
+    for bucket in (cmp.BUCKET_BASE, cmp.BUCKET_AMENDMENTS, cmp.BUCKET_TOTAL):
+        nominal_median = data["totals_medians"][bucket]["nominal"]
+        assert "value" in nominal_median
+        assert "shown_per_sqm" not in nominal_median
+        checked += 1
+    assert checked == 3

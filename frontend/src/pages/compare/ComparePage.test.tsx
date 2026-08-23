@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { useLocation } from "react-router-dom";
 
 import ComparePage from "./ComparePage";
+import type { Comparison } from "@/types/domain";
 import { deviationTone } from "./deviationTone";
 import { sampleComparison, sampleInflationSeries } from "@/test/fixtures";
-import { handlerState } from "@/test/handlers";
+import { handlerState, totalsMediansWithMode } from "@/test/handlers";
 import { server } from "@/test/server";
 import { DEFAULT_TEST_USER, renderWithProviders } from "@/test/utils";
 
@@ -44,6 +45,22 @@ function renderCompare(query = SELECTION, initialUser?: Parameters<typeof render
     initialRoute: `/compare?${query}`,
     ...initialUser,
   });
+}
+
+/** Рендер вместе с пробником адреса — для утверждений о ЗАПИСИ в URL. */
+function renderWithProbe(query = SELECTION) {
+  return renderWithProviders(
+    <>
+      <ComparePage />
+      <LocationProbe />
+    </>,
+    { initialRoute: `/compare?${query}` }
+  );
+}
+
+/** Адрес изнутри роутера: `window.location` под `MemoryRouter` правок не видит. */
+function locationSearch(): URLSearchParams {
+  return new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
 }
 
 describe("Сравнение договоров — предпосылки фикстуры", () => {
@@ -144,6 +161,633 @@ describe("Сравнение договоров — НДС и ставка в UR
     await screen.findByTestId("comparison-caption");
 
     expect(screen.getByRole("button", { name: "Своя ставка" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Действующая ставка показа в адресе
+//  (спека диаграммы стоимости §2.6, подраздел «Ставка показа не имеет права
+//   меняться от фильтра»; §2.10; DoD 33)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — действующая ставка показа в адресе", () => {
+  /** Запросы сравнения, дошедшие до мока: по ним видно, ЧТО отправил клиент. */
+  let requests: Record<string, string>[] = [];
+
+  beforeEach(() => {
+    requests = [];
+  });
+
+  /**
+   * Обработчик, повторяющий проводку СЕРВЕРА, а не общий мок.
+   *
+   * Копируется `effective_single_rate` (`backend/crud/comparison.py`): ответ
+   * отражает ПОЛУЧЕННУЮ ставку при любом режиме, а предвыбор подставляет
+   * только в «Единой» и только когда ставка не пришла. Копировать это важно:
+   * общий мок отдаёт `single_rate: null` вне «Единой» САМ, то есть держит
+   * рядом вторую защиту, и снятие клиентской проводки на нём ничего не уронило
+   * бы (`docs/insights/verifying-guards.md`, слой 8).
+   *
+   * `preselected` задаётся тестом, чтобы действующая ставка и предвыбор могли
+   * РАЗОЙТИСЬ: на фикстуре они совпадают, и тест на их совпадении не различает,
+   * какое из двух полей читает экран.
+   *
+   * `narrowedPreselected` (когда задан) делает предвыбор ЗАВИСЯЩИМ от
+   * `rate_class_id` запроса — ровно то, что требует предпосылка DoD 34 (спека
+   * диаграммы стоимости §2.6, подраздел «Ставка показа не имеет права меняться
+   * от фильтра»): сужение по классу меняет состав выборки, а значит на
+   * настоящем сервере могло бы изменить и предвыбор. На общем моке предвыбор
+   * один и тот же всегда, и без этого параметра тест DoD 34 был бы вакуозен —
+   * снятие записи ставки ничего бы не поменяло.
+   *
+   * Подпись состава помечена режимом, ставкой И предвыбором — это единственный
+   * сигнал ПРИМЕНЁННОГО ответа, а без него утверждение об отсутствии записи
+   * мерило бы старый кадр. Предвыбор в подписи нужен отдельно от ставки: при
+   * сужении меняется именно он, тогда как ставка обязана остаться прежней, —
+   * то есть без него у СУЖЕННОГО кадра наблюдаемого признака нет вовсе. Настоящий сервер подпись по режиму тоже различает
+   * (`_mode_caption`), общий мок — нет, и граница по времени вместо этого
+   * сигнала зависела бы от загрузки машины (devlog §4.3б).
+   */
+  function echoServerRate(preselected = "20.00", narrowedPreselected?: string) {
+    server.use(
+      http.get("/api/v1/analytics/comparison", ({ request }) => {
+        const url = new URL(request.url);
+        requests.push(Object.fromEntries(url.searchParams));
+        const mode = url.searchParams.get("vat_mode") ?? "own";
+        const narrowed = url.searchParams.get("rate_class_id") !== null;
+        const effectivePreselected =
+          narrowed && narrowedPreselected !== undefined ? narrowedPreselected : preselected;
+        const asked = url.searchParams.get("single_rate");
+        const effective = asked ?? (mode === "single" ? effectivePreselected : null);
+        return HttpResponse.json({
+          ...sampleComparison,
+          vat_mode: mode,
+          rate_preselected: effectivePreselected,
+          single_rate: effective,
+          caption: `mode=${mode} rate=${effective ?? "none"} preselected=${effectivePreselected}`,
+        });
+      })
+    );
+  }
+
+  /** Ждёт ПРИМЕНЁННОГО ответа: подпись состава несёт режим и ставку ответа. */
+  function appliedCaption(mode: string, rate: string, preselected = "20.00") {
+    return screen.findByText(`mode=${mode} rate=${rate} preselected=${preselected}`);
+  }
+
+  it("предпосылка: своей ставки в фикстуре нет, предвыбор — 20.00", () => {
+    // Обе величины тест ниже подразумевает. Фикстура правится, предпосылка
+    // молча меняется, и «дописал в адрес» стало бы «там уже было».
+    expect(sampleComparison.single_rate).toBeNull();
+    expect(sampleComparison.rate_preselected).toBe("20.00");
+  });
+
+  it("открытие «Единой» без ставки дописывает её в адрес (DoD 33)", async () => {
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Утверждается ЗНАЧЕНИЕ, а не факт появления параметра: «появился»
+    // прошло бы и при записи чего угодно.
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
+  });
+
+  it("в адрес идёт ДЕЙСТВУЮЩАЯ ставка, а не предвыбор", async () => {
+    /*
+      Ставка в адресе и предвыбор РАЗВЕДЕНЫ: сервер показал числа в 22.00,
+      предвыбрал бы 20.00. Это и есть смысл записи — после неё предвыбор в игру
+      больше не входит (спека диаграммы стоимости §2.6, DoD 34). Сужения по
+      классу здесь нет: единственный контрол сужения — чипы классов, их заводит
+      задача 10, и переход через чип закрывается там.
+    */
+    echoServerRate("20.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single&single_rate=22.00`);
+
+    await appliedCaption("single", "22.00");
+    expect(locationSearch().get("single_rate")).toBe("22.00");
+    expect(requests.every((r) => r.single_rate === "22.00")).toBe(true);
+  });
+
+  it("выход из «Единой» не возвращает ставку в адрес", async () => {
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Дождаться, что эффект уже записал ставку — иначе переход в «Без НДС»
+    // ничего не отменял бы: параметра и не было изначально.
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Без НДС" }));
+
+    // Уходит вместе с режимом — это делает `updateVatMode`.
+    await waitFor(() => expect(locationSearch().get("vat_mode")).toBe("net"));
+
+    /*
+      И НЕ ВОЗВРАЩАЕТСЯ. Утверждение об отсутствии требует границы, и граница
+      взята сигналом ПРИМЕНЁННОГО ответа, а не таймером: дописать параметр
+      обратно эффект может только после разбора ответа на новый запрос, а
+      подпись состава этот разбор и означает. Таймер здесь мерил бы сетевой
+      круг и на загруженной машине истекал бы раньше него — прогон стал бы
+      молча зелёным (devlog §4.3б).
+    */
+    await appliedCaption("net", "none");
+    // Плюс один такт: сам эффект сети не ждёт — он сработал бы уже на этом
+    // кадре, а `act` дожидается очереди обновлений детерминированно, не
+    // таймером. Достаточность проверена снятием (см. devlog).
+    await act(async () => {});
+    expect(locationSearch().get("single_rate")).toBeNull();
+  });
+
+  it("вне «Единой» клиент ставку серверу не отправляет", async () => {
+    /*
+      Пин на проводку, из которой эффект не имеет отдельного условия на режим:
+      `params` отдаёт `single_rate` ТОЛЬКО в «Единой». Обработчик здесь
+      отражает полученную ставку при любом режиме, как настоящий сервер, —
+      значит, начни клиент её отправлять, ответ вернул бы её, эффект записал бы
+      её в адрес, и человек увидел бы ставку, которой не выбирал.
+    */
+    echoServerRate();
+    renderWithProbe(`${SELECTION}&vat_mode=net&single_rate=22.00`);
+
+    await appliedCaption("net", "none");
+    expect(requests.length).toBeGreaterThan(0);
+    expect(requests.every((r) => r.single_rate === undefined)).toBe(true);
+  });
+
+  it("предпосылка (DoD 34): сужение по классу меняет предвыбор ставки на моке", async () => {
+    /*
+      Без этого измерения тест перехода ниже был бы вакуозен: на общем моке
+      предвыбор один и тот же всегда, и снятие записи ставки задачи 9 ничего
+      не изменило бы. Здесь обработчик подменён так, что суженный запрос
+      (`rate_class_id` есть) предвыбрал бы 22.00, а не фикстурные 20.00
+      (см. предпосылку выше и devlog §3.6б) — измеряется РАЗЛИЧИЕ, а не
+      совпадение.
+    */
+    echoServerRate("20.00", "22.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single&rate_class_id=1`);
+
+    /*
+      Мерится ОТВЕТ, а не адрес. Через адрес предпосылка проверялась бы тем самым
+      эффектом, снятие которого обязан ловить тест перехода ниже: сняли эффект —
+      покраснели оба, и какое из двух утверждений сломалось, не различить
+      (docs/insights/false-test-premises.md). Подпись состава несёт предвыбор
+      ответа и от эффекта не зависит вовсе.
+    */
+    await appliedCaption("single", "22.00", "22.00");
+  });
+
+  it("сужение по классу НЕ меняет действующую ставку показа (DoD 34, переход из задачи 9)", async () => {
+    /*
+      Задача 9 закрыла адресную половину DoD 34 («после записи предвыбор в
+      игру больше не входит»), но без контрола сужения переход было нечем
+      водить (devlog §3.6б). Чип класса — этот контрол. Предпосылка выше
+      измерила, что предвыбор для суженной выборки ИНОЙ (22.00); значит если
+      бы клиент читал предвыбор заново после клика, адрес получил бы 22.00.
+      Он обязан остаться с ПЕРВОЙ ставкой — 20.00.
+    */
+    echoServerRate("20.00", "22.00");
+    renderWithProbe(`${SELECTION}&vat_mode=single`);
+
+    // Дождаться, что действующая ставка уже записана в адрес — ДО сужения.
+    await waitFor(() => expect(locationSearch().get("single_rate")).toBe("20.00"));
+    requests.length = 0;
+
+    // Единственный контрол сужения — чип класса; снимаем «Класс B», сужая до
+    // «Класс A» (id 1). Дожидаемся ПРИМЕНЁННОГО ответа, а не таймера.
+    await userEvent.click(
+      within(screen.getByRole("group", { name: "Класс объекта" })).getByRole("button", {
+        name: /Класс B/,
+      })
+    );
+
+    /*
+      Якорь — ПРИМЕНЁННЫЙ суженный кадр, а не отправленный запрос: `requests`
+      наполняется внутри обработчика, то есть ДО того, как ответ разобран, а
+      дописать ставку заново эффект может только после разбора. Утверждение об
+      отсутствии, поставленное на request-time, мерило бы кадр до клика — ровно
+      та ошибка, которую эта ветка уже разобрала и записала правилом
+      (devlog §4.6). `preselected=22.00` в подписи и означает суженный кадр:
+      предвыбор для него ИНОЙ, а ставка обязана остаться прежней.
+    */
+    await appliedCaption("single", "20.00", "22.00");
+    await act(async () => {});
+
+    expect(requests.find((r) => r.rate_class_id === "1")?.single_rate).toBe("20.00");
+    expect(locationSearch().get("single_rate")).toBe("20.00");
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Чипы классов объекта
+//  (спека диаграммы стоимости §2.6, §2.7; DoD 8, 30, 31)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — чипы классов объекта", () => {
+  /**
+   * Чип ищется ВНУТРИ своей группы, а не по всему экрану: задача 11 добавит
+   * рядом контролы диаграммы, и глобальный поиск по ярлыку класса стал бы
+   * двусмысленным — тест упал бы по причине, не связанной с чипами.
+   */
+  function chip(title: string): HTMLElement {
+    return within(screen.getByRole("group", { name: "Класс объекта" })).getByRole("button", {
+      name: new RegExp(title),
+    });
+  }
+
+  it("клик пишет в адрес id по возрастанию, а при полном наборе параметр исчезает (DoD 31)", async () => {
+    /*
+      Локальная подмена только `available_rate_classes`: у фикстуры их ДВА, а
+      с двумя список из нескольких id никогда не наблюдаем — любые два разом
+      это полный набор, и параметр обязан исчезнуть (DoD 31). Третий класс
+      заведён здесь ЛОКАЛЬНО, а не в `fixtures.ts` — общая фикстура держит
+      счётчики фасета согласованными с колонками договоров, а этому тесту
+      нужен только сам механизм чипов. Порядок ответа НАМЕРЕННО не по
+      возрастанию id (3, 1, 2) — так тест отличает «пишем порядок id», что
+      требует DoD 31, от «пишем порядок ответа», что требуют чипы (§2.7).
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json({
+          ...sampleComparison,
+          available_rate_classes: [
+            { id: 3, title: "Класс C", count: 1 },
+            { id: 1, title: "Класс A", count: 3 },
+            { id: 2, title: "Класс B", count: 1 },
+          ],
+        })
+      )
+    );
+
+    renderWithProbe();
+    await screen.findByTestId("comparison-caption");
+
+    // Порядок в DOM — порядок ОТВЕТА (C, A, B), а не алфавитный: чипы не
+    // имеют права переставляться сами (§2.7).
+    const group = screen.getByRole("group", { name: "Класс объекта" });
+    const chipLabels = within(group)
+      .getAllByRole("button")
+      .map((button) => button.textContent ?? "");
+    expect(chipLabels[0]).toContain("Класс C");
+    expect(chipLabels[1]).toContain("Класс A");
+    expect(chipLabels[2]).toContain("Класс B");
+
+    // На чипе стоит `count` фасета, а не id класса: числа в подмене намеренно
+    // РАЗНЫЕ (класс A — id 1, count 3), иначе тест не отличил бы одно от другого.
+    expect(within(chip("Класс A")).getByText("3")).toBeInTheDocument();
+
+    // Снимаем «Класс C» (id 3), затем «Класс A» (id 1) — в этом порядке
+    // кликов, НЕ по возрастанию id, чтобы отличить «сортируем адрес» от
+    // «пишем порядок кликов».
+    await userEvent.click(chip("Класс C"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("1,2"));
+
+    await userEvent.click(chip("Класс A"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("2"));
+
+    // Возврат класса A восстанавливает {1,2}, но набор ещё НЕ полный (класс C
+    // всё ещё снят) — список остаётся в адресе, отсортированный по id.
+    await userEvent.click(chip("Класс A"));
+    await waitFor(() => expect(locationSearch().get("rate_class_id")).toBe("1,2"));
+
+    // И только возврат класса C даёт полный набор — параметр ИСЧЕЗАЕТ, а не
+    // записывается как «1,2,3»: ссылка становится посимвольно той же, что до
+    // фичи.
+    await userEvent.click(chip("Класс C"));
+    await waitFor(() => expect(locationSearch().has("rate_class_id")).toBe(false));
+  });
+
+  it("снятие последнего выбранного класса не срабатывает, запроса нет (DoD 30)", async () => {
+    let requestCount = 0;
+    server.use(
+      http.get("/api/v1/analytics/comparison", () => {
+        requestCount += 1;
+        return HttpResponse.json(sampleComparison);
+      })
+    );
+
+    renderWithProbe(`${SELECTION}&rate_class_id=1`);
+    await screen.findByTestId("comparison-caption");
+    const requestsAfterLoad = requestCount;
+
+    expect(locationSearch().get("rate_class_id")).toBe("1");
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    // Молчание контрола объяснено, а не просто случается: `aria-disabled` и
+    // подсказка. Именно `aria-disabled`, а не `disabled` — выключенную кнопку
+    // нельзя было бы нажать, и защита спряталась бы за DOM.
+    expect(classA).toHaveAttribute("aria-disabled", "true");
+    expect(classA).toHaveAttribute("title");
+
+    await userEvent.click(classA);
+
+    /*
+      Утверждение об ОТСУТСТВИИ (адрес не поехал, запроса не было) не имеет
+      наблюдаемого позитивного сигнала «применённого ответа» — самого ответа
+      здесь по определению не будет. `act` детерминированно доводит очередь
+      микрозадач/эффектов до конца ТЕКУЩЕГО кадра, а не мерит машину таймером
+      (devlog §4.6): если бы клик всё-таки отправлял запрос, доведённая до
+      конца очередь эффектов успела бы его инициировать до этой точки.
+    */
+    await act(async () => {});
+
+    expect(locationSearch().get("rate_class_id")).toBe("1");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    expect(requestCount).toBe(requestsAfterLoad);
+  });
+
+  it("снятие последнего ВИДИМОГО класса не срабатывает, даже когда адрес несёт класс вне фасета (DoD 30)", async () => {
+    /*
+      Присланная ссылка от другой выборки несёт `rate_class_id` с классом,
+      которого в фасете этой выборки нет: фасет считается по выборке (спека
+      диаграммы стоимости §2.7). Если бы выбранные считались прямо по адресу,
+      такой id шёл бы в счёт, снятие ЕДИНСТВЕННОГО видимого чипа проходило бы,
+      и в адресе оставался бы только фантом — то есть выборка из нуля
+      договоров, которую DoD 30 запрещает. Замерено на реализации без сечения:
+      адрес становился `rate_class_id=9`.
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () => HttpResponse.json(sampleComparison))
+    );
+    renderWithProbe(`${SELECTION}&rate_class_id=1,9`);
+    await screen.findByTestId("comparison-caption");
+
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+    // Класс 9 в фасете отсутствует, поэтому чипа у него нет вовсе.
+    expect(within(screen.getByRole("group", { name: "Класс объекта" })).getAllByRole("button"))
+      .toHaveLength(sampleComparison.available_rate_classes.length);
+
+    await userEvent.click(classA);
+    await act(async () => {});
+
+    expect(locationSearch().get("rate_class_id")).toBe("1,9");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("чипы видны и после перезагрузки с сужением: снятый класс остаётся на экране (DoD 8 на клиенте)", async () => {
+    /*
+      Открываем адрес, где `rate_class_id=1` УЖЕ сужает выборку до «Класс A» —
+      как после перезагрузки суженной ссылки. Общий мок отдаёт
+      `available_rate_classes` фикстуры БЕЗ УЧЁТА `rate_class_id` (facet
+      считается ДО сужения классами, спека §2.7) — этим тест и опирается на
+      настоящую серверную семантику, а не на клиентское домысливание: «Класс
+      B» обязан остаться виден и доступен для возврата, иначе фильтр стал бы
+      необратимым.
+    */
+    renderCompare(`${SELECTION}&rate_class_id=1`);
+    await screen.findByTestId("comparison-caption");
+
+    const classB = chip("Класс B");
+    expect(classB).toBeInTheDocument();
+    expect(classB).toHaveAttribute("aria-pressed", "false");
+
+    const classA = chip("Класс A");
+    expect(classA).toHaveAttribute("aria-pressed", "true");
+  });
+
+  /*
+    Теста на фокус клавиатуры после клика по чипу здесь НЕТ, и это решение, а не
+    пропуск. Дефект измерен (клик снимает всю панель скелетоном, чип уходит из
+    DOM, фокус уезжает в `body`), прописанное лечение
+    `placeholderData: keepPreviousData` опробовано и ОТКЛОНЕНО: оно постоянно
+    ломает три существующих утверждения об адресе. Механизм, обоснование и
+    условие, при котором лечение станет возможным, — в `docs/TECH_DEBT.md`,
+    запись 16; замеры — в devlog фичи.
+    Заводить тест на поведение, которого сейчас нет, значило бы держать в наборе
+    постоянно красный тест либо утверждать неправду.
+  */
+});
+
+// ---------------------------------------------------------------------------
+//  Приведение по умолчанию выключено
+//  (спека диаграммы стоимости §2.8, §2.9; DoD 32; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — приведение по умолчанию выключено (DoD 32)", () => {
+  it("без инфляционных параметров в адресе: числа номинальные, ключей nominal нет, диаграмма/чипы/facet есть", async () => {
+    /*
+      DoD 32 говорит не «экран отвечает как до фичи», а ровно наоборот:
+      диаграмма, чипы классов и `available_rate_classes` появляются
+      НЕЗАВИСИМО от приведения. Здесь всё это проверяется на голом адресе —
+      без единого инфляционного параметра.
+    */
+    renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByRole("heading", { name: /Диаграмма стоимости/ })).toBeInTheDocument();
+    const classGroup = screen.getByRole("group", { name: "Класс объекта" });
+    expect(within(classGroup).getAllByRole("button")).toHaveLength(
+      sampleComparison.available_rate_classes.length
+    );
+
+    // Число — то самое НОМИНАЛЬНОЕ значение фикстуры (с длинным хвостом
+    // `gross_to_net`, тот же замер, что и в тесте округления ниже), а не
+    // какое-то приведённое.
+    expect(screen.getByTestId("comparison-cell-totals-204").textContent?.replace(/\s/g, " ")).toBe(
+      "2 100 000,95 ₽"
+    );
+
+    /*
+      Ключей `nominal` в ответе нет ни одного (DoD 13, наследуется DoD 32).
+      `costChartData.buildCostChartBars` производит `nominalValue` РОВНО из
+      `bucketCell.nominal` — не вычисляет его сам, — поэтому отсутствие ключа
+      наблюдаемо на экране как отсутствие абзаца «Промежуток к номиналу» и
+      точечной линии медианы номинала. Снято и проверено: временная вставка
+      `nominal` в ответ мока без `inflation_series_id` (`src/test/handlers.ts`)
+      делает оба узла видимыми и красит это утверждение в красный — см. отчёт
+      задачи.
+    */
+    expect(screen.queryByText(/Промежуток к номиналу/)).not.toBeInTheDocument();
+  });
+
+  it("без инфляционных параметров нет и НОМИНАЛЬНОЙ линии медианы — при том, что обычная есть", async () => {
+    /*
+      Вторая половина того же обещания, и ей нужен свой режим. В «Своей ставке»
+      (умолчание фикстуры) линии медианы не бывает ВООБЩЕ — поля
+      `shown_per_sqm` там нет по правилу присутствия (спека диаграммы стоимости
+      §2.8), — поэтому утверждение «номинальной линии нет», сделанное там,
+      выполняется само собой и не может упасть ни при какой вставке `nominal` в
+      ответ. Измерено: вставка `nominal` во все корзины и в медиану его не
+      роняла. Здесь режим «Без НДС», и предпосылка измеряется — обычная линия
+      ДОЛЖНА присутствовать, иначе отсутствие второй ничего не значит.
+    */
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByTestId("cost-chart-median-line")).toBeInTheDocument();
+    expect(screen.queryByTestId("cost-chart-median-line-nominal")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+//  Медиана — на диаграмме, не в таблице
+//  (спека диаграммы стоимости §2.4; DoD 22в; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — медиана на диаграмме, а не в таблице (DoD 22в)", () => {
+  it("медиана есть на экране, в жёлобе диаграммы, но НЕ колонкой таблицы", async () => {
+    /*
+      Медиана — новая поверхность (спека диаграммы стоимости §2.4): на
+      сегодняшнем экране она числом не показана нигде, диаграмма — первое
+      место, где она появляется. Утверждение об отсутствии обязано различать
+      ТАБЛИЦУ и диаграмму, а не искать слово «медиана» по всему экрану —
+      тогда оно провалилось бы само по себе, потому что диаграмма печатает
+      его законно.
+
+      Режим «Без НДС» взят потому, что в «Своей ставке» (умолчание фикстуры)
+      поле `shown_per_sqm` у медианы «Итого» ОТСУТСТВУЕТ по правилу
+      присутствия (спека диаграммы стоимости §2.8) — линии не было бы, и
+      предпосылка «медиана есть на экране» была бы ложной без всякой связи с
+      этим тестом.
+    */
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    // Предпосылка, измеренная, а не подразумеваемая: сопоставимых у «Итого»
+    // действительно три и больше, и диаграмма ДЕЙСТВИТЕЛЬНО рисует линию.
+    expect(sampleComparison.totals_medians.total.comparable_count).toBeGreaterThanOrEqual(3);
+    expect(screen.getByTestId("cost-chart-median-line")).toHaveTextContent(/медиана/i);
+
+    // В таблице — нет: ни слова «медиана» где-либо внутри, ни колонки в шапке.
+    const table = screen.getByRole("table");
+    expect(within(table).queryByText(/медиана/i)).not.toBeInTheDocument();
+    const headers = within(table).getAllByRole("columnheader");
+    expect(headers.some((header) => /медиана/i.test(header.textContent ?? ""))).toBe(false);
+    // Шапка колонки договора — те же два столбца, что и до фичи: «Сумма»/«за м²».
+    expect(headers.filter((header) => header.textContent === "Сумма")).toHaveLength(
+      sampleComparison.columns.length
+    );
+    expect(headers.filter((header) => header.textContent === "за м²")).toHaveLength(
+      sampleComparison.columns.length
+    );
+  });
+});
+
+/**
+ * Связный ответ режима «Без НДС» из фикстуры «Своей ставки».
+ *
+ * Подменять один только `totals` нельзя: у ответа есть согласованные между собой
+ * поля — режим, подпись состава и правило присутствия `shown_per_sqm` у медиан
+ * КАЖДОЙ корзины (спека диаграммы стоимости §2.8, §2.10). Ответ, где адрес
+ * говорит `net`, а тело несёт `own`-подпись и медиану без поля, сервер не
+ * выдаёт, и тест на нём проверял бы кадр, которого не бывает. `vat_mode` в
+ * адресе при этом несущий: без него у медианы «Итого» поля нет, и половина
+ * утверждений о линии выполнялась бы сама собой.
+ */
+function netModeResponse(overrides: Partial<Comparison>): Comparison {
+  const base: Comparison = {
+    ...sampleComparison,
+    vat_mode: "net",
+    single_rate: null,
+    caption: "Суммы — без НДС. Отклонения посчитаны без НДС.",
+    ...overrides,
+  };
+  return { ...base, totals_medians: totalsMediansWithMode(base.totals_medians, "net") };
+}
+
+/** Медиана «Итого», которой нет вовсе: сопоставимых ноль. */
+const EMPTY_TOTAL_MEDIAN = { value: null, comparable_count: 0, contract_ids: [] };
+
+// ---------------------------------------------------------------------------
+//  Диаграмма не ломается на неполных выборках
+//  (спека диаграммы стоимости §2.4, §2.9; план — задача 12)
+// ---------------------------------------------------------------------------
+
+describe("Сравнение договоров — диаграмма не ломается на неполных выборках", () => {
+  it("выборка без сумм: таблица и диаграмма отрисовываются целиком, у каждой колонки — место и причина", async () => {
+    /*
+      Договор без суммы остаётся в ряду диаграммы с причиной из
+      `incomplete_reasons` (спека диаграммы стоимости §2.9) — здесь то же
+      самое верно для ВСЕЙ выборки разом, а не для одной колонки. Экран
+      обязан отрисоваться целиком: таблица (она читает `rows`, которые здесь
+      не трогаются) и диаграмма (она читает только `totals`, здесь погашенные).
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json(
+          netModeResponse({
+            totals: sampleComparison.totals.map((cell) => ({
+              ...cell,
+              total: {
+                net: null,
+                shown: null,
+                net_per_sqm: null,
+                shown_per_sqm: null,
+                state: "value",
+                deviation_pct: null,
+                incomplete_reasons: ["unpriced_rows"],
+              },
+            })),
+            totals_medians: { ...sampleComparison.totals_medians, total: EMPTY_TOTAL_MEDIAN },
+          })
+        )
+      )
+    );
+
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    // Таблица цела — дерево статей и итоговая строка на месте.
+    expect(screen.getByText("Земляные работы")).toBeInTheDocument();
+    expect(screen.getByTestId("comparison-row-totals")).toBeInTheDocument();
+
+    // Диаграмма цела: у КАЖДОЙ из четырёх колонок — место и причина, а не
+    // молчаливый пропуск (иначе выборка из четырёх выглядела бы как из нуля).
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.getByTestId(`cost-chart-nodata-${contractId}`)).toHaveTextContent(
+        "нет суммы: без цены"
+      );
+    }
+    // Медианы тоже нет — со своим объяснением, а не пустым местом.
+    expect(screen.getByTestId("cost-chart-median-note")).toBeInTheDocument();
+    expect(screen.queryByTestId("cost-chart-median-line")).not.toBeInTheDocument();
+  });
+
+  it("менее трёх сопоставимых: линии и плашек нет, объяснение есть, а столбцы и таблица целы", async () => {
+    /*
+      Отклонения ячеек тоже гасятся, и это не украшение фикстуры. Сервер при
+      медиане `null` оставляет `deviation_pct` пустым у ВСЕХ ячеек
+      (`_apply_deviation` в `backend/crud/comparison.py` возвращает ячейки
+      нетронутыми, когда медианы нет), поэтому ответ с живыми процентами при
+      мёртвой медиане сервер не выдаёт вовсе. Первая редакция этой фикстуры его
+      выдавала — и экран показывал плашки отклонений, которые DoD 24 запрещает
+      прямо, а тест этого не замечал, потому что про плашки не утверждал ничего.
+    */
+    server.use(
+      http.get("/api/v1/analytics/comparison", () =>
+        HttpResponse.json(
+          netModeResponse({
+            totals: sampleComparison.totals.map((cell) => ({
+              ...cell,
+              total: { ...cell.total, deviation_pct: null },
+            })),
+            totals_medians: {
+              ...sampleComparison.totals_medians,
+              total: { value: null, shown_per_sqm: null, comparable_count: 2, contract_ids: [203, 202] },
+            },
+          })
+        )
+      )
+    );
+
+    renderCompare(`${SELECTION}&vat_mode=net`);
+    await screen.findByTestId("comparison-caption");
+
+    expect(screen.getByTestId("comparison-row-totals")).toBeInTheDocument();
+    // Число «2» в объяснении — то самое, которым тест подменил `comparable_count`,
+    // а не угаданное значение.
+    expect(screen.getByTestId("cost-chart-median-note")).toHaveTextContent(
+      "Сопоставимых договоров в выборке 2"
+    );
+    expect(screen.queryByTestId("cost-chart-median-line")).not.toBeInTheDocument();
+    // И плашек отклонений нет ни у одного столбца — DoD 24 требует именно
+    // этого, а не только отсутствия линии: процент от медианы, которой нет,
+    // был бы отклонением ни от чего.
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.queryByTestId(`cost-chart-deviation-${contractId}`)).not.toBeInTheDocument();
+    }
+    // Столбцы всё равно нарисованы — данные не пропали вместе с медианой.
+    for (const contractId of [204, 203, 202, 201]) {
+      expect(screen.getByTestId(`cost-chart-column-${contractId}`)).toBeInTheDocument();
+    }
   });
 });
 
@@ -473,6 +1117,35 @@ describe("ComparePage: поправка на инфляцию", () => {
     expect(screen.getByRole("button", { name: "Привести" })).toBeEnabled();
     expect(screen.getByTestId("comparison-caption").textContent).toBe(before);
     expect(search()).not.toContain("inflation_series_id");
+    expect(handlerState.inflationRequests).toBe(0);
+  });
+
+  it("выбор ряда сам ось диаграммы не двигает (DoD 28а, вторая половина; план — задача 12)", async () => {
+    /*
+     * Пришло из задачи 11: она закрыла «ось строится по применённому состоянию»
+     * на чистой функции `costChartAxisTop` (спека диаграммы стоимости §2.2), но
+     * «выбор ряда сам по себе ничего не меняет» — свойство ЭКРАНА, а не той
+     * функции, и до сих пор не значилось ни в одном чек-листе (найдено ревью
+     * задачи 11). Соседний тест выше уже доказал это про числа и адрес; здесь —
+     * про засечки жёлоба, которых тот тест не касается вовсе.
+     */
+    await renderCompare();
+    const gutterBefore = screen.getByTestId("cost-chart-gutter");
+    const ticksBefore = Array.from(gutterBefore.querySelectorAll("span")).map(
+      (el) => `${el.style.bottom}|${el.textContent}`
+    );
+    // Предпосылка, измеренная: жёлоб ДЕЙСТВИТЕЛЬНО несёт засечки — иначе
+    // сравнение «до/после» сверяло бы два пустых списка и не проверяло бы
+    // ничего.
+    expect(ticksBefore.length).toBeGreaterThan(0);
+
+    await selectSeries("Росстат, ИПЦ, декабрь к декабрю");
+
+    const ticksAfter = Array.from(
+      screen.getByTestId("cost-chart-gutter").querySelectorAll("span")
+    ).map((el) => `${el.style.bottom}|${el.textContent}`);
+    expect(ticksAfter).toEqual(ticksBefore);
+    // И приведение при этом не считалось — та же ставка, что у соседнего теста.
     expect(handlerState.inflationRequests).toBe(0);
   });
 
@@ -983,6 +1656,110 @@ describe("ComparePage: поправка на инфляцию", () => {
     await waitFor(() => expect(search()).not.toContain("inflation_series_id"));
     expect(screen.getByRole("button", { name: "Привести" })).toBeDisabled();
     expect(screen.queryByTestId("inflation-levels")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Сложение панели управления — то из макета, что проверяемо БЕЗ браузера.
+ *
+ * Цвета, подложки и «подпись над контролом» здесь не утверждаются намеренно:
+ * вычисленных стилей в jsdom нет, и утверждение о классах сказало бы лишь то,
+ * что классы написаны, — а не то, что они дали. Их замер живёт в прогоне на
+ * стенде. Проверяется ПОРЯДОК и ВЛОЖЕННОСТЬ: и то и другое несёт смысл (сначала
+ * что показываем, потом на чём, потом в каких ценах; полоса уровней объясняет
+ * коэффициенты группы, в которой стоит), и то и другое молча разъезжается при
+ * любой правке разметки экрана.
+ */
+describe("Сравнение договоров — сложение панели управления", () => {
+  /** `DOCUMENT_POSITION_FOLLOWING`: узел идёт ПОСЛЕ того, с которым сравнивают. */
+  const FOLLOWING = 4;
+
+  function panelBlocks() {
+    const bucketGroup = screen.getByRole("group", { name: "Показатель" });
+    const classGroup = screen.getByRole("group", { name: "Класс объекта" });
+    const inflationGroup = screen.getByRole("group", { name: "Поправка на инфляцию" });
+    const caption = screen.getByTestId("comparison-caption");
+    return { bucketGroup, classGroup, inflationGroup, caption };
+  }
+
+  it("порядок блоков: корзина → класс объекта → поправка → подпись состава", async () => {
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+    const { bucketGroup, classGroup, inflationGroup, caption } = panelBlocks();
+
+    expect(bucketGroup.compareDocumentPosition(classGroup) & FOLLOWING).toBeTruthy();
+    expect(classGroup.compareDocumentPosition(inflationGroup) & FOLLOWING).toBeTruthy();
+    expect(inflationGroup.compareDocumentPosition(caption) & FOLLOWING).toBeTruthy();
+  });
+
+  it("все четыре блока лежат в ОДНОЙ карточке, а диаграмма — уже вне неё", async () => {
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+    const { bucketGroup, classGroup, inflationGroup, caption } = panelBlocks();
+
+    /*
+      Карточка ищется как ближайший общий предок корзины и подписи, а не по
+      классу: утверждение «это один орган управления» — про вложенность, и
+      привязка к имени класса сломалась бы от переименования подложки, ничего
+      не сказав о самой сборке.
+    */
+    let card: HTMLElement | null = bucketGroup;
+    while (card && !card.contains(caption)) card = card.parentElement;
+    expect(card).not.toBeNull();
+
+    expect(card!.contains(classGroup)).toBe(true);
+    expect(card!.contains(inflationGroup)).toBe(true);
+
+    // Диаграмма следует ЗА панелью и в неё не входит (спека диаграммы §2.2).
+    const chart = screen.getByRole("region", { name: /Диаграмма стоимости/ });
+    expect(card!.contains(chart)).toBe(false);
+  });
+
+  it("полоса уровней стоит ВНУТРИ группы поправки, а не рядом с ней", async () => {
+    await renderCompare(`${SELECTION}&inflation_series_id=1&target_month=2026-08`);
+    const bar = await waitFor(() => screen.getByTestId("inflation-levels"));
+
+    expect(screen.getByRole("group", { name: "Поправка на инфляцию" }).contains(bar)).toBe(true);
+  });
+
+  it("корзины идут в порядке макета: «Итого» первым, потому что это умолчание", async () => {
+    /*
+      Порядок кнопок задаёт ПОРЯДОК КЛЮЧЕЙ `BUCKET_LABELS` — переключатель
+      строится `Object.keys`. До этой правки словарь начинался с `base`, и
+      нажатая по умолчанию «Итого» оказывалась третьей: слева читатель видел не
+      то, что показано.
+
+      Утверждение о ПОСЛЕДОВАТЕЛЬНОСТИ, а не «первая кнопка такая-то»: при
+      возврате прежнего порядка тест обязан упасть, а не пройти на двух
+      совпадениях из трёх.
+    */
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    const buttons = within(screen.getByRole("group", { name: "Показатель" })).getAllByRole(
+      "button"
+    );
+    expect(buttons.map((el) => el.textContent)).toEqual(["Итого", "ДГП", "ДС"]);
+
+    // И первая же кнопка — та, что нажата: иначе порядок «правильный», а экран
+    // всё равно открывается с выбором не на первом месте.
+    expect(buttons[0]).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("у селектора единой ставки есть ВИДИМАЯ подпись, а не только имя для скринридера", async () => {
+    /*
+      Приставленный к группе «НДС» без подписи, селектор читался четвёртой
+      кнопкой режима: имя у него было только в `aria-label`. Утверждение идёт
+      через `getByLabelText` — оно проходит и по `aria-label`, поэтому рядом
+      стоит проверка, что подпись есть В ДОКУМЕНТЕ и связана с этим узлом.
+    */
+    await renderCompare();
+    await screen.findByTestId("comparison-caption");
+
+    const trigger = screen.getByLabelText("Единая ставка");
+    const label = screen.getByText("Единая ставка", { selector: "label" });
+    expect(label).toHaveAttribute("for", trigger.id);
+    expect(trigger.id).not.toBe("");
   });
 });
 

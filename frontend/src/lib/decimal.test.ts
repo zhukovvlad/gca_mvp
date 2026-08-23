@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { addDecimalStrings, multiplyDecimalStrings, normalizeDecimalInput } from "./decimal";
+import {
+  addDecimalStrings,
+  compareDecimalStrings,
+  multiplyDecimalStrings,
+  normalizeDecimalInput,
+} from "./decimal";
 import { formatDecimalMoney, roundDecimal } from "./format";
 
 /** Неразрывный пробел: им `formatDecimalMoney` группирует разряды, как ru-RU. */
@@ -72,6 +77,57 @@ describe("addDecimalStrings", () => {
     expect(addDecimalStrings("сто", "1")).toBeNull();
     expect(addDecimalStrings("", "1")).toBeNull();
     expect(addDecimalStrings("1,5", "1")).toBeNull();
+  });
+});
+
+describe("compareDecimalStrings", () => {
+  it("сравнивает при ОБОИХ отрицательных — то, на чём ломалась склейка минуса", () => {
+    /*
+     * Ровно случай внешнего ревью: −100 → −80 это РОСТ, −100 → −120 это
+     * СНИЖЕНИЕ. Прежний приём `addDecimalStrings(a, `-${b}`)` давал на этих
+     * входах `--100`, разбор отказывал, и оба случая становились
+     * неразличимы — «не смог сравнить».
+     */
+    expect(compareDecimalStrings("-80", "-100")).toBe(1);
+    expect(compareDecimalStrings("-120", "-100")).toBe(-1);
+    expect(compareDecimalStrings("-100", "-100")).toBe(0);
+  });
+
+  it("склейка минуса, от которой избавились, действительно не работала", () => {
+    /*
+     * Предпосылка утверждения выше, проверенная НЕ через проверяемый механизм:
+     * если `addDecimalStrings` однажды начнёт принимать `--100`, этот тест
+     * покраснеет и скажет, что довод устарел.
+     */
+    expect(addDecimalStrings("-80", "--100")).toBeNull();
+  });
+
+  it("знаки в разные стороны и ноль", () => {
+    expect(compareDecimalStrings("1", "-1")).toBe(1);
+    expect(compareDecimalStrings("-1", "1")).toBe(-1);
+    expect(compareDecimalStrings("0", "-0")).toBe(0);
+    expect(compareDecimalStrings("-0.00", "0")).toBe(0);
+  });
+
+  it("разные масштабы выравниваются, а не сравниваются как текст", () => {
+    // Как текст «9» больше «10», и лексикографическое сравнение соврало бы.
+    expect(compareDecimalStrings("9", "10")).toBe(-1);
+    expect(compareDecimalStrings("100.10", "100.1")).toBe(0);
+    expect(compareDecimalStrings("100.100000001", "100.1")).toBe(1);
+    expect(compareDecimalStrings("-100.100000001", "-100.1")).toBe(-1);
+  });
+
+  it("не теряет разряды на суммах, где float уже врёт", () => {
+    // Пара за пределом 15 значащих цифр double: `Number` склеил бы её в одно.
+    expect(compareDecimalStrings("12345678901234567.89", "12345678901234567.88")).toBe(1);
+    expect(Number("12345678901234567.89") === Number("12345678901234567.88")).toBe(true);
+  });
+
+  it("не десятичное число — `null`, а не догадка", () => {
+    expect(compareDecimalStrings("--100", "1")).toBeNull();
+    expect(compareDecimalStrings("1", "abc")).toBeNull();
+    expect(compareDecimalStrings("", "1")).toBeNull();
+    expect(compareDecimalStrings("1e3", "1")).toBeNull();
   });
 });
 

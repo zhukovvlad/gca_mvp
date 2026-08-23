@@ -84,6 +84,49 @@ export function addDecimalStrings(left: string, right: string): string | null {
   return fraction ? `${sign}${whole}.${fraction}` : `${sign}${whole}`;
 }
 
+/**
+ * Сравнивает две десятичные строки **точно и при любом знаке**.
+ *
+ * `-1` — левое меньше правого, `0` — равны, `1` — больше, `null` — аргумент не
+ * десятичное число.
+ *
+ * **Почему отдельная функция, а не `addDecimalStrings(a, `-${b}`)`.** Такая
+ * интерполяция — не операция вычитания, а склейка текста, и на отрицательном
+ * правом операнде она даёт `--100`. Строка не проходит `DECIMAL_RE`,
+ * `addDecimalStrings` возвращает `null`, и вызывающий получает «не смог
+ * сравнить» ровно там, где сравнение важнее всего — на отрицательных
+ * величинах. Найдено внешним ревью PR диаграммы стоимости: подсказка столбца
+ * теряла направление приведения и для роста (−100 → −80), и для снижения
+ * (−100 → −120), одинаково сваливаясь в нейтральную подпись.
+ *
+ * Отрицательные суммы в проекте достижимы: `position_items.total_cost_total`
+ * объявлен `Numeric NULL` без ограничения снизу, и ни одного `CheckConstraint`
+ * на неотрицательность у позиций нет.
+ *
+ * Масштабы выравниваются по большему, дальше сравниваются целые `BigInt` — тем
+ * же приёмом, что в `addDecimalStrings`. Знак живёт в самом целом, поэтому
+ * отдельной ветки под минус здесь нет вовсе: её нечему ломать.
+ */
+export function compareDecimalStrings(left: string, right: string): -1 | 0 | 1 | null {
+  const a = DECIMAL_RE.exec(left.trim());
+  const b = DECIMAL_RE.exec(right.trim());
+  if (!a || !b) return null;
+
+  const scaleA = a[3]?.length ?? 0;
+  const scaleB = b[3]?.length ?? 0;
+  const scale = Math.max(scaleA, scaleB);
+
+  const scaled = (m: RegExpExecArray, own: number) => {
+    const digits = BigInt(`${m[2]}${m[3] ?? ""}`) * 10n ** BigInt(scale - own);
+    return m[1] === "-" ? -digits : digits;
+  };
+
+  const x = scaled(a, scaleA);
+  const y = scaled(b, scaleB);
+  if (x < y) return -1;
+  return x > y ? 1 : 0;
+}
+
 export function multiplyDecimalStrings(left: string, right: string): string | null {
   const a = DECIMAL_RE.exec(left.trim());
   const b = DECIMAL_RE.exec(right.trim());

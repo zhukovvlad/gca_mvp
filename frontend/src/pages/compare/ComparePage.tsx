@@ -6,7 +6,17 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
+import { Surface } from "@/components/ui-domain/Surface";
+import {
+  CONTROLS_ROW_CLASS,
+  CONTROL_CELL_CLASS,
+  CONTROL_LABEL_CLASS,
+  SEGMENTED_GROUP_CLASS,
+  SEGMENTED_ITEM_ACTIVE_CLASS,
+  SEGMENTED_ITEM_CLASS,
+} from "@/components/ui-domain/controlStyles";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -29,6 +39,8 @@ import {
 } from "@/components/inflation/InflationSeriesDialog";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { coefficientLevel } from "@/lib/inflation";
+import { ContractCostChart } from "./ContractCostChart";
+import { AREA_MISSING_LABEL, BUCKET_LABELS, REASON_LABELS, VAT_MODE_LABELS } from "./labels";
 import {
   apiErrorCode,
   apiErrorContext,
@@ -78,25 +90,6 @@ import type {
  * незачем.
  */
 
-const BUCKET_LABELS: Record<ComparisonBucket, string> = {
-  total: "Итого",
-  base: "ДГП",
-  amendments: "ДС",
-};
-
-const VAT_MODE_LABELS: Record<ComparisonVatMode, string> = {
-  own: "Своя ставка",
-  single: "Единая",
-  net: "Без НДС",
-};
-
-/** Словарь причин неполноты (спека §2.1.3) — тот же смысл, что паспортная подпись, но список СОВМЕЩАЕТ все причины разом, а не выбирает старшую. */
-const REASON_LABELS: Record<ComparisonIncompleteReason, string> = {
-  unpriced_rows: "без цены",
-  not_finite_rows: "с ошибкой",
-  vat_base_unknown: "неизвестна база НДС",
-  display_rate_undefined: "ставка показа не определена",
-};
 
 // ---------------------------------------------------------------------------
 //  Дерево строк из плоского списка (спека §2.1.1)
@@ -285,7 +278,7 @@ function ComparisonColumnHeader({
       <div className="mt-1 text-2xs text-fg-secondary">{column.rate_class_title}</div>
       <div className="text-2xs text-fg-secondary">
         {column.area_total_sp === null ? (
-          <span className="text-warning-text">ТЭП не заведены</span>
+          <span className="text-warning-text">{AREA_MISSING_LABEL}</span>
         ) : (
           <>
             <MoneyCell value={column.area_total_sp} currency="" /> м²
@@ -597,6 +590,19 @@ export default function ComparePage() {
 
   const hasSelection = Boolean(idsParam) || allParam === "1";
 
+  /*
+    Выбранные классы объекта читаются из адреса (спека диаграммы стоимости
+    §2.6, §2.7): параметра `rate_class_id` НЕТ — выбраны ВСЕ, и это кодируется
+    значением `null`, а не пустым множеством — «параметра нет» и «выбрано
+    пусто» РАЗНЫЕ состояния, различие несёт форма кода, а не дисциплина
+    (docs/insights/one-value-two-states.md). Пустой `rate_class_id=` сервер
+    отвергает 400-м, и клиент его не пишет никогда (см. `toggleRateClass`).
+  */
+  const selectedRateClassIds = useMemo<Set<number> | null>(() => {
+    if (rateClassIdParam === undefined) return null;
+    return new Set(rateClassIdParam.split(",").map(Number));
+  }, [rateClassIdParam]);
+
   const params = useMemo<ComparisonParams>(
     () => ({
       ids: idsParam,
@@ -657,6 +663,28 @@ export default function ComparePage() {
 
   const tree = useMemo(() => buildComparisonTree(comparison?.rows ?? []), [comparison?.rows]);
 
+  /*
+    ДЕЙСТВУЮЩЕЕ множество выбранных классов — одно на весь экран: по нему и
+    рисуются чипы, и решает `toggleRateClass`. Один предикат вместо двух: два
+    независимых «выбран ли класс» однажды разошлись бы, а расхождение выглядело
+    бы как нажатый чип, который не снимается, либо ненажатый, который снимается.
+
+    Адрес СЕЧЁТСЯ с фасетом, а не берётся как есть. Фасет считается по выборке
+    (спека диаграммы стоимости §2.7), поэтому присланная ссылка от ДРУГОЙ
+    выборки может называть класс, которого в этом фасете нет. Лишний id рядом с
+    настоящим на результат не влияет — сужать им нечего, — но в СЧЁТЕ выбранных
+    он участвовал бы, и защита DoD 30 обходилась бы: `rate_class_id=1,9`
+    считался бы двумя выбранными, снятие единственного видимого чипа проходило
+    бы, и в адресе оставалось бы `9`, то есть выборка из нуля договоров.
+    Замерено. Сечение заодно делает адрес каноническим: фантомный id уходит при
+    первой же записи, а не живёт в ссылке дальше.
+  */
+  const effectiveRateClassIds = useMemo<Set<number>>(() => {
+    const allIds = comparison?.available_rate_classes.map((rateClass) => rateClass.id) ?? [];
+    if (selectedRateClassIds === null) return new Set(allIds);
+    return new Set(allIds.filter((classId) => selectedRateClassIds.has(classId)));
+  }, [comparison?.available_rate_classes, selectedRateClassIds]);
+
   function toggle(code: string) {
     setExpandedCodes((prev) => {
       const next = new Set(prev);
@@ -679,6 +707,46 @@ export default function ComparePage() {
     next.set("vat_mode", "single");
     next.set("single_rate", rate);
     setSearchParams(next, { replace: true });
+  }
+
+  /**
+   * Переключает чип класса объекта (спека диаграммы стоимости §2.6, §2.7).
+   * Фильтр — перезапрос, а не скрытие столбцов: медиана и отклонения обязаны
+   * пересчитаться сервером по суженной выборке, значит клик всегда правит
+   * адрес, а не локальное состояние страницы.
+   *
+   * Снятие ПОСЛЕДНЕГО выбранного класса не срабатывает (DoD 30): выборка из
+   * нуля договоров — не состояние экрана, а отсутствие запроса, контрол не
+   * срабатывает.
+   *
+   * Запись — тем же приёмом, что `updateVatMode`/`updateSingleRate`: id по
+   * возрастанию (одна выборка — один адрес, независимо от порядка чипов), а
+   * при выборе ВСЕХ доступных классов параметр из адреса ИСЧЕЗАЕТ (DoD 31) —
+   * ссылка становится посимвольно той же, что до фичи.
+   */
+  function toggleRateClass(id: number) {
+    if (!comparison) return;
+    const allIds = comparison.available_rate_classes.map((rateClass) => rateClass.id);
+    const current = effectiveRateClassIds;
+    if (current.has(id) && current.size === 1) return; // DoD 30
+
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+
+    const nextParams = new URLSearchParams(searchParams);
+    const isFullSet = allIds.length === next.size && allIds.every((classId) => next.has(classId));
+    if (isFullSet) {
+      nextParams.delete("rate_class_id");
+    } else {
+      nextParams.set(
+        "rate_class_id",
+        Array.from(next)
+          .sort((a, b) => a - b)
+          .join(",")
+      );
+    }
+    setSearchParams(nextParams, { replace: true });
   }
 
   /**
@@ -752,6 +820,52 @@ export default function ComparePage() {
     next.set("target_month", resolvedMonth);
     setSearchParams(next, { replace: true });
   }, [resolvedMonth, targetMonthParam, searchParams, setSearchParams]);
+
+  /*
+    Действующая ставка показа пишется в адрес ТЕМ ЖЕ приёмом, что месяц
+    приведения выше: в режиме «Единая» без явной ставки её предвыбирает
+    сервер по составу выборки (`rate_preselected`, спека сравнения §2.3), а
+    сужение выборки меняет состав — значит может изменить и предвыбор, и
+    числа поехали бы от нажатия на чип класса (спека диаграммы стоимости
+    §2.6, подраздел «Ставка показа не имеет права меняться от фильтра»).
+    Читается `comparison.single_rate` — ставка, которой числа показаны
+    ФАКТИЧЕСКИ, а не то, что ушло в запросе. Условие сравнивает с тем, что
+    уже в адресе, — иначе эффект переписывал бы адрес на каждом рендере.
+
+    Отдельного условия на `vatMode` здесь НЕТ, и причина живёт в этом же
+    файле, а не на сервере: `params` выше отдаёт `single_rate` ТОЛЬКО в
+    режиме «Единая», поэтому в остальных режимах сервер получает `None`,
+    подстановку предвыбора не делает и возвращает `null` — эффект молчит по
+    условию `!resolvedSingleRate`. Сам сервер ставку не фильтрует: он
+    отражает полученную при любом `vat_mode` (`build_comparison`,
+    `effective_single_rate`), так что несёт здесь КЛИЕНТСКАЯ проводка, и
+    второе условие было бы вторым сторожем той же двери.
+
+    Проводка поэтому закреплена тестом «вне «Единой» клиент ставку серверу не
+    отправляет», а не чтением: общий мок сам отдаёт `null` вне «Единой», то
+    есть стоит рядом второй защитой и снятие проводки на нём замаскировал бы
+    (`docs/insights/verifying-guards.md`, слой 8). Тест поэтому подменяет
+    обработчик на отражающий полученную ставку при любом режиме.
+
+    **Предпосылка, от которой зависит этот эффект и эффект месяца выше:
+    `comparison` описывает ТЕКУЩИЙ адрес.** Сегодня это так, потому что запрос
+    сравнения не отдаёт данных прошлого ключа: при смене ключа `data` пуста, и
+    эффект молчит по `!resolvedSingleRate`. Предпосылка не выражена типом и
+    держится на настройке запроса — если у `useComparison` появится
+    `placeholderData`, эффект начнёт читать кадр ПРОШЛОГО адреса и дописывать в
+    новый адрес устаревшее значение, откатить которое ему уже нечем. Замерено:
+    такая правка постоянно ломает три утверждения об адресе (DoD 18, выход из
+    «Единой», сброс приведения к номиналу) — они и есть сторожа этой
+    предпосылки. Подробности и условие безопасного включения —
+    `docs/TECH_DEBT.md`, запись 16.
+  */
+  const resolvedSingleRate = comparison?.single_rate;
+  useEffect(() => {
+    if (!resolvedSingleRate || singleRateParam === resolvedSingleRate) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("single_rate", resolvedSingleRate);
+    setSearchParams(next, { replace: true });
+  }, [resolvedSingleRate, singleRateParam, searchParams, setSearchParams]);
 
   /*
     Баннер отказа НЕ ЗАВИСИТ ОТ ЧИСЕЛ, и поэтому он — элемент, а не кусок разметки
@@ -929,15 +1043,165 @@ export default function ComparePage() {
       {comparison && (
         <>
           {/*
-            Подпись налогового состава денег (AGENTS.md §10 v6.8) —
-            печатается на поверхности, а не только в подсказке: тултип рядом
-            с ячейками объясняет расчёт, но не заменяет объявление состава.
-          */}
-          <p data-testid="comparison-caption" className="mt-4 text-sm text-fg-secondary">
-            {comparison.caption}
-          </p>
+            Панель управления — ОДНА карточка (макет, `.card.card-pad`). До этого
+            ряд корзин, чипы класса и группа поправки лежали прямо на фоне
+            страницы тремя отдельными блоками, и ничто не говорило, что это один
+            орган управления одной таблицей.
 
-          <div className="mt-4">
+            Порядок внутри — макетный, и он не косметический: сначала ЧТО
+            показываем (корзина и налоговый состав), затем НА ЧЁМ (сужение
+            выборки классом), затем В КАКИХ ЦЕНАХ (поправка). Поправка стояла
+            первой и читалась главным переключателем экрана, хотя выборки она не
+            меняет вовсе.
+          */}
+          <Surface padding="sm" className="mt-4">
+            <div className={CONTROLS_ROW_CLASS}>
+              <div className={CONTROL_CELL_CLASS}>
+                <span className={CONTROL_LABEL_CLASS}>Показатель</span>
+                <div role="group" aria-label="Показатель" className={SEGMENTED_GROUP_CLASS}>
+                  {(Object.keys(BUCKET_LABELS) as ComparisonBucket[]).map((value) => (
+                    <Button
+                      key={value}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={bucket === value}
+                      className={cn(
+                        SEGMENTED_ITEM_CLASS,
+                        bucket === value && SEGMENTED_ITEM_ACTIVE_CLASS
+                      )}
+                      onClick={() => setBucket(value)}
+                    >
+                      {BUCKET_LABELS[value]}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={CONTROL_CELL_CLASS}>
+                <span className={CONTROL_LABEL_CLASS}>НДС</span>
+                <div role="group" aria-label="Режим НДС" className={SEGMENTED_GROUP_CLASS}>
+                  {(Object.keys(VAT_MODE_LABELS) as ComparisonVatMode[]).map((mode) => (
+                    <Button
+                      key={mode}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={vatMode === mode}
+                      className={cn(
+                        SEGMENTED_ITEM_CLASS,
+                        vatMode === mode && SEGMENTED_ITEM_ACTIVE_CLASS
+                      )}
+                      onClick={() => updateVatMode(mode)}
+                    >
+                      {VAT_MODE_LABELS[mode]}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/*
+                Своя ячейка с ВИДИМОЙ подписью, а не селектор, приставленный к
+                группе «НДС». Приставленный, он читался как четвёртая кнопка
+                режима: имя у него было только в `aria-label`, то есть экран
+                называл его слепым, а глазам не называл никак. Связка —
+                `Label htmlFor` (идиома «Ряда индексов» в `InflationControls`), а
+                не `aria-label` рядом с подписью: два источника имени на один
+                узел однажды разойдутся.
+              */}
+              <div className={CONTROL_CELL_CLASS}>
+                <Label htmlFor="compare-single-rate" className={CONTROL_LABEL_CLASS}>
+                  Единая ставка
+                </Label>
+                <Select
+                  value={vatMode === "single" ? (singleRateParam ?? comparison.single_rate ?? "") : ""}
+                  onValueChange={(value) => {
+                    if (value) updateSingleRate(value);
+                  }}
+                >
+                  <SelectTrigger
+                    id="compare-single-rate"
+                    disabled={vatMode !== "single"}
+                    className="w-28"
+                  >
+                    <SelectValue>{(raw) => (raw ? formatSharePercent(raw) : "ставка")}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {comparison.rate_options.map((rate) => (
+                      <SelectItem key={rate} value={rate}>
+                        {formatSharePercent(rate)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/*
+              Чипы классов объекта — новый фильтр (спека диаграммы стоимости
+              §2.6, §2.7; DoD 30, 31). Источник — `available_rate_classes`, в
+              ПОРЯДКЕ ОТВЕТА: сервер уже упорядочил по `title`, и чипы не имеют
+              права переставляться, когда меняется набор договоров (§2.7).
+              Роль группы даёт сам `fieldset`/`legend` (как в макете) — заводить
+              рядом ещё один `role="group"` с тем же именем означало бы два
+              узла accessibility-дерева на одну группу; `aria-pressed` на каждой
+              кнопке — тот же приём, что у групп «Показатель»/«НДС» выше, чтобы
+              экран не выглядел собранным из двух разных наборов. Чип —
+              оформление поверх того же `Button`, а не новый примитив.
+            */}
+            <fieldset className="mt-4 rounded-lg border border-border-subtle bg-surface-sunken px-4 py-3">
+              <legend className={cn(CONTROL_LABEL_CLASS, "px-1.5")}>Класс объекта</legend>
+              <div className="flex flex-wrap gap-2">
+                {comparison.available_rate_classes.map((rateClass) => {
+                  const isSelected = effectiveRateClassIds.has(rateClass.id);
+                  /*
+                    Единственный выбранный чип не снимается (DoD 30), и молчание
+                    объяснено: `aria-disabled` с подсказкой, а НЕ `disabled` —
+                    выключенная кнопка спрятала бы защиту за DOM, и снятие защиты
+                    перестало бы что-либо ронять. Условие ТО ЖЕ, что в
+                    `toggleRateClass`, и оба читают одно множество.
+                  */
+                  const isLastSelected = isSelected && effectiveRateClassIds.size === 1;
+                  return (
+                    <Button
+                      key={rateClass.id}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-pressed={isSelected}
+                      aria-disabled={isLastSelected || undefined}
+                      aria-label={`${rateClass.title}, договоров: ${rateClass.count}`}
+                      title={
+                        isLastSelected
+                          ? "Последний класс не снимается: сравнивать было бы нечего"
+                          : undefined
+                      }
+                      className={cn(
+                        "rounded-full",
+                        isSelected && "border-accent-text/30 bg-accent-soft text-accent-text dark:bg-accent-soft"
+                      )}
+                      onClick={() => toggleRateClass(rateClass.id)}
+                    >
+                      {rateClass.title}
+                      {/*
+                        Счётчик выбранного чипа — акцентным цветом, а не приглушённым:
+                        на зелёной заливке `fg-tertiary` уходил в подложку, и число
+                        договоров у выбранного класса читалось хуже, чем у невыбранного.
+                      */}
+                      <span
+                        className={cn(
+                          "tabular-nums",
+                          isSelected ? "text-accent-text" : "text-fg-tertiary"
+                        )}
+                      >
+                        {rateClass.count}
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
+            </fieldset>
+
             <InflationControls
               series={seriesListQ.data ?? []}
               selectedSeriesId={selectedSeriesId}
@@ -949,97 +1213,56 @@ export default function ComparePage() {
               onSelectSeries={selectSeries}
               onToggle={toggleInflation}
               onChangeMonth={updateTargetMonth}
-            />
-          </div>
+            >
+              {/*
+                Полоса уровней не отрисовывается, пока приведение не сосчитано, — а
+                не скрывается атрибутом `hidden`: в макете `display:flex` перебивал
+                браузерное `[hidden] { display:none }`, и полоса продолжала занимать
+                место. Отсутствующий узел этой ловушки не имеет вовсе.
+
+                Стоит ВНУТРИ группы поправки (макет, `#levels` внутри
+                `fieldset.group`): полоса объясняет именно её коэффициенты, и
+                соседним блоком снаружи она объясняла бы их через границу.
+              */}
+              {comparison.inflation && (
+                <InflationLevelsBar
+                  inflation={comparison.inflation}
+                  canEdit={Boolean(canEditSeries)}
+                  onEdit={() => {
+                    setDialogMissingYears(undefined);
+                    setEditingSeries(comparison.inflation!.series_id);
+                  }}
+                />
+              )}
+            </InflationControls>
+
+            {refusalBanner}
+
+            {/*
+              Подпись налогового состава денег (AGENTS.md §10 v6.8) —
+              печатается на поверхности, а не только в подсказке: тултип рядом
+              с ячейками объясняет расчёт, но не заменяет объявление состава.
+
+              Место — ПОСЛЕДНЯЯ строка панели (макет, `.axisnote` в карточке): она
+              объявляет состав тех чисел, которые собраны переключателями выше, и
+              прочитанная до них объявляла бы состав ещё не сделанного выбора.
+            */}
+            <p data-testid="comparison-caption" className="mt-4 text-xs text-fg-secondary">
+              {comparison.caption}
+            </p>
+          </Surface>
 
           {/*
-            Полоса уровней не отрисовывается, пока приведение не сосчитано, — а не
-            скрывается атрибутом `hidden`: в макете `display:flex` перебивал
-            браузерное `[hidden] { display:none }`, и полоса продолжала занимать
-            место. Отсутствующий узел этой ловушки не имеет вовсе.
+            Диаграмма стоимости (план, задача 11; спека диаграммы стоимости
+            §2.2) — НАД таблицей статей, ПОД панелью управления и чипами:
+            следует тем же переключателям (корзина — пропом, режим НДС и
+            приведение — читая готовый `comparison`), а единицу диаграммы
+            держит своим локальным состоянием (спека диаграммы стоимости §2.10
+            не заводит её в контракте адреса). Подписи причин неполноты берутся
+            из общего модуля `labels.ts` — того же, что у таблицы: спека
+            диаграммы стоимости §2.9 требует ОДИН словарь на экран.
           */}
-          {comparison.inflation && (
-            <InflationLevelsBar
-              inflation={comparison.inflation}
-              canEdit={Boolean(canEditSeries)}
-              onEdit={() => {
-                setDialogMissingYears(undefined);
-                setEditingSeries(comparison.inflation!.series_id);
-              }}
-            />
-          )}
-
-          {refusalBanner}
-
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
-                Показатель
-              </span>
-              <div
-                role="group"
-                aria-label="Показатель"
-                className="inline-flex overflow-hidden rounded-lg border border-border"
-              >
-                {(Object.keys(BUCKET_LABELS) as ComparisonBucket[]).map((value) => (
-                  <Button
-                    key={value}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-pressed={bucket === value}
-                    className={cn("rounded-none", bucket === value && "bg-accent-soft text-accent-text")}
-                    onClick={() => setBucket(value)}
-                  >
-                    {BUCKET_LABELS[value]}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
-                НДС
-              </span>
-              <div
-                role="group"
-                aria-label="Режим НДС"
-                className="inline-flex overflow-hidden rounded-lg border border-border"
-              >
-                {(Object.keys(VAT_MODE_LABELS) as ComparisonVatMode[]).map((mode) => (
-                  <Button
-                    key={mode}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-pressed={vatMode === mode}
-                    className={cn("rounded-none", vatMode === mode && "bg-accent-soft text-accent-text")}
-                    onClick={() => updateVatMode(mode)}
-                  >
-                    {VAT_MODE_LABELS[mode]}
-                  </Button>
-                ))}
-              </div>
-
-              <Select
-                value={vatMode === "single" ? (singleRateParam ?? comparison.single_rate ?? "") : ""}
-                onValueChange={(value) => {
-                  if (value) updateSingleRate(value);
-                }}
-              >
-                <SelectTrigger aria-label="Единая ставка" disabled={vatMode !== "single"} className="w-28">
-                  <SelectValue>{(raw) => (raw ? formatSharePercent(raw) : "ставка")}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {comparison.rate_options.map((rate) => (
-                    <SelectItem key={rate} value={rate}>
-                      {formatSharePercent(rate)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+          <ContractCostChart comparison={comparison} bucket={bucket} />
 
           {/*
             Скролл в обе стороны сразу, первая колонка закреплена (DoD 17) —

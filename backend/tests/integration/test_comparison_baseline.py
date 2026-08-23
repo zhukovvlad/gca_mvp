@@ -61,10 +61,33 @@ def normalized(data: dict) -> dict:
     каждой ячейке (`_cell_entry`), а `contract_ids` — в каждой медиане
     (`_median_dict`), и перечисление путей разъехалось бы с формой ответа при
     первой же новой ячейке.
+
+    **Классы ставки нормализуются ТОЖЕ, и это оплачено красным CI.** Фича
+    диаграммы завела в ответ два новых сквозных идентификатора —
+    `columns[].rate_class_id` и `available_rate_classes[].id`, — а `RateClassFactory`
+    берёт их из ГЛОБАЛЬНОЙ последовательности. Точечный прогон этого файла дал
+    `1, 2, 3` и снимок лёг зелёным; полный параллельный прогон дал другие числа,
+    потому что классы успели создать соседние тесты. Ровно та причина, от которой
+    первый абзац этой докстроки защищает договоры: снимок краснел бы от порядка
+    тестов, то есть по причине, не связанной ни с одной правкой кода.
+
+    Порядок для нормализации берётся из самого `available_rate_classes`: он
+    упорядочен по `title` (спека §2.7), то есть детерминирован, тогда как сами id
+    зависят от того, что прогонялось раньше. `category_id` при этом по-прежнему
+    остаётся как есть — классификатор засеян миграцией 0005 детерминированно, и
+    его сдвиг означал бы настоящее изменение схемы.
+
+    Два имени ключа (`rate_class_id` у колонки и `id` внутри фасета) несут ОДИН
+    факт, поэтому нормализуются одной таблицей. Ключ `id` разбирается только
+    внутри фасета: снаружи это слово значит другое, и глобальное правило по нему
+    переписало бы чужие поля.
     """
     order = {column["contract_id"]: index for index, column in enumerate(data["columns"])}
+    class_order = {
+        entry["id"]: index for index, entry in enumerate(data["available_rate_classes"])
+    }
 
-    def walk(node):
+    def walk(node, *, in_facet: bool = False):
         if isinstance(node, dict):
             out = {}
             for key, value in node.items():
@@ -72,14 +95,19 @@ def normalized(data: dict) -> dict:
                     out[key] = order[value]
                 elif key == "contract_ids":
                     out[key] = [order[item] for item in value]
+                elif key == "rate_class_id" or (key == "id" and in_facet):
+                    out[key] = class_order[value]
                 else:
-                    out[key] = walk(value)
+                    out[key] = walk(value, in_facet=in_facet)
             return out
         if isinstance(node, list):
-            return [walk(item) for item in node]
+            return [walk(item, in_facet=in_facet) for item in node]
         return node
 
-    return walk(data)
+    return {
+        key: walk(value, in_facet=(key == "available_rate_classes"))
+        for key, value in data.items()
+    }
 
 
 def sheet_dump(content: bytes) -> list[dict]:

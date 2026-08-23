@@ -12,6 +12,7 @@
       "contract_number": "ГП-Б3",
       "object_title": "Объект Б3",
       "contractor_title": "Подрядчик Б3",
+      "rate_class_id": 2,
       "rate_class_title": "Класс Б3",
       "signed_date": "2026-07-06",
       "area_total_sp": "100000",
@@ -25,6 +26,7 @@
       "contract_number": "ГП-Б2",
       "object_title": "Объект Б2",
       "contractor_title": "Подрядчик Б2",
+      "rate_class_id": 1,
       "rate_class_title": "Класс Б2",
       "signed_date": "2025-02-20",
       "area_total_sp": "100000",
@@ -38,6 +40,7 @@
       "contract_number": "ГП-Б1",
       "object_title": "Объект Б1",
       "contractor_title": "Подрядчик Б1",
+      "rate_class_id": 0,
       "rate_class_title": "Класс Б1",
       "signed_date": "2024-05-28",
       "area_total_sp": "100000",
@@ -45,6 +48,23 @@
       "bank_guarantee_pct": null,
       "retention_pct": null,
       "composition_caption": "20 %"
+    }
+  ],
+  "available_rate_classes": [
+    {
+      "id": 0,
+      "title": "Класс Б1",
+      "count": 1
+    },
+    {
+      "id": 1,
+      "title": "Класс Б2",
+      "count": 1
+    },
+    {
+      "id": 2,
+      "title": "Класс Б3",
+      "count": 1
     }
   ],
   "rows": [

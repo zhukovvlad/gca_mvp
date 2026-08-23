@@ -1103,6 +1103,27 @@ export type ComparisonVatMode = "own" | "single" | "net";
 /** Три корзины спеки §2.2: базовый договор, допсоглашения, итог. */
 export type ComparisonBucket = "base" | "amendments" | "total";
 
+/**
+ * Фасет классов ставки в выборке — спека ДИАГРАММЫ СТОИМОСТИ §2.7 (в проекте две
+ * спеки сравнения с одинаковой нумерацией разделов, поэтому она названа по имени).
+ *
+ * Приходит ВСЕГДА: и без сужения, и при пустой выборке. Считается по выборке ДО
+ * сужения КЛАССАМИ, но ПОСЛЕ остальных фильтров (`q`, `object_id`,
+ * `contractor_id`) — DoD 9. Именно поэтому сужение обратимо: снятый чип есть чем
+ * вернуть, тогда как после сужения в ответе остались бы только уцелевшие
+ * договоры и экран забыл бы о существовании остальных классов.
+ */
+export interface ComparisonRateClassFacet {
+  id: number;
+  title: string;
+  /**
+   * Число договоров этого класса в выборке ДО сужения классами, но ПОСЛЕ
+   * остальных фильтров. Не «до любого сужения»: `q`/`object_id`/`contractor_id`
+   * фасет уже сузили.
+   */
+  count: number;
+}
+
 export type ComparisonRowKind = "category" | "own" | "unallocated";
 
 /**
@@ -1146,6 +1167,21 @@ export interface ComparisonBucketCell {
   /** `null`, если строка не входит в медиану ЭТОЙ корзины (§2.5 правила 3-5). */
   deviation_pct: Decimal | null;
   incomplete_reasons: ComparisonIncompleteReason[];
+  /**
+   * Денежное подмножество ячейки при сосчитанном приведении — спека диаграммы
+   * стоимости §2.10 и §2.8:
+   * РОВНО четыре денежные величины БЕЗ `state` и `deviation_pct` (они у
+   * номинала не нужны — экран берёт их у приведённой ячейки того же бакета).
+   * Приходит ТОЛЬКО при приведении: в номинальном ответе ключа нет ВОВСЕ, а не
+   * `null` (DoD 13). Тип общий со строками дерева, но сервер посылает `nominal`
+   * только у «Итого» — строки его не получают (DoD 17).
+   */
+  nominal?: {
+    net: Decimal | null;
+    shown: Decimal | null;
+    net_per_sqm: Decimal | null;
+    shown_per_sqm: Decimal | null;
+  };
 }
 
 /** Ячейка договора над строкой — ВСЕ ТРИ корзины сразу (спека §2.2, §2.7). */
@@ -1161,11 +1197,39 @@ export interface ComparisonCell {
  * трёх (правило 5, DoD 11); `comparable_count` и `contract_ids` приходят
  * ВСЕГДА, даже тогда — экрану нужно число, чтобы сказать «сопоставимых
  * меньше трёх», а не просто молчать.
+ *
+ * `shown_per_sqm` — ставка показа медианы (спека диаграммы стоимости §2.10,
+ * только у «Итого»):
+ * присутствие поля говорит, допускает ли режим НДС единую ось (`net`/`single`,
+ * но НЕ `own`). Значение `null` — медианы нет (сопоставимых меньше трёх).
+ * Поле НЕ приходит у строк дерева (`rows[].medians`), только у «Итого»
+ * (`totals_medians`).
  */
 export interface ComparisonMedian {
   value: Decimal | null;
   comparable_count: number;
   contract_ids: number[];
+  shown_per_sqm?: Decimal | null;
+  /**
+   * Медиана НОМИНАЛА — приходит только при сосчитанном приведении (спека
+   * диаграммы стоимости §2.10),
+   * и только у «Итого». Диаграмма рисует её второй, точечной линией с подписью
+   * «номинал» (DoD 23): приведение двигает и суммы, и медиану, поэтому без второй
+   * линии движение столбцов читалось бы как движение отклонений.
+   *
+   * Форма — ПОДМНОЖЕСТВО самой медианы, а не второй `ComparisonMedian`:
+   * `comparable_count` и `contract_ids` остаются общими на обе величины, потому
+   * что множество сопоставимых договоров приведение не меняет (коэффициент
+   * строго положителен, а умножение на положительное не делает ненулевое нулевым).
+   * Второй счётчик был бы вторым источником истины об одном множестве.
+   *
+   * `shown_per_sqm` внутри подчиняется ТОМУ ЖЕ правилу присутствия, что снаружи:
+   * есть при `net`/`single`, отсутствует при `own`.
+   */
+  nominal?: {
+    value: Decimal | null;
+    shown_per_sqm?: Decimal | null;
+  };
 }
 
 /** Шапка колонки — договор выборки, отсортированные `signed_date DESC, id DESC` (спека §2.1). */
@@ -1174,6 +1238,7 @@ export interface ComparisonColumn {
   contract_number: string;
   object_title: string;
   contractor_title: string;
+  rate_class_id: number;
   rate_class_title: string;
   signed_date: string;
   /** `null` — ТЭП объекта не заведены; ₽/м² договора — прочерк (спека §2.4). */
@@ -1259,6 +1324,7 @@ export interface Comparison {
    */
   caption: string;
   columns: ComparisonColumn[];
+  available_rate_classes: ComparisonRateClassFacet[];
   rows: ComparisonRow[];
   totals: ComparisonCell[];
   totals_medians: Record<ComparisonBucket, ComparisonMedian>;
@@ -1280,6 +1346,12 @@ export interface ComparisonParams {
   q?: string;
   object_id?: string;
   contractor_id?: string;
+  /**
+   * Сужение выборки по классам ставки: список id через запятую (`2,3`), а не
+   * одиночное значение — ревизия §2.6 спеки диаграммы стоимости: класс перестал
+   * быть ФОРМОЙ выборки
+   * и стал её сужением, поэтому законно сочетается с `ids` и принимает список.
+   */
   rate_class_id?: string;
   vat_mode?: ComparisonVatMode;
   /** Действует только в режиме `single`; без него сервер подставляет `rate_preselected`. */

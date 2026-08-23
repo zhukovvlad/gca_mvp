@@ -104,6 +104,7 @@ __all__ = [
     "DirectBranch",
     "EstimateRollup",
     "load_rollups",
+    "apply_adjustment",
     "own_net",
     "RowRef",
     "CellNet",
@@ -777,6 +778,62 @@ def _adjusted_branch(branch: DirectBranch, factor: Decimal) -> DirectBranch:
     return replace(branch, net=adjust_amount(branch.net, factor))
 
 
+def apply_adjustment(
+    rollups: dict[int, list[EstimateRollup]],
+    factor_by_estimate: Mapping[int, Decimal],
+    *,
+    categories: Sequence[CategoryRef],
+) -> dict[int, list[EstimateRollup]]:
+    """Наложить коэффициенты приведения на УЖЕ ПРОЧИТАННЫЕ роллапы (задача 6).
+
+    Вынесена из `load_rollups`, чтобы `build_comparison` мог читать сметы
+    РОВНО ОДИН РАЗ (номинал) и накладывать умножение поверх готового чтения —
+    диаграмме нужны и приведённое, и номинальное значение одновременно, а
+    второе чтение с `adjustment=` разошлось бы с первым составом смет в
+    `READ COMMITTED` (см. докстроку `load_rollups` ниже).
+
+    Чистая функция: без `db`. `categories` приходит параметром — это тот же
+    справочник, которым уже была построена `rollup.tree`, нужен заново, чтобы
+    пересобрать дерево НАД приведёнными ветвями (`tree` производно от
+    `direct`, задача 2).
+
+    Приводится КАЖДАЯ ветвь до разделения на `direct`/`unallocated` — как и
+    раньше внутри `load_rollups`: иначе дерево приведётся, а остаток
+    («Нераспределённое») останется номинальным и молча смешается с
+    приведённым в «Итого по договору».
+
+    `RuntimeError` на смету без коэффициента — та же громкая защита, что была
+    в `load_rollups`: молчаливое отсутствие смешало бы номинал с приведённым,
+    и итог соврал бы, оставаясь правдоподобным.
+    """
+    result: dict[int, list[EstimateRollup]] = {}
+    for contract_id, contract_rollups in rollups.items():
+        adjusted: list[EstimateRollup] = []
+        for rollup in contract_rollups:
+            factor = factor_by_estimate.get(rollup.estimate_id)
+            if factor is None:
+                raise RuntimeError(
+                    f"Смета {rollup.estimate_id} договора {rollup.contract_id} не получила "
+                    "коэффициента приведения: план приведения и выборка смет "
+                    "разошлись."
+                )
+            direct = {
+                category_id: {
+                    source: _adjusted_branch(branch, factor)
+                    for source, branch in branches.items()
+                }
+                for category_id, branches in rollup.direct.items()
+            }
+            unallocated = {
+                source: _adjusted_branch(branch, factor)
+                for source, branch in rollup.unallocated.items()
+            }
+            tree = build_tree(categories, _direct_totals_view(direct))
+            adjusted.append(replace(rollup, tree=tree, direct=direct, unallocated=unallocated))
+        result[contract_id] = adjusted
+    return result
+
+
 def _estimate_label(rollup: EstimateRollup) -> str:
     """«ДГП» либо «ДС №N» — ТОТ ЖЕ словарь, которым говорит `_composition_caption`.
 
@@ -793,6 +850,7 @@ def load_rollups(
     contract_ids: Sequence[int],
     *,
     adjustment: Mapping[int, Decimal] | None = None,
+    categories: Sequence[CategoryRef] | None = None,
 ) -> dict[int, list[EstimateRollup]]:
     """Роллапы всех смет выборки, ОДНИМ запросом к каждому из четырёх входов.
 
@@ -800,12 +858,14 @@ def load_rollups(
     (а не отсутствует в словаре — вызывающему коду не придётся гадать про
     KeyError на договоре, который есть в выборке, но ещё не разобран).
 
-    `adjustment` — коэффициент приведения НА СМЕТУ (`resolve_inflation`). Умножение
-    происходит здесь и только здесь, ДО `build_tree`: приводить позже пришлось бы
-    в `cell_net`, `_grand_total_cell`, `_own_mode_shown` и `_single_rollup_axis`,
-    то есть в четырёх независимых сумматорах, и каждый стал бы отдельным шансом
-    забыть. Умножение до дерева даёт приведённое дерево, и весь слой ячеек
-    работает без единой правки.
+    `adjustment` — коэффициент приведения НА СМЕТУ (`resolve_inflation`).
+    Умножение больше не живёт здесь: `apply_adjustment` (задача 6) — ЕДИНСТВЕННОЕ
+    место умножения, и эта функция лишь ДЕЛЕГИРУЕТ в неё, накладывая коэффициенты
+    на уже собранный номинальный результат ПОСЛЕ того, как он полностью собран, но
+    ДО возврата вызывающему коду — снаружи поведение не отличить от прежнего.
+    Делегирование, а не дублирование: `apply_adjustment` нужна отдельно и
+    `build_comparison`, которому вдобавок нужен и номинал (диаграмме — оба числа
+    разом), а два места умножения однажды разошлись бы в правке.
 
     Порядок «нетто → инфляция → ставка показа» выполняется по построению:
     `net_to_gross` вызывается уже над приведённой нетто-суммой.
@@ -815,7 +875,15 @@ def load_rollups(
     if not contract_ids:
         return result
 
-    categories = _load_categories(db)
+    # `categories` можно передать снаружи, и это НЕ микрооптимизация: справочник
+    # статей нужен и здесь (собрать дерево), и `apply_adjustment` (пересобрать его
+    # над приведёнными ветвями). Без параметра путь приведения читал бы один и тот
+    # же статический справочник ДВАЖДЫ, то есть фича диаграммы подняла бы бюджет
+    # запросов закрытой фичи инфляции с 7 до 8 — за перечитывание того, что уже
+    # лежит в памяти. Умолчание `None` оставляет прежнее поведение всем остальным
+    # вызовам (их два десятка), ни один из них править не нужно.
+    if categories is None:
+        categories = _load_categories(db)
     estimates = _load_estimates(db, contract_ids)
     if not estimates:
         return result
@@ -827,37 +895,12 @@ def load_rollups(
     base_rates_by_estimate = _collect_base_rates(view_rows)
 
     for estimate in estimates:
-        factor: Decimal | None = None
-        if adjustment:
-            factor = adjustment.get(estimate.id)
-            if factor is None:
-                # Громко, а не молча: `resolve_inflation` и этот запрос читают
-                # сметы ПОРОЗНЬ, и в READ COMMITTED каждый оператор берёт свой
-                # снимок даже внутри одной транзакции. Смета, которой нет в плане,
-                # осталась бы НЕПРИВЕДЁННОЙ и смешалась с приведёнными — то есть
-                # итог соврал бы, оставаясь правдоподобным. Та же форма, что у
-                # `_resolve_cell` на нарушении инварианта VIEW.
-                raise RuntimeError(
-                    f"Смета {estimate.id} договора {estimate.contract_id} не получила "
-                    "коэффициента приведения: план приведения и выборка смет "
-                    "разошлись."
-                )
-
         by_category = accumulated.get(estimate.id, {})
 
         direct: dict[int, dict[str, DirectBranch]] = {}
         unallocated: dict[str, DirectBranch] = {}
         for category_id, by_source in by_category.items():
             frozen_branches = {source: acc.freeze() for source, acc in by_source.items()}
-            if factor is not None:
-                # Приводится КАЖДАЯ ветвь до разделения на `direct` и
-                # `unallocated`: иначе дерево приведётся, а остаток останется
-                # номинальным и молча смешается с приведённым в «Итого по
-                # договору» — они складываются вместе.
-                frozen_branches = {
-                    source: _adjusted_branch(branch, factor)
-                    for source, branch in frozen_branches.items()
-                }
             if category_id is None:
                 # «Нераспределённое» — вынимается ДО build_tree, он его не пускает
                 # (спека §2.1.4, план п. 6 требований).
@@ -896,6 +939,11 @@ def load_rollups(
         )
         result.setdefault(estimate.contract_id, []).append(rollup)
 
+    if adjustment:
+        # Истинностная проверка, а не `is not None`: пустой словарь исторически
+        # (до вынесения умножения в `apply_adjustment`) означал «приведения нет» —
+        # так же молча, как и `None`, а не «ни одна смета не получила коэффициент».
+        return apply_adjustment(result, adjustment, categories=categories)
     return result
 
 
@@ -1500,6 +1548,101 @@ def _median_dict(median: _MedianResult) -> dict:
     }
 
 
+def _shown_per_sqm_axis_defined(vat_mode: str) -> bool:
+    """Есть ли у режима показа ЕДИНАЯ ось `shown_per_sqm` (спека §2.5, §2.10).
+
+    Единая ось есть при `net` и `single` (одна ставка показа на всю выборку) и
+    её НЕТ при `own` (у каждого договора своя ставка — общей линии не
+    существует). Предикат — ОДНО место для условия «own -> без единой оси»,
+    переиспользуемое `_totals_median_dict` (медиана приведённая, было до
+    задачи 6) и `_nominal_median_dict` (медиана номинальная, задача 6). План
+    требует ПЕРЕИСПОЛЬЗОВАТЬ правило, а не повторить («Архитектура → Медиана в
+    ставке показа»):
+    без выноса они разошлись бы по двум местам с одним и тем же `if vat_mode
+    == ...`, что план запрещает прямо.
+    """
+    if vat_mode == VAT_MODE_OWN:
+        return False
+    if vat_mode in (VAT_MODE_NET, VAT_MODE_SINGLE):
+        return True
+    # Громко, как и на ячейке (`_build_bucket_cell`): молчаливое отсутствие
+    # ключа при неизвестном режиме клиент прочитал бы как «своя ставка».
+    raise ValueError(f"неизвестный режим показа НДС: {vat_mode!r}")
+
+
+def _shown_per_sqm_value(
+    value: Decimal | None, *, vat_mode: str, single_rate: Decimal | None
+) -> Decimal | None:
+    """Значение линии `shown_per_sqm` медианы «Итого», когда ось определена
+    (`_shown_per_sqm_axis_defined` уже вернул `True`). Общий для приведённой и
+    номинальной медианы (задача 6) — избегает второй копии одного и того же
+    `net_to_gross`-пересчёта.
+    """
+    if vat_mode == VAT_MODE_NET:
+        return value
+    return None if value is None or single_rate is None else net_to_gross(value, single_rate)
+
+
+def _totals_median_dict(
+    median: _MedianResult, *, vat_mode: str, single_rate: Decimal | None
+) -> dict:
+    """Медиана «Итого» С ПОЛЕМ ставки показа (спека §2.10) — сериализатор
+    ОТДЕЛЬНЫЙ от `_median_dict`, а не флаг внутри неё.
+
+    Зовётся ТОЛЬКО в точке сборки `totals_medians`: `rows[].medians` продолжает
+    получать голый `_median_dict`, потому что спека называет поле показа только
+    у «Итого» (§2.10) — добавить его внутрь `_median_dict` значило бы протащить
+    новое поле во все 253 строки дерева, чего контракт не вводит, а флаг,
+    протянутый через `_row_cells`, однажды приехал бы в строку «за компанию».
+
+    Присутствие ключа и его значение отвечают на РАЗНЫЕ вопросы:
+
+    * присутствие — допускает ли режим НДС единую ось показа
+      (`_shown_per_sqm_axis_defined`): ключ ЕСТЬ при `net` и `single`, и его
+      НЕТ при `own`;
+    * значение — есть ли медиана вообще: `None`, когда сопоставимых меньше
+      трёх — то же правило, что у `value` (§2.5 правило 5).
+
+    В режиме `net` значение НАМЕРЕННО повторяет `value`: клиент читает ОДНО
+    поле во всех режимах, где ось однозначна, и не держит на своей стороне
+    второй копии правила о режимах НДС.
+
+    `single_rate` здесь обязан быть ЭФФЕКТИВНОЙ ставкой показа
+    (`effective_single_rate` вызывающего кода, ПОСЛЕ подстановки предвыбора),
+    а не голым параметром запроса: тот может быть `None` там, где столбцы уже
+    показывают числа (режим «единая» открылся на предвыборе, DoD 8ж) — и с
+    параметром запроса линия медианы пропала бы там, где обязана быть.
+    """
+    out = _median_dict(median)
+    if _shown_per_sqm_axis_defined(vat_mode):
+        out["shown_per_sqm"] = _shown_per_sqm_value(
+            median.value, vat_mode=vat_mode, single_rate=single_rate
+        )
+    return out
+
+
+def _nominal_median_dict(
+    median: _MedianResult, *, vat_mode: str, single_rate: Decimal | None
+) -> dict:
+    """Номинальная медиана «Итого» (задача 6): `{value, shown_per_sqm?}` — форма
+    из §2.10 спеки.
+
+    Форма — ПОДМНОЖЕСТВО `_totals_median_dict`: без `comparable_count` и
+    `contract_ids` (те у номинала не нужны — экран берёт их у ПРИВЕДЁННОЙ
+    медианы, номинал ей не более чем сопровождает). Присутствие
+    `shown_per_sqm` подчиняется ТОМУ ЖЕ предикату `_shown_per_sqm_axis_defined`
+    и тому же `_shown_per_sqm_value` — задача 6 переиспользует правило
+    режимов НДС, а не заводит вторую его копию (план, «Архитектура → Медиана в
+    ставке показа», последний абзац).
+    """
+    out: dict = {"value": median.value}
+    if _shown_per_sqm_axis_defined(vat_mode):
+        out["shown_per_sqm"] = _shown_per_sqm_value(
+            median.value, vat_mode=vat_mode, single_rate=single_rate
+        )
+    return out
+
+
 def _bucket_cell_dict(cell: BucketCell) -> dict:
     return {
         "net": cell.net,
@@ -1522,6 +1665,47 @@ def _cell_entry(contract_id: int, by_bucket: dict[str, dict[int, BucketCell]]) -
         BUCKET_AMENDMENTS: _bucket_cell_dict(by_bucket[BUCKET_AMENDMENTS][contract_id]),
         BUCKET_TOTAL: _bucket_cell_dict(by_bucket[BUCKET_TOTAL][contract_id]),
     }
+
+
+def _nominal_bucket_cell_dict(cell: BucketCell) -> dict:
+    """Денежное подмножество ячейки «Итого» для номинала (спека §2.10):
+    РОВНО четыре денежные величины, БЕЗ `state` и `deviation_pct`.
+
+    `deviation_pct` не входит намеренно: отклонение считается от медианы
+    ТЕКУЩЕГО (приведённого либо номинального-по-умолчанию) состояния, и
+    номинальное отклонение было бы вторым ответом на тот же вопрос «насколько
+    дороже медианы», которого спека не просит. `state` не входит по той же
+    причине, что и остальные метаданные ячейки: диаграмме нужны только деньги,
+    состояние она уже знает из ОСНОВНОЙ (приведённой) ячейки того же бакета.
+    """
+    return {
+        "net": cell.net,
+        "shown": cell.shown,
+        "net_per_sqm": cell.net_per_sqm,
+        "shown_per_sqm": cell.shown_per_sqm,
+    }
+
+
+def _totals_cell_entry(
+    contract_id: int,
+    by_bucket: dict[str, dict[int, BucketCell]],
+    nominal_by_bucket: dict[str, dict[int, BucketCell]] | None,
+) -> dict:
+    """Ячейка «Итого» — `_cell_entry` ПЛЮС номинал (задача 6, DoD 17).
+
+    ОТДЕЛЬНАЯ функция, а не флаг внутри `_cell_entry`: тот сериализатор общий
+    со строками дерева (`rows[].cells[]`, `_row_cells`/`_bucket_cell_dict`), и
+    добавление номинала туда утекло бы во все 253 строки, что DoD 17 запрещает
+    прямо. `nominal_by_bucket is None` — приведения не было (DoD 13): ключ
+    `nominal` не появляется вовсе, а не `null`.
+    """
+    entry = _cell_entry(contract_id, by_bucket)
+    if nominal_by_bucket is not None:
+        for bucket_name in (BUCKET_BASE, BUCKET_AMENDMENTS, BUCKET_TOTAL):
+            entry[bucket_name]["nominal"] = _nominal_bucket_cell_dict(
+                nominal_by_bucket[bucket_name][contract_id]
+            )
+    return entry
 
 
 def _row_cells(
@@ -1862,6 +2046,56 @@ def parse_ids_param(raw: str | None) -> list[int] | None:
         ) from None
 
 
+def parse_rate_class_id_param(raw: str | None) -> list[int] | None:
+    """`"2,3"` → `[2, 3]`; `None` → `None` (сужения по классу нет, задача 7).
+
+    Живёт РЯДОМ с `parse_ids_param` и `parse_target_month_param`, и по той же
+    причине: маршрутов сравнения ДВА (экран и выгрузка листа), и формат
+    `rate_class_id` у них обязан быть один — иначе один и тот же адрес получал
+    бы два разных ответа в зависимости от того, куда его послали.
+
+    Нечисловой элемент — `DomainError(400)` с самим значением в тексте, а не
+    422-трасса валидатора: строка приходит из адреса, который человек мог
+    набрать руками.
+
+    Пустая строка (`rate_class_id=`) даёт пустой список, а не `None`: отказ на
+    пустом списке классов бросает `crud.contracts.apply_contract_filters` —
+    второй такой же отказ здесь заводить не нужно.
+    """
+    if raw is None:
+        return None
+    try:
+        return [int(part) for part in raw.split(",") if part.strip()]
+    except ValueError:
+        raise DomainError(
+            400,
+            f"`rate_class_id` должен быть числом или списком чисел через запятую, а не {raw!r}.",
+        ) from None
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Выборка сравнения: множество ДО и ПОСЛЕ сужения по классу ставки (задача 4).
+
+    `contract_ids` — окончательная выборка, после сужения по классу; ей
+    продолжают пользоваться `rollups`, `resolve_inflation`, `build_rows` — всё,
+    что считает числа. `facet_ids` — то же множество, но ДО сужения (после
+    остальных фильтров): по нему строится фасет `available_rate_classes` —
+    чипы обязаны показывать классы выборки целиком, а не только тот, до
+    которого её сузили, иначе снятый чип не вернуть.
+
+    Когда сужения не было, оба множества совпадают по содержимому, но это два
+    РАЗНЫХ объекта-списка: копии делает `resolve_selection`, чтобы мутация одного
+    поля не могла случайно задеть другое. Именно `resolve_selection`, а не
+    `frozen=True`: тот запрещает переприсваивание ПОЛЯ, а не правку списка внутри
+    него, и на неизменяемость содержимого не годится вовсе (для неё понадобился бы
+    `tuple`, а он сломал бы существующие сравнения выборки со списком в тестах).
+    """
+
+    contract_ids: list[int]
+    facet_ids: list[int]
+
+
 def resolve_selection(
     db: Session,
     *,
@@ -1870,9 +2104,20 @@ def resolve_selection(
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
-) -> list[int]:
-    """Договоры выборки по одной из ДВУХ форм входа (спека §2.6).
+    rate_class_id: int | Sequence[int] | None = None,
+) -> Selection:
+    """Договоры выборки по одной из ДВУХ форм входа, суженные по классу (спека §2.6).
+
+    Функция делает ТРИ дела по очереди: отвергает двусмысленность форм → выбирает
+    форму → сужает результат по классу. Сужение стоит ПОСЛЕ выбора формы, а не
+    внутри каждой из двух веток, потому что DoD 2 требует от обеих форм
+    одинакового ответа на одинаковом множестве — с двумя копиями правила
+    сужения это равенство держалось бы на совпадении реализаций, а не на
+    построении, и первая же правка одной ветки развела бы формы.
+
+    Возвращает `Selection` — оба множества, до и после сужения (см. её
+    докстроку); `facet_ids` берётся ИМЕННО здесь, ДО шага сужения, потому что
+    после него надмножество для фасета уже потеряно.
 
     Живёт здесь, а не в роутере, потому что форм входа две, а эндпоинтов —
     тоже два (сравнение и выгрузка листа): вторая копия этого правила означала
@@ -1880,10 +2125,18 @@ def resolve_selection(
     §2.7 требует ровно обратного — один агрегат на оба представления.
 
     Фильтры не переписаны, а взяты у списка договоров
-    (`crud.contracts.filtered_contract_ids`, тот же `apply_contract_filters`):
-    DoD 1 требует, чтобы обе формы давали одинаковый ответ на одинаковом
-    множестве, и со второй копией условий это держалось бы на совпадении.
-    `page`/`page_size` не переносятся — сравнение берёт всю выборку.
+    (`crud.contracts.filtered_contract_ids` и `apply_contract_filters`): DoD 1
+    требует, чтобы обе формы давали одинаковый ответ на одинаковом множестве, и
+    со второй копией условий это держалось бы на совпадении. `page`/`page_size`
+    не переносятся — сравнение берёт всю выборку.
+
+    **Коррекция 400.** Раньше отвергалось только сочетание `ids` и `all=1`; `q`,
+    `object_id`, `contractor_id` вместе с `ids` молча игнорировались — ссылка
+    выглядела отфильтрованной, а ответ приходил по полному перечислению. Теперь
+    `ids` вместе с любым из этих трёх — тоже отказ 400, тем же текстом, что и
+    отказ на `ids`+`all=1`: с точки зрения человека это одна и та же ошибка —
+    выборка задана дважды. `rate_class_id` в эту проверку НЕ входит: он больше
+    не форма выборки, а её сужение, и потому законно сочетается с `ids`.
 
     Отсутствующий id — ОТКАЗ 404 с его номером, а не молчаливое выпадение
     колонки: `Contract.id.in_(...)` сам по себе просто не нашёл бы её, и
@@ -1893,46 +2146,89 @@ def resolve_selection(
     """
     from crud import contracts as crud_contracts
 
-    if use_filter and ids:
+    # «Задан» определяется ТЕМ ЖЕ правилом, каким фильтр применяется: пустоту `q`
+    # решает `normalized_search_term`, а не второе условие здесь. Замер до правки:
+    # `?ids=1,2&q=%20` отвечал 400, а `?all=1&q=%20` — полной выборкой без
+    # фильтра, то есть один и тот же `q` в одном модуле значил разное.
+    other_filters = {
+        "q": crud_contracts.normalized_search_term(q),
+        "object_id": object_id,
+        "contractor_id": contractor_id,
+    }
+    named = [name for name, value in other_filters.items() if value is not None]
+    if ids and (use_filter or named):
         raise DomainError(
             400,
             "Выборка задана дважды: и списком договоров, и фильтром. "
             "Оставьте одну форму — либо `ids`, либо `all=1` с фильтрами.",
         )
     if use_filter:
-        return crud_contracts.filtered_contract_ids(
+        selected = crud_contracts.filtered_contract_ids(
             db, q=q, object_id=object_id, contractor_id=contractor_id,
+        )
+    else:
+        if not ids:
+            raise DomainError(
+                400,
+                "Выборка не задана: передайте `ids` со списком договоров либо "
+                "`all=1` для выборки по фильтру.",
+            )
+
+        # Порядок здесь не важен (колонки упорядочивает `_load_columns` по
+        # signed_date/id), но дубликаты убрать обязательно: повторённый id дал бы
+        # вторую колонку того же договора.
+        unique = list(dict.fromkeys(ids))
+        existing = set(
+            db.execute(sa.select(Contract.id).where(Contract.id.in_(unique))).scalars().all()
+        )
+        missing = [contract_id for contract_id in unique if contract_id not in existing]
+        if missing:
+            raise DomainError(
+                404, "Договоры не найдены: " + ", ".join(str(value) for value in missing) + "."
+            )
+        selected = unique
+
+    # Сужение по классу — ОДНО место на обе формы (см. докстроку).
+    #
+    # Условие `is not None`, а не безусловный проход: без сужения выборка уже
+    # готова, и лишний запрос лёг бы на КАЖДЫЙ дофичевый ответ — приведение и
+    # фильтр по классу по умолчанию выключены, то есть на самый частый путь.
+    # Пустой список классов при этом внутрь ПОПАДАЕТ (`[] is not None`), и
+    # уронить его обязана `apply_contract_filters`: отказ 400 не имеет права
+    # исчезать от того, что сужать было нечего.
+    #
+    # Никакого раннего выхода по пустому `selected` внутри ветви: `in_([])` —
+    # законный SQL, который тихо вернул бы пустоту, а 400 на пустом списке
+    # классов обязан прозвучать даже при пустой выборке.
+    #
+    # `in_` без join-ов на `objects`/`contractors` допустим здесь только потому,
+    # что передаётся ОДИН фильтр — класс; `q` сюда не передаём, а
+    # `apply_contract_filters` требует для `q` тех самых join-ов.
+    facet_ids = list(selected)
+    if rate_class_id is not None:
+        stmt = crud_contracts.apply_contract_filters(
+            sa.select(Contract.id).where(Contract.id.in_(selected)),
             rate_class_id=rate_class_id,
         )
-    if not ids:
-        raise DomainError(
-            400,
-            "Выборка не задана: передайте `ids` со списком договоров либо "
-            "`all=1` для выборки по фильтру.",
-        )
-
-    # Порядок здесь не важен (колонки упорядочивает `_load_columns` по
-    # signed_date/id), но дубликаты убрать обязательно: повторённый id дал бы
-    # вторую колонку того же договора.
-    unique = list(dict.fromkeys(ids))
-    existing = set(
-        db.execute(sa.select(Contract.id).where(Contract.id.in_(unique))).scalars().all()
-    )
-    missing = [contract_id for contract_id in unique if contract_id not in existing]
-    if missing:
-        raise DomainError(
-            404, "Договоры не найдены: " + ", ".join(str(value) for value in missing) + "."
-        )
-    return unique
+        kept = set(db.execute(stmt).scalars())
+        selected = [contract_id for contract_id in selected if contract_id in kept]
+    return Selection(contract_ids=list(selected), facet_ids=facet_ids)
 
 
 def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
     """Шапки колонок выборки, в порядке `signed_date DESC`, затем `id DESC`
-    (спека §2.1, DoD 3) — от новых договоров к старым."""
+    (спека §2.1, DoD 3) — от новых договоров к старым.
+
+    `rate_class_id` — СНИМОК из самого договора (`Contract.rate_class_id`), а не
+    текущий класс объекта (`ObjectModel.rate_class_id`, который лишь умолчание
+    для НОВЫХ договоров, §4 модели): переклассификация объекта прошлое не
+    меняет, и договор сравнивается в том классе, в котором его подписывали
+    (задача 4, DoD 12).
+    """
     if not contract_ids:
         return []
     rows = db.execute(
-        sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
+        sa.select(Contract, ObjectModel, Contractor.title, RateClass.id, RateClass.title)
         .join(ObjectModel, ObjectModel.id == Contract.object_id)
         .join(Contractor, Contractor.id == Contract.contractor_id)
         .join(RateClass, RateClass.id == Contract.rate_class_id)
@@ -1945,6 +2241,7 @@ def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
             "contract_number": contract.contract_number,
             "object_title": obj.title,
             "contractor_title": contractor_title,
+            "rate_class_id": rate_class_id,
             "rate_class_title": rate_class_title,
             "signed_date": iso(contract.signed_date),
             "area_total_sp": obj.area_total_sp,
@@ -1952,7 +2249,45 @@ def _load_columns(db: Session, contract_ids: Sequence[int]) -> list[dict]:
             "bank_guarantee_pct": contract.bank_guarantee_pct,
             "retention_pct": contract.retention_pct,
         }
-        for contract, obj, contractor_title, rate_class_title in rows
+        for contract, obj, contractor_title, rate_class_id, rate_class_title in rows
+    ]
+
+
+def _rate_class_facet(columns_meta: Sequence[dict]) -> list[dict]:
+    """`available_rate_classes` — чипы классов ставки по facet-множеству.
+
+    Правило фасета — спека диаграммы стоимости §2.7 (задача 4).
+
+    Строится из результата `_load_columns` (join уже дал `rate_class_id` и
+    `rate_class_title`) — второго запроса к `rate_classes` здесь нет и не
+    должно быть: `build_comparison` обязан звать `_load_columns` РОВНО один раз
+    на ответ, даже когда сужения не было.
+
+    `count` — число договоров этого класса в множестве, из которого построен
+    `columns_meta` (то есть ДО сужения по классу, если оно было).
+
+    Порядок — по `title`, а не по порядку колонок (`signed_date`): фасет есть
+    срез справочника классов, а не проекция текущей выборки, и чипы не имеют
+    права переставляться местами от того, что человек сузил или расширил набор
+    договоров.
+
+    Ключ сортировки — ПАРА `(title, id)`, и второй элемент **не про тёзок**:
+    заголовок класса уникален на уровне схемы (`uq_rate_classes_title`, миграция
+    0002; на него же висит человекочитаемый 409 в `crud/references.py`), так что
+    одного `title` для однозначности достаточно. `id` добавлен затем, чтобы
+    порядок не зависел от порядка строк запроса ВОВСЕ — не опираясь на констрейнт
+    из другого модуля, который эта функция не контролирует. Стоит это ничего, а
+    DoD 11 требует стабильности между запросами с РАЗНЫМ набором договоров.
+    """
+    counts: dict[int, int] = {}
+    titles: dict[int, str] = {}
+    for column in columns_meta:
+        rate_class_id = column["rate_class_id"]
+        counts[rate_class_id] = counts.get(rate_class_id, 0) + 1
+        titles[rate_class_id] = column["rate_class_title"]
+    return [
+        {"id": rate_class_id, "title": titles[rate_class_id], "count": counts[rate_class_id]}
+        for rate_class_id in sorted(counts, key=lambda rid: (titles[rid], rid))
     ]
 
 
@@ -1960,6 +2295,7 @@ def build_comparison(
     db: Session,
     contract_ids: Sequence[int],
     *,
+    facet_ids: Sequence[int] | None = None,
     vat_mode: str,
     single_rate: Decimal | None = None,
     inflation_series_id: int | None = None,
@@ -1972,6 +2308,19 @@ def build_comparison(
     только на показ, не на то, что вообще посчитано) — экран берёт одно
     представление, Excel (задача 6) получает все три сразу с отдельными
     медианами (спека §2.7 «один агрегат — два представления»).
+
+    **`facet_ids` — надмножество для фасета `available_rate_classes` (задача 4,
+    решение плана 3).** Первый позиционный параметр НЕ меняет тип и остаётся списком: у
+    прямых вызовов `build_comparison(` десятки мест по всему проекту (включая
+    генераторы макетов в `docs/`, которых `just ci` не касается), и перевод
+    сигнатуры на новый тип сломал бы их молча. `facet_ids=None` означает
+    «сужения по классу не было» — тогда фасет считается по самим `contract_ids`
+    (умолчание не «фасета нет»: чипы нужны на первом открытии тоже, и множество
+    до сужения тогда совпадает с самой выборкой). Когда сужение было,
+    `facet_ids` — то самое надмножество ДО него (`Selection.facet_ids`
+    резолвера); `rollups`, `resolve_inflation`, `build_rows` продолжают
+    получать СУЖЕННЫЙ `contract_ids` — расширяется только источник шапок
+    колонок, иначе в ответ попали бы исключённые договоры.
 
     **Режим «единая ставка» без явной ставки открывается на ПРЕДВЫБОРЕ.** DoD 8ж
     требует, чтобы этот режим открывался с числами, а ссылка на страницу вправе
@@ -2034,10 +2383,53 @@ def build_comparison(
             target_month=target_month if target_month is not None else current_period(),
         )
 
-    rollups = load_rollups(
-        db, contract_ids, adjustment=plan.factor_by_estimate if plan else None
-    )
-    columns_meta = _load_columns(db, contract_ids)
+    # Одно чтение, а не два: `load_rollups` без `adjustment=` даёт НОМИНАЛ, и
+    # диаграмме (задача 6) нужен именно он — параллельно с приведённым деревом,
+    # а не вместо него. Второе чтение с `adjustment=` развело бы состав смет
+    # между двумя снимками READ COMMITTED (докстрока `load_rollups`).
+    #
+    # Справочник статей нужен ДВАЖДЫ на пути приведения — собрать номинальное
+    # дерево и пересобрать его над приведёнными ветвями, — поэтому читается ОДИН
+    # раз здесь и передаётся в оба места. Иначе фича диаграммы подняла бы бюджет
+    # запросов закрытой фичи инфляции с 7 до 8, перечитывая статический
+    # справочник. Без плана параметр не нужен вовсе: `load_rollups` берёт
+    # справочник сама, и дофичевый путь остаётся при своих 5 запросах.
+    shared_categories = _load_categories(db) if plan is not None else None
+    nominal_rollups = load_rollups(db, contract_ids, categories=shared_categories)
+    rollups = nominal_rollups
+    if plan is not None:
+        rollups = apply_adjustment(
+            nominal_rollups, plan.factor_by_estimate, categories=shared_categories
+        )
+
+    # Фасет строится из ОДНОГО запроса `_load_columns` по надмножеству (facet_ids,
+    # если сужение было, иначе сама выборка) — второго обращения к RateClass
+    # не заводим (решение плана 3). `columns_meta` затем отфильтровывается до `contract_ids`
+    # с сохранением порядка запроса — колонки видят только суженную выборку.
+    facet_source_ids = list(facet_ids) if facet_ids is not None else contract_ids
+    facet_columns_meta = _load_columns(db, facet_source_ids)
+    available_rate_classes = _rate_class_facet(facet_columns_meta)
+    contract_id_set = set(contract_ids)
+    columns_meta = [
+        column for column in facet_columns_meta if column["contract_id"] in contract_id_set
+    ]
+    if facet_ids is not None and len(columns_meta) != len(contract_id_set):
+        # Громко, а не молча: `facet_ids` обязан быть НАДмножеством выборки.
+        # Не будь он таким, договор выпал бы из `columns_meta` — а значит и из
+        # `ordered_ids`, — но роллапы для него всё равно прочитались бы, и ответ
+        # показал бы выборку меньше запрошенной, ничего об этом не сказав. Ровно
+        # тот класс отказа, который `load_rollups` уже глушит `RuntimeError`-ом
+        # на смете без коэффициента.
+        #
+        # Проверка стоит ТОЛЬКО под `facet_ids is not None`: на старом пути
+        # (`facet_ids` не передан) источник шапок и есть сама выборка, и
+        # несуществующий id там по-прежнему просто не даёт колонки — так вели
+        # себя все прямые вызовы до этой фичи, и менять их поведение задача не
+        # бралась.
+        raise RuntimeError(
+            "facet_ids не покрывает contract_ids: "
+            f"колонок {len(columns_meta)} на {len(contract_id_set)} договоров выборки"
+        )
     ordered_ids = [column["contract_id"] for column in columns_meta]
 
     rate_opts, rate_preselected = _rate_options_from_rollups(rollups)
@@ -2076,6 +2468,22 @@ def build_comparison(
         vat_mode=vat_mode, single_rate=effective_single_rate, skip_median=False,
     )
 
+    # Номинальная ветвь «Итого» (спека §2.8) — ОДИН дополнительный проход
+    # НАД номинальными роллапами, той же формы, что и приведённый выше: строки
+    # дерева номинал не получают вовсе (§2.8, DoD 17), поэтому обхода по 253
+    # узлам здесь нет и не должно быть.
+    nominal_totals_by_bucket: dict[str, dict[int, BucketCell]] | None = None
+    nominal_totals_medians: dict[str, _MedianResult] | None = None
+    if plan is not None:
+        nominal_bucket_rollups = {
+            contract_id: _split_buckets(nominal_rollups.get(contract_id, []))
+            for contract_id in ordered_ids
+        }
+        nominal_totals_by_bucket, nominal_totals_medians = _row_cells(
+            nominal_bucket_rollups, ordered_ids, area_by_contract, None,
+            vat_mode=vat_mode, single_rate=effective_single_rate, skip_median=False,
+        )
+
     columns = [
         {
             **column,
@@ -2099,12 +2507,28 @@ def build_comparison(
         "rate_preselected": rate_preselected,
         "caption": _mode_caption(vat_mode, effective_single_rate, plan),
         "columns": columns,
+        "available_rate_classes": available_rate_classes,
         "rows": rows_out,
-        "totals": [_cell_entry(contract_id, totals_by_bucket) for contract_id in ordered_ids],
+        "totals": [
+            _totals_cell_entry(contract_id, totals_by_bucket, nominal_totals_by_bucket)
+            for contract_id in ordered_ids
+        ],
         "totals_medians": {
-            bucket: _median_dict(totals_medians[bucket]) for bucket in totals_medians
+            bucket: _totals_median_dict(
+                totals_medians[bucket], vat_mode=vat_mode, single_rate=effective_single_rate
+            )
+            for bucket in totals_medians
         },
     }
+    if nominal_totals_medians is not None:
+        # Ключ `nominal` — ТОЛЬКО при сосчитанном приведении (DoD 13, как и у
+        # ячеек `totals[]` выше): без плана номинал и приведённое совпадают, и
+        # второй копии тех же чисел контракт не вводит.
+        for bucket, median_dict in result["totals_medians"].items():
+            median_dict["nominal"] = _nominal_median_dict(
+                nominal_totals_medians[bucket],
+                vat_mode=vat_mode, single_rate=effective_single_rate,
+            )
     if plan is not None:
         result["inflation"] = {
             "series_id": plan.series_id,

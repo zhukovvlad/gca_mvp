@@ -405,6 +405,47 @@ def contract_with_amendment_dates(
     return contract, base_estimate, amd_estimate
 
 
+# ---------------------------------------------------------------------------
+#  Фасет `available_rate_classes` (план поправки на диаграмму, задача 4)
+# ---------------------------------------------------------------------------
+
+def contracts_sharing_a_rate_class(
+    db, factories, *,
+    shared_title: str = "Класс общий",
+    other_title: str = "Класс другой",
+    shared_signed_dates: tuple[dt.date, dt.date] = (dt.date(2025, 1, 10), dt.date(2025, 2, 10)),
+    other_signed_date: dt.date = dt.date(2025, 3, 10),
+) -> tuple[list[int], int, int]:
+    """Два договора ОДНОГО класса ставки и один — другого.
+
+    `baseline_selection` даёт каждому договору свой класс (`title=f"Класс Б
+    {index}"`) — там `count` фасета всегда 1, и правило «count — число
+    договоров класса» им не проверяется. Здесь ровно наоборот: класс
+    `shared_title` держат ДВА договора, `other_title` — один, и тесты фасета
+    видят разницу между 1 и 2.
+
+    Возвращает `(contract_ids, shared_class_id, other_class_id)`: первые два
+    элемента `contract_ids` — класса `shared_title` (в порядке
+    `shared_signed_dates`), третий — `other_title`.
+    """
+    shared_class = factories.RateClassFactory.create(title=shared_title)
+    other_class = factories.RateClassFactory.create(title=other_title)
+
+    contract_ids = []
+    for signed_date, rate_class in (
+        (shared_signed_dates[0], shared_class),
+        (shared_signed_dates[1], shared_class),
+        (other_signed_date, other_class),
+    ):
+        contract = factories.ContractFactory.create(rate_class=rate_class, signed_date=signed_date)
+        estimate = factories.EstimateFactory.create(contract=contract)
+        proposal = make_proposal(factories, estimate=estimate)
+        seed_chapter_with_positions(db, factories, proposal=proposal, code="1", amounts=["100.00"])
+        contract_ids.append(contract.id)
+    db.flush()
+    return contract_ids, shared_class.id, other_class.id
+
+
 def archive_series(db, series_id: int) -> None:
     """Убрать ряд в архив. Прямым `UPDATE`, а не через CRUD: тесту нужен факт
     «ряд архивный», а не поведение правки (§12, ложные предпосылки)."""

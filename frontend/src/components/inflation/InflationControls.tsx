@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +10,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  CONTROLS_ROW_CLASS,
+  CONTROL_CELL_CLASS,
+  CONTROL_LABEL_CLASS,
+  SEGMENTED_GROUP_CLASS,
+  SEGMENTED_ITEM_ACTIVE_CLASS,
+  SEGMENTED_ITEM_CLASS,
+} from "@/components/ui-domain/controlStyles";
+import { cn } from "@/lib/utils";
 import type { InflationSeries } from "@/types/domain";
 
 interface InflationControlsProps {
@@ -41,6 +52,17 @@ interface InflationControlsProps {
   onSelectSeries: (id: number | null) => void;
   onToggle: (enabled: boolean) => void;
   onChangeMonth: (month: string) => void;
+  /**
+   * Полоса уровней — ВНУТРИ группы, под тремя контролами (макет, `#levels` внутри
+   * `fieldset.group`).
+   *
+   * Слотом, а не своим запросом: полоса живёт только при сосчитанном приведении, и
+   * решение «рисовать или нет» принимает страница — отсутствующий узел вместо
+   * `hidden` (см. докстроку `InflationLevelsBar`). Соседним узлом снаружи полоса
+   * легла бы на белую подложку карточки и оторвалась бы от группы, которую
+   * объясняет.
+   */
+  children?: ReactNode;
 }
 
 /**
@@ -57,6 +79,11 @@ interface InflationControlsProps {
  * означало бы, что его вычислил клиент, — то есть два человека получили бы два
  * ответа. Пустое поле при выбранном ряде читается как «текущий месяц, разрешит
  * сервер».
+ *
+ * **Группа выделена акцентной подложкой** (макет, `fieldset.group`), а чипы класса
+ * объекта рядом — приглушённой (`.group.plain`). Разница несёт смысл, а не вкус:
+ * поправка меняет САМИ ЧИСЛА и обязана объявлять себя на поверхности
+ * (`AGENTS.md` §10 v6.10), фильтр по классу меняет только состав выборки.
  */
 export function InflationControls({
   series,
@@ -68,28 +95,25 @@ export function InflationControls({
   onSelectSeries,
   onToggle,
   onChangeMonth,
+  children,
 }: InflationControlsProps) {
   const NO_SERIES = "none";
 
   return (
-    <fieldset className="rounded-lg border border-border px-4 py-3">
-      <legend className="px-1 text-2xs font-semibold tracking-wide text-fg-tertiary uppercase">
+    <fieldset className="mt-4 rounded-lg border border-accent-border bg-accent-soft px-4 py-3">
+      <legend className={cn(CONTROL_LABEL_CLASS, "px-1.5 font-bold text-accent-text")}>
         Поправка на инфляцию
       </legend>
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div className="grid gap-1">
-          <span className="text-2xs text-fg-tertiary">Режим</span>
-          <div
-            role="group"
-            aria-label="Режим приведения"
-            className="inline-flex overflow-hidden rounded-lg border border-border"
-          >
+      <div className={CONTROLS_ROW_CLASS}>
+        <div className={CONTROL_CELL_CLASS}>
+          <span className={CONTROL_LABEL_CLASS}>Режим</span>
+          <div role="group" aria-label="Режим приведения" className={SEGMENTED_GROUP_CLASS}>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="rounded-none"
+              className={cn(SEGMENTED_ITEM_CLASS, !enabled && SEGMENTED_ITEM_ACTIVE_CLASS)}
               aria-pressed={!enabled}
               onClick={() => onToggle(false)}
             >
@@ -99,7 +123,7 @@ export function InflationControls({
               type="button"
               variant="ghost"
               size="sm"
-              className="rounded-none"
+              className={cn(SEGMENTED_ITEM_CLASS, enabled && SEGMENTED_ITEM_ACTIVE_CLASS)}
               aria-pressed={enabled}
               // Пока ряд не выбран, приводить нечем: умолчательного ряда не
               // существует, справочник создаётся пустым и рядов может быть
@@ -112,8 +136,8 @@ export function InflationControls({
           </div>
         </div>
 
-        <div className="grid gap-1">
-          <Label htmlFor="inflation-series-select" className="text-2xs text-fg-tertiary">
+        <div className={CONTROL_CELL_CLASS}>
+          <Label htmlFor="inflation-series-select" className={CONTROL_LABEL_CLASS}>
             Ряд индексов
           </Label>
           <Select
@@ -122,7 +146,7 @@ export function InflationControls({
               onSelectSeries(value === NO_SERIES ? null : Number(value))
             }
           >
-            <SelectTrigger id="inflation-series-select" className="w-64">
+            <SelectTrigger id="inflation-series-select" className="w-64 bg-surface dark:bg-surface">
               {/*
                 `SelectValue` РЕНДЕР-ФУНКЦИЕЙ, а не `placeholder`-ом: без неё
                 триггер печатает сырое значение, то есть `id` ряда — «1» вместо
@@ -178,20 +202,22 @@ export function InflationControls({
           )}
         </div>
 
-        <div className="grid gap-1">
-          <Label htmlFor="inflation-target-month" className="text-2xs text-fg-tertiary">
+        <div className={CONTROL_CELL_CLASS}>
+          <Label htmlFor="inflation-target-month" className={CONTROL_LABEL_CLASS}>
             В ценах
           </Label>
           <Input
             id="inflation-target-month"
             type="month"
-            className="w-40"
+            className="w-40 bg-surface dark:bg-surface"
             value={targetMonth}
             disabled={selectedSeriesId === null}
             onChange={(event) => onChangeMonth(event.target.value)}
           />
         </div>
       </div>
+
+      {children}
     </fieldset>
   );
 }

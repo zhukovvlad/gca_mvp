@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Sequence
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -110,13 +111,33 @@ def _contracts_select():
 CONTRACT_LIST_ORDER = (Contract.signed_date.desc(), Contract.id.desc())
 
 
+def normalized_search_term(q: str | None) -> str | None:
+    """`q` в том виде, в каком фильтр его ПРИМЕНЯЕТ: `None`, если искать нечего.
+
+    Вынесено ОДНОЙ функцией, потому что «задан ли фильтр» спрашивают в двух
+    местах: здесь его применяют, а `crud.comparison.resolve_selection` по нему
+    отвергает двусмысленную выборку. Правила разошлись, и это было замерено:
+    резолвер считал заданным всё, что `not in (None, "")`, поэтому
+    `?ids=1,2&q=%20` отвечал 400 «выборка задана дважды», а `?all=1&q=%20` —
+    полной выборкой без всякого фильтра. Один и тот же `q` в одном модуле
+    означал разное — ровно то расхождение, ради отсутствия которого выборка и
+    живёт в единственном резолвере (спека сравнения §2.6).
+
+    Пробельная строка — «фильтр не задан», а не «искать пробел»: она приходит из
+    адреса, и человек, стерший запрос, оставляет за собой именно её.
+    """
+    if q is None:
+        return None
+    return q.strip() or None
+
+
 def apply_contract_filters(
     stmt,
     *,
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
+    rate_class_id: int | Sequence[int] | None = None,
 ):
     """Наложить фильтры списка договоров (§7.1) на готовый `select`.
 
@@ -130,9 +151,22 @@ def apply_contract_filters(
 
     Требует, чтобы `stmt` уже нёс join-ы на `objects` и `contractors`: `q` ищет
     и по их названиям (`_contracts_select` их даёт).
+
+    **`rate_class_id` принимает и одиночное значение, и последовательность.**
+    Многозначность нужна сравнению договоров: там класс перестал быть ФОРМОЙ
+    выборки и стал её сужением (спека диаграммы §2.6), а чипы классов снимаются
+    по нескольку. Одиночное значение продолжает работать не для совместимости, а
+    потому, что список договоров (§7.1) той фичей не тронут и передаёт одно
+    число.
+
+    Пустая последовательность — отказ 400, а не «фильтра нет»: пустое значение
+    приходит от кода, а не от человека (никакой чип не снимается «в ничто» —
+    снять последний класс экран не даёт), и молча прочитать его как «все классы»
+    значило бы прятать чужую ошибку под видом ответа по полной выборке.
     """
-    if q and q.strip():
-        pattern = f"%{q.strip()}%"
+    q = normalized_search_term(q)
+    if q:
+        pattern = f"%{q}%"
         stmt = stmt.where(
             sa.or_(
                 Contract.contract_number.ilike(pattern),
@@ -146,7 +180,21 @@ def apply_contract_filters(
     if contractor_id is not None:
         stmt = stmt.where(Contract.contractor_id == contractor_id)
     if rate_class_id is not None:
-        stmt = stmt.where(Contract.rate_class_id == rate_class_id)
+        if isinstance(rate_class_id, str | bytes):
+            # Строка — тоже последовательность, и `list("12")` даёт два СИМВОЛА:
+            # фильтр ушёл бы в `IN ('1','2')` и ответил 200 по чужой выборке
+            # вместо отказа. Сегодня сюда приходит уже разобранный список (формат
+            # адреса разбирает роутер), но задача 7 вводит этот разбор, и один
+            # недоделанный `parse` попал бы сюда МОЛЧА.
+            raise DomainError(
+                400,
+                "Фильтр по классу объекта ожидается числом или списком чисел, "
+                f"а не строкой {rate_class_id!r}.",
+            )
+        classes = [rate_class_id] if isinstance(rate_class_id, int) else list(rate_class_id)
+        if not classes:
+            raise DomainError(400, "Фильтр по классу объекта задан пустым списком.")
+        stmt = stmt.where(Contract.rate_class_id.in_(classes))
     return stmt
 
 
@@ -156,7 +204,7 @@ def filtered_contract_ids(
     q: str | None = None,
     object_id: int | None = None,
     contractor_id: int | None = None,
-    rate_class_id: int | None = None,
+    rate_class_id: int | Sequence[int] | None = None,
 ) -> list[int]:
     """Идентификаторы ВСЕХ договоров под фильтры списка, без пагинации.
 
