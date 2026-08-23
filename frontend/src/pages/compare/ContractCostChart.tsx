@@ -34,7 +34,7 @@ import {
   type CostChartUnit,
 } from "./costChartData";
 import { deviationTone, type DeviationTone } from "./deviationTone";
-import { BUCKET_LABELS, REASON_LABELS } from "./labels";
+import { AREA_MISSING_LABEL, BUCKET_LABELS, REASON_LABELS } from "./labels";
 
 /**
  * Диаграмма стоимости договоров (план, задача 11; спека диаграммы стоимости
@@ -326,6 +326,32 @@ function tooltipValue(decimal: string | null, unit: CostChartUnit): string {
 }
 
 /**
+ * Подпись строки приведённого значения: направление берётся из САМИХ ЧИСЕЛ
+ * (номинал против приведённого), а не из знака `k − 1`.
+ *
+ * Прежняя редакция читала `coefficient.down`, и на РАЗНЫХ множителях смет
+ * (`kind: "mixed"`) это давало «Приведено, рост» безусловно — при том, что
+ * агрегат разных множителей может дать и снижение, и ровно ноль. Найдено
+ * внешним ревью PR. Знак множителя вообще не тот вопрос: строка говорит о том,
+ * куда поехало ЗНАЧЕНИЕ, и отвечать на него обязаны значения.
+ *
+ * Сравнение — точной арифметикой строк (`addDecimalStrings`), а не `Number()`:
+ * §3 AGENTS.md действует и на показ, а на близких величинах двоичное
+ * представление решало бы исход.
+ *
+ * Равенство — ТРЕТЬЕ состояние, а не «рост»: множитель ровно 1 достижим, когда
+ * цель совпала с месяцем сметы и коэффициенты за годы не потребовались
+ * (DoD 5). Нейтральное «Приведено» и говорит ровно то, что известно.
+ */
+function adjustedRowTerm(bar: CostChartBar): string {
+  if (bar.nominalDecimal === null || bar.shownDecimal === null) return "Приведено";
+  const delta = addDecimalStrings(bar.shownDecimal, `-${bar.nominalDecimal}`);
+  if (delta === null) return "Приведено";
+  if (delta.startsWith("-")) return "Приведено, снижение";
+  return /^0(\.0*)?$/.test(delta) ? "Приведено" : "Приведено, рост";
+}
+
+/**
  * Подсказка столбца — СВОЙ `content` у `<ChartTooltip>`, а не
  * `ChartTooltipContent` из `@/components/ui/chart`.
  *
@@ -391,10 +417,7 @@ export function CostChartTooltip({
           */
           `× ${formatDecimalMoney(bar.inflationCoefficient, "", 4)} (${coefficient.level})`,
     ]);
-    rows.push([
-      coefficient.kind === "level" && coefficient.down ? "Приведено, снижение" : "Приведено, рост",
-      tooltipValue(bar.shownDecimal, unit),
-    ]);
+    rows.push([adjustedRowTerm(bar), tooltipValue(bar.shownDecimal, unit)]);
   }
   rows.push(["Отклонение от медианы", deviation ? deviation.text : "—"]);
   rows.push(["Ставка НДС договора", bar.compositionCaption]);
@@ -402,6 +425,11 @@ export function CostChartTooltip({
     // Площадь — тем же форматом, что в шапке колонки таблицы (`MoneyCell` без
     // валюты), и из той же decimal-строки: `Number()` здесь не нужен вовсе.
     rows.push(["Площадь", `${formatDecimalMoney(bar.areaTotalSp, "", 2)} м²`]);
+  } else if (bar.perSqmBlockedByArea) {
+    // Площади нет, а прочерки в денежных строках выше есть, и объяснить их
+    // больше нечем: причина живёт ровно в этом поле. В остальных случаях строка
+    // площади ОПУСКАЕТСЯ — прочерк там не отличался бы от нуля.
+    rows.push(["Площадь", AREA_MISSING_LABEL]);
   }
 
   return (
@@ -431,6 +459,21 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
   const deviation = bar.deviationPct === null ? null : deviationTone(bar.deviationPct);
   const reasonsText = bar.incompleteReasons.map((reason) => REASON_LABELS[reason]).join(", ");
 
+  /*
+    ДВЕ РАЗНЫЕ ПРИЧИНЫ ПУСТОГО СТОЛБЦА, и «нет суммы» годится только для одной.
+    На оси ₽/м² значение берётся из `shown_per_sqm`, а оно пусто и тогда, когда
+    сумма есть, но делить её не на что — ТЭП объекта не заведены. Прежняя
+    редакция писала над таким договором «нет суммы» и озвучивала это же
+    скринридеру, то есть говорила неправду о наличии денег (найдено внешним
+    ревью PR). Слова про ТЭП — из общего словаря экрана: ими же подписана шапка
+    колонки в таблице.
+  */
+  const missingText = bar.perSqmBlockedByArea
+    ? `₽/м² не считаются: ${AREA_MISSING_LABEL}`
+    : reasonsText
+      ? `нет суммы: ${reasonsText}`
+      : "нет суммы";
+
   return (
     <div
       data-testid={`cost-chart-column-${bar.contractId}`}
@@ -444,7 +487,7 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
         доступном дереве нет вовсе.
       */}
       <span className="sr-only">
-        {bar.value === null ? "нет суммы" : formatDecimalMoney(bar.shownDecimal, "₽", 2)}
+        {bar.value === null ? missingText : formatDecimalMoney(bar.shownDecimal, "₽", 2)}
       </span>
       <span className="text-xs font-semibold text-fg">{bar.contractNumber}</span>
       {/*
@@ -473,7 +516,7 @@ function ColumnLabel({ bar, unit }: { bar: CostChartBar; unit: CostChartUnit }) 
       )}
       {bar.value === null ? (
         <span data-testid={`cost-chart-nodata-${bar.contractId}`} className="text-2xs text-fg-tertiary">
-          {reasonsText ? `нет суммы: ${reasonsText}` : "нет суммы"}
+          {missingText}
         </span>
       ) : deviation ? (
         <span

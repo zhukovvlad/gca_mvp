@@ -125,6 +125,22 @@ export interface CostChartBar {
   /** Разбивка по сметам, когда `inflationCoefficient === null`. */
   inflationFactors: ComparisonInflationFactor[] | undefined;
 
+  /**
+   * ₽/м² не существует ПО ПРИЧИНЕ ОТСУТСТВИЯ ПЛОЩАДИ, а сумма при этом есть.
+   *
+   * Отдельное поле, потому что иначе два разных факта сходятся в одно значение
+   * `value === null` и становятся неразличимы (`docs/insights/one-value-two-states.md`).
+   * Сервер отдаёт `shown_per_sqm` пустым, когда `area_total_sp` не заведена, и
+   * никакой причины в `incomplete_reasons` при этом НЕ добавляет — причины там
+   * про саму сумму. Диаграмма из-за этого писала «нет суммы» над договором с
+   * полной стоимостью и озвучивала ту же неправду скринридеру (найдено внешним
+   * ревью PR).
+   *
+   * На оси сумм поле всегда `false`: там пустое значение и означает ровно
+   * отсутствие суммы.
+   */
+  perSqmBlockedByArea: boolean;
+
   /** Состояние ячейки сервера (спека сравнения §2.1.2) — «absent» отличимо от «есть, но погашено причинами». */
   state: ComparisonCellState;
   /** Причины неполноты (спека сравнения §2.1.3) — источник подписи «нет суммы: …» (спека диаграммы стоимости §2.9). */
@@ -269,6 +285,11 @@ export function buildCostChartBars(
       shownDecimal,
       nominalValue,
       nominalDecimal,
+      // Флаг считается ЗДЕСЬ, а не в компоненте: только у этой функции есть разом
+      // единица, ячейка корзины и площадь колонки. В компоненте пришлось бы
+      // протаскивать сумму отдельным полем ради одного сравнения.
+      perSqmBlockedByArea:
+        unit === "sqm" && shownDecimal === null && bucketCell.shown !== null && column.area_total_sp === null,
       gap: buildGap(value, nominalValue),
       deviationPct: bucketCell.deviation_pct,
       inflationCoefficient: column.inflation_coefficient,

@@ -364,6 +364,92 @@ describe("buildCostChartBars", () => {
     expect(bar.inflationCoefficient).toBe("1.4620");
     expect(bar.deviationPct).toBe("7.00");
   });
+
+  /*
+   * ДВА РАЗНЫХ ФАКТА, которые сервер отдаёт одним пустым `shown_per_sqm`:
+   * суммы нет вовсе и сумма есть, но площади нет. Причины в
+   * `incomplete_reasons` про второй случай МОЛЧАТ — они описывают саму сумму,
+   * — поэтому различитель обязан быть отдельным полем. Найдено внешним ревью
+   * PR: диаграмма писала «нет суммы» над договором с полной стоимостью.
+   */
+  it("сумма есть, ТЭП нет: на оси ₽/м² это НЕ «нет суммы», а отдельный флаг", () => {
+    const column = makeColumn({ contractId: 1, signedDate: "2025-01-01" });
+    expect(column.area_total_sp).toBeNull();
+    const comparison = makeComparison({
+      columns: [column],
+      // Ровно то, что отдаёт сервер без ТЭП: `shown` есть, `shown_per_sqm` пуст,
+      // причин неполноты НЕТ (`backend/crud/comparison.py`: `shown_per_sqm`
+      // считается только при непустой `area_total_sp`).
+      totals: [makeTotalsCell(1, makeBucketCell({ shown: "34000000000.00", shownPerSqm: null }))],
+    });
+
+    const [bar] = buildCostChartBars(comparison, "total", "sqm");
+
+    expect(bar.value).toBeNull();
+    expect(bar.incompleteReasons).toEqual([]);
+    expect(bar.perSqmBlockedByArea).toBe(true);
+  });
+
+  it("на оси СУММ тот же договор пустым не остаётся, и флаг снят", () => {
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [makeTotalsCell(1, makeBucketCell({ shown: "34000000000.00", shownPerSqm: null }))],
+    });
+
+    const [bar] = buildCostChartBars(comparison, "total", "sum");
+
+    expect(bar.value).toBe(34000000000);
+    expect(bar.perSqmBlockedByArea).toBe(false);
+  });
+
+  it("нет ни суммы, ни площади — флаг снят: причина здесь ДРУГАЯ", () => {
+    /*
+     * Парой к первому: без этого утверждения флаг мог бы стоять всегда, когда
+     * нет площади, и «нет суммы: без цены» подменилось бы разговором о ТЭП.
+     */
+    const comparison = makeComparison({
+      columns: [makeColumn({ contractId: 1, signedDate: "2025-01-01" })],
+      totals: [
+        makeTotalsCell(
+          1,
+          makeBucketCell({ shown: null, shownPerSqm: null, reasons: ["unpriced_rows"] })
+        ),
+      ],
+    });
+
+    const [bar] = buildCostChartBars(comparison, "total", "sqm");
+
+    expect(bar.value).toBeNull();
+    expect(bar.perSqmBlockedByArea).toBe(false);
+    expect(bar.incompleteReasons).toEqual(["unpriced_rows"]);
+  });
+
+  it("площадь заведена — флаг снят даже при пустом ₽/м²", () => {
+    /*
+     * Достижимо в режиме «своя ставка»: агрегат гасит `shown`/`shown_per_sqm`
+     * причиной `display_rate_undefined`, а площадь при этом есть. Разговор о ТЭП
+     * там был бы неправдой.
+     */
+    const column = makeColumn({ contractId: 1, signedDate: "2025-01-01" });
+    column.area_total_sp = "166756.90";
+    const comparison = makeComparison({
+      columns: [column],
+      totals: [
+        makeTotalsCell(
+          1,
+          makeBucketCell({
+            shown: null,
+            shownPerSqm: null,
+            reasons: ["display_rate_undefined"],
+          })
+        ),
+      ],
+    });
+
+    const [bar] = buildCostChartBars(comparison, "total", "sqm");
+
+    expect(bar.perSqmBlockedByArea).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

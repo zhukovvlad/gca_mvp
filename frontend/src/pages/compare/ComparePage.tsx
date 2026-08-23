@@ -40,7 +40,7 @@ import {
 import { useCurrentUser } from "@/hooks/useAuth";
 import { coefficientLevel } from "@/lib/inflation";
 import { ContractCostChart } from "./ContractCostChart";
-import { BUCKET_LABELS, REASON_LABELS, VAT_MODE_LABELS } from "./labels";
+import { AREA_MISSING_LABEL, BUCKET_LABELS, REASON_LABELS, VAT_MODE_LABELS } from "./labels";
 import {
   apiErrorCode,
   apiErrorContext,
@@ -278,7 +278,7 @@ function ComparisonColumnHeader({
       <div className="mt-1 text-2xs text-fg-secondary">{column.rate_class_title}</div>
       <div className="text-2xs text-fg-secondary">
         {column.area_total_sp === null ? (
-          <span className="text-warning-text">ТЭП не заведены</span>
+          <span className="text-warning-text">{AREA_MISSING_LABEL}</span>
         ) : (
           <>
             <MoneyCell value={column.area_total_sp} currency="" /> м²

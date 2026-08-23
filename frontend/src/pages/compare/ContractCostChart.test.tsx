@@ -1064,20 +1064,27 @@ describe("ContractCostChart — подсказка столбца", () => {
     expect(tooltipRows()).toContainEqual(["Отклонение от медианы", "—"]);
   });
 
-  it("площади нет в подсказке, когда ТЭП объекта не заведены", () => {
+  it("на оси СУММ площади в подсказке нет вовсе, когда ТЭП не заведены", () => {
     /*
-     * Парой к первому тесту: там площадь есть и строка стоит. Строка с
-     * прочерком здесь была бы хуже отсутствия — «площадь неизвестна» и
-     * «площадь ноль» читались бы одинаково, а первое означает незаведённые ТЭП.
+     * Парой к первому тесту: там площадь есть и строка стоит.
+     *
+     * Ось — СУММ, и это исправление предпосылки, а не выбор удобства. Прежняя
+     * редакция брала ось ₽/м² при `shown_per_sqm: "203890.00"` и пустой
+     * `area_total_sp` — состояние, которого сервер выдать НЕ МОЖЕТ: он считает
+     * `shown_per_sqm` только при непустой площади. Тест описывал недостижимое, а
+     * значит не описывал ничего (то же правило, что у `EMPTY_MEDIAN` выше).
+     *
+     * На оси сумм пустых денежных строк нет, объяснять нечего — и строка площади
+     * ОПУСКАЕТСЯ: прочерк в ней не отличался бы от нуля.
      */
     const comparison = makeComparison({
       columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
       totals: [
-        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: "203890.00" })),
+        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: null })),
       ],
     });
     expect(comparison.columns[0].area_total_sp).toBeNull();
-    renderTooltip(comparison, 7);
+    renderTooltip(comparison, 7, "sum");
 
     expect(tooltipRows().map(([term]) => term)).not.toContain("Площадь");
   });
@@ -1123,5 +1130,160 @@ describe("ContractCostChart — дата подписания в подписи 
     const lines = [...first.querySelectorAll("span")].map((el) => el.textContent);
     expect(lines.indexOf("Д-1")).toBeLessThan(lines.indexOf("28.05.2024"));
     expect(lines.indexOf("28.05.2024")).toBeLessThan(lines.indexOf("бизнес"));
+  });
+});
+
+describe("ContractCostChart — сумма есть, ТЭП не заведены", () => {
+  /**
+   * Ответ сервера для договора БЕЗ ТЭП: `shown` есть, `shown_per_sqm` пуст,
+   * причин неполноты нет. Именно эта комбинация превращалась на экране в
+   * «нет суммы» (найдено внешним ревью PR).
+   */
+  function noAreaComparison(): Comparison {
+    return makeComparison({
+      columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+      totals: [
+        makeTotalsCell(7, makeBucketCell({ shown: "34000000000.00", shownPerSqm: null })),
+      ],
+    });
+  }
+
+  it("подпись столбца называет ПРИЧИНУ и не говорит «нет суммы»", () => {
+    renderChart(noAreaComparison());
+
+    const note = screen.getByTestId("cost-chart-nodata-7");
+    expect(note).toHaveTextContent("ТЭП не заведены");
+    expect(note.textContent).not.toContain("нет суммы");
+  });
+
+  it("скринридеру озвучивается то же, а не «нет суммы»", () => {
+    /*
+     * Половина дефекта жила именно здесь: `sr-only` строка повторяла «нет
+     * суммы» независимо от причины, и человек со скринридером получал
+     * утверждение об отсутствии денег, которых договор не лишён.
+     */
+    renderChart(noAreaComparison());
+
+    const column = screen.getByTestId("cost-chart-column-7");
+    const sr = column.querySelector(".sr-only")!;
+    expect(sr.textContent).toContain("ТЭП не заведены");
+    expect(sr.textContent).not.toContain("нет суммы");
+  });
+
+  it("подсказка объясняет прочерки строкой площади, а не молчит", () => {
+    renderTooltip(noAreaComparison(), 7);
+
+    expect(tooltipRows()).toContainEqual(["Площадь", "ТЭП не заведены"]);
+    expect(tooltipRows()).toContainEqual(["В ценах подписания", "—"]);
+  });
+
+  it("настоящее отсутствие суммы по-прежнему называется «нет суммы» с причиной", () => {
+    /*
+     * Обратная половина: различитель обязан РАЗЛИЧАТЬ. Без этого утверждения
+     * подпись могла бы говорить про ТЭП всегда, когда столбца нет.
+     */
+    renderChart(
+      makeComparison({
+        columns: [makeColumn({ contractId: 7, signedDate: "2025-03-14" })],
+        totals: [
+          makeTotalsCell(
+            7,
+            makeBucketCell({ shown: null, shownPerSqm: null, reasons: ["unpriced_rows"] })
+          ),
+        ],
+      })
+    );
+
+    const note = screen.getByTestId("cost-chart-nodata-7");
+    expect(note).toHaveTextContent(`нет суммы: ${REASON_LABELS.unpriced_rows}`);
+    expect(note.textContent).not.toContain("ТЭП");
+  });
+});
+
+describe("ContractCostChart — направление приведения в подсказке", () => {
+  /**
+   * Подпись строки приведённого значения берётся из САМИХ ЧИСЕЛ, а не из знака
+   * множителя. На РАЗНЫХ множителях смет (`inflation_coefficient: null` плюс
+   * `inflation_factors`) прежняя редакция писала «Приведено, рост» безусловно —
+   * найдено внешним ревью PR.
+   */
+  function mixedComparison(shown: string, nominal: string): Comparison {
+    const column = makeColumn({
+      contractId: 7,
+      signedDate: "2025-03-14",
+      inflationCoefficient: null,
+    });
+    column.inflation_factors = [
+      { label: "ДГП", coefficient: "1.0800000000" },
+      { label: "ДС №1", coefficient: "0.9100000000" },
+    ];
+    return makeComparison({
+      columns: [column],
+      totals: [
+        makeTotalsCell(
+          7,
+          makeBucketCell({
+            shown,
+            shownPerSqm: shown,
+            nominalShown: nominal,
+            nominalShownPerSqm: nominal,
+          })
+        ),
+      ],
+    });
+  }
+
+  it("разные множители, а агрегат СНИЗИЛСЯ — подпись «снижение», не «рост»", () => {
+    renderTooltip(mixedComparison("184077.00", "203890.00"), 7);
+
+    const terms = tooltipRows().map(([term]) => term);
+    expect(terms).toContain("Приведено, снижение");
+    expect(terms).not.toContain("Приведено, рост");
+  });
+
+  it("разные множители, агрегат вырос — «рост»", () => {
+    renderTooltip(mixedComparison("203890.00", "184077.00"), 7);
+
+    expect(tooltipRows().map(([term]) => term)).toContain("Приведено, рост");
+  });
+
+  it("значение не изменилось — нейтральное «Приведено», без направления", () => {
+    /*
+     * Достижимо: цель совпала с месяцем сметы, коэффициенты за годы не
+     * потребовались (DoD 5). Назвать это «ростом» значило бы сообщить движение,
+     * которого не было.
+     */
+    renderTooltip(mixedComparison("203890.00", "203890.00"), 7);
+
+    const terms = tooltipRows().map(([term]) => term);
+    expect(terms).toContain("Приведено");
+    expect(terms).not.toContain("Приведено, рост");
+    expect(terms).not.toContain("Приведено, снижение");
+  });
+
+  it("ОДИН множитель со снижением — подпись та же, и берётся из тех же чисел", () => {
+    const comparison = makeComparison({
+      columns: [
+        makeColumn({
+          contractId: 7,
+          signedDate: "2025-03-14",
+          inflationCoefficient: "0.9028265360528709543841903724151045",
+        }),
+      ],
+      totals: [
+        makeTotalsCell(
+          7,
+          makeBucketCell({
+            shown: "184077.00",
+            shownPerSqm: "184077.00",
+            nominalShown: "203890.00",
+            nominalShownPerSqm: "203890.00",
+          })
+        ),
+      ],
+    });
+    renderTooltip(comparison, 7);
+
+    expect(tooltipRows().map(([term]) => term)).toContain("Приведено, снижение");
   });
 });
