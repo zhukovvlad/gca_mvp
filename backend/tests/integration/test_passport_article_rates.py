@@ -736,3 +736,28 @@ def test_money_share_computation_survives_an_inexact_trap_in_the_ambient_context
 
     assert result["money_share"] is not None
     assert result["money_share_state"] == "complete"
+
+
+def test_money_share_is_quantized_to_hundredths_of_a_percent(db_session, factories):
+    """Ревизия 24.08.2026, реализация («money_share квантуется», §2.10).
+
+    Фикстура — статья со своей позицией на 100,00 и нераспределённая позиция
+    на 200,00: набор = {статья}, `covered` = 100,00, знаменатель = 300,00.
+    Частное 100/300 = 33,333...% — период, не представимый конечной десятичной
+    дробью НИ при каком `prec` (тот же случай, что доказывает соседний тест на
+    `Inexact`-ловушку, только здесь через полный `get_project_passport`, чтобы
+    проверить фактическое поле ответа, а не внутренний вызов). Без квантования
+    в ответ уехало бы 100-символьное число ставки на явном `_RATE_CONTEXT`; с
+    квантованием (тот же приём, что `unit_rate`, §2.10) — ровно `33.33`.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6")
+    chapter = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+                        unit_id=m2, suggested_quantity=Decimal("10.00"),
+                        total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("100.00"))
+    _position(factories, proposal, total_cost_total=Decimal("200.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["money_share"] == Decimal("33.33")
