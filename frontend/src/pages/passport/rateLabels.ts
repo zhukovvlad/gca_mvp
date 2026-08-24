@@ -1,0 +1,53 @@
+import type { RateNote, RateState } from "@/types/domain";
+
+/**
+ * Подпись пилюли «Ставка, ₽/ед.» по `rate_state` (спека §2.5, §2.10 — задача 6
+ * плана). Текст ДОСЛОВНЫЙ: он печатается на листе, который уходит в банк, и
+ * менять его нельзя ни одним символом.
+ *
+ * `rate` не несёт подписи здесь — состояние показывает число, а не пилюлю
+ * (см. `RateColumns` в `CategoryTable.tsx`). `no_carrier` даёт `null`
+ * намеренно, а не текст: по правилу 2 §2.5 клетка остаётся ПУСТОЙ БЕЗ
+ * пометки — смета этой статьи как статьи не называет вовсе, и предупреждать
+ * не о чем. `volume_inconsistent` тоже даёт `null` здесь: у него не ОДНА
+ * подпись, а три, выбранные по `rate_note` (см. `RATE_NOTE_LABEL` ниже,
+ * решение У3 «б»).
+ *
+ * `satisfies Record<RateState, string | null>`, а не аннотация типа: новое
+ * состояние `RateState`, забытое в этой карте, обязано ронять `tsc`, а не
+ * тихо превращаться в пустую клетку на экране.
+ *
+ * Живёт в отдельном модуле, а не в `CategoryTable.tsx` (где её сначала
+ * поместил бриф задачи 6): `react-refresh/only-export-components` не
+ * позволяет файлу с экспортом компонента экспортировать что-то ещё —
+ * `just lint-frontend` иначе красный, а он часть `just ci` (ревизия
+ * координатора, гейт 3, после первого прогона задачи 6).
+ */
+export const RATE_STATE_LABEL = {
+  no_carrier: null,
+  additional_works: "дополнительные работы",
+  amount_missing: "сумма не прочитана",
+  unit_missing: "единица не прочитана",
+  unit_conflict: "единицы строк не совпадают",
+  unit_not_scalable: "не нормируется",
+  volume_missing: "объём в смете не указан",
+  volume_nonpositive: "объём не годится",
+  volume_inconsistent: null,
+  rate: null,
+} satisfies Record<RateState, string | null>;
+
+/**
+ * Три подписи `volume_inconsistent` — по `rate_note` (спека §2.10, ревизия
+ * гейта 3; решение У3 «б»). Одна подпись на все три причины была бы дефектом,
+ * от которого это решение и уходит: «смешаны» (`mixed_units`), «перебор»
+ * (`overshoot`) и «нечем проверить» (`unverifiable`, ребёнок сам без единицы)
+ * — разные факты, за которыми стоят разные действия.
+ *
+ * `satisfies Record<RateNote, string>` — четвёртое значение `RateNote`,
+ * забытое здесь, обязано ронять `tsc`, а не показываться пустой пилюлей.
+ */
+export const RATE_NOTE_LABEL = {
+  overshoot: "объём не сходится",
+  mixed_units: "объём смешан",
+  unverifiable: "сходимость не проверить",
+} satisfies Record<RateNote, string>;

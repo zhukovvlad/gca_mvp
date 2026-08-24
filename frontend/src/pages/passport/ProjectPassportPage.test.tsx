@@ -1589,6 +1589,14 @@ describe("Паспорт проекта: кольцо структуры", () =>
           own_rows_not_finite: 0,
           extras: [],
           own_sections: [],
+          // Поля задачи 6 плана здесь не участвуют в проверке этого теста
+          // (легенда кольца, не колонки объёма/ставки) — no_carrier — тот же
+          // выбор, что у большинства узлов sampleProjectPassport.
+          unit: null,
+          volume: null,
+          unit_rate: null,
+          rate_state: "no_carrier",
+          rate_note: null,
         },
       ],
     };
