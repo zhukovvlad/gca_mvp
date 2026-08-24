@@ -678,6 +678,67 @@ def test_a_negative_denominator_is_out_of_range_before_the_division(
     assert passport["rate_coverage"]["money_share_state"] == "out_of_range"
 
 
+def test_out_of_range_survives_a_share_the_quantizer_cannot_represent(
+    db_session, factories
+):
+    """DoD 32 (§2.8): проверка диапазона обязана отвергнуть долю ДО того, как
+    квантование получит шанс на ней упасть, а не после.
+
+    `quantize_money` — не «вернуть неверное число», а `Decimal.quantize` под
+    явным `_RATE_CONTEXT` (`prec = 100`): на результате, которому не хватает
+    разрядов контекста, ОН БРОСАЕТ `decimal.InvalidOperation`. Если бы
+    проверка диапазона (проверка 4) смотрела на РЕЗУЛЬТАТ квантования вместо
+    того, чтобы предшествовать ему, — эта строка паспорта не отвечала бы
+    `out_of_range`, а уронила бы всё чтение паспорта исключением.
+
+    Фикстура строит именно такую долю, оставаясь при этом чистой Decimal-
+    арифметикой без единого округления по пути (`position_items.total_cost_
+    total` не несёт `CHECK` ни на знак, ни на величину — открытый хвост Ф4,
+    которым и пользуется этот случай). Статья 6 — единственный носитель
+    (набор из одного элемента), её собственная позиция несёт 10²⁰⁰ — это и
+    есть числитель `covered`. Четыре статьи ВНЕ набора (7-10, у них нет
+    носителя — обычные позиции без `smr_article_raw`) гасят его каскадом:
+    каждая несёт РОВНО разницу двух соседних степеней десяти (10²⁰⁰-10¹⁷²,
+    10¹⁷²-10¹⁴⁴, 10¹⁴⁴-10¹¹⁶, 10¹¹⁶-10⁸⁸) — то есть ровно 28 значащих цифр,
+    ни одной цифрой больше предела точности АМБИЕНТНОГО контекста Python вне
+    `_RATE_CONTEXT` (`prec = 28` по умолчанию), в котором эти суммы складывает
+    остальной код паспорта. Поэтому ни одна сумма по пути не округляется —
+    каждая разность «10²⁰⁰ минус 28 девяток» посчитана РОВНО, а не приближённо. Итог
+    паспорта после каскада — 10⁸⁸ (`grand_total`), доля — `covered /
+    grand_total * 100` = 10¹¹⁴ %: чтобы квантовать такое число до сотых,
+    нужно свыше сотни значащих цифр — ровно то, чего `prec = 100` не даёт.
+
+    Порядок статей в наборе `roots` определяет `sort_order` справочника
+    (6 < 7 < 8 < 9 < 10), а не порядок вставки фикстуры — `build_tree`
+    сортирует корни сама, и каскад складывается в ТОМ порядке, для которого
+    он посчитан.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+
+    article = _category(db_session, "6")
+    carrier = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+                       unit_id=m2, suggested_quantity=Decimal("10.00"),
+                       total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, chapter=carrier, total_cost_total=Decimal(10) ** 200)
+
+    cascade = (
+        ("7", Decimal(10) ** 200 - Decimal(10) ** 172),
+        ("8", Decimal(10) ** 172 - Decimal(10) ** 144),
+        ("9", Decimal(10) ** 144 - Decimal(10) ** 116),
+        ("10", Decimal(10) ** 116 - Decimal(10) ** 88),
+    )
+    for code, gap in cascade:
+        outside = _category(db_session, code)
+        outside_chapter = _chapter(factories, proposal, category_id=outside.id,
+                                   unit_id=m2, suggested_quantity=Decimal("5.00"))
+        _position(factories, proposal, chapter=outside_chapter, total_cost_total=-gap)
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["money_share"] is None
+    assert passport["rate_coverage"]["money_share_state"] == "out_of_range"
+
+
 def test_a_partial_article_total_does_not_kill_the_money_share(db_session, factories):
     """DoD 33. Внутри статьи со ставкой одна позиция БЕЗ суммы
     (`total_cost_total = None`): итог статьи частичный, `rows_priced < rows`.
