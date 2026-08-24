@@ -19,13 +19,14 @@ import type {
   Decimal,
   ProjectPassport,
   ProjectPassportCategory,
+  ProjectPassportRateCoverage,
   ProjectPassportSection,
   ProjectPassportUnallocated,
   RateNote,
   RateState,
 } from "@/types/domain";
 
-import { RATE_NOTE_LABEL, RATE_STATE_LABEL } from "./rateLabels";
+import { RATE_COVERAGE_LABEL, RATE_NOTE_LABEL, RATE_STATE_LABEL } from "./rateLabels";
 import { UnallocatedPanel } from "./UnallocatedPanel";
 
 /**
@@ -376,6 +377,43 @@ function unallocatedCaption(unallocated: ProjectPassportUnallocated): string {
   return rest.length === 0
     ? base
     : `${base}; ${rest.map((cause) => `отдельно — ${cause}`).join("; ")}`;
+}
+
+/**
+ * Согласование числа для строки охвата (спека §2.8, DoD 34): оба числа, N и M,
+ * стоят после предлога «у» в родительном падеже — родительный ед.ч. «статьи»
+ * против родительного мн.ч. «статей». Формам «2-4», которые в счётной позиции
+ * получили бы отдельный вид (ср. `unallocatedCaption` выше), тут взяться не с
+ * чего: здесь не счётная позиция. Без этого помощника документ, уходящий в
+ * банк, напечатал бы «у 1 статей».
+ */
+function articlesWord(n: number): string {
+  return n % 10 === 1 && n % 100 !== 11 ? "статьи" : "статей";
+}
+
+/**
+ * Строка охвата под таблицей статей (спека §2.8, DoD 25, 32-34; задача 7
+ * плана). Подпись выбирается СТРОГО по `money_share_state` — `RATE_COVERAGE_LABEL`
+ * (`./rateLabels`) несёт пять шаблонов, по одному на состояние; здесь только
+ * подстановка K/N/M/A. Ветвиться по `money_share === null` нельзя: под `null`
+ * живут три разных факта, и один выбор подписи на все три был бы ложным в
+ * двух случаях из трёх (см. докстроку карты).
+ */
+function rateCoverageCaption(coverage: ProjectPassportRateCoverage): string {
+  const { articles_with_rate: n, articles_total: m, money_share, money_share_state } = coverage;
+  const template = RATE_COVERAGE_LABEL[money_share_state];
+  // Проверка `null` здесь — только подсказка типов для `formatSharePercent`
+  // (её сигнатура берёт `string`, не `string | null`): какой шаблон печатать,
+  // уже решено строкой выше, по состоянию. По контракту (`domain.ts`)
+  // `money_share` не `null` ровно в состояниях `complete`/`partial` — то есть
+  // ровно там, где шаблон несёт `{K}`; в остальных шаблонах `{K}` нет, и ветка
+  // `""` в них не используется.
+  const k = money_share === null ? "" : formatSharePercent(money_share);
+  return template
+    .replace("{K}", k)
+    .replace("{N}", String(n))
+    .replace("{M}", String(m))
+    .replace("{A}", articlesWord(n));
 }
 
 function ExpandToggle({
@@ -863,6 +901,23 @@ export function CategoryTable({
           </TableRow>
         </TableBody>
       </Table>
+
+      {/*
+        Строка охвата (спека §2.8, задача 7 плана) — ПЕЧАТАЕТСЯ (без
+        `data-print="hide"`): без неё печатный лист читается как полный свод
+        расценок, а он не полный — в таблице выше показаны крупнейшие статьи,
+        полный свод в самом паспорте. Стоит всегда, в том числе когда ставок
+        нет ни одной (два договора стенда, DoD 25) — не подчинена развороту
+        дерева и не читает `expandedIds`: число ставок, ВИДИМЫХ на экране,
+        сюда не выносится (§2.8), только серверные `articles_with_rate` и
+        `articles_total`.
+      */}
+      <p
+        data-testid="rate-coverage"
+        className="border-t border-border-subtle px-6 py-2 text-2xs text-fg-tertiary"
+      >
+        {rateCoverageCaption(passport.rate_coverage)}
+      </p>
 
       {/*
         Печатная сноска (задача 9, спека §2.10) — называет ЧИСЛО действующих

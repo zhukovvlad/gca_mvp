@@ -5,11 +5,11 @@ import { Route, Routes } from "react-router-dom";
 import { http, HttpResponse } from "msw";
 
 import ProjectPassportPage from "./ProjectPassportPage";
-import { RATE_NOTE_LABEL, RATE_STATE_LABEL } from "./rateLabels";
+import { RATE_COVERAGE_LABEL, RATE_NOTE_LABEL, RATE_STATE_LABEL } from "./rateLabels";
 import { sampleProjectPassport } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
-import type { ProjectPassport, RateNote } from "@/types/domain";
+import type { MoneyShareState, ProjectPassport, RateNote } from "@/types/domain";
 
 /**
  * Три новые колонки таблицы статей — единица, объём, ставка ₽/ед. (спека
@@ -176,5 +176,172 @@ describe("Таблица статей: единица, объём, ставка 
     const cell = panelRow.querySelector("td");
     expect(cell).not.toBeNull();
     expect((cell as HTMLTableCellElement).colSpan).toBe(8);
+  });
+});
+
+/**
+ * Строка охвата под таблицей статей (спека 2026-08-24, §2.8; план, задача 7).
+ *
+ * `RATE_COVERAGE_LABEL` (`./rateLabels`) импортируется, а не переписывается
+ * здесь списком (та же причина, что у `ALL_RATE_CAPTIONS` выше): проверки
+ * DoD 32-34 читают саму карту, а не её копию.
+ */
+describe("Строка охвата под таблицей статей (§2.8)", () => {
+  it("непустой охват несёт K, N и M дословно (фикстура стенда: complete, N=1, M=11)", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const coverage = await screen.findByTestId("rate-coverage");
+    expect(coverage.textContent).toBe(
+      "Покрыто 10,64 % цены договора — ставка есть у 1 статьи из 11 в неперекрывающемся наборе."
+    );
+  });
+
+  describe("RATE_COVERAGE_LABEL: пять состояний — пять подписей (DoD 32, 33, 34)", () => {
+    const states = Object.keys(RATE_COVERAGE_LABEL) as MoneyShareState[];
+
+    it.each(states)("%s несёт собственный непустой текст", (state) => {
+      expect(RATE_COVERAGE_LABEL[state].length).toBeGreaterThan(0);
+    });
+
+    it("подписи всех пяти состояний различны дословно", () => {
+      const captions = states.map((state) => RATE_COVERAGE_LABEL[state]);
+      expect(new Set(captions).size).toBe(states.length);
+    });
+
+    it("partial несёт оговорку «по известным суммам» (DoD 33)", () => {
+      expect(RATE_COVERAGE_LABEL.partial).toContain("По известным суммам");
+    });
+
+    it("out_of_range несёт «суммы сметы требуют проверки» и НЕ несёт «итог паспорта неизвестен» (DoD 32)", () => {
+      expect(RATE_COVERAGE_LABEL.out_of_range).toContain("суммы сметы требуют проверки");
+      expect(RATE_COVERAGE_LABEL.out_of_range).not.toContain("итог паспорта неизвестен");
+    });
+
+    it("no_articles не называет ни N, ни M", () => {
+      expect(RATE_COVERAGE_LABEL.no_articles).not.toMatch(/\{N\}|\{M\}/);
+    });
+  });
+
+  describe("DoD 25 — два случая по отдельности (склейка была дефектом прежней редакции)", () => {
+    it("набор непуст, ставок нет, суммы полные (complete) → печатает «покрыто 0,00 %» и называет M = 1", async () => {
+      withPassport((base) => ({
+        ...base,
+        rate_coverage: {
+          articles_with_rate: 0,
+          articles_total: 1,
+          money_share: "0",
+          money_share_state: "complete",
+        },
+      }));
+      renderPassport();
+      await screen.findByText("ГП-0212");
+
+      const coverage = await screen.findByTestId("rate-coverage");
+      expect(coverage.textContent).toBe(
+        "Покрыто 0,00 % цены договора — ставка есть у 0 статей из 1 в неперекрывающемся наборе."
+      );
+    });
+
+    it("набор пуст (no_articles) → подпись про отсутствие названных статей, ни N, ни M не названы", async () => {
+      withPassport((base) => ({
+        ...base,
+        rate_coverage: {
+          articles_with_rate: 0,
+          articles_total: 0,
+          money_share: null,
+          money_share_state: "no_articles",
+        },
+      }));
+      renderPassport();
+      await screen.findByText("ГП-0212");
+
+      const coverage = await screen.findByTestId("rate-coverage");
+      expect(coverage.textContent).toBe("В смете нет названных статей классификатора — охват не определён.");
+      expect(coverage.textContent).not.toMatch(/\d/);
+    });
+  });
+
+  it.each([
+    {
+      money_share_state: "total_unavailable" as MoneyShareState,
+      articles_with_rate: 3,
+      articles_total: 7,
+      expected:
+        "Ставка есть у 3 статей из 7 в неперекрывающемся наборе; доля цены договора не определена — итог паспорта неизвестен.",
+    },
+    {
+      money_share_state: "out_of_range" as MoneyShareState,
+      articles_with_rate: 2,
+      articles_total: 5,
+      expected:
+        "Ставка есть у 2 статей из 5 в неперекрывающемся наборе; доля цены договора не определена — суммы сметы требуют проверки.",
+    },
+    {
+      money_share_state: "no_articles" as MoneyShareState,
+      articles_with_rate: 0,
+      articles_total: 0,
+      expected: "В смете нет названных статей классификатора — охват не определён.",
+    },
+  ])(
+    "$money_share_state с money_share: null не печатает процента — проверка по состоянию, не по null",
+    async ({ money_share_state, articles_with_rate, articles_total, expected }) => {
+      withPassport((base) => ({
+        ...base,
+        rate_coverage: {
+          articles_with_rate,
+          articles_total,
+          money_share: null,
+          money_share_state,
+        },
+      }));
+      renderPassport();
+      await screen.findByText("ГП-0212");
+
+      const coverage = await screen.findByTestId("rate-coverage");
+      expect(coverage.textContent).toBe(expected);
+      expect(within(coverage).queryByText(/%/)).not.toBeInTheDocument();
+    }
+  );
+
+  it.each([
+    { n: 1, word: "статьи" },
+    { n: 2, word: "статей" },
+  ])("согласование числа: articles_with_rate $n → «у $n $word»", async ({ n, word }) => {
+    withPassport((base) => ({
+      ...base,
+      rate_coverage: {
+        articles_with_rate: n,
+        articles_total: 9,
+        money_share: "40",
+        money_share_state: "complete",
+      },
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const coverage = await screen.findByTestId("rate-coverage");
+    expect(coverage.textContent).toContain(`у ${n} ${word} из 9`);
+  });
+
+  it("строка не несёт data-print=\"hide\" — печатное обещание §2.8", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+
+    const coverage = await screen.findByTestId("rate-coverage");
+    expect(coverage.getAttribute("data-print")).not.toBe("hide");
+  });
+
+  it("число раскрытых ставок на экране не попадает в строку: разворот узла «01» не меняет её текст ни на символ", async () => {
+    renderPassport();
+    await screen.findByText("ГП-0212");
+    const coverage = await screen.findByTestId("rate-coverage");
+    const before = coverage.textContent;
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 01" }));
+    await screen.findByTestId("unit-cat-01.01");
+
+    expect(coverage.textContent).toBe(before);
   });
 });
