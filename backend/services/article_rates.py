@@ -33,6 +33,7 @@ from decimal import (
     Overflow,
     localcontext,
 )
+from enum import StrEnum
 
 from money.vat import AmountStatus, restate_gross
 from parser.summary_block import ARITHMETIC_PRECISION
@@ -134,4 +135,188 @@ def fold_carrier_rows(rows: Sequence[CarrierRow], effective_rate: Decimal | None
         volume=volume,
         volume_missing=volume_missing,
         volume_nonpositive=volume_nonpositive,
+    )
+
+
+class RateState(StrEnum):
+    """Состояние ставки статьи — исчерпывающий автомат с приоритетом (§2.5),
+    ровно тот же список, что несёт контракт ответа (§2.10)."""
+
+    NO_CARRIER = "no_carrier"
+    ADDITIONAL_WORKS = "additional_works"
+    AMOUNT_MISSING = "amount_missing"
+    UNIT_MISSING = "unit_missing"
+    UNIT_CONFLICT = "unit_conflict"
+    UNIT_NOT_SCALABLE = "unit_not_scalable"
+    VOLUME_MISSING = "volume_missing"
+    VOLUME_NONPOSITIVE = "volume_nonpositive"
+    VOLUME_INCONSISTENT = "volume_inconsistent"
+    RATE = "rate"
+
+
+class RateNote(StrEnum):
+    """Уточнение для `RateState.VOLUME_INCONSISTENT`, иначе `None` (§2.4, §2.10).
+
+    Третье значение, `UNVERIFIABLE`, заведено ревизией У3 варианта «б»: ребёнок
+    без прочитанной единицы (`unit_missing` либо `unit_conflict` в его свёртке)
+    не несёт единицы узла, и сходимость по нему проверить нечем — но подпись
+    `MIXED_UNITS` утверждала бы про него ложное (единица не «отличается», она
+    неизвестна). Два состояния под одним значением — тот самый дефект
+    `docs/insights/one-value-two-states.md`, поэтому подпись отдельная.
+    """
+
+    OVERSHOOT = "overshoot"
+    MIXED_UNITS = "mixed_units"
+    UNVERIFIABLE = "unverifiable"
+
+
+#: Допуск сходимости на одно слагаемое (§2.4): объёмы в смете округлены до
+#: сотых, и допуск накапливается по числу слагаемых — `ε = TOLERANCE_PER_SUMMAND
+#: * n`. Порог выбран рассуждением, а не замером (§4): на стенде сходимость
+#: точная и допуск ни разу не понадобился.
+TOLERANCE_PER_SUMMAND: Decimal = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class ArticleRate:
+    """Итог автомата состояния для одного узла свода статей (§2.5, §2.10).
+
+    `volume` и `unit_rate` — `None` во всех состояниях, кроме `RateState.RATE`;
+    `unit` — символ единицы (`fold.unit_symbol`), когда он известен, независимо
+    от состояния (уточнение У2); `note` — не `None` только при
+    `RateState.VOLUME_INCONSISTENT`.
+    """
+
+    state: RateState
+    note: RateNote | None
+    unit: str | None
+    volume: Decimal | None
+    unit_rate: Decimal | None
+
+
+def convergence_note(fold: ArticleFold, children: Sequence[ArticleFold]) -> RateNote | None:
+    """Проверка сходимости объёма узла с объёмами детей (§2.4), три проверки
+    строго в этом порядке — арифметика последней, потому что при смешении
+    единиц она бессмысленна:
+
+    1. **Смешение.** Ребёнок с ИЗВЕСТНОЙ единицей, отличной от единицы узла,
+       делает объём узла непроверяемым — величины разных единиц не складываются
+       нигде, ни здесь, ни в диагностике.
+    2. **Непроверяемость** (уточнение У3, вариант «б»). Ребёнок без прочитанной
+       единицы (`unit_code is None`) не несёт единицы узла и складывать его
+       объём с объёмами братьев нельзя — не потому, что она отличается, а
+       потому, что она не известна. Порядок 1 перед 2 намеренный: определённая
+       находка полезнее отсутствия сведений, а узел гасится в обоих случаях
+       одинаково — различается только подпись.
+    3. **Арифметика.** Сумма объёмов детей `S`, допуск `ε = TOLERANCE_PER_SUMMAND
+       * n`; перебор (`S > P + ε`) гасит ставку узла, недобор и равенство —
+       норма (не все дети несут код статьи).
+
+    Пустой `children` — сразу `None`: без детей сходимость не проверяема и не
+    нужна. Сумма считается внутри `localcontext(_RATE_CONTEXT)`, как и вся
+    арифметика фичи (Global Constraint 16).
+    """
+    if not children:
+        return None
+
+    if any(child.unit_code is not None and child.unit_code != fold.unit_code for child in children):
+        return RateNote.MIXED_UNITS
+
+    if any(child.unit_code is None for child in children):
+        return RateNote.UNVERIFIABLE
+
+    with localcontext(_RATE_CONTEXT):
+        total = Decimal(0)
+        for child in children:
+            total += child.volume
+        epsilon = TOLERANCE_PER_SUMMAND * len(children)
+        if total > fold.volume + epsilon:
+            return RateNote.OVERSHOOT
+
+    return None
+
+
+def resolve_rate(
+    fold: ArticleFold, *, has_extras: bool, children: Sequence[ArticleFold]
+) -> ArticleRate:
+    """Автомат состояния ставки статьи (§2.5) — линейная цепочка проверок в
+    порядке контракта, первое совпадение выигрывает всегда: порядок здесь
+    ЕСТЬ правило, а не деталь реализации (§2.10, DoD 15, DoD 16).
+
+    Проверки 1 и 2 (`additional_works`, `no_carrier`) взаимоисключающи: узел
+    либо несёт строку с кодом (`fold.rows > 0`), либо нет. Оговорка «нет
+    допработ» (`and has_extras`) внутри условия первой проверки — единственное,
+    что отличает «допработы есть, носителя нет» от «смета статью не называет
+    вовсе»; она выражена именно оговоркой, а не порядком, и переставить эти две
+    проверки местами не изменило бы ничего, раз их условия не пересекаются.
+    DoD 7 снимает поэтому оговорку, а не порядок.
+
+    Смешение единиц детей (проверка 9, `convergence_note`) ловится ПРЕДИКАТОМ
+    по кодам единиц, а не арифметическим сравнением суммы объёмов с объёмом
+    узла: сумма разноразмерных величин не имеет смысла, и её числовое совпадение
+    с объёмом узла было бы случайным — при другом числе комплектов узел получил
+    бы ставку молча. Цена этого решения — узел с любым разноединичным ребёнком
+    ставки не получает, даже если его собственный объём указан верно (§2.4).
+    """
+    if fold.rows == 0 and has_extras:
+        return ArticleRate(
+            state=RateState.ADDITIONAL_WORKS, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if fold.rows == 0:
+        return ArticleRate(
+            state=RateState.NO_CARRIER, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if not fold.amount_ok:
+        return ArticleRate(
+            state=RateState.AMOUNT_MISSING, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if fold.unit_missing:
+        return ArticleRate(
+            state=RateState.UNIT_MISSING, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if fold.unit_conflict:
+        return ArticleRate(
+            state=RateState.UNIT_CONFLICT, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if not is_scalable_unit(fold.unit_code):
+        return ArticleRate(
+            state=RateState.UNIT_NOT_SCALABLE, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if fold.volume_missing:
+        return ArticleRate(
+            state=RateState.VOLUME_MISSING, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+    if fold.volume_nonpositive:
+        return ArticleRate(
+            state=RateState.VOLUME_NONPOSITIVE, note=None,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+
+    note = convergence_note(fold, children)
+    if note is not None:
+        return ArticleRate(
+            state=RateState.VOLUME_INCONSISTENT, note=note,
+            unit=fold.unit_symbol, volume=None, unit_rate=None,
+        )
+
+    # Проверки выше уже гарантируют конечный числитель (`amount_ok`) и строго
+    # положительный конечный знаменатель (не `volume_missing`, не
+    # `volume_nonpositive`) — трапы `_RATE_CONTEXT` здесь недостижимы, они стоят
+    # утверждением, а не обработкой. Ambient-контекст нельзя: он приходит с
+    # чужими трапами, и включённый где-то `Inexact` превратил бы штатное деление
+    # в исключение — а частное почти никогда представимо конечной дробью.
+    # Округление не здесь: его делает граница ответа, за пределами этого модуля.
+    with localcontext(_RATE_CONTEXT):
+        unit_rate = fold.amount / fold.volume
+
+    return ArticleRate(
+        state=RateState.RATE, note=None,
+        unit=fold.unit_symbol, volume=fold.volume, unit_rate=unit_rate,
     )
