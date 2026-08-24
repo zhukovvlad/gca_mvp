@@ -172,6 +172,46 @@ def test_a_row_nested_inside_the_same_article_is_excluded(db_session, factories)
     assert fold.amount / fold.volume == Decimal("100")
 
 
+def test_a_row_nested_through_a_codeless_section_of_the_same_article_is_excluded(
+    db_session, factories
+):
+    """DoD 4, вариант через раздел без кода (§2.3): между двумя носителями
+    статьи A стоит промежуточный раздел, у которого нет СВОЕЙ статьи вовсе
+    (`work_category_id IS NULL`, `category_source IS NULL` — оба поля пусты
+    одновременно, как того требует `ck_position_items_category_source_pairs`;
+    `_chapter` без `category_id` даёт ровно это). Цепочка предков внутреннего
+    носителя идёт inner → промежуточный → outer, и промежуточный НЕ несёт кода
+    статьи — если бы подъём строился только по строкам-носителям, а не по всем
+    разделам, эта цепочка обрывалась бы на промежуточном узле и внутренний
+    носитель остался бы не исключённым.
+
+    Объём и сумма внутреннего носителя подобраны НЕ пропорционально внешнему
+    (2,00 и 500,00 против 10,00 и 1000,00) — той же причиной, что у соседнего
+    теста прямой вложенности: при пропорциональных числах задвоение не
+    изменило бы ставку, и тест остался бы зелёным при снятой защите.
+
+    Снятие: убрать подъём по предкам — объём станет 12,00, ставка 125,00
+    (тот же результат, что у прямой вложенности).
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6")
+    outer = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+                     unit_id=m2, suggested_quantity=Decimal("10.00"),
+                     total_cost_total=Decimal("1000.00"))
+    codeless_section = _chapter(factories, proposal, chapter_item_id=outer.id, unit_id=m2,
+                                suggested_quantity=Decimal("5.00"),
+                                total_cost_total=Decimal("500.00"))
+    _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+             chapter_item_id=codeless_section.id, unit_id=m2,
+             suggested_quantity=Decimal("2.00"), total_cost_total=Decimal("500.00"))
+
+    fold = _carrier_rows_by_category(db_session, proposal.lot.estimate_id, None)[article.id]
+    assert fold.rows == 1
+    assert fold.volume == Decimal("10.00")
+    assert fold.amount / fold.volume == Decimal("100")
+
+
 def test_a_manually_assigned_section_is_not_a_carrier(db_session, factories):
     """§2.5 состояние 2: у статьи ручного разноса строки с кодом нет вовсе
     (`smr_article_raw IS NULL`), и носителем она не становится."""
