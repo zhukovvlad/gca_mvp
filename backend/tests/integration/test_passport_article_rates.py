@@ -761,3 +761,40 @@ def test_money_share_is_quantized_to_hundredths_of_a_percent(db_session, factori
 
     passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
     assert passport["rate_coverage"]["money_share"] == Decimal("33.33")
+
+
+def test_unit_rate_computation_survives_an_inexact_trap_in_the_ambient_context(
+    db_session, factories
+):
+    """Тест на явный контекст вокруг квантования `unit_rate` (Global Constraint 16,
+    §2.10, §10 AGENTS.md).
+
+    Носитель статьи 6 несёт сумму 100,00 на объёме 300,00: частное `1/3` не
+    представимо конечной десятичной дробью НИ при каком `prec` — та же пара,
+    что доказывает соседний тест на `money_share` (100/300), только здесь
+    делится сама ставка (`fold.amount / fold.volume` в `resolve_rate`, ЕЩЁ под
+    `_RATE_CONTEXT`, без `Inexact` в его трапах) и её КВАНТОВАНИЕ на границе
+    ответа (`_category_dict`) — не деление внутри правила. Этот тест взводит
+    `Inexact` в AMBIENT-контексте ДО чтения паспорта: `quantize_money` вызывает
+    `Decimal.quantize`, который сам по себе округляющая операция и взводит
+    `Inexact` на неконечном значении, а `money_round` (`finance.py`) не
+    подставляет свой контекст — трап ловит АМБИЕНТНЫЙ вызывающий. Без
+    `localcontext(_RATE_CONTEXT)` вокруг этого вызова в `_category_dict` тест
+    падает `decimal.Inexact`; с ним — контекст квантования свежий, трапов
+    `Inexact` не несёт, и ответ приходит с `unit_rate = 0.33` (округление
+    ROUND_HALF_UP периода 0,333... до сотых).
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6")
+    _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+              unit_id=m2, suggested_quantity=Decimal("300.00"),
+              total_cost_total=Decimal("100.00"))
+
+    with decimal.localcontext() as ctx:
+        ctx.traps[decimal.Inexact] = True
+        passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+
+    node = next(n for n in passport["categories"] if n["code"] == "6")
+    assert node["rate_state"] == "rate"
+    assert node["unit_rate"] == Decimal("0.33")

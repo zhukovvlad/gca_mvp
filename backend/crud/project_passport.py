@@ -762,6 +762,20 @@ def _category_dict(
 ) -> dict:
     ref = node.ref
     rate = rates.get(ref.id, _NO_ESTIMATE_RATE)
+    # `unit_rate` квантуется ПОД явным `localcontext(_RATE_CONTEXT)` (Global
+    # Constraint 16 этой фичи: квантование — арифметика, `Decimal.quantize`
+    # выполняет округление и на неконечном частном взводит `Inexact`), а не в
+    # унаследованном ambient-контексте вызывающего, как три поля ниже (`total`,
+    # `own`, `per_sqm` через `_quantize_if_restated`). Различие НАМЕРЕННОЕ и
+    # обратного знака: те три поля — существующие поля ответа непересчитанной
+    # сметы, и тождество §10 AGENTS.md запрещает трогать их контекст —
+    # квантование в другом контексте изменило бы их байты. `unit_rate` этой
+    # фичей и заводится, дофичевой формы не имеет, и Global Constraint 16
+    # требует явного контекста для ВСЕЙ её арифметики, включая округление
+    # результата. Не "выравнивать" эти четыре строки друг под друга ни в одну
+    # сторону — несогласованность здесь прямое следствие §10, а не недосмотр.
+    with localcontext(_RATE_CONTEXT):
+        quantized_unit_rate = quantize_money(rate.unit_rate)
     return {
         "id": ref.id,
         "code": ref.code,
@@ -791,7 +805,7 @@ def _category_dict(
         # бы почти никогда не конечное частное.
         "unit": rate.unit,
         "volume": rate.volume,
-        "unit_rate": quantize_money(rate.unit_rate),
+        "unit_rate": quantized_unit_rate,
         "rate_state": rate.state.value,
         "rate_note": rate.note.value if rate.note else None,
     }
