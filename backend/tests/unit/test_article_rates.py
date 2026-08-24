@@ -95,6 +95,7 @@ def test_missing_unit_is_not_the_same_as_conflicting_units():
     missing = fold_carrier_rows([_row(unit_code=None, unit_symbol=None)], effective_rate=None)
     assert (missing.unit_missing, missing.unit_conflict) == (True, False)
     assert missing.unit_code is None
+    assert missing.unit_symbol is None
 
     conflict = fold_carrier_rows(
         [_row(unit_code="M2", unit_symbol="м²"), _row(unit_code="M3", unit_symbol="м³")],
@@ -102,6 +103,7 @@ def test_missing_unit_is_not_the_same_as_conflicting_units():
     )
     assert (conflict.unit_missing, conflict.unit_conflict) == (False, True)
     assert conflict.unit_code is None
+    assert conflict.unit_symbol is None
 
 
 def test_amount_is_restated_row_by_row_before_any_division():

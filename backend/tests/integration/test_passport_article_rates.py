@@ -253,6 +253,67 @@ def test_a_manually_assigned_section_is_not_a_carrier(db_session, factories):
     assert _carrier_rows_by_category(db_session, proposal.lot.estimate_id, None) == {}
 
 
+def test_convergence_uses_only_direct_children_not_all_descendants(db_session, factories):
+    """§2.4, §2.5 — фикс финального ревью: `_article_rates` (`crud/project_
+    passport.py`) обязан передавать в `resolve_rate` ПРЯМЫХ детей узла, а не
+    всех потомков; спека говорит «дети», и пропущенный внук недобора не
+    портит (§2.4). Ни один из существующих тестов файла не различает эти два
+    правила — все фикстуры родитель→ребёнок здесь двухуровневые, поэтому
+    рефакторинг на «все потомки» прошёл бы 2000+ тестов зелёным, молча сменив
+    семантику перебора.
+
+    Дерево классификатора: P = "6" (корень), прямой ребёнок C = "6.1", внук
+    G = "6.1.1" — ребёнок C, а НЕ P. У каждого свой носитель со своим объёмом,
+    без вложенности строк сметы друг в друга (`chapter_item_id` не выставлен
+    ни у одной из трёх строк) — значит объёмы никак не связаны структурой
+    файла, только структурой классификатора.
+
+    Арифметика (по инструкции: ε = 0,01 × n, n — число слагаемых):
+
+    - объём P = 10,00; объём C = 10,00; объём G = 5,00 (все — м²).
+    - **Правило прямых детей (верное, §2.4):** дети P в дереве классификатора
+      — ТОЛЬКО C (G — ребёнок C, не P). S = 10,00, n = 1, ε = 0,01 × 1 = 0,01.
+      S = 10,00 ≤ P + ε = 10,01 → недобор, ставка P жива.
+    - **Правило всех потомков (неверное, гипотетическое):** дети P — C и G.
+      S = 10,00 + 5,00 = 15,00, n = 2, ε = 0,01 × 2 = 0,02. S = 15,00 >
+      P + ε = 10,02 → перебор, `volume_inconsistent`/`overshoot`, ставки нет.
+
+    Разница не может быть случайной: 15,00 превышает порог 10,02 почти на
+    50 %, а не на сотые доли — никакое округление допуска её не стирает.
+
+    Видимость C и G в дереве паспорта (`build_tree`) для этой проверки не
+    нужна: свёртка родителя читает `folds` по ВСЕМ строкам-носителям сметы
+    независимо от того, показывает ли паспорт узел ребёнка (докстрока
+    `_article_rates`), поэтому фикстура не даёт им собственных позиций —
+    только P обязан быть виден, а он виден как корень классификатора всегда.
+
+    Снятие защиты (для проверки самой фикстуры, не автоматическое): заменить
+    `children_by_parent`, построенный из прямых `ref.parent_id`, на подъём по
+    всем потомкам — этот тест покраснеет числом `unit_rate = None` и
+    состоянием `volume_inconsistent` вместо `100`/`rate`.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    parent = _category(db_session, "6")
+    child = _category(db_session, "6.1")
+    grandchild = _category(db_session, "6.1.1")
+
+    _chapter(factories, proposal, category_id=parent.id, smr_article_raw="6",
+             unit_id=m2, suggested_quantity=Decimal("10.00"),
+             total_cost_total=Decimal("1000.00"))
+    _chapter(factories, proposal, category_id=child.id, smr_article_raw="6.1",
+             unit_id=m2, suggested_quantity=Decimal("10.00"),
+             total_cost_total=Decimal("500.00"))
+    _chapter(factories, proposal, category_id=grandchild.id, smr_article_raw="6.1.1",
+             unit_id=m2, suggested_quantity=Decimal("5.00"),
+             total_cost_total=Decimal("250.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(n for n in passport["categories"] if n["code"] == "6")
+    assert node["rate_state"] == "rate"
+    assert Decimal(node["unit_rate"]) == Decimal("100")
+
+
 # ---------------------------------------------------------------------------
 #  Пять полей ставки на каждом узле свода (§2.2-§2.5, §2.10, задача 4)
 # ---------------------------------------------------------------------------

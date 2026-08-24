@@ -1432,10 +1432,21 @@ def _rate_coverage(
     # Статья исключена из набора, если у неё есть хотя бы один ПОТОМОК с
     # носителем: помечаем всех ПРЕДКОВ каждого носителя, поднимаясь по
     # `parent_of` до корня — эти предки антицепь не составляют.
+    #
+    # Подъём ограничен счётчиком шагов, той же защитой и по тому же доводу,
+    # что подъём по предкам в `_carrier_rows_by_category._shadowed_by_same_
+    # article_ancestor`: обе функции ходят по `parent_id`/`chapter_item_id`
+    # вверх по дереву, которое схема не защищает от цикла ДЛИННЕЕ одного шага
+    # (`ck_work_categories_not_self_parent` запрещает только самозамыкание), а
+    # чтение паспорта не имеет права зависнуть, если это когда-то перестанет
+    # быть так. Само вычисление (какие узлы затенены) счётчик не меняет.
     shadowed: set[int] = set()
+    step_limit = len(id_to_node)
     for carrier_id in carrier_ids:
         ancestor = parent_of.get(carrier_id)
-        while ancestor is not None:
+        for _ in range(step_limit):
+            if ancestor is None:
+                break
             shadowed.add(ancestor)
             ancestor = parent_of.get(ancestor)
 
