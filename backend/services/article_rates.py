@@ -258,46 +258,32 @@ def resolve_rate(
     бы ставку молча. Цена этого решения — узел с любым разноединичным ребёнком
     ставки не получает, даже если его собственный объём указан верно (§2.4).
     """
+
+    def _dead_end(state: RateState) -> ArticleRate:
+        """Тупиковая ветка (проверки 1–8): ставки нет, `note` нет — он есть
+        только у `VOLUME_INCONSISTENT` (проверка 9), а `volume`/`unit_rate`
+        нет ни у одной ветки, кроме `RATE` (проверка 10). `unit` — всегда
+        `fold.unit_symbol`: `fold_carrier_rows` уже гарантирует, что он `None`
+        ровно там, где единица неизвестна или конфликтна, так что отдельного
+        условия под каждое из восьми состояний не требуется."""
+        return ArticleRate(state=state, note=None, unit=fold.unit_symbol, volume=None, unit_rate=None)
+
     if fold.rows == 0 and has_extras:
-        return ArticleRate(
-            state=RateState.ADDITIONAL_WORKS, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.ADDITIONAL_WORKS)
     if fold.rows == 0:
-        return ArticleRate(
-            state=RateState.NO_CARRIER, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.NO_CARRIER)
     if not fold.amount_ok:
-        return ArticleRate(
-            state=RateState.AMOUNT_MISSING, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.AMOUNT_MISSING)
     if fold.unit_missing:
-        return ArticleRate(
-            state=RateState.UNIT_MISSING, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.UNIT_MISSING)
     if fold.unit_conflict:
-        return ArticleRate(
-            state=RateState.UNIT_CONFLICT, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.UNIT_CONFLICT)
     if not is_scalable_unit(fold.unit_code):
-        return ArticleRate(
-            state=RateState.UNIT_NOT_SCALABLE, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.UNIT_NOT_SCALABLE)
     if fold.volume_missing:
-        return ArticleRate(
-            state=RateState.VOLUME_MISSING, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.VOLUME_MISSING)
     if fold.volume_nonpositive:
-        return ArticleRate(
-            state=RateState.VOLUME_NONPOSITIVE, note=None,
-            unit=fold.unit_symbol, volume=None, unit_rate=None,
-        )
+        return _dead_end(RateState.VOLUME_NONPOSITIVE)
 
     note = convergence_note(fold, children)
     if note is not None:
