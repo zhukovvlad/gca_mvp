@@ -29,6 +29,7 @@ from models import (
     Proposal,
     ProposalSummaryLine,
     RateClass,
+    UnitOfMeasure,
     User,
     WorkCategory,
 )
@@ -46,6 +47,7 @@ from parser.constants import (
     JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
     JSON_KEY_TOTAL_COST_INCLUDING_VAT,
 )
+from services.article_rates import ArticleFold, CarrierRow, fold_carrier_rows
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -349,6 +351,129 @@ def _own_sections_by_category(db: Session, estimate_id: int) -> dict[int, list[d
             }
         )
     return by_category
+
+
+# ---------------------------------------------------------------------------
+#  Строки-носители статьи запросом (спека §2.2, §2.3). `CarrierRow`,
+#  `ArticleFold`, `fold_carrier_rows` — готовый чистый модуль `services.
+#  article_rates`, здесь только SQL и правило исключения вложенности.
+# ---------------------------------------------------------------------------
+
+def _carrier_rows_select(estimate_id: int) -> sa.Select:
+    """ВСЕ строки-разделы исходной сметы (`is_chapter = true`), а не только
+    строки-носители: цепочка предков носителя может проходить через раздел без
+    кода, и без ВСЕХ разделов её не построить (§2.3).
+
+    `COALESCE(estimates.vat_rate_base_override, proposals.vat_rate)` — та же
+    парная граница с `v_category_totals`, что называет `_finite_amount` выше:
+    выражение базы НДС повторяет строку 111 миграции 0012 (регруппировка
+    VIEW по предложению/базе, спека пересчёта §2.4), общего кода с ней нет и
+    быть не может — миграция застыла навсегда, и расхождение между этим
+    выражением и её строкой ловится только парностью двух докстрок, вручную.
+
+    Без `ORDER BY`, и это НАМЕРЕННО отличает запрос от `_extras_select` и
+    `_own_sections_select`: там порядок строк наблюдаем клиентом (список на
+    экране паспорта), а здесь результат идёт только в свёртку `Decimal`-сумм
+    `fold_carrier_rows` — сложение `Decimal` под явным контекстом модуля
+    (`services/article_rates._RATE_CONTEXT`) не зависит от порядка слагаемых
+    ни значением, ни экспонентой, и третий явный порядок был бы отвергнутой
+    работой без предмета.
+    """
+    return (
+        sa.select(
+            PositionItem.id,
+            PositionItem.chapter_item_id,
+            PositionItem.work_category_id,
+            PositionItem.smr_article_raw,
+            PositionItem.total_cost_total.label("amount"),
+            sa.func.coalesce(
+                Estimate.vat_rate_base_override, Proposal.vat_rate
+            ).label("vat_rate_base"),
+            UnitOfMeasure.code.label("unit_code"),
+            UnitOfMeasure.symbol.label("unit_symbol"),
+            sa.func.coalesce(
+                PositionItem.suggested_quantity, PositionItem.quantity
+            ).label("volume"),
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+        .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(True))
+    )
+
+
+def _carrier_rows_by_category(
+    db: Session, estimate_id: int, effective_rate: Decimal | None
+) -> dict[int, ArticleFold]:
+    """Строки-носители статьи, свёрнутые по `work_category_id` (§2.2, §2.3;
+    DoD 1-4).
+
+    Носитель — строка-раздел, несущая И код (`smr_article_raw IS NOT NULL`),
+    И саму статью (`work_category_id IS NOT NULL`); строка ручного разноса
+    (§2.5, состояние 2) кода не несёт вовсе и носителем не становится (проверено
+    отдельным тестом, а не значением по умолчанию).
+
+    Носитель исключается из свёртки своей статьи, если у него есть
+    ПРЕДОК-НОСИТЕЛЬ ТОЙ ЖЕ статьи (DoD 4) — его деньги уже посчитаны в свёртке
+    того предка. Предикат — по `work_category_id`, а не по тексту кода: узел
+    свода ключуется статьёй, и задваивались бы именно её деньги; у носителей
+    это совпадает с равенством кодов, потому что разрешение «код → статья»
+    детерминировано. Вложенность РАЗНЫХ статей (DoD 3) деньги не задваивает —
+    предок и потомок получают ставку каждый со своей.
+
+    Подъём по предкам защищён счётчиком шагов, ограниченным числом разделов
+    сметы: схема запрещает цикл составным self-FK (`fk_position_items_chapter`),
+    но чтение паспорта не имеет права зависнуть, если это когда-то перестанет
+    быть так.
+
+    Статьи без носителя в возвращённом словаре ОТСУТСТВУЮТ — вызывающий код
+    читает через `.get(id)` и подставляет пустую свёртку.
+    """
+    rows = db.execute(_carrier_rows_select(estimate_id)).all()
+
+    # `parent` — по ВСЕМ разделам: подъём может пройти через раздел без кода.
+    # `carrier_category` — только по строкам-носителям: это и есть предикат
+    # исключения DoD 4.
+    parent: dict[int, int | None] = {row.id: row.chapter_item_id for row in rows}
+    carrier_category: dict[int, int] = {
+        row.id: row.work_category_id
+        for row in rows
+        if row.smr_article_raw is not None and row.work_category_id is not None
+    }
+    step_limit = len(rows)
+
+    def _shadowed_by_same_article_ancestor(row) -> bool:
+        current = parent.get(row.id)
+        for _ in range(step_limit):
+            if current is None:
+                return False
+            if carrier_category.get(current) == row.work_category_id:
+                return True
+            current = parent.get(current)
+        return False
+
+    by_category: dict[int, list[CarrierRow]] = defaultdict(list)
+    for row in rows:
+        if row.id not in carrier_category:
+            continue
+        if _shadowed_by_same_article_ancestor(row):
+            continue
+        by_category[row.work_category_id].append(
+            CarrierRow(
+                amount=row.amount,
+                vat_rate_base=row.vat_rate_base,
+                unit_code=row.unit_code,
+                unit_symbol=row.unit_symbol,
+                volume=row.volume,
+            )
+        )
+
+    return {
+        category_id: fold_carrier_rows(carrier_rows, effective_rate)
+        for category_id, carrier_rows in by_category.items()
+    }
 
 
 # ---------------------------------------------------------------------------
