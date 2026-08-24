@@ -10,14 +10,27 @@
 
 from __future__ import annotations
 
+import decimal
 from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
 
-from crud.project_passport import _carrier_rows_by_category, get_project_passport
+from crud.project_passport import (
+    MoneyShareState,
+    _carrier_rows_by_category,
+    _rate_coverage,
+    get_project_passport,
+)
 from models import EstimateAdditionalWork, UnitOfMeasure, WorkCategory
-from services.article_rates import NON_SCALABLE_UNIT_CODES, SCALABLE_UNIT_CODES, RateState
+from services.article_rates import (
+    NON_SCALABLE_UNIT_CODES,
+    SCALABLE_UNIT_CODES,
+    ArticleRate,
+    RateState,
+    fold_carrier_rows,
+)
+from services.category_rollup import CategoryNode, CategoryRef
 
 pytestmark = pytest.mark.integration
 
@@ -385,21 +398,341 @@ def test_the_rate_follows_the_display_axis(db_session, factories):
 
 
 def test_the_route_and_the_response_keys_of_the_feature(client, db_session, factories):
-    """DoD 27: маршрут действующий, новых нет; пять полей на месте.
-
-    `rate_coverage` не проверяется здесь — задача 5 (см. решения оркестратора)."""
+    """DoD 27: маршрут действующий, новых нет; пять полей на месте, плюс
+    `rate_coverage` на верхнем уровне ответа (задача 5, §2.10)."""
     contract = factories.ContractFactory.create()
 
     response = client.get(f"/api/v1/analytics/project-passport/{contract.id}")
     assert response.status_code == 200
-    node = response.json()["categories"][0]
+    body = response.json()
+    node = body["categories"][0]
     assert {"unit", "volume", "unit_rate", "rate_state", "rate_note"} <= node.keys()
+    assert "rate_coverage" in body
 
 
 def test_a_contract_without_an_estimate_keeps_the_same_response_shape(db_session, factories):
     """Правило 8 `get_project_passport`: форма ответа одна на оба пути функции.
 
-    `rate_coverage` не проверяется здесь — задача 5 (см. решения оркестратора)."""
+    `rate_coverage` на пути без сметы (задача 5): без знаменателя первая же
+    проверка `_rate_coverage` отдаёт `total_unavailable`, а не `no_articles` —
+    порядок проверок §2.8 ставит отсутствие итога раньше пустого набора."""
     contract = factories.ContractFactory.create()
     passport = get_project_passport(db_session, contract.id)
     assert all(n["rate_state"] == "no_carrier" for n in passport["categories"])
+    assert passport["rate_coverage"] == {
+        "articles_with_rate": 0, "articles_total": 0,
+        "money_share": None, "money_share_state": "total_unavailable",
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Охват: неперекрывающийся набор статей и доля денег (§2.8, §2.10, задача 5)
+# ---------------------------------------------------------------------------
+
+def test_articles_total_counts_the_non_overlapping_set_of_this_estimate(
+    db_session, factories
+):
+    """DoD 23: корень без носителя и две названные статьи под ним → M = 2.
+    Не число строк дерева и не размер справочника."""
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    for code in ("6.1", "6.2"):
+        chapter = _chapter(factories, proposal, category_id=_category(db_session, code).id,
+                 smr_article_raw=code, unit_id=m2,
+                 suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("1000.00"))
+        # Собственная позиция обязательна: `v_category_totals` (миграция 0010)
+        # считает только `is_chapter = false` строки, и без неё узел не набрал
+        # бы `rows > 0` — `build_tree` спрятал бы его, и он не появился бы ни
+        # в `categories`, ни в `nodes`, которыми считает `_rate_coverage`.
+        _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1.00"))
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["articles_total"] == 2
+
+
+def test_the_coverage_set_is_independent_of_how_many_rates_the_screen_shows(
+    db_session, factories
+):
+    """DoD 5: на фикстуре вложенных кодов ставок ДВЕ, а статей в наборе ОДНА.
+
+    Та же фикстура, что у DoD 3
+    (`test_an_article_nested_inside_another_article_keeps_its_own_rate`): код
+    6.1 лежит внутри строки с кодом 6, обе получают ставку (100 и 150) — но
+    6 несёт потомка-статью с носителем (6.1), и в набор охвата не входит.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    outer_cat, inner_cat = _category(db_session, "6"), _category(db_session, "6.1")
+    outer = _chapter(factories, proposal, category_id=outer_cat.id, smr_article_raw="6",
+                     unit_id=m2, suggested_quantity=Decimal("10.00"),
+                     total_cost_total=Decimal("1000.00"))
+    inner = _chapter(factories, proposal, category_id=inner_cat.id, smr_article_raw="6.1",
+                     chapter_item_id=outer.id, unit_id=m2,
+                     suggested_quantity=Decimal("4.00"), total_cost_total=Decimal("600.00"))
+    # Обе статьи обязаны иметь СОБСТВЕННУЮ позицию (не только строку-носитель):
+    # `v_category_totals` считает только `is_chapter = false` строки (миграция
+    # `0010`), и без этого узел не набрал бы `rows > 0` и не попал бы в
+    # видимое дерево паспорта (`build_tree`) вовсе — тогда на экране не было
+    # бы ни одной из двух ставок, которые проверяет этот тест.
+    _position(factories, proposal, chapter=outer, total_cost_total=Decimal("1.00"))
+    _position(factories, proposal, chapter=inner, total_cost_total=Decimal("1.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert len([n for n in passport["categories"] if n["rate_state"] == "rate"]) == 2
+    assert passport["rate_coverage"]["articles_total"] == 1
+    assert passport["rate_coverage"]["articles_with_rate"] == 1
+
+
+def test_money_share_never_exceeds_a_hundred_on_nested_codes(db_session, factories):
+    """DoD 24. Фикстура: раздел с кодом 6 (носитель 1 000,00 / 10,00 м²), внутри
+    него раздел с кодом 6.1 (носитель 600,00 / 6,00 м²); позиции под 6 напрямую —
+    400,00, позиции под 6.1 — 600,00. Итог паспорта (из позиций) = 1 000,00.
+
+    Набор = {6.1}, её `node.total` = 600,00 → K = 60. Снятие «считать по всем
+    статьям с носителем» берёт и 6, и 6.1: `node.total` шестой — итог всего её
+    поддерева, то есть 1 000,00, плюс 600,00 у 6.1 → 160 %. Деньги вложенной
+    статьи учтены дважды — на первой редакции спеки так и вышло, 110,7 %.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    outer_cat, inner_cat = _category(db_session, "6"), _category(db_session, "6.1")
+    outer = _chapter(factories, proposal, category_id=outer_cat.id, smr_article_raw="6",
+                     unit_id=m2, suggested_quantity=Decimal("10.00"),
+                     total_cost_total=Decimal("1000.00"))
+    inner = _chapter(factories, proposal, category_id=inner_cat.id, smr_article_raw="6.1",
+                     chapter_item_id=outer.id, unit_id=m2,
+                     suggested_quantity=Decimal("6.00"), total_cost_total=Decimal("600.00"))
+    _position(factories, proposal, chapter=outer, total_cost_total=Decimal("400.00"))
+    _position(factories, proposal, chapter=inner, total_cost_total=Decimal("600.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert Decimal(passport["rate_coverage"]["money_share"]) == Decimal("60")
+
+
+def test_money_share_does_not_move_when_the_display_target_changes(
+    db_session, factories
+):
+    """DoD 22: числитель и знаменатель приведены одинаково — доля инвариантна.
+    Это и есть проверка того, что ось ОДНА (§2.7).
+
+    Статья со ставкой несёт 600,00 своих позиций, «Нераспределённое» — 300,00
+    (носитель статьи 10,00 м² / 1 000,00, база НДС 20 %). Оба слагаемых —
+    кратные 3, поэтому `gross_to_net` (§2.2, `money/vat.py`) делит их НАЦЕЛО
+    и на цели показа 22 % не оставляет остатка округления по отдельным
+    строкам VIEW — иначе двойное независимое округление числителя и
+    знаменателя (задача 8, `_direct_totals`) могло бы разъехись в последнем
+    знаке `prec = 100` и превратить точное равенство в `59,999...998 != 60`.
+    """
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot = factories.LotFactory.create(estimate=estimate)
+    proposal = factories.ProposalFactory.create(
+        lot=lot, contractor=contract.contractor, vat_rate=Decimal("20"),
+    )
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6")
+    chapter = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+                        unit_id=m2, suggested_quantity=Decimal("10.00"),
+                        total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("600.00"))
+    _position(factories, proposal, total_cost_total=Decimal("300.00"))
+
+    before = get_project_passport(db_session, contract.id)
+    estimate.vat_rate_target = Decimal("22")
+    db_session.flush()
+    after = get_project_passport(db_session, contract.id)
+
+    assert before["rate_coverage"]["money_share"] is not None
+    assert Decimal(after["rate_coverage"]["money_share"]) == Decimal(
+        before["rate_coverage"]["money_share"]
+    )
+
+
+def test_money_share_is_null_when_the_share_leaves_the_zero_to_hundred_range(
+    db_session, factories
+):
+    """DoD 32. Антицепь держит границу только при неотрицательных суммах, а
+    `CHECK`-а на знак `position_items.total_cost_total` в схеме нет.
+
+    Фикстура: статья 6.1 в наборе (носитель 600,00 / 6,00 м², позиции 600,00) и
+    ВТОРАЯ статья 7 вне набора, у которой позиция несёт ОТРИЦАТЕЛЬНУЮ сумму
+    -400,00. Итог паспорта = 600,00 - 400,00 = 200,00; покрыто 600,00. Отношение
+    300 % — за диапазоном.
+
+    Ожидание — `None`, а не 300 и не срезанные 100: выход за диапазон означает
+    либо отрицательные суммы, либо ошибку построения набора, и печатать по нему
+    процент нельзя. Знак суммы фикстура задаёт прямо — это единственный способ
+    воспроизвести случай, схема его не запрещает.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6.1")
+    carrier = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6.1",
+                       unit_id=m2, suggested_quantity=Decimal("6.00"),
+                       total_cost_total=Decimal("600.00"))
+    _position(factories, proposal, chapter=carrier, total_cost_total=Decimal("600.00"))
+
+    outside = _category(db_session, "7")
+    outside_chapter = _chapter(factories, proposal, category_id=outside.id,
+                               unit_id=m2, suggested_quantity=Decimal("5.00"))
+    _position(factories, proposal, chapter=outside_chapter, total_cost_total=Decimal("-400.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["money_share"] is None
+    assert passport["rate_coverage"]["money_share_state"] == "out_of_range"
+    assert passport["rate_coverage"]["articles_with_rate"] == 1   # набор цел
+
+
+def test_a_negative_denominator_is_out_of_range_before_the_division(
+    db_session, factories
+):
+    """DoD 32, вторая фикстура — случай, который проверка ДИАПАЗОНА не ловит.
+
+    ДВЕ позиции, обе с отрицательной суммой: -50,00 под статьёй 6.1 (у неё есть
+    носитель, статья попадает в набор и получает ставку) и -50,00
+    нераспределённая, вне набора. Тогда `covered = -50,00`, а итог паспорта
+    считает обе — `grand_total = -100,00`, потому что знаменатель включает
+    «Нераспределённое» (докстрока `_share_pct`).
+
+    Отношение -50 / -100 * 100 = ровно 50 % — формально допустимый процент по
+    бессмысленным числам. Знаки сократились при делении, поэтому проверка
+    РЕЗУЛЬТАТА его пропускает: знак знаменателя обязан смотреться ДО деления
+    (проверка 3, а не 4). Вторая позиция здесь не декорация — без неё
+    `covered = grand_total` и отношение было бы 100 %, то есть тоже внутри
+    диапазона, но по совпадению, а не по механизму.
+
+    Ожидание — `out_of_range`. Фикстура задаёт знак прямо: схема его не
+    запрещает (`CHECK`-а на `total_cost_total` нет), а иначе случай недостижим.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6.1")
+    carrier = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6.1",
+                       unit_id=m2, suggested_quantity=Decimal("6.00"),
+                       total_cost_total=Decimal("600.00"))
+    _position(factories, proposal, chapter=carrier, total_cost_total=Decimal("-50.00"))
+    _position(factories, proposal, total_cost_total=Decimal("-50.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["money_share"] is None
+    assert passport["rate_coverage"]["money_share_state"] == "out_of_range"
+
+
+def test_a_partial_article_total_does_not_kill_the_money_share(db_session, factories):
+    """DoD 33. Внутри статьи со ставкой одна позиция БЕЗ суммы
+    (`total_cost_total = None`): итог статьи частичный, `rows_priced < rows`.
+
+    K обязан остаться числом. Только известные деньги считают ОБЕ части дроби —
+    ровно как все прочие доли паспорта, — поэтому доля остаётся согласованной, а
+    не становится ложной. Обратное решение (гасить K на любой непросчитанной
+    позиции) обнулило бы замеры §1.1 на живых сметах, где такие строки есть.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    article = _category(db_session, "6")
+    chapter = _chapter(factories, proposal, category_id=article.id, smr_article_raw="6",
+                        unit_id=m2, suggested_quantity=Decimal("10.00"),
+                        total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("600.00"))
+    _position(factories, proposal, chapter=chapter, total_cost_total=None)
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"]["money_share"] is not None
+    assert passport["rate_coverage"]["money_share_state"] == "partial"
+
+
+def test_a_non_empty_set_without_a_single_rate_is_a_real_zero(db_session, factories):
+    """DoD 25, первая фикстура: статьи названы, но ни одна не дала ставки (объёма
+    в смете нет), а суммы паспорта известны все.
+
+    Ожидание — `money_share = 0` и состояние `complete`: «покрыто 0 %» правда, и
+    её надо напечатать. Прежняя редакция плана отдавала здесь `None`.
+
+    Фикстура доказывает доменное правило «ноль — не отсутствие охвата», но НЕ
+    воспроизводит два договора стенда с нулём (§1.1): у них состояние зависит от
+    `positions_rows_priced`/`positions_rows`, при неполных суммах ноль придёт как
+    `partial`. Счётчики замеряет задача 9, шаг 1 — до замера привязывать фикстуру
+    к стенду нельзя.
+
+    Собственная позиция под носителем 6.1 обязательна: `v_category_totals`
+    считает только `is_chapter = false` строки (миграция 0010), и без неё
+    статья осталась бы без строк (`rows = 0`) и `build_tree` спрятал бы её —
+    тогда набор охвата не увидел бы узел вовсе, вместо того чтобы честно
+    посчитать его без ставки.
+
+    `quantity=None` ЯВНО, а не только `suggested_quantity=None`: объём
+    носителя читается через `COALESCE(suggested_quantity, quantity)`
+    (`_carrier_rows_select`), а `PositionItemFactory` даёт `quantity`
+    ненулевое значение по умолчанию (`Decimal("1")`) — без этой явной
+    перезаписи `COALESCE` тихо подставил бы его, и статья получила бы
+    `RATE` вместо `volume_missing`.
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+    chapter = _chapter(factories, proposal, category_id=_category(db_session, "6.1").id,
+             smr_article_raw="6.1", unit_id=m2,
+             quantity=None, suggested_quantity=None, total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, chapter=chapter, total_cost_total=Decimal("1000.00"))
+    _position(factories, proposal, total_cost_total=Decimal("1000.00"))
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"] == {
+        "articles_with_rate": 0, "articles_total": 1,
+        "money_share": Decimal("0"), "money_share_state": "complete",
+    }
+
+
+def test_an_empty_set_is_no_articles_not_a_zero(db_session, factories):
+    """DoD 25, вторая фикстура: смета не называет ни одной статьи. Мерить нечего —
+    состояние `no_articles`, доля `None`. «0 %» здесь было бы утверждением о
+    покрытии, которого никто не считал."""
+    proposal = _proposal(factories)
+    _position(factories, proposal)
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    assert passport["rate_coverage"] == {
+        "articles_with_rate": 0, "articles_total": 0,
+        "money_share": None, "money_share_state": "no_articles",
+    }
+
+
+def test_the_state_enum_carries_exactly_the_five_contract_values():
+    """DoD 34: перечень §2.8 и контракт §2.10 — один список."""
+    assert {state.value for state in MoneyShareState} == {
+        "complete", "partial", "no_articles", "total_unavailable", "out_of_range",
+    }
+
+
+def test_money_share_computation_survives_an_inexact_trap_in_the_ambient_context():
+    """Тест на явный контекст (Global Constraint 16, докстрока `_rate_coverage`).
+
+    `_share_pct` делит в AMBIENT-контексте, и `covered` копится под явным
+    `localcontext(_RATE_CONTEXT)` (трапы: `Overflow`, `DivisionByZero`,
+    `InvalidOperation` — БЕЗ `Inexact`). Этот тест взводит `Inexact` в
+    AMBIENT-контексте (той же нити, что видит `_share_pct` СНАРУЖИ явного
+    контекста) и делит 100,00 на 300,00 — частное `33,333...%` не представимо
+    конечной десятичной дробью НИ при каком `prec`, и деление обязано вызвать
+    `decimal.Inexact` без защиты. Вызов идёт напрямую в `_rate_coverage`, а не
+    в `get_project_passport`: у КАЖДОЙ строки паспорта своя доля `share_pct`
+    через ТУ ЖЕ незащищённую `_share_pct`, и на цельном паспорте пришлось бы
+    доказывать, что все они тоже делятся нацело — а это не то, что проверяет
+    этот тест. Без `with localcontext(_RATE_CONTEXT)` внутри `_rate_coverage`
+    этот же вызов уронил бы `decimal.Inexact`; тест намеренно ставит трап
+    ДО вызова, чтобы падение (при регрессии) было видно здесь, а не потерялось
+    в шуме интеграционного теста.
+    """
+    node = CategoryNode(
+        ref=CategoryRef(id=1, code="6", title="Статья", parent_id=None, is_bucket=False, sort_order=1),
+        total=Decimal("100.00"), rows=1, rows_priced=1, rows_not_finite=0,
+        own=Decimal("100.00"), own_rows=1, own_rows_priced=1, own_rows_not_finite=0,
+        children=(),
+    )
+    rate = ArticleRate(
+        state=RateState.RATE, note=None, unit="м²", volume=Decimal("10.00"), unit_rate=Decimal("10.00"),
+    )
+    folds = {1: fold_carrier_rows([], None)}
+    totals = {"positions_rows": 1, "positions_rows_priced": 1}
+
+    with decimal.localcontext() as ctx:
+        ctx.traps[decimal.Inexact] = True
+        result = _rate_coverage([node], folds, {1: rate}, Decimal("300.00"), totals)
+
+    assert result["money_share"] is not None
+    assert result["money_share_state"] == "complete"
