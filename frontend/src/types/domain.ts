@@ -637,6 +637,41 @@ export interface ProjectPassportSection {
   source: "file" | "manual";
 }
 
+// ---------------------------------------------------------------------------
+//  Объём и ставка ₽/ед. в таблице статей (спека 2026-08-24, §2.5, §2.10)
+// ---------------------------------------------------------------------------
+//
+//  Состояние вычисляется на сервере и приходит полем — клиент НЕ выводит его
+//  из комбинации `null`-ов: правило одно, носитель один (§2.5). Проверки идут
+//  строго сверху вниз, первое совпадение выигрывает — у узла ровно одно
+//  состояние. Порядок здесь — порядок таблицы §2.5, не алфавит.
+
+/**
+ * Состояние ставки узла свода — ровно одно из десяти, на КАЖДОМ узле,
+ * включая корни классификатора и статьи ручного разноса (спека §2.5, §2.10).
+ * Клиент читает готовое значение, а не пересчитывает его из `unit`/`volume`/
+ * `unit_rate`.
+ */
+export type RateState =
+  | "no_carrier"
+  | "additional_works"
+  | "amount_missing"
+  | "unit_missing"
+  | "unit_conflict"
+  | "unit_not_scalable"
+  | "volume_missing"
+  | "volume_nonpositive"
+  | "volume_inconsistent"
+  | "rate";
+
+/**
+ * Уточнение состояния `volume_inconsistent` — ТРИ причины одного гашения
+ * ставки (спека §2.10, ревизия гейта 3): смешанные единицы детей, перебор
+ * объёма родителя, либо сходимость, которую нечем проверить (ребёнок сам
+ * несёт `unit_missing`/`unit_conflict`). `null` вне этого состояния.
+ */
+export type RateNote = "overshoot" | "mixed_units" | "unverifiable";
+
 /** Узел дерева статей — элемент ПЛОСКОГО списка `categories` (правило 2). */
 export interface ProjectPassportCategory {
   id: number;
@@ -660,6 +695,41 @@ export interface ProjectPassportCategory {
   own_rows_not_finite: number;
   extras: ProjectPassportExtra[];
   own_sections: ProjectPassportSection[];
+  /** СИМВОЛ единицы (`units_of_measure.symbol`): «м²», «м³», «шт»; `null` при `unit_missing` — не имя (спека §2.10, ревизия гейта 3). */
+  unit: string | null;
+  /** Объём с носителя статьи — строки, несущей код узла. `null` во всех состояниях, КРОМЕ `rate` (спека §2.5, §2.10). */
+  volume: Decimal | null;
+  /** Приведённая сумма / объём (§2.2). `null` во всех состояниях, КРОМЕ `rate`. */
+  unit_rate: Decimal | null;
+  /** См. {@link RateState}. */
+  rate_state: RateState;
+  /** См. {@link RateNote} — не `null` ровно при `rate_state === "volume_inconsistent"`. */
+  rate_note: RateNote | null;
+}
+
+/**
+ * Пять исходов охвата ставками (§2.8) — состояние ОТДЕЛЬНОЕ от `money_share`,
+ * а не перегруженный `null`: «итог паспорта неизвестен» и «суммы требуют
+ * проверки» — разные факты с разными действиями (`docs/insights/
+ * one-value-two-states.md`). Проверки — строго сверху вниз, первое совпадение
+ * выигрывает.
+ */
+export type MoneyShareState = "complete" | "partial" | "no_articles" | "total_unavailable" | "out_of_range";
+
+/**
+ * Охват ставками — строка §2.8 под таблицей статей («покрыто K % цены
+ * договора: ставка есть у N статей из M в неперекрывающемся наборе»). Печать
+ * самой строки — задача 7, не эта: здесь только контракт поля.
+ */
+export interface ProjectPassportRateCoverage {
+  /** N — статьи неперекрывающегося набора §2.3 со состоянием `rate`. */
+  articles_with_rate: number;
+  /** M — размер неперекрывающегося набора §2.3 (не справочник и не все видимые строки дерева). */
+  articles_total: number;
+  /** K — decimal-строка `0..100`; `null` при `money_share_state !== "complete" | "partial"`. */
+  money_share: Decimal | null;
+  /** См. {@link MoneyShareState}. */
+  money_share_state: MoneyShareState;
 }
 
 /** Раздел сметы без статьи — узел ДЕРЕВА разносимого (спека разноса §2.6). */
@@ -783,6 +853,8 @@ export interface ProjectPassport {
   manual_assignments: ProjectPassportManualAssignment[];
   /** Варианты для выбора статьи при разносе — см. {@link ProjectPassportCategoryOption}. */
   category_options: ProjectPassportCategoryOption[];
+  /** Охват ставками (спека объёма и ставки §2.8, §2.10) — см. {@link ProjectPassportRateCoverage}. */
+  rate_coverage: ProjectPassportRateCoverage;
 }
 
 // ---------------------------------------------------------------------------

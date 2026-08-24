@@ -574,6 +574,13 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      // Корень без собственной строки — деньги целиком у детей (own: null
+      // выше); носителя кода "01" в смете нет, допработ у узла тоже нет.
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 2,
@@ -594,6 +601,20 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      // Единственный узел фикстуры со ставкой (задача 6 плана). `unit_rate` —
+      // ДЕЛЕНИЕ total/volume: 500000.00 / 3000.00 = 166,(6), бесконечная
+      // периодическая дробь — но, В ОТЛИЧИЕ от `per_sqm` выше, `unit_rate`
+      // сервер квантует ДО отдачи, безусловно (`quantize_money`, §2.10
+      // ревизия «ставка квантуется всегда»): по проводу приходит уже
+      // "166.67", а не хвост из `_RATE_CONTEXT` (`prec = 100`). Это форма
+      // стенда, а не сокращение теста: округлённое и точное значение здесь
+      // совпадают, и `MoneyCell` поэтому НЕ кладёт `title` вовсе (см. тест
+      // на ставку в `PassportRates.test.tsx`).
+      unit: "м³",
+      volume: "3000.00",
+      unit_rate: "166.67",
+      rate_state: "rate",
+      rate_note: null,
     },
     {
       id: 3,
@@ -620,6 +641,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 4,
@@ -641,6 +667,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 5,
@@ -662,6 +693,12 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      // Статьи нет в смете вовсе — учебниковый no_carrier (нет ни строки, ни допработ).
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 6,
@@ -688,6 +725,13 @@ export const sampleProjectPassport: ProjectPassport = {
         { id: 1, number: "4.1", title: "Раздел «Водоснабжение и водоотведение»", source: "file" },
         { id: 2, number: "4.2", title: "Раздел «Электроснабжение сетей»", source: "file" },
       ],
+      // Единственный unit_not_scalable фикстуры (задача 6 плана): своя строка
+      // есть (own > 0), единица «Комплект» — количество не измеряет объём работ.
+      unit: "компл",
+      volume: null,
+      unit_rate: null,
+      rate_state: "unit_not_scalable",
+      rate_note: null,
     },
     {
       id: 7,
@@ -708,6 +752,13 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      // Единственный volume_missing фикстуры (задача 6 плана): единица
+      // известна («м» — погонный метр труб), а объём на строке не указан.
+      unit: "м",
+      volume: null,
+      unit_rate: null,
+      rate_state: "volume_missing",
+      rate_note: null,
     },
     {
       id: 8,
@@ -737,6 +788,14 @@ export const sampleProjectPassport: ProjectPassport = {
         },
       ],
       own_sections: [],
+      // Единственный additional_works фикстуры (задача 6 плана): строки-
+      // носителя нет, вся сумма узла — из extras выше; единицы нет по природе
+      // данных (спека §2.5, состояние 1).
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "additional_works",
+      rate_note: null,
     },
     {
       id: 9,
@@ -757,6 +816,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 10,
@@ -777,6 +841,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 11,
@@ -797,6 +866,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 12,
@@ -817,6 +891,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       id: 13,
@@ -837,6 +916,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_rows_not_finite: 0,
       extras: [],
       own_sections: [],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
     {
       // Девятая статья с деньгами — топ-8 кольца задачи 8 обязан свернуть её
@@ -866,6 +950,11 @@ export const sampleProjectPassport: ProjectPassport = {
       own_sections: [
         { id: 3, number: "5.3", title: "Раздел «Устройство эстакад»", source: "manual" },
       ],
+      unit: null,
+      volume: null,
+      unit_rate: null,
+      rate_state: "no_carrier",
+      rate_note: null,
     },
   ],
   unallocated: {
@@ -1033,6 +1122,34 @@ export const sampleProjectPassport: ProjectPassport = {
     // Вложенный, без единой строки — отсутствует в `categories`, см. комментарий выше.
     { id: 16, code: "10.01", title: "Демонтаж временных ограждений", is_bucket: false },
   ],
+  /*
+    Охват ставками (спека объёма и ставки §2.8, §2.10; задача 6 плана — только
+    тип и согласованное число, печать самой строки охвата это задача 7).
+
+    Неперекрывающийся набор §2.3 — статьи, названные в смете, внутри которых
+    нет других названных статей: "01" и "04" из него ИСКЛЮЧЕНЫ, потому что у
+    каждой есть названные дети ("01.01"/"01.02" и "04.01"/"04.02" —
+    соответственно). "03" исключена по другой причине: total: null, rows: 0 —
+    её нет в смете вовсе. Остаются 11: "01.01", "01.02", "99", "04.01",
+    "04.02", "05", "06", "07", "08", "09", "10" — отсюда articles_total: 11.
+
+    Из них состоянием rate несёт только "01.01" (id 2) — отсюда
+    articles_with_rate: 1. money_share — её total ("500000.00") к
+    totals.amount ("4700000.00"): 500000 / 4700000 = 0.106382978723404255319…,
+    та же бесконечная дробь, что несёт `share_pct` узлов "01"/"01.01" выше
+    (500000 — их общий total). НО, в отличие от `share_pct`, `money_share`
+    сервер квантует до сотых процента безусловно (§2.10, ревизия «money_share
+    квантуется» — тем же приёмом и по тому же доводу, что `unit_rate`): по
+    проводу приходит "10.64", а не хвост `_RATE_CONTEXT`.
+    positions_rows_priced (461) === positions_rows (461) у totals — суммы
+    известны полностью, поэтому money_share_state: "complete".
+  */
+  rate_coverage: {
+    articles_with_rate: 1,
+    articles_total: 11,
+    money_share: "10.64",
+    money_share_state: "complete",
+  },
 };
 
 export const sampleMatrixCellDetail: MatrixCellDetail = {

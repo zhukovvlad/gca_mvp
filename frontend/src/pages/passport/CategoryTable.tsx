@@ -16,12 +16,17 @@ import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
+  Decimal,
   ProjectPassport,
   ProjectPassportCategory,
+  ProjectPassportRateCoverage,
   ProjectPassportSection,
   ProjectPassportUnallocated,
+  RateNote,
+  RateState,
 } from "@/types/domain";
 
+import { RATE_COVERAGE_LABEL, RATE_NOTE_LABEL, RATE_STATE_LABEL } from "./rateLabels";
 import { UnallocatedPanel } from "./UnallocatedPanel";
 
 /**
@@ -79,6 +84,103 @@ function isZeroDecimal(value: string): boolean {
  */
 function formatSharePct(value: string | null): string {
   return value === null ? "—" : formatSharePercent(value);
+}
+
+/**
+ * Подпись пилюли по состоянию узла — снимает развилку `volume_inconsistent`.
+ * Сами карты (`RATE_STATE_LABEL`, `RATE_NOTE_LABEL`) — в `./rateLabels`, не
+ * здесь: файл, экспортирующий React-компонент, не может экспортировать что-то
+ * ещё без потери fast refresh (`react-refresh/only-export-components`,
+ * `just lint-frontend`).
+ */
+function rateStateCaption(rateState: RateState, rateNote: RateNote | null): string | null {
+  if (rateState === "volume_inconsistent") {
+    return rateNote === null ? null : RATE_NOTE_LABEL[rateNote];
+  }
+  return RATE_STATE_LABEL[rateState];
+}
+
+/**
+ * Состояния, где данные ДОЗАПОЛНИМЫ либо испорчены — макет различает `pill` и
+ * `pill warn`, и разница выражена токенами темы (та же пара, что уже несёт
+ * строка «Нераспределённое»), а не литеральным цветом. Состояния, где ставки
+ * не будет никогда по природе данных (`additional_works`, `unit_not_scalable`),
+ * остаются нейтральными.
+ */
+const RATE_WARN_STATES: ReadonlySet<RateState> = new Set([
+  "amount_missing",
+  "unit_missing",
+  "unit_conflict",
+  "volume_missing",
+  "volume_nonpositive",
+  "volume_inconsistent",
+]);
+
+/**
+ * Три ячейки «Ед.» / «Объём» / «Ставка, ₽/ед.» для строки статьи (спека
+ * §2.9, §2.10; задача 6 плана). Общая для CategoryRow — четыре другие места
+ * раскладки (допработы, служебная строка, «Нераспределённое», «Итого по
+ * договору») несут прочерки и этот компонент не используют (мокап, строка
+ * итога): там взять реальные `unit`/`volume`/`rate_state` неоткуда — эти
+ * колонки посчитаны только по строке-носителю кода статьи.
+ */
+function RateColumns({
+  code,
+  unit,
+  volume,
+  unitRate,
+  rateState,
+  rateNote,
+}: {
+  code: string;
+  unit: string | null;
+  volume: Decimal | null;
+  unitRate: Decimal | null;
+  rateState: RateState;
+  rateNote: RateNote | null;
+}) {
+  const caption = rateStateCaption(rateState, rateNote);
+  const warn = RATE_WARN_STATES.has(rateState);
+  return (
+    <>
+      <TableCell data-testid={`unit-cat-${code}`} className="text-right text-xs text-fg-secondary">
+        {unit ?? "—"}
+      </TableCell>
+      {/*
+        Объём — ИЗ ФАЙЛА, не вычислен: `maxFractionDigits` НЕ передаётся
+        (докстрока `MoneyCell` разграничивает это явно), в отличие от ₽/м²
+        ниже, которая делит `Decimal` на `Decimal` и округляется намеренно.
+      */}
+      <TableCell data-testid={`volume-cat-${code}`} className="text-right">
+        <MoneyCell value={volume} currency="" />
+      </TableCell>
+      <TableCell data-testid={`rate-cat-${code}`} className="text-right">
+        {rateState === "rate" ? (
+          <MoneyCell value={unitRate} maxFractionDigits={2} currency="₽/ед." />
+        ) : (
+          caption && (
+            <Badge
+              variant="outline"
+              className={warn ? "border-warning-border bg-warning-soft text-warning-text" : undefined}
+            >
+              {caption}
+            </Badge>
+          )
+        )}
+      </TableCell>
+    </>
+  );
+}
+
+/** Три ячейки-прочерка тех же колонок — там, где показывать нечего (мокап, строка итога). */
+function RateColumnsDash() {
+  return (
+    <>
+      <TableCell className="text-right text-fg-tertiary">—</TableCell>
+      <TableCell className="text-right text-fg-tertiary">—</TableCell>
+      <TableCell className="text-right text-fg-tertiary">—</TableCell>
+    </>
+  );
 }
 
 /** Одна подпись раздела: «6.5 «Прочее»». Заголовок, уже несущий кавычки
@@ -277,6 +379,43 @@ function unallocatedCaption(unallocated: ProjectPassportUnallocated): string {
     : `${base}; ${rest.map((cause) => `отдельно — ${cause}`).join("; ")}`;
 }
 
+/**
+ * Согласование числа для строки охвата (спека §2.8, DoD 34): оба числа, N и M,
+ * стоят после предлога «у» в родительном падеже — родительный ед.ч. «статьи»
+ * против родительного мн.ч. «статей». Формам «2-4», которые в счётной позиции
+ * получили бы отдельный вид (ср. `unallocatedCaption` выше), тут взяться не с
+ * чего: здесь не счётная позиция. Без этого помощника документ, уходящий в
+ * банк, напечатал бы «у 1 статей».
+ */
+function articlesWord(n: number): string {
+  return n % 10 === 1 && n % 100 !== 11 ? "статьи" : "статей";
+}
+
+/**
+ * Строка охвата под таблицей статей (спека §2.8, DoD 25, 32-34; задача 7
+ * плана). Подпись выбирается СТРОГО по `money_share_state` — `RATE_COVERAGE_LABEL`
+ * (`./rateLabels`) несёт пять шаблонов, по одному на состояние; здесь только
+ * подстановка K/N/M/A. Ветвиться по `money_share === null` нельзя: под `null`
+ * живут три разных факта, и один выбор подписи на все три был бы ложным в
+ * двух случаях из трёх (см. докстроку карты).
+ */
+function rateCoverageCaption(coverage: ProjectPassportRateCoverage): string {
+  const { articles_with_rate: n, articles_total: m, money_share, money_share_state } = coverage;
+  const template = RATE_COVERAGE_LABEL[money_share_state];
+  // Проверка `null` здесь — только подсказка типов для `formatSharePercent`
+  // (её сигнатура берёт `string`, не `string | null`): какой шаблон печатать,
+  // уже решено строкой выше, по состоянию. По контракту (`domain.ts`)
+  // `money_share` не `null` ровно в состояниях `complete`/`partial` — то есть
+  // ровно там, где шаблон несёт `{K}`; в остальных шаблонах `{K}` нет, и ветка
+  // `""` в них не используется.
+  const k = money_share === null ? "" : formatSharePercent(money_share);
+  return template
+    .replace("{K}", k)
+    .replace("{N}", String(n))
+    .replace("{M}", String(m))
+    .replace("{A}", articlesWord(n));
+}
+
 function ExpandToggle({
   expandable,
   expanded,
@@ -437,6 +576,14 @@ function CategoryRow({
         <TableCell data-testid={`per-sqm-cat-${node.code}`} className="text-right">
           <MoneyCell value={node.per_sqm} maxFractionDigits={2} />
         </TableCell>
+        <RateColumns
+          code={node.code}
+          unit={node.unit}
+          volume={node.volume}
+          unitRate={node.unit_rate}
+          rateState={node.rate_state}
+          rateNote={node.rate_note}
+        />
       </TableRow>
 
       {isOpen && (
@@ -474,6 +621,7 @@ function CategoryRow({
               </TableCell>
               <TableCell className="text-right text-fg-tertiary">—</TableCell>
               <TableCell className="text-right text-fg-tertiary">—</TableCell>
+              <RateColumnsDash />
             </TableRow>
           ))}
 
@@ -504,6 +652,7 @@ function CategoryRow({
               </TableCell>
               <TableCell className="text-right text-fg-tertiary">—</TableCell>
               <TableCell className="text-right text-fg-tertiary">—</TableCell>
+              <RateColumnsDash />
             </TableRow>
           )}
         </>
@@ -616,7 +765,10 @@ export function CategoryTable({
             <TableHead>Статья классификатора</TableHead>
             <TableHead className="text-right">Итого, ₽</TableHead>
             <TableHead className="text-right">Доля</TableHead>
-            <TableHead className="text-right pr-6">₽ / м²</TableHead>
+            <TableHead className="text-right">₽ / м²</TableHead>
+            <TableHead className="text-right">Ед.</TableHead>
+            <TableHead className="text-right">Объём</TableHead>
+            <TableHead className="text-right pr-6">Ставка, ₽/ед.</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -701,6 +853,7 @@ export function CategoryTable({
                 className={allocated ? undefined : "text-warning-text"}
               />
             </TableCell>
+            <RateColumnsDash />
           </TableRow>
 
           {/*
@@ -711,7 +864,7 @@ export function CategoryTable({
           */}
           {unallocatedOpen && estimateId !== undefined && (
             <TableRow data-testid="row-unallocated-panel" data-print="hide">
-              <TableCell colSpan={5} className="p-0">
+              <TableCell colSpan={8} className="p-0">
                 <UnallocatedPanel passport={passport} contractId={contractId} estimateId={estimateId} />
               </TableCell>
             </TableRow>
@@ -744,9 +897,27 @@ export function CategoryTable({
                 className="font-semibold"
               />
             </TableCell>
+            <RateColumnsDash />
           </TableRow>
         </TableBody>
       </Table>
+
+      {/*
+        Строка охвата (спека §2.8, задача 7 плана) — ПЕЧАТАЕТСЯ (без
+        `data-print="hide"`): без неё печатный лист читается как полный свод
+        расценок, а он не полный — ставка известна для ЧАСТИ цены договора, не
+        для всей (62 % на лучшем договоре стенда, 0 % на двух других, §1.1).
+        Стоит всегда, в том числе когда ставок нет ни одной (два договора
+        стенда, DoD 25) — не подчинена развороту дерева и не читает
+        `expandedIds`: число ставок, ВИДИМЫХ на экране, сюда не выносится
+        (§2.8), только серверные `articles_with_rate` и `articles_total`.
+      */}
+      <p
+        data-testid="rate-coverage"
+        className="border-t border-border-subtle px-6 py-2 text-2xs text-fg-tertiary"
+      >
+        {rateCoverageCaption(passport.rate_coverage)}
+      </p>
 
       {/*
         Печатная сноска (задача 9, спека §2.10) — называет ЧИСЛО действующих

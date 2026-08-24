@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from enum import StrEnum
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
@@ -29,6 +30,7 @@ from models import (
     Proposal,
     ProposalSummaryLine,
     RateClass,
+    UnitOfMeasure,
     User,
     WorkCategory,
 )
@@ -45,6 +47,15 @@ from money.vat import (
 from parser.constants import (
     JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
     JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+)
+from services.article_rates import (
+    _RATE_CONTEXT,
+    ArticleFold,
+    ArticleRate,
+    CarrierRow,
+    RateState,
+    fold_carrier_rows,
+    resolve_rate,
 )
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
@@ -352,6 +363,185 @@ def _own_sections_by_category(db: Session, estimate_id: int) -> dict[int, list[d
 
 
 # ---------------------------------------------------------------------------
+#  Строки-носители статьи запросом (спека §2.2, §2.3). `CarrierRow`,
+#  `ArticleFold`, `fold_carrier_rows` — готовый чистый модуль `services.
+#  article_rates`, здесь только SQL и правило исключения вложенности.
+# ---------------------------------------------------------------------------
+
+def _carrier_rows_select(estimate_id: int) -> sa.Select:
+    """ВСЕ строки-разделы исходной сметы (`is_chapter = true`), а не только
+    строки-носители: цепочка предков носителя может проходить через раздел без
+    кода, и без ВСЕХ разделов её не построить (§2.3).
+
+    `COALESCE(estimates.vat_rate_base_override, proposals.vat_rate)` — та же
+    парная граница с `v_category_totals`, что называет `_finite_amount` выше:
+    выражение базы НДС повторяет строку 111 миграции 0012 (регруппировка
+    VIEW по предложению/базе, спека пересчёта §2.4), общего кода с ней нет и
+    быть не может — миграция застыла навсегда, и расхождение между этим
+    выражением и её строкой ловится только парностью двух докстрок, вручную.
+
+    Без `ORDER BY`, и это НАМЕРЕННО отличает запрос от `_extras_select` и
+    `_own_sections_select`: там порядок строк наблюдаем клиентом (список на
+    экране паспорта), а здесь результат идёт только в свёртку `Decimal`-сумм
+    `fold_carrier_rows` — сложение `Decimal` под явным контекстом модуля
+    (`services/article_rates._RATE_CONTEXT`) не зависит от порядка слагаемых
+    ни значением, ни экспонентой, и третий явный порядок был бы отвергнутой
+    работой без предмета.
+    """
+    return (
+        sa.select(
+            PositionItem.id,
+            PositionItem.chapter_item_id,
+            PositionItem.work_category_id,
+            PositionItem.smr_article_raw,
+            PositionItem.total_cost_total.label("amount"),
+            sa.func.coalesce(
+                Estimate.vat_rate_base_override, Proposal.vat_rate
+            ).label("vat_rate_base"),
+            UnitOfMeasure.code.label("unit_code"),
+            UnitOfMeasure.symbol.label("unit_symbol"),
+            sa.func.coalesce(
+                PositionItem.suggested_quantity, PositionItem.quantity
+            ).label("volume"),
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+        .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(True))
+    )
+
+
+def _carrier_rows_by_category(
+    db: Session, estimate_id: int, effective_rate: Decimal | None
+) -> dict[int, ArticleFold]:
+    """Строки-носители статьи, свёрнутые по `work_category_id` (§2.2, §2.3;
+    DoD 1-4).
+
+    Носитель — строка-раздел, несущая И код (`smr_article_raw IS NOT NULL`),
+    И саму статью (`work_category_id IS NOT NULL`); строка ручного разноса
+    (§2.5, состояние 2) кода не несёт вовсе и носителем не становится (проверено
+    отдельным тестом, а не значением по умолчанию).
+
+    Носитель исключается из свёртки своей статьи, если у него есть
+    ПРЕДОК-НОСИТЕЛЬ ТОЙ ЖЕ статьи (DoD 4) — его деньги уже посчитаны в свёртке
+    того предка. Предикат — по `work_category_id`, а не по тексту кода: узел
+    свода ключуется статьёй, и задваивались бы именно её деньги; у носителей
+    это совпадает с равенством кодов, потому что разрешение «код → статья»
+    детерминировано. Вложенность РАЗНЫХ статей (DoD 3) деньги не задваивает —
+    предок и потомок получают ставку каждый со своей.
+
+    Подъём по предкам защищён счётчиком шагов, ограниченным числом разделов
+    сметы: схема запрещает цикл составным self-FK (`fk_position_items_chapter`),
+    но чтение паспорта не имеет права зависнуть, если это когда-то перестанет
+    быть так.
+
+    Статьи без носителя в возвращённом словаре ОТСУТСТВУЮТ — вызывающий код
+    читает через `.get(id)` и подставляет пустую свёртку.
+    """
+    rows = db.execute(_carrier_rows_select(estimate_id)).all()
+
+    # `parent` — по ВСЕМ разделам: подъём может пройти через раздел без кода.
+    # `carrier_category` — только по строкам-носителям: это и есть предикат
+    # исключения DoD 4.
+    parent: dict[int, int | None] = {row.id: row.chapter_item_id for row in rows}
+    carrier_category: dict[int, int] = {
+        row.id: row.work_category_id
+        for row in rows
+        if row.smr_article_raw is not None and row.work_category_id is not None
+    }
+    step_limit = len(rows)
+
+    def _shadowed_by_same_article_ancestor(row) -> bool:
+        current = parent.get(row.id)
+        for _ in range(step_limit):
+            if current is None:
+                return False
+            if carrier_category.get(current) == row.work_category_id:
+                return True
+            current = parent.get(current)
+        return False
+
+    by_category: dict[int, list[CarrierRow]] = defaultdict(list)
+    for row in rows:
+        if row.id not in carrier_category:
+            continue
+        if _shadowed_by_same_article_ancestor(row):
+            continue
+        by_category[row.work_category_id].append(
+            CarrierRow(
+                amount=row.amount,
+                vat_rate_base=row.vat_rate_base,
+                unit_code=row.unit_code,
+                unit_symbol=row.unit_symbol,
+                volume=row.volume,
+            )
+        )
+
+    return {
+        category_id: fold_carrier_rows(carrier_rows, effective_rate)
+        for category_id, carrier_rows in by_category.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+#  Ставка статьи на каждом узле свода (спека §2.2-§2.5, §2.10)
+# ---------------------------------------------------------------------------
+
+#: Свёртка отсутствующей статьи — та же пустая свёртка, что `fold_carrier_rows`
+#: отдаёт на пустом списке строк; ставка НДС во втором аргументе не читается на
+#: пустом входе (`fold_carrier_rows` формы выше), поэтому `None` здесь — не
+#: решение об НДС, а просто незначащий аргумент.
+_EMPTY_ARTICLE_FOLD = fold_carrier_rows([], None)
+
+
+def _article_rates(
+    refs: Sequence[CategoryRef],
+    folds: Mapping[int, ArticleFold],
+    extras_by_category: Mapping[int, list[dict]],
+) -> dict[int, ArticleRate]:
+    """Автомат ставки статьи (`services.article_rates.resolve_rate`) для КАЖДОЙ
+    статьи справочника — состояние обязано быть у каждого узла свода, включая
+    корни классификатора (§2.5).
+
+    `children_by_parent` строится из `refs` — дерева КЛАССИФИКАТОРА
+    (`CategoryRef.parent_id`), а не из видимого дерева паспорта: узел без
+    собственных строк всё равно обязан участвовать в проверке сходимости
+    родителя, если у него есть ставка (`_carrier_rows_by_category` строит
+    свёртки независимо от видимости узла в дереве паспорта).
+
+    `children` — свёртки ПРЯМЫХ детей статьи, у которых известен объём
+    (`fold.volume is not None`, §2.4: «дети с объёмом»). Фильтр обязателен, а
+    не защита от дурака: `convergence_note` складывает `child.volume` без
+    проверки на `None` по правилу «вызывающий уже отфильтровал» — необходимый
+    объём. Прямые дети, а не все потомки: спека говорит «дети», и пропущенный
+    внук недобора не портит (недобор — норма, §2.4).
+
+    Статья без строки-носителя (`folds.get(id)` пуст) получает пустую свёртку
+    `_EMPTY_ARTICLE_FOLD`; `has_extras` — есть ли у статьи строки дополнительных
+    работ (`_extras_by_category`) — решает между `no_carrier` и
+    `additional_works` внутри `resolve_rate` (§2.5, состояния 1-2).
+    """
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for ref in refs:
+        if ref.parent_id is not None:
+            children_by_parent[ref.parent_id].append(ref.id)
+
+    rates: dict[int, ArticleRate] = {}
+    for ref in refs:
+        fold = folds.get(ref.id, _EMPTY_ARTICLE_FOLD)
+        has_extras = bool(extras_by_category.get(ref.id))
+        children = [
+            child_fold
+            for child_id in children_by_parent.get(ref.id, ())
+            if (child_fold := folds.get(child_id)) is not None and child_fold.volume is not None
+        ]
+        rates[ref.id] = resolve_rate(fold, has_extras=has_extras, children=children)
+    return rates
+
+
+# ---------------------------------------------------------------------------
 #  Валовое ИТОГО сметы и ставка НДС (спека §2.5, правила 1-2, 5-6)
 # ---------------------------------------------------------------------------
 
@@ -553,6 +743,14 @@ def _quantize_if_restated(value: Decimal | None, restated_any: bool) -> Decimal 
     return quantize_money(value) if restated_any else value
 
 
+#: Ставка отсутствующей статьи на пути БЕЗ сметы (`estimate is None`) — та же
+#: ФОРМА ответа на обоих путях функции (правило 8): пять полей ставки на месте,
+#: `rate_state = "no_carrier"`, остальные `None` (§2.10). Реальный автомат
+#: (`_article_rates`) на этом пути не вызывается — сметы нет, строк-носителей
+#: нет ни у одной статьи, и это ровно тот же исход, к которому он пришёл бы.
+_NO_ESTIMATE_RATE = ArticleRate(state=RateState.NO_CARRIER, note=None, unit=None, volume=None, unit_rate=None)
+
+
 def _category_dict(
     node: CategoryNode,
     grand_total,
@@ -560,8 +758,24 @@ def _category_dict(
     extras_by_category: dict[int, list[dict]],
     own_sections_by_category: dict[int, list[dict]],
     restated_any: bool,
+    rates: Mapping[int, ArticleRate],
 ) -> dict:
     ref = node.ref
+    rate = rates.get(ref.id, _NO_ESTIMATE_RATE)
+    # `unit_rate` квантуется ПОД явным `localcontext(_RATE_CONTEXT)` (Global
+    # Constraint 16 этой фичи: квантование — арифметика, `Decimal.quantize`
+    # выполняет округление и на неконечном частном взводит `Inexact`), а не в
+    # унаследованном ambient-контексте вызывающего, как три поля ниже (`total`,
+    # `own`, `per_sqm` через `_quantize_if_restated`). Различие НАМЕРЕННОЕ и
+    # обратного знака: те три поля — существующие поля ответа непересчитанной
+    # сметы, и тождество §10 AGENTS.md запрещает трогать их контекст —
+    # квантование в другом контексте изменило бы их байты. `unit_rate` этой
+    # фичей и заводится, дофичевой формы не имеет, и Global Constraint 16
+    # требует явного контекста для ВСЕЙ её арифметики, включая округление
+    # результата. Не "выравнивать" эти четыре строки друг под друга ни в одну
+    # сторону — несогласованность здесь прямое следствие §10, а не недосмотр.
+    with localcontext(_RATE_CONTEXT):
+        quantized_unit_rate = quantize_money(rate.unit_rate)
     return {
         "id": ref.id,
         "code": ref.code,
@@ -581,6 +795,19 @@ def _category_dict(
         "own_rows_not_finite": node.own_rows_not_finite,
         "extras": extras_by_category.get(ref.id, []),
         "own_sections": own_sections_by_category.get(ref.id, []),
+        # Пять полей ставки статьи (§2.2-§2.5, §2.10): `unit` — символ единицы,
+        # независимо от состояния (уточнение У2); `volume` — БЕЗ квантования,
+        # это число из файла, а не деньги; `unit_rate` — `quantize_money`
+        # БЕЗУСЛОВНО, а не `_quantize_if_restated`: тождество §10 AGENTS.md
+        # защищает СУЩЕСТВУЮЩИЕ поля ответа на непересчитанной смете, а
+        # `unit_rate` заводится этой фичей и дофичевой формы не имеет; без
+        # округления при `prec = 100` (`services.article_rates`) в ответ уехало
+        # бы почти никогда не конечное частное.
+        "unit": rate.unit,
+        "volume": rate.volume,
+        "unit_rate": quantized_unit_rate,
+        "rate_state": rate.state.value,
+        "rate_note": rate.note.value if rate.note else None,
     }
 
 
@@ -1105,6 +1332,200 @@ def _category_options(refs: Sequence[CategoryRef]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+#  Охват: неперекрывающийся набор статей и доля денег под ставкой (спека §2.8)
+# ---------------------------------------------------------------------------
+
+class MoneyShareState(StrEnum):
+    """Пять исходов охвата — ровно тот список, что несёт контракт §2.10
+    (§2.8, DoD 34). `_rate_coverage` проверяет их строго сверху вниз, первое
+    совпадение выигрывает, у ответа ровно одно состояние; расхождение между
+    этим перечнем и таблицей §2.8 означало бы, что часть состояний
+    недостижима — ровно так разошлась первая редакция спеки (§2.10)."""
+
+    TOTAL_UNAVAILABLE = "total_unavailable"
+    NO_ARTICLES = "no_articles"
+    OUT_OF_RANGE = "out_of_range"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
+def _rate_coverage(
+    nodes: Sequence[CategoryNode],
+    folds: Mapping[int, ArticleFold],
+    rates: Mapping[int, ArticleRate],
+    grand_total: Decimal | None,
+    totals: Mapping[str, object],
+) -> dict:
+    """Строка охвата под таблицей паспорта (§2.8, §2.10): `articles_total`
+    (M) — размер неперекрывающегося набора, `articles_with_rate` (N) —
+    сколько из них со ставкой, `money_share` (K) — доля денег набора под
+    ставкой, `money_share_state` — какое из пяти состояний §2.8 к ней привело.
+
+    **Набор — антицепь дерева КЛАССИФИКАТОРА, не дерева видимости паспорта.**
+    Статья входит в набор, если у неё есть носитель (`ref.id in folds`) И у
+    неё НЕТ потомка-статьи с носителем; предок/потомок здесь читаются по
+    `node.ref.parent_id`, а не по `node.children` — то дерево видимости,
+    `build_tree` прячет в нём узлы без строк. Аргумент — `nodes`, а не
+    `refs`, и это следствие числителя: `CategoryRef` несёт только
+    идентификаторы, а деньги статьи лежат на `CategoryNode.total`. Список —
+    тот самый плоский, что `_flatten_categories` отдаёт под ключом
+    `categories`, поэтому «K = сумма видимых долей набора» верно ПО
+    ПОСТРОЕНИЮ: набор и колонка «Итого, ₽» считаны по одному списку. Статья с
+    носителем, не попавшая в этот список, — дефект сборки дерева, а не повод
+    молча досчитать её: набор строится по `nodes`, и без узла статья в набор
+    не попадёт.
+
+    **`covered` — сумма `node.total` (не `fold.amount`) статей набора со
+    состоянием `rate`.** «Деньги статьи» здесь — её итог из
+    `v_category_totals` (колонка «Итого, ₽»), а не сумма её строк-разделов, по
+    которой считается сама ставка (§2.2): взяв в числитель сумму носителя, мы
+    получили бы отношение двух разных путей к деньгам одной сметы. Частичный
+    итог статьи (не все её строки известны) K не гасит (DoD 33) — числитель и
+    знаменатель считают только известные деньги, как и любая другая доля
+    этого паспорта.
+
+    **Арифметика — под `localcontext(_RATE_CONTEXT)`** (Global Constraint 16):
+    и накопление `covered`, и сам вызов `_share_pct(covered, grand_total)`.
+    `_share_pct` делит в ambient-контексте и меняться не должна (`AGENTS.md`
+    §10 — она считает `share_pct` каждой строки паспорта, те обязаны остаться
+    посимвольно теми же), поэтому явный контекст ставится здесь, на стороне
+    вызова, а не внутри неё.
+
+    **Проверка 3 (знак знаменателя, ДО деления) не дублирует проверку 4
+    (диапазон результата, ПОСЛЕ деления, последней) — обе нужны порознь.**
+    Антицепь доказывает `K <= 100`, но только при неотрицательных суммах:
+    доказательство держится на том, что итог каждой статьи набора — итог её
+    попарно непересекающегося поддерева, а `CHECK`-а на знак
+    `position_items.total_cost_total` в схеме нет (`Numeric, nullable=True`,
+    миграция `0010` называет это открытым хвостом Ф4). Отрицательный
+    `grand_total` вместе с отрицательным `covered` даёт отношение, которое
+    ПОПАДАЕТ в 0..100 (`-50 / -100 * 100` — ровно 50 %), и проверка одного
+    результата такой случай пропускает — лист напечатал бы правдоподобный
+    процент по бессмысленным числам. Поэтому знак смотрится ДО деления
+    отдельной проверкой, а диапазон результата — ПОСЛЕДНЕЙ проверкой, на самом
+    результате, а не на сканировании входа: так она ловит и причины, не
+    перечисленные здесь, включая дефект самого набора.
+
+    **`money_share` квантуется до сотых процента** (§2.10, ревизия
+    «`money_share` квантуется») — тем же приёмом и по тому же доводу, что
+    `unit_rate`: частное почти никогда не представимо конечной дробью, и
+    печатать имеет смысл только то число, которое и печатается. Квантование
+    считается ЕЩЁ под `localcontext(_RATE_CONTEXT)` (сама операция —
+    округляющая и взводит `Inexact` на неконечном частном; вызывающий может
+    держать эту ловушку в своём ambient-контексте) и хранится ОТДЕЛЬНО от
+    неквантованного `money_share`.
+
+    **Внутри `with`-блока проверка 4 (диапазон результата) идёт ПЕРВОЙ, а
+    квантование — ПОСЛЕ неё, а не наоборот.** Квантование — форма ответа, а
+    не часть правила, но само оно арифметика: `Decimal.quantize` бросает
+    `InvalidOperation`, если квантованному результату не хватает разрядов
+    контекста (`prec = 100`), а `_RATE_CONTEXT` эту ловушку не снимает —
+    достаточно большая конечная доля (ровно то значение, которое проверка 4
+    обязана отвергнуть как `out_of_range`) валит квантователь исключением
+    раньше, чем правило успевает вернуть состояние. Значение, отвергнутое
+    проверкой 4, поэтому не должно попасть в квантователь вовсе: шаг
+    оформления ответа не имеет права переопределить исход правила падением.
+
+    **Ноль — не `no_articles`** (DoD 25): набор может быть непустым и без
+    единой ставки — тогда `covered = 0`, K = 0, «покрыто 0 %» правда, которую
+    надо напечатать. Каким состоянием окажется этот ноль (`complete` либо
+    `partial`), решает полнота сумм ВСЕГО паспорта (`totals["positions_rows_
+    priced"] < totals["positions_rows"]`), а не сам ноль и не только статьи
+    набора: знаменатель — цена договора целиком.
+    """
+    id_to_node = {node.ref.id: node for node in nodes}
+    parent_of = {node_id: node.ref.parent_id for node_id, node in id_to_node.items()}
+
+    carrier_ids = {node_id for node_id in id_to_node if node_id in folds}
+
+    # Статья исключена из набора, если у неё есть хотя бы один ПОТОМОК с
+    # носителем: помечаем всех ПРЕДКОВ каждого носителя, поднимаясь по
+    # `parent_of` до корня — эти предки антицепь не составляют.
+    #
+    # Подъём ограничен счётчиком шагов, той же защитой и по тому же доводу,
+    # что подъём по предкам в `_carrier_rows_by_category._shadowed_by_same_
+    # article_ancestor`: обе функции ходят по `parent_id`/`chapter_item_id`
+    # вверх по дереву, которое схема не защищает от цикла ДЛИННЕЕ одного шага
+    # (`ck_work_categories_not_self_parent` запрещает только самозамыкание), а
+    # чтение паспорта не имеет права зависнуть, если это когда-то перестанет
+    # быть так. Само вычисление (какие узлы затенены) счётчик не меняет.
+    shadowed: set[int] = set()
+    step_limit = len(id_to_node)
+    for carrier_id in carrier_ids:
+        ancestor = parent_of.get(carrier_id)
+        for _ in range(step_limit):
+            if ancestor is None:
+                break
+            shadowed.add(ancestor)
+            ancestor = parent_of.get(ancestor)
+
+    article_ids = carrier_ids - shadowed
+    articles_total = len(article_ids)
+    articles_with_rate = sum(
+        1
+        for article_id in article_ids
+        if (rate := rates.get(article_id)) is not None and rate.state is RateState.RATE
+    )
+
+    def _coverage(state: MoneyShareState, money_share: Decimal | None) -> dict:
+        return {
+            "articles_with_rate": articles_with_rate,
+            "articles_total": articles_total,
+            "money_share": money_share,
+            "money_share_state": state.value,
+        }
+
+    # Проверки 1-2 (§2.8): без знаменателя мерить нечем; на пустом наборе
+    # делить не придётся — обе идут раньше знака и диапазона.
+    if grand_total is None or grand_total == 0:
+        return _coverage(MoneyShareState.TOTAL_UNAVAILABLE, None)
+    if articles_total == 0:
+        return _coverage(MoneyShareState.NO_ARTICLES, None)
+    # Проверка 3 — знак ДО деления (см. докстроку выше про порядок с
+    # проверкой 4): отрицательный знаменатель уходит в `out_of_range`, не
+    # дожидаясь самого деления.
+    if grand_total < 0:
+        return _coverage(MoneyShareState.OUT_OF_RANGE, None)
+
+    with localcontext(_RATE_CONTEXT):
+        covered = Decimal(0)
+        for article_id in article_ids:
+            rate = rates.get(article_id)
+            if rate is None or rate.state is not RateState.RATE:
+                continue
+            node_total = id_to_node[article_id].total
+            if node_total is not None:
+                covered += node_total
+        money_share = _share_pct(covered, grand_total)
+        # Проверка 4 — на РЕЗУЛЬТАТЕ (см. докстроку выше): ловит выход за
+        # диапазон и по причинам, не перечисленным явно, включая дефект
+        # набора. Смотрит на НЕквантованное значение (§2.10, ревизия
+        # «money_share квантуется»). ОБЯЗАНА идти ДО квантования, а не после:
+        # значение, которое она отвергает, не должно попасть в
+        # `quantize_money` вовсе — на достаточно большой конечной доле
+        # `Decimal.quantize` бросает `InvalidOperation` (не хватает разрядов
+        # `prec = 100`), а `_RATE_CONTEXT` эту ловушку не снимает. Квантование
+        # после проверки — форма ответа; квантование ДО проверки превратило
+        # бы законный отказ («не подходит») в необработанное исключение.
+        if money_share is None or not (Decimal(0) <= money_share <= Decimal(100)):
+            return _coverage(MoneyShareState.OUT_OF_RANGE, None)
+        # `quantize_money` — квантизатор до двух знаков, а не только для
+        # денег: тех же двух знаков просит и лист (сотые доли процента), и
+        # приём здесь тот же, что у `unit_rate` (§2.10) — по той же причине:
+        # частное почти никогда конечно, печатать надо то, что видно. Вызов
+        # ЗДЕСЬ, ещё под `_RATE_CONTEXT` (без ловушки `Inexact`, в отличие от
+        # ставки-снаружи ambient): квантование САМО — округляющая операция и
+        # взводит `Inexact` на неконечном частном, а вызывающий этой функции
+        # может держать `Inexact` под ловушкой в своём ambient-контексте
+        # (ровно так делает тест на устойчивость к этой ловушке).
+        quantized_money_share = quantize_money(money_share)
+
+    if totals["positions_rows_priced"] < totals["positions_rows"]:
+        return _coverage(MoneyShareState.PARTIAL, quantized_money_share)
+    return _coverage(MoneyShareState.COMPLETE, quantized_money_share)
+
+
+# ---------------------------------------------------------------------------
 #  Паспорт проекта целиком (спека §2.6)
 # ---------------------------------------------------------------------------
 
@@ -1185,6 +1606,30 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         без задачи 8 (ветка тождества `restate_gross`). `delta_to_file_total`
         и `net_reconciliation` (правила 12, 17) не тронуты — они опираются на
         `raw_grand_total`/файловую базу, а не на ставку показа.
+    19. `categories[].unit`/`volume`/`unit_rate`/`rate_state`/`rate_note` —
+        автомат ставки статьи (спека §2.2–§2.5, §2.10, `_article_rates` /
+        `services.article_rates.resolve_rate`): состояние обязано быть у
+        КАЖДОГО узла, включая корни классификатора; клиент его не вычисляет.
+        `unit` — символ единицы независимо от состояния (уточнение У2);
+        `volume` — БЕЗ квантования (число из файла, не деньги); `unit_rate` —
+        `quantize_money` БЕЗУСЛОВНО, не `_quantize_if_restated`: правило 18
+        защищает СУЩЕСТВУЮЩИЕ поля ответа на непересчитанной смете, а
+        `unit_rate` дофичевой формы не имеет. Договор без сметы (правило 8)
+        отдаёт ту же форму: пять полей на каждом узле, `rate_state =
+        "no_carrier"`, остальные `None`.
+    20. `rate_coverage` — доля цены договора под статьями со ставкой (§2.8,
+        §2.10, `_rate_coverage`): `articles_total`/`articles_with_rate` —
+        размер неперекрывающегося набора (антицепь дерева классификатора,
+        §2.3) и сколько из него со ставкой; `money_share` — их деньги
+        (`CategoryNode.total`, НЕ `fold.amount`) на той же оси показа и от
+        того же знаменателя `grand_total`, что и все `share_pct` этой
+        таблицы, под явным `localcontext(_RATE_CONTEXT)`; `money_share_state`
+        — одно из пяти состояний §2.8, `NULL` у `money_share` в трёх из них.
+        Договор без сметы (правило 8) получает ту же форму:
+        `{"articles_with_rate": 0, "articles_total": 0, "money_share": None,
+        "money_share_state": "total_unavailable"}`, тем же путём через
+        `_rate_coverage` — знаменателя нет, и это ПЕРВАЯ проверка в её
+        цепочке.
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -1248,9 +1693,10 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         # ещё не загружен. Дерево статей всё равно полное — экран показывает
         # тот же скелет, что и для договора со сметой, просто без чисел.
         roots = build_tree(refs, {})
+        flat_nodes = _flatten_categories(roots)
         categories = [
-            _category_dict(node, None, None, {}, {}, restated_any=False)
-            for node in _flatten_categories(roots)
+            _category_dict(node, None, None, {}, {}, restated_any=False, rates={})
+            for node in flat_nodes
         ]
         return {
             "contract": contract_dict,
@@ -1292,6 +1738,13 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
             # быть той же, что при наличии сметы (правило 8), а классификатор
             # от наличия сметы не зависит вовсе (задача 4).
             "category_options": _category_options(refs),
+            # Та же форма, что и со сметой (правило 8, правило 20): без
+            # знаменателя `_rate_coverage` отдаёт `total_unavailable` первой
+            # же своей проверкой, не читая ни `folds`, ни `rates` (оба пусты).
+            "rate_coverage": _rate_coverage(
+                flat_nodes, {}, {}, None,
+                {"positions_rows": 0, "positions_rows_priced": 0},
+            ),
         }
 
     parser_version = db.execute(
@@ -1352,6 +1805,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
 
     extras_by_category, unallocated_extras = _extras_by_category(db, estimate.id)
     own_sections_by_category = _own_sections_by_category(db, estimate.id)
+    carrier_folds = _carrier_rows_by_category(db, estimate.id, effective_rate)
+    rates = _article_rates(refs, carrier_folds, extras_by_category)
 
     grand_total = _sum_known(*(node.total for node in roots), unallocated_amount)
     area_total = obj.area_total_sp
@@ -1409,10 +1864,15 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     categories = [
         _category_dict(
             node, grand_total, area_total, extras_by_category, own_sections_by_category,
-            restated_any=restated_any,
+            restated_any=restated_any, rates=rates,
         )
         for node in flat_nodes
     ]
+
+    # Знаменатель — тот же СЫРОЙ `grand_total`, что у всех `share_pct` этой
+    # таблицы (не `totals["amount"]`: тот уже квантован задачей 8, а
+    # `_share_pct` внутри `_rate_coverage` делит под явным контекстом сама).
+    rate_coverage = _rate_coverage(flat_nodes, carrier_folds, rates, grand_total, totals)
 
     return {
         "contract": contract_dict,
@@ -1423,4 +1883,5 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         "unallocated": unallocated_dict,
         "manual_assignments": _manual_assignments(db, estimate.id),
         "category_options": _category_options(refs),
+        "rate_coverage": rate_coverage,
     }

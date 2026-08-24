@@ -1,0 +1,476 @@
+<!--
+  Макет блока «объём и ставка» в таблице статей паспорта объекта
+  (`/api/v1/analytics/project-passport/{contract_id}`). Сделан ДО гейта 1.
+
+  ПРАВКА 24.08.2026, ПЯТАЯ РЕДАКЦИЯ. Хвост приведён к спеке: правило
+  уровней снято (§2.3 сохраняет ставки вложенных статей), сходимость больше не
+  «не определена» — она закрыта §2.4, гасится узел, а не договор. Идентификаторы
+  объектов (буквенно-цифровые коды корпусов) обезличены наравне с названиями.
+
+  ЧЕТВЁРТАЯ РЕДАКЦИЯ. Абсолютные суммы убраны — вместо
+  колонки «Сумма» стоит доля цены договора (её же показывает настоящий паспорт:
+  30,14 % у фасадных работ). Названия объектов обезличены до «Объект А…Ж»:
+  бриф фазы 7 §9 запрещает названия ЖК так же, как суммы; соответствие имён
+  живёт в стенде и в документ не выносится. Удельные величины — ₽ за единицу,
+  ₽/м², объёмы и доли — оставлены: рамка уточнена 24.08.2026 решением
+  пользователя, они разрешены, а без них замеры не проверяемы.
+
+  ПРАВКА 23.08.2026, ТРЕТЬЯ РЕДАКЦИЯ. По ревью: убраны реквизиты контрагента и
+  номер договора (DoD фазы 7 — реальные реквизиты не попадают в доки и коммиты);
+  исправлено «причин две» при трёх перечисленных; снято утверждение о
+  необъяснённой разнице итогов (она объяснена допработами тут же ниже);
+  добавлены незакрытые вопросы правила сходимости и объявлена ревизия рамки.
+
+  ВТОРАЯ РЕДАКЦИЯ. Первая редакция брала объём статьи как
+  СУММУ «предлагаемого количества» по нижним позициям — и это было неверно.
+  Под «Устройством навесного фасада» лежат корпуса, а под ними слои: подсистема
+  3 335,08 м² + утеплитель 6 413,10 + панели 7 914,60 + решётки 137,37, все по
+  одной стене. Сумма давала 50 089 м² вместо 19 545,81 и ставку 13 805 вместо
+  35 377. Порог разброса ставок эту ошибку НЕ ловил: «Светопрозрачные
+  конструкции 1 этажа» проходили его (1,3×) при объёме, завышенном на 17 %.
+  Правило исправлено: объём и сумма берутся С ТОЙ СТРОКИ, НА КОТОРОЙ СТОИТ КОД
+  СТАТЬИ. Проверка сходимости: 6.1 (1 475,64) + 6.2 (21 495,72) + 6.4
+  (19 545,81) = 42 517,17 — ровно объём «Фасадных работ» из сметы; 4.1
+  (14 706,97) + 4.2 (25 129,38) = 39 836,35 = «Конструктивные решения».
+
+  ДАННЫЕ НАСТОЯЩИЕ И ИЛЛЮСТРАТИВНОГО НЕТ НИЧЕГО — стенд `gca_dev` на
+  23.08.2026, договор генподряда по объекту А, исходная смета
+  ПОСЛЕ ПЕРЕЗАЛИВКИ файлом, у которого «предлагаемое количество» заполнено на
+  строках-разделах (128 разделов с объёмом против 0 у прежнего файла). Общая
+  площадь 75 741 м², база НДС 20 %.
+
+  ОСЬ ИЗМЕРЕНИЯ. Суммы и ставки — в ставке показа договора, как и весь паспорт
+  (`AGENTS.md` §10). Норматив объявлен ценой без НДС, поэтому ставку отсюда
+  нельзя переносить в норматив, не разделив на базу НДС.
+
+  Палитра, шрифтовые стеки и классы таблицы — из
+  `2026-08-19-comparison-cost-chart-mockup.html` без изменений.
+  Скрипта нет: макет статичный.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Объём и ставка в паспорте</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1280px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:68ch; }
+section { margin-bottom:38px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px;
+  text-wrap:balance; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:76ch; }
+.pass-head { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px;
+  padding:16px 18px; margin-bottom:14px; }
+.pass-head h3 { font-family:var(--font-serif); font-weight:600; font-size:26px; margin:0;
+  letter-spacing:-.01em; }
+.pass-head .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.tep { display:flex; flex-wrap:wrap; gap:22px; margin-top:13px; padding-top:13px;
+  border-top:1px solid var(--bd-subtle); }
+.tep div { display:flex; flex-direction:column; gap:1px; }
+.tep .k { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; }
+.tep .v { font-size:14px; font-variant-numeric:tabular-nums; }
+.axis { margin-top:13px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); }
+.axis b { color:var(--fg); }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px;
+  background:var(--surface); }
+table.pass { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.pass th, table.pass td { border-bottom:1px solid var(--bd-subtle); padding:7px 11px;
+  text-align:left; vertical-align:baseline; }
+table.pass thead th { background:var(--sechead); font-weight:600; vertical-align:bottom;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+table.pass th.art { min-width:340px; }
+table.pass td.num, table.pass th.num { text-align:right; font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+td.newcol, th.newcol { background:var(--sunken); }
+th.newcol.first, td.newcol.first { border-left:1px solid var(--bd); }
+td.rate { font-weight:600; }
+.code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+  color:var(--fg3); margin-right:6px; }
+.lvl1 { font-weight:600; }
+.lvl2 .t { padding-left:18px; font-weight:400; color:var(--fg2); }
+.lvl3 .t { padding-left:36px; font-weight:400; color:var(--fg2); }
+.pill { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px;
+  border:1px solid var(--neutral-bd); background:var(--neutral-soft); color:var(--neutral-text);
+  white-space:nowrap; }
+.pill.warn { border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }
+.dash { color:var(--fg4); }
+tr.total td, tr.total th { border-top:2px solid var(--fg); background:var(--sunken);
+  font-weight:600; }
+.axisnote { font-size:12px; color:var(--fg2); margin:13px 0 0; }
+.axisnote code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px; background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+.warnbox { font-size:12px; margin:13px 0 0; padding:9px 13px; border-radius:9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+ul.notes { margin:0; padding-left:19px; color:var(--fg2); font-size:13px; }
+ul.notes li { margin-bottom:9px; }
+ul.notes li:last-child { margin-bottom:0; }
+ul.notes b { color:var(--fg); }
+ul.notes code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px; background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+.bound { border-left:3px solid var(--info); background:var(--info-soft);
+  border-radius:0 8px 8px 0; padding:9px 13px; }
+.tag { display:inline-block; font-size:10.5px; border-radius:5px; padding:1px 7px;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+table.cov { border-collapse:separate; border-spacing:0; width:100%; max-width:660px;
+  font-size:13px; background:var(--surface); border:1px solid var(--bd-subtle);
+  border-radius:12px; overflow:hidden; }
+table.cov th, table.cov td { padding:7px 11px; border-bottom:1px solid var(--bd-subtle);
+  text-align:left; }
+table.cov thead th { background:var(--sechead); font-size:10.5px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--fg3); }
+table.cov td.num { text-align:right; font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет, пятая редакция.</strong>
+    <span>Объём и ставка берутся со строки, несущей код статьи. Числа — стенд
+    <code>gca_dev</code> на 23.08.2026, договор объекта А после перезаливки сметы.</span>
+    <span class="tag">иллюстративного нет ничего</span>
+  </div>
+
+  <h1>Объём и ставка в паспорте</h1>
+  <p class="sub">Паспорт отвечает, <b>сколько</b> стоила статья и сколько это на
+  квадратный метр объекта. Две новые колонки отвечают, <b>по какой ставке и за
+  какой объём</b> — там, где смета это говорит, и молчат там, где не говорит.</p>
+
+  <section>
+    <h2>Таблица статей</h2>
+    <p class="secsub">Объём и сумма — с той строки сметы, на которой стоит код
+    статьи. Не сумма нижних позиций: там под одной статьёй лежат слои по одной
+    поверхности, и их сложение даёт площадь, которой не существует.</p>
+
+    <div class="pass-head">
+      <h3>Объект А</h3>
+      <div class="meta">Договор генподряда · класс «Жилые — бизнес» ·
+      исходная смета</div>
+      <div class="tep">
+        <div><span class="k">Общая площадь</span><span class="v">75 741 м²</span></div>
+        <div><span class="k">Полезная площадь</span><span class="v dash">не заведена</span></div>
+        <div><span class="k">₽ на м² общей</span><span class="v">132 914</span></div>
+        <div><span class="k">Ставка НДС сметы</span><span class="v">20 %</span></div>
+      </div>
+      <p class="axis"><b>Суммы и ставки — в ставке НДС договора (20 %)</b>, как и
+      весь паспорт. Для сравнения с нормативом, который объявлен ценой без НДС,
+      ставку надо разделить на 1,20; на самом экране этого пересчёта нет
+      намеренно — два измерения на одном листе путают сильнее, чем помогают.</p>
+    </div>
+
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr>
+            <th class="art">Статья классификатора</th>
+            <th class="num">Доля</th>
+            <th class="num">₽/м² объекта</th>
+            <th class="num newcol first">Ед.</th>
+            <th class="num newcol">Объём</th>
+            <th class="num newcol">Ставка, ₽/ед.</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="lvl1"><td class="t"><span class="code">6</span>Фасадные работы</td>
+            <td class="num">30,14 %</td><td class="num">40 059</td>
+            <td class="num newcol first">м²</td><td class="num newcol">42 517,17</td>
+            <td class="num newcol rate">71 362</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">6.1</span>Светопрозрачные конструкции 1 этажа</td>
+            <td class="num">1,36 %</td><td class="num">1 803</td>
+            <td class="num newcol first">м²</td><td class="num newcol">1 475,64</td>
+            <td class="num newcol rate">92 563</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">6.2</span>Светопрозрачные конструкции типового этажа</td>
+            <td class="num">20,08 %</td><td class="num">26 692</td>
+            <td class="num newcol first">м²</td><td class="num newcol">21 495,72</td>
+            <td class="num newcol rate">94 050</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">6.3</span>Устройство навесного фасада 1 этажа</td>
+            <td class="num">0,88 %</td><td class="num">1 175</td>
+            <td class="num newcol first">м²</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill warn">объём в смете не указан</span></td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">6.4</span>Устройство навесного фасада типового этажа</td>
+            <td class="num">6,87 %</td><td class="num">9 129</td>
+            <td class="num newcol first">м²</td><td class="num newcol">19 545,81</td>
+            <td class="num newcol rate">35 377</td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">4</span>Конструктивные решения</td>
+            <td class="num">21,36 %</td><td class="num">28 394</td>
+            <td class="num newcol first">м³</td><td class="num newcol">39 836,35</td>
+            <td class="num newcol rate">53 986</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">4.1</span>Подземная часть. Конструктивные решения</td>
+            <td class="num">6,75 %</td><td class="num">8 971</td>
+            <td class="num newcol first">м³</td><td class="num newcol">14 706,97</td>
+            <td class="num newcol rate">46 203</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.1.1</span>Устройство фундаментной плиты</td>
+            <td class="num">2,21 %</td><td class="num">2 942</td>
+            <td class="num newcol first">м³</td><td class="num newcol">6 918,83</td>
+            <td class="num newcol rate">32 211</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.1.2</span>Устройство горизонтальных монолитных ж/б конструкций подземной части</td>
+            <td class="num">2,59 %</td><td class="num">3 448</td>
+            <td class="num newcol first">м³</td><td class="num newcol">5 099,03</td>
+            <td class="num newcol rate">51 217</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.1.3</span>Устройство вертикальных монолитных ж/б конструкций подземной части</td>
+            <td class="num">1,94 %</td><td class="num">2 581</td>
+            <td class="num newcol first">м³</td><td class="num newcol">2 689,11</td>
+            <td class="num newcol rate">72 693</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">4.2</span>Надземная часть. Конструктивные решения</td>
+            <td class="num">14,30 %</td><td class="num">19 001</td>
+            <td class="num newcol first">м³</td><td class="num newcol">25 129,38</td>
+            <td class="num newcol rate">57 269</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.2.1</span>Устройство горизонтальных монолитных конструкций 1-го этажа</td>
+            <td class="num">1,48 %</td><td class="num">1 969</td>
+            <td class="num newcol first">м³</td><td class="num newcol">2 835,28</td>
+            <td class="num newcol rate">52 597</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.2.2</span>Устройство вертикальных монолитных конструкций 1-го этажа</td>
+            <td class="num">0,68 %</td><td class="num">907</td>
+            <td class="num newcol first">м³</td><td class="num newcol">940,45</td>
+            <td class="num newcol rate">73 008</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.2.3</span>Устройство горизонтальных монолитных конструкций надземных этажей</td>
+            <td class="num">6,86 %</td><td class="num">9 118</td>
+            <td class="num newcol first">м³</td><td class="num newcol">13 731,55</td>
+            <td class="num newcol rate">50 294</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">4.2.4</span>Устройство вертикальных монолитных конструкций надземных этажей</td>
+            <td class="num">5,27 %</td><td class="num">7 007</td>
+            <td class="num newcol first">м³</td><td class="num newcol">7 622,10</td>
+            <td class="num newcol rate">69 628</td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">8</span>Отделочные работы (паркинг, надземная часть МОП)</td>
+            <td class="num">7,51 %</td><td class="num">9 978</td>
+            <td class="num newcol first">м²</td><td class="num newcol">25 296,97</td>
+            <td class="num newcol rate">29 875</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">8.1</span>Отделка подземной части (в т.ч. меблировка)</td>
+            <td class="num">1,93 %</td><td class="num">2 568</td>
+            <td class="num newcol first">м²</td><td class="num newcol">14 218,77</td>
+            <td class="num newcol rate">13 680</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">8.1.1</span>Отделка паркинг и рампы</td>
+            <td class="num">1,13 %</td><td class="num">1 502</td>
+            <td class="num newcol first">м²</td><td class="num newcol">9 882,59</td>
+            <td class="num newcol rate">11 513</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">8.2</span>Отделка надземной части (в т.ч. меблировка)</td>
+            <td class="num">3,95 %</td><td class="num">5 249</td>
+            <td class="num newcol first">м²</td><td class="num newcol">11 078,20</td>
+            <td class="num newcol rate">35 890</td></tr>
+          <tr class="lvl3"><td class="t"><span class="code">8.2.3</span>Лифтовые холлы и коридоры, тамбур-шлюзы</td>
+            <td class="num">3,02 %</td><td class="num">4 008</td>
+            <td class="num newcol first">м²</td><td class="num newcol">6 578,46</td>
+            <td class="num newcol rate">46 146</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">8.3</span>Устройство дверей, ворот, противопожарных штор</td>
+            <td class="num">1,63 %</td><td class="num">2 160</td>
+            <td class="num newcol first">шт</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill warn">объём в смете не указан</span></td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">9</span>Лифты, подъемники</td>
+            <td class="num">2,19 %</td><td class="num">2 905</td>
+            <td class="num newcol first">шт</td><td class="num newcol">10,00</td>
+            <td class="num newcol rate">22 000 000</td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">7</span>Кровля</td>
+            <td class="num">1,43 %</td><td class="num">1 896</td>
+            <td class="num newcol first">м²</td><td class="num newcol">9 146,13</td>
+            <td class="num newcol rate">15 699</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">7.1</span>Устройство кровли подземной части / стилобата</td>
+            <td class="num">0,67 %</td><td class="num">891</td>
+            <td class="num newcol first">м²</td><td class="num newcol">5 976,02</td>
+            <td class="num newcol rate">11 295</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">7.2</span>Устройство кровли зданий</td>
+            <td class="num">0,68 %</td><td class="num">898</td>
+            <td class="num newcol first">м²</td><td class="num newcol">3 170,11</td>
+            <td class="num newcol rate">21 446</td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">5</span>Общестроительные работы (без отделки)</td>
+            <td class="num">2,07 %</td><td class="num">2 757</td>
+            <td class="num newcol first">м²</td><td class="num newcol">42 330,57</td>
+            <td class="num newcol rate">4 932</td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">5.2</span>Устройство перегородок и стен надземной части</td>
+            <td class="num">1,67 %</td><td class="num">2 219</td>
+            <td class="num newcol first">м²</td><td class="num newcol">37 311,62</td>
+            <td class="num newcol rate">4 505</td></tr>
+
+          <tr class="lvl1"><td class="t"><span class="code">10</span>ВИС — механические системы</td>
+            <td class="num">10,95 %</td><td class="num">14 554</td>
+            <td class="num newcol first">м²</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill warn">объём в смете не указан</span></td></tr>
+          <tr class="lvl2"><td class="t"><span class="code">10.4</span>ОВ и К. Система отопления</td>
+            <td class="num">2,28 %</td><td class="num">3 029</td>
+            <td class="num newcol first">компл</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill">не нормируется</span></td></tr>
+          <tr class="lvl1"><td class="t"><span class="code">11</span>ВИС — электрические и слаботочные системы</td>
+            <td class="num">8,01 %</td><td class="num">10 640</td>
+            <td class="num newcol first">м²</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill warn">объём в смете не указан</span></td></tr>
+          <tr class="lvl1"><td class="t"><span class="code">1</span>Подготовительные работы, содержание площадки</td>
+            <td class="num">12,72 %</td><td class="num">16 912</td>
+            <td class="num newcol first">компл</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill">не нормируется</span></td></tr>
+          <tr class="lvl1"><td class="t"><span class="code">16</span>Разработка рабочей документации</td>
+            <td class="num">1,92 %</td><td class="num">2 546</td>
+            <td class="num newcol first">м²</td><td class="num newcol dash">—</td>
+            <td class="num newcol"><span class="pill warn">объём в смете не указан</span></td></tr>
+
+          <tr class="total"><td class="t">Итого по статьям
+            <span class="pill">включая дополнительные работы, 0,13 %</span></td>
+            <td class="num">100 %</td><td class="num">132 914</td>
+            <td class="num newcol first dash">—</td><td class="num newcol dash">—</td>
+            <td class="num newcol dash">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="axisnote">Под таблицей на самом экране стоит строка охвата:
+    <b>покрыто 62 % цены договора — ставка есть у 54 статей из 121 в
+    неперекрывающемся наборе</b>. Формулировка «ставка показана на 54 статьях»
+    была бы неверна: на экране ставок больше, потому что вложенные статьи
+    уточняют те же деньги и в наборе второй раз не считаются. Без этой строки
+    печатный лист читается как полный свод расценок. В таблице выше показаны
+    крупнейшие статьи; полный свод — в самом паспорте.</p>
+
+    <p class="warnbox">Итог включает <b>дополнительные работы</b>  — 0,13 % цены договора
+    («Гидроизоляция фундаментной плиты», ссылка на раздел 3.2.2). Это отдельный
+    блок сметы: у его строк есть сумма и ссылка на раздел, но нет ни единицы, ни
+    объёма. Свод паспорта их учитывает (<code>v_category_totals</code> добавляет
+    их через <code>UNION ALL</code> с пометкой источника), поэтому итог равен цене
+    договора, а не сумме позиций.</p>
+  </section>
+
+  <section>
+    <h2>Когда клетка пуста</h2>
+    <p class="secsub">Состояний девять плюс саму ставку, и они образуют автомат
+    со строгим приоритетом — полный список в спеке, §2.5. Ниже — четыре, которые
+    встречаются на этом договоре; смешивать их нельзя, за ними разные действия.
+    Прежнего порога разброса среди них нет: он был защитой от ошибки в объёмах и
+    с правильным носителем не нужен.</p>
+    <ul class="notes">
+      <li><b>«не нормируется»</b> — единица не масштабируется: «компл», «мес».
+      Ставка за комплект равна цене всего пакета работ на объекте и ни с чем не
+      сравнима: у «Содержания площадки» это один комплект на весь объект. А вот
+      «штука» теперь работает — у лифтов стоит настоящий объём, 10 штук, и
+      ставка 22 млн ₽ за лифт сравнима между объектами.</li>
+      <li><b>«объём в смете не указан»</b> — статья есть, единица физическая, а
+      количества на её строке нет. Так у «Разработки рабочей документации»
+      (единица м², а объём пуст), у «ВИС» и у «Устройства навесного фасада
+      1 этажа». Подставлять сумму нижних позиций вместо него нельзя — именно эта
+      подстановка и дала в первой редакции 50 089 м² фасада вместо 19 545,81.
+      Пустая клетка здесь — приглашение дозаполнить смету, а не ошибка расчёта.</li>
+      <li><b>«дополнительные работы»</b> — состояние, которое
+      неустраним по природе данных: у этих строк есть сумма и раздел, но единицы
+      и объёма нет вовсе. у объекта А это 0,13 % цены договора, у объекта Ж
+      0,34 %, у объекта В 0,70 % (там одна строка «Пол»). Ставку по ним показать нельзя
+      никогда, и это надо отличать от «объём в смете не указан», где данные
+      дозаполнимы.</li>
+      <li><b>Проверка сходимости — часть правила, а не примечание.</b> Объёмы
+      статей одного уровня складываются в объём родителя: 1 475,64 + 21 495,72 +
+      19 545,81 = 42 517,17 у фасадов; 14 706,97 + 25 129,38 = 39 836,35 у
+      конструктива. Перебор над объёмом родителя гасит ставку <b>этого узла</b> —
+      не договора и не детей: у детей объёмы свои, и они остаются в силе.
+      Недобор законен: не все дети несут код статьи.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Что видно на этих числах</h2>
+    <table class="cov">
+      <thead><tr><th>Объект</th><th class="num">Статей</th><th class="num">Со ставкой</th><th class="num">Покрыто денег</th></tr></thead>
+      <tbody>
+        <tr><td>Объект А</td><td class="num">121</td><td class="num">54</td><td class="num">62,1 %</td></tr>
+        <tr><td>Объект В</td><td class="num">130</td><td class="num">57</td><td class="num">60,9 %</td></tr>
+        <tr><td>Объект Б</td><td class="num">149</td><td class="num">71</td><td class="num">57,7 %</td></tr>
+        <tr><td>Объект Г</td><td class="num">66</td><td class="num">33</td><td class="num">32,6 %</td></tr>
+        <tr><td>Объект Д</td><td class="num">181</td><td class="num">0</td><td class="num">0 %</td></tr>
+        <tr><td>Объекты Е и Ж</td><td class="num">—</td><td class="num">—</td><td class="num">0 %</td></tr>
+      </tbody>
+    </table>
+    <ul class="notes" style="margin-top:16px">
+      <li><b>Перезаливка сметы правильным файлом меняет всё.</b> у объекта А было ноль
+      разделов с объёмом, стало 128, и покрытие выросло с 25 % (по сломанному
+      правилу) до 62 % — при том, что суммы в смете не изменились ни на рубль.
+      Рычаг фичи — заполненные «предлагаемые количества» на строках-разделах,
+      а не настройки в коде.</li>
+      <li><b>Пустые объекты пусты по разным причинам.</b> у объекта Д статьи есть
+      (181), а объёмов на их строках нет вовсе. у объектов Е и Ж нет самих статей:
+      у первого разнос сделан вручную по корням, у второго не сделан. Экран
+      обязан различать эти два случая — иначе пустой блок читается как «работ
+      нет».</li>
+      <li><b>Цена и геометрия наконец разделились.</b> Фасад объекта А — 71 362 ₽/м²
+      при 42 517,17 м² на объект 75 741 м², то есть 0,561 м² фасада на м²
+      объекта. у объекта Б — 54 490 ₽/м² при 111 892,56 м² на 174 329 м², то есть
+      0,642. Фасада на метр объекта почти столько же (+14 %), а метр фасада
+      дороже у объекта А на 31 %. Первое — проектное решение, второе — предмет торга,
+      и по одному числу ₽/м² объекта их было не различить.</li>
+      <li class="bound"><b>Границы макета.</b> Печатная раскладка не проверена:
+      две новые колонки расширяют таблицу, а у паспорта есть обещание печати без
+      обрезки по правому краю (§7.4, DoD), и проверяется оно только замером в
+      браузере. Ставки в ставке показа договора — перенос в норматив без деления
+      на базу НДС даст ошибку в её размер.</li>
+
+      <li class="bound"><b>Правило сходимости закрыто спекой, §2.4 —
+      недобор законен, перебор запрещён.</b> Дети не обязаны нести код статьи,
+      поэтому равенство требовать нельзя; ошибка — только превышение объёма
+      родителя, оно и означает задвоение. Гасится при этом ставка <b>узла</b>, а
+      не всего договора: у детей ставки остаются. Смешение единиц выясняется
+      предикатом по единицам до всякой арифметики: сумма квадратных метров с
+      комплектами размерности не имеет, и совпадение с объёмом родителя было бы
+      случайным — у объекта Б в объём фасада как раз входит строка «Прочее» в
+      комплектах.</li>
+
+      <li class="bound"><b>Фича — осознанная ревизия рамки фазы 7.</b> Там, в
+      «Вне скоупа v1», пункт 2 говорит: «LLM-контур ключевых объёмов — не
+      строится; колонки „объём“ в паспорте нет». Основание снято новым фактом:
+      объём берётся из самой сметы, со строки статьи, и LLM для этого не нужен
+      вовсе. Пункт помечен «не пересматривать молча» — значит ревизию надо
+      объявить в спеке и внести в рамку, а не молча обойти макетом.</li>
+    </ul>
+  </section>
+
+</div>
+</body>
+</html>
