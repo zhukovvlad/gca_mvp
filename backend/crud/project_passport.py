@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -47,7 +47,14 @@ from parser.constants import (
     JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
     JSON_KEY_TOTAL_COST_INCLUDING_VAT,
 )
-from services.article_rates import ArticleFold, CarrierRow, fold_carrier_rows
+from services.article_rates import (
+    ArticleFold,
+    ArticleRate,
+    CarrierRow,
+    RateState,
+    fold_carrier_rows,
+    resolve_rate,
+)
 from services.category_rollup import (
     SOURCE_ADDITIONAL_WORKS,
     SOURCE_POSITIONS,
@@ -477,6 +484,62 @@ def _carrier_rows_by_category(
 
 
 # ---------------------------------------------------------------------------
+#  Ставка статьи на каждом узле свода (спека §2.2-§2.5, §2.10)
+# ---------------------------------------------------------------------------
+
+#: Свёртка отсутствующей статьи — та же пустая свёртка, что `fold_carrier_rows`
+#: отдаёт на пустом списке строк; ставка НДС во втором аргументе не читается на
+#: пустом входе (`fold_carrier_rows` формы выше), поэтому `None` здесь — не
+#: решение об НДС, а просто незначащий аргумент.
+_EMPTY_ARTICLE_FOLD = fold_carrier_rows([], None)
+
+
+def _article_rates(
+    refs: Sequence[CategoryRef],
+    folds: Mapping[int, ArticleFold],
+    extras_by_category: Mapping[int, list[dict]],
+) -> dict[int, ArticleRate]:
+    """Автомат ставки статьи (`services.article_rates.resolve_rate`) для КАЖДОЙ
+    статьи справочника — состояние обязано быть у каждого узла свода, включая
+    корни классификатора (§2.5).
+
+    `children_by_parent` строится из `refs` — дерева КЛАССИФИКАТОРА
+    (`CategoryRef.parent_id`), а не из видимого дерева паспорта: узел без
+    собственных строк всё равно обязан участвовать в проверке сходимости
+    родителя, если у него есть ставка (`_carrier_rows_by_category` строит
+    свёртки независимо от видимости узла в дереве паспорта).
+
+    `children` — свёртки ПРЯМЫХ детей статьи, у которых известен объём
+    (`fold.volume is not None`, §2.4: «дети с объёмом»). Фильтр обязателен, а
+    не защита от дурака: `convergence_note` складывает `child.volume` без
+    проверки на `None` по правилу «вызывающий уже отфильтровал» — необходимый
+    объём. Прямые дети, а не все потомки: спека говорит «дети», и пропущенный
+    внук недобора не портит (недобор — норма, §2.4).
+
+    Статья без строки-носителя (`folds.get(id)` пуст) получает пустую свёртку
+    `_EMPTY_ARTICLE_FOLD`; `has_extras` — есть ли у статьи строки дополнительных
+    работ (`_extras_by_category`) — решает между `no_carrier` и
+    `additional_works` внутри `resolve_rate` (§2.5, состояния 1-2).
+    """
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for ref in refs:
+        if ref.parent_id is not None:
+            children_by_parent[ref.parent_id].append(ref.id)
+
+    rates: dict[int, ArticleRate] = {}
+    for ref in refs:
+        fold = folds.get(ref.id, _EMPTY_ARTICLE_FOLD)
+        has_extras = bool(extras_by_category.get(ref.id))
+        children = [
+            child_fold
+            for child_id in children_by_parent.get(ref.id, ())
+            if (child_fold := folds.get(child_id)) is not None and child_fold.volume is not None
+        ]
+        rates[ref.id] = resolve_rate(fold, has_extras=has_extras, children=children)
+    return rates
+
+
+# ---------------------------------------------------------------------------
 #  Валовое ИТОГО сметы и ставка НДС (спека §2.5, правила 1-2, 5-6)
 # ---------------------------------------------------------------------------
 
@@ -678,6 +741,14 @@ def _quantize_if_restated(value: Decimal | None, restated_any: bool) -> Decimal 
     return quantize_money(value) if restated_any else value
 
 
+#: Ставка отсутствующей статьи на пути БЕЗ сметы (`estimate is None`) — та же
+#: ФОРМА ответа на обоих путях функции (правило 8): пять полей ставки на месте,
+#: `rate_state = "no_carrier"`, остальные `None` (§2.10). Реальный автомат
+#: (`_article_rates`) на этом пути не вызывается — сметы нет, строк-носителей
+#: нет ни у одной статьи, и это ровно тот же исход, к которому он пришёл бы.
+_NO_ESTIMATE_RATE = ArticleRate(state=RateState.NO_CARRIER, note=None, unit=None, volume=None, unit_rate=None)
+
+
 def _category_dict(
     node: CategoryNode,
     grand_total,
@@ -685,8 +756,10 @@ def _category_dict(
     extras_by_category: dict[int, list[dict]],
     own_sections_by_category: dict[int, list[dict]],
     restated_any: bool,
+    rates: Mapping[int, ArticleRate],
 ) -> dict:
     ref = node.ref
+    rate = rates.get(ref.id, _NO_ESTIMATE_RATE)
     return {
         "id": ref.id,
         "code": ref.code,
@@ -706,6 +779,19 @@ def _category_dict(
         "own_rows_not_finite": node.own_rows_not_finite,
         "extras": extras_by_category.get(ref.id, []),
         "own_sections": own_sections_by_category.get(ref.id, []),
+        # Пять полей ставки статьи (§2.2-§2.5, §2.10): `unit` — символ единицы,
+        # независимо от состояния (уточнение У2); `volume` — БЕЗ квантования,
+        # это число из файла, а не деньги; `unit_rate` — `quantize_money`
+        # БЕЗУСЛОВНО, а не `_quantize_if_restated`: тождество §10 AGENTS.md
+        # защищает СУЩЕСТВУЮЩИЕ поля ответа на непересчитанной смете, а
+        # `unit_rate` заводится этой фичей и дофичевой формы не имеет; без
+        # округления при `prec = 100` (`services.article_rates`) в ответ уехало
+        # бы почти никогда не конечное частное.
+        "unit": rate.unit,
+        "volume": rate.volume,
+        "unit_rate": quantize_money(rate.unit_rate),
+        "rate_state": rate.state.value,
+        "rate_note": rate.note.value if rate.note else None,
     }
 
 
@@ -1310,6 +1396,20 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         без задачи 8 (ветка тождества `restate_gross`). `delta_to_file_total`
         и `net_reconciliation` (правила 12, 17) не тронуты — они опираются на
         `raw_grand_total`/файловую базу, а не на ставку показа.
+    19. `categories[].unit`/`volume`/`unit_rate`/`rate_state`/`rate_note` —
+        автомат ставки статьи (спека §2.2–§2.5, §2.10, `_article_rates` /
+        `services.article_rates.resolve_rate`): состояние обязано быть у
+        КАЖДОГО узла, включая корни классификатора; клиент его не вычисляет.
+        `unit` — символ единицы независимо от состояния (уточнение У2);
+        `volume` — БЕЗ квантования (число из файла, не деньги); `unit_rate` —
+        `quantize_money` БЕЗУСЛОВНО, не `_quantize_if_restated`: правило 18
+        защищает СУЩЕСТВУЮЩИЕ поля ответа на непересчитанной смете, а
+        `unit_rate` дофичевой формы не имеет. Договор без сметы (правило 8)
+        отдаёт ту же форму: пять полей на каждом узле, `rate_state =
+        "no_carrier"`, остальные `None`.
+    20. `rate_coverage` — доля цены договора под статьями со ставкой (§2.8,
+        §2.10): контракт объявлен этим номером правила; ключ ответа и его
+        значение реализация добавит позже, в рамках той же спеки.
     """
     row = db.execute(
         sa.select(Contract, ObjectModel, Contractor.title, RateClass.title)
@@ -1374,7 +1474,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
         # тот же скелет, что и для договора со сметой, просто без чисел.
         roots = build_tree(refs, {})
         categories = [
-            _category_dict(node, None, None, {}, {}, restated_any=False)
+            _category_dict(node, None, None, {}, {}, restated_any=False, rates={})
             for node in _flatten_categories(roots)
         ]
         return {
@@ -1477,6 +1577,8 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
 
     extras_by_category, unallocated_extras = _extras_by_category(db, estimate.id)
     own_sections_by_category = _own_sections_by_category(db, estimate.id)
+    carrier_folds = _carrier_rows_by_category(db, estimate.id, effective_rate)
+    rates = _article_rates(refs, carrier_folds, extras_by_category)
 
     grand_total = _sum_known(*(node.total for node in roots), unallocated_amount)
     area_total = obj.area_total_sp
@@ -1534,7 +1636,7 @@ def get_project_passport(db: Session, contract_id: int) -> dict:
     categories = [
         _category_dict(
             node, grand_total, area_total, extras_by_category, own_sections_by_category,
-            restated_any=restated_any,
+            restated_any=restated_any, rates=rates,
         )
         for node in flat_nodes
     ]
