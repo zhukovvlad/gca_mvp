@@ -85,7 +85,7 @@ docs поверх `main` (`310c6bf`), дерево чистое. Новой ве
 | **Р3** | `check_estimate_layout` теряет параметр `ws` | после перехода на набор ключей функция не читает ни одной ячейки; диаграмма §2.5 иллюстрирует порядок вызовов, а не сигнатуру |
 | **Р4** | новый модуль `parser/resolve_contractor.py`; `GP_EXPECTED_KEYS` живёт в `layout.py` | докстрока `layout.py` объявляет его домом предупреждений; отказы там жить не могут |
 | **Р5** | подписи одиночных колонок и два префикса групп — константы в `constants.py`; подписи внутри групп (`Материалы`…) — словарём в `resolve_contractor.py` | `constants.py` — объявленный дом текстовых маркеров; `TABLE_PARSE_SUGGESTED_QUANTITY` переиспользуется, а не дублируется |
-| **Р6** | «Комментарий участника» в замеренных файлах НЕ объединён по вертикали: подпись лежит в верхнем ярусе, нижний пуст | замер ниже; таблица §2.3 спеки называет его объединённым — правило 2 («нижний, если непуст; иначе верхний») покрывает оба начертания, код на объединение комментария не полагается |
+| **Р6** | «Комментарий участника» в замеренных файлах НЕ объединён по вертикали: подпись лежит в верхнем ярусе, нижний пуст | замер ниже; прежняя таблица §2.3 спеки содержала ложный замер и **исправлена ревизией 25.08.2026 (гейт 3)** — план следует исправленной спеке; правило 2 покрывает оба начертания, код на объединение комментария не полагается, но поддерживает его |
 | **Р7** | снимки и сравнение классов — скриптами `backend/scripts/` (см. задачи 1 и 7), вывод — счётчики и дайджесты | реальные файлы и их JSON не коммитятся; pytest-прогон по samples/ уже существует и остаётся |
 
 ---
@@ -162,6 +162,7 @@ tc.total`):
 | `FIXTURE_CONTRACTOR`, `_independent_total_with_vat` | `backend/tests/integration/test_import_fixture_e2e.py` | существует, правится задачей 3 |
 | `_ALLOWED_SKIPS` | `backend/tests/conftest.py` | существует, **не правится** — новых samples-зависимых pytest-файлов план не заводит |
 | `scripts/measure_vat_aggregation.py` | `backend/scripts/` | существует как образец оформления скрипта |
+| `_money` (строки 179–197), `_text` (строка 249), `_import_positions` (строка 946) | `backend/services/estimate_import.py` | существует, **не меняется** — тесты зовут функции как есть |
 | `resolve_contractor`, `BlockLayout`, `ResolvedContractor`, `COLUMN_KEY_BY_PAIR`, `REQUIRED_COLUMN_KEYS`, `OPTIONAL_COLUMN_KEYS`, `_header_merge_map` | `backend/parser/resolve_contractor.py` | **заводится задачей 2** |
 | `TABLE_PARSE_UNIT_COST_GROUP_PREFIX`, `TABLE_PARSE_TOTAL_COST_GROUP_PREFIX`, `TABLE_PARSE_ORGANIZER_QUANTITY_LABEL`, `TABLE_PARSE_COMMENT_CONTRACTOR_LABEL`, `TABLE_PARSE_DEVIATION_COLUMN_LABEL` | `backend/parser/constants.py` | **заводится задачей 2** |
 | `GP_EXPECTED_KEYS` | `backend/parser/layout.py` | **заводится задачей 3** |
@@ -226,12 +227,21 @@ tc.total`):
 - Produces: снимок `{sha256}.json` на каждый xlsx: `{"relpath", "parser_version",
   "status": "ok"|"error", "error", "warnings", "data"}`; `data` сериализован
   `json.dumps(..., ensure_ascii=False, indent=1)` — эта сериализация и есть
-  предмет побайтного сравнения задачи 6.
+  предмет побайтного сравнения задачи 6. Рядом — `manifest.json`:
+  `{"label", "git_head", "parser_tree", "dirty", "parser_version", "count",
+  "digests"}`; его проверяет `compare_parse_snapshots` (задача 6).
+
+Базовый коммит фичи — `310c6bf3db20528fb1e1ce85de963b1bafdd4daf`
+(`BASELINE_COMMIT`); дерево парсера в нём —
+`git rev-parse 310c6bf3db20528fb1e1ce85de963b1bafdd4daf:backend/parser` =
+`ff8b7b3f65ce9922d75ec12977fa100be9a58b83`. Эталон «до» привязывается к этому
+коммиту, а не к подвижному `origin/main`.
 
 - [ ] **Step 1: убедиться, что парсер не тронут веткой**
 
-Run: `git diff origin/main --stat -- backend/`
-Expected: пусто. Непусто — остановиться и разобраться до любого снимка.
+Run: `git diff 310c6bf3db20528fb1e1ce85de963b1bafdd4daf --stat -- backend/ && git status --porcelain -- backend/`
+Expected: обе части пусты. Непусто — остановиться и разобраться до любого
+снимка: эталон обязан быть снят кодом базового коммита.
 
 - [ ] **Step 2: написать скрипт снимка**
 
@@ -242,7 +252,12 @@ Expected: пусто. Непусто — остановиться и разоб�
 Запуск из backend/:
     PYTHONIOENCODING=utf-8 uv run python -m scripts.snapshot_parse_samples before
 
-Пишет по одному JSON на файл в samples/_snapshots/<метка>/<sha256>.json.
+Пишет по одному JSON на файл в samples/_snapshots/<метка>/<sha256>.json плюс
+manifest.json с происхождением снимка (коммит, дерево backend/parser, версия
+парсера, дайджесты). Непустая метка НЕ перезаписывается без --force: снимок
+«до» — единственный эталон побайтного сравнения, и повторный запуск кодом
+«после» уничтожил бы его молча, дав ложнозелёное сравнение.
+
 Каталог /samples целиком в .gitignore — снимки не коммитятся. В консоль
 печатаются только счётчики и дайджесты: имена файлов несут реквизиты
 контрагентов и в вывод не попадают (AGENTS.md §9).
@@ -251,13 +266,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-from parser import parse_estimate
+from parser import PARSER_VERSION, parse_estimate
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLES_DIR = REPO_ROOT / "samples"
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
 def snapshot_one(path: Path) -> dict:
@@ -278,26 +300,51 @@ def snapshot_one(path: Path) -> dict:
 
 def main() -> int:
     label = sys.argv[1]
+    force = "--force" in sys.argv[2:]
     out_dir = SAMPLES_DIR / "_snapshots" / label
+    if out_dir.is_dir() and any(out_dir.iterdir()) and not force:
+        print(f"метка «{label}» уже содержит снимок; перезапись только с --force")
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
+
     counts = {"ok": 0, "error": 0}
+    digests: list[str] = []
     for path in sorted(SAMPLES_DIR.rglob("*.xlsx")):
         if path.name.startswith("~$") or "_snapshots" in path.parts:
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digests.append(digest)
         payload = snapshot_one(path)
         (out_dir / f"{digest}.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
         )
         counts[payload["status"]] += 1
         print(digest[:12], payload["status"])
-    print(f"итого: ok={counts['ok']} error={counts['error']}")
+
+    manifest = {
+        "label": label,
+        "git_head": _git("rev-parse", "HEAD"),
+        "parser_tree": _git("rev-parse", "HEAD:backend/parser"),
+        "dirty": bool(_git("status", "--porcelain", "--", "backend/parser")),
+        "parser_version": PARSER_VERSION,
+        "count": len(digests),
+        "digests": sorted(digests),
+    }
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(f"итого: ok={counts['ok']} error={counts['error']} "
+          f"parser={manifest['parser_version']} dirty={manifest['dirty']}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
+
+`parser_tree` в manifest — хеш дерева `backend/parser` на HEAD; вместе с
+`dirty` он привязывает снимок к конкретному состоянию кода, а не к моменту
+запуска. Снимок с `dirty=true` сравнение задачи 6 отвергает.
 
 - [ ] **Step 3: прогнать снимок «до»**
 
@@ -308,11 +355,15 @@ Expected: 27 строк-дайджестов; **ok=21, error=6** — 18 файл
 без тендерной шапки. Любое другое соотношение — записать фактическое и сверить
 руками с классами §7 до продолжения.
 
-- [ ] **Step 4: зафиксировать счётчики**
+- [ ] **Step 4: проверить происхождение эталона**
 
-Счётчики и шесть дайджестов отказов записать во временный раздел этого плана не
-надо — они пойдут в devlog задачей 6. Проверить, что `git status` не показывает
-ничего из `samples/`.
+Run: `cat ../samples/_snapshots/before/manifest.json` (из backend/)
+Expected: `"parser_tree": "ff8b7b3f65ce9922d75ec12977fa100be9a58b83"` (дерево
+парсера базового коммита), `"dirty": false`, `"parser_version": "3.1.0"`,
+`"count": 27`. Расхождение — снимок снят не тем кодом, пересдать.
+
+Счётчики и шесть дайджестов отказов пойдут в devlog задачей 6. Проверить, что
+`git status` не показывает ничего из `samples/`.
 
 - [ ] **Step 5: Commit**
 
@@ -1667,7 +1718,70 @@ class TestMultiContractorSheet:
 Run: `cd backend && uv run pytest tests/unit/parser -q`
 Expected: PASS.
 
-- [ ] **Step 5: снятие защиты предупреждения о лишнем ключе**
+- [ ] **Step 5: выполняемый путь парсер → импорт для ширины 10**
+
+Вывод «ключа нет → предупреждению не из чего родиться» правдоподобен, но
+поведение `import_jobs.warnings` он не исполняет. Исполняем: значения позиции
+читаются ТЕМИ ЖЕ функциями, какими их читает `_import_positions`
+(`services/estimate_import.py`: `_money` — строки 179–197, `_text`, чтение
+поля — строка 1005), без БД. В `test_estimate.py`:
+
+```python
+class TestWidthTenReachesImportCleanly:
+    """Третий пункт дельты класса 2 (§7): ложное «значение не число» исчезло.
+    Проверяется исполнением реального пути значения, а не выводом из отсутствия
+    ключа: parse_worksheet → позиция → services.estimate_import._money/_text —
+    ровно те вызовы, из которых _import_positions собирает PositionItem."""
+
+    @staticmethod
+    def _parsed_width_ten_position():
+        ws = gp_sheet(KEYS_10)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        ws.cell(row=12, column=19, value="таймлайн уточним")  # 10-я колонка блока
+        return _positions(parse_worksheet(ws))["2"]
+
+    def test_no_false_warning_and_the_comment_survives(self):
+        from services.estimate_import import _money, _text
+
+        position = self._parsed_width_ten_position()
+        value_problems: list[str] = []
+
+        organizer = _money(
+            position.get(JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST), value_problems, "позиция «2»"
+        )
+
+        assert organizer is None
+        assert value_problems == []
+        assert _text(position.get(JSON_KEY_COMMENT_CONTRACTOR)) == "таймлайн уточним"
+
+    def test_the_old_shape_did_produce_the_false_warning(self):
+        """Контроль наблюдаемости: тот же путь на СТАРОЙ форме позиции
+        (комментарий под денежным ключом) даёт ровно то предупреждение, чьё
+        исчезновение утверждает тест выше. Без контроля пустой value_problems
+        мог бы означать «смотреть было нечем»
+        (docs/insights/unobservable-in-the-runner.md)."""
+        from services.estimate_import import _money
+
+        value_problems: list[str] = []
+        result = _money("таймлайн уточним", value_problems, "позиция «2»")
+
+        assert result is None
+        assert value_problems == [
+            "позиция «2»: значение «таймлайн уточним» не число, записано NULL"
+        ]
+```
+
+Импорты `JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST`, `JSON_KEY_COMMENT_CONTRACTOR`
+добавить в шапку test_estimate.py; `services.estimate_import` импортируется
+внутри тестов — модульный импорт тянет SQLAlchemy-слои, парсерному файлу
+тестов он на уровне модуля не нужен. Код сервиса НЕ меняется.
+
+Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -k WidthTenReachesImport -v`
+Expected: PASS оба.
+
+- [ ] **Step 6: снятие защиты предупреждения о лишнем ключе**
 
 В `check_estimate_layout` временно удалить две строки
 `if extra: parts.append(...)`. Expected:
@@ -1675,11 +1789,11 @@ Expected: PASS.
 остальное зелёное. Вернуть, прогнать — зелёное. Так доказано, что «лишний
 deviation — тоже отличие» стережёт именно тест, а не совпадение.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/tests/unit/parser
-git commit -m "test(parser-columns): перестановка колонок, многоподрядный лист, судьба % от р/с"
+git commit -m "test(parser-columns): перестановка, многоподрядный лист, % от р/с, путь до импорта"
 ```
 
 ---
@@ -1745,8 +1859,16 @@ git commit -m "refactor(parser-columns): ширина больше не несё
 
 - [ ] **Step 1: снимок «после»**
 
+Прогонять на ЗАКОММИЧЕННОМ дереве (после коммита задачи 5): manifest снимает
+`git rev-parse HEAD:backend/parser` и `dirty`, грязный снимок сравнение
+отвергнет. Метку `before` не трогать — скрипт и сам откажется писать в неё без
+`--force`, но `--force` на `before` законен только для пересдачи эталона с
+кода базового коммита.
+
 Run: `cd backend && PYTHONIOENCODING=utf-8 uv run python -m scripts.snapshot_parse_samples after`
-Expected: `ok=22 error=5` — сводная таблица перешла из отказа в разбор.
+Expected: `ok=22 error=5` — сводная таблица перешла из отказа в разбор;
+в `manifest.json` метки `after`: `"parser_version": "4.0.0"`, `"dirty": false`,
+`"count": 27`.
 
 - [ ] **Step 2: скрипт сравнения**
 
@@ -1767,15 +1889,48 @@ Expected: `ok=22 error=5` — сводная таблица перешла из 
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-SNAPSHOTS_DIR = Path(__file__).resolve().parents[2] / "samples" / "_snapshots"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SNAPSHOTS_DIR = REPO_ROOT / "samples" / "_snapshots"
 EXPECTED_COUNTS = {"class1": 18, "class2": 3, "class3": 1, "class4": 5}
+
+#: База фичи: эталон «до» обязан быть снят деревом парсера ЭТОГО коммита,
+#: а не тем, что окажется в origin/main на момент сравнения.
+BASELINE_COMMIT = "310c6bf3db20528fb1e1ce85de963b1bafdd4daf"
+BASELINE_PARSER_VERSION = "3.1.0"
+AFTER_PARSER_VERSION = "4.0.0"
 
 
 def dumps(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
+
+
+def check_manifests(before_dir: Path, after_dir: Path) -> list[str]:
+    """Происхождение снимков. Любая строка в ответе — отказ от сравнения:
+    сравнивать подделанный или пересданный не тем кодом эталон бессмысленно."""
+    problems: list[str] = []
+    before = json.loads((before_dir / "manifest.json").read_text(encoding="utf-8"))
+    after = json.loads((after_dir / "manifest.json").read_text(encoding="utf-8"))
+    baseline_tree = subprocess.run(
+        ["git", "rev-parse", f"{BASELINE_COMMIT}:backend/parser"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if before["parser_tree"] != baseline_tree:
+        problems.append("эталон «до» снят не деревом базового коммита")
+    if before["parser_version"] != BASELINE_PARSER_VERSION:
+        problems.append(f"версия «до» {before['parser_version']} ≠ {BASELINE_PARSER_VERSION}")
+    if after["parser_version"] != AFTER_PARSER_VERSION:
+        problems.append(f"версия «после» {after['parser_version']} ≠ {AFTER_PARSER_VERSION}")
+    if before["dirty"] or after["dirty"]:
+        problems.append("снимок снят при грязном backend/parser")
+    if before["digests"] != after["digests"]:
+        problems.append("наборы файлов образцов в снимках различаются")
+    if before["count"] != len(before["digests"]) or after["count"] != len(after["digests"]):
+        problems.append("count манифеста расходится со списком дайджестов")
+    return problems
 
 
 def rename_organizer_to_comment(node):
@@ -1811,10 +1966,11 @@ def classify(before, after) -> str:
     return "VIOLATION"
 ```
 
-`main()`: пройти ОБЪЕДИНЕНИЕ дайджестов двух каталогов (файл, есть только с
-одной стороны, — VIOLATION), классифицировать каждую пару, напечатать счётчики
-по классам и список дайджестов на класс. `exit 1`, если счётчики ≠
-`EXPECTED_COUNTS` или есть хоть один VIOLATION.
+`main()`: сначала `check_manifests` — любая проблема происхождения печатается
+и даёт `exit 1` ДО сравнения данных; затем пройти ОБЪЕДИНЕНИЕ дайджестов двух
+каталогов (файл, есть только с одной стороны, — VIOLATION), классифицировать
+каждую пару, напечатать счётчики по классам и список дайджестов на класс.
+`exit 1`, если счётчики ≠ `EXPECTED_COUNTS` или есть хоть один VIOLATION.
 Ложно-зелёный прогон исключается формой запуска: успех читается по коду
 возврата ОДИНОЧНОЙ команды, без конвейеров
 (`docs/insights/silent-test-runs.md`).
@@ -1822,9 +1978,10 @@ def classify(before, after) -> str:
 Комментарий в скрипте — почему трёхпунктная дельта класса 2 сводится к
 переименованию: значение прежнего ключа (текст комментария) в «до» прошло через
 `money_to_json` (текст возвращается как есть), в «после» — читается как есть,
-поэтому значения совпадают, а «ложные предупреждения „значение не число“»
-исчезают ПОСТРОЕНИЕМ: ключа `total_cost_for_organizer_quantity` в JSON нет, и
-импорту нечего приводить к `Decimal`. Если у какого-то файла в колонке
+поэтому значения совпадают. Третий пункт дельты — исчезновение ложных
+«значение не число» — этим сравнением не доказывается: его ИСПОЛНЯЕТ
+`TestWidthTenReachesImportCleanly` (задача 4, шаг 5) на реальном пути
+`parse_worksheet → estimate_import._money`. Если у какого-то файла в колонке
 комментария лежит ЧИСЛО (в «до» — десятичная строка, в «после» — число), скрипт
 покажет VIOLATION — тогда расхождение разобрать руками и записать в devlog как
 находку, прежде чем ослаблять правило.
@@ -1838,32 +1995,47 @@ Expected: `class1=18 class2=3 class3=1 class4=5`, код возврата 0
 - [ ] **Step 4: независимый замер сводной таблицы**
 
 `scripts/verify_summary_sheet.py` — находит в `samples/` файл класса 3 (тот,
-чей снимок «до» был отказом, дайджест берёт из вывода сравнения либо
-аргументом), затем:
+чей снимок «до» был отказом на ширине 12; дайджест берёт из вывода сравнения
+либо аргументом). Замер идёт **двумя этапами**, потому что итоговый JSON
+пяти блоков не несёт: postprocess заменяет пустой baseline заглушкой (его
+позиции из JSON исчезают) и вычищает отклонения подрядчиков, хотя физическая
+колонка «% от р/с» на листе есть.
 
-1. разбирает его `parse_estimate` и сверяет **по листу, литералами**, без
-   `resolve_contractor`: физическая раскладка пяти блоков записана в скрипт
-   константами из замера плана (`col_start` 10/19/31/44/57, `header_row` 11,
-   первая строка данных 13, ключи колонок каждого блока — литеральные кортежи);
-2. для первых трёх и последних двух строк позиций каждого блока сверяет каждое
-   значение JSON с сырым чтением `ws.cell(...)` (деньги — через
-   `str(Decimal(str(...)))`, как `money_to_json`);
-3. проверяет: `proposals` = `contractor_1..4` — восьмиколоночный блок озаглавлен
-   в точности «Расчетная стоимость» (замер плана) и отделён
+**Этап A — до postprocess, все пять блоков поколоночно.** Скрипт собирает
+СЫРЫЕ лоты той же цепочкой, что `parse_worksheet`, но останавливается ДО
+`normalize_lots_json_structure`: `read_contractors` → `find_lot_starts` →
+`_validate_column_headers` → `resolve_contractor` на каждый блок →
+`read_lots_and_boundaries(...)` — и берёт `lots.lots` как есть. Эталон при этом
+НЕЗАВИСИМ от резолвера: физическая раскладка пяти блоков записана в скрипт
+литералами из замера плана (`col_start` 10/19/31/44/57, `header_row` 11, первая
+строка данных 13, ключи колонок каждого блока — литеральные кортежи, включая
+«% от р/с» у блоков 19/31/44/57). Для первых трёх и последних двух строк
+позиций КАЖДОГО из пяти блоков каждое значение JSON сверяется с сырым чтением
+`ws.cell(...)` по этим литеральным координатам (деньги и «% от р/с» — через
+`str(Decimal(str(...)))`, как `money_to_json`); плюс счётчик позиций на блок
+одинаков у всех пяти.
+
+**Этап B — после `parse_estimate`, факты постобработки.** Полный прогон того же
+файла:
+
+1. `proposals` = `contractor_1..4` — восьмиколоночный блок озаглавлен в
+   точности «Расчетная стоимость» (замер плана) и отделён
    `postprocess._separate_proposals` (сравнение там ТОЧНОЕ, не по префиксу);
-   блок пуст, поэтому `baseline_proposal["title"]` ожидается равным
-   `BASELINE_MISSING_TITLE` — предпосылка утверждается внутри прогона, фактическая
-   форма записывается в devlog;
-4. `vat_rate == "22"` у всех четырёх предложений (шапки 22%);
-5. `deviation_from_baseline_cost` на позициях ОТСУТСТВУЕТ (база пуста —
-   правило чистки, спека §2.8);
-6. печатает счётчики позиций по блокам и число сверенных ячеек; `exit 1` при
-   любом расхождении.
+2. блок пуст, поэтому `baseline_proposal["title"]` ожидается равным
+   `BASELINE_MISSING_TITLE` — предпосылка утверждается внутри прогона,
+   фактическая форма записывается в devlog;
+3. `vat_rate == "22"` у всех четырёх предложений (шапки 22%);
+4. `deviation_from_baseline_cost` на позициях ОТСУТСТВУЕТ — колонка на листе
+   есть (этап A её прочитал), вычистило её именно правило «нет валидной базы»
+   (спека §2.8);
+5. предупреждения содержат «найдено 5» (число блоков с базовым — DoD 7).
+
+Оба этапа печатают счётчики сверенных ячеек; `exit 1` при любом расхождении.
 
 Run: `cd backend && PYTHONIOENCODING=utf-8 uv run python -m scripts.verify_summary_sheet`
 Expected: код возврата 0; счётчики в devlog.
 
-- [ ] **Step 5: пункт 3 замера уточнить по факту**
+- [ ] **Step 5: пункт 2 этапа B уточнить по факту**
 
 Ожидание «baseline пуст → заголовок стал `BASELINE_MISSING_TITLE`» — предпосылка,
 проверяемая внутри самого прогона (docs/insights/false-test-premises.md):
@@ -1900,9 +2072,10 @@ Expected: пусто.
 
 - [ ] **Step 3: devlog дописать**
 
-Отступления от плана, находки, границы (например: импортный слой «ложных
-предупреждений» подтверждён отсутствием ключа, а не прогоном импорта — граница
-названа явно).
+Отступления от плана, находки, границы (например: путь до `import_jobs.warnings`
+исполнен на уровне функций преобразования значений
+(`TestWidthTenReachesImportCleanly`), полный импорт в БД ширины 10 остаётся
+стенду — если граница осталась, назвать её явно).
 
 - [ ] **Step 4: `just ci`**
 
@@ -1933,16 +2106,17 @@ PR: заголовок «Парсер: смысл колонок — из заг
 | 2. Раскладка один раз, объектом; `get_proposals` без `read_contractors` | Задача 3 | `TestResolutionFlow` (identity через spy на обоих звеньях); импорт удалён |
 | 3. Контракт только в `resolve_contractor`; геометрия отдельно; `GP_EXPECTED_KEYS` поимённо; лишний deviation — отличие | Задачи 2, 3 | `TestRefusals`, `_validate_contractor_geometry` без семантики, `test_twelve_wide_block_parses_with_an_extra_key_warning` + снятие задачи 4 шаг 5 |
 | 4. Три класса отказа с координатами и подписями | Задача 2 | `TestRefusals`: координата+обе подписи; обе координаты повтора; блок+ключ без координаты |
-| 5. Совместимость по классам, сравнением | Задачи 1, 6 | снимок «до» до правок; `compare_parse_snapshots` с жёсткими счётчиками 18/3/1/5 и точной формой дельты |
+| 5. Совместимость по классам, сравнением | Задачи 1, 4, 6 | снимок «до» кодом базового коммита (manifest + `--force`-защита); `compare_parse_snapshots` с проверкой manifest, жёсткими счётчиками 18/3/1/5 и точной формой дельты; третий пункт дельты исполняется `TestWidthTenReachesImportCleanly` на реальном `_money`/`_text` |
 | 6. НДС 20/22/0/без ставки | Задачи 2, 3, 6 | `test_group_header_without_rate_still_types_the_group`; обновлённый `TestVatRateFullPath` (20%, 0%, без суффикса); класс 1 побайтно (20%, «20», без ставки в образцах); сводная — `vat_rate == "22"` в `verify_summary_sheet` |
-| 7. Многоподрядный файл | Задачи 4, 6 | `TestMultiContractorSheet` (синтетика); сводная таблица: 4 предложения + базовый, предупреждение о числе |
+| 7. Многоподрядный файл | Задачи 4, 6 | `TestMultiContractorSheet` (синтетика); сводная таблица: этап A `verify_summary_sheet` читает все пять блоков до postprocess, этап B — 4 предложения + базовый-заглушка и предупреждение «найдено 5» |
 | 8. `postprocess.py` не изменён; пустая база вычищает отклонения | Задачи 4, 7 | `test_empty_baseline_cleans_deviations_with_the_base`; `git diff` пуст |
 | 9. `just ci` зелёный | Задача 7 | прогон перед пушем |
 
 Доказательства §6 спеки: пять раскладок — `TestMeasuredLayouts`; две ширины 11 —
 там же (`KEYS_GP_11` и `KEYS_TENDER_11`); ширина 12 —
 `test_twelve_wide_block_parses_with_an_extra_key_warning`; ширина 10 —
-`TestWidthTenComment` + класс 2 сравнения; перестановка —
+`TestWidthTenComment` + `TestWidthTenReachesImportCleanly` + класс 2 сравнения;
+перестановка —
 `TestPermutedColumnsEndToEnd` (+ снятие); отказы — `TestRefusals`; объединения —
 `TestHeaderTiers` + рукописный `test_real_gp_geometry_built_by_hand`; ставка —
 DoD 6; регрессия — задача 6.
