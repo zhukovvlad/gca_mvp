@@ -19,17 +19,16 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .build_merged_shape_map import merged_rows_in_first_column
 from .parse_contractor_row import parse_contractor_row
+from .resolve_contractor import ResolvedContractor
 from .sheet import contractor_last_column, row_is_empty
 from .summary_block import SummaryBlock, SummaryRow, build_summary_block
 
 
-def get_summary(ws: Worksheet, contractor: dict[str, Any], search_start_row: int) -> SummaryBlock:
+def get_summary(ws: Worksheet, contractor: ResolvedContractor, search_start_row: int) -> SummaryBlock:
     """Извлекает итоговые строки подрядчика из блока итогов внизу таблицы.
 
     Здесь только обход листа: где блок начинается, где кончается и что стоит в
@@ -37,11 +36,17 @@ def get_summary(ws: Worksheet, contractor: dict[str, Any], search_start_row: int
     сверка арифметики, предупреждения — живут в `summary_block` и проверяются
     без файла (спека Ф4a §2.2–§2.7).
 
+    Args:
+        ws: лист Excel.
+        contractor: разрешённый блок подрядчика — геометрия в `.geometry`,
+            раскладка в `.layout`.
+        search_start_row: первая строка позиций, откуда начинается поиск блока.
+
     Returns:
         `SummaryBlock`: строки блока и parser warnings о нём.
     """
     merged_first_column_rows = merged_rows_in_first_column(ws)
-    last_column = contractor_last_column(contractor)
+    last_column = contractor_last_column(contractor.geometry)
 
     summary_start_row = -1
     for row_num in range(search_start_row, ws.max_row + 1):

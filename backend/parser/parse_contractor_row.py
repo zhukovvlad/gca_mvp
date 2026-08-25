@@ -17,6 +17,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .constants import (
     JSON_KEY_COMMENT_CONTRACTOR,
+    JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     JSON_KEY_INDIRECT_COSTS,
     JSON_KEY_MATERIALS,
     JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
@@ -26,10 +27,12 @@ from .constants import (
     JSON_KEY_UNIT_COST,
     JSON_KEY_WORKS,
 )
+from .resolve_contractor import ResolvedContractor
 
-# Ширины блока подрядчика, для которых известен смысл колонок. Всё остальное
-# структурно неразбираемо: `estimate._validate_contractor_blocks` отсекает такие
-# файлы `EstimateParseError` до того, как дело дойдёт сюда.
+# Мёртвый код (фича «колонки по заголовкам», спека §2.7): смысл колонок теперь
+# разрешает `resolve_contractor` по подписям шапки, а не число колонок этого
+# перечня. Используется только `get_column_keys`/`money_group_offsets` ниже —
+# обе снесёт задача 5 вместе с этой константой (план фичи, задача 3).
 SUPPORTED_CONTRACTOR_COLSPANS = (8, 9, 10, 11)
 
 # Денежные колонки блока подрядчика — ключи в том же составном виде, в каком их
@@ -45,6 +48,9 @@ MONEY_KEYS = frozenset(
         f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_INDIRECT_COSTS}",
         f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_TOTAL}",
         JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
+        # Р2: доля — та же дисциплина строк, что и деньги; `#DIV/0!` гасит
+        # postprocess, ключ при невалидной базе вычищает `_clean_deviation_fields`.
+        JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     }
 )
 
@@ -170,26 +176,22 @@ def money_group_offsets(colspan: int) -> tuple[int, int]:
     )
 
 
-def parse_contractor_row(ws: Worksheet, row_index: int, contractor: dict[str, Any]) -> dict[str, Any]:
+def parse_contractor_row(ws: Worksheet, row_index: int, contractor: ResolvedContractor) -> dict[str, Any]:
     """Извлекает значения колонок подрядчика из одной строки.
 
-    Набор колонок определяется шириной блока подрядчика (`colspan`); составные
-    ключи вида "unit_cost.materials" разворачиваются во вложенные словари.
-    Денежные колонки отдаются десятичными строками (`money_to_json`).
+    Раскладка приходит УЖЕ РАЗРЕШЁННОЙ (`resolve_contractor`): набор и порядок
+    ключей задаёт `contractor.layout.column_keys`, а ширина блока — это просто
+    число ключей, а не отдельно хранимый `colspan`. Составные ключи вида
+    "unit_cost.materials" разворачиваются во вложенные словари. Денежные
+    колонки отдаются десятичными строками (`money_to_json`).
 
     Args:
         ws: лист Excel.
         row_index: номер строки (1-индексация).
-        contractor: словарь подрядчика; нужны `column_start` и
-            `merged_shape.colspan`.
+        contractor: разрешённый блок подрядчика.
 
     Returns:
         Словарь значений ячеек с вложенными блоками `unit_cost` и `total_cost`.
-
-    Raises:
-        ValueError: если `colspan` не входит в `SUPPORTED_CONTRACTOR_COLSPANS`.
-            В штатном пайплайне сюда не доходит: такие файлы отвергает
-            `estimate._validate_contractor_blocks`.
     """
 
     def map_to_nested_dict(cells: list[Cell], keys: list[str]) -> dict[str, Any]:
@@ -204,14 +206,12 @@ def parse_contractor_row(ws: Worksheet, row_index: int, contractor: dict[str, An
             current_level_dict[key_parts[-1]] = money_to_json(value) if key_str in MONEY_KEYS else value
         return result_dict
 
-    contractor_col_start: int = contractor["column_start"]
-    contractor_colspan: int = contractor["merged_shape"]["colspan"]
-
-    list_of_keys = get_column_keys(contractor_colspan)
+    contractor_col_start: int = contractor.geometry["column_start"]
+    list_of_keys = list(contractor.layout.column_keys)
 
     cells_to_parse: list[Cell] = [
         ws.cell(row=row_index, column=col_idx)
-        for col_idx in range(contractor_col_start, contractor_col_start + contractor_colspan)
+        for col_idx in range(contractor_col_start, contractor_col_start + len(list_of_keys))
     ]
 
     return map_to_nested_dict(cells_to_parse, list_of_keys)

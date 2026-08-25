@@ -29,6 +29,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 from parser import parse_worksheet
 from parser.read_contractors import read_contractors
 
+from .sheet_builders import KEYS_GP_11, add_contractor_block
+
 # Последняя колонка Excel — та самая XFD.
 LAST_EXCEL_COLUMN = 16384
 
@@ -58,10 +60,12 @@ def _build_estimate_sheet(*, inflate_to_xfd: bool) -> Worksheet:
     ws["A4"] = "Адрес объекта"
     ws["D4"] = "г. Тестоград"
 
-    # Контрагент: маркер и блок на 11 колонок J..T
+    # Контрагент: маркер и блок на 11 колонок J..T, разрешённая раскладка ГП
+    # (строитель кладёт и группы, и суффикс ставки НДС — без него на каждом
+    # прогоне возникло бы предупреждение «ставка не получена», не имеющее
+    # отношения к тому, что этот тест мерит).
     ws["G6"] = "Наименование контрагента"
-    ws.merge_cells("J6:T6")
-    ws["J6"] = 'ООО "Синтетика"'
+    add_contractor_block(ws, col_start=10, columns=KEYS_GP_11, title='ООО "Синтетика"')
     ws["J7"] = "0000000000"
     ws["J8"] = "г. Тестоград, ул. Примерная"
 
@@ -73,12 +77,6 @@ def _build_estimate_sheet(*, inflate_to_xfd: bool) -> Worksheet:
     ws["D9"] = "Наименование работ"
     ws["G9"] = "Ед. изм "
     ws["H9"] = "Общее кол-во"
-    ws["J10"] = "Предлагаемое количество"
-    # Ф4б: суффикс ставки НДС в якорях групповых шапок K9/O9 (offsets (1, 5)
-    # для colspan 11) — без него на каждом прогоне возникло бы предупреждение
-    # «ставка не получена», не имеющее отношения к тому, что этот тест мерит.
-    ws["K9"] = "Цена за единицу, с учетом НДС 20%"
-    ws["O9"] = "Стоимость всего, с учетом НДС 20%"
 
     # Строка-маркер лота
     ws["A11"] = "1"

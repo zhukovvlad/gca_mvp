@@ -10,14 +10,21 @@
 подрядчика, обход с индекса 1 даёт ровно одно предложение `contractor_1`.
 Слой proposals сохраняется как есть — это задел на возврат тендеров (§4).
 
-Ф4б: здесь же читаются две ячейки групповой шапки ценового блока (якоря
-`unit_cost` и `total_cost`, смещения — `parse_contractor_row.money_group_offsets`)
-и вызывается `vat_rate.build_vat_rate` — это единственное место, где блок
-подрядчика и результат `get_summary` уже рядом (спека Ф4б §1.4 факт 1, §2.8).
+`contractors` приходит сюда уже РАЗРЕШЁННЫМ из `parse_worksheet`
+(`resolve_contractor` на каждый блок) — `read_contractors` отсюда убран: геометрия
+не читается второй раз (спека §2.5). Это же значит, что якоря групповых шапок
+`unit_cost` и `total_cost` больше не считаются формулой от `colspan`
+(`money_group_offsets`) — смещения уже посчитаны в `resolved.layout` из того же
+перечня ключей, что и сами колонки (спека §2.4).
+
+Ф4б: здесь же читаются две ячейки групповой шапки ценового блока и вызывается
+`vat_rate.build_vat_rate` — это единственное место, где блок подрядчика и
+результат `get_summary` уже рядом (спека Ф4б §1.4 факт 1, §2.8).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,8 +49,7 @@ from .constants import (
 from .get_additional_info import get_additional_info
 from .get_lot_positions import get_lot_positions
 from .get_summary import get_summary
-from .parse_contractor_row import money_group_offsets
-from .read_contractors import read_contractors
+from .resolve_contractor import ResolvedContractor
 from .vat_rate import build_vat_rate
 
 
@@ -55,7 +61,9 @@ class LotProposals:
     warnings: list[str]
 
 
-def get_proposals(ws: Worksheet, start_row: int, end_row: int, *, header_row: int) -> LotProposals:
+def get_proposals(
+    ws: Worksheet, start_row: int, end_row: int, *, header_row: int, contractors: Sequence[ResolvedContractor]
+) -> LotProposals:
     """Собирает предложения всех подрядчиков для одного лота.
 
     Позиции берутся строго в границах лота, итоги и дополнительная информация —
@@ -68,12 +76,18 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int, *, header_row: in
     второй путь «найти строку шапки самому» рядом с уже вычисленным вызывающей
     стороной значением — то есть вторую правду о том, где шапка.
 
+    `contractors` приходит РАЗРЕШЁННЫМ из `parse_worksheet`: каждый блок уже
+    прошёл `resolve_contractor` выше по стеку, и `read_contractors` здесь
+    больше не зовётся — геометрия не читается второй раз (спека §2.5). Пустой
+    список — валидный вход, обход по нему пуст, отдельная ветка не нужна.
+
     Ставка НДС (`vat_rate`) читается из двух ячеек строки `header_row` —
-    якорей групповых шапок `unit_cost` и `total_cost`, смещения которых относительно
-    начала блока отдаёт `money_group_offsets(colspan)` (спека Ф4б §2.3): при
-    ширинах 8 и 9 обе группы сдвинуты влево на колонку, и захардкоженные
-    смещения читали бы не те ячейки молча. Ключ кладётся в предложение
-    ВСЕГДА, в том числе значением `None`.
+    якорей групповых шапок `unit_cost` и `total_cost`. Смещения этих якорей
+    относительно начала блока — `resolved.layout.unit_cost_offset` и
+    `.total_cost_offset`, посчитанные `resolve_contractor` из того же перечня
+    ключей, что и сами колонки (спека §2.4); захардкоженные смещения читали бы
+    не те ячейки молча. Ключ кладётся в предложение ВСЕГДА, в том числе
+    значением `None`.
 
     Args:
         ws: лист Excel.
@@ -81,57 +95,43 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int, *, header_row: in
         end_row: последняя строка лота.
         header_row: номер строки шапки таблицы позиций, найденный выше по стеку
             (`estimate._validate_column_headers`).
+        contractors: разрешённые блоки подрядчиков (`resolve_contractor` на
+            каждый), в порядке следования по листу.
 
     Returns:
         `LotProposals`: словарь `{"contractor_1": {...}, ...}` (пустой, если
         подрядчики не найдены) и предупреждения, собранные при разборе блоков
         итогов подрядчиков и ставки НДС.
     """
-    contractors_list: list[dict[str, Any]] | None = read_contractors(ws)
     proposals: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
 
-    if not contractors_list:
-        return LotProposals(proposals={}, warnings=[])
-
-    # Индекс 0 — ячейка-маркер "Наименование контрагента", подрядчики идут за ней.
-    for i in range(1, len(contractors_list)):
-        contractor_details = contractors_list[i]
-
-        contractor_name: str | None = contractor_details.get("value")
-        contractor_row_start: int | None = contractor_details.get("row_start")
-        contractor_col_start: int | None = contractor_details.get("column_start")
-        contractor_coordinate: str | None = contractor_details.get("coordinate")
-
-        merged_shape: dict[str, int] = contractor_details.get("merged_shape", {})
+    for i, resolved in enumerate(contractors, start=1):
+        geometry = resolved.geometry
+        contractor_name = geometry.get("value")
+        contractor_row_start = geometry.get("row_start")
+        contractor_col_start: int = geometry["column_start"]
+        contractor_coordinate = geometry.get("coordinate")
+        merged_shape: dict[str, int] = geometry.get("merged_shape", {})
         rowspan: int = merged_shape.get("rowspan", 1)
         colspan: int = merged_shape.get("colspan", 1)
 
         inn_val: Any = None
         address_val: Any = None
         accreditation_val: Any = None
-
-        if rowspan == 1 and contractor_row_start is not None and contractor_col_start is not None:
+        if rowspan == 1 and contractor_row_start is not None:
             inn_val = ws.cell(row=contractor_row_start + 1, column=contractor_col_start).value
             address_val = ws.cell(row=contractor_row_start + 2, column=contractor_col_start).value
             accreditation_val = ws.cell(row=contractor_row_start + 3, column=contractor_col_start).value
 
-        lot_rows = get_lot_positions(ws, contractor_details, lot_start_row=start_row, lot_end_row=end_row)
-        summary = get_summary(ws, contractor_details, search_start_row=start_row)
+        lot_rows = get_lot_positions(ws, resolved, lot_start_row=start_row, lot_end_row=end_row)
+        summary = get_summary(ws, resolved, search_start_row=start_row)
         warnings.extend(summary.warnings)
 
-        # Смещения якорей денежных групп зависят от ширины блока (спека §2.3):
-        # при 8 и 9 колонки «Предлагаемое количество» в блоке нет, и обе группы
-        # сдвинуты влево на колонку. `column_start` может отсутствовать у
-        # заведомо неполного словаря подрядчика (тот же случай, что у чтения
-        # ИНН/адреса/аккредитации выше) — тогда обе метки остаются `None`, и
-        # `build_vat_rate` даёт штатное «ставка не получена».
-        unit_cost_label: Any = None
-        total_cost_label: Any = None
-        if contractor_col_start is not None:
-            unit_cost_offset, total_cost_offset = money_group_offsets(colspan)
-            unit_cost_label = ws.cell(row=header_row, column=contractor_col_start + unit_cost_offset).value
-            total_cost_label = ws.cell(row=header_row, column=contractor_col_start + total_cost_offset).value
+        # Якоря групповых шапок — из разрешённой раскладки: смещения живут в
+        # BlockLayout и посчитаны из того же перечня ключей, что сами колонки.
+        unit_cost_label = ws.cell(row=header_row, column=contractor_col_start + resolved.layout.unit_cost_offset).value
+        total_cost_label = ws.cell(row=header_row, column=contractor_col_start + resolved.layout.total_cost_offset).value
 
         vat_rate_result = build_vat_rate(unit_cost_label, total_cost_label, summary.lines)
         warnings.extend(vat_rate_result.warnings)
@@ -145,7 +145,7 @@ def get_proposals(ws: Worksheet, start_row: int, end_row: int, *, header_row: in
             JSON_KEY_CONTRACTOR_ADDITIONAL_WORKS: lot_rows.additional_works,
         }
 
-        contractor_additional_info_data = get_additional_info(ws, contractor_details)
+        contractor_additional_info_data = get_additional_info(ws, geometry)
 
         proposal_key = f"{JSON_KEY_CONTRACTOR_INDEX}{i}"
         proposals[proposal_key] = {

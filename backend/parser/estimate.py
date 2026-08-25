@@ -23,7 +23,6 @@ from openpyxl.worksheet.worksheet import Worksheet
 from .constants import CONTRACTOR_SCAN_ROW_START, JSON_KEY_EXECUTOR, JSON_KEY_LOTS, TABLE_PARSE_POSITION_COLUMN_HEADERS
 from .errors import EstimateParseError
 from .layout import check_estimate_layout
-from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS
 from .postprocess import (
     normalize_lots_json_structure,
     replace_excel_errors_with_null,
@@ -33,6 +32,7 @@ from .read_contractors import read_contractors
 from .read_executer_block import read_executer_block
 from .read_headers import read_headers
 from .read_lots_and_boundaries import find_lot_starts, read_lots_and_boundaries
+from .resolve_contractor import resolve_contractor
 from .sheet import normalized_cell_text
 
 log = logging.getLogger(__name__)
@@ -71,7 +71,15 @@ log = logging.getLogger(__name__)
 # минорная: из контракта ничего не исчезает, структура только дополняется —
 # тот же случай, что 1.1.0 (Ф2). Мажора здесь нет, потому что нет причины
 # мажора: не пропал ни один ключ (спека Ф4б §2.1).
-PARSER_VERSION = "3.1.0"
+#
+# 4.0.0 (фича «колонки по заголовкам»): смысл колонок блока подрядчика
+# определяется парой «тип группы + подпись» из шапки, а не числом колонок.
+# Мажор, потому что у файлов ширины 10 из позиций ИСЧЕЗ ключ
+# total_cost_for_organizer_quantity (файл такой колонки не нёс — прежний разбор
+# читал в него комментарий участника) и появился comment_contractor; на
+# позициях впервые возможен deviation_from_baseline_cost. Для смет ГП
+# ширины 11 JSON побайтно прежний (спека §7, регрессия по классам).
+PARSER_VERSION = "4.0.0"
 
 
 @dataclass(frozen=True)
@@ -102,49 +110,27 @@ def _select_worksheet(wb: openpyxl.Workbook, warnings: list[str]) -> Worksheet:
     return wb[wb.sheetnames[0]]
 
 
-def _validate_contractor_blocks(contractors: list[dict[str, Any]]) -> None:
-    """Отвергает файлы, в которых смысл колонок подрядчика неизвестен.
+def _validate_contractor_geometry(contractors: list[dict[str, Any]]) -> None:
+    """Отвергает файлы, где у блока подрядчика нет физических границ.
 
-    Парсер определяет смысл колонок по ширине объединённого блока подрядчика
-    (`parse_contractor_row.get_column_keys`). Для ширин из
-    `SUPPORTED_CONTRACTOR_COLSPANS` раскладка известна, и файл разбирается —
-    несовпадение с ожидаемой для сметы ГП шириной 11 уходит предупреждением
-    (`layout.check_estimate_layout`). Для любой другой ширины раскладки нет, и
-    разбор был бы выдумкой: стоимости легли бы не в те поля молча.
-
-    Это граница между «читается с оговорками» и «структурно непригодно»:
-    предупреждение обещает импорт, поэтому его нельзя выдавать там, где импорт
-    невозможен.
+    Проверяется только геометрия: заголовок объединён, значит известно, сколько
+    колонок сканировать. Смысл колонок здесь НЕ проверяется — семантический
+    контракт живёт в resolve_contractor и только там (спека §2.6).
 
     Args:
         contractors: результат `read_contractors` целиком (нулевой элемент —
             ячейка-маркер, дальше подрядчики).
 
     Raises:
-        EstimateParseError: заголовок подрядчика не объединён с колонками блока
-            либо ширина блока не поддерживается.
+        EstimateParseError: заголовок подрядчика не объединён с колонками блока.
     """
-    expected = ", ".join(str(value) for value in SUPPORTED_CONTRACTOR_COLSPANS)
-
     for contractor in contractors[1:]:
-        title = contractor.get("value")
-        coordinate = contractor.get("coordinate")
-        merged_shape = contractor.get("merged_shape")
-
-        if not merged_shape:
+        if not contractor.get("merged_shape"):
             raise EstimateParseError(
-                f"Заголовок подрядчика «{title}» ({coordinate}) не объединён с колонками "
-                "своего блока, поэтому неизвестно, сколько их и что в них лежит. "
-                "Смысл колонок подрядчика задаётся шириной объединённого блока."
-            )
-
-        colspan = merged_shape.get("colspan")
-        if colspan not in SUPPORTED_CONTRACTOR_COLSPANS:
-            raise EstimateParseError(
-                f"Блок подрядчика «{title}» ({coordinate}) занимает {colspan} колонок; "
-                f"парсер знает раскладку только для {expected}. Смысл колонок определяется "
-                "их числом, поэтому блок неизвестной ширины разобрать нельзя — стоимости "
-                "попали бы не в те поля."
+                f"Заголовок подрядчика «{contractor.get('value')}» "
+                f"({contractor.get('coordinate')}) не объединён с колонками своего "
+                "блока, поэтому неизвестна его физическая граница — сколько колонок "
+                "сканировать и где кончается блок."
             )
 
 
@@ -184,7 +170,7 @@ def _validate_column_headers(
     (`get_lot_positions`), поэтому чужая шапка означает, что недостоверен весь
     позиционный разбор: номер, раздел, статья и наименование могли бы прийти не
     из тех ячеек. Это отказ, а не предупреждение, — та же граница, что у
-    `_validate_contractor_blocks`: предупреждение обещает импорт, а импортировать
+    `_validate_contractor_geometry`: предупреждение обещает импорт, а импортировать
     здесь нечего.
 
     Номер строки шапки возвращается, а не отбрасывается: он уже вычислен здесь
@@ -246,10 +232,11 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
 
     Raises:
         EstimateParseError: не найдена строка заголовков контрагентов, нет
-            подрядчиков, нет маркера лота либо ширина блока подрядчика такова,
-            что смысл его колонок неизвестен (`_validate_contractor_blocks`),
-            либо шапка общих колонок A–D не совпала с ожидаемой
-            (`_validate_column_headers`).
+            подрядчиков, нет маркера лота, у блока подрядчика нет физических
+            границ (`_validate_contractor_geometry`), шапка общих колонок A–D
+            не совпала с ожидаемой (`_validate_column_headers`) либо смысл
+            хотя бы одной колонки блока подрядчика не опознан по подписям
+            шапки (`resolve_contractor`, спека §2.6).
     """
     warnings: list[str] = []
 
@@ -273,12 +260,16 @@ def parse_worksheet(ws: Worksheet) -> ParseResult:
             "Без него не определить границы блока позиций."
         )
 
-    _validate_contractor_blocks(contractors)
+    _validate_contractor_geometry(contractors)
     header_row = _validate_column_headers(ws, contractors, lot_starts)
 
-    warnings.extend(check_estimate_layout(ws, contractors, lot_starts))
+    resolved_contractors = [
+        resolve_contractor(ws, contractor, header_row) for contractor in contractors[1:]
+    ]
 
-    lots = read_lots_and_boundaries(ws, header_row=header_row)
+    warnings.extend(check_estimate_layout(resolved_contractors, lot_starts))
+
+    lots = read_lots_and_boundaries(ws, header_row=header_row, contractors=resolved_contractors)
 
     # Блок итогов — факт уровня ЛИСТА, а `get_summary` зовётся на каждое
     # предложение каждого лота (спека §1.5 факт 5). В смете ГП лот и подрядчик

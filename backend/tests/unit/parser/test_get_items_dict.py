@@ -1,17 +1,15 @@
 """Тесты шаблона позиции.
 
 Перенос `app/tests/excel_parser/test_get_items_dict.py` из
-`parser_tender_xlsx@0e178c0`.
-
-**Тесты исходника были протухшими**: они описывали более раннюю версию
-`get_items_dict` — с валидным colspan 12 и полем `deviation_from_baseline_cost`
-у colspan 9/10/11. Код исходника на зафиксированной ревизии так себя не ведёт
-(colspan 8..11, поля отклонения нет вовсе), то есть эти тесты в исходном
-репозитории падали. Здесь они приведены к фактическому поведению кода;
-проверяемые свойства (общие поля всегда на месте, блоки стоимости —
-независимые копии, неподдерживаемый colspan даёт "error") сохранены.
+`parser_tender_xlsx@0e178c0`, переписанный под фичу «колонки по заголовкам»
+(спека §2.4, §2.8): шаблон строится по РАЗРЕШЁННОЙ раскладке
+(`BlockLayout.column_keys`), а не по ширине блока (`colspan`). Понятия
+«неподдерживаемый colspan» и ветки "error" у `get_items_dict` больше нет —
+они уходят вместе с самой мыслью, что смысл колонок определяет их число.
 """
 from __future__ import annotations
+
+from openpyxl import Workbook
 
 from parser.constants import (
     JSON_KEY_ARTICLE_SMR,
@@ -33,6 +31,9 @@ from parser.constants import (
     JSON_KEY_WORKS,
 )
 from parser.get_items_dict import get_items_dict
+from parser.parse_contractor_row import parse_contractor_row
+
+from .sheet_builders import KEYS_8, KEYS_9, KEYS_10, KEYS_12, KEYS_GP_11, KEYS_TENDER_11, resolved
 
 COMMON_FIELDS = [
     JSON_KEY_NUMBER,
@@ -44,34 +45,41 @@ COMMON_FIELDS = [
     JSON_KEY_QUANTITY,
 ]
 
-VALID_COLSPANS = [8, 9, 10, 11]
+#: Пять измеренных раскладок задачи 2 (план фичи, «Замеры») плюс ширина 12 —
+#: тестовые случаи, а не ветви кода (спека §3).
+MEASURED_LAYOUTS = [KEYS_8, KEYS_9, KEYS_10, KEYS_GP_11, KEYS_TENDER_11, KEYS_12]
+
+
+def _layout(columns):
+    """`BlockLayout` для набора ключей — геометрия здесь не важна."""
+    return resolved(10, columns).layout
 
 
 class TestGetItemsDictBehavior:
     """Общее поведение."""
 
-    def test_returns_dict_for_any_input(self):
-        for colspan in [*VALID_COLSPANS, 12, 0, -1, 100, 999]:
-            assert isinstance(get_items_dict(colspan), dict), f"colspan={colspan}"
+    def test_returns_dict_for_any_measured_layout(self):
+        for columns in MEASURED_LAYOUTS:
+            assert isinstance(get_items_dict(_layout(columns)), dict), columns
 
     def test_always_includes_common_fields(self):
-        for colspan in [*VALID_COLSPANS, 12, -1, 999]:
-            result = get_items_dict(colspan)
+        for columns in MEASURED_LAYOUTS:
+            result = get_items_dict(_layout(columns))
             for field in COMMON_FIELDS:
-                assert field in result, f"{field} должно быть при colspan={colspan}"
+                assert field in result, f"{field} должно быть при columns={columns}"
 
     def test_common_fields_default_to_none(self):
-        result = get_items_dict(8)
+        result = get_items_dict(_layout(KEYS_8))
         for field in COMMON_FIELDS:
             assert result[field] is None, field
 
 
-class TestGetItemsDictValidColspan:
-    """Состав полей подрядчика по ширине блока."""
+class TestGetItemsDictMeasuredLayouts:
+    """Состав полей подрядчика по разрешённой раскладке (спека §2.4, §2.8)."""
 
-    def test_colspan_8_structure(self):
-        """colspan=8 — только блоки стоимости."""
-        result = get_items_dict(8)
+    def test_keys_8_is_only_cost_blocks(self):
+        """KEYS_8 — только блоки стоимости, ничего опционального."""
+        result = get_items_dict(_layout(KEYS_8))
 
         assert isinstance(result[JSON_KEY_UNIT_COST], dict)
         assert isinstance(result[JSON_KEY_TOTAL_COST], dict)
@@ -82,28 +90,35 @@ class TestGetItemsDictValidColspan:
             JSON_KEY_COMMENT_CONTRACTOR,
             JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
         ):
-            assert field not in result, f"{field} не должно быть при colspan=8"
+            assert field not in result, f"{field} не должно быть у KEYS_8"
 
-    def test_colspan_9_adds_contractor_comment(self):
-        result = get_items_dict(9)
+    def test_keys_9_adds_contractor_comment(self):
+        result = get_items_dict(_layout(KEYS_9))
 
         assert JSON_KEY_UNIT_COST in result
         assert JSON_KEY_TOTAL_COST in result
         assert result[JSON_KEY_COMMENT_CONTRACTOR] is None
 
         for field in (JSON_KEY_SUGGESTED_QUANTITY, JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST):
-            assert field not in result, f"{field} не должно быть при colspan=9"
+            assert field not in result, f"{field} не должно быть у KEYS_9"
 
-    def test_colspan_10_adds_suggested_quantity_and_organizer_total(self):
-        result = get_items_dict(10)
+    def test_keys_10_has_comment_but_not_organizer_total(self):
+        """Смена ожиданий фичи (спека §2.8): у ширины 10 в файле нет колонки
+        «Стоимость всего за объемы заказчика» — там стоит комментарий
+        участника. Ключа `total_cost_for_organizer_quantity` в шаблоне нет
+        вовсе, а `comment_contractor` есть — сменяет прежний
+        `test_colspan_10_adds_suggested_quantity_and_organizer_total`, который
+        описывал обратное (дефект, который фича устраняет, спека §7 класс 2).
+        """
+        result = get_items_dict(_layout(KEYS_10))
 
         assert result[JSON_KEY_SUGGESTED_QUANTITY] is None
-        assert result[JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST] is None
-        assert JSON_KEY_COMMENT_CONTRACTOR not in result
+        assert result[JSON_KEY_COMMENT_CONTRACTOR] is None
+        assert JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST not in result
 
-    def test_colspan_11_is_full_gp_estimate_layout(self):
-        """colspan=11 — раскладка сметы ГП: J..T."""
-        result = get_items_dict(11)
+    def test_keys_gp_11_is_full_gp_estimate_layout(self):
+        """KEYS_GP_11 — раскладка сметы ГП: J..T."""
+        result = get_items_dict(_layout(KEYS_GP_11))
 
         for field in (
             JSON_KEY_SUGGESTED_QUANTITY,
@@ -113,26 +128,39 @@ class TestGetItemsDictValidColspan:
             JSON_KEY_COMMENT_CONTRACTOR,
         ):
             assert field in result, field
+        assert JSON_KEY_DEVIATION_FROM_CALCULATED_COST not in result
 
         assert result[JSON_KEY_SUGGESTED_QUANTITY] is None
         assert result[JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST] is None
         assert result[JSON_KEY_COMMENT_CONTRACTOR] is None
 
-    def test_deviation_field_never_present(self):
-        """Поля отклонения от baseline нет ни при какой ширине.
+    def test_keys_tender_11_has_deviation_instead_of_comment(self):
+        """Другая ширина-11: «% от р/с» вместо комментария (спека §1.2)."""
+        result = get_items_dict(_layout(KEYS_TENDER_11))
 
-        В смете ГП baseline отсутствует по определению (AGENTS.md §4), а в
-        тендерной таблице отклонение живёт в summary, не в шаблоне позиции.
-        """
-        for colspan in VALID_COLSPANS:
-            assert JSON_KEY_DEVIATION_FROM_CALCULATED_COST not in get_items_dict(colspan)
+        assert result[JSON_KEY_DEVIATION_FROM_CALCULATED_COST] is None
+        assert JSON_KEY_COMMENT_CONTRACTOR not in result
+
+    def test_keys_12_carries_both_comment_and_deviation(self):
+        result = get_items_dict(_layout(KEYS_12))
+
+        assert result[JSON_KEY_COMMENT_CONTRACTOR] is None
+        assert result[JSON_KEY_DEVIATION_FROM_CALCULATED_COST] is None
+
+    def test_deviation_present_only_on_layouts_with_the_percent_column(self):
+        """Поле отклонения — только у раскладок, где физически есть «% от
+        р/с» (спека §2.2); в KEYS_GP_11 её нет, значит и ключа нет."""
+        for columns in MEASURED_LAYOUTS:
+            has_deviation_column = JSON_KEY_DEVIATION_FROM_CALCULATED_COST in columns
+            has_deviation_key = JSON_KEY_DEVIATION_FROM_CALCULATED_COST in get_items_dict(_layout(columns))
+            assert has_deviation_key == has_deviation_column, columns
 
 
 class TestGetItemsDictCostBlocks:
     """Вложенные блоки стоимости."""
 
     def test_cost_blocks_are_independent_copies(self):
-        result = get_items_dict(8)
+        result = get_items_dict(_layout(KEYS_8))
         unit_cost = result[JSON_KEY_UNIT_COST]
         total_cost = result[JSON_KEY_TOTAL_COST]
 
@@ -144,46 +172,27 @@ class TestGetItemsDictCostBlocks:
 
     def test_cost_block_structure(self):
         expected = [JSON_KEY_MATERIALS, JSON_KEY_WORKS, JSON_KEY_INDIRECT_COSTS, JSON_KEY_TOTAL]
-        result = get_items_dict(8)
+        result = get_items_dict(_layout(KEYS_8))
 
         for block_key in (JSON_KEY_UNIT_COST, JSON_KEY_TOTAL_COST):
             block = result[block_key]
             assert list(block) == expected, block_key
             assert all(block[f] is None for f in expected), block_key
 
-    def test_cost_blocks_present_in_all_valid_colspan(self):
-        for colspan in VALID_COLSPANS:
-            result = get_items_dict(colspan)
-            assert isinstance(result[JSON_KEY_UNIT_COST], dict), colspan
-            assert isinstance(result[JSON_KEY_TOTAL_COST], dict), colspan
-
-
-class TestGetItemsDictInvalidColspan:
-    """Неподдерживаемая ширина блока."""
-
-    def test_invalid_colspan_adds_error_field(self):
-        for colspan in [0, -1, 7, 12, 13, 100, 999]:
-            result = get_items_dict(colspan)
-            assert result["error"] == f"Unknown contractor_colspan: {colspan}"
-
-    def test_invalid_colspan_still_includes_common_fields(self):
-        result = get_items_dict(999)
-        for field in COMMON_FIELDS:
-            assert result[field] is None, field
-
-    def test_boundary_values(self):
-        """Границы поддерживаемого диапазона: 8..11."""
-        for colspan, valid in [(7, False), (8, True), (11, True), (12, False)]:
-            result = get_items_dict(colspan)
-            assert ("error" not in result) is valid, colspan
+    def test_cost_blocks_present_in_every_measured_layout(self):
+        for columns in MEASURED_LAYOUTS:
+            result = get_items_dict(_layout(columns))
+            assert isinstance(result[JSON_KEY_UNIT_COST], dict), columns
+            assert isinstance(result[JSON_KEY_TOTAL_COST], dict), columns
 
 
 class TestGetItemsDictDataIntegrity:
     """Независимость возвращаемых структур."""
 
     def test_no_shared_mutable_objects(self):
-        result1 = get_items_dict(11)
-        result2 = get_items_dict(11)
+        layout = _layout(KEYS_GP_11)
+        result1 = get_items_dict(layout)
+        result2 = get_items_dict(layout)
 
         assert result1 is not result2
         assert result1 == result2
@@ -194,35 +203,38 @@ class TestGetItemsDictDataIntegrity:
         result1[JSON_KEY_UNIT_COST][JSON_KEY_MATERIALS] = "test"
         assert result2[JSON_KEY_UNIT_COST][JSON_KEY_MATERIALS] is None
 
-    def test_consistent_field_count_for_same_colspan(self):
-        for colspan in VALID_COLSPANS:
-            counts = {len(get_items_dict(colspan)) for _ in range(5)}
-            assert len(counts) == 1, colspan
+    def test_consistent_field_count_for_the_same_layout(self):
+        for columns in MEASURED_LAYOUTS:
+            layout = _layout(columns)
+            counts = {len(get_items_dict(layout)) for _ in range(5)}
+            assert len(counts) == 1, columns
 
-    def test_field_count_does_not_shrink_as_colspan_grows(self):
-        counts = [len(get_items_dict(c)) for c in VALID_COLSPANS]
+    def test_field_count_does_not_shrink_along_the_measured_growth_chain(self):
+        """Ширины 8→9→10→ГП-11 наращивают число полей монотонно — та самая
+        измеренная цепочка расширений блока (docs/phase0-input-data.md).
+        KEYS_12 сюда не входит: у него другой набор опциональных ключей
+        (комментарий И отклонение сразу), а не надмножество предыдущих.
+        """
+        counts = [len(get_items_dict(_layout(c))) for c in (KEYS_8, KEYS_9, KEYS_10, KEYS_GP_11)]
         assert counts == sorted(counts)
 
     def test_template_matches_parse_contractor_row_keys(self):
         """Шаблон и заполнение обязаны знать один и тот же набор полей.
 
         Если они разойдутся, позиция получит поля-призраки (из шаблона, всегда
-        None) либо поля мимо шаблона — и то и другое утечёт в raw_data.
+        None) либо поля мимо шаблона — и то и другое утечёт в raw_data. Оба
+        строятся через ОДИН `resolved(...)`, чтобы раскладка не разъехалась
+        сама с собой между шаблоном и разбором.
         """
-        from parser.parse_contractor_row import parse_contractor_row
-
-        for colspan in VALID_COLSPANS:
-            template = get_items_dict(colspan)
-            # Достаём приватный список ключей тем же способом, что и продовый код:
-            # через фактический разбор строки на синтетическом листе.
-            from openpyxl import Workbook
+        for columns in MEASURED_LAYOUTS:
+            contractor = resolved(1, columns)
+            template = get_items_dict(contractor.layout)
 
             ws = Workbook().active
-            contractor = {"column_start": 1, "merged_shape": {"colspan": colspan}}
             parsed = parse_contractor_row(ws, 1, contractor)
 
-            assert set(parsed) <= set(template), f"colspan={colspan}: лишние поля {set(parsed) - set(template)}"
+            assert set(parsed) <= set(template), f"{columns}: лишние поля {set(parsed) - set(template)}"
             template_contractor_fields = set(template) - set(COMMON_FIELDS)
             assert template_contractor_fields == set(parsed), (
-                f"colspan={colspan}: шаблон и разбор строки описывают разные поля"
+                f"{columns}: шаблон и разбор строки описывают разные поля"
             )

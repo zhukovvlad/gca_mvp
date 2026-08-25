@@ -33,6 +33,7 @@ from models import (
 from parser import parse_estimate
 from parser.constants import TABLE_PARSE_ADDITIONAL_WORKS_TITLE
 from parser.parse_contractor_row import parse_contractor_row
+from parser.resolve_contractor import BlockLayout, ResolvedContractor
 from services import import_pipeline
 from services.review import set_kind
 from services.unit_resolution import UnitResolver
@@ -404,8 +405,27 @@ FIXTURE_SVEDENIYA_REF_ABSENT_AMOUNT = Decimal("500.00")
 
 #: Раскладка блока подрядчика fixture (J6, ширина 11) — тот же факт, что
 #: проверяет `test_contractor_block_is_eleven_columns` в test_estimate.py:
-#: column_start=10 (колонка J), colspan=11.
-FIXTURE_CONTRACTOR = {"column_start": 10, "merged_shape": {"colspan": 11}}
+#: column_start=10 (колонка J), colspan=11. Ключи и смещения — литералы, не
+#: `sheet_builders.KEYS_GP_11`: эталон этого файла независим от строителя
+#: (замер плана фичи, «Замеры»).
+GP_11_COLUMN_KEYS = (
+    "suggested_quantity",
+    "unit_cost.materials",
+    "unit_cost.works",
+    "unit_cost.indirect_costs",
+    "unit_cost.total",
+    "total_cost.materials",
+    "total_cost.works",
+    "total_cost.indirect_costs",
+    "total_cost.total",
+    "total_cost_for_organizer_quantity",
+    "comment_contractor",
+)
+
+FIXTURE_CONTRACTOR = ResolvedContractor(
+    geometry={"column_start": 10, "merged_shape": {"colspan": 11}},
+    layout=BlockLayout(column_keys=GP_11_COLUMN_KEYS, unit_cost_offset=1, total_cost_offset=5),
+)
 
 #: Точная метка строки ИТОГО (с учётом НДС) в колонке A листа fixture.
 FIXTURE_TOTAL_WITH_VAT_LABEL = "ИТОГО, руб. с учетом НДС"
@@ -430,7 +450,7 @@ def _contractor_items(parsed) -> dict:
     return parsed.data["lots"]["lot_1"]["proposals"]["contractor_1"]["contractor_items"]
 
 
-def _independent_total_with_vat(ws, contractor: dict) -> Decimal:
+def _independent_total_with_vat(ws, contractor: ResolvedContractor) -> Decimal:
     """ИТОГО (с учётом НДС), прочитанное НАПРЯМУЮ из листа по точной метке в
     колонке A — в обход `get_summary`/`proposal_summary_lines`.
 

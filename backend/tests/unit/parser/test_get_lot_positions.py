@@ -28,8 +28,11 @@ from parser.constants import (
 )
 from parser.errors import EstimateParseError
 from parser.get_lot_positions import get_lot_positions
+from parser.resolve_contractor import ResolvedContractor
 
-CONTRACTOR = {"column_start": 9, "merged_shape": {"colspan": 8}}
+from .sheet_builders import KEYS_8, resolved
+
+CONTRACTOR = resolved(9, KEYS_8)
 
 
 @pytest.fixture
@@ -143,7 +146,9 @@ class TestGetLotPositionsEdgeCases:
 
     def test_invalid_contractor_structure(self, sample_worksheet):
         """Без column_start разбор строки подрядчика обязан упасть, а не молчать."""
-        invalid_contractor = {"merged_shape": {"colspan": 8}}
+        invalid_contractor = ResolvedContractor(
+            geometry={"merged_shape": {"colspan": 8}}, layout=CONTRACTOR.layout
+        )
 
         with pytest.raises((KeyError, AttributeError, TypeError)):
             get_lot_positions(sample_worksheet, invalid_contractor, lot_start_row=13, lot_end_row=15)
