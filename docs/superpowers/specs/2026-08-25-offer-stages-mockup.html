@@ -1,0 +1,673 @@
+<!--
+  Макет экрана «Этапы КП одного подрядчика» — свод по статьям классификатора.
+  Сделан ДО гейта 1, по разведке 25.08.2026.
+
+  ДАННЫЕ НАСТОЯЩИЕ, СУММЫ МАСШТАБИРОВАНЫ. Пять оферт одного подрядчика по одному
+  лоту (этапы 1–4 и финал), 1193–1213 позиций в каждой; статьи СМР совпадают с
+  классификатором `work_categories` (миграция 0005) на 100 % — и по числу позиций,
+  и по сумме. Все суммы умножены на один коэффициент, подобранный так, чтобы итог
+  первого этапа стал ровно 10 000 млн: пропорции, доли и все проценты настоящие,
+  абсолютных сумм в документе нет. Коэффициент здесь не записан намеренно
+  (DoD фазы 7: абсолютные суммы не попадают в доки). Названия объекта и
+  подрядчика обезличены, реквизиты и номер тендера убраны.
+
+  ЧТО РЕШЕНО И ПОЧЕМУ:
+  * Величина статьи — «Стоимость всего» позиции, НЕ «Стоимость всего за объемы
+    заказчика»: в этих КП «Общее кол-во» заказчика равно 1 у 1192 строк из 1193,
+    поэтому вторая колонка равна цене за единицу и смысла не несёт.
+  * ₽/ед. на уровне свода НЕ показывается. Подрядчик переписывает строку то как
+    «74 519 м × ставка», то как «1 × вся сумма» при неизменной единице «м» —
+    ставка между этапами несопоставима, а итог строки сопоставим всегда.
+  * Ноль — не цена, а «снято с оценки»: по домену обнуление значит, что работа
+    снята с тендера, переуступлена либо вынесена в отдельный тендер. Поэтому
+    «−100 %» как скидка не показывается нигде.
+  * Рост и снижение подписаны знаком и различены цветом, но НЕ названы хорошим
+    или плохим: снижение цены выгодно заказчику, а снижение из-за снятой работы —
+    нет, и по одному числу поверхность их не различает.
+
+  РАСКЛАДКА, ВТОРАЯ РЕДАКЦИЯ (замер по замечанию пользователя). При раскрытии
+  подстатей колонка названий не расширяется, а СУЖАЕТСЯ: у подстатей длинные
+  дельты («+1216,6 %»), числовые колонки с `nowrap` требуют больше места, и
+  название отдаёт его, пока может. На 1100px оно упиралось в минимум, и таблица
+  выезжала на 92px — за экран уходили именно итоговые колонки. Сделано два
+  изменения: заголовкам числовых колонок разрешён перенос (подпись «Вклад в
+  итог, млн» держала 144px при данных в 40), и первая колонка закреплена
+  (`position: sticky`) — этапов может быть больше пяти, и тогда прокрутка
+  неизбежна на любой ширине, а без закрепления уезжает подпись строки.
+  Замер с колонкой «Договор» (10 колонок), все 16 статей раскрыты: 1440px — 0,
+  1280px — 0, 1100px — 105px переполнения ТАБЛИЦЫ. Страница не едет ни на одной
+  ширине: прокрутка живёт внутри `.scroller`, а закреплённая первая колонка
+  держит подпись строки. До колонки «Договор» на 1100px переполнения не было —
+  это цена двух добавленных колонок, названная, а не скрытая.
+
+  КОЛОНКА «ДОГОВОР» (правка 25.08.2026). Смета договора показана шестой
+  колонкой за разделителем — она не этап торга. Правые колонки разделены на
+  «Торг» (1 → финал) и «После торга» (финал → договор): складывать их в одно
+  число значило бы скрыть, какая часть чему принадлежит. На этом пакете
+  содержание сметы договора совпало с финалом по всем статьям и по итогу.
+
+  ЧЕГО ЗДЕСЬ НЕТ: попозиционного раскрытия статьи (следующая фича), сравнения
+  разных подрядчиков.
+
+  Палитра, шрифтовые стеки и классы таблицы — из
+  `2026-08-23-passport-volumes-mockup.html` без изменений.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Этапы КП: свод по статьям</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1320px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar b { color:var(--fg); }
+.mockbar code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:70ch; }
+.sub b { color:var(--fg); }
+section { margin-bottom:38px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:78ch; }
+.secsub b { color:var(--fg); }
+.pass-head { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px;
+  padding:16px 18px; margin-bottom:22px; }
+.pass-head h3 { font-family:var(--font-serif); font-weight:600; font-size:26px; margin:0; }
+.pass-head .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.tep { display:flex; flex-wrap:wrap; gap:22px; margin-top:13px; padding-top:13px;
+  border-top:1px solid var(--bd-subtle); }
+.tep div { display:flex; flex-direction:column; gap:1px; }
+.tep .k { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; }
+.tep .v { font-size:14px; font-variant-numeric:tabular-nums; }
+.axis { margin-top:13px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); }
+.axis b { color:var(--fg); }
+.track { display:flex; gap:14px; align-items:flex-end; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:18px 20px 14px; }
+.bar { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; }
+/* Договор — не этап торга: столбец отделён линией, а не просто стоит следующим. */
+.bar.gap { margin-left:20px; padding-left:20px; border-left:1px solid var(--bd); }
+.bwrap { width:100%; max-width:130px; height:150px; display:flex; align-items:flex-end;
+  background:var(--sunken); border-radius:7px 7px 0 0; }
+.bfill { width:100%; background:var(--accent); border-radius:7px 7px 0 0; }
+.bv { font-variant-numeric:tabular-nums; font-weight:600; font-size:14px; }
+.bl { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; }
+.bd { font-size:12px; font-variant-numeric:tabular-nums; min-height:18px; }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px;
+  background:var(--surface); }
+table.pass { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.pass th, table.pass td { border-bottom:1px solid var(--bd-subtle); padding:6px 11px;
+  text-align:left; vertical-align:baseline; }
+table.pass thead th { background:var(--sechead); font-weight:600; vertical-align:bottom;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+/* Первая колонка закреплена: этапов может быть больше пяти, и тогда прокрутка
+   неизбежна на любой ширине — без закрепления уезжает подпись строки, то есть
+   ответ на вопрос «чья это цифра». Тот же приём, что на `/compare`.
+   Фон обязателен каждому состоянию строки: прозрачная ячейка пропустила бы
+   под собой уезжающие числа. */
+table.pass th.art, table.pass td.t { position:sticky; left:0; z-index:2;
+  min-width:250px; max-width:420px; background:var(--surface);
+  /* Разделитель — тенью, а не `border-right`: тень рисуется СНАРУЖИ и не
+     занимает ширину, а ширина здесь в дефиците (см. замер раскрытия).
+     `overflow:hidden` тут НЕ ставится намеренно: длинное название статьи
+     обрезалось бы молча, а поверхность не вправе прятать факт. */
+  box-shadow:1px 0 0 0 var(--bd); }
+table.pass thead th.art { z-index:3; background:var(--sechead); }
+table.pass tr.lvl2 td.t { background:var(--sunken); }
+table.pass tr.total td.t { background:var(--sunken); }
+table.pass tr.art:hover td.t { background:var(--hover); }
+table.pass td.num, table.pass th.num { text-align:right; font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+/* Заголовку переносы разрешены, ячейке — нет: иначе ширину колонки задаёт не
+   число, а длина подписи («Вклад в итог, млн» держал 144px при данных в 40). */
+table.pass thead th.num { white-space:normal; }
+th.sep, td.sep { border-left:1px solid var(--bd); }
+.dp { display:block; font-size:11px; font-variant-numeric:tabular-nums; font-weight:400; }
+.up { color:var(--accent-text); }
+.down { color:var(--warn-text); }
+.flat { color:var(--fg4); }
+tr.lvl1 > td { font-weight:600; }
+tr.lvl2 > td { background:var(--sunken); font-weight:400; }
+tr.lvl2 .t { padding-left:32px; color:var(--fg2); }
+tr.art:hover > td { background:var(--hover); }
+.tw { border:0; background:transparent; color:var(--fg3); cursor:pointer; font-size:11px;
+  padding:0 6px 0 0; font-family:inherit; }
+.code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+  color:var(--fg3); margin-right:6px; }
+.pill { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px;
+  border:1px solid var(--neutral-bd); background:var(--neutral-soft); color:var(--neutral-text);
+  white-space:nowrap; }
+.pill.warn { border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }
+tr.total td { border-top:2px solid var(--fg); background:var(--sunken); font-weight:600; }
+.warnbox { font-size:12.5px; margin:16px 0 0; padding:11px 15px; border-radius:9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+ul.notes { margin:0; padding-left:19px; color:var(--fg2); font-size:13px; }
+ul.notes li { margin-bottom:9px; }
+ul.notes li:last-child { margin-bottom:0; }
+ul.notes b { color:var(--fg); }
+ul.notes code, .axis code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px; background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+table.cov { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.cov th, table.cov td { padding:6px 11px; border-bottom:1px solid var(--bd-subtle);
+  text-align:left; }
+table.cov thead th { background:var(--sechead); font-size:10.5px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--fg3); font-weight:600; }
+table.cov td.num, table.cov th.num { text-align:right; font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+.bound { border-left:3px solid var(--info); background:var(--info-soft);
+  border-radius:0 8px 8px 0; padding:12px 16px; }
+.tag { display:inline-block; font-size:10.5px; border-radius:5px; padding:1px 7px;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+
+.flow { display:flex; flex-wrap:wrap; align-items:center; gap:9px; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:15px 18px; font-size:13px; }
+.flow .node { border:1px solid var(--bd); border-radius:8px; padding:5px 11px;
+  background:var(--sunken); white-space:nowrap; }
+.flow .node.nav { border-color:var(--accent-bd); background:var(--accent-soft);
+  color:var(--accent-text); font-weight:600; }
+.flow .node.new { border-style:dashed; }
+.flow .arrow { color:var(--fg3); }
+.flow .note { color:var(--fg3); font-size:12px; width:100%; margin-top:4px; }
+.screen { border:1px solid var(--bd); border-radius:12px; overflow:hidden;
+  background:var(--surface); }
+.screen .chrome { display:flex; align-items:center; gap:9px; padding:8px 13px;
+  background:var(--sechead); border-bottom:1px solid var(--bd-subtle); font-size:12px;
+  color:var(--fg3); }
+.screen .chrome code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11.5px; color:var(--fg2); }
+.screen .pane { padding:16px 18px; }
+.crumbs { font-size:12px; color:var(--fg3); margin-bottom:8px; }
+.crumbs a { color:var(--info); text-decoration:none; }
+.rowhead { display:flex; flex-wrap:wrap; align-items:flex-start; gap:12px;
+  justify-content:space-between; }
+.rowhead h3 { font-family:var(--font-serif); font-weight:600; font-size:24px; margin:0; }
+.btn { display:inline-block; font-size:12.5px; border-radius:8px; padding:6px 13px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); white-space:nowrap; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+.btns { display:flex; flex-wrap:wrap; gap:8px; }
+.tabbar { display:flex; gap:2px; border-bottom:1px solid var(--bd-subtle); margin:16px 0 0; }
+.tabbar span { font-size:13px; padding:7px 13px; color:var(--fg2); border-bottom:2px solid transparent; }
+.tabbar span.on { color:var(--fg); font-weight:600; border-bottom-color:var(--action); }
+.dropzone { border:1.5px dashed var(--bd); border-radius:10px; padding:26px 18px;
+  text-align:center; color:var(--fg2); font-size:13px; background:var(--sunken); }
+.dropzone b { color:var(--fg); display:block; margin-bottom:3px; font-size:14px; }
+.field { display:grid; gap:4px; max-width:230px; }
+.field label { font-size:11px; letter-spacing:.05em; text-transform:uppercase;
+  color:var(--fg3); font-weight:600; }
+.field .inp { border:1px solid var(--bd); border-radius:8px; padding:6px 10px;
+  background:var(--surface); font-size:13px; color:var(--fg); }
+.field .inp.ph { color:var(--fg4); }
+.fields { display:flex; flex-wrap:wrap; gap:14px; }
+.state { font-size:12.5px; padding:9px 13px; border-radius:9px; margin-top:13px; }
+.state.warn { background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+.state.info { background:var(--info-soft); border:1px solid var(--info-bd); color:var(--fg2); }
+.state b { font-weight:600; }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет, первая редакция.</strong>
+    <span>Пять оферт одного подрядчика по одному лоту. Числа настоящие,
+    <b>суммы масштабированы</b> так, что итог первого этапа равен 10 000 млн;
+    пропорции и все проценты — как в файлах.</span>
+    <span class="tag">до гейта 1</span>
+  </div>
+
+  <h1>Этапы КП: свод по статьям</h1>
+  <p class="sub">Экран отвечает на один вопрос: <b>из чего сложилось изменение цены
+  между этапами торга</b>. Не «какая работа подешевела» — на это отвечает раскрытие
+  статьи, отдельная фича. Здесь видно, где подрядчик уступал постепенно, где снял
+  статью одним шагом, а где цена росла.</p>
+
+
+  <section>
+    <h2>Как сюда попадают</h2>
+    <p class="secsub">Свод — не пункт меню. По тому же правилу, по которому в
+    навигации нет паспорта объекта: экран строится ПО ПАКЕТУ, и пункт без
+    выбранного пакета вёл бы в никуда (<code>TopNav.tsx</code>). В меню попадает
+    только список — как «Договоры».</p>
+    <div class="flow">
+      <span class="node nav">Тендеры</span><span class="arrow">→</span>
+      <span class="node new">Список пакетов КП<br><code>/tenders</code></span><span class="arrow">→</span>
+      <span class="node new">Карточка пакета<br><code>/tenders/{id}</code></span><span class="arrow">→</span>
+      <span class="node new">Свод по этапам<br><code>/tenders/{id}/stages</code></span>
+      <p class="note">Обратный ход: карточка договора → пакет, по которому он
+      заключён (связь <code>contracts.awarded_offer_id</code>). И вперёд:
+      карточка пакета → «Создать договор из этапа» → карточка договора.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 1. Тендеры — список пакетов</h2>
+    <p class="secsub">Колонки повторяют список договоров (<code>/contracts</code>):
+    объект, подрядчик, класс — те же и на том же месте. Своё — три последних:
+    сколько этапов, куда пришёл торг и заключён ли договор.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders</code> · пункт меню «Тендеры»</div>
+      <div class="pane">
+        <div class="rowhead">
+          <h3>Тендеры</h3>
+          <div class="btns"><span class="btn primary">Новый пакет КП</span></div>
+        </div>
+        <div class="scroller" style="margin-top:14px">
+          <table class="cov">
+            <thead>
+              <tr>
+                <th>Предмет торга</th><th>Объект</th><th>Подрядчик</th><th>Класс</th>
+                <th class="num">Этапов</th><th class="num">Итог последнего</th>
+                <th class="num">К первому</th><th>Договор</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Лот № 1, генподряд</td><td>Объект А</td><td>Подрядчик А</td>
+                <td>Жилые — бизнес</td>
+                <td class="num">5</td><td class="num">8 022</td>
+                <td class="num"><span class="down">−19,8 %</span></td>
+                <td><span class="pill">заключён</span></td>
+              </tr>
+              <tr>
+                <td>Лот № 2, фасады</td><td>Объект А</td><td>Подрядчик Б</td>
+                <td>Жилые — бизнес</td>
+                <td class="num">2</td><td class="num">1 340</td>
+                <td class="num"><span class="down">−4,1 %</span></td>
+                <td><span class="dash">торг идёт</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="state info">Вторая строка — <b>иллюстрация, а не данные</b>:
+        второго пакета в образцах нет. Она стоит здесь, чтобы показать
+        состояние «договора ещё нет» и то, что пакетов по одному объекту бывает
+        несколько.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 2. Карточка пакета</h2>
+    <p class="secsub">Устроена как карточка договора: шапка с реквизитами, под
+    ней вкладки. Вкладок три — «Этапы», «Загрузка», «История загрузок», — и они
+    называются и ведут себя так же, как у договора.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/1</code></div>
+      <div class="pane">
+        <div class="crumbs"><a href="#">Тендеры</a> → Лот № 1, генподряд</div>
+        <div class="rowhead">
+          <div>
+            <h3>Объект А · Подрядчик А</h3>
+            <div class="meta" style="color:var(--fg2);font-size:12.5px;margin-top:3px">
+              Лот № 1, генподряд · тендер № не указан · класс «Жилые — бизнес» ·
+              договор заключён по этапу 5
+            </div>
+          </div>
+          <div class="btns">
+            <span class="btn primary">Свод по этапам</span>
+            <span class="btn">Создать договор из этапа</span>
+            <span class="btn">Изменить</span>
+          </div>
+        </div>
+
+        <div class="tabbar">
+          <span class="on">Этапы (5)</span><span>Загрузка</span>
+          <span>История загрузок (5)</span>
+        </div>
+
+        <div class="scroller" style="margin-top:14px">
+          <table class="cov">
+            <thead>
+              <tr>
+                <th class="num">№</th><th>Метка</th><th>Получено</th>
+                <th class="num">Позиций</th><th class="num">Итог</th>
+                <th class="num">К предыдущему</th><th>Статус</th><th>Роль</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td class="num">1</td><td>1 этап</td><td class="dash">—</td>
+                  <td class="num">1 193</td><td class="num">10 000</td>
+                  <td class="dash">—</td><td><span class="pill">загружен</span></td><td class="dash">—</td></tr>
+              <tr><td class="num">2</td><td>2 этап</td><td class="dash">—</td>
+                  <td class="num">1 193</td><td class="num">9 904</td>
+                  <td class="num"><span class="down">−1,0 %</span></td>
+                  <td><span class="pill">загружен</span></td><td class="dash">—</td></tr>
+              <tr><td class="num">3</td><td>3 этап</td><td class="dash">—</td>
+                  <td class="num">1 213</td><td class="num">9 562</td>
+                  <td class="num"><span class="down">−3,5 %</span></td>
+                  <td><span class="pill">загружен</span></td><td class="dash">—</td></tr>
+              <tr><td class="num">4</td><td>4 этап</td><td class="dash">—</td>
+                  <td class="num">1 194</td><td class="num">9 685</td>
+                  <td class="num"><span class="up">+1,3 %</span></td>
+                  <td><span class="pill">загружен</span></td><td class="dash">—</td></tr>
+              <tr><td class="num">5</td><td>финал</td><td class="dash">—</td>
+                  <td class="num">1 194</td><td class="num">8 022</td>
+                  <td class="num"><span class="down">−17,2 %</span></td>
+                  <td><span class="pill">загружен</span></td>
+                  <td><span class="pill">выигравший</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="state info"><b>«Получено» пусто у всех пяти этапов, и это не
+        заглушка.</b> В файлах даты нет, а придумывать её макет не вправе:
+        <code>offers.received_date</code> объявлена <code>NULL</code>-able именно
+        под такой случай. Порядок этапов держит <code>stage_no</code>, и от даты
+        ничего не зависит.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 3. Загрузка этапа</h2>
+    <p class="secsub">Та же панель, что у договора (<code>EstimateUploadPanel</code>):
+    поля слева, dropzone под ними, те же ограничения файла. Отличаются только
+    поля — вместо номера допсоглашения три поля этапа.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/1</code> · вкладка «Загрузка»</div>
+      <div class="pane">
+        <div class="tabbar" style="margin-top:0">
+          <span>Этапы (5)</span><span class="on">Загрузка</span>
+          <span>История загрузок (5)</span>
+        </div>
+        <div style="margin-top:16px" class="fields">
+          <div class="field"><label>Номер этапа</label>
+            <div class="inp">6</div></div>
+          <div class="field"><label>Метка этапа</label>
+            <div class="inp ph">необязательно: «финал»</div></div>
+          <div class="field"><label>Дата получения</label>
+            <div class="inp ph">необязательно</div></div>
+        </div>
+        <div class="dropzone" style="margin-top:14px">
+          <b>Перетащите файл КП</b>
+          XLSX или XLSM, до 25 МБ
+        </div>
+        <p class="state warn"><b>Повторная загрузка того же номера этапа — отказ
+        409</b>, как и у сметы договора. Диалог замены предлагается администратору
+        и называет, что будет утрачено: ручной разнос статей этого этапа. Разнос
+        на этапах возможен ровно так же, как на смете договора — маршрут разноса
+        привязан к смете, а не к договору.</p>
+        <p class="state info"><b>Подрядчик берётся из карточки пакета, а не из
+        файла.</b> Это то же правило, что §3 держит для договора, только источник
+        истины другой — <code>offer_packages</code>. Расхождение реквизитов в
+        шапке файла с карточкой пишется в <code>import_jobs.warnings</code> и
+        импорт не роняет.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 4. Свод по этапам</h2>
+    <p class="secsub">Вход — кнопка «Свод по этапам» в карточке пакета.
+    Шапка повторяет карточку и добавляет то, без чего числа ниже нельзя
+    читать: ставку НДС и объявление оси.</p>
+    <div class="screen" style="margin-bottom:14px"><div class="chrome"><code>/tenders/1/stages</code></div></div>
+    <div class="pass-head">
+      <h3>Объект А · Подрядчик А</h3>
+      <div class="meta">Пакет КП · лот № 1 · генподряд · 5 этапов · договор заключён по этапу 5</div>
+      <div class="tep">
+        <div><span class="k">Этапов загружено</span><span class="v">5 + смета договора</span></div>
+        <div><span class="k">Позиций в финале</span><span class="v">1 194</span></div>
+        <div><span class="k">Статей классификатора</span><span class="v">16 из 16</span></div>
+        <div><span class="k">Ставка НДС</span><span class="v">20 % · ОСН</span></div>
+        <div><span class="k">Финал к первому этапу</span><span class="v">80,2 %</span></div>
+      </div>
+      <p class="axis"><b>Все суммы — в ставке НДС 20 %</b>, одинаковой во всех пяти
+      этапах: она объявлена в шапке колонок каждого файла. Если этап придёт с другой
+      ставкой, приведение к общей оси делает сервер, и ось подписывается здесь же —
+      как этого требует <code>AGENTS.md</code> §10.</p>
+    </div>
+
+    <h2>Трасса торга</h2>
+    <p class="secsub">Итог каждого этапа и изменение к предыдущему. Четвёртый этап
+    <b>выше</b> третьего — торг не монотонен, и поверхность обязана это показывать:
+    сравнение только с первым этапом скрыло бы возврат. Последний столбец за
+    линией — <b>смета договора</b>, а не этап: торг к тому моменту кончился, и
+    её отличие от финала отвечает на отдельный вопрос — что изменилось уже при
+    подписании. На этом пакете не изменилось ничего: содержание сметы договора
+    совпало с финальным КП по всем статьям и по итогу до копейки (файлы при этом
+    разные по <code>sha256</code>, поэтому признаком расхождения хэш служить не
+    может — сравнивать надо разобранное содержание).</p>
+    <div class="track"><div class="bar"><div class="bwrap"><div class="bfill" style="height:100.0%"></div></div><div class="bv">10 000</div><div class="bl">Этап 1</div><div class="bd"></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:99.0%"></div></div><div class="bv">9 904</div><div class="bl">Этап 2</div><div class="bd"><span class="down">−1,0 %</span></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:95.6%"></div></div><div class="bv">9 562</div><div class="bl">Этап 3</div><div class="bd"><span class="down">−3,5 %</span></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:96.9%"></div></div><div class="bv">9 685</div><div class="bl">Этап 4</div><div class="bd"><span class="up">+1,3 %</span></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:80.2%"></div></div><div class="bv">8 022</div><div class="bl">Финал</div><div class="bd"><span class="down">−17,2 %</span></div></div><div class="bar gap"><div class="bwrap"><div class="bfill" style="height:80.2%"></div></div><div class="bv">8 022</div><div class="bl">Договор</div><div class="bd"><span class="flat">0,0 %</span></div></div></div>
+  </section>
+
+  <section>
+    <h2>Статьи по этапам</h2>
+    <p class="secsub">Строка — статья классификатора, треугольник раскрывает
+    подстатьи. В ячейке — сумма статьи на этапе (млн) и изменение к предыдущему
+    этапу. Две крайние колонки отвечают на «сколько всего уступили по статье» и
+    «сколько эта статья дала в изменение итога».</p>
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr>
+            <th class="art">Статья классификатора</th>
+            <th class="num">Этап 1</th><th class="num">Этап 2</th>
+            <th class="num">Этап 3</th><th class="num">Этап 4</th>
+            <th class="num">Финал</th>
+            <th class="num sep">Договор</th>
+            <th class="num sep">Торг: 1 → финал</th>
+            <th class="num">После торга: финал → договор</th>
+            <th class="num">Вклад в итог, млн</th>
+          </tr>
+        </thead>
+        <tbody>
+<tr class="lvl1 art" data-code="6"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">6</span>Фасадные работы</td><td class="num">2 536</td><td class="num">2 481<span class="dp down">−2,2 %</span></td><td class="num">2 382<span class="dp down">−4,0 %</span></td><td class="num">2 543<span class="dp up">+6,7 %</span></td><td class="num">2 418<span class="dp down">−4,9 %</span></td><td class="num sep">2 418<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−4,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−118</span></td></tr>
+<tr class="lvl2 kid k-6" hidden><td class="t"><span class="code">6.2</span>Светопрозрачные конструкции типового этажа</td><td class="num">1 695</td><td class="num">1 693<span class="dp down">−0,1 %</span></td><td class="num">1 640<span class="dp down">−3,2 %</span></td><td class="num">1 645<span class="dp up">+0,3 %</span></td><td class="num">1 611<span class="dp down">−2,1 %</span></td><td class="num sep">1 611<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−5,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−84</span></td></tr>
+<tr class="lvl2 kid k-6" hidden><td class="t"><span class="code">6.4</span>Устройство навесного фасада типового этажа</td><td class="num">587</td><td class="num">594<span class="dp up">+1,2 %</span></td><td class="num">556<span class="dp down">−6,4 %</span></td><td class="num">637<span class="dp up">+14,6 %</span></td><td class="num">551<span class="dp down">−13,5 %</span></td><td class="num sep">551<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−6,1 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−36</span></td></tr>
+<tr class="lvl2 kid k-6" hidden><td class="t"><span class="code">6.1</span>Светопрозрачные конструкции 1 этажа</td><td class="num">117</td><td class="num">117<span class="dp down">−0,1 %</span></td><td class="num">116<span class="dp down">−1,0 %</span></td><td class="num">116<span class="dp up">+0,3 %</span></td><td class="num">109<span class="dp down">−6,4 %</span></td><td class="num sep">109<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−7,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−8</span></td></tr>
+<tr class="lvl2 kid k-6" hidden><td class="t"><span class="code">6.3</span>Устройство навесного фасада 1 этажа</td><td class="num">71</td><td class="num">72<span class="dp up">+1,3 %</span></td><td class="num">67<span class="dp down">−7,9 %</span></td><td class="num">87<span class="dp up">+30,8 %</span></td><td class="num">71<span class="dp down">−18,6 %</span></td><td class="num sep">71<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−0,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">0</span></td></tr>
+<tr class="lvl2 kid k-6" hidden><td class="t"><span class="code">6.6</span>Система обслуживания фасадов</td><td class="num">66</td><td class="num">5<span class="dp down">−93,0 %</span></td><td class="num">4<span class="dp down">−4,3 %</span></td><td class="num">58<span class="dp up">+1216,6 %</span></td><td class="num">76<span class="dp up">+31,8 %</span></td><td class="num sep">76<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+15,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">10</span></td></tr>
+<tr class="lvl1 art" data-code="4"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">4</span>Конструктивные решения</td><td class="num">1 779</td><td class="num">1 778<span class="dp down">−0,1 %</span></td><td class="num">1 746<span class="dp down">−1,8 %</span></td><td class="num">1 754<span class="dp up">+0,5 %</span></td><td class="num">1 714<span class="dp down">−2,3 %</span></td><td class="num sep">1 714<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−3,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−65</span></td></tr>
+<tr class="lvl2 kid k-4" hidden><td class="t"><span class="code">4.2</span>Надземная часть. Конструктивные решения</td><td class="num">1 211</td><td class="num">1 215<span class="dp up">+0,3 %</span></td><td class="num">1 190<span class="dp down">−2,1 %</span></td><td class="num">1 198<span class="dp up">+0,7 %</span></td><td class="num">1 172<span class="dp down">−2,2 %</span></td><td class="num sep">1 147<span class="dp down">−2,2 %</span></td><td class="num sep"><span class="down">−3,2 %</span></td><td class="num"><span class="down">−2,2 %</span></td><td class="num"><span class="down">−65</span></td></tr>
+<tr class="lvl2 kid k-4" hidden><td class="t"><span class="code">4.1</span>Подземная часть. Конструктивные решения</td><td class="num">568</td><td class="num">563<span class="dp down">−0,9 %</span></td><td class="num">556<span class="dp down">−1,2 %</span></td><td class="num">556<span class="dp flat">0,0 %</span></td><td class="num">541<span class="dp down">−2,6 %</span></td><td class="num sep">541<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−4,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−26</span></td></tr>
+<tr class="lvl2 kid k-4" hidden><td class="t"><span class="code">4.3</span>Металлоконструкции</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep">25</td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="pill">появилась</span></td><td class="num"><span class="up">25</span></td></tr>
+<tr class="lvl1 art" data-code="1"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">1</span>Подготовительные работы, содержание площадки</td><td class="num">1 077</td><td class="num">1 054<span class="dp down">−2,1 %</span></td><td class="num">1 038<span class="dp down">−1,5 %</span></td><td class="num">1 038<span class="dp flat">0,0 %</span></td><td class="num">1 021<span class="dp down">−1,7 %</span></td><td class="num sep">1 021<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−5,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−56</span></td></tr>
+<tr class="lvl2 kid k-1" hidden><td class="t"><span class="code">1.3</span>Содержание площадки, генподрядные функции</td><td class="num">922</td><td class="num">916<span class="dp down">−0,6 %</span></td><td class="num">923<span class="dp up">+0,8 %</span></td><td class="num">923<span class="dp flat">0,0 %</span></td><td class="num">939<span class="dp up">+1,7 %</span></td><td class="num sep">939<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+1,8 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">17</span></td></tr>
+<tr class="lvl2 kid k-1" hidden><td class="t"><span class="code">1.1</span>Обеспечение финансовых условий контракта</td><td class="num">69</td><td class="num">53<span class="dp down">−22,5 %</span></td><td class="num">56<span class="dp up">+5,7 %</span></td><td class="num">56<span class="dp down">−0,3 %</span></td><td class="num">23<span class="dp down">−58,2 %</span></td><td class="num sep">23<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−65,9 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−45</span></td></tr>
+<tr class="lvl2 kid k-1" hidden><td class="t"><span class="code">1.2</span>Мобилизация площадки (в т.ч. снос и демонтаж)</td><td class="num">62</td><td class="num">62<span class="dp flat">0,0 %</span></td><td class="num">35<span class="dp down">−43,9 %</span></td><td class="num">35<span class="dp flat">0,0 %</span></td><td class="num">39<span class="dp up">+11,9 %</span></td><td class="num sep">39<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−37,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−23</span></td></tr>
+<tr class="lvl2 kid k-1" hidden><td class="t"><span class="code">1.4</span>Мокап</td><td class="num">24</td><td class="num">23<span class="dp down">−7,0 %</span></td><td class="num">24<span class="dp up">+6,0 %</span></td><td class="num">24<span class="dp flat">0,0 %</span></td><td class="num">19<span class="dp down">−19,2 %</span></td><td class="num sep">19<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−20,4 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−5</span></td></tr>
+<tr class="lvl1 art" data-code="10"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">10</span>ВИС - механические системы</td><td class="num">1 013</td><td class="num">1 013<span class="dp flat">0,0 %</span></td><td class="num">943<span class="dp down">−6,9 %</span></td><td class="num">924<span class="dp down">−2,1 %</span></td><td class="num">878<span class="dp down">−4,9 %</span></td><td class="num sep">878<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−13,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−135</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.4</span>ОВ и К. Система отопления</td><td class="num">291</td><td class="num">291<span class="dp flat">0,0 %</span></td><td class="num">185<span class="dp down">−36,3 %</span></td><td class="num">181<span class="dp down">−2,1 %</span></td><td class="num">183<span class="dp up">+0,7 %</span></td><td class="num sep">183<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−37,1 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−108</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.5</span>ОВ и К. Система общеобменной вентиляции</td><td class="num">210</td><td class="num">210<span class="dp flat">0,0 %</span></td><td class="num">173<span class="dp down">−17,5 %</span></td><td class="num">170<span class="dp down">−2,1 %</span></td><td class="num">171<span class="dp up">+0,7 %</span></td><td class="num sep">171<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−18,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−39</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.6</span>ОВ и К. Система кондиционирования</td><td class="num">139</td><td class="num">139<span class="dp flat">0,0 %</span></td><td class="num">223<span class="dp up">+60,2 %</span></td><td class="num">218<span class="dp down">−2,1 %</span></td><td class="num">168<span class="dp down">−23,0 %</span></td><td class="num sep">168<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+20,8 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">29</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.2</span>Система  водяного пожаротушения, противопожарный водопровод</td><td class="num">87</td><td class="num">87<span class="dp flat">0,0 %</span></td><td class="num">65<span class="dp down">−25,2 %</span></td><td class="num">64<span class="dp down">−2,1 %</span></td><td class="num">74<span class="dp up">+16,2 %</span></td><td class="num sep">74<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−14,9 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−13</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.3</span>Система внутреннего водоотведения</td><td class="num">79</td><td class="num">79<span class="dp flat">0,0 %</span></td><td class="num">90<span class="dp up">+14,8 %</span></td><td class="num">89<span class="dp down">−2,1 %</span></td><td class="num">79<span class="dp down">−10,8 %</span></td><td class="num sep">79<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+0,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">0</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.7</span>Системы противодымной вентиляции</td><td class="num">78</td><td class="num">78<span class="dp flat">0,0 %</span></td><td class="num">76<span class="dp down">−3,0 %</span></td><td class="num">74<span class="dp down">−2,1 %</span></td><td class="num">75<span class="dp up">+0,7 %</span></td><td class="num sep">75<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−4,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−3</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.1</span>Системы внутреннего водоснабжения</td><td class="num">73</td><td class="num">73<span class="dp flat">0,0 %</span></td><td class="num">97<span class="dp up">+33,4 %</span></td><td class="num">95<span class="dp down">−2,1 %</span></td><td class="num">96<span class="dp up">+0,7 %</span></td><td class="num sep">96<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+31,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">23</span></td></tr>
+<tr class="lvl2 kid k-10" hidden><td class="t"><span class="code">10.8</span>Индивидуальный тепловой пункт</td><td class="num">57</td><td class="num">57<span class="dp flat">0,0 %</span></td><td class="num">33<span class="dp down">−41,0 %</span></td><td class="num">33<span class="dp down">−2,1 %</span></td><td class="num">33<span class="dp up">+0,7 %</span></td><td class="num sep">33<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−41,8 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−24</span></td></tr>
+<tr class="lvl1 art" data-code="14"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">14</span>MR-base</td><td class="num">876</td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">717<span class="dp down">−18,2 %</span></td><td class="num">759<span class="dp up">+5,8 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−876</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.6</span>Электрические инженерные системы</td><td class="num">233</td><td class="num">234<span class="dp up">+0,6 %</span></td><td class="num">182<span class="dp down">−22,2 %</span></td><td class="num">240<span class="dp up">+31,7 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−233</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.5</span>Монтаж системы водоснабжения, водоотведения и оборудования</td><td class="num">193</td><td class="num">194<span class="dp up">+0,6 %</span></td><td class="num">94<span class="dp down">−51,6 %</span></td><td class="num">92<span class="dp down">−1,6 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−193</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.1</span>Устройство перегородок из ГКЛ/ГСБ</td><td class="num">159</td><td class="num">160<span class="dp up">+0,6 %</span></td><td class="num">124<span class="dp down">−22,7 %</span></td><td class="num">122<span class="dp down">−1,6 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−159</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.3</span>?</td><td class="num">145</td><td class="num">145<span class="dp up">+0,1 %</span></td><td class="num">104<span class="dp down">−28,6 %</span></td><td class="num">123<span class="dp up">+18,7 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−145</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.4</span>?</td><td class="num">86</td><td class="num">82<span class="dp down">−4,6 %</span></td><td class="num">67<span class="dp down">−18,1 %</span></td><td class="num">79<span class="dp up">+17,5 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−86</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.99</span>Прочее (MR Base)</td><td class="num">51</td><td class="num">51<span class="dp up">+0,6 %</span></td><td class="num">50<span class="dp down">−2,0 %</span></td><td class="num">8<span class="dp down">−83,8 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−51</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.2</span>?</td><td class="num">6</td><td class="num">5<span class="dp down">−4,5 %</span></td><td class="num">4<span class="dp down">−18,2 %</span></td><td class="num">4<span class="dp down">−7,6 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−6</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.7</span>Терморегулирование (Штробление, разводка силовой сети и управления)</td><td class="num">4</td><td class="num">4<span class="dp up">+0,6 %</span></td><td class="num">7<span class="dp up">+65,9 %</span></td><td class="num">7<span class="dp down">−1,6 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−4</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.9</span>Индивидуальная приточно-вытяжная система</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl2 kid k-14" hidden><td class="t"><span class="code">14.10</span>Кондиционирование</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num">85</td><td class="num">83<span class="dp down">−1,6 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art" data-code="8"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">8</span>Отделочные работы (паркинг, надземная часть МОП)</td><td class="num">836</td><td class="num">845<span class="dp up">+1,1 %</span></td><td class="num">888<span class="dp up">+5,0 %</span></td><td class="num">835<span class="dp down">−6,0 %</span></td><td class="num">602<span class="dp down">−27,8 %</span></td><td class="num sep">602<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−28,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−234</span></td></tr>
+<tr class="lvl2 kid k-8" hidden><td class="t"><span class="code">8.2</span>Отделка надземной части (в т.ч. меблировка)</td><td class="num">429</td><td class="num">423<span class="dp down">−1,4 %</span></td><td class="num">485<span class="dp up">+14,5 %</span></td><td class="num">473<span class="dp down">−2,4 %</span></td><td class="num">317<span class="dp down">−33,0 %</span></td><td class="num sep">317<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−26,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−113</span></td></tr>
+<tr class="lvl2 kid k-8" hidden><td class="t"><span class="code">8.3</span>Устройство дверей, ворот, противопожарных штор, люков и т.д.</td><td class="num">209</td><td class="num">216<span class="dp up">+3,5 %</span></td><td class="num">215<span class="dp down">−0,5 %</span></td><td class="num">181<span class="dp down">−16,0 %</span></td><td class="num">130<span class="dp down">−27,8 %</span></td><td class="num sep">130<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−37,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−79</span></td></tr>
+<tr class="lvl2 kid k-8" hidden><td class="t"><span class="code">8.1</span>Отделка подземной части (в т.ч. меблировка)</td><td class="num">198</td><td class="num">206<span class="dp up">+4,0 %</span></td><td class="num">188<span class="dp down">−8,7 %</span></td><td class="num">181<span class="dp down">−3,8 %</span></td><td class="num">155<span class="dp down">−14,3 %</span></td><td class="num sep">155<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−21,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−43</span></td></tr>
+<tr class="lvl2 kid k-8" hidden><td class="t"><span class="code">8.99</span>Прочее (отделка, в т.ч. навигация)</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art" data-code="11"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">11</span>ВИС - Электрические и слаботочные системы</td><td class="num">753</td><td class="num">753<span class="dp flat">0,0 %</span></td><td class="num">752<span class="dp down">−0,2 %</span></td><td class="num">744<span class="dp down">−1,1 %</span></td><td class="num">642<span class="dp down">−13,6 %</span></td><td class="num sep">642<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−14,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−111</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.1</span>Внутреннее электрооборудование, освещение</td><td class="num">362</td><td class="num">362<span class="dp flat">0,0 %</span></td><td class="num">362<span class="dp flat">0,0 %</span></td><td class="num">340<span class="dp down">−6,1 %</span></td><td class="num">255<span class="dp down">−25,1 %</span></td><td class="num sep">255<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−29,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−107</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.5</span>Системы Безопасности</td><td class="num">105</td><td class="num">105<span class="dp flat">0,0 %</span></td><td class="num">105<span class="dp flat">0,0 %</span></td><td class="num">104<span class="dp down">−0,5 %</span></td><td class="num">148<span class="dp up">+42,7 %</span></td><td class="num sep">148<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+42,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">44</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.4</span>Система пожарной сигнализации и Система оповещения и управления эвакуацией людей при пожаре</td><td class="num">90</td><td class="num">90<span class="dp flat">0,0 %</span></td><td class="num">88<span class="dp down">−2,4 %</span></td><td class="num">88<span class="dp down">−0,7 %</span></td><td class="num">113<span class="dp up">+29,3 %</span></td><td class="num sep">113<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+25,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">23</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.6</span>Системы автоматизации и диспетчеризации инженерных систем</td><td class="num">79</td><td class="num">79<span class="dp flat">0,0 %</span></td><td class="num">79<span class="dp flat">0,0 %</span></td><td class="num">78<span class="dp down">−0,5 %</span></td><td class="num">43<span class="dp down">−45,0 %</span></td><td class="num sep">43<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−45,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−36</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.3</span>Сети связи</td><td class="num">51</td><td class="num">51<span class="dp flat">0,0 %</span></td><td class="num">51<span class="dp flat">0,0 %</span></td><td class="num">60<span class="dp up">+17,2 %</span></td><td class="num">59<span class="dp down">−0,8 %</span></td><td class="num sep">59<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+16,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">8</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.11</span>Наружное освещение согласно концепции</td><td class="num">23</td><td class="num">23<span class="dp flat">0,0 %</span></td><td class="num">23<span class="dp flat">0,0 %</span></td><td class="num">20<span class="dp down">−12,2 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−23</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.7</span>Автоматизированная система контроля и учёта электроэнергии и энергоресурсов</td><td class="num">17</td><td class="num">17<span class="dp flat">0,0 %</span></td><td class="num">17<span class="dp flat">0,0 %</span></td><td class="num">17<span class="dp down">−0,5 %</span></td><td class="num">13<span class="dp down">−22,6 %</span></td><td class="num sep">13<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−23,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−4</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.2</span>Монтаж системы молниезащиты и заземления</td><td class="num">12</td><td class="num">12<span class="dp flat">0,0 %</span></td><td class="num">12<span class="dp flat">0,0 %</span></td><td class="num">12<span class="dp down">−0,5 %</span></td><td class="num">7<span class="dp down">−37,6 %</span></td><td class="num sep">7<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−38,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−4</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.12</span>Фасадное освещение согласно концепции</td><td class="num">11</td><td class="num">11<span class="dp flat">0,0 %</span></td><td class="num">11<span class="dp flat">0,0 %</span></td><td class="num">20<span class="dp up">+86,9 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−11</span></td></tr>
+<tr class="lvl2 kid k-11" hidden><td class="t"><span class="code">11.8</span>Мероприятия по Единой цифровой среде здания</td><td class="num">3</td><td class="num">3<span class="dp flat">0,0 %</span></td><td class="num">4<span class="dp up">+33,5 %</span></td><td class="num">4<span class="dp down">−0,5 %</span></td><td class="num">3<span class="dp down">−35,0 %</span></td><td class="num sep">3<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−13,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">0</span></td></tr>
+<tr class="lvl1 art" data-code="12"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">12</span>Благоустройство, дороги</td><td class="num">312</td><td class="num">290<span class="dp down">−6,9 %</span></td><td class="num">291<span class="dp up">+0,4 %</span></td><td class="num">250<span class="dp down">−14,3 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−312</span></td></tr>
+<tr class="lvl2 kid k-12" hidden><td class="t"><span class="code">12.2</span>Твердые покрытия (в тч. финишные слои кровли подземной части/стилобата), бортовой камень</td><td class="num">133</td><td class="num">134<span class="dp up">+1,1 %</span></td><td class="num">112<span class="dp down">−16,7 %</span></td><td class="num">91<span class="dp down">−18,7 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−133</span></td></tr>
+<tr class="lvl2 kid k-12" hidden><td class="t"><span class="code">12.4</span>МАФы (в т.ч. детские площадки), велопарковки, шлагбаумы, фонтаны</td><td class="num">55</td><td class="num">55<span class="dp flat">0,0 %</span></td><td class="num">82<span class="dp up">+49,0 %</span></td><td class="num">67<span class="dp down">−18,3 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−55</span></td></tr>
+<tr class="lvl2 kid k-12" hidden><td class="t"><span class="code">12.99</span>Прочее (благоустройство)</td><td class="num">55</td><td class="num">31<span class="dp down">−42,3 %</span></td><td class="num">30<span class="dp down">−4,6 %</span></td><td class="num">23<span class="dp down">−22,3 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−55</span></td></tr>
+<tr class="lvl2 kid k-12" hidden><td class="t"><span class="code">12.3</span>Озеленение территории</td><td class="num">49</td><td class="num">49<span class="dp flat">0,0 %</span></td><td class="num">45<span class="dp down">−8,0 %</span></td><td class="num">47<span class="dp up">+4,5 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−49</span></td></tr>
+<tr class="lvl2 kid k-12" hidden><td class="t"><span class="code">12.1</span>Земляные работы</td><td class="num">21</td><td class="num">21<span class="dp flat">0,0 %</span></td><td class="num">23<span class="dp up">+8,7 %</span></td><td class="num">22<span class="dp down">−4,3 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−21</span></td></tr>
+<tr class="lvl1 art" data-code="16"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">16</span>Разработка рабочей документации</td><td class="num">236</td><td class="num">240<span class="dp up">+1,8 %</span></td><td class="num">166<span class="dp down">−30,9 %</span></td><td class="num">175<span class="dp up">+5,4 %</span></td><td class="num">164<span class="dp down">−6,3 %</span></td><td class="num sep">164<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−30,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−72</span></td></tr>
+<tr class="lvl1 art" data-code="9"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">9</span>Лифты, подъемники</td><td class="num">153</td><td class="num">149<span class="dp down">−2,3 %</span></td><td class="num">149<span class="dp flat">0,0 %</span></td><td class="num">247<span class="dp up">+65,5 %</span></td><td class="num">175<span class="dp down">−28,9 %</span></td><td class="num sep">175<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+14,9 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">23</span></td></tr>
+<tr class="lvl2 kid k-9" hidden><td class="t"><span class="code">9.2</span>Монтаж лифтов и подъемников</td><td class="num">153</td><td class="num">149<span class="dp down">−2,3 %</span></td><td class="num">149<span class="dp flat">0,0 %</span></td><td class="num">205<span class="dp up">+37,4 %</span></td><td class="num">175<span class="dp down">−14,4 %</span></td><td class="num sep">175<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+14,9 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">23</span></td></tr>
+<tr class="lvl2 kid k-9" hidden><td class="t"><span class="code">9.99</span>Прочее (лифты, подъемники)</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num">42</td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art" data-code="5"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">5</span>Общестроительные работы (без отделки)</td><td class="num">152</td><td class="num">164<span class="dp up">+8,1 %</span></td><td class="num">160<span class="dp down">−2,9 %</span></td><td class="num">166<span class="dp up">+4,2 %</span></td><td class="num">166<span class="dp flat">0,0 %</span></td><td class="num sep">166<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+9,4 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">14</span></td></tr>
+<tr class="lvl2 kid k-5" hidden><td class="t"><span class="code">5.2</span>Устройство перегородок и стен надземной части (каменная кладка, ГКЛ)</td><td class="num">119</td><td class="num">134<span class="dp up">+13,2 %</span></td><td class="num">127<span class="dp down">−5,4 %</span></td><td class="num">134<span class="dp up">+5,6 %</span></td><td class="num">134<span class="dp down">−0,2 %</span></td><td class="num sep">134<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+12,9 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">15</span></td></tr>
+<tr class="lvl2 kid k-5" hidden><td class="t"><span class="code">5.1</span>Устройство перегородок и стен подземной части (каменная кладка, ГКЛ)</td><td class="num">19</td><td class="num">15<span class="dp down">−17,8 %</span></td><td class="num">17<span class="dp up">+8,2 %</span></td><td class="num">16<span class="dp down">−0,5 %</span></td><td class="num">16<span class="dp down">−0,3 %</span></td><td class="num sep">16<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−11,8 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−2</span></td></tr>
+<tr class="lvl2 kid k-5" hidden><td class="t"><span class="code">5.3</span>Устройство светопрозрачных перегородок</td><td class="num">15</td><td class="num">15<span class="dp flat">0,0 %</span></td><td class="num">16<span class="dp up">+8,0 %</span></td><td class="num">16<span class="dp down">−2,2 %</span></td><td class="num">16<span class="dp up">+1,7 %</span></td><td class="num sep">16<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+7,4 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">1</span></td></tr>
+<tr class="lvl1 art" data-code="7"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">7</span>Кровля</td><td class="num">126</td><td class="num">132<span class="dp up">+4,7 %</span></td><td class="num">183<span class="dp up">+38,3 %</span></td><td class="num">115<span class="dp down">−37,3 %</span></td><td class="num">114<span class="dp down">−0,1 %</span></td><td class="num sep">114<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−9,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−12</span></td></tr>
+<tr class="lvl2 kid k-7" hidden><td class="t"><span class="code">7.1</span>Устройство кровли подземной части/стилобата (пирог кровли под финишное покрытие благоустройства)</td><td class="num">59</td><td class="num">65<span class="dp up">+9,5 %</span></td><td class="num">61<span class="dp down">−6,0 %</span></td><td class="num">54<span class="dp down">−11,5 %</span></td><td class="num">54<span class="dp down">−0,3 %</span></td><td class="num sep">54<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−9,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−5</span></td></tr>
+<tr class="lvl2 kid k-7" hidden><td class="t"><span class="code">7.2</span>Устройство кровли зданий</td><td class="num">57</td><td class="num">60<span class="dp up">+5,0 %</span></td><td class="num">61<span class="dp up">+1,8 %</span></td><td class="num">54<span class="dp down">−11,5 %</span></td><td class="num">54<span class="dp flat">0,0 %</span></td><td class="num sep">54<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−5,5 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−3</span></td></tr>
+<tr class="lvl2 kid k-7" hidden><td class="t"><span class="code">7.3</span>Устройство лестниц, ограждения и проч.</td><td class="num">9</td><td class="num">7<span class="dp down">−26,1 %</span></td><td class="num">60<span class="dp up">+762,1 %</span></td><td class="num">6<span class="dp down">−89,3 %</span></td><td class="num">6<span class="dp flat">0,0 %</span></td><td class="num sep">6<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−32,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−3</span></td></tr>
+<tr class="lvl1 art" data-code="3"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">3</span>Устройство гидроизоляции подземной части</td><td class="num">89</td><td class="num">83<span class="dp down">−7,0 %</span></td><td class="num">89<span class="dp up">+7,5 %</span></td><td class="num">80<span class="dp down">−10,2 %</span></td><td class="num">88<span class="dp up">+9,1 %</span></td><td class="num sep">88<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−2,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−2</span></td></tr>
+<tr class="lvl2 kid k-3" hidden><td class="t"><span class="code">3.2</span>Устройство гидроизоляции фундамента и подземной части здания</td><td class="num">69</td><td class="num">64<span class="dp down">−7,1 %</span></td><td class="num">72<span class="dp up">+13,3 %</span></td><td class="num">56<span class="dp down">−23,3 %</span></td><td class="num">54<span class="dp down">−3,7 %</span></td><td class="num sep">54<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−22,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−15</span></td></tr>
+<tr class="lvl2 kid k-3" hidden><td class="t"><span class="code">3.1</span>Устройство подготовки под фундаментную плиту</td><td class="num">21</td><td class="num">19<span class="dp down">−6,6 %</span></td><td class="num">17<span class="dp down">−11,5 %</span></td><td class="num">25<span class="dp up">+45,7 %</span></td><td class="num">34<span class="dp up">+37,9 %</span></td><td class="num sep">34<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+66,1 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">14</span></td></tr>
+<tr class="lvl1 art" data-code="2"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">2</span>Котлован</td><td class="num">44</td><td class="num">27<span class="dp down">−37,6 %</span></td><td class="num">25<span class="dp down">−7,6 %</span></td><td class="num">25<span class="dp flat">0,0 %</span></td><td class="num">25<span class="dp flat">0,0 %</span></td><td class="num sep">25<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−42,3 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−19</span></td></tr>
+<tr class="lvl2 kid k-2" hidden><td class="t"><span class="code">2.5</span>Строительное водопонижение</td><td class="num">22</td><td class="num">10<span class="dp down">−56,0 %</span></td><td class="num">10<span class="dp flat">0,0 %</span></td><td class="num">10<span class="dp flat">0,0 %</span></td><td class="num">10<span class="dp flat">0,0 %</span></td><td class="num sep">10<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−56,0 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−12</span></td></tr>
+<tr class="lvl2 kid k-2" hidden><td class="t"><span class="code">2.6</span>Земляные работы</td><td class="num">21</td><td class="num">17<span class="dp down">−19,8 %</span></td><td class="num">15<span class="dp down">−11,7 %</span></td><td class="num">15<span class="dp flat">0,0 %</span></td><td class="num">15<span class="dp flat">0,0 %</span></td><td class="num sep">15<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−29,2 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−6</span></td></tr>
+<tr class="lvl2 kid k-2" hidden><td class="t"><span class="code">2.4</span>Устройство ограждающих конструкций котлована</td><td class="num">1</td><td class="num">1<span class="dp down">−5,2 %</span></td><td class="num">1<span class="dp down">−12,0 %</span></td><td class="num">1<span class="dp flat">0,0 %</span></td><td class="num">1<span class="dp flat">0,0 %</span></td><td class="num sep">1<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−16,6 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">0</span></td></tr>
+<tr class="lvl1 art" data-code="13"><td class="t"><button class="tw" aria-expanded="false">▸</button><span class="code">13</span>ТХ</td><td class="num">18</td><td class="num">18<span class="dp flat">0,0 %</span></td><td class="num">25<span class="dp up">+40,8 %</span></td><td class="num">25<span class="dp flat">0,0 %</span></td><td class="num">14<span class="dp down">−42,3 %</span></td><td class="num sep">14<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−18,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="down">−3</span></td></tr>
+<tr class="lvl2 kid k-13" hidden><td class="t"><span class="code">13.3</span>Система мусороудаления</td><td class="num">11</td><td class="num">11<span class="dp flat">0,0 %</span></td><td class="num">10<span class="dp down">−8,0 %</span></td><td class="num">10<span class="dp flat">0,0 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="down">−11</span></td></tr>
+<tr class="lvl2 kid k-13" hidden><td class="t"><span class="code">13.1</span>ТХ паркинга</td><td class="num">7</td><td class="num">7<span class="dp flat">0,0 %</span></td><td class="num">15<span class="dp up">+116,1 %</span></td><td class="num">15<span class="dp flat">0,0 %</span></td><td class="num">14<span class="dp down">−4,3 %</span></td><td class="num sep">14<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+106,7 %</span></td><td class="num"><span class="flat">0,0 %</span></td><td class="num"><span class="up">7</span></td></tr>
+<tr class="lvl2 kid k-13" hidden><td class="t"><span class="code">13.2</span>Автоматизированная парковочная система</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl2 kid k-13" hidden><td class="t"><span class="code">13.4</span>ТХ ДОУ, СОШ</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art" data-code="99"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">99</span>Прочее</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num">8</td><td class="num">8<span class="dp flat">0,0 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+        </tbody>
+        <tfoot>
+          <tr class="total"><td class="t">Итого по лоту</td><td class="num">10 000</td><td class="num">9 904<span class="dp down">−1,0 %</span></td><td class="num">9 562<span class="dp down">−3,5 %</span></td><td class="num">9 685<span class="dp up">+1,3 %</span></td><td class="num">8 022<span class="dp down">−17,2 %</span></td><td class="num sep">8 022<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−19,8 %</span></td><td class="num "><span class="flat">0,0 %</span></td><td class="num"><span class="down">−1 978</span></td></tr>
+        </tfoot>
+      </table>
+    </div>
+    <p class="warnbox"><b>Две статьи сняты целиком, и вдвоём они дают 60 % всего
+    снижения.</b> «Снято» — не скидка и не «стоит ноль»: по домену обнуление значит,
+    что работа снята с тендера, переуступлена другому подрядчику либо вынесена в
+    отдельный тендер. Поэтому в ячейке стоит пометка, а не «−100 %»: процент здесь
+    означал бы уступку в цене, которой не было.</p>
+  </section>
+
+  <section>
+    <h2>Снятое с оценки: как это выглядит в файле</h2>
+    <p class="secsub">Признак — <b>цена, а не комментарий</b>. Пустых цен во всех пяти
+    файлах ровно по одной; всё остальное подрядчик пишет явным нулём. Пояснение он
+    даёт не всегда — и ровно там, где снимает статью целиком, не даёт совсем.</p>
+    <div class="scroller">
+      <table class="cov">
+        <thead>
+          <tr>
+            <th>Этап</th>
+            <th class="num">Позиций</th><th class="num">С нулём</th>
+            <th class="num">С пояснением</th><th class="num">Молча</th>
+            <th class="num sep">Ст. 12: нулей</th><th class="num">с поясн.</th>
+            <th class="num sep">Ст. 14: нулей</th><th class="num">с поясн.</th>
+          </tr>
+        </thead>
+        <tbody><tr><td>Этап 1</td><td class="num">1193</td><td class="num">216</td><td class="num">150</td><td class="num">66</td><td class="num sep">2 / 165</td><td class="num">0</td><td class="num sep">52 / 141</td><td class="num">52</td></tr><tr><td>Этап 2</td><td class="num">1193</td><td class="num">197</td><td class="num">131</td><td class="num">66</td><td class="num sep">2 / 165</td><td class="num">0</td><td class="num sep">52 / 141</td><td class="num">52</td></tr><tr><td>Этап 3</td><td class="num">1213</td><td class="num">191</td><td class="num">153</td><td class="num">38</td><td class="num sep">2 / 165</td><td class="num">1</td><td class="num sep">34 / 141</td><td class="num">34</td></tr><tr><td>Этап 4</td><td class="num">1194</td><td class="num">211</td><td class="num">166</td><td class="num">45</td><td class="num sep">2 / 165</td><td class="num">1</td><td class="num sep">51 / 106</td><td class="num">50</td></tr><tr><td>Финал</td><td class="num">1194</td><td class="num">514</td><td class="num">235</td><td class="num">279</td><td class="num sep">165 / 165</td><td class="num">0</td><td class="num sep">106 / 106</td><td class="num">0</td></tr></tbody>
+      </table>
+    </div>
+    <ul class="notes" style="margin-top:16px">
+      <li><b>Пока идёт торг, подрядчик поясняет каждый ноль.</b> В статье 14 нулевых
+      строк 52 из 141 уже на первом этапе — и все 52 с пояснением; на третьем этапе
+      34 из 34, на четвёртом 50 из 51.</li>
+      <li><b>Когда статья снимается целиком — молчит.</b> В финале в статьях 12 и 14
+      нулей 165 и 106, пояснений — ноль. Значит поверхность не вправе выводить
+      причину снятия из файла: причина есть, но её в файле нет.</li>
+      <li><b>Снятое в финале — 43 % позиций</b> (514 из 1194) против 18 % на первом
+      этапе. Это не редкий случай, а режим работы: «снято» обязано быть отдельным
+      состоянием ячейки, а не нулём.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Границы макета</h2>
+    <div class="bound">
+      <ul class="notes">
+        <li><b>Попозиционного раскрытия здесь нет</b> — это следующая фича. Кнопка
+        раскрытия доходит до подстатьи и останавливается. Ключ сопоставления
+        отдельных работ между этапами будет выбираться на загруженных в базу КП, а не
+        по прикидкам: внутри одного файла 117 пар «название + единица» встречаются по
+        нескольку раз (399 строк из 1193), а работы переезжают между статьями.</li>
+        <li><b>Сравнения разных подрядчиков нет</b> — пакет КП принадлежит одному
+        подрядчику. Схема этого не запрещает: второй пакет по тому же объекту
+        заводится без правок.</li>
+        <li><b>Смета договора и финальное КП — две независимые сметы</b>, а не
+        одна общая (ревизия 25.08.2026 по итогам внешнего ревью). Колонку
+        «Договор» экран берёт по связи <code>contracts.awarded_offer_id</code>.
+        Договора нет либо выигравший этап не указан — колонки нет, остальное
+        работает как раньше.</li>
+        <li><b>Смета договора может прийти в форме, которой парсер не читает.</b>
+        Проверено на другом объекте: файл «к договору» отвергнут разбором —
+        «не найдена строка заголовков контрагентов». У такого договора колонки
+        «Договор» не будет, и это ограничение, а не дефект.</li>
+        <li><b>Ручной разнос статей возможен и на сметах этапов</b> — маршрут
+        разноса привязан к смете, а не к договору. Значит колонка может нести
+        решение человека, и признак разноса нужен у каждой колонки, а не только
+        у договорной. В этом макете разноса нет ни на одной.</li>
+        <li><b>₽/ед. и ₽/м² не показываются.</b> Первое несопоставимо между этапами
+        (подрядчик меняет базис при неизменной единице), второе требует площади
+        объекта, которой у пакета КП может не быть.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+<script>
+document.querySelectorAll('tr.art .tw').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var code = btn.closest('tr').dataset.code;
+    var open = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', String(!open));
+    btn.textContent = open ? '\u25B8' : '\u25BE';
+    document.querySelectorAll('tr.k-' + code).forEach(function (row) { row.hidden = open; });
+  });
+});
+</script>
+</body>
+</html>
