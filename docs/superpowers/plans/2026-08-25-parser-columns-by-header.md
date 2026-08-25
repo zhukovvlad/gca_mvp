@@ -1878,7 +1878,7 @@ git commit -m "refactor(parser-columns): ширина больше не несё
 **Interfaces:**
 - Consumes: снимки задачи 1; формат снимка из `snapshot_parse_samples.py`.
 
-- [ ] **Step 1: снимок «после»**
+- [x] **Step 1: снимок «после»**
 
 Прогонять на ЗАКОММИЧЕННОМ дереве (после коммита задачи 5): manifest снимает
 `git rev-parse HEAD:backend/parser` и `dirty`, грязный снимок сравнение
@@ -1891,7 +1891,7 @@ Expected: `ok=22 error=5` — сводная таблица перешла из 
 в `manifest.json` метки `after`: `"parser_version": "4.0.0"`, `"dirty": false`,
 `"count": 27`.
 
-- [ ] **Step 2: скрипт сравнения**
+- [x] **Step 2: скрипт сравнения**
 
 `scripts/compare_parse_snapshots.py <before> <after>` (метки каталогов).
 Правила классификации на каждый дайджест — зеркало §7:
@@ -2019,13 +2019,13 @@ def classify(before, after) -> str:
 покажет VIOLATION — тогда расхождение разобрать руками и записать в devlog как
 находку, прежде чем ослаблять правило.
 
-- [ ] **Step 3: прогнать сравнение**
+- [x] **Step 3: прогнать сравнение**
 
 Run: `cd backend && PYTHONIOENCODING=utf-8 uv run python -m scripts.compare_parse_snapshots before after`
 Expected: `class1=18 class2=3 class3=1 class4=5`, код возврата 0
 (проверить `echo $?` отдельной командой).
 
-- [ ] **Step 4: независимый замер сводной таблицы**
+- [x] **Step 4: независимый замер сводной таблицы**
 
 `scripts/verify_summary_sheet.py` — находит в `samples/` файл класса 3 (тот,
 чей снимок «до» был отказом на ширине 12; дайджест берёт из вывода сравнения
@@ -2091,19 +2091,19 @@ def expected_money_cell(value):
 Run: `cd backend && PYTHONIOENCODING=utf-8 uv run python -m scripts.verify_summary_sheet`
 Expected: код возврата 0; счётчики в devlog.
 
-- [ ] **Step 5: пункт 2 этапа B уточнить по факту**
+- [x] **Step 5: пункт 2 этапа B уточнить по факту**
 
 Ожидание «baseline пуст → заголовок стал `BASELINE_MISSING_TITLE`» — предпосылка,
 проверяемая внутри самого прогона (docs/insights/false-test-premises.md):
 скрипт утверждает фактическую форму, а не молчит. Что бы ни оказалось — записать
 в devlog.
 
-- [ ] **Step 6: devlog — раздел «Регрессия по классам»**
+- [x] **Step 6: devlog — раздел «Регрессия по классам»**
 
 Числа: 27 файлов, счётчики классов, ok/error «до» и «после», счётчики
 независимого замера. Только дайджесты и счётчики — ни имён, ни сумм.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/scripts/compare_parse_snapshots.py backend/scripts/verify_summary_sheet.py \
