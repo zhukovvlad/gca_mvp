@@ -162,7 +162,10 @@ tc.total`):
 | `FIXTURE_CONTRACTOR`, `_independent_total_with_vat` | `backend/tests/integration/test_import_fixture_e2e.py` | существует, правится задачей 3 |
 | `_ALLOWED_SKIPS` | `backend/tests/conftest.py` | существует, **не правится** — новых samples-зависимых pytest-файлов план не заводит |
 | `scripts/measure_vat_aggregation.py` | `backend/scripts/` | существует как образец оформления скрипта |
-| `_money` (строки 179–197), `_text` (строка 249), `_import_positions` (строка 946) | `backend/services/estimate_import.py` | существует, **не меняется** — тесты зовут функции как есть |
+| `_money` (строки 179–197), `_text` (строка 249), `_import_positions` (строка 946), `import_estimate`, `ImportOutcome.warnings` | `backend/services/estimate_import.py` | существует, **не меняется** — тесты зовут как есть |
+| `run_import` (строка 59), `resolver` (фикстура, строка 55) | `backend/tests/integration/test_estimate_import.py` | существует; новый класс пользуется ими как есть |
+| `factories` (фикстура, `conftest.py:512`), `ContractFactory` (`factories.py:107`) | `backend/tests/` | существует |
+| `PositionItem.{comment_contractor, total_cost_for_organizer_quantity, job_title_in_proposal}` | `backend/models.py` | существует (поля видны в конструкторе `_import_positions`) |
 | `resolve_contractor`, `BlockLayout`, `ResolvedContractor`, `COLUMN_KEY_BY_PAIR`, `REQUIRED_COLUMN_KEYS`, `OPTIONAL_COLUMN_KEYS`, `_header_merge_map` | `backend/parser/resolve_contractor.py` | **заводится задачей 2** |
 | `TABLE_PARSE_UNIT_COST_GROUP_PREFIX`, `TABLE_PARSE_TOTAL_COST_GROUP_PREFIX`, `TABLE_PARSE_ORGANIZER_QUANTITY_LABEL`, `TABLE_PARSE_COMMENT_CONTRACTOR_LABEL`, `TABLE_PARSE_DEVIATION_COLUMN_LABEL` | `backend/parser/constants.py` | **заводится задачей 2** |
 | `GP_EXPECTED_KEYS` | `backend/parser/layout.py` | **заводится задачей 3** |
@@ -1581,6 +1584,9 @@ git commit -m "feat(parser-columns): раскладка разрешается �
 
 **Files:**
 - Test: `backend/tests/unit/parser/test_estimate.py` (новые классы)
+- Test: `backend/tests/integration/test_estimate_import.py` (класс
+  `TestWidthTenReachesImportCleanly` — путь до `ImportOutcome.warnings` и
+  `PositionItem`)
 - Modify: `backend/tests/unit/parser/sheet_builders.py` (если понадобится
   параметр `title` у `gp_sheet` — прокинуть в `add_contractor_block`, он уже есть)
 
@@ -1718,50 +1724,70 @@ class TestMultiContractorSheet:
 Run: `cd backend && uv run pytest tests/unit/parser -q`
 Expected: PASS.
 
-- [ ] **Step 5: выполняемый путь парсер → импорт для ширины 10**
+- [ ] **Step 5: путь парсер → импорт для ширины 10 — настоящий `import_estimate`**
 
 Вывод «ключа нет → предупреждению не из чего родиться» правдоподобен, но
-поведение `import_jobs.warnings` он не исполняет. Исполняем: значения позиции
-читаются ТЕМИ ЖЕ функциями, какими их читает `_import_positions`
-(`services/estimate_import.py`: `_money` — строки 179–197, `_text`, чтение
-поля — строка 1005), без БД. В `test_estimate.py`:
+поведение `import_jobs.warnings` он не исполняет. Исполняем настоящим импортом:
+инфраструктура готова в `tests/integration/test_estimate_import.py` —
+`run_import` (строка 59) зовёт `import_estimate` и возвращает `ImportOutcome`
+с тем самым списком `warnings`, который роутер пишет в `import_jobs.warnings`.
+Новый класс в `tests/integration/test_estimate_import.py`:
 
 ```python
 class TestWidthTenReachesImportCleanly:
-    """Третий пункт дельты класса 2 (§7): ложное «значение не число» исчезло.
-    Проверяется исполнением реального пути значения, а не выводом из отсутствия
-    ключа: parse_worksheet → позиция → services.estimate_import._money/_text —
-    ровно те вызовы, из которых _import_positions собирает PositionItem."""
+    """Третий пункт дельты класса 2 (спека §7): ложное «значение не число»
+    исчезло. Полный путь: синтетический лист ширины 10 → parse_worksheet →
+    import_estimate → ImportOutcome.warnings и сохранённый PositionItem.
+    До фичи комментарий лежал под денежным ключом, _money падал на тексте и
+    писал предупреждение на каждую строку с комментарием (спека §1.1)."""
 
     @staticmethod
-    def _parsed_width_ten_position():
+    def _width_ten_payload():
         ws = gp_sheet(KEYS_10)
         ws.cell(row=12, column=1, value=2)
         ws.cell(row=12, column=2, value="1")
         ws.cell(row=12, column=4, value="Работа")
         ws.cell(row=12, column=19, value="таймлайн уточним")  # 10-я колонка блока
-        return _positions(parse_worksheet(ws))["2"]
+        return parse_worksheet(ws).data
 
-    def test_no_false_warning_and_the_comment_survives(self):
-        from services.estimate_import import _money, _text
+    def test_no_false_warning_and_the_comment_lands_in_the_row(
+        self, db_session, factories, resolver
+    ):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
 
-        position = self._parsed_width_ten_position()
-        value_problems: list[str] = []
+        outcome = run_import(db_session, resolver, contract, self._width_ten_payload())
 
-        organizer = _money(
-            position.get(JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST), value_problems, "позиция «2»"
-        )
+        assert not any("не число" in w for w in outcome.warnings), outcome.warnings
+        item = db_session.execute(
+            sa.select(PositionItem).where(PositionItem.job_title_in_proposal == "Работа")
+        ).scalar_one()
+        assert item.comment_contractor == "таймлайн уточним"
+        assert item.total_cost_for_organizer_quantity is None
+```
 
-        assert organizer is None
-        assert value_problems == []
-        assert _text(position.get(JSON_KEY_COMMENT_CONTRACTOR)) == "таймлайн уточним"
+Утверждение про `warnings` — «нет НИ ОДНОГО „не число“», а не «список пуст»:
+синтетический лист без шапки документа даёт законные предупреждения сверки
+реквизитов и раскладки, они к проверяемому пути отношения не имеют. Импорты в
+шапку файла: `from parser import parse_worksheet`,
+`from tests.unit.parser.sheet_builders import KEYS_10, gp_sheet` — паттерн
+`from tests....` в integration-тестах уже принят (`tests.payloads`,
+`tests.comparison_fixtures`). Код сервиса НЕ меняется.
 
+Run: `cd backend && uv run pytest tests/integration/test_estimate_import.py -k WidthTenReachesImport -v`
+(нужен `TEST_DATABASE_URL`; в `just ci` входит)
+Expected: PASS.
+
+Контроль наблюдаемости — юнит-тестом рядом, в
+`tests/unit/parser/test_estimate.py` (он вторичен и основной тест не заменяет):
+
+```python
+class TestOldWidthTenShapeWasNoisy:
     def test_the_old_shape_did_produce_the_false_warning(self):
-        """Контроль наблюдаемости: тот же путь на СТАРОЙ форме позиции
-        (комментарий под денежным ключом) даёт ровно то предупреждение, чьё
-        исчезновение утверждает тест выше. Без контроля пустой value_problems
-        мог бы означать «смотреть было нечем»
-        (docs/insights/unobservable-in-the-runner.md)."""
+        """Старая форма позиции (комментарий под денежным ключом) на том же
+        пути значений даёт ровно то предупреждение, чьё исчезновение утверждает
+        интеграционный тест. Без контроля пустой список мог бы означать
+        «смотреть было нечем» (docs/insights/unobservable-in-the-runner.md)."""
         from services.estimate_import import _money
 
         value_problems: list[str] = []
@@ -1773,13 +1799,8 @@ class TestWidthTenReachesImportCleanly:
         ]
 ```
 
-Импорты `JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST`, `JSON_KEY_COMMENT_CONTRACTOR`
-добавить в шапку test_estimate.py; `services.estimate_import` импортируется
-внутри тестов — модульный импорт тянет SQLAlchemy-слои, парсерному файлу
-тестов он на уровне модуля не нужен. Код сервиса НЕ меняется.
-
-Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -k WidthTenReachesImport -v`
-Expected: PASS оба.
+Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -k OldWidthTenShape -v`
+Expected: PASS.
 
 - [ ] **Step 6: снятие защиты предупреждения о лишнем ключе**
 
@@ -1792,7 +1813,7 @@ deviation — тоже отличие» стережёт именно тест, 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/tests/unit/parser
+git add backend/tests/unit/parser backend/tests/integration/test_estimate_import.py
 git commit -m "test(parser-columns): перестановка, многоподрядный лист, % от р/с, путь до импорта"
 ```
 
@@ -1908,18 +1929,29 @@ def dumps(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
 
 
+def _git_tree(rev: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", f"{rev}:backend/parser"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
 def check_manifests(before_dir: Path, after_dir: Path) -> list[str]:
     """Происхождение снимков. Любая строка в ответе — отказ от сравнения:
-    сравнивать подделанный или пересданный не тем кодом эталон бессмысленно."""
+    сравнивать подделанный или пересданный не тем кодом эталон бессмысленно.
+
+    «До» привязан к дереву парсера БАЗОВОГО коммита, «после» — к дереву
+    парсера ТЕКУЩЕГО HEAD: иначе старый снимок «после» от другого дерева с
+    той же версией 4.0.0 прошёл бы проверку, и сравнение говорило бы не о
+    проверяемой реализации.
+    """
     problems: list[str] = []
     before = json.loads((before_dir / "manifest.json").read_text(encoding="utf-8"))
     after = json.loads((after_dir / "manifest.json").read_text(encoding="utf-8"))
-    baseline_tree = subprocess.run(
-        ["git", "rev-parse", f"{BASELINE_COMMIT}:backend/parser"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    if before["parser_tree"] != baseline_tree:
+    if before["parser_tree"] != _git_tree(BASELINE_COMMIT):
         problems.append("эталон «до» снят не деревом базового коммита")
+    if after["parser_tree"] != _git_tree("HEAD"):
+        problems.append("снимок «после» снят не деревом текущего HEAD — пересдать")
     if before["parser_version"] != BASELINE_PARSER_VERSION:
         problems.append(f"версия «до» {before['parser_version']} ≠ {BASELINE_PARSER_VERSION}")
     if after["parser_version"] != AFTER_PARSER_VERSION:
@@ -1980,8 +2012,9 @@ def classify(before, after) -> str:
 `money_to_json` (текст возвращается как есть), в «после» — читается как есть,
 поэтому значения совпадают. Третий пункт дельты — исчезновение ложных
 «значение не число» — этим сравнением не доказывается: его ИСПОЛНЯЕТ
-`TestWidthTenReachesImportCleanly` (задача 4, шаг 5) на реальном пути
-`parse_worksheet → estimate_import._money`. Если у какого-то файла в колонке
+`TestWidthTenReachesImportCleanly` (задача 4, шаг 5) настоящим
+`import_estimate` — от листа ширины 10 до `ImportOutcome.warnings` и
+сохранённого `PositionItem`. Если у какого-то файла в колонке
 комментария лежит ЧИСЛО (в «до» — десятичная строка, в «после» — число), скрипт
 покажет VIOLATION — тогда расхождение разобрать руками и записать в devlog как
 находку, прежде чем ослаблять правило.
@@ -2011,9 +2044,32 @@ Expected: `class1=18 class2=3 class3=1 class4=5`, код возврата 0
 строка данных 13, ключи колонок каждого блока — литеральные кортежи, включая
 «% от р/с» у блоков 19/31/44/57). Для первых трёх и последних двух строк
 позиций КАЖДОГО из пяти блоков каждое значение JSON сверяется с сырым чтением
-`ws.cell(...)` по этим литеральным координатам (деньги и «% от р/с» — через
-`str(Decimal(str(...)))`, как `money_to_json`); плюс счётчик позиций на блок
+`ws.cell(...)` по этим литеральным координатам; плюс счётчик позиций на блок
 одинаков у всех пяти.
+
+Эталонное преобразование денежной ячейки (и «% от р/с») обязано различать три
+случая — ДО postprocess Excel-ошибки ещё живы, и `Decimal("#DIV/0!")` уронил
+бы сам замер, а не найденное расхождение (в блоке «% от р/с» пустой базы стоит
+именно `#DIV/0!`, спека §2.8):
+
+```python
+def expected_money_cell(value):
+    """Зеркало контракта money_to_json на стороне ЭТАЛОНА: число → десятичная
+    строка, пусто/bool/нечисловые nan-inf → None, текст (включая Excel-ошибки
+    вида '#DIV/0!') — исходная строка как есть. Независимость замера — в
+    КООРДИНАТАХ (литералы листа против раскладки резолвера), а не в кодировке
+    значений: её контракт один на проект (AGENTS.md §3)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(Decimal(value))
+    if isinstance(value, float):
+        return str(Decimal(str(value))) if math.isfinite(value) else None
+    return value
+```
+
+Неденежные колонки (`suggested_quantity`, комментарий) сверяются сырым
+равенством без преобразования.
 
 **Этап B — после `parse_estimate`, факты постобработки.** Полный прогон того же
 файла:
@@ -2072,10 +2128,10 @@ Expected: пусто.
 
 - [ ] **Step 3: devlog дописать**
 
-Отступления от плана, находки, границы (например: путь до `import_jobs.warnings`
-исполнен на уровне функций преобразования значений
-(`TestWidthTenReachesImportCleanly`), полный импорт в БД ширины 10 остаётся
-стенду — если граница осталась, назвать её явно).
+Отступления от плана, находки, границы. Путь до `import_jobs.warnings` для
+ширины 10 исполнен настоящим `import_estimate`
+(`TestWidthTenReachesImportCleanly`, integration); если по ходу реализации
+какая-то проверка осталась выводом, а не прогоном, — назвать её границей явно.
 
 - [ ] **Step 4: `just ci`**
 
@@ -2106,7 +2162,7 @@ PR: заголовок «Парсер: смысл колонок — из заг
 | 2. Раскладка один раз, объектом; `get_proposals` без `read_contractors` | Задача 3 | `TestResolutionFlow` (identity через spy на обоих звеньях); импорт удалён |
 | 3. Контракт только в `resolve_contractor`; геометрия отдельно; `GP_EXPECTED_KEYS` поимённо; лишний deviation — отличие | Задачи 2, 3 | `TestRefusals`, `_validate_contractor_geometry` без семантики, `test_twelve_wide_block_parses_with_an_extra_key_warning` + снятие задачи 4 шаг 5 |
 | 4. Три класса отказа с координатами и подписями | Задача 2 | `TestRefusals`: координата+обе подписи; обе координаты повтора; блок+ключ без координаты |
-| 5. Совместимость по классам, сравнением | Задачи 1, 4, 6 | снимок «до» кодом базового коммита (manifest + `--force`-защита); `compare_parse_snapshots` с проверкой manifest, жёсткими счётчиками 18/3/1/5 и точной формой дельты; третий пункт дельты исполняется `TestWidthTenReachesImportCleanly` на реальном `_money`/`_text` |
+| 5. Совместимость по классам, сравнением | Задачи 1, 4, 6 | снимок «до» кодом базового коммита, «после» — деревом текущего HEAD (manifest + `--force`-защита, `check_manifests`); `compare_parse_snapshots` с жёсткими счётчиками 18/3/1/5 и точной формой дельты; третий пункт дельты исполняется `TestWidthTenReachesImportCleanly` настоящим `import_estimate` до `ImportOutcome.warnings` и `PositionItem` |
 | 6. НДС 20/22/0/без ставки | Задачи 2, 3, 6 | `test_group_header_without_rate_still_types_the_group`; обновлённый `TestVatRateFullPath` (20%, 0%, без суффикса); класс 1 побайтно (20%, «20», без ставки в образцах); сводная — `vat_rate == "22"` в `verify_summary_sheet` |
 | 7. Многоподрядный файл | Задачи 4, 6 | `TestMultiContractorSheet` (синтетика); сводная таблица: этап A `verify_summary_sheet` читает все пять блоков до postprocess, этап B — 4 предложения + базовый-заглушка и предупреждение «найдено 5» |
 | 8. `postprocess.py` не изменён; пустая база вычищает отклонения | Задачи 4, 7 | `test_empty_baseline_cleans_deviations_with_the_base`; `git diff` пуст |
