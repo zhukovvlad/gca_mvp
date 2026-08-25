@@ -19,6 +19,7 @@ from .sheet_builders import (
     KEYS_12,
     KEYS_GP_11,
     KEYS_PERMUTED_11,
+    KEYS_SUBLABELS_SWAPPED_11,
     KEYS_TENDER_11,
     gp_sheet,
 )
@@ -55,6 +56,18 @@ class TestMeasuredLayouts:
         assert result.layout.column_keys == KEYS_PERMUTED_11
         assert result.layout.unit_cost_offset == 6
         assert result.layout.total_cost_offset == 1
+
+    def test_sublabels_swapped_inside_group_resolve_to_group_anchor(self):
+        """Смещение — якорь группы (её левая физическая граница), а не индекс
+        колонки Материалы. Здесь группы стоят на канонических местах группы
+        GP-11 (1, 5), но подписи внутри каждой группы идут «СМР, Материалы,
+        …» — Материалы сдвинута на одну позицию внутрь группы. Раз якорь
+        зависит только от места группы, а не от места Материалы внутри неё,
+        ожидаемые смещения совпадают с KEYS_GP_11: (1, 5), а не (2, 6)."""
+        ws = gp_sheet(KEYS_SUBLABELS_SWAPPED_11)
+        result = resolve_contractor(ws, _contractor(ws), HEADER_ROW)
+        assert result.layout.column_keys == KEYS_SUBLABELS_SWAPPED_11
+        assert (result.layout.unit_cost_offset, result.layout.total_cost_offset) == (1, 5)
 
     def test_real_gp_geometry_built_by_hand(self):
         """Геометрия fixture воспроизведена merge_cells-ами, не строителем —

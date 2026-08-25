@@ -79,9 +79,19 @@ class BlockLayout:
     """Раскладка блока: физический порядок ключей и якоря денежных групп.
 
     column_keys — tuple, а не list: frozen=True запрещает переприсваивание
-    поля, но не мутацию списка внутри него (спека §2.4). Смещения считаются
-    там же, где ключи, из того же перечня — две согласованные таблицы не
-    разъезжаются молча.
+    поля, но не мутацию списка внутри него (спека §2.4).
+
+    unit_cost_offset и total_cost_offset — это АНКОРЫ денежных групп: смещение
+    (относительно начала блока) левой границы горизонтального объединения
+    группы, а не индекс какой-либо конкретной подписи внутри неё (в
+    частности, НЕ индекс «.materials» — Материалы не обязана быть первой
+    физической колонкой группы). Это обязательное условие, а не стиль: single
+    consumer — get_proposals.py — читает по этому смещению
+    `ws.cell(row=header_row, column=col_start + offset).value`, чтобы достать
+    текст объединённого заголовка группы для build_vat_rate. openpyxl хранит
+    значение только в ЛЕВОЙ ВЕРХНЕЙ ячейке объединённого диапазона; любая
+    другая ячейка того же диапазона возвращает None. Смещение, указывающее не
+    на якорь, тихо теряет заголовок группы — а с ним и ставку НДС.
     """
 
     column_keys: tuple[str, ...]
@@ -147,6 +157,7 @@ def resolve_contractor(ws: Worksheet, contractor: dict[str, Any], header_row: in
 
     keys: list[str] = []
     seen: dict[str, tuple[str, str]] = {}  # ключ -> (координата, показанная подпись)
+    group_anchor_offset: dict[str, int] = {}  # тип группы -> смещение её якоря
 
     for offset in range(colspan):
         col = col_start + offset
@@ -168,6 +179,8 @@ def resolve_contractor(ws: Worksheet, contractor: dict[str, Any], header_row: in
                 group_type = None
             key = COLUMN_KEY_BY_PAIR.get((group_type, lower_shown.casefold())) if group_type else None
             shown = lower_shown
+            if group_type is not None and group_type not in group_anchor_offset:
+                group_anchor_offset[group_type] = upper_bounds[1] - col_start
         else:
             shown = lower_shown or upper_shown
             key = COLUMN_KEY_BY_PAIR.get((None, shown.casefold()))
@@ -198,11 +211,15 @@ def resolve_contractor(ws: Worksheet, contractor: dict[str, Any], header_row: in
         )
 
     column_keys = tuple(keys)
+    # Обе денежных группы обязательны (REQUIRED_COLUMN_KEYS выше уже проверил
+    # полную восьмёрку), и тип группы колонка получает только внутри
+    # горизонтального объединения шириной больше единицы (in_group выше) — то
+    # есть к этой строке group_anchor_offset обязан содержать обе группы.
     return ResolvedContractor(
         geometry=contractor,
         layout=BlockLayout(
             column_keys=column_keys,
-            unit_cost_offset=column_keys.index(f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"),
-            total_cost_offset=column_keys.index(f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"),
+            unit_cost_offset=group_anchor_offset[JSON_KEY_UNIT_COST],
+            total_cost_offset=group_anchor_offset[JSON_KEY_TOTAL_COST],
         ),
     )

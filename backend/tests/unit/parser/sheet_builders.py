@@ -78,6 +78,21 @@ KEYS_PERMUTED_11 = (
     JSON_KEY_SUGGESTED_QUANTITY,
 )
 
+#: Перестановка ВНУТРИ денежных групп при том же colspan 11 и тех же местах
+#: самих групп (в отличие от KEYS_PERMUTED_11, где переставлены целиком
+#: группы): подписи внутри каждой группы идут «СМР, Материалы, Косвенные
+#: расходы, Всего» — Материалы не первая колонка группы. Ловит именно якорь
+#: денежной группы: он обязан быть левой границей объединения (первой
+#: физической колонкой группы), а не колонкой Материалы, которая здесь
+#: сдвинута внутрь группы на одну позицию.
+KEYS_SUBLABELS_SWAPPED_11 = (
+    JSON_KEY_SUGGESTED_QUANTITY,
+    f"{_UC}.{JSON_KEY_WORKS}", f"{_UC}.{JSON_KEY_MATERIALS}", f"{_UC}.{JSON_KEY_INDIRECT_COSTS}", f"{_UC}.{JSON_KEY_TOTAL}",
+    f"{_TC}.{JSON_KEY_WORKS}", f"{_TC}.{JSON_KEY_MATERIALS}", f"{_TC}.{JSON_KEY_INDIRECT_COSTS}", f"{_TC}.{JSON_KEY_TOTAL}",
+    JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
+    JSON_KEY_COMMENT_CONTRACTOR,
+)
+
 #: Канонические раскладки по ширине — ТОЛЬКО для удобства тестов: продакшен-код
 #: ширину со смыслом не связывает.
 COLUMNS_BY_WIDTH = {8: KEYS_8, 9: KEYS_9, 10: KEYS_10, 11: KEYS_GP_11, 12: KEYS_12}
@@ -170,11 +185,24 @@ def gp_sheet(
     return ws
 
 
+def _group_anchor_offset(columns: tuple[str, ...], group: str) -> int:
+    """Смещение ПЕРВОЙ физической колонки группы — якорь, а не «.materials».
+
+    Совпадает с продакшен-контрактом BlockLayout: offset должен указывать на
+    левую границу горизонтального объединения группы, потому что openpyxl
+    отдаёт None для любой другой ячейки внутри объединения (см. докстринг
+    BlockLayout в resolve_contractor.py).
+    """
+    return next(i for i, key in enumerate(columns) if key.startswith(f"{group}."))
+
+
 def resolved(col_start: int, columns: tuple[str, ...], **geometry_extra) -> ResolvedContractor:
     """ResolvedContractor для юнит-тестов нижних слоёв — без листа и шапки.
 
-    Смещения выводятся из columns; тесты, которые СТЕРЕГУТ смещения, пишут их
-    литералами в test_resolve_contractor.py, а не берут отсюда.
+    Смещения выводятся из columns как якоря групп (первая физическая колонка
+    каждой группы), а не как индекс «.materials» — тесты, которые СТЕРЕГУТ
+    смещения, пишут их литералами в test_resolve_contractor.py, а не берут
+    отсюда.
     """
     geometry = {
         "column_start": col_start,
@@ -185,7 +213,7 @@ def resolved(col_start: int, columns: tuple[str, ...], **geometry_extra) -> Reso
         geometry=geometry,
         layout=BlockLayout(
             column_keys=tuple(columns),
-            unit_cost_offset=columns.index(f"{_UC}.{JSON_KEY_MATERIALS}"),
-            total_cost_offset=columns.index(f"{_TC}.{JSON_KEY_MATERIALS}"),
+            unit_cost_offset=_group_anchor_offset(columns, _UC),
+            total_cost_offset=_group_anchor_offset(columns, _TC),
         ),
     )

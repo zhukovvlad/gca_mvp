@@ -34,6 +34,7 @@ from .sheet_builders import (
     KEYS_12,
     KEYS_GP_11,
     KEYS_PERMUTED_11,
+    KEYS_SUBLABELS_SWAPPED_11,
     KEYS_TENDER_11,
     add_contractor_block,
     gp_sheet,
@@ -586,6 +587,56 @@ class TestPermutedColumnsEndToEnd:
         смещения вычисляются раскладкой, а не формулой от ширины (замена
         прежнего test_vat_rate_not_found_when_suffix_uses_wrong_offset_formula)."""
         ws = gp_sheet(KEYS_PERMUTED_11)
+        result = parse_worksheet(ws)
+        assert _proposal(result)["vat_rate"] == "20"
+
+    def test_every_marker_lands_under_its_own_key_when_sublabels_swap_inside_group(self):
+        """Дефект гейта 3: смещение якоря группы считалось как индекс колонки
+        Материалы, а не как левая граница объединения. Здесь, в отличие от
+        KEYS_PERMUTED_11, сами группы стоят на канонических местах GP-11, и
+        ширина блока не меняется — переставлены только подписи ВНУТРИ каждой
+        группы («СМР» перед «Материалами»). Это должно ловить именно якорь,
+        а не общую перестановку колонок."""
+        ws = gp_sheet(KEYS_SUBLABELS_SWAPPED_11)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        # Физический порядок колонок 10..20: suggested_quantity, затем группа
+        # цены (СМР, Материалы, Косвенные, Всего), затем группа стоимости
+        # (СМР, Материалы, Косвенные, Всего), затем организатор, комментарий.
+        ws.cell(row=12, column=10, value=110)
+        ws.cell(row=12, column=11, value=101)
+        ws.cell(row=12, column=12, value=102)
+        ws.cell(row=12, column=13, value=103)
+        ws.cell(row=12, column=14, value=104)
+        ws.cell(row=12, column=15, value=105)
+        ws.cell(row=12, column=16, value=106)
+        ws.cell(row=12, column=17, value=107)
+        ws.cell(row=12, column=18, value=108)
+        ws.cell(row=12, column=19, value=109)
+        ws.cell(row=12, column=20, value="маркер-комментарий")
+
+        result = parse_worksheet(ws)
+        position = _positions(result)["2"]
+
+        assert position["suggested_quantity"] == 110
+        assert position["unit_cost"] == {
+            "works": "101", "materials": "102", "indirect_costs": "103", "total": "104",
+        }
+        assert position["total_cost"] == {
+            "works": "105", "materials": "106", "indirect_costs": "107", "total": "108",
+        }
+        assert position["total_cost_for_organizer_quantity"] == "109"
+        assert position["comment_contractor"] == "маркер-комментарий"
+
+    def test_vat_rate_survives_when_sublabels_swap_inside_group(self):
+        """Ставка НДС читается по якорю группы (её первая физическая
+        колонка), а не по колонке Материалы: до фикса offset указывал на
+        Материалы, сдвинутую внутрь группы, ws.cell по немy смещению попадал
+        на не-якорную ячейку объединения и openpyxl отдавал None — ставка
+        терялась молча. Ширина блока и порядок самих групп — как в
+        KEYS_GP_11, переставлены только подписи внутри каждой группы."""
+        ws = gp_sheet(KEYS_SUBLABELS_SWAPPED_11)
         result = parse_worksheet(ws)
         assert _proposal(result)["vat_rate"] == "20"
 
