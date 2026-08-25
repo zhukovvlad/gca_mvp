@@ -2139,7 +2139,7 @@ Run: `just ci` (из корня).
 Expected: `OK: все проверки прошли`. Код возврата смотреть у самой команды,
 не через конвейер.
 
-- [ ] **Step 5: push и PR**
+- [x] **Step 5: push и PR**
 
 ```bash
 git push -u origin feat/parser-columns-by-header
