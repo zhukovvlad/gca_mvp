@@ -23,8 +23,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from openpyxl.worksheet.worksheet import Worksheet
-
 from .constants import (
     JSON_KEY_COMMENT_CONTRACTOR,
     JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
@@ -32,44 +30,6 @@ from .constants import (
     TABLE_PARSE_SUGGESTED_QUANTITY,
 )
 from .resolve_contractor import REQUIRED_COLUMN_KEYS, ResolvedContractor
-
-# Ширина блока подрядчика в смете ГП: J..T — предлагаемое количество,
-# цена за единицу ×4, стоимость всего ×4, стоимость за объёмы заказчика,
-# комментарий участника (docs/phase0-input-data.md).
-#
-# Мёртвый код (фича «колонки по заголовкам», спека §2.7): смысл колонок больше
-# не выводится из числа колонок. Снесёт задача 5 вместе с
-# `find_suggested_quantity_header` ниже — не эта задача (план фичи, задача 3).
-GP_CONTRACTOR_COLSPAN = 11
-
-
-def find_suggested_quantity_header(ws: Worksheet, contractor: dict[str, Any], search_end_row: int) -> str | None:
-    """Ищет заголовок первой колонки блока подрядчика.
-
-    Сканируется колонка `contractor["column_start"]` от строки под заголовком
-    подрядчика до `search_end_row` (не включая) — то есть шапка таблицы между
-    реквизитами контрагента и первой строкой данных.
-
-    Args:
-        ws: лист Excel.
-        contractor: словарь подрядчика от `read_contractors`.
-        search_end_row: первая строка данных (маркер лота).
-
-    Returns:
-        Текст последней непустой ячейки в этом диапазоне либо None.
-    """
-    column = contractor.get("column_start")
-    row_start = contractor.get("row_start")
-    if column is None or row_start is None:
-        return None
-
-    found: str | None = None
-    for row in range(row_start + 1, search_end_row):
-        value = ws.cell(row=row, column=column).value
-        if isinstance(value, str) and value.strip():
-            found = value.strip()
-    return found
-
 
 #: Эталон набора ключей сметы ГП (спека §2.5): восемь обязательных денежных
 #: плюс три из четырёх опциональных. deviation_from_baseline_cost сюда не

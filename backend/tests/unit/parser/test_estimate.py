@@ -1068,8 +1068,7 @@ class TestColumnHeaderGuard:
 class TestVatRateFullPath:
     """Полный путь Ф4б: XLSX → `ParseResult` (спека §4.2).
 
-    Ядро (`vat_rate.py`) и раскладка (`money_group_offsets`) проверены без
-    файла в `test_vat_rate.py` и `test_parse_contractor_row.py`; здесь —
+    Ядро (`vat_rate.py`) проверено без файла в `test_vat_rate.py`; здесь —
     только проводка: что лист со ставкой в шапке даёт `vat_rate` в
     `ParseResult.data`, а лист без неё — предупреждение в
     `ParseResult.warnings`, и что оба не путают лоты и строки шапки.
@@ -1172,8 +1171,7 @@ class TestVatRateFullPath:
     @pytest.mark.parametrize("colspan", sorted(COLUMNS_BY_WIDTH))
     def test_vat_rate_found_at_measured_offsets_for_every_supported_width(self, colspan):
         """Суффикс в шапке даёт ставку на каждой измеренной раскладке (спека
-        §2.3, §4.2): якоря групповых шапок больше не формула от ширины
-        (`money_group_offsets`), а смещения `BlockLayout`, посчитанные
+        §2.3, §4.2): якоря групповых шапок — смещения `BlockLayout`, посчитанные
         `resolve_contractor` из того же перечня ключей, что и сами колонки
         (спека §2.4) — строитель просто кладёт суффикс в анкер группы, где он
         физически стоит на каждой измеренной раскладке.

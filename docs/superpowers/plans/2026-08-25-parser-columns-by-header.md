@@ -1832,30 +1832,30 @@ grep-ом ПОСЛЕ.
 - Test: `backend/tests/unit/parser/test_parse_contractor_row.py`
   (−`TestMoneyGroupOffsets`, −импорты удалённого)
 
-- [ ] **Step 1: убедиться, что потребителей нет**
+- [x] **Step 1: убедиться, что потребителей нет**
 
 Run (из корня):
 `grep -rn "SUPPORTED_CONTRACTOR_COLSPANS\|GP_CONTRACTOR_COLSPAN\|money_group_offsets\|find_suggested_quantity_header\|get_column_keys" backend --include=*.py`
 Expected: только объявления в двух файлах и их тесты/докстроки — ни одного
 вызова из живого кода. Любой неожиданный потребитель — вернуться в задачу 3.
 
-- [ ] **Step 2: удалить код и тесты**
+- [x] **Step 2: удалить код и тесты**
 
 Вместе с функциями удалить их упоминания в докстроках живых модулей
 (`get_items_dict`, `get_proposals`, `layout`, `estimate` — задача 3 уже
 переписала большинство; здесь добить остаточные).
 
-- [ ] **Step 3: grep DoD 1**
+- [x] **Step 3: grep DoD 1**
 
 Run: `grep -rn "SUPPORTED_CONTRACTOR_COLSPANS\|GP_CONTRACTOR_COLSPAN\|money_group_offsets\|find_suggested_quantity_header" backend`
 Expected: пусто. (Исторические `docs/` не считаются: DoD говорит про код.)
 
-- [ ] **Step 4: прогнать всё**
+- [x] **Step 4: прогнать всё**
 
 Run: `cd backend && uv run pytest tests/unit -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend

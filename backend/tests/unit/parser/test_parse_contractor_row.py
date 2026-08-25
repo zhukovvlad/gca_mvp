@@ -14,7 +14,6 @@ from openpyxl import Workbook
 
 from parser.parse_contractor_row import (
     MONEY_KEYS,
-    money_group_offsets,
     money_to_json,
     parse_contractor_row,
 )
@@ -181,9 +180,9 @@ class TestParseContractorRow:
         ids=["8", "9", "10", "11", "12"],
     )
     def test_column_lift_keeps_the_positional_layout(self, columns, expected):
-        """Регрессия на подъём `get_column_keys` из тела `parse_contractor_row`
-        (наследие width-based раскладки) — сейчас читается разрешённый набор
-        ключей `contractor.layout.column_keys`, а не сам подъём. Молчаливая
+        """Регрессия на позиционную раскладку колонок подрядчика из разрешённой
+        геометрии (наследие width-based инференции) — сейчас читается разрешённый
+        набор ключей `contractor.layout.column_keys` и их позиции. Молчаливая
         поломка здесь задела бы весь позиционный разбор. В каждую ячейку
         блока кладётся её физический номер колонки (блок начинается с
         колонки 10), результат сверяется поколоночно; эталон записан
@@ -200,19 +199,3 @@ class TestParseContractorRow:
         result = parse_contractor_row(ws, 2, contractor)
 
         assert result == expected
-
-
-class TestMoneyGroupOffsets:
-    """Смещения якорей `unit_cost`/`total_cost` относительно `column_start`."""
-
-    @pytest.mark.parametrize(
-        ("colspan", "expected"),
-        [(8, (0, 4)), (9, (0, 4)), (10, (1, 5)), (11, (1, 5))],
-    )
-    def test_money_group_offsets_match_measured_layout(self, colspan, expected):
-        """Смещения замерены на всех поддерживаемых ширинах; числа записаны литералами намеренно."""
-        assert money_group_offsets(colspan) == expected
-
-    def test_money_group_offsets_rejects_unsupported_colspan(self):
-        with pytest.raises(ValueError, match="colspan"):
-            money_group_offsets(7)

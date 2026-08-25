@@ -16,12 +16,10 @@ from openpyxl.cell import Cell
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .constants import (
-    JSON_KEY_COMMENT_CONTRACTOR,
     JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     JSON_KEY_INDIRECT_COSTS,
     JSON_KEY_MATERIALS,
     JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
-    JSON_KEY_SUGGESTED_QUANTITY,
     JSON_KEY_TOTAL,
     JSON_KEY_TOTAL_COST,
     JSON_KEY_UNIT_COST,
@@ -29,14 +27,8 @@ from .constants import (
 )
 from .resolve_contractor import ResolvedContractor
 
-# Мёртвый код (фича «колонки по заголовкам», спека §2.7): смысл колонок теперь
-# разрешает `resolve_contractor` по подписям шапки, а не число колонок этого
-# перечня. Используется только `get_column_keys`/`money_group_offsets` ниже —
-# обе снесёт задача 5 вместе с этой константой (план фичи, задача 3).
-SUPPORTED_CONTRACTOR_COLSPANS = (8, 9, 10, 11)
-
 # Денежные колонки блока подрядчика — ключи в том же составном виде, в каком их
-# отдаёт `get_column_keys`. Количества (`suggested_quantity`) сюда не входят.
+# отдаёт раскладка подрядчика. Количества (`suggested_quantity`) сюда не входят.
 MONEY_KEYS = frozenset(
     {
         f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}",
@@ -90,90 +82,6 @@ def money_to_json(value: Any) -> Any:
             return None
         return str(Decimal(str(value)))
     return value
-
-
-def get_column_keys(colspan: int) -> list[str]:
-    """Порядок ключей колонок подрядчика для заданной ширины блока.
-
-    Порядок соответствует физическому порядку колонок на листе. Для сметы
-    ГП (colspan 11) это J..T.
-
-    Raises:
-        ValueError: при неподдерживаемом `colspan`.
-    """
-    uc_mat = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"
-    uc_wrk = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_WORKS}"
-    uc_ind = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_INDIRECT_COSTS}"
-    uc_tot = f"{JSON_KEY_UNIT_COST}.{JSON_KEY_TOTAL}"
-
-    tc_mat = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"
-    tc_wrk = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_WORKS}"
-    tc_ind = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_INDIRECT_COSTS}"
-    tc_tot = f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_TOTAL}"
-
-    if colspan == 11:
-        return [
-            JSON_KEY_SUGGESTED_QUANTITY,
-            uc_mat,
-            uc_wrk,
-            uc_ind,
-            uc_tot,
-            tc_mat,
-            tc_wrk,
-            tc_ind,
-            tc_tot,
-            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
-            JSON_KEY_COMMENT_CONTRACTOR,
-        ]
-    elif colspan == 10:
-        return [
-            JSON_KEY_SUGGESTED_QUANTITY,
-            uc_mat,
-            uc_wrk,
-            uc_ind,
-            uc_tot,
-            tc_mat,
-            tc_wrk,
-            tc_ind,
-            tc_tot,
-            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
-        ]
-    elif colspan == 9:
-        return [
-            uc_mat,
-            uc_wrk,
-            uc_ind,
-            uc_tot,
-            tc_mat,
-            tc_wrk,
-            tc_ind,
-            tc_tot,
-            JSON_KEY_COMMENT_CONTRACTOR,
-        ]
-    elif colspan == 8:
-        return [uc_mat, uc_wrk, uc_ind, uc_tot, tc_mat, tc_wrk, tc_ind, tc_tot]
-    else:
-        expected = ", ".join(str(value) for value in SUPPORTED_CONTRACTOR_COLSPANS)
-        raise ValueError(f"Неподдерживаемый colspan подрядчика: {colspan}. Ожидались значения {expected}.")
-
-
-def money_group_offsets(colspan: int) -> tuple[int, int]:
-    """Смещения якорей `unit_cost` и `total_cost` относительно `column_start`.
-
-    Смещения ВЫВОДЯТСЯ из того же перечня ключей, по которому строятся сами
-    колонки, а не задаются второй таблицей: две согласованные таблицы
-    разъезжаются молча. При ширинах 8 и 9 в блоке нет колонки предлагаемого
-    количества, и обе группы сдвинуты влево на одну колонку.
-
-    Raises:
-        ValueError: при неподдерживаемом `colspan` — тем же сообщением, что и
-            `get_column_keys`.
-    """
-    keys = get_column_keys(colspan)
-    return (
-        keys.index(f"{JSON_KEY_UNIT_COST}.{JSON_KEY_MATERIALS}"),
-        keys.index(f"{JSON_KEY_TOTAL_COST}.{JSON_KEY_MATERIALS}"),
-    )
 
 
 def parse_contractor_row(ws: Worksheet, row_index: int, contractor: ResolvedContractor) -> dict[str, Any]:

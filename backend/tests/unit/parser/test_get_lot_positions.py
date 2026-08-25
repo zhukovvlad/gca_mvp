@@ -353,8 +353,8 @@ class TestAdditionalWorksRow:
         """
         ws = sample_worksheet
         ws.cell(row=16, column=4, value=TABLE_PARSE_ADDITIONAL_WORKS_TITLE)
-        # Колонки 9–16 — весь блок подрядчика при colspan 8 (порядок задан
-        # `parse_contractor_row.get_column_keys`). Значения различны: одинаковые
+        # Колонки 9–16 — весь блок подрядчика при colspan 8 (порядок — из
+        # разрешённой раскладки подрядчика). Значения различны: одинаковые
         # пропустили бы перестановку колонок молча.
         for column, value in enumerate([11.11, 22.22, 33.33, 44.44, 55.55, 66.66, 77.77, 88.88], 9):
             ws.cell(row=16, column=column, value=value)
