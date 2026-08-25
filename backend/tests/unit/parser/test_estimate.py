@@ -27,7 +27,17 @@ from parser import PARSER_VERSION, EstimateParseError, parse_estimate, parse_wor
 from parser.constants import TABLE_PARSE_POSITION_COLUMN_HEADERS
 from parser.postprocess import BASELINE_MISSING_TITLE
 
-from .sheet_builders import COLUMNS_BY_WIDTH, KEYS_10, KEYS_GP_11, gp_sheet
+from .sheet_builders import (
+    COLUMNS_BY_WIDTH,
+    KEYS_8,
+    KEYS_10,
+    KEYS_12,
+    KEYS_GP_11,
+    KEYS_PERMUTED_11,
+    KEYS_TENDER_11,
+    add_contractor_block,
+    gp_sheet,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_PATH = REPO_ROOT / "fixtures" / "gp_estimate_fixture.xlsx"
@@ -521,6 +531,121 @@ class TestWidthTenComment:
         position = _positions(result)["2"]
         assert position["comment_contractor"] == "таймлайн уточним"
         assert "total_cost_for_organizer_quantity" not in position
+
+
+class TestOldWidthTenShapeWasNoisy:
+    def test_the_old_shape_did_produce_the_false_warning(self):
+        """Старая форма позиции (комментарий под денежным ключом) на том же
+        пути значений даёт ровно то предупреждение, чьё исчезновение утверждает
+        интеграционный тест. Без контроля пустой список мог бы означать
+        «смотреть было нечем» (docs/insights/unobservable-in-the-runner.md).
+        """
+        from services.estimate_import import _money
+
+        value_problems: list[str] = []
+        result = _money("таймлайн уточним", value_problems, "позиция «2»")
+
+        assert result is None
+        assert value_problems == [
+            "позиция «2»: значение «таймлайн уточним» не число, записано NULL"
+        ]
+
+
+class TestPermutedColumnsEndToEnd:
+    """Спека §6: синтетическая фикстура перестановки, собранная кодом. Два
+    яруса, горизонтальные и вертикальные объединения, прежний colspan 11 и
+    РАЗЛИЧИМЫЙ маркер в каждой физической колонке — иначе тест не отличит
+    правильный разбор от совпадения."""
+
+    def test_every_marker_lands_under_its_own_key(self):
+        ws = gp_sheet(KEYS_PERMUTED_11)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        # Маркеры: физическая колонка 10+i несёт значение 100+i (деньги и
+        # количество) либо строку-маркер (комментарий).
+        markers = ["маркер-комментарий", 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+        for offset, marker in enumerate(markers):
+            ws.cell(row=12, column=10 + offset, value=marker)
+
+        result = parse_worksheet(ws)
+        position = _positions(result)["2"]
+
+        assert position["comment_contractor"] == "маркер-комментарий"
+        assert position["total_cost"] == {
+            "materials": "101", "works": "102", "indirect_costs": "103", "total": "104",
+        }
+        assert position["total_cost_for_organizer_quantity"] == "105"
+        assert position["unit_cost"] == {
+            "materials": "106", "works": "107", "indirect_costs": "108", "total": "109",
+        }
+        assert position["suggested_quantity"] == 110
+
+    def test_vat_anchors_follow_the_permuted_layout(self):
+        """Ставка найдена в якорях ПЕРЕСТАВЛЕННЫХ групп — доказательство, что
+        смещения вычисляются раскладкой, а не формулой от ширины (замена
+        прежнего test_vat_rate_not_found_when_suffix_uses_wrong_offset_formula)."""
+        ws = gp_sheet(KEYS_PERMUTED_11)
+        result = parse_worksheet(ws)
+        assert _proposal(result)["vat_rate"] == "20"
+
+
+class TestMultiContractorSheet:
+    def test_two_blocks_parse_with_a_count_warning(self):
+        ws = gp_sheet(KEYS_GP_11)                                  # J..T
+        add_contractor_block(ws, col_start=22, columns=KEYS_12, title='ООО "Тест-2"')
+        result = parse_worksheet(ws)
+        proposals = result.data["lots"]["lot_1"]["proposals"]
+        assert list(proposals) == ["contractor_1", "contractor_2"]
+        assert any("ожидается один подрядчик, найдено 2" in w for w in result.warnings)
+
+    @staticmethod
+    def _tender_sheet_with_baseline(*, baseline_total: float | None):
+        """Тендерный лист: подрядчик KEYS_TENDER_11 (J..T) + базовый блок
+        KEYS_8 (V..AC), позиция с «% от р/с» и блок итогов.
+
+        baseline_total кладётся в колонку total_cost.total БАЗОВОГО блока
+        (22+7=29): ненулевое значение делает базу валидной для
+        postprocess._is_baseline_valid; None — база пуста.
+        """
+        ws = gp_sheet(KEYS_TENDER_11)
+        add_contractor_block(ws, col_start=22, columns=KEYS_8,
+                             title="Расчетная стоимость", vat_suffix=None)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        ws.cell(row=12, column=20, value=-0.05)   # % от р/с — 11-я колонка блока
+        # Объединённая ячейка в колонке A — конец блока позиций (AGENTS.md §11).
+        ws.merge_cells(start_row=14, start_column=1, end_row=14, end_column=5)
+        ws.cell(row=14, column=1, value="ИТОГО, руб. с учетом НДС")
+        if baseline_total is not None:
+            ws.cell(row=14, column=29, value=baseline_total)
+        return ws
+
+    def test_deviation_reaches_json_when_the_baseline_is_valid(self):
+        """% от р/с доезжает до позиции (§2.8) — при живой расчётной стоимости
+        postprocess его не трогает."""
+        ws = self._tender_sheet_with_baseline(baseline_total=100.0)
+
+        result = parse_worksheet(ws)
+
+        lot = result.data["lots"]["lot_1"]
+        assert lot["baseline_proposal"]["title"] == "Расчетная стоимость"
+        position = lot["proposals"]["contractor_1"]["contractor_items"]["positions"]["2"]
+        assert position["deviation_from_baseline_cost"] == "-0.05"
+
+    def test_empty_baseline_cleans_deviations_with_the_base(self):
+        """DoD 8: postprocess.py не менялся, и его правило «нет валидной базы —
+        нет осмысленного отклонения» покрыто на файле с ПУСТОЙ расчётной
+        стоимостью: тот же лист, но без итога базового блока."""
+        ws = self._tender_sheet_with_baseline(baseline_total=None)
+
+        result = parse_worksheet(ws)
+
+        lot = result.data["lots"]["lot_1"]
+        assert lot["baseline_proposal"]["title"] == BASELINE_MISSING_TITLE
+        position = lot["proposals"]["contractor_1"]["contractor_items"]["positions"]["2"]
+        assert "deviation_from_baseline_cost" not in position
 
 
 class TestResolutionFlow:

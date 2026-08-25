@@ -19,6 +19,7 @@ from models import (
     ProposalAdditionalInfo,
     ProposalSummaryLine,
 )
+from parser import parse_worksheet
 from parser.constants import (
     JSON_KEY_BASELINE_PROPOSAL,
     JSON_KEY_CONTRACTOR_ITEMS,
@@ -48,6 +49,7 @@ from tests.payloads import (
     summary_line,
     svedeniya_info,
 )
+from tests.unit.parser.sheet_builders import KEYS_10, gp_sheet
 
 pytestmark = pytest.mark.integration
 
@@ -1578,6 +1580,38 @@ class TestAdditionalWorks:
         outcome = run_import(db_session, resolver, contract, data)
 
         assert any("Ссылка не разрешилась" in w for w in outcome.warnings)
+
+
+class TestWidthTenReachesImportCleanly:
+    """Третий пункт дельты класса 2 (спека §7): ложное «значение не число»
+    исчезло. Полный путь: синтетический лист ширины 10 → parse_worksheet →
+    import_estimate → ImportOutcome.warnings и сохранённый PositionItem.
+    До фичи комментарий лежал под денежным ключом, _money падал на тексте и
+    писал предупреждение на каждую строку с комментарием (спека §1.1)."""
+
+    @staticmethod
+    def _width_ten_payload():
+        ws = gp_sheet(KEYS_10)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        ws.cell(row=12, column=19, value="таймлайн уточним")  # 10-я колонка блока
+        return parse_worksheet(ws).data
+
+    def test_no_false_warning_and_the_comment_lands_in_the_row(
+        self, db_session, factories, resolver
+    ):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+
+        outcome = run_import(db_session, resolver, contract, self._width_ten_payload())
+
+        assert not any("не число" in w for w in outcome.warnings), outcome.warnings
+        item = db_session.execute(
+            sa.select(PositionItem).where(PositionItem.job_title_in_proposal == "Работа")
+        ).scalar_one()
+        assert item.comment_contractor == "таймлайн уточним"
+        assert item.total_cost_for_organizer_quantity is None
 
 
 def _items_by_key(db_session, estimate_id: int) -> dict[str, PositionItem]:

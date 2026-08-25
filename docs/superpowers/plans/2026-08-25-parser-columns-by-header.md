@@ -1594,7 +1594,7 @@ git commit -m "feat(parser-columns): раскладка разрешается �
 - Consumes: всё из задач 2–3; `BASELINE_MISSING_TITLE`
   (`parser/postprocess.py`), `_positions`/`_proposal` (test_estimate.py).
 
-- [ ] **Step 1: перестановка колонок при прежнем colspan — сквозной тест**
+- [x] **Step 1: перестановка колонок при прежнем colspan — сквозной тест**
 
 ```python
 class TestPermutedColumnsEndToEnd:
@@ -1636,7 +1636,7 @@ class TestPermutedColumnsEndToEnd:
         assert _proposal(result)["vat_rate"] == "20"
 ```
 
-- [ ] **Step 2: прогнать, увидеть зелёное; затем снятие защиты**
+- [x] **Step 2: прогнать, увидеть зелёное; затем снятие защиты**
 
 Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py::TestPermutedColumnsEndToEnd -v`
 Expected: PASS.
@@ -1651,7 +1651,7 @@ Expected: PASS.
 совпадает с местом) — значит перестановку стережёт именно этот тест. Вернуть
 обе строки, прогнать снова — зелёное.
 
-- [ ] **Step 3: многоподрядный лист (DoD 7) и валидная расчётная стоимость**
+- [x] **Step 3: многоподрядный лист (DoD 7) и валидная расчётная стоимость**
 
 ```python
 class TestMultiContractorSheet:
@@ -1719,12 +1719,12 @@ class TestMultiContractorSheet:
 итоговые строки в самом блоке summary — добавить их листу, как в
 `_sheet_with_summary_rows`.
 
-- [ ] **Step 4: прогнать класс, затем весь набор**
+- [x] **Step 4: прогнать класс, затем весь набор**
 
 Run: `cd backend && uv run pytest tests/unit/parser -q`
 Expected: PASS.
 
-- [ ] **Step 5: путь парсер → импорт для ширины 10 — настоящий `import_estimate`**
+- [x] **Step 5: путь парсер → импорт для ширины 10 — настоящий `import_estimate`**
 
 Вывод «ключа нет → предупреждению не из чего родиться» правдоподобен, но
 поведение `import_jobs.warnings` он не исполняет. Исполняем настоящим импортом:
@@ -1802,7 +1802,7 @@ class TestOldWidthTenShapeWasNoisy:
 Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -k OldWidthTenShape -v`
 Expected: PASS.
 
-- [ ] **Step 6: снятие защиты предупреждения о лишнем ключе**
+- [x] **Step 6: снятие защиты предупреждения о лишнем ключе**
 
 В `check_estimate_layout` временно удалить две строки
 `if extra: parts.append(...)`. Expected:
@@ -1810,7 +1810,7 @@ Expected: PASS.
 остальное зелёное. Вернуть, прогнать — зелёное. Так доказано, что «лишний
 deviation — тоже отличие» стережёт именно тест, а не совпадение.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add backend/tests/unit/parser backend/tests/integration/test_estimate_import.py
