@@ -2115,25 +2115,25 @@ git commit -m "test(parser-columns): регрессия по четырём кл
 
 ## Task 7: Финал — devlog, `just ci`, PR
 
-- [ ] **Step 1: postprocess не изменён (DoD 8)**
+- [x] **Step 1: postprocess не изменён (DoD 8)**
 
 Run: `git diff origin/main -- backend/parser/postprocess.py`
 Expected: пусто.
 
-- [ ] **Step 2: соответствие «требование спеки → тест» перечитать списком**
+- [x] **Step 2: соответствие «требование спеки → тест» перечитать списком**
 
 Пройти таблицу «Соответствие DoD» ниже по фактическому дереву (не по памяти —
 `docs/insights/replaying-new-rules.md`, слой 3): каждый названный тест
 существует и зелёный. Требование без теста — либо тест, либо граница в devlog.
 
-- [ ] **Step 3: devlog дописать**
+- [x] **Step 3: devlog дописать**
 
 Отступления от плана, находки, границы. Путь до `import_jobs.warnings` для
 ширины 10 исполнен настоящим `import_estimate`
 (`TestWidthTenReachesImportCleanly`, integration); если по ходу реализации
 какая-то проверка осталась выводом, а не прогоном, — назвать её границей явно.
 
-- [ ] **Step 4: `just ci`**
+- [x] **Step 4: `just ci`**
 
 Run: `just ci` (из корня).
 Expected: `OK: все проверки прошли`. Код возврата смотреть у самой команды,
