@@ -2,8 +2,8 @@
 
 Новый файл фазы 3. У исходника `app/excel_parser/parse_contractor_row.py`
 тестов не было; здесь проверяется единственное отступление от него —
-преобразование денег в десятичные строки (AGENTS.md §3, §11) — и раскладка
-колонок по ширине блока.
+преобразование денег в десятичные строки (AGENTS.md §3, §11) — и позиционную
+раскладку колонок в разрешённом блоке подрядчика.
 """
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ from openpyxl import Workbook
 
 from parser.parse_contractor_row import (
     MONEY_KEYS,
-    SUPPORTED_CONTRACTOR_COLSPANS,
-    money_group_offsets,
     money_to_json,
     parse_contractor_row,
 )
+
+from .sheet_builders import COLUMNS_BY_WIDTH, KEYS_8, KEYS_9, KEYS_10, KEYS_12, KEYS_GP_11, resolved
 
 
 class TestMoneyToJson:
@@ -73,18 +73,19 @@ class TestParseContractorRow:
     """Раскладка колонок и типы значений на синтетическом листе."""
 
     @staticmethod
-    def _sheet_with_row(values: list) -> tuple:
-        """Лист с одной заполненной строкой начиная с колонки J."""
+    def _sheet_with_row(values: list, columns: tuple[str, ...]) -> tuple:
+        """Лист с одной заполненной строкой начиная с колонки J, и разрешённый
+        блок под неё (`resolved` из sheet_builders — без листа и шапки)."""
         ws = Workbook().active
         for offset, value in enumerate(values):
             ws.cell(row=2, column=10 + offset, value=value)
-        contractor = {"column_start": 10, "merged_shape": {"colspan": len(values)}}
+        contractor = resolved(10, columns)
         return ws, contractor
 
     def test_gp_layout_maps_eleven_columns(self):
-        """colspan 11 — раскладка сметы ГП J..T (docs/phase0-input-data.md)."""
+        """KEYS_GP_11 — раскладка сметы ГП J..T (docs/phase0-input-data.md)."""
         ws, contractor = self._sheet_with_row(
-            [2.5, 10.0, 20.0, 30.0, 60.0, 25.0, 50.0, 75.0, 150.0, 300.0, "комментарий"]
+            [2.5, 10.0, 20.0, 30.0, 60.0, 25.0, 50.0, 75.0, 150.0, 300.0, "комментарий"], KEYS_GP_11
         )
 
         result = parse_contractor_row(ws, 2, contractor)
@@ -97,15 +98,22 @@ class TestParseContractorRow:
 
     def test_quantity_stays_a_number(self):
         """Требование «строки» относится к деньгам; количество остаётся числом."""
-        ws, contractor = self._sheet_with_row([2.5, 10.0, 20.0, 30.0, 60.0, 25.0, 50.0, 75.0, 150.0, 300.0, None])
+        ws, contractor = self._sheet_with_row(
+            [2.5, 10.0, 20.0, 30.0, 60.0, 25.0, 50.0, 75.0, 150.0, 300.0, None], KEYS_GP_11
+        )
 
         result = parse_contractor_row(ws, 2, contractor)
 
         assert isinstance(result["suggested_quantity"], float)
 
     def test_every_money_key_is_covered_by_the_layout(self):
-        """`MONEY_KEYS` не должен разъехаться с реально читаемыми колонками."""
-        ws, contractor = self._sheet_with_row([1.0] * 11)
+        """`MONEY_KEYS` не должен разъехаться с реально читаемыми колонками.
+
+        Только `KEYS_12` несёт все десять денежных ключей сразу — восемь
+        обязательных плюс `total_cost_for_organizer_quantity` и
+        `deviation_from_baseline_cost`.
+        """
+        ws, contractor = self._sheet_with_row([1.0] * len(KEYS_12), KEYS_12)
 
         result = parse_contractor_row(ws, 2, contractor)
 
@@ -114,31 +122,24 @@ class TestParseContractorRow:
             value = result[head][tail] if tail else result[head]
             assert isinstance(value, str), key
 
-    @pytest.mark.parametrize("colspan", SUPPORTED_CONTRACTOR_COLSPANS)
-    def test_supported_colspans_parse(self, colspan):
-        ws, contractor = self._sheet_with_row([1.0] * colspan)
+    @pytest.mark.parametrize("columns", list(COLUMNS_BY_WIDTH.values()), ids=[str(w) for w in COLUMNS_BY_WIDTH])
+    def test_supported_widths_parse(self, columns):
+        ws, contractor = self._sheet_with_row([1.0] * len(columns), columns)
 
         assert parse_contractor_row(ws, 2, contractor)
 
-    def test_unsupported_colspan_raises_value_error(self):
-        """Внутренний инвариант; наружу такие файлы не пускает оркестратор."""
-        ws, contractor = self._sheet_with_row([1.0] * 12)
-
-        with pytest.raises(ValueError, match="Неподдерживаемый colspan"):
-            parse_contractor_row(ws, 2, contractor)
-
     @pytest.mark.parametrize(
-        ("colspan", "expected"),
+        ("columns", "expected"),
         [
             (
-                8,
+                KEYS_8,
                 {
                     "unit_cost": {"materials": "10", "works": "11", "indirect_costs": "12", "total": "13"},
                     "total_cost": {"materials": "14", "works": "15", "indirect_costs": "16", "total": "17"},
                 },
             ),
             (
-                9,
+                KEYS_9,
                 {
                     "unit_cost": {"materials": "10", "works": "11", "indirect_costs": "12", "total": "13"},
                     "total_cost": {"materials": "14", "works": "15", "indirect_costs": "16", "total": "17"},
@@ -146,16 +147,16 @@ class TestParseContractorRow:
                 },
             ),
             (
-                10,
+                KEYS_10,
                 {
                     "suggested_quantity": 10,
                     "unit_cost": {"materials": "11", "works": "12", "indirect_costs": "13", "total": "14"},
                     "total_cost": {"materials": "15", "works": "16", "indirect_costs": "17", "total": "18"},
-                    "total_cost_for_organizer_quantity": "19",
+                    "comment_contractor": 19,
                 },
             ),
             (
-                11,
+                KEYS_GP_11,
                 {
                     "suggested_quantity": 10,
                     "unit_cost": {"materials": "11", "works": "12", "indirect_costs": "13", "total": "14"},
@@ -164,36 +165,39 @@ class TestParseContractorRow:
                     "comment_contractor": 20,
                 },
             ),
+            (
+                KEYS_12,
+                {
+                    "suggested_quantity": 10,
+                    "unit_cost": {"materials": "11", "works": "12", "indirect_costs": "13", "total": "14"},
+                    "total_cost": {"materials": "15", "works": "16", "indirect_costs": "17", "total": "18"},
+                    "total_cost_for_organizer_quantity": "19",
+                    "comment_contractor": 20,
+                    "deviation_from_baseline_cost": "21",
+                },
+            ),
         ],
+        ids=["8", "9", "10", "11", "12"],
     )
-    def test_column_lift_keeps_the_positional_layout(self, colspan, expected):
-        """Регрессия на подъём `get_column_keys` из тела `parse_contractor_row`.
-
-        Подъём меняет область видимости функции, а не раскладку колонок:
-        молчаливая поломка тут задела бы весь позиционный разбор. В каждую
-        ячейку блока кладётся её физический номер колонки (блок начинается с
+    def test_column_lift_keeps_the_positional_layout(self, columns, expected):
+        """Регрессия, которую защищают литеральные ожидания ниже: позиция
+        колонки для каждого ключа подрядчика должна браться из уже разрешённой
+        геометрии (`contractor.layout.column_keys` и их позиции), а не
+        выводиться заново из ширины блока — так работал старый width-based
+        инференс. Молчаливая поломка здесь задела бы весь позиционный разбор.
+        В каждую ячейку
+        блока кладётся её физический номер колонки (блок начинается с
         колонки 10), результат сверяется поколоночно; эталон записан
-        литералами намеренно — не выводится из `get_column_keys`, иначе обе
-        стороны сравнения поехали бы вместе при поломке.
+        литералами намеренно — не выводится из `columns`, иначе обе стороны
+        сравнения поехали бы вместе при поломке.
+
+        Ширина 10: десятая колонка — `comment_contractor` (число, не строка:
+        комментарий не денежный ключ), а `total_cost_for_organizer_quantity`
+        у этой раскладки нет вовсе (спека §2.8) — не только «другое значение»,
+        как раньше, а другой НАБОР ключей.
         """
-        ws, contractor = self._sheet_with_row(list(range(10, 10 + colspan)))
+        ws, contractor = self._sheet_with_row(list(range(10, 10 + len(columns))), columns)
 
         result = parse_contractor_row(ws, 2, contractor)
 
         assert result == expected
-
-
-class TestMoneyGroupOffsets:
-    """Смещения якорей `unit_cost`/`total_cost` относительно `column_start`."""
-
-    @pytest.mark.parametrize(
-        ("colspan", "expected"),
-        [(8, (0, 4)), (9, (0, 4)), (10, (1, 5)), (11, (1, 5))],
-    )
-    def test_money_group_offsets_match_measured_layout(self, colspan, expected):
-        """Смещения замерены на всех поддерживаемых ширинах; числа записаны литералами намеренно."""
-        assert money_group_offsets(colspan) == expected
-
-    def test_money_group_offsets_rejects_unsupported_colspan(self):
-        with pytest.raises(ValueError, match="colspan"):
-            money_group_offsets(7)

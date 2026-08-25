@@ -47,8 +47,11 @@ def read_contractors(ws: Worksheet) -> list[dict[str, Any]] | None:
                 "merged_shape": {"rowspan": int, "colspan": int},  # если объединена
             }
 
-        Первый элемент — сама ячейка-маркер; подрядчики идут за ней (этим
-        пользуется `get_proposals`, начиная обход с индекса 1).
+        Первый элемент — сама ячейка-маркер; подрядчики идут за ней. Срез
+        `[1:]` делает `parse_worksheet` — он же разрешает каждый блок через
+        `resolve_contractor`, поэтому ниже по конвейеру маркера уже нет:
+        `get_proposals` получает готовые `ResolvedContractor` и обходит их
+        целиком.
         None — если строка заголовков не найдена.
     """
     search_prefix_lower = TABLE_PARSE_CONTRACTOR_TITLE.lower()

@@ -41,6 +41,7 @@ from .constants import (
 from .errors import EstimateParseError
 from .get_items_dict import get_items_dict
 from .parse_contractor_row import parse_contractor_row
+from .resolve_contractor import ResolvedContractor
 from .sanitize_text import normalize_job_title_with_lemmatization
 from .sheet import cell_text_is_blank, contractor_last_column, normalized_cell_text, row_is_empty
 
@@ -62,7 +63,9 @@ class LotRows:
     """
 
 
-def get_lot_positions(ws: Worksheet, contractor: dict[str, Any], lot_start_row: int, lot_end_row: int) -> LotRows:
+def get_lot_positions(
+    ws: Worksheet, contractor: ResolvedContractor, lot_start_row: int, lot_end_row: int
+) -> LotRows:
     """Извлекает позиции подрядчика строго в границах лота.
 
     Обход идёт от `lot_start_row` до `lot_end_row` включительно и **досрочно
@@ -84,7 +87,8 @@ def get_lot_positions(ws: Worksheet, contractor: dict[str, Any], lot_start_row: 
 
     Args:
         ws: лист Excel.
-        contractor: словарь подрядчика; нужны `column_start` и `merged_shape`.
+        contractor: разрешённый блок подрядчика — геометрия в `.geometry`,
+            раскладка в `.layout`.
         lot_start_row: первая строка лота.
         lot_end_row: последняя строка лота (включительно).
 
@@ -102,7 +106,7 @@ def get_lot_positions(ws: Worksheet, contractor: dict[str, Any], lot_start_row: 
     additional_works: dict[str, Any] | None = None
 
     merged_first_column_rows = merged_rows_in_first_column(ws)
-    last_column = contractor_last_column(contractor)
+    last_column = contractor_last_column(contractor.geometry)
 
     for current_row_num in range(lot_start_row, lot_end_row + 1):
         # Объединённая ячейка в первой колонке — конец блока позиций.
@@ -117,7 +121,7 @@ def get_lot_positions(ws: Worksheet, contractor: dict[str, Any], lot_start_row: 
             log.debug("get_lot_positions: строка %s пустая — пропускаем", current_row_num)
             continue
 
-        item = get_items_dict(contractor["merged_shape"]["colspan"])
+        item = get_items_dict(contractor.layout)
         item[JSON_KEY_NUMBER] = ws.cell(row=current_row_num, column=1).value
         item[JSON_KEY_CHAPTER_NUMBER] = ws.cell(row=current_row_num, column=2).value
         item[JSON_KEY_ARTICLE_SMR] = ws.cell(row=current_row_num, column=3).value

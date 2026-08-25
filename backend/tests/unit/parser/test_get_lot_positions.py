@@ -28,8 +28,11 @@ from parser.constants import (
 )
 from parser.errors import EstimateParseError
 from parser.get_lot_positions import get_lot_positions
+from parser.resolve_contractor import ResolvedContractor
 
-CONTRACTOR = {"column_start": 9, "merged_shape": {"colspan": 8}}
+from .sheet_builders import KEYS_8, resolved
+
+CONTRACTOR = resolved(9, KEYS_8)
 
 
 @pytest.fixture
@@ -143,7 +146,9 @@ class TestGetLotPositionsEdgeCases:
 
     def test_invalid_contractor_structure(self, sample_worksheet):
         """Без column_start разбор строки подрядчика обязан упасть, а не молчать."""
-        invalid_contractor = {"merged_shape": {"colspan": 8}}
+        invalid_contractor = ResolvedContractor(
+            geometry={"merged_shape": {"colspan": 8}}, layout=CONTRACTOR.layout
+        )
 
         with pytest.raises((KeyError, AttributeError, TypeError)):
             get_lot_positions(sample_worksheet, invalid_contractor, lot_start_row=13, lot_end_row=15)
@@ -348,8 +353,8 @@ class TestAdditionalWorksRow:
         """
         ws = sample_worksheet
         ws.cell(row=16, column=4, value=TABLE_PARSE_ADDITIONAL_WORKS_TITLE)
-        # Колонки 9–16 — весь блок подрядчика при colspan 8 (порядок задан
-        # `parse_contractor_row.get_column_keys`). Значения различны: одинаковые
+        # Колонки 9–16 — весь блок подрядчика при colspan 8 (порядок — из
+        # разрешённой раскладки подрядчика). Значения различны: одинаковые
         # пропустили бы перестановку колонок молча.
         for column, value in enumerate([11.11, 22.22, 33.33, 44.44, 55.55, 66.66, 77.77, 88.88], 9):
             ws.cell(row=16, column=column, value=value)

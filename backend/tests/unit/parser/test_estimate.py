@@ -27,6 +27,19 @@ from parser import PARSER_VERSION, EstimateParseError, parse_estimate, parse_wor
 from parser.constants import TABLE_PARSE_POSITION_COLUMN_HEADERS
 from parser.postprocess import BASELINE_MISSING_TITLE
 
+from .sheet_builders import (
+    COLUMNS_BY_WIDTH,
+    KEYS_8,
+    KEYS_10,
+    KEYS_12,
+    KEYS_GP_11,
+    KEYS_PERMUTED_11,
+    KEYS_SUBLABELS_SWAPPED_11,
+    KEYS_TENDER_11,
+    add_contractor_block,
+    gp_sheet,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_PATH = REPO_ROOT / "fixtures" / "gp_estimate_fixture.xlsx"
 SAMPLES_DIR = REPO_ROOT / "samples"
@@ -492,20 +505,249 @@ class TestAdditionalWorksInJson:
         assert items["additional_works"] is None
 
 
-def test_parser_version_is_minor_because_a_key_was_added_and_nothing_disappeared():
-    """3.1.0: минор из-за того, что в контракт ДОБАВИЛСЯ ключ `vat_rate` (спека Ф4б §2.1).
-
-    В отличие от 3.0.0 (два ключа `summary` ИСЧЕЗЛИ — оплачено мажором), здесь
-    структура только дополняется: у каждого подрядчика появляется `vat_rate`
-    (ставка НДС, заявленная в шапке ценового блока; `null`, если файл её не
-    заявил). Ни один существующий ключ не исчез и не сменил смысла, поэтому
-    инкремент минорный — тот же случай, что 1.1.0 (Ф2).
+def test_parser_version_is_major_because_a_key_disappeared_for_width_ten_files():
+    """4.0.0: мажор из-за того, что у файлов ширины 10 из позиций ИСЧЕЗ ключ
+    `total_cost_for_organizer_quantity` (файл такой колонки не нёс — прежний
+    разбор молча читал в него комментарий участника). Взамен появился
+    `comment_contractor`, а на позициях впервые стал возможен
+    `deviation_from_baseline_cost`. Для смет ГП ширины 11 JSON побайтно
+    прежний (спека §7, регрессия по классам) — мажор пришёл не за них.
     """
-    assert PARSER_VERSION == "3.1.0"
+    assert PARSER_VERSION == "4.0.0"
+
+
+class TestWidthTenComment:
+    """Класс 2 спеки §7: комментарий ширины 10 попадает в comment_contractor,
+    ключа total_cost_for_organizer_quantity в JSON нет вовсе (§2.8)."""
+
+    def test_comment_of_a_ten_wide_block_lands_in_comment_contractor(self):
+        ws = gp_sheet(KEYS_10)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        ws.cell(row=12, column=19, value="таймлайн уточним")  # 10-я колонка блока
+
+        result = parse_worksheet(ws)
+
+        position = _positions(result)["2"]
+        assert position["comment_contractor"] == "таймлайн уточним"
+        assert "total_cost_for_organizer_quantity" not in position
+
+
+class TestOldWidthTenShapeWasNoisy:
+    def test_the_old_shape_did_produce_the_false_warning(self):
+        """Старая форма позиции (комментарий под денежным ключом) на том же
+        пути значений даёт ровно то предупреждение, чьё исчезновение утверждает
+        интеграционный тест. Без контроля пустой список мог бы означать
+        «смотреть было нечем» (docs/insights/unobservable-in-the-runner.md).
+        """
+        from services.estimate_import import _money
+
+        value_problems: list[str] = []
+        result = _money("таймлайн уточним", value_problems, "позиция «2»")
+
+        assert result is None
+        assert value_problems == [
+            "позиция «2»: значение «таймлайн уточним» не число, записано NULL"
+        ]
+
+
+class TestPermutedColumnsEndToEnd:
+    """Спека §6: синтетическая фикстура перестановки, собранная кодом. Два
+    яруса, горизонтальные и вертикальные объединения, прежний colspan 11 и
+    РАЗЛИЧИМЫЙ маркер в каждой физической колонке — иначе тест не отличит
+    правильный разбор от совпадения."""
+
+    def test_every_marker_lands_under_its_own_key(self):
+        ws = gp_sheet(KEYS_PERMUTED_11)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        # Маркеры: физическая колонка 10+i несёт значение 100+i (деньги и
+        # количество) либо строку-маркер (комментарий).
+        markers = ["маркер-комментарий", 101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+        for offset, marker in enumerate(markers):
+            ws.cell(row=12, column=10 + offset, value=marker)
+
+        result = parse_worksheet(ws)
+        position = _positions(result)["2"]
+
+        assert position["comment_contractor"] == "маркер-комментарий"
+        assert position["total_cost"] == {
+            "materials": "101", "works": "102", "indirect_costs": "103", "total": "104",
+        }
+        assert position["total_cost_for_organizer_quantity"] == "105"
+        assert position["unit_cost"] == {
+            "materials": "106", "works": "107", "indirect_costs": "108", "total": "109",
+        }
+        assert position["suggested_quantity"] == 110
+
+    def test_vat_anchors_follow_the_permuted_layout(self):
+        """Ставка найдена в якорях ПЕРЕСТАВЛЕННЫХ групп — доказательство, что
+        смещения вычисляются раскладкой, а не формулой от ширины (замена
+        прежнего test_vat_rate_not_found_when_suffix_uses_wrong_offset_formula)."""
+        ws = gp_sheet(KEYS_PERMUTED_11)
+        result = parse_worksheet(ws)
+        assert _proposal(result)["vat_rate"] == "20"
+
+    def test_every_marker_lands_under_its_own_key_when_sublabels_swap_inside_group(self):
+        """Дефект гейта 3: смещение якоря группы считалось как индекс колонки
+        Материалы, а не как левая граница объединения. Здесь, в отличие от
+        KEYS_PERMUTED_11, сами группы стоят на канонических местах GP-11, и
+        ширина блока не меняется — переставлены только подписи ВНУТРИ каждой
+        группы («СМР» перед «Материалами»). Это должно ловить именно якорь,
+        а не общую перестановку колонок."""
+        ws = gp_sheet(KEYS_SUBLABELS_SWAPPED_11)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        # Физический порядок колонок 10..20: suggested_quantity, затем группа
+        # цены (СМР, Материалы, Косвенные, Всего), затем группа стоимости
+        # (СМР, Материалы, Косвенные, Всего), затем организатор, комментарий.
+        ws.cell(row=12, column=10, value=110)
+        ws.cell(row=12, column=11, value=101)
+        ws.cell(row=12, column=12, value=102)
+        ws.cell(row=12, column=13, value=103)
+        ws.cell(row=12, column=14, value=104)
+        ws.cell(row=12, column=15, value=105)
+        ws.cell(row=12, column=16, value=106)
+        ws.cell(row=12, column=17, value=107)
+        ws.cell(row=12, column=18, value=108)
+        ws.cell(row=12, column=19, value=109)
+        ws.cell(row=12, column=20, value="маркер-комментарий")
+
+        result = parse_worksheet(ws)
+        position = _positions(result)["2"]
+
+        assert position["suggested_quantity"] == 110
+        assert position["unit_cost"] == {
+            "works": "101", "materials": "102", "indirect_costs": "103", "total": "104",
+        }
+        assert position["total_cost"] == {
+            "works": "105", "materials": "106", "indirect_costs": "107", "total": "108",
+        }
+        assert position["total_cost_for_organizer_quantity"] == "109"
+        assert position["comment_contractor"] == "маркер-комментарий"
+
+    def test_vat_rate_survives_when_sublabels_swap_inside_group(self):
+        """Ставка НДС читается по якорю группы (её первая физическая
+        колонка), а не по колонке Материалы: до фикса offset указывал на
+        Материалы, сдвинутую внутрь группы, ws.cell по немy смещению попадал
+        на не-якорную ячейку объединения и openpyxl отдавал None — ставка
+        терялась молча. Ширина блока и порядок самих групп — как в
+        KEYS_GP_11, переставлены только подписи внутри каждой группы."""
+        ws = gp_sheet(KEYS_SUBLABELS_SWAPPED_11)
+        result = parse_worksheet(ws)
+        assert _proposal(result)["vat_rate"] == "20"
+
+
+class TestMultiContractorSheet:
+    """Лист с более чем одним блоком подрядчика — не отбрасывается и не
+    обрезается до первого: разбираются оба блока, каждый попадает в
+    `proposals` под своим ключом, а превышение ожидаемого числа подрядчиков
+    (AGENTS.md §4) фиксируется предупреждением, а не исключением."""
+
+    def test_two_blocks_parse_with_a_count_warning(self):
+        ws = gp_sheet(KEYS_GP_11)                                  # J..T
+        add_contractor_block(ws, col_start=22, columns=KEYS_12, title='ООО "Тест-2"')
+        result = parse_worksheet(ws)
+        proposals = result.data["lots"]["lot_1"]["proposals"]
+        assert list(proposals) == ["contractor_1", "contractor_2"]
+        assert any("ожидается один подрядчик, найдено 2" in w for w in result.warnings)
+
+    @staticmethod
+    def _tender_sheet_with_baseline(*, baseline_total: float | None):
+        """Тендерный лист: подрядчик KEYS_TENDER_11 (J..T) + базовый блок
+        KEYS_8 (V..AC), позиция с «% от р/с» и блок итогов.
+
+        baseline_total кладётся в колонку total_cost.total БАЗОВОГО блока
+        (22+7=29): ненулевое значение делает базу валидной для
+        postprocess._is_baseline_valid; None — база пуста.
+        """
+        ws = gp_sheet(KEYS_TENDER_11)
+        add_contractor_block(ws, col_start=22, columns=KEYS_8,
+                             title="Расчетная стоимость", vat_suffix=None)
+        ws.cell(row=12, column=1, value=2)
+        ws.cell(row=12, column=2, value="1")
+        ws.cell(row=12, column=4, value="Работа")
+        ws.cell(row=12, column=20, value=-0.05)   # % от р/с — 11-я колонка блока
+        # Объединённая ячейка в колонке A — конец блока позиций (AGENTS.md §11).
+        ws.merge_cells(start_row=14, start_column=1, end_row=14, end_column=5)
+        ws.cell(row=14, column=1, value="ИТОГО, руб. с учетом НДС")
+        if baseline_total is not None:
+            ws.cell(row=14, column=29, value=baseline_total)
+        return ws
+
+    def test_deviation_reaches_json_when_the_baseline_is_valid(self):
+        """% от р/с доезжает до позиции (§2.8) — при живой расчётной стоимости
+        postprocess его не трогает."""
+        ws = self._tender_sheet_with_baseline(baseline_total=100.0)
+
+        result = parse_worksheet(ws)
+
+        lot = result.data["lots"]["lot_1"]
+        assert lot["baseline_proposal"]["title"] == "Расчетная стоимость"
+        position = lot["proposals"]["contractor_1"]["contractor_items"]["positions"]["2"]
+        assert position["deviation_from_baseline_cost"] == "-0.05"
+
+    def test_empty_baseline_cleans_deviations_with_the_base(self):
+        """DoD 8: postprocess.py не менялся, и его правило «нет валидной базы —
+        нет осмысленного отклонения» покрыто на файле с ПУСТОЙ расчётной
+        стоимостью: тот же лист, но без итога базового блока."""
+        ws = self._tender_sheet_with_baseline(baseline_total=None)
+
+        result = parse_worksheet(ws)
+
+        lot = result.data["lots"]["lot_1"]
+        assert lot["baseline_proposal"]["title"] == BASELINE_MISSING_TITLE
+        position = lot["proposals"]["contractor_1"]["contractor_items"]["positions"]["2"]
+        assert "deviation_from_baseline_cost" not in position
+
+
+class TestResolutionFlow:
+    """Геометрия блока разрешается РОВНО один раз на блок, и в
+    `parse_contractor_row` для каждой строки приходит тот же объект
+    `ResolvedContractor` (identity), а не пересчёт. Это ловит именно тот
+    регресс, ради которого убран `read_contractors` из `get_proposals`:
+    если модуль снова начнёт читать геометрию сам, тест увидит либо второй
+    вызов `resolve_contractor`, либо чужой объект в строках."""
+
+    def test_resolution_happens_once_per_block_and_the_same_object_reaches_rows(self, monkeypatch):
+        """Два лота, один блок: resolve_contractor вызван РОВНО один раз, и в
+        parse_contractor_row приходит ТОТ ЖЕ объект (identity), а не пересчёт.
+        Регресс «get_proposals снова читает геометрию сам» этим и ловится."""
+        import parser.estimate as estimate_module
+        import parser.get_lot_positions as glp_module
+
+        ws = _sheet_with_summary_rows(SUMMARY_TRIPLE, second_lot=True)
+
+        resolved_seen = []
+        real_resolve = estimate_module.resolve_contractor
+        monkeypatch.setattr(
+            estimate_module, "resolve_contractor",
+            lambda ws_, c, hr: resolved_seen.append(real_resolve(ws_, c, hr)) or resolved_seen[-1],
+        )
+        row_contractors = []
+        real_row = glp_module.parse_contractor_row
+        monkeypatch.setattr(
+            glp_module, "parse_contractor_row",
+            lambda ws_, row, contractor: row_contractors.append(contractor) or real_row(ws_, row, contractor),
+        )
+
+        parse_worksheet(ws)
+
+        assert len(resolved_seen) == 1
+        assert row_contractors, "ни одна строка не прошла через parse_contractor_row"
+        assert all(c is resolved_seen[0] for c in row_contractors)
 
 
 class TestParseEstimateFailures:
-    """Структурно непригодные файлы отвергаются с внятной причиной."""
+    """Структурно непригодные файлы отвергаются с внятной причиной.
+
+    Граница отказа — в двух местах: геометрия (объединение заголовка блока
+    подрядчика) проверяет `_validate_contractor_geometry`, смысл его колонок —
+    `resolve_contractor` (спека §2.6). Ни то, ни другое не дублируется.
+    """
 
     def test_raises_without_contractor_header_row(self):
         from openpyxl import Workbook
@@ -535,18 +777,22 @@ class TestParseEstimateFailures:
         with pytest.raises(EstimateParseError, match="Лот №"):
             parse_worksheet(ws)
 
-    def test_raises_on_unsupported_contractor_colspan(self):
-        """Неизвестная ширина блока — отказ, а не предупреждение и не ValueError.
-
-        Смысл колонок задаётся их числом; при colspan 12 раскладки нет, и разбор
-        был бы выдумкой. Раньше сюда прилетал необработанный `ValueError` из
-        `parse_contractor_row`, и предупреждение `check_estimate_layout` не
-        доезжало до `import_jobs.warnings` — `ParseResult` просто не создавался.
-        """
-        ws = _minimal_sheet(contractor_colspan=12)
-
-        with pytest.raises(EstimateParseError, match="12 колонок"):
+    def test_unknown_column_label_is_a_refusal_through_the_full_path(self):
+        """Проводка контракта §2.6 через parse_worksheet — сами классы отказа
+        проверены в test_resolve_contractor.py."""
+        ws = _minimal_sheet(11)
+        ws.cell(row=10, column=12, value="Труд")  # подпись СМР группы цен
+        with pytest.raises(EstimateParseError, match="L9"):
             parse_worksheet(ws)
+
+    def test_twelve_wide_block_parses_with_an_extra_key_warning(self):
+        """Ширина 12 разбирается; лишний deviation_from_baseline_cost — отличие
+        от эталона ГП и предупреждение поимённо (спека §2.5)."""
+        ws = _minimal_sheet(12)
+        result = parse_worksheet(ws)
+        matching = [w for w in result.warnings if "не совпадает с ожидаемым" in w]
+        assert len(matching) == 1
+        assert "deviation_from_baseline_cost" in matching[0]
 
     def test_raises_when_contractor_header_is_not_merged(self):
         """Необъединённый заголовок раньше давал `KeyError` по `merged_shape`."""
@@ -559,41 +805,41 @@ class TestParseEstimateFailures:
         """Ширина 8 разбирается: раскладка известна, просто это не смета ГП.
 
         Здесь предупреждение обещает импорт — и импорт действительно возможен.
+        Утверждение — набор ключей поимённо (§2.5), не число колонок: прежняя
+        мысль «блок занимает N колонок вместо 11» исчезла вместе с самой собой.
         """
         ws = _minimal_sheet(contractor_colspan=8)
 
         result = parse_worksheet(ws)
 
-        assert any("8 колонок" in w for w in result.warnings)
+        matching = [w for w in result.warnings if "не совпадает с ожидаемым" in w]
+        assert len(matching) == 1
+        for key in ("suggested_quantity", "total_cost_for_organizer_quantity", "comment_contractor"):
+            assert key in matching[0]
+        assert not any("колонок вместо" in w for w in result.warnings)
 
 
 # --- вспомогательное ---
 
 
 def _minimal_sheet(contractor_colspan: int | None):
-    """Лист с шапкой контрагентов и маркером лота, но без строк позиций.
+    """Лист с шапкой контрагентов, шапкой блока и маркером лота, без позиций.
 
-    Args:
-        contractor_colspan: ширина объединённого блока подрядчика; None —
-            заголовок вообще не объединён.
+    None — заголовок подрядчика не объединён (случай геометрии); ширины 8–12
+    получают канонические измеренные раскладки sheet_builders.COLUMNS_BY_WIDTH.
     """
-    from openpyxl import Workbook
-
-    ws = Workbook().active
-    ws["G6"] = "Наименование контрагента"
-    ws["J6"] = 'ООО "Тест"'
-    ws["D11"] = "Лот №1 Тестовый"
-
-    for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
-        ws.cell(row=9, column=column, value=title)
-
-    ws["A11"] = 1
-    ws["B11"] = 1
-
-    if contractor_colspan is not None:
-        ws.merge_cells(start_row=6, start_column=10, end_row=6, end_column=9 + contractor_colspan)
-
-    return ws
+    if contractor_colspan is None:
+        from openpyxl import Workbook
+        ws = Workbook().active
+        ws["G6"] = "Наименование контрагента"
+        ws["J6"] = 'ООО "Тест"'
+        ws["D11"] = "Лот №1 Тестовый"
+        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
+            ws.cell(row=9, column=column, value=title)
+        ws["A11"] = 1
+        ws["B11"] = 1
+        return ws
+    return gp_sheet(COLUMNS_BY_WIDTH[contractor_colspan])
 
 
 def _proposal(result):
@@ -801,7 +1047,7 @@ class TestColumnHeaderGuard:
 
     Не предупреждение: колонки A, B, C, D читаются по фиксированным позициям,
     поэтому при чужой шапке недостоверен весь позиционный разбор, а не только
-    колонка статьи. Та же граница, что у `_validate_contractor_blocks`.
+    колонка статьи. Та же граница, что у `_validate_contractor_geometry`.
     """
 
     def test_correct_headers_parse(self):
@@ -861,12 +1107,15 @@ class TestColumnHeaderGuard:
         """Шапка сдвинута на строку — файл валиден и должен разбираться.
 
         Ради этого строка ищется по маркеру, а не берётся константой 9.
+
+        Строитель кладёт и A–D, и двухъярусную шапку блока подрядчика в ОДНУ
+        и ту же сдвинутую строку (`gp_sheet(header_row=8)`): раздельное
+        затирание строки 9 и запись в 8 сдвинуло бы только общие колонки,
+        оставив шапку блока подрядчика на месте — `resolve_contractor` искал
+        бы группы там, где их больше нет, и тест падал бы по чужой причине
+        (не «шапка не найдена», а «колонка не опознана»).
         """
-        ws = _minimal_sheet(11)
-        for column in TABLE_PARSE_POSITION_COLUMN_HEADERS:
-            ws.cell(row=9, column=column, value=None)
-        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
-            ws.cell(row=8, column=column, value=title)
+        ws = gp_sheet(KEYS_GP_11, header_row=8)
 
         result = parse_worksheet(ws)
         assert result.data is not None
@@ -882,8 +1131,7 @@ class TestColumnHeaderGuard:
 class TestVatRateFullPath:
     """Полный путь Ф4б: XLSX → `ParseResult` (спека §4.2).
 
-    Ядро (`vat_rate.py`) и раскладка (`money_group_offsets`) проверены без
-    файла в `test_vat_rate.py` и `test_parse_contractor_row.py`; здесь —
+    Ядро (`vat_rate.py`) проверено без файла в `test_vat_rate.py`; здесь —
     только проводка: что лист со ставкой в шапке даёт `vat_rate` в
     `ParseResult.data`, а лист без неё — предупреждение в
     `ParseResult.warnings`, и что оба не путают лоты и строки шапки.
@@ -894,16 +1142,11 @@ class TestVatRateFullPath:
         (`SUMMARY_TRIPLE`) → ставка в `ParseResult.data`, предупреждений НЕТ
         ВООБЩЕ — не только о ставке: блок итогов у этого листа полный и
         годный, поэтому и сверка (§2.4) проходит тишиной, как на реальном
-        fixture (`test_parses_without_warnings`).
+        fixture (`test_parses_without_warnings`). Шапку блока и суффикс
+        `с учетом НДС 20%` даёт строитель (`_minimal_sheet(11)` →
+        `gp_sheet(KEYS_GP_11)`) — ручных заплаток в строке 9 больше не нужно.
         """
         ws = _sheet_with_summary_rows(SUMMARY_TRIPLE)
-        # Заголовок первой колонки блока (`check_estimate_layout`) — иначе лист
-        # не пройдёт как раскладка сметы ГП и добавит СВОЁ предупреждение,
-        # не связанное со ставкой, и утверждение «предупреждений нет вовсе»
-        # оказалось бы недостижимо по чужой причине.
-        ws.cell(row=9, column=10, value="Предлагаемое количество")
-        ws.cell(row=9, column=11, value="Цена за единицу, с учетом НДС 20%")
-        ws.cell(row=9, column=15, value="Стоимость всего, с учетом НДС 20%")
 
         result = parse_worksheet(ws)
 
@@ -923,11 +1166,17 @@ class TestVatRateFullPath:
 
         Блок итогов взят с нулевым НДС при ненулевой базе: `0 / 100 * 100 = 0`,
         то есть сверка не только не мешает, но и подтверждает ставку.
+
+        Суффикс меняется поверх текста, положенного строителем: собственный
+        текст без префикса типа группы (`TABLE_PARSE_UNIT_COST_GROUP_PREFIX` /
+        `_TOTAL_COST_GROUP_PREFIX`) не опознался бы `resolve_contractor`'ом
+        (спека §2.1) — `gp_sheet` не принимает суффикс отдельно от базового
+        текста группы через `_sheet_with_summary_rows`, поэтому здесь пишется
+        итоговый текст целиком, тот же, что даёт строитель, только с 0%.
         """
         ws = _sheet_with_summary_rows(SUMMARY_TRIPLE_ZERO_VAT)
-        ws.cell(row=9, column=10, value="Предлагаемое количество")
-        ws.cell(row=9, column=11, value="Цена за единицу, с учетом НДС 0%")
-        ws.cell(row=9, column=15, value="Стоимость всего, с учетом НДС 0%")
+        ws.cell(row=9, column=11).value = "Цена за ед. изм., RUB, ОСН, с учетом НДС 0%"
+        ws.cell(row=9, column=15).value = "Стоимость всего, RUB, ОСН, с учетом НДС 0%"
 
         result = parse_worksheet(ws)
 
@@ -938,10 +1187,10 @@ class TestVatRateFullPath:
         """Предупреждение ядра доезжает наверх проводкой `get_proposals` →
         `read_lots_and_boundaries` → `parse_worksheet`, а не гасится по дороге.
 
-        Обе групповые шапки пусты (`_minimal_sheet` не заполняет колонки 11 и
-        15 в строке 9), значит `resolve_declared_rate` не получает ставку.
+        `vat_suffix=None`: групповые шапки типизированы (замеренное написание,
+        тип группы опознан), но без ставки — `read_label_rate` её не находит.
         """
-        ws = _minimal_sheet(contractor_colspan=11)
+        ws = gp_sheet(KEYS_GP_11, vat_suffix=None)
 
         result = parse_worksheet(ws)
 
@@ -952,8 +1201,15 @@ class TestVatRateFullPath:
         """Два лота — один блок подрядчика и одна шапка колонок; `dict.fromkeys`
         в `estimate.py` схлопывает повтор так же, как у предупреждений Ф4a
         (спека §2.8): тексты §2.7 не несут ничего, что различается между лотами.
+
+        Суффикс снят с обеих групповых шапок (тот же довод, что у
+        `test_vat_rate_warning_reaches_parse_result_warnings`): без этого
+        `_minimal_sheet(11)` дал бы заявленную ставку по умолчанию, и
+        предупреждение, которое стережёт тест, не возникло бы вовсе.
         """
         ws = _sheet_with_summary_rows(SUMMARY_TRIPLE, second_lot=True)
+        ws.cell(row=9, column=11).value = "Цена за ед. изм., RUB, ОСН"
+        ws.cell(row=9, column=15).value = "Стоимость всего, RUB, ОСН"
 
         result = parse_worksheet(ws)
 
@@ -965,61 +1221,26 @@ class TestVatRateFullPath:
 
         `header_row` приходит из `_validate_column_headers`
         (`_find_column_header_row`), а не константы 9 (та же гарантия, что у
-        `test_header_row_is_found_not_hardcoded`); суффикс кладётся в СДВИНУТУЮ
-        строку (8), а не в 9-ю — иначе тест не отличил бы «читает сдвинутую
-        строку» от «всегда читает строку 9».
+        `test_header_row_is_found_not_hardcoded`). Строитель кладёт и A–D, и
+        двухъярусную шапку блока подрядчика в ОДНУ сдвинутую строку —
+        отдельные затирания больше не нужны.
         """
-        ws = _minimal_sheet(11)
-        for column in TABLE_PARSE_POSITION_COLUMN_HEADERS:
-            ws.cell(row=9, column=column, value=None)
-        for column, title in TABLE_PARSE_POSITION_COLUMN_HEADERS.items():
-            ws.cell(row=8, column=column, value=title)
-        ws.cell(row=8, column=11, value="Цена за единицу, с учетом НДС 20%")
-        ws.cell(row=8, column=15, value="Стоимость всего, с учетом НДС 20%")
+        ws = gp_sheet(KEYS_GP_11, header_row=8)
 
         result = parse_worksheet(ws)
 
         assert _proposal(result)["vat_rate"] == "20"
 
-    @pytest.mark.parametrize(
-        ("colspan", "unit_offset", "total_offset"),
-        [(8, 0, 4), (9, 0, 4), (10, 1, 5), (11, 1, 5)],
-    )
-    def test_vat_rate_found_at_measured_offsets_for_every_supported_width(self, colspan, unit_offset, total_offset):
-        """Суффикс в ячейках-якорях, вычисленных `money_group_offsets`, даёт
-        ставку на всех четырёх поддерживаемых ширинах блока (спека §2.3, §4.2).
-
-        Смещения записаны ЛИТЕРАЛАМИ — они замерены прогоном продакшен-кода в
-        Task 1 (`test_money_group_offsets_match_measured_layout`): 8 и 9 → (0,
-        4); 10 и 11 → (1, 5). Если бы этот тест сам звал `money_group_offsets`
-        для расстановки суффикса, проверка сравнивала бы вычисление с собой
-        (verifying-guards.md, слой 5).
+    @pytest.mark.parametrize("colspan", sorted(COLUMNS_BY_WIDTH))
+    def test_vat_rate_found_at_measured_offsets_for_every_supported_width(self, colspan):
+        """Суффикс в шапке даёт ставку на каждой измеренной раскладке (спека
+        §2.3, §4.2): якоря групповых шапок — смещения `BlockLayout`, посчитанные
+        `resolve_contractor` из того же перечня ключей, что и сами колонки
+        (спека §2.4) — строитель просто кладёт суффикс в анкер группы, где он
+        физически стоит на каждой измеренной раскладке.
         """
-        contractor_col_start = 10  # J — начало блока подрядчика в _minimal_sheet
-        ws = _minimal_sheet(contractor_colspan=colspan)
-        ws.cell(row=9, column=contractor_col_start + unit_offset, value="Цена за единицу, с учетом НДС 20%")
-        ws.cell(row=9, column=contractor_col_start + total_offset, value="Стоимость всего, с учетом НДС 20%")
+        ws = gp_sheet(COLUMNS_BY_WIDTH[colspan])
 
         result = parse_worksheet(ws)
 
         assert _proposal(result)["vat_rate"] == "20"
-
-    @pytest.mark.parametrize("colspan", [8, 9])
-    def test_vat_rate_not_found_when_suffix_uses_wrong_offset_formula(self, colspan):
-        """Обратная проверка: смещения `+1`/`+5` верны только для ширин 10 и 11
-        (спека §2.3). На ширинах 8 и 9 суффикс, положенный по этой формуле,
-        попадает не в ячейки-якоря групп, а в соседние колонки блока (пустые в
-        этом синтетическом листе), и ставка остаётся неизвестной. Это и есть
-        доказательство, что смещение ВЫЧИСЛЯЕТСЯ `money_group_offsets`, а не
-        угадывается захардкоженной константой — при угаданной формуле этот
-        тест был бы красным по построению.
-        """
-        contractor_col_start = 10  # J
-        ws = _minimal_sheet(contractor_colspan=colspan)
-        ws.cell(row=9, column=contractor_col_start + 1, value="Цена за единицу, с учетом НДС 20%")
-        ws.cell(row=9, column=contractor_col_start + 5, value="Стоимость всего, с учетом НДС 20%")
-
-        result = parse_worksheet(ws)
-
-        assert _proposal(result)["vat_rate"] is None
-        assert any("Ставка НДС не получена из шапки" in w for w in result.warnings)

@@ -1,13 +1,11 @@
 """Шаблон словаря одной позиции сметы.
 
-Перенос `app/excel_parser/get_items_dict.py` из `parser_tender_xlsx@0e178c0`
-без изменений логики.
-
-Набор полей подрядчика определяется шириной его блока (`colspan`) и обязан
-совпадать со списком ключей в `parse_contractor_row.get_column_keys` — иначе
-шаблон и заполнение разъедутся. В смете ГП блок подрядчика — 11 колонок
-(J..T: предлагаемое количество, цена за единицу ×4, стоимость всего ×4,
-стоимость за объёмы заказчика, комментарий участника).
+Перенос `app/excel_parser/get_items_dict.py` из `parser_tender_xlsx@0e178c0`,
+переписанный под фичу «колонки по заголовкам» (спека §2.4, §2.8). Прежняя
+редакция строила поля подрядчика по ширине блока (`colspan`) — своей второй
+таблицей, отдельной от той, что читает ячейки в `parse_contractor_row`, и
+рисковавшей разъехаться с ней молча. Теперь шаблон строится по РАЗРЕШЁННОЙ
+раскладке (`BlockLayout.column_keys`) — тому же перечню ключей.
 """
 
 from __future__ import annotations
@@ -17,48 +15,23 @@ from typing import Any
 from .constants import (
     JSON_KEY_ARTICLE_SMR,
     JSON_KEY_CHAPTER_NUMBER,
-    JSON_KEY_COMMENT_CONTRACTOR,
     JSON_KEY_COMMENT_ORGANIZER,
-    JSON_KEY_INDIRECT_COSTS,
     JSON_KEY_JOB_TITLE,
-    JSON_KEY_MATERIALS,
     JSON_KEY_NUMBER,
-    JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST,
     JSON_KEY_QUANTITY,
-    JSON_KEY_SUGGESTED_QUANTITY,
-    JSON_KEY_TOTAL,
-    JSON_KEY_TOTAL_COST,
     JSON_KEY_UNIT,
-    JSON_KEY_UNIT_COST,
-    JSON_KEY_WORKS,
 )
+from .resolve_contractor import BlockLayout
 
 
-def get_items_dict(contractor_colspan: int) -> dict[str, Any]:
-    """Возвращает шаблон позиции: общие поля + поля подрядчика под `colspan`.
+def get_items_dict(layout: BlockLayout) -> dict[str, Any]:
+    """Шаблон позиции: общие поля + поля подрядчика по разрешённой раскладке.
 
-    Все значения — None; блоки `unit_cost`/`total_cost` — независимые вложенные
-    словари.
-
-    Общие поля (всегда): number, chapter_number, article_smr, job_title,
-    comment_organizer, unit, quantity.
-
-    Поля подрядчика:
-
-    * colspan 11 — suggested_quantity, unit_cost, total_cost,
-      total_cost_for_organizer_quantity, comment_contractor;
-    * colspan 10 — то же без comment_contractor;
-    * colspan 9 — unit_cost, total_cost, comment_contractor;
-    * colspan 8 — unit_cost, total_cost.
-
-    Args:
-        contractor_colspan: ширина блока подрядчика. Поддерживаются 8, 9, 10, 11.
-
-    Returns:
-        Словарь-шаблон. При неподдерживаемом `colspan` — общие поля плюс ключ
-        "error" с описанием. Поведение исходника; в штатном пайплайне эта ветка
-        недостижима — файлы с неизвестной шириной блока отвергает
-        `estimate._validate_contractor_blocks` ещё до разбора позиций.
+    Шаблон строится по ТОМУ ЖЕ перечню ключей, которым читаются ячейки
+    (BlockLayout.column_keys), поэтому разъехаться с parse_contractor_row не
+    может по построению. У блока, где колонки нет, ключа в шаблоне нет вовсе —
+    отсутствующий ключ, а не null (спека §2.8): все потребители читают позицию
+    через .get(...) (estimate_import.py) и .pop(..., None) (_clean_deviation_fields).
     """
     item: dict[str, Any] = {
         JSON_KEY_NUMBER: None,
@@ -69,43 +42,10 @@ def get_items_dict(contractor_colspan: int) -> dict[str, Any]:
         JSON_KEY_UNIT: None,
         JSON_KEY_QUANTITY: None,
     }
-
-    cost_block_template: dict[str, Any] = {
-        JSON_KEY_MATERIALS: None,
-        JSON_KEY_WORKS: None,
-        JSON_KEY_INDIRECT_COSTS: None,
-        JSON_KEY_TOTAL: None,
-    }
-
-    contractor_specific_data: dict[str, Any]
-
-    if contractor_colspan == 11:
-        contractor_specific_data = {
-            JSON_KEY_SUGGESTED_QUANTITY: None,
-            JSON_KEY_UNIT_COST: cost_block_template.copy(),
-            JSON_KEY_TOTAL_COST: cost_block_template.copy(),
-            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST: None,
-            JSON_KEY_COMMENT_CONTRACTOR: None,
-        }
-    elif contractor_colspan == 10:
-        contractor_specific_data = {
-            JSON_KEY_SUGGESTED_QUANTITY: None,
-            JSON_KEY_UNIT_COST: cost_block_template.copy(),
-            JSON_KEY_TOTAL_COST: cost_block_template.copy(),
-            JSON_KEY_ORGANIZER_QUANTITY_TOTAL_COST: None,
-        }
-    elif contractor_colspan == 9:
-        contractor_specific_data = {
-            JSON_KEY_UNIT_COST: cost_block_template.copy(),
-            JSON_KEY_TOTAL_COST: cost_block_template.copy(),
-            JSON_KEY_COMMENT_CONTRACTOR: None,
-        }
-    elif contractor_colspan == 8:
-        contractor_specific_data = {
-            JSON_KEY_UNIT_COST: cost_block_template.copy(),
-            JSON_KEY_TOTAL_COST: cost_block_template.copy(),
-        }
-    else:
-        contractor_specific_data = {"error": f"Unknown contractor_colspan: {contractor_colspan}"}
-
-    return {**item, **contractor_specific_data}
+    for key in layout.column_keys:
+        head, _, tail = key.partition(".")
+        if tail:
+            item.setdefault(head, {})[tail] = None
+        else:
+            item[key] = None
+    return item

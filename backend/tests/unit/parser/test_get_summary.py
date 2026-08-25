@@ -5,7 +5,14 @@ from openpyxl import Workbook
 
 from parser.get_summary import get_summary
 
-CONTRACTOR = {"column_start": 10, "merged_shape": {"colspan": 11}}
+from .sheet_builders import KEYS_GP_11, resolved
+
+# column_start=10, colspan=11 — те же координаты, что и раньше: литералы этого
+# файла (TOTAL_COST_TOTAL_COLUMN=18 и все "20"/"120"/... ниже) сверены под
+# КОНКРЕТНО эту раскладку, а не под resolved(9, KEYS_8) (та подошла бы
+# test_get_lot_positions.py, но не этому файлу — здесь другая ширина и
+# другой column_start).
+CONTRACTOR = resolved(10, KEYS_GP_11)
 
 
 # Блок подрядчика J..T (colspan 11) раскладывается так — замерено вызовом
