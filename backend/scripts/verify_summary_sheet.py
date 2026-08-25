@@ -376,6 +376,15 @@ def _stage_b(path: Path) -> tuple[list[str], dict[str, Any]]:
     if not any("найдено 5" in warning for warning in result.warnings):
         problems.append("предупреждения не содержат «найдено 5» (ожидалось число блоков подрядчика с базовым)")
 
+    # Зелёный прогон обязан быть способен покраснеть (docs/insights/silent-test-runs.md,
+    # docs/insights/unobservable-in-the-runner.md): пустой набор проверенных предложений
+    # или позиций — не пройденная проверка, а её отсутствие. Этап A стережёт свой нулевой
+    # случай явно (см. "в блоках нет ни одной позиции" выше по файлу) — этап B обязан тем же.
+    if counters["proposals_checked"] == 0:
+        problems.append("предложений сверено 0 — этап B ничего не проверил, зелёный код возврата был бы ложным")
+    if counters["positions_checked"] == 0:
+        problems.append("позиций сверено 0 — этап B ничего не проверил, зелёный код возврата был бы ложным")
+
     return problems, counters
 
 
