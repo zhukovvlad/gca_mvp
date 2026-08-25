@@ -412,7 +412,7 @@ git commit -m "feat(parser-columns): скрипт снимка разбора о
     `COLUMNS_BY_WIDTH`, `add_contractor_block(...)`, `gp_sheet(...)`,
     `resolved(col_start, columns, **geometry_extra)`
 
-- [ ] **Step 1: константы в `constants.py`**
+- [x] **Step 1: константы в `constants.py`**
 
 Рядом с `TABLE_PARSE_SUGGESTED_QUANTITY` (после строки 62):
 
@@ -433,7 +433,7 @@ TABLE_PARSE_COMMENT_CONTRACTOR_LABEL = "Комментарий участник�
 TABLE_PARSE_DEVIATION_COLUMN_LABEL = "% от р/с"
 ```
 
-- [ ] **Step 2: строитель листов `sheet_builders.py`**
+- [x] **Step 2: строитель листов `sheet_builders.py`**
 
 Полный файл (тестовая инфраструктура, импортируется тестами как модуль — по
 образцу `tests/payloads.py`):
@@ -632,7 +632,7 @@ def resolved(col_start: int, columns: tuple[str, ...], **geometry_extra) -> Reso
     )
 ```
 
-- [ ] **Step 3: написать падающие тесты `test_resolve_contractor.py`**
+- [x] **Step 3: написать падающие тесты `test_resolve_contractor.py`**
 
 Состав (каждый тест — обычный pytest, листы через `gp_sheet`/`add_contractor_block`,
 кроме одного рукописного):
@@ -812,12 +812,12 @@ class TestRefusals:
 
 Все имена в эскизах существуют либо заводятся этой задачей.
 
-- [ ] **Step 4: убедиться, что тесты падают**
+- [x] **Step 4: убедиться, что тесты падают**
 
 Run: `cd backend && uv run pytest tests/unit/parser/test_resolve_contractor.py -v`
 Expected: сбор падает на `ModuleNotFoundError: parser.resolve_contractor`.
 
-- [ ] **Step 5: реализовать `resolve_contractor.py`**
+- [x] **Step 5: реализовать `resolve_contractor.py`**
 
 Полный модуль:
 
@@ -1032,18 +1032,18 @@ def resolve_contractor(ws: Worksheet, contractor: dict[str, Any], header_row: in
     )
 ```
 
-- [ ] **Step 6: прогнать тесты задачи**
+- [x] **Step 6: прогнать тесты задачи**
 
 Run: `cd backend && uv run pytest tests/unit/parser/test_resolve_contractor.py -v`
 Expected: PASS все.
 
-- [ ] **Step 7: прогнать весь набор парсера — старый код не задет**
+- [x] **Step 7: прогнать весь набор парсера — старый код не задет**
 
 Run: `cd backend && uv run pytest tests/unit/parser -q`
 Expected: PASS (все прежние тесты зелёные: ни один существующий модуль
 логику не менял).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add backend/parser/resolve_contractor.py backend/parser/constants.py \
