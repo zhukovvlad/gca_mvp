@@ -591,6 +591,11 @@ class TestPermutedColumnsEndToEnd:
 
 
 class TestMultiContractorSheet:
+    """Лист с более чем одним блоком подрядчика — не отбрасывается и не
+    обрезается до первого: разбираются оба блока, каждый попадает в
+    `proposals` под своим ключом, а превышение ожидаемого числа подрядчиков
+    (AGENTS.md §4) фиксируется предупреждением, а не исключением."""
+
     def test_two_blocks_parse_with_a_count_warning(self):
         ws = gp_sheet(KEYS_GP_11)                                  # J..T
         add_contractor_block(ws, col_start=22, columns=KEYS_12, title='ООО "Тест-2"')
@@ -649,6 +654,13 @@ class TestMultiContractorSheet:
 
 
 class TestResolutionFlow:
+    """Геометрия блока разрешается РОВНО один раз на блок, и в
+    `parse_contractor_row` для каждой строки приходит тот же объект
+    `ResolvedContractor` (identity), а не пересчёт. Это ловит именно тот
+    регресс, ради которого убран `read_contractors` из `get_proposals`:
+    если модуль снова начнёт читать геометрию сам, тест увидит либо второй
+    вызов `resolve_contractor`, либо чужой объект в строках."""
+
     def test_resolution_happens_once_per_block_and_the_same_object_reaches_rows(self, monkeypatch):
         """Два лота, один блок: resolve_contractor вызван РОВНО один раз, и в
         parse_contractor_row приходит ТОТ ЖЕ объект (identity), а не пересчёт.

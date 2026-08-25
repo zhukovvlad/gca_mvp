@@ -51,6 +51,10 @@ def snapshot_one(path: Path) -> dict:
 
 
 def main() -> int:
+    if len(sys.argv) < 2:
+        print("использование: snapshot_parse_samples.py <метка> [--force]")
+        return 1
+
     label = sys.argv[1]
     force = "--force" in sys.argv[2:]
     out_dir = SAMPLES_DIR / "_snapshots" / label
