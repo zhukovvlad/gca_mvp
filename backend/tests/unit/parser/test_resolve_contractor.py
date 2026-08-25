@@ -11,10 +11,15 @@ from openpyxl import Workbook
 
 from parser.errors import EstimateParseError
 from parser.read_contractors import read_contractors
-from parser.resolve_contractor import BlockLayout, resolve_contractor
+from parser.resolve_contractor import resolve_contractor
 
 from .sheet_builders import (
-    KEYS_8, KEYS_10, KEYS_GP_11, KEYS_PERMUTED_11, KEYS_TENDER_11, KEYS_12,
+    KEYS_8,
+    KEYS_10,
+    KEYS_12,
+    KEYS_GP_11,
+    KEYS_PERMUTED_11,
+    KEYS_TENDER_11,
     gp_sheet,
 )
 

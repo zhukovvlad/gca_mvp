@@ -1085,7 +1085,7 @@ git commit -m "feat(parser-columns): resolve_contractor — словарь па�
   - `get_items_dict(layout: BlockLayout) -> dict`
   - `PARSER_VERSION = "4.0.0"`
 
-- [ ] **Step 1: написать падающий тест — дефект ширины 10 исправлен**
+- [x] **Step 1: написать падающий тест — дефект ширины 10 исправлен**
 
 В `test_estimate.py` (новый класс, импорты из `sheet_builders` добавить):
 
@@ -1108,13 +1108,13 @@ class TestWidthTenComment:
         assert "total_cost_for_organizer_quantity" not in position
 ```
 
-- [ ] **Step 2: убедиться, что тест падает по НУЖНОЙ причине**
+- [x] **Step 2: убедиться, что тест падает по НУЖНОЙ причине**
 
 Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py::TestWidthTenComment -v`
 Expected: FAIL — сегодня текст лежит в `total_cost_for_organizer_quantity`
 (через `money_to_json`), ключа `comment_contractor` нет.
 
-- [ ] **Step 3: `parse_contractor_row.py`**
+- [x] **Step 3: `parse_contractor_row.py`**
 
 - В `MONEY_KEYS` добавить `JSON_KEY_DEVIATION_FROM_CALCULATED_COST` (импорт из
   constants) с комментарием Р2: «доля — та же дисциплина строк, что и деньги;
@@ -1139,7 +1139,7 @@ Expected: FAIL — сегодня текст лежит в `total_cost_for_organ
   удаляется. `get_column_keys` и `money_group_offsets` пока НЕ трогать —
   их снесёт задача 5, когда уйдут их тесты.
 
-- [ ] **Step 4: `get_items_dict.py`**
+- [x] **Step 4: `get_items_dict.py`**
 
 ```python
 def get_items_dict(layout: BlockLayout) -> dict[str, Any]:
@@ -1173,7 +1173,7 @@ def get_items_dict(layout: BlockLayout) -> dict[str, Any]:
 Порядок ключей шаблона для ширины 11 ГП совпадает с прежним поколоночно —
 это условие побайтного равенства класса 1.
 
-- [ ] **Step 5: `get_summary.py` и `get_lot_positions.py`**
+- [x] **Step 5: `get_summary.py` и `get_lot_positions.py`**
 
 - `get_summary(ws, contractor: ResolvedContractor, search_start_row)`:
   `contractor_last_column(contractor.geometry)`; транзит `contractor` в
@@ -1185,7 +1185,7 @@ def get_items_dict(layout: BlockLayout) -> dict[str, Any]:
 - Докстроки обеих: аргумент — разрешённый блок; про «нужны column_start и
   merged_shape.colspan» заменить на «геометрия в .geometry, раскладка в .layout».
 
-- [ ] **Step 6: `get_proposals.py`**
+- [x] **Step 6: `get_proposals.py`**
 
 - Импорты: убрать `from .parse_contractor_row import money_group_offsets` и
   `from .read_contractors import read_contractors`; добавить
@@ -1243,13 +1243,13 @@ def get_items_dict(layout: BlockLayout) -> dict[str, Any]:
   на `BlockLayout`. Ветка `if not contractors_list` не нужна — пустой список
   даёт пустой обход.
 
-- [ ] **Step 7: `read_lots_and_boundaries.py`**
+- [x] **Step 7: `read_lots_and_boundaries.py`**
 
 `def read_lots_and_boundaries(ws, *, header_row: int, contractors:
 Sequence[ResolvedContractor]) -> LotsResult:` — транзит в `get_proposals`
 (`contractors=contractors`); докстрока аргумента.
 
-- [ ] **Step 8: `layout.py` — набор ключей вместо ширины**
+- [x] **Step 8: `layout.py` — набор ключей вместо ширины**
 
 Модуль после правки (кроме `find_suggested_quantity_header` — он остаётся
 мёртвым до задачи 5):
@@ -1323,7 +1323,7 @@ def check_estimate_layout(
 Сообщение о наборе стабильно по тексту — на фрагмент «не совпадает с ожидаемым»
 опирается сравнение снимков задачи 6.
 
-- [ ] **Step 9: `estimate.py`**
+- [x] **Step 9: `estimate.py`**
 
 - Импорты: `from .resolve_contractor import resolve_contractor`; убрать
   `from .parse_contractor_row import SUPPORTED_CONTRACTOR_COLSPANS`.
@@ -1374,12 +1374,12 @@ def _validate_contractor_geometry(contractors: list[dict[str, Any]]) -> None:
 
 - Докстроки `parse_worksheet` (Raises) и модуля привести к новому потоку §2.5.
 
-- [ ] **Step 10: прогнать тест шага 1**
+- [x] **Step 10: прогнать тест шага 1**
 
 Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py::TestWidthTenComment -v`
 Expected: PASS.
 
-- [ ] **Step 11: тест потока данных — раскладка разрешается один раз и доходит объектом**
+- [x] **Step 11: тест потока данных — раскладка разрешается один раз и доходит объектом**
 
 В `test_estimate.py` (DoD 2; порядок и связь звеньев стережёт только
 утверждение о потоке данных — `docs/insights/data-flow-assertions-for-order.md`):
@@ -1418,7 +1418,7 @@ class TestResolutionFlow:
 Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -k test_resolution_happens_once -v`
 Expected: PASS.
 
-- [ ] **Step 12: переписать `test_estimate.py` под новый контракт**
+- [x] **Step 12: переписать `test_estimate.py` под новый контракт**
 
 Диспозиция по местам:
 
@@ -1501,7 +1501,7 @@ Run: `cd backend && uv run pytest tests/unit/parser/test_estimate.py -q`
 Expected: PASS (при наличии `samples/` — вместе с TestParseEstimateOnRealSamples:
 все три верхнеуровневые оферты — ширина 11, их поведение не изменилось).
 
-- [ ] **Step 13: переписать нижние тесты**
+- [x] **Step 13: переписать нижние тесты**
 
 - `test_parse_contractor_row.py`: `_sheet_with_row(values)` дополнительно
   строит `resolved(10, columns)` из `sheet_builders`; параметризации по
@@ -1558,12 +1558,12 @@ FIXTURE_CONTRACTOR = ResolvedContractor(
 Run: `cd backend && uv run pytest tests/unit/parser tests/unit/test_additional_works.py -q`
 Expected: PASS.
 
-- [ ] **Step 14: полный юнит-прогон**
+- [x] **Step 14: полный юнит-прогон**
 
 Run: `cd backend && uv run pytest tests/unit -q`
 Expected: PASS.
 
-- [ ] **Step 15: Commit**
+- [x] **Step 15: Commit**
 
 ```bash
 git add backend/parser backend/tests
