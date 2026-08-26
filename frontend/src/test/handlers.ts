@@ -139,6 +139,16 @@ interface HandlerState {
   /** Была ли последняя загрузка раунда с `replace=true`. */
   lastRoundUploadReplace: boolean;
   /**
+   * Какой КОД несёт 409 загрузки раунда, когда `uploadOutcome === "conflict"`
+   * (находка внешнего ревью PR #33, finding 2): `replace_required` — «раунд
+   * уже загружен» (единственный код, на который панель открывает диалог
+   * замены), `active_import` — «идёт чужой импорт» (тот же код, что у гонки
+   * на индексе бэкенда) — эта причина ВСЕГДА побеждает `replace`, как и на
+   * бэкенде: проверка активного импорта идёт раньше проверки «есть ли что
+   * заменять».
+   */
+  roundUploadConflictCode: "replace_required" | "active_import";
+  /**
    * Исход `DELETE /api/v1/tenders/:id` — зеркалит отказ, которым `DELETE
    * .../participants/:pid` уже отвечает на активный импорт (§2.11): пока
    * раунд грузится, тендер целиком удалить тоже нельзя.
@@ -171,6 +181,7 @@ export const handlerState: HandlerState = {
   tenderRoundState: "loaded",
   participantDeleteOutcome: "preview",
   lastRoundUploadReplace: false,
+  roundUploadConflictCode: "replace_required",
   tenderDeleteOutcome: "ok",
 };
 
@@ -194,6 +205,7 @@ export function resetHandlerState() {
   handlerState.tenderRoundState = "loaded";
   handlerState.participantDeleteOutcome = "preview";
   handlerState.lastRoundUploadReplace = false;
+  handlerState.roundUploadConflictCode = "replace_required";
   handlerState.tenderDeleteOutcome = "ok";
 }
 
@@ -1391,14 +1403,32 @@ export const handlers = [
     // `request.formData()` падает под jsdom, тело читается текстом.
     const body = await request.text();
     handlerState.lastRoundUploadReplace = /name="replace"[\s\S]*?\btrue\b/.test(body);
-    if (handlerState.uploadOutcome === "conflict" && !handlerState.lastRoundUploadReplace) {
-      return HttpResponse.json(
-        {
-          detail:
-            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
-        },
-        { status: 409 }
-      );
+    if (handlerState.uploadOutcome === "conflict") {
+      // `active_import` побеждает `replace` — та же причина, что на бэкенде
+      // отдаёт эту причину РАНЬШЕ проверки «есть ли что заменять» (§2.14).
+      if (handlerState.roundUploadConflictCode === "active_import") {
+        return HttpResponse.json(
+          {
+            detail: {
+              code: "active_import",
+              message: "Импорт этого раунда уже выполняется (задание 999, статус «parsing»).",
+            },
+          },
+          { status: 409 }
+        );
+      }
+      if (!handlerState.lastRoundUploadReplace) {
+        return HttpResponse.json(
+          {
+            detail: {
+              code: "replace_required",
+              message:
+                "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
+            },
+          },
+          { status: 409 }
+        );
+      }
     }
     const job = {
       ...jobPayload(handlerState.jobStatuses[0] ?? "pending"),

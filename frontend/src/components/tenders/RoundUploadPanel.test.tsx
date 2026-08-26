@@ -63,6 +63,29 @@ describe("RoundUploadPanel (спека §2.14)", () => {
     await waitFor(() => expect(handlerState.lastRoundUploadReplace).toBe(true));
   });
 
+  /**
+   * Находка внешнего ревью PR #33 (finding 2): бэкенд отвечает 409 в ТРЁХ
+   * разных ситуациях, и до фикса все они были голым `HTTPException(409,…)` —
+   * второй браузер, увидевший ЧУЖОЙ идущий импорт этого раунда, получал тот
+   * же диалог «заменить раунд», что и штатная развилка «уже загружено»,
+   * хотя замена здесь ничего не решает и опасна (уничтожает сметы раунда).
+   * Отличаем по коду `active_import`, а не по статусу: диалог не открывается,
+   * текст сервера показан как обычный отказ.
+   */
+  it("409 active_import — отказ БЕЗ диалога замены, даже у admin", async () => {
+    handlerState.uploadOutcome = "conflict";
+    handlerState.roundUploadConflictCode = "active_import";
+    const user = userEvent.setup();
+    renderWithProviders(
+      <RoundUploadPanel tenderId={300} roundId={3001} round={sampleTenderCard.rounds[0]} />
+    );
+    await dropXlsx(user);
+    expect(await screen.findByTestId("upload-rejection")).toHaveTextContent(
+      /уже выполняется/
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   it("member на 409 видит отказ, а не диалог", async () => {
     handlerState.uploadOutcome = "conflict";
     const user = userEvent.setup();

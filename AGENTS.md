@@ -244,7 +244,8 @@ contractors.inn — канон, только ASCII-цифры (CHECK); одна 
 
 estimate_raw_data
   estimate_id PK → estimates ON DELETE CASCADE
-  raw_data jsonb NOT NULL    # полный JSON парсера, включая реквизиты из шапки XLSX
+  raw_data jsonb NOT NULL    # проекция parsed_data под смету; точный результат разбора —
+                             #   import_jobs.parsed_data + parser_version (см. выше)
   parser_version text NOT NULL
   created_at
 

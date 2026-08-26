@@ -207,6 +207,55 @@ describe("инвалидация паспорта проекта источни�
       expect(keys).toContain(JSON.stringify(qk.passport.all));
     });
   });
+
+  /**
+   * Находка внешнего ревью PR #33 (finding 1): после ПРОВАЛЕННОГО импорта
+   * карточка и история договора обязаны обновиться так же, как после
+   * успешного, — иначе job навсегда остаётся «в процессе» и в истории, и в
+   * `latest_job` карточки (`staleTime` минута, без рефетча по фокусу).
+   * Прогоняем задание через настоящий переход `pending → error` (а не просто
+   * рендерим его сразу `error`), потому что баг был именно в этом переходе:
+   * загрузочный `202` уже положил `pending`-job в историю, а поллинг после
+   * `error` не обновлял ничего. `review.all`/`passport.all` — НЕ трогаем:
+   * проваленный импорт не создаёт сметы, смотреть и пересчитывать нечего.
+   */
+  it("pending → error задания договора инвалидирует карточку и историю, но НЕ паспорт и НЕ review", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    let polls = 0;
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () => {
+        const status = polls === 0 ? "pending" : "error";
+        polls += 1;
+        return HttpResponse.json({
+          ...sampleImportJobs[0],
+          id: 81,
+          contract_id: 12,
+          status,
+          estimate_id: null,
+          estimates_created: null,
+          error_text: status === "error" ? "Не удалось разобрать файл." : null,
+        });
+      })
+    );
+
+    const { result } = renderHook(() => useImportJob(81, { contractId: 12 }), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await waitFor(() => expect(result.current.data?.status).toBe("pending"));
+    // Интервал поллинга — 1500 мс; окно ожидания заведомо больше, чтобы
+    // дождаться следующего опроса, который вернёт `error`.
+    await waitFor(() => expect(result.current.data?.status).toBe("error"), { timeout: 8000 });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.contracts.card(12)));
+    expect(keys).toContain(JSON.stringify(qk.contracts.importJobs(12)));
+    expect(keys).not.toContain(JSON.stringify(qk.passport.all));
+    expect(keys).not.toContain(JSON.stringify(qk.review.all));
+  });
 });
 
 /**

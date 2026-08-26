@@ -392,4 +392,63 @@ describe("useImportJob: инвалидация для раундового за�
     expect(keys).toContain(JSON.stringify(qk.passport.all));
     expect(keys.some((k) => k.includes('"tenders"'))).toBe(false);
   });
+
+  /**
+   * Находка внешнего ревью PR #33 (finding 1): раунд ведёт себя так же, как
+   * договор выше — после ПРОВАЛЕННОГО импорта карточка тендера (несёт
+   * `latest_job` раунда) и история загрузок ИМЕННО этого раунда обязаны
+   * обновиться, иначе `RoundUploadPanel`/таблица истории держат job «в
+   * процессе» неопределённо долго. Гоняем настоящий переход
+   * `pending → error` тем же приёмом, что у договора: баг был именно в этом
+   * переходе, а не в статичном рендере `error`. `review.all` — НЕ трогаем:
+   * у раунда, как и у договора, провал не создаёт смет.
+   */
+  it("pending → error задания раунда инвалидирует qk.tenders.card и qk.tenders.roundJobs, но НЕ qk.review.all", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    let polls = 0;
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () => {
+        const status = polls === 0 ? "pending" : "error";
+        polls += 1;
+        return HttpResponse.json({
+          id: 80,
+          owner_type: "round",
+          tender_id: 300,
+          round_id: 3001,
+          estimate_ids: [],
+          estimates_created: null,
+          filename: "round.xlsx",
+          file_sha256: "abc",
+          status,
+          error_text: status === "error" ? "Не удалось разобрать файл." : null,
+          warnings: [],
+          counters: {
+            positions_total: 0,
+            matched_cache: 0,
+            matched_exact: 0,
+            matched_nonposition: 0,
+            to_review: 0,
+          },
+          created_at: null,
+          started_at: null,
+          finished_at: null,
+        });
+      })
+    );
+
+    const { result } = renderHook(() => useImportJob(80, { tenderId: 300, roundId: 3001 }), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.data?.status).toBe("pending"));
+    // Интервал поллинга — 1500 мс; окно заведомо больше, чтобы дождаться
+    // следующего опроса, который вернёт `error`.
+    await waitFor(() => expect(result.current.data?.status).toBe("error"), { timeout: 8000 });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.tenders.card(300)));
+    expect(keys).toContain(JSON.stringify(qk.tenders.roundJobs(300, 3001)));
+    expect(keys).not.toContain(JSON.stringify(qk.review.all));
+  });
 });

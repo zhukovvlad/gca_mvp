@@ -505,6 +505,16 @@ export interface ImportJobOwnerRef {
  * процессе» без бейджа «актуальный» неопределённо долго: `staleTime` истории —
  * минута, а загрузочный `202` инвалидирует её РАНЬШЕ, пока job ещё pending, не
  * в момент перехода в `done`.
+ *
+ * **Оба терминальных статуса, не только `done`** (находка внешнего ревью
+ * PR #33, finding 1). Загрузочный `202` кладёт `pending`-job в карточку/
+ * историю владельца сразу; если импорт затем падает в `error`, и владелец
+ * инвалидируется ТОЛЬКО на `done`, ничто больше не обновит эти кэши —
+ * `staleTime` карточки/истории минута, рефетча по фокусу нет, и job навсегда
+ * остаётся «в процессе» на экране, хотя работа давно закончилась отказом.
+ * Владельца (карточку и историю) освежаем на ОБОИХ терминальных статусах;
+ * `review.all`/`passport.all` — ТОЛЬКО на `done`: провалившийся импорт не
+ * создаёт сметы, и смотреть/пересчитывать нечего.
  */
 export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwnerRef) {
   const qc = useQueryClient();
@@ -512,10 +522,21 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
     queryKey: qk.importJobs.one(jobId ?? 0),
     queryFn: async () => {
       const job = await estimatesApi.getJob(jobId as number);
-      if (job.status === "done") {
+      const terminal = job.status === "done" || job.status === "error";
+      if (terminal) {
         if (ownerRef?.contractId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.contracts.card(ownerRef.contractId) });
           qc.invalidateQueries({ queryKey: qk.contracts.importJobs(ownerRef.contractId) });
+        }
+        if (ownerRef?.tenderId !== undefined) {
+          qc.invalidateQueries({ queryKey: qk.tenders.card(ownerRef.tenderId) });
+          if (ownerRef.roundId !== undefined) {
+            qc.invalidateQueries({ queryKey: qk.tenders.roundJobs(ownerRef.tenderId, ownerRef.roundId) });
+          }
+        }
+      }
+      if (job.status === "done") {
+        if (ownerRef?.contractId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.review.all });
           // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
           // или заменяется, а с ней все суммы по статьям. Без этой инвалидации
@@ -524,11 +545,7 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
           qc.invalidateQueries({ queryKey: qk.passport.all });
         }
         if (ownerRef?.tenderId !== undefined) {
-          qc.invalidateQueries({ queryKey: qk.tenders.card(ownerRef.tenderId) });
           qc.invalidateQueries({ queryKey: qk.review.all });
-          if (ownerRef.roundId !== undefined) {
-            qc.invalidateQueries({ queryKey: qk.tenders.roundJobs(ownerRef.tenderId, ownerRef.roundId) });
-          }
         }
       }
       return job;

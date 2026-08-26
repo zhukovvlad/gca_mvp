@@ -15,7 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useCurrentUser } from "@/hooks/useAuth";
-import { apiErrorDetail, apiErrorStatus, useImportJob, useUploadRound } from "@/services/queries";
+import { apiErrorCode, apiErrorDetail, useImportJob, useUploadRound } from "@/services/queries";
 import type { RoundImportJob, TenderRoundRow } from "@/types/domain";
 
 /**
@@ -65,9 +65,14 @@ export function RoundUploadPanel({
       setIdempotent(created.status === "done");
       setConflict(null);
     } catch (error) {
-      const status = apiErrorStatus(error);
       const detail = apiErrorDetail(error) ?? "Не удалось загрузить файл.";
-      if (status === 409 && isAdmin && !replace) {
+      // Диалог замены открывается ТОЛЬКО по коду `replace_required` (находка
+      // внешнего ревью PR #33, finding 2), а не по голому статусу 409:
+      // сервер отвечает 409 ещё в двух случаях — идёт чужой импорт этого
+      // раунда (`active_import`) и гонка на индексе (тот же код), — и оба
+      // означают «подождите», а не «замените». Замена уничтожает сметы
+      // раунда, и предлагать её по неверной причине опасно.
+      if (apiErrorCode(error) === "replace_required" && isAdmin && !replace) {
         setConflict({ file, detail });
         return;
       }

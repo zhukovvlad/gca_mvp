@@ -92,6 +92,64 @@ class TestRoundUpload:
         assert first_job["estimates_created"] == 1
         assert upload_round(committing_client, tender, content=xlsx_bytes("b")).status_code == 409
 
+    def test_already_loaded_conflict_has_replace_required_code(self, committing_client, tender, round_stub):
+        """Находка внешнего ревью PR #33 (finding 2): развилка «нужна
+        замена» несёт СВОЙ код `replace_required` — до фикса три разных
+        причины 409 (идёт другой импорт / уже загружено / гонка на индексе)
+        были неотличимым голым `HTTPException(409, ...)`, и фронт не мог
+        решить, когда предлагать диалог замены."""
+        round_stub(round_payload([P_A()]))
+        first_job = finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes("a")))
+        assert first_job["status"] == ImportJobStatus.done.value
+
+        response = upload_round(committing_client, tender, content=xlsx_bytes("b"))
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "replace_required"
+
+    def test_running_import_conflict_has_active_import_code(
+        self, committing_client, committing_db, committing_factories, tender, round_stub
+    ):
+        """Находка внешнего ревью PR #33 (finding 2): второй запрос видит
+        задание ДРУГОГО запроса как ЗАПУЩЕННЫЙ импорт — это не то же самое,
+        что «раунд уже загружен» выше, и код обязан быть ДРУГИМ
+        (`active_import`), иначе клиент предложил бы опасную замену там, где
+        нужно просто подождать завершения чужого импорта."""
+        committing_factories.ImportJobFactory.create(
+            contract=None, round_id=tender["round_id"], status=ImportJobStatus.parsing.value, file_key="k-running",
+        )
+        committing_db.commit()
+
+        response = upload_round(committing_client, tender, content=xlsx_bytes())
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "active_import"
+
+    def test_active_round_index_race_maps_to_active_import_code(
+        self, committing_client, committing_db, committing_factories, tender, round_stub, monkeypatch
+    ):
+        """Находка внешнего ревью PR #33 (finding 2): третья причина 409 —
+        гонка на partial unique index `uq_import_jobs_active_round`, вторая
+        линия защиты ПОСЛЕ `active_round_job()`. Проверяем СНЯТИЕМ первой
+        защиты (мок возвращает `None`, как будто активного job нет), а не
+        притворной параллельностью — тот же приём, что у любого теста на
+        гонку: доказывать защиту её снятием, а не совпадением по времени.
+        С первой защитой снятой INSERT реально упирается в partial unique
+        index, и именно ветка `except IntegrityError` обязана поймать отказ
+        и отдать тот же код `active_import`, что и штатная проверка выше —
+        причина отказа для клиента одна и та же."""
+        committing_factories.ImportJobFactory.create(
+            contract=None, round_id=tender["round_id"], status=ImportJobStatus.parsing.value, file_key="k-race",
+        )
+        committing_db.commit()
+        from routers import tenders as tenders_router
+        monkeypatch.setattr(tenders_router.crud_tenders, "active_round_job", lambda db, round_id: None)
+
+        response = upload_round(committing_client, tender, content=xlsx_bytes())
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "active_import"
+
     def test_replace_requires_admin(self, committing_client, tender, round_stub):
         committing_client.auth_state["role"] = UserRole.member
         response = upload_round(committing_client, tender, content=xlsx_bytes(), replace=True)

@@ -180,16 +180,22 @@ def upload_round(
 
     running = crud_tenders.active_round_job(db, rnd.id)
     if running is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            f"Импорт этого раунда уже выполняется (задание {running.id}, статус «{running.status}»).")
+        raise_domain_error(DomainError(
+            status.HTTP_409_CONFLICT,
+            f"Импорт этого раунда уже выполняется (задание {running.id}, статус «{running.status}»).",
+            code="active_import", context={"job_id": running.id},
+        ))
 
     current = crud_tenders.current_round_job(db, rnd.id)
     if current is not None and current.file_sha256 == file_sha256:
         response.status_code = status.HTTP_200_OK
         return job_response(db, current)
     if crud_tenders.round_estimate_ids(db, rnd.id) and not replace:
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.")
+        raise_domain_error(DomainError(
+            status.HTTP_409_CONFLICT,
+            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
+            code="replace_required",
+        ))
 
     file_key = storage.save(payload)
     try:
@@ -202,8 +208,11 @@ def upload_round(
         db.rollback()
         storage.delete(file_key)
         if ACTIVE_ROUND_INDEX in str(exc.orig):
-            raise HTTPException(status.HTTP_409_CONFLICT,
-                                "Импорт этого раунда уже запущен параллельным запросом.") from exc
+            raise_domain_error(DomainError(
+                status.HTTP_409_CONFLICT,
+                "Импорт этого раунда уже запущен параллельным запросом.",
+                code="active_import",
+            ))
         raise
     except Exception:
         db.rollback()
