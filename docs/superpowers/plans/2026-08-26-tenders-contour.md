@@ -134,7 +134,7 @@ pytest; React 19 / TanStack Query 5 / shadcn/ui / vitest + msw.
 | `BASELINE_MISSING_TITLE` | `backend/parser/postprocess.py` | существует |
 | `JSON_KEY_LOTS`, `JSON_KEY_PROPOSALS`, `JSON_KEY_BASELINE_PROPOSAL`, `JSON_KEY_LOT_TITLE`, `JSON_KEY_CONTRACTOR_TITLE`, `JSON_KEY_CONTRACTOR_INN`, `JSON_KEY_CONTRACTOR_ADDRESS`, `JSON_KEY_CONTRACTOR_ACCREDITATION`, `JSON_KEY_CONTRACTOR_ITEMS`, `JSON_KEY_CONTRACTOR_ADDITIONAL_INFO`, `JSON_KEY_DEVIATION_FROM_CALCULATED_COST`, `JSON_KEY_TENDER_OBJECT`, `JSON_KEY_TENDER_ADDRESS`, `JSON_KEY_TOTAL_COST_INCLUDING_VAT` | `backend/parser/constants.py` | существует |
 | `payload_for`, `estimate_payload`, `proposal`, `position`, `summary_line`, `DEFAULT_INN` | `backend/tests/payloads.py` | существует |
-| `gp_sheet`, `add_contractor_block`, `KEYS_8`, `KEYS_GP_11`, `KEYS_TENDER_11`, `KEYS_12` | `backend/tests/unit/parser/sheet_builders.py` | существует, не меняется — строитель не пишет ИНН, и это используется негативным тестом задачи 6 |
+| `gp_sheet`, `add_contractor_block`, `KEYS_8`, `KEYS_GP_11`, `KEYS_TENDER_11`, `KEYS_12` | `backend/tests/unit/parser/sheet_builders.py` | существует; `add_contractor_block` получает `inn`, `address` задачей 6 (по умолчанию `None` — прежние тесты парсера не меняются) |
 | `parse_worksheet` | `backend/parser` | существует |
 | `ContractorFactory`, `ContractFactory`, `ImportJobFactory`, `EstimateFactory`, `LotFactory`, `ProposalFactory`, `_BaseFactory` | `backend/tests/factories.py` | существует |
 | `db_session`, `factories`, `client`, `committing_db`, `committing_factories`, `committing_session_factory`, `committing_client`, `tmp_storage` | `backend/tests/conftest.py` | существует |
@@ -201,6 +201,7 @@ pytest; React 19 / TanStack Query 5 / shadcn/ui / vitest + msw.
 | `backend/main.py` | регистрация роутера |
 | `backend/tests/factories.py` | четыре фабрики |
 | `backend/tests/payloads.py` | `round_payload(...)` — JSON раунда с N предложениями и baseline в форме ПОСЛЕ постобработки |
+| `backend/tests/unit/parser/sheet_builders.py` | `add_contractor_block(inn=, address=)` — реквизиты под заголовком блока, чтобы настоящий парсер отдавал ИНН участника |
 | Тесты, зовущие `import_estimate(contract=…)` | переход на `owner=contract_estimate_owner(...)` — механическая замена сигнатуры без изменения утверждений |
 | `frontend/src/types/domain.ts`, `services/api/domain.ts`, `services/queryKeys.ts`, `services/queries.ts` | типы, API, ключи, хуки |
 | `frontend/src/test/fixtures.ts`, `handlers.ts` | фикстуры и хендлеры тендеров |
@@ -1124,22 +1125,38 @@ def upgrade() -> None:
     op.create_check_constraint("ck_contractors_inn_canonical", "contractors", CK_CONTRACTORS_INN)
 
 
+def _downgrade_blockers(bind) -> dict[str, int]:
+    """Три счётчика, каждый из которых сам по себе держит откат. Вынесены в
+    функцию, чтобы тест проверил каждую ветвь отдельно — в валидной схеме
+    дочерние строки без тендера не существуют, и одним живым downgrade все
+    три диагностики не увидеть."""
+    return {
+        "tenders": bind.execute(sa.text("SELECT count(*) FROM tenders")).scalar_one(),
+        "round_jobs": bind.execute(
+            sa.text("SELECT count(*) FROM import_jobs WHERE round_id IS NOT NULL")
+        ).scalar_one(),
+        "ownerless_estimates": bind.execute(
+            sa.text("SELECT count(*) FROM estimates WHERE contract_id IS NULL")
+        ).scalar_one(),
+    }
+
+
+def _downgrade_refusal(blockers: dict[str, int]) -> str | None:
+    if not any(blockers.values()):
+        return None
+    return (
+        f"Откат 0015 невозможен: тендеров — {blockers['tenders']}, заданий импорта раундов — "
+        f"{blockers['round_jobs']}, смет предложений и baseline — {blockers['ownerless_estimates']}. "
+        "Это загруженные файлы и результаты импорта; удалить их — решение человека, а не "
+        "миграции. Удалите тендеры через приложение и повторите откат."
+    )
+
+
 def downgrade() -> None:
     bind = op.get_bind()
-    tenders = bind.execute(sa.text("SELECT count(*) FROM tenders")).scalar_one()
-    round_jobs = bind.execute(
-        sa.text("SELECT count(*) FROM import_jobs WHERE round_id IS NOT NULL")
-    ).scalar_one()
-    ownerless_estimates = bind.execute(
-        sa.text("SELECT count(*) FROM estimates WHERE contract_id IS NULL")
-    ).scalar_one()
-    if tenders or round_jobs or ownerless_estimates:
-        raise RuntimeError(
-            f"Откат 0015 невозможен: тендеров — {tenders}, заданий импорта раундов — "
-            f"{round_jobs}, смет предложений и baseline — {ownerless_estimates}. Это "
-            "загруженные файлы и результаты импорта; удалить их — решение человека, а не "
-            "миграции. Удалите тендеры через приложение и повторите откат."
-        )
+    refusal = _downgrade_refusal(_downgrade_blockers(bind))
+    if refusal is not None:
+        raise RuntimeError(refusal)
 
     op.drop_constraint("ck_contractors_inn_canonical", "contractors", type_="check")
 
@@ -1339,6 +1356,42 @@ class TestInnDataMigration:
         _migration_0015()._canonicalize_existing_inns(db_session.connection())
         db_session.expire_all()
         assert db_session.get(type(c), c.id).inn == "7700000002"
+
+
+class TestDowngradeBlockers:
+    """Каждая из трёх диагностик отката — отдельно, на живом соединении."""
+
+    def test_clean_schema_does_not_block(self, db_session):
+        m = _migration_0015()
+        assert m._downgrade_refusal(m._downgrade_blockers(db_session.connection())) is None
+
+    def test_tender_alone_blocks_and_is_named(self, db_session, factories):
+        factories.TenderFactory.create()
+        db_session.flush()
+        m = _migration_0015()
+        blockers = m._downgrade_blockers(db_session.connection())
+        assert blockers == {"tenders": 1, "round_jobs": 0, "ownerless_estimates": 0}
+        assert "тендеров — 1" in m._downgrade_refusal(blockers)
+
+    def test_round_job_is_counted_separately(self, db_session, factories):
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        db_session.add(ImportJob(round_id=rnd.id, filename="f.xlsx", file_key="k-dg", file_sha256="0" * 64,
+                                 status=ImportJobStatus.error.value))
+        db_session.flush()
+        m = _migration_0015()
+        blockers = m._downgrade_blockers(db_session.connection())
+        assert blockers["round_jobs"] == 1
+        assert "заданий импорта раундов — 1" in m._downgrade_refusal(blockers)
+
+    def test_ownerless_estimate_is_counted_separately(self, db_session, factories):
+        offer = factories.OfferFactory.create()
+        db_session.add(Estimate(offer_id=offer.id))
+        db_session.flush()
+        m = _migration_0015()
+        blockers = m._downgrade_blockers(db_session.connection())
+        assert blockers["ownerless_estimates"] == 1
+        assert "смет предложений и baseline — 1" in m._downgrade_refusal(blockers)
 ```
 
 Тесты `TestInnDataMigration` работают внутри транзакции `db_session`, которая
@@ -1361,11 +1414,9 @@ DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run alem
 ```
 Expected: `0014 -> 0015`.
 
-Затем вставить один тендер `psql`-ом или через
-`uv run python -c "..."` и повторить `downgrade 0014`.
-Expected: `RuntimeError: Откат 0015 невозможен: тендеров — 1, ...`. Удалить
-тендер, `downgrade` проходит, `upgrade head` снова. Результат трёх прогонов —
-в отчёт исполнителя.
+Три ветви отказа доказаны `TestDowngradeBlockers` (шаг 9); здесь — один
+настоящий Alembic-откат на живой БД. Результат обоих прогонов — в отчёт
+исполнителя.
 
 - [ ] **Step 11: весь набор — старое не задето**
 
@@ -1403,7 +1454,7 @@ git commit -m "feat(tenders-contour): схема — тендеры, раунд�
 - Consumes: `Tender`, `TenderRound`, `Offer`, `OfferPackage`, `Contractor`, `Contract` (модели).
 - Produces:
   - `HeaderTruth(object_title, object_address, contractor_title, contractor_inn, contractor_address, contractor_accreditation)` — все `str | None`;
-  - `EstimateOwner(kind: Literal["contract","offer","baseline"], estimate_columns: dict[str, Any], proposal_contractor_id: int | None, is_baseline: bool, truth: HeaderTruth, replace_scope: tuple[int, int | None] | None)`;
+  - `EstimateOwner(kind: Literal["contract","offer","baseline"], contract_id: int | None, amendment_no: int | None, offer_id: int | None, round_id: int | None, proposal_contractor_id: int | None, is_baseline: bool, truth: HeaderTruth)` — frozen, все поля неизменяемы; метод `estimate_columns() -> dict[str, Any]` отдаёт колонки владельца для `Estimate(...)`; свойство `replace_scope -> tuple[int, int | None] | None` — `(contract_id, amendment_no)` у договора, иначе `None`;
     свойства: `imports_additional_works -> bool` (`kind != "baseline"`), `reads_deviation -> bool` (`kind == "offer"`), `warns_on_unexpected_baseline -> bool` (`kind == "contract"`);
   - `contract_estimate_owner(contract: Contract, amendment_no: int | None) -> EstimateOwner`;
   - `offer_estimate_owner(offer: Offer, tender: Tender, contractor: Contractor) -> EstimateOwner`;
@@ -1476,8 +1527,10 @@ class TestContractOwner:
             object_address=contract.object.address,
             contractor_title=contract.contractor.title,
             contractor_inn=contract.contractor.inn,
-            contractor_address=contract.contractor.address,
-            contractor_accreditation=contract.contractor.accreditation,
+            # Договорная сверка адрес и аккредитацию не проверяет — как сегодня
+            # (спека §2.4, ревизия гейта 3).
+            contractor_address=None,
+            contractor_accreditation=None,
         )
 
     def test_header_mismatch_names_the_card(self, factories, db_session):
@@ -1546,16 +1599,32 @@ class HeaderTruth:
 @dataclass(frozen=True)
 class EstimateOwner:
     kind: OwnerKind
-    #: Колонки владельца для `Estimate(...)`: {"contract_id", "amendment_no"} |
-    #: {"offer_id"} | {"round_id"}.
-    estimate_columns: dict[str, Any]
+    #: Владелец сметы — ровно одно из трёх не None (CHECK схемы). Хранятся
+    #: конкретные id, а не словарь: frozen=True не защитил бы содержимое dict.
+    contract_id: int | None
+    amendment_no: int | None
+    offer_id: int | None
+    round_id: int | None
     #: Подрядчик предложения: из карточки договора / из пакета; у baseline None.
     proposal_contractor_id: int | None
     is_baseline: bool
     truth: HeaderTruth
-    #: Пара (contract_id, amendment_no) для `_replace_existing`; у раундовых
-    #: владельцев None — замену раунда делает `round_import` ДО цикла (§2.6).
-    replace_scope: tuple[int, int | None] | None
+
+    def estimate_columns(self) -> dict[str, Any]:
+        """Колонки владельца для `Estimate(...)`."""
+        if self.kind == "contract":
+            return {"contract_id": self.contract_id, "amendment_no": self.amendment_no}
+        if self.kind == "offer":
+            return {"offer_id": self.offer_id}
+        return {"round_id": self.round_id}
+
+    @property
+    def replace_scope(self) -> tuple[int, int | None] | None:
+        """Пара для `_replace_existing`; у раундовых владельцев None — замену
+        раунда делает `round_import` ДО цикла (§2.6)."""
+        if self.kind == "contract" and self.contract_id is not None:
+            return (self.contract_id, self.amendment_no)
+        return None
 
     @property
     def imports_additional_works(self) -> bool:
@@ -1577,9 +1646,12 @@ class EstimateOwner:
 
 
 def contract_estimate_owner(contract: Contract, amendment_no: int | None) -> EstimateOwner:
+    """Договор: истина — карточка договора, но у подрядчика ТОЛЬКО название и
+    ИНН (спека §2.4, ревизия гейта 3): договорная сверка адрес и аккредитацию не
+    проверяла и не начинает — иначе изменилось бы поведение договорного импорта."""
     return EstimateOwner(
         kind="contract",
-        estimate_columns={"contract_id": contract.id, "amendment_no": amendment_no},
+        contract_id=contract.id, amendment_no=amendment_no, offer_id=None, round_id=None,
         proposal_contractor_id=contract.contractor_id,
         is_baseline=False,
         truth=HeaderTruth(
@@ -1587,17 +1659,18 @@ def contract_estimate_owner(contract: Contract, amendment_no: int | None) -> Est
             object_address=contract.object.address,
             contractor_title=contract.contractor.title,
             contractor_inn=contract.contractor.inn,
-            contractor_address=contract.contractor.address,
-            contractor_accreditation=contract.contractor.accreditation,
+            contractor_address=None,
+            contractor_accreditation=None,
         ),
-        replace_scope=(contract.id, amendment_no),
     )
 
 
 def offer_estimate_owner(offer: Offer, tender: Tender, contractor: Contractor) -> EstimateOwner:
+    """Предложение: объект из карточки тендера, подрядчик — ВСЕ четыре поля из
+    пакета (спека §2.4)."""
     return EstimateOwner(
         kind="offer",
-        estimate_columns={"offer_id": offer.id},
+        contract_id=None, amendment_no=None, offer_id=offer.id, round_id=None,
         proposal_contractor_id=contractor.id,
         is_baseline=False,
         truth=HeaderTruth(
@@ -1608,14 +1681,13 @@ def offer_estimate_owner(offer: Offer, tender: Tender, contractor: Contractor) -
             contractor_address=contractor.address,
             contractor_accreditation=contractor.accreditation,
         ),
-        replace_scope=None,
     )
 
 
 def baseline_estimate_owner(tender_round: TenderRound, tender: Tender) -> EstimateOwner:
     return EstimateOwner(
         kind="baseline",
-        estimate_columns={"round_id": tender_round.id},
+        contract_id=None, amendment_no=None, offer_id=None, round_id=tender_round.id,
         proposal_contractor_id=None,
         is_baseline=True,
         truth=HeaderTruth(
@@ -1626,7 +1698,6 @@ def baseline_estimate_owner(tender_round: TenderRound, tender: Tender) -> Estima
             contractor_address=None,
             contractor_accreditation=None,
         ),
-        replace_scope=None,
     )
 ```
 
@@ -1670,8 +1741,21 @@ def compare_header(
         if file_inn and card_inn and file_inn != card_inn:
             mismatch("ИНН подрядчика", file_inn, truth.contractor_inn)
 
+        # Адрес и аккредитация — только там, где истина их несёт: у предложения
+        # раунда (все четыре поля из пакета), у договора они None и не сверяются.
+        file_address = _text(proposal_data.get(JSON_KEY_CONTRACTOR_ADDRESS))
+        if file_address and truth.contractor_address is not None and _loose(file_address) != _loose(truth.contractor_address):
+            mismatch("Адрес подрядчика", file_address, truth.contractor_address)
+
+        file_accreditation = _text(proposal_data.get(JSON_KEY_CONTRACTOR_ACCREDITATION))
+        if file_accreditation and truth.contractor_accreditation is not None and _loose(file_accreditation) != _loose(truth.contractor_accreditation):
+            mismatch("Аккредитация подрядчика", file_accreditation, truth.contractor_accreditation)
+
     return warnings
 ```
+
+Импорты `JSON_KEY_CONTRACTOR_ADDRESS`, `JSON_KEY_CONTRACTOR_ACCREDITATION` из
+`parser.constants`.
 
 Текст предупреждения меняется с «карточкой договора» на «карточкой»: у раунда
 карточка — тендер и участник. Существующий тест `test_estimate_import.py:551`,
@@ -1710,7 +1794,7 @@ estimates, с чем сверяется шапка, чей подрядчик у
     )
 
     estimate = Estimate(
-        **owner.estimate_columns,
+        **owner.estimate_columns(),
         title=_text(data.get(JSON_KEY_TENDER_TITLE)),
         data_prepared_on_date=_prepared_date(data, warnings),
         import_job_id=import_job_id,
@@ -2070,7 +2154,11 @@ def round_payload(
 
 ```python
 from models import PositionItem
-from parser.constants import JSON_KEY_DEVIATION_FROM_CALCULATED_COST
+from parser.constants import (
+    JSON_KEY_CONTRACTOR_ACCREDITATION,
+    JSON_KEY_CONTRACTOR_ADDRESS,
+    JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
+)
 from services.import_owners import baseline_estimate_owner, offer_estimate_owner
 from tests.payloads import baseline_proposal_block, estimate_payload, position, proposal
 
@@ -2128,6 +2216,38 @@ class TestOfferOwner:
         owner = offer_estimate_owner(offer, offer.round.tender, offer.package.contractor)
         with pytest.raises(ValueError, match="замена раунда"):
             _import(db_session, owner, estimate_payload(), replace=True)
+
+    @pytest.mark.parametrize(
+        ("key", "label"),
+        [
+            (JSON_KEY_CONTRACTOR_ADDRESS, "Адрес подрядчика"),
+            (JSON_KEY_CONTRACTOR_ACCREDITATION, "Аккредитация подрядчика"),
+        ],
+    )
+    def test_offer_truth_checks_address_and_accreditation(self, db_session, factories, key, label):
+        """Все четыре поля подрядчика (спека §2.4). У договора эти два поля в
+        истину не входят — см. test_truth_is_the_contract_card."""
+        offer = factories.OfferFactory.create()
+        db_session.flush()
+        owner = offer_estimate_owner(offer, offer.round.tender, offer.package.contractor)
+        data = estimate_payload(title=offer.package.contractor.title, inn=offer.package.contractor.inn)
+        data["lots"]["lot_1"]["proposals"]["contractor_1"][key] = "СОВСЕМ ДРУГОЕ"
+
+        outcome = _import(db_session, owner, data)
+
+        assert any(label in w and "СОВСЕМ ДРУГОЕ" in w for w in outcome.warnings)
+
+    def test_contract_truth_ignores_address_and_accreditation(self, db_session, factories):
+        """Контроль: тот же вход у договора предупреждения НЕ даёт — иначе
+        DoD 13 нарушен новыми warnings у смет договора."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract)
+        data["lots"]["lot_1"]["proposals"]["contractor_1"][JSON_KEY_CONTRACTOR_ADDRESS] = "СОВСЕМ ДРУГОЕ"
+
+        outcome = _import(db_session, contract_estimate_owner(contract, None), data)
+
+        assert not any("Адрес подрядчика" in w for w in outcome.warnings)
 
 
 class TestBaselineOwner:
@@ -2284,6 +2404,7 @@ git commit -m "feat(tenders-contour): import_estimate под offer- и baseline-
 **Files:**
 - Create: `backend/services/round_import.py`
 - Modify: `backend/services/import_pipeline.py` (ветка раунда вместо заглушки)
+- Modify: `backend/tests/unit/parser/sheet_builders.py` (`add_contractor_block` — параметры `inn`, `address`)
 - Test: `backend/tests/integration/test_round_import.py`
 - Test: `backend/tests/integration/test_import_pipeline.py` (класс `TestRoundJob`)
 
@@ -2396,7 +2517,93 @@ class TestSplitRoundPayload:
         data = parse_worksheet(ws).data
         with pytest.raises(EstimateImportError, match="ИНН"):
             split_round_payload(data)
+
+
+def synthetic_round_sheet(*, baseline_total: float | None = 90.0):
+    """Сводная таблица раунда как ЛИСТ (спека §6): два участника с ИНН в
+    строке под заголовком, блок «Расчетная стоимость» KEYS_8, одна позиция и
+    блок итогов. Геометрия — та же, что у `_tender_sheet_with_baseline` в
+    test_estimate.py: участник 1 — J..T (10..20), участник 2 — V..AF (22..32),
+    база — AH..AO (34..41); итог базы — total_cost.total, индекс 7 → колонка 41.
+    Настоящий `parse_worksheet` даёт форму ParseResult.data, которую режет
+    `split_round_payload`: расхождение формы поймает CI, а не стенд."""
+    ws = gp_sheet(KEYS_TENDER_11, inn="7700000001", address="г. Тест, ул. Первая, 1")
+    add_contractor_block(ws, col_start=22, columns=KEYS_TENDER_11, title='ООО "Второй"',
+                         inn="77 0000 0002", address="г. Тест, ул. Вторая, 2")
+    add_contractor_block(ws, col_start=34, columns=KEYS_8, title="Расчетная стоимость", vat_suffix=None)
+    ws.cell(row=12, column=1, value=2)
+    ws.cell(row=12, column=2, value="1")
+    ws.cell(row=12, column=4, value="Работа")
+    for col_start in (10, 22):
+        ws.cell(row=12, column=col_start + 8, value=100.0)   # total_cost.total участника
+        ws.cell(row=12, column=col_start + 10, value=-0.05)  # % от р/с
+    ws.cell(row=12, column=34 + 7, value=90.0)               # total_cost.total базы
+    ws.merge_cells(start_row=14, start_column=1, end_row=14, end_column=5)
+    ws.cell(row=14, column=1, value="ИТОГО, руб. с учетом НДС")
+    for col_start in (10, 22):
+        ws.cell(row=14, column=col_start + 8, value=100.0)
+    if baseline_total is not None:
+        ws.cell(row=14, column=34 + 7, value=baseline_total)
+    return ws
+
+
+class TestRealParserPath:
+    """Положительный путь через НАСТОЯЩИЙ парсер (спека §6): синтетический XLSX
+    → parse_worksheet → split → import_round → 3 сметы."""
+
+    def test_two_participants_and_baseline_from_a_real_sheet(self, db_session, factories):
+        data = parse_worksheet(synthetic_round_sheet()).data
+
+        projections, baseline = split_round_payload(data)
+        assert [p.inn for p in projections] == ["7700000001", "7700000002"]
+        assert baseline is not None and baseline.lots_with_baseline == ("lot_1",)
+
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        outcome = _run_round(db_session, rnd, data)
+        assert outcome.estimates_created == 3
+        rows = db_session.execute(
+            sa.select(Proposal.is_baseline, PositionItem.deviation_from_baseline_cost)
+            .join(PositionItem, PositionItem.proposal_id == Proposal.id)
+        ).all()
+        assert sorted(str(d) for b, d in rows if not b) == ["-0.05", "-0.05"]
+        assert all(d is None for b, d in rows if b)
+
+    def test_empty_baseline_on_a_real_sheet_gives_two_estimates(self, db_session, factories):
+        data = parse_worksheet(synthetic_round_sheet(baseline_total=None)).data
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        outcome = _run_round(db_session, rnd, data)
+        assert outcome.estimates_created == 2
+        assert any("не заполнена" in w for w in outcome.warnings)
 ```
+
+`_run_round` объявлен ниже (шаг 7) — Python разрешает имена при вызове, порядок
+объявлений в файле значения не имеет. Импорт `KEYS_8` в шапке уже есть.
+
+**Строитель листов учится писать ИНН.** В `backend/tests/unit/parser/sheet_builders.py`
+`add_contractor_block` получает два параметра после `vat_suffix`:
+
+```python
+    inn: str | None = None,
+    address: str | None = None,
+```
+
+и после записи заголовка подрядчика (`ws.cell(row=contractor_row, column=col_start, value=title)`):
+
+```python
+    # Реквизиты блока — строки под заголовком, как в реальных файлах и как их
+    # читает get_proposals (row_start+1 — ИНН, +2 — адрес). Аккредитация
+    # (+3) намеренно не пишется: при contractor_row=6 и header_row=9 она легла
+    # бы в строку шапки.
+    if inn is not None:
+        ws.cell(row=contractor_row + 1, column=col_start, value=inn)
+    if address is not None:
+        ws.cell(row=contractor_row + 2, column=col_start, value=address)
+```
+
+`gp_sheet` пробрасывает их через `**block_kwargs` без правок. Существующие
+тесты парсера от этого не меняются — параметры по умолчанию `None`.
 
 - [ ] **Step 2: убедиться, что падают**
 
@@ -2494,7 +2701,7 @@ def _baseline_is_valid(lot: dict[str, Any]) -> bool:
     """Валидность решил postprocess, по лоту (спека §1.3; план Р5): заглушка —
     невалидна, полный блок — валиден. Второй раз `_is_baseline_valid` не зовём."""
     block = lot.get(JSON_KEY_BASELINE_PROPOSAL) or {}
-    return _text(block.get(JSON_KEY_CONTRACTOR_TITLE)) != BASELINE_MISSING_TITLE and "contractor_items" in block
+    return _text(block.get(JSON_KEY_CONTRACTOR_TITLE)) != BASELINE_MISSING_TITLE
 
 
 def _lot_shell(lot: dict[str, Any], proposal_block: dict[str, Any]) -> dict[str, Any]:
@@ -3194,76 +3401,86 @@ P_B = lambda: proposal([position(job_title="Работа", unit="м2", unit_cost
                        title="ООО Б", inn="7700000002")
 
 
-def _load_round(db, rnd, participants, *, baseline=None, job=None):
-    return import_round(
-        db, tender_round=rnd, data=round_payload(participants, baseline=baseline),
-        parser_version="4.0.0", import_job_id=job.id if job else None, replace=False,
-        unit_resolver=UnitResolver(db), category_resolver=CategoryResolver.from_db(db),
-    )
-
-
-def _done_job(db, factories, rnd, *, estimates_created):
-    job = factories.ImportJobFactory.create(
-        contract=None, round_id=rnd.id, status=ImportJobStatus.done.value,
-        estimates_created=estimates_created, file_key=f"key-{rnd.id}-{estimates_created}",
-    )
-    db.flush()
-    return job
-
-
-@pytest.fixture
-def full_grid(db_session, factories):
-    """Тендер, два раунда, два участника, сметы в каждой ячейке плюс baseline в
-    первом раунде. Второй участник появляется ТОЛЬКО во втором раунде — так у
-    решётки есть и ячейка без Offer, и ячейка с Offer без сметы (после удаления)."""
+def _grid(db_session, factories, *, round_participants: dict[int, list], baseline_in_round_1: bool):
+    """Тендер с двумя раундами. Jobs проводятся так, как их оставил бы пайплайн:
+    done, estimates_created, parsed_data и parser_version заполнены — иначе
+    правило текущего job (§2.12) и проверка «аудит сохранён» тестам не видны."""
     tender = factories.TenderFactory.create()
     r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
     r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
     db_session.flush()
-    j1 = factories.ImportJobFactory.create(contract=None, round_id=r1.id, status=ImportJobStatus.pending.value, file_key="k-r1")
-    j2 = factories.ImportJobFactory.create(contract=None, round_id=r2.id, status=ImportJobStatus.pending.value, file_key="k-r2")
-    db_session.flush()
     base = baseline_proposal_block([position(job_title="База", unit="м2", unit_cost_total="9", total_cost_total="9")])
-    o1 = _load_round(db_session, r1, [P_A()], baseline=base, job=j1)
-    o2 = _load_round(db_session, r2, [P_A(), P_B()], job=j2)
-    for job, outcome in ((j1, o1), (j2, o2)):
+    jobs = {}
+    for rnd, key in ((r1, "k-r1"), (r2, "k-r2")):
+        participants = round_participants[rnd.stage_no]
+        data = round_payload(participants, baseline=base if (rnd.stage_no == 1 and baseline_in_round_1) else None)
+        job = factories.ImportJobFactory.create(contract=None, round_id=rnd.id, status=ImportJobStatus.pending.value,
+                                                file_key=key, file_sha256=f"{rnd.stage_no:064x}")
+        db_session.flush()
+        outcome = import_round(db_session, tender_round=rnd, data=data, parser_version="4.0.0", import_job_id=job.id,
+                               replace=False, unit_resolver=UnitResolver(db_session),
+                               category_resolver=CategoryResolver.from_db(db_session))
         job.status = ImportJobStatus.done.value
         job.estimates_created = outcome.estimates_created
+        job.parsed_data = data
+        job.parser_version = "4.0.0"
+        jobs[rnd.stage_no] = job
     db_session.flush()
 
     class Grid:
         pass
 
     g = Grid()
-    g.tender, g.r1, g.r2, g.j1, g.j2 = tender, r1, r2, j1, j2
-    g.package_a = db_session.execute(sa.select(OfferPackage).join(OfferPackage.contractor).where(
-        OfferPackage.tender_id == tender.id, OfferPackage.contractor.has(inn="7700000001"))).scalar_one()
-    g.package_b = db_session.execute(sa.select(OfferPackage).join(OfferPackage.contractor).where(
-        OfferPackage.tender_id == tender.id, OfferPackage.contractor.has(inn="7700000002"))).scalar_one()
+    g.tender, g.r1, g.r2, g.j1, g.j2 = tender, r1, r2, jobs[1], jobs[2]
+
+    def package_of(inn):
+        return db_session.execute(
+            sa.select(OfferPackage).join(OfferPackage.contractor)
+            .where(OfferPackage.tender_id == tender.id, OfferPackage.contractor.has(inn=inn))
+        ).scalar_one()
+
+    g.package_a = package_of("7700000001")
+    g.package_b = package_of("7700000002")
     return g
 
 
+@pytest.fixture
+def rectangular_grid(db_session, factories):
+    """Участник Б появляется ТОЛЬКО во втором раунде: у решётки есть ячейка без
+    Offer. Корпус для формы карточки (§2.13), не для удалений."""
+    return _grid(db_session, factories, round_participants={1: [P_A()], 2: [P_A(), P_B()]}, baseline_in_round_1=True)
+
+
+@pytest.fixture
+def full_grid(db_session, factories):
+    """2 раунда × 2 участника, смета в КАЖДОЙ ячейке плюс baseline в первом
+    раунде — корпус, которого спека требует для удалений (§2.11, §6)."""
+    return _grid(db_session, factories, round_participants={1: [P_A(), P_B()], 2: [P_A(), P_B()]}, baseline_in_round_1=True)
+
+
 class TestTenderCard:
-    def test_cells_are_the_full_rectangle_with_three_states(self, db_session, full_grid):
-        card = crud_tenders.get_tender_card(db_session, full_grid.tender.id)
+    def test_cells_are_the_full_rectangle_with_three_states(self, db_session, rectangular_grid):
+        g = rectangular_grid
+        card = crud_tenders.get_tender_card(db_session, g.tender.id)
         assert [r["stage_no"] for r in card["rounds"]] == [1, 2]
         assert {p["inn"] for p in card["participants"]} == {"7700000001", "7700000002"}
         cells = {(c["round_id"], c["package_id"]): c for c in card["cells"]}
         assert len(cells) == 4
         # участник Б в раунде 1 не участвовал: ни Offer, ни сметы
-        none_cell = cells[(full_grid.r1.id, full_grid.package_b.id)]
+        none_cell = cells[(g.r1.id, g.package_b.id)]
         assert none_cell["offer_id"] is None and none_cell["estimate_id"] is None
         # участник А в раунде 1: и Offer, и смета, и «Итого с НДС»
-        full_cell = cells[(full_grid.r1.id, full_grid.package_a.id)]
+        full_cell = cells[(g.r1.id, g.package_a.id)]
         assert full_cell["offer_id"] is not None and full_cell["estimate_id"] is not None
         assert full_cell["total_including_vat"] == "1200.00"
 
-    def test_round_carries_baseline_and_current_job(self, db_session, full_grid):
-        card = crud_tenders.get_tender_card(db_session, full_grid.tender.id)
+    def test_round_carries_baseline_and_current_job(self, db_session, rectangular_grid):
+        g = rectangular_grid
+        card = crud_tenders.get_tender_card(db_session, g.tender.id)
         r1 = next(r for r in card["rounds"] if r["stage_no"] == 1)
         assert r1["baseline_estimate_id"] is not None
         assert r1["baseline_total_including_vat"] == "1200.00"
-        assert r1["current_job_id"] == full_grid.j1.id
+        assert r1["current_job_id"] == g.j1.id
         r2 = next(r for r in card["rounds"] if r["stage_no"] == 2)
         assert r2["baseline_estimate_id"] is None
 
@@ -3294,8 +3511,8 @@ class TestDeleteParticipant:
         with pytest.raises(DomainError) as err:
             crud_tenders.delete_participant(db_session, full_grid.tender.id, full_grid.package_b.id, confirmation_token=None)
         assert err.value.code == "confirmation_required"
-        assert err.value.context["rounds_count"] == 1
-        assert err.value.context["estimates_count"] == 1
+        assert err.value.context["rounds_count"] == 2
+        assert err.value.context["estimates_count"] == 2
         assert err.value.context["confirmation_token"]
         assert db_session.get(OfferPackage, full_grid.package_b.id) is not None
 
@@ -3315,7 +3532,8 @@ class TestDeleteParticipant:
 
         assert db_session.get(OfferPackage, full_grid.package_b.id) is None
         assert db_session.execute(sa.select(sa.func.count()).select_from(Offer).where(Offer.package_id == full_grid.package_b.id)).scalar_one() == 0
-        # чужие сметы целы: у А — две offer-сметы и baseline
+        # полная решётка: 4 offer-сметы + baseline = 5; ушли две сметы Б, остались
+        # две сметы А и baseline
         assert db_session.execute(sa.select(sa.func.count()).select_from(Estimate)).scalar_one() == 3
         assert db_session.execute(sa.select(sa.func.count()).select_from(ImportJob)).scalar_one() == before_jobs
         assert db_session.get(ImportJob, full_grid.j2.id).parsed_data is not None
@@ -3864,7 +4082,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 
-from models import Estimate, ImportJobStatus, UserRole
+from models import Estimate, ImportJob, ImportJobStatus, UserRole
 from tests.integration.test_estimates_api import finished_job, xlsx_bytes
 from tests.payloads import position, proposal, round_payload
 
@@ -3994,6 +4212,70 @@ class TestParticipantDeletionProtocol:
     def test_member_cannot_delete_participant(self, committing_client, tender):
         committing_client.auth_state["role"] = UserRole.member
         assert committing_client.delete(f"{TENDERS}/{tender['id']}/participants/1").status_code == 403
+
+
+class TestDeletionPurgesFiles:
+    """Файлы удаляются ПОСЛЕ коммита, best-effort, по одному ключу (спека §2.11,
+    DoD 9). Проверяется физически — через `tmp_storage.exists`, а не по списку
+    возвращённых ключей."""
+
+    def _two_jobs(self, committing_client, tender, round_stub):
+        round_stub(round_payload([P_A()]))
+        first = upload_round(committing_client, tender, content=xlsx_bytes("a"))
+        finished_job(committing_client, first)
+        second = upload_round(committing_client, tender, content=xlsx_bytes("b"), replace=True)
+        finished_job(committing_client, second)
+        return first.json()["id"], second.json()["id"]
+
+    def _file_keys(self, committing_db, job_ids):
+        committing_db.expire_all()
+        return [committing_db.get(ImportJob, j).file_key for j in job_ids]
+
+    def test_delete_round_purges_all_history_files(self, committing_client, committing_db, tmp_storage, tender, round_stub):
+        job_ids = self._two_jobs(committing_client, tender, round_stub)
+        keys = self._file_keys(committing_db, job_ids)
+        assert all(tmp_storage.exists(k) for k in keys)
+
+        response = committing_client.delete(f"{TENDERS}/{tender['id']}/rounds/{tender['round_id']}")
+
+        assert response.status_code == 204
+        assert not any(tmp_storage.exists(k) for k in keys)
+
+    def test_delete_tender_purges_files_of_all_rounds(self, committing_client, committing_db, tmp_storage, tender, round_stub):
+        job_ids = self._two_jobs(committing_client, tender, round_stub)
+        r2 = committing_client.post(f"{TENDERS}/{tender['id']}/rounds", json={"stage_no": 2}).json()
+        r2_id = next(r["id"] for r in r2["rounds"] if r["stage_no"] == 2)
+        third = committing_client.post(f"{TENDERS}/{tender['id']}/rounds/{r2_id}/upload",
+                                       files={"file": ("c.xlsx", xlsx_bytes("c"), "application/octet-stream")})
+        finished_job(committing_client, third)
+        keys = self._file_keys(committing_db, [*job_ids, third.json()["id"]])
+
+        assert committing_client.delete(f"{TENDERS}/{tender['id']}").status_code == 204
+        assert not any(tmp_storage.exists(k) for k in keys)
+
+    def test_one_broken_key_does_not_stop_the_rest(self, committing_client, committing_db, tmp_storage, tender, round_stub):
+        """Испорченный file_key поднимает StorageKeyError; purge изолирует
+        ошибку по ключу — остальные удалены, ответ 204."""
+        first_id, second_id = self._two_jobs(committing_client, tender, round_stub)
+        good_key = self._file_keys(committing_db, [second_id])[0]
+        committing_db.execute(sa.update(ImportJob).where(ImportJob.id == first_id).values(file_key="not-a-valid-key"))
+        committing_db.commit()
+
+        assert committing_client.delete(f"{TENDERS}/{tender['id']}/rounds/{tender['round_id']}").status_code == 204
+        assert not tmp_storage.exists(good_key)
+
+    def test_domain_refusal_deletes_no_files(self, committing_client, committing_db, committing_factories, tmp_storage, tender, round_stub):
+        job_ids = self._two_jobs(committing_client, tender, round_stub)
+        keys = self._file_keys(committing_db, job_ids)
+        committing_factories.ImportJobFactory.create(contract=None, round_id=tender["round_id"],
+                                                     status=ImportJobStatus.parsing.value, file_key="k-active")
+        committing_db.commit()
+
+        response = committing_client.delete(f"{TENDERS}/{tender['id']}/rounds/{tender['round_id']}")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "active_import"
+        assert all(tmp_storage.exists(k) for k in keys)
 
 
 class TestRights:
@@ -4547,47 +4829,81 @@ def test_participant_deletion_blocks_a_concurrent_round_creation(grid):
 
 
 def test_import_and_participant_deletion_do_not_deadlock(grid):
-    """Обе команды берут tender → rounds → package в одном порядке (§2.11):
-    одновременный запуск заканчивается без ошибки дедлока у обоих.
-    В прежней редакции спеки импорт брал round, удаление — package → rounds;
-    воспроизвести гонку можно, поменяв порядок локов у delete_participant."""
+    """Обе команды берут tender → rounds → package в одном порядке (§2.11), и
+    доказательство ДЕТЕРМИНИРОВАННОЕ — событиями, не «повезло за три прогона».
+
+    Импорт воспроизводится его ТОЧНОЙ последовательностью локов сырым SQL
+    (tender FOR KEY SHARE → round FOR UPDATE → INSERT offers, который берёт
+    FOR KEY SHARE на пакете по FK); удаление участника — настоящим
+    `delete_participant`. Сценарий:
+
+    1. импорт держит tender KEY SHARE и round FOR UPDATE;
+    2. удаление стартует и — по иерархии — упирается в tender FOR UPDATE;
+    3. импорт вставляет offer и коммитит;
+    4. удаление просыпается и доходит до конца.
+
+    Снятие защиты — переставить в `delete_participant` лок пакета ПЕРЕД
+    `_lock_tender`/`_lock_rounds`: тогда на шаге 2 удаление возьмёт пакет сразу
+    (событие `package_locked`), импорт на шаге 3 встанет на пакете, удаление
+    на раундах — и PostgreSQL убьёт одного `DeadlockDetected`. Тест обязан
+    покраснеть по `errors`, а не по таймауту.
+    """
     errors: list[str] = []
-    barrier = threading.Barrier(2, timeout=10)
+    import_locked = threading.Event()
+    package_locked = threading.Event()
+    import_done = threading.Event()
+    delete_done = threading.Event()
 
     def importer():
         session = grid.session_factory()
         try:
-            rnd = session.get(TenderRound, grid.round_id)
-            barrier.wait()
             with session.begin():
-                import_round(session, tender_round=rnd, data=round_payload([P_A()]), parser_version="4.0.0",
-                             import_job_id=None, replace=True, unit_resolver=UnitResolver(session),
-                             category_resolver=CategoryResolver.from_db(session))
+                session.execute(sa.text("SELECT id FROM tenders WHERE id = :t FOR KEY SHARE"), {"t": grid.tender_id})
+                session.execute(sa.text("SELECT id FROM tender_rounds WHERE id = :r FOR UPDATE"), {"r": grid.round_id})
+                import_locked.set()
+                # Ждём, пока удаление либо встало на замок тендера (правильная
+                # иерархия), либо успело взять пакет (снятая защита).
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and not package_locked.is_set():
+                    if _wait_until_a_backend_blocks(grid.session_factory, timeout=0.2):
+                        break
+                session.execute(sa.text(
+                    "INSERT INTO offers (tender_id, round_id, package_id) VALUES (:t, :r, :p) "
+                    "ON CONFLICT (round_id, package_id) DO NOTHING"
+                ), {"t": grid.tender_id, "r": grid.round_id, "p": grid.package})
         except Exception as e:  # noqa: BLE001
-            errors.append(f"import: {type(e).__name__}")
+            errors.append(f"import: {type(e).__name__}: {e}")
         finally:
             session.close()
+            import_done.set()
 
     def deleter():
         session = grid.session_factory()
         try:
-            barrier.wait()
+            @sa.event.listens_for(session.connection(), "after_cursor_execute")
+            def note_package_lock(conn, cursor, statement, parameters, context, executemany):
+                if "FOR UPDATE" in statement.upper() and "offer_packages" in statement:
+                    package_locked.set()
+
+            assert import_locked.wait(timeout=10)
             preview = crud_tenders.participant_deletion_preview(session, grid.tender_id, grid.package)
             try:
-                crud_tenders.delete_participant(session, grid.tender_id, grid.package, confirmation_token=preview["confirmation_token"])
+                crud_tenders.delete_participant(session, grid.tender_id, grid.package,
+                                                confirmation_token=preview["confirmation_token"])
             except DomainError:
-                pass  # устаревший token или active_import — законные исходы; дедлок — нет
+                pass  # устаревший token / active_import — законные исходы; ошибка БД — нет
         except Exception as e:  # noqa: BLE001
-            errors.append(f"delete: {type(e).__name__}")
+            errors.append(f"delete: {type(e).__name__}: {e}")
         finally:
             session.close()
+            delete_done.set()
 
     threads = [threading.Thread(target=importer, daemon=True), threading.Thread(target=deleter, daemon=True)]
     for th in threads:
         th.start()
-    for th in threads:
-        th.join(timeout=30)
-    assert not any("Deadlock" in e or "OperationalError" in e for e in errors), errors
+    assert import_done.wait(timeout=30), "импорт не завершился — потоки зависли"
+    assert delete_done.wait(timeout=30), "удаление не завершилось — потоки зависли"
+    assert errors == []
 ```
 
 В `test_maintenance.py`:
@@ -4620,10 +4936,12 @@ Expected: PASS все.
 2. В `delete_participant` заменить `exclusive=True` на `exclusive=False` у
    `_lock_tender` — ожидается: `test_participant_deletion_blocks_a_concurrent_round_creation`
    красный (`order == ["created", "deleted"]` либо таймаут ожидания замка). Вернуть.
-3. В `delete_participant` переставить `_lock_rounds` ПОСЛЕ лока пакета и
-   убрать `_lock_tender` — ожидается: `test_import_and_participant_deletion_do_not_deadlock`
-   красный хотя бы в одном из трёх прогонов (дедлок недетерминирован —
-   прогнать трижды). Вернуть.
+3. В `delete_participant` переставить лок пакета ПЕРЕД `_lock_tender` и
+   `_lock_rounds` — ожидается: `test_import_and_participant_deletion_do_not_deadlock`
+   красный **детерминированно**, по `errors` с `DeadlockDetected` у одного из
+   потоков (сценарий тестом навязан событиями, а не гонкой). Красный по
+   таймауту — не пройдено: значит, тест не воспроизводит перекрёстный захват.
+   Вернуть.
 
 - [ ] **Step 4: Commit**
 
@@ -5147,6 +5465,22 @@ describe("RoundUploadPanel (спека §2.14)", () => {
     expect(await screen.findByTestId("upload-rejection")).toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
+
+  it("после перезагрузки показывает идущий импорт по latest_job, а не теряет его", async () => {
+    handlerState.jobStatuses = ["parsing", "done"];
+    const round = { ...sampleTenderCard.rounds[0], current_job_id: null,
+      latest_job: { id: 9102, status: "parsing" as const, filename: "r1.xlsx", finished_at: null, created_at: "2026-06-02T09:00:00Z" } };
+    renderWithProviders(<RoundUploadPanel tenderId={300} roundId={3001} round={round} />);
+    expect(await screen.findByText("Разбор файла")).toBeInTheDocument();
+  });
+
+  it("после перезагрузки показывает ошибку последнего job", async () => {
+    handlerState.jobStatuses = ["error"];
+    const round = { ...sampleTenderCard.rounds[0], current_job_id: null,
+      latest_job: { id: 9103, status: "error" as const, filename: "bad.xlsx", finished_at: "2026-06-02T10:00:00Z", created_at: "2026-06-02T09:00:00Z" } };
+    renderWithProviders(<RoundUploadPanel tenderId={300} roundId={3001} round={round} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Не удалось разобрать файл/);
+  });
 });
 ```
 
@@ -5171,7 +5505,11 @@ import type { TenderRoundRow } from "@/types/domain";
 export function RoundUploadPanel({ tenderId, roundId, round }: { tenderId: number; roundId: number; round: TenderRoundRow }) {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
-  const [jobId, setJobId] = useState<number | undefined>(round.current_job_id ?? undefined);
+  // Поллинг стартует с ПОСЛЕДНЕГО job раунда, а не с текущего: current_job_id
+  // есть только у полного done-набора (§2.12), и после перезагрузки страницы
+  // идущий импорт или его ошибка исчезли бы с панели. latest_job — то, что
+  // человек видел бы, не перезагружая.
+  const [jobId, setJobId] = useState<number | undefined>(round.latest_job?.id);
   const [idempotent, setIdempotent] = useState(false);
   const [conflict, setConflict] = useState<{ file: File; detail: string } | null>(null);
   const [rejection, setRejection] = useState<string | null>(null);
