@@ -3314,7 +3314,7 @@ git commit -m "feat(tenders-contour): импорт раунда — проекц
   - `active_round_job(db, round_id) -> ImportJob | None`.
   - Коды `DomainError`: `"confirmation_required"`, `"active_import"`.
 
-- [ ] **Step 1: падающие тесты «Итого с НДС»**
+- [x] **Step 1: падающие тесты «Итого с НДС»**
 
 `backend/tests/integration/test_tenders_crud.py`:
 
@@ -3381,7 +3381,7 @@ class TestEstimateTotalIncludingVat:
         assert estimate_total_including_vat(db_session, e.id) is None
 ```
 
-- [ ] **Step 2: убедиться, что падают; реализовать**
+- [x] **Step 2: убедиться, что падают; реализовать**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_crud.py -q`
 Expected: сбор падает — `No module named 'crud.estimate_totals'`.
@@ -3435,7 +3435,7 @@ def estimate_total_including_vat(db: Session, estimate_id: int) -> Decimal | Non
 
 Run: тот же — `TestEstimateTotalIncludingVat` PASS 5.
 
-- [ ] **Step 3: падающие тесты карточки, текущего job и удалений**
+- [x] **Step 3: падающие тесты карточки, текущего job и удалений**
 
 Дописать в `test_tenders_crud.py`:
 
@@ -3638,7 +3638,7 @@ def test_delete_contractor_refused_while_it_is_a_tender_participant(client, fact
     assert "тендерах (1)" in response.json()["detail"]
 ```
 
-- [ ] **Step 4: реализация `crud/tenders.py`**
+- [x] **Step 4: реализация `crud/tenders.py`**
 
 ```python
 """Тендерный контур: тендеры, раунды, участники, решётка, удаления (спека
@@ -4054,7 +4054,7 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
 `from crud.common import translating_integrity` вынести в шапку модуля (в
 эскизе он внутри функций — это ошибка эскиза, импорт один и наверху).
 
-- [ ] **Step 5: `delete_contractor` — третий потребитель**
+- [x] **Step 5: `delete_contractor` — третий потребитель**
 
 В `references.py` заменить тело проверки:
 
@@ -4077,12 +4077,12 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
 
 Импорт `OfferPackage` из `models`.
 
-- [ ] **Step 6: все тесты задачи зелёные**
+- [x] **Step 6: все тесты задачи зелёные**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_crud.py tests/integration/test_references_api.py -q`
 Expected: PASS все.
 
-- [ ] **Step 7: снятие защиты — явный `DELETE offers` (контроллер)**
+- [x] **Step 7: снятие защиты — явный `DELETE offers` (контроллер)**
 
 Закомментировать `db.execute(sa.delete(Offer).where(Offer.tender_id == tender_id))`
 в `delete_tender`. Run `test_delete_tender_on_full_grid_removes_everything`.
@@ -4090,7 +4090,7 @@ Expected: FAIL с `IntegrityError` по `fk_offers_package`. Вернуть ст
 прогнать — PASS. То же для `delete_participant` и
 `test_valid_token_deletes_offers_estimates_and_package_but_not_jobs`.
 
-- [ ] **Step 8: ruff, Commit**
+- [x] **Step 8: ruff, Commit**
 
 ```bash
 git add backend/crud/estimate_totals.py backend/crud/tenders.py backend/crud/references.py \

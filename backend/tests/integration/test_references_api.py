@@ -730,3 +730,13 @@ def test_rejected_contractor_patch_leaves_nothing_behind(client):
     body = client.get(f"/api/v1/contractors/{contractor_id}").json()
     assert body["title"] == "Подрядчик исходный"
     assert body["inn"] == "111000111000"
+
+
+def test_delete_contractor_refused_while_it_is_a_tender_participant(client, factories):
+    """Третий потребитель подрядчика (спека контура §2.13): пакет есть,
+    материализованных предложений нет — раньше это был сырой IntegrityError.
+    """
+    package = factories.OfferPackageFactory.create()
+    response = client.delete(f"/api/v1/contractors/{package.contractor_id}")
+    assert response.status_code == 409
+    assert "тендерах (1)" in response.json()["detail"]

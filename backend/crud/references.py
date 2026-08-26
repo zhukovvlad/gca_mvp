@@ -34,7 +34,7 @@ from crud.common import (
     rollback_on_domain_error,
     translating_integrity,
 )
-from models import Contract, Contractor, ObjectModel, Proposal, RateClass, RateStandard
+from models import Contract, Contractor, ObjectModel, OfferPackage, Proposal, RateClass, RateStandard
 from utils import canonicalize_inn
 
 log = logging.getLogger(__name__)
@@ -504,11 +504,15 @@ def delete_contractor(db: Session, contractor_id: int) -> None:
     # proposals.contractor_id — тоже FK без каскада: подрядчик остаётся в уже
     # импортированных сметах даже если его договор удалён.
     proposals = db.query(Proposal).filter(Proposal.contractor_id == contractor.id).count()
-    if contracts or proposals:
+    # offer_packages.contractor_id RESTRICT (спека контура §2.13): участник
+    # тендера без материализованных предложений — третий потребитель, и без
+    # этого счётчика удаление упало бы сырым IntegrityError.
+    tenders = db.query(OfferPackage).filter(OfferPackage.contractor_id == contractor.id).count()
+    if contracts or proposals or tenders:
         raise DomainError(
             409,
             f"Подрядчика «{contractor.title}» удалить нельзя: договоров ({contracts}), "
-            f"предложений в сметах ({proposals}).",
+            f"предложений в сметах ({proposals}), участий в тендерах ({tenders}).",
         )
     db.delete(contractor)
     db.commit()
