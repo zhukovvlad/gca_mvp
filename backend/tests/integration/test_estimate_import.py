@@ -35,10 +35,11 @@ from services.category_override import set_override
 from services.category_resolution import CategoryResolver
 from services.estimate_import import (
     EstimateImportError,
-    compare_header_with_contract,
+    compare_header,
     import_estimate,
 )
 from services.estimate_vat import set_vat_rates
+from services.import_owners import contract_estimate_owner
 from services.unit_resolution import UnitResolver
 from tests.payloads import (
     additional_works_row,
@@ -62,8 +63,7 @@ def resolver(db_session):
 def run_import(db_session, resolver, contract, data, *, amendment_no=None, replace=False, job=None):
     return import_estimate(
         db_session,
-        contract=contract,
-        amendment_no=amendment_no,
+        owner=contract_estimate_owner(contract, amendment_no),
         data=data,
         parser_version="1.0.0",
         import_job_id=job.id if job is not None else None,
@@ -548,8 +548,9 @@ class TestHeaderComparison:
             inn=contract.contractor.inn,
         )
 
-        warnings = compare_header_with_contract(
-            data, contract, data["lots"]["lot_1"]["proposals"]["contractor_1"]
+        warnings = compare_header(
+            data, contract_estimate_owner(contract, None).truth,
+            data["lots"]["lot_1"]["proposals"]["contractor_1"]
         )
         assert warnings == []
 

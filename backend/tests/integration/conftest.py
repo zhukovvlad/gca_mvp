@@ -22,6 +22,7 @@ import sqlalchemy as sa
 from models import Estimate, Lot, PositionItem, Proposal, UserRole, WorkCategory
 from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
+from services.import_owners import contract_estimate_owner
 from services.unit_resolution import UnitResolver
 from tests.payloads import additional_works_row, payload_for, position, svedeniya_info
 
@@ -298,8 +299,7 @@ def make_imported_estimate(db_session, factories):
         data = payload_for(contract, positions, **kwargs)
         outcome = import_estimate(
             db_session,
-            contract=contract,
-            amendment_no=None,
+            owner=contract_estimate_owner(contract, None),
             data=data,
             parser_version="1.0.0",
             import_job_id=None,
@@ -395,8 +395,7 @@ def contract_with_amendment(db_session, factories):
         )
         outcome = import_estimate(
             db_session,
-            contract=contract,
-            amendment_no=amendment_no,
+            owner=contract_estimate_owner(contract, amendment_no),
             data=data,
             parser_version="1.0.0",
             import_job_id=None,

@@ -1499,7 +1499,7 @@ git commit -m "feat(tenders-contour): схема — тендеры, раунд�
   - `import_estimate(db, *, owner: EstimateOwner, data, parser_version, import_job_id, replace, unit_resolver, category_resolver) -> ImportOutcome`;
   - `compare_header(data, truth: HeaderTruth, proposal_data) -> list[str]`.
 
-- [ ] **Step 1: падающий тест — договорный владелец эквивалентен прежнему вызову**
+- [x] **Step 1: падающий тест — договорный владелец эквивалентен прежнему вызову**
 
 `backend/tests/integration/test_import_owners.py`:
 
@@ -1588,12 +1588,12 @@ class TestContractOwner:
         assert db_session.get(Estimate, first.estimate_id) is None
 ```
 
-- [ ] **Step 2: убедиться, что падает**
+- [x] **Step 2: убедиться, что падает**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_owners.py -q`
 Expected: сбор падает — `No module named 'services.import_owners'`.
 
-- [ ] **Step 3: модуль владельцев**
+- [x] **Step 3: модуль владельцев**
 
 `backend/services/import_owners.py`:
 
@@ -1738,7 +1738,7 @@ def baseline_estimate_owner(tender_round: TenderRound, tender: Tender) -> Estima
     )
 ```
 
-- [ ] **Step 4: `estimate_import.py` — сигнатура и сверка шапки**
+- [x] **Step 4: `estimate_import.py` — сигнатура и сверка шапки**
 
 Заменить `compare_header_with_contract(data, contract, proposal_data)` на:
 
@@ -1871,7 +1871,7 @@ estimates, с чем сверяется шапка, чей подрядчик у
 Остальное тело (позиции, допработы, deviation) в этой задаче **не меняется** —
 это задача 5. Импорт `from services.import_owners import EstimateOwner, HeaderTruth`.
 
-- [ ] **Step 5: пайплайн собирает владельца**
+- [x] **Step 5: пайплайн собирает владельца**
 
 В `import_pipeline.run_import_job`, вместо
 
@@ -1892,7 +1892,7 @@ estimates, с чем сверяется шапка, чей подрядчик у
 
 Импорт `from services.import_owners import contract_estimate_owner`.
 
-- [ ] **Step 6: шесть мест вызова — механическая замена формы**
+- [x] **Step 6: шесть мест вызова — механическая замена формы**
 
 В каждом из `tests/integration/conftest.py` (2 вызова),
 `test_estimate_import.py` (`run_import`), `test_category_override_concurrency.py`
@@ -1914,17 +1914,17 @@ estimates, с чем сверяется шапка, чей подрядчик у
 `compare_header_with_contract` → `compare_header`, вызов на строке ~551 получает
 `contract_estimate_owner(contract, None).truth` вторым аргументом.
 
-- [ ] **Step 7: новый тест зелёный, старые — без правок утверждений**
+- [x] **Step 7: новый тест зелёный, старые — без правок утверждений**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_owners.py tests/integration/test_estimate_import.py tests/integration/test_import_pipeline.py tests/integration/test_matching.py tests/integration/test_review_concurrency.py tests/integration/test_category_override_concurrency.py tests/integration/test_import_fixture_e2e.py -q`
 Expected: PASS все. `git diff` по тестовым файлам показывает ТОЛЬКО правки
 формы вызова и импорта (плюс одно слово «договора» в одном фрагменте).
 
-- [ ] **Step 8: ruff, юнит**
+- [x] **Step 8: ruff, юнит**
 
 Run: `cd backend && uv run ruff check .` — clean. `uv run pytest tests/unit -q` — PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add backend/services/import_owners.py backend/services/estimate_import.py \

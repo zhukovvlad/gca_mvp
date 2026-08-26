@@ -40,6 +40,7 @@ from parser import EstimateParseError, parse_estimate
 from parser.sanitize_text import NormalizationUnavailableError
 from services.category_resolution import CategoryResolver
 from services.estimate_import import EstimateImportError, import_estimate
+from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
@@ -245,8 +246,7 @@ def run_import_job(
             category_resolver = CategoryResolver.from_db(db)
             outcome = import_estimate(
                 db,
-                contract=contract,
-                amendment_no=context.amendment_no,
+                owner=contract_estimate_owner(contract, context.amendment_no),
                 data=parse_result.data,
                 parser_version=parse_result.parser_version,
                 import_job_id=job_id,
