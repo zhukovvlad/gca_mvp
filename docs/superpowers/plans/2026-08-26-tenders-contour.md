@@ -2136,7 +2136,7 @@ git commit -m "feat(tenders-contour): пайплайн хранит точный
   - `payloads.baseline_proposal_block(positions, *, total: str = "1200.00") -> dict` — блок «Расчетная стоимость» в форме, которую даёт `postprocess` для ВАЛИДНОЙ базы: `title="Расчетная стоимость"`, БЕЗ ключа `additional_info`, summary с ненулевым итогом;
   - `payloads.round_payload(participants: list[dict], *, baseline: dict | None = None, lots: int = 1, **header) -> dict` — JSON раунда: `participants` — список `proposal(...)`-словарей, каждый попадает в каждый лот под ключом `contractor_N`; `baseline` — блок из `baseline_proposal_block` либо `None` → заглушка `BASELINE_MISSING_TITLE`; `lots` — число лотов `lot_1..lot_N`.
 
-- [ ] **Step 1: строители payload**
+- [x] **Step 1: строители payload**
 
 В `backend/tests/payloads.py`, после `proposal(...)`:
 
@@ -2185,7 +2185,7 @@ def round_payload(
 
 Импорт `copy` в шапке `payloads.py`.
 
-- [ ] **Step 2: падающие тесты**
+- [x] **Step 2: падающие тесты**
 
 В `test_import_owners.py`:
 
@@ -2353,7 +2353,7 @@ class TestBaselineOwner:
 
 Импорт `from decimal import Decimal` в шапке файла.
 
-- [ ] **Step 3: убедиться, что падают по нужной причине**
+- [x] **Step 3: убедиться, что падают по нужной причине**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_owners.py -k "Offer or Baseline" -v`
 Expected: `test_deviation_is_read...` FAIL (`None != Decimal('-0.05')`);
@@ -2361,7 +2361,7 @@ Expected: `test_deviation_is_read...` FAIL (`None != Decimal('-0.05')`);
 `test_replace_is_refused` — PASS уже (задача 3); остальные — PASS или FAIL, но
 не ошибкой сбора.
 
-- [ ] **Step 4: `_import_positions` читает deviation по флагу**
+- [x] **Step 4: `_import_positions` читает deviation по флагу**
 
 Добавить параметр `reads_deviation: bool` (keyword-only, после `lot_key`) и в
 конструкторе `PositionItem` заменить
@@ -2386,7 +2386,7 @@ Expected: `test_deviation_is_read...` FAIL (`None != Decimal('-0.05')`);
 
 Импорт `JSON_KEY_DEVIATION_FROM_CALCULATED_COST` из `parser.constants`.
 
-- [ ] **Step 5: гейт контура допработ в `import_estimate`**
+- [x] **Step 5: гейт контура допработ в `import_estimate`**
 
 Предпасс владельца:
 
@@ -2419,12 +2419,12 @@ Expected: `test_deviation_is_read...` FAIL (`None != Decimal('-0.05')`);
 на отсутствующем ключе — заменить в нём индексирование этого ключа на `.get()`
 и записать в отчёт, какой ключ.
 
-- [ ] **Step 6: зелёное; договорной путь не изменился**
+- [x] **Step 6: зелёное; договорной путь не изменился**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_owners.py tests/integration/test_estimate_import.py tests/integration/test_import_fixture_e2e.py tests/unit/test_additional_works.py -q`
 Expected: PASS все.
 
-- [ ] **Step 7: ruff, Commit**
+- [x] **Step 7: ruff, Commit**
 
 ```bash
 git add backend/services/estimate_import.py backend/tests/payloads.py backend/tests/integration/test_import_owners.py

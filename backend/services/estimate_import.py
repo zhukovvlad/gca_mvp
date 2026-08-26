@@ -62,6 +62,7 @@ from parser.constants import (
     JSON_KEY_CONTRACTOR_SUMMARY,
     JSON_KEY_CONTRACTOR_TITLE,
     JSON_KEY_CONTRACTOR_WIDTH,
+    JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     JSON_KEY_EXECUTOR,
     JSON_KEY_EXECUTOR_DATE,
     JSON_KEY_INDIRECT_COSTS,
@@ -437,8 +438,15 @@ def import_estimate(
     # Названа `works_owner`, а не `owner`: параметр функции `owner: EstimateOwner`
     # уже занял это имя (владелец СМЕТЫ, спека контура §2.4) — разные понятия,
     # у каждого своё «чьё это».
-    works_owner = decide_owner(data)
-    warnings.extend(works_owner.warnings)
+    #
+    # Контур допработ выключен целиком для baseline (`owner.imports_additional_works`,
+    # спека §2.9): у базы нет «Сведений», а `additional_info` вырезан
+    # постобработкой — `decide_owner` там нечего решать, и звать его означало бы
+    # либо KeyError на вырезанном ключе, либо решение поверх данных, которых по
+    # смыслу владельца не существует.
+    works_owner = decide_owner(data) if owner.imports_additional_works else None
+    if works_owner is not None:
+        warnings.extend(works_owner.warnings)
 
     if replace and owner.replace_scope is None:
         raise ValueError(
@@ -541,6 +549,7 @@ def import_estimate(
             warnings=warnings,
             long_titles=long_titles,
             lot_key=str(lot_key),
+            reads_deviation=owner.reads_deviation,
         )
         positions_total += lot_positions
         positions_to_match.extend(lot_to_match)
@@ -548,17 +557,19 @@ def import_estimate(
 
         # Допработы — ПОСЛЕ позиций, в той же транзакции сессии B (спека §2.8
         # п.4): владелец уже решён предпассом выше, план резолва и позиции уже
-        # готовы для резолва ссылки на раздел (спека §2.5).
-        _import_additional_works(
-            db,
-            proposal_id=proposal.id,
-            proposal_data=proposal_data,
-            positions=positions,
-            resolution=resolution,
-            is_owner=lot_key == works_owner.owner_lot_key,
-            lot_key=str(lot_key),
-            warnings=warnings,
-        )
+        # готовы для резолва ссылки на раздел (спека §2.5). `works_owner is None`
+        # у baseline (контур выключен целиком, спека §2.9) — блок не вызывается.
+        if works_owner is not None:
+            _import_additional_works(
+                db,
+                proposal_id=proposal.id,
+                proposal_data=proposal_data,
+                positions=positions,
+                resolution=resolution,
+                is_owner=lot_key == works_owner.owner_lot_key,
+                lot_key=str(lot_key),
+                warnings=warnings,
+            )
 
     warnings.extend(unit_resolver.unknown_warnings())
     warnings.extend(_squash(value_problems))
@@ -974,6 +985,7 @@ def _import_positions(
     warnings: list[str],
     long_titles: list[LongTitle],
     lot_key: str,
+    reads_deviation: bool,
 ) -> tuple[int, list[PositionToMatch], bool]:
     """Строки сметы. Возвращает (сколько строк, что матчить, есть ли деньги).
 
@@ -1036,8 +1048,14 @@ def _import_positions(
                 total_cost.get(JSON_KEY_INDIRECT_COSTS), value_problems, where
             ),
             total_cost_total=_money(total_cost.get(JSON_KEY_TOTAL), value_problems, where),
-            # В сметах ГП baseline нет, поле остаётся NULL (§4).
-            deviation_from_baseline_cost=None,
+            # Только у offer-позиций (спека контура §2.10): postprocess оставил
+            # ключ там, где база лота валидна, и вычистил там, где нет. У договора
+            # и у baseline — принудительно NULL, даже если ключ пришёл.
+            deviation_from_baseline_cost=_money(
+                raw_position.get(JSON_KEY_DEVIATION_FROM_CALCULATED_COST), value_problems, where
+            )
+            if reads_deviation
+            else None,
             is_chapter=is_chapter,
             chapter_ref_in_proposal=_text(raw_position.get(JSON_KEY_CHAPTER_REF)),
             smr_article_raw=decision.smr_article_raw,
