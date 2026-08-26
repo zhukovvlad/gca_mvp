@@ -196,7 +196,7 @@ describe("инвалидация паспорта проекта источни�
       )
     );
 
-    renderHook(() => useImportJob(77, 12), {
+    renderHook(() => useImportJob(77, { contractId: 12 }), {
       wrapper: ({ children }) => (
         <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
       ),

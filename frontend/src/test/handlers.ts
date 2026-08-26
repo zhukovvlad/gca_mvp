@@ -24,6 +24,8 @@ import {
   sampleMatrix,
   sampleMatrixCellDetail,
   sampleProjectPassport,
+  sampleTenderCard,
+  sampleTenders,
 } from "./fixtures";
 import type {
   Comparison,
@@ -34,6 +36,7 @@ import type {
   EstimateRow,
   ImportJobStatus,
   ProjectPassport,
+  TenderCard,
 } from "@/types/domain";
 
 /**
@@ -123,6 +126,17 @@ interface HandlerState {
   inflationPatches: number;
   /** Исход диагностик: обычный набор либо «всё сходится» (макет, панель ok). */
   attentionOutcome: "issues" | "clean";
+  /**
+   * Граничные случаи карточки тендера (спека контура §2.13, §2.12): раунд с
+   * baseline как есть в фикстуре, раунд без baseline, раунд без единого job
+   * (файла нет), раунд с job, но составом, изменившимся после загрузки
+   * (`current_job_id: null` при живой ячейке со сметой).
+   */
+  tenderRoundState: "loaded" | "loaded-no-baseline" | "empty" | "changed";
+  /** Исход `DELETE .../participants/:pid` — протокол `confirmation_token` (§2.11). */
+  participantDeleteOutcome: "preview" | "stale" | "deleted" | "active";
+  /** Была ли последняя загрузка раунда с `replace=true`. */
+  lastRoundUploadReplace: boolean;
 }
 
 export const handlerState: HandlerState = {
@@ -147,6 +161,9 @@ export const handlerState: HandlerState = {
   inflationSeries: sampleInflationSeries,
   lastInflationBody: null,
   inflationPatches: 0,
+  tenderRoundState: "loaded",
+  participantDeleteOutcome: "preview",
+  lastRoundUploadReplace: false,
 };
 
 export function resetHandlerState() {
@@ -166,6 +183,9 @@ export function resetHandlerState() {
   handlerState.contractCardFails = false;
   handlerState.attentionRequests = 0;
   handlerState.attentionOutcome = "issues";
+  handlerState.tenderRoundState = "loaded";
+  handlerState.participantDeleteOutcome = "preview";
+  handlerState.lastRoundUploadReplace = false;
 }
 
 function page<T>(items: T[]) {
@@ -314,6 +334,48 @@ function jobPayload(status: ImportJobStatus) {
     estimate_id: status === "done" ? 500 : null,
     error_text: status === "error" ? "Не удалось разобрать файл." : null,
   };
+}
+
+/**
+ * Карточка тендера, приведённая к одному из граничных случаев `HandlerState.
+ * tenderRoundState` (спека контура §2.12, §2.13). Возвращает НОВЫЙ объект —
+ * не мутирует `sampleTenderCard`, иначе один тест испортил бы фикстуру для
+ * следующего.
+ */
+function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
+  const [round1, round2] = sampleTenderCard.rounds;
+  switch (state) {
+    case "loaded":
+      return sampleTenderCard;
+
+    case "loaded-no-baseline":
+      return {
+        ...sampleTenderCard,
+        rounds: [{ ...round1, baseline_estimate_id: null, baseline_total_including_vat: null }, round2],
+      };
+
+    case "empty":
+      // Раунд без единого job (файла нет) — латест job и текущий job тоже null,
+      // и все ячейки раунда 3001 обязаны стать «не участвовал» (offer_id null).
+      return {
+        ...sampleTenderCard,
+        rounds: [{ ...round1, latest_job: null, current_job_id: null }, round2],
+        cells: sampleTenderCard.cells.map((cell) =>
+          cell.round_id === round1.id
+            ? { ...cell, offer_id: null, estimate_id: null, total_including_vat: null }
+            : cell
+        ),
+      };
+
+    case "changed":
+      // Состав после загрузки изменился (например участника удалили): job есть,
+      // но он больше не "текущий" — а ячейка (3001, 501) со сметой остаётся как
+      // была в фикстуре (её никто не трогал).
+      return {
+        ...sampleTenderCard,
+        rounds: [{ ...round1, current_job_id: null }, round2],
+      };
+  }
 }
 
 /**
@@ -1186,5 +1248,97 @@ export const handlers = [
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       },
     });
+  }),
+
+  // --- Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13, §2.14) ---
+  http.get("/api/v1/tenders", ({ request }) => {
+    const q = (new URL(request.url).searchParams.get("q") ?? "").toLowerCase();
+    const items = q
+      ? sampleTenders.filter((t) =>
+          `${t.tender_number} ${t.title} ${t.object_title}`.toLowerCase().includes(q)
+        )
+      : sampleTenders;
+    return HttpResponse.json(page(items));
+  }),
+  http.get("/api/v1/tenders/:id", ({ params }) => {
+    if (Number(params.id) !== sampleTenderCard.id) {
+      return HttpResponse.json({ detail: "Тендер не найден." }, { status: 404 });
+    }
+    return HttpResponse.json(tenderCardFor(handlerState.tenderRoundState));
+  }),
+  http.post("/api/v1/tenders", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json(
+      { ...sampleTenderCard, id: 301, tender_number: body.tender_number },
+      { status: 201 }
+    );
+  }),
+  http.post("/api/v1/tenders/:id/rounds", () => HttpResponse.json(sampleTenderCard, { status: 201 })),
+  http.delete("/api/v1/tenders/:id/rounds/:rid", () => new HttpResponse(null, { status: 204 })),
+  http.post("/api/v1/tenders/:id/rounds/:rid/upload", async ({ request, params }) => {
+    // Тот же обход jsdom/undici multipart, что у загрузки сметы договора выше:
+    // `request.formData()` падает под jsdom, тело читается текстом.
+    const body = await request.text();
+    handlerState.lastRoundUploadReplace = /name="replace"[\s\S]*?\btrue\b/.test(body);
+    if (handlerState.uploadOutcome === "conflict" && !handlerState.lastRoundUploadReplace) {
+      return HttpResponse.json(
+        {
+          detail:
+            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
+        },
+        { status: 409 }
+      );
+    }
+    const job = {
+      ...jobPayload(handlerState.jobStatuses[0] ?? "pending"),
+      owner_type: "round",
+      tender_id: Number(params.id),
+      round_id: Number(params.rid),
+      estimate_ids: [8001, 8002],
+      estimates_created: 2,
+    };
+    // Задание-владелец "round" сметы ТЕКУЩЕЙ пары не несёт — только `estimate_ids`
+    // (спека контура §2.13). Оставлять унаследованное поле смысла "contract"-пути
+    // значило бы утверждать то, чего у раундового job нет.
+    delete (job as { estimate_id?: unknown }).estimate_id;
+    return HttpResponse.json(job, {
+      status: handlerState.uploadOutcome === "idempotent" ? 200 : 202,
+    });
+  }),
+  http.delete("/api/v1/tenders/:id/participants/:pid", ({ request }) => {
+    const token = new URL(request.url).searchParams.get("confirmation_token");
+    if (handlerState.participantDeleteOutcome === "active") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "active_import",
+            message: "Импорт раунда выполняется.",
+            job_id: 9102,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    if (!token || handlerState.participantDeleteOutcome === "stale") {
+      // Без токена — ВСЕГДА preview (протокол §2.11): сервер отвечает 409 со
+      // свежим `confirmation_token`, а не молча требует «пришлите токен».
+      // "stale" отличим тем, что даже пришедший токен не совпал — сервер
+      // отвечает 409 заново с ДРУГИМ токеном вместо 204.
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "confirmation_required",
+            message: "Удаление участника требует подтверждения состава.",
+            rounds_count: 2,
+            estimates_count: 2,
+            positions_count: 1830,
+            overrides_count: 3,
+            confirmation_token: token ? "fresh-token" : "token-1",
+          },
+        },
+        { status: 409 }
+      );
+    }
+    return new HttpResponse(null, { status: 204 });
   }),
 ];

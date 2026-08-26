@@ -109,7 +109,7 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
   const [rejection, setRejection] = useState<string | null>(null);
 
   const upload = useUploadEstimate();
-  const jobQ = useImportJob(jobId, contractId);
+  const jobQ = useImportJob(jobId, { contractId });
   const job: ImportJob | undefined = jobQ.data;
   const contractQ = useContract(contractId);
   const lostOnReplace = conflict ? lostDecisionsFor(conflict.estimates, conflict.amendmentNo) : 0;

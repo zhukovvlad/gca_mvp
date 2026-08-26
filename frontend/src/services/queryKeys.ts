@@ -125,4 +125,14 @@ export const qk = {
     all: ["comparison"] as const,
     get: (params?: ComparisonParams) => ["comparison", "get", params ?? {}] as const,
   },
+
+  /** Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13). */
+  tenders: {
+    all: ["tenders"] as const,
+    list: (params?: { q?: string; page?: number; page_size?: number }) =>
+      ["tenders", "list", params ?? {}] as const,
+    card: (id: number) => ["tenders", "card", id] as const,
+    roundJobs: (tenderId: number, roundId: number) =>
+      ["tenders", "round-jobs", tenderId, roundId] as const,
+  },
 };

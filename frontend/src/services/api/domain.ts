@@ -37,7 +37,13 @@ import type {
   ReapproveResult,
   ReviewQueueItem,
   ReviewQueueParams,
+  RoundImportJob,
+  RoundInput,
+  TenderCard,
+  TenderInput,
+  TenderRow,
   UploadEstimateInput,
+  UploadRoundInput,
   Unit,
 } from "@/types/domain";
 
@@ -243,4 +249,39 @@ export const rateStandardsApi = {
 
   remove: (id: number): Promise<void> =>
     api.delete(`/v1/rate-standards/${id}`).then(() => undefined),
+};
+
+// ---------------------------------------------------------------------------
+//  Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13, §2.14)
+// ---------------------------------------------------------------------------
+
+export const tendersApi = {
+  list: (params?: { q?: string; page?: number; page_size?: number }): Promise<Paginated<TenderRow>> =>
+    api.get<Paginated<TenderRow>>("/v1/tenders", { params }).then((r) => r.data),
+  get: (id: number): Promise<TenderCard> =>
+    api.get<TenderCard>(`/v1/tenders/${id}`).then((r) => r.data),
+  create: (input: TenderInput): Promise<TenderCard> =>
+    api.post<TenderCard>("/v1/tenders", input).then((r) => r.data),
+  update: (id: number, input: Partial<Pick<TenderInput, "title" | "notes">>): Promise<TenderCard> =>
+    api.patch<TenderCard>(`/v1/tenders/${id}`, input).then((r) => r.data),
+  remove: (id: number): Promise<void> => api.delete(`/v1/tenders/${id}`).then(() => undefined),
+  createRound: (tenderId: number, input: RoundInput): Promise<TenderCard> =>
+    api.post<TenderCard>(`/v1/tenders/${tenderId}/rounds`, input).then((r) => r.data),
+  updateRound: (tenderId: number, roundId: number, input: Partial<Omit<RoundInput, "stage_no">>): Promise<TenderCard> =>
+    api.patch<TenderCard>(`/v1/tenders/${tenderId}/rounds/${roundId}`, input).then((r) => r.data),
+  removeRound: (tenderId: number, roundId: number): Promise<void> =>
+    api.delete(`/v1/tenders/${tenderId}/rounds/${roundId}`).then(() => undefined),
+  roundImportJobs: (tenderId: number, roundId: number): Promise<RoundImportJob[]> =>
+    api.get<RoundImportJob[]>(`/v1/tenders/${tenderId}/rounds/${roundId}/import-jobs`).then((r) => r.data),
+  uploadRound: ({ file, tender_id, round_id, replace }: UploadRoundInput): Promise<ImportJob> => {
+    const form = new FormData();
+    form.append("file", file);
+    if (replace) form.append("replace", "true");
+    return api.post<ImportJob>(`/v1/tenders/${tender_id}/rounds/${round_id}/upload`, form).then((r) => r.data);
+  },
+  /** Без token — сервер отвечает 409 `confirmation_required` с preview; с token — 204. */
+  removeParticipant: (tenderId: number, packageId: number, confirmationToken?: string): Promise<void> =>
+    api.delete(`/v1/tenders/${tenderId}/participants/${packageId}`, {
+      params: confirmationToken ? { confirmation_token: confirmationToken } : undefined,
+    }).then(() => undefined),
 };

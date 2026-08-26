@@ -12,6 +12,7 @@ import {
   rateStandardsApi,
   referencesApi,
   reviewApi,
+  tendersApi,
   type ContractListParams,
 } from "./api/domain";
 import { jobRefetchInterval } from "./jobPolling";
@@ -36,7 +37,9 @@ import type {
   ReapproveInput,
   MatrixParams,
   ReviewQueueParams,
+  RoundInput,
   SetCategoryOverrideInput,
+  TenderInput,
 } from "@/types/domain";
 
 /** Элемент `detail` при ошибке валидации Pydantic. */
@@ -427,6 +430,10 @@ export function useUploadEstimate() {
   return useMutation({
     mutationFn: estimatesApi.upload,
     onSuccess: (job) => {
+      // `contract_id` живёт только у задания-владельца "contract" (§2.13); проверка
+      // САМОГО поля рядом с `owner_type` — не только по смыслу, но и чтобы TS
+      // сузил `number | undefined` до `number` для инвалидации ниже.
+      if (job.owner_type !== "contract" || job.contract_id === undefined) return;
       qc.invalidateQueries({ queryKey: qk.contracts.card(job.contract_id) });
       qc.invalidateQueries({ queryKey: qk.contracts.importJobs(job.contract_id) });
     },
@@ -475,28 +482,44 @@ export function useDownloadJobFile() {
   });
 }
 
+/** Чей job поллит {@link useImportJob} — ровно один из двух, никогда оба сразу. */
+export interface ImportJobOwnerRef {
+  contractId?: number;
+  tenderId?: number;
+}
+
 /**
  * Поллинг задания импорта. Прекращается на `done`/`error`.
  *
- * `contractId` — чтобы при завершении обновить карточку: смета появляется в БД
- * позже ответа `202`, и без инвалидации экран показывал бы «смет нет» у
- * успешного задания.
+ * `ownerRef` — чтобы при завершении обновить владельца: смета (или сметы)
+ * появляются в БД позже ответа `202`, и без инвалидации экран показывал бы
+ * «смет нет» у успешного задания. Два владельца задания (спека контура §2.13)
+ * инвалидируют РАЗНОЕ: договор — свою карточку и историю загрузок (поведение
+ * не менялось задачей 10 ни на строку); раунд тендера — карточку тендера,
+ * которая несёт решётку и baseline (`ImportJobPanel`, задача 11, читает
+ * именно её, чтобы обновить грид после загрузки раунда).
  */
-export function useImportJob(jobId: number | undefined, contractId?: number) {
+export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwnerRef) {
   const qc = useQueryClient();
   return useQuery({
     queryKey: qk.importJobs.one(jobId ?? 0),
     queryFn: async () => {
       const job = await estimatesApi.getJob(jobId as number);
-      if (job.status === "done" && contractId !== undefined) {
-        qc.invalidateQueries({ queryKey: qk.contracts.card(contractId) });
-        qc.invalidateQueries({ queryKey: qk.contracts.importJobs(contractId) });
-        qc.invalidateQueries({ queryKey: qk.review.all });
-        // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
-        // или заменяется, а с ней все суммы по статьям. Без этой инвалидации
-        // паспорт, открытый до загрузки, ещё минуту показывал бы «смета не
-        // загружена» либо суммы прежней сметы (спека Ф6 §2.4).
-        qc.invalidateQueries({ queryKey: qk.passport.all });
+      if (job.status === "done") {
+        if (ownerRef?.contractId !== undefined) {
+          qc.invalidateQueries({ queryKey: qk.contracts.card(ownerRef.contractId) });
+          qc.invalidateQueries({ queryKey: qk.contracts.importJobs(ownerRef.contractId) });
+          qc.invalidateQueries({ queryKey: qk.review.all });
+          // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
+          // или заменяется, а с ней все суммы по статьям. Без этой инвалидации
+          // паспорт, открытый до загрузки, ещё минуту показывал бы «смета не
+          // загружена» либо суммы прежней сметы (спека Ф6 §2.4).
+          qc.invalidateQueries({ queryKey: qk.passport.all });
+        }
+        if (ownerRef?.tenderId !== undefined) {
+          qc.invalidateQueries({ queryKey: qk.tenders.card(ownerRef.tenderId) });
+          qc.invalidateQueries({ queryKey: qk.review.all });
+        }
       }
       return job;
     },
@@ -974,5 +997,122 @@ export function useUpdateInflationSeries() {
       toast.success("Ряд индексов сохранён");
     },
     onError: toastApiError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Тендеры (§7.8)
+// ---------------------------------------------------------------------------
+
+export function useTenders(params?: { q?: string; page?: number; page_size?: number }) {
+  return useQuery({ queryKey: qk.tenders.list(params), queryFn: () => tendersApi.list(params) });
+}
+
+export function useTender(id: number | undefined) {
+  return useQuery({ queryKey: qk.tenders.card(id ?? 0), queryFn: () => tendersApi.get(id as number), enabled: id !== undefined });
+}
+
+export function useRoundImportJobs(tenderId: number | undefined, roundId: number | undefined) {
+  return useQuery({
+    queryKey: qk.tenders.roundJobs(tenderId ?? 0, roundId ?? 0),
+    queryFn: () => tendersApi.roundImportJobs(tenderId as number, roundId as number),
+    enabled: tenderId !== undefined && roundId !== undefined,
+  });
+}
+
+function invalidateTender(qc: ReturnType<typeof useQueryClient>, tenderId: number) {
+  qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.all });
+}
+
+export function useCreateTender() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: tendersApi.create,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: qk.tenders.all }); toast.success("Тендер создан"); },
+    onError: toastApiError,
+  });
+}
+
+export function useUpdateTender() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: Partial<Pick<TenderInput, "title" | "notes">> }) => tendersApi.update(id, input),
+    onSuccess: (card) => invalidateTender(qc, card.id),
+    onError: toastApiError,
+  });
+}
+
+export function useDeleteTender() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => tendersApi.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.tenders.all });
+      qc.invalidateQueries({ queryKey: qk.importJobs.all });
+      qc.invalidateQueries({ queryKey: qk.review.all });
+      qc.invalidateQueries({ queryKey: qk.contractors.all });
+      toast.success("Тендер удалён");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useCreateRound() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenderId, input }: { tenderId: number; input: RoundInput }) => tendersApi.createRound(tenderId, input),
+    onSuccess: (card) => invalidateTender(qc, card.id),
+    onError: toastApiError,
+  });
+}
+
+export function useUpdateRound() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenderId, roundId, input }: { tenderId: number; roundId: number; input: Partial<Omit<RoundInput, "stage_no">> }) =>
+      tendersApi.updateRound(tenderId, roundId, input),
+    onSuccess: (card) => invalidateTender(qc, card.id),
+    onError: toastApiError,
+  });
+}
+
+export function useDeleteRound() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenderId, roundId }: { tenderId: number; roundId: number }) => tendersApi.removeRound(tenderId, roundId),
+    onSuccess: (_, { tenderId }) => {
+      invalidateTender(qc, tenderId);
+      qc.invalidateQueries({ queryKey: qk.importJobs.all });
+      qc.invalidateQueries({ queryKey: qk.review.all });
+      toast.success("Раунд удалён");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Без общего тоста: 409 — развилка «нужна замена раунда», её ведёт компонент. */
+export function useUploadRound() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: tendersApi.uploadRound,
+    onSuccess: (job) => { if (job.tender_id !== undefined) invalidateTender(qc, job.tender_id); },
+  });
+}
+
+/**
+ * Удаление участника — протокол token (спека §2.11). Без тоста на ошибку:
+ * 409 `confirmation_required` — не сбой, а preview, его показывает диалог.
+ */
+export function useDeleteParticipant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenderId, packageId, confirmationToken }: { tenderId: number; packageId: number; confirmationToken?: string }) =>
+      tendersApi.removeParticipant(tenderId, packageId, confirmationToken),
+    onSuccess: (_, { tenderId }) => {
+      invalidateTender(qc, tenderId);
+      qc.invalidateQueries({ queryKey: qk.review.all });
+      toast.success("Участник удалён; исходные файлы и результаты разбора сохранены");
+    },
   });
 }

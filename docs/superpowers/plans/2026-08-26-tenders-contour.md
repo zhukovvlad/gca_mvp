@@ -5033,7 +5033,7 @@ git commit -m "test(tenders-contour): гонки upload ↔ delete, удален
 - Produces (ключи): `qk.tenders.{all, list(params), card(id), roundJobs(tenderId, roundId)}`.
 - Produces (хуки): `useTenders`, `useTender`, `useCreateTender`, `useUpdateTender`, `useDeleteTender`, `useCreateRound`, `useUpdateRound`, `useDeleteRound`, `useRoundImportJobs`, `useUploadRound`, `useDeleteParticipant`; `useImportJob(jobId, ownerRef?)` — инвалидирует `qk.tenders.card(tenderId)` при `done` раундового job.
 
-- [ ] **Step 1: типы**
+- [x] **Step 1: типы**
 
 В `frontend/src/types/domain.ts`, раздел «Задания импорта»: в `ImportJob`
 заменить `contract_id: number; amendment_no: number | null;` на
@@ -5150,7 +5150,7 @@ export interface ParticipantDeletionPreview {
 `undefined` (`useUploadEstimate.onSuccess`, `EstimateUploadPanel`), — сузить
 проверкой `if (job.owner_type === "contract")`.
 
-- [ ] **Step 2: API**
+- [x] **Step 2: API**
 
 В `services/api/domain.ts`:
 
@@ -5187,7 +5187,7 @@ export const tendersApi = {
 };
 ```
 
-- [ ] **Step 3: ключи и хуки**
+- [x] **Step 3: ключи и хуки**
 
 `queryKeys.ts`:
 
@@ -5323,7 +5323,7 @@ export function useDeleteParticipant() {
 `qk.review.all`. Единственный существующий вызов в `EstimateUploadPanel`
 переписать на `useImportJob(jobId, { contractId })`.
 
-- [ ] **Step 4: фикстуры и хендлеры msw**
+- [x] **Step 4: фикстуры и хендлеры msw**
 
 `fixtures.ts`:
 
@@ -5410,7 +5410,7 @@ export const sampleTenderCard: TenderCard = {
 `(3001, 501)` со сметой. Для `"loaded"` baseline задать
 `baseline_estimate_id: 8100, baseline_total_including_vat: "1150.00"` у раунда 3001.
 
-- [ ] **Step 5: тест хуков**
+- [x] **Step 5: тест хуков**
 
 `frontend/src/services/queries.tenders.test.tsx` — по образцу `queries.test.tsx`:
 `useTender(300)` отдаёт карточку с четырьмя ячейками; `useDeleteParticipant` без
@@ -5422,7 +5422,7 @@ Run: `cd frontend && npx vitest run src/services/queries.tenders.test.tsx` — P
 Run: `cd frontend && npx tsc -b --noEmit` — clean (сужение `owner_type` в двух местах).
 Run: `cd frontend && npm test` — PASS все прежние.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/src/types/domain.ts frontend/src/services frontend/src/test frontend/src/components/contracts/EstimateUploadPanel.tsx
