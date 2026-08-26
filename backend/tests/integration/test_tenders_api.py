@@ -78,14 +78,18 @@ class TestRoundUpload:
     def test_same_file_twice_is_idempotent_200(self, committing_client, tender, round_stub):
         round_stub(round_payload([P_A()]))
         first = upload_round(committing_client, tender, content=xlsx_bytes("same"))
-        finished_job(committing_client, first)
+        first_job = finished_job(committing_client, first)
+        assert first_job["status"] == ImportJobStatus.done.value
+        assert first_job["estimates_created"] == 1
         second = upload_round(committing_client, tender, content=xlsx_bytes("same"))
         assert second.status_code == 200
         assert second.json()["id"] == first.json()["id"]
 
     def test_different_file_without_replace_is_409(self, committing_client, tender, round_stub):
         round_stub(round_payload([P_A()]))
-        finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes("a")))
+        first_job = finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes("a")))
+        assert first_job["status"] == ImportJobStatus.done.value
+        assert first_job["estimates_created"] == 1
         assert upload_round(committing_client, tender, content=xlsx_bytes("b")).status_code == 409
 
     def test_replace_requires_admin(self, committing_client, tender, round_stub):
@@ -110,7 +114,9 @@ class TestRoundUpload:
     def test_same_sha_after_participant_deleted_is_409_not_200(self, committing_client, committing_db, tender, round_stub):
         round_stub(round_payload([P_A(), P_B()]))
         first = upload_round(committing_client, tender, content=xlsx_bytes("same"))
-        finished_job(committing_client, first)
+        first_job = finished_job(committing_client, first)
+        assert first_job["status"] == ImportJobStatus.done.value
+        assert first_job["estimates_created"] == 2
         card = committing_client.get(f"{TENDERS}/{tender['id']}").json()
         package_b = next(p for p in card["participants"] if p["inn"] == "7700000002")["package_id"]
         preview = committing_client.delete(f"{TENDERS}/{tender['id']}/participants/{package_b}")
@@ -126,7 +132,9 @@ class TestRoundUpload:
 class TestParticipantDeletionProtocol:
     def test_stale_token_returns_fresh_preview_and_deletes_nothing(self, committing_client, committing_db, tender, round_stub):
         round_stub(round_payload([P_A()]))
-        finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes()))
+        job = finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes()))
+        assert job["status"] == ImportJobStatus.done.value
+        assert job["estimates_created"] == 1
         card = committing_client.get(f"{TENDERS}/{tender['id']}").json()
         package = card["participants"][0]["package_id"]
         response = committing_client.delete(f"{TENDERS}/{tender['id']}/participants/{package}",
@@ -150,9 +158,13 @@ class TestDeletionPurgesFiles:
     def _two_jobs(self, committing_client, tender, round_stub):
         round_stub(round_payload([P_A()]))
         first = upload_round(committing_client, tender, content=xlsx_bytes("a"))
-        finished_job(committing_client, first)
+        first_job = finished_job(committing_client, first)
+        assert first_job["status"] == ImportJobStatus.done.value
+        assert first_job["estimates_created"] == 1
         second = upload_round(committing_client, tender, content=xlsx_bytes("b"), replace=True)
-        finished_job(committing_client, second)
+        second_job = finished_job(committing_client, second)
+        assert second_job["status"] == ImportJobStatus.done.value
+        assert second_job["estimates_created"] == 1
         return first.json()["id"], second.json()["id"]
 
     def _file_keys(self, committing_db, job_ids):
@@ -175,7 +187,9 @@ class TestDeletionPurgesFiles:
         r2_id = next(r["id"] for r in r2["rounds"] if r["stage_no"] == 2)
         third = committing_client.post(f"{TENDERS}/{tender['id']}/rounds/{r2_id}/upload",
                                        files={"file": ("c.xlsx", xlsx_bytes("c"), "application/octet-stream")})
-        finished_job(committing_client, third)
+        third_job = finished_job(committing_client, third)
+        assert third_job["status"] == ImportJobStatus.done.value
+        assert third_job["estimates_created"] == 1
         keys = self._file_keys(committing_db, [*job_ids, third.json()["id"]])
 
         assert committing_client.delete(f"{TENDERS}/{tender['id']}").status_code == 204
@@ -231,13 +245,17 @@ class TestCardShape:
         """Участник Б появляется только во втором раунде — ячейка (раунд 1, Б)
         обязана быть с offer_id = null (§2.13)."""
         round_stub(round_payload([P_A()]))
-        finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes("r1")))
+        r1_job = finished_job(committing_client, upload_round(committing_client, tender, content=xlsx_bytes("r1")))
+        assert r1_job["status"] == ImportJobStatus.done.value
+        assert r1_job["estimates_created"] == 1
         r2 = committing_client.post(f"{TENDERS}/{tender['id']}/rounds", json={"stage_no": 2}).json()
         r2_id = next(r["id"] for r in r2["rounds"] if r["stage_no"] == 2)
         round_stub(round_payload([P_A(), P_B()]))
-        finished_job(committing_client, committing_client.post(
+        r2_job = finished_job(committing_client, committing_client.post(
             f"{TENDERS}/{tender['id']}/rounds/{r2_id}/upload",
             files={"file": ("r2.xlsx", xlsx_bytes("r2"), "application/octet-stream")}))
+        assert r2_job["status"] == ImportJobStatus.done.value
+        assert r2_job["estimates_created"] == 2
 
         card = committing_client.get(f"{TENDERS}/{tender['id']}").json()
         assert len(card["cells"]) == 4
