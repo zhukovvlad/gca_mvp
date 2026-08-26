@@ -5958,7 +5958,7 @@ git add docs/devlog/2026-08-26-tenders-contour.md
 git commit -m "docs(tenders-contour): devlog — отступления, грабли, границы, стенд"
 ```
 
-- [ ] **Step 5: push и PR**
+- [x] **Step 5: push и PR**
 
 ```bash
 git push -u origin feat/tenders-contour
