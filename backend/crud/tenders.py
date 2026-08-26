@@ -337,7 +337,11 @@ def delete_tender(db: Session, tender_id: int) -> list[str]:
     round_ids = _lock_rounds(db, tender_id)
     _refuse_if_active(db, round_ids)
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id.in_(round_ids)).order_by(ImportJob.id)).scalars()) if round_ids else []
-    # RESTRICT от пакета: ветка каскада packages встретила бы живые offers.
+    # НЕ load-bearing для fk_offers_package: ветка tender_rounds уносит все
+    # offers каскадом (fk_offers_round ON DELETE CASCADE) раньше, чем ветка
+    # offer_packages вообще может дойти до RESTRICT — без этой строки ни один
+    # тест не краснеет. Она здесь, чтобы удаление тендера не зависело от того,
+    # в каком порядке Postgres пойдёт по двум веткам каскада одного DELETE.
     db.execute(sa.delete(Offer).where(Offer.tender_id == tender_id))
     db.execute(sa.delete(Tender).where(Tender.id == tender_id))
     db.commit()

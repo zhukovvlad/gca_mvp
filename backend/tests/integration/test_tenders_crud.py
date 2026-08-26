@@ -174,6 +174,39 @@ class TestCurrentRoundJob:
         db_session.flush()
         assert crud_tenders.current_round_job(db_session, rnd.id) is None
 
+    def test_status_alone_disqualifies_a_job_that_otherwise_fully_matches(self, db_session, factories):
+        """Изолирует условие «status = done» (§2.12): смета есть, count сошёлся с
+        estimates_created, группа одна — единственная причина отказа обязана
+        быть статусом job. Раунд с нулём смет (как в предыдущем тесте) выходит
+        из функции раньше, чем статус вообще проверяется, — этот тест доходит
+        до строки со статусом."""
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        job = factories.ImportJobFactory.create(contract=None, round_id=rnd.id, status=ImportJobStatus.error.value,
+                                                 estimates_created=1, file_key="k-status")
+        db_session.flush()
+        factories.EstimateFactory.create(contract=None, round_id=rnd.id, import_job_id=job.id)
+        db_session.flush()
+        assert crud_tenders.current_round_job(db_session, rnd.id) is None
+
+    def test_extra_estimate_under_another_job_disqualifies_even_when_the_primary_job_matches(self, db_session, factories):
+        """Изолирует условие «у раунда нет ДРУГИХ смет» (§2.12): первый job сам
+        по себе безупречен — done, count 1 = estimates_created 1, — но у раунда
+        есть вторая смета с ЧУЖИМ import_job_id (здесь — NULL, осиротевшая).
+        Группировка даёт ДВЕ группы, и это единственное, что может дать None:
+        первая группа одна прошла бы все проверки."""
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        job = factories.ImportJobFactory.create(contract=None, round_id=rnd.id, status=ImportJobStatus.done.value,
+                                                 estimates_created=1, file_key="k-primary")
+        db_session.flush()
+        factories.EstimateFactory.create(contract=None, round_id=rnd.id, import_job_id=job.id)
+        offer = factories.OfferFactory.create(round=rnd)
+        db_session.flush()
+        factories.EstimateFactory.create(contract=None, offer_id=offer.id, import_job_id=None)
+        db_session.flush()
+        assert crud_tenders.current_round_job(db_session, rnd.id) is None
+
 
 class TestDeleteParticipant:
     def test_without_token_returns_preview_and_deletes_nothing(self, db_session, full_grid):
