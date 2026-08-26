@@ -20,10 +20,14 @@ from models import (
     ImportJobStatus,
     Lot,
     ObjectModel,
+    Offer,
+    OfferPackage,
     PositionItem,
     Proposal,
     RateClass,
     RateStandard,
+    Tender,
+    TenderRound,
     UnitOfMeasure,
     User,
     UserRole,
@@ -115,6 +119,47 @@ class ContractFactory(_BaseFactory):
     title = "Договор генподряда"
     signer = "Иванов И.И."
     signed_date = dt.date(2025, 3, 1)
+
+
+class TenderFactory(_BaseFactory):
+    class Meta:
+        model = Tender
+
+    object = factory.SubFactory(ObjectFactory)
+    rate_class = factory.SubFactory(RateClassFactory)
+    title = "Генподряд на строительство"
+    tender_number = factory.Sequence(lambda n: f"Т-{n:04d}")
+
+
+class TenderRoundFactory(_BaseFactory):
+    class Meta:
+        model = TenderRound
+
+    tender = factory.SubFactory(TenderFactory)
+    stage_no = factory.Sequence(lambda n: n + 1)
+    label = None
+
+
+class OfferPackageFactory(_BaseFactory):
+    class Meta:
+        model = OfferPackage
+
+    tender = factory.SubFactory(TenderFactory)
+    contractor = factory.SubFactory(ContractorFactory)
+
+
+class OfferFactory(_BaseFactory):
+    """Ячейка решётки. `tender_id` выводится из раунда — фабрика не даёт
+    собрать ячейку из раунда и пакета разных тендеров случайно; тест на
+    скрещивание строит Offer руками."""
+    class Meta:
+        model = Offer
+
+    round = factory.SubFactory(TenderRoundFactory)
+    package = factory.LazyAttribute(
+        lambda o: OfferPackageFactory.create(tender=o.round.tender)
+    )
+    tender_id = factory.LazyAttribute(lambda o: o.round.tender_id)
 
 
 class ImportJobFactory(_BaseFactory):

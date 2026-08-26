@@ -456,7 +456,7 @@ git commit -m "feat(tenders-contour): канон ИНН — одна функц�
   `OfferFactory` ВЫВОДИТ `tender_id` из `round.tender_id`.
 - Produces (константы имён): см. шаг 3 — они же в parity-тестах.
 
-- [ ] **Step 1: падающие тесты схемы**
+- [x] **Step 1: падающие тесты схемы**
 
 `backend/tests/integration/test_tenders_schema.py`:
 
@@ -665,12 +665,12 @@ class TestContractorInn:
             factories.ContractorFactory.create(inn="")
 ```
 
-- [ ] **Step 2: убедиться, что тесты падают**
+- [x] **Step 2: убедиться, что тесты падают**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_schema.py -q`
 Expected: сбор падает на `ImportError: cannot import name 'Offer' from 'models'`.
 
-- [ ] **Step 3: модели**
+- [x] **Step 3: модели**
 
 В `backend/models.py`. Сразу после класса `Contractor` (перед комментарием
 «Договор и сметы») добавить `CHECK` канона к нему — заменить
@@ -900,7 +900,7 @@ relationships: `offer = relationship("Offer")`, `round = relationship("TenderRou
 материализации и резолвера статей (спека контура §2.3). Полный результат
 разбора файла — `import_jobs.parsed_data`».
 
-- [ ] **Step 4: миграция 0015**
+- [x] **Step 4: миграция 0015**
 
 `backend/alembic/versions/2026_08_26_0015-tenders_contour.py`:
 
@@ -1210,7 +1210,7 @@ def downgrade() -> None:
 в шапке и `JSONB()` в колонке, если `sa.dialects` не резолвится (в 0002 JSONB
 импортирован именно так — повторить его форму).
 
-- [ ] **Step 5: `env.py` — новые raw-SQL индексы вне сравнения `alembic check`**
+- [x] **Step 5: `env.py` — новые raw-SQL индексы вне сравнения `alembic check`**
 
 В `backend/alembic/env.py` дополнить `RAW_SQL_INDEXES`:
 
@@ -1220,7 +1220,7 @@ def downgrade() -> None:
     "uq_import_jobs_active_round",      # UNIQUE (round_id) WHERE ... NOT IN terminal — 0015
 ```
 
-- [ ] **Step 6: фабрики**
+- [x] **Step 6: фабрики**
 
 В `backend/tests/factories.py`, после `ContractFactory`:
 
@@ -1268,7 +1268,7 @@ class OfferFactory(_BaseFactory):
 
 Импорт моделей в шапке `factories.py` дополнить `Offer, OfferPackage, Tender, TenderRound`.
 
-- [ ] **Step 7: применить миграцию к тестовой БД и прогнать `alembic check`**
+- [x] **Step 7: применить миграцию к тестовой БД и прогнать `alembic check`**
 
 Run: `cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run alembic upgrade head`
 Expected: `Running upgrade 0014 -> 0015`.
@@ -1276,12 +1276,12 @@ Run: `cd backend && DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/g
 Expected: `No new upgrade operations detected.` Любой дрейф — расхождение
 модели и миграции, чинить до продолжения.
 
-- [ ] **Step 8: тесты схемы зелёные**
+- [x] **Step 8: тесты схемы зелёные**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_schema.py -v`
 Expected: PASS все.
 
-- [ ] **Step 9: parity-тест и тесты downgrade/миграции данных**
+- [x] **Step 9: parity-тест и тесты downgrade/миграции данных**
 
 Дописать в `test_tenders_schema.py`:
 
@@ -1400,7 +1400,7 @@ class TestDowngradeBlockers:
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_schema.py -v`
 Expected: PASS все.
 
-- [ ] **Step 10: downgrade-защита — прогон вручную на тестовой БД**
+- [x] **Step 10: downgrade-защита — прогон вручную на тестовой БД**
 
 Run (из `backend/`, три команды по отдельности):
 
@@ -1455,13 +1455,13 @@ print('cleaned')
 `INSERT` по их определению в `models.py`, не убирая проверку. Вывод всех
 команд — в отчёт исполнителя.
 
-- [ ] **Step 11: весь набор — старое не задето**
+- [x] **Step 11: весь набор — старое не задето**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest -n 8 -q`
 Expected: PASS. `test_schema_constraints.py::TestImportJobsActiveLock` зелёный
 без правок — частичный индекс держит прежний инвариант.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add backend/models.py backend/alembic/versions/2026_08_26_0015-tenders_contour.py \

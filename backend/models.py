@@ -321,6 +321,10 @@ class ObjectModel(Base):
     )
 
 
+#: Дублирует миграцию 0015; расхождение ловит test_tenders_schema.py.
+CONTRACTOR_INN_CANONICAL = "inn ~ '^[0-9]+$'"
+
+
 class Contractor(Base):
     """Подрядчик. Перенос из tenders-go без изменений."""
     __tablename__ = "contractors"
@@ -333,7 +337,13 @@ class Contractor(Base):
     created_at = _created_at()
     updated_at = _updated_at()
 
-    __table_args__ = (UniqueConstraint("inn", name="uq_contractors_inn"),)
+    __table_args__ = (
+        UniqueConstraint("inn", name="uq_contractors_inn"),
+        # Канон ИНН — только ASCII-цифры (миграция 0015, спека контура §2.7):
+        # `utils.canonicalize_inn` пишет ровно эту форму, CHECK стережёт правку
+        # мимо приложения. Длина не проверяется — юрисдикции разные.
+        CheckConstraint(CONTRACTOR_INN_CANONICAL, name="ck_contractors_inn_canonical"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +411,137 @@ class Contract(Base):
     )
 
 
+# ---------------------------------------------------------------------------
+#  Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.1)
+# ---------------------------------------------------------------------------
+
+#: Выражения CHECK продублированы в миграции 0015 намеренно (та же дисциплина,
+#: что у 0004–0014); расхождение ловит test_tenders_schema.py.
+TENDER_TITLE_NOT_BLANK = "btrim(title) <> ''"
+TENDER_NUMBER_NOT_BLANK = "btrim(tender_number) <> ''"
+TENDER_ROUND_STAGE_NO_POSITIVE = "stage_no > 0"
+ESTIMATE_OWNER_EXACTLY_ONE = "num_nonnulls(contract_id, offer_id, round_id) = 1"
+ESTIMATE_AMENDMENT_ONLY_WITH_CONTRACT = "contract_id IS NOT NULL OR amendment_no IS NULL"
+PROPOSAL_BASELINE_CONTRACTOR = (
+    "(is_baseline = true AND contractor_id IS NULL) "
+    "OR (is_baseline = false AND contractor_id IS NOT NULL)"
+)
+IMPORT_JOB_OWNER_EXACTLY_ONE = "num_nonnulls(contract_id, round_id) = 1"
+IMPORT_JOB_AMENDMENT_ONLY_WITH_CONTRACT = "contract_id IS NOT NULL OR amendment_no IS NULL"
+IMPORT_JOB_PARSED_PAIR = "(parsed_data IS NULL) = (parser_version IS NULL)"
+IMPORT_JOB_ESTIMATES_CREATED_POSITIVE = "estimates_created IS NULL OR estimates_created > 0"
+
+
+class Tender(Base):
+    """Тендер: объект, предмет торга, номер. `rate_class_id` — СНИМОК класса на
+    момент торга, по тому же правилу, что `contracts.rate_class_id` (§4):
+    переклассификация объекта не меняет прошлое."""
+    __tablename__ = "tenders"
+
+    id = Column(BigInteger, primary_key=True)
+    object_id = Column(BigInteger, ForeignKey("objects.id"), nullable=False)
+    title = Column(Text, nullable=False)
+    tender_number = Column(Text, nullable=False)
+    rate_class_id = Column(BigInteger, ForeignKey("rate_classes.id"), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    object = relationship("ObjectModel")
+    rate_class = relationship("RateClass")
+    rounds = relationship(
+        "TenderRound", back_populates="tender", cascade="all, delete-orphan",
+        order_by="TenderRound.stage_no",
+    )
+    packages = relationship("OfferPackage", back_populates="tender", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("tender_number", name="uq_tenders_tender_number"),
+        CheckConstraint(TENDER_TITLE_NOT_BLANK, name="ck_tenders_title_not_blank"),
+        CheckConstraint(TENDER_NUMBER_NOT_BLANK, name="ck_tenders_number_not_blank"),
+        Index("ix_tenders_object_id", "object_id"),
+        Index("ix_tenders_rate_class_id", "rate_class_id"),
+    )
+
+
+class TenderRound(Base):
+    """Раунд (этап) торга. `UNIQUE (id, tender_id)` — цель составного FK из
+    `offers`: так раунд и участник ячейки обязаны принадлежать одному тендеру
+    (спека §2.1)."""
+    __tablename__ = "tender_rounds"
+
+    id = Column(BigInteger, primary_key=True)
+    tender_id = Column(BigInteger, ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False)
+    stage_no = Column(Integer, nullable=False)
+    label = Column(Text, nullable=True)
+    held_on = Column(Date, nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    tender = relationship("Tender", back_populates="rounds")
+    offers = relationship("Offer", back_populates="round", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("tender_id", "stage_no", name="uq_tender_rounds_tender_stage"),
+        UniqueConstraint("id", "tender_id", name="uq_tender_rounds_id_tender"),
+        CheckConstraint(TENDER_ROUND_STAGE_NO_POSITIVE, name="ck_tender_rounds_stage_no"),
+    )
+
+
+class OfferPackage(Base):
+    """Участник тендера — «пакет» его предложений по всем раундам. Удаляется
+    ТОЛЬКО командой (спека §2.11): `offers.package_id` объявлен RESTRICT, чтобы
+    история участника не исчезала от случайного DELETE."""
+    __tablename__ = "offer_packages"
+
+    id = Column(BigInteger, primary_key=True)
+    tender_id = Column(BigInteger, ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False)
+    contractor_id = Column(BigInteger, ForeignKey("contractors.id", ondelete="RESTRICT"), nullable=False)
+    created_at = _created_at()
+
+    tender = relationship("Tender", back_populates="packages")
+    contractor = relationship("Contractor")
+    offers = relationship("Offer", back_populates="package")
+
+    __table_args__ = (
+        UniqueConstraint("tender_id", "contractor_id", name="uq_offer_packages_tender_contractor"),
+        UniqueConstraint("id", "tender_id", name="uq_offer_packages_id_tender"),
+        Index("ix_offer_packages_contractor_id", "contractor_id"),
+    )
+
+
+class Offer(Base):
+    """Ячейка решётки «раунд × участник». `tender_id` продублирован намеренно:
+    два составных FK держат раунд и пакет в одном тендере структурно, а не
+    триггером. Все три колонки NOT NULL — иначе MATCH SIMPLE отключил бы
+    проверку (спека §2.1)."""
+    __tablename__ = "offers"
+
+    id = Column(BigInteger, primary_key=True)
+    tender_id = Column(BigInteger, nullable=False)
+    round_id = Column(BigInteger, nullable=False)
+    package_id = Column(BigInteger, nullable=False)
+    created_at = _created_at()
+
+    round = relationship("TenderRound", back_populates="offers", foreign_keys=[round_id, tender_id],
+                         overlaps="package,offers")
+    package = relationship("OfferPackage", back_populates="offers", foreign_keys=[package_id, tender_id],
+                           overlaps="round,offers")
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["round_id", "tender_id"], ["tender_rounds.id", "tender_rounds.tender_id"],
+            ondelete="CASCADE", name="fk_offers_round",
+        ),
+        ForeignKeyConstraint(
+            ["package_id", "tender_id"], ["offer_packages.id", "offer_packages.tender_id"],
+            ondelete="RESTRICT", name="fk_offers_package",
+        ),
+        UniqueConstraint("round_id", "package_id", name="uq_offers_round_package"),
+        Index("ix_offers_package_id", "package_id"),
+    )
+
+
 class ImportJob(Base):
     """Задание импорта сметы (§4, §5).
 
@@ -410,7 +551,9 @@ class ImportJob(Base):
     __tablename__ = "import_jobs"
 
     id = Column(BigInteger, primary_key=True)
-    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=False)
+    # Два владельца — договор либо раунд, ровно один (спека контура §2.1).
+    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=True)
+    round_id = Column(BigInteger, ForeignKey("tender_rounds.id", ondelete="CASCADE"), nullable=True)
     amendment_no = Column(Integer, nullable=True)
 
     filename = Column(Text, nullable=False)   # оригинальное имя, только в БД (§8)
@@ -427,11 +570,22 @@ class ImportJob(Base):
     matched_nonposition = Column(Integer, nullable=False, server_default=sa_text("0"))
     to_review = Column(Integer, nullable=False, server_default=sa_text("0"))
 
+    # Три факта об одном файле (спека контура §2.3): XLSX в storage,
+    # ТОЧНЫЙ ParseResult.data этого разбора — здесь, проекция под смету — в
+    # estimate_raw_data. Пишется сессией A сразу после парсинга независимо от
+    # исхода импорта; у jobs до 0015 законно NULL.
+    parsed_data = Column(JSONB, nullable=True)
+    parser_version = Column(Text, nullable=True)
+    # Сколько смет создал успешный job: 1 у договора, N(+1) у раунда. Нужен
+    # правилу «текущий job раунда» (спека §2.12); у старых jobs NULL.
+    estimates_created = Column(Integer, nullable=True)
+
     created_at = _created_at()
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
 
     contract = relationship("Contract")
+    round = relationship("TenderRound")
 
     __table_args__ = (
         UniqueConstraint("file_key", name="uq_import_jobs_file_key"),
@@ -443,7 +597,12 @@ class ImportJob(Base):
         CheckConstraint(
             "amendment_no IS NULL OR amendment_no > 0", name="ck_import_jobs_amendment_no"
         ),
+        CheckConstraint(IMPORT_JOB_OWNER_EXACTLY_ONE, name="ck_import_jobs_owner"),
+        CheckConstraint(IMPORT_JOB_AMENDMENT_ONLY_WITH_CONTRACT, name="ck_import_jobs_amendment_owner"),
+        CheckConstraint(IMPORT_JOB_PARSED_PAIR, name="ck_import_jobs_parsed_pair"),
+        CheckConstraint(IMPORT_JOB_ESTIMATES_CREATED_POSITIVE, name="ck_import_jobs_estimates_created"),
         Index("ix_import_jobs_contract_id", "contract_id", "amendment_no"),
+        Index("ix_import_jobs_round_id", "round_id"),
         # Очередь startup-recovery (§5): все незавершённые задания.
         Index(
             "ix_import_jobs_active",
@@ -453,6 +612,9 @@ class ImportJob(Base):
         # uq_import_jobs_active_pair — частичный уникальный индекс по
         # (contract_id, COALESCE(amendment_no,-1)); выражение Alembic не
         # выражает декларативно, создаётся raw SQL в миграции 0002.
+        # с 0015 — частичный, WHERE contract_id IS NOT NULL.
+        # uq_import_jobs_active_round — UNIQUE (round_id) WHERE round_id IS NOT NULL
+        # AND status NOT IN (terminal); raw SQL в миграции 0015, как active_pair.
     )
 
 
@@ -462,7 +624,11 @@ class Estimate(Base):
     __tablename__ = "estimates"
 
     id = Column(BigInteger, primary_key=True)
-    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=False)
+    # Три владельца — договор, предложение раунда, раунд (baseline); ровно один
+    # (спека контура §2.1). round_id на смете и ЕСТЬ признак baseline.
+    contract_id = Column(BigInteger, ForeignKey("contracts.id"), nullable=True)
+    offer_id = Column(BigInteger, ForeignKey("offers.id", ondelete="CASCADE"), nullable=True)
+    round_id = Column(BigInteger, ForeignKey("tender_rounds.id", ondelete="CASCADE"), nullable=True)
     amendment_no = Column(Integer, nullable=True)
     title = Column(String, nullable=True)
     data_prepared_on_date = Column(Date, nullable=True)
@@ -484,6 +650,8 @@ class Estimate(Base):
     updated_at = _updated_at()
 
     contract = relationship("Contract")
+    offer = relationship("Offer")
+    round = relationship("TenderRound")
     import_job = relationship("ImportJob")
     raw_data = relationship(
         "EstimateRawData", back_populates="estimate", uselist=False, cascade="all, delete-orphan"
@@ -503,6 +671,8 @@ class Estimate(Base):
             "vat_rate_target IS NULL OR (vat_rate_target >= 0 AND vat_rate_target <= 100)",
             name="ck_estimates_vat_rate_target",
         ),
+        CheckConstraint(ESTIMATE_OWNER_EXACTLY_ONE, name="ck_estimates_owner"),
+        CheckConstraint(ESTIMATE_AMENDMENT_ONLY_WITH_CONTRACT, name="ck_estimates_amendment_owner"),
         # Отдельного индекса по contract_id нет намеренно: выборки по договору
         # обслуживает uq_estimates_contract_amendment — полный уникальный индекс
         # с ведущей колонкой contract_id (создаётся raw SQL в миграции 0002).
@@ -511,11 +681,15 @@ class Estimate(Base):
         # (contract_id, amendment_no), синтаксис PG16; создаётся raw SQL
         # в миграции 0002. Обычный UNIQUE не годится: NULL-ы в нём различны,
         # и исходную смету можно было бы загрузить дважды.
+        # uq_estimates_offer / uq_estimates_round — частичные UNIQUE, raw SQL 0015;
+        # uq_estimates_contract_amendment с 0015 — WHERE contract_id IS NOT NULL.
     )
 
 
 class EstimateRawData(Base):
-    """Полный JSON парсера — источник истины по содержимому файла (§4)."""
+    """Проекция разобранного JSON под ЭТУ смету — вход материализации и
+    резолвера статей (спека контура §2.3). Полный результат разбора файла —
+    `import_jobs.parsed_data`."""
     __tablename__ = "estimate_raw_data"
 
     estimate_id = Column(
@@ -561,7 +735,8 @@ class Proposal(Base):
 
     id = Column(BigInteger, primary_key=True)
     lot_id = Column(BigInteger, ForeignKey("lots.id", ondelete="CASCADE"), nullable=False)
-    contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=False)
+    # У baseline подрядчика нет (спека контура §1.2).
+    contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=True)
     # В сметах ГП baseline-колонки нет — поле сохранено для 1:1 переноса JSON
     # парсера и задела на возврат тендеров (§4).
     is_baseline = Column(Boolean, nullable=False, server_default=sa_text("false"))
@@ -593,6 +768,7 @@ class Proposal(Base):
             "vat_rate IS NULL OR (vat_rate >= 0 AND vat_rate <= 100)",
             name="ck_proposals_vat_rate",
         ),
+        CheckConstraint(PROPOSAL_BASELINE_CONTRACTOR, name="ck_proposals_baseline_contractor"),
     )
 
 
