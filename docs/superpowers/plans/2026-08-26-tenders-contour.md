@@ -5448,7 +5448,7 @@ git commit -m "feat(tenders-contour): фронт — типы, API, ключи �
 - Produces: `RoundUploadPanel` props — `{ tenderId: number; roundId: number; round: TenderRoundRow }`.
 - Экспортирует из `ImportJobPanel.tsx`: `STATUS_LABEL`, `statusTone`, `isRunning`, `XLSX_ACCEPT`, `CounterCell` (перенесены из `EstimateUploadPanel`).
 
-- [ ] **Step 1: вынести общую часть**
+- [x] **Step 1: вынести общую часть**
 
 Создать `ImportJobPanel.tsx`, перенеся из `EstimateUploadPanel.tsx`
 `XLSX_ACCEPT`, `STATUS_LABEL`, `statusTone`, `isRunning`, `CounterCell` и весь
@@ -5473,7 +5473,7 @@ JSX от `<Dropzone …>` до конца блока `{job && (...)}` включ
 
 Run: `cd frontend && npx vitest run src/components/contracts/EstimateUploadPanel.test.tsx src/pages/contracts/ContractCardPage.test.tsx` — PASS **без правок тестов**.
 
-- [ ] **Step 2: тест `ImportJobPanel`**
+- [x] **Step 2: тест `ImportJobPanel`**
 
 `ImportJobPanel.test.tsx`: рендер с `job` в статусе `done` показывает пять
 счётчиков; `job.status === "error"` показывает `error_text` с `role="alert"`;
@@ -5482,7 +5482,7 @@ Run: `cd frontend && npx vitest run src/components/contracts/EstimateUploadPanel
 
 Run: `cd frontend && npx vitest run src/components/imports/ImportJobPanel.test.tsx` — PASS.
 
-- [ ] **Step 3: падающий тест `RoundUploadPanel`**
+- [x] **Step 3: падающий тест `RoundUploadPanel`**
 
 ```tsx
 import { screen, waitFor } from "@testing-library/react";
@@ -5586,7 +5586,7 @@ Library). `server` и `http`/`HttpResponse` — из `@/test/server` и `msw`;
 `jobPayload` экспортировать из `handlers.ts` (сейчас он модульно-приватный —
 добавить `export`).
 
-- [ ] **Step 4: реализация `RoundUploadPanel`**
+- [x] **Step 4: реализация `RoundUploadPanel`**
 
 ```tsx
 import { useState } from "react";
@@ -5670,7 +5670,7 @@ export function RoundUploadPanel({ tenderId, roundId, round }: { tenderId: numbe
 
 Run: `cd frontend && npx vitest run src/components/tenders/RoundUploadPanel.test.tsx` — PASS.
 
-- [ ] **Step 5: lint, typecheck, весь фронт, Commit**
+- [x] **Step 5: lint, typecheck, весь фронт, Commit**
 
 Run: `cd frontend && npm run lint`; `npx tsc -b --noEmit`; `npm test` — всё зелёное.
 

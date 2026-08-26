@@ -334,7 +334,7 @@ function projectPassportForOutcome(
   }
 }
 
-function jobPayload(status: ImportJobStatus) {
+export function jobPayload(status: ImportJobStatus) {
   return {
     ...sampleImportJobs[0],
     status,
