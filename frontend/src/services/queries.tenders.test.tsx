@@ -5,11 +5,16 @@ import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
 
 import {
+  apiErrorCode,
   apiErrorContext,
   apiErrorStatus,
   useDeleteParticipant,
+  useDeleteTender,
   useImportJob,
+  useRoundImportJobs,
   useTender,
+  useUpdateRound,
+  useUpdateTender,
   useUploadRound,
 } from "./queries";
 import { qk } from "./queryKeys";
@@ -101,6 +106,134 @@ describe("useUploadRound", () => {
     });
 
     expect(handlerState.lastRoundUploadReplace).toBe(true);
+  });
+});
+
+/**
+ * `useUpdateTender` (правка §2.14 — только `title`/`notes`, находка ревью
+ * задачи 10: у семи из одиннадцати функций `tendersApi` не было хендлера
+ * вовсе). Хендлер отвечает ПРИМЕНЁННОЙ карточкой — проверяем, что правка
+ * действительно ушла в ответ, а не то, что запрос просто не упал: фиксированная
+ * фикстура прошла бы тест «запрос успешен» так же зелено, ничего не доказав
+ * про применение патча.
+ */
+describe("useUpdateTender", () => {
+  it("PATCH доезжает до /v1/tenders/:id и возвращает карточку с применённой правкой", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useUpdateTender(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let card: Awaited<ReturnType<typeof result.current.mutateAsync>> | undefined;
+    await act(async () => {
+      card = await result.current.mutateAsync({
+        id: 300,
+        input: { title: "Генподряд — переторжка", notes: "перенесён третий раунд" },
+      });
+    });
+
+    expect(card?.title).toBe("Генподряд — переторжка");
+    expect(card?.notes).toBe("перенесён третий раунд");
+  });
+});
+
+/**
+ * `useDeleteTender` (§2.14). Два случая: обычное удаление отвечает `204` (сама
+ * мутация ничего не возвращает — `undefined`, но запрос обязан дойти до
+ * ПРАВИЛЬНОГО пути `DELETE /v1/tenders/:id`, а не молча удариться в хендлер
+ * участника или раунда с тем же методом); отказ при активном импорте зеркалит
+ * протокол `DELETE .../participants/:pid` — тем же кодом `active_import`,
+ * потому что причина отказа та же самая (спека §2.11).
+ */
+describe("useDeleteTender", () => {
+  it("DELETE /v1/tenders/:id отвечает 204", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useDeleteTender(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(300);
+    });
+
+    expect(result.current.isSuccess).toBe(true);
+  });
+
+  it("при активном импорте отвечает 409 active_import вместо удаления", async () => {
+    handlerState.tenderDeleteOutcome = "active";
+
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useDeleteTender(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.mutateAsync(300);
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(apiErrorStatus(caught)).toBe(409);
+    expect(apiErrorCode(caught)).toBe("active_import");
+  });
+});
+
+/**
+ * `useUpdateRound` (§2.14 — `label`/`held_on`, не `stage_no`). Как и у
+ * `useUpdateTender`: хендлер обязан отдать карточку с ИМЕННО этим раундом
+ * обновлённым, а другие раунды — нетронутыми, иначе тест не отличил бы
+ * «применили патч к правильному раунду» от «применили ко всем».
+ */
+describe("useUpdateRound", () => {
+  it("PATCH доезжает до /v1/tenders/:id/rounds/:rid и правит только этот раунд", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useUpdateRound(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let card: Awaited<ReturnType<typeof result.current.mutateAsync>> | undefined;
+    await act(async () => {
+      card = await result.current.mutateAsync({
+        tenderId: 300,
+        roundId: 3001,
+        input: { label: "Переторжка", held_on: "2026-07-01" },
+      });
+    });
+
+    const patched = card?.rounds.find((round) => round.id === 3001);
+    const untouched = card?.rounds.find((round) => round.id === 3002);
+    expect(patched?.label).toBe("Переторжка");
+    expect(patched?.held_on).toBe("2026-07-01");
+    // Второй раунд карточки — не участник этого PATCH — обязан остаться как
+    // в фикстуре: `null`/`null`, а не подхватить правку первого.
+    expect(untouched?.label).toBeNull();
+    expect(untouched?.held_on).toBeNull();
+  });
+});
+
+/**
+ * `useRoundImportJobs` (§2.14) — история заданий импорта КОНКРЕТНОГО раунда.
+ * Проверяем форму, которую типизирует `RoundImportJob`: массив с хотя бы одним
+ * `is_current: true` — без него компонент задачи 11 не смог бы отрисовать
+ * «текущее задание раунда», единственный сценарий, ради которого экран вообще
+ * запрашивает эту историю.
+ */
+describe("useRoundImportJobs", () => {
+  it("отдаёт историю раунда 3001 с текущим заданием", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useRoundImportJobs(300, 3001), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const jobs = result.current.data ?? [];
+    expect(jobs.length).toBeGreaterThan(0);
+    expect(jobs.every((job) => job.round_id === 3001 && job.owner_type === "round")).toBe(true);
+    expect(jobs.some((job) => job.is_current)).toBe(true);
   });
 });
 

@@ -36,6 +36,7 @@ import type {
   EstimateRow,
   ImportJobStatus,
   ProjectPassport,
+  RoundImportJob,
   TenderCard,
 } from "@/types/domain";
 
@@ -137,6 +138,12 @@ interface HandlerState {
   participantDeleteOutcome: "preview" | "stale" | "deleted" | "active";
   /** Была ли последняя загрузка раунда с `replace=true`. */
   lastRoundUploadReplace: boolean;
+  /**
+   * Исход `DELETE /api/v1/tenders/:id` — зеркалит отказ, которым `DELETE
+   * .../participants/:pid` уже отвечает на активный импорт (§2.11): пока
+   * раунд грузится, тендер целиком удалить тоже нельзя.
+   */
+  tenderDeleteOutcome: "ok" | "active";
 }
 
 export const handlerState: HandlerState = {
@@ -164,6 +171,7 @@ export const handlerState: HandlerState = {
   tenderRoundState: "loaded",
   participantDeleteOutcome: "preview",
   lastRoundUploadReplace: false,
+  tenderDeleteOutcome: "ok",
 };
 
 export function resetHandlerState() {
@@ -186,6 +194,7 @@ export function resetHandlerState() {
   handlerState.tenderRoundState = "loaded";
   handlerState.participantDeleteOutcome = "preview";
   handlerState.lastRoundUploadReplace = false;
+  handlerState.tenderDeleteOutcome = "ok";
 }
 
 function page<T>(items: T[]) {
@@ -1273,8 +1282,110 @@ export const handlers = [
       { status: 201 }
     );
   }),
+  /**
+   * Правка тендера (`useUpdateTender` — только `title`/`notes`). Отвечает
+   * ПРИМЕНЁННОЙ карточкой, а не фикстурой как есть, — иначе тест не отличил бы
+   * применённую правку от проигнорированной (находка ревью задачи 10).
+   */
+  http.patch("/api/v1/tenders/:id", async ({ params, request }) => {
+    if (Number(params.id) !== sampleTenderCard.id) {
+      return HttpResponse.json({ detail: "Тендер не найден." }, { status: 404 });
+    }
+    const body = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({ ...tenderCardFor(handlerState.tenderRoundState), ...body });
+  }),
+  /**
+   * Удаление тендера (`useDeleteTender`). Как и удаление участника, отказывает
+   * ПОКА идёт импорт раунда (`handlerState.tenderDeleteOutcome`) — тот же код
+   * отказа `active_import`, что у `DELETE .../participants/:pid` ниже, потому
+   * что причина отказа буквально та же самая (спека §2.11).
+   */
+  http.delete("/api/v1/tenders/:id", () => {
+    if (handlerState.tenderDeleteOutcome === "active") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "active_import",
+            message: "Импорт раунда выполняется.",
+            job_id: 9102,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
   http.post("/api/v1/tenders/:id/rounds", () => HttpResponse.json(sampleTenderCard, { status: 201 })),
+  /**
+   * Правка раунда (`useUpdateRound` — `label`/`held_on`, не `stage_no`).
+   * Отвечает карточкой тендера с ИМЕННО этим раундом обновлённым — та же
+   * логика «применённое, а не фиксированное», что у PATCH тендера выше.
+   */
+  http.patch("/api/v1/tenders/:id/rounds/:rid", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const card = tenderCardFor(handlerState.tenderRoundState);
+    const roundId = Number(params.rid);
+    return HttpResponse.json({
+      ...card,
+      rounds: card.rounds.map((round) => (round.id === roundId ? { ...round, ...body } : round)),
+    });
+  }),
   http.delete("/api/v1/tenders/:id/rounds/:rid", () => new HttpResponse(null, { status: 204 })),
+  /**
+   * История задний импорта раунда (`useRoundImportJobs`). Два элемента — как у
+   * истории договора (`sampleImportJobs`) — чтобы компонент мог отрисовать и
+   * ТЕКУЩЕЕ задание (`is_current: true`), и вытесненное им.
+   */
+  http.get("/api/v1/tenders/:id/rounds/:rid/import-jobs", ({ params }) => {
+    const tenderId = Number(params.id);
+    const roundId = Number(params.rid);
+    const counters = {
+      positions_total: 0,
+      matched_cache: 0,
+      matched_exact: 0,
+      matched_nonposition: 0,
+      to_review: 0,
+    };
+    const jobs: RoundImportJob[] = [
+      {
+        id: 9101,
+        owner_type: "round",
+        tender_id: tenderId,
+        round_id: roundId,
+        estimate_ids: [8001, 8002],
+        estimates_created: 2,
+        filename: "r1.xlsx",
+        file_sha256: "b".repeat(64),
+        status: "done",
+        error_text: null,
+        warnings: [],
+        counters,
+        created_at: "2026-06-02T09:00:00Z",
+        started_at: "2026-06-02T09:00:01Z",
+        finished_at: "2026-06-02T10:00:00Z",
+        is_current: true,
+      },
+      {
+        id: 9100,
+        owner_type: "round",
+        tender_id: tenderId,
+        round_id: roundId,
+        estimate_ids: [7999],
+        estimates_created: 1,
+        filename: "r1-первая-попытка.xlsx",
+        file_sha256: "c".repeat(64),
+        status: "done",
+        error_text: null,
+        warnings: [],
+        counters,
+        created_at: "2026-06-01T09:00:00Z",
+        started_at: "2026-06-01T09:00:01Z",
+        finished_at: "2026-06-01T09:30:00Z",
+        is_current: false,
+      },
+    ];
+    return HttpResponse.json(jobs);
+  }),
   http.post("/api/v1/tenders/:id/rounds/:rid/upload", async ({ request, params }) => {
     // Тот же обход jsdom/undici multipart, что у загрузки сметы договора выше:
     // `request.formData()` падает под jsdom, тело читается текстом.

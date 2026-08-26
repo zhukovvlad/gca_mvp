@@ -205,7 +205,11 @@ export interface ImportJob {
   counters: ImportJobCounters;
   /** Смета ТЕКУЩЕЙ пары (contract_id, amendment_no), а не «этого задания». */
   estimate_id?: number | null;
-  /** 1 у договора, N(+1) у раунда; null у заданий до 0015. */
+  /**
+   * 1 у договора, N(+1) у раунда; `null` у заданий до 0015 — И у задания,
+   * которое ещё не завершилось (или завершилось `error`): счётчик появляется
+   * вместе со сметами, на `done`, а не заранее.
+   */
   estimates_created: number | null;
   created_at: string | null;
   started_at: string | null;
