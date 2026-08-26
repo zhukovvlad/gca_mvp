@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { AlertTriangle, FileSpreadsheet, Loader2 } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
-import { Dropzone } from "@/components/ui-domain/Dropzone";
-import { StatusPill } from "@/components/ui-domain/StatusPill";
+import { ImportJobPanel } from "@/components/imports/ImportJobPanel";
+import { isRunning } from "@/components/imports/jobStatus";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,32 +25,7 @@ import {
   useImportJob,
   useUploadEstimate,
 } from "@/services/queries";
-import type { EstimateRow, ImportJob, ImportJobStatus } from "@/types/domain";
-
-const XLSX_ACCEPT = {
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
-  "application/vnd.ms-excel.sheet.macroEnabled.12": [".xlsm"],
-};
-
-const STATUS_LABEL: Record<ImportJobStatus, string> = {
-  pending: "В очереди",
-  parsing: "Разбор файла",
-  importing: "Запись сметы",
-  matching: "Матчинг работ",
-  done: "Готово",
-  error: "Ошибка",
-};
-
-function statusTone(status: ImportJobStatus): "success" | "danger" | "info" {
-  if (status === "done") return "success";
-  if (status === "error") return "danger";
-  return "info";
-}
-
-/** Идёт ли работа — по этому же признаку останавливается поллинг. */
-function isRunning(status: ImportJobStatus): boolean {
-  return status !== "done" && status !== "error";
-}
+import type { ContractImportJob, EstimateRow } from "@/types/domain";
 
 interface EstimateUploadPanelProps {
   contractId: number;
@@ -109,8 +84,14 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
   const [rejection, setRejection] = useState<string | null>(null);
 
   const upload = useUploadEstimate();
-  const jobQ = useImportJob(jobId, contractId);
-  const job: ImportJob | undefined = jobQ.data;
+  const jobQ = useImportJob(jobId, { contractId });
+  // `useImportJob` возвращает широкий `ImportJob` (владелец не различён в
+  // типе — см. докстроку `ImportJob` в `types/domain.ts`), но ЗДЕСЬ владелец
+  // известен заранее: эта панель поллит только job'ы, созданные
+  // `useUploadEstimate` для ДОГОВОРА. Сужение к `ContractImportJob` в точке
+  // вызова (задача 11) — не изменение поведения, а называние того, что уже
+  // истинно.
+  const job = jobQ.data as ContractImportJob | undefined;
   const contractQ = useContract(contractId);
   const lostOnReplace = conflict ? lostDecisionsFor(conflict.estimates, conflict.amendmentNo) : 0;
 
@@ -186,105 +167,35 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
 
   return (
     <Surface className="grid gap-4">
-      <div className="grid gap-2 sm:max-w-xs">
-        <Label htmlFor="amendment-no">Номер допсоглашения</Label>
-        <Input
-          id="amendment-no"
-          inputMode="numeric"
-          placeholder="пусто — исходная смета"
-          value={amendmentNo}
-          onChange={(e) => setAmendmentNo(e.target.value)}
-        />
-      </div>
-
-      <Dropzone
-        onDrop={handleDrop}
-        accept={XLSX_ACCEPT}
-        multiple={false}
+      <ImportJobPanel
+        job={job}
+        uploading={upload.isPending}
+        idempotent={idempotent}
+        // Формулировка — БУКВА В БУКВУ прежний, вшитый в панель текст:
+        // существующие тесты (`EstimateUploadPanel.test.tsx`,
+        // `ContractCardPage.test.tsx`) ищут именно эту строку, и правка
+        // задачи 11 (ревью, finding 2) не имеет права менять их утверждения.
+        idempotentNote="Этот файл уже был загружен для этой сметы — ничего не изменилось, показано прежнее задание."
+        // БУКВА В БУКВУ прежний зашитый текст панели (ревью финального fix
+        // wave, finding 5) — `ContractCardPage.test.tsx` ищет именно эту
+        // строку, правка не имеет права сдвинуть её утверждение.
+        runningHint="Смета появится в карточке после завершения — страницу закрывать не нужно"
+        rejection={rejection}
         disabled={upload.isPending || (job !== undefined && isRunning(job.status))}
         hint="XLSX или XLSM, до 25 МБ"
-      />
-
-      {upload.isPending && (
-        <p className="flex items-center gap-2 text-sm text-fg-secondary">
-          <Loader2 className="size-4 animate-spin" /> Файл передаётся…
-        </p>
-      )}
-
-      {rejection && (
-        // `data-testid` рядом с ролью — не дубль: открытый `AlertDialog`
-        // модален и помечает фон `aria-hidden`, из-за чего запрос по РОЛИ
-        // перестаёт видеть этот текст ровно тогда, когда диалог всё-таки
-        // открылся. Тест на упавший рефетч обязан различать «отказа нет» и
-        // «отказ есть, но его накрыл диалог», иначе главное утверждение —
-        // об отсутствии диалога — недостижимо (см. комментарий в тесте).
-        <p
-          data-testid="upload-rejection"
-          role="alert"
-          className="flex items-start gap-2 text-sm text-danger-text"
-        >
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-          {rejection}
-        </p>
-      )}
-
-      {job && (
-        <div className="grid gap-3 rounded-md border border-border-subtle p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <FileSpreadsheet className="size-4 text-fg-tertiary" />
-            <span className="text-sm font-medium text-fg">{job.filename}</span>
-            <StatusPill
-              tone={statusTone(job.status)}
-              label={STATUS_LABEL[job.status]}
-              dot={isRunning(job.status)}
-            />
-            {isRunning(job.status) && (
-              <span className="text-xs text-fg-secondary">
-                Смета появится в карточке после завершения — страницу закрывать не нужно
-              </span>
-            )}
-          </div>
-
-          {idempotent && (
-            <p className="text-sm text-fg-secondary">
-              Этот файл уже был загружен для этой сметы — ничего не изменилось,
-              показано прежнее задание.
-            </p>
-          )}
-
-          {job.status === "error" && job.error_text && (
-            <p role="alert" className="text-sm text-danger-text">
-              {job.error_text}
-            </p>
-          )}
-
-          {job.status === "done" && (
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-5">
-              <CounterCell label="Позиций" value={job.counters.positions_total} />
-              <CounterCell label="Из кэша" value={job.counters.matched_cache} />
-              <CounterCell label="Точно" value={job.counters.matched_exact} />
-              <CounterCell label="Не работы" value={job.counters.matched_nonposition} />
-              <CounterCell label="На разбор" value={job.counters.to_review} />
-            </dl>
-          )}
-
-          {job.warnings.length > 0 && (
-            <div className="grid gap-1">
-              <p className="text-xs font-medium text-warning-text">
-                Предупреждения ({job.warnings.length})
-              </p>
-              <ul className="grid gap-1 text-xs text-fg-secondary">
-                {job.warnings.map((warning, index) => (
-                  <li key={index} className="flex items-start gap-1.5">
-                    <AlertTriangle className="mt-0.5 size-3 shrink-0 text-warning-text" />
-                    {warning}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        onDrop={handleDrop}
+      >
+        <div className="grid gap-2 sm:max-w-xs">
+          <Label htmlFor="amendment-no">Номер допсоглашения</Label>
+          <Input
+            id="amendment-no"
+            inputMode="numeric"
+            placeholder="пусто — исходная смета"
+            value={amendmentNo}
+            onChange={(e) => setAmendmentNo(e.target.value)}
+          />
         </div>
-      )}
+      </ImportJobPanel>
 
       <AlertDialog open={conflict !== null} onOpenChange={(open) => !open && setConflict(null)}>
         <AlertDialogContent>
@@ -329,14 +240,5 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
         </AlertDialogContent>
       </AlertDialog>
     </Surface>
-  );
-}
-
-function CounterCell({ label, value }: { label: string; value: number }) {
-  return (
-    <div>
-      <dt className="text-xs text-fg-tertiary">{label}</dt>
-      <dd className="font-mono tabular-nums text-fg">{value}</dd>
-    </div>
   );
 }

@@ -60,6 +60,7 @@ from models import (
 from services.category_override import set_override
 from services.category_resolution import CATEGORY_SOURCE_MANUAL, CategoryResolver
 from services.estimate_import import import_estimate
+from services.import_owners import contract_estimate_owner
 from services.unit_resolution import UnitResolver
 from tests.payloads import payload_for, position
 
@@ -77,8 +78,7 @@ def scene(committing_db, committing_factories, committing_session_factory):
     resolver = UnitResolver(committing_db)
     outcome = import_estimate(
         committing_db,
-        contract=contract,
-        amendment_no=None,
+        owner=contract_estimate_owner(contract, None),
         data=payload_for(
             contract,
             [
@@ -285,8 +285,7 @@ def replace_scene(committing_db, committing_factories, committing_session_factor
     resolver = UnitResolver(committing_db)
     outcome = import_estimate(
         committing_db,
-        contract=contract,
-        amendment_no=None,
+        owner=contract_estimate_owner(contract, None),
         data=payload_for(
             contract,
             [position(job_title="Раздел без статьи", is_chapter=True, chapter_number="1")],
@@ -393,8 +392,7 @@ class TestReplaceRaceWithDecision:
                 try:
                     replace_outcome["result"] = import_estimate(
                         db1,
-                        contract=contract,
-                        amendment_no=None,
+                        owner=contract_estimate_owner(contract, None),
                         data=payload_for(
                             contract,
                             [

@@ -34,7 +34,8 @@ from crud.common import (
     rollback_on_domain_error,
     translating_integrity,
 )
-from models import Contract, Contractor, ObjectModel, Proposal, RateClass, RateStandard
+from models import Contract, Contractor, ObjectModel, OfferPackage, Proposal, RateClass, RateStandard
+from utils import canonicalize_inn
 
 log = logging.getLogger(__name__)
 
@@ -404,7 +405,14 @@ def list_contractors(
     stmt = _contractors_select()
     if q and q.strip():
         pattern = f"%{q.strip()}%"
-        stmt = stmt.where(sa.or_(Contractor.title.ilike(pattern), Contractor.inn.ilike(pattern)))
+        conditions = [Contractor.title.ilike(pattern)]
+        # ИНН хранится каноном (только цифры), а человек вводит его с
+        # разделителями — ищем по канону запроса, иначе «77 00 12» не нашёл
+        # бы сохранённое «7700123456» (спека контура §2.7).
+        inn_digits = canonicalize_inn(q)
+        if inn_digits:
+            conditions.append(Contractor.inn.like(f"%{inn_digits}%"))
+        stmt = stmt.where(sa.or_(*conditions))
 
     rows, total = paginated(
         db, stmt, order_by=(Contractor.title,), page=page, page_size=page_size
@@ -433,7 +441,9 @@ def create_contractor(
     accreditation: str | None = None,
 ) -> dict:
     title = require_text(title, "Название")
-    inn = require_text(inn, "БИН/ИНН")
+    inn = canonicalize_inn(require_text(inn, "БИН/ИНН"))
+    if not inn:
+        raise DomainError(422, "Поле «БИН/ИНН» не содержит ни одной цифры.")
     if db.query(Contractor).filter(Contractor.inn == inn).first():
         raise DomainError(409, _UNIQUE_MESSAGES["uq_contractors_inn"])
 
@@ -471,7 +481,10 @@ def update_contractor(
         if title is not UNSET:
             contractor.title = require_text(title, "Название")
         if inn is not UNSET:
-            contractor.inn = require_text(inn, "БИН/ИНН")
+            canonical = canonicalize_inn(require_text(inn, "БИН/ИНН"))
+            if not canonical:
+                raise DomainError(422, "Поле «БИН/ИНН» не содержит ни одной цифры.")
+            contractor.inn = canonical
         if address is not UNSET:
             contractor.address = (address or "").strip()
         if accreditation is not UNSET:
@@ -491,11 +504,15 @@ def delete_contractor(db: Session, contractor_id: int) -> None:
     # proposals.contractor_id — тоже FK без каскада: подрядчик остаётся в уже
     # импортированных сметах даже если его договор удалён.
     proposals = db.query(Proposal).filter(Proposal.contractor_id == contractor.id).count()
-    if contracts or proposals:
+    # offer_packages.contractor_id RESTRICT (спека контура §2.13): участник
+    # тендера без материализованных предложений — третий потребитель, и без
+    # этого счётчика удаление упало бы сырым IntegrityError.
+    tenders = db.query(OfferPackage).filter(OfferPackage.contractor_id == contractor.id).count()
+    if contracts or proposals or tenders:
         raise DomainError(
             409,
             f"Подрядчика «{contractor.title}» удалить нельзя: договоров ({contracts}), "
-            f"предложений в сметах ({proposals}).",
+            f"предложений в сметах ({proposals}), участий в тендерах ({tenders}).",
         )
     db.delete(contractor)
     db.commit()

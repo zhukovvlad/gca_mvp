@@ -20,10 +20,20 @@ UPLOAD_URL = "/api/v1/estimates/upload"
 
 
 def xlsx_bytes(marker: str = "a") -> bytes:
-    """Настоящий ZIP-контейнер — эндпоинт проверяет магию файла, не расширение."""
+    """Настоящий ZIP-контейнер — эндпоинт проверяет магию файла, не расширение.
+
+    `ZipInfo` с ФИКСИРОВАННОЙ датой: `writestr(str, ...)` иначе штампует
+    `date_time` текущим временем (гранулярность DOS-формата в ZIP — 2 секунды).
+    Тесты идемпотентности («тот же файл — тот же sha256») зовут эту функцию
+    ДВАЖДЫ с одним marker и ждут побайтово одинаковый результат; без
+    фиксированной даты два вызова, разнесённые по времени больше чем на
+    пару секунд (обычное дело под полным прогоном — фон успевает досчитать),
+    дают разные байты и разные sha256 чисто по случайности момента вызова.
+    """
     buffer = io.BytesIO()
+    info = zipfile.ZipInfo("xl/workbook.xml", date_time=(2020, 1, 1, 0, 0, 0))
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("xl/workbook.xml", f"<workbook>{marker}</workbook>")
+        archive.writestr(info, f"<workbook>{marker}</workbook>")
     return buffer.getvalue()
 
 

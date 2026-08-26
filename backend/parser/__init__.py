@@ -8,8 +8,11 @@
 зависимости — `openpyxl` (чтение книги) и `spacy` с моделью `ru_core_news_sm`
 (лемматизация наименований работ).
 
-Точка входа — `parse_estimate`; она возвращает `ParseResult` со структурой для
-`estimate_raw_data.raw_data` и списком предупреждений для `import_jobs.warnings`.
+Точка входа — `parse_estimate`; она возвращает `ParseResult`, чья структура
+целиком сохраняется в `import_jobs.parsed_data` (вместе с `parser_version`) —
+это и есть точный результат разбора файла; `estimate_raw_data.raw_data` под
+сметой хранит лишь проекцию этих данных. Предупреждения идут в
+`import_jobs.warnings`.
 Отдельно экспортируется `normalize_job_title_with_lemmatization`: фаза 4 строит
 на ней `catalog_positions.normalized_job_title` и `cache_key` матчинга
 (AGENTS.md §4–§5).

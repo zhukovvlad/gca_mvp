@@ -59,6 +59,9 @@ RAW_SQL_INDEXES = {
     "uq_catalog_positions_norm_hash_unit",
     "uq_estimates_contract_amendment",  # UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)
     "uq_import_jobs_active_pair",       # UNIQUE (contract_id, COALESCE(amendment_no,-1)) WHERE ...
+    "uq_estimates_offer",               # UNIQUE (offer_id) WHERE offer_id IS NOT NULL — 0015
+    "uq_estimates_round",               # UNIQUE (round_id) WHERE round_id IS NOT NULL — 0015
+    "uq_import_jobs_active_round",      # UNIQUE (round_id) WHERE ... NOT IN terminal — 0015
 }
 
 

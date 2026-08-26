@@ -23,6 +23,8 @@ import type {
   MatrixRow,
   ProjectPassport,
   ReviewQueueItem,
+  TenderCard,
+  TenderRow,
 } from "@/types/domain";
 
 export const sampleAdminUsers: AdminUser[] = [
@@ -182,6 +184,7 @@ export const sampleContractCard: ContractCard = {
 export const sampleImportJobs: ContractImportJob[] = [
   {
     id: 900,
+    owner_type: "contract",
     contract_id: 100,
     amendment_no: null,
     filename: "смета-актуальная.xlsx",
@@ -197,6 +200,7 @@ export const sampleImportJobs: ContractImportJob[] = [
       to_review: 1000,
     },
     estimate_id: 500,
+    estimates_created: 1,
     is_current: true,
     created_at: "2026-03-11T08:00:00Z",
     started_at: "2026-03-11T08:00:01Z",
@@ -204,6 +208,7 @@ export const sampleImportJobs: ContractImportJob[] = [
   },
   {
     id: 899,
+    owner_type: "contract",
     contract_id: 100,
     amendment_no: null,
     filename: "смета-вытесненная.xlsx",
@@ -219,6 +224,7 @@ export const sampleImportJobs: ContractImportJob[] = [
       to_review: 1800,
     },
     estimate_id: null,
+    estimates_created: 1,
     is_current: false,
     created_at: "2026-03-05T08:00:00Z",
     started_at: "2026-03-05T08:00:01Z",
@@ -229,6 +235,7 @@ export const sampleImportJobs: ContractImportJob[] = [
 /** Задание, упавшее с ошибкой: сметы не создавало никогда. */
 export const sampleFailedJob: ContractImportJob = {
   id: 898,
+  owner_type: "contract",
   contract_id: 100,
   amendment_no: null,
   filename: "смета-битая.xlsx",
@@ -244,6 +251,7 @@ export const sampleFailedJob: ContractImportJob = {
     to_review: 0,
   },
   estimate_id: null,
+  estimates_created: null,
   is_current: false,
   created_at: "2026-03-04T08:00:00Z",
   started_at: "2026-03-04T08:00:01Z",
@@ -1737,5 +1745,39 @@ export const sampleInflationValues: Record<number, InflationSeriesValue[]> = {
   3: [
     { year: 2024, coefficient: "1.0800", source: "архивная публикация", is_forecast: false,
       created_at: "2024-02-01T09:00:00+03:00", updated_at: "2024-02-01T09:00:00+03:00" },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+//  Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13, §2.14).
+//  Данные синтетические — реальные тендеры, участники и суммы из samples/
+//  никуда не выносятся (политика docs/phase0-input-data.md).
+// ---------------------------------------------------------------------------
+
+export const sampleTenders: TenderRow[] = [
+  { id: 300, tender_number: "Т-2026-001", title: "Генподряд на строительство", object_id: 10, object_title: "ЖК Северный",
+    rate_class_id: 1, rate_class_title: "Жилые дома", rounds_count: 2, participants_count: 2, created_at: "2026-08-01T08:00:00Z" },
+];
+
+export const sampleTenderCard: TenderCard = {
+  ...sampleTenders[0],
+  notes: null,
+  object_address: "ул. Северная, 1",
+  rounds: [
+    { id: 3001, stage_no: 1, label: "Первичные предложения", held_on: "2026-06-01",
+      latest_job: { id: 9101, status: "done", filename: "r1.xlsx", finished_at: "2026-06-02T10:00:00Z", created_at: "2026-06-02T09:00:00Z" },
+      current_job_id: 9101, baseline_estimate_id: 8100, baseline_total_including_vat: "1150.00" },
+    { id: 3002, stage_no: 2, label: null, held_on: null,
+      latest_job: null, current_job_id: null, baseline_estimate_id: null, baseline_total_including_vat: null },
+  ],
+  participants: [
+    { package_id: 501, contractor_id: 20, title: "ООО Альфа", inn: "7700000001" },
+    { package_id: 502, contractor_id: 21, title: "ООО Бета", inn: "7700000002" },
+  ],
+  cells: [
+    { round_id: 3001, package_id: 501, offer_id: 7001, estimate_id: 8001, total_including_vat: "1200.00" },
+    { round_id: 3001, package_id: 502, offer_id: null, estimate_id: null, total_including_vat: null },
+    { round_id: 3002, package_id: 501, offer_id: null, estimate_id: null, total_including_vat: null },
+    { round_id: 3002, package_id: 502, offer_id: 7002, estimate_id: null, total_including_vat: null },
   ],
 };

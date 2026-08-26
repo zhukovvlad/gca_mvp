@@ -28,6 +28,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -37,8 +38,10 @@ from database import get_db, get_session_factory
 from models import (
     TERMINAL_IMPORT_JOB_STATUSES,
     Contract,
+    Estimate,
     ImportJob,
     ImportJobStatus,
+    TenderRound,
     User,
     UserRole,
 )
@@ -69,12 +72,14 @@ CONTRACT_FK_CONSTRAINT = "import_jobs_contract_id_fkey"
 
 
 def job_response(db: Session, job: ImportJob) -> dict:
-    """Единый формат задания импорта — общий с роутером `import_jobs`."""
-    estimate = find_estimate(db, job.contract_id, job.amendment_no)
-    return {
+    """Единый формат задания импорта — общий с роутером `import_jobs`.
+
+    Дискриминирован по владельцу (спека контура §2.13): договорной job
+    сохраняет `estimate_id` (смета ТЕКУЩЕЙ пары), раундовый несёт
+    `estimate_ids` — все сметы, созданные ИМ.
+    """
+    base = {
         "id": job.id,
-        "contract_id": job.contract_id,
-        "amendment_no": job.amendment_no,
         "filename": job.filename,
         "file_sha256": job.file_sha256,
         "status": job.status,
@@ -87,12 +92,27 @@ def job_response(db: Session, job: ImportJob) -> dict:
             "matched_nonposition": job.matched_nonposition,
             "to_review": job.to_review,
         },
-        # Смета текущей пары (contract_id, amendment_no), а не «смета этого job»:
-        # у неудачного задания сметы нет, а у пары она может быть от предыдущего.
-        "estimate_id": estimate.id if estimate else None,
+        "estimates_created": job.estimates_created,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+    if job.contract_id is not None:
+        estimate = find_estimate(db, job.contract_id, job.amendment_no)
+        return {
+            **base, "owner_type": "contract",
+            "contract_id": job.contract_id, "amendment_no": job.amendment_no,
+            # Смета текущей пары, а не «смета этого job» (прежнее правило).
+            "estimate_id": estimate.id if estimate else None,
+        }
+    rnd = db.get(TenderRound, job.round_id)
+    estimate_ids = list(db.execute(
+        select(Estimate.id).where(Estimate.import_job_id == job.id).order_by(Estimate.id)
+    ).scalars())
+    return {
+        **base, "owner_type": "round",
+        "tender_id": rnd.tender_id if rnd else None, "round_id": job.round_id,
+        "estimate_ids": estimate_ids,
     }
 
 

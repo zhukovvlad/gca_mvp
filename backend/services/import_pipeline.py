@@ -35,12 +35,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from config import settings
-from models import Contract, ImportJob, ImportJobStatus
+from models import Contract, ImportJob, ImportJobStatus, TenderRound
 from parser import EstimateParseError, parse_estimate
 from parser.sanitize_text import NormalizationUnavailableError
 from services.category_resolution import CategoryResolver
 from services.estimate_import import EstimateImportError, import_estimate
+from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
+from services.round_import import import_round
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
 from utils import utcnow_aware
@@ -54,11 +56,16 @@ class ImportSoftTimeout(Exception):
 
 @dataclass(frozen=True)
 class JobContext:
-    """Минимум данных о задании, нужный пайплайну (читается сессией A один раз)."""
+    """Минимум данных о задании, нужный пайплайну (читается сессией A один раз).
+
+    Владелец — договор ЛИБО раунд (спека контура §2.1); ровно одно из
+    `contract_id`/`round_id` не None, это стережёт CHECK схемы.
+    """
 
     job_id: int
-    contract_id: int
+    contract_id: int | None
     amendment_no: int | None
+    round_id: int | None
     file_key: str
     filename: str
 
@@ -96,6 +103,12 @@ class StatusWriter:
         if not items:
             return
         self._run({"warnings": _warnings_concat(items)})
+
+    def record_parse(self, data: dict, parser_version: str) -> None:
+        """Точный ParseResult этого разбора — сессией A, сразу после парсинга,
+        независимо от исхода импорта (спека контура §2.3): failed-job тоже
+        показывает, какой разбор привёл к отказу."""
+        self._run({"parsed_data": data, "parser_version": parser_version})
 
     def fail(self, error_text: str) -> None:
         """Статус `error` + текст. Пишется ПОСЛЕ откатa домена, поэтому выживает.
@@ -150,16 +163,26 @@ class _Deadline:
 # ---------------------------------------------------------------------------
 
 def finalize_done(
-    db: Session, job_id: int, *, counters: MatchCounters, warnings: list[str], now: datetime
+    db: Session,
+    job_id: int,
+    *,
+    counters: MatchCounters,
+    warnings: list[str],
+    now: datetime,
+    estimates_created: int,
 ) -> None:
     """Переводит задание в `done` со счётчиками — ПОСЛЕДНЯЯ операция сессии B.
 
     Коммитится вместе с доменом (§5): смета и её `done`-статус неразделимы.
+
+    `estimates_created` — сколько смет создал этот job: 1 у договора, N(+1) у
+    раунда; нужен правилу текущего job раунда (§2.12).
     """
     values: dict = {
         "status": ImportJobStatus.done.value,
         "error_text": None,
         "finished_at": now,
+        "estimates_created": estimates_created,
         **counters.as_dict(),
     }
     if warnings:
@@ -177,6 +200,7 @@ def load_job_context(db: Session, job_id: int) -> JobContext:
             ImportJob.id,
             ImportJob.contract_id,
             ImportJob.amendment_no,
+            ImportJob.round_id,
             ImportJob.file_key,
             ImportJob.filename,
         ).where(ImportJob.id == job_id)
@@ -229,31 +253,53 @@ def run_import_job(
         with storage.get(context.file_key) as handle:
             parse_result = parse(handle)
         status.add_warnings(list(parse_result.warnings))
+        status.record_parse(parse_result.data, parse_result.parser_version)
         deadline.check("парсинг")
 
         status.set_status(ImportJobStatus.importing)
 
         # --- Этапы 3–4 и финал: ОДНА транзакция сессии B ---
         with session_factory() as db, db.begin():
-            contract = db.get(Contract, context.contract_id)
-            if contract is None:
-                raise EstimateImportError(
-                    f"Договор {context.contract_id} не найден — импортировать смету не к чему."
+            if context.contract_id is not None:
+                contract = db.get(Contract, context.contract_id)
+                if contract is None:
+                    raise EstimateImportError(
+                        f"Договор {context.contract_id} не найден — импортировать смету не к чему."
+                    )
+                owner = contract_estimate_owner(contract, context.amendment_no)
+                resolver = UnitResolver(db)
+                category_resolver = CategoryResolver.from_db(db)
+                outcome = import_estimate(
+                    db,
+                    owner=owner,
+                    data=parse_result.data,
+                    parser_version=parse_result.parser_version,
+                    import_job_id=job_id,
+                    replace=replace,
+                    unit_resolver=resolver,
+                    category_resolver=category_resolver,
                 )
-
-            resolver = UnitResolver(db)
-            category_resolver = CategoryResolver.from_db(db)
-            outcome = import_estimate(
-                db,
-                contract=contract,
-                amendment_no=context.amendment_no,
-                data=parse_result.data,
-                parser_version=parse_result.parser_version,
-                import_job_id=job_id,
-                replace=replace,
-                unit_resolver=resolver,
-                category_resolver=category_resolver,
-            )
+                positions_to_match = outcome.positions_to_match
+                domain_warnings = outcome.warnings
+                estimates_created = 1
+                log_estimate_ids = [outcome.estimate_id]
+            else:
+                tender_round = db.get(TenderRound, context.round_id)
+                if tender_round is None:
+                    raise EstimateImportError(
+                        f"Раунд {context.round_id} не найден — импортировать сводную таблицу не к чему."
+                    )
+                resolver = UnitResolver(db)
+                category_resolver = CategoryResolver.from_db(db)
+                round_outcome = import_round(
+                    db, tender_round=tender_round, data=parse_result.data,
+                    parser_version=parse_result.parser_version, import_job_id=job_id,
+                    replace=replace, unit_resolver=resolver, category_resolver=category_resolver,
+                )
+                positions_to_match = round_outcome.positions_to_match
+                domain_warnings = round_outcome.warnings
+                estimates_created = round_outcome.estimates_created
+                log_estimate_ids = round_outcome.estimate_ids
             deadline.check("импорт")
 
             # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:
@@ -262,21 +308,22 @@ def run_import_job(
             # в PostgreSQL совместимы.
             status.set_status(ImportJobStatus.matching)
 
-            match = match_positions(db, outcome.positions_to_match)
+            match = match_positions(db, positions_to_match)
             deadline.check("матчинг")
 
             finalize_done(
                 db,
                 job_id,
                 counters=match.counters,
-                warnings=outcome.warnings + match.warnings,
+                warnings=domain_warnings + match.warnings,
                 now=utcnow_aware(),
+                estimates_created=estimates_created,
             )
 
         log.info(
-            "Импорт задания %d завершён: estimate_id=%d, счётчики=%s",
+            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s",
             job_id,
-            outcome.estimate_id,
+            log_estimate_ids,
             match.counters.as_dict(),
         )
 

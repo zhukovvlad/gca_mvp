@@ -29,6 +29,7 @@ from models import CatalogKind, CatalogPosition, MatchingCache, MatchSource, Pos
 from parser.sanitize_text import normalize_job_title_with_lemmatization
 from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
+from services.import_owners import contract_estimate_owner
 from services.matching import cache_key, match_positions
 from services.review import ReviewError, merge_into_position, set_kind
 from services.unit_resolution import UnitResolver
@@ -47,8 +48,7 @@ def queue(committing_db, committing_factories, committing_session_factory):
     resolver = UnitResolver(committing_db)
     outcome = import_estimate(
         committing_db,
-        contract=contract,
-        amendment_no=None,
+        owner=contract_estimate_owner(contract, None),
         data=payload_for(contract, [position(job_title=TO_REVIEW_TITLE, unit="м2")]),
         parser_version="1.0.0",
         import_job_id=None,

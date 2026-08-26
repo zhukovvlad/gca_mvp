@@ -6,6 +6,7 @@ import type { ImportJob, ImportJobStatus } from "@/types/domain";
 function job(status: ImportJobStatus): ImportJob {
   return {
     id: 1,
+    owner_type: "contract",
     contract_id: 100,
     amendment_no: null,
     filename: "смета.xlsx",
@@ -21,6 +22,7 @@ function job(status: ImportJobStatus): ImportJob {
       to_review: 0,
     },
     estimate_id: null,
+    estimates_created: 1,
     created_at: null,
     started_at: null,
     finished_at: null,

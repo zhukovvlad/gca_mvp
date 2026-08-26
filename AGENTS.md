@@ -193,7 +193,7 @@
 
 ## 3. Ключевые решения (зафиксированы, не пересматривать)
 
-- **Single-tenant.** Внутренний инструмент одной компании. `organizations` и все `org_id` выпиливаются. Роли: `admin` — управление пользователями, классами, нормативами, замена/удаление смет, удаление договора целиком — вместе со сметами, заданиями импорта и файлами (v6.7); `member` — чтение, загрузка смет, ручной матчинг (Review), ручной разнос разделов сметы по статьям классификатора («Нераспределённое» в паспорте проекта; [спека разноса](docs/superpowers/specs/2026-08-11-unallocated-category-override-design.md) §2.7).
+- **Single-tenant.** Внутренний инструмент одной компании. `organizations` и все `org_id` выпиливаются. Роли: `admin` — управление пользователями, классами, нормативами, замена/удаление смет, удаление договора целиком — вместе со сметами, заданиями импорта и файлами (v6.7); тендеры, раунды, удаление участника тендера, замена раунда (тендерный контур, спека 2026-08-26); `member` — чтение, загрузка смет, ручной матчинг (Review), ручной разнос разделов сметы по статьям классификатора («Нераспределённое» в паспорте проекта; [спека разноса](docs/superpowers/specs/2026-08-11-unallocated-category-override-design.md) §2.7); загрузка файлов раундов тендера — и она **заводит подрядчиков** по ИНН из файла (спека контура §2.8).
 - **Стек:** Python 3.12, FastAPI, SQLAlchemy 2.x sync ORM, Alembic, psycopg3; PostgreSQL 16 + pgvector (extension включить первой миграцией, векторный матчинг — фаза 2); React + TS, Vite, shadcn/ui, Tailwind, TanStack Query, TanStack Table, Recharts.
 - **Без брокеров:** никаких Celery/Redis. Длинные операции — FastAPI `BackgroundTasks` + таблица `import_jobs`. **MVP запускается строго с одним worker-процессом uvicorn** — это условие корректности startup-recovery (§6); зафиксировать в конфиге запуска и README. Таймаут парсинга — **мягкий**: проверка прошедшего времени между этапами пайплайна, не жёсткое прерывание.
 - **Деньги:** `numeric` в БД ↔ `Decimal` в Python ↔ строки в JSON. Никаких float. Пустая стоимость в смете → `NULL`, не `0`.
@@ -224,26 +224,41 @@ contracts                    # договор ГП
   UNIQUE (contract_number)
 
 estimates                    # смета (бывш. tenders); 1 договор : N смет
-  id, contract_id NOT NULL → contracts
-  amendment_no int NULL      # NULL = исходная смета, иначе номер доп. соглашения
+  id, contract_id NULL → contracts   # с 0015 (тендерный контур) — один из трёх
+                                     #   владельцев, см. блок ниже: contract_id | offer_id | round_id
+  amendment_no int NULL      # NULL = исходная смета, иначе номер доп. соглашения; только у contract_id
   title, data_prepared_on_date date
   import_job_id → import_jobs
   UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)   # PG16
 
+tenders / tender_rounds / offer_packages / offers    # тендерный контур (спека 2026-08-26)
+  # offers — ячейка решётки «раунд × участник»; составные FK с продублированным
+  # tender_id держат раунд и участника в одном тендере структурно.
+estimates: contract_id NULL | offer_id NULL | round_id NULL — РОВНО ОДИН (CHECK);
+  # round_id на смете = baseline раунда. uq_estimates_contract_amendment — частичный.
+proposals.contractor_id NULL у baseline (CHECK против is_baseline).
+position_items.deviation_from_baseline_cost: у смет договора NULL; у offer-смет — из файла (§2.10).
+estimate_raw_data — ПРОЕКЦИЯ разобранного JSON под смету; точный результат разбора файла —
+  import_jobs.parsed_data + parser_version (три факта об одном файле, спека §2.3).
+contractors.inn — канон, только ASCII-цифры (CHECK); одна canonicalize_inn().
+
 estimate_raw_data
   estimate_id PK → estimates ON DELETE CASCADE
-  raw_data jsonb NOT NULL    # полный JSON парсера, включая реквизиты из шапки XLSX
+  raw_data jsonb NOT NULL    # проекция parsed_data под смету; точный результат разбора —
+                             #   import_jobs.parsed_data + parser_version (см. выше)
   parser_version text NOT NULL
   created_at
 
 lots / proposals / position_items
   # перенос из tenders-go. proposals — РОВНО ОДНО на лот (единственный подрядчик);
   # слой сохраняем: JSON парсера ложится 1:1, на proposal висят summary_lines и
-  # additional_info, задел на возврат тендеров в будущем.
+  # additional_info. is_baseline — с 0015 опорное поле (не задел): у baseline-
+  # proposal true и contractor_id NULL, у offer-proposal — наоборот
+  # (CHECK ck_proposals_baseline_contractor), и тот же флаг ветвит импорт раунда.
   # position_items: quantity, suggested_quantity,
   #   unit_cost_{materials,works,indirect_costs,total}, total_cost_{...},
   #   is_chapter, chapter_ref_in_proposal, catalog_position_id NULL, unit_id,
-  #   комментарии. deviation_from_baseline_cost остаётся NULL (baseline в сметах нет).
+  #   комментарии. deviation_from_baseline_cost — NULL у смет договора; у offer-смет — из файла.
 ```
 
 Каталожный контур:
@@ -341,16 +356,24 @@ rate_standards
 
 ```
 import_jobs
-  id, contract_id NOT NULL, amendment_no int NULL, filename, file_key,
-  file_sha256 text NOT NULL,
+  id, contract_id NULL, round_id NULL → tender_rounds   # с 0015 — два владельца
+                                                         #   (CHECK: ровно один из двух)
+  amendment_no int NULL      # только у contract_id; у round_id — NULL (CHECK)
+  filename, file_key, file_sha256 text NOT NULL,
   status ('pending|parsing|importing|matching|done|error'), error_text,
   warnings jsonb NOT NULL DEFAULT '[]',
   counters (positions_total, matched_cache, matched_exact, matched_nonposition, to_review),
+  parsed_data jsonb NULL, parser_version text NULL   # пара — вместе NULL либо вместе заданы (CHECK)
+  estimates_created int NULL   # только у round_id; NULL либо > 0 (CHECK); число offer-смет
+                                # этого job (§5, «Для раунда тендера»)
   created_at, started_at, finished_at
-  # Лок: частичный уникальный индекс
-  #   UNIQUE (contract_id, COALESCE(amendment_no,-1)) WHERE status NOT IN ('done','error')
-  # Блокируется одна ПАРА (contract_id, amendment_no); параллельный импорт РАЗНЫХ
-  # допсоглашений одного договора — разрешён.
+  # Локи — два частичных уникальных индекса:
+  #   uq_import_jobs_active_pair: UNIQUE (contract_id, COALESCE(amendment_no,-1))
+  #     WHERE contract_id IS NOT NULL AND status NOT IN ('done','error')
+  #   uq_import_jobs_active_round: UNIQUE (round_id)
+  #     WHERE round_id IS NOT NULL AND status NOT IN ('done','error')
+  # Блокируется одна ПАРА (contract_id, amendment_no) либо один round_id;
+  # параллельный импорт РАЗНЫХ допсоглашений одного договора — разрешён.
 ```
 
 ## 5. Пайплайн импорта
@@ -362,6 +385,8 @@ import_jobs
 1. **Текущая** смета этой пары загружена **тем же** файлом (`estimates.import_job_id` ведёт на `done`-job с тем же `file_sha256`) → идемпотентно вернуть этот job, не импортировать. Идемпотентность привязана к текущей смете, а не к любому историческому `done`-job: иначе после замены (правило 3) повторная загрузка **вытесненного** файла отвечала бы «уже загружено», хотя в БД лежит другая смета. Такой случай идёт по правилу 2 и требует `replace=true`.
 2. Уже существует estimate, файл **другой**, `replace` не передан → **`409 Conflict`** с понятным сообщением («смета уже загружена; для замены повторите с replace=true»).
 3. `replace=true` (право: `admin`) → в доменной транзакции: удалить существующий estimate (CASCADE на lots/proposals/positions/raw_data), импортировать новый. Старые `import_jobs` и их файлы **не удаляются при ЗАМЕНЕ сметы** — это аудит. Удаление самого договора уносит их вместе с ним (v6.7); удаление отвергается, пока импорт этой сметы выполняется. В новом job зафиксировать warning «заменена смета estimate_id=N от <дата>».
+
+**Для раунда тендера** (`POST /api/v1/tenders/{id}/rounds/{rid}/upload`): владелец один — раунд; правило 1 работает через **текущий job** — `done`, число смет раунда с этим `import_job_id` равно `estimates_created`, других смет у раунда нет; замена — раунда целиком, до цикла, под `FOR KEY SHARE` тендера и `FOR UPDATE` раунда; один файл даёт N offer-смет плюс baseline в ОДНОЙ транзакции сессии B и ОДИН матчинг; `parsed_data` пишет сессия A сразу после парсинга у обоих владельцев.
 
 Транзакционная модель — **две разные сессии**:
 
@@ -481,10 +506,11 @@ Recovery — **условие запуска, а не удобство**: нез
    > 4. сравнимые.
 
 7. **Сравнение договоров** — новая страница на маршруте `/compare`, строки — дерево статей классификатора, колонки — договоры выборки; вход только из списка договоров галочками и двумя кнопками, ПУНКТА В ГЛАВНОМ МЕНЮ НЕТ (сравнение без выборки бессмысленно). Режимы показа НДС и выбранная ставка живут в URL; **там же живут выбранный ряд индексов инфляции и целевой месяц** (v6.10) — ссылка воспроизводит параметры расчёта, но не гарантирует исторического результата, потому что версий у ряда нет. Целевой месяц разрешает СЕРВЕР в названной бизнес-таймзоне и возвращает его клиенту: `Date.now()` в браузере — часы читателя, и два человека получили бы два ответа. Печати нет. **Плюс диаграмма стоимости договоров над таблицей и фильтр по классу объекта** (v6.11), и оба выражены в URL: класс — многозначным `rate_class_id`, который СУЖАЕТ выборку обеих форм и законно сочетается с `ids`; адрес канонический — id по возрастанию, при полном наборе классов параметра нет вовсе. Диаграмма строится по ИТОГУ ДОГОВОРА, а не по выбранной статье классификатора (переключатель корзины ДГП/ДС/Итого она при этом слушает), столбцы идут ОТ СТАРЫХ К НОВЫМ (у таблицы порядок обратный, `signed_date DESC`, и это осознанная цена: у диаграммы горизонтальная ось — время). Единица диаграммы («₽/м²» либо сумма договора) — состояние страницы, в URL её нет. В режиме «Единая» действующая ставка показа ПИШЕТСЯ В АДРЕС: сужение по классу меняет состав выборки, а значит и серверный предвыбор ставки, и без записи числа поехали бы от нажатия на чип. Семантика и DoD — [спека](docs/superpowers/specs/2026-08-17-contract-comparison-design.md), приведение к ценовому уровню — [спека](docs/superpowers/specs/2026-08-18-inflation-adjustment-design.md), диаграмма и фильтр — [спека](docs/superpowers/specs/2026-08-19-comparison-cost-chart-design.md).
+8. **Тендеры** — `/tenders` и `/tenders/:id`: список, карточка с решёткой «участники × раунды», панель раунда (`?round=`) с четырьмя состояниями расчётной стоимости, загрузка сводной таблицы, удаление участника с подтверждением состава (token). Сравнение участников между собой — фича 3 ([спека](docs/superpowers/specs/2026-08-26-tenders-contour-design.md) §2.14).
 
 ## 8. Хранилище файлов
 
-Локальная директория за абстракцией `Storage` (`save/get/delete`, реализация `LocalStorage`, путь из настроек). Требования: имя на диске = непрозрачный ключ (uuid), оригинальное имя — только в БД; никаких путей от клиента; выдача только через авторизованный `GET /api/v1/import-jobs/{id}/file`, не через статику. Ретенция: файлы jobs со статусом `error` старше 30 дней (настройка) удаляются проверкой при старте приложения — т.е. при первом запуске после истечения срока, не ровно в срок; файлы `done`-jobs хранятся бессрочно (аудит), пока жив договор; удаление договора удаляет их после коммита доменной транзакции, best-effort (v6.7). S3-реализация — потом, без правки вызывающих мест.
+Локальная директория за абстракцией `Storage` (`save/get/delete`, реализация `LocalStorage`, путь из настроек). Требования: имя на диске = непрозрачный ключ (uuid), оригинальное имя — только в БД; никаких путей от клиента; выдача только через авторизованный `GET /api/v1/import-jobs/{id}/file`, не через статику. Ретенция: файлы jobs со статусом `error` старше 30 дней (настройка) удаляются проверкой при старте приложения — т.е. при первом запуске после истечения срока, не ровно в срок; файлы `done`-jobs хранятся бессрочно (аудит), пока жив владелец — договор либо раунд тендера; удаление договора, раунда или тендера удаляет их после коммита доменной транзакции, best-effort; удаление участника тендера файлы НЕ трогает — job и результат разбора остаются аудитом (спека контура §2.11). S3-реализация — потом, без правки вызывающих мест.
 
 ## 9. Процесс разработки
 

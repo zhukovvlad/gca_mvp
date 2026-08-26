@@ -1,7 +1,8 @@
 """Оркестратор разбора сметы ГП.
 
-Точка входа парсера: XLSX → JSON-структура, которая ложится в
-`estimate_raw_data.raw_data` и разбирается импортом фазы 4 (AGENTS.md §5, шаги 2–3).
+Точка входа парсера: XLSX → JSON-структура. Точный результат сохраняется в
+`import_jobs.parsed_data` (+ `parser_version`); `estimate_raw_data.raw_data` —
+её проекция под сметой. Разбирается импортом фазы 4 (AGENTS.md §5, шаги 2–3).
 
 Соответствует `app/parse.py` исходника, но без всего, что относилось к
 тендерному конвейеру: регистрации на Go-сервере, генерации markdown, чанков и
@@ -37,8 +38,9 @@ from .sheet import normalized_cell_text
 
 log = logging.getLogger(__name__)
 
-# Версия формата разбора. Пишется в `estimate_raw_data.parser_version`
-# (AGENTS.md §4): по ней видно, каким кодом получен сохранённый JSON.
+# Версия формата разбора. Пишется в `import_jobs.parser_version` (точный
+# результат разбора) и в `estimate_raw_data.parser_version` (её проекция под
+# сметой, AGENTS.md §4): по ней видно, каким кодом получен сохранённый JSON.
 #
 # Это НЕ `norm_version` из §4: версия нормализации наименований живёт отдельно и
 # вводится в фазе 4 вместе с матчингом, потому что её инкремент требует миграции
@@ -87,7 +89,9 @@ class ParseResult:
     """Результат разбора одной сметы."""
 
     data: dict[str, Any]
-    """Полная JSON-структура для `estimate_raw_data.raw_data`."""
+    """Полная JSON-структура разбора; сохраняется в `import_jobs.parsed_data` —
+    это точный результат. `estimate_raw_data.raw_data` под сметой хранит лишь
+    проекцию этих данных."""
 
     parser_version: str = PARSER_VERSION
     """Версия парсера, которой получен `data`."""

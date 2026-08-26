@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from parser.constants import (
@@ -215,6 +216,48 @@ def proposal(
         if additional_info is not None
         else {"Условия оплаты": "Аванс 30%", "Гарантия": ""},
     }
+
+
+TABLE_PARSE_BASELINE_TITLE = "Расчетная стоимость"
+
+
+def baseline_proposal_block(
+    positions: list[dict[str, Any]], *, total: str = "1200.00"
+) -> dict[str, Any]:
+    """Блок «Расчетная стоимость» ПОСЛЕ постобработки ВАЛИДНОЙ базы (спека контура
+    §1.3, §2.9): заголовок точный, `additional_info` вырезан `postprocess`-ом,
+    итог ненулевой — иначе `_is_baseline_valid` заменил бы блок заглушкой."""
+    block = proposal(positions, title=TABLE_PARSE_BASELINE_TITLE, inn=None,
+                     summary={
+                         JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", total),
+                     })
+    block.pop(JSON_KEY_CONTRACTOR_ADDITIONAL_INFO)
+    return block
+
+
+def round_payload(
+    participants: list[dict[str, Any]],
+    *,
+    baseline: dict[str, Any] | None = None,
+    lots: int = 1,
+    **header: Any,
+) -> dict[str, Any]:
+    """JSON сводной таблицы раунда в форме `ParseResult.data` после
+    `normalize_lots_json_structure`: N предложений под `contractor_N` в каждом
+    лоте, baseline — валидный блок либо заглушка."""
+    lots_dict = {}
+    for n in range(1, lots + 1):
+        lots_dict[f"lot_{n}"] = {
+            JSON_KEY_LOT_TITLE: f"Лот №{n} - Тестовый",
+            JSON_KEY_PROPOSALS: {
+                f"contractor_{i}": copy.deepcopy(p) for i, p in enumerate(participants, start=1)
+            },
+            JSON_KEY_BASELINE_PROPOSAL: copy.deepcopy(baseline)
+            if baseline is not None
+            else {JSON_KEY_CONTRACTOR_TITLE: BASELINE_MISSING_TITLE},
+        }
+    header.setdefault("tender_title", "Сводная таблица раунда")
+    return estimate_payload(lots=lots_dict, **header)
 
 
 def _default_position() -> dict[str, Any]:

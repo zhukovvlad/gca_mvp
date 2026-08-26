@@ -399,3 +399,83 @@ class TestRealNormalization:
             "Устройство стяжек"
         )
         assert row.kind == CatalogKind.TO_REVIEW.value
+
+
+# ---------------------------------------------------------------------------
+#  §2.3: три факта об одном файле — parsed_data сессией A
+# ---------------------------------------------------------------------------
+
+class TestParseAudit:
+    """Три факта об одном файле (спека контура §2.3): точный ParseResult
+    остаётся у job, что бы ни случилось с импортом."""
+
+    def test_done_job_keeps_parsed_data_and_version(self, job_env):
+        payload = payload_for(job_env.contract)
+        job = job_env.run(payload, parse=fake_parse(payload, version="4.0.0"))
+        assert job.status == ImportJobStatus.done.value
+        assert job.parsed_data == payload
+        assert job.parser_version == "4.0.0"
+        assert job.estimates_created == 1
+
+    def test_failed_import_still_keeps_parsed_data(self, job_env):
+        """Инъекция отказа ПОСЛЕ парсинга: домен откатился, аудит разбора — нет."""
+        payload = payload_for(job_env.contract)
+        # Два предложения в лоте — договорный путь отвергает такой файл в
+        # _validate_payload, то есть после успешного парсинга.
+        payload["lots"]["lot_1"]["proposals"]["contractor_2"] = dict(
+            payload["lots"]["lot_1"]["proposals"]["contractor_1"]
+        )
+        job = job_env.run(payload, parse=fake_parse(payload, version="4.0.0"))
+        assert job.status == ImportJobStatus.error.value
+        assert job.parsed_data == payload
+        assert job.parser_version == "4.0.0"
+        assert job.estimates_created is None
+        assert job_env.estimates() == []
+
+    def test_parse_failure_leaves_both_null(self, job_env):
+        def broken(_handle):
+            raise EstimateParseError("не смета")
+
+        job = job_env.run(None, parse=broken)
+        assert job.status == ImportJobStatus.error.value
+        assert job.parsed_data is None and job.parser_version is None
+
+
+# ---------------------------------------------------------------------------
+#  Раунд (спека контура §2.5): один файл — N offer-смет + baseline, один
+#  матчинг на весь набор.
+# ---------------------------------------------------------------------------
+
+class TestRoundJob:
+    def test_round_job_creates_all_estimates_and_matches_once(self, job_env, monkeypatch):
+        from services import import_pipeline as pipeline_module
+        from tests.payloads import baseline_proposal_block, proposal, round_payload
+
+        rnd = job_env.factories.TenderRoundFactory.create()
+        job_env.db.flush()
+        job = job_env.factories.ImportJobFactory.create(
+            contract=None, round_id=rnd.id, file_key=job_env.storage.save(b"PK\x03\x04x"),
+            status=ImportJobStatus.pending.value,
+        )
+        job_env.db.commit()
+
+        calls = {"n": 0}
+        real_match = pipeline_module.match_positions
+        def counting_match(db, items):
+            calls["n"] += 1
+            return real_match(db, items)
+        monkeypatch.setattr(pipeline_module, "match_positions", counting_match)
+
+        payload = round_payload(
+            [proposal([position(job_title="Работа", unit="м2", unit_cost_total="10", total_cost_total="10")], title="ООО А", inn="7700000001"),
+             proposal([position(job_title="Работа", unit="м2", unit_cost_total="11", total_cost_total="11")], title="ООО Б", inn="7700000002")],
+            baseline=baseline_proposal_block([position(job_title="Работа", unit="м2", unit_cost_total="9", total_cost_total="9")]),
+        )
+        done = job_env.run(payload, job=job, parse=fake_parse(payload, version="4.0.0"))
+
+        assert done.status == ImportJobStatus.done.value
+        assert done.estimates_created == 3
+        assert calls["n"] == 1
+        assert done.positions_total == 3
+        assert (done.matched_cache + done.matched_exact + done.matched_nonposition + done.to_review) == done.positions_total
+        assert done.parsed_data == payload

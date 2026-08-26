@@ -189,8 +189,14 @@ export interface ImportJobCounters {
 
 export interface ImportJob {
   id: number;
-  contract_id: number;
-  amendment_no: number | null;
+  /** Владелец задания (спека контура §2.13): договор либо раунд тендера. */
+  owner_type: "contract" | "round";
+  contract_id?: number;
+  amendment_no?: number | null;
+  tender_id?: number;
+  round_id?: number;
+  /** Сметы, созданные ЭТИМ заданием — только у раунда. */
+  estimate_ids?: number[];
   filename: string;
   file_sha256: string;
   status: ImportJobStatus;
@@ -198,7 +204,13 @@ export interface ImportJob {
   warnings: string[];
   counters: ImportJobCounters;
   /** Смета ТЕКУЩЕЙ пары (contract_id, amendment_no), а не «этого задания». */
-  estimate_id: number | null;
+  estimate_id?: number | null;
+  /**
+   * 1 у договора, N(+1) у раунда; `null` у заданий до 0015 — И у задания,
+   * которое ещё не завершилось (или завершилось `error`): счётчик появляется
+   * вместе со сметами, на `done`, а не заранее.
+   */
+  estimates_created: number | null;
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -214,6 +226,97 @@ export interface UploadEstimateInput {
   contract_id: number;
   amendment_no?: number | null;
   replace?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+//  Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13)
+// ---------------------------------------------------------------------------
+
+export interface TenderRow {
+  id: number;
+  tender_number: string;
+  title: string;
+  object_id: number;
+  object_title: string;
+  /** Снимок класса на момент торга (§4) — не класс объекта сейчас. */
+  rate_class_id: number;
+  rate_class_title: string;
+  rounds_count: number;
+  participants_count: number;
+  created_at: string | null;
+}
+
+export interface TenderRoundRow {
+  id: number;
+  stage_no: number;
+  label: string | null;
+  held_on: string | null;
+  latest_job: { id: number; status: ImportJobStatus; filename: string; finished_at: string | null; created_at: string | null } | null;
+  /** Текущий done-job с полным набором смет (§2.12); null — файла нет или состав изменён. */
+  current_job_id: number | null;
+  baseline_estimate_id: number | null;
+  baseline_total_including_vat: Decimal | null;
+}
+
+export interface TenderParticipant {
+  package_id: number;
+  contractor_id: number;
+  title: string;
+  inn: string;
+}
+
+/** Ячейка решётки. Три состояния данными, не выводом клиента (§2.13):
+ *  offer_id null — не участвовал; offer_id есть, estimate_id null — предложение
+ *  было, сметы сейчас нет; оба есть — смета загружена. */
+export interface TenderCell {
+  round_id: number;
+  package_id: number;
+  offer_id: number | null;
+  estimate_id: number | null;
+  total_including_vat: Decimal | null;
+}
+
+export interface TenderCard extends Omit<TenderRow, "rounds_count" | "participants_count"> {
+  notes: string | null;
+  object_address: string | null;
+  rounds: TenderRoundRow[];
+  participants: TenderParticipant[];
+  cells: TenderCell[];
+}
+
+export interface TenderInput {
+  object_id: number;
+  title: string;
+  tender_number: string;
+  rate_class_id?: number | null;
+  notes?: string | null;
+}
+
+export interface RoundInput {
+  stage_no: number;
+  label?: string | null;
+  held_on?: string | null;
+}
+
+export interface RoundImportJob extends ImportJob {
+  is_current: boolean;
+}
+
+export interface UploadRoundInput {
+  file: File;
+  tender_id: number;
+  round_id: number;
+  replace?: boolean;
+}
+
+export interface ParticipantDeletionPreview {
+  code: "confirmation_required";
+  message: string;
+  rounds_count: number;
+  estimates_count: number;
+  positions_count: number;
+  overrides_count: number;
+  confirmation_token: string;
 }
 
 // ---------------------------------------------------------------------------

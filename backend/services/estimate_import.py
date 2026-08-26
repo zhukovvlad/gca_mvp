@@ -33,7 +33,6 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from models import (
-    Contract,
     Estimate,
     EstimateAdditionalWork,
     EstimateCategoryOverride,
@@ -63,6 +62,7 @@ from parser.constants import (
     JSON_KEY_CONTRACTOR_SUMMARY,
     JSON_KEY_CONTRACTOR_TITLE,
     JSON_KEY_CONTRACTOR_WIDTH,
+    JSON_KEY_DEVIATION_FROM_CALCULATED_COST,
     JSON_KEY_EXECUTOR,
     JSON_KEY_EXECUTOR_DATE,
     JSON_KEY_INDIRECT_COSTS,
@@ -96,7 +96,9 @@ from services.category_resolution import (
     ProposalResolution,
     RowKind,
 )
+from services.import_owners import EstimateOwner, HeaderTruth
 from services.unit_resolution import ResolvedUnit, UnitResolver
+from utils import canonicalize_inn
 
 log = logging.getLogger(__name__)
 
@@ -284,43 +286,50 @@ def _loose(value: Any) -> str:
     return " ".join(text.split())
 
 
-def _digits(value: Any) -> str:
-    return "".join(ch for ch in str(value or "") if ch.isdigit())
-
-
-def compare_header_with_contract(
-    data: dict[str, Any], contract: Contract, proposal_data: dict[str, Any] | None
+def compare_header(
+    data: dict[str, Any], truth: HeaderTruth, proposal_data: dict[str, Any] | None
 ) -> list[str]:
-    """Сверяет реквизиты из шапки XLSX с карточкой договора.
+    """Сверяет реквизиты из шапки XLSX с истиной владельца (спека контура §2.4).
 
     Источник истины — карточка (§3): из файла ничего не апсертится. Расхождения
-    не блокируют импорт, они уходят в `import_jobs.warnings`.
+    не блокируют импорт, они уходят в `import_jobs.warnings`. Поле истины
+    `None` означает «сверять нечем» — так у baseline нет подрядчика.
     """
     warnings: list[str] = []
 
     def mismatch(label: str, in_file: Any, in_card: Any) -> None:
         warnings.append(
-            f"{label} в файле («{in_file}») не совпадает с карточкой договора («{in_card}»). "
+            f"{label} в файле («{in_file}») не совпадает с карточкой («{in_card}»). "
             "Импортировано по карточке — она источник истины."
         )
 
     file_object = _text(data.get(JSON_KEY_TENDER_OBJECT))
-    if file_object and _loose(file_object) != _loose(contract.object.title):
-        mismatch("Объект", file_object, contract.object.title)
+    if file_object and truth.object_title is not None and _loose(file_object) != _loose(truth.object_title):
+        mismatch("Объект", file_object, truth.object_title)
 
     file_address = _text(data.get(JSON_KEY_TENDER_ADDRESS))
-    if file_address and _loose(file_address) != _loose(contract.object.address):
-        mismatch("Адрес объекта", file_address, contract.object.address)
+    if file_address and truth.object_address is not None and _loose(file_address) != _loose(truth.object_address):
+        mismatch("Адрес объекта", file_address, truth.object_address)
 
-    if proposal_data:
+    if proposal_data and truth.contractor_title is not None:
         file_contractor = _text(proposal_data.get(JSON_KEY_CONTRACTOR_TITLE))
-        if file_contractor and _loose(file_contractor) != _loose(contract.contractor.title):
-            mismatch("Подрядчик", file_contractor, contract.contractor.title)
+        if file_contractor and _loose(file_contractor) != _loose(truth.contractor_title):
+            mismatch("Подрядчик", file_contractor, truth.contractor_title)
 
-        file_inn = _digits(proposal_data.get(JSON_KEY_CONTRACTOR_INN))
-        card_inn = _digits(contract.contractor.inn)
+        file_inn = canonicalize_inn(proposal_data.get(JSON_KEY_CONTRACTOR_INN))
+        card_inn = canonicalize_inn(truth.contractor_inn)
         if file_inn and card_inn and file_inn != card_inn:
-            mismatch("ИНН подрядчика", file_inn, contract.contractor.inn)
+            mismatch("ИНН подрядчика", file_inn, truth.contractor_inn)
+
+        # Адрес и аккредитация — только там, где истина их несёт: у предложения
+        # раунда (все четыре поля из пакета), у договора они None и не сверяются.
+        file_address = _text(proposal_data.get(JSON_KEY_CONTRACTOR_ADDRESS))
+        if file_address and truth.contractor_address is not None and _loose(file_address) != _loose(truth.contractor_address):
+            mismatch("Адрес подрядчика", file_address, truth.contractor_address)
+
+        file_accreditation = _text(proposal_data.get(JSON_KEY_CONTRACTOR_ACCREDITATION))
+        if file_accreditation and truth.contractor_accreditation is not None and _loose(file_accreditation) != _loose(truth.contractor_accreditation):
+            mismatch("Аккредитация подрядчика", file_accreditation, truth.contractor_accreditation)
 
     return warnings
 
@@ -381,8 +390,7 @@ def find_estimate(db: Session, contract_id: int, amendment_no: int | None) -> Es
 def import_estimate(
     db: Session,
     *,
-    contract: Contract,
-    amendment_no: int | None,
+    owner: EstimateOwner,
     data: dict[str, Any],
     parser_version: str,
     import_job_id: int | None,
@@ -397,8 +405,8 @@ def import_estimate(
 
     Args:
         db: сессия B (домен + финальный статус), транзакция уже открыта.
-        contract: карточка договора — источник истины по объекту и подрядчику.
-        amendment_no: номер допсоглашения; None — исходная смета.
+        owner: владелец сметы (спека контура §2.4): куда пишется estimates, с
+            чем сверяется шапка, чей подрядчик у предложения.
         data: `ParseResult.data`.
         parser_version: `ParseResult.parser_version`.
         import_job_id: задание, которым загружена смета.
@@ -426,14 +434,32 @@ def import_estimate(
     # деньги» обязано быть фактом уровня сметы, а не предложения — иначе
     # расшивка задвоилась бы между предложениями. Предупреждения владельца
     # уходят в аккумулятор ОДИН раз, здесь же.
-    owner = decide_owner(data)
-    warnings.extend(owner.warnings)
+    #
+    # Названа `works_owner`, а не `owner`: параметр функции `owner: EstimateOwner`
+    # уже занял это имя (владелец СМЕТЫ, спека контура §2.4) — разные понятия,
+    # у каждого своё «чьё это».
+    #
+    # Контур допработ выключен целиком для baseline (`owner.imports_additional_works`,
+    # спека §2.9): у базы нет «Сведений», а `additional_info` вырезан
+    # постобработкой — `decide_owner` там нечего решать, и звать его означало бы
+    # либо KeyError на вырезанном ключе, либо решение поверх данных, которых по
+    # смыслу владельца не существует.
+    works_owner = decide_owner(data) if owner.imports_additional_works else None
+    if works_owner is not None:
+        warnings.extend(works_owner.warnings)
 
-    replaced_id = _replace_existing(db, contract.id, amendment_no, replace, warnings)
+    if replace and owner.replace_scope is None:
+        raise ValueError(
+            "replace допустим только для договорного владельца; замена раунда делается до цикла"
+        )
+    replaced_id = (
+        _replace_existing(db, owner.replace_scope[0], owner.replace_scope[1], replace, warnings)
+        if owner.replace_scope is not None
+        else None
+    )
 
     estimate = Estimate(
-        contract_id=contract.id,
-        amendment_no=amendment_no,
+        **owner.estimate_columns(),
         title=_text(data.get(JSON_KEY_TENDER_TITLE)),
         data_prepared_on_date=_prepared_date(data, warnings),
         import_job_id=import_job_id,
@@ -464,17 +490,18 @@ def import_estimate(
         db.add(lot)
         db.flush()
 
-        _warn_on_unexpected_baseline(lot_content, lot_key, warnings)
+        if owner.warns_on_unexpected_baseline:
+            _warn_on_unexpected_baseline(lot_content, lot_key, warnings)
 
         proposal_data = extract_single_proposal(lot_content)
-        warnings.extend(compare_header_with_contract(data, contract, proposal_data))
+        warnings.extend(compare_header(data, owner.truth, proposal_data))
         _log_ignored_contractor_details(proposal_data)
 
         proposal = Proposal(
             lot_id=lot.id,
-            # Подрядчик берётся из карточки договора, а не из файла (§3).
-            contractor_id=contract.contractor_id,
-            is_baseline=False,
+            # Подрядчик — из карточки владельца, не из файла (§3); у baseline None.
+            contractor_id=owner.proposal_contractor_id,
+            is_baseline=owner.is_baseline,
             contractor_coordinate=_text(proposal_data.get(JSON_KEY_CONTRACTOR_COORDINATE)),
             contractor_width=_int_or_none(proposal_data.get(JSON_KEY_CONTRACTOR_WIDTH)),
             contractor_height=_int_or_none(proposal_data.get(JSON_KEY_CONTRACTOR_HEIGHT)),
@@ -522,6 +549,7 @@ def import_estimate(
             warnings=warnings,
             long_titles=long_titles,
             lot_key=str(lot_key),
+            reads_deviation=owner.reads_deviation,
         )
         positions_total += lot_positions
         positions_to_match.extend(lot_to_match)
@@ -529,17 +557,19 @@ def import_estimate(
 
         # Допработы — ПОСЛЕ позиций, в той же транзакции сессии B (спека §2.8
         # п.4): владелец уже решён предпассом выше, план резолва и позиции уже
-        # готовы для резолва ссылки на раздел (спека §2.5).
-        _import_additional_works(
-            db,
-            proposal_id=proposal.id,
-            proposal_data=proposal_data,
-            positions=positions,
-            resolution=resolution,
-            is_owner=lot_key == owner.owner_lot_key,
-            lot_key=str(lot_key),
-            warnings=warnings,
-        )
+        # готовы для резолва ссылки на раздел (спека §2.5). `works_owner is None`
+        # у baseline (контур выключен целиком, спека §2.9) — блок не вызывается.
+        if works_owner is not None:
+            _import_additional_works(
+                db,
+                proposal_id=proposal.id,
+                proposal_data=proposal_data,
+                positions=positions,
+                resolution=resolution,
+                is_owner=lot_key == works_owner.owner_lot_key,
+                lot_key=str(lot_key),
+                warnings=warnings,
+            )
 
     warnings.extend(unit_resolver.unknown_warnings())
     warnings.extend(_squash(value_problems))
@@ -955,6 +985,7 @@ def _import_positions(
     warnings: list[str],
     long_titles: list[LongTitle],
     lot_key: str,
+    reads_deviation: bool,
 ) -> tuple[int, list[PositionToMatch], bool]:
     """Строки сметы. Возвращает (сколько строк, что матчить, есть ли деньги).
 
@@ -1017,8 +1048,14 @@ def _import_positions(
                 total_cost.get(JSON_KEY_INDIRECT_COSTS), value_problems, where
             ),
             total_cost_total=_money(total_cost.get(JSON_KEY_TOTAL), value_problems, where),
-            # В сметах ГП baseline нет, поле остаётся NULL (§4).
-            deviation_from_baseline_cost=None,
+            # Только у offer-позиций (спека контура §2.10): postprocess оставил
+            # ключ там, где база лота валидна, и вычистил там, где нет. У договора
+            # и у baseline — принудительно NULL, даже если ключ пришёл.
+            deviation_from_baseline_cost=_money(
+                raw_position.get(JSON_KEY_DEVIATION_FROM_CALCULATED_COST), value_problems, where
+            )
+            if reads_deviation
+            else None,
             is_chapter=is_chapter,
             chapter_ref_in_proposal=_text(raw_position.get(JSON_KEY_CHAPTER_REF)),
             smr_article_raw=decision.smr_article_raw,

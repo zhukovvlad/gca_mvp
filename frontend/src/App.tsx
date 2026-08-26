@@ -19,6 +19,8 @@ import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
+import TenderCardPage from "@/pages/tenders/TenderCardPage";
+import TendersPage from "@/pages/tenders/TendersPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -74,6 +76,14 @@ export default function App() {
                 */}
                 <Route path="/contracts" element={<ContractsPage />} />
                 <Route path="/contracts/:contractId" element={<ContractCardPage />} />
+                {/*
+                  Тендеры (спека 2026-08-26-tenders-contour §2.13) — чтение
+                  доступно и `member` (§3), тем же решением §6.2, что у
+                  договоров: заведение и правка карточки — право `admin`,
+                  экран лишь не рисует кнопок, которых у member нет.
+                */}
+                <Route path="/tenders" element={<TendersPage />} />
+                <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*
                   Паспорт проекта (Ф6 фазы 7) — чтение, поэтому доступен и `member` (§3):

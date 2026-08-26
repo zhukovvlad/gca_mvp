@@ -15,6 +15,7 @@ from models import CatalogKind, CatalogPosition, MatchingCache, MatchSource, Pos
 from parser.sanitize_text import normalize_job_title_with_lemmatization
 from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
+from services.import_owners import contract_estimate_owner
 from services.matching import (
     AUTO_CACHE_TTL_DAYS,
     NORM_VERSION,
@@ -76,8 +77,7 @@ def import_and_match(db_session, resolver, contract, positions, *, now=None, ame
     """Импорт + матчинг в одной транзакции — как это делает сессия B (§5)."""
     outcome = import_estimate(
         db_session,
-        contract=contract,
-        amendment_no=amendment_no,
+        owner=contract_estimate_owner(contract, amendment_no),
         data=payload_for(contract, positions),
         parser_version="1.0.0",
         import_job_id=None,
