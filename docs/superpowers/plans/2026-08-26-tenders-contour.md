@@ -1414,9 +1414,46 @@ DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run alem
 ```
 Expected: `0014 -> 0015`.
 
-Три ветви отказа доказаны `TestDowngradeBlockers` (шаг 9); здесь — один
-настоящий Alembic-откат на живой БД. Результат обоих прогонов — в отчёт
-исполнителя.
+Три ветви отказа по отдельности доказаны `TestDowngradeBlockers` (шаг 9). Здесь
+— **связка целиком** на живой БД: `downgrade()` → `_downgrade_blockers` →
+`_downgrade_refusal` → `RuntimeError` ДО первого DDL. Наполнить схему одним
+тендером (три команды по отдельности, из `backend/`):
+
+```
+DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run python -c "
+import os, sqlalchemy as sa
+e = sa.create_engine(os.environ['DATABASE_URL'])
+with e.begin() as c:
+    rc = c.execute(sa.text(\"INSERT INTO rate_classes (title) VALUES ('dg-класс') RETURNING id\")).scalar_one()
+    ob = c.execute(sa.text(\"INSERT INTO objects (title, address) VALUES ('dg-объект', '-') RETURNING id\")).scalar_one()
+    c.execute(sa.text(\"INSERT INTO tenders (object_id, title, tender_number, rate_class_id) VALUES (:o, 'dg', 'DG-1', :r)\"), {'o': ob, 'r': rc})
+print('seeded')
+"
+```
+
+```
+DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run alembic downgrade 0014
+```
+Expected: `RuntimeError: Откат 0015 невозможен: тендеров — 1, заданий импорта
+раундов — 0, смет предложений и baseline — 0. …`; схема осталась на 0015
+(`alembic current` → `0015`).
+
+```
+DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run python -c "
+import os, sqlalchemy as sa
+e = sa.create_engine(os.environ['DATABASE_URL'])
+with e.begin() as c:
+    c.execute(sa.text(\"DELETE FROM tenders WHERE tender_number = 'DG-1'\"))
+    c.execute(sa.text(\"DELETE FROM objects WHERE title = 'dg-объект'\"))
+    c.execute(sa.text(\"DELETE FROM rate_classes WHERE title = 'dg-класс'\"))
+print('cleaned')
+"
+```
+
+Затем `downgrade 0014` — успех, `upgrade head` — снова `0015`. Если у `objects`
+или `rate_classes` есть обязательные колонки, не названные здесь, — дополнить
+`INSERT` по их определению в `models.py`, не убирая проверку. Вывод всех
+команд — в отчёт исполнителя.
 
 - [ ] **Step 11: весь набор — старое не задето**
 
@@ -2812,7 +2849,17 @@ class TestGetOrCreate:
                                      address=None, accreditation=None, warnings=warnings)
         assert c.id == existing.id
         assert db_session.get(Contractor, c.id).title == "ООО Карточка"
-        assert any("ООО Из файла" in w and "ООО Карточка" in w for w in warnings)
+        # Расхождение имени — забота compare_header, не get-or-create: здесь тихо.
+        assert warnings == []
+
+    def test_name_mismatch_is_reported_exactly_once_per_lot(self, db_session, factories):
+        """Одно расхождение — одно предупреждение (из compare_header), а не два."""
+        factories.ContractorFactory.create(inn="7700000001", title="ООО Карточка")
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        outcome = _run_round(db_session, rnd, round_payload([P1()]))  # в файле — «ООО Первый»
+        mismatches = [w for w in outcome.warnings if "Подрядчик" in w and "ООО Первый" in w and "ООО Карточка" in w]
+        assert len(mismatches) == 1
 
     def test_package_and_offer_are_idempotent(self, db_session, factories):
         rnd = factories.TenderRoundFactory.create()
@@ -2876,11 +2923,9 @@ def get_or_create_contractor(
         warnings.append(
             f"Участник «{contractor.title}» (ИНН {inn}) заведён в справочник подрядчиков из файла раунда."
         )
-    elif title and contractor.title != title:
-        warnings.append(
-            f"Подрядчик с ИНН {inn} в файле назван «{title}», в справочнике — «{contractor.title}». "
-            "Карточка не изменена — она источник истины."
-        )
+    # Расхождения СУЩЕСТВУЮЩЕЙ карточки с файлом (имя, адрес, аккредитация)
+    # здесь не проверяются: это делает `compare_header` по истине владельца —
+    # один раз и в одном месте, иначе одно расхождение давало бы два предупреждения.
     return contractor
 
 
@@ -4723,12 +4768,17 @@ def grid(committing_db, committing_factories, committing_session_factory):
     import_round(committing_db, tender_round=rnd, data=round_payload([P_A()]), parser_version="4.0.0",
                  import_job_id=None, replace=False, unit_resolver=UnitResolver(committing_db),
                  category_resolver=CategoryResolver.from_db(committing_db))
+    # Второй раунд — ПУСТОЙ: в нём у участника ещё нет Offer, поэтому импорт в
+    # тесте дедлока делает настоящий INSERT (FK берёт KEY SHARE на пакете), а не
+    # ON CONFLICT DO NOTHING, который на занятой паре не взял бы ничего.
+    empty_round = committing_factories.TenderRoundFactory.create(tender=tender, stage_no=2)
     committing_db.commit()
     package_id = committing_db.execute(sa.select(Offer.package_id).where(Offer.round_id == rnd.id)).scalar_one()
 
     class G:
         tender_id = tender.id
         round_id = rnd.id
+        empty_round_id = empty_round.id
         package = package_id
         session_factory = committing_session_factory
 
@@ -4835,12 +4885,15 @@ def test_import_and_participant_deletion_do_not_deadlock(grid):
     Импорт воспроизводится его ТОЧНОЙ последовательностью локов сырым SQL
     (tender FOR KEY SHARE → round FOR UPDATE → INSERT offers, который берёт
     FOR KEY SHARE на пакете по FK); удаление участника — настоящим
-    `delete_participant`. Сценарий:
+    `delete_participant`. Импорт идёт в ПУСТОЙ второй раунд: там у участника
+    Offer ещё нет, и INSERT настоящий — на занятой паре `ON CONFLICT DO NOTHING`
+    не вставил бы строку, FK не проверялась бы, и ключевой захват пакета не
+    состоялся бы вовсе (находка ревью гейта 3). Сценарий:
 
-    1. импорт держит tender KEY SHARE и round FOR UPDATE;
+    1. импорт держит tender KEY SHARE и empty_round FOR UPDATE;
     2. удаление стартует и — по иерархии — упирается в tender FOR UPDATE;
-    3. импорт вставляет offer и коммитит;
-    4. удаление просыпается и доходит до конца.
+    3. импорт вставляет offer (KEY SHARE на пакете) и коммитит;
+    4. удаление просыпается, локирует раунды и пакет, доходит до конца.
 
     Снятие защиты — переставить в `delete_participant` лок пакета ПЕРЕД
     `_lock_tender`/`_lock_rounds`: тогда на шаге 2 удаление возьмёт пакет сразу
@@ -4859,7 +4912,7 @@ def test_import_and_participant_deletion_do_not_deadlock(grid):
         try:
             with session.begin():
                 session.execute(sa.text("SELECT id FROM tenders WHERE id = :t FOR KEY SHARE"), {"t": grid.tender_id})
-                session.execute(sa.text("SELECT id FROM tender_rounds WHERE id = :r FOR UPDATE"), {"r": grid.round_id})
+                session.execute(sa.text("SELECT id FROM tender_rounds WHERE id = :r FOR UPDATE"), {"r": grid.empty_round_id})
                 import_locked.set()
                 # Ждём, пока удаление либо встало на замок тендера (правильная
                 # иерархия), либо успело взять пакет (снятая защита).
@@ -4867,10 +4920,12 @@ def test_import_and_participant_deletion_do_not_deadlock(grid):
                 while time.monotonic() < deadline and not package_locked.is_set():
                     if _wait_until_a_backend_blocks(grid.session_factory, timeout=0.2):
                         break
-                session.execute(sa.text(
-                    "INSERT INTO offers (tender_id, round_id, package_id) VALUES (:t, :r, :p) "
-                    "ON CONFLICT (round_id, package_id) DO NOTHING"
-                ), {"t": grid.tender_id, "r": grid.round_id, "p": grid.package})
+                # Настоящий INSERT, без ON CONFLICT: занятая пара обязана уронить
+                # тест, а не тихо отменить захват пакета.
+                inserted = session.execute(sa.text(
+                    "INSERT INTO offers (tender_id, round_id, package_id) VALUES (:t, :r, :p) RETURNING id"
+                ), {"t": grid.tender_id, "r": grid.empty_round_id, "p": grid.package}).scalar_one()
+                assert inserted is not None
         except Exception as e:  # noqa: BLE001
             errors.append(f"import: {type(e).__name__}: {e}")
         finally:
@@ -4904,6 +4959,11 @@ def test_import_and_participant_deletion_do_not_deadlock(grid):
     assert import_done.wait(timeout=30), "импорт не завершился — потоки зависли"
     assert delete_done.wait(timeout=30), "удаление не завершилось — потоки зависли"
     assert errors == []
+    # Контроль корпуса: захват пакета состоялся — offer во втором раунде есть.
+    with grid.session_factory() as check:
+        assert check.execute(
+            sa.select(sa.func.count()).select_from(Offer).where(Offer.round_id == grid.empty_round_id)
+        ).scalar_one() == 1
 ```
 
 В `test_maintenance.py`:
@@ -5481,8 +5541,32 @@ describe("RoundUploadPanel (спека §2.14)", () => {
     renderWithProviders(<RoundUploadPanel tenderId={300} roundId={3001} round={round} />);
     expect(await screen.findByRole("alert")).toHaveTextContent(/Не удалось разобрать файл/);
   });
+
+  it("смена раунда через key пересоздаёт панель и показывает job НОВОГО раунда", async () => {
+    // Раунд 1 — pending-job, раунд 2 — error-job. Без key панель продолжала бы
+    // опрашивать 9102 (useState читает проп один раз).
+    handlerState.jobStatuses = ["parsing", "parsing", "error"];
+    const round1 = { ...sampleTenderCard.rounds[0], current_job_id: null,
+      latest_job: { id: 9102, status: "parsing" as const, filename: "r1.xlsx", finished_at: null, created_at: null } };
+    const round2 = { ...sampleTenderCard.rounds[1], current_job_id: null,
+      latest_job: { id: 9103, status: "error" as const, filename: "bad.xlsx", finished_at: null, created_at: null } };
+    const { rerender } = renderWithProviders(
+      <RoundUploadPanel key={round1.id} tenderId={300} roundId={round1.id} round={round1} />
+    );
+    expect(await screen.findByText("r1.xlsx")).toBeInTheDocument();
+
+    rerender(<RoundUploadPanel key={round2.id} tenderId={300} roundId={round2.id} round={round2} />);
+
+    expect(await screen.findByText("bad.xlsx")).toBeInTheDocument();
+    expect(screen.queryByText("r1.xlsx")).toBeNull();
+  });
 });
 ```
+
+`rerender` возвращается из `renderWithProviders` (это обёртка над `render`
+Testing Library). Хендлер `GET /api/v1/import-jobs/:id` берёт статус из
+`handlerState.jobStatuses` по счётчику опросов, поэтому третьим значением стоит
+`error` — его получит job 9103.
 
 - [ ] **Step 4: реализация `RoundUploadPanel`**
 
@@ -5509,6 +5593,13 @@ export function RoundUploadPanel({ tenderId, roundId, round }: { tenderId: numbe
   // есть только у полного done-набора (§2.12), и после перезагрузки страницы
   // идущий импорт или его ошибка исчезли бы с панели. latest_job — то, что
   // человек видел бы, не перезагружая.
+  //
+  // useState читает проп ОДИН раз, при монтировании. Смена раунда обязана
+  // пересоздать панель целиком — родитель ставит `key={round.id}` (см.
+  // TenderCardPage); иначе после `?round=` панель продолжала бы опрашивать job
+  // ПРЕЖНЕГО раунда. Эффект с setState здесь не годится: правило
+  // `react-hooks/set-state-in-effect` в этом проекте его запрещает (см.
+  // комментарий в ContractDeleteDialog).
   const [jobId, setJobId] = useState<number | undefined>(round.latest_job?.id);
   const [idempotent, setIdempotent] = useState(false);
   const [conflict, setConflict] = useState<{ file: File; detail: string } | null>(null);
@@ -5723,9 +5814,11 @@ export default function TenderCardPage() {
 
 Состав: `Breadcrumbs` (Тендеры → номер), `PageHeader` с кнопками admin (правка,
 новый этап, удалить тендер), реквизиты (`Surface`), `OfferGrid`, панель
-выбранного раунда: заголовок этапа, `BaselineStatus`, `RoundUploadPanel`,
-история загрузок раунда (`useRoundImportJobs`, `is_current` пилюлей), кнопка
-удаления этапа (admin). У каждого участника в решётке — кнопка удаления (admin)
+выбранного раунда: заголовок этапа, `BaselineStatus`,
+**`<RoundUploadPanel key={selected.id} … />`** — `key` обязателен: смена
+`?round=` пересоздаёт панель, иначе она опрашивала бы job прежнего раунда
+(комментарий в самой панели), история загрузок раунда (`useRoundImportJobs`,
+`is_current` пилюлей), кнопка удаления этапа (admin). У каждого участника в решётке — кнопка удаления (admin)
 → `ParticipantDeleteDialog`.
 
 `App.tsx`: `import TendersPage`, `TenderCardPage`; маршруты
