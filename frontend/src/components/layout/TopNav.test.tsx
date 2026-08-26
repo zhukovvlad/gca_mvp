@@ -37,4 +37,22 @@ describe("TopNav", () => {
     expect(screen.getByText("Нормативы")).toBeInTheDocument();
     expect(screen.getByText("Пользователи")).toBeInTheDocument();
   });
+
+  /**
+   * Тендер предшествует договору в самом домене (спека контура §2.13) —
+   * пункт «Тендеры» обязан стоять МЕЖДУ «Договоры» и «Ручной матчинг», а не
+   * просто где-то в списке: `getByText` выше прошёл бы и при пункте,
+   * закинутом в конец меню.
+   */
+  it("«Тендеры» стоит между «Договоры» и «Ручной матчинг»", () => {
+    renderWithProviders(<TopNav />);
+
+    const labels = screen.getAllByRole("link").map((link) => link.textContent);
+    const contractsIdx = labels.findIndex((l) => l === "Договоры");
+    const tendersIdx = labels.findIndex((l) => l === "Тендеры");
+    const reviewIdx = labels.findIndex((l) => l === "Ручной матчинг");
+
+    expect(tendersIdx).toBeGreaterThan(contractsIdx);
+    expect(tendersIdx).toBeLessThan(reviewIdx);
+  });
 });

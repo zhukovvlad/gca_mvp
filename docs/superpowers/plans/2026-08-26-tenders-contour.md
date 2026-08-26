@@ -5697,7 +5697,7 @@ git commit -m "feat(tenders-contour): общий ImportJobPanel; RoundUploadPane
 - Consumes: всё из задач 10–11.
 - Produces: `BaselineStatus({ round }: { round: TenderRoundRow; hasEstimates: boolean })` — одно из четырёх состояний §2.14 текстом; `OfferGrid({ card, selectedRoundId, onSelectRound })`; `ParticipantDeleteDialog({ tenderId, participant, onOpenChange })` — протокол token.
 
-- [ ] **Step 1: падающие тесты состояний baseline**
+- [x] **Step 1: падающие тесты состояний baseline**
 
 `BaselineStatus.test.tsx`:
 
@@ -5731,7 +5731,7 @@ describe("BaselineStatus — четыре состояния (спека §2.14)
 });
 ```
 
-- [ ] **Step 2: `BaselineStatus`**
+- [x] **Step 2: `BaselineStatus`**
 
 ```tsx
 import { StatusPill } from "@/components/ui-domain/StatusPill";
@@ -5772,7 +5772,7 @@ export function BaselineStatus({ round, hasEstimates }: { round: TenderRoundRow;
 
 Run: `cd frontend && npx vitest run src/components/tenders/BaselineStatus.test.tsx` — PASS.
 
-- [ ] **Step 3: `ParticipantDeleteDialog` — тест и реализация**
+- [x] **Step 3: `ParticipantDeleteDialog` — тест и реализация**
 
 Тест: открытие диалога вызывает `removeParticipant` без token → 409 →
 показывает preview («раундах: 2», «смет: 2», «позиций: 1 830», «ручных решений: 3»)
@@ -5787,7 +5787,7 @@ Run: `cd frontend && npx vitest run src/components/tenders/BaselineStatus.test.t
 `confirmation_required` → сохранить `detail` как preview; `active_import` →
 состояние ожидания; успех → `onOpenChange(false)`.
 
-- [ ] **Step 4: `OfferGrid`, `TenderFormDialog`, `RoundDeleteDialog`**
+- [x] **Step 4: `OfferGrid`, `TenderFormDialog`, `RoundDeleteDialog`**
 
 `OfferGrid` — `<Table>`: первая колонка — участник (название, ИНН), далее по
 колонке на раунд (`Этап {stage_no}` + `label`), заголовок колонки — кнопка выбора
@@ -5803,7 +5803,7 @@ Run: `cd frontend && npx vitest run src/components/tenders/BaselineStatus.test.t
 `RoundDeleteDialog` — `AlertDialog`: «Удалить этап {stage_no}? Уйдут сметы всех
 участников этого раунда и история его загрузок с файлами»; `useDeleteRound`.
 
-- [ ] **Step 5: страницы**
+- [x] **Step 5: страницы**
 
 `TendersPage` — по образцу `ContractsPage`: `PageHeader` «Тендеры», поиск
 (`useDebounce`), таблица (номер → ссылка на карточку, предмет, объект, класс,
@@ -5846,7 +5846,7 @@ export default function TenderCardPage() {
 `{ to: "/tenders", icon: Gavel, label: "Тендеры" }` после «Договоры»; импорт
 `Gavel` из `lucide-react`.
 
-- [ ] **Step 6: тесты страниц**
+- [x] **Step 6: тесты страниц**
 
 `TendersPage.test.tsx`: показывает номер, предмет, объект, счётчики;
 `member` не видит «Новый тендер». `TenderCardPage.test.tsx` (рендер через
@@ -5858,7 +5858,7 @@ export default function TenderCardPage() {
 
 Run: `cd frontend && npx vitest run src/pages/tenders src/components/tenders` — PASS.
 
-- [ ] **Step 7: lint, typecheck, весь фронт, Commit**
+- [x] **Step 7: lint, typecheck, весь фронт, Commit**
 
 Run: `cd frontend && npm run lint && npx tsc -b --noEmit` (две команды) и `npm test`.
 
