@@ -59,6 +59,19 @@ class TestRecovery:
         db_session.flush()
         assert retry.id != stuck.id
 
+    def test_recovery_frees_the_active_round_lock(self, db_session, factories):
+        """Новый частичный индекс — вторая точка, где неполное обобщение даёт
+        вечный 409 (спека §5 контура)."""
+        rnd = factories.TenderRoundFactory.create()
+        db_session.flush()
+        factories.ImportJobFactory.create(contract=None, round_id=rnd.id, status=ImportJobStatus.parsing.value, file_key="k-hang")
+        db_session.flush()
+
+        assert recover_interrupted_jobs(db_session) == 1
+
+        factories.ImportJobFactory.create(contract=None, round_id=rnd.id, status=ImportJobStatus.pending.value, file_key="k-again")
+        db_session.flush()  # без recovery здесь был бы IntegrityError по uq_import_jobs_active_round
+
 
 class TestRetention:
     def _aged_error_job(self, db_session, factories, storage, *, days_ago: int):

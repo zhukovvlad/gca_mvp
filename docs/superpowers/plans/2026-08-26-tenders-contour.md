@@ -4712,7 +4712,7 @@ git commit -m "feat(tenders-contour): API — тендеры, раунды, за
 **Interfaces:**
 - Consumes: `crud.tenders.delete_tender/delete_round/delete_participant/create_round`, `import_round`, `recover_interrupted_jobs`, `committing_session_factory`, `tmp_storage`.
 
-- [ ] **Step 1: тесты**
+- [x] **Step 1: тесты**
 
 `backend/tests/integration/test_tenders_concurrency.py`:
 
@@ -4985,12 +4985,12 @@ def test_import_and_participant_deletion_do_not_deadlock(grid):
         db_session.flush()  # без recovery здесь был бы IntegrityError по uq_import_jobs_active_round
 ```
 
-- [ ] **Step 2: прогон**
+- [x] **Step 2: прогон**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_concurrency.py tests/integration/test_maintenance.py -v`
 Expected: PASS все.
 
-- [ ] **Step 3: снятия защиты (контроллер)**
+- [x] **Step 3: снятия защиты (контроллер)**
 
 1. В `delete_participant` убрать `_lock_rounds(...)` — ожидается: тест
    `test_upload_wins_the_race...[participant]` красный (удаление не ждёт,
@@ -5005,7 +5005,7 @@ Expected: PASS все.
    таймауту — не пройдено: значит, тест не воспроизводит перекрёстный захват.
    Вернуть.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add backend/tests/integration/test_tenders_concurrency.py backend/tests/integration/test_maintenance.py
