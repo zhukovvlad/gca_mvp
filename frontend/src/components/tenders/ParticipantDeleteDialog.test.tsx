@@ -1,13 +1,25 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ParticipantDeleteDialog } from "./ParticipantDeleteDialog";
 import { handlerState } from "@/test/handlers";
 import { sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
+
+// Мок целиком, а не спай поверх реального модуля: `toast.error` нужен как
+// `vi.fn()`, который можно проверить на «не звали вовсе» — реальный sonner
+// кладёт уведомление в DOM асинхронно и через портал, и «не нашли текст на
+// экране» не отличило бы «не звали» от «ещё не отрисовалось».
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+  Toaster: () => null,
+}));
+
+import { toast } from "sonner";
 
 /**
  * Протокол `confirmation_token` (спека §2.11, задача 12): первый запрос — БЕЗ
@@ -18,7 +30,32 @@ import { renderWithProviders } from "@/test/utils";
  */
 const participant = sampleTenderCard.participants[0];
 
+/**
+ * Тот же глобальный `mutations.onError`, что в `App.tsx`: `toast.error(error
+ * instanceof Error ? error.message : "Произошла ошибка")`. Без него тест «нет
+ * тоста» проходил бы и без исправления — `createTestQueryClient()` из
+ * `@/test/utils` глобального обработчика не несёт, а `onError` на самой
+ * мутации молчит независимо от него. Это единственный способ здесь и правда
+ * воспроизвести баг: без страховки внутри `useDeleteParticipant` именно ЭТОТ
+ * обработчик и кладёт в тост сырую строку axios.
+ */
+function queryClientWithGlobalErrorToast(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0, staleTime: 0 },
+      mutations: {
+        retry: false,
+        onError: (error: unknown) => {
+          toast.error(error instanceof Error ? error.message : "Произошла ошибка");
+        },
+      },
+    },
+  });
+}
+
 describe("ParticipantDeleteDialog — протокол confirmation_token (§2.11)", () => {
+  afterEach(() => vi.clearAllMocks());
+
   it("открытие запрашивает preview и показывает состав удаляемого", async () => {
     renderWithProviders(
       <ParticipantDeleteDialog tenderId={300} participant={participant} onOpenChange={() => {}} />
@@ -134,5 +171,32 @@ describe("ParticipantDeleteDialog — протокол confirmation_token (§2.1
 
     expect(await screen.findByText(/Импорт раунда выполняется — дождитесь/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Удалить участника" })).toBeNull();
+  });
+
+  // Краснеет от: возврата `useDeleteParticipant` к отсутствию собственного
+  // `onError` (или от него, но без проверки `confirmation_required`) — запрос
+  // падал бы в глобальный обработчик `App.tsx`, а тот кладёт в тост сырую
+  // строку axios «Request failed with status code 409» для ОЖИДАЕМОГО первого
+  // шага протокола, которого preview на экране уже и так объясняет по-русски.
+  it("ожидаемый 409 confirmation_required не показывает тост-ошибку", async () => {
+    renderWithProviders(
+      <ParticipantDeleteDialog tenderId={300} participant={participant} onOpenChange={() => {}} />,
+      { queryClient: queryClientWithGlobalErrorToast() }
+    );
+
+    expect(await screen.findByText(/Раундов:\s*2/)).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  // Краснеет от: onError, который молчит на ЛЮБОЙ отказ (а не только
+  // `confirmation_required`) — настоящий сбой протокола (409 `active_import`,
+  // 404, 500) обязан дойти до человека, а не потеряться вместе с ожидаемым.
+  it('"active" — настоящий отказ показывает тост с текстом сервера', async () => {
+    handlerState.participantDeleteOutcome = "active";
+    renderWithProviders(
+      <ParticipantDeleteDialog tenderId={300} participant={participant} onOpenChange={() => {}} />
+    );
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Импорт раунда выполняется."));
   });
 });

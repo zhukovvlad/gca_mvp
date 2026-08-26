@@ -1101,8 +1101,16 @@ export function useUploadRound() {
 }
 
 /**
- * Удаление участника — протокол token (спека §2.11). Без тоста на ошибку:
- * 409 `confirmation_required` — не сбой, а preview, его показывает диалог.
+ * Удаление участника — протокол token (спека §2.11).
+ *
+ * Без собственного `onError` этот запрос падал бы в ГЛОБАЛЬНЫЙ обработчик
+ * (`App.tsx`), а тот кладёт в тост `error.message` — сырую строку axios вида
+ * «Request failed with status code 409». Для 409 `confirmation_required` это
+ * враньё: это не сбой, а ОЖИДАЕМЫЙ первый шаг протокола (preview состава),
+ * диалог его уже показывает своим текстом. Поэтому именно этот код молчит.
+ * Всякий ДРУГОЙ отказ того же запроса (409 `active_import`, 404, 500) —
+ * настоящий, и должен дойти до человека по-русски, текстом сервера, — через
+ * `toastApiError`, как у остальных мутаций.
  */
 export function useDeleteParticipant() {
   const qc = useQueryClient();
@@ -1113,6 +1121,10 @@ export function useDeleteParticipant() {
       invalidateTender(qc, tenderId);
       qc.invalidateQueries({ queryKey: qk.review.all });
       toast.success("Участник удалён; исходные файлы и результаты разбора сохранены");
+    },
+    onError: (error) => {
+      if (apiErrorCode(error) === "confirmation_required") return;
+      toastApiError(error);
     },
   });
 }
