@@ -231,7 +231,7 @@ pytest; React 19 / TanStack Query 5 / shadcn/ui / vitest + msw.
 - Produces: `utils.canonicalize_inn(value: Any) -> str` — только ASCII `[0-9]`
   из `str(value)`; `None` → `""`.
 
-- [ ] **Step 1: падающий юнит-тест**
+- [x] **Step 1: падающий юнит-тест**
 
 `backend/tests/unit/test_inn.py`:
 
@@ -274,12 +274,12 @@ def test_non_ascii_digits_are_dropped_not_converted():
     assert "７７00٣²".isdigit()  # предпосылка теста: isdigit действительно шире
 ```
 
-- [ ] **Step 2: убедиться, что тест падает**
+- [x] **Step 2: убедиться, что тест падает**
 
 Run: `cd backend && uv run pytest tests/unit/test_inn.py -v`
 Expected: `ImportError: cannot import name 'canonicalize_inn' from 'utils'`.
 
-- [ ] **Step 3: реализовать `canonicalize_inn`**
+- [x] **Step 3: реализовать `canonicalize_inn`**
 
 В `backend/utils.py`, после существующих импортов, добавить `import re` и:
 
@@ -302,12 +302,12 @@ def canonicalize_inn(value: object) -> str:
     return _NON_ASCII_DIGIT.sub("", str(value))
 ```
 
-- [ ] **Step 4: юнит-тест зелёный**
+- [x] **Step 4: юнит-тест зелёный**
 
 Run: `cd backend && uv run pytest tests/unit/test_inn.py -v`
 Expected: PASS, 9 тестов.
 
-- [ ] **Step 5: падающие интеграционные тесты справочника**
+- [x] **Step 5: падающие интеграционные тесты справочника**
 
 В `backend/tests/integration/test_references_api.py`, рядом с
 `test_delete_unused_contractor_succeeds`:
@@ -342,7 +342,7 @@ def test_contractor_inn_of_only_separators_is_422(client):
     assert response.status_code == 422
 ```
 
-- [ ] **Step 6: убедиться, что три из четырёх падают**
+- [x] **Step 6: убедиться, что три из четырёх падают**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_references_api.py -k "canonical or formatting or formatted_inn or separators" -v`
 Expected: `test_contractor_inn_is_stored_canonically` FAIL (`"77 00-123 456" != "7700123456"`),
@@ -350,7 +350,7 @@ Expected: `test_contractor_inn_is_stored_canonically` FAIL (`"77 00-123 456" != 
 FAIL (пусто), `..._only_separators...` PASS уже сейчас — `require_text` его
 ловит; он остаётся как контроль, что канонизация не сломает этот отказ.
 
-- [ ] **Step 7: перевести `references.py` на канон**
+- [x] **Step 7: перевести `references.py` на канон**
 
 В `create_contractor` заменить
 
@@ -400,23 +400,23 @@ FAIL (пусто), `..._only_separators...` PASS уже сейчас — `requir
 
 Импорт: `from utils import canonicalize_inn` в шапке `references.py`.
 
-- [ ] **Step 8: `estimate_import.py` — тот же канон в сверке шапки**
+- [x] **Step 8: `estimate_import.py` — тот же канон в сверке шапки**
 
 Удалить `_digits` (строки 287–289) и в `compare_header_with_contract` заменить
 оба вызова `_digits(...)` на `canonicalize_inn(...)`; добавить
 `from utils import canonicalize_inn`. Докстрока `_loose` рядом не меняется.
 
-- [ ] **Step 9: интеграционные тесты зелёные, старые не задеты**
+- [x] **Step 9: интеграционные тесты зелёные, старые не задеты**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_references_api.py tests/integration/test_estimate_import.py -q`
 Expected: PASS все.
 
-- [ ] **Step 10: ruff и юнит-набор**
+- [x] **Step 10: ruff и юнит-набор**
 
 Run: `cd backend && uv run ruff check .` — clean.
 Run: `cd backend && uv run pytest tests/unit -q` — PASS.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add backend/utils.py backend/crud/references.py backend/services/estimate_import.py \

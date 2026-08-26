@@ -577,6 +577,35 @@ def test_delete_unused_contractor_succeeds(client, factories):
     assert client.delete(f"/api/v1/contractors/{contractor.id}").status_code == 204
 
 
+def test_contractor_inn_is_stored_canonically(client):
+    """Разделители не создают новой идентичности (спека контура §2.7)."""
+    created = client.post(
+        "/api/v1/contractors", json={"title": "ООО Канон", "inn": "77 00-123 456"}
+    )
+    assert created.status_code == 201
+    assert created.json()["inn"] == "7700123456"
+
+
+def test_contractor_inn_duplicate_detected_across_formatting(client, factories):
+    factories.ContractorFactory.create(inn="7700123456")
+    response = client.post(
+        "/api/v1/contractors", json={"title": "ООО Дубль", "inn": "77 00 123 456"}
+    )
+    assert response.status_code == 409
+
+
+def test_contractor_search_by_formatted_inn_finds_canonical_row(client, factories):
+    """Хранится «7700123456», человек ищет «77 00 12» — обязан найти."""
+    factories.ContractorFactory.create(title="ООО Искомый", inn="7700123456")
+    found = client.get("/api/v1/contractors", params={"q": "77 00 12"}).json()
+    assert [row["title"] for row in found["items"]] == ["ООО Искомый"]
+
+
+def test_contractor_inn_of_only_separators_is_422(client):
+    response = client.post("/api/v1/contractors", json={"title": "ООО Пусто", "inn": " - - "})
+    assert response.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 #  Права (решение §6.2): изменение — только admin
 # ---------------------------------------------------------------------------

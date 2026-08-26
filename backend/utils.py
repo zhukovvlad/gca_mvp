@@ -1,9 +1,27 @@
 """Вспомогательные утилиты для backend."""
+import re
 from datetime import UTC, datetime
 
 from fastapi import Request
 
 from config import settings
+
+_NON_ASCII_DIGIT = re.compile(r"[^0-9]")
+
+
+def canonicalize_inn(value: object) -> str:
+    """Канонический ИНН/БИН: только ASCII-цифры `[0-9]`, без разделителей.
+
+    Единственная форма записи ИНН в проекте — ею сравнивают карточки, ищут
+    подрядчика из файла раунда и сверяют шапку с карточкой; та же форма
+    закреплена `CHECK (inn ~ '^[0-9]+$')` на `contractors` (миграция 0015).
+    `str.isdigit()` здесь непригоден: он принимает цифры других письменностей,
+    которые `CHECK` отвергнет. Длина не проверяется — разрядность отличается по
+    юрисдикции (10/12 в РФ, 12 в РК), и это прежнее решение справочника.
+    """
+    if value is None:
+        return ""
+    return _NON_ASCII_DIGIT.sub("", str(value))
 
 
 def utcnow() -> datetime:

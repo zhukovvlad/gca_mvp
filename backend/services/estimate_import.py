@@ -97,6 +97,7 @@ from services.category_resolution import (
     RowKind,
 )
 from services.unit_resolution import ResolvedUnit, UnitResolver
+from utils import canonicalize_inn
 
 log = logging.getLogger(__name__)
 
@@ -284,10 +285,6 @@ def _loose(value: Any) -> str:
     return " ".join(text.split())
 
 
-def _digits(value: Any) -> str:
-    return "".join(ch for ch in str(value or "") if ch.isdigit())
-
-
 def compare_header_with_contract(
     data: dict[str, Any], contract: Contract, proposal_data: dict[str, Any] | None
 ) -> list[str]:
@@ -317,8 +314,8 @@ def compare_header_with_contract(
         if file_contractor and _loose(file_contractor) != _loose(contract.contractor.title):
             mismatch("Подрядчик", file_contractor, contract.contractor.title)
 
-        file_inn = _digits(proposal_data.get(JSON_KEY_CONTRACTOR_INN))
-        card_inn = _digits(contract.contractor.inn)
+        file_inn = canonicalize_inn(proposal_data.get(JSON_KEY_CONTRACTOR_INN))
+        card_inn = canonicalize_inn(contract.contractor.inn)
         if file_inn and card_inn and file_inn != card_inn:
             mismatch("ИНН подрядчика", file_inn, contract.contractor.inn)
 
