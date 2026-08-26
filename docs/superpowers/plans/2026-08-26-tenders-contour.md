@@ -4864,7 +4864,9 @@ def test_participant_deletion_blocks_a_concurrent_round_creation(grid):
     def creator():
         session = grid.session_factory()
         try:
-            crud_tenders.create_round(session, grid.tender_id, stage_no=2, label=None, held_on=None)
+            # stage_no=3: этапы 1 и 2 у фикстуры grid уже заняты (второй — пустой
+            # раунд для теста дедлока); занятый номер дал бы 409 вместо гонки.
+            crud_tenders.create_round(session, grid.tender_id, stage_no=3, label=None, held_on=None)
             order.append("created")
         finally:
             session.close()
@@ -5542,10 +5544,21 @@ describe("RoundUploadPanel (спека §2.14)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/Не удалось разобрать файл/);
   });
 
-  it("смена раунда через key пересоздаёт панель и показывает job НОВОГО раунда", async () => {
-    // Раунд 1 — pending-job, раунд 2 — error-job. Без key панель продолжала бы
-    // опрашивать 9102 (useState читает проп один раз).
-    handlerState.jobStatuses = ["parsing", "parsing", "error"];
+  it("смена раунда через key пересоздаёт панель и переключает поллинг на job НОВОГО раунда", async () => {
+    // Раунд 1 — pending-job 9102, раунд 2 — error-job 9103. Без key панель
+    // продолжала бы опрашивать 9102 (useState читает проп один раз).
+    // Ответ — ПО ID задания, а не по счётчику опросов: иначе тест не отличил бы
+    // «переключился на 9103» от «получил третий статус из очереди».
+    const polled: number[] = [];
+    server.use(
+      http.get("/api/v1/import-jobs/:id", ({ params }) => {
+        const id = Number(params.id);
+        polled.push(id);
+        if (id === 9102) return HttpResponse.json({ ...jobPayload("parsing"), id, owner_type: "round", filename: "r1.xlsx" });
+        if (id === 9103) return HttpResponse.json({ ...jobPayload("error"), id, owner_type: "round", filename: "bad.xlsx" });
+        return HttpResponse.json({ detail: "нет" }, { status: 404 });
+      })
+    );
     const round1 = { ...sampleTenderCard.rounds[0], current_job_id: null,
       latest_job: { id: 9102, status: "parsing" as const, filename: "r1.xlsx", finished_at: null, created_at: null } };
     const round2 = { ...sampleTenderCard.rounds[1], current_job_id: null,
@@ -5554,19 +5567,24 @@ describe("RoundUploadPanel (спека §2.14)", () => {
       <RoundUploadPanel key={round1.id} tenderId={300} roundId={round1.id} round={round1} />
     );
     expect(await screen.findByText("r1.xlsx")).toBeInTheDocument();
+    expect(polled).toContain(9102);
 
     rerender(<RoundUploadPanel key={round2.id} tenderId={300} roundId={round2.id} round={round2} />);
 
     expect(await screen.findByText("bad.xlsx")).toBeInTheDocument();
     expect(screen.queryByText("r1.xlsx")).toBeNull();
+    const switchedAt = polled.indexOf(9103);
+    expect(switchedAt).toBeGreaterThan(-1);
+    // после переключения 9102 больше не опрашивается
+    expect(polled.slice(switchedAt)).not.toContain(9102);
   });
 });
 ```
 
-`rerender` возвращается из `renderWithProviders` (это обёртка над `render`
-Testing Library). Хендлер `GET /api/v1/import-jobs/:id` берёт статус из
-`handlerState.jobStatuses` по счётчику опросов, поэтому третьим значением стоит
-`error` — его получит job 9103.
+`rerender` возвращается из `renderWithProviders` (обёртка над `render` Testing
+Library). `server` и `http`/`HttpResponse` — из `@/test/server` и `msw`;
+`jobPayload` экспортировать из `handlers.ts` (сейчас он модульно-приватный —
+добавить `export`).
 
 - [ ] **Step 4: реализация `RoundUploadPanel`**
 
