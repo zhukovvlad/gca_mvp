@@ -479,7 +479,9 @@ class TenderRound(Base):
     updated_at = _updated_at()
 
     tender = relationship("Tender", back_populates="rounds")
-    offers = relationship("Offer", back_populates="round", cascade="all, delete-orphan")
+    offers = relationship(
+        "Offer", back_populates="round", cascade="all, delete-orphan", overlaps="offers"
+    )
 
     __table_args__ = (
         UniqueConstraint("tender_id", "stage_no", name="uq_tender_rounds_tender_stage"),
@@ -501,7 +503,7 @@ class OfferPackage(Base):
 
     tender = relationship("Tender", back_populates="packages")
     contractor = relationship("Contractor")
-    offers = relationship("Offer", back_populates="package")
+    offers = relationship("Offer", back_populates="package", overlaps="offers")
 
     __table_args__ = (
         UniqueConstraint("tender_id", "contractor_id", name="uq_offer_packages_tender_contractor"),
@@ -730,12 +732,12 @@ class Lot(Base):
 
 class Proposal(Base):
     """Предложение подрядчика по лоту. В сметах ГП — РОВНО ОДНО на лот (§4);
-    инвариант закреплён уникальным индексом по lot_id."""
+    инвариант закреплён уникальным индексом по lot_id. У baseline подрядчика
+    нет (спека контура §1.2)."""
     __tablename__ = "proposals"
 
     id = Column(BigInteger, primary_key=True)
     lot_id = Column(BigInteger, ForeignKey("lots.id", ondelete="CASCADE"), nullable=False)
-    # У baseline подрядчика нет (спека контура §1.2).
     contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=True)
     # В сметах ГП baseline-колонки нет — поле сохранено для 1:1 переноса JSON
     # парсера и задела на возврат тендеров (§4).
