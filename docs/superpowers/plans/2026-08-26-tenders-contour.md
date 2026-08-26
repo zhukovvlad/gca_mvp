@@ -4116,7 +4116,7 @@ git commit -m "feat(tenders-contour): CRUD тендеров — решётка, 
 - Produces: маршруты §2.13 под `APIRouter(prefix="/api/v1/tenders", tags=["tenders"])`;
   `job_response` → `{..., "owner_type": "contract"|"round", "contract_id", "amendment_no", "estimate_id" (у договора), "tender_id", "round_id", "estimate_ids" (у раунда), "estimates_created"}`.
 
-- [ ] **Step 1: падающие тесты API**
+- [x] **Step 1: падающие тесты API**
 
 `backend/tests/integration/test_tenders_api.py`:
 
@@ -4387,12 +4387,12 @@ class TestContractJobResponseUnchanged:
         assert job["estimates_created"] == 1
 ```
 
-- [ ] **Step 2: убедиться, что падают**
+- [x] **Step 2: убедиться, что падают**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_api.py -q`
 Expected: фикстура `tender` падает с 404 — маршрута нет.
 
-- [ ] **Step 3: `job_response` — дискриминированный ответ**
+- [x] **Step 3: `job_response` — дискриминированный ответ**
 
 В `routers/estimates.py`:
 
@@ -4444,7 +4444,7 @@ def job_response(db: Session, job: ImportJob) -> dict:
 
 Импорты `Estimate`, `TenderRound`, `select`.
 
-- [ ] **Step 4: роутер тендеров**
+- [x] **Step 4: роутер тендеров**
 
 `backend/routers/tenders.py`:
 
@@ -4665,7 +4665,7 @@ def upload_round(
     return job_response(db, job)
 ```
 
-- [ ] **Step 5: регистрация и текст скачивания**
+- [x] **Step 5: регистрация и текст скачивания**
 
 `main.py`, после `import_jobs_router`:
 
@@ -4683,12 +4683,12 @@ app.include_router(tenders_router.router, dependencies=_auth_dep)
 
 и в докстроке «пока жив договор» → «пока жив владелец — договор либо раунд».
 
-- [ ] **Step 6: зелёное**
+- [x] **Step 6: зелёное**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_tenders_api.py tests/integration/test_estimates_api.py tests/integration/test_contracts_api.py -q`
 Expected: PASS все; `test_estimates_api.py` — без правок утверждений.
 
-- [ ] **Step 7: ruff, полный набор, Commit**
+- [x] **Step 7: ruff, полный набор, Commit**
 
 Run: `cd backend && uv run ruff check .`; `TEST_DATABASE_URL=... uv run pytest -n 8 -q`.
 

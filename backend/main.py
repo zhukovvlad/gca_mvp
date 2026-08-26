@@ -30,6 +30,7 @@ from routers import references as references_router
 from routers import reports as reports_router
 from routers import review as review_router
 from routers import settings as settings_router
+from routers import tenders as tenders_router
 from routers import units
 from services.maintenance import run_startup_maintenance
 from storage import get_storage
@@ -146,6 +147,8 @@ app.include_router(units.router, prefix="/api/units", tags=["units"], dependenci
 # у этих двух роутеров он есть, а у более раннего /api/units — нет.
 app.include_router(estimates_router.router, dependencies=_auth_dep)
 app.include_router(import_jobs_router.router, dependencies=_auth_dep)
+# Тендерный контур (спека 2026-08-26): чтение и upload — member, изменение — admin.
+app.include_router(tenders_router.router, dependencies=_auth_dep)
 # Правка ставок НДС сметы — admin (§3, спека пересчёта §2.7): меняет все
 # деньги договора сразу, включая выгрузку для банка.
 app.include_router(estimate_vat_router.router, dependencies=_auth_dep)
