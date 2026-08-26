@@ -399,3 +399,43 @@ class TestRealNormalization:
             "Устройство стяжек"
         )
         assert row.kind == CatalogKind.TO_REVIEW.value
+
+
+# ---------------------------------------------------------------------------
+#  §2.3: три факта об одном файле — parsed_data сессией A
+# ---------------------------------------------------------------------------
+
+class TestParseAudit:
+    """Три факта об одном файле (спека контура §2.3): точный ParseResult
+    остаётся у job, что бы ни случилось с импортом."""
+
+    def test_done_job_keeps_parsed_data_and_version(self, job_env):
+        payload = payload_for(job_env.contract)
+        job = job_env.run(payload, parse=fake_parse(payload, version="4.0.0"))
+        assert job.status == ImportJobStatus.done.value
+        assert job.parsed_data == payload
+        assert job.parser_version == "4.0.0"
+        assert job.estimates_created == 1
+
+    def test_failed_import_still_keeps_parsed_data(self, job_env):
+        """Инъекция отказа ПОСЛЕ парсинга: домен откатился, аудит разбора — нет."""
+        payload = payload_for(job_env.contract)
+        # Два предложения в лоте — договорный путь отвергает такой файл в
+        # _validate_payload, то есть после успешного парсинга.
+        payload["lots"]["lot_1"]["proposals"]["contractor_2"] = dict(
+            payload["lots"]["lot_1"]["proposals"]["contractor_1"]
+        )
+        job = job_env.run(payload, parse=fake_parse(payload, version="4.0.0"))
+        assert job.status == ImportJobStatus.error.value
+        assert job.parsed_data == payload
+        assert job.parser_version == "4.0.0"
+        assert job.estimates_created is None
+        assert job_env.estimates() == []
+
+    def test_parse_failure_leaves_both_null(self, job_env):
+        def broken(_handle):
+            raise EstimateParseError("не смета")
+
+        job = job_env.run(None, parse=broken)
+        assert job.status == ImportJobStatus.error.value
+        assert job.parsed_data is None and job.parser_version is None

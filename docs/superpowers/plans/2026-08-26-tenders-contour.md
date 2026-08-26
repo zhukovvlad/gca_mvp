@@ -1949,7 +1949,7 @@ git commit -m "refactor(tenders-contour): import_estimate принимает в�
   `parsed_data`, `parser_version` отдельной короткой транзакцией сессии A;
   `finalize_done(db, job_id, *, counters, warnings, now, estimates_created: int)`.
 
-- [ ] **Step 1: падающие тесты**
+- [x] **Step 1: падающие тесты**
 
 В `test_import_pipeline.py` новый класс:
 
@@ -1990,12 +1990,12 @@ class TestParseAudit:
         assert job.parsed_data is None and job.parser_version is None
 ```
 
-- [ ] **Step 2: убедиться, что падают**
+- [x] **Step 2: убедиться, что падают**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_pipeline.py::TestParseAudit -v`
 Expected: первые два FAIL на `parsed_data is None`; третий PASS.
 
-- [ ] **Step 3: `JobContext` и `load_job_context`**
+- [x] **Step 3: `JobContext` и `load_job_context`**
 
 ```python
 @dataclass(frozen=True)
@@ -2017,7 +2017,7 @@ class JobContext:
 В `load_job_context` добавить `ImportJob.round_id` в `select` между
 `amendment_no` и `file_key`.
 
-- [ ] **Step 4: `StatusWriter.record_parse`**
+- [x] **Step 4: `StatusWriter.record_parse`**
 
 ```python
     def record_parse(self, data: dict, parser_version: str) -> None:
@@ -2027,7 +2027,7 @@ class JobContext:
         self._run({"parsed_data": data, "parser_version": parser_version})
 ```
 
-- [ ] **Step 5: `finalize_done` получает `estimates_created`**
+- [x] **Step 5: `finalize_done` получает `estimates_created`**
 
 ```python
 def finalize_done(
@@ -2047,7 +2047,7 @@ def finalize_done(
 Докстроку дополнить: «`estimates_created` — сколько смет создал этот job:
 1 у договора, N(+1) у раунда; нужен правилу текущего job раунда (§2.12)».
 
-- [ ] **Step 6: `run_import_job` — запись аудита и ветка по владельцу**
+- [x] **Step 6: `run_import_job` — запись аудита и ветка по владельцу**
 
 После `parse_result = parse(handle)` и `status.add_warnings(...)`:
 
@@ -2099,12 +2099,12 @@ def finalize_done(
         )
 ```
 
-- [ ] **Step 7: тесты зелёные**
+- [x] **Step 7: тесты зелёные**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_pipeline.py tests/integration/test_estimates_api.py tests/integration/test_maintenance.py -q`
 Expected: PASS все, старые без правок утверждений.
 
-- [ ] **Step 8: ruff, Commit**
+- [x] **Step 8: ruff, Commit**
 
 Run: `cd backend && uv run ruff check .` — clean.
 
