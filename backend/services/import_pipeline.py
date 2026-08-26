@@ -35,13 +35,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from config import settings
-from models import Contract, ImportJob, ImportJobStatus
+from models import Contract, ImportJob, ImportJobStatus, TenderRound
 from parser import EstimateParseError, parse_estimate
 from parser.sanitize_text import NormalizationUnavailableError
 from services.category_resolution import CategoryResolver
 from services.estimate_import import EstimateImportError, import_estimate
 from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
+from services.round_import import import_round
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
 from utils import utcnow_aware
@@ -283,8 +284,22 @@ def run_import_job(
                 estimates_created = 1
                 log_estimate_ids = [outcome.estimate_id]
             else:
-                # Раунд — задача 6 плана; до неё round-job создать негде.
-                raise EstimateImportError("Импорт раунда ещё не подключён.")
+                tender_round = db.get(TenderRound, context.round_id)
+                if tender_round is None:
+                    raise EstimateImportError(
+                        f"Раунд {context.round_id} не найден — импортировать сводную таблицу не к чему."
+                    )
+                resolver = UnitResolver(db)
+                category_resolver = CategoryResolver.from_db(db)
+                round_outcome = import_round(
+                    db, tender_round=tender_round, data=parse_result.data,
+                    parser_version=parse_result.parser_version, import_job_id=job_id,
+                    replace=replace, unit_resolver=resolver, category_resolver=category_resolver,
+                )
+                positions_to_match = round_outcome.positions_to_match
+                domain_warnings = round_outcome.warnings
+                estimates_created = round_outcome.estimates_created
+                log_estimate_ids = round_outcome.estimate_ids
             deadline.check("импорт")
 
             # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:

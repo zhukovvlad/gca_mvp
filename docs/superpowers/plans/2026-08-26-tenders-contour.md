@@ -2458,7 +2458,7 @@ git commit -m "feat(tenders-contour): import_estimate под offer- и baseline-
   - `RoundImportOutcome(estimate_ids: list[int], positions_to_match: list[PositionToMatch], warnings: list[str], estimates_created: int)`;
   - `import_round(db, *, tender_round: TenderRound, data, parser_version, import_job_id, replace, unit_resolver, category_resolver) -> RoundImportOutcome`.
 
-- [ ] **Step 1: падающие тесты разбиения (чистая функция)**
+- [x] **Step 1: падающие тесты разбиения (чистая функция)**
 
 `backend/tests/integration/test_round_import.py`:
 
@@ -2642,12 +2642,12 @@ class TestRealParserPath:
 `gp_sheet` пробрасывает их через `**block_kwargs` без правок. Существующие
 тесты парсера от этого не меняются — параметры по умолчанию `None`.
 
-- [ ] **Step 2: убедиться, что падают**
+- [x] **Step 2: убедиться, что падают**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_round_import.py -q`
 Expected: сбор падает — `No module named 'services.round_import'`.
 
-- [ ] **Step 3: `round_import.py` — разбиение**
+- [x] **Step 3: `round_import.py` — разбиение**
 
 ```python
 """Импорт сводной таблицы раунда: N offer-смет и опциональная baseline из одного
@@ -2815,12 +2815,12 @@ def split_round_payload(data: dict[str, Any]) -> tuple[list[RoundProjection], Ba
     return projections, baseline
 ```
 
-- [ ] **Step 4: тесты разбиения зелёные**
+- [x] **Step 4: тесты разбиения зелёные**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_round_import.py::TestSplitRoundPayload -v`
 Expected: PASS 8.
 
-- [ ] **Step 5: падающие тесты get-or-create и замены**
+- [x] **Step 5: падающие тесты get-or-create и замены**
 
 Дописать в `test_round_import.py`:
 
@@ -2901,7 +2901,7 @@ class TestReplaceRoundEstimates:
         assert db_session.execute(sa.select(sa.func.count()).select_from(Offer)).scalar_one() == 2
 ```
 
-- [ ] **Step 6: реализация get-or-create и замены**
+- [x] **Step 6: реализация get-or-create и замены**
 
 ```python
 def get_or_create_contractor(
@@ -2993,7 +2993,7 @@ def replace_round_estimates(db: Session, round_id: int, replace: bool, warnings:
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_round_import.py -q`
 Expected: PASS все.
 
-- [ ] **Step 7: падающие тесты `import_round`**
+- [x] **Step 7: падающие тесты `import_round`**
 
 ```python
 def _run_round(db, rnd, data, *, replace=False):
@@ -3119,7 +3119,7 @@ class TestImportRound:
         assert _estimates_of_round(db_session, rnd) == []
 ```
 
-- [ ] **Step 8: реализация `import_round`**
+- [x] **Step 8: реализация `import_round`**
 
 ```python
 def import_round(
@@ -3196,7 +3196,7 @@ def import_round(
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_round_import.py -q`
 Expected: PASS все.
 
-- [ ] **Step 9: пайплайн — ветка раунда**
+- [x] **Step 9: пайплайн — ветка раунда**
 
 В `run_import_job` заменить заглушку `else: raise EstimateImportError("Импорт раунда ещё не подключён.")`:
 
@@ -3263,12 +3263,12 @@ class TestRoundJob:
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest tests/integration/test_import_pipeline.py -q`
 Expected: PASS.
 
-- [ ] **Step 10: полный интеграционный набор, ruff**
+- [x] **Step 10: полный интеграционный набор, ruff**
 
 Run: `cd backend && TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5459/gca_test" uv run pytest -n 8 -q` — PASS.
 Run: `cd backend && uv run ruff check .` — clean.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add backend/services/round_import.py backend/services/import_pipeline.py \

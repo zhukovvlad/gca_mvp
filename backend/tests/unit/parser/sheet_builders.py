@@ -115,6 +115,8 @@ def add_contractor_block(
     contractor_row: int = 6,
     header_row: int = 9,
     vat_suffix: str | None = ", с учетом НДС 20%",
+    inn: str | None = None,
+    address: str | None = None,
 ) -> Worksheet:
     """Пишет заголовок подрядчика и двухъярусную шапку его блока.
 
@@ -128,6 +130,15 @@ def add_contractor_block(
         end_row=contractor_row, end_column=col_start + colspan - 1,
     )
     ws.cell(row=contractor_row, column=col_start, value=title)
+
+    # Реквизиты блока — строки под заголовком, как в реальных файлах и как их
+    # читает get_proposals (row_start+1 — ИНН, +2 — адрес). Аккредитация
+    # (+3) намеренно не пишется: при contractor_row=6 и header_row=9 она легла
+    # бы в строку шапки.
+    if inn is not None:
+        ws.cell(row=contractor_row + 1, column=col_start, value=inn)
+    if address is not None:
+        ws.cell(row=contractor_row + 2, column=col_start, value=address)
 
     i = 0
     while i < colspan:
