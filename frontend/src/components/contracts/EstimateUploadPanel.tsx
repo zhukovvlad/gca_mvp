@@ -176,6 +176,10 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
         // `ContractCardPage.test.tsx`) ищут именно эту строку, и правка
         // задачи 11 (ревью, finding 2) не имеет права менять их утверждения.
         idempotentNote="Этот файл уже был загружен для этой сметы — ничего не изменилось, показано прежнее задание."
+        // БУКВА В БУКВУ прежний зашитый текст панели (ревью финального fix
+        // wave, finding 5) — `ContractCardPage.test.tsx` ищет именно эту
+        // строку, правка не имеет права сдвинуть её утверждение.
+        runningHint="Смета появится в карточке после завершения — страницу закрывать не нужно"
         rejection={rejection}
         disabled={upload.isPending || (job !== undefined && isRunning(job.status))}
         hint="XLSX или XLSM, до 25 МБ"

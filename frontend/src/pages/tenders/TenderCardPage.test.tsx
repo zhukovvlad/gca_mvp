@@ -130,6 +130,48 @@ describe("Admin-диалоги карточки тендера — открыт�
     expect(body!.label).toBe("Третий этап");
   });
 
+  /**
+   * Удаление СРЕДНЕГО раунда оставляет дыру в нумерации (этапы [1, 3]) —
+   * `rounds.length + 1` предложил бы 3 и столкнулся бы с уже существующим
+   * этапом (сервер отвечает 409, диалог без ручного поля номера зацикливается
+   * на отказе). Фикстура здесь — НЕ contiguous [1, 2] из предыдущего теста:
+   * именно на contiguous паре `rounds.length + 1` и `max(stage_no) + 1` дают
+   * одно и то же число и тест не отличил бы формулы.
+   */
+  it('"Новый этап" после удаления среднего раунда предлагает max(stage_no)+1, а не rounds.length+1', async () => {
+    server.use(
+      http.get("/api/v1/tenders/:id", () =>
+        HttpResponse.json({
+          ...sampleTenderCard,
+          rounds: [
+            sampleTenderCard.rounds[0],
+            { ...sampleTenderCard.rounds[1], id: 3003, stage_no: 3 },
+          ],
+          cells: sampleTenderCard.cells.map((c) => (c.round_id === 3002 ? { ...c, round_id: 3003 } : c)),
+        })
+      )
+    );
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.post("/api/v1/tenders/:id/rounds", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(sampleTenderCard, { status: 201 });
+      })
+    );
+    const user = userEvent.setup();
+    renderCard();
+    await screen.findByText("ООО Альфа");
+
+    await user.click(screen.getByRole("button", { name: "Новый этап" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Этап 4");
+
+    await user.click(within(dialog).getByRole("button", { name: "Создать этап" }));
+
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.stage_no).toBe(4);
+  });
+
   it('"Удалить этап" шлёт id ИМЕННО выбранного раунда (?round=3001), а не первого/последнего', async () => {
     let deletedTenderId: string | undefined;
     let deletedRoundId: string | undefined;

@@ -739,8 +739,11 @@ class Proposal(Base):
     id = Column(BigInteger, primary_key=True)
     lot_id = Column(BigInteger, ForeignKey("lots.id", ondelete="CASCADE"), nullable=False)
     contractor_id = Column(BigInteger, ForeignKey("contractors.id"), nullable=True)
-    # В сметах ГП baseline-колонки нет — поле сохранено для 1:1 переноса JSON
-    # парсера и задела на возврат тендеров (§4).
+    # В сметах ГП baseline-колонки нет — поле унаследовано 1:1 переносом JSON
+    # парсера. С тендерным контуром (0015) поле стало опорным: у baseline-
+    # proposal оно true и contractor_id обязан быть NULL, у offer-proposal —
+    # наоборот (CHECK `ck_proposals_baseline_contractor`, спека §2.1); тот же
+    # флаг ветвит импорт раунда на baseline- и offer-путь (§2.5).
     is_baseline = Column(Boolean, nullable=False, server_default=sa_text("false"))
     contractor_coordinate = Column(String(255), nullable=True)
     contractor_width = Column(Integer, nullable=True)

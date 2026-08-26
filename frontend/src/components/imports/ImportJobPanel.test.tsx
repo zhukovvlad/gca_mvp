@@ -54,6 +54,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         uploading={false}
         idempotent={false}
         idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
+        runningHint="неважно — статус не running, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -77,6 +78,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         uploading={false}
         idempotent={false}
         idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
+        runningHint="неважно — статус не running, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -94,6 +96,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         uploading={false}
         idempotent={false}
         idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
+        runningHint="неважно — статус не running, панель эту подпись не покажет"
         rejection="Не удалось загрузить файл."
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -119,6 +122,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         uploading={false}
         idempotent
         idempotentNote={note}
+        runningHint="неважно — статус не running, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -136,6 +140,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         uploading={false}
         idempotent={false}
         idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
+        runningHint="неважно — статус не running, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"

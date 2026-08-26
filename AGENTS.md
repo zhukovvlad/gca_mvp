@@ -224,8 +224,9 @@ contracts                    # договор ГП
   UNIQUE (contract_number)
 
 estimates                    # смета (бывш. tenders); 1 договор : N смет
-  id, contract_id NOT NULL → contracts
-  amendment_no int NULL      # NULL = исходная смета, иначе номер доп. соглашения
+  id, contract_id NULL → contracts   # с 0015 (тендерный контур) — один из трёх
+                                     #   владельцев, см. блок ниже: contract_id | offer_id | round_id
+  amendment_no int NULL      # NULL = исходная смета, иначе номер доп. соглашения; только у contract_id
   title, data_prepared_on_date date
   import_job_id → import_jobs
   UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)   # PG16
@@ -250,7 +251,9 @@ estimate_raw_data
 lots / proposals / position_items
   # перенос из tenders-go. proposals — РОВНО ОДНО на лот (единственный подрядчик);
   # слой сохраняем: JSON парсера ложится 1:1, на proposal висят summary_lines и
-  # additional_info, задел на возврат тендеров в будущем.
+  # additional_info. is_baseline — с 0015 опорное поле (не задел): у baseline-
+  # proposal true и contractor_id NULL, у offer-proposal — наоборот
+  # (CHECK ck_proposals_baseline_contractor), и тот же флаг ветвит импорт раунда.
   # position_items: quantity, suggested_quantity,
   #   unit_cost_{materials,works,indirect_costs,total}, total_cost_{...},
   #   is_chapter, chapter_ref_in_proposal, catalog_position_id NULL, unit_id,
@@ -352,16 +355,24 @@ rate_standards
 
 ```
 import_jobs
-  id, contract_id NOT NULL, amendment_no int NULL, filename, file_key,
-  file_sha256 text NOT NULL,
+  id, contract_id NULL, round_id NULL → tender_rounds   # с 0015 — два владельца
+                                                         #   (CHECK: ровно один из двух)
+  amendment_no int NULL      # только у contract_id; у round_id — NULL (CHECK)
+  filename, file_key, file_sha256 text NOT NULL,
   status ('pending|parsing|importing|matching|done|error'), error_text,
   warnings jsonb NOT NULL DEFAULT '[]',
   counters (positions_total, matched_cache, matched_exact, matched_nonposition, to_review),
+  parsed_data jsonb NULL, parser_version text NULL   # пара — вместе NULL либо вместе заданы (CHECK)
+  estimates_created int NULL   # только у round_id; NULL либо > 0 (CHECK); число offer-смет
+                                # этого job (§5, «Для раунда тендера»)
   created_at, started_at, finished_at
-  # Лок: частичный уникальный индекс
-  #   UNIQUE (contract_id, COALESCE(amendment_no,-1)) WHERE status NOT IN ('done','error')
-  # Блокируется одна ПАРА (contract_id, amendment_no); параллельный импорт РАЗНЫХ
-  # допсоглашений одного договора — разрешён.
+  # Локи — два частичных уникальных индекса:
+  #   uq_import_jobs_active_pair: UNIQUE (contract_id, COALESCE(amendment_no,-1))
+  #     WHERE contract_id IS NOT NULL AND status NOT IN ('done','error')
+  #   uq_import_jobs_active_round: UNIQUE (round_id)
+  #     WHERE round_id IS NOT NULL AND status NOT IN ('done','error')
+  # Блокируется одна ПАРА (contract_id, amendment_no) либо один round_id;
+  # параллельный импорт РАЗНЫХ допсоглашений одного договора — разрешён.
 ```
 
 ## 5. Пайплайн импорта

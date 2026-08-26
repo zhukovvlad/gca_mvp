@@ -68,6 +68,10 @@ export default function TenderCardPage() {
   const card = cardQ.data;
 
   const rounds = card?.rounds ?? [];
+  // `rounds.length + 1` коллизирует, если удалён средний раунд (этапы [1, 3] →
+  // формула снова предложит 3, сервер откажет 409, и диалог зациклится: ручного
+  // ввода номера этапа у него нет). Берём максимум по факту, а не по счётчику.
+  const nextStageNo = rounds.length === 0 ? 1 : Math.max(...rounds.map((r) => r.stage_no)) + 1;
   const fromUrl = params.get("round") ? Number(params.get("round")) : undefined;
   const selected = rounds.find((r) => r.id === fromUrl) ?? rounds.at(-1);
   const hasEstimates = selected
@@ -174,7 +178,7 @@ export default function TenderCardPage() {
 
       <TenderFormDialog open={editOpen} onOpenChange={setEditOpen} tender={card} />
       {roundFormOpen && (
-        <NewRoundDialog tenderId={card.id} nextStageNo={rounds.length + 1} onOpenChange={setRoundFormOpen} />
+        <NewRoundDialog tenderId={card.id} nextStageNo={nextStageNo} onOpenChange={setRoundFormOpen} />
       )}
       <RoundDeleteDialog tenderId={card.id} round={roundToDelete} onOpenChange={() => setRoundToDelete(null)} />
       <TenderDeleteDialog

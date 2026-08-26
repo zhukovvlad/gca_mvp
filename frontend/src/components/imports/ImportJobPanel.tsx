@@ -54,6 +54,15 @@ interface ImportJobPanelProps {
    * ВСЕХ участников, а не «этой сметы»).
    */
   idempotentNote: string;
+  /**
+   * Подпись рядом с идущим job (`isRunning`) — та же развилка владельца, что
+   * у `idempotentNote` (ревью финального fix wave, finding 5): панель не
+   * знает, смету одного подрядчика или сметы N участников раунда принесёт
+   * завершение job'а, и раньше несла зашитый контрактный текст «Смета
+   * появится в карточке…», неверный для раунда. Проп ОБЯЗАТЕЛЬНЫЙ, чтобы
+   * будущий третий владелец не унаследовал молча чужую формулировку.
+   */
+  runningHint: string;
   rejection: string | null;
   disabled: boolean;
   hint: string;
@@ -67,6 +76,7 @@ export function ImportJobPanel({
   uploading,
   idempotent,
   idempotentNote,
+  runningHint,
   rejection,
   disabled,
   hint,
@@ -111,9 +121,7 @@ export function ImportJobPanel({
               dot={isRunning(job.status)}
             />
             {isRunning(job.status) && (
-              <span className="text-xs text-fg-secondary">
-                Смета появится в карточке после завершения — страницу закрывать не нужно
-              </span>
+              <span className="text-xs text-fg-secondary">{runningHint}</span>
             )}
           </div>
 

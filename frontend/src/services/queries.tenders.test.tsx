@@ -288,4 +288,108 @@ describe("useImportJob: инвалидация для раундового за�
       expect(keys).toContain(JSON.stringify(qk.tenders.card(300)));
     });
   });
+
+  /**
+   * Находка финального ревью контура: `RoundUploadPanel` живёт на том же
+   * экране, что и таблица истории загрузок раунда (`useRoundImportJobs`,
+   * `TenderCardPage`), но прежде инвалидировала только карточку тендера.
+   * История держала `staleTime` в минуту и не видела, что job закончился —
+   * строка молча оставалась «в процессе», без бейджа «актуальный»,
+   * неопределённо долго. Без этой инвалидации данный тест падал бы: спай не
+   * увидел бы ключ `roundJobs` среди вызовов.
+   */
+  it("done-задание раунда ТАКЖЕ инвалидирует qk.tenders.roundJobs(tenderId, roundId)", async () => {
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () =>
+        HttpResponse.json({
+          id: 78,
+          owner_type: "round",
+          tender_id: 300,
+          round_id: 3001,
+          estimate_ids: [8001, 8002],
+          estimates_created: 2,
+          filename: "round.xlsx",
+          file_sha256: "abc",
+          status: "done",
+          error_text: null,
+          warnings: [],
+          counters: {
+            positions_total: 0,
+            matched_cache: 0,
+            matched_exact: 0,
+            matched_nonposition: 0,
+            to_review: 0,
+          },
+          created_at: null,
+          started_at: null,
+          finished_at: null,
+        })
+      )
+    );
+
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderHook(() => useImportJob(78, { tenderId: 300, roundId: 3001 }), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.tenders.roundJobs(300, 3001)));
+    });
+  });
+
+  /**
+   * Договорный путь (`ownerRef.contractId`) этим finding'ом не тронут ни на
+   * строку: тот же набор ключей, что и до фикса — карточка договора, история
+   * загрузок договора, очередь ручного матчинга, корень паспорта, — и НИЧЕГО
+   * из тендерного мира. Три отдельные задачи уже защищали контрактные экраны
+   * от коллизии с тендерным контуром; это ревью явно требует не сдвигать их
+   * поведение.
+   */
+  it("done-задание договора инвалидирует ровно контрактный набор ключей — без qk.tenders.*", async () => {
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () =>
+        HttpResponse.json({
+          id: 79,
+          owner_type: "contract",
+          contract_id: 12,
+          estimate_id: 8001,
+          filename: "contract.xlsx",
+          file_sha256: "def",
+          status: "done",
+          error_text: null,
+          warnings: [],
+          counters: {
+            positions_total: 0,
+            matched_cache: 0,
+            matched_exact: 0,
+            matched_nonposition: 0,
+            to_review: 0,
+          },
+          created_at: null,
+          started_at: null,
+          finished_at: null,
+        })
+      )
+    );
+
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderHook(() => useImportJob(79, { contractId: 12 }), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.contracts.card(12)));
+    });
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.contracts.importJobs(12)));
+    expect(keys).toContain(JSON.stringify(qk.review.all));
+    expect(keys).toContain(JSON.stringify(qk.passport.all));
+    expect(keys.some((k) => k.includes('"tenders"'))).toBe(false);
+  });
 });

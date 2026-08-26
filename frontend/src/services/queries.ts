@@ -486,6 +486,8 @@ export function useDownloadJobFile() {
 export interface ImportJobOwnerRef {
   contractId?: number;
   tenderId?: number;
+  /** Только вместе с `tenderId` — какой раунд инвалидировать в истории загрузок. */
+  roundId?: number;
 }
 
 /**
@@ -497,7 +499,12 @@ export interface ImportJobOwnerRef {
  * инвалидируют РАЗНОЕ: договор — свою карточку и историю загрузок (поведение
  * не менялось задачей 10 ни на строку); раунд тендера — карточку тендера,
  * которая несёт решётку и baseline (`ImportJobPanel`, задача 11, читает
- * именно её, чтобы обновить грид после загрузки раунда).
+ * именно её, чтобы обновить грид после загрузки раунда), и историю загрузок
+ * ИМЕННО этого раунда (`qk.tenders.roundJobs`, требует `ownerRef.roundId`) —
+ * без неё таблица истории под гридом (та же карточка тендера) держит job «в
+ * процессе» без бейджа «актуальный» неопределённо долго: `staleTime` истории —
+ * минута, а загрузочный `202` инвалидирует её РАНЬШЕ, пока job ещё pending, не
+ * в момент перехода в `done`.
  */
 export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwnerRef) {
   const qc = useQueryClient();
@@ -519,6 +526,9 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
         if (ownerRef?.tenderId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.tenders.card(ownerRef.tenderId) });
           qc.invalidateQueries({ queryKey: qk.review.all });
+          if (ownerRef.roundId !== undefined) {
+            qc.invalidateQueries({ queryKey: qk.tenders.roundJobs(ownerRef.tenderId, ownerRef.roundId) });
+          }
         }
       }
       return job;

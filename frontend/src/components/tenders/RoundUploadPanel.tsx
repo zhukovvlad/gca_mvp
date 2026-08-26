@@ -50,7 +50,7 @@ export function RoundUploadPanel({
   const [conflict, setConflict] = useState<{ file: File; detail: string } | null>(null);
   const [rejection, setRejection] = useState<string | null>(null);
   const upload = useUploadRound();
-  const jobQ = useImportJob(jobId, { tenderId });
+  const jobQ = useImportJob(jobId, { tenderId, roundId });
   // `useImportJob` возвращает широкий `ImportJob` (см. комментарий в
   // `EstimateUploadPanel.tsx`), но здесь владелец известен заранее: эта
   // панель поллит только job'ы, созданные `useUploadRound` для РАУНДА.
@@ -85,6 +85,11 @@ export function RoundUploadPanel({
         // раунда касается смет ВСЕХ участников (§2.6), а не «этой сметы» —
         // унаследованный текст `EstimateUploadPanel` здесь был бы неверен.
         idempotentNote="Этот файл уже был загружен для этого раунда — ничего не изменилось, показано прежнее задание."
+        // Раунд-специфичная формулировка (тот же приём, что у `idempotentNote`
+        // выше): загрузка раунда создаёт сметы ВСЕХ участников (§2.6), а не
+        // одну — унаследованный контрактный текст «Смета появится…» был бы
+        // здесь неверен числом.
+        runningHint="Сметы участников появятся в решётке после завершения — страницу закрывать не нужно"
         rejection={rejection}
         disabled={upload.isPending || (job !== undefined && isRunning(job.status))}
         hint="Сводная таблица раунда: XLSX или XLSM, до 25 МБ"
