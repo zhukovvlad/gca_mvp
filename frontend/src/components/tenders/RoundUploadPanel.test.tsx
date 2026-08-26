@@ -32,6 +32,25 @@ describe("RoundUploadPanel (спека §2.14)", () => {
     expect(screen.getByText("Позиций")).toBeInTheDocument();
   });
 
+  /**
+   * Ревью задачи 11, finding 2: `ImportJobPanel` унаследовала от
+   * `EstimateUploadPanel` фразу «для этой сметы» — верную для договора,
+   * но ЛОЖНУЮ для раунда (замена раунда касается смет всех участников, §2.6).
+   * Проверяем не только присутствие раундовой формулировки, но и ОТСУТСТВИЕ
+   * унаследованной: тест обязан падать, если `RoundUploadPanel` забудет
+   * передать свой `idempotentNote` и панель откатится к формулировке про смету.
+   */
+  it("200 — тот же файл: подпись про РАУНД, а не про смету", async () => {
+    handlerState.uploadOutcome = "idempotent";
+    const user = userEvent.setup();
+    renderWithProviders(
+      <RoundUploadPanel tenderId={300} roundId={3001} round={sampleTenderCard.rounds[0]} />
+    );
+    await dropXlsx(user);
+    expect(await screen.findByText(/уже был загружен для этого раунда/)).toBeInTheDocument();
+    expect(screen.queryByText(/уже был загружен для этой сметы/)).toBeNull();
+  });
+
   it("409 — развилка «заменить раунд целиком», только у admin", async () => {
     handlerState.uploadOutcome = "conflict";
     const user = userEvent.setup();

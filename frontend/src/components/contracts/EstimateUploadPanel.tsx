@@ -171,6 +171,11 @@ export function EstimateUploadPanel({ contractId }: EstimateUploadPanelProps) {
         job={job}
         uploading={upload.isPending}
         idempotent={idempotent}
+        // Формулировка — БУКВА В БУКВУ прежний, вшитый в панель текст:
+        // существующие тесты (`EstimateUploadPanel.test.tsx`,
+        // `ContractCardPage.test.tsx`) ищут именно эту строку, и правка
+        // задачи 11 (ревью, finding 2) не имеет права менять их утверждения.
+        idempotentNote="Этот файл уже был загружен для этой сметы — ничего не изменилось, показано прежнее задание."
         rejection={rejection}
         disabled={upload.isPending || (job !== undefined && isRunning(job.status))}
         hint="XLSX или XLSM, до 25 МБ"

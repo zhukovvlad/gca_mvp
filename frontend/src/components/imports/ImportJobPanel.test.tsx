@@ -53,6 +53,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         job={job}
         uploading={false}
         idempotent={false}
+        idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -75,6 +76,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         job={job}
         uploading={false}
         idempotent={false}
+        idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -91,6 +93,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         job={undefined}
         uploading={false}
         idempotent={false}
+        idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
         rejection="Не удалось загрузить файл."
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -101,13 +104,21 @@ describe("ImportJobPanel (спека §2.14)", () => {
     expect(screen.getByTestId("upload-rejection")).toHaveTextContent("Не удалось загрузить файл.");
   });
 
-  it("idempotent показывает подпись «уже был загружен»", () => {
+  it("idempotent показывает подпись, ЦЕЛИКОМ пришедшую от вызывающего", () => {
+    // Панель не знает своего владельца (ревью задачи 11, finding 2) и не несёт
+    // зашитого текста про смету или раунд — подпись целиком приходит пропом
+    // `idempotentNote`. Текст здесь намеренно НЕ похож ни на формулировку
+    // `EstimateUploadPanel`, ни на формулировку `RoundUploadPanel`: если бы
+    // панель игнорировала проп и рисовала собственный текст, этот тест не
+    // прошёл бы ни при каком старом хардкоде.
     const job = baseJob({ status: "done" });
+    const note = "Проверочная подпись идемпотентности — источник только проп.";
     render(
       <ImportJobPanel
         job={job}
         uploading={false}
         idempotent
+        idempotentNote={note}
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"
@@ -115,7 +126,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
       />
     );
 
-    expect(screen.getByText(/уже был загружен/)).toBeInTheDocument();
+    expect(screen.getByText(note)).toBeInTheDocument();
   });
 
   it("children рендерится над dropzone", () => {
@@ -124,6 +135,7 @@ describe("ImportJobPanel (спека §2.14)", () => {
         job={undefined}
         uploading={false}
         idempotent={false}
+        idempotentNote="неважно — idempotent=false, панель эту подпись не покажет"
         rejection={null}
         disabled={false}
         hint="XLSX или XLSM, до 25 МБ"

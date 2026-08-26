@@ -7,11 +7,14 @@ import type { ImportJobStatus } from "@/types/domain";
  *
  * `react-refresh/only-export-components` не позволяет файлу с экспортом
  * компонента экспортировать что-то ещё — тот же приём, что у
- * `pages/passport/rateLabels.ts` и `pages/compare/deviationTone.ts`:
- * `ImportJobPanel.tsx` реэкспортирует эти имена (`export { ... } from
- * "./jobStatus"`), поэтому вызывающие по-прежнему импортируют их из
- * `ImportJobPanel`, как называет брифинг задачи 11, а горячая перезагрузка
- * компонента при этом не ломается.
+ * `pages/passport/rateLabels.ts` и `pages/compare/deviationTone.ts`.
+ * `ImportJobPanel.tsx` эти имена НЕ реэкспортирует (даже сквозным `export …
+ * from` — линт запрещает и его): он только импортирует их для внутреннего
+ * использования. Вызывающие (`EstimateUploadPanel`, `RoundUploadPanel`,
+ * тесты) обязаны импортировать `statusTone`/`isRunning`/`STATUS_LABEL`/
+ * `XLSX_ACCEPT` отсюда напрямую (`@/components/imports/jobStatus`), а не из
+ * `ImportJobPanel` — брифинг задачи 11 называл местом экспорта именно
+ * `ImportJobPanel.tsx`, но этим расходится с правилом линта проекта.
  */
 
 export const XLSX_ACCEPT = {

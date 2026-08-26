@@ -81,6 +81,10 @@ export function RoundUploadPanel({
         job={job}
         uploading={upload.isPending}
         idempotent={idempotent}
+        // Раунд-специфичная формулировка (ревью задачи 11, finding 2): замена
+        // раунда касается смет ВСЕХ участников (§2.6), а не «этой сметы» —
+        // унаследованный текст `EstimateUploadPanel` здесь был бы неверен.
+        idempotentNote="Этот файл уже был загружен для этого раунда — ничего не изменилось, показано прежнее задание."
         rejection={rejection}
         disabled={upload.isPending || (job !== undefined && isRunning(job.status))}
         hint="Сводная таблица раунда: XLSX или XLSM, до 25 МБ"

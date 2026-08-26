@@ -45,6 +45,15 @@ interface ImportJobPanelProps {
   job: ImportJob | undefined;
   uploading: boolean;
   idempotent: boolean;
+  /**
+   * Текст подписи «файл уже был загружен», показанной при `idempotent`.
+   * Панель не знает своего владельца (см. докстроку выше) и потому не может
+   * сама решить, идёт ли речь о смете или о раунде — предложение целиком
+   * даёт вызывающий: `EstimateUploadPanel` несёт формулировку про смету,
+   * `RoundUploadPanel` — про раунд (спека §2.6: замена раунда касается смет
+   * ВСЕХ участников, а не «этой сметы»).
+   */
+  idempotentNote: string;
   rejection: string | null;
   disabled: boolean;
   hint: string;
@@ -57,6 +66,7 @@ export function ImportJobPanel({
   job,
   uploading,
   idempotent,
+  idempotentNote,
   rejection,
   disabled,
   hint,
@@ -107,12 +117,7 @@ export function ImportJobPanel({
             )}
           </div>
 
-          {idempotent && (
-            <p className="text-sm text-fg-secondary">
-              Этот файл уже был загружен для этой сметы — ничего не изменилось,
-              показано прежнее задание.
-            </p>
-          )}
+          {idempotent && <p className="text-sm text-fg-secondary">{idempotentNote}</p>}
 
           {job.status === "error" && job.error_text && (
             <p role="alert" className="text-sm text-danger-text">
