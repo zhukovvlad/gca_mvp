@@ -5,12 +5,13 @@
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from unittest.mock import patch
 
 import pytest
 
 from services import stage_summary as ss
+from services.category_rollup import SOURCE_ADDITIONAL_WORKS, SOURCE_POSITIONS, CategoryRef, DirectTotals
 
 D = Decimal
 
@@ -143,3 +144,179 @@ class TestContribution:
         `null`; `absent` уже обработан раньше и сюда не попадает."""
         c = ss.contribution_between(ss.STATE_NOT_EVALUATED, ss.STATE_AMOUNT, None, D("30"), unavailable_reason=None)
         assert c.value == D("30") and c.direction == ss.DIR_UP and c.reason is None
+
+
+def ref(id_, code, parent_id=None, sort_order=0):
+    return CategoryRef(id=id_, code=code, title=f"Статья {code}", parent_id=parent_id, is_bucket=False, sort_order=sort_order)
+
+
+def dt_(amount, rows=1):
+    return DirectTotals(amount=None if amount is None else D(amount), row_count=rows,
+                        rows_with_amount=rows if amount is not None else 0, rows_not_finite=0)
+
+
+def col(offer_id, stage_no, rate, direct, file_total=None, overrides=0):
+    return ss.ColumnInput(offer_id=offer_id, estimate_id=offer_id * 10, round_id=stage_no, stage_no=stage_no,
+                          label=None, held_on=None, vat_rate_base=None if rate is None else D(rate), direct=direct,
+                          file_total_gross=None if file_total is None else D(file_total),
+                          overrides_count=overrides, overrides_last_at=None)
+
+
+CATS = [ref(6, "6", sort_order=6), ref(2, "2", sort_order=2), ref(26, "2.6", parent_id=2, sort_order=1)]
+
+
+class TestTaxBasis:
+    def test_single_known_rate_is_gross(self):
+        tb = ss.pick_tax_basis([D("20"), D("20"), None])
+        assert tb.basis == ss.TAX_GROSS and tb.reason == ss.TAX_REASON_SINGLE and tb.rates_by_column is None
+
+    def test_mixed_known_rates_is_net_with_rates_listed(self):
+        tb = ss.pick_tax_basis([D("20"), D("0")])
+        assert tb.basis == ss.TAX_NET and tb.reason == ss.TAX_REASON_MIXED and tb.rates_by_column == [D("20"), D("0")]
+
+    def test_no_known_rates_is_none(self):
+        tb = ss.pick_tax_basis([None, None])
+        assert tb.basis == ss.TAX_NONE and tb.reason == ss.TAX_REASON_NO_KNOWN
+
+    def test_unknown_column_is_unavailable_on_gross_axis(self):
+        """20 % + неизвестная: известная валовая, неизвестная — без суммы (§2.8)."""
+        tb = ss.pick_tax_basis([D("20"), None])
+        assert tb.basis == ss.TAX_GROSS
+        assert ss.to_shown(D("120"), D("20"), tb) == D("120")
+        assert ss.to_shown(D("120"), None, tb) is None
+
+    def test_net_axis_divides_by_own_rate(self):
+        tb = ss.pick_tax_basis([D("20"), D("0")])
+        assert ss.to_shown(D("120"), D("20"), tb) == D("100")
+        assert ss.to_shown(D("100"), D("0"), tb) == D("100")
+
+
+class TestComputeSummary:
+    def two_columns(self):
+        c1 = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("120")}, 2: {SOURCE_POSITIONS: dt_("60")},
+                              26: {SOURCE_POSITIONS: dt_("12")}, None: {SOURCE_POSITIONS: dt_("6")}}, file_total="198")
+        c2 = col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("96"), SOURCE_ADDITIONAL_WORKS: dt_("24")},
+                              2: {SOURCE_POSITIONS: dt_("0")}, None: {SOURCE_POSITIONS: dt_("0")}}, file_total="130")
+        return [c1, c2]
+
+    def test_total_is_sum_of_roots_plus_unallocated_not_file_total(self):
+        r = ss.compute_summary(self.two_columns(), CATS)
+        assert r.columns[0].total_shown == D("198")      # 120 + 72 (60+12) + 6
+        assert r.columns[1].total_shown == D("120")      # 120 + 0 + 0; файл говорит 130 → не сходится
+        assert r.columns[1].convergence.converged is False and r.columns[1].convergence.delta == D("-10")
+        assert r.columns[0].convergence.converged is True
+
+    def test_convergence_null_when_file_total_missing(self):
+        cols = self.two_columns()
+        cols[0] = ss.ColumnInput(**{**cols[0].__dict__, "file_total_gross": None})
+        r = ss.compute_summary(cols, CATS)
+        assert r.columns[0].convergence.converged is None
+        assert r.columns[0].convergence.reason == ss.CONV_FILE_TOTAL_UNAVAILABLE
+
+    def test_convergence_is_computed_in_gross_even_on_net_axis(self):
+        cols = self.two_columns()
+        cols[1] = ss.ColumnInput(**{**cols[1].__dict__, "vat_rate_base": D("0")})
+        r = ss.compute_summary(cols, CATS)
+        assert r.display.basis == ss.TAX_NET
+        assert r.columns[0].total_shown == D("165")      # 198 / 1.2
+        assert r.columns[0].convergence.categories_sum_gross == D("198") and r.columns[0].convergence.converged is True
+
+    def test_additional_works_amount_independent_of_state(self):
+        c = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("-24"), SOURCE_ADDITIONAL_WORKS: dt_("24")}})
+        r = ss.compute_summary([c, c], CATS)
+        row6 = next(row for row in r.rows if row.ref.id == 6)
+        cell = row6.cells[0]
+        assert cell.state == ss.STATE_NOT_EVALUATED and cell.shown is None
+        assert cell.additional_works_shown == D("24")
+
+    def test_additional_works_at_child_are_visible_in_parent(self):
+        c = col(1, 1, "20", {2: {SOURCE_POSITIONS: dt_("10")},
+                              26: {SOURCE_POSITIONS: dt_("5"), SOURCE_ADDITIONAL_WORKS: dt_("7")}})
+        r = ss.compute_summary([c, c], CATS)
+        two = next(row for row in r.rows if row.ref.id == 2)
+        assert two.cells[0].additional_works_shown == D("7")
+        assert two.children[0].cells[0].additional_works_shown == D("7")
+        six = next(row for row in r.rows if row.ref.id == 6)
+        assert six.cells[0].additional_works_shown is None
+
+    def test_rows_sorted_by_abs_contribution_within_level_then_sort_order(self):
+        r = ss.compute_summary(self.two_columns(), CATS)
+        assert [row.ref.code for row in r.rows] == ["2", "6"]          # |−72| > |0|
+        assert r.rows[0].contribution.value == D("-72") and r.rows[1].contribution.value == D("0")
+
+    def test_roots_always_present_children_only_with_nonzero_somewhere(self):
+        cats = CATS + [ref(7, "7", sort_order=7), ref(27, "2.7", parent_id=2, sort_order=2)]
+        r = ss.compute_summary(self.two_columns(), cats)
+        assert {row.ref.code for row in r.rows} == {"2", "6", "7"}
+        two = next(row for row in r.rows if row.ref.code == "2")
+        assert [c.ref.code for c in two.children] == ["2.6"]        # 2.7 без строк — скрыт
+
+    def test_child_with_explicit_zero_everywhere_is_hidden(self):
+        c = col(1, 1, "20", {2: {SOURCE_POSITIONS: dt_("10")}, 26: {SOURCE_POSITIONS: dt_("0")}})
+        r = ss.compute_summary([c, c], CATS)
+        two = next(row for row in r.rows if row.ref.code == "2")
+        assert two.children == []
+
+    def test_unallocated_row_bargain_has_no_percent_but_contribution_is_number(self):
+        r = ss.compute_summary(self.two_columns(), CATS)
+        assert r.unallocated.is_unallocated
+        assert r.unallocated.bargain.kind == ss.KIND_NONE and r.unallocated.bargain.reason == ss.REASON_UNALLOCATED
+        assert r.unallocated.contribution.value == D("-6")
+
+    def test_kpi_counts_nonzero_roots_of_last_column_both_signs(self):
+        c = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("5")}, 2: {SOURCE_POSITIONS: dt_("-5")}})
+        r = ss.compute_summary([c, c], CATS)
+        assert r.kpi.categories_with_amount == 2 and r.kpi.categories_total == 2
+
+    def test_track_heights_are_server_side_and_max_is_100(self):
+        r = ss.compute_summary(self.two_columns(), CATS)
+        assert r.track.available is True
+        assert r.columns[0].bar_height_pct == D("100")
+        # RESOLUTION A: RHS `D("120") / D("198") * 100` вычислялась бы в амбиентном
+        # 28-значном контексте decimal, а реализация делит под prec=ARITHMETIC_PRECISION
+        # (=100, см. parser/summary_block.py:154) — хвосты расходятся. Сверяем то, что
+        # реально уходит клиенту: квантование до 0.1 (§2.12).
+        assert r.columns[1].bar_height_pct.quantize(D("0.1"), rounding=ROUND_HALF_UP) == D("60.6")
+
+    def test_track_unavailable_on_non_positive_total(self):
+        c = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("-5")}})
+        r = ss.compute_summary([c, c], CATS)
+        assert r.track.available is False and r.track.reason == ss.TRACK_NON_POSITIVE
+
+    def test_unknown_column_does_not_disable_track_but_has_no_bar(self):
+        cols = self.two_columns()
+        cols[1] = ss.ColumnInput(**{**cols[1].__dict__, "vat_rate_base": None})
+        r = ss.compute_summary(cols, CATS)
+        assert r.track.available is True
+        assert r.columns[1].bar_height_pct is None and r.columns[1].vat_state == ss.VAT_UNKNOWN
+        assert r.columns[1].total_shown is None
+        assert all(cell.unavailable_reason == ss.REASON_UNKNOWN_VAT_BASE for cell in r.rows[0].cells[1:2])
+        assert r.columns[1].total_change.kind == ss.KIND_NONE
+
+    def test_all_unknown_means_basis_none_and_no_comparable_totals(self):
+        """Это проверка ФОРМЫ, не значения: состояние ячейки лежит в множестве
+        валидных состояний и просто ПЕРЕЖИЛО отсутствие суммы (ни одна ставка не
+        известна), а не что это состояние ПРАВИЛЬНОЕ — за правильность состояний
+        отвечают тесты `TestCellStates` выше."""
+        cols = [ss.ColumnInput(**{**c.__dict__, "vat_rate_base": None}) for c in self.two_columns()]
+        r = ss.compute_summary(cols, CATS)
+        assert r.display.basis == ss.TAX_NONE
+        assert r.track.available is False and r.track.reason == ss.TRACK_NO_COMPARABLE
+        assert r.rows[0].cells[0].state in (ss.STATE_AMOUNT, ss.STATE_NOT_EVALUATED)   # состояния на месте
+
+    def test_first_column_change_is_none_with_first_column_reason(self):
+        r = ss.compute_summary(self.two_columns(), CATS)
+        assert r.rows[0].cells[0].change.kind == ss.KIND_NONE
+        assert r.rows[0].cells[0].change.reason == ss.REASON_FIRST_COLUMN
+
+    def test_rows_with_no_price_are_not_absent(self):
+        """RESOLUTION B: строка есть, но без цены (row_count=1, rows_with_amount=0)
+        — не то же самое, что строки нет вовсе (row_count=0). `_node_inputs` обязан
+        сохранять инвариант Task 1 (`gross is None` ⟺ `row_count == 0`), иначе
+        «нет в файле» подменяется «не оценивалась»."""
+        c = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_(None)}})
+        r = ss.compute_summary([c, c], CATS)
+        row6 = next(row for row in r.rows if row.ref.id == 6)
+        cell = row6.cells[0]
+        assert cell.state != ss.STATE_ABSENT
+        assert cell.rows.row_count == 1
