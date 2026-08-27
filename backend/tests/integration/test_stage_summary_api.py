@@ -543,3 +543,43 @@ class TestConvergenceAndKpi:
         body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         rows = _row(body, "6")["cells"][2]["rows"]
         assert rows == {"row_count": 1, "rows_with_amount": 0, "rows_not_finite": 1}
+
+
+class TestHttp:
+    URL = "/api/v1/tenders/{tid}/stage-summary"
+
+    def test_member_reads_summary(self, member_client, db_session, grid):
+        db_session.flush()
+        r = member_client.get(self.URL.format(tid=grid.tender.id), params={"offers": grid.path})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert [c["stage_no"] for c in body["columns"]] == [1, 2, 4]
+        assert body["display"]["price_level"] == "nominal"
+        assert body["columns"][0]["total"] == "180.00"      # фикстура: раунд 1, итог участника А
+
+    def test_422_detail_is_object_with_code_and_offers(self, member_client, grid):
+        r = member_client.get(self.URL.format(tid=grid.tender.id), params={"offers": [grid.a[0], grid.b[0]]})
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "single_participant"
+        assert set(r.json()["detail"]["offers"]) == {grid.a[0], grid.b[0]}
+
+    def test_404_detail_has_same_shape(self, member_client, grid):
+        """Тело ошибки имеет ровно три ключа (code, message, offers), потому что клиент читает причину из code."""
+        r = member_client.get(self.URL.format(tid=grid.tender.id), params={"offers": [grid.a[0], 999999]})
+        assert r.status_code == 404
+        detail = r.json()["detail"]
+        assert set(detail.keys()) == {"code", "message", "offers"}
+        assert detail["code"] == "offer_not_found"
+        assert detail["offers"] == [999999]
+        assert isinstance(detail["message"], str) and len(detail["message"]) > 0
+
+    def test_missing_offers_param_is_422_too_few(self, member_client, grid):
+        r = member_client.get(self.URL.format(tid=grid.tender.id))
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "too_few_offers"
+
+    def test_unknown_tender_is_404_with_code(self, member_client, grid):
+        r = member_client.get(self.URL.format(tid=999999), params={"offers": grid.path})
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "tender_not_found"
+        assert set(r.json()["detail"]["offers"]) == set(grid.path)
