@@ -138,8 +138,8 @@ React 19 / TanStack Query 5 / shadcn/ui (`Toggle`) / vitest + msw.
 | `services/stage_summary.py` — все имена Р1 | — | **заводится Task 1–2** |
 | `crud/stage_summary.py`: `load_inputs`, `build_stage_summary`; `crud/estimate_totals.estimate_totals_including_vat` | — | **заводится Task 3** |
 | `routers/tenders.py::stage_summary` | — | **заводится Task 5** |
-| `StageSummary`, `StageSummaryColumn`, `StageSummaryRow`, `StageSummaryCell`, `StageSummaryChange` (типы), `tendersApi.stageSummary`, `qk.tenders.stageSummary`, `useStageSummary`, `sampleStageSummary`, `handlerState.stageSummaryOutcome` | frontend | **заводится Task 6** |
-| `StageSummaryPage`, `StageSummaryTable`, `StageSummaryTrack`, `SummaryCell`, `cellCopy.ts` | `frontend/src/pages/tenders/summary/` | **заводится Task 8** |
+| `StageSummary`, `StageSummaryColumn`, `StageSummaryRow`, `StageSummaryCell`, `StageSummaryChange` (типы), `tendersApi.stageSummary`, `qk.tenders.stageSummary`, `useStageSummary`, `sampleStageSummary`, `stageSummaryNet`, `stageSummaryAllUnknown`, `stageSummaryWithUnknownSecondColumn`, `handlerState.stageSummaryOutcome`, `frontend/src/test/fixtures.test.ts` (инварианты §2.16 у всех четырёх фикстур) | frontend | **заводится Task 6** |
+| `StageSummaryPage`, `StageSummaryTable`, `StageSummaryTrack`, `SummaryCell`, `ChangeBadge` (экспорт из `SummaryCell.tsx`, проп `inKpi` — «—» вместо пустоты при `none`), `cellCopy.ts` | `frontend/src/pages/tenders/summary/` | **заводится Task 8** |
 | `docs/devlog/2026-08-27-stage-summary.md` | — | **заводится Task 9** |
 
 ---
@@ -1136,7 +1136,9 @@ def grid(db_session, factories):
 
 class TestBatchTotalsParity:
     """`estimate_totals_including_vat` по списку обязано совпадать с одиночным правилом
-    на каждом из пяти исходов — иначе у свода и решётки были бы два разных «Итого с НДС»."""
+    на каждом достижимом исходе — иначе у свода и решётки были бы два разных «Итого с НДС».
+    Дубль строки итога на живой БД НЕДОСТИЖИМ (`UNIQUE (proposal_id, summary_key)`, models.py) —
+    он покрыт unit-тестом с подменённым результатом запроса (`tests/unit/test_estimate_totals_batch.py`)."""
 
     def _estimate(self, db, factories, lines_per_proposal):
         """lines_per_proposal: список списков итогов по предложениям; [] — строки нет."""
@@ -1154,7 +1156,6 @@ class TestBatchTotalsParity:
     @pytest.mark.parametrize("lines", [
         [[Decimal("1200.00")], [Decimal("1200.00")]],           # единогласие
         [[Decimal("1200.00")], []],                              # пропуск
-        [[Decimal("1200.00"), Decimal("1200.00")]],             # дубль строки
         [[Decimal("1200.00")], [Decimal("NaN")]],               # NaN
         [[Decimal("1200.00")], [Decimal("1300.00")]],           # разные итоги
         [],                                                     # предложений нет
@@ -1226,6 +1227,37 @@ class TestSelectionShape:
 Run: `cd backend && TEST_DATABASE_URL=... uv run pytest tests/integration/test_stage_summary_api.py -q` (через `just test-int-local-k stage_summary`).
 
 - [ ] **Step 3: `estimate_totals_including_vat` — одно чтение на список**
+
+Юнит-тест недостижимого на БД дубля — `backend/tests/unit/test_estimate_totals_batch.py`:
+
+```python
+"""Дубль строки итога у одного предложения структурно невозможен в БД (UNIQUE), но
+правило «ровно одна конечная строка на предложение» — часть контракта функции, и
+его стережёт подменённый результат запроса, а не фикстура."""
+from decimal import Decimal
+
+from crud.estimate_totals import estimate_totals_including_vat
+
+
+class _Result:
+    def __init__(self, rows): self._rows = rows
+    def all(self): return self._rows
+
+
+class _FakeDb:
+    def __init__(self, proposals, lines): self._answers = [_Result(proposals), _Result(lines)]
+    def execute(self, _stmt): return self._answers.pop(0)
+
+
+def test_duplicate_summary_line_makes_total_unavailable():
+    db = _FakeDb(proposals=[(10, 100)], lines=[(100, Decimal("1200.00")), (100, Decimal("1200.00"))])
+    assert estimate_totals_including_vat(db, [10]) == {10: None}
+
+
+def test_single_line_per_proposal_is_returned():
+    db = _FakeDb(proposals=[(10, 100), (10, 101)], lines=[(100, Decimal("5")), (101, Decimal("5"))])
+    assert estimate_totals_including_vat(db, [10]) == {10: Decimal("5")}
+```
 
 ```python
 # дописать в backend/crud/estimate_totals.py
@@ -1913,7 +1945,10 @@ export function useStageSummary(tenderId: number | undefined, offerIds: number[]
 
 - [ ] **Step 4: Фикстура и хендлер**
 
-`sampleStageSummary` — числа те же, что в фикстуре бэкенда Task 3 (`180 / 120 / 90`, статья «6» 120→120→90, «2» 60→снято→нет в файле, «Нераспределённое» 0), плюс ребёнок «6.99» у «6» с суммами `12 / 24 / 0` (removed в 3-й). `participant.stages` — четыре этапа `[1 sel, 2 sel, 3 NOT selected (offer 7003), 4 sel]`, `rounds_with_estimate: 4`, `kpi: {stages_selected: 3, stages_loaded: 4, last_stage_positions: 1, categories_with_amount: 1, categories_total: 2, first_to_last: {kind: "percent", value: "-50.0", direction: "down", reason: null}}`. `columns[*].bar_height_pct`: `"100.0" / "66.7" / "50.0"`; `manual_overrides` у 2-й колонки `{count: 1, last_at: "2026-08-26T10:00:00Z"}`. `display` — `gross/single_rate`. Кол-во `cells` везде = 3. Производные фикстуры: `stageSummaryNet()` — `display: {tax_basis: "net", reason: "mixed_rates", rates_by_column: ["20", "0", "20"]}`, суммы колонок 1 и 3 делены на 1,2; `stageSummaryWithUnknownSecondColumn()` — см. ниже.
+`sampleStageSummary` — числа те же, что в фикстуре бэкенда Task 3 (`180 / 120 / 90`, статья «6» 120→120→90, «2» 60→снято→нет в файле, «Нераспределённое» 0), плюс ребёнок «6.99» у «6» с суммами `12 / 24 / 0` (removed в 3-й). `participant.stages` — четыре этапа `[1 sel, 2 sel, 3 NOT selected (offer 7003), 4 sel]`, `rounds_with_estimate: 4`, `kpi: {stages_selected: 3, stages_loaded: 4, last_stage_positions: 1, categories_with_amount: 1, categories_total: 2, first_to_last: {kind: "percent", value: "-50.0", direction: "down", reason: null}}`. `columns[*].bar_height_pct`: `"100.0" / "66.7" / "50.0"`; `manual_overrides` у 2-й колонки `{count: 1, last_at: "2026-08-26T10:00:00Z"}`. `display` — `gross/single_rate`. Кол-во `cells` везде = 3. Производные фикстуры обязаны быть **внутренне согласованы по инвариантам спеки §2.16** (у каждой — тест-проверка инвариантов в `fixtures.test.ts`: длины `cells`, `tax_basis=none ⇔ все колонки unknown`, `bar_height_pct ≠ null ⇔ есть сопоставимый итог`, `amount = null ⇔ …`):
+- `stageSummaryNet()` — `display: {tax_basis: "net", reason: "mixed_rates", rates_by_column: ["20", "0", "20"]}`, `vat_rate_base` колонки 2 = `"0"`, **все** `amount`, `additional_works_amount`, `total`, `contribution.value` колонок 1 и 3 делены на 1,2 (`"100.00"`, `"75.00"` и т. д.), `change` пересчитаны от нетто, `convergence.categories_sum` остаётся валовой (`"180.00"`);
+- `stageSummaryAllUnknown()` — у **всех** колонок `vat_state: "unknown_vat_base"`, `vat_rate_base: null`, `total: null`, `bar_height_pct: null`, `total_change: {kind: "none", reason: "unknown_vat_base"}` (у первой — `first_column`); у **всех** ячеек `amount: null`, `additional_works_amount: null`, `amount_unavailable_reason: "unknown_vat_base"`, `change.kind: "none"` с причиной; `state` сохранён; у всех строк `contribution: {value: null, reason: "unknown_vat_base"}`; `display: {tax_basis: "none", reason: "no_known_rates", rates_by_column: null}`; `track: {available: false, reason: "no_comparable_totals"}`; `kpi.first_to_last: {kind: "none", reason: "unknown_vat_base"}`; `convergence` — как у исходной (сходимость от ставки не зависит);
+- `stageSummaryWithUnknownSecondColumn()` — см. ниже.
 
 ```ts
 // handlers.ts
@@ -1931,7 +1966,7 @@ http.get("/api/v1/tenders/:id/stage-summary", ({ request }) => {
     case "net":                   return HttpResponse.json(stageSummaryNet());
     case "unknown_vat":           return HttpResponse.json(stageSummaryWithUnknownSecondColumn());
     case "track_non_positive":    return HttpResponse.json({ ...sampleStageSummary, track: { available: false, reason: "non_positive_total" } });
-    case "track_no_comparable":   return HttpResponse.json({ ...sampleStageSummary, display: { ...sampleStageSummary.display, tax_basis: "none", reason: "no_known_rates" }, track: { available: false, reason: "no_comparable_totals" } });
+    case "track_no_comparable":   return HttpResponse.json(stageSummaryAllUnknown());
     default:                      return HttpResponse.json(sampleStageSummary);
   }
 }),
@@ -2261,6 +2296,16 @@ describe("Таблица свода — состояния по данным (с
     expect(screen.getByRole("cell")).toHaveTextContent(label);
   });
 
+  it.each([
+    [{ kind: "percent", value: "-50.0", direction: "down", reason: null }, /-50,0%/],
+    [{ kind: "abs_only", value: "-20.00", direction: "down", reason: null }, /20,00.*Δ, без %/],
+    [{ kind: "disappeared", value: null, direction: null, reason: null }, /нет в файле/],
+    [{ kind: "none", value: null, direction: null, reason: "unknown_vat_base" }, /^—$/],
+  ])("ChangeBadge исчерпывающе рисует %o (тот же компонент в KPI «Последний к первому»)", (change, expected) => {
+    render(<ChangeBadge change={change as StageSummaryChange} inKpi />);
+    expect(screen.getByTestId("change")).toHaveTextContent(expected);
+  });
+
   it("direction трёх состояний: up/down/flat — знак и тон, flat не окрашен как рост", () => {
     for (const [direction, value, cls] of [["up", "+5.0", "text-accent-primary-text"], ["down", "-5.0", "text-danger-text"], ["flat", "0.0", "text-fg-tertiary"]] as const) {
       const cell = { ...sampleStageSummary.rows[0].cells[1], change: { kind: "percent", value, direction, reason: null } } as StageSummaryCell;
@@ -2326,11 +2371,11 @@ it("каждая var(--…) компонентов свода объявлена
 
 - [ ] **Step 3: Компоненты**
 
-`StageSummaryPage`: карта текстов отказа дополняется `tender_not_found` «Тендер не найден»; подзаголовок — `этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}` плюс, если есть `participant.stages.filter(s => !s.selected)`, «исключён выбором: этап 3» (несколько — «исключены выбором: этапы 3, 5»); ряд KPI — `<div data-testid="kpi">` с пятью `KpiCard` (`label` ровно «Этапов в своде», «Позиций в последнем», «Статей с суммой», «Ставка НДС», «Последний к первому»; последняя — `roundDecimalPercent(kpi.first_to_last.value).text` либо подпись `KIND_LABEL`); слот трассы `track-slot-unknown` несёт видимый текст «нет базы НДС». `useParams` → `tenderId`; `useSearchParams().getAll("offers").map(Number).filter(Number.isFinite)`; без offers → `EmptyState title="Свод не построен" description="Выберите предложения на решётке тендера"` со ссылкой; `useStageSummary`; `isPending` → `Skeleton`; `isError` → `EmptyState` с `REASON`-текстом по `apiErrorCode` (карта кодов отказа → текст: `offer_not_found` «Предложение не найдено в этом тендере», `too_few_offers` «Для свода нужны хотя бы два этапа», `one_offer_per_round` «В одном раунде — одно предложение», `single_participant` «Выбранные предложения принадлежат разным участникам — свод строится по одному участнику», `offer_has_no_estimate` «У предложения нет сметы: раунд был заменён другим файлом») и `Button render={<Link to={`/tenders/${tenderId}`}>}` «К решётке тендера»; успех → `Breadcrumbs` (Тендеры → номер → Свод по этапам), `PageHeader serif title={`Свод по этапам · ${participant.title}`} subtitle={`${tender.title} · ${tender.object_title} · этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}`}`, ряд `KpiCard` ×5, подпись осей (`TAX_LABEL[display.tax_basis]`, «Цены номинальные, без приведения к ценовому уровню месяца»), `StageSummaryTrack`, `StageSummaryTable`.
+`StageSummaryPage`: карта текстов отказа дополняется `tender_not_found` «Тендер не найден»; подзаголовок — `этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}` плюс, если есть `participant.stages.filter(s => !s.selected)`, «исключён выбором: этап 3» (несколько — «исключены выбором: этапы 3, 5»); ряд KPI — `<div data-testid="kpi">` с пятью `KpiCard` (`label` ровно «Этапов в своде», «Позиций в последнем», «Статей с суммой», «Ставка НДС», «Последний к первому»; последняя — `<ChangeBadge change={kpi.first_to_last} inKpi />`, тот же исчерпывающий компонент, что в ячейках: `percent` → процент, `abs_only` → дельта с «Δ, без %», структурные виды → `KIND_LABEL`, `none` → «—» с `title={REASON_LABEL[reason]}`); слот трассы `track-slot-unknown` несёт видимый текст «нет базы НДС». `useParams` → `tenderId`; `useSearchParams().getAll("offers").map(Number).filter(Number.isFinite)`; без offers → `EmptyState title="Свод не построен" description="Выберите предложения на решётке тендера"` со ссылкой; `useStageSummary`; `isPending` → `Skeleton`; `isError` → `EmptyState` с `REASON`-текстом по `apiErrorCode` (карта кодов отказа → текст: `offer_not_found` «Предложение не найдено в этом тендере», `too_few_offers` «Для свода нужны хотя бы два этапа», `one_offer_per_round` «В одном раунде — одно предложение», `single_participant` «Выбранные предложения принадлежат разным участникам — свод строится по одному участнику», `offer_has_no_estimate` «У предложения нет сметы: раунд был заменён другим файлом») и `Button render={<Link to={`/tenders/${tenderId}`}>}` «К решётке тендера»; успех → `Breadcrumbs` (Тендеры → номер → Свод по этапам), `PageHeader serif title={`Свод по этапам · ${participant.title}`} subtitle={`${tender.title} · ${tender.object_title} · этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}`}`, ряд `KpiCard` ×5, подпись осей (`TAX_LABEL[display.tax_basis]`, «Цены номинальные, без приведения к ценовому уровню месяца»), `StageSummaryTrack`, `StageSummaryTable`.
 
-`StageSummaryTrack`: `summary.track.available ? columns.map(bar) : <EmptyState …>`; столбик — `<div data-testid="track-bar" style={{ height: `${Number(col.bar_height_pct)}%` }} />` (число только для CSS-высоты — не сравнение и не деление); колонка с `vat_state === "unknown_vat_base"` — `<div data-testid="track-slot-unknown" className="… bg-[repeating-linear-gradient(45deg,var(--border-subtle)_0_4px,transparent_4px_8px)]" title={REASON_LABEL.unknown_vat_base} />`; под столбиком `formatDecimalMoney(col.total)` и `ChangeBadge change={col.total_change}`.
+`StageSummaryTrack`: `summary.track.available ? columns.map(bar) : <EmptyState …>`; столбик — `<div data-testid="track-bar" style={{ height: `${Number(col.bar_height_pct)}%` }} />` (число только для CSS-высоты — не сравнение и не деление); колонка с `vat_state === "unknown_vat_base"` — `<div data-testid="track-slot-unknown" className="… bg-[repeating-linear-gradient(45deg,var(--border-subtle)_0_4px,transparent_4px_8px)]" title={REASON_LABEL.unknown_vat_base}><StatusPill tone="neutral" label="нет базы НДС" /></div>` — подпись **видимая**, внутри слота, `title` лишь дублирует её; под столбиком `formatDecimalMoney(col.total)` и `ChangeBadge change={col.total_change}`; под слотом суммы нет.
 
-`SummaryCell({cell})`: `<td className="text-right tabular-nums" title={cell.amount_unavailable_reason ? REASON_LABEL[...] : undefined}>`; если `amount_unavailable_reason` → **видимая** пилюля `StatusPill tone="neutral" label="нет базы НДС"` (не только `title`) и никакой цифры; иначе по `state`: `amount` → `formatDecimalMoney(cell.amount)`, прочие → `STATE_LABEL[state]` пилюлей (`StatusPill tone="warning"` для `removed`, `neutral` для `not_evaluated`); под числом `ChangeBadge` (`data-testid="change"`, тон по `direction`: `up → text-accent-primary-text`, `down → text-danger-text`, `flat → text-fg-tertiary`; `kind ∈ KIND_LABEL` → пилюля с подписью; `none` → ничего); значок неполноты при `rows_with_amount < row_count`: `<Tooltip><TooltipTrigger aria-label={`Сумма неполна: учтено ${rows_with_amount} из ${row_count} строк${rows_not_finite ? `; неконечных значений: ${rows_not_finite}` : ""}`}>◐</TooltipTrigger><TooltipContent>…</TooltipContent></Tooltip>`. Процент — `roundDecimalPercent(value).text`; `abs_only` — `formatDecimalMoney(value)` с подписью «Δ, без %».
+`SummaryCell({cell})`: `<td className="text-right tabular-nums" title={cell.amount_unavailable_reason ? REASON_LABEL[...] : undefined}>`; если `amount_unavailable_reason` → **видимая** пилюля `StatusPill tone="neutral" label="нет базы НДС"` (не только `title`) и никакой цифры; иначе по `state`: `amount` → `formatDecimalMoney(cell.amount)`, прочие → `STATE_LABEL[state]` пилюлей (`StatusPill tone="warning"` для `removed`, `neutral` для `not_evaluated`); под числом `ChangeBadge` — **экспортируемый из `SummaryCell.tsx` исчерпывающий по `kind` компонент** (`data-testid="change"`, тон по `direction`: `up → text-accent-primary-text`, `down → text-danger-text`, `flat → text-fg-tertiary`; `percent` → `roundDecimalPercent(value).text`; `abs_only` → `formatDecimalMoney(value)` + «Δ, без %»; `kind ∈ KIND_LABEL` → пилюля с подписью; `none` → в ячейке ничего, при пропе `inKpi` — «—»; `switch` по `kind` с `never`-проверкой, чтобы новый вид не отрисовался пустотой); значок неполноты при `rows_with_amount < row_count`: `<Tooltip><TooltipTrigger aria-label={`Сумма неполна: учтено ${rows_with_amount} из ${row_count} строк${rows_not_finite ? `; неконечных значений: ${rows_not_finite}` : ""}`}>◐</TooltipTrigger><TooltipContent>…</TooltipContent></Tooltip>`. Процент — `roundDecimalPercent(value).text`; `abs_only` — `formatDecimalMoney(value)` с подписью «Δ, без %».
 
 `StageSummaryTable({summary})`: `<Table>` из shadcn в `Surface padding="none" className="overflow-x-auto"`; `thead` — «Статья классификатора» (`sticky left-0 bg-surface`), по колонке `Этап {stage_no}{label ? ` · ${label}` : ""}` и под ней `manual_overrides.count ? `разнос: ${count} ${plural} · ${formatDate(last_at)}` : "без ручного разноса"`, затем «Торг: первый → последний», «Вклад в итог»; `tbody` — строки в порядке ответа, у строки с `children.length > 0` кнопка `aria-label={`Раскрыть ${title}`}` и `aria-expanded`; дети — `pl-8 bg-surface-sunken`; `tfoot` — `unallocated` (бейдж «обязательная строка», `bargain` → «без %» с title `REASON_LABEL.unallocated`, `contribution.value` числом) и «Итого по предложению» с `total.cells` и под каждым — сходимость: `converged === true` «сходится», `false` `не сходится: Δ ${formatDecimalMoney(delta)}`, `null` `сверка невозможна: ${REASON_LABEL[reason]}`; при `display.tax_basis === "net"` — строка под таблицей «Δ сходимости измерена в исходных деньгах файла».
 
