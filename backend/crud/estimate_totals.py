@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -40,3 +41,39 @@ def estimate_total_including_vat(db: Session, estimate_id: int) -> Decimal | Non
     if len(set(totals)) != 1:
         return None
     return totals[0]
+
+
+def estimate_totals_including_vat(db: Session, estimate_ids: Sequence[int]) -> dict[int, Decimal | None]:
+    """То же правило единогласия, что выше, для списка смет за ДВА запроса
+    (спека свода §2.12: число запросов не растёт с числом колонок).
+    Ключ есть у каждого переданного id; `None` — итог недоступен."""
+    ids = list(dict.fromkeys(estimate_ids))
+    result: dict[int, Decimal | None] = {i: None for i in ids}
+    if not ids:
+        return result
+    proposals = db.execute(
+        sa.select(Lot.estimate_id, Proposal.id).join(Lot, Lot.id == Proposal.lot_id).where(Lot.estimate_id.in_(ids))
+    ).all()
+    by_estimate: dict[int, list[int]] = {}
+    for estimate_id, proposal_id in proposals:
+        by_estimate.setdefault(estimate_id, []).append(proposal_id)
+    all_proposals = [p for ps in by_estimate.values() for p in ps]
+    # СПИСКИ строк на предложение, не dict: dict молча схлопнул бы дубль строки итога,
+    # а одиночное правило на дубле отдаёт None (len(totals) != len(proposal_ids)).
+    lines: dict[int, list] = {p: [] for p in all_proposals}
+    for proposal_id, total in db.execute(
+        sa.select(ProposalSummaryLine.proposal_id, ProposalSummaryLine.total_cost).where(
+            ProposalSummaryLine.proposal_id.in_(all_proposals or [-1]),
+            ProposalSummaryLine.summary_key == JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+        )
+    ).all():
+        lines[proposal_id].append(total)
+    for estimate_id, proposal_ids in by_estimate.items():
+        per_proposal = [lines[p] for p in proposal_ids]
+        if any(len(ls) != 1 for ls in per_proposal):
+            continue                       # пропуск или дубль у одного предложения
+        values = [ls[0] for ls in per_proposal]
+        if any(v is None or not v.is_finite() for v in values) or len(set(values)) != 1:
+            continue
+        result[estimate_id] = values[0]
+    return result
