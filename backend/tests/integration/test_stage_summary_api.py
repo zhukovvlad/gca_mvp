@@ -14,7 +14,18 @@ import sqlalchemy as sa
 
 from crud import stage_summary as crud_ss
 from crud.common import DomainError
-from models import Contractor, Estimate, Offer, OfferPackage, ProposalSummaryLine, TenderRound
+from models import (
+    Contractor,
+    Estimate,
+    Lot,
+    Offer,
+    OfferPackage,
+    PositionItem,
+    Proposal,
+    ProposalSummaryLine,
+    TenderRound,
+    WorkCategory,
+)
 from parser.constants import (
     JSON_KEY_BASELINE_PROPOSAL,
     JSON_KEY_CONTRACTOR_TITLE,
@@ -330,3 +341,205 @@ class TestTwoLotAccumulation:
         # берёт итог одного из лотов.
         assert body["columns"][0]["convergence"]["file_total"] is None
         assert body["columns"][0]["convergence"]["reason"] == ss.CONV_FILE_TOTAL_UNAVAILABLE
+
+
+def _row(body, code):
+    return next(r for r in body["rows"] if r["code"] == code)
+
+
+def _estimate_of(db, offer_id):
+    return db.execute(sa.select(Estimate).where(Estimate.offer_id == offer_id)).scalar_one()
+
+
+def _assert_column_totals_reconcile(body):
+    """Аддиция 1 задачи 4: инвариант арифметики ответа, которого нет нигде в
+    плане. Итог колонки (`columns[].total`) обязан посимвольно совпадать
+    (а) с опубликованной суммой в `total.cells` той же колонки и (б) с суммой
+    опубликованных сумм всех строк ВЕРХНЕГО уровня плюс Нераспределённого —
+    считая по СТРОКАМ ответа (то, что видит и складывает читатель на экране),
+    а не по внутренним `Decimal` до квантования. `None`-сумма строки (клетка
+    не в состоянии `amount`) участвует как ноль — так же, как её трактует
+    `compute_summary` при сборке `totals_gross`/`totals_shown` (`_sum_known`
+    там неприменим: это чужая сумма, уже квантованная и распечатанная).
+    Проверяется на обеих осях (валовой и нетто) вызывающим тестом — на нетто
+    это же ловит расхождение «квантовать итог целиком» vs «квантовать каждую
+    строку и сложить квантованное», которое резолюция C (§2.9) в
+    `services/stage_summary.py` устраняет структурой кода, но которое до сих
+    пор не было проверено ни одним тестом на живых числах."""
+    for idx, col in enumerate(body["columns"]):
+        total = col["total"]
+        total_cell = body["total"]["cells"][idx]["amount"]
+        assert total_cell == total
+        if total is None:
+            continue
+        parts = [Decimal(r["cells"][idx]["amount"]) for r in body["rows"] if r["cells"][idx]["amount"] is not None]
+        unalloc = body["unallocated"]["cells"][idx]["amount"]
+        if unalloc is not None:
+            parts.append(Decimal(unalloc))
+        assert sum(parts, Decimal(0)) == Decimal(total)
+
+
+class TestAmounts:
+    def test_both_view_branches_and_additional_works_amount(self, db_session, grid):
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        six = _row(body, "6")
+        assert six["cells"][1]["amount"] == "120.00"                # 96 позиций + 24 допработ (§2.4)
+        assert six["cells"][1]["additional_works_amount"] == "24.00"
+        # Аддиция 2 задачи 4: поле для суммы работ и поле для допработ — РАЗНЫЕ
+        # числа; транспонирование этой пары (частая ошибка сборки JSON, две
+        # соседние Decimal-суммы в одном `_cell`) обязано уронить тест, а не
+        # пройти незамеченным на совпавшей паре значений.
+        assert six["cells"][1]["amount"] != six["cells"][1]["additional_works_amount"]
+        assert six["cells"][0]["additional_works_amount"] is None   # ветви нет вовсе
+
+    def test_states_along_selected_path(self, db_session, grid):
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        two = _row(body, "2")
+        assert [c["state"] for c in two["cells"]] == ["amount", "removed", "absent"]
+        assert two["cells"][1]["change"]["kind"] == "removed"
+        # removed → absent: отдельной дельты нет (матрица §2.6), факт виден по состояниям
+        assert two["cells"][2]["change"] == {"kind": "none", "value": None, "direction": None, "reason": "no_amounts"}
+        assert two["contribution"] == {"value": None, "direction": None, "reason": "absent_endpoint"}
+
+    def test_excluding_middle_column_changes_neighbours(self, db_session, grid):
+        full = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        short = crud_ss.build_stage_summary(db_session, grid.tender.id, [grid.a[0], grid.a[3]])
+        assert _row(full, "6")["cells"][1]["change"]["value"] == "0.0"      # 120 → 120 (96 + 24 допработ)
+        assert _row(full, "6")["cells"][2]["change"]["value"] == "-25.0"    # 120 → 90 относительно раунда 2
+        assert _row(short, "6")["cells"][1]["change"]["value"] == "-25.0"   # 120 → 90 относительно раунда 1
+        # путь = выбранные: без раунда 2 статья «2» идёт amount → absent, то есть «нет в файле», а не «снято»
+        assert _row(full, "2")["cells"][1]["change"]["kind"] == "removed"
+        assert _row(short, "2")["cells"][1]["change"]["kind"] == "disappeared"
+        assert len(short["columns"]) == 2
+        assert short["participant"]["rounds_with_estimate"] == 4 and short["kpi"]["stages_selected"] == 2
+
+    def test_manual_override_marks_only_its_own_column(self, db_session, grid, admin_user):
+        from services.category_override import set_override
+        est = _estimate_of(db_session, grid.a[0])
+        chapter = db_session.execute(
+            sa.select(PositionItem).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == est.id, PositionItem.is_chapter.is_(True),
+                   PositionItem.chapter_number_in_proposal == "2")
+        ).scalar_one()
+        seven = db_session.execute(sa.select(WorkCategory.id).where(WorkCategory.code == "7")).scalar_one()
+        set_override(db_session, estimate_id=est.id, position_item_id=chapter.id, work_category_id=seven,
+                     note=None, user_id=admin_user.id)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert _row(body, "7")["cells"][0]["amount"] == "60.00"
+        assert _row(body, "2")["cells"][0]["state"] == "absent"
+        assert body["columns"][0]["manual_overrides"]["count"] == 1
+        assert body["columns"][0]["manual_overrides"]["last_at"] is not None
+        # Раунд с переносом (round1) несёт метку; оба соседа по пути (round2,
+        # round4) — нет. Раньше проверялась только колонка 1, здесь "и больше
+        # нигде" покрыто целиком, а не на две трети.
+        assert body["columns"][1]["manual_overrides"] == {"count": 0, "last_at": None}
+        assert body["columns"][2]["manual_overrides"] == {"count": 0, "last_at": None}
+
+
+class TestVatAxis:
+    def _set_rate(self, db, offer_id, rate):
+        est = _estimate_of(db, offer_id)
+        db.execute(sa.update(Proposal).where(Proposal.lot_id.in_(sa.select(Lot.id).where(Lot.estimate_id == est.id)))
+                   .values(vat_rate=rate))
+        db.flush()
+
+    def test_single_rate_is_gross(self, db_session, grid):
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "gross" and body["display"]["reason"] == "single_rate"
+        # "Единая ставка — все колонки валовые" — раньше проверялась только
+        # колонка 0; здесь заявление проверено на КАЖДОЙ из трёх колонок пути,
+        # не на одной.
+        assert [c["vat_state"] for c in body["columns"]] == ["known", "known", "known"]
+        assert all(c["vat_rate_base"] is not None for c in body["columns"])
+        assert [c["total"] for c in body["columns"]] == ["180.00", "120.00", "90.00"]
+        _assert_column_totals_reconcile(body)   # аддиция 1 — ось gross
+
+    def test_mixed_rates_is_net_with_rates_listed(self, db_session, grid):
+        self._set_rate(db_session, grid.a[1], Decimal("0"))
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "net"
+        assert [Decimal(r) for r in body["display"]["rates_by_column"]] == [D("20"), D("0"), D("20")]
+        assert body["columns"][0]["total"] == "150.00" and body["columns"][1]["total"] == "120.00"
+        assert body["columns"][0]["convergence"]["categories_sum"] == "180.00"   # сходимость в валовых (§2.9)
+        # Тот же приём аддиции 2: «показанный» (нетто) итог колонки и валовая
+        # сумма категорий из сходимости живут в одном объекте колонки, и это
+        # два РАЗНЫХ числа — перестановка полей при сборке JSON обязана упасть.
+        assert body["columns"][0]["total"] != body["columns"][0]["convergence"]["categories_sum"]
+        _assert_column_totals_reconcile(body)   # аддиция 1 — ось net (нет дрейфа округления)
+
+    def test_twenty_plus_unknown_keeps_known_gross(self, db_session, grid):
+        self._set_rate(db_session, grid.a[1], None)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "gross"
+        col = body["columns"][1]
+        assert col["vat_state"] == "unknown_vat_base" and col["total"] is None and col["bar_height_pct"] is None
+        cell = _row(body, "6")["cells"][1]
+        assert cell["state"] == "amount" and cell["amount"] is None
+        assert cell["amount_unavailable_reason"] == "unknown_vat_base"
+        assert cell["change"] == {"kind": "none", "value": None, "direction": None, "reason": "unknown_vat_base"}
+        assert _row(body, "6")["cells"][2]["change"]["reason"] == "unknown_vat_base"
+        assert body["track"]["available"] is True
+        assert col["convergence"]["converged"] is True      # сходимость от ставки не зависит
+
+    def test_estimate_override_wins_over_declared_rate(self, db_session, grid):
+        """COALESCE(override, ставка предложения) — спека §1.3: назначенная вручную база
+        побеждает заявленную, и одна такая колонка делает ось нетто."""
+        est = _estimate_of(db_session, grid.a[1])
+        est.vat_rate_base_override = Decimal("0")
+        db_session.flush()
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "net"
+        assert Decimal(body["columns"][1]["vat_rate_base"]) == D("0")
+        assert body["columns"][1]["total"] == "120.00" and body["columns"][0]["total"] == "150.00"
+
+    def test_all_unknown_disables_track_and_basis(self, db_session, grid):
+        for o in grid.a:
+            self._set_rate(db_session, o, None)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "none"
+        assert body["track"] == {"available": False, "reason": "no_comparable_totals"}
+        assert _row(body, "6")["cells"][0]["state"] == "amount"
+
+
+class TestConvergenceAndKpi:
+    def test_convergence_null_when_file_total_not_unanimous(self, db_session, grid):
+        est = _estimate_of(db_session, grid.a[0])
+        db_session.execute(sa.delete(ProposalSummaryLine).where(
+            ProposalSummaryLine.proposal_id.in_(sa.select(Proposal.id).join(Lot).where(Lot.estimate_id == est.id))))
+        db_session.flush()
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["columns"][0]["convergence"]["converged"] is None
+        assert body["columns"][0]["convergence"]["reason"] == "file_total_unavailable"
+        assert body["columns"][0]["total"] == "180.00"                # итог колонки — не файловый (§2.9)
+
+    def test_kpi_last_stage_positions_excludes_chapters(self, db_session, grid):
+        """`kpi.categories_total` не проверяется против `len(body["rows"])`:
+        производственный код определяет это поле КАК длину того же списка
+        (`crud/stage_summary.py`, `"categories_total": ... len(result.rows)`),
+        так что сравнение значения с собой через две записи не может упасть —
+        оно ничего не доказывает и прячет смысл числа. Источник истины для
+        смысла — СВОИМ SQL-запросом посчитанное число корневых статей
+        классификатора (`work_categories where parent_id is null`): это то,
+        что `categories_total` обязано отражать по спеке (все корни, есть
+        деньги или нет), а не то, сколько строк решил вернуть расчёт."""
+        root_count = db_session.execute(
+            sa.select(sa.func.count()).select_from(WorkCategory).where(WorkCategory.parent_id.is_(None))
+        ).scalar_one()
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["kpi"]["last_stage_positions"] == 1
+        assert body["kpi"]["categories_with_amount"] == 1
+        assert body["kpi"]["categories_total"] == root_count
+        # Смысл числа: корни присутствуют ВСЕ, деньгами в последней колонке
+        # несёт только один — поэтому это строго больше, а не совпадение.
+        assert body["kpi"]["categories_total"] > body["kpi"]["categories_with_amount"]
+
+    def test_rows_not_finite_reaches_cell(self, db_session, grid):
+        est = _estimate_of(db_session, grid.a[3])
+        db_session.execute(sa.update(PositionItem).where(
+            PositionItem.proposal_id.in_(sa.select(Proposal.id).join(Lot).where(Lot.estimate_id == est.id)),
+            PositionItem.is_chapter.is_(False)).values(total_cost_total=Decimal("NaN")))
+        db_session.flush()
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        rows = _row(body, "6")["cells"][2]["rows"]
+        assert rows == {"row_count": 1, "rows_with_amount": 0, "rows_not_finite": 1}
