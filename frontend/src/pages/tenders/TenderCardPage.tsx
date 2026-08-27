@@ -63,6 +63,9 @@ export default function TenderCardPage() {
   const [roundFormOpen, setRoundFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [roundToDelete, setRoundToDelete] = useState<TenderRoundRow | null>(null);
+  // Выбор предложений для свода по этапам (спека свода §2.1, задача 7):
+  // сметы РОВНО одного участника, отсюда и `Set` — порядок выбора неважен.
+  const [selectedOfferIds, setSelectedOfferIds] = useState<ReadonlySet<number>>(new Set());
 
   const cardQ = useTender(id);
   const card = cardQ.data;
@@ -85,6 +88,37 @@ export default function TenderCardPage() {
     next.set("round", String(roundId));
     setParams(next);
   }
+
+  // Участник, чьи сметы сейчас выбраны — вычисляется из ячеек, а не хранится
+  // отдельным полем: набор offer_id и есть источник истины, второй копии
+  // состояния, с которой он мог бы разойтись, нет.
+  const selectedParticipant = card?.participants.find((p) =>
+    card.cells.some(
+      (c) => c.offer_id !== null && selectedOfferIds.has(c.offer_id) && c.package_id === p.package_id
+    )
+  );
+
+  function toggleOffer(offerId: number) {
+    setSelectedOfferIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(offerId)) next.delete(offerId);
+      else next.add(offerId);
+      return next;
+    });
+  }
+
+  function selectParticipant(packageId: number) {
+    const own = (card?.cells ?? [])
+      .filter((c) => c.package_id === packageId && c.offer_id !== null && c.estimate_id !== null)
+      .map((c) => c.offer_id as number);
+    // Повторный клик по участнику, у которого уже выбраны все сметы, снимает
+    // выбор целиком — тот же toggle, что у отдельной плитки, но пакетом.
+    setSelectedOfferIds((prev) => (own.length > 0 && own.every((id) => prev.has(id)) ? new Set() : new Set(own)));
+  }
+
+  const summaryParams = new URLSearchParams();
+  [...selectedOfferIds].sort((a, b) => a - b).forEach((offerId) => summaryParams.append("offers", String(offerId)));
+  const summaryHref = `/tenders/${card?.id}/summary?${summaryParams.toString()}`;
 
   if (cardQ.isPending) {
     return (
@@ -145,8 +179,32 @@ export default function TenderCardPage() {
         </dl>
       </Surface>
 
-      <div className="mt-6">
-        <OfferGrid card={card} selectedRoundId={selected?.id} onSelectRound={selectRound} />
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-fg-secondary">
+          {selectedOfferIds.size > 0 && selectedParticipant
+            ? `выбрано ${selectedOfferIds.size} ${estimateWordFor(selectedOfferIds.size)} · ${selectedParticipant.title}`
+            : "Выберите этапы одного участника, чтобы собрать свод"}
+        </p>
+        {selectedOfferIds.size >= 2 ? (
+          <Button variant="outline" render={<Link to={summaryHref} />}>
+            Свод по этапам ({selectedOfferIds.size})
+          </Button>
+        ) : (
+          <Button variant="outline" disabled title="выберите хотя бы два этапа">
+            Свод по этапам ({selectedOfferIds.size})
+          </Button>
+        )}
+      </div>
+
+      <div className="mt-3">
+        <OfferGrid
+          card={card}
+          selectedRoundId={selected?.id}
+          onSelectRound={selectRound}
+          selectedOfferIds={selectedOfferIds}
+          onToggleOffer={toggleOffer}
+          onSelectParticipant={selectParticipant}
+        />
       </div>
 
       {selected && (
@@ -188,6 +246,22 @@ export default function TenderCardPage() {
       />
     </div>
   );
+}
+
+/**
+ * Русское склонение слова «смета» по числу выбранных предложений (подпись
+ * над решёткой). `lib/format.ts` уже несёт `pluralRu` — но тот возвращает
+ * ОКОНЧАНИЕ для слов мужского рода вида «объект/объекта/объектов», а «смета»
+ * женского рода и меняет не только окончание («смета» → «сметы» → «смет»):
+ * тот хелпер сюда не годится, нужна отдельная функция, а не переиспользование
+ * не подходящей по роду.
+ */
+function estimateWordFor(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "смета";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "сметы";
+  return "смет";
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

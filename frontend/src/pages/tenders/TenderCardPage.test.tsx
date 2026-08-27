@@ -238,3 +238,109 @@ describe("Admin-диалоги карточки тендера — открыт�
     });
   });
 });
+
+/**
+ * Выбор предложений для свода по этапам (спека 2026-08-27-stage-summary-design.md
+ * §2.16, задача 7): плитка есть только у ячейки с offer_id и estimate_id разом;
+ * чужие плитки недоступны, пока выбрана хотя бы одна; клик по имени участника
+ * выбирает все его сметы; кнопка ведёт на /summary с offer_id по возрастанию.
+ *
+ * Кнопка следует образцу `ContractsPage` ("Сравнить выбранные (N)"): ниже двух
+ * выбранных — обычная disabled-кнопка (роль `button`), от двух — рендерится
+ * ссылкой (роль `link`) с адресом. Disabled-ссылка осталась бы кликабельной,
+ * поэтому у неактивной кнопки другая роль, а не одна и та же с атрибутом.
+ */
+describe("Выбор предложений для свода (спека свода §2.1)", () => {
+  it("плитки есть только у ячеек со сметой; у «—» и «нет сметы» плиток нет", async () => {
+    handlerState.tenderRoundState = "both-loaded";
+    renderCard();
+    await screen.findByText("ООО Альфа");
+    // Обе сметы Альфы (этап 1 — 7001, этап 2 — 7003) — плитки; у Беты плиток
+    // нет ни в одном раунде («—» в первом, «нет сметы» во втором).
+    const tiles = screen
+      .getAllByRole("button", { pressed: false })
+      .filter((t) => t.getAttribute("aria-pressed") !== null);
+    expect(tiles).toHaveLength(2);
+  });
+
+  it("нажатие плитки выбирает; кнопка активна от двух; чужие плитки недоступны", async () => {
+    handlerState.tenderRoundState = "both-loaded-with-beta";
+    const user = userEvent.setup();
+    renderCard();
+    await screen.findByText("ООО Альфа");
+    expect(screen.getByRole("button", { name: /Свод по этапам/ })).toBeDisabled();
+
+    const alfaRow = screen.getByText("ООО Альфа").closest("tr") as HTMLElement;
+    const alfaTiles = within(alfaRow).getAllByRole("button", { pressed: false });
+    await user.click(alfaTiles[0]);
+    expect(alfaTiles[0]).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Свод по этапам/ })).toBeDisabled();
+    expect(screen.getByText(/выбрано 1 смета · ООО Альфа/)).toBeInTheDocument();
+
+    const betaRow = screen.getByText("ООО Бета").closest("tr") as HTMLElement;
+    const betaTile = within(betaRow).getByRole("button", { pressed: false });
+    // Недоступность — через ARIA, не через нативный `disabled` (fix round 2):
+    // плитка остаётся фокусируемой (не выпадает из Tab), а причину несёт
+    // accessible description, а не только hover-title.
+    expect(betaTile).toBeEnabled();
+    expect(betaTile).toHaveAttribute("aria-disabled", "true");
+    expect(betaTile).toHaveAccessibleDescription("Свод строится по одному участнику");
+
+    // Раз плитка не задизейблена нативно, нажатие на неё должно игнорироваться
+    // кодом обработчика — иначе то, что раньше давал `disabled` бесплатно,
+    // молча перестало бы работать.
+    await user.click(betaTile);
+    expect(betaTile).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/выбрано 1 смета · ООО Альфа/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Свод по этапам (1)" })).toBeDisabled();
+
+    await user.click(alfaTiles[1]);
+    // От двух выбранных кнопка становится ссылкой (роль меняется с button на
+    // link) — старую ссылку на `button` из начала теста здесь уже не читаем,
+    // после ре-рендера это другой DOM-узел.
+    const link = screen.getByRole("link", { name: "Свод по этапам (2)" });
+    expect(link).toHaveAttribute("href", "/tenders/300/summary?offers=7001&offers=7003");
+  });
+
+  it("клик по имени участника выбирает все его сметы; повторный снимает", async () => {
+    handlerState.tenderRoundState = "both-loaded";
+    const user = userEvent.setup();
+    renderCard();
+    const name = await screen.findByRole("button", { name: "ООО Альфа" });
+    await user.click(name);
+    expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(2);
+    await user.click(name);
+    expect(screen.queryAllByRole("button", { pressed: true })).toHaveLength(0);
+  });
+
+  /**
+   * Находка ревью (fix round 1): клик по имени участника обязан брать сметы
+   * ТОЛЬКО там, где есть и offer_id, и estimate_id. У Альфы во втором раунде
+   * offer_id есть, а estimate_id — нет («нет сметы»); без фильтра по обоим id
+   * это предложение молча попало бы в выбор без единой плитки на экране, а
+   * сервер свода отказал бы кодом «у предложения нет сметы». Проверяем
+   * именно ЧИСЛО — а не только факт единственной нажатой плитки — иначе тест
+   * не отличил бы «взяли одну» от «взяли обе, но нарисовали плитку только
+   * одной».
+   */
+  it("клик по имени берёт только сметы с обоими id; предложение без сметы не входит в выбор", async () => {
+    handlerState.tenderRoundState = "second-round-no-estimate";
+    const user = userEvent.setup();
+    renderCard();
+    const name = await screen.findByRole("button", { name: "ООО Альфа" });
+    await user.click(name);
+
+    expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(1);
+    expect(screen.getByText(/выбрано 1 смета · ООО Альфа/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Свод по этапам (1)" })).toBeDisabled();
+  });
+
+  it("без выбора карточка сохраняет факты решётки: «—», «нет сметы», суммы", async () => {
+    renderCard();
+    await screen.findByText("ООО Альфа");
+    const betaRow = screen.getByText("ООО Бета").closest("tr") as HTMLElement;
+    expect(within(betaRow).getAllByRole("cell")[1]).toHaveTextContent("—");
+    expect(within(betaRow).getAllByRole("cell")[2]).toHaveTextContent("нет сметы");
+    expect(screen.getByText(/1\s200,00/)).toBeInTheDocument();
+  });
+});

@@ -137,7 +137,14 @@ interface HandlerState {
    * (файла нет), раунд с job, но составом, изменившимся после загрузки
    * (`current_job_id: null` при живой ячейке со сметой).
    */
-  tenderRoundState: "loaded" | "loaded-no-baseline" | "empty" | "changed";
+  tenderRoundState:
+    | "loaded"
+    | "loaded-no-baseline"
+    | "empty"
+    | "changed"
+    | "both-loaded"
+    | "both-loaded-with-beta"
+    | "second-round-no-estimate";
   /** Исход `DELETE .../participants/:pid` — протокол `confirmation_token` (§2.11). */
   participantDeleteOutcome: "preview" | "stale" | "deleted" | "active";
   /** Была ли последняя загрузка раунда с `replace=true`. */
@@ -418,6 +425,51 @@ function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
       return {
         ...sampleTenderCard,
         rounds: [{ ...round1, current_job_id: null }, round2],
+      };
+
+    case "both-loaded":
+      // Плитки выбора для свода (спека свода §2.1, задача 7): у Альфы смета в
+      // ОБОИХ раундах, а не только в первом — иначе клик по имени участника
+      // выбирал бы одну плитку и тест не отличил бы «выбрать все сметы» от
+      // «выбрать единственную».
+      return {
+        ...sampleTenderCard,
+        cells: sampleTenderCard.cells.map((cell) =>
+          cell.round_id === round2.id && cell.package_id === 501
+            ? { ...cell, offer_id: 7003, estimate_id: 8003, total_including_vat: "1100.00" }
+            : cell
+        ),
+      };
+
+    case "both-loaded-with-beta":
+      // То же самое плюс у Беты тоже смета во втором раунде (была только
+      // offer_id без estimate_id) — доказывает, что чужая плитка недоступна
+      // именно потому, что выбор уже сделан по другому участнику, а не потому,
+      // что у Беты вообще нет плиток.
+      return {
+        ...sampleTenderCard,
+        cells: sampleTenderCard.cells.map((cell) => {
+          if (cell.round_id === round2.id && cell.package_id === 501) {
+            return { ...cell, offer_id: 7003, estimate_id: 8003, total_including_vat: "1100.00" };
+          }
+          if (cell.round_id === round2.id && cell.package_id === 502) {
+            return { ...cell, offer_id: 7002, estimate_id: 8002, total_including_vat: "1300.00" };
+          }
+          return cell;
+        }),
+      };
+
+    case "second-round-no-estimate":
+      // Альфа участвовала во втором раунде (offer_id есть), но смета туда не
+      // загрузилась (estimate_id остаётся null — "нет сметы"). Клик по имени
+      // участника обязан взять только первую смету (задача 7, находка ревью):
+      // фильтр по обоим id — не только по offer_id — иначе предложение без
+      // сметы попало бы в выбор молча, без единой плитки на экране.
+      return {
+        ...sampleTenderCard,
+        cells: sampleTenderCard.cells.map((cell) =>
+          cell.round_id === round2.id && cell.package_id === 501 ? { ...cell, offer_id: 7003 } : cell
+        ),
       };
   }
 }

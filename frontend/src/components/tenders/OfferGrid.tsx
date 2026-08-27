@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 
 import { ParticipantDeleteDialog } from "@/components/tenders/ParticipantDeleteDialog";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Toggle } from "@/components/ui/toggle";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,11 @@ interface OfferGridProps {
   card: TenderCard;
   selectedRoundId: number | undefined;
   onSelectRound: (roundId: number) => void;
+  /** Выбранные для свода предложения — сметы ровно одного участника (спека свода §2.1). */
+  selectedOfferIds: ReadonlySet<number>;
+  onToggleOffer: (offerId: number) => void;
+  /** Клик по имени участника — переключить разом все его сметы. */
+  onSelectParticipant: (packageId: number) => void;
 }
 
 /**
@@ -31,11 +37,30 @@ interface OfferGridProps {
  * Три состояния ячейки — данными, не выводом клиента (см. `TenderCell` в
  * `types/domain.ts`): нет предложения → «—»; предложение есть, сметы нет →
  * «нет сметы»; обе есть → сумма.
+ *
+ * Плитка выбора для свода по этапам (спека свода §2.1, задача 7) есть ТОЛЬКО
+ * у ячейки с обоими id разом — у «—» и «нет сметы» нечего брать в свод.
+ * Свод строится по одному участнику: пока выбрана хотя бы одна плитка,
+ * плитки остальных участников недоступны (`disabled` с поясняющим `title`).
  */
-export function OfferGrid({ card, selectedRoundId, onSelectRound }: OfferGridProps) {
+export function OfferGrid({
+  card,
+  selectedRoundId,
+  onSelectRound,
+  selectedOfferIds,
+  onToggleOffer,
+  onSelectParticipant,
+}: OfferGridProps) {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
   const [toDelete, setToDelete] = useState<TenderParticipant | null>(null);
+
+  // Участник, чьи сметы уже выбраны — по факту принадлежности выбранных
+  // offer_id, а не отдельным полем состояния: так выбор не может
+  // рассинхронизироваться с тем, что реально отмечено.
+  const selectedPackageId = card.cells.find(
+    (c) => c.offer_id !== null && selectedOfferIds.has(c.offer_id)
+  )?.package_id;
 
   return (
     <>
@@ -68,23 +93,89 @@ export function OfferGrid({ card, selectedRoundId, onSelectRound }: OfferGridPro
             {card.participants.map((participant) => (
               <TableRow key={participant.package_id}>
                 <TableCell>
-                  <div className="font-medium text-fg">{participant.title}</div>
+                  <button
+                    type="button"
+                    className="font-medium text-fg hover:underline"
+                    onClick={() => onSelectParticipant(participant.package_id)}
+                    title="Выбрать все этапы участника"
+                  >
+                    {participant.title}
+                  </button>
                   <div className="text-xs text-fg-tertiary">{participant.inn}</div>
                 </TableCell>
                 {card.rounds.map((round) => {
                   const cell = card.cells.find(
                     (c) => c.round_id === round.id && c.package_id === participant.package_id
                   );
-                  return (
-                    <TableCell key={round.id}>
-                      {!cell || cell.offer_id === null ? (
+                  if (!cell || cell.offer_id === null) {
+                    return (
+                      <TableCell key={round.id}>
                         <span title="Не участвовал" className="text-fg-tertiary">
                           —
                         </span>
-                      ) : cell.estimate_id === null ? (
+                      </TableCell>
+                    );
+                  }
+                  if (cell.estimate_id === null) {
+                    return (
+                      <TableCell key={round.id}>
                         <StatusPill tone="warning" label="нет сметы" />
-                      ) : (
-                        formatDecimalMoney(cell.total_including_vat)
+                      </TableCell>
+                    );
+                  }
+
+                  const offerId = cell.offer_id;
+                  const pressed = selectedOfferIds.has(offerId);
+                  // «Чужая» плитка — выбор уже сделан, но по ДРУГОМУ участнику
+                  // (свод строится по одному участнику разом, спека §2.1).
+                  const foreign =
+                    selectedOfferIds.size > 0 && !pressed && selectedPackageId !== participant.package_id;
+                  // Находка ревью (fix round 2): «недоступна» — состояние, которого
+                  // до этой плитки в интерфейсе не было, и его причину не вывести из
+                  // тишины. Нативный `disabled` убрал бы плитку из порядка Tab и
+                  // спрятал бы причину в title, до которого клавиатура и скринридер
+                  // не добираются. Поэтому недоступность — только `aria-disabled`
+                  // (плитка остаётся фокусируемой), причина — `aria-describedby` на
+                  // скрытый для глаза, но озвучиваемый текст, а не только title.
+                  // Обработчик игнорирует нажатие сам — то, что раньше давал нативный
+                  // атрибут бесплатно, теперь приходится обеспечивать в коде.
+                  const foreignReasonId = `offer-${offerId}-foreign-reason`;
+                  const foreignReason = "Свод строится по одному участнику";
+                  return (
+                    <TableCell key={round.id} className="text-right">
+                      <Toggle
+                        variant="outline"
+                        size="sm"
+                        pressed={pressed}
+                        aria-disabled={foreign || undefined}
+                        aria-describedby={foreign ? foreignReasonId : undefined}
+                        title={foreign ? foreignReason : pressed ? "В своде" : "Взять в свод"}
+                        onPressedChange={() => {
+                          if (foreign) return;
+                          onToggleOffer(offerId);
+                        }}
+                        className={cn(
+                          "relative tabular-nums",
+                          // Тот же визуальный эффект, что раньше давал `disabled:` —
+                          // но явными классами, потому что `disabled:` в utility-стилях
+                          // тумблера реагирует на НАТИВНЫЙ атрибут, а не на `aria-disabled`.
+                          foreign && "pointer-events-none opacity-50",
+                          pressed &&
+                            "border-accent-border bg-accent-soft text-accent-text font-semibold dark:border-accent-border dark:bg-accent-soft dark:text-accent-text"
+                        )}
+                      >
+                        {formatDecimalMoney(cell.total_including_vat)}
+                        {pressed && (
+                          <Check
+                            aria-hidden
+                            className="absolute -right-1.5 -top-1.5 size-3.5 rounded-full bg-accent p-0.5 text-action-text"
+                          />
+                        )}
+                      </Toggle>
+                      {foreign && (
+                        <span id={foreignReasonId} className="sr-only">
+                          {foreignReason}
+                        </span>
                       )}
                     </TableCell>
                   );
