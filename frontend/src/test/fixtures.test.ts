@@ -9,8 +9,10 @@ import {
 import type { StageSummary, StageSummaryCell, StageSummaryRow, Direction, StageSummaryChange } from "@/types/domain";
 
 // Valid reason codes per backend contract (services/stage_summary.py)
+
 // Change reasons (line 43-47): REASON_FIRST_COLUMN, REASON_UNKNOWN_VAT_BASE, REASON_NO_AMOUNTS
-const VALID_CHANGE_REASONS = new Set([
+type ChangeReason = "first_column" | "unknown_vat_base" | "no_amounts" | null;
+const VALID_CHANGE_REASONS: Set<ChangeReason> = new Set([
   "first_column",
   "unknown_vat_base",
   "no_amounts",
@@ -18,23 +20,33 @@ const VALID_CHANGE_REASONS = new Set([
 ]);
 
 // Contribution reasons (line 43-47): REASON_UNKNOWN_VAT_BASE, REASON_ABSENT_ENDPOINT
-const VALID_CONTRIBUTION_REASONS = new Set([
+type ContributionReason = "unknown_vat_base" | "absent_endpoint" | null;
+const VALID_CONTRIBUTION_REASONS: Set<ContributionReason> = new Set([
   "unknown_vat_base",
   "absent_endpoint",
   null,
 ]);
 
 // Bargain reasons (line 43-47): REASON_UNKNOWN_VAT_BASE (endpoint unavailable), REASON_UNALLOCATED (unallocated row)
-const VALID_BARGAIN_REASONS = new Set([
+type BargainReason = "unknown_vat_base" | "unallocated" | null;
+const VALID_BARGAIN_REASONS: Set<BargainReason> = new Set([
   "unknown_vat_base",
   "unallocated",
   null,
 ]);
 
 // Track reasons (line 161-162): TRACK_NON_POSITIVE, TRACK_NO_COMPARABLE
-const VALID_TRACK_REASONS = new Set([
+type TrackReason = "non_positive_total" | "no_comparable_totals" | null;
+const VALID_TRACK_REASONS: Set<TrackReason> = new Set([
   "non_positive_total",
   "no_comparable_totals",
+  null,
+]);
+
+// Convergence reasons (line 376): file_total unavailability marker
+type ConvergenceReason = "file_total_unavailable" | null;
+const VALID_CONVERGENCE_REASONS: Set<ConvergenceReason> = new Set([
+  "file_total_unavailable",
   null,
 ]);
 
@@ -246,13 +258,13 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
       }
       checkReasonCodesInRow(fixture.unallocated);
       fixture.total.cells.forEach((cell) => {
-        expect(VALID_CHANGE_REASONS.has(cell.change.reason as any)).toBe(true);
+        expect(VALID_CHANGE_REASONS.has(cell.change.reason as ChangeReason)).toBe(true);
       });
       for (const col of fixture.columns) {
-        expect(VALID_CHANGE_REASONS.has(col.total_change.reason as any)).toBe(true);
-        expect(VALID_TRACK_REASONS.has(col.convergence.reason as any)).toBe(true);
+        expect(VALID_CHANGE_REASONS.has(col.total_change.reason as ChangeReason)).toBe(true);
+        expect(VALID_CONVERGENCE_REASONS.has(col.convergence.reason as ConvergenceReason)).toBe(true);
       }
-      expect(VALID_TRACK_REASONS.has(fixture.track.reason as any)).toBe(true);
+      expect(VALID_TRACK_REASONS.has(fixture.track.reason as TrackReason)).toBe(true);
     });
 
     /**
@@ -524,14 +536,14 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
  */
 function checkReasonCodesInRow(row: StageSummaryRow): void {
   row.cells.forEach((cell, idx) => {
-    if (!VALID_CHANGE_REASONS.has(cell.change.reason as any)) {
+    if (!VALID_CHANGE_REASONS.has(cell.change.reason as ChangeReason)) {
       throw new Error(`Row ${row.code} cell ${idx}: invalid change reason "${cell.change.reason}". Valid: ${Array.from(VALID_CHANGE_REASONS).join(", ")}`);
     }
   });
-  if (!VALID_BARGAIN_REASONS.has(row.bargain.reason as any)) {
+  if (!VALID_BARGAIN_REASONS.has(row.bargain.reason as BargainReason)) {
     throw new Error(`Row ${row.code}: invalid bargain reason "${row.bargain.reason}". Valid: ${Array.from(VALID_BARGAIN_REASONS).join(", ")}`);
   }
-  if (!VALID_CONTRIBUTION_REASONS.has(row.contribution.reason as any)) {
+  if (!VALID_CONTRIBUTION_REASONS.has(row.contribution.reason as ContributionReason)) {
     throw new Error(`Row ${row.code}: invalid contribution reason "${row.contribution.reason}". Valid: ${Array.from(VALID_CONTRIBUTION_REASONS).join(", ")}`);
   }
   for (const child of row.children) {
