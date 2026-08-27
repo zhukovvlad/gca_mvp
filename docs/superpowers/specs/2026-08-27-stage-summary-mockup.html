@@ -423,7 +423,7 @@ table.grid .pname:hover { text-decoration:underline; }
 
   <section>
     <h2>Состояния ячейки и отказы</h2>
-    <p class="secsub">Пять состояний ячейки плюс флаг неполноты (контракт §3) и виды изменения (§4.2). Каждое — свой факт; сводить их нельзя.</p>
+    <p class="secsub">Четыре состояния ячейки, характеристика полноты поверх любого из них и виды изменения между двумя колонками (спека §2.4–§2.6). Каждое — свой факт; сводить их нельзя.</p>
     <div class="legend">
       <div><span class="ex">2 543<span class="dp up">+2,5 %</span></span><b>amount</b> сумма ≠ 0 и процент к предыдущей выбранной колонке (база &gt; 0)</div>
       <div><span class="ex">−12<span class="dp flat">Δ, без %</span></span><b>abs_only</b> база отрицательна — процент инвертировал бы смысл, показана абсолютная дельта</div>
@@ -431,7 +431,9 @@ table.grid .pname:hover { text-decoration:underline; }
       <div><span class="ex"><span class="pill">не оценивалась</span></span><b>not_evaluated</b> сумма = 0 и ни в одной предыдущей выбранной не была ≠ 0</div>
       <div><span class="ex"><span class="flat">—</span></span><b>absent</b> статьи нет в файле раунда ни одной строкой. Не равно «не оценивалась»</div>
       <div><span class="ex">25<span class="inc" title="Сумма неполна">◐</span></span><b>incomplete</b> флаг поверх любого состояния: у части строк статьи нет числа, сумма неполна</div>
-      <div><span class="ex"><span class="pill">появилась</span></span><b>appeared</b> изменение «пусто → есть»; обратное — «снято»; «пусто → пусто» — прочерк, ничего не менялось</div>
+      <div><span class="ex"><span class="pill">появилась</span></span><b>appeared</b> изменение <code>not_evaluated | absent → amount</code>; переходы между состояниями без суммы — прочерк, ничего не менялось</div>
+      <div><span class="ex"><span class="pill">вернулась</span></span><b>reappeared</b> <code>removed → amount</code>: статья вернулась в торг после снятия</div>
+      <div><span class="ex"><span class="pill warn">нет в файле</span></span><b>disappeared</b> <code>amount → absent</code>: строка исчезла из файла — это НЕ доказывает снятия, поэтому подпись другая</div>
       <div><span class="ex">8 022<span class="conv bad">не сходится: Δ +3</span></span><b>convergence</b> сумма статей + «Нераспределённое» ≠ «Итого с НДС» файла — показывается, не гасится</div>
     </div>
     <div class="screen" style="margin-top:14px">
