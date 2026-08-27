@@ -136,7 +136,7 @@ M загруженных у участника» с перечислением �
 
 | Условие | Ответ |
 |---|---|
-| предложение не принадлежит тендеру либо не существует | 404 |
+| предложение не принадлежит тендеру либо не существует | 404 `offer_not_found` |
 | выбрано меньше двух | 422 `too_few_offers` |
 | два предложения одного раунда | 422 `one_offer_per_round` |
 | предложения разных участников | 422 `single_participant` |
@@ -312,8 +312,20 @@ none}`; у `none` — `reason`, когда расчёт недоступен.
 | `false` | «не сходится: Δ …» — дефект данных или разноса, показывается, не гасится |
 | `null` | «сверка невозможна: причина» — `file_total` пуст (итог файла не единогласен, `estimate_total_including_vat` вернул `None`) |
 
-Сумма статей первого уровня плюс «Нераспределённое» сверяется с «Итого с НДС»
-на валовой оси; на нетто-оси — с итогом, приведённым той же базой.
+**Сходимость — диагностика исходного файла и от ставки НДС не зависит.** Она
+всегда считается в **исходных валовых величинах**: сумма статей первого уровня
+плюс «Нераспределённое» по `v_category_totals` против «Итого с НДС» файла — на
+любой оси показа, в том числе у колонки `unknown_vat_base` (её валовые величины
+известны, неизвестен только состав). Единственная причина `converged = null` —
+недоступный или неединогласный файловый итог. На нетто-поверхности подпись
+называет, что Δ сходимости измерена в исходных деньгах файла, а не в показанных.
+
+**Источник итога колонки — решение, а не следствие:** `columns[].total`, трасса
+и `kpi.first_to_last` берутся из **суммы дерева статей плюс «Нераспределённое»**
+на оси показа, а не из файлового итога. Тогда трасса раскладывается вкладом
+строк тождественно даже при расхождении с файлом; файловый итог остаётся
+диагностикой в `convergence.file_total`, и расхождение между ними видно как
+`converged = false`, а не спрятано в разнице двух чисел на одном экране.
 
 ### 2.10. Ручной разнос
 
@@ -436,12 +448,13 @@ columns[]:    { kind: 'round',                       -- задел: 'contract' �
                 total_change: Change,                -- к предыдущей выбранной колонке
                 bar_height_pct: string | null,       -- 0–100, null без сопоставимого итога
                 manual_overrides: { count, last_at: iso | null },
-                convergence: { categories_sum: string | null, file_total: string | null,
+                convergence: { categories_sum: string,          -- ВСЕГДА в исходных валовых деньгах файла (§2.9)
+                               file_total: string | null,
                                converged: bool | null, delta: string | null,
-                               reason: 'file_total_unavailable' | 'unknown_vat_base' | null } }
+                               reason: 'file_total_unavailable' | null } }
 rows[]:       Row                                    -- корни, порядок §2.13
 unallocated:  Row                                    -- флаг is_unallocated = true, bargain без процента
-total:        { cells: Cell[] }                      -- итоги по колонкам = columns[].total
+total:        { cells: Cell[] }                      -- итог колонки = Σ корней + unallocated на оси показа (§2.9); = columns[].total
 display:      { tax_basis: 'gross' | 'net' | 'none',
                 reason: 'single_rate' | 'mixed_rates' | 'no_known_rates',
                 rates_by_column: string[] | null,    -- при 'mixed_rates'
@@ -454,7 +467,8 @@ Row  = { work_category_id, code, title, is_unallocated: bool,
          cells: Cell[],                               -- выровнены по columns[]
          bargain: Change,                             -- первая → последняя выбранная
          contribution: { value: string | null, direction: 'up'|'down'|'flat'|null,
-                         reason: 'absent_endpoint' | 'unknown_vat_base' | 'unallocated' | null },
+                         reason: 'absent_endpoint' | 'unknown_vat_base' | null },
+                                                      -- у unallocated value ЧИСЛО: запрет касается только процента в bargain
          children: Row[] }                            -- по правилу видимости §2.14
 Cell = { state: 'amount' | 'removed' | 'not_evaluated' | 'absent',
          amount: string | null,                       -- на оси показа
@@ -465,13 +479,15 @@ Cell = { state: 'amount' | 'removed' | 'not_evaluated' | 'absent',
 Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappeared'|'none',
            value: string | null,                     -- процент при 'percent', дельта при 'abs_only', иначе null
            direction: 'up' | 'down' | 'flat' | null,
-           reason: 'first_column' | 'unknown_vat_base' | 'no_amounts' | null }
+           reason: 'first_column' | 'unknown_vat_base' | 'no_amounts' | 'unallocated' | null }
+                                                      -- 'unallocated' — только у bargain строки «Нераспределённое»
 
-404 → { detail: "Предложение не найдено в этом тендере" }
+404 → { detail: { code: 'offer_not_found', message: "…", offers: [id, …] } }
 422 → { detail: { code: 'too_few_offers' | 'one_offer_per_round' | 'single_participant'
                         | 'offer_has_no_estimate',
                   message: "…человекочитаемо…",
                   offers: [id, …] } }                 -- предложения, на которых сработал отказ
+-- detail — один и тот же объект у 404 и 422: фронтенд различает причины по code, не по статусу и не по тексту
 ```
 
 Инварианты, которые план обязан закрепить тестами:
@@ -479,12 +495,20 @@ Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappe
 - `cell.state = 'absent'` ⇔ `rows.row_count = 0`; `state = 'amount'` ⇔ сумма по
   валовым величинам ≠ 0 — состояние **не зависит** от `amount_unavailable_reason`.
 - `amount = null` ⇔ (`state ∈ {absent, removed, not_evaluated}` **или**
-  `amount_unavailable_reason ≠ null`); `additional_works_amount` подчиняется тому же.
+  `amount_unavailable_reason ≠ null`).
+- `additional_works_amount` **независим от состояния ячейки**: ветви могут
+  взаимно погашаться (итог статьи 0 при ненулевых допработах), и сумма допработ
+  сохраняется как есть. `null` ⇔ (ветви `additional_works` у статьи в этой смете
+  нет **или** `amount_unavailable_reason ≠ null`).
 - `change.kind = 'percent'` ⇒ `value ≠ null`, `direction ≠ null`; `kind = 'none'`
   ⇒ `value = null`, `direction = null`, `reason ≠ null`.
-- `contribution.value = null` ⇔ `reason ≠ null`.
-- `columns[i].total = total.cells[i].amount`; `convergence.converged = true` ⇒
-  `categories_sum = file_total`.
+- `contribution.value = null` ⇔ `reason ≠ null`; у `unallocated` `value` — число
+  (при известных концах), `bargain.kind = 'none'` с `reason = 'unallocated'`.
+- `columns[i].total = total.cells[i].amount = Σ rows[].cells[i].amount +
+  unallocated.cells[i].amount` на оси показа (§2.9); `convergence.categories_sum`
+  — та же сумма в исходных валовых деньгах; `converged = true` ⇒
+  `categories_sum = file_total`; `converged = null` ⇔ `file_total = null` ⇔
+  `reason = 'file_total_unavailable'`.
 - `display.tax_basis = 'none'` ⇔ `track.available = false` с
   `reason = 'no_comparable_totals'` ⇔ у всех колонок `vat_state = 'unknown_vat_base'`.
 - `bar_height_pct ≠ null` ⇔ колонка имеет сопоставимый положительный `total` и
