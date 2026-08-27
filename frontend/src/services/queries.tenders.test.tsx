@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 
 import {
@@ -12,6 +12,7 @@ import {
   useDeleteTender,
   useImportJob,
   useRoundImportJobs,
+  useStageSummary,
   useTender,
   useUpdateRound,
   useUpdateTender,
@@ -454,5 +455,67 @@ describe("useImportJob: инвалидация для раундового за�
     expect(keys).toContain(JSON.stringify(qk.tenders.card(300)));
     expect(keys).toContain(JSON.stringify(qk.tenders.roundJobs(300, 3001)));
     expect(keys).not.toContain(JSON.stringify(qk.review.all));
+  });
+});
+
+/**
+ * `useStageSummary` (спека 2026-08-27-stage-summary-design.md §2.16): свод по этапам
+ * одного участника с параллельным выбором нескольких предложений.
+ */
+describe("useStageSummary", () => {
+  afterEach(() => {
+    resetHandlerState();
+  });
+
+  it("отдаёт свод с тремя колонками по возрастанию stage_no", async () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStageSummary(300, [7002, 7001, 7004]), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.columns.map((c) => c.stage_no)).toEqual([1, 2, 4]);
+    // ключ канонический: порядок id в URL не создаёт второй записи кэша
+    expect(qc.getQueryData(qk.tenders.stageSummary(300, [7001, 7002, 7004]))).toBeDefined();
+  });
+
+  it("single_participant → 422 с кодом и списком offers в detail", async () => {
+    handlerState.stageSummaryOutcome = "single_participant";
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStageSummary(300, [7001, 7101]), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiErrorStatus(result.current.error)).toBe(422);
+    expect(apiErrorCode(result.current.error)).toBe("single_participant");
+    expect(apiErrorContext<{ offers: number[] }>(result.current.error)?.offers).toEqual([7001, 7101]);
+  });
+
+  it("offer_not_found → 404 с тем же объектом detail", async () => {
+    handlerState.stageSummaryOutcome = "offer_not_found";
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStageSummary(300, [7001, 9999]), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiErrorStatus(result.current.error)).toBe(404);
+    expect(apiErrorCode(result.current.error)).toBe("offer_not_found");
+  });
+
+  it("при одном offer запрос УХОДИТ и получает too_few_offers — клиент отказ не подменяет", async () => {
+    handlerState.stageSummaryOutcome = "too_few_offers";
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStageSummary(300, [7001]), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiErrorCode(result.current.error)).toBe("too_few_offers");
+  });
+
+  it("при пустом выборе запрос не уходит", () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStageSummary(300, []), {
+      wrapper: wrapperFor(qc),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
   });
 });

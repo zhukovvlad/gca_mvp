@@ -39,6 +39,7 @@ import type {
   ReviewQueueParams,
   RoundImportJob,
   RoundInput,
+  StageSummary,
   TenderCard,
   TenderInput,
   TenderRow,
@@ -284,4 +285,12 @@ export const tendersApi = {
     api.delete(`/v1/tenders/${tenderId}/participants/${packageId}`, {
       params: confirmationToken ? { confirmation_token: confirmationToken } : undefined,
     }).then(() => undefined),
+  /** Свод по этапам одного участника (спека §2.16). */
+  stageSummary: (tenderId: number, offerIds: number[]): Promise<StageSummary> =>
+    api
+      .get<StageSummary>(`/v1/tenders/${tenderId}/stage-summary`, {
+        params: { offers: offerIds },
+        paramsSerializer: { indexes: null },
+      })
+      .then((r) => r.data),
 };

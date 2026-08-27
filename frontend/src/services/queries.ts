@@ -1047,6 +1047,19 @@ export function useRoundImportJobs(tenderId: number | undefined, roundId: number
   });
 }
 
+/**
+ * Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16).
+ * Требует хотя бы два предложения (Р8); 4xx кодов не повторяет (retry: false).
+ */
+export function useStageSummary(tenderId: number | undefined, offerIds: number[]) {
+  return useQuery({
+    queryKey: qk.tenders.stageSummary(tenderId ?? 0, offerIds),
+    queryFn: () => tendersApi.stageSummary(tenderId as number, offerIds),
+    enabled: tenderId !== undefined && offerIds.length >= 1,
+    retry: false,
+  });
+}
+
 function invalidateTender(qc: ReturnType<typeof useQueryClient>, tenderId: number) {
   qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.all });

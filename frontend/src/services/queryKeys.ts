@@ -134,5 +134,8 @@ export const qk = {
     card: (id: number) => ["tenders", "card", id] as const,
     roundJobs: (tenderId: number, roundId: number) =>
       ["tenders", "round-jobs", tenderId, roundId] as const,
+    /** Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16). */
+    stageSummary: (tenderId: number, offerIds: number[]) =>
+      ["tenders", "stage-summary", tenderId, [...offerIds].sort((a, b) => a - b)] as const,
   },
 };

@@ -24,6 +24,10 @@ import {
   sampleMatrix,
   sampleMatrixCellDetail,
   sampleProjectPassport,
+  sampleStageSummary,
+  stageSummaryAllUnknown,
+  stageSummaryNet,
+  stageSummaryWithUnknownSecondColumn,
   sampleTenderCard,
   sampleTenders,
 } from "./fixtures";
@@ -154,6 +158,23 @@ interface HandlerState {
    * раунд грузится, тендер целиком удалить тоже нельзя.
    */
   tenderDeleteOutcome: "ok" | "active";
+  /**
+   * Исход `GET /api/v1/tenders/:id/stage-summary` (спека 2026-08-27-stage-summary-design.md
+   * §2.16, Task 6): свод валовой с ставкой 20%, нетто с ставками [20, 0, 20],
+   * со всеми unknown, со второй колонкой unknown, или один из кодов отказа.
+   */
+  stageSummaryOutcome:
+    | "ok"
+    | "net"
+    | "unknown_vat"
+    | "track_non_positive"
+    | "track_no_comparable"
+    | "tender_not_found"
+    | "offer_not_found"
+    | "too_few_offers"
+    | "one_offer_per_round"
+    | "single_participant"
+    | "offer_has_no_estimate";
 }
 
 export const handlerState: HandlerState = {
@@ -183,6 +204,7 @@ export const handlerState: HandlerState = {
   lastRoundUploadReplace: false,
   roundUploadConflictCode: "replace_required",
   tenderDeleteOutcome: "ok",
+  stageSummaryOutcome: "ok",
 };
 
 export function resetHandlerState() {
@@ -207,6 +229,7 @@ export function resetHandlerState() {
   handlerState.lastRoundUploadReplace = false;
   handlerState.roundUploadConflictCode = "replace_required";
   handlerState.tenderDeleteOutcome = "ok";
+  handlerState.stageSummaryOutcome = "ok";
 }
 
 function page<T>(items: T[]) {
@@ -1481,5 +1504,45 @@ export const handlers = [
       );
     }
     return new HttpResponse(null, { status: 204 });
+  }),
+  /**
+   * Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16, Task 6).
+   * Ответ выбирается по `handlerState.stageSummaryOutcome`.
+   */
+  http.get("/api/v1/tenders/:id/stage-summary", ({ request }) => {
+    const offers = new URL(request.url).searchParams.getAll("offers").map(Number);
+    const refuse = (status: number, code: string) =>
+      HttpResponse.json(
+        { detail: { code, message: `Отказ ${code}`, offers } },
+        { status }
+      );
+
+    switch (handlerState.stageSummaryOutcome) {
+      case "tender_not_found":
+        return refuse(404, "tender_not_found");
+      case "offer_not_found":
+        return refuse(404, "offer_not_found");
+      case "too_few_offers":
+        return refuse(422, "too_few_offers");
+      case "one_offer_per_round":
+        return refuse(422, "one_offer_per_round");
+      case "single_participant":
+        return refuse(422, "single_participant");
+      case "offer_has_no_estimate":
+        return refuse(422, "offer_has_no_estimate");
+      case "net":
+        return HttpResponse.json(stageSummaryNet());
+      case "unknown_vat":
+        return HttpResponse.json(stageSummaryWithUnknownSecondColumn());
+      case "track_non_positive":
+        return HttpResponse.json({
+          ...sampleStageSummary,
+          track: { available: false, reason: "non_positive_total" },
+        });
+      case "track_no_comparable":
+        return HttpResponse.json(stageSummaryAllUnknown());
+      default:
+        return HttpResponse.json(sampleStageSummary);
+    }
   }),
 ];
