@@ -119,7 +119,7 @@ React 19 / TanStack Query 5 / shadcn/ui (`Toggle`) / vitest + msw.
 | `round_payload`, `proposal(positions, title=, inn=, vat_rate=, additional_works=)`, `position(job_title=, is_chapter=, chapter_number=, chapter_ref=, article_smr=, unit_cost_total=, total_cost_total=, number=)`, `additional_works_row`, `summary_line` | `backend/tests/payloads.py` | существует |
 | `import_round(db, tender_round=, data=, parser_version=, import_job_id=, replace=, unit_resolver=, category_resolver=)` | `backend/services/round_import.py` | существует |
 | `UnitResolver`, `CategoryResolver.from_db` | `backend/services/unit_resolution.py`, `category_resolution.py` | существует |
-| `set_override(db, estimate_id=, position_item_id=, work_category_id=, user=…)` — точная сигнатура читается в `services/category_override.py:129` исполнителем Task 4 | `backend/services/category_override.py` | существует |
+| `set_override(db, *, estimate_id, position_item_id, work_category_id, note, user_id) -> ApplyResult` | `backend/services/category_override.py` | существует |
 | `_count_queries` | `backend/tests/integration/test_dashboard_api.py` | существует, образец (копируется в тест Task 4 — общий хелпер не заводится) |
 | `_grid`, `P_A`, `P_B` | `backend/tests/integration/test_tenders_crud.py` | существует, образец |
 | `tendersApi`, `api` | `frontend/src/services/api/domain.ts`, `frontend/src/lib/api.ts` | существует, дополняется Task 6 |
@@ -999,6 +999,7 @@ git commit -m "feat(stage-summary): ось НДС, сходимость, дер�
 
 **Files:**
 - Modify: `backend/crud/estimate_totals.py` (добавить `estimate_totals_including_vat`)
+- Test: `backend/tests/unit/test_estimate_totals_batch.py` (дубль строки итога — недостижим на БД)
 - Create: `backend/crud/stage_summary.py`
 - Test: `backend/tests/integration/test_stage_summary_api.py` (первая часть: фикстуры, отказы, порядок, счётчик запросов)
 
@@ -1553,8 +1554,9 @@ Expected: PASS. Если `chaptered` не проходит `_validate_payload`, 
 - [ ] **Step 7: ruff и коммит**
 
 ```bash
-cd backend && uv run ruff check crud/stage_summary.py crud/estimate_totals.py tests/integration/test_stage_summary_api.py
-git add backend/crud/stage_summary.py backend/crud/estimate_totals.py backend/tests/integration/test_stage_summary_api.py
+cd backend && uv run ruff check crud/stage_summary.py crud/estimate_totals.py tests/integration/test_stage_summary_api.py tests/unit/test_estimate_totals_batch.py
+cd backend && uv run pytest tests/unit/test_estimate_totals_batch.py -q
+git add backend/crud/stage_summary.py backend/crud/estimate_totals.py backend/tests/integration/test_stage_summary_api.py backend/tests/unit/test_estimate_totals_batch.py
 git commit -m "feat(stage-summary): проверка выбора и чтение входов свода постоянным числом запросов"
 ```
 
@@ -1817,7 +1819,7 @@ git commit -m "feat(stage-summary): GET /tenders/{id}/stage-summary — отка
 
 **Files:**
 - Modify: `frontend/src/types/domain.ts`, `frontend/src/services/api/domain.ts`, `frontend/src/services/queryKeys.ts`, `frontend/src/services/queries.ts`, `frontend/src/test/fixtures.ts`, `frontend/src/test/handlers.ts`
-- Test: `frontend/src/services/queries.tenders.test.tsx` (дописать)
+- Test: `frontend/src/services/queries.tenders.test.tsx` (дописать), `frontend/src/test/fixtures.test.ts` (инварианты §2.16 у четырёх фикстур свода)
 
 **Interfaces:**
 - Produces:
@@ -1976,12 +1978,12 @@ http.get("/api/v1/tenders/:id/stage-summary", ({ request }) => {
 
 - [ ] **Step 5: Прогнать хук-тесты и `tsc -b` — зелёные**
 
-Run: `cd frontend && npx tsc -b --noEmit && just test-frontend-file src/services/queries.tenders.test.tsx`
+Run: `cd frontend && npx tsc -b --noEmit && just test-frontend-file src/services/queries.tenders.test.tsx && just test-frontend-file src/test/fixtures.test.ts`
 
 - [ ] **Step 6: Коммит**
 
 ```bash
-git add frontend/src/types/domain.ts frontend/src/services/api/domain.ts frontend/src/services/queryKeys.ts frontend/src/services/queries.ts frontend/src/test/fixtures.ts frontend/src/test/handlers.ts frontend/src/services/queries.tenders.test.tsx
+git add frontend/src/types/domain.ts frontend/src/services/api/domain.ts frontend/src/services/queryKeys.ts frontend/src/services/queries.ts frontend/src/test/fixtures.ts frontend/src/test/fixtures.test.ts frontend/src/test/handlers.ts frontend/src/services/queries.tenders.test.tsx
 git commit -m "feat(stage-summary): типы ответа свода, tendersApi.stageSummary, useStageSummary, фикстура и хендлер"
 ```
 

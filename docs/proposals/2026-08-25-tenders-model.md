@@ -318,7 +318,8 @@ amendment_no)` (миграция 0002, raw SQL). При `contract_id IS NULL` и
 на решётке карточки тендера, путь по выбранным колонкам, без колонки
 «Договор» до тонкой фичи provenance.
 
-[Спека](../superpowers/specs/2026-08-27-stage-summary-design.md) · план — после гейта 3 ·
+[Спека](../superpowers/specs/2026-08-27-stage-summary-design.md) ·
+[план](../superpowers/plans/2026-08-27-stage-summary.md) (гейт 3 закрыт 27.08.2026) ·
 devlog и PR — на финале.
 
 ### Фича 4. Попозиционное раскрытие статьи
