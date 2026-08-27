@@ -83,7 +83,7 @@ React 19 / TanStack Query 5 / shadcn/ui (`Toggle`) / vitest + msw.
 | | Решение | Основание |
 |---|---|---|
 | **Р1** | Расчёт — чистый модуль `services/stage_summary.py` (dataclass'ы `ColumnInput`, `CellInput`, `Cell`, `Change`, `Contribution`, `SummaryRow`, `ColumnOut`, функции `cell_states`, `change_between`, `contribution_between`, `pick_tax_basis`, `sort_rows`, `visible_tree`, `compute_summary`); чтение БД — `crud/stage_summary.py` (`load_inputs`, `build_stage_summary`) | тот же раздел труда, что `category_rollup` ↔ `project_passport`: чистая арифметика тестируется литералами без БД |
-| **Р2** | Ручные решения по колонке считаются одним запросом по `EstimateCategoryOverride` (`count`, `max(assigned_at)`) по списку смет, а не вызовом `_manual_assignments` на каждую смету | `_manual_assignments` тянет `_section_metrics` (дерево разделов) и делает N запросов на смету — нарушило бы ограничение 10; спека §1.2 требует не второй копии *дерева*, а признака и даты, которые уже есть в таблице решений |
+| **Р2** | Ручные решения по колонке считаются одним запросом по `EstimateCategoryOverride` (`count`, `max(assigned_at)`) по списку смет, а не вызовом `_manual_assignments` на каждую смету | `_manual_assignments` тянет `_section_metrics` (дерево разделов) и делает N запросов на смету — нарушило бы ограничение 10; спека §1.2/§2.10 приведены к этому на гейте 3: своду — пакетный агрегат, паспорту — подробности |
 | **Р3** | Дерево статей строится `build_tree` по колонке, затем объединяется в один скелет по `work_category_id` (`visible_tree`): корни всегда, вложенный узел — если хотя бы в одной колонке `total` ненулевой | спека §2.14: `build_tree` сохраняет узлы с явным нулём (`rows > 0`), фильтрация после свёртки |
 | **Р4** | Ставка колонки — по `vat_rate_base` строк `CATEGORY_TOTALS` этой сметы: одна общая → известна; разные или `NULL` → `unknown_vat_base`; у сметы без строк VIEW — `_vat_rate`-правило единогласия по `Proposal.vat_rate` не нужно: такая смета не проходит проверку `offer_has_no_estimate`? — нет, смета есть; для неё ставка читается запросом по `Proposal.vat_rate` через `Lot.estimate_id`, тем же правилом единогласия, что `_vat_rate` | VIEW не даёт строк у сметы без позиций; правило единогласия уже записано в паспорте и повторяется одним `select` |
 | **Р5** | Проценты квантуются `Decimal("0.1")` с `ROUND_HALF_UP`, деньги — `quantize_money`; `bar_height_pct` — `Decimal("0.1")` | §2.12: округление на выходе; половина — вверх, как у `roundDecimalPercent` на клиенте |
@@ -313,13 +313,11 @@ class TestChangeMatrix:
     def test_removed_to_amount_is_reappeared(self):
         assert self.c(ss.STATE_REMOVED, ss.STATE_AMOUNT, D("0"), D("5")).kind == ss.KIND_REAPPEARED
 
-    @pytest.mark.parametrize("ps,cs", [
-        (ss.STATE_REMOVED, ss.STATE_REMOVED),
-        (ss.STATE_ABSENT, ss.STATE_NOT_EVALUATED),
-        (ss.STATE_REMOVED, ss.STATE_ABSENT),
-        (ss.STATE_NOT_EVALUATED, ss.STATE_NOT_EVALUATED),
-    ])
-    def test_transitions_without_amounts_are_none_with_reason(self, ps, cs):
+    _NO_AMOUNT = (ss.STATE_REMOVED, ss.STATE_NOT_EVALUATED, ss.STATE_ABSENT)
+
+    @pytest.mark.parametrize("ps,cs", [(a, b) for a in _NO_AMOUNT for b in _NO_AMOUNT])
+    def test_all_nine_transitions_without_amounts_are_none_with_reason(self, ps, cs):
+        """Матрица §2.6 целиком: 3 × 3 переходов между состояниями без суммы — все `none`."""
         ch = self.c(ps, cs, None, None)
         assert ch.kind == ss.KIND_NONE and ch.value is None and ch.direction is None
         assert ch.reason == ss.REASON_NO_AMOUNTS
@@ -675,6 +673,16 @@ class TestComputeSummary:
         assert cell.state == ss.STATE_NOT_EVALUATED and cell.shown is None
         assert cell.additional_works_shown == D("24")
 
+    def test_additional_works_at_child_are_visible_in_parent(self):
+        c = col(1, 1, "20", {2: {SOURCE_POSITIONS: dt_("10")},
+                              26: {SOURCE_POSITIONS: dt_("5"), SOURCE_ADDITIONAL_WORKS: dt_("7")}})
+        r = ss.compute_summary([c, c], CATS)
+        two = next(row for row in r.rows if row.ref.id == 2)
+        assert two.cells[0].additional_works_shown == D("7")
+        assert two.children[0].cells[0].additional_works_shown == D("7")
+        six = next(row for row in r.rows if row.ref.id == 6)
+        assert six.cells[0].additional_works_shown is None
+
     def test_rows_sorted_by_abs_contribution_within_level_then_sort_order(self):
         r = ss.compute_summary(self.two_columns(), CATS)
         assert [row.ref.code for row in r.rows] == ["2", "6"]          # |−72| > |0|
@@ -830,12 +838,20 @@ class SummaryResult:
     total_cells: list[Cell]; display: TaxBasis; kpi: Kpi; track: Track
 
 
+def _extra_subtree(node: CategoryNode, direct) -> Decimal | None:
+    """Допработы статьи = свои + всех потомков (как `node.total` у `build_tree`):
+    ветвь у ребёнка обязана быть видна и в родителе (§2.4). None — ветви нет нигде в поддереве."""
+    own = direct.get(node.ref.id, {}).get(SOURCE_ADDITIONAL_WORKS)
+    parts = [own.amount] if own is not None and own.amount is not None else []
+    parts.extend(v for v in (_extra_subtree(c, direct) for c in node.children) if v is not None)
+    return sum(parts) if parts else None
+
+
 def _node_inputs(node: CategoryNode | None, direct_key: int | None, direct) -> CellInput:
     """Валовые входы одной пары (колонка, статья). Для статьи — из свёрнутого узла
     `build_tree` (поддерево целиком); для Нераспределённого — из `direct[None]`."""
     if node is not None:
-        extra = direct.get(node.ref.id, {}).get(SOURCE_ADDITIONAL_WORKS)
-        return CellInput(gross=node.total, additional_works_gross=None if extra is None else extra.amount,
+        return CellInput(gross=node.total, additional_works_gross=_extra_subtree(node, direct),
                          row_count=node.rows, rows_with_amount=node.rows_priced, rows_not_finite=node.rows_not_finite)
     branches = direct.get(direct_key, {})
     amounts = [b.amount for b in branches.values() if b.amount is not None]
@@ -1000,6 +1016,7 @@ def estimate_totals_including_vat(db: Session, estimate_ids: Sequence[int]) -> d
 CODE_OFFER_NOT_FOUND = "offer_not_found"; CODE_TOO_FEW = "too_few_offers"
 CODE_ONE_PER_ROUND = "one_offer_per_round"; CODE_SINGLE_PARTICIPANT = "single_participant"
 CODE_NO_ESTIMATE = "offer_has_no_estimate"
+CODE_TENDER_NOT_FOUND = "tender_not_found"
 
 def validate_selection(db, tender_id: int, offer_ids: Sequence[int]) -> list[Row]   # Offer+Estimate.id+TenderRound, по stage_no
 def load_inputs(db, selection) -> list[ColumnInput]
@@ -1080,15 +1097,17 @@ def count_queries(db_session):
 
 @pytest.fixture
 def grid(db_session, factories):
-    """Тендер, 3 раунда (stage_no 1, 2, 4 — пропуск номера законен), участники А и Б.
-    А: во всех трёх; Б: только в 2-м. Суммы А по статьям: р1 6→120, 2→60; р2 6→96(+24 допработ), 2→0; р4 6→90."""
+    """Тендер, 4 раунда (1, 2, 3, 4), участники А и Б. А: во всех четырёх; Б: только во 2-м.
+    Суммы А по статьям: р1 6→120, 2→60; р2 6→96(+24 допработ), 2→0; р3 6→100; р4 6→90.
+    `g.path` — трасса из трёх выбранных (1, 2, 4): этап 3 ИСКЛЮЧЁН выбором (спека §2.2, §2.6)."""
     tender = factories.TenderFactory.create()
-    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2, 4)}
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2, 3, 4)}
     db_session.flush()
     payloads = {
         1: [chaptered({"1": ("6", "120.00"), "2": ("2", "60.00")}, total="180.00")],
         2: [chaptered({"1": ("6", "96.00"), "2": ("2", "0")}, total="120.00", additional=additional_works_row(total="24.00")),
             chaptered({"1": ("6", "200.00")}, inn="7700000002", title="ООО Б", total="200.00")],
+        3: [chaptered({"1": ("6", "100.00")}, total="100.00")],
         4: [chaptered({"1": ("6", "90.00")}, total="90.00")],
     }
     for n, rnd in rounds.items():
@@ -1109,9 +1128,41 @@ def grid(db_session, factories):
 
     class G: pass
     g = G(); g.tender = tender; g.rounds = rounds
-    g.a = offers_of("7700000001")   # [o1, o2, o4]
+    g.a = offers_of("7700000001")   # [o1, o2, o3, o4]
     g.b = offers_of("7700000002")   # [o2b]
+    g.path = [g.a[0], g.a[1], g.a[3]]   # выбранная трасса: 1, 2, 4
     return g
+
+
+class TestBatchTotalsParity:
+    """`estimate_totals_including_vat` по списку обязано совпадать с одиночным правилом
+    на каждом из пяти исходов — иначе у свода и решётки были бы два разных «Итого с НДС»."""
+
+    def _estimate(self, db, factories, lines_per_proposal):
+        """lines_per_proposal: список списков итогов по предложениям; [] — строки нет."""
+        est = factories.EstimateFactory.create()
+        for lines in lines_per_proposal:
+            lot = factories.LotFactory.create(estimate=est)
+            prop = factories.ProposalFactory.create(lot=lot)
+            db.flush()
+            for total in lines:
+                db.add(ProposalSummaryLine(proposal_id=prop.id, summary_key="total_cost_including_vat",
+                                           job_title="ИТОГО", total_cost=total))
+        db.flush()
+        return est
+
+    @pytest.mark.parametrize("lines", [
+        [[Decimal("1200.00")], [Decimal("1200.00")]],           # единогласие
+        [[Decimal("1200.00")], []],                              # пропуск
+        [[Decimal("1200.00"), Decimal("1200.00")]],             # дубль строки
+        [[Decimal("1200.00")], [Decimal("NaN")]],               # NaN
+        [[Decimal("1200.00")], [Decimal("1300.00")]],           # разные итоги
+        [],                                                     # предложений нет
+    ])
+    def test_batch_matches_single_rule(self, db_session, factories, lines):
+        from crud.estimate_totals import estimate_total_including_vat, estimate_totals_including_vat
+        est = self._estimate(db_session, factories, lines)
+        assert estimate_totals_including_vat(db_session, [est.id])[est.id] == estimate_total_including_vat(db_session, est.id)
 
 
 class TestSelectionRefusals:
@@ -1141,24 +1192,32 @@ class TestSelectionRefusals:
         assert err.code == crud_ss.CODE_SINGLE_PARTICIPANT and grid.b[0] in err.context["offers"]
 
     def test_offer_without_estimate_is_422(self, db_session, grid):
-        db_session.execute(sa.delete(Estimate).where(Estimate.offer_id == grid.a[2]))
+        db_session.execute(sa.delete(Estimate).where(Estimate.offer_id == grid.a[3]))
         db_session.flush()
-        err = self._code(db_session, grid.tender.id, grid.a)
-        assert err.code == crud_ss.CODE_NO_ESTIMATE and err.context["offers"] == [grid.a[2]]
+        err = self._code(db_session, grid.tender.id, grid.path)
+        assert err.code == crud_ss.CODE_NO_ESTIMATE and err.context["offers"] == [grid.a[3]]
 
 
 class TestSelectionShape:
     def test_columns_follow_stage_no_regardless_of_request_order(self, db_session, grid):
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, [grid.a[2], grid.a[0], grid.a[1]])
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, [grid.a[3], grid.a[0], grid.a[1]])
         assert [c["stage_no"] for c in body["columns"]] == [1, 2, 4]
-        assert body["participant"]["rounds_with_estimate"] == 3
-        assert body["kpi"]["stages_selected"] == 3 and body["kpi"]["stages_loaded"] == 3
+        assert body["participant"]["rounds_with_estimate"] == 4
+        assert body["kpi"]["stages_selected"] == 3 and body["kpi"]["stages_loaded"] == 4
+
+    def test_participant_stages_list_marks_excluded_stage(self, db_session, grid):
+        """Исключённые этапы клиент берёт из ответа, не вычисляет (спека §2.2, §2.16)."""
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        stages = body["participant"]["stages"]
+        assert [(s["stage_no"], s["selected"]) for s in stages] == [(1, True), (2, True), (3, False), (4, True)]
+        assert [s["offer_id"] for s in stages if s["selected"]] == [c["offer_id"] for c in body["columns"]]
+        assert stages[2]["offer_id"] == grid.a[2]
 
     def test_query_count_does_not_grow_with_columns(self, db_session, grid):
         with count_queries(db_session) as two:
             crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a[:2])
         with count_queries(db_session) as three:
-            crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+            crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert three["n"] == two["n"]
 ```
 
@@ -1188,14 +1247,21 @@ def estimate_totals_including_vat(db: Session, estimate_ids: Sequence[int]) -> d
     for estimate_id, proposal_id in proposals:
         by_estimate.setdefault(estimate_id, []).append(proposal_id)
     all_proposals = [p for ps in by_estimate.values() for p in ps]
-    totals = dict(db.execute(
+    # СПИСКИ строк на предложение, не dict: dict молча схлопнул бы дубль строки итога,
+    # а одиночное правило на дубле отдаёт None (len(totals) != len(proposal_ids)).
+    lines: dict[int, list] = {p: [] for p in all_proposals}
+    for proposal_id, total in db.execute(
         sa.select(ProposalSummaryLine.proposal_id, ProposalSummaryLine.total_cost).where(
             ProposalSummaryLine.proposal_id.in_(all_proposals or [-1]),
             ProposalSummaryLine.summary_key == JSON_KEY_TOTAL_COST_INCLUDING_VAT,
         )
-    ).all())
+    ).all():
+        lines[proposal_id].append(total)
     for estimate_id, proposal_ids in by_estimate.items():
-        values = [totals.get(p) for p in proposal_ids]
+        per_proposal = [lines[p] for p in proposal_ids]
+        if any(len(ls) != 1 for ls in per_proposal):
+            continue                       # пропуск или дубль у одного предложения
+        values = [ls[0] for ls in per_proposal]
         if any(v is None or not v.is_finite() for v in values) or len(set(values)) != 1:
             continue
         result[estimate_id] = values[0]
@@ -1223,9 +1289,8 @@ from sqlalchemy.orm import Session
 from crud.common import DomainError, iso
 from crud.estimate_totals import estimate_totals_including_vat
 from crud.project_passport import CATEGORY_TOTALS
-from crud.tenders import get_tender
 from models import (Contractor, Estimate, EstimateCategoryOverride, Lot, Offer, OfferPackage, PositionItem,
-                    Proposal, TenderRound, WorkCategory)
+                    Proposal, Tender, TenderRound, WorkCategory)
 from money.vat import quantize_money
 from services import stage_summary as ss
 from services.category_rollup import CategoryRef, DirectTotals
@@ -1235,6 +1300,7 @@ CODE_TOO_FEW = "too_few_offers"
 CODE_ONE_PER_ROUND = "one_offer_per_round"
 CODE_SINGLE_PARTICIPANT = "single_participant"
 CODE_NO_ESTIMATE = "offer_has_no_estimate"
+CODE_TENDER_NOT_FOUND = "tender_not_found"
 
 _PCT = Decimal("0.1")
 
@@ -1294,14 +1360,26 @@ def _direct_by_estimate(db: Session, estimate_ids: list[int]) -> dict[int, dict]
 
 
 def _rates_by_estimate(db: Session, estimate_ids: list[int]) -> dict[int, Decimal | None]:
-    """Единогласие заявленных ставок предложений сметы (правило `_vat_rate` паспорта), одним запросом."""
-    rates: dict[int, set] = {e: set() for e in estimate_ids}
+    """Эффективная база НДС сметы: `COALESCE(estimates.vat_rate_base_override, единогласие
+    Proposal.vat_rate)` (спека §1.3, §2.8) — то же правило, что у `v_category_totals` и
+    `_vat_rate` паспорта, двумя запросами на список."""
+    overrides = dict(db.execute(
+        sa.select(Estimate.id, Estimate.vat_rate_base_override).where(Estimate.id.in_(estimate_ids))
+    ).all())
+    declared: dict[int, set] = {e: set() for e in estimate_ids}
     for estimate_id, rate in db.execute(
         sa.select(Lot.estimate_id, Proposal.vat_rate).join(Lot, Lot.id == Proposal.lot_id)
         .where(Lot.estimate_id.in_(estimate_ids))
     ).all():
-        rates[estimate_id].add(rate)
-    return {e: (next(iter(s)) if len(s) == 1 and None not in s else None) for e, s in rates.items()}
+        declared[estimate_id].add(rate)
+    out: dict[int, Decimal | None] = {}
+    for e in estimate_ids:
+        if overrides.get(e) is not None:
+            out[e] = overrides[e]
+        else:
+            s = declared[e]
+            out[e] = next(iter(s)) if len(s) == 1 and None not in s else None
+    return out
 
 
 def _overrides_by_estimate(db: Session, estimate_ids: list[int]) -> dict[int, tuple[int, object]]:
@@ -1367,7 +1445,11 @@ def _row(r: ss.SummaryRow) -> dict:
 
 
 def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -> dict:
-    tender = get_tender(db, tender_id)
+    tender = db.get(Tender, tender_id)
+    if tender is None:
+        # Свой код, а не `get_tender`: у свода detail — ОДИН объект у 404 и 422 (§2.16),
+        # строковый detail карточки тендера сюда не годится.
+        raise _refuse(404, CODE_TENDER_NOT_FOUND, f"Тендер {tender_id} не найден.", list(offer_ids))
     selection = validate_selection(db, tender_id, offer_ids)
     columns = load_inputs(db, selection)
     package_id = selection[0][0].package_id
@@ -1375,10 +1457,16 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
         sa.select(OfferPackage, Contractor).join(Contractor, Contractor.id == OfferPackage.contractor_id)
         .where(OfferPackage.id == package_id)
     ).one()
-    rounds_with_estimate = db.execute(
-        sa.select(sa.func.count()).select_from(Offer).join(Estimate, Estimate.offer_id == Offer.id)
-        .where(Offer.package_id == package_id)
-    ).scalar_one()
+    selected_offer_ids = {offer.id for offer, _, _ in selection}
+    stage_rows = db.execute(
+        sa.select(TenderRound.stage_no, TenderRound.label, Offer.id)
+        .select_from(Offer).join(Estimate, Estimate.offer_id == Offer.id)
+        .join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.package_id == package_id).order_by(TenderRound.stage_no)
+    ).all()
+    stages = [{"stage_no": s, "label": lbl, "offer_id": oid, "selected": oid in selected_offer_ids}
+              for s, lbl, oid in stage_rows]
+    rounds_with_estimate = len(stages)
     last_estimate_id = columns[-1].estimate_id
     last_positions = db.execute(
         sa.select(sa.func.count()).select_from(PositionItem)
@@ -1394,7 +1482,7 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
         "tender": {"id": tender.id, "tender_number": tender.tender_number, "title": tender.title,
                    "object_title": tender.object.title},
         "participant": {"package_id": package.id, "contractor_id": contractor.id, "title": contractor.title,
-                        "inn": contractor.inn, "rounds_with_estimate": rounds_with_estimate},
+                        "inn": contractor.inn, "rounds_with_estimate": rounds_with_estimate, "stages": stages},
         "columns": [{
             "kind": "round", "offer_id": c.input.offer_id, "estimate_id": c.input.estimate_id,
             "round_id": c.input.round_id, "stage_no": c.input.stage_no, "label": c.input.label,
@@ -1461,14 +1549,14 @@ def _estimate_of(db, offer_id):
 
 class TestAmounts:
     def test_both_view_branches_and_additional_works_amount(self, db_session, grid):
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         six = _row(body, "6")
         assert six["cells"][1]["amount"] == "120.00"                # 96 позиций + 24 допработ (§2.4)
         assert six["cells"][1]["additional_works_amount"] == "24.00"
         assert six["cells"][0]["additional_works_amount"] is None   # ветви нет вовсе
 
     def test_states_along_selected_path(self, db_session, grid):
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         two = _row(body, "2")
         assert [c["state"] for c in two["cells"]] == ["amount", "removed", "absent"]
         assert two["cells"][1]["change"]["kind"] == "removed"
@@ -1477,8 +1565,8 @@ class TestAmounts:
         assert two["contribution"] == {"value": None, "direction": None, "reason": "absent_endpoint"}
 
     def test_excluding_middle_column_changes_neighbours(self, db_session, grid):
-        full = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
-        short = crud_ss.build_stage_summary(db_session, grid.tender.id, [grid.a[0], grid.a[2]])
+        full = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        short = crud_ss.build_stage_summary(db_session, grid.tender.id, [grid.a[0], grid.a[3]])
         assert _row(full, "6")["cells"][1]["change"]["value"] == "0.0"      # 120 → 120 (96 + 24 допработ)
         assert _row(full, "6")["cells"][2]["change"]["value"] == "-25.0"    # 120 → 90 относительно раунда 2
         assert _row(short, "6")["cells"][1]["change"]["value"] == "-25.0"   # 120 → 90 относительно раунда 1
@@ -1486,7 +1574,7 @@ class TestAmounts:
         assert _row(full, "2")["cells"][1]["change"]["kind"] == "removed"
         assert _row(short, "2")["cells"][1]["change"]["kind"] == "disappeared"
         assert len(short["columns"]) == 2
-        assert short["participant"]["rounds_with_estimate"] == 3 and short["kpi"]["stages_selected"] == 2
+        assert short["participant"]["rounds_with_estimate"] == 4 and short["kpi"]["stages_selected"] == 2
 
     def test_manual_override_moves_money_and_is_signed(self, db_session, grid, admin_user):
         from services.category_override import set_override
@@ -1499,7 +1587,7 @@ class TestAmounts:
         seven = db_session.execute(sa.select(WorkCategory.id).where(WorkCategory.code == "7")).scalar_one()
         set_override(db_session, estimate_id=est.id, position_item_id=chapter.id, work_category_id=seven,
                      note=None, user_id=admin_user.id)
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert _row(body, "7")["cells"][0]["amount"] == "60.00"
         assert _row(body, "2")["cells"][0]["state"] == "absent"
         assert body["columns"][0]["manual_overrides"]["count"] == 1
@@ -1515,13 +1603,13 @@ class TestVatAxis:
         db.flush()
 
     def test_single_rate_is_gross(self, db_session, grid):
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["display"]["tax_basis"] == "gross" and body["display"]["reason"] == "single_rate"
         assert body["columns"][0]["total"] == "180.00"
 
     def test_mixed_rates_is_net_with_rates_listed(self, db_session, grid):
         self._set_rate(db_session, grid.a[1], Decimal("0"))
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["display"]["tax_basis"] == "net"
         assert [Decimal(r) for r in body["display"]["rates_by_column"]] == [D("20"), D("0"), D("20")]
         assert body["columns"][0]["total"] == "150.00" and body["columns"][1]["total"] == "120.00"
@@ -1529,7 +1617,7 @@ class TestVatAxis:
 
     def test_twenty_plus_unknown_keeps_known_gross(self, db_session, grid):
         self._set_rate(db_session, grid.a[1], None)
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["display"]["tax_basis"] == "gross"
         col = body["columns"][1]
         assert col["vat_state"] == "unknown_vat_base" and col["total"] is None and col["bar_height_pct"] is None
@@ -1541,10 +1629,21 @@ class TestVatAxis:
         assert body["track"]["available"] is True
         assert col["convergence"]["converged"] is True      # сходимость от ставки не зависит
 
+    def test_estimate_override_wins_over_declared_rate(self, db_session, grid):
+        """COALESCE(override, ставка предложения) — спека §1.3: назначенная вручную база
+        побеждает заявленную, и одна такая колонка делает ось нетто."""
+        est = _estimate_of(db_session, grid.a[1])
+        est.vat_rate_base_override = Decimal("0")
+        db_session.flush()
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert body["display"]["tax_basis"] == "net"
+        assert Decimal(body["columns"][1]["vat_rate_base"]) == D("0")
+        assert body["columns"][1]["total"] == "120.00" and body["columns"][0]["total"] == "150.00"
+
     def test_all_unknown_disables_track_and_basis(self, db_session, grid):
         for o in grid.a:
             self._set_rate(db_session, o, None)
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["display"]["tax_basis"] == "none"
         assert body["track"] == {"available": False, "reason": "no_comparable_totals"}
         assert _row(body, "6")["cells"][0]["state"] == "amount"
@@ -1556,24 +1655,24 @@ class TestConvergenceAndKpi:
         db_session.execute(sa.delete(ProposalSummaryLine).where(
             ProposalSummaryLine.proposal_id.in_(sa.select(Proposal.id).join(Lot).where(Lot.estimate_id == est.id))))
         db_session.flush()
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["columns"][0]["convergence"]["converged"] is None
         assert body["columns"][0]["convergence"]["reason"] == "file_total_unavailable"
         assert body["columns"][0]["total"] == "180.00"                # итог колонки — не файловый (§2.9)
 
     def test_kpi_last_stage_positions_excludes_chapters(self, db_session, grid):
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         assert body["kpi"]["last_stage_positions"] == 1
         assert body["kpi"]["categories_with_amount"] == 1
         assert body["kpi"]["categories_total"] == len(body["rows"])
 
     def test_rows_not_finite_reaches_cell(self, db_session, grid):
-        est = _estimate_of(db_session, grid.a[2])
+        est = _estimate_of(db_session, grid.a[3])
         db_session.execute(sa.update(PositionItem).where(
             PositionItem.proposal_id.in_(sa.select(Proposal.id).join(Lot).where(Lot.estimate_id == est.id)),
             PositionItem.is_chapter.is_(False)).values(total_cost_total=Decimal("NaN")))
         db_session.flush()
-        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         rows = _row(body, "6")["cells"][2]["rows"]
         assert rows == {"row_count": 1, "rows_with_amount": 0, "rows_not_finite": 1}
 ```
@@ -1616,7 +1715,7 @@ class TestHttp:
 
     def test_member_reads_summary(self, member_client, db_session, grid):
         db_session.flush()
-        r = member_client.get(self.URL.format(tid=grid.tender.id), params={"offers": grid.a})
+        r = member_client.get(self.URL.format(tid=grid.tender.id), params={"offers": grid.path})
         assert r.status_code == 200, r.text
         body = r.json()
         assert [c["stage_no"] for c in body["columns"]] == [1, 2, 4]
@@ -1640,9 +1739,11 @@ class TestHttp:
         assert r.status_code == 422
         assert r.json()["detail"]["code"] == "too_few_offers"
 
-    def test_unknown_tender_is_404(self, member_client, grid):
-        r = member_client.get(self.URL.format(tid=999999), params={"offers": grid.a})
+    def test_unknown_tender_is_404_with_code(self, member_client, grid):
+        r = member_client.get(self.URL.format(tid=999999), params={"offers": grid.path})
         assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "tender_not_found"
+        assert set(r.json()["detail"]["offers"]) == set(grid.path)
 ```
 
 - [ ] **Step 2: Прогнать — 404 «Not Found» от FastAPI на маршруте**
@@ -1667,7 +1768,7 @@ def stage_summary(tender_id: int, offers: list[int] = Query(default=[]), db: Ses
         raise_domain_error(e)
 ```
 
-Маршрут объявить **до** `@router.get("/{tender_id}")`? — нет нужды: у FastAPI сегмент `/stage-summary` статический и не конфликтует с `/{tender_id}`; но `get_tender(db, tender_id)` внутри `build_stage_summary` даёт 404 без `code` для чужого тендера — это `DomainError(404, …)` без кода, `detail` строкой; тест `test_unknown_tender_is_404` утверждает только статус.
+Порядок объявления не важен: сегмент `/stage-summary` статический и не конфликтует с `/{tender_id}`. Отсутствующий тендер отвечает **тем же объектом `detail`** с кодом `tender_not_found` (спека §2.16) — `build_stage_summary` проверяет тендер сам, а не через `get_tender` со строковым `detail`.
 
 - [ ] **Step 4: Прогнать — PASS; полный `just test-backend-unit` и точечный интеграционный**
 
@@ -1716,13 +1817,14 @@ export interface StageSummaryColumn {
 }
 export interface StageSummary {
   tender: { id: number; tender_number: string; title: string; object_title: string };
-  participant: { package_id: number; contractor_id: number; title: string; inn: string; rounds_with_estimate: number };
+  participant: { package_id: number; contractor_id: number; title: string; inn: string; rounds_with_estimate: number;
+                 stages: { stage_no: number; label: string | null; offer_id: number; selected: boolean }[] };
   columns: StageSummaryColumn[]; rows: StageSummaryRow[]; unallocated: StageSummaryRow; total: { cells: StageSummaryCell[] };
   display: { tax_basis: "gross" | "net" | "none"; reason: "single_rate" | "mixed_rates" | "no_known_rates"; rates_by_column: (Decimal | null)[] | null; price_level: "nominal" };
   kpi: { stages_selected: number; stages_loaded: number; last_stage_positions: number; categories_with_amount: number; categories_total: number; first_to_last: StageSummaryChange };
   track: { available: boolean; reason: "non_positive_total" | "no_comparable_totals" | null };
 }
-export type StageSummaryErrorCode = "offer_not_found" | "too_few_offers" | "one_offer_per_round" | "single_participant" | "offer_has_no_estimate";
+export type StageSummaryErrorCode = "tender_not_found" | "offer_not_found" | "too_few_offers" | "one_offer_per_round" | "single_participant" | "offer_has_no_estimate";
 export interface StageSummaryErrorDetail { code: StageSummaryErrorCode; message: string; offers: number[] }
 
 // api/domain.ts
@@ -1735,9 +1837,11 @@ qk.tenders.stageSummary: (tenderId: number, offerIds: number[]) => ["tenders", "
 export function useStageSummary(tenderId: number | undefined, offerIds: number[])
    // enabled: tenderId !== undefined && offerIds.length >= 1 (Р8); retry: false — 4xx не повторяются
 // test/fixtures.ts
-export const sampleStageSummary: StageSummary   // 3 колонки (stage 1, 2, 4), строки «6» (с ребёнком «6.99»), «2», unallocated, все виды изменения хоть раз
+export const sampleStageSummary: StageSummary   // 3 колонки (stage 1, 2, 4) из 4 этапов участника (этап 3 selected=false),
+                                                // строки «6» (с ребёнком «6.99»), «2», unallocated, все виды изменения хоть раз
 // test/handlers.ts
-handlerState.stageSummaryOutcome: "ok" | "single_participant" | "too_few_offers" | "offer_not_found" | "unknown_vat" | "track_unavailable"
+handlerState.stageSummaryOutcome: "ok" | "net" | "unknown_vat" | "track_non_positive" | "track_no_comparable"
+  | "tender_not_found" | "offer_not_found" | "too_few_offers" | "one_offer_per_round" | "single_participant" | "offer_has_no_estimate"
 ```
 
 - [ ] **Step 1: Тест хука (падает: экспорта нет)**
@@ -1809,7 +1913,7 @@ export function useStageSummary(tenderId: number | undefined, offerIds: number[]
 
 - [ ] **Step 4: Фикстура и хендлер**
 
-`sampleStageSummary` — числа те же, что в фикстуре бэкенда Task 3 (`180 / 120 / 90`, статья «6» 120→120→90, «2» 60→снято→нет в файле, «Нераспределённое» 0), плюс ребёнок «6.99» у «6» с суммами `12 / 24 / 0` (removed в 3-й). `columns[*].bar_height_pct`: `"100.0" / "66.7" / "50.0"`; `manual_overrides` у 2-й колонки `{count: 1, last_at: "2026-08-26T10:00:00Z"}`. `display` — `gross/single_rate`. Кол-во `cells` везде = 3.
+`sampleStageSummary` — числа те же, что в фикстуре бэкенда Task 3 (`180 / 120 / 90`, статья «6» 120→120→90, «2» 60→снято→нет в файле, «Нераспределённое» 0), плюс ребёнок «6.99» у «6» с суммами `12 / 24 / 0` (removed в 3-й). `participant.stages` — четыре этапа `[1 sel, 2 sel, 3 NOT selected (offer 7003), 4 sel]`, `rounds_with_estimate: 4`, `kpi: {stages_selected: 3, stages_loaded: 4, last_stage_positions: 1, categories_with_amount: 1, categories_total: 2, first_to_last: {kind: "percent", value: "-50.0", direction: "down", reason: null}}`. `columns[*].bar_height_pct`: `"100.0" / "66.7" / "50.0"`; `manual_overrides` у 2-й колонки `{count: 1, last_at: "2026-08-26T10:00:00Z"}`. `display` — `gross/single_rate`. Кол-во `cells` везде = 3. Производные фикстуры: `stageSummaryNet()` — `display: {tax_basis: "net", reason: "mixed_rates", rates_by_column: ["20", "0", "20"]}`, суммы колонок 1 и 3 делены на 1,2; `stageSummaryWithUnknownSecondColumn()` — см. ниже.
 
 ```ts
 // handlers.ts
@@ -1818,12 +1922,17 @@ http.get("/api/v1/tenders/:id/stage-summary", ({ request }) => {
   const refuse = (status: number, code: string) =>
     HttpResponse.json({ detail: { code, message: `Отказ ${code}`, offers } }, { status });
   switch (handlerState.stageSummaryOutcome) {
-    case "single_participant": return refuse(422, "single_participant");
-    case "too_few_offers":     return refuse(422, "too_few_offers");
-    case "offer_not_found":    return refuse(404, "offer_not_found");
-    case "unknown_vat":        return HttpResponse.json(stageSummaryWithUnknownSecondColumn());
-    case "track_unavailable":  return HttpResponse.json({ ...sampleStageSummary, track: { available: false, reason: "non_positive_total" } });
-    default:                   return HttpResponse.json(sampleStageSummary);
+    case "tender_not_found":      return refuse(404, "tender_not_found");
+    case "offer_not_found":       return refuse(404, "offer_not_found");
+    case "too_few_offers":        return refuse(422, "too_few_offers");
+    case "one_offer_per_round":   return refuse(422, "one_offer_per_round");
+    case "single_participant":    return refuse(422, "single_participant");
+    case "offer_has_no_estimate": return refuse(422, "offer_has_no_estimate");
+    case "net":                   return HttpResponse.json(stageSummaryNet());
+    case "unknown_vat":           return HttpResponse.json(stageSummaryWithUnknownSecondColumn());
+    case "track_non_positive":    return HttpResponse.json({ ...sampleStageSummary, track: { available: false, reason: "non_positive_total" } });
+    case "track_no_comparable":   return HttpResponse.json({ ...sampleStageSummary, display: { ...sampleStageSummary.display, tax_basis: "none", reason: "no_known_rates" }, track: { available: false, reason: "no_comparable_totals" } });
+    default:                      return HttpResponse.json(sampleStageSummary);
   }
 }),
 ```
@@ -2040,12 +2149,38 @@ function renderSummary(route = "/tenders/300/summary?offers=7002&offers=7001&off
 }
 
 describe("Свод по этапам — страница (спека §2.2, §2.11, §2.14)", () => {
-  it("шапка: участник, «3 из 3», подпись валовой оси и номинального уровня", async () => {
+  it("шапка: участник, «3 из 4», исключённый этап из participant.stages, подпись валовой оси и номинального уровня", async () => {
     renderSummary();
     expect(await screen.findByRole("heading", { name: /Свод по этапам · ООО Альфа/ })).toBeInTheDocument();
-    expect(screen.getByText(/этапов в своде 3 из 3/)).toBeInTheDocument();
+    expect(screen.getByText(/этапов в своде 3 из 4/)).toBeInTheDocument();
+    expect(screen.getByText(/исключён выбором: этап 3/)).toBeInTheDocument();
     expect(screen.getByText(/Все суммы — с НДС 20 %/)).toBeInTheDocument();
     expect(screen.getByText(/номинальные/i)).toBeInTheDocument();
+  });
+
+  it("KPI целиком — пять карточек по полям kpi, не по вычислению клиента", async () => {
+    renderSummary();
+    await screen.findByRole("table");
+    const kpi = screen.getByTestId("kpi");
+    expect(within(kpi).getByText("Этапов в своде").parentElement).toHaveTextContent("3 из 4");
+    expect(within(kpi).getByText("Позиций в последнем").parentElement).toHaveTextContent("1");
+    expect(within(kpi).getByText("Статей с суммой").parentElement).toHaveTextContent("1 из 2");
+    expect(within(kpi).getByText("Ставка НДС").parentElement).toHaveTextContent("20 %");
+    expect(within(kpi).getByText("Последний к первому").parentElement).toHaveTextContent("-50,0%");
+  });
+
+  it("нетто-ось: подпись с перечислением ставок и пометка о сходимости в исходных деньгах", async () => {
+    handlerState.stageSummaryOutcome = "net";
+    renderSummary();
+    expect(await screen.findByText(/Все суммы — без НДС: ставки этапов расходятся \(20, 0, 20\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Δ сходимости измерена в исходных деньгах файла/)).toBeInTheDocument();
+  });
+
+  it("track.reason=no_comparable_totals → своя причина, ось «нет сопоставимых сумм»", async () => {
+    handlerState.stageSummaryOutcome = "track_no_comparable";
+    renderSummary();
+    expect(await screen.findByText(/ни у одного этапа нет сопоставимого итога/)).toBeInTheDocument();
+    expect(screen.getByText(/Сопоставимых сумм нет/)).toBeInTheDocument();
   });
 
   it("трасса: высота столбика — из bar_height_pct, а не из сравнения сумм клиентом", async () => {
@@ -2055,7 +2190,7 @@ describe("Свод по этапам — страница (спека §2.2, §2
   });
 
   it("track.available=false → объяснение вместо столбиков, таблица остаётся", async () => {
-    handlerState.stageSummaryOutcome = "track_unavailable";
+    handlerState.stageSummaryOutcome = "track_non_positive";
     renderSummary();
     expect(await screen.findByText(/столбики не строятся/)).toBeInTheDocument();
     expect(screen.queryAllByTestId("track-bar")).toHaveLength(0);
@@ -2069,15 +2204,20 @@ describe("Свод по этапам — страница (спека §2.2, §2
     expect(screen.getByTestId("track-slot-unknown")).toBeInTheDocument();
     expect(screen.getByText(/Все суммы — с НДС 20 %/)).toBeInTheDocument();
     const six = screen.getByText("Фасадные работы").closest("tr") as HTMLElement;
-    expect(within(six).getAllByRole("cell")[2]).toHaveTextContent("—");
-    expect(within(six).getAllByRole("cell")[2]).toHaveAttribute("title", expect.stringMatching(/база НДС неизвестна/));
+    // видимая подпись, не только title: читатель обязан видеть причину без наведения
+    expect(within(six).getAllByRole("cell")[2]).toHaveTextContent("нет базы НДС");
+    expect(within(six).getAllByRole("cell")[2]).not.toHaveTextContent(/\d/);
+    expect(screen.getByTestId("track-slot-unknown")).toHaveTextContent("нет базы НДС");
   });
 
   it.each([
-    ["single_participant", /по одному участнику/],
-    ["offer_not_found", /не найдено/],
+    ["tender_not_found", /Тендер не найден/],
+    ["offer_not_found", /Предложение не найдено/],
     ["too_few_offers", /хотя бы два/],
-  ])("отказ %s → пустое состояние с причиной и ссылкой на решётку", async (outcome, text) => {
+    ["one_offer_per_round", /одно предложение/],
+    ["single_participant", /по одному участнику/],
+    ["offer_has_no_estimate", /нет сметы/],
+  ])("отказ %s → пустое состояние с причиной и ссылкой на решётку (все шесть кодов)", async (outcome, text) => {
     handlerState.stageSummaryOutcome = outcome as typeof handlerState.stageSummaryOutcome;
     renderSummary();
     expect(await screen.findByText(text)).toBeInTheDocument();
@@ -2186,11 +2326,11 @@ it("каждая var(--…) компонентов свода объявлена
 
 - [ ] **Step 3: Компоненты**
 
-`StageSummaryPage`: `useParams` → `tenderId`; `useSearchParams().getAll("offers").map(Number).filter(Number.isFinite)`; без offers → `EmptyState title="Свод не построен" description="Выберите предложения на решётке тендера"` со ссылкой; `useStageSummary`; `isPending` → `Skeleton`; `isError` → `EmptyState` с `REASON`-текстом по `apiErrorCode` (карта кодов отказа → текст: `offer_not_found` «Предложение не найдено в этом тендере», `too_few_offers` «Для свода нужны хотя бы два этапа», `one_offer_per_round` «В одном раунде — одно предложение», `single_participant` «Выбранные предложения принадлежат разным участникам — свод строится по одному участнику», `offer_has_no_estimate` «У предложения нет сметы: раунд был заменён другим файлом») и `Button render={<Link to={`/tenders/${tenderId}`}>}` «К решётке тендера»; успех → `Breadcrumbs` (Тендеры → номер → Свод по этапам), `PageHeader serif title={`Свод по этапам · ${participant.title}`} subtitle={`${tender.title} · ${tender.object_title} · этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}`}`, ряд `KpiCard` ×5, подпись осей (`TAX_LABEL[display.tax_basis]`, «Цены номинальные, без приведения к ценовому уровню месяца»), `StageSummaryTrack`, `StageSummaryTable`.
+`StageSummaryPage`: карта текстов отказа дополняется `tender_not_found` «Тендер не найден»; подзаголовок — `этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}` плюс, если есть `participant.stages.filter(s => !s.selected)`, «исключён выбором: этап 3» (несколько — «исключены выбором: этапы 3, 5»); ряд KPI — `<div data-testid="kpi">` с пятью `KpiCard` (`label` ровно «Этапов в своде», «Позиций в последнем», «Статей с суммой», «Ставка НДС», «Последний к первому»; последняя — `roundDecimalPercent(kpi.first_to_last.value).text` либо подпись `KIND_LABEL`); слот трассы `track-slot-unknown` несёт видимый текст «нет базы НДС». `useParams` → `tenderId`; `useSearchParams().getAll("offers").map(Number).filter(Number.isFinite)`; без offers → `EmptyState title="Свод не построен" description="Выберите предложения на решётке тендера"` со ссылкой; `useStageSummary`; `isPending` → `Skeleton`; `isError` → `EmptyState` с `REASON`-текстом по `apiErrorCode` (карта кодов отказа → текст: `offer_not_found` «Предложение не найдено в этом тендере», `too_few_offers` «Для свода нужны хотя бы два этапа», `one_offer_per_round` «В одном раунде — одно предложение», `single_participant` «Выбранные предложения принадлежат разным участникам — свод строится по одному участнику», `offer_has_no_estimate` «У предложения нет сметы: раунд был заменён другим файлом») и `Button render={<Link to={`/tenders/${tenderId}`}>}` «К решётке тендера»; успех → `Breadcrumbs` (Тендеры → номер → Свод по этапам), `PageHeader serif title={`Свод по этапам · ${participant.title}`} subtitle={`${tender.title} · ${tender.object_title} · этапов в своде ${kpi.stages_selected} из ${kpi.stages_loaded}`}`, ряд `KpiCard` ×5, подпись осей (`TAX_LABEL[display.tax_basis]`, «Цены номинальные, без приведения к ценовому уровню месяца»), `StageSummaryTrack`, `StageSummaryTable`.
 
 `StageSummaryTrack`: `summary.track.available ? columns.map(bar) : <EmptyState …>`; столбик — `<div data-testid="track-bar" style={{ height: `${Number(col.bar_height_pct)}%` }} />` (число только для CSS-высоты — не сравнение и не деление); колонка с `vat_state === "unknown_vat_base"` — `<div data-testid="track-slot-unknown" className="… bg-[repeating-linear-gradient(45deg,var(--border-subtle)_0_4px,transparent_4px_8px)]" title={REASON_LABEL.unknown_vat_base} />`; под столбиком `formatDecimalMoney(col.total)` и `ChangeBadge change={col.total_change}`.
 
-`SummaryCell({cell})`: `<td className="text-right tabular-nums" title={cell.amount_unavailable_reason ? REASON_LABEL[...] : undefined}>`; если `amount_unavailable_reason` → «—»; иначе по `state`: `amount` → `formatDecimalMoney(cell.amount)`, прочие → `STATE_LABEL[state]` пилюлей (`StatusPill tone="warning"` для `removed`, `neutral` для `not_evaluated`); под числом `ChangeBadge` (`data-testid="change"`, тон по `direction`: `up → text-accent-primary-text`, `down → text-danger-text`, `flat → text-fg-tertiary`; `kind ∈ KIND_LABEL` → пилюля с подписью; `none` → ничего); значок неполноты при `rows_with_amount < row_count`: `<Tooltip><TooltipTrigger aria-label={`Сумма неполна: учтено ${rows_with_amount} из ${row_count} строк${rows_not_finite ? `; неконечных значений: ${rows_not_finite}` : ""}`}>◐</TooltipTrigger><TooltipContent>…</TooltipContent></Tooltip>`. Процент — `roundDecimalPercent(value).text`; `abs_only` — `formatDecimalMoney(value)` с подписью «Δ, без %».
+`SummaryCell({cell})`: `<td className="text-right tabular-nums" title={cell.amount_unavailable_reason ? REASON_LABEL[...] : undefined}>`; если `amount_unavailable_reason` → **видимая** пилюля `StatusPill tone="neutral" label="нет базы НДС"` (не только `title`) и никакой цифры; иначе по `state`: `amount` → `formatDecimalMoney(cell.amount)`, прочие → `STATE_LABEL[state]` пилюлей (`StatusPill tone="warning"` для `removed`, `neutral` для `not_evaluated`); под числом `ChangeBadge` (`data-testid="change"`, тон по `direction`: `up → text-accent-primary-text`, `down → text-danger-text`, `flat → text-fg-tertiary`; `kind ∈ KIND_LABEL` → пилюля с подписью; `none` → ничего); значок неполноты при `rows_with_amount < row_count`: `<Tooltip><TooltipTrigger aria-label={`Сумма неполна: учтено ${rows_with_amount} из ${row_count} строк${rows_not_finite ? `; неконечных значений: ${rows_not_finite}` : ""}`}>◐</TooltipTrigger><TooltipContent>…</TooltipContent></Tooltip>`. Процент — `roundDecimalPercent(value).text`; `abs_only` — `formatDecimalMoney(value)` с подписью «Δ, без %».
 
 `StageSummaryTable({summary})`: `<Table>` из shadcn в `Surface padding="none" className="overflow-x-auto"`; `thead` — «Статья классификатора» (`sticky left-0 bg-surface`), по колонке `Этап {stage_no}{label ? ` · ${label}` : ""}` и под ней `manual_overrides.count ? `разнос: ${count} ${plural} · ${formatDate(last_at)}` : "без ручного разноса"`, затем «Торг: первый → последний», «Вклад в итог»; `tbody` — строки в порядке ответа, у строки с `children.length > 0` кнопка `aria-label={`Раскрыть ${title}`}` и `aria-expanded`; дети — `pl-8 bg-surface-sunken`; `tfoot` — `unallocated` (бейдж «обязательная строка», `bargain` → «без %» с title `REASON_LABEL.unallocated`, `contribution.value` числом) и «Итого по предложению» с `total.cells` и под каждым — сходимость: `converged === true` «сходится», `false` `не сходится: Δ ${formatDecimalMoney(delta)}`, `null` `сверка невозможна: ${REASON_LABEL[reason]}`; при `display.tax_basis === "net"` — строка под таблицей «Δ сходимости измерена в исходных деньгах файла».
 

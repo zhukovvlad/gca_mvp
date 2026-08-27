@@ -42,9 +42,14 @@ vat_rate_base, work_category_id, source)` и отдаёт `amount` без `NaN`/
 
 `services/category_rollup.build_tree(CategoryRef[], direct)` сворачивает
 подстатьи в статьи по `parent_id` и упорядочивает по `WorkCategory.sort_order`;
-корни присутствуют всегда, узел глубже — только при `rows > 0`. Ручные решения
-сметы с датой отдаёт `crud/project_passport._manual_assignments`. Свод зовёт эти
-функции, вторых копий не заводит.
+корни присутствуют всегда, узел глубже — только при `rows > 0`. Свод зовёт
+`build_tree`, второй свёртки не заводит. Ручные решения сметы с подробностями
+(раздел, автор, заметка, суммы поддерева) отдаёт
+`crud/project_passport._manual_assignments` — это источник **паспорта**, он
+тянет `_section_metrics` и делает несколько запросов на смету. Своду нужны только
+признак и дата: он читает `count` и `max(assigned_at)` из
+`estimate_category_overrides` **одним пакетным агрегатом по списку смет трассы**
+(§2.10, §2.12) — иначе число запросов росло бы с числом колонок.
 
 ### 1.3. Ставка и итог сметы — правилом единогласия
 
@@ -123,7 +128,8 @@ vat_rate_base, work_category_id, source)` и отдаёт `amount` без `NaN`/
 
 Хлебные крошки: Тендеры → {номер тендера} → Свод по этапам. Заголовок «Свод по
 этапам · {участник}», подзаголовок — предмет торга, объект и «этапов в своде N из
-M загруженных у участника» с перечислением исключённых.
+M загруженных у участника» с перечислением исключённых — список этапов участника
+отдаёт сервер (`participant.stages[]`, §2.16), клиент ничего не вычисляет.
 
 ### 2.3. Эндпоинт и проверка выбора
 
@@ -136,6 +142,7 @@ M загруженных у участника» с перечислением �
 
 | Условие | Ответ |
 |---|---|
+| тендер не существует | 404 `tender_not_found` |
 | предложение не принадлежит тендеру либо не существует | 404 `offer_not_found` |
 | выбрано меньше двух | 422 `too_few_offers` |
 | два предложения одного раунда | 422 `one_offer_per_round` |
@@ -338,7 +345,9 @@ none}`; у `none` — `reason`, когда расчёт недоступен.
 last_at}` — признак и дата последнего разноса, под шапкой колонки («разнос: 3
 решения · 26.08.2026» / «без ручного разноса»). Разнос делается человеком между
 просмотрами, и без этой подписи две выгрузки одной трассы разошлись бы без единой
-новой загрузки файла. Источник — `_manual_assignments` (§1.2).
+новой загрузки файла. Источник — пакетный агрегат `count` / `max(assigned_at)` по
+`estimate_category_overrides` для всех смет трассы одним запросом (§1.2);
+подробности решений остаются у `_manual_assignments` паспорта.
 
 ### 2.11. KPI и трасса — считает сервер
 
@@ -439,7 +448,10 @@ GET /api/v1/tenders/{tender_id}/stage-summary?offers=27&offers=29&offers=38
 200 →
 tender:       { id, tender_number, title, object_title }
 participant:  { package_id, contractor_id, title, inn,
-                rounds_with_estimate: M }            -- раунды участника со сметой
+                rounds_with_estimate: M,             -- раунды участника со сметой
+                stages: [ { stage_no, label, offer_id, selected: bool } ] }
+                                                     -- ВСЕ раунды участника со сметой по stage_no;
+                                                     -- исключённые из свода = selected: false
 columns[]:    { kind: 'round',                       -- задел: 'contract' за разделителем
                 offer_id, estimate_id, round_id, stage_no, label, held_on,
                 vat_rate_base: "20" | null,          -- эффективная база; null ⇔ vat_state = 'unknown_vat_base'
@@ -482,7 +494,8 @@ Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappe
            reason: 'first_column' | 'unknown_vat_base' | 'no_amounts' | 'unallocated' | null }
                                                       -- 'unallocated' — только у bargain строки «Нераспределённое»
 
-404 → { detail: { code: 'offer_not_found', message: "…", offers: [id, …] } }
+404 → { detail: { code: 'tender_not_found' | 'offer_not_found', message: "…", offers: [id, …] } }
+                                                     -- tender_not_found: offers = весь запрошенный список
 422 → { detail: { code: 'too_few_offers' | 'one_offer_per_round' | 'single_participant'
                         | 'offer_has_no_estimate',
                   message: "…человекочитаемо…",
@@ -514,6 +527,9 @@ Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappe
 - `bar_height_pct ≠ null` ⇔ колонка имеет сопоставимый положительный `total` и
   `track.available = true`; максимум среди ненулевых — ровно `"100"`.
 - Длина `cells` у каждой строки, у `unallocated` и у `total` равна длине `columns`.
+- `participant.stages` отсортирован по `stage_no`; число элементов с `selected = true`
+  равно длине `columns`, а их `offer_id` — ровно `columns[].offer_id`;
+  `len(stages) = rounds_with_estimate = kpi.stages_loaded`.
 
 ---
 
