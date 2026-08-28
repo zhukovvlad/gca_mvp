@@ -397,11 +397,14 @@ def _total_endpoint_change(cells: Sequence[TotalCell]) -> Change:
     return _numeric_change(first.shown, last.shown, reason=reason)
 
 
-def sort_key(contribution: Contribution, sort_order: int) -> tuple:
-    """§2.13: по убыванию |вклада|, `None` — после числовых, оба — вторично по `sort_order`."""
-    if contribution.value is None:
-        return (1, Decimal(0), sort_order)
-    return (0, -abs(contribution.value), sort_order)
+def sort_key(ref: CategoryRef) -> int:
+    """§2.13 (ревизия 28.08.2026): порядок строк — `sort_order` классификатора,
+    внутри каждого уровня отдельно. Вклад в итог на порядок НЕ влияет ни как
+    первичный, ни как вторичный ключ, и пустой вклад не отправляет строку в
+    конец: статья стоит там, где стоит в классификаторе. Прежняя редакция
+    сортировала по убыванию |вклада| — почему решение сменилось, записано в
+    спеке §2.13."""
+    return ref.sort_order
 
 
 def _row(ref: CategoryRef, nodes_by_column: list[CategoryNode | None],
@@ -417,8 +420,15 @@ def _row(ref: CategoryRef, nodes_by_column: list[CategoryNode | None],
     children = [r for cid, cref in child_refs.items()
                 if (r := _row(cref, child_nodes[cid], columns, basis)) is not None]
     bargain, contribution = _endpoints(cells)
+    # Сортировка детей НАГРУЖЕНА, в отличие от корневой ниже: `child_refs`
+    # склеивает детей по ВСЕМ колонкам через словарь, и его порядок — порядок
+    # первой встречи. Колонка, где ребёнка нет, сдвигает союз: если в первой
+    # колонке есть только «1.2», а во второй «1.1» и «1.2», словарь отдаст
+    # «1.2», «1.1». Проверено тестом
+    # `test_child_order_survives_columns_that_differ_in_children`, который
+    # краснеет при снятии этого `sorted`.
     row = SummaryRow(ref, False, cells, bargain, contribution,
-                     sorted(children, key=lambda r: sort_key(r.contribution, r.ref.sort_order)))
+                     sorted(children, key=lambda r: sort_key(r.ref)))
     if ref.parent_id is not None and all(c.rows.gross in (None, Decimal(0)) for c in cells):
         return None          # §2.14: вложенный узел виден только при ненулевой сумме хоть в одной колонке
     return row
@@ -430,7 +440,15 @@ def compute_summary(columns: Sequence[ColumnInput], categories: Sequence[Categor
     roots_by_id = {node.ref.id: [t[i] if i < len(t) else None for t in trees] for i, node in enumerate(trees[0])}
     # build_tree отдаёт корни в одном порядке для всех колонок (общий справочник) — индекс i общий.
     rows = [r for rid, nodes in roots_by_id.items() if (r := _row(nodes[0].ref, nodes, columns, basis)) is not None]
-    rows.sort(key=lambda r: sort_key(r.contribution, r.ref.sort_order))
+    # ЯВНОЕ ОБЪЯВЛЕНИЕ ПРАВИЛА, А НЕ МЕХАНИЗМ, и снятие этой строки сегодня не
+    # меняет ничего: корни приходят из `build_tree`, который уже отсортировал их
+    # по `sort_order` (`services/category_rollup.py`), словарь выше сохраняет
+    # порядок вставки, а фильтрация и сортировка стабильны. Строка оставлена
+    # намеренно: §2.13 публикует ЭТОТ модуль, и порядок, который он обещает, не
+    # должен зависеть от внутренней сортировки соседа — если `build_tree`
+    # однажды перестанет сортировать, поверхность не поедет. У детей всё иначе:
+    # там сортировка нагружена, см. `_row`.
+    rows.sort(key=lambda r: sort_key(r.ref))
 
     unalloc_inputs = [_node_inputs(None, None, c.direct) for c in columns]
     unalloc_cells = _cells(unalloc_inputs, columns, basis)

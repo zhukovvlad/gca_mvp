@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { sampleStageSummary } from "@/test/fixtures";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
-import type { StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
+import type { StageSummary, StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
 import { KIND_LABEL, REASON_LABEL } from "./cellCopy";
 import { StageSummaryTable } from "./StageSummaryTable";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
@@ -18,13 +18,34 @@ import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
  */
 describe("Таблица свода — состояния по данным (спека §2.5–§2.7, §2.9, §2.13)", () => {
   it("порядок строк — как пришёл с сервера; «Нераспределённое» и «Итого» в tfoot", () => {
-    render(<StageSummaryTable summary={sampleStageSummary} />);
-    // sampleStageSummary.rows[0] — «Котлован» (|contribution| = 60), rows[1] —
-    // «Фасадные работы» (|contribution| = 30): убывание модуля вклада уже
-    // проверено инвариантом фикстуры, здесь — что таблица не пересортировывает.
+    /*
+      Вход РАЗВЁРНУТ относительно фикстуры намеренно. В `sampleStageSummary`
+      порядок «Котлован» → «Фасадные работы» совпадает у четырёх разных правил
+      сразу: как пришло, по коду («2» < «6»), по убыванию модуля вклада
+      (60 > 30) и по алфавиту («К» < «Ф»), — то есть на исходной фикстуре тест
+      был бы зелёным при любом из них и не проверял бы ничего
+      (`docs/insights/verifying-guards.md`, слой 12: ложную зелень создаёт
+      выбор чисел). Переставленные строки не даёт ни одно из трёх сортирующих
+      правил, поэтому совпадение с массивом здесь означает ровно то, о чём
+      тест: клиент не пересортировывает.
+
+      Сам порядок задаёт сервер по `sort_order` классификатора и по телу
+      ответа не наблюдаем вовсе (`sort_order` в контракте нет) — правило
+      стережёт бэкендовый тест
+      `test_rows_sorted_by_classifier_sort_order_within_level`, граница
+      записана в `fixtures.test.ts` на месте снятого инварианта порядка.
+    */
+    const reversed: StageSummary = {
+      ...sampleStageSummary,
+      rows: [...sampleStageSummary.rows].reverse(),
+    };
+    expect(reversed.rows[0].code).toBe("6");
+    expect(reversed.rows[1].code).toBe("2");
+
+    render(<StageSummaryTable summary={reversed} />);
     const bodyRows = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row");
-    expect(bodyRows[0]).toHaveTextContent("Котлован");
-    expect(bodyRows[1]).toHaveTextContent("Фасадные работы");
+    expect(bodyRows[0]).toHaveTextContent("Фасадные работы");
+    expect(bodyRows[1]).toHaveTextContent("Котлован");
     const foot = within(screen.getAllByRole("rowgroup")[2]).getAllByRole("row");
     expect(foot[0]).toHaveTextContent("Нераспределённое");
     expect(foot[1]).toHaveTextContent("Итого по предложению");
@@ -214,7 +235,7 @@ describe("Таблица свода — состояния по данным (с
     [{ kind: "disappeared", value: null, direction: null, reason: null }, /нет в файле/],
     [{ kind: "none", value: null, direction: null, reason: "unknown_vat_base" }, /^—$/],
   ])("ChangeBadge исчерпывающе рисует %o (тот же компонент в KPI «Последний к первому»)", (change, expected) => {
-    render(<ChangeBadge change={change as StageSummaryChange} inKpi />);
+    render(<ChangeBadge change={change as StageSummaryChange} dashOnNone />);
     expect(screen.getByTestId("change")).toHaveTextContent(expected);
   });
 

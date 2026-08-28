@@ -1862,9 +1862,12 @@ function deriveTotalCells(
 /**
  * Главная фикстура свода с валовыми суммами, ставка 20%, gross-показ.
  * Три колонки: stage 1 (offer 7001), stage 2 (offer 7002), stage 4 (offer 7004).
- * Строки: "6" Фасадные (120→120→90) с ребёнком "6.99" (12→24→0 removed),
- *         "2" Котлован (60→removed→removed) с contribution величиной 60,
+ * Строки — в порядке МАССИВА `stageSummaryRows`, а не перечисления здесь:
+ *         "2" Котлован (60→removed→removed), contribution величиной 60;
+ *         "6" Фасадные (120→120→90) с ребёнком "6.99" (12→24→0 removed);
  *         unallocated (0).
+ * Порядок фикстуры инвариантом НЕ проверяется: правило §2.13 — `sort_order`
+ * классификатора, а его контракт ответа не несёт (см. `fixtures.test.ts`).
  */
 const stageSummaryColumns: StageSummaryColumn[] = [
   {
@@ -2074,7 +2077,7 @@ export function stageSummaryNet(): StageSummary {
   base.columns[2].bar_height_pct = "50.0";  // 75.00 / 150.00 * 100
 
   // Обновить строки и их contributions (делены на 1.2 для колонок 1 и 3)
-  // После переупорядочивания: rows[0] = Котлован (contribution -60), rows[1] = Фасадные (contribution -30)
+  // Порядок массива: rows[0] — статья «2» Котлован, rows[1] — «6» Фасадные.
   base.rows[0].cells[0] = stageSummaryCell("amount", "50.00", "0.00", "none", null, null, "first_column");
   base.rows[0].cells[1] = stageSummaryCell("removed", null, null, "removed", null, null, null);
   base.rows[0].cells[2] = stageSummaryCell("removed", null, null, "none", null, null, "no_amounts");
@@ -2144,7 +2147,7 @@ export function stageSummaryAllUnknown(): StageSummary {
   });
 
   // Строки: трансформировать все клетки, синхронизировать bargain/contribution
-  // После переупорядочивания: rows[0] = Котлован (no children), rows[1] = Фасадные (has children)
+  // Порядок массива: rows[0] — статья «2» Котлован (без детей), rows[1] — «6» Фасадные (с ребёнком).
   for (let i = 0; i < base.rows[0].cells.length; i++) {
     base.rows[0].cells[i] = unknownCell(base.rows[0].cells[i], i === 0);
   }

@@ -41,14 +41,21 @@ function directionToneClass(direction: StageSummaryChange["direction"]): string 
 }
 
 /**
- * Значок изменения — используется и в ячейках таблицы, и в KPI «Последний к
- * первому» (`inKpi`): тот же компонент, а не копия под другую подпись.
+ * Значок изменения — используется в ячейках таблицы, в KPI «Последний к
+ * первому» и под столбиками трассы: тот же компонент, а не копия под другую
+ * подпись.
+ *
+ * `dashOnNone` — что рисовать, когда изменения НЕТ по построению (`kind =
+ * 'none'` без пилюли): прочерк или ничего. Проп назван по тому, что делает, а
+ * не по месту вызова (прежнее имя `inKpi` описывало ОДНОГО вызывающего, и
+ * второму — трассе, где прочерк нужен у первой колонки, — пришлось бы
+ * передавать «я KPI», не будучи им).
  *
  * `switch` по `kind` завершается веткой `never` — если контракт добавит новый
  * вид изменения, а эта ветка не будет расширена, сборка типов упадёт здесь, а
  * не отрисует новый вид пустотой.
  */
-export function ChangeBadge({ change, inKpi }: { change: StageSummaryChange; inKpi?: boolean }) {
+export function ChangeBadge({ change, dashOnNone }: { change: StageSummaryChange; dashOnNone?: boolean }) {
   const toneClass = directionToneClass(change.direction);
 
   let content: ReactNode;
@@ -72,7 +79,7 @@ export function ChangeBadge({ change, inKpi }: { change: StageSummaryChange; inK
       content = <StatusPill tone="neutral" label={KIND_LABEL[change.kind]} />;
       break;
     case "none":
-      content = inKpi ? "—" : null;
+      content = dashOnNone ? "—" : null;
       break;
     default: {
       // Исчерпывающая проверка компилятором: новый ChangeKind обязан получить

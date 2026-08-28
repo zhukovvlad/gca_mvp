@@ -101,24 +101,44 @@ export default function StageSummaryPage() {
 
   const summaryQ = useStageSummary(id, offerIds);
 
+  /*
+    `container-page py-8` стоит на КАЖДОЙ ветке возврата, а не только на
+    успешной (найдено просмотром на стенде 28.08.2026: корень страницы был
+    единственным корнем страницы в проекте без ограничителя ширины и тянулся во
+    всё окно). Отказ и загрузка — такие же страницы, как готовый свод: ширина,
+    поля и центрирование у них обязаны быть те же, иначе пустое состояние
+    выглядит другой поверхностью. Утилита — общая (`index.css`,
+    `max-width: 1400px`), та же, что у `TenderCardPage`, `ContractsPage` и
+    шапки: собственных чисел ширины страница не заводит.
+  */
   if (offerIds.length === 0) {
     return (
-      <EmptyState
-        title="Свод не построен"
-        description="Выберите предложения на решётке тендера"
-        action={backLink}
-      />
+      <div className="container-page py-8">
+        <EmptyState
+          title="Свод не построен"
+          description="Выберите предложения на решётке тендера"
+          action={backLink}
+        />
+      </div>
     );
   }
 
   if (summaryQ.isPending) {
-    return <Skeleton className="h-96" />;
+    return (
+      <div className="container-page py-8">
+        <Skeleton className="h-96" />
+      </div>
+    );
   }
 
   if (summaryQ.isError) {
     const code = apiErrorCode(summaryQ.error) as StageSummaryErrorCode | undefined;
     const description = code ? ERROR_LABEL[code] : "Не удалось построить свод";
-    return <EmptyState title="Свод не построен" description={description} action={backLink} />;
+    return (
+      <div className="container-page py-8">
+        <EmptyState title="Свод не построен" description={description} action={backLink} />
+      </div>
+    );
   }
 
   const summary = summaryQ.data;
@@ -128,7 +148,7 @@ export default function StageSummaryPage() {
   const excludedCaption = excludedStagesCaption(participant.stages);
 
   return (
-    <div className="space-y-6">
+    <div className="container-page space-y-6 py-8">
       <Breadcrumbs
         items={[
           { label: "Тендеры", to: "/tenders" },
@@ -148,7 +168,7 @@ export default function StageSummaryPage() {
         <KpiCard label="Позиций в последнем" value={String(kpi.last_stage_positions)} />
         <KpiCard label="Статей с суммой" value={`${kpi.categories_with_amount} из ${kpi.categories_total}`} />
         <KpiCard label="Ставка НДС" value={vatRateKpiText(summary)} />
-        <KpiCard label="Последний к первому" suffix={<ChangeBadge change={kpi.first_to_last} inKpi />} />
+        <KpiCard label="Последний к первому" suffix={<ChangeBadge change={kpi.first_to_last} dashOnNone />} />
       </div>
 
       <p className="text-sm text-fg-secondary">

@@ -239,10 +239,59 @@ class TestComputeSummary:
         six = next(row for row in r.rows if row.ref.id == 6)
         assert six.cells[0].additional_works_shown is None
 
-    def test_rows_sorted_by_abs_contribution_within_level_then_sort_order(self):
-        r = ss.compute_summary(self.two_columns(), CATS)
-        assert [row.ref.code for row in r.rows] == ["2", "6"]          # |−72| > |0|
-        assert r.rows[0].contribution.value == D("-72") and r.rows[1].contribution.value == D("0")
+    def test_rows_sorted_by_classifier_sort_order_within_level(self):
+        """§2.13 (ревизия 28.08.2026): порядок — `sort_order` классификатора,
+        вклад на него не влияет ВОВСЕ, и пустой вклад не уезжает в конец.
+
+        Фикстура подобрана так, что прежнее правило (по убыванию |вклада|,
+        пустые — после числовых) дало бы ДРУГОЙ порядок на КАЖДОМ из трёх
+        утверждений ниже — иначе тест был бы зелёным при обоих правилах и не
+        проверял бы ничего (`docs/insights/verifying-guards.md`, слой 12 — ложную
+        зелень создаёт ВЫБОР ЧИСЕЛ в фикстуре):
+
+        | уровень | по классификатору (сейчас) | по вкладу (прежнее правило)       |
+        |---|---|---|
+        | корни   | `1` (10), `3` (15), `2` (20) | `2` (|−500|), `1` (|+120|), `3` (null) |
+        | дети `1`| `1.1` (10), `1.2` (20)       | `1.2` (|+110|), `1.1` (|+10|)          |
+        """
+        cats = [ref(1, "1", sort_order=10), ref(3, "3", sort_order=15), ref(2, "2", sort_order=20),
+                ref(11, "1.1", parent_id=1, sort_order=10), ref(12, "1.2", parent_id=1, sort_order=20)]
+        c1 = col(1, 1, "20", {11: {SOURCE_POSITIONS: dt_("10")}, 12: {SOURCE_POSITIONS: dt_("90")},
+                              2: {SOURCE_POSITIONS: dt_("1000")}})
+        c2 = col(2, 2, "20", {11: {SOURCE_POSITIONS: dt_("20")}, 12: {SOURCE_POSITIONS: dt_("200")},
+                              2: {SOURCE_POSITIONS: dt_("500")}})
+        r = ss.compute_summary([c1, c2], cats)
+
+        assert [row.ref.code for row in r.rows] == ["1", "3", "2"]
+        one = next(row for row in r.rows if row.ref.code == "1")
+        assert [child.ref.code for child in one.children] == ["1.1", "1.2"]
+
+        # Предпосылка самой фикстуры: вклады действительно РАЗЛИЧАЮТ два правила
+        # (иначе таблица в докстроке — рассуждение, а не факт прогона).
+        by_code = {row.ref.code: row.contribution.value for row in r.rows}
+        assert by_code["1"] == D("120") and by_code["2"] == D("-500") and by_code["3"] is None
+        assert [child.contribution.value for child in one.children] == [D("10"), D("110")]
+
+    def test_child_order_survives_columns_that_differ_in_children(self):
+        """Вход, на котором сортировка детей НАГРУЖЕНА, а не совпадает с
+        порядком прихода.
+
+        `build_tree` отдаёт детей каждой колонки уже по `sort_order`, поэтому на
+        обычной фикстуре, где во всех колонках одни и те же дети, снятие
+        `sorted(...)` в `_row` не поменяло бы ничего — тест был бы зелёным при
+        мёртвой сортировке (`docs/insights/verifying-guards.md`, слой 7). Здесь
+        колонки РАЗНЫЕ по составу детей: в первой есть только «1.2», во второй
+        «1.1» и «1.2». Склейка `child_refs` идёт словарём в порядке первой
+        встречи и даёт «1.2», «1.1» — порядок, которого классификатор не знает.
+        """
+        cats = [ref(1, "1", sort_order=10),
+                ref(11, "1.1", parent_id=1, sort_order=10), ref(12, "1.2", parent_id=1, sort_order=20)]
+        c1 = col(1, 1, "20", {12: {SOURCE_POSITIONS: dt_("90")}})
+        c2 = col(2, 2, "20", {11: {SOURCE_POSITIONS: dt_("20")}, 12: {SOURCE_POSITIONS: dt_("70")}})
+        r = ss.compute_summary([c1, c2], cats)
+
+        one = next(row for row in r.rows if row.ref.code == "1")
+        assert [child.ref.code for child in one.children] == ["1.1", "1.2"]
 
     def test_roots_always_present_children_only_with_nonzero_somewhere(self):
         cats = CATS + [ref(7, "7", sort_order=7), ref(27, "2.7", parent_id=2, sort_order=2)]

@@ -527,13 +527,32 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
       checkAmountStateNonZero(fixture.unallocated);
     });
 
-    /**
-     * Rows упорядочены по убыванию |contribution| (nulls в конце).
-      * backend/services/stage_summary.py, sort_key (и её использование в compute_summary) по contribution.
+    /*
+     * ИНВАРИАНТА ПОРЯДКА СТРОК ЗДЕСЬ НЕТ, И ЭТО ГРАНИЦА НАБЛЮДАЕМОСТИ, А НЕ
+     * ПРОПУСК (§2.13, ревизия 28.08.2026; `docs/insights/unobservable-in-the-runner.md`).
+     * Порядок строк задаёт `sort_order` классификатора, а его контракт ответа
+     * НЕ несёт вовсе — по телу свода классификаторный порядок неотличим от
+     * любого другого, и проверка, написанная здесь, утверждала бы не правило, а
+     * совпадение кодов в конкретной фикстуре. Правило стережёт сервер
+     * (`backend/tests/unit/test_stage_summary.py`,
+     * `test_rows_sorted_by_classifier_sort_order_within_level` — на фикстуре, где
+     * прежнее правило дало бы другой порядок на каждом уровне). Обязательство
+     * КЛИЕНТА тут другое и проверяется своим тестом: не пересортировывать
+     * пришедшее (`StageSummaryTable.test.tsx`, «порядок строк — как пришёл с
+     * сервера»; вход там намеренно переставлен, иначе проверка была бы зелёной
+     * при четырёх разных правилах сразу). Прежняя редакция держала здесь
+     * проверку «по убыванию |contribution|, nulls в конце» — правила с таким
+     * смыслом больше нет.
+     *
+     * Вторая половина той же мысли, без которой правило ловит половину
+     * дефектов (`docs/insights/state-the-rule-as-an-equivalence.md`):
+     * наблюдаемое СЛЕДСТВИЕ у правила всё-таки есть — в сиде классификатора
+     * `sort_order` назначается по порядку кодов, поэтому на живых данных коды
+     * внутри уровня возрастают. Проверять его здесь НЕЛЬЗЯ: такая проверка
+     * прибила бы фикстуры к содержимому сида, а не к правилу, и покраснела бы
+     * от справочника, где `sort_order` разошёлся с кодом. Именно поэтому
+     * инвариант снят, а не переписан «по кодам».
      */
-    it("rows: descending contribution magnitude, nulls last", () => {
-      checkRowsOrdering(fixture.rows);
-    });
 
     /**
      * categories_with_amount = count top-level rows whose LAST cell has non-zero sum.
@@ -860,38 +879,6 @@ function checkAmountStateNonZero(row: StageSummaryRow): void {
   });
   for (const child of row.children) {
     checkAmountStateNonZero(child);
-  }
-}
-
-/**
- * Проверить: rows упорядочены по убыванию |contribution|, nulls в конце.
-  * backend/services/stage_summary.py, sort_key.
- */
-function checkRowsOrdering(rows: StageSummaryRow[]): void {
-  for (let i = 0; i < rows.length - 1; i++) {
-    const curr = rows[i];
-    const next = rows[i + 1];
-
-    // Нахождение величин contribution
-    const currMag = curr.contribution.value === null ? null : Math.abs(parseFloat(curr.contribution.value));
-    const nextMag = next.contribution.value === null ? null : Math.abs(parseFloat(next.contribution.value));
-
-    // Numeric contributions должны идти перед null
-    if (currMag === null && nextMag !== null) {
-      throw new Error(`Row order violation: row ${next.code} (non-null) after row ${curr.code} (null)`);
-    }
-
-    // Между numeric: убыванию
-    if (currMag !== null && nextMag !== null && currMag < nextMag) {
-      throw new Error(`Row order violation: row ${curr.code} (${currMag}) before row ${next.code} (${nextMag})`);
-    }
-  }
-
-  // Recurse into children
-  for (const row of rows) {
-    if (row.children.length > 0) {
-      checkRowsOrdering(row.children);
-    }
   }
 }
 

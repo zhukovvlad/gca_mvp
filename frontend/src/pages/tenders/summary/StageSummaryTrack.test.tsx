@@ -74,4 +74,50 @@ describe("Трасса торга — высота из данных, не из 
     // Остались столбики только у колонок 0 и 2 — у колонки 1 столбика нет вовсе.
     expect(bars).toHaveLength(2);
   });
+
+  /**
+   * Правки по просмотру на стенде 28.08.2026.
+   *
+   * ГРАНИЦА НАБЛЮДАЕМОСТИ (`docs/insights/unobservable-in-the-runner.md`):
+   * jsdom раскладку не считает, поэтому утверждать «низы столбиков совпали»
+   * здесь нельзя вовсе — этот тест стережёт только то, ЧЕМ раскладка
+   * ЗАПРОШЕНА. Напарник, который проверяет результат, — замер в браузере
+   * (devlog фичи, раздел про раскладку): `getBoundingClientRect().bottom` у
+   * контейнеров столбиков обязан совпадать между колонками при 4, 8 и 10
+   * этапах в окнах 1440, 1280 и 1100 px.
+   */
+  it("строка трассы выравнивает колонки по ВЕРХУ: стеки разной высоты не двигают основания столбиков", () => {
+    const { container } = render(<StageSummaryTrack summary={sampleStageSummary} />);
+    const row = container.firstElementChild!;
+    // Это действительно строка трассы, а не случайный узел: в ней лежат все
+    // колонки выбранных этапов.
+    expect(row.children).toHaveLength(sampleStageSummary.columns.length);
+    expect(row).toHaveClass("items-start");
+    // Именно ОТСУТСТВИЕ `items-end` и есть правка: класс-двойник в той же
+    // группе перебил бы её порядком в CSS, а не в разметке.
+    expect(row).not.toHaveClass("items-end");
+  });
+
+  /**
+   * У первой выбранной колонки `kind = 'none'` с `reason = 'first_column'` —
+   * сравнивать не с чем. Прочерк вместо пустоты: решение пользователя по
+   * просмотру на стенде. Проверяется на КАЖДОЙ колонке разом, а не только на
+   * первой: `dashOnNone` не должен подменить прочерком настоящее изменение
+   * соседей (снятие в обе стороны — `docs/insights/verifying-guards.md`).
+   */
+  it("под первым столбиком — прочерк, а не пустота; у остальных колонок их собственные изменения", () => {
+    render(<StageSummaryTrack summary={sampleStageSummary} />);
+    const badges = screen.getAllByTestId("change");
+    expect(badges).toHaveLength(sampleStageSummary.columns.length);
+    expect(sampleStageSummary.columns[0].total_change.kind).toBe("none");
+    expect(badges[0]).toHaveTextContent(/^—$/);
+    // Соседи с числовым изменением прочерка НЕ получают.
+    const numeric = sampleStageSummary.columns
+      .map((column, i) => [i, column.total_change.kind] as const)
+      .filter(([, kind]) => kind === "percent");
+    expect(numeric.length).toBeGreaterThan(0);
+    for (const [i] of numeric) {
+      expect(badges[i]).not.toHaveTextContent(/^—$/);
+    }
+  });
 });

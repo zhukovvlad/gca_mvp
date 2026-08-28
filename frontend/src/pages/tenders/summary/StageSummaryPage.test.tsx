@@ -28,6 +28,21 @@ function renderSummary(route = "/tenders/300/summary?offers=7002&offers=7001&off
   );
 }
 
+/**
+ * Шесть кодов отказа §2.3 и текст, по которому их узнаёт читатель. Список ОДИН
+ * на файл: его проходят два набора — «отказ показывает причину» и «отказ несёт
+ * тот же ограничитель ширины», и разъехавшись, они молча проверяли бы разные
+ * множества кодов.
+ */
+const REFUSALS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["tender_not_found", /Тендер не найден/],
+  ["offer_not_found", /Предложение не найдено/],
+  ["too_few_offers", /хотя бы два/],
+  ["one_offer_per_round", /одно предложение/],
+  ["single_participant", /по одному участнику/],
+  ["offer_has_no_estimate", /нет сметы/],
+];
+
 describe("Свод по этапам — страница (спека §2.2, §2.11, §2.14)", () => {
   it("шапка: участник, «3 из 4», исключённый этап из participant.stages, подпись валовой оси и номинального уровня", async () => {
     renderSummary();
@@ -189,14 +204,7 @@ describe("Свод по этапам — страница (спека §2.2, §2
     expect(screen.queryByText(/ставка одна во всех выбранных этапах/)).not.toBeInTheDocument();
   });
 
-  it.each([
-    ["tender_not_found", /Тендер не найден/],
-    ["offer_not_found", /Предложение не найдено/],
-    ["too_few_offers", /хотя бы два/],
-    ["one_offer_per_round", /одно предложение/],
-    ["single_participant", /по одному участнику/],
-    ["offer_has_no_estimate", /нет сметы/],
-  ])("отказ %s → пустое состояние с причиной и ссылкой на решётку (все шесть кодов)", async (outcome, text) => {
+  it.each(REFUSALS)("отказ %s → пустое состояние с причиной и ссылкой на решётку (все шесть кодов)", async (outcome, text) => {
     handlerState.stageSummaryOutcome = outcome as typeof handlerState.stageSummaryOutcome;
     renderSummary();
     expect(await screen.findByText(text)).toBeInTheDocument();
@@ -206,5 +214,59 @@ describe("Свод по этапам — страница (спека §2.2, §2
   it("без ?offers — пустое состояние без запроса", async () => {
     renderSummary("/tenders/300/summary");
     expect(await screen.findByText(/Выберите предложения на решётке/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Ограничитель ширины — правка по просмотру на стенде 28.08.2026: страница была
+ * единственным корнем страницы в проекте без `container-page` и тянулась во всю
+ * ширину окна (замер: корень 0…1425 px при контейнере шапки 12,5…1412,5).
+ *
+ * Проверяются ВСЕ ветки возврата, а не только успешная: отказ и загрузка —
+ * такие же страницы, и раньше они тоже возвращались без обёртки. Ветка
+ * `!summary → null` в список не входит: она не рисует ничего, оборачивать
+ * нечего.
+ *
+ * ГРАНИЦА НАБЛЮДАЕМОСТИ (`docs/insights/unobservable-in-the-runner.md`): здесь
+ * утверждается только НАЛИЧИЕ КЛАССА — jsdom не считает раскладку и о ширине
+ * 1400 px, полях и центрировании не знает ничего. Напарник, проверяющий
+ * результат, — замер в браузере (devlog фичи): страница не едет по горизонтали,
+ * прокрутка живёт внутри таблицы, первая колонка закреплена.
+ */
+describe("Ограничитель ширины страницы — на каждой ветке возврата", () => {
+  function pageRoot(container: HTMLElement): HTMLElement {
+    // Первый DIV среди ПРЯМЫХ потомков контейнера: `firstElementChild` здесь не
+    // годится — next-themes вставляет перед разметкой свой <script>, а sonner
+    // добавляет <section> после неё. Требование «прямой потомок» существенно:
+    // на вложенном узле проверка прошла бы и при корне без ограничителя.
+    const root = Array.from(container.children).find((el) => el.tagName === "DIV");
+    expect(root).toBeDefined();
+    return root as HTMLElement;
+  }
+
+  it("готовый свод", async () => {
+    const { container } = renderSummary();
+    await screen.findByRole("table");
+    expect(pageRoot(container)).toHaveClass("container-page");
+  });
+
+  it("загрузка: до ответа сервера на месте свода скелет — и он в том же контейнере", () => {
+    const { container } = renderSummary();
+    // Синхронно после рендера ответа ещё нет — это именно ветка `isPending`.
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(pageRoot(container)).toHaveClass("container-page");
+  });
+
+  it("без ?offers", async () => {
+    const { container } = renderSummary("/tenders/300/summary");
+    await screen.findByText(/Выберите предложения на решётке/);
+    expect(pageRoot(container)).toHaveClass("container-page");
+  });
+
+  it.each(REFUSALS)("отказ %s", async (outcome, text) => {
+    handlerState.stageSummaryOutcome = outcome as typeof handlerState.stageSummaryOutcome;
+    const { container } = renderSummary();
+    await screen.findByText(text);
+    expect(pageRoot(container)).toHaveClass("container-page");
   });
 });
