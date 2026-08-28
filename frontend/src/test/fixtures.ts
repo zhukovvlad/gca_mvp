@@ -27,6 +27,9 @@ import type {
   StageSummaryCell,
   StageSummaryChange,
   StageSummaryChangeReason,
+  StageSummaryColumn,
+  StageSummaryRow,
+  StageSummaryTotalCell,
   CellState,
   ChangeKind,
   Direction,
@@ -1819,12 +1822,180 @@ function stageSummaryCell(
 }
 
 /**
+ * Собрать ячейки строки «Итого» из уже посчитанных частей фикстуры — колонок,
+ * корневых строк и «Нераспределённого» (спека §2.16, ревизия 28.08.2026):
+ * `StageSummaryTotalCell` не несёт `state`, а его поля — производные величины
+ * контракта (`columns[].total = total.cells[].amount = Σ rows[].cells[].amount +
+ * unallocated.cells[].amount`; `columns[].total_change = total.cells[].change`,
+ * `backend/services/stage_summary.py::compute_summary`, `ColumnOut.total_change
+ * = total_cells[idx].change`), а не второй независимый набор литералов. Ручной
+ * набор (как было до этой правки) рисковал разойтись с колонками при первой же
+ * правке фикстуры — эта функция читает те же данные, что уже стоят в
+ * `columns`/`rows`/`unallocated`, и не может разойтись с ними по построению.
+ *
+ * Счётчики строк — сумма ТОЛЬКО по корневым строкам (без рекурсии в детей: их
+ * строки уже включены в `rows` родителя, `build_tree`/`_node_inputs` на
+ * бэкенде) плюс «Нераспределённое» — тот же набор, что суммирует
+ * `compute_summary` (`row_inputs = [r.cells[idx].rows for r in rows] +
+ * [unalloc_cells[idx].rows]`).
+ */
+function deriveTotalCells(
+  columns: StageSummaryColumn[],
+  rows: StageSummaryRow[],
+  unallocated: StageSummaryRow
+): StageSummaryTotalCell[] {
+  return columns.map((column, i) => {
+    const counters = [...rows.map((r) => r.cells[i].rows), unallocated.cells[i].rows];
+    return {
+      amount: column.total,
+      amount_unavailable_reason: column.vat_state === "unknown_vat_base" ? "unknown_vat_base" : null,
+      rows: {
+        row_count: counters.reduce((sum, r) => sum + r.row_count, 0),
+        rows_with_amount: counters.reduce((sum, r) => sum + r.rows_with_amount, 0),
+        rows_not_finite: counters.reduce((sum, r) => sum + r.rows_not_finite, 0),
+      },
+      change: column.total_change,
+    };
+  });
+}
+
+/**
  * Главная фикстура свода с валовыми суммами, ставка 20%, gross-показ.
  * Три колонки: stage 1 (offer 7001), stage 2 (offer 7002), stage 4 (offer 7004).
  * Строки: "6" Фасадные (120→120→90) с ребёнком "6.99" (12→24→0 removed),
  *         "2" Котлован (60→removed→removed) с contribution величиной 60,
  *         unallocated (0).
  */
+const stageSummaryColumns: StageSummaryColumn[] = [
+  {
+    kind: "round",
+    offer_id: 7001,
+    estimate_id: 8001,
+    round_id: 3001,
+    stage_no: 1,
+    label: "Первичные предложения",
+    held_on: "2026-06-01",
+    vat_rate_base: "20",
+    vat_state: "known",
+    total: "180.00",
+    total_change: { kind: "none", value: null, direction: null, reason: "first_column" },
+    bar_height_pct: "100.0",
+    manual_overrides: { count: 0, last_at: null },
+    convergence: {
+      categories_sum: "180.00",
+      file_total: "180.00",
+      converged: true,
+      delta: "0.00",
+      reason: null,
+    },
+  },
+  {
+    kind: "round",
+    offer_id: 7002,
+    estimate_id: 8002,
+    round_id: 3002,
+    stage_no: 2,
+    label: null,
+    held_on: null,
+    vat_rate_base: "20",
+    vat_state: "known",
+    total: "120.00",
+    total_change: { kind: "percent", value: "-33.3", direction: "down", reason: null },
+    bar_height_pct: "66.7",
+    manual_overrides: { count: 1, last_at: "2026-08-26T10:00:00Z" },
+    convergence: {
+      categories_sum: "120.00",
+      file_total: "120.00",
+      converged: true,
+      delta: "0.00",
+      reason: null,
+    },
+  },
+  {
+    kind: "round",
+    offer_id: 7004,
+    estimate_id: 8004,
+    round_id: 3004,
+    stage_no: 4,
+    label: null,
+    held_on: null,
+    vat_rate_base: "20",
+    vat_state: "known",
+    total: "90.00",
+    total_change: { kind: "percent", value: "-25.0", direction: "down", reason: null },
+    bar_height_pct: "50.0",
+    manual_overrides: { count: 0, last_at: null },
+    convergence: {
+      categories_sum: "90.00",
+      file_total: "90.00",
+      converged: true,
+      delta: "0.00",
+      reason: null,
+    },
+  },
+];
+
+const stageSummaryRows: StageSummaryRow[] = [
+  {
+    work_category_id: 2,
+    code: "2",
+    title: "Котлован",
+    is_unallocated: false,
+    cells: [
+      stageSummaryCell("amount", "60.00", "0.00", "none", null, null, "first_column"),
+      stageSummaryCell("removed", null, null, "removed", null, null, null),
+      stageSummaryCell("removed", null, null, "none", null, null, "no_amounts"),
+    ],
+    bargain: { kind: "removed", value: null, direction: null, reason: null },
+    contribution: { value: "-60.00", direction: "down", reason: null },
+    children: [],
+  },
+  {
+    work_category_id: 6,
+    code: "6",
+    title: "Фасадные работы",
+    is_unallocated: false,
+    cells: [
+      stageSummaryCell("amount", "120.00", "0.00", "none", null, null, "first_column"),
+      stageSummaryCell("amount", "120.00", "0.00", "percent", "0.0", "flat", null),
+      stageSummaryCell("amount", "90.00", "0.00", "percent", "-25.0", "down", null),
+    ],
+    bargain: { kind: "percent", value: "-25.0", direction: "down", reason: null },
+    contribution: { value: "-30.00", direction: "down", reason: null },
+    children: [
+      {
+        work_category_id: 699,
+        code: "6.99",
+        title: "Прочее (фасады)",
+        is_unallocated: false,
+        cells: [
+          stageSummaryCell("amount", "12.00", "0.00", "none", null, null, "first_column"),
+          stageSummaryCell("amount", "24.00", "0.00", "percent", "100.0", "up", null),
+          stageSummaryCell("absent", null, null, "disappeared", null, null, null),
+        ],
+        bargain: { kind: "disappeared", value: null, direction: null, reason: null },
+        contribution: { value: null, direction: null, reason: "absent_endpoint" },
+        children: [],
+      },
+    ],
+  },
+];
+
+const stageSummaryUnallocated: StageSummaryRow = {
+  work_category_id: null,
+  code: null,
+  title: "Нераспределённое",
+  is_unallocated: true,
+  cells: [
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
+  ],
+  bargain: { kind: "none", value: null, direction: null, reason: "unallocated" },
+  contribution: { value: "0.00", direction: "flat", reason: null },
+  children: [],
+};
+
 export const sampleStageSummary: StageSummary = {
   tender: {
     id: 300,
@@ -1845,145 +2016,14 @@ export const sampleStageSummary: StageSummary = {
       { stage_no: 4, label: null, offer_id: 7004, selected: true },
     ],
   },
-  columns: [
-    {
-      kind: "round",
-      offer_id: 7001,
-      estimate_id: 8001,
-      round_id: 3001,
-      stage_no: 1,
-      label: "Первичные предложения",
-      held_on: "2026-06-01",
-      vat_rate_base: "20",
-      vat_state: "known",
-      total: "180.00",
-      total_change: { kind: "none", value: null, direction: null, reason: "first_column" },
-      bar_height_pct: "100.0",
-      manual_overrides: { count: 0, last_at: null },
-      convergence: {
-        categories_sum: "180.00",
-        file_total: "180.00",
-        converged: true,
-        delta: "0.00",
-        reason: null,
-      },
-    },
-    {
-      kind: "round",
-      offer_id: 7002,
-      estimate_id: 8002,
-      round_id: 3002,
-      stage_no: 2,
-      label: null,
-      held_on: null,
-      vat_rate_base: "20",
-      vat_state: "known",
-      total: "120.00",
-      total_change: { kind: "percent", value: "-33.3", direction: "down", reason: null },
-      bar_height_pct: "66.7",
-      manual_overrides: { count: 1, last_at: "2026-08-26T10:00:00Z" },
-      convergence: {
-        categories_sum: "120.00",
-        file_total: "120.00",
-        converged: true,
-        delta: "0.00",
-        reason: null,
-      },
-    },
-    {
-      kind: "round",
-      offer_id: 7004,
-      estimate_id: 8004,
-      round_id: 3004,
-      stage_no: 4,
-      label: null,
-      held_on: null,
-      vat_rate_base: "20",
-      vat_state: "known",
-      total: "90.00",
-      total_change: { kind: "percent", value: "-25.0", direction: "down", reason: null },
-      bar_height_pct: "50.0",
-      manual_overrides: { count: 0, last_at: null },
-      convergence: {
-        categories_sum: "90.00",
-        file_total: "90.00",
-        converged: true,
-        delta: "0.00",
-        reason: null,
-      },
-    },
-  ],
-  rows: [
-    {
-      work_category_id: 2,
-      code: "2",
-      title: "Котлован",
-      is_unallocated: false,
-      cells: [
-        stageSummaryCell("amount", "60.00", "0.00", "none", null, null, "first_column"),
-        stageSummaryCell("removed", null, null, "removed", null, null, null),
-        stageSummaryCell("removed", null, null, "none", null, null, "no_amounts"),
-      ],
-      bargain: { kind: "removed", value: null, direction: null, reason: null },
-      contribution: { value: "-60.00", direction: "down", reason: null },
-      children: [],
-    },
-    {
-      work_category_id: 6,
-      code: "6",
-      title: "Фасадные работы",
-      is_unallocated: false,
-      cells: [
-        stageSummaryCell("amount", "120.00", "0.00", "none", null, null, "first_column"),
-        stageSummaryCell("amount", "120.00", "0.00", "percent", "0.0", "flat", null),
-        stageSummaryCell("amount", "90.00", "0.00", "percent", "-25.0", "down", null),
-      ],
-      bargain: { kind: "percent", value: "-25.0", direction: "down", reason: null },
-      contribution: { value: "-30.00", direction: "down", reason: null },
-      children: [
-        {
-          work_category_id: 699,
-          code: "6.99",
-          title: "Прочее (фасады)",
-          is_unallocated: false,
-          cells: [
-            stageSummaryCell("amount", "12.00", "0.00", "none", null, null, "first_column"),
-            stageSummaryCell("amount", "24.00", "0.00", "percent", "100.0", "up", null),
-            stageSummaryCell("absent", null, null, "disappeared", null, null, null),
-          ],
-          bargain: { kind: "disappeared", value: null, direction: null, reason: null },
-          contribution: { value: null, direction: null, reason: "absent_endpoint" },
-          children: [],
-        },
-      ],
-    },
-  ],
-  unallocated: {
-    work_category_id: null,
-    code: null,
-    title: "Нераспределённое",
-    is_unallocated: true,
-    cells: [
-      stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
-      stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
-      stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
-    ],
-    bargain: { kind: "none", value: null, direction: null, reason: "unallocated" },
-    contribution: { value: "0.00", direction: "flat", reason: null },
-    children: [],
-  },
-  // Счётчики строк — НАСТОЯЩИЕ, не выдуманные нули: сумма по ДВУМ корням
-  // ("2" и "6", "6.99" — ребёнок "6", его строки уже внутри родителя, повторно
-  // не считаются) плюс «Нераспределённое», по одной строке у каждого в каждой
-  // колонке (спека §2.16: `state = 'absent' ⟺ rows.row_count = 0`, и «Итого»
-  // не исключение).
-  total: {
-    cells: [
-      stageSummaryCell("amount", "180.00", "0.00", "none", null, null, "first_column", 3, 3),
-      stageSummaryCell("amount", "120.00", "0.00", "percent", "-33.3", "down", null, 3, 3),
-      stageSummaryCell("amount", "90.00", "0.00", "percent", "-25.0", "down", null, 3, 3),
-    ],
-  },
+  columns: stageSummaryColumns,
+  rows: stageSummaryRows,
+  unallocated: stageSummaryUnallocated,
+  // Ячейки «Итого» — ПРОИЗВОДНЫЕ от columns/rows/unallocated выше
+  // (`deriveTotalCells`, §2.16), а не отдельный ручной набор: счётчики строк
+  // считаются суммой по ДВУМ корням ("2" и "6", "6.99" — ребёнок "6", его
+  // строки уже внутри родителя, повторно не считаются) плюс «Нераспределённое».
+  total: { cells: deriveTotalCells(stageSummaryColumns, stageSummaryRows, stageSummaryUnallocated) },
   display: {
     tax_basis: "gross",
     reason: "single_rate",
@@ -2049,12 +2089,11 @@ export function stageSummaryNet(): StageSummary {
   base.unallocated.cells[0] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column");
   base.unallocated.cells[1] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts");
   base.unallocated.cells[2] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts");
-  // Те же счётчики, что в базовой фикстуре: нетто-ось меняет суммы, не число
-  // строк за колонкой (реальные счётчики, не выдуманные нули — см. комментарий
-  // у `total` в sampleStageSummary).
-  base.total.cells[0] = stageSummaryCell("amount", "150.00", "0.00", "none", null, null, "first_column", 3, 3);
-  base.total.cells[1] = stageSummaryCell("amount", "120.00", "0.00", "percent", "-20.0", "down", null, 3, 3);
-  base.total.cells[2] = stageSummaryCell("amount", "75.00", "0.00", "percent", "-37.5", "down", null, 3, 3);
+  // «Итого» — производная от columns/rows/unallocated ВЫШЕ (`deriveTotalCells`,
+  // §2.16), а не ручной набор: нетто-ось меняет суммы колонок и строк, а
+  // «Итого» пересчитывается из них же, а не переписывается вторым литералом,
+  // который может незаметно разойтись при следующей правке этой функции.
+  base.total.cells = deriveTotalCells(base.columns, base.rows, base.unallocated);
   return base;
 }
 
@@ -2131,11 +2170,13 @@ export function stageSummaryAllUnknown(): StageSummary {
   base.unallocated.bargain = { kind: "none", value: null, direction: null, reason: "unallocated" };
   base.unallocated.contribution = { value: null, direction: null, reason: "unknown_vat_base" };
 
-  // `unknownCell` уже сохраняет `rows` из `original` (см. определение выше) —
-  // неизвестная ставка НДС прячет ПОКАЗАННУЮ сумму, а не строки за колонкой;
-  // счётчики «Итого» здесь настоящие (наследованы из sampleStageSummary), не
-  // выдуманные нули: state остаётся 'amount', и он обязан нести rows_with_amount > 0.
-  base.total.cells = base.total.cells.map((cell, i) => unknownCell(cell, i === 0));
+  // «Итого» — производная от columns/rows/unallocated ВЫШЕ (`deriveTotalCells`,
+  // §2.16): у `StageSummaryTotalCell` нет `state` вовсе, поэтому пересчёт
+  // читает `column.total`/`vat_state`/`total_change`, уже приведённые к
+  // «все базы неизвестны» циклом выше, а не трансформирует старый набор
+  // ячеек через `unknownCell` (тот приём — для `StageSummaryCell`, у которого
+  // есть `state` для сохранения).
+  base.total.cells = deriveTotalCells(base.columns, base.rows, base.unallocated);
 
   return base;
 }
@@ -2198,17 +2239,19 @@ export function stageSummaryWithUnknownSecondColumn(): StageSummary {
     change: propagatedChange,
   };
 
-  base.total.cells[1] = unknownCell(base.total.cells[1]);
-  base.total.cells[2] = {
-    ...base.total.cells[2],
-    change: propagatedChange,
-  };
-
   // total_change в колонках также должны отражать пропагацию
   base.columns[2].total_change = { kind: "none", value: null, direction: null, reason: "unknown_vat_base" };
 
   // rates_by_column должен быть null для gross axis
   base.display.rates_by_column = null;
+
+  // «Итого» — производная от columns/rows/unallocated ВЫШЕ (`deriveTotalCells`,
+  // §2.16): колонка 2 уже несёт пропагированный `total_change` (reason
+  // "unknown_vat_base") при известной сумме "90.00" — тот же приём, что и
+  // ниже у построчных ячеек, но для «Итого» его не нужно повторять вручную
+  // (`unknownCell`/`propagatedChange`): пересчёт читает готовые `column.total`/
+  // `total_change` и получает то же самое автоматически.
+  base.total.cells = deriveTotalCells(base.columns, base.rows, base.unallocated);
 
   return base;
 }

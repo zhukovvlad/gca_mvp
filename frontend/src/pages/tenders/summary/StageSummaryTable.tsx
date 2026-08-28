@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import type { StageSummary, StageSummaryColumn, StageSummaryRow } from "@/types/domain";
 
 import { REASON_LABEL } from "./cellCopy";
-import { ChangeBadge, SummaryCell } from "./SummaryCell";
+import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
 
 /**
  * Таблица свода по статьям (спека 2026-08-27-stage-summary-design.md
@@ -310,7 +310,7 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
               {total.cells.map((cell, index) => {
                 const convergence = convergenceView(columns[index].convergence);
                 return (
-                  <SummaryCell
+                  <SummaryTotalCell
                     key={index}
                     cell={cell}
                     extra={

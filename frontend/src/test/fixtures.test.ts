@@ -6,7 +6,14 @@ import {
   stageSummaryNet,
   stageSummaryWithUnknownSecondColumn,
 } from "./fixtures";
-import type { StageSummary, StageSummaryCell, StageSummaryRow, Direction, StageSummaryChange } from "@/types/domain";
+import type {
+  StageSummary,
+  StageSummaryCell,
+  StageSummaryRow,
+  StageSummaryTotalCell,
+  Direction,
+  StageSummaryChange,
+} from "@/types/domain";
 
 // Valid reason codes per backend contract (services/stage_summary.py)
 
@@ -77,15 +84,25 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     });
 
     /**
-     * amount = null ⇔ state !== "amount" ИЛИ есть unavailable_reason.
+     * amount = null ⇔ state !== "amount" ИЛИ есть unavailable_reason —
+     * инвариант ячеек СТАТЕЙ (`StageSummaryCell` несёт `state`).
      */
     it("amount = null точно совпадает с условиями", () => {
       for (const row of fixture.rows) {
         checkAmountNullInvariant(row);
       }
       checkAmountNullInvariant(fixture.unallocated);
+    });
+
+    /**
+     * У «Итого» своё, более узкое правило (§2.16): `StageSummaryTotalCell` не
+     * несёт `state` вовсе, поэтому единственное условие для `amount = null` —
+     * недоступная база НДС. При известной оси сумма — ВСЕГДА число, включая
+     * ноль (ровно дефект PR #34, который эта ревизия правит).
+     */
+    it("totals: amount = null ⇔ amount_unavailable_reason ≠ null", () => {
       fixture.total.cells.forEach((cell) => {
-        checkCellAmountInvariant(cell);
+        checkTotalCellAmountInvariant(cell);
       });
     });
 
@@ -117,13 +134,19 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     });
 
     /**
-     * Сумма по колоне: total.cells[i].amount == sum(rows[*].cells[i].amount) + unallocated.cells[i].amount.
-     * Null во всех этих операциях игнорируется (как неизвестное значение).
+     * Сумма по колоне (§2.16): при ИЗВЕСТНОЙ базе `total.cells[i].amount`
+     * равна сумме известных `rows[*].cells[i].amount` плюс
+     * `unallocated.cells[i].amount` — ВСЕГДА число, включая ноль (у
+     * `StageSummaryTotalCell` нет `state`, гасить сумму нечем, кроме
+     * неизвестной базы). Null во внутренней сумме игнорируется как
+     * неизвестное слагаемое, но итог при известной оси null не бывает.
      */
     it("totals по колонам верны", () => {
       for (let i = 0; i < fixture.columns.length; i++) {
-        const col = fixture.columns[i];
         const totalCell = fixture.total.cells[i];
+        if (totalCell.amount_unavailable_reason !== null) {
+          continue; // неизвестная база — своя проверка ниже
+        }
 
         // Сумма от рядов
         let sum: string | null = null;
@@ -142,18 +165,37 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
           sum = sum === null ? unallocAmount : String(parseFloat(sum) + parsed);
         }
 
-        // Проверить совпадение
-        if (sum === null) {
-          expect(totalCell.amount).toBeNull();
-        } else {
-          expect(totalCell.amount).not.toBeNull();
-          expect(parseFloat(totalCell.amount!)).toBeCloseTo(parseFloat(sum));
-        }
+        // Известная ось — сумма ВСЕГДА число (§2.16): отсутствие известных
+        // слагаемых читается как ноль, а не как null.
+        expect(totalCell.amount).not.toBeNull();
+        expect(parseFloat(totalCell.amount!)).toBeCloseTo(sum === null ? 0 : parseFloat(sum));
+      }
+    });
 
-        // И ещё проверить, что total.amount совпадает с total_change логики
-        expect(parseFloat(col.total ?? "0")).toBeCloseTo(
-          parseFloat(totalCell.amount ?? "0")
-        );
+    /**
+     * `columns[i].total` и `total.cells[i].amount` — ОДНО И ТО ЖЕ число по
+     * контракту (§2.16: `columns[i].total = total.cells[i].amount`,
+     * `backend/services/stage_summary.py::compute_summary`, `ColumnOut` строится
+     * из `total_cells[idx]`) — точное сравнение строк, включая совпадение
+     * null с null, а не приведение обоих к «0» перед сравнением (последнее
+     * пропустило бы расхождение "0.00" против null).
+     */
+    it("columns[i].total совпадает с total.cells[i].amount для каждой колонки", () => {
+      for (let i = 0; i < fixture.columns.length; i++) {
+        expect(fixture.columns[i].total).toBe(fixture.total.cells[i].amount);
+      }
+    });
+
+    /**
+     * `total.cells[i].amount = null` ⇔ база НДС этой колонки неизвестна
+     * (§2.16) — то же самое условие, что `vat_state`/`amount_unavailable_reason`
+     * колонки, названное явно, а не выведенное из побочных эффектов расчёта.
+     */
+    it("totals: amount отсутствует ровно когда база НДС неизвестна", () => {
+      for (let i = 0; i < fixture.columns.length; i++) {
+        const isUnknown = fixture.columns[i].vat_state === "unknown_vat_base";
+        expect(fixture.total.cells[i].amount === null).toBe(isUnknown);
+        expect(fixture.total.cells[i].amount_unavailable_reason !== null).toBe(isUnknown);
       }
     });
 
@@ -369,6 +411,10 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
      * Эквивалентность: kind IS percent/abs_only ⟺ (both states = "amount" AND no unavailability).
      * Else kind IS structural/suppressed (removed/disappeared/appeared/reappeared/none).
       * backend/services/stage_summary.py, change_between: only percent/abs_only for state_amount pair.
+     *
+     * У «Итого» условие ДРУГОЕ (§2.16, `_numeric_change`): агрегат не несёт
+     * `state`, а числовое правило смотрит только на доступность суммы —
+     * `amount !== null` на обоих концах, не на матрицу состояний §2.6.
      */
     it("kind ⟺ both=amount+available equivalence", () => {
       for (const row of fixture.rows) {
@@ -378,11 +424,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
       for (let i = 1; i < fixture.total.cells.length; i++) {
         const prev = fixture.total.cells[i - 1];
         const cur = fixture.total.cells[i];
-        const isBothAmountAvailable =
-          prev.state === "amount" &&
-          prev.amount_unavailable_reason === null &&
-          cur.state === "amount" &&
-          cur.amount_unavailable_reason === null;
+        const isBothAmountAvailable = prev.amount !== null && cur.amount !== null;
         if (isBothAmountAvailable) {
           expect(["percent", "abs_only"]).toContain(cur.change.kind);
         } else {
@@ -405,20 +447,17 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
      * state="amount" требует rows_with_amount > 0: ненулевая сумма не может быть от нулевых строк.
       * backend/services/stage_summary.py, _node_inputs: rows_with_amount считается для узла,
      * state="amount" означает сумма ненулевая (спека §2.5).
-     * «Итого» — ячейка как любая другая (Task 9, внешнее ревью PR #34): раньше
-     * тест держал для неё исключение, подогнанное под фиктивные нулевые
-     * счётчики компьютации, а не под контракт §2.16 — правило общее.
+     * Инвариант — про `state` ячеек СТАТЕЙ; у «Итого» (`StageSummaryTotalCell`)
+     * `state` нет вовсе (§2.16, ревизия 28.08.2026 по внешнему ревью PR #34) —
+     * условие к нему структурно неприменимо, а не смягчено: раньше тест
+     * подгонял агрегат под правило ячейки статьи через фиктивное `state`,
+     * которого контракт больше не несёт.
      */
     it("state=amount => rows_with_amount > 0", () => {
       for (const row of fixture.rows) {
         checkAmountStateInvariant(row);
       }
       checkAmountStateInvariant(fixture.unallocated);
-      fixture.total.cells.forEach((cell) => {
-        if (cell.state === "amount") {
-          expect(cell.rows.rows_with_amount).toBeGreaterThan(0);
-        }
-      });
     });
 
     /**
@@ -475,18 +514,17 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     /**
      * state="amount" без unavailable_reason обязан иметь non-null и ненулевой amount.
       * backend/services/stage_summary.py, cell_states: state="amount" <=> gross !== 0.
+     * Инвариант — про `state` ячеек СТАТЕЙ, а не про «Итого»: агрегату ноль —
+     * законное число, а не признак другого состояния (§2.16). Утверждать про
+     * «Итого» «amount ≠ "0.00"» было бы прямым нарушением контракта — ровно
+     * тот дефект, который правит эта ревизия (нулевой итог с живыми строками
+     * публиковал состояние «снято» вместе с суммой "0.00").
      */
     it("state=amount + no unavail => amount non-null и non-zero", () => {
       for (const row of fixture.rows) {
         checkAmountStateNonZero(row);
       }
       checkAmountStateNonZero(fixture.unallocated);
-      fixture.total.cells.forEach((cell) => {
-        if (cell.state === "amount" && cell.amount_unavailable_reason === null) {
-          expect(cell.amount).not.toBeNull();
-          expect(cell.amount).not.toBe("0.00");
-        }
-      });
     });
 
     /**
@@ -656,6 +694,17 @@ function checkAmountNullInvariant(row: StageSummaryRow): void {
 function checkCellAmountInvariant(cell: StageSummaryCell): void {
   const amountIsNull = cell.amount === null;
   const shouldBeNull = cell.state !== "amount" || cell.amount_unavailable_reason !== null;
+  expect(amountIsNull).toBe(shouldBeNull);
+}
+
+/**
+ * Тот же инвариант для «Итого» — БЕЗ условия про `state`, которого у
+ * `StageSummaryTotalCell` нет (спека §2.16): `amount = null` ровно когда база
+ * НДС неизвестна, и никогда — из-за нулевой или отсутствующей суммы.
+ */
+function checkTotalCellAmountInvariant(cell: StageSummaryTotalCell): void {
+  const amountIsNull = cell.amount === null;
+  const shouldBeNull = cell.amount_unavailable_reason !== null;
   expect(amountIsNull).toBe(shouldBeNull);
 }
 

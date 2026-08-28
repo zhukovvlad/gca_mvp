@@ -474,7 +474,7 @@ columns[]:    { kind: 'round',                       -- задел: 'contract' �
                                reason: 'file_total_unavailable' | null } }
 rows[]:       Row                                    -- корни, порядок §2.13
 unallocated:  Row                                    -- флаг is_unallocated = true, bargain без процента
-total:        { cells: Cell[] }                      -- итог колонки = Σ корней + unallocated на оси показа (§2.9); = columns[].total
+total:        { cells: TotalCell[] }                 -- итог колонки = Σ корней + unallocated на оси показа (§2.9); = columns[].total
 display:      { tax_basis: 'gross' | 'net' | 'none',
                 reason: 'single_rate' | 'mixed_rates' | 'no_known_rates',
                 rates_by_column: string[] | null,    -- при 'mixed_rates'
@@ -490,6 +490,10 @@ Row  = { work_category_id, code, title, is_unallocated: bool,
                          reason: 'absent_endpoint' | 'unknown_vat_base' | null },
                                                       -- у unallocated value ЧИСЛО: запрет касается только процента в bargain
          children: Row[] }                            -- по правилу видимости §2.14
+TotalCell = { amount: string | null,                  -- на оси показа; null ⇔ amount_unavailable_reason ≠ null
+              amount_unavailable_reason: 'unknown_vat_base' | null,
+              rows: { row_count, rows_with_amount, rows_not_finite },   -- Σ по корням и unallocated этой колонки
+              change: Change }                        -- к предыдущей выбранной; у первой kind = 'none', reason = 'first_column'
 Cell = { state: 'amount' | 'removed' | 'not_evaluated' | 'absent',
          amount: string | null,                       -- на оси показа
          amount_unavailable_reason: 'unknown_vat_base' | null,
@@ -513,6 +517,7 @@ Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappe
 
 Инварианты, которые план обязан закрепить тестами:
 
+- (инварианты ниже про `Cell` — ячейки СТАТЕЙ; у `TotalCell` состояния нет вовсе)
 - `cell.state = 'absent'` ⇔ `rows.row_count = 0`; `state = 'amount'` ⇔ сумма по
   валовым величинам ≠ 0 — состояние **не зависит** от `amount_unavailable_reason`.
 - `amount = null` ⇔ (`state ∈ {absent, removed, not_evaluated}` **или**
@@ -525,6 +530,20 @@ Change = { kind: 'percent'|'abs_only'|'appeared'|'reappeared'|'removed'|'disappe
   ⇒ `value = null`, `direction = null`, `reason ≠ null`.
 - `contribution.value = null` ⇔ `reason ≠ null`; у `unallocated` `value` — число
   (при известных концах), `bargain.kind = 'none'` с `reason = 'unallocated'`.
+- **У итоговой строки НЕТ состояния, и это структурно, а не по соглашению.**
+  `TotalCell` не несёт поля `state`: итог — АГРЕГАТ, а не статья, и состояния
+  «снято» / «не оценивалась» / «нет в файле» к нему неприменимы по смыслу —
+  сумма нулей равна нулю, а не «неизвестна». Поэтому при известной оси
+  `total.cells[].amount` — ВСЕГДА число, включая `"0.00"` и пустую смету, а
+  `null` возможен единственно при `unknown_vat_base`. Изменение итога считается
+  ЧИСЛЕННО, а не по матрице состояний: положительная база — `percent`, база
+  ≤ 0 — `abs_only`, недоступный конец — `none` с причиной. Неположительный итог
+  по-прежнему выключает трассу (`track.reason = 'non_positive_total'`).
+  Ревизия 28.08.2026 по внешнему ревью PR #34: прежняя редакция типизировала
+  итог как `Cell`, и на нулевом итоге с живыми строками он публиковал состояние
+  «снято» вместе с суммой `"0.00"` — нарушение сразу двух инвариантов ниже,
+  причём строка статьи в том же ответе честно отдавала пустую сумму. Правка
+  структурная: у типа, к которому состояния неприменимы, их не должно быть.
 - `columns[i].total = total.cells[i].amount = Σ rows[].cells[i].amount +
   unallocated.cells[i].amount` на оси показа (§2.9); `convergence.categories_sum`
   — та же сумма в исходных валовых деньгах; `converged = true` ⇒

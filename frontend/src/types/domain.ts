@@ -1182,13 +1182,34 @@ export interface StageSummaryChange {
 }
 
 /**
- * Ячейка таблицы свода: состояние, сумма, причина недоступности, дополнительные работы.
+ * Ячейка таблицы свода — ячейка СТАТЬИ (спека §2.16: инварианты про `state`
+ * относятся только к ней). Строка «Итого» несёт другой тип — {@link StageSummaryTotalCell}.
  */
 export interface StageSummaryCell {
   state: CellState;
   amount: Decimal | null;
   amount_unavailable_reason: "unknown_vat_base" | null;
   additional_works_amount: Decimal | null;
+  rows: { row_count: number; rows_with_amount: number; rows_not_finite: number };
+  change: StageSummaryChange;
+}
+
+/**
+ * Ячейка строки «Итого» (спека §2.16, ревизия 28.08.2026 по внешнему ревью
+ * PR #34) — АГРЕГАТ, а не статья, и структурно другой тип, а не {@link StageSummaryCell}
+ * с той же формой: у него нет поля `state` (состояния «снято»/«не оценивалась»/
+ * «нет в файле» к сумме неприменимы по смыслу — сумма нулей равна нулю, а не
+ * «неизвестна») и нет `additional_works_amount` (спека прямо перечисляет обе
+ * дырки в наборе полей). При известной оси `amount` — ВСЕГДА число, включая
+ * `"0.00"` и колонку без единой строки; `null` возможен единственно при
+ * `amount_unavailable_reason = "unknown_vat_base"`. Прежняя редакция
+ * типизировала итог как `StageSummaryCell` и на нулевом итоге с живыми
+ * строками рисовала пилюлю «снято» вместе с суммой «0.00» — нарушение
+ * инвариантов контракта; правка структурная, а не патч одного поля.
+ */
+export interface StageSummaryTotalCell {
+  amount: Decimal | null;
+  amount_unavailable_reason: "unknown_vat_base" | null;
   rows: { row_count: number; rows_with_amount: number; rows_not_finite: number };
   change: StageSummaryChange;
 }
@@ -1256,7 +1277,7 @@ export interface StageSummary {
   columns: StageSummaryColumn[];
   rows: StageSummaryRow[];
   unallocated: StageSummaryRow;
-  total: { cells: StageSummaryCell[] };
+  total: { cells: StageSummaryTotalCell[] };
   display: {
     tax_basis: "gross" | "net" | "none";
     reason: "single_rate" | "mixed_rates" | "no_known_rates";

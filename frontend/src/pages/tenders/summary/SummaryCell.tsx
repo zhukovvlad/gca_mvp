@@ -4,7 +4,7 @@ import { StatusPill, type StatusTone } from "@/components/ui-domain/StatusPill";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { CellState, StageSummaryCell, StageSummaryChange } from "@/types/domain";
+import type { CellState, StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
 
 import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
 
@@ -162,6 +162,59 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
         СВОЙ тон в трёх состояниях — жёсткий `text-fg-tertiary` на обёртке
         забивал бы его тем же тоном для всех трёх, что и было дефектом.
       */}
+      {extra && <div className="mt-0.5 text-2xs">{extra}</div>}
+    </td>
+  );
+}
+
+/**
+ * Ячейка строки «Итого» — СВОЙ компонент, не переиспользование {@link SummaryCell}
+ * с другим типом входа (спека §2.16, ревизия 28.08.2026, задача 9 плана):
+ * `StageSummaryTotalCell` не несёт `state` вовсе, и подгонять его под
+ * четырёхветочный `switch` `SummaryCell` значило бы либо придумывать пятое
+ * состояние агрегату, которому состояния неприменимы структурно, либо
+ * симулировать `state: "amount"` литералом — та же подмена типа, которую и
+ * правит эта ревизия, только на одну функцию ближе к рендеру. `SummaryCell`
+ * при этом не тронут и продолжает делать всё, что делал для ячеек статей.
+ *
+ * Общее с `SummaryCell` — показ суммы или причины недоступности, значок
+ * изменения, подсказка неполноты счётчиков — читается тем же кодом, что и
+ * ветка `state === "amount"` там: при известной оси сумма «Итого» ВСЕГДА
+ * число (в том числе `"0.00"`), поэтому здесь нет ветвления вовсе — только
+ * `amount_unavailable_reason`, которая гасит показ ровно как у статьи.
+ */
+export function SummaryTotalCell({ cell, extra }: { cell: StageSummaryTotalCell; extra?: ReactNode }) {
+  const { amount, amount_unavailable_reason, rows, change } = cell;
+  const incomplete = rows.rows_with_amount < rows.row_count;
+
+  return (
+    <td
+      className="text-right tabular-nums align-top"
+      title={amount_unavailable_reason ? REASON_LABEL[amount_unavailable_reason] : undefined}
+    >
+      <div className="flex items-center justify-end gap-1">
+        {amount_unavailable_reason ? (
+          <StatusPill tone="neutral" label="нет базы НДС" />
+        ) : (
+          // Агрегату состояние неприменимо структурно (§2.16): нулевой итог —
+          // такое же число, как любое другое, а не пилюля «снято»/«не
+          // оценивалась» — ровно дефект, который правит эта ревизия.
+          <span>{formatDecimalMoney(amount)}</span>
+        )}
+        {incomplete && (
+          <Tooltip>
+            <TooltipTrigger aria-label={incompletenessLabel(rows)} className={cn("cursor-help text-warning")}>
+              ◐
+            </TooltipTrigger>
+            <TooltipContent>{incompletenessLabel(rows)}</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+      {!amount_unavailable_reason && (
+        <div className="mt-0.5">
+          <ChangeBadge change={change} />
+        </div>
+      )}
       {extra && <div className="mt-0.5 text-2xs">{extra}</div>}
     </td>
   );

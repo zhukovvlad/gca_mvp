@@ -188,6 +188,17 @@ def _cell(c: ss.Cell) -> dict:
             "change": _change(c.change)}
 
 
+def _total_cell(c: ss.TotalCell) -> dict:
+    """§2.16 (ревизия 28.08.2026): `TotalCell` — АГРЕГАТ, без `state` и без
+    `additional_works_amount` (спека перечисляет их отсутствие явно). Отдельный
+    сериализатор, а не `_cell`, потому что у типов теперь разные поля, а не
+    только разные значения одних и тех же."""
+    return {"amount": _money(c.shown), "amount_unavailable_reason": c.unavailable_reason,
+            "rows": {"row_count": c.rows.row_count, "rows_with_amount": c.rows.rows_with_amount,
+                     "rows_not_finite": c.rows.rows_not_finite},
+            "change": _change(c.change)}
+
+
 def _row(r: ss.SummaryRow) -> dict:
     return {"work_category_id": None if r.ref is None else r.ref.id,
             "code": None if r.ref is None else r.ref.code,
@@ -253,7 +264,7 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
         } for c in result.columns],
         "rows": [_row(r) for r in result.rows],
         "unallocated": _row(result.unallocated),
-        "total": {"cells": [_cell(c) for c in result.total_cells]},
+        "total": {"cells": [_total_cell(c) for c in result.total_cells]},
         "display": {"tax_basis": result.display.basis, "reason": result.display.reason,
                     "rates_by_column": None if result.display.rates_by_column is None
                     else [None if r is None else str(r) for r in result.display.rates_by_column],

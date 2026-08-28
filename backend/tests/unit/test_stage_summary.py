@@ -321,29 +321,135 @@ class TestComputeSummary:
         assert cell.state != ss.STATE_ABSENT
         assert cell.rows.row_count == 1
 
-    def test_total_row_count_matches_absent_invariant_when_rows_exist(self):
-        """Task 9 (внешнее ревью PR #34): `state = 'absent' ⟺ rows.row_count = 0`
-        (§2.16) — общий инвариант ячейки, а «Итого» — такая же ячейка, не
-        исключение. Раньше `compute_summary` фабриковал `CellInput(g, None, 0, 0, 0)`
-        для total независимо от реальных строк: колонка с данными получала
-        `row_count = 0` при `state != 'absent'` — нарушение с одной стороны."""
+    def test_total_row_counters_are_real_when_rows_exist(self):
+        """Task 9 (внешнее ревью PR #34): счётчики строк «Итого» — НАСТОЯЩИЕ,
+        не нули, когда за колонкой реально стоят строки. `TotalCell` не несёт
+        `state` вовсе (§2.16, ревизия 28.08.2026) — инвариант «state = absent
+        ⟺ row_count = 0» относится только к `Cell` (статьям); у агрегата
+        проверяется прямо то, что важно: счётчик и сумма."""
         r = ss.compute_summary(self.two_columns(), CATS)
         for cell in r.total_cells:
             assert cell.rows.row_count > 0
-            assert cell.state != ss.STATE_ABSENT
+            assert cell.shown is not None
+            assert cell.unavailable_reason is None
 
-    def test_total_is_absent_with_zero_count_when_column_has_no_rows_at_all(self):
-        """Зеркальная сторона того же инварианта: смета колонки без единой строки
-        ни в одной статье, ни в «Нераспределённом» (`_validate_payload` не требует
-        хотя бы одной позиции у предложения — вырожденный случай достижим через
-        реальный импорт). Раньше total.gross всегда был числом (`sum(...) or
-        Decimal(0)`), и total.state никогда не становился `absent` — нарушение
-        с другой стороны того же инварианта."""
+    def test_total_amount_is_zero_not_absent_when_column_has_no_rows_at_all(self):
+        """Заменяет обсолетный `test_total_is_absent_with_zero_count_when_column_has_no_rows_at_all`
+        (Task 9, ревизия 28.08.2026 по внешнему ревью PR #34): у `TotalCell`
+        состояния нет, и при известной оси сумма ВСЕГДА число, включая пустую
+        колонку без единой строки — единственный путь к `None` — неизвестная
+        база НДС, а не отсутствие строк. Зеркальная сторона того же случая —
+        смета колонки без единой строки ни в одной статье, ни в
+        «Нераспределённом» (`_validate_payload` не требует хотя бы одной
+        позиции у предложения — вырожденный случай достижим через реальный
+        импорт, интеграционный сосед — `TestZeroTotalWithRealRows` ниже и
+        `test_column_without_a_single_row_still_yields_zero_total` в
+        `test_stage_summary_api.py`)."""
         c = col(1, 1, "20", {})
         r = ss.compute_summary([c, c], CATS)
         for cell in r.total_cells:
             assert cell.rows.row_count == 0
             assert cell.rows.rows_with_amount == 0
             assert cell.rows.rows_not_finite == 0
-            assert cell.state == ss.STATE_ABSENT
-            assert cell.shown is None
+            assert cell.shown == D("0")
+            assert cell.unavailable_reason is None
+
+
+class TestZeroTotalWithRealRows:
+    """Task 9 (внешнее ревью PR #34, §2.16 ревизия 28.08.2026): дефект, который
+    исправляет эта задача — на нулевом итоге с живыми строками `TotalCell`
+    раньше нёс состояние («снято»/«не оценивалась») ВМЕСТЕ с суммой `"0"`,
+    хотя статья в том же ответе честно отдавала пустую сумму. Два случая,
+    названных ревью явно, плюс паритет колонки и `TotalCell`, плюс «единственный
+    путь к `None`» — оба направления."""
+
+    def test_first_column_zero_total_with_real_rows_is_zero_not_stateful(self):
+        """Первая колонка, итог которой ноль при живых строках позади: сумма —
+        ноль, а не отсутствие; состояния к ней уже неприменимы структурно (у
+        `TotalCell` нет поля `state` вовсе — здесь просто нет способа его
+        «перепутать»)."""
+        zero_first = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("0")}, 2: {SOURCE_POSITIONS: dt_("0")}})
+        priced_second = col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("30")}, 2: {SOURCE_POSITIONS: dt_("20")}})
+        r = ss.compute_summary([zero_first, priced_second], CATS)
+
+        assert r.total_cells[0].shown == D("0")
+        assert r.total_cells[0].unavailable_reason is None
+        assert r.total_cells[0].rows.row_count > 0
+        assert r.columns[0].total_shown == D("0")
+        # первая колонка — всегда `first_column`, независимо от того, что сумма ноль
+        assert r.total_cells[0].change.kind == ss.KIND_NONE
+        assert r.total_cells[0].change.reason == ss.REASON_FIRST_COLUMN
+
+    def test_nonzero_total_becoming_zero_is_numeric_percent_and_disables_track(self):
+        """Ненулевой итог, ставший нулём: сумма — ноль, изменение считается
+        ЧИСЛЕННО (положительная предыдущая величина — процент, здесь −100 %,
+        не матрицей состояний), трасса выключается неположительным итогом."""
+        priced_first = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("100")}})
+        zero_second = col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("0")}})
+        r = ss.compute_summary([priced_first, zero_second], CATS)
+
+        assert r.total_cells[0].shown == D("100")
+        assert r.total_cells[1].shown == D("0")
+        assert r.total_cells[1].unavailable_reason is None
+        assert r.total_cells[1].change.kind == ss.KIND_PERCENT
+        assert r.total_cells[1].change.value == D("-100")
+        assert r.total_cells[1].change.direction == ss.DIR_DOWN
+        assert r.track.available is False and r.track.reason == ss.TRACK_NON_POSITIVE
+
+    def test_negative_previous_total_becoming_zero_is_abs_only(self):
+        """Третий знак базы (§2.6/§2.16, `AGENTS.md` §11 — оба знака у величины,
+        чей знак участвует в решении): предыдущий итог ≤ 0 даёт абсолютную
+        дельту, не процент, даже когда предыдущая величина сама отрицательна."""
+        negative_first = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("-40")}})
+        zero_second = col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("0")}})
+        r = ss.compute_summary([negative_first, zero_second], CATS)
+
+        assert r.total_cells[0].shown == D("-40")
+        assert r.total_cells[1].shown == D("0")
+        assert r.total_cells[1].change.kind == ss.KIND_ABS_ONLY
+        assert r.total_cells[1].change.value == D("40")
+        assert r.total_cells[1].change.direction == ss.DIR_UP
+
+    def test_column_total_and_total_cell_amount_are_the_same_value_both_directions(self):
+        """`columns[i].total_shown == total_cells[i].shown` — в обе стороны: как
+        числом (ось известна на всех колонках), так и `None` (неизвестная база
+        НДС) — паритет проверяется на каждой колонке трассы, не выборочно."""
+        c1 = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("50")}})
+        c2 = ss.ColumnInput(**{**col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("30")}}).__dict__,
+                               "vat_rate_base": None})
+        c3 = col(3, 3, "20", {6: {SOURCE_POSITIONS: dt_("0")}})
+        r = ss.compute_summary([c1, c2, c3], CATS)
+
+        for idx in range(3):
+            assert r.columns[idx].total_shown == r.total_cells[idx].shown
+        assert r.total_cells[0].shown == D("50")
+        assert r.total_cells[1].shown is None
+        assert r.total_cells[2].shown == D("0")
+
+    def test_unknown_vat_base_is_the_only_way_amount_is_absent(self):
+        """Единственный путь к `None` у `TotalCell.amount` — неизвестная база
+        НДС, не отсутствие строк и не нулевая сумма (обе дают число — тесты
+        выше и `test_total_amount_is_zero_not_absent_when_column_has_no_rows_at_all`).
+        Здесь — обратное направление: колонка БЕЗ строк вообще, но с ИЗВЕСТНОЙ
+        базой, обязана остаться числом, а колонка с ИЗВЕСТНЫМИ строками, но
+        НЕИЗВЕСТНОЙ базой — обязана уйти в `None` с причиной."""
+        known_empty = col(1, 1, "20", {})
+        unknown_priced = ss.ColumnInput(**{**col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("10")}}).__dict__,
+                                           "vat_rate_base": None})
+        r = ss.compute_summary([known_empty, unknown_priced], CATS)
+
+        assert r.total_cells[0].shown == D("0") and r.total_cells[0].unavailable_reason is None
+        assert r.total_cells[1].shown is None
+        assert r.total_cells[1].unavailable_reason == ss.REASON_UNKNOWN_VAT_BASE
+
+    def test_kpi_first_to_last_uses_same_numeric_rule_as_last_column_change(self):
+        """Требование задачи: KPI и последняя колонка согласованы одним правилом.
+        При РОВНО двух колонках путь «первый → последний» и шаг «к предыдущей»
+        последней колонки — один и тот же интервал, поэтому они обязаны совпасть
+        буквально, не только «использовать похожую формулу»."""
+        priced_first = col(1, 1, "20", {6: {SOURCE_POSITIONS: dt_("100")}})
+        zero_second = col(2, 2, "20", {6: {SOURCE_POSITIONS: dt_("0")}})
+        r = ss.compute_summary([priced_first, zero_second], CATS)
+
+        assert r.kpi.first_to_last == r.total_cells[-1].change
+        assert r.kpi.first_to_last.kind == ss.KIND_PERCENT and r.kpi.first_to_last.value == D("-100")

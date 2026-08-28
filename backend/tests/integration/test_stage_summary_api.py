@@ -615,15 +615,27 @@ class TestConvergenceAndKpi:
         assert rows == {"row_count": 1, "rows_with_amount": 0, "rows_not_finite": 1}
 
 
-class TestTotalAbsentInvariant:
-    """Task 9 (внешнее ревью PR #34): «Итого» — ячейка как любая другая, и
-    инвариант §2.16 `state = 'absent' ⟺ rows.row_count = 0` обязан выполняться
-    и для неё. Вырожденный случай — смета без единой строки вовсе — достижим
+class TestTotalCellHasNoState:
+    """Task 9 (внешнее ревью PR #34, §2.16 ревизия 28.08.2026): «Итого» —
+    АГРЕГАТ, а не статья, и у `TotalCell` состояния нет ВООБЩЕ — ни в форме
+    ответа (ключа `state` в `total.cells[]` нет), ни в смысле. Раньше нулевой
+    итог с живыми строками позади нёс состояние («снято»/«не оценивалась»)
+    вместе с суммой `"0.00"` — заменяет обсолетный
+    `TestTotalAbsentInvariant.test_column_without_a_single_row_makes_total_absent`,
+    который проверял прямо противоположное (`state == 'absent'` при пустой
+    колонке). Вырожденный случай — смета без единой строки вовсе — достижим
     через реальный импорт: `_validate_payload` (services/estimate_import.py)
     отклоняет только лот без предложения подрядчика или с несколькими, но не
-    требует у принятого предложения хотя бы одной позиции."""
+    требует у принятого предложения хотя бы одной позиции — этим и доказана
+    досягаемость пустой колонки через настоящий пайплайн, не только юнитом."""
 
-    def test_column_without_a_single_row_makes_total_absent(self, db_session, factories):
+    def test_total_cell_carries_no_state_key(self, db_session, grid):
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        for cell in body["total"]["cells"]:
+            assert "state" not in cell
+            assert set(cell.keys()) == {"amount", "amount_unavailable_reason", "rows", "change"}
+
+    def test_column_without_a_single_row_still_yields_zero_total(self, db_session, factories):
         tender = factories.TenderFactory.create()
         r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
         r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
@@ -659,19 +671,63 @@ class TestTotalAbsentInvariant:
         body = crud_ss.build_stage_summary(db_session, tender.id, offer_ids)
         total_r1, total_r2 = body["total"]["cells"]
 
-        # Раунд 1 — обычная непустая колонка: инвариант держится с той стороны,
-        # где строки есть.
-        assert total_r1["state"] != "absent"
+        # Раунд 1 — обычная непустая колонка.
         assert total_r1["rows"]["row_count"] > 0
+        assert total_r1["amount"] == "120.00"
 
         # Раунд 2 — вырожденный случай: ни одной строки ни в одной статье, ни
-        # в «Нераспределённом». Раньше `compute_summary` фабриковал для «Итого»
-        # нулевые счётчики независимо от состояния — здесь `state` было бы
-        # `amount` (сумма всегда числом) при `row_count = 0`, нарушая инвариант
-        # с другой стороны.
-        assert total_r2["state"] == "absent"
-        assert total_r2["amount"] is None
+        # в «Нераспределённом». `TotalCell` не знает состояний — ось известна
+        # (ставка НДС заявлена), поэтому сумма ВСЕГДА число: ноль, а не `null`.
+        # Изменение к предыдущей колонке (120 → 0) — численно, процент от
+        # положительной базы, не «снято».
         assert total_r2["rows"] == {"row_count": 0, "rows_with_amount": 0, "rows_not_finite": 0}
+        assert total_r2["amount"] == "0.00"
+        assert total_r2["amount_unavailable_reason"] is None
+        assert total_r2["change"]["kind"] == "percent"
+        assert total_r2["change"]["value"] == "-100.0"
+        assert body["columns"][1]["total"] == "0.00"
+        assert body["track"] == {"available": False, "reason": "non_positive_total"}
+
+    def test_first_column_zero_total_with_real_rows_via_import(self, db_session, factories):
+        """Второй названный ревью случай — первая колонка, чей итог ноль при
+        живых строках позади, достижимый ЧЕРЕЗ НАСТОЯЩИЙ импорт (не только
+        юнитом `TestZeroTotalWithRealRows` в `tests/unit/test_stage_summary.py`):
+        работа реально оценена в 0.00 руб., строка есть, `row_count > 0`."""
+        tender = factories.TenderFactory.create()
+        r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+        db_session.flush()
+        import_round(db_session, tender_round=r1,
+                     data=round_payload([chaptered({"1": ("6", "0.00")}, total="0.00")]),
+                     parser_version="4.0.0", import_job_id=None, replace=False,
+                     unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session))
+        import_round(db_session, tender_round=r2,
+                     data=round_payload([chaptered({"1": ("6", "50.00")}, total="50.00")]),
+                     parser_version="4.0.0", import_job_id=None, replace=False,
+                     unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+
+        offer_ids = db_session.execute(
+            sa.select(Offer.id)
+            .join(OfferPackage, OfferPackage.id == Offer.package_id)
+            .join(Contractor, Contractor.id == OfferPackage.contractor_id)
+            .join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id, Contractor.inn == "7700000001")
+            .order_by(TenderRound.stage_no)
+        ).scalars().all()
+        assert len(offer_ids) == 2
+
+        body = crud_ss.build_stage_summary(db_session, tender.id, offer_ids)
+        total_r1, total_r2 = body["total"]["cells"]
+
+        assert total_r1["rows"]["row_count"] > 0
+        assert total_r1["amount"] == "0.00"
+        assert total_r1["amount_unavailable_reason"] is None
+        # первая колонка — `first_column`, даже когда сумма ноль: нет состояния,
+        # которое можно было бы перепутать со «снято».
+        assert total_r1["change"] == {"kind": "none", "value": None, "direction": None, "reason": "first_column"}
+        assert body["columns"][0]["total"] == "0.00"
+        assert total_r2["amount"] == "50.00"
 
 
 class TestHttp:

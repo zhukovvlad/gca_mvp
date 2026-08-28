@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 
 import { sampleStageSummary } from "@/test/fixtures";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
-import type { StageSummaryCell, StageSummaryChange } from "@/types/domain";
+import type { StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
 import { KIND_LABEL, REASON_LABEL } from "./cellCopy";
 import { StageSummaryTable } from "./StageSummaryTable";
-import { ChangeBadge, SummaryCell } from "./SummaryCell";
+import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
 
 /**
  * Таблица свода — состояния рисуются ПО ДАННЫМ, а не выводятся клиентом из
@@ -149,6 +149,39 @@ describe("Таблица свода — состояния по данным (с
     );
     expect(screen.getByRole("cell")).toHaveTextContent("нет базы НДС");
     expect(screen.getByRole("cell")).not.toHaveTextContent("999");
+  });
+
+  /**
+   * Дефект, из-за которого затеяна ревизия §2.16 (внешнее ревью PR #34):
+   * итог одной из колонок сходился в ноль при живых строках, но прежний тип
+   * («Итого» = `Cell`) публиковал вместе с суммой "0.00" состояние «снято» —
+   * агрегату состояние неприменимо по смыслу, сумма нулей равна нулю, а не
+   * «неизвестна». `SummaryTotalCell` не несёт `state` вовсе, поэтому нулевой
+   * итог печатается ЧИСЛОМ безусловно — тест проверяет ровно это, а не то,
+   * что раньше падало молча.
+   */
+  it("SummaryTotalCell: нулевой итог печатается числом, а не пилюлей «снято» (§2.16, PR #34)", () => {
+    const zeroTotal: StageSummaryTotalCell = {
+      amount: "0.00",
+      amount_unavailable_reason: null,
+      rows: { row_count: 3, rows_with_amount: 3, rows_not_finite: 0 },
+      change: { kind: "abs_only", value: "0.00", direction: "flat", reason: null },
+    };
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryTotalCell cell={zeroTotal} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const cell = screen.getByRole("cell");
+    expect(cell).toHaveTextContent(formatDecimalMoney("0.00").replace(/\s+/g, " "));
+    expect(cell).not.toHaveTextContent("снято");
+    // Пилюля состояния (`StatusPill`) несёт `rounded-full` безусловно — у
+    // числа его нет: разные элементы, а не текст, перекрашенный поверх пилюли.
+    expect(cell.querySelector(".rounded-full")).toBeNull();
   });
 
   it.each([

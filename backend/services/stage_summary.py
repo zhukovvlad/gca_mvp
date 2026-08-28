@@ -214,6 +214,21 @@ class Cell:
 
 
 @dataclass(frozen=True)
+class TotalCell:
+    """§2.16 (ревизия 28.08.2026, внешнее ревью PR #34): «Итого» — АГРЕГАТ, а не
+    статья, и у него НЕТ состояния — ни поля, ни смысла: «снято» / «не
+    оценивалась» / «нет в файле» неприменимы к сумме. Отсюда и дырка в наборе
+    полей относительно `Cell` — нет `state`, нет `additional_works_shown` (§2.16
+    прямо перечисляет, что у типа отсутствует). При известной оси `shown`
+    ВСЕГДА число (включая ноль и пустую колонку без единой строки); `None`
+    возможен единственно при `unavailable_reason = unknown_vat_base`."""
+    shown: Decimal | None
+    unavailable_reason: str | None
+    rows: CellInput
+    change: Change
+
+
+@dataclass(frozen=True)
 class SummaryRow:
     ref: CategoryRef | None
     is_unallocated: bool
@@ -261,7 +276,7 @@ class SummaryResult:
     columns: list[ColumnOut]
     rows: list[SummaryRow]
     unallocated: SummaryRow
-    total_cells: list[Cell]
+    total_cells: list[TotalCell]
     display: TaxBasis
     kpi: Kpi
     track: Track
@@ -342,6 +357,46 @@ def _endpoints(cells: list[Cell]) -> tuple[Change, Contribution]:
             contribution_between(first.state, last.state, first.shown, last.shown, unavailable_reason=reason))
 
 
+def _numeric_change(start: Decimal | None, end: Decimal | None, *, reason: str | None) -> Change:
+    """§2.16 (ревизия 28.08.2026): изменение ИТОГА — числом, не по матрице
+    состояний §2.6: у `TotalCell` состояния нет вовсе, а сумма нулей — это ноль,
+    не «неизвестно». Недоступный конец с любой стороны — `none` с причиной;
+    положительная предыдущая величина — процент (та же `percent_change`, что и
+    у построчных ячеек); ноль или отрицательная — абсолютная дельта. Общая
+    функция для шага «к предыдущей выбранной» (`_total_change_step`) и для
+    торга «первый → последний» (`_total_endpoint_change`, `kpi.first_to_last`) —
+    одно правило, а не два его пересказа."""
+    if reason is not None:
+        return Change(KIND_NONE, None, None, reason)
+    assert start is not None and end is not None
+    delta = end - start
+    if start > 0:
+        return Change(KIND_PERCENT, percent_change(start, end), direction_of(delta), None)
+    return Change(KIND_ABS_ONLY, delta, direction_of(delta), None)
+
+
+def _total_change_step(idx: int, *, amount: Decimal | None, reason: str | None,
+                       prev_amount: Decimal | None, prev_reason: str | None) -> Change:
+    """Шаг цепочки «Итого» к предыдущей выбранной колонке — числовое правило
+    `_numeric_change`, не `change_between`. Первая колонка — как у построчных
+    ячеек, `none`/`first_column`; текущая причина недоступности приоритетнее
+    причины предыдущей колонки (тот же порядок, что у `_change_step` построчных
+    ячеек)."""
+    if idx == 0:
+        return Change(KIND_NONE, None, None, REASON_FIRST_COLUMN)
+    return _numeric_change(prev_amount, amount, reason=reason or prev_reason)
+
+
+def _total_endpoint_change(cells: Sequence[TotalCell]) -> Change:
+    """`kpi.first_to_last` — то же числовое правило между КРАЙНИМИ выбранными
+    колонками (как `bargain` у строки статьи через `_endpoints`), но без
+    состояний: первая причина недоступности приоритетнее последней — тот же
+    порядок, что у `_endpoints` построчных ячеек."""
+    first, last = cells[0], cells[-1]
+    reason = first.unavailable_reason or last.unavailable_reason
+    return _numeric_change(first.shown, last.shown, reason=reason)
+
+
 def sort_key(contribution: Contribution, sort_order: int) -> tuple:
     """§2.13: по убыванию |вклада|, `None` — после числовых, оба — вторично по `sort_order`."""
     if contribution.value is None:
@@ -401,54 +456,39 @@ def compute_summary(columns: Sequence[ColumnInput], categories: Sequence[Categor
         total_row_counts.append(sum(ri.row_count for ri in row_inputs))
         total_rows_with_amount.append(sum(ri.rows_with_amount for ri in row_inputs))
         total_rows_not_finite.append(sum(ri.rows_not_finite for ri in row_inputs))
-        if total_row_counts[idx] == 0:
-            # Вырожденный случай: за колонкой нет ни одной строки вовсе (смета
-            # без единой позиции — `_validate_payload` не требует хотя бы одной
-            # строки у предложения). `state = absent ⟺ row_count = 0` (§2.16)
-            # обязан выполняться и для «Итого» — показанная сумма недоступна,
-            # а не молчаливый ноль.
-            totals_shown.append(None)
-        elif column.vat_rate_base is None or basis.basis == TAX_NONE:
+        if column.vat_rate_base is None or basis.basis == TAX_NONE:
             totals_shown.append(None)
         else:
+            # §2.16 (ревизия 28.08.2026): сумма при известной оси — ВСЕГДА число,
+            # включая ноль и колонку без единой строки вовсе (`sum([]) or
+            # Decimal(0)` покрывает оба: и «все ячейки сократились до нуля», и
+            # «ячеек, несущих сумму, не было вовсе» — раньше вырожденный
+            # `total_row_counts[idx] == 0` уходил в `None` отдельной веткой,
+            # чего у «Итого»-агрегата, в отличие от статьи, быть не должно.
             shown_parts = [r.cells[idx].shown for r in rows] + [unalloc_cells[idx].shown]
             totals_shown.append(sum(p for p in shown_parts if p is not None) or Decimal(0))
 
-    total_inputs = [
-        CellInput(_gross_or_zero(g, rc), None, rc, ra, rn)
-        for g, rc, ra, rn in zip(totals_gross, total_row_counts, total_rows_with_amount,
-                                 total_rows_not_finite, strict=True)
-    ]
-    total_cells = _cells(total_inputs, columns, basis)
-    # RESOLUTION C: у итога shown — сумма ПОКАЗАННЫХ строк, а не свёртка состояний
-    # по валовому итогу колонки; change пересчитан ПОСЛЕ этой подмены, через тот
-    # же `_change_step`, что и построчные ячейки (§ обзор фикс-раунда 1, item 2) —
-    # это гарантирует, что `columns[].total_change`, `total.cells[].change` и
-    # `kpi.first_to_last` (ниже, `_endpoints(total_cells)`) читают ОДИН ряд чисел
-    # (totals_shown), а не «change по старому валовому ряду + shown по новому».
-    #
-    # Ни один unit-тест в этом раннере не может опровергнуть эту гарантию отдельно
-    # от структуры кода: расхождение, которое она устраняет, — это разница между
-    # «поделить сумму строк на ставку один раз» и «поделить каждую строку и сложить
-    # частные» — она живёт в младших разрядах Decimal под prec=100 (см.
-    # ARITHMETIC_PRECISION), а КАЖДАЯ граница, на которой продукт реально читает
-    # эти числа, квантует деньги до копеек и проценты до 0,1 п.п. (§2.12) — тем
-    # самым стирая именно ту разницу, которую резолюция C предотвращает. Тест,
-    # который увидел бы её напрямую, был бы вынужден пришпилить длинный хвост
-    # цифр — то есть закрепить сам decimal-контекст, а не поведение. Партнёрская
-    # проверка — на живых данных, в более позднем task'е: итог колонки, уже
-    # опубликованный клиенту, обязан посимвольно совпадать с суммой опубликованных
-    # (то есть тоже квантованных) сумм её ячеек — на валовой оси и на нетто-оси
-    # одинаково, уже на границе, где округление сделано.
-    recomputed: list[Cell] = []
-    for idx, (cell, shown) in enumerate(zip(total_cells, totals_shown, strict=True)):
-        prev = recomputed[idx - 1] if idx > 0 else None
-        change = _change_step(idx, state=cell.state, shown=shown, reason=cell.unavailable_reason,
-                              prev_state=prev.state if prev else None,
-                              prev_shown=prev.shown if prev else None,
-                              prev_reason=prev.unavailable_reason if prev else None)
-        recomputed.append(Cell(cell.state, shown, cell.unavailable_reason, None, cell.rows, change))
-    total_cells = recomputed
+    # RESOLUTION C (сохранена): shown «Итого» — сумма ПОКАЗАННЫХ строк
+    # (`totals_shown`), а не отдельная свёртка валового итога колонки — тем
+    # самым `columns[].total_change`, `total.cells[].change` и
+    # `kpi.first_to_last` читают ОДИН ряд чисел, а не «change по валовому ряду +
+    # shown по показанному». У `TotalCell` состояния нет — change считается
+    # ЧИСЛЕННО (`_total_change_step`/`_numeric_change`), не через матрицу
+    # состояний §2.6: сумма нулей — ноль, а не «неизвестно» (§2.16, ревизия
+    # 28.08.2026 по внешнему ревью PR #34 — прежняя редакция типизировала итог
+    # как `Cell` и на нулевом итоге с живыми строками публиковала состояние
+    # «снято» вместе с суммой «0.00»).
+    total_cells: list[TotalCell] = []
+    for idx in range(len(columns)):
+        shown = totals_shown[idx]
+        reason = REASON_UNKNOWN_VAT_BASE if shown is None else None
+        rows_counter = CellInput(None, None, total_row_counts[idx], total_rows_with_amount[idx],
+                                 total_rows_not_finite[idx])
+        prev = total_cells[idx - 1] if idx > 0 else None
+        change = _total_change_step(idx, amount=shown, reason=reason,
+                                    prev_amount=prev.shown if prev else None,
+                                    prev_reason=prev.unavailable_reason if prev else None)
+        total_cells.append(TotalCell(shown, reason, rows_counter, change))
 
     comparable = [t for t in totals_shown if t is not None]
     if not comparable:
@@ -477,5 +517,5 @@ def compute_summary(columns: Sequence[ColumnInput], categories: Sequence[Categor
     kpi = Kpi(stages_selected=len(columns),
               categories_with_amount=sum(1 for r in rows if r.cells[last_idx].rows.gross not in (None, Decimal(0))),
               categories_total=len(rows),
-              first_to_last=_endpoints(total_cells)[0])
+              first_to_last=_total_endpoint_change(total_cells))
     return SummaryResult(columns_out, rows, unallocated, total_cells, basis, kpi, track)
