@@ -1,4 +1,10 @@
-import type { CellState, ChangeKind, StageSummaryErrorCode } from "@/types/domain";
+import type {
+  CellState,
+  ChangeKind,
+  StageSummaryChangeReason,
+  StageSummaryContributionReason,
+  StageSummaryErrorCode,
+} from "@/types/domain";
 
 /**
  * Словари подписей страницы свода по этапам (спека 2026-08-27-stage-summary-design.md
@@ -26,9 +32,26 @@ export const KIND_LABEL: Record<Exclude<ChangeKind, "percent" | "abs_only" | "no
   disappeared: "нет в файле",
 };
 
+/**
+ * Причина, по которой сумма/сравнение/сходимость недоступны — объединение
+ * ЧЕТЫРЁХ закрытых множеств контракта (§2.16): изменения (`Change.reason`),
+ * вклада статьи (`Row.contribution.reason`), сходимости колонки
+ * (`convergence.reason`) и доступности трассы (`track.reason`) — у двух
+ * последних в `types/domain.ts` нет отдельного имени типа, отсюда их
+ * литералы здесь напрямую. Открытая строка (до этой правки) прятала бы
+ * будущий отвалившийся код причины от компилятора — ровно то, чего closed
+ * union в домене и добивается.
+ */
+type StageSummaryReasonCode =
+  | StageSummaryChangeReason
+  | StageSummaryContributionReason
+  | "file_total_unavailable"
+  | "non_positive_total"
+  | "no_comparable_totals";
+
 /** Подпись причины, по которой сумма/сравнение/сходимость недоступны — коды из
  *  контракта сервера (`backend/services/stage_summary.py`), не выдуманные. */
-export const REASON_LABEL: Record<string, string> = {
+export const REASON_LABEL: Record<StageSummaryReasonCode, string> = {
   first_column: "первая колонка",
   unknown_vat_base: "база НДС неизвестна — сравнивать нечем",
   no_amounts: "суммы нет ни на одном конце",

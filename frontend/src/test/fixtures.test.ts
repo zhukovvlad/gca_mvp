@@ -405,13 +405,20 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
      * state="amount" требует rows_with_amount > 0: ненулевая сумма не может быть от нулевых строк.
       * backend/services/stage_summary.py, _node_inputs: rows_with_amount считается для узла,
      * state="amount" означает сумма ненулевая (спека §2.5).
-     * Исключение: total row — вычисляемая строка (row_count=0 по контракту).
+     * «Итого» — ячейка как любая другая (Task 9, внешнее ревью PR #34): раньше
+     * тест держал для неё исключение, подогнанное под фиктивные нулевые
+     * счётчики компьютации, а не под контракт §2.16 — правило общее.
      */
     it("state=amount => rows_with_amount > 0", () => {
       for (const row of fixture.rows) {
         checkAmountStateInvariant(row);
       }
       checkAmountStateInvariant(fixture.unallocated);
+      fixture.total.cells.forEach((cell) => {
+        if (cell.state === "amount") {
+          expect(cell.rows.rows_with_amount).toBeGreaterThan(0);
+        }
+      });
     });
 
     /**

@@ -615,6 +615,65 @@ class TestConvergenceAndKpi:
         assert rows == {"row_count": 1, "rows_with_amount": 0, "rows_not_finite": 1}
 
 
+class TestTotalAbsentInvariant:
+    """Task 9 (внешнее ревью PR #34): «Итого» — ячейка как любая другая, и
+    инвариант §2.16 `state = 'absent' ⟺ rows.row_count = 0` обязан выполняться
+    и для неё. Вырожденный случай — смета без единой строки вовсе — достижим
+    через реальный импорт: `_validate_payload` (services/estimate_import.py)
+    отклоняет только лот без предложения подрядчика или с несколькими, но не
+    требует у принятого предложения хотя бы одной позиции."""
+
+    def test_column_without_a_single_row_makes_total_absent(self, db_session, factories):
+        tender = factories.TenderFactory.create()
+        r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+        db_session.flush()
+        import_round(db_session, tender_round=r1,
+                     data=round_payload([chaptered({"1": ("6", "120.00")}, total="120.00")]),
+                     parser_version="4.0.0", import_job_id=None, replace=False,
+                     unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session))
+        empty_summary = {
+            JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", "0.00"),
+            JSON_KEY_VAT_AMOUNT: summary_line("В том числе НДС", "0.00"),
+            JSON_KEY_TOTAL_COST_EXCLUDING_VAT: summary_line("ИТОГО, руб. без учета НДС", "0.00"),
+        }
+        # Предложение без единой позиции — раздел пуст: реальный файл, где
+        # подрядчик не заполнил ни одной строки во втором раунде.
+        import_round(db_session, tender_round=r2,
+                     data=round_payload([proposal([], inn="7700000001", title="ООО А", vat_rate="20",
+                                                  summary=empty_summary)]),
+                     parser_version="4.0.0", import_job_id=None, replace=False,
+                     unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+
+        offer_ids = db_session.execute(
+            sa.select(Offer.id)
+            .join(OfferPackage, OfferPackage.id == Offer.package_id)
+            .join(Contractor, Contractor.id == OfferPackage.contractor_id)
+            .join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id, Contractor.inn == "7700000001")
+            .order_by(TenderRound.stage_no)
+        ).scalars().all()
+        assert len(offer_ids) == 2
+
+        body = crud_ss.build_stage_summary(db_session, tender.id, offer_ids)
+        total_r1, total_r2 = body["total"]["cells"]
+
+        # Раунд 1 — обычная непустая колонка: инвариант держится с той стороны,
+        # где строки есть.
+        assert total_r1["state"] != "absent"
+        assert total_r1["rows"]["row_count"] > 0
+
+        # Раунд 2 — вырожденный случай: ни одной строки ни в одной статье, ни
+        # в «Нераспределённом». Раньше `compute_summary` фабриковал для «Итого»
+        # нулевые счётчики независимо от состояния — здесь `state` было бы
+        # `amount` (сумма всегда числом) при `row_count = 0`, нарушая инвариант
+        # с другой стороны.
+        assert total_r2["state"] == "absent"
+        assert total_r2["amount"] is None
+        assert total_r2["rows"] == {"row_count": 0, "rows_with_amount": 0, "rows_not_finite": 0}
+
+
 class TestHttp:
     URL = "/api/v1/tenders/{tid}/stage-summary"
 

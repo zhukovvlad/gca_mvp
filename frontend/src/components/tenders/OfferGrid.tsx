@@ -159,7 +159,13 @@ export function OfferGrid({
                           // Тот же визуальный эффект, что раньше давал `disabled:` —
                           // но явными классами, потому что `disabled:` в utility-стилях
                           // тумблера реагирует на НАТИВНЫЙ атрибут, а не на `aria-disabled`.
-                          foreign && "pointer-events-none opacity-50",
+                          // `pointer-events-none` сюда не входит (находка внешнего
+                          // ревью): он снял бы наведение — а с ним и `title` с
+                          // объяснением причины — хотя обработчик уже сам отказывает
+                          // в переключении (`if (foreign) return;` ниже); выключать
+                          // события указателя ради поведения, которое и так не
+                          // происходит, только стоило бы подсказки.
+                          foreign && "opacity-50",
                           pressed &&
                             "border-accent-border bg-accent-soft text-accent-text font-semibold dark:border-accent-border dark:bg-accent-soft dark:text-accent-text"
                         )}

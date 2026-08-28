@@ -385,16 +385,40 @@ def compute_summary(columns: Sequence[ColumnInput], categories: Sequence[Categor
 
     totals_shown: list[Decimal | None] = []
     totals_gross: list[Decimal] = []
+    total_row_counts: list[int] = []
+    total_rows_with_amount: list[int] = []
+    total_rows_not_finite: list[int] = []
     for idx, column in enumerate(columns):
         gross_parts = [r.cells[idx].rows.gross for r in rows] + [unalloc_cells[idx].rows.gross]
         totals_gross.append(sum(p for p in gross_parts if p is not None) or Decimal(0))
-        if column.vat_rate_base is None or basis.basis == TAX_NONE:
+        # Счётчики строк итога — НАСТОЯЩИЕ, а не нули: сумма по корням плюс
+        # «Нераспределённое», как у `totals_gross` выше. Дважды не считаются:
+        # `rows.row_count` корня уже включает ВСЁ поддерево целиком
+        # (`build_tree._build_node`, `rows = own + extra + Σ children.rows`),
+        # поэтому дети сюда не заходят — иначе строка посчиталась бы дважды,
+        # один раз в ребёнке и один раз в родителе.
+        row_inputs = [r.cells[idx].rows for r in rows] + [unalloc_cells[idx].rows]
+        total_row_counts.append(sum(ri.row_count for ri in row_inputs))
+        total_rows_with_amount.append(sum(ri.rows_with_amount for ri in row_inputs))
+        total_rows_not_finite.append(sum(ri.rows_not_finite for ri in row_inputs))
+        if total_row_counts[idx] == 0:
+            # Вырожденный случай: за колонкой нет ни одной строки вовсе (смета
+            # без единой позиции — `_validate_payload` не требует хотя бы одной
+            # строки у предложения). `state = absent ⟺ row_count = 0` (§2.16)
+            # обязан выполняться и для «Итого» — показанная сумма недоступна,
+            # а не молчаливый ноль.
+            totals_shown.append(None)
+        elif column.vat_rate_base is None or basis.basis == TAX_NONE:
             totals_shown.append(None)
         else:
             shown_parts = [r.cells[idx].shown for r in rows] + [unalloc_cells[idx].shown]
             totals_shown.append(sum(p for p in shown_parts if p is not None) or Decimal(0))
 
-    total_inputs = [CellInput(g, None, 0, 0, 0) for g in totals_gross]
+    total_inputs = [
+        CellInput(_gross_or_zero(g, rc), None, rc, ra, rn)
+        for g, rc, ra, rn in zip(totals_gross, total_row_counts, total_rows_with_amount,
+                                 total_rows_not_finite, strict=True)
+    ]
     total_cells = _cells(total_inputs, columns, basis)
     # RESOLUTION C: у итога shown — сумма ПОКАЗАННЫХ строк, а не свёртка состояний
     # по валовому итогу колонки; change пересчитан ПОСЛЕ этой подмены, через тот

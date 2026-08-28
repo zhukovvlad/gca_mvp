@@ -1163,13 +1163,22 @@ export type ChangeKind = "percent" | "abs_only" | "appeared" | "reappeared" | "r
 export type Direction = "up" | "down" | "flat";
 
 /**
+ * Причина, по которой `Change.reason` называет отсутствие числа (спека
+ * §2.16, `Change.reason`): закрытое множество, а не открытая строка — иначе
+ * компилятор не поймает код, который сервер перестал присылать (находка
+ * ревью PR: словарь подписей `cellCopy.REASON_LABEL` держался открытым только
+ * из-за этого поля).
+ */
+export type StageSummaryChangeReason = "first_column" | "unknown_vat_base" | "no_amounts" | "unallocated";
+
+/**
  * Изменение между этапами: вид, значение, направление, причина отсутствия.
  */
 export interface StageSummaryChange {
   kind: ChangeKind;
   value: Decimal | null;
   direction: Direction | null;
-  reason: string | null;
+  reason: StageSummaryChangeReason | null;
 }
 
 /**
@@ -1185,6 +1194,13 @@ export interface StageSummaryCell {
 }
 
 /**
+ * Причина, по которой у статьи нет числового вклада в итог (спека §2.16,
+ * `Row.contribution.reason`) — закрытое множество, зеркало
+ * {@link StageSummaryChangeReason} по тому же основанию.
+ */
+export type StageSummaryContributionReason = "absent_endpoint" | "unknown_vat_base";
+
+/**
  * Строка свода: статья, ячейки по этапам, изменение всей статьи, дети статьи.
  */
 export interface StageSummaryRow {
@@ -1194,7 +1210,7 @@ export interface StageSummaryRow {
   is_unallocated: boolean;
   cells: StageSummaryCell[];
   bargain: StageSummaryChange;
-  contribution: { value: Decimal | null; direction: Direction | null; reason: string | null };
+  contribution: { value: Decimal | null; direction: Direction | null; reason: StageSummaryContributionReason | null };
   children: StageSummaryRow[];
 }
 

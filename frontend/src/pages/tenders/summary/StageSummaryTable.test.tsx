@@ -93,6 +93,64 @@ describe("Таблица свода — состояния по данным (с
     }
   });
 
+  /**
+   * Дефект внешнего ревью PR: `amount_unavailable_reason` тестировался ДО
+   * `state`, и в колонке с неизвестной базой НДС «снято»/«не оценивалась»/
+   * «отсутствует» подменялись подписью «нет базы НДС» — состояние ячейки
+   * пропадало. Спека §2.5, §2.8 и AGENTS.md §10 сходятся: неизвестная база
+   * гасит ТОЛЬКО показанную сумму, состояние ячейки не зависит от ставки НДС
+   * и рисуется как обычно. У `removed`/`not_evaluated`/`absent` числа и так не
+   * было — подписи «нет базы НДС» рядом с их пилюлей/прочерком макет не
+   * показывает ни для одного состояния, поэтому она не выводится вовсе (у
+   * `<td>` остаётся `title` с причиной — тот же механизм, что уже был).
+   */
+  it.each([
+    ["removed", "снято"],
+    ["not_evaluated", "не оценивалась"],
+    ["absent", "—"],
+  ])(
+    "amount_unavailable_reason не гасит state=%s — остаётся «%s», а не «нет базы НДС»",
+    (state, label) => {
+      const cell = {
+        ...sampleStageSummary.rows[0].cells[0],
+        state,
+        amount: null,
+        amount_unavailable_reason: "unknown_vat_base",
+      } as StageSummaryCell;
+      render(
+        <table>
+          <tbody>
+            <tr>
+              <SummaryCell cell={cell} />
+            </tr>
+          </tbody>
+        </table>
+      );
+      expect(screen.getByRole("cell")).toHaveTextContent(label);
+      expect(screen.getByRole("cell")).not.toHaveTextContent("нет базы НДС");
+    }
+  );
+
+  it("amount_unavailable_reason гасит сумму ТОЛЬКО у state=amount — «нет базы НДС» вместо числа", () => {
+    const cell = {
+      ...sampleStageSummary.rows[0].cells[0],
+      state: "amount",
+      amount: "999.00",
+      amount_unavailable_reason: "unknown_vat_base",
+    } as StageSummaryCell;
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={cell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    expect(screen.getByRole("cell")).toHaveTextContent("нет базы НДС");
+    expect(screen.getByRole("cell")).not.toHaveTextContent("999");
+  });
+
   it.each([
     ["appeared", "появилась"],
     ["reappeared", "вернулась"],
@@ -358,6 +416,6 @@ describe("Таблица свода — состояния по данным (с
     expect(contributionCell).not.toHaveTextContent(/\d/);
     const contributionValue = within(contributionCell).getByTestId("contribution-value");
     expect(contributionValue.textContent?.trim()).toBe("—");
-    expect(contributionValue).toHaveAttribute("title", REASON_LABEL[child.contribution.reason as string]);
+    expect(contributionValue).toHaveAttribute("title", REASON_LABEL[child.contribution.reason!]);
   });
 });

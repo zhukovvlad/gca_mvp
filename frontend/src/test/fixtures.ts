@@ -25,6 +25,8 @@ import type {
   ReviewQueueItem,
   StageSummary,
   StageSummaryCell,
+  StageSummaryChange,
+  StageSummaryChangeReason,
   CellState,
   ChangeKind,
   Direction,
@@ -1802,7 +1804,7 @@ function stageSummaryCell(
   changeKind: ChangeKind,
   changeValue: string | null,
   changeDirection: Direction | null,
-  changeReason: string | null,
+  changeReason: StageSummaryChangeReason | null,
   rowCount: number = 1,
   rowsWithAmount: number = 1
 ): StageSummaryCell {
@@ -1970,11 +1972,16 @@ export const sampleStageSummary: StageSummary = {
     contribution: { value: "0.00", direction: "flat", reason: null },
     children: [],
   },
+  // Счётчики строк — НАСТОЯЩИЕ, не выдуманные нули: сумма по ДВУМ корням
+  // ("2" и "6", "6.99" — ребёнок "6", его строки уже внутри родителя, повторно
+  // не считаются) плюс «Нераспределённое», по одной строке у каждого в каждой
+  // колонке (спека §2.16: `state = 'absent' ⟺ rows.row_count = 0`, и «Итого»
+  // не исключение).
   total: {
     cells: [
-      stageSummaryCell("amount", "180.00", "0.00", "none", null, null, "first_column", 0, 0),
-      stageSummaryCell("amount", "120.00", "0.00", "percent", "-33.3", "down", null, 0, 0),
-      stageSummaryCell("amount", "90.00", "0.00", "percent", "-25.0", "down", null, 0, 0),
+      stageSummaryCell("amount", "180.00", "0.00", "none", null, null, "first_column", 3, 3),
+      stageSummaryCell("amount", "120.00", "0.00", "percent", "-33.3", "down", null, 3, 3),
+      stageSummaryCell("amount", "90.00", "0.00", "percent", "-25.0", "down", null, 3, 3),
     ],
   },
   display: {
@@ -2042,9 +2049,12 @@ export function stageSummaryNet(): StageSummary {
   base.unallocated.cells[0] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column");
   base.unallocated.cells[1] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts");
   base.unallocated.cells[2] = stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts");
-  base.total.cells[0] = stageSummaryCell("amount", "150.00", "0.00", "none", null, null, "first_column", 0, 0);
-  base.total.cells[1] = stageSummaryCell("amount", "120.00", "0.00", "percent", "-20.0", "down", null, 0, 0);
-  base.total.cells[2] = stageSummaryCell("amount", "75.00", "0.00", "percent", "-37.5", "down", null, 0, 0);
+  // Те же счётчики, что в базовой фикстуре: нетто-ось меняет суммы, не число
+  // строк за колонкой (реальные счётчики, не выдуманные нули — см. комментарий
+  // у `total` в sampleStageSummary).
+  base.total.cells[0] = stageSummaryCell("amount", "150.00", "0.00", "none", null, null, "first_column", 3, 3);
+  base.total.cells[1] = stageSummaryCell("amount", "120.00", "0.00", "percent", "-20.0", "down", null, 3, 3);
+  base.total.cells[2] = stageSummaryCell("amount", "75.00", "0.00", "percent", "-37.5", "down", null, 3, 3);
   return base;
 }
 
@@ -2121,10 +2131,11 @@ export function stageSummaryAllUnknown(): StageSummary {
   base.unallocated.bargain = { kind: "none", value: null, direction: null, reason: "unallocated" };
   base.unallocated.contribution = { value: null, direction: null, reason: "unknown_vat_base" };
 
-  base.total.cells = base.total.cells.map((cell, i) => ({
-    ...unknownCell(cell, i === 0),
-    rows: { row_count: 0, rows_with_amount: 0, rows_not_finite: 0 },
-  }));
+  // `unknownCell` уже сохраняет `rows` из `original` (см. определение выше) —
+  // неизвестная ставка НДС прячет ПОКАЗАННУЮ сумму, а не строки за колонкой;
+  // счётчики «Итого» здесь настоящие (наследованы из sampleStageSummary), не
+  // выдуманные нули: state остаётся 'amount', и он обязан нести rows_with_amount > 0.
+  base.total.cells = base.total.cells.map((cell, i) => unknownCell(cell, i === 0));
 
   return base;
 }
@@ -2156,7 +2167,12 @@ export function stageSummaryWithUnknownSecondColumn(): StageSummary {
   // Только колонка 1 неизвестна: трансформировать её ячейки
   // Концы (0 и 2) остаются known, поэтому bargain/contribution НЕ подавляются
   // НО: unavailability пропагируется forward (backend line 319: reason or prev_reason)
-  const propagatedChange = { kind: "none" as const, value: null, direction: null, reason: "unknown_vat_base" };
+  const propagatedChange: StageSummaryChange = {
+    kind: "none",
+    value: null,
+    direction: null,
+    reason: "unknown_vat_base",
+  };
 
   base.rows[0].cells[1] = unknownCell(base.rows[0].cells[1]);
   base.rows[0].cells[2] = {

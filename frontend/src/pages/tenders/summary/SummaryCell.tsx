@@ -116,18 +116,31 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
       title={amount_unavailable_reason ? REASON_LABEL[amount_unavailable_reason] : undefined}
     >
       <div className="flex items-center justify-end gap-1">
-        {amount_unavailable_reason ? (
-          <StatusPill tone="neutral" label="нет базы НДС" />
-        ) : state === "amount" ? (
-          <span>{formatDecimalMoney(amount)}</span>
+        {state === "amount" ? (
+          // `amount_unavailable_reason` гасит ТОЛЬКО показанную сумму — ровно
+          // то, чего база НДС лишает (спека §2.5, §2.8; AGENTS.md §10): для
+          // остальных состояний числа никогда не было, поэтому у них нечего
+          // withhold-ить, и ветка ниже их не касается (fix round review PR,
+          // дефект «состояние пропадает в недоступной колонке»).
+          amount_unavailable_reason ? (
+            <StatusPill tone="neutral" label="нет базы НДС" />
+          ) : (
+            <span>{formatDecimalMoney(amount)}</span>
+          )
         ) : state === "absent" ? (
           // Плоский прочерк — как на макете (`table.pass`, статья "15"):
           // «отсутствует» говорит, что статьи нет в файле вовсе, а не что-то
           // о её цене, и пилюля здесь читалась бы неверно (fix round 3, п.2).
+          // Неизвестная база НДС ничего не меняет: у `absent` и так нет суммы.
           <span data-testid="cell-dash" className="text-fg-tertiary">
             {STATE_LABEL.absent}
           </span>
         ) : (
+          // `removed`/`not_evaluated`: состояние рисуется как обычно и при
+          // неизвестной базе НДС — сумма и состояние гасятся раздельно (§2.5:
+          // «состояние не зависит от ставки НДС»). Причина недоступности суммы
+          // уже несётся `title` самой `<td>` (ниже) — второй, видимой рядом с
+          // пилюлей подписи макет не показывает ни для одного состояния.
           <StatusPill tone={CELL_STATE_TONE[state]} label={STATE_LABEL[state]} />
         )}
         {incomplete && (

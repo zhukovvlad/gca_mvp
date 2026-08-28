@@ -320,3 +320,30 @@ class TestComputeSummary:
         cell = row6.cells[0]
         assert cell.state != ss.STATE_ABSENT
         assert cell.rows.row_count == 1
+
+    def test_total_row_count_matches_absent_invariant_when_rows_exist(self):
+        """Task 9 (внешнее ревью PR #34): `state = 'absent' ⟺ rows.row_count = 0`
+        (§2.16) — общий инвариант ячейки, а «Итого» — такая же ячейка, не
+        исключение. Раньше `compute_summary` фабриковал `CellInput(g, None, 0, 0, 0)`
+        для total независимо от реальных строк: колонка с данными получала
+        `row_count = 0` при `state != 'absent'` — нарушение с одной стороны."""
+        r = ss.compute_summary(self.two_columns(), CATS)
+        for cell in r.total_cells:
+            assert cell.rows.row_count > 0
+            assert cell.state != ss.STATE_ABSENT
+
+    def test_total_is_absent_with_zero_count_when_column_has_no_rows_at_all(self):
+        """Зеркальная сторона того же инварианта: смета колонки без единой строки
+        ни в одной статье, ни в «Нераспределённом» (`_validate_payload` не требует
+        хотя бы одной позиции у предложения — вырожденный случай достижим через
+        реальный импорт). Раньше total.gross всегда был числом (`sum(...) or
+        Decimal(0)`), и total.state никогда не становился `absent` — нарушение
+        с другой стороны того же инварианта."""
+        c = col(1, 1, "20", {})
+        r = ss.compute_summary([c, c], CATS)
+        for cell in r.total_cells:
+            assert cell.rows.row_count == 0
+            assert cell.rows.rows_with_amount == 0
+            assert cell.rows.rows_not_finite == 0
+            assert cell.state == ss.STATE_ABSENT
+            assert cell.shown is None
