@@ -250,7 +250,7 @@ export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
         макетом. Пилюли размер не меняют: `StatusPill` и так несёт `text-2xs`.
       */}
       {!amount_unavailable_reason && !repeatsState && (
-        <div className="mt-0.5 text-2xs">
+        <div className="mt-0.5 text-2xs font-normal">
           <ChangeBadge change={change} />
         </div>
       )}
@@ -306,11 +306,13 @@ export function SummaryTotalCell({ cell, extra }: { cell: StageSummaryTotalCell;
         )}
       </div>
       {!amount_unavailable_reason && (
-        <div className="mt-0.5 text-2xs">
+        <div className="mt-0.5 text-2xs font-normal">
           <ChangeBadge change={change} />
         </div>
       )}
-      {extra && <div className="mt-0.5 text-2xs">{extra}</div>}
+      {/* `font-normal` — макет держит подпись обычной даже в полужирной строке
+          «Итого» (`.conv { font-weight: 400 }`, `.dp { font-weight: 400 }`). */}
+      {extra && <div className="mt-0.5 text-2xs font-normal">{extra}</div>}
     </TableCell>
   );
 }

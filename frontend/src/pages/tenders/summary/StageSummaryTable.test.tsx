@@ -373,6 +373,78 @@ describe("Таблица свода — состояния по данным (с
   });
 
   /**
+   * Сверка ТАБЛИЦЫ СТАТЕЙ макета гейта 1 с реализацией одним проходом
+   * (28.08.2026): вычисленные стили макета сняты браузером и сопоставлены со
+   * стилями страницы свойство за свойством. Здесь — девять правил, которые
+   * реализация потеряла; остальные расхождения оказались подменой макета на
+   * примитивы и токены проекта и записаны в devlog §9.9 как осознанные. Что
+   * НЕ сверялось (трасса, KPI, вторая таблица макета, цвета) — там же.
+   *
+   * ГРАНИЦА НАБЛЮДАЕМОСТИ: jsdom не считает стилей, здесь проверяется только
+   * запрошенное. Напарник — замер: вес корня 600 против 400 у ребёнка; фон
+   * строки ребёнка и строки «Итого» совпал с макетом до значения
+   * `rgb(247, 246, 242)`, «Нераспределённое» — белое, как в макете; шапка
+   * переносится и набрана 600; разделитель закреплённой колонки 1 px.
+   */
+  it("восстановленные правила макета: веса, подложки, перенос шапки, табличные цифры, разделитель", async () => {
+    const user = userEvent.setup();
+    render(<StageSummaryTable summary={sampleStageSummary} />);
+    await user.click(screen.getByRole("button", { name: /Раскрыть/ }));
+
+    const bodyRows = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row");
+    const root = bodyRows[0];
+    // Ребёнок опознаётся по ОТСТУПУ, а не по проверяемой же подложке: иначе
+    // снятие подложки просто перестало бы находить строку, и тест молчал бы.
+    const child = bodyRows.find((r) => r.querySelector(".pl-8"));
+    expect(child).toBeDefined();
+
+    expect(root).toHaveClass("font-semibold");
+    expect(child).not.toHaveClass("font-semibold");
+    expect(child).toHaveClass("bg-surface-sunken");
+
+    const headers = within(screen.getAllByRole("rowgroup")[0]).getAllByRole("columnheader");
+    for (const th of headers) {
+      expect(th).toHaveClass("font-semibold");
+      expect(th).toHaveClass("whitespace-normal");
+    }
+    // Обратная сторона переноса: числовые ячейки ТЕЛА переносить нельзя —
+    // именно `whitespace-normal` на них вернул бы дефект с зажимом ширины.
+    for (const cell of Array.from(root.children).slice(1)) {
+      expect(cell).toHaveClass("whitespace-nowrap");
+    }
+
+    // Табличные цифры — во ВСЕХ числовых колонках, включая обе служебные строки.
+    expect(root.children[1]).toHaveClass("tabular-nums");
+    expect(screen.getAllByTestId("bargain-cell")[0]).toHaveClass("tabular-nums");
+    expect(screen.getAllByTestId("contribution-cell")[0]).toHaveClass("tabular-nums");
+
+    // Подвал: «Итого» полужирная и тонированная, «Нераспределённое» — обычная и
+    // на подложке поверхности (в макете она не тонирована вовсе).
+    const total = screen.getByTestId("row-total");
+    const unallocated = screen.getByTestId("row-unallocated");
+    expect(total).toHaveClass("font-semibold");
+    expect(total).toHaveClass("bg-surface-sunken");
+    expect(unallocated).toHaveClass("font-normal");
+    expect(unallocated).toHaveClass("bg-surface");
+    expect(unallocated).not.toHaveClass("bg-surface-sunken");
+
+    // Разделитель закреплённой колонки — на КАЖДОЙ её ячейке, иначе линия рвётся.
+    for (const cell of [headers[0], root.children[0], total.children[0], unallocated.children[0]]) {
+      expect(cell).toHaveClass("border-r");
+    }
+
+    // Подписи под числом не толстеют вместе со строкой (макет: `.dp`, `.conv` — 400).
+    const changeInRoot = within(root).getAllByTestId("change")[0];
+    expect(changeInRoot.closest(".font-normal")).not.toBeNull();
+    const convergence = screen.getAllByTestId("convergence")[0];
+    // Сначала убеждаемся, что узел ЕСТЬ: `?.` на отсутствующем узле дал бы
+    // `undefined`, а `expect(undefined).not.toBeNull()` проходит — защита
+    // испарилась бы ровно тогда, когда её надо сорвать.
+    expect(convergence).toBeInTheDocument();
+    expect(convergence.closest(".font-normal")).not.toBeNull();
+  });
+
+  /**
    * Строка изменения под суммой — МЕЛЬЧЕ самой суммы, как на макете гейта 1
    * (`.dp { font-size: 11px }` при 13 px у таблицы); реализация это потеряла, и
    * процент читался таким же крупным, как сумма над ним (просьба пользователя

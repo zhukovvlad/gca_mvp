@@ -168,7 +168,15 @@ function ContributionValue({
  * Заработанный инвариант формулируется не «≤ 420 px», а «колонка не растёт от
  * содержимого»: замеры со свёрнутыми и раскрытыми статьями совпадают до сотых.
  */
-const FIRST_COL_CLASS = "sticky left-0 min-w-[250px] max-w-[420px] whitespace-normal align-top";
+/*
+  `border-r` — разделитель закреплённой колонки. Макет рисует его тенью
+  (`box-shadow: 1px 0 0 0`), в реализации его не было вовсе (замер: `box-shadow:
+  none`), и колонка при прокрутке не отличалась от просто первой — а линия и есть
+  единственный признак того, что содержимое уезжает ПОД неё. Тенью не делаем:
+  граница живёт в той же системе, что остальные линии таблицы.
+*/
+const FIRST_COL_CLASS =
+  "sticky left-0 min-w-[250px] max-w-[420px] whitespace-normal border-r border-border-subtle align-top";
 
 function CategoryRowGroup({
   row,
@@ -186,7 +194,22 @@ function CategoryRowGroup({
 
   return (
     <>
-      <TableRow data-testid={`row-${row.work_category_id ?? row.code ?? "row"}`}>
+      {/*
+        Вес и подложка — на ВСЮ строку, а не на одну ячейку подписи: макет гейта 1
+        объявляет `tr.lvl1 > td` полужирным, а `tr.lvl2 > td` — с подложкой
+        утопленного уровня (имя переменной макета здесь НЕ ЦИТИРУЕТСЯ: палитра
+        макета автономна, а `summaryTokens.test.ts` сканирует исходник текстом и
+        не отличает комментарий от кода — и правильно делает, AGENTS.md §11).
+        Реализация ставила полужирный только заголовку строки, а
+        подложку — только её первой ячейке, поэтому корни не выделялись в числовых
+        колонках, а тонировка ребёнка обрывалась на границе подписи (замерено:
+        фон числовой ячейки ребёнка — прозрачный против тонированного в макете).
+        Сверка макета с реализацией 28.08.2026.
+      */}
+      <TableRow
+        data-testid={`row-${row.work_category_id ?? row.code ?? "row"}`}
+        className={cn(depth === 0 ? "font-semibold" : "bg-surface-sunken")}
+      >
         <TableCell
           className={cn(FIRST_COL_CLASS, "bg-surface", depth > 0 && "bg-surface-sunken pl-8")}
         >
@@ -219,7 +242,7 @@ function CategoryRowGroup({
                 {row.code}
               </span>
             )}
-            <span className={cn("min-w-0 break-words", depth === 0 ? "font-medium text-fg" : "text-fg-secondary")}>{row.title}</span>
+            <span className={cn("min-w-0 break-words", depth === 0 ? "text-fg" : "text-fg-secondary")}>{row.title}</span>
           </div>
         </TableCell>
         {row.cells.map((cell, index) => (
@@ -235,13 +258,13 @@ function CategoryRowGroup({
         */}
         <TableCell
           data-testid="bargain-cell"
-          className={cn("border-l text-right", cellAlignClass(isNumericChange(row.bargain), false))}
+          className={cn("border-l text-right tabular-nums", cellAlignClass(isNumericChange(row.bargain), false))}
         >
           <ChangeBadge change={row.bargain} dashOnNone />
         </TableCell>
         <TableCell
           data-testid="contribution-cell"
-          className={cn("text-right", cellAlignClass(row.contribution.value !== null, false))}
+          className={cn("text-right tabular-nums", cellAlignClass(row.contribution.value !== null, false))}
         >
           <ContributionValue contribution={row.contribution} />
         </TableCell>
@@ -282,9 +305,11 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className={cn(FIRST_COL_CLASS, "z-10 bg-section-header")}>Статья классификатора</TableHead>
+              <TableHead className={cn(FIRST_COL_CLASS, "z-10 bg-section-header font-semibold")}>
+                Статья классификатора
+              </TableHead>
               {columns.map((column) => (
-                <TableHead key={column.offer_id} className="text-right normal-case">
+                <TableHead key={column.offer_id} className="whitespace-normal text-right font-semibold normal-case">
                   <span className="text-2xs uppercase tracking-wider text-fg-tertiary">
                     Этап {column.stage_no}
                     {column.label ? ` · ${column.label}` : ""}
@@ -294,12 +319,12 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
                   </span>
                 </TableHead>
               ))}
-              <TableHead className="border-l text-right normal-case">
+              <TableHead className="whitespace-normal border-l text-right font-semibold normal-case">
                 <span className="text-2xs uppercase tracking-wider text-fg-tertiary">
-                  Торг: первый → последний
+                  первый → последний
                 </span>
               </TableHead>
-              <TableHead className="text-right normal-case">
+              <TableHead className="whitespace-normal text-right font-semibold normal-case">
                 <span className="text-2xs uppercase tracking-wider text-fg-tertiary">Вклад в итог</span>
               </TableHead>
             </TableRow>
@@ -316,8 +341,18 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
             ))}
           </TableBody>
           <TableFooter>
-            <TableRow data-testid="row-unallocated">
-              <TableCell className={cn(FIRST_COL_CLASS, "bg-surface-sunken")}>
+            {/* Обычный вес, а не медиум подвала: макет объявляет `tr.unalloc > td { font-weight: 400 }`. */}
+            {/*
+              Подложка — по макету: строка «Итого» тонирована ЦЕЛИКОМ, а
+              «Нераспределённое» не тонирована вовсе (замер макета: 247,246,242
+              против белого). В реализации тонирована была только закреплённая
+              ячейка, а остальные получали полутон от подвала примитива — обе
+              строки выходили двухцветными, и «Нераспределённое» тонировалось
+              вопреки макету. Тот же дефект, что чинился у строк-детей, только
+              в подвале.
+            */}
+            <TableRow data-testid="row-unallocated" className="bg-surface font-normal">
+              <TableCell className={cn(FIRST_COL_CLASS, "bg-surface")}>
                 <div className="flex items-start gap-2">
                   <span className="inline-block size-3.5 shrink-0" aria-hidden="true" />
                   {/* Код-прочерк — как на макете: у «Нераспределённого» нет
@@ -361,12 +396,12 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
                 без %
               </TableCell>
               <TableCell
-                className={cn("text-right", cellAlignClass(unallocated.contribution.value !== null, false))}
+                className={cn("text-right tabular-nums", cellAlignClass(unallocated.contribution.value !== null, false))}
               >
                 <ContributionValue contribution={unallocated.contribution} />
               </TableCell>
             </TableRow>
-            <TableRow className="border-t-2 border-fg" data-testid="row-total">
+            <TableRow className="border-t-2 border-fg bg-surface-sunken font-semibold" data-testid="row-total">
               <TableCell className={cn(FIRST_COL_CLASS, "bg-surface-sunken font-semibold text-fg")}>
                 Итого по предложению
               </TableCell>
