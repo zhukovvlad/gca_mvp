@@ -20,11 +20,16 @@ import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
  * `StageSummaryTable.test.tsx`, «по полю, а не по сумме»).
  */
 
-/** Тон пилюли состояния — «снято» тревожнее «не оценивалась»/«отсутствует». */
-const CELL_STATE_TONE: Record<Exclude<CellState, "amount">, StatusTone> = {
+/**
+ * Тон пилюли состояния — «снято» тревожнее «не оценивалась». `absent` сюда не
+ * входит (fix round 3, п.2): на макете «отсутствует» — плоский прочерк, не
+ * пилюля, потому что это факт о ФАЙЛЕ (статьи там нет вовсе), а не о цене —
+ * пилюля рядом с «снято»/«не оценивалась» читалась бы как утверждение того же
+ * рода про цену, которого здесь нет.
+ */
+const CELL_STATE_TONE: Record<Exclude<CellState, "amount" | "absent">, StatusTone> = {
   removed: "warning",
   not_evaluated: "neutral",
-  absent: "neutral",
 };
 
 /** Направление → тон текста. `flat` НЕ окрашивается как рост — своим тоном. */
@@ -115,6 +120,13 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
           <StatusPill tone="neutral" label="нет базы НДС" />
         ) : state === "amount" ? (
           <span>{formatDecimalMoney(amount)}</span>
+        ) : state === "absent" ? (
+          // Плоский прочерк — как на макете (`table.pass`, статья "15"):
+          // «отсутствует» говорит, что статьи нет в файле вовсе, а не что-то
+          // о её цене, и пилюля здесь читалась бы неверно (fix round 3, п.2).
+          <span data-testid="cell-dash" className="text-fg-tertiary">
+            {STATE_LABEL.absent}
+          </span>
         ) : (
           <StatusPill tone={CELL_STATE_TONE[state]} label={STATE_LABEL[state]} />
         )}

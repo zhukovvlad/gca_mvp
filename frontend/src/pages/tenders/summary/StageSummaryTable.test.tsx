@@ -51,6 +51,48 @@ describe("Таблица свода — состояния по данным (с
     expect(screen.getByRole("cell")).not.toHaveTextContent("999");
   });
 
+  /**
+   * Fix round 3, п.2: макет рисует «отсутствует» плоским прочерком, а
+   * «снято»/«не оценивалась» — пилюлями (то и другое остаётся пилюлями); эта
+   * ветка проверяет ФАКТ РАЗМЕТКИ — какой элемент отрисован, что наблюдаемо в
+   * прогоне — а не саму визуальную приглушённость прочерка: та проверяется
+   * замером в браузере, не здесь (`docs/insights/unobservable-in-the-runner.md`).
+   */
+  it("state=absent рисует плоский прочерк (не пилюлю); removed/not_evaluated остаются пилюлями", () => {
+    const dashCell = { ...sampleStageSummary.rows[0].cells[0], state: "absent", amount: null } as StageSummaryCell;
+    const { unmount: unmountDash } = render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={dashCell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const dash = screen.getByTestId("cell-dash");
+    expect(dash).toHaveTextContent("—");
+    // Пилюля (`StatusPill`) несёт `rounded-full`/`border` безусловно — у
+    // плоского прочерка их нет: разные элементы, а не один перекрашенный.
+    expect(dash).not.toHaveClass("rounded-full");
+    unmountDash();
+
+    for (const state of ["removed", "not_evaluated"] as const) {
+      const pillCell = { ...sampleStageSummary.rows[0].cells[0], state, amount: null } as StageSummaryCell;
+      const { unmount } = render(
+        <table>
+          <tbody>
+            <tr>
+              <SummaryCell cell={pillCell} />
+            </tr>
+          </tbody>
+        </table>
+      );
+      expect(screen.queryByTestId("cell-dash")).not.toBeInTheDocument();
+      expect(screen.getByRole("cell").querySelector(".rounded-full")).not.toBeNull();
+      unmount();
+    }
+  });
+
   it.each([
     ["appeared", "появилась"],
     ["reappeared", "вернулась"],

@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { formatDecimalMoney } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { StageSummary, StageSummaryColumn } from "@/types/domain";
 
 import { REASON_LABEL } from "./cellCopy";
@@ -18,6 +19,40 @@ import { ChangeBadge } from "./SummaryCell";
 function stageLabel(column: StageSummaryColumn): string {
   return column.label ? `Этап ${column.stage_no} · ${column.label}` : `Этап ${column.stage_no}`;
 }
+
+/*
+  Fix round 3, п.1, и fix round 4 (найдено замером на стенде — тестовый
+  прогон этого не видит: jsdom не считает layout,
+  `docs/insights/unobservable-in-the-runner.md`).
+
+  КОНСТРАЙНТ, который обязан выполнять КАЖДЫЙ подписанный узел под столбиком:
+  при 10 колонках в окне 1100px соседние экземпляры одного узла (подпись,
+  сумма) не должны перекрываться, в обеих темах (при 4 колонках вид не
+  меняется — там и так было просторно). Подтвердить это может ТОЛЬКО замер в
+  браузере — повторный замер за координатором.
+
+  Причина коллизии была общая для ВСЕГО, что стоит под столбиком, не только
+  подписи этапа: `TrackColumn` — контейнер `flex-col` с `items-center`, а
+  `items-center` на кросс-оси НЕ растягивает детей до ширины контейнера — они
+  сидят по своей ЕСТЕСТВЕННОЙ ширине содержимого. Round 3 закрыл подпись
+  этапа; round 4 (замер того же стенда одной строкой ниже) нашёл ТУ ЖЕ
+  причину у денежной суммы — раньше не увиденную, потому что это другой
+  узел, а не другое проявление уже пофиксенного. `TRACK_TEXT_CLASS` несёт
+  общее лечение: `w-full min-w-0` привязывает узел к ширине его колонки (та
+  уже ограничена `flex-1 min-w-0` на строке трассы), `break-words` —
+  подстраховка перетекания. У суммы (`formatDecimalMoney`) ЭТА подстраховка
+  особенно важна: разряды и пробел перед знаком валюты — НЕРАЗРЫВНЫЕ (NBSP),
+  то есть обычного места для переноса внутри самой суммы нет вовсе — без
+  `break-words` строка не переносилась бы, а просто вылезала бы за край
+  колонки. Перенос ничего не скрывает — обе строки, если понадобятся,
+  показывают ВСЕ цифры целиком, просто в две строки, а не одну.
+*/
+const TRACK_TEXT_CLASS = "w-full min-w-0 break-words text-center";
+const STAGE_LABEL_CLASS = cn(
+  TRACK_TEXT_CLASS,
+  "text-2xs font-semibold uppercase tracking-wider text-fg-tertiary"
+);
+const TRACK_AMOUNT_CLASS = cn(TRACK_TEXT_CLASS, "font-mono text-sm font-semibold text-fg");
 
 /**
  * Столбик одной колонки. Высота — ЧИСЛОМ ИЗ `bar_height_pct` (только для CSS,
@@ -41,9 +76,7 @@ function TrackColumn({ column }: { column: StageSummaryColumn }) {
           {/* Подпись ВИДИМАЯ, не только в title — читатель обязан увидеть причину без наведения. */}
           <StatusPill tone="neutral" label="нет базы НДС" />
         </div>
-        <span className="text-2xs font-semibold uppercase tracking-wider text-fg-tertiary">
-          {stageLabel(column)}
-        </span>
+        <span className={STAGE_LABEL_CLASS}>{stageLabel(column)}</span>
       </div>
     );
   }
@@ -72,11 +105,17 @@ function TrackColumn({ column }: { column: StageSummaryColumn }) {
           />
         )}
       </div>
-      <span className="font-mono text-sm font-semibold text-fg">{formatDecimalMoney(column.total)}</span>
-      <span className="text-2xs font-semibold uppercase tracking-wider text-fg-tertiary">
-        {stageLabel(column)}
-      </span>
-      <ChangeBadge change={column.total_change} />
+      <span className={TRACK_AMOUNT_CLASS}>{formatDecimalMoney(column.total)}</span>
+      <span className={STAGE_LABEL_CLASS}>{stageLabel(column)}</span>
+      {/*
+        Fix round 4: третий узел строки, тем же приёмом — `ChangeBadge`
+        (общий компонент, его самого не трогаем) без обёртки сидел бы, как и
+        сумма выше, по своей естественной ширине и мог налезать на соседний
+        столбик на узких колонках.
+      */}
+      <div className={TRACK_TEXT_CLASS}>
+        <ChangeBadge change={column.total_change} />
+      </div>
     </div>
   );
 }
