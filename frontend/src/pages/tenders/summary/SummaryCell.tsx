@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
 
 import { StatusPill, type StatusTone } from "@/components/ui-domain/StatusPill";
+import { TableCell } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CellState, StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
 
 import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
+import { cellAlignClass } from "./cellLayout";
 
 /**
  * Ячейка таблицы свода и её исчерпывающий значок изменения (спека
@@ -74,9 +76,27 @@ export function ChangeBadge({ change, dashOnNone }: { change: StageSummaryChange
       break;
     case "appeared":
     case "reappeared":
-    case "removed":
     case "disappeared":
       content = <StatusPill tone="neutral" label={KIND_LABEL[change.kind]} />;
+      break;
+    case "removed":
+      // Тон «снято» — тревожный, как у ОДНОИМЁННОГО состояния ячейки
+      // (`CELL_STATE_TONE.removed`) и как на макете гейта 1: там «снято»
+      // печатается `pill warn` и в ячейке этапа, и в колонке «Торг»
+      // (`table.pass`, строки статей «14» и «12»), а «появилась» / «не
+      // оценивалась» — обычной пилюлей. Реализация красила ВСЕ структурные
+      // виды нейтрально, и «Торг» расходился с макетом тоном; в ячейке этого
+      // видно не было, потому что там значок гасится как повтор состояния.
+      // Остальные три вида остаются нейтральными: они сообщают о движении, а
+      // не о потере.
+      //
+      // Тон меняется у ОБЩЕГО компонента, то есть достаёт до всех его
+      // вызывающих: ячейка статьи (там значок гасится как повтор состояния),
+      // «Торг», трасса и KPI «Последний к первому». Для трассы и KPI это
+      // сегодня недостижимо — там изменение считается числовым правилом
+      // (`_numeric_change`) и структурных видов не бывает вовсе, — но если
+      // контракт это изменит, тон приедет туда осознанно, а не случайно.
+      content = <StatusPill tone="warning" label={KIND_LABEL.removed} />;
       break;
     case "none":
       content = dashOnNone ? "—" : null;
@@ -100,6 +120,48 @@ export function ChangeBadge({ change, dashOnNone }: { change: StageSummaryChange
   );
 }
 
+/**
+ * Повторяет ли значок изменения СЛОВО, которое уже сказало состояние ячейки.
+ *
+ * Найдено пользователем на стенде 28.08.2026: ячейка, где статью сняли на этом
+ * шаге, показывала «снято» ДВАЖДЫ — пилюлей состояния (`state = 'removed'`,
+ * §2.5) и под ней пилюлей вида изменения (`kind = 'removed'`, §2.6). Факты
+ * разные (состояние говорит «цены нет сейчас, а была раньше»; вид — «сняли
+ * именно на этом шаге»), но НАПИСАНЫ они одним и тем же словом, и читатель
+ * видит две одинаковые пилюли. Макет гейта 1 в такой ячейке рисует ОДНУ, тоном
+ * состояния (`table.pass`, `pill warn`), — реализация от макета отошла.
+ *
+ * Для `removed` гашение в ячейке статьи — ПРАВИЛО, а не редкий случай:
+ * `KIND_REMOVED` сервер возвращает единственной веткой `amount → removed`
+ * (`backend/services/stage_summary.py`, `change_between`), то есть
+ * `kind = 'removed'` влечёт `state = 'removed'` всегда, и второй пилюли в
+ * ячейке не бывает никогда. Видимым этот вид остаётся в колонке «Торг», где
+ * состояния рядом нет.
+ *
+ * Правило сформулировано через САМИ СЛОВАРИ, а не списком пар: совпало слово —
+ * второй раз не печатаем. Так подпись, переименованная в `cellCopy.ts`, не
+ * заведёт молча новый дубль и не отключит нужный значок. Сегодня совпадение
+ * ровно одно — `STATE_LABEL.removed === KIND_LABEL.removed === "снято"`, и это
+ * проверено тестом (`StageSummaryTable.test.tsx`), а не глазами.
+ *
+ * Виды без пилюли (`percent`, `abs_only`, `none`) сюда не попадают: они печатают
+ * число или ничего, повторить слово состояния им нечем. Состояние `amount` тоже:
+ * у него нет подписи вовсе, печатается сумма.
+ *
+ * Оговорка о границе самого приёма: литерал «—» рождается на экране и ВНЕ
+ * словарей — `ChangeBadge` печатает его при `kind = 'percent'`, если
+ * `roundDecimalPercent` вернул `null`, а `STATE_LABEL.absent` — тоже «—».
+ * Сравнение по словарям такую пару не увидит. Сегодня она недостижима (у
+ * `absent` нет суммы, процент из неё не строится, да и `percent` отсекается
+ * ветками выше), но правило по словарям — не про ВЕСЬ экран, а про подписи, и
+ * это его граница.
+ */
+function changeRepeatsState(state: CellState, change: StageSummaryChange): boolean {
+  if (state === "amount") return false;
+  if (change.kind === "percent" || change.kind === "abs_only" || change.kind === "none") return false;
+  return KIND_LABEL[change.kind] === STATE_LABEL[state];
+}
+
 /** Подпись подсказки неполноты (§2.1 контракта): обе величины и, если есть,
  *  отдельный счётчик неконечных значений — одна причина не заменяет другую. */
 function incompletenessLabel(rows: StageSummaryCell["rows"]): string {
@@ -108,18 +170,37 @@ function incompletenessLabel(rows: StageSummaryCell["rows"]): string {
 }
 
 /**
- * Ячейка таблицы свода. `extra` — дополнительная строка под значком изменения
- * (используется строкой «Итого» для подписи сходимости колонки): SummaryCell
- * остаётся единственным местом, где читаются `state`/`amount_unavailable_reason`,
- * и строка «Итого» не заводит свой параллельный рендер той же ячейки.
+ * Ячейка таблицы свода — статья классификатора в колонке одного этапа.
+ *
+ * Прежде компонент принимал ещё и `extra` (дополнительную строку под значком
+ * изменения) — им пользовалась строка «Итого». С ревизии §2.16 у итога СВОЙ
+ * компонент {@link SummaryTotalCell}, и проп остался мёртвым вместе с абзацем
+ * докстроки, который объяснял несуществующий механизм: снят 28.08.2026.
  */
-export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: ReactNode }) {
+export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
   const { state, amount, amount_unavailable_reason, rows, change } = cell;
   const incomplete = rows.rows_with_amount < rows.row_count;
+  const repeatsState = changeRepeatsState(state, change);
+  // Число ячейка показывает только в состоянии `amount` и только когда сумма не
+  // погашена неизвестной базой НДС — в остальных случаях на её месте пилюля или
+  // прочерк, и выравнивать по верхней строке нечего.
+  const showsNumber = state === "amount" && !amount_unavailable_reason;
+  // Вторая ВИДИМАЯ строка: значок изменения (при `kind = 'none'` он в ячейке не
+  // рисует ничего, поэтому строкой не считается) либо подпись `extra`.
+  const hasSecondLine = !amount_unavailable_reason && !repeatsState && change.kind !== "none";
 
+  /*
+    Примитив `TableCell`, а не сырой `<td>`: у примитива `p-2`, и до этой правки
+    ячейки этапов были единственными в строке БЕЗ отступов — «Торг», «Вклад» и
+    колонка классификатора идут через примитив. Пока всё нечисловое
+    центрировалось, разница пряталась; после перехода на «число по верхней
+    строке» она вылезла числом — замер: первая строка ячейки этапа на 8 px выше
+    первой строки «Вклада в итог», ровно на величину чужого `padding-top`.
+    Выравниванием такое не лечится — лечится одинаковой коробкой.
+  */
   return (
-    <td
-      className="text-right tabular-nums align-top"
+    <TableCell
+      className={cn("text-right tabular-nums", cellAlignClass(showsNumber, hasSecondLine))}
       title={amount_unavailable_reason ? REASON_LABEL[amount_unavailable_reason] : undefined}
     >
       <div className="flex items-center justify-end gap-1">
@@ -129,10 +210,12 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
           // остальных состояний числа никогда не было, поэтому у них нечего
           // withhold-ить, и ветка ниже их не касается (fix round review PR,
           // дефект «состояние пропадает в недоступной колонке»).
-          amount_unavailable_reason ? (
-            <StatusPill tone="neutral" label="нет базы НДС" />
-          ) : (
+          // Условие — тот же `showsNumber`, что выбирает выравнивание: два
+          // независимых чтения одного признака умеют разойтись, одно — нет.
+          showsNumber ? (
             <span>{formatDecimalMoney(amount)}</span>
+          ) : (
+            <StatusPill tone="neutral" label="нет базы НДС" />
           )
         ) : state === "absent" ? (
           // Плоский прочерк — как на макете (`table.pass`, статья "15"):
@@ -159,18 +242,12 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
           </Tooltip>
         )}
       </div>
-      {!amount_unavailable_reason && (
+      {!amount_unavailable_reason && !repeatsState && (
         <div className="mt-0.5">
           <ChangeBadge change={change} />
         </div>
       )}
-      {/*
-        Без цвета здесь: `extra` (сходимость «Итого», fix round 2, п.4) несёт
-        СВОЙ тон в трёх состояниях — жёсткий `text-fg-tertiary` на обёртке
-        забивал бы его тем же тоном для всех трёх, что и было дефектом.
-      */}
-      {extra && <div className="mt-0.5 text-2xs">{extra}</div>}
-    </td>
+    </TableCell>
   );
 }
 
@@ -193,10 +270,14 @@ export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: R
 export function SummaryTotalCell({ cell, extra }: { cell: StageSummaryTotalCell; extra?: ReactNode }) {
   const { amount, amount_unavailable_reason, rows, change } = cell;
   const incomplete = rows.rows_with_amount < rows.row_count;
+  // У итога состояний нет (§2.16): число он не показывает единственно тогда,
+  // когда сумма погашена неизвестной базой НДС.
+  const showsNumber = !amount_unavailable_reason;
+  const hasSecondLine = (!amount_unavailable_reason && change.kind !== "none") || extra !== undefined;
 
   return (
-    <td
-      className="text-right tabular-nums align-top"
+    <TableCell
+      className={cn("text-right tabular-nums", cellAlignClass(showsNumber, hasSecondLine))}
       title={amount_unavailable_reason ? REASON_LABEL[amount_unavailable_reason] : undefined}
     >
       <div className="flex items-center justify-end gap-1">
@@ -223,6 +304,6 @@ export function SummaryTotalCell({ cell, extra }: { cell: StageSummaryTotalCell;
         </div>
       )}
       {extra && <div className="mt-0.5 text-2xs">{extra}</div>}
-    </td>
+    </TableCell>
   );
 }

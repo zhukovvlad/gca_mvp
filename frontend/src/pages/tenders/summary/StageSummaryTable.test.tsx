@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { sampleStageSummary } from "@/test/fixtures";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import type { StageSummary, StageSummaryCell, StageSummaryChange, StageSummaryTotalCell } from "@/types/domain";
-import { KIND_LABEL, REASON_LABEL } from "./cellCopy";
+import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
 import { StageSummaryTable } from "./StageSummaryTable";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
 
@@ -49,6 +49,58 @@ describe("Таблица свода — состояния по данным (с
     const foot = within(screen.getAllByRole("rowgroup")[2]).getAllByRole("row");
     expect(foot[0]).toHaveTextContent("Нераспределённое");
     expect(foot[1]).toHaveTextContent("Итого по предложению");
+  });
+
+  /**
+   * Зажим ширины колонки классификатора — восстановление ограничения макета
+   * гейта 1 (`table.pass`, `th.art, td.t`: `min-width:250px; max-width:420px`),
+   * потерянного реализацией. Ставится на ВСЕ ячейки первой колонки: ширину
+   * колонки в авторазметке диктует самая широкая из них.
+   *
+   * ГРАНИЦА НАБЛЮДАЕМОСТИ (`docs/insights/unobservable-in-the-runner.md`):
+   * jsdom раскладку не считает, поэтому здесь проверяется только ТО, ЧЕМ
+   * раскладка запрошена. Что из этого вышло, проверяет замер в браузере
+   * (devlog §9.6): при раскрытии статей колонка перестала расти, а «Торг» и
+   * «Вклад в итог» перестали уезжать за край.
+   */
+  it("колонка классификатора зажата по ширине и переносит наименование — на всех ячейках первой колонки, включая раскрытого ребёнка", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StageSummaryTable summary={sampleStageSummary} />);
+
+    // Раскрываем статью: дефект был именно в раскрытом состоянии, и ячейка
+    // ребёнка (`pl-8`) до раскрытия не рендерится вовсе.
+    await user.click(screen.getByRole("button", { name: /Раскрыть/ }));
+
+    const firstCells = Array.from(container.querySelectorAll("table tr > *:first-child"));
+    // Точное число, а не «не меньше»: шапка + два корня + раскрытый ребёнок +
+    // «Нераспределённое» + «Итого». С `>=` молча сузившийся селектор оставил бы
+    // тест зелёным, проверив меньше ячеек, чем он обещает.
+    expect(firstCells).toHaveLength(6);
+    for (const cell of firstCells) {
+      expect(cell).toHaveClass("min-w-[250px]");
+      expect(cell).toHaveClass("max-w-[420px]");
+      // Перенос: примитив shadcn несёт `whitespace-nowrap`, и зажим без
+      // переноса кладёт наименование поверх соседней колонки — хуже, чем его
+      // отсутствие. Проверяются ОБА направления: свой класс стоит И чужой снят.
+      // Второе утверждение не лишнее: `whitespace-nowrap` сегодня выбрасывает
+      // `twMerge` внутри `cn`, и без этой строки замена `cn` на `clsx` вернула
+      // бы дефект целиком при зелёном тесте.
+      expect(cell).toHaveClass("whitespace-normal");
+      expect(cell).not.toHaveClass("whitespace-nowrap");
+      // Подпись строки — по верхней строке, как её числа: она бывает в две-три
+      // строки, и центрирование увело бы её с линии собственных сумм.
+      expect(cell).toHaveClass("align-top");
+    }
+
+    // Разрыв внутри длинного слова — третья половина той же работы, и у неё
+    // свой носитель: `break-words` на самом наименовании и `min-w-0`, без
+    // которого флекс-элемент не сузится.
+    const titles = Array.from(container.querySelectorAll("table tbody tr > td:first-child > div > span:last-child"));
+    expect(titles.length).toBeGreaterThan(0);
+    for (const title of titles) {
+      expect(title).toHaveClass("break-words");
+      expect(title).toHaveClass("min-w-0");
+    }
   });
 
   it.each([
@@ -227,6 +279,207 @@ describe("Таблица свода — состояния по данным (с
       </table>
     );
     expect(screen.getByRole("cell")).toHaveTextContent(label);
+  });
+
+  /**
+   * Найдено пользователем на стенде 28.08.2026: ячейка, где статью сняли на
+   * этом шаге, показывала «снято» ДВАЖДЫ — пилюлей состояния и пилюлей вида
+   * изменения. Макет гейта 1 в такой ячейке рисует одну.
+   *
+   * `sampleStageSummary.rows[0].cells[1]` — ровно этот вход: `state =
+   * "removed"` и `change.kind = "removed"` (проверено первым утверждением,
+   * иначе тест мог бы зеленеть на ячейке, где повторяться нечему).
+   */
+  it("состояние и вид изменения не печатают одно слово дважды: «снято» в ячейке ровно один раз", () => {
+    const cell = sampleStageSummary.rows[0].cells[1];
+    expect(cell.state).toBe("removed");
+    expect(cell.change.kind).toBe("removed");
+
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={cell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const text = screen.getByRole("cell").textContent ?? "";
+    expect(text.match(/снято/g)).toHaveLength(1);
+    expect(screen.queryByTestId("change")).toBeNull();
+  });
+
+  /**
+   * Вторая половина того же правила: значок гасится ТОЛЬКО когда повторяет
+   * слово состояния, а не всегда, когда состояние есть. Иначе правка съела бы
+   * настоящие изменения (`docs/insights/state-the-rule-as-an-equivalence.md`).
+   * `rows[1].children[0].cells[2]` — `state = "absent"` с
+   * `change.kind = "disappeared"`: подписи разные («—» и «нет в файле»), и обе
+   * обязаны стоять.
+   */
+  it("значок гасится только при совпадении слова: absent + disappeared показывает и прочерк, и «нет в файле»", () => {
+    const cell = sampleStageSummary.rows[1].children[0].cells[2];
+    expect(cell.state).toBe("absent");
+    expect(cell.change.kind).toBe("disappeared");
+
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={cell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    expect(screen.getByTestId("cell-dash")).toBeInTheDocument();
+    expect(screen.getByTestId("change")).toHaveTextContent(KIND_LABEL.disappeared);
+  });
+
+  /**
+   * Вертикальное выравнивание ячейки этапа (найдено пользователем на стенде
+   * 28.08.2026: пилюли прилипали к верху, тогда как те же пилюли в «Торге» и
+   * «Вкладе» стояли по центру).
+   *
+   * Правило проверяется В ОБЕ СТОРОНЫ одним набором: число остаётся на верхней
+   * строке (иначе суммы этапов перестали бы читаться строкой поперёк таблицы —
+   * у первой колонки изменения нет по построению, и центрирование увело бы её
+   * вниз в КАЖДОЙ строке), всё остальное — по центру.
+   *
+   * ГРАНИЦА НАБЛЮДАЕМОСТИ: jsdom раскладку не считает, здесь проверяется только
+   * запрошенное выравнивание. Что из него вышло, проверил замер в браузере
+   * (devlog §9.7): суммы одной строки на одной линии во всех 113 строках,
+   * содержимое 60 нечисловых ячеек — по центру строки.
+   */
+  it.each([
+    ["сумма", { state: "amount", amount: "5.00", amount_unavailable_reason: null }, "align-top"],
+    ["снято", { state: "removed", amount: null, amount_unavailable_reason: null }, "align-middle"],
+    ["не оценивалась", { state: "not_evaluated", amount: null, amount_unavailable_reason: null }, "align-middle"],
+    ["прочерк (статьи нет в файле)", { state: "absent", amount: null, amount_unavailable_reason: null }, "align-middle"],
+    ["сумма без базы НДС", { state: "amount", amount: null, amount_unavailable_reason: "unknown_vat_base" }, "align-middle"],
+  ])("ячейка «%s» выравнивается по %s", (_name, patch, expected) => {
+    const cell = { ...sampleStageSummary.rows[0].cells[0], ...patch } as StageSummaryCell;
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={cell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const td = screen.getByRole("cell");
+    expect(td).toHaveClass(expected);
+    expect(td).not.toHaveClass(expected === "align-top" ? "align-middle" : "align-top");
+  });
+
+  /**
+   * Правило одно на всю СТРОКУ, а не на колонку ячеек этапа: «Торг», «Вклад в
+   * итог» и колонка классификатора живут по нему же. До правки они
+   * центрировались примитивом таблицы безусловно, и число «Вклада» стояло на
+   * полстроки ниже сумм этапов той же строки — тот самый разнобой, с которого
+   * началась правка, только в другой колонке
+   * (`docs/insights/state-the-rule-as-an-equivalence.md`: правило, применённое
+   * к половине поверхности, ловит половину дефектов).
+   */
+  it("«Торг» и «Вклад в итог» подчиняются тому же правилу: число по верху, пилюля и прочерк по центру", () => {
+    const summary: StageSummary = structuredClone(sampleStageSummary);
+    // Строка 0: «Торг» пилюлей, вклад числом. Строка 1: «Торг» процентом, вклад пустой.
+    summary.rows[0].bargain = { kind: "removed", value: null, direction: null, reason: null };
+    summary.rows[0].contribution = { value: "-60.00", direction: "down", reason: null };
+    summary.rows[1].bargain = { kind: "percent", value: "-25.0", direction: "down", reason: null };
+    summary.rows[1].contribution = { value: null, direction: null, reason: "absent_endpoint" };
+
+    render(<StageSummaryTable summary={summary} />);
+    const bargain = screen.getAllByTestId("bargain-cell");
+    const contribution = screen.getAllByTestId("contribution-cell");
+    expect(bargain[0]).toHaveClass("align-middle");   // пилюля «снято»
+    expect(bargain[1]).toHaveClass("align-top");      // процент
+    expect(contribution[0]).toHaveClass("align-top"); // сумма вклада
+    expect(contribution[1]).toHaveClass("align-middle"); // прочерк
+  });
+
+  it("ячейка «Итого» — то же правило: число по верху, погашенная сумма по центру", () => {
+    const base = sampleStageSummary.total.cells[0];
+    const { rerender } = render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryTotalCell cell={{ ...base, amount_unavailable_reason: null } as StageSummaryTotalCell} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    expect(screen.getByRole("cell")).toHaveClass("align-top");
+
+    rerender(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryTotalCell
+              cell={{ ...base, amount: null, amount_unavailable_reason: "unknown_vat_base" } as StageSummaryTotalCell}
+            />
+          </tr>
+        </tbody>
+      </table>
+    );
+    expect(screen.getByRole("cell")).toHaveClass("align-middle");
+  });
+
+  /**
+   * Колонка «Торг» при `kind = 'none'` — прочерк, а не пустота: макет гейта 1
+   * печатает там литерал у статьи, которой нет ни на одном конце пути
+   * (`table.pass`, статьи «15» и «99»). Рядом с «Торгом» состояния нет, и пустой
+   * слот читается как несчитанное значение — тот же довод, что у KPI и трассы.
+   *
+   * Вход построен правкой фикстуры, а не взят как есть: ни одна строка
+   * `sampleStageSummary` не даёт `bargain.kind = 'none'`, и на ней тест был бы
+   * зелёным, ничего не проверив.
+   */
+  it("«Торг» при kind=none рисует прочерк; у соседней строки с настоящим торгом он не появляется", () => {
+    const summary: StageSummary = structuredClone(sampleStageSummary);
+    summary.rows[0].bargain = { kind: "none", value: null, direction: null, reason: "no_amounts" };
+    expect(summary.rows[1].bargain.kind).toBe("percent");
+
+    render(<StageSummaryTable summary={summary} />);
+    const bargainCells = screen.getAllByTestId("bargain-cell");
+    expect(bargainCells[0]).toHaveTextContent(/^—$/);
+    // Вторая половина: прочерк не подменил настоящее значение соседа.
+    expect(bargainCells[1]).not.toHaveTextContent(/^—$/);
+    expect(bargainCells[1]).toHaveTextContent("%");
+  });
+
+  /**
+   * Тон «снято» — тревожный, как у одноимённого состояния ячейки и как на
+   * макете (`pill warn` и в ячейке этапа, и в «Торге»). Остальные структурные
+   * виды остаются нейтральными: макет печатает их обычной пилюлей.
+   */
+  it("«снято» в «Торге» окрашено тоном состояния, а «появилась» — нет", () => {
+    const summary: StageSummary = structuredClone(sampleStageSummary);
+    summary.rows[0].bargain = { kind: "removed", value: null, direction: null, reason: null };
+    summary.rows[1].bargain = { kind: "appeared", value: null, direction: null, reason: null };
+
+    render(<StageSummaryTable summary={summary} />);
+    const cells = screen.getAllByTestId("bargain-cell");
+    expect(cells[0].querySelector(".bg-warning-soft")).not.toBeNull();
+    expect(cells[1].querySelector(".bg-warning-soft")).toBeNull();
+    expect(cells[1].querySelector(".bg-neutral-soft")).not.toBeNull();
+  });
+
+  /**
+   * Правило написано через сами словари (`changeRepeatsState` в `SummaryCell`),
+   * поэтому оно ровно настолько верно, насколько верно допущение о словарях:
+   * совпадение подписи состояния и подписи вида — ОДНО, «снято». Если завтра
+   * `cellCopy.ts` переименует «нет в файле» в «—», гашение молча съест значок
+   * там, где он нужен, — этот тест покраснеет раньше.
+   */
+  it("в словарях ровно одно совпадение подписи состояния и подписи вида изменения — removed/removed", () => {
+    const collisions: string[] = [];
+    for (const [state, stateLabel] of Object.entries(STATE_LABEL)) {
+      for (const [kind, kindLabel] of Object.entries(KIND_LABEL)) {
+        if (stateLabel === kindLabel) collisions.push(`${state}/${kind}`);
+      }
+    }
+    expect(collisions).toEqual(["removed/removed"]);
   });
 
   it.each([

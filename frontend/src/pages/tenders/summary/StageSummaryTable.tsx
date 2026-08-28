@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import type { StageSummary, StageSummaryColumn, StageSummaryRow } from "@/types/domain";
 
 import { REASON_LABEL } from "./cellCopy";
+import { cellAlignClass, isNumericChange } from "./cellLayout";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
 
 /**
@@ -128,6 +129,47 @@ function ContributionValue({
   );
 }
 
+/**
+ * Колонка классификатора зажата по ширине — `min-width: 250px`,
+ * `max-width: 420px`, ровно как на макете гейта 1 (`table.pass`,
+ * `th.art, td.t`). Реализация это ограничение ПОТЕРЯЛА, и таблица с авторазметкой
+ * отдавала колонке столько, сколько просило самое длинное наименование: замер на
+ * стенде 28.08.2026 — при свёрнутых статьях 459,8 px (34 % контейнера) и всё
+ * помещалось, при раскрытых 752,81 px (55,8 %), таблица становилась шире
+ * контейнера на 253 px, и «Торг» с «Вкладом в итог» уезжали за правый край.
+ *
+ * Зажим ставится на ВСЕ ячейки первой колонки — шапку, строки статей и обе
+ * строки подвала: ширину колонки в авторазметке диктует самая широкая ячейка, и
+ * пропущенная строка вернула бы прежнее поведение целиком.
+ *
+ * `whitespace-normal` здесь — не украшение, а условие работы зажима: примитив
+ * `TableCell`/`TableHead` из shadcn несёт `whitespace-nowrap`, и с ним
+ * наименование не переносится вовсе. Он ломает строку ПО ПРОБЕЛАМ; за
+ * одиночный длинный токен (слипшееся слово, код без пробелов) отвечают
+ * `break-words` и `min-w-0` на самом наименовании ниже — первый разрешает
+ * разрыв внутри слова, второй снимает `min-width: auto` у флекс-элемента, без
+ * которого он не сузится. Три класса — три разные половины одной работы, и
+ * снятие любого возвращает часть дефекта. Замер на стенде показал, чем это кончается:
+ * колонка честно вставала в 446 px, а текст на 100 символов вылезал из своей
+ * ячейки на 130 px и ЛОЖИЛСЯ ПОВЕРХ первой денежной колонки — 25 таких ячеек при
+ * раскрытых статьях. То есть зажим без переноса делает хуже, чем его отсутствие.
+ *
+ * Вместе с зажимом строка содержимого ячейки выравнивается ПО ВЕРХУ
+ * (`items-start` вместо `items-center`): наименование теперь бывает в две-три
+ * строки, и при выравнивании по центру треугольник раскрытия и код статьи
+ * уезжали бы к середине абзаца вместо его первой строки. То же у
+ * «Нераспределённого» — наименование там короткое, но правило одно на колонку,
+ * а не на строку.
+ *
+ * Про число 420: это ПОТОЛОК ПРЕДПОЧТИТЕЛЬНОЙ ширины, а не итоговой. При
+ * `table-layout: auto` и `w-full` браузер сперва считает предпочтительные
+ * ширины (тут `max-width` и связывает), а СВОБОДНОЕ место потом раздаёт поверх
+ * — поэтому на широком окне замер показывает 446 px, и это не полработы.
+ * Заработанный инвариант формулируется не «≤ 420 px», а «колонка не растёт от
+ * содержимого»: замеры со свёрнутыми и раскрытыми статьями совпадают до сотых.
+ */
+const FIRST_COL_CLASS = "sticky left-0 min-w-[250px] max-w-[420px] whitespace-normal align-top";
+
 function CategoryRowGroup({
   row,
   depth,
@@ -146,9 +188,9 @@ function CategoryRowGroup({
     <>
       <TableRow data-testid={`row-${row.work_category_id ?? row.code ?? "row"}`}>
         <TableCell
-          className={cn("sticky left-0 bg-surface", depth > 0 && "bg-surface-sunken pl-8")}
+          className={cn(FIRST_COL_CLASS, "bg-surface", depth > 0 && "bg-surface-sunken pl-8")}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-start gap-2">
             {hasChildren ? (
               <button
                 type="button"
@@ -177,16 +219,30 @@ function CategoryRowGroup({
                 {row.code}
               </span>
             )}
-            <span className={depth === 0 ? "font-medium text-fg" : "text-fg-secondary"}>{row.title}</span>
+            <span className={cn("min-w-0 break-words", depth === 0 ? "font-medium text-fg" : "text-fg-secondary")}>{row.title}</span>
           </div>
         </TableCell>
         {row.cells.map((cell, index) => (
           <SummaryCell key={index} cell={cell} />
         ))}
-        <TableCell data-testid="bargain-cell" className="border-l text-right">
-          <ChangeBadge change={row.bargain} />
+        {/*
+          `dashOnNone` — по макету гейта 1: в колонке «Торг» у статьи, которой
+          нет ни на одном конце пути, стоит прочерк (`table.pass`, статьи «15» и
+          «99» — `td.num.sep` с литералом «—»), а не пустота. Реализация это
+          потеряла вместе с зажимом ширины. Довод тот же, что у трассы и KPI и
+          записанный в спеке §2.14: рядом с «Торгом» состояния НЕТ, объяснить
+          пустой слот нечем, и читатель принимает его за несчитанное значение.
+        */}
+        <TableCell
+          data-testid="bargain-cell"
+          className={cn("border-l text-right", cellAlignClass(isNumericChange(row.bargain), false))}
+        >
+          <ChangeBadge change={row.bargain} dashOnNone />
         </TableCell>
-        <TableCell data-testid="contribution-cell" className="text-right">
+        <TableCell
+          data-testid="contribution-cell"
+          className={cn("text-right", cellAlignClass(row.contribution.value !== null, false))}
+        >
           <ContributionValue contribution={row.contribution} />
         </TableCell>
       </TableRow>
@@ -226,7 +282,7 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="sticky left-0 z-10 bg-section-header">Статья классификатора</TableHead>
+              <TableHead className={cn(FIRST_COL_CLASS, "z-10 bg-section-header")}>Статья классификатора</TableHead>
               {columns.map((column) => (
                 <TableHead key={column.offer_id} className="text-right normal-case">
                   <span className="text-2xs uppercase tracking-wider text-fg-tertiary">
@@ -261,8 +317,8 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
           </TableBody>
           <TableFooter>
             <TableRow data-testid="row-unallocated">
-              <TableCell className="sticky left-0 bg-surface-sunken">
-                <div className="flex items-center gap-2">
+              <TableCell className={cn(FIRST_COL_CLASS, "bg-surface-sunken")}>
+                <div className="flex items-start gap-2">
                   <span className="inline-block size-3.5 shrink-0" aria-hidden="true" />
                   {/* Код-прочерк — как на макете: у «Нераспределённого» нет
                       кода классификатора, но ячейка кода на строке всё равно есть. */}
@@ -297,15 +353,21 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
                 литеральное «без %» с причиной, а не ChangeBadge с kind=none
                 (тот в ячейке ничего не рисует — REASON только в title).
               */}
-              <TableCell className="border-l text-right text-fg-tertiary" title={REASON_LABEL.unallocated}>
+              {/* «без %» — не число, строка одна: по центру, как пилюли. */}
+              <TableCell
+                className="border-l text-right align-middle text-fg-tertiary"
+                title={REASON_LABEL.unallocated}
+              >
                 без %
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell
+                className={cn("text-right", cellAlignClass(unallocated.contribution.value !== null, false))}
+              >
                 <ContributionValue contribution={unallocated.contribution} />
               </TableCell>
             </TableRow>
             <TableRow className="border-t-2 border-fg" data-testid="row-total">
-              <TableCell className="sticky left-0 bg-surface-sunken font-semibold text-fg">
+              <TableCell className={cn(FIRST_COL_CLASS, "bg-surface-sunken font-semibold text-fg")}>
                 Итого по предложению
               </TableCell>
               {total.cells.map((cell, index) => {
