@@ -482,6 +482,76 @@ class TestVatAxis:
         assert body["track"]["available"] is True
         assert col["convergence"]["converged"] is True      # сходимость от ставки не зависит
 
+    def test_mixed_rate_plus_unknown_keeps_known_net(self, db_session, grid):
+        """Спека §6.2 («Доказательства» → «Бэкенд, интеграция»): для «20 % +
+        неизвестная» список доказательств требует ОБЕ ветки — валовую (сосед
+        выше, `test_twenty_plus_unknown_keeps_known_gross`) и буквально «то же
+        с неизвестной на нетто-оси». Гросс-сосед её не покрывает: там среди
+        известных колонок ставка ОДНА (20 % у обеих), поэтому ось остаётся
+        gross и `to_shown` для известных колонок — тождество (сумма не
+        делится). Здесь известные колонки несут РАЗНЫЕ ставки (10 % и 20 %) —
+        по правилу §2.8 (`pick_tax_basis`) это переводит ось в net, и то же
+        место кода обязано реально пересчитать известные колонки в нетто,
+        одновременно оставляя третью, с неизвестной базой, без суммы на
+        обеих осях."""
+        self._set_rate(db_session, grid.a[0], Decimal("10"))
+        self._set_rate(db_session, grid.a[1], None)
+        body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+
+        # Ось — нетто, причина — расхождение ИЗВЕСТНЫХ ставок (10 % и 20 %),
+        # а не единственная известная ставка, как у гросс-соседа; в перечне
+        # ставок по колонкам — дыра ровно на месте неизвестной колонки.
+        assert body["display"]["tax_basis"] == ss.TAX_NET
+        assert body["display"]["reason"] == ss.TAX_REASON_MIXED
+        rates = body["display"]["rates_by_column"]
+        assert [None if r is None else Decimal(r) for r in rates] == [D("10"), None, D("20")]
+
+        col0, col1, col2 = body["columns"]
+
+        # Известные колонки: итог и суммы ячеек — в нетто по СВОЕЙ ставке.
+        # 180.00 и 90.00 — те же валовые суммы фикстуры, что и на гросс-оси
+        # (спека §2.2); 163.64 = 180.00 / 1.10, 75.00 = 90.00 / 1.20.
+        assert col0["vat_state"] == ss.VAT_KNOWN and col0["total"] == "163.64"
+        assert col2["vat_state"] == ss.VAT_KNOWN and col2["total"] == "75.00"
+        six, two = _row(body, "6"), _row(body, "2")
+        assert six["cells"][0]["amount"] == "109.09"    # 120.00 / 1.10
+        assert six["cells"][2]["amount"] == "75.00"     # 90.00 / 1.20
+        assert two["cells"][0]["amount"] == "54.55"     # 60.00 / 1.10
+
+        # Неизвестная колонка: ни итога, ни высоты столбика — на ЛЮБОЙ оси
+        # (§2.8). Её ячейки не несут суммы, но состояние своё — у статьи «6»
+        # это «amount» (валовая сумма ненулевая), у статьи «2» — «removed»
+        # (снята относительно раунда 1), обе с одной и той же причиной.
+        assert col1["vat_state"] == ss.VAT_UNKNOWN and col1["total"] is None and col1["bar_height_pct"] is None
+        six_unknown, two_unknown = six["cells"][1], two["cells"][1]
+        assert six_unknown["state"] == "amount" and six_unknown["amount"] is None
+        assert six_unknown["amount_unavailable_reason"] == ss.REASON_UNKNOWN_VAT_BASE
+        assert two_unknown["state"] == "removed" and two_unknown["amount"] is None
+        assert two_unknown["amount_unavailable_reason"] == ss.REASON_UNKNOWN_VAT_BASE
+
+        # Шаг ВО неизвестную колонку (col0 → col1) и шаг ИЗ неё (col1 → col2)
+        # гашены ОДНОЙ и той же причиной. Второй важнее: у col2 своя база
+        # ИЗВЕСТНА (20 %), и всё же сравнивать не с чем — у предшественника
+        # (col1) суммы нет вовсе; будь `change` собран по «своей» базе, а не
+        # по предыдущей ячейке, здесь появился бы процент вместо `none`.
+        assert six_unknown["change"] == {"kind": "none", "value": None, "direction": None,
+                                         "reason": ss.REASON_UNKNOWN_VAT_BASE}
+        assert six["cells"][2]["change"]["reason"] == ss.REASON_UNKNOWN_VAT_BASE
+
+        # Одна неизвестная колонка не гасит трассу.
+        assert body["track"]["available"] is True
+
+        # Сходимость КАЖДОЙ колонки, включая неизвестную, — в исходных
+        # валовых деньгах файла, а не в деньгах оси показа: `categories_sum`
+        # неизвестной колонки (120.00) не прошёл через `gross_to_net`, хотя
+        # ось всего ответа — net. Гросс-сосед этот факт доказать не может:
+        # там ось gross и валовое/нетто совпадают тождеством, здесь — нет.
+        assert col0["convergence"]["categories_sum"] == "180.00" and col0["convergence"]["converged"] is True
+        assert col1["convergence"]["categories_sum"] == "120.00" and col1["convergence"]["converged"] is True
+        assert col2["convergence"]["categories_sum"] == "90.00" and col2["convergence"]["converged"] is True
+
+        _assert_column_totals_reconcile(body)   # паритет итога и на этой оси, с дырой в середине пути
+
     def test_estimate_override_wins_over_declared_rate(self, db_session, grid):
         """COALESCE(override, ставка предложения) — спека §1.3: назначенная вручную база
         побеждает заявленную, и одна такая колонка делает ось нетто."""

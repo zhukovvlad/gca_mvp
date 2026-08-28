@@ -10,7 +10,7 @@ import type { StageSummary, StageSummaryCell, StageSummaryRow, Direction, StageS
 
 // Valid reason codes per backend contract (services/stage_summary.py)
 
-// Change reasons (line 43-47): REASON_FIRST_COLUMN, REASON_UNKNOWN_VAT_BASE, REASON_NO_AMOUNTS
+// Change reasons: REASON_FIRST_COLUMN, REASON_UNKNOWN_VAT_BASE, REASON_NO_AMOUNTS
 type ChangeReason = "first_column" | "unknown_vat_base" | "no_amounts" | null;
 const VALID_CHANGE_REASONS: Set<ChangeReason> = new Set([
   "first_column",
@@ -19,7 +19,7 @@ const VALID_CHANGE_REASONS: Set<ChangeReason> = new Set([
   null,
 ]);
 
-// Contribution reasons (line 43-47): REASON_UNKNOWN_VAT_BASE, REASON_ABSENT_ENDPOINT
+// Contribution reasons: REASON_UNKNOWN_VAT_BASE, REASON_ABSENT_ENDPOINT
 type ContributionReason = "unknown_vat_base" | "absent_endpoint" | null;
 const VALID_CONTRIBUTION_REASONS: Set<ContributionReason> = new Set([
   "unknown_vat_base",
@@ -27,7 +27,7 @@ const VALID_CONTRIBUTION_REASONS: Set<ContributionReason> = new Set([
   null,
 ]);
 
-// Bargain reasons (line 43-47): REASON_UNKNOWN_VAT_BASE (endpoint unavailable), REASON_UNALLOCATED (unallocated row)
+// Bargain reasons: REASON_UNKNOWN_VAT_BASE (endpoint unavailable), REASON_UNALLOCATED (unallocated row)
 type BargainReason = "unknown_vat_base" | "unallocated" | null;
 const VALID_BARGAIN_REASONS: Set<BargainReason> = new Set([
   "unknown_vat_base",
@@ -35,7 +35,7 @@ const VALID_BARGAIN_REASONS: Set<BargainReason> = new Set([
   null,
 ]);
 
-// Track reasons (line 161-162): TRACK_NON_POSITIVE, TRACK_NO_COMPARABLE
+// Track reasons: TRACK_NON_POSITIVE, TRACK_NO_COMPARABLE
 type TrackReason = "non_positive_total" | "no_comparable_totals" | null;
 const VALID_TRACK_REASONS: Set<TrackReason> = new Set([
   "non_positive_total",
@@ -43,7 +43,7 @@ const VALID_TRACK_REASONS: Set<TrackReason> = new Set([
   null,
 ]);
 
-// Convergence reasons (line 376): file_total unavailability marker
+// Convergence reasons: CONV_FILE_TOTAL_UNAVAILABLE (file_total unavailability marker)
 type ConvergenceReason = "file_total_unavailable" | null;
 const VALID_CONVERGENCE_REASONS: Set<ConvergenceReason> = new Set([
   "file_total_unavailable",
@@ -163,7 +163,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
      * even if individual columns have positive totals. That case is not exercised today (see
      * MSW handler stage-summary GET endpoint outcome 'non_positive_track' for when it first matters).
      * Если bar_height_pct есть, то макс из них = 100.0 (numerically).
-     * backend/services/stage_summary.py lines 406-415 (bar_height_pct computation and track availability).
+      * backend/services/stage_summary.py, compute_summary (участок bar_height_pct и track availability).
      */
     it("bar_height_pct корректны", () => {
       let maxHeight: number | null = null;
@@ -188,7 +188,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
      * This guards against inherited values that happen to be correct by coincidence (e.g., when
      * dividing all totals by the same factor preserves ratios but a partial transformation breaks it).
      * Comparison done as strings with one decimal precision to match server rendering.
-     * backend/services/stage_summary.py line 409: bar_height = (total / max_total) * 100
+      * backend/services/stage_summary.py, compute_summary: bar_height_pct = total / max_total * 100
      */
     it("bar_height_pct ratio equals total / max_total", () => {
       if (fixture.track.available) {
@@ -368,7 +368,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     /**
      * Эквивалентность: kind IS percent/abs_only ⟺ (both states = "amount" AND no unavailability).
      * Else kind IS structural/suppressed (removed/disappeared/appeared/reappeared/none).
-     * backend/services/stage_summary.py lines 115-139 (change_between): only percent/abs_only for state_amount pair.
+      * backend/services/stage_summary.py, change_between: only percent/abs_only for state_amount pair.
      */
     it("kind ⟺ both=amount+available equivalence", () => {
       for (const row of fixture.rows) {
@@ -403,7 +403,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
 
     /**
      * state="amount" требует rows_with_amount > 0: ненулевая сумма не может быть от нулевых строк.
-     * backend/services/stage_summary.py line 296: rows_with_amount считается для узла,
+      * backend/services/stage_summary.py, _node_inputs: rows_with_amount считается для узла,
      * state="amount" означает сумма ненулевая (спека §2.5).
      * Исключение: total row — вычисляемая строка (row_count=0 по контракту).
      */
@@ -417,8 +417,8 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     /**
      * Если первая или последняя ячейка ряда имеет unavailable_reason, то bargain и contribution
      * обязаны быть супрессированы с ЭТОЙ ЖЕ причиной. Обе читают один пайр концов и не могут расходиться.
-     * backend/services/stage_summary.py lines 341, 380: обе вычисляются _endpoints с одной и той же reason.
-     * Исключение: unallocated имеет фиксированное bargain/reason независимо от концов (line 383).
+      * backend/services/stage_summary.py, _endpoints: обе вычисляются с одной и той же reason.
+      * Исключение: unallocated имеет фиксированное bargain/reason независимо от концов (compute_summary).
      */
     it("недоступный конец => bargain и contribution синхронны", () => {
       for (const row of fixture.rows) {
@@ -429,7 +429,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     /**
      * Если ячейка-предшественник в массиве имеет unavailable_reason, то change текущей ячейки —
      * kind=none с ЭТОЙ ЖЕ причиной, независимо от собственной базы ячейки.
-     * backend/services/stage_summary.py line 319: unavailable_reason=reason or prev_reason
+      * backend/services/stage_summary.py, _change_step: unavailable_reason=reason or prev_reason
      * Пропагация: unknown_vat_base на col1 => col2 change тоже has reason="unknown_vat_base".
      */
     it("недоступность пропагируется forward => change = none/reason", () => {
@@ -455,7 +455,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
 
     /**
      * rates_by_column = null точно когда tax_basis != "net".
-     * backend/services/stage_summary.py lines 193-195: pick_tax_basis возвращает rates только для TAX_NET.
+      * backend/services/stage_summary.py, pick_tax_basis возвращает rates только для TAX_NET.
      */
     it("rates_by_column is list iff tax_basis = net", () => {
       if (fixture.display.tax_basis === "net") {
@@ -467,7 +467,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
 
     /**
      * state="amount" без unavailable_reason обязан иметь non-null и ненулевой amount.
-     * backend/services/stage_summary.py lines 86-93: state="amount" <=> gross !== 0.
+      * backend/services/stage_summary.py, cell_states: state="amount" <=> gross !== 0.
      */
     it("state=amount + no unavail => amount non-null и non-zero", () => {
       for (const row of fixture.rows) {
@@ -484,7 +484,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
 
     /**
      * Rows упорядочены по убыванию |contribution| (nulls в конце).
-     * backend/services/stage_summary.py lines 345-349, 377-378: sort_key по contribution.
+      * backend/services/stage_summary.py, sort_key (и её использование в compute_summary) по contribution.
      */
     it("rows: descending contribution magnitude, nulls last", () => {
       checkRowsOrdering(fixture.rows);
@@ -493,7 +493,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
     /**
      * categories_with_amount = count top-level rows whose LAST cell has non-zero sum.
      * categories_total = count top-level rows.
-     * backend/services/stage_summary.py lines 454-455.
+      * backend/services/stage_summary.py, compute_summary (построение kpi).
      *
      * NOTE: We count by STATE, not by displayed amount. When tax base is unknown,
      * the backend withholds the sum from display (amount=null) but preserves the state
@@ -511,7 +511,7 @@ function checkStageSummaryInvariants(fixture: StageSummary, label: string): void
 
     /**
      * Convergence: когда file_total известен, delta = categories_sum - file_total и converged = (delta == 0).
-     * backend/services/stage_summary.py lines 442-445.
+      * backend/services/stage_summary.py, compute_summary (построение convergence).
      */
     it("convergence: delta and converged consistent with totals", () => {
       for (const col of fixture.columns) {
@@ -687,7 +687,7 @@ function checkContributionInvariant(contribution: { value: string | null; direct
 
 /**
  * Проверить контракт: kind != none ⇒ reason = null.
- * backend/services/stage_summary.py: change_between возвращает reason только для kind=none (line 121-122).
+  * backend/services/stage_summary.py: change_between возвращает reason только для kind=none.
  */
 function checkKindReasonContract(row: StageSummaryRow): void {
   row.cells.forEach((cell) => {
@@ -705,8 +705,8 @@ function checkKindReasonContract(row: StageSummaryRow): void {
 
 /**
  * Проверить контракт: шаг после первого с обоими доступными концами — не none.
- * backend/services/stage_summary.py: change_between возвращает kind != none только когда оба конца STATE_AMOUNT
- * и ни один не имеет unavailable_reason (line 121-130).
+  * backend/services/stage_summary.py: change_between возвращает kind != none только когда оба конца STATE_AMOUNT
+  * и ни один не имеет unavailable_reason.
  */
 function checkChangeKindEquivalence(row: StageSummaryRow): void {
   const cells = row.cells;
@@ -734,7 +734,7 @@ function checkChangeKindEquivalence(row: StageSummaryRow): void {
 
 /**
  * Проверить: state="amount" требует rows_with_amount > 0.
- * backend/services/stage_summary.py line 296: ненулевая сумма не может быть от нулевых строк.
+  * backend/services/stage_summary.py, _node_inputs: ненулевая сумма не может быть от нулевых строк.
  */
 function checkAmountStateInvariant(row: StageSummaryRow): void {
   row.cells.forEach((cell) => {
@@ -749,7 +749,7 @@ function checkAmountStateInvariant(row: StageSummaryRow): void {
 
 /**
  * Проверить синхронизацию bargain и contribution при недоступном концовом: обе должны быть подавлены с одной причиной.
- * backend/services/stage_summary.py lines 338-342, 380: обе функции (_endpoints) читают пайр концов с одной reason.
+  * backend/services/stage_summary.py, _endpoints: обе функции читают пайр концов с одной reason.
  */
 function checkEndpointUnavailabilitySync(row: StageSummaryRow): void {
   const cells = row.cells;
@@ -775,7 +775,7 @@ function checkEndpointUnavailabilitySync(row: StageSummaryRow): void {
 
 /**
  * Проверить: если ячейка-предшественник имеет unavailable_reason, то change текущей = kind none с той же причиной.
- * backend/services/stage_summary.py line 319: unavailable_reason=reason or prev_reason
+  * backend/services/stage_summary.py, _change_step: unavailable_reason=reason or prev_reason
  */
 function checkPropagatedUnavailability(row: StageSummaryRow): void {
   const cells = row.cells;
@@ -793,7 +793,7 @@ function checkPropagatedUnavailability(row: StageSummaryRow): void {
 
 /**
  * Проверить: state="amount" без unavailable_reason => amount non-null и non-zero.
- * backend/services/stage_summary.py lines 86-93: non-zero => state="amount", zero => state="removed"/"not_evaluated".
+  * backend/services/stage_summary.py, cell_states: non-zero => state="amount", zero => state="removed"/"not_evaluated".
  */
 function checkAmountStateNonZero(row: StageSummaryRow): void {
   row.cells.forEach((cell) => {
@@ -809,7 +809,7 @@ function checkAmountStateNonZero(row: StageSummaryRow): void {
 
 /**
  * Проверить: rows упорядочены по убыванию |contribution|, nulls в конце.
- * backend/services/stage_summary.py lines 345-349, 377-378: sort_key.
+  * backend/services/stage_summary.py, sort_key.
  */
 function checkRowsOrdering(rows: StageSummaryRow[]): void {
   for (let i = 0; i < rows.length - 1; i++) {

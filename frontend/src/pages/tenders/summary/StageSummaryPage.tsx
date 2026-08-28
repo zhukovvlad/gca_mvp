@@ -51,7 +51,13 @@ function vatRateKpiText(summary: StageSummary): string {
   const { tax_basis, rates_by_column } = summary.display;
   if (tax_basis === "gross") {
     const known = summary.columns.find((column) => column.vat_rate_base !== null);
-    return known ? `${known.vat_rate_base} % во всех выбранных` : "—";
+    if (!known) return "—";
+    const allKnown = summary.columns.every((column) => column.vat_state === "known");
+    // fix round 5: «во всех выбранных» верно только когда база известна у
+    // КАЖДОЙ выбранной колонки — при частично неизвестной базе (валовая ось
+    // законно остаётся, спека §2.8) карточка обязана называть подмножество,
+    // а не все этапы, той же причиной, что несёт `TAX_LABEL.gross`.
+    return allKnown ? `${known.vat_rate_base} % во всех выбранных` : `${known.vat_rate_base} % у этапов с известной базой`;
   }
   if (tax_basis === "net") {
     const rates = (rates_by_column ?? []).map((rate) => rate ?? "—").join(", ");
@@ -66,7 +72,15 @@ function taxAxisCaption(summary: StageSummary): string {
   const { tax_basis, rates_by_column } = summary.display;
   if (tax_basis === "gross") {
     const known = summary.columns.find((column) => column.vat_rate_base !== null);
-    return TAX_LABEL.gross(known?.vat_rate_base ?? "");
+    // fix round 5: ось выбирается по множеству ИЗВЕСТНЫХ ставок среди
+    // выбранных колонок (спека §2.8) — колонка с неизвестной базой в это
+    // множество не входит, но ось соседей не меняет, поэтому валовая ось с
+    // одной известной ставкой законно сочетается с одной или более
+    // `unknown_vat_base`-колонками (фикстура `stageSummaryWithUnknownSecondColumn`).
+    // `TAX_LABEL.gross` читает этот флаг и не утверждает «во всех этапах»,
+    // когда это неверно.
+    const allKnown = summary.columns.every((column) => column.vat_state === "known");
+    return TAX_LABEL.gross(known?.vat_rate_base ?? "", allKnown);
   }
   if (tax_basis === "net") {
     return TAX_LABEL.net((rates_by_column ?? []).map((rate) => rate ?? "—").join(", "));

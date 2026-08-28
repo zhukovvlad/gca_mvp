@@ -70,6 +70,37 @@ export default function TenderCardPage() {
   const cardQ = useTender(id);
   const card = cardQ.data;
 
+  // Сверка выбора с картой при каждом её обновлении (находка финального
+  // ревью, fix round 3): выбор — это id предложений в состоянии СТРАНИЦЫ, и
+  // ничто раньше не сверяло их с перезагруженной картой. Перезалив файла
+  // раунда меняет offer_id/estimate_id его ячеек; id из выбора, который
+  // больше не называет ячейку с обоими полями разом, отовсюду исчез — и
+  // участник по нему больше не находится (`selectedParticipant` ниже вернул
+  // бы `undefined`), из-за чего КАЖДАЯ плитка на решётke вычисляла бы себя
+  // «чужой» и решётка блокировалась целиком, а кнопка свода вела бы на адрес,
+  // который сервер отказал бы кодом «у предложения нет сметы».
+  //
+  // Снимаются ТОЛЬКО устаревшие id, не весь выбор — так второй, ещё живой
+  // выбор того же участника не пропадает зря. Приём — синхронная
+  // корректировка состояния в теле рендера (тот же, что у `TenderDeleteDialog`
+  // ниже, где он подробно обоснован через `react-hooks/set-state-in-effect`),
+  // а не `useEffect`: `card` — новый объект при каждом успешном рефетче
+  // (react-query не сохраняет ссылку, если данные изменились), поэтому
+  // сравнение с «последней увиденной» картой ловит именно момент обновления.
+  const [reconciledCard, setReconciledCard] = useState(card);
+  if (card !== reconciledCard) {
+    setReconciledCard(card);
+    const liveOfferIds = new Set(
+      (card?.cells ?? [])
+        .filter((c) => c.offer_id !== null && c.estimate_id !== null)
+        .map((c) => c.offer_id as number)
+    );
+    setSelectedOfferIds((prev) => {
+      const next = new Set([...prev].filter((id) => liveOfferIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }
+
   const rounds = card?.rounds ?? [];
   // `rounds.length + 1` коллизирует, если удалён средний раунд (этапы [1, 3] →
   // формула снова предложит 3, сервер откажет 409, и диалог зациклится: ручного

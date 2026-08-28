@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 
 import StageSummaryPage from "./StageSummaryPage";
 import { handlerState } from "@/test/handlers";
-import { stageSummaryAllUnknown, stageSummaryNet } from "@/test/fixtures";
+import {
+  sampleStageSummary,
+  stageSummaryAllUnknown,
+  stageSummaryNet,
+  stageSummaryWithUnknownSecondColumn,
+} from "@/test/fixtures";
 import { renderWithProviders } from "@/test/utils";
 
 /**
@@ -131,12 +136,57 @@ describe("Свод по этапам — страница (спека §2.2, §2
     renderSummary();
     await screen.findByRole("table");
     expect(screen.getByTestId("track-slot-unknown")).toBeInTheDocument();
-    expect(screen.getByText(/Все суммы — с НДС 20 %/)).toBeInTheDocument();
+    // fix round 5: одна известная колонка не значит «все» — вторая колонка
+    // здесь unknown_vat_base, и подпись обязана называть подмножество (обе
+    // формулировки закреплены отдельным тестом ниже).
+    expect(screen.getByText(/ставка одна во всех этапах с известной базой/)).toBeInTheDocument();
     const six = screen.getByText("Фасадные работы").closest("tr") as HTMLElement;
     // видимая подпись, не только title: читатель обязан видеть причину без наведения
     expect(within(six).getAllByRole("cell")[2]).toHaveTextContent("нет базы НДС");
     expect(within(six).getAllByRole("cell")[2]).not.toHaveTextContent(/\d/);
     expect(screen.getByTestId("track-slot-unknown")).toHaveTextContent("нет базы НДС");
+  });
+
+  /**
+   * Fix round 5. Ось выбирается по множеству ИЗВЕСТНЫХ ставок среди
+   * ВЫБРАННЫХ колонок (спека §2.8) — колонка с неизвестной базой в это
+   * множество не входит, но ось соседей не меняет. Значит валовая ось с
+   * ОДНОЙ известной ставкой законно сочетается с одной или более
+   * `unknown_vat_base`-колонками, и подпись «ставка одна во всех выбранных
+   * этапах» была бы в этом случае ложной. Два теста ниже пиннят ОБЕ формы —
+   * из `sampleStageSummary` (все базы известны) и из
+   * `stageSummaryWithUnknownSecondColumn` (та же фикстура, что отдаёт
+   * MSW-обработчик на `stageSummaryOutcome = "unknown_vat"`, вторая колонка —
+   * unknown_vat_base) — раздельно, так, чтобы будущая правка не могла
+   * свернуть их обратно в одно предложение.
+   */
+  it('ось валового НДС: "все выбранные этапы" — только когда база известна у всех (sampleStageSummary)', async () => {
+    expect(sampleStageSummary.columns.every((c) => c.vat_state === "known")).toBe(true);
+    renderSummary();
+    await screen.findByRole("table");
+    expect(
+      screen.getByText("Все суммы — с НДС 20 %, ставка одна во всех выбранных этапах.", { exact: false })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/у остальных суммы недоступны/)).not.toBeInTheDocument();
+  });
+
+  it("ось валового НДС (смешанный случай): подпись называет подмножество известных, не «все» (stageSummaryWithUnknownSecondColumn)", async () => {
+    const mixed = stageSummaryWithUnknownSecondColumn();
+    expect(mixed.display.tax_basis).toBe("gross");
+    expect(mixed.columns.every((c) => c.vat_state === "known")).toBe(false);
+    expect(mixed.columns.some((c) => c.vat_state === "unknown_vat_base")).toBe(true);
+
+    handlerState.stageSummaryOutcome = "unknown_vat";
+    renderSummary();
+    await screen.findByRole("table");
+    expect(
+      screen.getByText(
+        "Все суммы с известной базой — с НДС 20 %, ставка одна во всех этапах с известной базой; у остальных суммы недоступны.",
+        { exact: false }
+      )
+    ).toBeInTheDocument();
+    // Ложная форма «все выбранные этапы» не появляется рядом со смешанным случаем.
+    expect(screen.queryByText(/ставка одна во всех выбранных этапах/)).not.toBeInTheDocument();
   });
 
   it.each([

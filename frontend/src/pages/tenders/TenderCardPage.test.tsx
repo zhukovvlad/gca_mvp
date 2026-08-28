@@ -5,10 +5,11 @@ import { Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import TenderCardPage from "./TenderCardPage";
+import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
 import { sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 
 /**
  * Карточка тендера (спека §2.13, §2.14, задача 12): решётка участник×раунд —
@@ -342,5 +343,69 @@ describe("Выбор предложений для свода (спека сво
     expect(within(betaRow).getAllByRole("cell")[1]).toHaveTextContent("—");
     expect(within(betaRow).getAllByRole("cell")[2]).toHaveTextContent("нет сметы");
     expect(screen.getByText(/1\s200,00/)).toBeInTheDocument();
+  });
+
+  /**
+   * Находка финального ревью (fix round 3): выбор — id предложений в
+   * состоянии страницы, и ничто не сверяло его с перезагруженной картой.
+   * Перезалив файла раунда (тот же путь, что в реальности приводит сюда) даёт
+   * этому раунду НОВЫЙ offer_id — старый id из выбора отовсюду исчезает,
+   * участник по нему больше не находится, и КАЖДАЯ плитка вычисляла бы себя
+   * «чужой» — решётка блокировалась бы целиком, а кнопка вела бы на адрес,
+   * который сервер отказал бы.
+   *
+   * Вторую карту доставляем через MSW-хендлер (`server.use`) и инвалидацию
+   * запроса — НЕ трогая состояние компонента напрямую: `queryClient` передан
+   * в `renderCard`, и именно его инвалидация запускает настоящий рефетч.
+   */
+  it("перезалив раунда с выбранными плитками снимает только устаревший id, а не весь выбор", async () => {
+    handlerState.tenderRoundState = "both-loaded";
+    const user = userEvent.setup();
+    const queryClient = createTestQueryClient();
+    renderCard({ queryClient });
+    await screen.findByText("ООО Альфа");
+
+    const alfaRow = screen.getByText("ООО Альфа").closest("tr") as HTMLElement;
+    const alfaTiles = within(alfaRow).getAllByRole("button", { pressed: false });
+    await user.click(alfaTiles[0]); // этап 1 — offer_id 7001
+    await user.click(alfaTiles[1]); // этап 2 — offer_id 7003
+    expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(2);
+
+    // Раунд 2 перезалит: у offer_id 7003 больше нет ячейки — на его месте
+    // новое предложение 9003 с новой сметой. offer_id 7001 (этап 1) не тронут.
+    server.use(
+      http.get("/api/v1/tenders/:id", () =>
+        HttpResponse.json({
+          ...sampleTenderCard,
+          cells: sampleTenderCard.cells.map((c) =>
+            c.round_id === 3002 && c.package_id === 501
+              ? { ...c, offer_id: 9003, estimate_id: 9008, total_including_vat: "1400.00" }
+              : c
+          ),
+        })
+      )
+    );
+    await queryClient.invalidateQueries({ queryKey: qk.tenders.card(sampleTenderCard.id) });
+
+    // 1) Ни одна плитка не показывает пропавшее предложение нажатым — а
+    //    нажатых плиток теперь ровно одна (выжившая: offer_id 7001).
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(1);
+    });
+    expect(screen.getByText(/1\s?200,00/)).toBeInTheDocument();
+
+    // 2) Счётчик над решёткой и на кнопке совпадает с фактическим числом
+    //    нажатых плиток — не отстаёт и не забегает вперёд.
+    expect(screen.getByText(/выбрано 1 смета · ООО Альфа/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Свод по этапам (1)" })).toBeDisabled();
+
+    // 3) Решётка не заблокирована целиком: ни одна плитка (Альфы — своя же,
+    //    Беты — она вообще без единой сметы в этом состоянии) не отмечена
+    //    недоступной. Раньше здесь ломалось именно так: участник по
+    //    пропавшему id не находился, и КАЖДАЯ плитка считала себя «чужой».
+    const unavailableTiles = screen
+      .getAllByRole("button")
+      .filter((b) => b.getAttribute("aria-disabled") === "true");
+    expect(unavailableTiles).toHaveLength(0);
   });
 });
