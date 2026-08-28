@@ -242,8 +242,15 @@ export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
           </Tooltip>
         )}
       </div>
+      {/*
+        `text-2xs` (11 px против 13 px у суммы) — как на макете гейта 1, где
+        строка изменения объявлена `.dp { font-size: 11px }` при 13 px у самой
+        таблицы; реализация это ограничение потеряла, и процент читался таким же
+        крупным, как сумма над ним. Просьба пользователя 28.08.2026 совпала с
+        макетом. Пилюли размер не меняют: `StatusPill` и так несёт `text-2xs`.
+      */}
       {!amount_unavailable_reason && !repeatsState && (
-        <div className="mt-0.5">
+        <div className="mt-0.5 text-2xs">
           <ChangeBadge change={change} />
         </div>
       )}
@@ -299,7 +306,7 @@ export function SummaryTotalCell({ cell, extra }: { cell: StageSummaryTotalCell;
         )}
       </div>
       {!amount_unavailable_reason && (
-        <div className="mt-0.5">
+        <div className="mt-0.5 text-2xs">
           <ChangeBadge change={change} />
         </div>
       )}
