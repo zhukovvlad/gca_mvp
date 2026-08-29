@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Попозиционное раскрытие статьи: макет гейта 1</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1320px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar b { color:var(--fg); }
+.mockbar .sp { flex:1; }
+.mockbar button { font:inherit; font-size:12px; border:1px solid var(--bd); background:var(--surface);
+  color:var(--fg); border-radius:7px; padding:3px 9px; cursor:pointer; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:70ch; }
+.sub b { color:var(--fg); }
+section { margin-bottom:38px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:78ch; }
+.secsub b { color:var(--fg); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+.pass-head { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px;
+  padding:16px 18px; margin-bottom:22px; }
+.pass-head h3 { font-family:var(--font-serif); font-weight:600; font-size:26px; margin:0; }
+.pass-head .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.tep { display:flex; flex-wrap:wrap; gap:22px; margin-top:13px; padding-top:13px;
+  border-top:1px solid var(--bd-subtle); }
+.tep div { display:flex; flex-direction:column; gap:1px; }
+.tep .k { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.tep .v { font-size:14px; font-variant-numeric:tabular-nums; }
+.axis { margin-top:13px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); }
+.axis b { color:var(--fg); }
+.track { display:flex; gap:14px; align-items:flex-end; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:18px 20px 14px; }
+.bar { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; }
+.bwrap { width:100%; max-width:130px; height:150px; display:flex; align-items:flex-end;
+  background:var(--sunken); border-radius:7px 7px 0 0; }
+.bfill { width:100%; background:var(--accent); border-radius:7px 7px 0 0; }
+.bv { font-variant-numeric:tabular-nums; font-weight:600; font-size:14px; }
+.bl { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.bd { font-size:12px; font-variant-numeric:tabular-nums; min-height:18px; }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px; background:var(--surface); }
+table.pass { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.pass th, table.pass td { border-bottom:1px solid var(--bd-subtle); padding:6px 11px;
+  text-align:left; vertical-align:baseline; }
+table.pass thead th { background:var(--sechead); font-weight:600; vertical-align:bottom;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+table.pass th.art, table.pass td.t { position:sticky; left:0; z-index:2;
+  min-width:250px; max-width:420px; background:var(--surface); box-shadow:1px 0 0 0 var(--bd); }
+table.pass thead th.art { z-index:3; background:var(--sechead); }
+table.pass tr.lvl2 td.t { background:var(--sunken); }
+table.pass tr.total td.t { background:var(--sunken); }
+table.pass tr.art:hover td.t { background:var(--hover); }
+table.pass td.num, table.pass th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.pass thead th.num { white-space:normal; }
+th.sep, td.sep { border-left:1px solid var(--bd); }
+/* Граница между этапами: без неё объём одного этапа зрительно липнет к проценту
+   соседнего, и строка читается как каша (замечание пользователя 29.08.2026). */
+table.pass th.num, table.pass td.num { border-left:1px solid var(--bd-subtle); }
+.dp { display:block; font-size:11px; font-variant-numeric:tabular-nums; font-weight:400; }
+.ov { display:block; font-size:9.5px; letter-spacing:0; text-transform:none; color:var(--fg4);
+  font-weight:400; margin-top:2px; }
+.up { color:var(--accent-text); }
+.down { color:var(--warn-text); }
+.flat { color:var(--fg4); }
+tr.lvl1 > td { font-weight:600; }
+tr.lvl2 > td { background:var(--sunken); font-weight:400; }
+tr.lvl2 .t { padding-left:32px; color:var(--fg2); }
+tr.art:hover > td { background:var(--hover); }
+tr.unalloc > td { font-weight:400; color:var(--fg2); }
+.tw { border:0; background:transparent; color:var(--fg3); cursor:pointer; font-size:11px;
+  padding:0 6px 0 0; font-family:inherit; }
+.code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+  color:var(--fg3); margin-right:6px; }
+.pill { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px;
+  border:1px solid var(--neutral-bd); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.pill.warn { border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }
+.inc { color:var(--warn); font-size:11px; margin-left:4px; cursor:help; }
+.conv { display:block; font-size:9.5px; font-weight:400; }
+.conv.ok { color:var(--fg4); }
+.conv.bad { color:var(--warn-text); }
+tr.total td { border-top:2px solid var(--fg); background:var(--sunken); font-weight:600; }
+.warnbox { font-size:12.5px; margin:16px 0 0; padding:11px 15px; border-radius:9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+ul.notes { margin:0; padding-left:19px; color:var(--fg2); font-size:13px; }
+ul.notes li { margin-bottom:9px; }
+ul.notes li:last-child { margin-bottom:0; }
+ul.notes b { color:var(--fg); }
+ul.notes code, .axis code, .secsub code, .state code { background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+.bound { border-left:3px solid var(--info); background:var(--info-soft);
+  border-radius:0 8px 8px 0; padding:12px 16px; }
+.tag { display:inline-block; font-size:10.5px; border-radius:5px; padding:1px 7px;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+.flow { display:flex; flex-wrap:wrap; align-items:center; gap:9px; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:15px 18px; font-size:13px; }
+.flow .node { border:1px solid var(--bd); border-radius:8px; padding:5px 11px; background:var(--sunken); white-space:nowrap; }
+.flow .node.nav { border-color:var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.flow .node.new { border-style:dashed; }
+.flow .arrow { color:var(--fg3); }
+.flow .note { color:var(--fg3); font-size:12px; width:100%; margin-top:4px; }
+.screen { border:1px solid var(--bd); border-radius:12px; overflow:hidden; background:var(--surface); }
+.screen .chrome { display:flex; align-items:center; gap:9px; padding:8px 13px;
+  background:var(--sechead); border-bottom:1px solid var(--bd-subtle); font-size:12px; color:var(--fg3); }
+.screen .chrome code { color:var(--fg2); }
+.screen .pane { padding:16px 18px; }
+.crumbs { font-size:12px; color:var(--fg3); margin-bottom:8px; }
+.crumbs a { color:var(--info); text-decoration:none; }
+.rowhead { display:flex; flex-wrap:wrap; align-items:flex-start; gap:12px; justify-content:space-between; }
+.rowhead h3 { font-family:var(--font-serif); font-weight:600; font-size:24px; margin:0; }
+.rowhead .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.btn { display:inline-block; font-size:12.5px; border-radius:8px; padding:6px 13px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); white-space:nowrap; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+.btn.disabled { opacity:.5; }
+.btns { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.hint { font-size:12px; color:var(--fg3); }
+table.grid { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.grid th, table.grid td { padding:8px 11px; border-bottom:1px solid var(--bd-subtle); text-align:left; vertical-align:middle; }
+table.grid thead th { background:var(--sechead); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+table.grid thead th.on { color:var(--accent-text); }
+table.grid td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.grid .name { font-weight:600; }
+table.grid .inn { font-size:11px; color:var(--fg3); }
+table.grid tr.dim td { color:var(--fg4); }
+table.grid tr.dim .name { color:var(--fg3); }
+table.grid th.num { text-align:right; }
+table.grid td.num { padding:6px 8px; }
+table.grid .pname { border:0; background:transparent; font:inherit; font-weight:600; color:var(--fg);
+  cursor:pointer; padding:0; text-align:left; }
+table.grid .pname:hover { text-decoration:underline; }
+/* Плитка предложения — кнопка с aria-pressed (shadcn Toggle): выбранная получает
+   акцентную рамку и галочку в правом верхнем углу, как карточка товара. */
+.tile { position:relative; display:inline-block; min-width:104px; padding:7px 12px 7px 12px;
+  border:1px solid var(--bd-subtle); border-radius:9px; background:var(--surface);
+  font-variant-numeric:tabular-nums; text-align:right; color:var(--fg); cursor:pointer; }
+.tile:hover { border-color:var(--bd); background:var(--hover); }
+.tile.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.tile.on .chk { position:absolute; top:-7px; right:-7px; width:16px; height:16px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface); }
+.tile.on .chk::after { content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid var(--action-text); border-width:0 2px 2px 0; transform:rotate(45deg); }
+.tile.off { opacity:.4; cursor:not-allowed; }
+.tile.plain { border-color:transparent; background:transparent; cursor:default; }
+.state { font-size:12.5px; padding:9px 13px; border-radius:9px; margin-top:13px; }
+.state.warn { background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+.state.info { background:var(--info-soft); border:1px solid var(--info-bd); color:var(--fg2); }
+.state b { font-weight:600; }
+.empty { text-align:center; padding:34px 20px; color:var(--fg2); }
+.empty b { display:block; color:var(--fg); font-size:15px; margin-bottom:4px; }
+.legend { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
+.legend div { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; padding:10px 13px; font-size:12.5px; color:var(--fg2); }
+.legend div b { color:var(--fg); display:block; margin-bottom:3px; }
+.legend .ex { display:block; margin-bottom:5px; font-size:13px; color:var(--fg); font-variant-numeric:tabular-nums; }
+</style>
+<style>
+/* Добавления этого макета к общей палитре свода. */
+.legend { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 14px; }
+.legend span { font-size:11.5px; border:1px solid var(--bd); border-radius:6px; padding:2px 8px; color:var(--fg2); }
+.legend b { color:var(--fg); font-weight:600; }
+.measure { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px; padding:14px 17px; margin-bottom:20px; }
+.measure table { border-collapse:collapse; width:100%; font-size:12.5px; }
+.measure td { padding:3px 0; vertical-align:baseline; }
+.measure td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; padding-left:18px; }
+.measure .hint { color:var(--fg3); font-size:11.5px; margin-top:9px; }
+tr.grp > td { background:var(--sunken); }
+tr.member > td { color:var(--fg2); font-weight:400; }
+tr.member .t { padding-left:52px; }
+.mny { display:block; font-variant-numeric:tabular-nums; }
+.sub2 { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-top:1px; }
+.qty { font-size:9.5px; color:var(--fg4); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.qty.chg { color:var(--info); font-weight:600; }
+.ambig { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px; white-space:nowrap;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+.side { display:grid; grid-template-columns:1fr 1fr; gap:0; }
+.side > div { border:1px solid var(--bd-subtle); }
+.side > div:first-child { border-radius:12px 0 0 12px; border-right:0; }
+.side > div:last-child { border-radius:0 12px 12px 0; }
+.side h4 { margin:0; padding:8px 12px; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--fg3); font-weight:600; background:var(--sechead); border-bottom:1px solid var(--bd-subtle); }
+.side ul { list-style:none; margin:0; padding:0; font-size:12.5px; }
+.side li { display:flex; justify-content:space-between; gap:12px; padding:5px 12px;
+  border-bottom:1px solid var(--bd-subtle); }
+.side li span:last-child { font-variant-numeric:tabular-nums; white-space:nowrap; }
+.side li.pair { background:var(--surface); }
+.side li.free { background:var(--sunken); color:var(--fg2); }
+.side li.blank { background:var(--sunken); color:var(--fg4); }
+.verdict { margin-top:12px; padding:11px 14px; border-radius:9px; font-size:12.5px;
+  background:var(--accent-soft); border:1px solid var(--accent-bd); color:var(--accent-text); }
+.verdict.bad { background:var(--warn-soft); border-color:var(--warn-bd); color:var(--warn-text); }
+.verdict b { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет гейта 1 — фича 4, попозиционное раскрытие статьи.</strong>
+    <span><b>Наименования работ, состав строк, число дублей и динамика статьи — настоящие,
+    со стенда</b> (статья 8.3, участник с четырьмя этапами). Деньги заменены иллюстративными:
+    итог статьи первого этапа принят за 400 млн, остальные числа получены из
+    ЗАМЕРЕННЫХ ДОЛЕЙ и замеренной динамики этапов.</span>
+    <span class="sp"></span>
+    <button id="theme" type="button">тема</button>
+  </div>
+
+  <h1>Что внутри статьи изменилось между этапами</h1>
+  <p class="sub">Свод по этапам отвечает, <b>на какой статье</b> сложилось изменение.
+  Эта фича отвечает на следующий вопрос: <b>за счёт каких работ внутри статьи</b>.
+  Главная трудность — у строк сметы нет удостоверения: подрядчик каждый раз присылает
+  новый файл, строки переставлены и переписаны, и «та же работа» — это вывод, а не
+  данность.</p>
+
+  <section>
+    <h2>Замер, на котором стоит весь дизайн</h2>
+    <p class="secsub">Сделан на реальных данных стенда до рисования макета — рамка контура
+    прямо требует выбирать ключ сопоставления на загруженных данных.</p>
+    <div class="measure">
+      <table>
+        <tr><td>Каталожная привязка есть у строки (её ставит матчер)</td><td>100 %</td></tr>
+        <tr><td>Ключ «статья + каталожная позиция» уникален</td><td>нет: 400 строк из 1192 в дублях</td></tr>
+        <tr><td>…он же с ОБЪЁМОМ ЗАКАЗЧИКА как различителем</td><td><b>76 строк, 6,4 %</b></td></tr>
+        <tr><td>Объём между этапами меняется у пары</td><td>261 пара из 684</td></tr>
+        <tr><td>Номер строки в файле устойчив между этапами</td><td>нет: 52 из 955</td></tr>
+        <tr><td><b>Сопоставилось однозначно, 1:1</b></td><td>684 пары</td></tr>
+        <tr><td><b>Осталось неразличимым</b></td><td>27 групп, 76 строк</td></tr>
+        <tr><td><b>Только в первом / только в последнем</b></td><td>110 / 101</td></tr>
+      </table>
+      <p class="hint"><b>Объём заказчика — различитель, но НЕ часть ключа.</b> Если включить
+      его в ключ, дубли падают с 400 строк до 76, но 261 пара из 684 рассыпается на «снято» +
+      «появилась»: подрядчик уточняет объёмы между этапами, и ключ с объёмом на этом врёт.
+      Поэтому ключ — «статья + каталожная позиция», а объём разводит строки уже внутри группы.
+      Ошибка первого замера: сперва я мерил поле <code>quantity</code>, которое в сметах ГП —
+      заглушка «1» (AGENTS §6), и получил вывод «объём не различает ничего». Авторитетное поле —
+      <code>suggested_quantity</code>.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Вариант A. Неоднозначная группа — одна строка со своим итогом</h2>
+    <p class="secsub">Статья <b>8.3 «Устройство дверей, ворот, противопожарных штор,
+    люков и т.д.»</b>, все четыре этапа. Состав строк настоящий: пары нашлись однозначно у всех строк — в этой статье объём
+    заказчика развёл даже те, что совпали по каталогу; одна строка снята, несколько появилось.</p>
+
+    <div class="legend">
+      <span><b>1:1</b> — пара найдена однозначно</span>
+      <span><b>2 строки &rarr; 2 строки</b> — группа, сравнивается итог</span>
+      <span><b>появилась / снято</b> — только на одном конце</span>
+    </div>
+
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr>
+            <th class="art">Работа</th>
+            <th class="num">Этап 1</th><th class="num">Этап 2</th>
+            <th class="num">Этап 3</th><th class="num">Этап 4</th>
+            <th class="num sep">первый &rarr; последний</th>
+            <th class="num">Вклад в статью, млн</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="lvl2 art"><td class="t">Входные двери квартир · класс взломостойкости 5</td><td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span></span></td><td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span><span class="dp flat">0,0 %</span></span></td><td class="num"><span class="mny">183</span><span class="sub2"><span class="qty">762 шт</span><span class="dp up">+2,2 %</span></span></td><td class="num"><span class="mny">72</span><span class="sub2"><span class="qty">762 шт</span><span class="dp down">−60,7 %</span></span></td><td class="num sep"><span class="dp down">−59,8 %</span></td><td class="num"><span class="down">−107</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Двери в эвакуационные ЛК и тамбур-шлюзы на всех этажах</td><td class="num"><span class="mny">82</span><span class="sub2"><span class="qty">294 шт</span></span></td><td class="num"><span class="mny">31</span><span class="sub2"><span class="qty chg">111 шт</span><span class="dp down">−62,2 %</span></span></td><td class="num"><span class="mny">78</span><span class="sub2"><span class="qty chg">273 шт</span><span class="dp up">+151,6 %</span></span></td><td class="num"><span class="mny">56</span><span class="sub2"><span class="qty">273 шт</span><span class="dp down">−28,2 %</span></span></td><td class="num sep"><span class="dp down">−31,7 %</span></td><td class="num"><span class="down">−26</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Дверь МОП — лифтовой холл/коридор на типовых этажах</td><td class="num"><span class="mny">50</span><span class="sub2"><span class="qty">160 шт</span></span></td><td class="num"><span class="mny">112</span><span class="sub2"><span class="qty chg">356 шт</span><span class="dp up">+124,0 %</span></span></td><td class="num"><span class="mny">61</span><span class="sub2"><span class="qty chg">188 шт</span><span class="dp down">−45,5 %</span></span></td><td class="num"><span class="mny">50</span><span class="sub2"><span class="qty">188 шт</span><span class="dp down">−18,0 %</span></span></td><td class="num sep"><span class="dp flat">0,0 %</span></td><td class="num"><span class="flat">0</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Ревизионные люки, дверцы скрытого монтажа под отделку</td><td class="num"><span class="mny">24</span><span class="sub2"><span class="qty">1 905 шт</span></span></td><td class="num"><span class="mny">24</span><span class="sub2"><span class="qty">1 905 шт</span><span class="dp flat">0,0 %</span></span></td><td class="num"><span class="mny">25</span><span class="sub2"><span class="qty">1 905 шт</span><span class="dp up">+4,2 %</span></span></td><td class="num"><span class="mny">17</span><span class="sub2"><span class="qty">1 905 шт</span><span class="dp down">−32,0 %</span></span></td><td class="num sep"><span class="dp down">−29,2 %</span></td><td class="num"><span class="down">−7</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Внутренние ворота откатные</td><td class="num"><span class="mny">11</span><span class="sub2"><span class="qty">6 шт</span></span></td><td class="num"><span class="mny">11</span><span class="sub2"><span class="qty">6 шт</span><span class="dp flat">0,0 %</span></span></td><td class="num"><span class="mny">12</span><span class="sub2"><span class="qty">6 шт</span><span class="dp up">+9,1 %</span></span></td><td class="num"><span class="mny">10</span><span class="sub2"><span class="qty">6 шт</span><span class="dp down">−16,7 %</span></span></td><td class="num sep"><span class="dp down">−9,1 %</span></td><td class="num"><span class="down">−1</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Двери в пассажирские лифтовые холлы и тамбур-шлюзы</td><td class="num"><span class="mny">10</span><span class="sub2"><span class="qty">33 шт</span></span></td><td class="num"><span class="mny">10</span><span class="sub2"><span class="qty">33 шт</span><span class="dp flat">0,0 %</span></span></td><td class="num"><span class="mny">11</span><span class="sub2"><span class="qty">33 шт</span><span class="dp up">+10,0 %</span></span></td><td class="num"><span class="mny">8,8</span><span class="sub2"><span class="qty">33 шт</span><span class="dp down">−20,0 %</span></span></td><td class="num sep"><span class="dp down">−12,0 %</span></td><td class="num"><span class="down">−1,2</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Въездные ворота подземной автостоянки</td><td class="num"><span class="mny">9,5</span><span class="sub2"><span class="qty">2 шт</span></span></td><td class="num"><span class="mny">14</span><span class="sub2"><span class="qty chg">3 шт</span><span class="dp up">+47,4 %</span></span></td><td class="num"><span class="mny">4,9</span><span class="sub2"><span class="qty chg">1 шт</span><span class="dp down">−65,0 %</span></span></td><td class="num"><span class="mny">4,2</span><span class="sub2"><span class="qty">1 шт</span><span class="dp down">−14,3 %</span></span></td><td class="num sep"><span class="dp down">−55,8 %</span></td><td class="num"><span class="down">−5,3</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Двери в технические помещения, однопольная скрытая</td><td class="num"><span class="mny">6,8</span><span class="sub2"><span class="qty">73 шт</span></span></td><td class="num"><span class="mny">6,3</span><span class="sub2"><span class="qty chg">68 шт</span><span class="dp down">−7,4 %</span></span></td><td class="num"><span class="mny">6,4</span><span class="sub2"><span class="qty">68 шт</span><span class="dp up">+1,6 %</span></span></td><td class="num"><span class="mny">5,5</span><span class="sub2"><span class="qty">68 шт</span><span class="dp down">−14,1 %</span></span></td><td class="num sep"><span class="dp down">−19,1 %</span></td><td class="num"><span class="down">−1,3</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Двери кладовых помещений</td><td class="num"><span class="mny">4,9</span><span class="sub2"><span class="qty">67 шт</span></span></td><td class="num"><span class="mny">4,9</span><span class="sub2"><span class="qty">67 шт</span><span class="dp flat">0,0 %</span></span></td><td class="num"><span class="mny">5</span><span class="sub2"><span class="qty">67 шт</span><span class="dp up">+2,0 %</span></span></td><td class="num"><span class="mny">4,3</span><span class="sub2"><span class="qty">67 шт</span><span class="dp down">−14,0 %</span></span></td><td class="num sep"><span class="dp down">−12,2 %</span></td><td class="num"><span class="down">−0,6</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Двери кладовых помещений</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="mny">3</span><span class="sub2"><span class="qty">40 шт</span><span class="pill">появилась</span></span></td><td class="num"><span class="mny">2,6</span><span class="sub2"><span class="qty">40 шт</span><span class="dp down">−13,3 %</span></span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="up">2,6</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Входная дверь в здание</td><td class="num"><span class="mny">2,5</span><span class="sub2"><span class="qty">11 шт</span></span></td><td class="num"><span class="mny">0,2</span><span class="sub2"><span class="qty chg">1 шт</span><span class="dp down">−92,0 %</span></span></td><td class="num"><span class="pill warn">снято</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="down">−2,5</span></td></tr>
+          <tr class="lvl2 art"><td class="t">Прочие 13 строк статьи <span class="ambig">свёрнуто</span></td><td class="num"><span class="mny">19</span></td><td class="num"><span class="mny">20</span></td><td class="num"><span class="mny">24</span></td><td class="num"><span class="mny">21</span></td><td class="num sep"><span class="dp up">+10,5 %</span></td><td class="num"><span class="down">−-2</span></td></tr>
+          <tr class="total"><td class="t">Итого по статье</td><td class="num"><span class="mny">400</span></td><td class="num"><span class="mny">414</span><span class="sub2"><span class="dp up">+3,5 %</span></span></td><td class="num"><span class="mny">412</span><span class="sub2"><span class="dp down">−0,5 %</span></span></td><td class="num"><span class="mny">250</span><span class="sub2"><span class="dp down">−39,3 %</span></span></td><td class="num sep"><span class="dp down">−37,6 %</span></td><td class="num"><span class="down">−150</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="secsub" style="margin-top:16px">В этой статье после различения по объёму
+    неоднозначных групп не осталось вовсе. Вот как выглядит группа, которая не развелась
+    и по объёму, — из <b>другой статьи, 7.2 «Устройство кровли зданий»</b>. Это пирог кровли:
+    на одни и те же 248,45 м² уложено одиннадцать слоёв, и <b>«Битумный праймер» входит в него
+    дважды</b> — под каждый слой гидроизоляции. Обе строки совпадают во всём: позиция каталога,
+    объём, единица, сумма. Сопоставить их между этапами нечем, и экран этого не скрывает.</p>
+    <div class="scroller">
+      <table class="pass">
+        <tbody>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Битумный праймер Технониколь №1 <span class="ambig">2 строки &rarr; 2 строки</span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,5</span><span class="sub2"><span class="qty">248 м²</span><span class="dp down">&minus;37,5 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;37,5 %</span></td><td class="num"><span class="down">&minus;0,3</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1 · под первый слой гидроизоляции</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1 · под второй слой гидроизоляции</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="secsub" style="margin-top:10px">Подписи «под первый слой» и «под второй слой»
+    здесь <b>дописаны для наглядности — в файле их нет</b>. В смете обе строки называются
+    одинаково, и порядок в пироге — единственное, чем они отличаются. Использовать порядок как
+    ключ мы не можем: он между этапами не устойчив (замер выше).</p>
+    <div class="verdict"><b>Что даёт вариант A:</b> та же таблица, что свод, читается сверху
+    вниз; итог статьи сходится из строк тождественно; объём стоит рядом с суммой, поэтому
+    видно, когда процент — это не уступка, а изменение количества; неоднозначность названа
+    значком, а не спрятана. <b>Чего не даёт:</b> внутри группы «что на что заменили» не
+    видно — и по данным этого не знает никто.</div>
+  </section>
+
+  <section>
+    <h2>Вариант B. Две стороны списком, соответствие не заявляется</h2>
+    <p class="secsub">Экран не берётся сопоставлять вовсе: слева строки первого этапа,
+    справа последнего. Те же настоящие работы статьи 8.3.</p>
+    <div class="side">
+      <div>
+        <h4>Этап 1 · 20 строк</h4>
+        <ul>
+          <li class="pair"><span>Входные двери квартир</span><span>179</span></li>
+          <li class="pair"><span>Двери в эвакуационные ЛК и тамбур-шлюзы</span><span>82</span></li>
+          <li class="pair"><span>Дверь МОП — лифтовой холл/коридор</span><span>50</span></li>
+          <li class="pair"><span>Ревизионные люки, дверцы скрытого монтажа</span><span>24</span></li>
+          <li class="free"><span>Двери кладовых помещений · 1 шт</span><span>5</span></li>
+          <li class="blank"><span>— нет строки —</span><span></span></li>
+          <li class="free"><span>Входная дверь в здание</span><span>2</span></li>
+          <li class="blank"><span>— нет строки —</span><span></span></li>
+          <li class="blank"><span>— нет строки —</span><span></span></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Этап 4 · 23 строки</h4>
+        <ul>
+          <li class="pair"><span>Входные двери квартир</span><span>72</span></li>
+          <li class="pair"><span>Двери в эвакуационные ЛК и тамбур-шлюзы</span><span>56</span></li>
+          <li class="pair"><span>Дверь МОП — лифтовой холл/коридор</span><span>50</span></li>
+          <li class="pair"><span>Ревизионные люки, дверцы скрытого монтажа</span><span>17</span></li>
+          <li class="free"><span>Двери кладовых помещений · 1 шт</span><span>4</span></li>
+          <li class="free"><span>Двери кладовых помещений · 1 шт</span><span>3</span></li>
+          <li class="blank"><span>— снято: Входная дверь в здание —</span><span></span></li>
+          <li class="free"><span>Двери в помещения персонала УК · 2 строки</span><span>1,4</span></li>
+          <li class="free"><span>Двери ПУИ СУ · 2 строки</span><span>1,1</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="verdict bad"><b>Что даёт:</b> ни одного утверждения, которого нет в
+    данных. <b>Чего не даёт:</b> ответа на исходный вопрос — «за счёт чего изменилась
+    статья»; читатель считает сам, а колонок этапов тут помещается только две из
+    четырёх.</div>
+  </section>
+
+  <section>
+    <h2>Что в обоих вариантах одинаково</h2>
+    <ul class="notes">
+      <li><b>Объём заказчика стоит второй строкой в каждой ячейке.</b> Без него процент по
+      сумме смешивает цену и количество: «Двери в эвакуационные ЛК» на втором этапе показывают
+      &minus;62,2 %, но это не уступка, а падение объёма с 294 до 111 шт. Объём между этапами
+      меняется у 261 пары из 684 — то есть на 38 % строк. Изменившийся объём выделен тоном.</li>
+      <li><b>Удельная цена (₽ за единицу) становится осмысленной</b> ровно потому, что объём
+      показан: она равна сумме, делённой на объём заказчика, и её изменение — это движение цены,
+      очищенное от количества. Заводить ли ей отдельную колонку — открытый вопрос гейта: три
+      величины в ячейке уже много.</li>
+      <li><b>Появление и снятие — те же пилюли, что в своде.</b> Новых слов на этой
+      поверхности не заводится.</li>
+      <li><b>Итог статьи сходится из показанных строк:</b> свёрнутая группа несёт сумму
+      своих строк, «прочие 13 строк» — свою.</li>
+      <li><b>Работа могла переехать в другую статью</b> — тогда здесь она видна как
+      снятие, а в соседней как появление. Это факт о файле, и экран его не сглаживает.</li>
+    </ul>
+  </section>
+
+</div>
+<script>
+document.querySelectorAll('button.tw[data-k]').forEach(function(b){
+  var k = b.getAttribute('data-k');
+  var kids = document.querySelectorAll('tr.k-' + k);
+  function apply(open){ kids.forEach(function(r){ r.hidden = !open; }); b.textContent = open ? '▾' : '▸'; b.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  apply(b.getAttribute('aria-expanded') === 'true');
+  b.addEventListener('click', function(){ apply(b.getAttribute('aria-expanded') !== 'true'); });
+});
+var tb = document.getElementById('theme');
+tb.addEventListener('click', function(){
+  var r = document.documentElement;
+  var dark = r.getAttribute('data-theme') === 'dark' || (!r.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme', dark ? 'light' : 'dark');
+});
+</script>
+</body>
+</html>
