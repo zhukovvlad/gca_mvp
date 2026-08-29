@@ -236,6 +236,9 @@ tr.member .t { padding-left:52px; }
 .vh { font-family:var(--font-serif); font-weight:600; font-size:17px; margin:22px 0 4px; }
 .cnt { color:var(--fg3); font-weight:400; }
 .verdict.bad b { color:var(--warn-text); }
+tr.pos3 > td { background:var(--surface); }
+tr.pos3 .t { padding-left:52px; }
+tr.dimrow > td { color:var(--fg4); font-style:italic; }
 </style>
 </head>
 <body>
@@ -551,6 +554,166 @@ tr.member .t { padding-left:52px; }
     рассуждением. Он же снимает исходную причину непонимания: стрелки в пометке нет вовсе,
     а слово уточнено до «строк СМЕТЫ». Цена &mdash; вторая строка ячейки становится плотнее,
     и это надо учесть при решении по «₽ за единицу» (вопрос 4).</div>
+  </section>
+
+  <section id="place">
+    <h2>Открытый вопрос гейта: где живёт экран</h2>
+    <p class="secsub">Свод по этапам отвечает, НА КАКОЙ СТАТЬЕ сложилось изменение. Этот экран
+    отвечает, ЗА СЧЁТ КАКИХ РАБОТ внутри статьи. Вопрос в том, чем он приходится своду:
+    третьим уровнем той же таблицы, отдельной страницей или панелью рядом.</p>
+
+    <div class="measure">
+      <table>
+        <tr><td>Статей с работами у этого участника</td><td>95</td></tr>
+        <tr><td>Строк экрана в статье: медиана</td><td>8</td></tr>
+        <tr><td>…девятая дециль</td><td>39</td></tr>
+        <tr><td>…худшая статья</td><td>168</td></tr>
+        <tr><td>Всего строк экрана, если раскрыть ВСЕ статьи сразу</td><td>1 679</td></tr>
+      </table>
+      <p class="hint">Замер 29.08.2026, тот же участник и те же четыре этапа. «Строка экрана» —
+      группа «статья + каталожная позиция + объём заказчика», объединённая по всем этапам:
+      именно она и есть строка этой таблицы после решений 1 и 2.</p>
+    </div>
+
+    <h3 class="vh">Вариант A. Третий уровень внутри свода</h3>
+    <p class="secsub">Статья раскрывается тем же шевроном, что и сейчас, и позиции встают
+    строками ниже. Ниже — фрагмент свода: два уровня классификатора, третьим идут работы.</p>
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr><th class="art">Статья</th><th class="num">Этап 1</th><th class="num">Этап 2</th>
+          <th class="num">Этап 3</th><th class="num">Этап 4</th>
+          <th class="num sep">первый &rarr; последний</th><th class="num">Вклад, млн</th></tr>
+        </thead>
+        <tbody>
+          <tr class="lvl1"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            <span class="code">8</span>Заполнение проёмов</td>
+            <td class="num">468</td><td class="num">486</td><td class="num">483</td><td class="num">297</td>
+            <td class="num sep"><span class="dp down">&minus;36,5 %</span></td><td class="num"><span class="down">&minus;171</span></td></tr>
+          <tr class="lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            <span class="code">8.3</span>Устройство дверей, ворот, противопожарных штор, люков</td>
+            <td class="num">400</td><td class="num">414</td><td class="num">412</td><td class="num">250</td>
+            <td class="num sep"><span class="dp down">&minus;37,6 %</span></td><td class="num"><span class="down">&minus;150</span></td></tr>
+          <tr class="pos3"><td class="t">Входные двери квартир · класс взломостойкости 5</td>
+            <td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span></span></td>
+            <td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">183</span><span class="sub2"><span class="qty">762 шт</span><span class="dp up">+2,2 %</span></span></td>
+            <td class="num"><span class="mny">72</span><span class="sub2"><span class="qty">762 шт</span><span class="dp down">&minus;60,7 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;59,8 %</span></td><td class="num"><span class="down">&minus;107</span></td></tr>
+          <tr class="pos3"><td class="t">Двери в эвакуационные ЛК и тамбур-шлюзы на всех этажах</td>
+            <td class="num"><span class="mny">82</span><span class="sub2"><span class="qty">294 шт</span></span></td>
+            <td class="num"><span class="mny">31</span><span class="sub2"><span class="qty chg">111 шт</span><span class="dp down">&minus;62,2 %</span></span></td>
+            <td class="num"><span class="mny">78</span><span class="sub2"><span class="qty chg">273 шт</span><span class="dp up">+151,6 %</span></span></td>
+            <td class="num"><span class="mny">56</span><span class="sub2"><span class="qty">273 шт</span><span class="dp down">&minus;28,2 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;31,7 %</span></td><td class="num"><span class="down">&minus;26</span></td></tr>
+          <tr class="pos3 dimrow"><td class="t">…ещё 22 строки статьи</td>
+            <td class="num" colspan="6"></td></tr>
+          <tr class="lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&or;</span>
+            <span class="code">8.4</span>Устройство светопрозрачных конструкций</td>
+            <td class="num">68</td><td class="num">72</td><td class="num">71</td><td class="num">47</td>
+            <td class="num sep"><span class="dp down">&minus;30,9 %</span></td><td class="num"><span class="down">&minus;21</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict bad"><b>Против:</b> в одну таблицу попадают ДВЕ РАЗНЫЕ ОСИ — узлы
+    классификатора и строки сметы; проект уже платил за их смешение (AGENTS §7.4: пометка
+    ручного разноса стоит на статье, а не на разделе сметы, «это разные оси»). Отступ уходит на
+    четвёртый уровень, а колонка подписи в своде и без того замерена на 55,8 % контейнера при
+    раскрытии (AGENTS §11). Худшая статья добавляет 168 строк в таблицу, где уже 95 статей.
+    <b>За:</b> итог статьи и её строки видны одновременно, и сходимость читается глазом.</div>
+
+    <h3 class="vh">Вариант B. Отдельная страница статьи</h3>
+    <p class="secsub">Клик по названию статьи в своде уводит на свой маршрут; выбор этапов
+    переезжает в адрес вместе со статьёй, крошки ведут назад.</p>
+    <div class="flow" style="margin-bottom:14px">
+      <span class="node nav">Карточка тендера</span><span class="arrow">&rarr;</span>
+      <span class="node">Свод по этапам<br><code>/tenders/2/summary?offers=…</code></span><span class="arrow">&rarr;</span>
+      <span class="node new">Статья<br><code>/tenders/2/summary/8.3?offers=…</code></span>
+      <span class="note">Пункта в меню нет ни у свода, ни у статьи: без выбора этапов оба бессмысленны.</span>
+    </div>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/2/summary/8.3?offers=7,9,13,18</code></div>
+      <div class="pane">
+        <div class="crumbs"><a href="#place">Тендер</a> · <a href="#place">Свод по этапам</a> · Статья 8.3</div>
+        <div class="rowhead">
+          <div>
+            <h3><span class="code">8.3</span>Устройство дверей, ворот, противопожарных штор, люков</h3>
+            <div class="meta">Четыре этапа одного участника · 24 строки · итог статьи 400 &rarr; 250 млн</div>
+          </div>
+          <div class="btns"><span class="btn">&larr; к своду</span></div>
+        </div>
+        <div class="axis"><b>Все суммы — с НДС 20 %.</b> Ценовой уровень номинальный, приведения нет.</div>
+        <div class="scroller" style="margin-top:13px">
+          <table class="pass">
+            <thead>
+              <tr><th class="art">Работа</th><th class="num">Этап 1</th><th class="num">Этап 2</th>
+              <th class="num">Этап 3</th><th class="num">Этап 4</th>
+              <th class="num sep">первый &rarr; последний</th><th class="num">Вклад в статью, млн</th></tr>
+            </thead>
+            <tbody>
+              <tr class="lvl2 art"><td class="t">Входные двери квартир · класс взломостойкости 5</td>
+                <td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span></span></td>
+                <td class="num"><span class="mny">179</span><span class="sub2"><span class="qty">762 шт</span><span class="dp flat">0,0 %</span></span></td>
+                <td class="num"><span class="mny">183</span><span class="sub2"><span class="qty">762 шт</span><span class="dp up">+2,2 %</span></span></td>
+                <td class="num"><span class="mny">72</span><span class="sub2"><span class="qty">762 шт</span><span class="dp down">&minus;60,7 %</span></span></td>
+                <td class="num sep"><span class="dp down">&minus;59,8 %</span></td><td class="num"><span class="down">&minus;107</span></td></tr>
+              <tr class="lvl2 art"><td class="t">Двери в эвакуационные ЛК и тамбур-шлюзы на всех этажах</td>
+                <td class="num"><span class="mny">82</span><span class="sub2"><span class="qty">294 шт</span></span></td>
+                <td class="num"><span class="mny">31</span><span class="sub2"><span class="qty chg">111 шт</span><span class="dp down">&minus;62,2 %</span></span></td>
+                <td class="num"><span class="mny">78</span><span class="sub2"><span class="qty chg">273 шт</span><span class="dp up">+151,6 %</span></span></td>
+                <td class="num"><span class="mny">56</span><span class="sub2"><span class="qty">273 шт</span><span class="dp down">&minus;28,2 %</span></span></td>
+                <td class="num sep"><span class="dp down">&minus;31,7 %</span></td><td class="num"><span class="down">&minus;26</span></td></tr>
+              <tr class="total"><td class="t">Итого по статье</td>
+                <td class="num">400</td><td class="num">414</td><td class="num">412</td><td class="num">250</td>
+                <td class="num sep"><span class="dp down">&minus;37,6 %</span></td><td class="num"><span class="down">&minus;150</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="verdict"><b>За:</b> оси не смешиваются — на этой поверхности строка означает
+    работу и только её; ширина своя, колонки свои, заголовок несёт название статьи и её итог;
+    ссылка воспроизводит экран целиком; повторяется тот же приём, каким уже живут сравнение
+    договоров и сам свод (вход выбором, пункта в меню нет). <b>Против:</b> уход со страницы —
+    соседние статьи из виду пропадают, возврат стоит клика; и по AGENTS §10 подпись налоговой
+    оси надо объявить заново на новой поверхности.</div>
+
+    <h3 class="vh">Вариант C. Панель рядом</h3>
+    <p class="secsub">Статья открывается справа поверх свода; свод остаётся виден и приглушён.</p>
+    <div class="side" style="grid-template-columns:0.85fr 1.15fr">
+      <div>
+        <h4>Свод по этапам — остаётся на месте</h4>
+        <ul>
+          <li class="free"><span>8.1 Кладочные работы</span><span>&minus;12</span></li>
+          <li class="free"><span>8.2 Монтаж перегородок</span><span>&minus;9</span></li>
+          <li class="pair"><span><b>8.3 Устройство дверей, ворот…</b></span><span><b>&minus;150</b></span></li>
+          <li class="free"><span>8.4 Светопрозрачные конструкции</span><span>&minus;21</span></li>
+          <li class="blank"><span>— свод продолжается —</span><span></span></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Панель · статья 8.3 · 24 строки</h4>
+        <ul>
+          <li class="pair"><span>Входные двери квартир · класс 5<br><span class="qty">762 шт · 179 &rarr; 72</span></span><span>&minus;107</span></li>
+          <li class="pair"><span>Двери в эвакуационные ЛК и тамбур-шлюзы<br><span class="qty">294 &rarr; 273 шт · 82 &rarr; 56</span></span><span>&minus;26</span></li>
+          <li class="pair"><span>Дверь МОП — лифтовой холл/коридор<br><span class="qty">160 &rarr; 188 шт · 50 &rarr; 50</span></span><span>0</span></li>
+          <li class="blank"><span>— ещё 21 строка —</span><span></span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="verdict bad"><b>Против:</b> четыре этапа плюс «первый &rarr; последний» плюс вклад
+    — семь колонок; в панели они не помещаются, и таблица вырождается в список, где движение по
+    этапам приходится сворачивать в «179 &rarr; 72». То есть панель отвечает на вопрос «сколько
+    стало», а фича заведена ради вопроса «когда это произошло». На узком окне панель всё равно
+    станет полноэкранной — то есть вариантом B, но без адреса. <b>За:</b> контекст соседних
+    статей не теряется, возврат бесплатный.</div>
+
+    <div class="bound" style="margin-top:16px"><b>Рекомендация &mdash; вариант B.</b> Решает
+    единственное жёсткое ограничение — семь колонок на четырёх этапах требуют полной ширины, а
+    их будет больше, если заведём «₽ за единицу» (вопрос 4). Плюс не смешивает оси
+    классификатора и сметы, за что проект уже платил. Цену варианта B — потерю соседних статей
+    из виду — снимает заголовок: он несёт название статьи и её итог, то есть ровно ту строку
+    свода, из которой пришли.</div>
   </section>
 
   <section>
