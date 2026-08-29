@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
 from config import settings
+from crud import stage_summary as crud_stage_summary
 from crud import tenders as crud_tenders
 from crud.common import DomainError
 from database import get_db, get_session_factory
@@ -69,6 +70,23 @@ def list_tenders(q: str | None = Query(default=None), page: int = Query(default=
 def get_tender(tender_id: int, db: Session = Depends(get_db)):
     try:
         return decimal_json(crud_tenders.get_tender_card(db, tender_id))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.get("/{tender_id}/stage-summary")
+def stage_summary(tender_id: int, offers: list[int] = Query(default=[]), db: Session = Depends(get_db)):
+    """Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.3, §2.16).
+
+    `offers` — повторяющийся параметр. Пустой список НЕ отдаётся ошибкой валидации
+    FastAPI: он доходит до домена и получает `too_few_offers` — тот же код, что у
+    одного предложения, чтобы клиент различал причины по `code`, а не по форме 422.
+
+    Ответ обёртывается decimal_json — это стандартный контракт маршрутизатора для
+    денежных полей (всё уже квантовано и распечатано слоем ниже).
+    """
+    try:
+        return decimal_json(crud_stage_summary.build_stage_summary(db, tender_id, offers))
     except DomainError as e:
         raise_domain_error(e)
 

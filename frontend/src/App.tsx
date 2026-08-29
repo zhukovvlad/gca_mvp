@@ -19,6 +19,7 @@ import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
+import StageSummaryPage from "@/pages/tenders/summary/StageSummaryPage";
 import TenderCardPage from "@/pages/tenders/TenderCardPage";
 import TendersPage from "@/pages/tenders/TendersPage";
 
@@ -84,6 +85,13 @@ export default function App() {
                 */}
                 <Route path="/tenders" element={<TendersPage />} />
                 <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
+                {/*
+                  Свод по этапам (спека 2026-08-27-stage-summary-design.md
+                  §2.16) — не пункт меню: вход только по выбору предложений
+                  на решётке карточки тендера (`OfferGrid`), тем же правилом,
+                  что и «Сравнение договоров» (`/compare`).
+                */}
+                <Route path="/tenders/:tenderId/summary" element={<StageSummaryPage />} />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*
                   Паспорт проекта (Ф6 фазы 7) — чтение, поэтому доступен и `member` (§3):

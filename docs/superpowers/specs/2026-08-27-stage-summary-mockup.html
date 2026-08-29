@@ -1,0 +1,489 @@
+<!--
+  Макет фичи 3 «Свод по этапам, по статьям» — вторая редакция, по итогам
+  гейта 1 (брейншторм 27.08.2026). Заменяет экран 4 макета
+  2026-08-25-offer-stages-mockup.html; экраны 1–3 того макета устарели после
+  фичи 2 и здесь не повторяются.
+
+  ЧТО ИЗМЕНИЛОСЬ ПРОТИВ РЕДАКЦИИ 25.08 И ПОЧЕМУ:
+  * Вход — выбор на решётке «участники × раунды» карточки тендера (решение
+    пользователя 27.08): ячейка со сметой — плитка-переключатель с галочкой в
+    углу (как карточка товара; shadcn Toggle + aria-pressed), нажатие на имя
+    участника выбирает все его этапы. Выбираются предложения ОДНОГО участника,
+    по одному на раунд, любые раунды можно исключить. Кнопка активна от двух
+    смет. Выбор живёт в URL страницы свода (`?offers=…`), на карточке — локально.
+  * Один участник на трассу. Семантика «снято / не оценивалась / уступка»
+    написана про путь одного подрядчика; смешанная трасса (этап 1 — А, этап 2
+    — Б) сделала бы подписи ложными. Смешанные трассы — задел контракта
+    (API от списка offer_id), не этой фичи. Рамка §5.5 и AGENTS.md §7 п.8
+    приводятся к этому в спеке фичи 3.
+  * Путь = ВЫБРАННЫЕ колонки. «Предыдущий раунд» и «снято» считаются по
+    выбранным, а не по всем раундам участника: поверхность обязана
+    воспроизводиться из своего URL. Шапка предупреждает: «этапов в своде 4 из 5».
+  * Колонки «Договор» и «После торга» НЕТ: `contracts.awarded_offer_id` не
+    существует, он в отдельной тонкой фиче вне четвёрки. Ответ API готов принять
+    колонку `kind: 'contract'` за разделителем без перелома.
+  * Порядок строк — по убыванию модуля «Вклада в итог», а не по сумме первого
+    этапа: поверхность отвечает «на чём сложилось изменение».
+    ПЕРЕСМОТРЕНО 28.08.2026 по просмотру на стенде: в приложении порядок строк —
+    по `sort_order` классификатора; причина — спека §2.13. Макет здесь остался
+    исторической редакцией гейта 1, как и редакция 25.08 до него.
+  * Признак ручного разноса и дата — под шапкой каждой колонки (контракт §8).
+  * Строка «Нераспределённое» обязательна, её «Торг» без процента (контракт §7);
+    на реальном стенде она непуста у двух участников из пяти.
+  * Сходимость показывается в строке «Итого» у каждой колонки; на стенде
+    сходится 16 из 16 смет предложений до копейки.
+  * Флаг неполноты ячейки (`incomplete`) — значок ◐ с подсказкой (контракт §2.1).
+  * Трасса торга — обычные блоки, не recharts: нет осей и наведения, а у
+    recharts в проекте два записанных грабля (AGENTS.md §11).
+
+  ДАННЫЕ. Пропорции — те же, что в редакции 25.08 (итог первого этапа = 10 000
+  млн, пять этапов одного участника), чтобы картина была узнаваема. Проценты
+  пересчитаны скриптом к предыдущей ВЫБРАННОЙ колонке по округлённым суммам —
+  иллюстрация, не результат сервера. Статья «15» добавлена как пример
+  состояния `absent` (статьи нет в файле ни одной строкой), в исходных файлах
+  её не было. Раскладка на 10 колонок — синтетическая (линейная между первым
+  и последним этапом), нужна только для замера прокрутки (открытый вопрос
+  контракта §11.2). Названия участников и объекта обезличены, абсолютных сумм
+  в документе нет.
+
+  Палитра и классы таблицы — из редакции 25.08 без изменений; новые классы:
+  `.ov` (признак разноса под шапкой), `.inc` (неполнота), `.conv` (сходимость),
+  `table.grid`/`.tile` (решётка с плитками-переключателями), `.legend`, `.empty`.
+-->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Свод по этапам: макет гейта 1</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1320px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar b { color:var(--fg); }
+.mockbar .sp { flex:1; }
+.mockbar button { font:inherit; font-size:12px; border:1px solid var(--bd); background:var(--surface);
+  color:var(--fg); border-radius:7px; padding:3px 9px; cursor:pointer; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:70ch; }
+.sub b { color:var(--fg); }
+section { margin-bottom:38px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:78ch; }
+.secsub b { color:var(--fg); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+.pass-head { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px;
+  padding:16px 18px; margin-bottom:22px; }
+.pass-head h3 { font-family:var(--font-serif); font-weight:600; font-size:26px; margin:0; }
+.pass-head .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.tep { display:flex; flex-wrap:wrap; gap:22px; margin-top:13px; padding-top:13px;
+  border-top:1px solid var(--bd-subtle); }
+.tep div { display:flex; flex-direction:column; gap:1px; }
+.tep .k { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.tep .v { font-size:14px; font-variant-numeric:tabular-nums; }
+.axis { margin-top:13px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); }
+.axis b { color:var(--fg); }
+.track { display:flex; gap:14px; align-items:flex-end; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:18px 20px 14px; }
+.bar { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; }
+.bwrap { width:100%; max-width:130px; height:150px; display:flex; align-items:flex-end;
+  background:var(--sunken); border-radius:7px 7px 0 0; }
+.bfill { width:100%; background:var(--accent); border-radius:7px 7px 0 0; }
+.bv { font-variant-numeric:tabular-nums; font-weight:600; font-size:14px; }
+.bl { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.bd { font-size:12px; font-variant-numeric:tabular-nums; min-height:18px; }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px; background:var(--surface); }
+table.pass { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.pass th, table.pass td { border-bottom:1px solid var(--bd-subtle); padding:6px 11px;
+  text-align:left; vertical-align:baseline; }
+table.pass thead th { background:var(--sechead); font-weight:600; vertical-align:bottom;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+table.pass th.art, table.pass td.t { position:sticky; left:0; z-index:2;
+  min-width:250px; max-width:420px; background:var(--surface); box-shadow:1px 0 0 0 var(--bd); }
+table.pass thead th.art { z-index:3; background:var(--sechead); }
+table.pass tr.lvl2 td.t { background:var(--sunken); }
+table.pass tr.total td.t { background:var(--sunken); }
+table.pass tr.art:hover td.t { background:var(--hover); }
+table.pass td.num, table.pass th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.pass thead th.num { white-space:normal; }
+th.sep, td.sep { border-left:1px solid var(--bd); }
+.dp { display:block; font-size:11px; font-variant-numeric:tabular-nums; font-weight:400; }
+.ov { display:block; font-size:9.5px; letter-spacing:0; text-transform:none; color:var(--fg4);
+  font-weight:400; margin-top:2px; }
+.up { color:var(--accent-text); }
+.down { color:var(--warn-text); }
+.flat { color:var(--fg4); }
+tr.lvl1 > td { font-weight:600; }
+tr.lvl2 > td { background:var(--sunken); font-weight:400; }
+tr.lvl2 .t { padding-left:32px; color:var(--fg2); }
+tr.art:hover > td { background:var(--hover); }
+tr.unalloc > td { font-weight:400; color:var(--fg2); }
+.tw { border:0; background:transparent; color:var(--fg3); cursor:pointer; font-size:11px;
+  padding:0 6px 0 0; font-family:inherit; }
+.code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+  color:var(--fg3); margin-right:6px; }
+.pill { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px;
+  border:1px solid var(--neutral-bd); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.pill.warn { border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }
+.inc { color:var(--warn); font-size:11px; margin-left:4px; cursor:help; }
+.conv { display:block; font-size:9.5px; font-weight:400; }
+.conv.ok { color:var(--fg4); }
+.conv.bad { color:var(--warn-text); }
+tr.total td { border-top:2px solid var(--fg); background:var(--sunken); font-weight:600; }
+.warnbox { font-size:12.5px; margin:16px 0 0; padding:11px 15px; border-radius:9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+ul.notes { margin:0; padding-left:19px; color:var(--fg2); font-size:13px; }
+ul.notes li { margin-bottom:9px; }
+ul.notes li:last-child { margin-bottom:0; }
+ul.notes b { color:var(--fg); }
+ul.notes code, .axis code, .secsub code, .state code { background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+.bound { border-left:3px solid var(--info); background:var(--info-soft);
+  border-radius:0 8px 8px 0; padding:12px 16px; }
+.tag { display:inline-block; font-size:10.5px; border-radius:5px; padding:1px 7px;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+.flow { display:flex; flex-wrap:wrap; align-items:center; gap:9px; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:15px 18px; font-size:13px; }
+.flow .node { border:1px solid var(--bd); border-radius:8px; padding:5px 11px; background:var(--sunken); white-space:nowrap; }
+.flow .node.nav { border-color:var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.flow .node.new { border-style:dashed; }
+.flow .arrow { color:var(--fg3); }
+.flow .note { color:var(--fg3); font-size:12px; width:100%; margin-top:4px; }
+.screen { border:1px solid var(--bd); border-radius:12px; overflow:hidden; background:var(--surface); }
+.screen .chrome { display:flex; align-items:center; gap:9px; padding:8px 13px;
+  background:var(--sechead); border-bottom:1px solid var(--bd-subtle); font-size:12px; color:var(--fg3); }
+.screen .chrome code { color:var(--fg2); }
+.screen .pane { padding:16px 18px; }
+.crumbs { font-size:12px; color:var(--fg3); margin-bottom:8px; }
+.crumbs a { color:var(--info); text-decoration:none; }
+.rowhead { display:flex; flex-wrap:wrap; align-items:flex-start; gap:12px; justify-content:space-between; }
+.rowhead h3 { font-family:var(--font-serif); font-weight:600; font-size:24px; margin:0; }
+.rowhead .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.btn { display:inline-block; font-size:12.5px; border-radius:8px; padding:6px 13px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); white-space:nowrap; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+.btn.disabled { opacity:.5; }
+.btns { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.hint { font-size:12px; color:var(--fg3); }
+table.grid { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.grid th, table.grid td { padding:8px 11px; border-bottom:1px solid var(--bd-subtle); text-align:left; vertical-align:middle; }
+table.grid thead th { background:var(--sechead); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+table.grid thead th.on { color:var(--accent-text); }
+table.grid td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.grid .name { font-weight:600; }
+table.grid .inn { font-size:11px; color:var(--fg3); }
+table.grid tr.dim td { color:var(--fg4); }
+table.grid tr.dim .name { color:var(--fg3); }
+table.grid th.num { text-align:right; }
+table.grid td.num { padding:6px 8px; }
+table.grid .pname { border:0; background:transparent; font:inherit; font-weight:600; color:var(--fg);
+  cursor:pointer; padding:0; text-align:left; }
+table.grid .pname:hover { text-decoration:underline; }
+/* Плитка предложения — кнопка с aria-pressed (shadcn Toggle): выбранная получает
+   акцентную рамку и галочку в правом верхнем углу, как карточка товара. */
+.tile { position:relative; display:inline-block; min-width:104px; padding:7px 12px 7px 12px;
+  border:1px solid var(--bd-subtle); border-radius:9px; background:var(--surface);
+  font-variant-numeric:tabular-nums; text-align:right; color:var(--fg); cursor:pointer; }
+.tile:hover { border-color:var(--bd); background:var(--hover); }
+.tile.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.tile.on .chk { position:absolute; top:-7px; right:-7px; width:16px; height:16px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface); }
+.tile.on .chk::after { content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid var(--action-text); border-width:0 2px 2px 0; transform:rotate(45deg); }
+.tile.off { opacity:.4; cursor:not-allowed; }
+.tile.plain { border-color:transparent; background:transparent; cursor:default; }
+.state { font-size:12.5px; padding:9px 13px; border-radius:9px; margin-top:13px; }
+.state.warn { background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+.state.info { background:var(--info-soft); border:1px solid var(--info-bd); color:var(--fg2); }
+.state b { font-weight:600; }
+.empty { text-align:center; padding:34px 20px; color:var(--fg2); }
+.empty b { display:block; color:var(--fg); font-size:15px; margin-bottom:4px; }
+.legend { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
+.legend div { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; padding:10px 13px; font-size:12.5px; color:var(--fg2); }
+.legend div b { color:var(--fg); display:block; margin-bottom:3px; }
+.legend .ex { display:block; margin-bottom:5px; font-size:13px; color:var(--fg); font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет, вторая редакция — гейт 1 фичи 3.</strong>
+    <span>Пропорции — из редакции 25.08 (итог первого этапа = 10 000 млн); проценты
+    пересчитаны к предыдущей <b>выбранной</b> колонке.</span>
+    <span><b>Три решения гейта 1 пересмотрены 28.08.2026</b> по просмотру готовой
+    страницы на стенде, и макет им уже НЕ СООТВЕТСТВУЕТ — источник истины по ним
+    спека, §2.13 и §2.14: порядок строк в приложении — по <b>sort_order</b>
+    классификатора, а не по модулю вклада; под первым столбиком трассы стоит
+    <b>прочерк</b>, а не пустота; в приложении односложные пилюли и
+    прочерки стоят ПО ЦЕНТРУ высоты ячейки, а здесь у всех ячеек
+    <code>vertical-align: baseline</code>, то есть и они на верхней линии
+    (числа в приложении тоже на верхней линии — эта половина макету не
+    противоречит).</span>
+    <span class="tag">дизайн одобряется в диалоге</span>
+    <span class="sp"></span>
+    <button id="theme" type="button">тема</button>
+  </div>
+
+  <h1>Свод по этапам: галочки на решётке, трасса одного участника</h1>
+  <p class="sub">Экран отвечает на один вопрос: <b>из чего сложилось изменение цены между
+  этапами торга у одного участника</b>. Не «какая работа подешевела» — это фича 4; не «кто из
+  участников дешевле» — эта поверхность не спроектирована (рамка §5.5), и смешанные трассы
+  оставлены заделом.</p>
+
+  <section>
+    <h2>Как сюда попадают</h2>
+    <p class="secsub">Свод — не пункт меню и не вкладка: он строится по <b>выбору</b>, а выбор
+    делается на решётке карточки тендера. По тому же правилу, что «Сравнение договоров»
+    (<code>/compare</code>): вход только из списка галочками.</p>
+    <div class="flow">
+      <span class="node nav">Тендеры</span><span class="arrow">→</span>
+      <span class="node">Список тендеров<br><code>/tenders</code></span><span class="arrow">→</span>
+      <span class="node">Карточка тендера, решётка<br><code>/tenders/{id}</code> + галочки</span><span class="arrow">→</span>
+      <span class="node new">Свод по этапам<br><code>/tenders/{id}/summary?offers=…</code></span>
+      <p class="note">Выбор живёт в URL страницы свода — ссылка воспроизводима. На карточке галочки
+      локальны: перезагрузка сбрасывает (MVP, без сохранения трасс). Колонки «Договор» нет —
+      <code>contracts.awarded_offer_id</code> ещё не существует.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 1. Карточка тендера — решётка с выбором предложений</h2>
+    <p class="secsub">Это существующий экран фичи 2 плюс галочки и кнопка. Ничего другого на нём не меняется.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/2</code> · карточка тендера, решётка с выбором предложений</div>
+      <div class="pane">
+        <div class="crumbs"><a>Тендеры</a> → Тендер № ****</div>
+        <div class="rowhead">
+          <div><h3>Тендер № ****</h3><div class="meta">Генподряд · Объект А · класс «Жилые — бизнес»</div></div>
+          <div class="btns">
+            <span class="hint">выбрано 4 сметы · Участник А</span>
+            <span class="btn primary">Свод по этапам (4)</span>
+            <span class="btn">Правка</span><span class="btn">Новый этап</span>
+          </div>
+        </div>
+        <div class="scroller" style="margin-top:14px">
+          <table class="grid">
+            <thead><tr><th>Участник</th><th class="num">Этап 1</th><th class="num">Этап 2</th><th class="num">Этап 3</th><th class="num">Этап 4</th><th class="num">Этап 5 · финал</th></tr></thead>
+            <tbody><tr class="sel"><td><button class="pname" type="button" title="Выбрать все этапы участника">Участник А</button><div class="inn">ИНН 7700000001</div></td><td class="num"><span class="tile on" role="button" aria-pressed="true" title="В своде">10 000<span class="chk"></span></span></td><td class="num"><span class="tile on" role="button" aria-pressed="true" title="В своде">9 904<span class="chk"></span></span></td><td class="num"><span class="tile " role="button" aria-pressed="false" title="Этап исключён из свода — нажмите, чтобы вернуть">9 562</span></td><td class="num"><span class="tile on" role="button" aria-pressed="true" title="В своде">9 685<span class="chk"></span></span></td><td class="num"><span class="tile on" role="button" aria-pressed="true" title="В своде">8 022<span class="chk"></span></span></td></tr><tr class="dim"><td><button class="pname" type="button" title="Выбрать все этапы участника">Участник Б</button><div class="inn">ИНН 7700000002</div></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 640</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 510</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 210</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">9 980</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">9 720</span></td></tr><tr class="dim"><td><button class="pname" type="button" title="Выбрать все этапы участника">Участник В</button><div class="inn">ИНН 7700000003</div></td><td class="num"><span class="tile plain flat" title="Не участвовал">—</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">11 120</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 870</span></td><td class="num"><span class="tile plain"><span class="pill warn" title="Предложение было, сметы нет: раунд заменён другим файлом">нет сметы</span></span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">9 940</span></td></tr><tr class="dim"><td><button class="pname" type="button" title="Выбрать все этапы участника">Участник Г</button><div class="inn">ИНН 7700000004</div></td><td class="num"><span class="tile plain flat" title="Не участвовал">—</span></td><td class="num"><span class="tile plain flat" title="Не участвовал">—</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 330</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">10 105</span></td><td class="num"><span class="tile off" role="button" aria-pressed="false" title="Свод строится по одному участнику — снимите выбор у Участника А">9 860</span></td></tr></tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin:8px 0 0">Суммы в ячейках — итого с НДС. Ячейка со сметой — плитка-переключатель: нажатие берёт предложение в свод, галочка в углу показывает выбор. Нажатие на имя участника выбирает все его этапы разом.</p>
+        <div class="state info"><b>Правило одного участника выражено состоянием, а не сюрпризом:</b>
+        пока выбрана хотя бы одна плитка Участника А, плитки других строк недоступны, подсказка
+        называет причину. Этап 3 у Участника А снят нажатием — свод покажет «4 из 5». Кнопка
+        активна от двух смет; при одной — подсказка «выберите хотя бы два этапа». Плитка —
+        shadcn <code>Toggle</code> (<code>aria-pressed</code>) с иконкой <code>Check</code> в углу, без кастомного компонента.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 2. Свод по этапам одного участника</h2>
+    <p class="secsub">Трасса из четырёх выбранных этапов из пяти. Колонки «Договор» и «После торга» из
+    редакции 25.08 отсутствуют.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/2/summary?offers=27&amp;offers=29&amp;offers=38&amp;offers=43</code></div>
+      <div class="pane">
+        <div class="crumbs"><a>Тендеры</a> → <a>Тендер № ****</a> → Свод по этапам</div>
+        <div class="pass-head" style="margin-bottom:18px">
+          <h3>Свод по этапам · Участник А</h3>
+          <div class="meta">Генподряд · Объект А · этапов в своде <b>4 из 5</b> загруженных у участника (этап 3 исключён выбором)</div>
+          <div class="tep">
+            <div><span class="k">Этапов в своде</span><span class="v">4 из 5</span></div>
+            <div><span class="k">Позиций в последнем</span><span class="v">1 194</span></div>
+            <div><span class="k">Статей с суммой</span><span class="v">15 из 17</span></div>
+            <div><span class="k">Ставка НДС</span><span class="v">20 % во всех выбранных</span></div>
+            <div><span class="k">Последний к первому</span><span class="v">−19,8 %</span></div>
+          </div>
+          <p class="axis"><b>Все суммы — с НДС 20 %</b>, ставка одна во всех выбранных этапах; сходимость
+          таблицы тождественна. Если ставки этапов расходятся, вся таблица приводится к нетто и здесь
+          называются ставки по этапам (<code>AGENTS.md</code> §10). <b>Цены номинальные</b>, без
+          приведения к ценовому уровню месяца.</p>
+        </div>
+
+        <h2 style="font-size:19px">Трасса торга</h2>
+        <p class="secsub">Итог каждого выбранного этапа и изменение к предыдущему <b>выбранному</b>.
+        Этап 4 стоит после этапа 2 — между ними исключённый этап 3, и процент считается через него, как
+        через пропуск номера у отменённого раунда.</p>
+        <div class="track"><div class="bar"><div class="bwrap"><div class="bfill" style="height:100.0%"></div></div><div class="bv">10 000</div><div class="bl">Этап 1</div><div class="bd"></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:99.0%"></div></div><div class="bv">9 904</div><div class="bl">Этап 2</div><div class="bd"><span class="down">−1,0 %</span></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:96.8%"></div></div><div class="bv">9 685</div><div class="bl">Этап 4</div><div class="bd"><span class="down">−2,2 %</span></div></div><div class="bar"><div class="bwrap"><div class="bfill" style="height:80.2%"></div></div><div class="bv">8 022</div><div class="bl">Этап 5 · финал</div><div class="bd"><span class="down">−17,2 %</span></div></div></div>
+
+        <h2 style="font-size:19px; margin-top:26px">Статьи по этапам</h2>
+        <p class="secsub">Строка — статья классификатора, треугольник раскрывает подстатьи с данными.
+        Строки упорядочены по <b>модулю вклада в итог</b>: первой стоит статья, давшая больше всего.
+        <b>Пересмотрено 28.08.2026</b> — в приложении порядок по <b>sort_order</b> классификатора (спека §2.13).
+        Под шапкой каждой колонки — признак ручного разноса на этой смете.</p>
+        <div class="scroller">
+      <table class="pass">
+        <thead><tr><th class="art">Статья классификатора</th><th class="num">Этап 1<span class="ov">без ручного разноса</span></th><th class="num">Этап 2<span class="ov">без ручного разноса</span></th><th class="num">Этап 4<span class="ov">разнос: 3 решения · 26.08.2026</span></th><th class="num">Этап 5 · финал<span class="ov">разнос: 3 решения · 26.08.2026</span></th><th class="num sep">Торг: первый → последний</th><th class="num">Вклад в итог, млн</th></tr></thead>
+        <tbody>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">14</span>MR-base</td><td class="num">876</td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">759<span class="dp down">−13,4 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="down">−876</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">12</span>Благоустройство, дороги</td><td class="num">312</td><td class="num">290<span class="dp down">−7,1 %</span></td><td class="num">250<span class="dp down">−13,8 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="down">−312</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">8</span>Отделочные работы (паркинг, надземная часть МОП)</td><td class="num">836</td><td class="num">845<span class="dp up">+1,1 %</span></td><td class="num">835<span class="dp down">−1,2 %</span></td><td class="num">602<span class="dp down">−27,9 %</span></td><td class="num sep"><span class="down">−28,0 %</span></td><td class="num"><span class="down">−234</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">10</span>ВИС - механические системы</td><td class="num">1 013</td><td class="num">1 013<span class="dp flat">0,0 %</span></td><td class="num">924<span class="dp down">−8,8 %</span></td><td class="num">878<span class="dp down">−5,0 %</span></td><td class="num sep"><span class="down">−13,3 %</span></td><td class="num"><span class="down">−135</span></td></tr>
+<tr class="lvl1 art"><td class="t"><button class="tw" aria-expanded="true" data-k="6">▾</button><span class="code">6</span>Фасадные работы</td><td class="num">2 536</td><td class="num">2 481<span class="dp down">−2,2 %</span></td><td class="num">2 543<span class="dp up">+2,5 %</span></td><td class="num">2 418<span class="dp down">−4,9 %</span></td><td class="num sep"><span class="down">−4,7 %</span></td><td class="num"><span class="down">−118</span></td></tr>
+<tr class="lvl2 kid k-6"><td class="t"><span class="code">6.2</span>Светопрозрачные конструкции типового этажа</td><td class="num">1 695</td><td class="num">1 693<span class="dp down">−0,1 %</span></td><td class="num">1 645<span class="dp down">−2,8 %</span></td><td class="num">1 611<span class="dp down">−2,1 %</span></td><td class="num sep"><span class="down">−5,0 %</span></td><td class="num"><span class="down">−84</span></td></tr>
+<tr class="lvl2 kid k-6"><td class="t"><span class="code">6.4</span>Устройство навесного фасада типового этажа</td><td class="num">587</td><td class="num">594<span class="dp up">+1,2 %</span></td><td class="num">637<span class="dp up">+7,2 %</span></td><td class="num">551<span class="dp down">−13,5 %</span></td><td class="num sep"><span class="down">−6,1 %</span></td><td class="num"><span class="down">−36</span></td></tr>
+<tr class="lvl2 kid k-6"><td class="t"><span class="code">6.1</span>Светопрозрачные конструкции 1 этажа</td><td class="num">117</td><td class="num">117<span class="dp flat">0,0 %</span></td><td class="num">116<span class="dp down">−0,9 %</span></td><td class="num">109<span class="dp down">−6,0 %</span></td><td class="num sep"><span class="down">−6,8 %</span></td><td class="num"><span class="down">−8</span></td></tr>
+<tr class="lvl2 kid k-6"><td class="t"><span class="code">6.3</span>Устройство навесного фасада 1 этажа</td><td class="num">71</td><td class="num">72<span class="dp up">+1,4 %</span></td><td class="num">87<span class="dp up">+20,8 %</span></td><td class="num">71<span class="dp down">−18,4 %</span></td><td class="num sep"><span class="flat">0,0 %</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl2 kid k-6"><td class="t"><span class="code">6.6</span>Система обслуживания фасадов</td><td class="num">66</td><td class="num">5<span class="dp down">−92,4 %</span></td><td class="num">58<span class="dp up">+1060,0 %</span></td><td class="num">76<span class="dp up">+31,0 %</span></td><td class="num sep"><span class="up">+15,2 %</span></td><td class="num"><span class="up">10</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">11</span>ВИС - Электрические и слаботочные системы</td><td class="num">753</td><td class="num">753<span class="dp flat">0,0 %</span></td><td class="num">744<span class="dp down">−1,2 %</span></td><td class="num">642<span class="dp down">−13,7 %</span></td><td class="num sep"><span class="down">−14,7 %</span></td><td class="num"><span class="down">−111</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">16</span>Разработка рабочей документации</td><td class="num">236</td><td class="num">240<span class="dp up">+1,7 %</span></td><td class="num">175<span class="dp down">−27,1 %</span></td><td class="num">164<span class="dp down">−6,3 %</span></td><td class="num sep"><span class="down">−30,5 %</span></td><td class="num"><span class="down">−72</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">4</span>Конструктивные решения</td><td class="num">1 779</td><td class="num">1 778<span class="dp down">−0,1 %</span></td><td class="num">1 754<span class="dp down">−1,3 %</span></td><td class="num">1 714<span class="dp down">−2,3 %</span></td><td class="num sep"><span class="down">−3,7 %</span></td><td class="num"><span class="down">−65</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">1</span>Подготовительные работы, содержание площадки</td><td class="num">1 077</td><td class="num">1 054<span class="dp down">−2,1 %</span></td><td class="num">1 038<span class="dp down">−1,5 %</span></td><td class="num">1 021<span class="dp down">−1,6 %</span></td><td class="num sep"><span class="down">−5,2 %</span></td><td class="num"><span class="down">−56</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">9</span>Лифты, подъемники</td><td class="num">153</td><td class="num">149<span class="dp down">−2,6 %</span></td><td class="num">247<span class="dp up">+65,8 %</span></td><td class="num">175<span class="dp down">−29,1 %</span></td><td class="num sep"><span class="up">+14,4 %</span></td><td class="num"><span class="up">22</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">2</span>Котлован</td><td class="num">44</td><td class="num">27<span class="dp down">−38,6 %</span></td><td class="num">25<span class="dp down">−7,4 %</span></td><td class="num">25<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−43,2 %</span></td><td class="num"><span class="down">−19</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">5</span>Общестроительные работы (без отделки)</td><td class="num">152</td><td class="num">164<span class="dp up">+7,9 %</span></td><td class="num">166<span class="dp up">+1,2 %</span></td><td class="num">166<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="up">+9,2 %</span></td><td class="num"><span class="up">14</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">7</span>Кровля</td><td class="num">126</td><td class="num">132<span class="dp up">+4,8 %</span></td><td class="num">115<span class="dp down">−12,9 %</span></td><td class="num">114<span class="dp down">−0,9 %</span></td><td class="num sep"><span class="down">−9,5 %</span></td><td class="num"><span class="down">−12</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">13</span>ТХ</td><td class="num">18</td><td class="num">18<span class="dp flat">0,0 %</span></td><td class="num">25<span class="dp up">+38,9 %</span><span class="inc" title="Сумма неполна: 2 из 31 строк без цены">◐</span></td><td class="num">14<span class="dp down">−44,0 %</span></td><td class="num sep"><span class="down">−22,2 %</span></td><td class="num"><span class="down">−4</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">3</span>Устройство гидроизоляции подземной части</td><td class="num">89</td><td class="num">83<span class="dp down">−6,7 %</span></td><td class="num">80<span class="dp down">−3,6 %</span></td><td class="num">88<span class="dp up">+10,0 %</span></td><td class="num sep"><span class="down">−1,1 %</span></td><td class="num"><span class="down">−1</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">15</span>Слабые токи вне здания</td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">99</span>Прочее</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num">8<span style="display:block;margin-top:2px"><span class="pill">появилась</span></span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art unalloc"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">—</span>Нераспределённое <span class="pill" title="Разделы без статьи классификатора. Строка показывается всегда, даже пустая">обязательная строка</span></td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num sep"><span class="flat" title="Дельта «Нераспределённого» не читается как уступка: рост может значить и новые разделы без статьи, и незаконченный разнос">без %</span></td><td class="num"><span class="flat">0</span></td></tr>
+        </tbody>
+        <tfoot><tr class="total"><td class="t">Итого по предложению</td><td class="num">10 000<span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 904<span class="dp down">−1,0 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 685<span class="dp down">−2,2 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">8 022<span class="dp down">−17,2 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num sep"><span class="down">−19,8 %</span></td><td class="num"><span class="down">−1 978</span></td></tr></tfoot>
+      </table>
+    </div>
+        <p class="warnbox"><b>Две статьи сняты целиком и вдвоём дают 60 % всего снижения.</b> «Снято» —
+        не скидка и не «стоит ноль»: работа снята с тендера, переуступлена либо вынесена в отдельный
+        тендер. Процент здесь означал бы уступку, которой не было. Рост и снижение подписаны знаком и
+        цветом, но не названы хорошим или плохим.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 3. Десять колонок — проверка раскладки</h2>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/…/summary?offers=…×10</code> · раскладка при десяти колонках (числа синтетические)</div>
+      <div class="pane">
+        <p class="secsub" style="margin-top:0">Открытый вопрос контракта §11.2: остаётся ли прокрутка единственным
+        ответом. Ответ дизайна — <b>прокрутка внутри таблицы с закреплённой первой колонкой</b> плюс сам выбор
+        как штатный ограничитель ширины. Замер ширины и <code>scrollWidth &gt; clientWidth</code> на 8 и 10
+        колонках при всех раскрытых статьях — пункт DoD, в браузере, не в jsdom.</p>
+        <div class="scroller">
+      <table class="pass">
+        <thead><tr><th class="art">Статья классификатора</th><th class="num">Этап 1<span class="ov">без ручного разноса</span></th><th class="num">Этап 2<span class="ov">без ручного разноса</span></th><th class="num">Этап 3<span class="ov">без ручного разноса</span></th><th class="num">Этап 4<span class="ov">без ручного разноса</span></th><th class="num">Этап 5<span class="ov">без ручного разноса</span></th><th class="num">Этап 6<span class="ov">без ручного разноса</span></th><th class="num">Этап 7<span class="ov">без ручного разноса</span></th><th class="num">Этап 8<span class="ov">без ручного разноса</span></th><th class="num">Этап 9<span class="ov">без ручного разноса</span></th><th class="num">Этап 10<span class="ov">без ручного разноса</span></th><th class="num sep">Торг: первый → последний</th><th class="num">Вклад в итог, млн</th></tr></thead>
+        <tbody>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">14</span>MR-base</td><td class="num">876</td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num">876<span class="dp flat">0,0 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="down">−876</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">12</span>Благоустройство, дороги</td><td class="num">312</td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num">312<span class="dp flat">0,0 %</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num"><span class="pill warn">снято</span></td><td class="num sep"><span class="pill warn">снято</span></td><td class="num"><span class="down">−312</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">8</span>Отделочные работы (паркинг, надземная часть МОП)</td><td class="num">836</td><td class="num">810<span class="dp down">−3,1 %</span></td><td class="num">784<span class="dp down">−3,2 %</span></td><td class="num">758<span class="dp down">−3,3 %</span></td><td class="num">732<span class="dp down">−3,4 %</span></td><td class="num">706<span class="dp down">−3,6 %</span></td><td class="num">680<span class="dp down">−3,7 %</span></td><td class="num">654<span class="dp down">−3,8 %</span></td><td class="num">628<span class="dp down">−4,0 %</span></td><td class="num">602<span class="dp down">−4,1 %</span></td><td class="num sep"><span class="down">−28,0 %</span></td><td class="num"><span class="down">−234</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">10</span>ВИС - механические системы</td><td class="num">1 013</td><td class="num">998<span class="dp down">−1,5 %</span></td><td class="num">983<span class="dp down">−1,5 %</span></td><td class="num">968<span class="dp down">−1,5 %</span></td><td class="num">953<span class="dp down">−1,5 %</span></td><td class="num">938<span class="dp down">−1,6 %</span></td><td class="num">923<span class="dp down">−1,6 %</span></td><td class="num">908<span class="dp down">−1,6 %</span></td><td class="num">893<span class="dp down">−1,7 %</span></td><td class="num">878<span class="dp down">−1,7 %</span></td><td class="num sep"><span class="down">−13,3 %</span></td><td class="num"><span class="down">−135</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">6</span>Фасадные работы</td><td class="num">2 536</td><td class="num">2 523<span class="dp down">−0,5 %</span></td><td class="num">2 510<span class="dp down">−0,5 %</span></td><td class="num">2 497<span class="dp down">−0,5 %</span></td><td class="num">2 484<span class="dp down">−0,5 %</span></td><td class="num">2 470<span class="dp down">−0,6 %</span></td><td class="num">2 457<span class="dp down">−0,5 %</span></td><td class="num">2 444<span class="dp down">−0,5 %</span></td><td class="num">2 431<span class="dp down">−0,5 %</span></td><td class="num">2 418<span class="dp down">−0,5 %</span></td><td class="num sep"><span class="down">−4,7 %</span></td><td class="num"><span class="down">−118</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">11</span>ВИС - Электрические и слаботочные системы</td><td class="num">753</td><td class="num">741<span class="dp down">−1,6 %</span></td><td class="num">728<span class="dp down">−1,8 %</span></td><td class="num">716<span class="dp down">−1,6 %</span></td><td class="num">704<span class="dp down">−1,7 %</span></td><td class="num">691<span class="dp down">−1,8 %</span></td><td class="num">679<span class="dp down">−1,7 %</span></td><td class="num">667<span class="dp down">−1,8 %</span></td><td class="num">654<span class="dp down">−1,9 %</span></td><td class="num">642<span class="dp down">−1,8 %</span></td><td class="num sep"><span class="down">−14,7 %</span></td><td class="num"><span class="down">−111</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">16</span>Разработка рабочей документации</td><td class="num">236</td><td class="num">228<span class="dp down">−3,4 %</span></td><td class="num">220<span class="dp down">−3,5 %</span></td><td class="num">212<span class="dp down">−3,6 %</span></td><td class="num">204<span class="dp down">−3,8 %</span></td><td class="num">196<span class="dp down">−3,9 %</span></td><td class="num">188<span class="dp down">−4,1 %</span></td><td class="num">180<span class="dp down">−4,3 %</span></td><td class="num">172<span class="dp down">−4,4 %</span></td><td class="num">164<span class="dp down">−4,7 %</span></td><td class="num sep"><span class="down">−30,5 %</span></td><td class="num"><span class="down">−72</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">4</span>Конструктивные решения</td><td class="num">1 779</td><td class="num">1 772<span class="dp down">−0,4 %</span></td><td class="num">1 765<span class="dp down">−0,4 %</span></td><td class="num">1 757<span class="dp down">−0,5 %</span></td><td class="num">1 750<span class="dp down">−0,4 %</span></td><td class="num">1 743<span class="dp down">−0,4 %</span></td><td class="num">1 736<span class="dp down">−0,4 %</span></td><td class="num">1 728<span class="dp down">−0,5 %</span></td><td class="num">1 721<span class="dp down">−0,4 %</span></td><td class="num">1 714<span class="dp down">−0,4 %</span></td><td class="num sep"><span class="down">−3,7 %</span></td><td class="num"><span class="down">−65</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">1</span>Подготовительные работы, содержание площадки</td><td class="num">1 077</td><td class="num">1 071<span class="dp down">−0,6 %</span></td><td class="num">1 065<span class="dp down">−0,6 %</span></td><td class="num">1 058<span class="dp down">−0,7 %</span></td><td class="num">1 052<span class="dp down">−0,6 %</span></td><td class="num">1 046<span class="dp down">−0,6 %</span></td><td class="num">1 040<span class="dp down">−0,6 %</span></td><td class="num">1 033<span class="dp down">−0,7 %</span></td><td class="num">1 027<span class="dp down">−0,6 %</span></td><td class="num">1 021<span class="dp down">−0,6 %</span></td><td class="num sep"><span class="down">−5,2 %</span></td><td class="num"><span class="down">−56</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">9</span>Лифты, подъемники</td><td class="num">153</td><td class="num">155<span class="dp up">+1,3 %</span></td><td class="num">158<span class="dp up">+1,9 %</span></td><td class="num">160<span class="dp up">+1,3 %</span></td><td class="num">163<span class="dp up">+1,9 %</span></td><td class="num">165<span class="dp up">+1,2 %</span></td><td class="num">168<span class="dp up">+1,8 %</span></td><td class="num">170<span class="dp up">+1,2 %</span></td><td class="num">173<span class="dp up">+1,8 %</span></td><td class="num">175<span class="dp up">+1,2 %</span></td><td class="num sep"><span class="up">+14,4 %</span></td><td class="num"><span class="up">22</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">2</span>Котлован</td><td class="num">44</td><td class="num">42<span class="dp down">−4,5 %</span></td><td class="num">40<span class="dp down">−4,8 %</span></td><td class="num">38<span class="dp down">−5,0 %</span></td><td class="num">36<span class="dp down">−5,3 %</span></td><td class="num">33<span class="dp down">−8,3 %</span></td><td class="num">31<span class="dp down">−6,1 %</span></td><td class="num">29<span class="dp down">−6,5 %</span></td><td class="num">27<span class="dp down">−6,9 %</span></td><td class="num">25<span class="dp down">−7,4 %</span></td><td class="num sep"><span class="down">−43,2 %</span></td><td class="num"><span class="down">−19</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">5</span>Общестроительные работы (без отделки)</td><td class="num">152</td><td class="num">154<span class="dp up">+1,3 %</span></td><td class="num">155<span class="dp up">+0,6 %</span></td><td class="num">157<span class="dp up">+1,3 %</span></td><td class="num">158<span class="dp up">+0,6 %</span></td><td class="num">160<span class="dp up">+1,3 %</span></td><td class="num">161<span class="dp up">+0,6 %</span></td><td class="num">163<span class="dp up">+1,2 %</span></td><td class="num">164<span class="dp up">+0,6 %</span></td><td class="num">166<span class="dp up">+1,2 %</span></td><td class="num sep"><span class="up">+9,2 %</span></td><td class="num"><span class="up">14</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">7</span>Кровля</td><td class="num">126</td><td class="num">125<span class="dp down">−0,8 %</span></td><td class="num">123<span class="dp down">−1,6 %</span></td><td class="num">122<span class="dp down">−0,8 %</span></td><td class="num">121<span class="dp down">−0,8 %</span></td><td class="num">119<span class="dp down">−1,7 %</span></td><td class="num">118<span class="dp down">−0,8 %</span></td><td class="num">117<span class="dp down">−0,8 %</span></td><td class="num">115<span class="dp down">−1,7 %</span></td><td class="num">114<span class="dp down">−0,9 %</span></td><td class="num sep"><span class="down">−9,5 %</span></td><td class="num"><span class="down">−12</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">13</span>ТХ</td><td class="num">18</td><td class="num">18<span class="dp flat">0,0 %</span></td><td class="num">17<span class="dp down">−5,6 %</span></td><td class="num">17<span class="dp flat">0,0 %</span><span class="inc" title="Сумма неполна: 2 из 31 строк без цены">◐</span></td><td class="num">16<span class="dp down">−5,9 %</span></td><td class="num">16<span class="dp flat">0,0 %</span></td><td class="num">15<span class="dp down">−6,3 %</span></td><td class="num">15<span class="dp flat">0,0 %</span></td><td class="num">14<span class="dp down">−6,7 %</span></td><td class="num">14<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−22,2 %</span></td><td class="num"><span class="down">−4</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">3</span>Устройство гидроизоляции подземной части</td><td class="num">89</td><td class="num">89<span class="dp flat">0,0 %</span></td><td class="num">89<span class="dp flat">0,0 %</span></td><td class="num">89<span class="dp flat">0,0 %</span></td><td class="num">89<span class="dp flat">0,0 %</span></td><td class="num">88<span class="dp down">−1,1 %</span></td><td class="num">88<span class="dp flat">0,0 %</span></td><td class="num">88<span class="dp flat">0,0 %</span></td><td class="num">88<span class="dp flat">0,0 %</span></td><td class="num">88<span class="dp flat">0,0 %</span></td><td class="num sep"><span class="down">−1,1 %</span></td><td class="num"><span class="down">−1</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">15</span>Слабые токи вне здания</td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+<tr class="lvl1 art"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">99</span>Прочее</td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num"><span class="pill">не оценивалась</span></td><td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">0</span></td></tr>
+<tr class="lvl1 art unalloc"><td class="t"><span class="tw" aria-hidden="true"> </span><span class="code">—</span>Нераспределённое <span class="pill" title="Разделы без статьи классификатора. Строка показывается всегда, даже пустая">обязательная строка</span></td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num sep"><span class="flat" title="Дельта «Нераспределённого» не читается как уступка: рост может значить и новые разделы без статьи, и незаконченный разнос">без %</span></td><td class="num"><span class="flat">0</span></td></tr>
+        </tbody>
+        <tfoot><tr class="total"><td class="t">Итого по предложению</td><td class="num">10 000<span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 914<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 825<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 737<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 650<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 559<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">9 472<span class="dp down">−0,9 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">8 196<span class="dp down">−13,5 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">8 107<span class="dp down">−1,1 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num">8 021<span class="dp down">−1,1 %</span><span class="conv ok" title="Сумма статей + «Нераспределённое» = «Итого с НДС» файла">сходится</span></td><td class="num sep"><span class="down">−19,8 %</span></td><td class="num"><span class="down">−1 979</span></td></tr></tfoot>
+      </table>
+    </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Состояния ячейки и отказы</h2>
+    <p class="secsub">Четыре состояния ячейки, характеристика полноты поверх любого из них и виды изменения между двумя колонками (спека §2.4–§2.6). Каждое — свой факт; сводить их нельзя.</p>
+    <div class="legend">
+      <div><span class="ex">2 543<span class="dp up">+2,5 %</span></span><b>amount</b> сумма ≠ 0 и процент к предыдущей выбранной колонке (база &gt; 0)</div>
+      <div><span class="ex">−12<span class="dp flat">Δ, без %</span></span><b>abs_only</b> база отрицательна — процент инвертировал бы смысл, показана абсолютная дельта</div>
+      <div><span class="ex"><span class="pill warn">снято</span></span><b>removed</b> сумма = 0, а в одной из предыдущих ВЫБРАННЫХ колонок была ≠ 0. Никогда не «−100 %»</div>
+      <div><span class="ex"><span class="pill">не оценивалась</span></span><b>not_evaluated</b> сумма = 0 и ни в одной предыдущей выбранной не была ≠ 0</div>
+      <div><span class="ex"><span class="flat">—</span></span><b>absent</b> статьи нет в файле раунда ни одной строкой. Не равно «не оценивалась»</div>
+      <div><span class="ex">25<span class="inc" title="Сумма неполна">◐</span></span><b>incomplete</b> флаг поверх любого состояния: у части строк статьи нет числа, сумма неполна</div>
+      <div><span class="ex"><span class="pill">появилась</span></span><b>appeared</b> изменение <code>not_evaluated | absent → amount</code>; переходы между состояниями без суммы — прочерк, ничего не менялось</div>
+      <div><span class="ex"><span class="pill">вернулась</span></span><b>reappeared</b> <code>removed → amount</code>: статья вернулась в торг после снятия</div>
+      <div><span class="ex"><span class="pill warn">нет в файле</span></span><b>disappeared</b> <code>amount → absent</code>: строка исчезла из файла — это НЕ доказывает снятия, поэтому подпись другая</div>
+      <div><span class="ex">8 022<span class="conv bad">не сходится: Δ +3</span></span><b>convergence</b> сумма статей + «Нераспределённое» ≠ «Итого с НДС» файла — показывается, не гасится</div>
+    </div>
+    <div class="screen" style="margin-top:14px">
+      <div class="chrome"><code>/tenders/2/summary?offers=27&amp;offers=31</code> · отказ сервера, 422 <code>single_participant</code></div>
+      <div class="pane"><div class="empty"><b>Свод не построен</b>Выбранные предложения принадлежат разным участникам — свод строится по одному участнику.<br><span class="btn" style="margin-top:12px">К решётке тендера</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Границы макета</h2>
+    <div class="bound">
+      <ul class="notes">
+        <li><b>Один участник на трассу.</b> Смешанные трассы (разные участники в разных колонках) — задел контракта, не этой фичи: подписи «снято/уступка» верны только внутри одного участника.</li>
+        <li><b>Колонки «Договор» нет</b> до тонкой фичи provenance (<code>awarded_offer_id</code> + «создать договор из раунда»). Место в ответе API зарезервировано элементом <code>kind: 'contract'</code>.</li>
+        <li><b>Попозиционного раскрытия нет</b> — фича 4. Треугольник доходит до подстатьи.</li>
+        <li><b>₽/ед. и ₽/м² не показываются</b> (контракт §10).</li>
+        <li><b>Печати и выгрузки нет.</b></li>
+        <li><b>Сохранённых трасс нет</b> — выбор только в URL.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+<script>
+document.querySelectorAll('button.tw[data-k]').forEach(function(b){
+  var k = b.getAttribute('data-k');
+  var kids = document.querySelectorAll('tr.k-' + k);
+  function apply(open){ kids.forEach(function(r){ r.hidden = !open; }); b.textContent = open ? '▾' : '▸'; b.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  apply(b.getAttribute('aria-expanded') === 'true');
+  b.addEventListener('click', function(){ apply(b.getAttribute('aria-expanded') !== 'true'); });
+});
+var tb = document.getElementById('theme');
+tb.addEventListener('click', function(){
+  var r = document.documentElement;
+  var dark = r.getAttribute('data-theme') === 'dark' || (!r.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme', dark ? 'light' : 'dark');
+});
+</script>
+</body>
+</html>

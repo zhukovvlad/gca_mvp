@@ -1144,6 +1144,178 @@ export interface DashboardAttention {
 }
 
 // ---------------------------------------------------------------------------
+//  Свод по этапам (спека 2026-08-27-stage-summary-design.md §2.16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Состояние ячейки свода: конкретное значение, снято, не оценено, отсутствует в смете.
+ */
+export type CellState = "amount" | "removed" | "not_evaluated" | "absent";
+
+/**
+ * Вид изменения: процент, только сумма, появление/исчезновение, отсутствие изменения.
+ */
+export type ChangeKind = "percent" | "abs_only" | "appeared" | "reappeared" | "removed" | "disappeared" | "none";
+
+/**
+ * Направление изменения: рост, снижение, без изменения.
+ */
+export type Direction = "up" | "down" | "flat";
+
+/**
+ * Причина, по которой `Change.reason` называет отсутствие числа (спека
+ * §2.16, `Change.reason`): закрытое множество, а не открытая строка — иначе
+ * компилятор не поймает код, который сервер перестал присылать (находка
+ * ревью PR: словарь подписей `cellCopy.REASON_LABEL` держался открытым только
+ * из-за этого поля).
+ */
+export type StageSummaryChangeReason = "first_column" | "unknown_vat_base" | "no_amounts" | "unallocated";
+
+/**
+ * Изменение между этапами: вид, значение, направление, причина отсутствия.
+ */
+export interface StageSummaryChange {
+  kind: ChangeKind;
+  value: Decimal | null;
+  direction: Direction | null;
+  reason: StageSummaryChangeReason | null;
+}
+
+/**
+ * Ячейка таблицы свода — ячейка СТАТЬИ (спека §2.16: инварианты про `state`
+ * относятся только к ней). Строка «Итого» несёт другой тип — {@link StageSummaryTotalCell}.
+ */
+export interface StageSummaryCell {
+  state: CellState;
+  amount: Decimal | null;
+  amount_unavailable_reason: "unknown_vat_base" | null;
+  additional_works_amount: Decimal | null;
+  rows: { row_count: number; rows_with_amount: number; rows_not_finite: number };
+  change: StageSummaryChange;
+}
+
+/**
+ * Ячейка строки «Итого» (спека §2.16, ревизия 28.08.2026 по внешнему ревью
+ * PR #34) — АГРЕГАТ, а не статья, и структурно другой тип, а не {@link StageSummaryCell}
+ * с той же формой: у него нет поля `state` (состояния «снято»/«не оценивалась»/
+ * «нет в файле» к сумме неприменимы по смыслу — сумма нулей равна нулю, а не
+ * «неизвестна») и нет `additional_works_amount` (спека прямо перечисляет обе
+ * дырки в наборе полей). При известной оси `amount` — ВСЕГДА число, включая
+ * `"0.00"` и колонку без единой строки; `null` возможен единственно при
+ * `amount_unavailable_reason = "unknown_vat_base"`. Прежняя редакция
+ * типизировала итог как `StageSummaryCell` и на нулевом итоге с живыми
+ * строками рисовала пилюлю «снято» вместе с суммой «0.00» — нарушение
+ * инвариантов контракта; правка структурная, а не патч одного поля.
+ */
+export interface StageSummaryTotalCell {
+  amount: Decimal | null;
+  amount_unavailable_reason: "unknown_vat_base" | null;
+  rows: { row_count: number; rows_with_amount: number; rows_not_finite: number };
+  change: StageSummaryChange;
+}
+
+/**
+ * Причина, по которой у статьи нет числового вклада в итог (спека §2.16,
+ * `Row.contribution.reason`) — закрытое множество, зеркало
+ * {@link StageSummaryChangeReason} по тому же основанию.
+ */
+export type StageSummaryContributionReason = "absent_endpoint" | "unknown_vat_base";
+
+/**
+ * Строка свода: статья, ячейки по этапам, изменение всей статьи, дети статьи.
+ */
+export interface StageSummaryRow {
+  work_category_id: number | null;
+  code: string | null;
+  title: string;
+  is_unallocated: boolean;
+  cells: StageSummaryCell[];
+  bargain: StageSummaryChange;
+  contribution: { value: Decimal | null; direction: Direction | null; reason: StageSummaryContributionReason | null };
+  children: StageSummaryRow[];
+}
+
+/**
+ * Колонка таблицы свода: метаданные раунда, ставки НДС, итог, сходимость.
+ */
+export interface StageSummaryColumn {
+  kind: "round";
+  offer_id: number;
+  estimate_id: number;
+  round_id: number;
+  stage_no: number;
+  label: string | null;
+  held_on: string | null;
+  vat_rate_base: Decimal | null;
+  vat_state: "known" | "unknown_vat_base";
+  total: Decimal | null;
+  total_change: StageSummaryChange;
+  bar_height_pct: Decimal | null;
+  manual_overrides: { count: number; last_at: string | null };
+  convergence: {
+    categories_sum: Decimal;
+    file_total: Decimal | null;
+    converged: boolean | null;
+    delta: Decimal | null;
+    reason: "file_total_unavailable" | null;
+  };
+}
+
+/**
+ * Свод по этапам одного участника: строки и колонки таблицы, КПИ, трек.
+ */
+export interface StageSummary {
+  tender: { id: number; tender_number: string; title: string; object_title: string };
+  participant: {
+    package_id: number;
+    contractor_id: number;
+    title: string;
+    inn: string;
+    rounds_with_estimate: number;
+    stages: { stage_no: number; label: string | null; offer_id: number; selected: boolean }[];
+  };
+  columns: StageSummaryColumn[];
+  rows: StageSummaryRow[];
+  unallocated: StageSummaryRow;
+  total: { cells: StageSummaryTotalCell[] };
+  display: {
+    tax_basis: "gross" | "net" | "none";
+    reason: "single_rate" | "mixed_rates" | "no_known_rates";
+    rates_by_column: (Decimal | null)[] | null;
+    price_level: "nominal";
+  };
+  kpi: {
+    stages_selected: number;
+    stages_loaded: number;
+    last_stage_positions: number;
+    categories_with_amount: number;
+    categories_total: number;
+    first_to_last: StageSummaryChange;
+  };
+  track: { available: boolean; reason: "non_positive_total" | "no_comparable_totals" | null };
+}
+
+/**
+ * Код ошибки отказа свода.
+ */
+export type StageSummaryErrorCode =
+  | "tender_not_found"
+  | "offer_not_found"
+  | "too_few_offers"
+  | "one_offer_per_round"
+  | "single_participant"
+  | "offer_has_no_estimate";
+
+/**
+ * Деталь ошибки отказа свода.
+ */
+export interface StageSummaryErrorDetail {
+  code: StageSummaryErrorCode;
+  message: string;
+  offers: number[];
+}
+
+// ---------------------------------------------------------------------------
 //  Сравнение договоров (спека 2026-08-17, задача 8)
 // ---------------------------------------------------------------------------
 //

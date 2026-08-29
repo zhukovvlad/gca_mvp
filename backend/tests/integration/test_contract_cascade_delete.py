@@ -142,7 +142,6 @@ def test_upload_wins_the_race_and_delete_answers_409(
         finally:
             session.rollback()
             session.close()
-            outcome["finished_after_commit"] = upload_committed.is_set()
 
     uploader = threading.Thread(target=upload_side, name="upload")
     deleter = threading.Thread(target=delete_side, name="delete")
@@ -152,6 +151,14 @@ def test_upload_wins_the_race_and_delete_answers_409(
 
     # Окно одностороннее: при работающем замке удаление не вернётся НИКОГДА,
     # пока держится транзакция загрузки, а без замка вернулось бы сразу.
+    #
+    # Именно здесь доказана сериализация, и доказательство детерминированное:
+    # разрешение на коммит (`may_commit`) главный поток ещё не выдал, поэтому
+    # живой поток удаления в этот момент означает только одно — замок держит.
+    # Более поздняя проверка «успело ли событие коммита загрузки сработать до
+    # завершения удаления» отсюда была убрана: она мерила очерёдность потоков
+    # планировщиком ОС, а не поведение продукта, и на загруженном раннере
+    # ловила не то, что задумано.
     deleter.join(timeout=1.0)
     assert deleter.is_alive(), (
         "удаление вернулось, не дождавшись коммита загрузки, — строка договора "
@@ -169,7 +176,6 @@ def test_upload_wins_the_race_and_delete_answers_409(
     assert outcome["status"] == 409
     assert str(outcome["job_id"]) in outcome["detail"]
     assert ImportJobStatus.pending.value in outcome["detail"]
-    assert outcome["finished_after_commit"] is True
 
     # Данных живого импорта удаление не тронуло.
     committing_db.rollback()  # снимаем снимок транзакции, иначе видно старое
