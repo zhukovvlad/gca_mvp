@@ -233,6 +233,9 @@ tr.member .t { padding-left:52px; }
   background:var(--accent-soft); border:1px solid var(--accent-bd); color:var(--accent-text); }
 .verdict.bad { background:var(--warn-soft); border-color:var(--warn-bd); color:var(--warn-text); }
 .verdict b { font-weight:600; }
+.vh { font-family:var(--font-serif); font-weight:600; font-size:17px; margin:22px 0 4px; }
+.cnt { color:var(--fg3); font-weight:400; }
+.verdict.bad b { color:var(--warn-text); }
 </style>
 </head>
 <body>
@@ -395,6 +398,159 @@ tr.member .t { padding-left:52px; }
     данных. <b>Чего не даёт:</b> ответа на исходный вопрос — «за счёт чего изменилась
     статья»; читатель считает сам, а колонок этапов тут помещается только две из
     четырёх.</div>
+  </section>
+
+  <section id="naming">
+    <h2>Открытый вопрос гейта: как назвать неоднозначную группу</h2>
+    <p class="secsub">Значок <span class="ambig">1 &harr; 2 строки</span> не был понят, и это
+    факт о значке, а не о читателе. Вероятная причина: стрелка на этой поверхности уже занята
+    &mdash; заголовок колонки «первый &rarr; последний» означает движение между ЭТАПАМИ, поэтому
+    «2 строки &rarr; 2 строки» читается как «было две, стало две» во времени, хотя говорит о
+    количестве строк на каждом конце. Второе: слово «строки» само по себе двусмысленно &mdash;
+    строка экрана или строка сметы.</p>
+
+    <div class="measure">
+      <table>
+        <tr><td>Групп «статья + каталожная позиция» с несколькими строками (объём НЕ различает)</td><td>129</td></tr>
+        <tr><td>Из них после различения по объёму заказчика остаются неоднозначными</td><td>43</td></tr>
+        <tr><td>Строк в этих группах на худшем этапе</td><td>113</td></tr>
+        <tr><td>Групп, где число строк РАЗЛИЧАЕТСЯ по этапам</td><td>1 из 43</td></tr>
+        <tr><td>Наибольшая группа после различения по объёму</td><td>4 строки</td></tr>
+      </table>
+      <p class="hint">Замер 29.08.2026, тот же участник и те же четыре этапа, что и выше.
+      Единственная группа с непостоянным числом строк &mdash; «Трассы (силовые, слаботочные,
+      медные, дренажные и прочие)», статья 312: одна строка, одна, затем две. Она стоит второй
+      в каждом варианте ниже именно поэтому: счётчик, записанный в названии один раз, на ней врёт.</p>
+    </div>
+
+    <h3 class="vh">Вариант 1. Пилюля без числа, счётчик по этапу в ячейке</h3>
+    <p class="secsub">На названии &mdash; <span class="ambig">несколько строк сметы</span>, без
+    стрелки и без числа. Число строк уезжает во вторую строку каждой денежной ячейки, рядом с
+    объёмом: оно и есть факт ЭТАПА, а не работы. На этапе с тремя строками честно стоит «3 стр.».</p>
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr><th class="art">Работа</th><th class="num">Этап 1</th><th class="num">Этап 2</th>
+          <th class="num">Этап 3</th><th class="num">Этап 4</th>
+          <th class="num sep">первый &rarr; последний</th><th class="num">Вклад в статью, млн</th></tr>
+        </thead>
+        <tbody>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Битумный праймер Технониколь №1 <span class="ambig">несколько строк сметы</span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">2 стр. · 248 м²</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">2 стр. · 248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">2 стр. · 248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,5</span><span class="sub2"><span class="qty">2 стр. · 248 м²</span><span class="dp down">&minus;37,5 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;37,5 %</span></td><td class="num"><span class="down">&minus;0,3</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Трассы (силовые, слаботочные, медные, дренажные и прочие) <span class="ambig">несколько строк сметы</span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 стр. · 1 компл</span></span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 стр. · 1 компл</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="pill warn">снято</span></td>
+            <td class="num"><span class="mny">1,5</span><span class="sub2"><span class="qty chg">2 стр. · 1 компл</span><span class="pill">появилась</span></span></td>
+            <td class="num sep"><span class="dp up">+25,0 %</span></td><td class="num"><span class="up">0,3</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict"><b>За:</b> счётчик стоит там, где он верен &mdash; у этапа; группа с
+    непостоянным числом строк рассказывает о себе сама, и рост «+25,0 %» сразу читается как
+    «строк стало две», а не как подорожание. <b>Против:</b> вторая строка ячейки несёт уже две
+    величины, и это ровно то место, куда просится «₽ за единицу» (вопрос 4 гейта).</div>
+
+    <h3 class="vh">Вариант 2. Пилюля называет число</h3>
+    <p class="secsub">На названии &mdash; <span class="ambig">сумма 2 строк сметы</span>: подпись
+    объясняет не работу, а САМО ЧИСЛО в ячейке. Счётчик один на всю строку. Там, где по этапам
+    он разный, сказать точное число нельзя, и остаётся <span class="ambig">сумма нескольких
+    строк сметы</span> &mdash; то есть на 1 группе из 43 вариант вырождается в вариант 1 без
+    его счётчика.</p>
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr><th class="art">Работа</th><th class="num">Этап 1</th><th class="num">Этап 2</th>
+          <th class="num">Этап 3</th><th class="num">Этап 4</th>
+          <th class="num sep">первый &rarr; последний</th><th class="num">Вклад в статью, млн</th></tr>
+        </thead>
+        <tbody>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Битумный праймер Технониколь №1 <span class="ambig">сумма 2 строк сметы</span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,5</span><span class="sub2"><span class="qty">248 м²</span><span class="dp down">&minus;37,5 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;37,5 %</span></td><td class="num"><span class="down">&minus;0,3</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Трассы (силовые, слаботочные, медные, дренажные и прочие) <span class="ambig">сумма нескольких строк сметы</span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 компл</span></span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 компл</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="pill warn">снято</span></td>
+            <td class="num"><span class="mny">1,5</span><span class="sub2"><span class="qty">1 компл</span><span class="pill">появилась</span></span></td>
+            <td class="num sep"><span class="dp up">+25,0 %</span></td><td class="num"><span class="up">0,3</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict"><b>За:</b> подпись отвечает ровно на тот вопрос, который у читателя
+    возникает, &mdash; «что это за число»; ячейки не трогаем вовсе, место под «₽ за единицу»
+    остаётся свободным. <b>Против:</b> у группы «Трассы» рост «+25,0 %» ничем не объяснён &mdash;
+    экран не говорит, что строк стало две, и процент читается как подорожание. Слово
+    «нескольких» прячет ровно тот случай, ради которого нужна пометка.</div>
+
+    <h3 class="vh">Вариант 3. Без пилюли, число обычным текстом в названии</h3>
+    <p class="secsub">Никакого значка: счётчик уходит в само название. Неоднозначность объясняет
+    раскрытый список участников, а не пометка. Меньше всего новых элементов на поверхности.</p>
+    <div class="scroller">
+      <table class="pass">
+        <thead>
+          <tr><th class="art">Работа</th><th class="num">Этап 1</th><th class="num">Этап 2</th>
+          <th class="num">Этап 3</th><th class="num">Этап 4</th>
+          <th class="num sep">первый &rarr; последний</th><th class="num">Вклад в статью, млн</th></tr>
+        </thead>
+        <tbody>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Битумный праймер Технониколь №1 <span class="cnt">(2 строки сметы)</span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,8</span><span class="sub2"><span class="qty">248 м²</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="mny">0,5</span><span class="sub2"><span class="qty">248 м²</span><span class="dp down">&minus;37,5 %</span></span></td>
+            <td class="num sep"><span class="dp down">&minus;37,5 %</span></td><td class="num"><span class="down">&minus;0,3</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="member"><td class="t">Битумный праймер Технониколь №1</td>
+            <td class="num">0,4</td><td class="num">0,4</td><td class="num">0,4</td><td class="num">0,25</td>
+            <td class="num sep"><span class="flat">—</span></td><td class="num"><span class="flat">—</span></td></tr>
+          <tr class="grp lvl2 art"><td class="t"><span class="tw" aria-hidden="true">&and;</span>
+            Трассы (силовые, слаботочные, медные, дренажные и прочие) <span class="cnt">(2 строки сметы)</span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 компл</span></span></td>
+            <td class="num"><span class="mny">1,2</span><span class="sub2"><span class="qty">1 компл</span><span class="dp flat">0,0 %</span></span></td>
+            <td class="num"><span class="pill warn">снято</span></td>
+            <td class="num"><span class="mny">1,5</span><span class="sub2"><span class="qty">1 компл</span><span class="pill">появилась</span></span></td>
+            <td class="num sep"><span class="dp up">+25,0 %</span></td><td class="num"><span class="up">0,3</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verdict bad"><b>Против:</b> «(2 строки сметы)» у «Трасс» &mdash; НЕПРАВДА на первых
+    двух этапах, где строка одна. Пометка без пилюли не имеет запасной формулировки: она либо
+    называет число, либо исчезает. <b>За:</b> ни одного нового элемента оформления; название
+    читается как в смете.</div>
+
+    <div class="bound" style="margin-top:16px"><b>ПРИНЯТ вариант 1</b> (решение пользователя 29.08.2026). Обоснование: Он
+    единственный, у которого счётчик стоит в том месте, где он ВЕРЕН по построению: число строк
+    сметы &mdash; факт этапа, а не работы, и группа «Трассы» это доказывает данными, а не
+    рассуждением. Он же снимает исходную причину непонимания: стрелки в пометке нет вовсе,
+    а слово уточнено до «строк СМЕТЫ». Цена &mdash; вторая строка ячейки становится плотнее,
+    и это надо учесть при решении по «₽ за единицу» (вопрос 4).</div>
   </section>
 
   <section>
