@@ -224,7 +224,12 @@ def load_groups(cur, code: str) -> list[dict]:
             }
         cur.execute(
             """
-            select aw.chapter_ref_raw, min(aw.title), sum(aw.total_amount), count(*)
+            -- Подпись группы — наименование строки с наименьшим `ordinal`, то
+            -- есть ПЕРВОЙ по файлу: `min(title)` брал бы алфавитно, а это
+            -- произвол. `ordinal` — порядок «Сведений», уникальный в пределах
+            -- предложения; тем же ключом упорядочивает допработы паспорт.
+            select aw.chapter_ref_raw, (array_agg(aw.title order by aw.ordinal))[1],
+                   sum(aw.total_amount), count(*)
             from estimate_additional_works aw
             join work_categories wc on wc.id = aw.work_category_id
             where aw.proposal_id = %s and wc.code = %s
@@ -237,8 +242,9 @@ def load_groups(cur, code: str) -> list[dict]:
             group = groups.setdefault(
                 key, {"id": key, "title": title, "extra": True, "ref": ref, "stages": {}}
             )
-            # Подпись — наименование с ПОСЛЕДНЕГО этапа, где работа есть: этапы
-            # читаются по возрастанию, поэтому присваивание перетирает прежнее.
+            # Подпись — с ПОСЛЕДНЕГО этапа, где работа есть: этапы читаются по
+            # возрастанию, поэтому присваивание перетирает прежнее. Внутри этапа
+            # берётся первая по файлу строка группы (см. SQL выше).
             group["title"] = title
             group["stages"][stage] = {
                 "amount": Decimal(amount or 0), "rows": rows, "volumes": [], "unit": None,
