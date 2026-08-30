@@ -777,13 +777,37 @@ def stage_cells(cells: dict[int, dict], *, inline_volume: bool = False,
     return "".join(out)
 
 
-def article_row(node: dict, level: int, *, key: str | None = None) -> str:
+def article_row(node: dict, level: int, *, key: str | None = None,
+                works: int | None = None) -> str:
+    """Строка статьи. `key` — шеврон классификатора, `works` — действие «Работы».
+
+    Действие подписано словом, а не вторым шевроном: под строкой статьи живут ДВА
+    разных разложения одного и того же числа — по подстатьям и по работам, — и
+    одинаковые треугольники читались бы как один список (§2.1).
+    """
     cells = {s: {"amount": a} for s, a in node["cells"].items()}
     chevron = (f'<button class="tw" aria-expanded="true" data-k="{key}">▾</button>'
                if key else '<span class="tw" aria-hidden="true"> </span>')
+    action = ""
+    if works is not None:
+        action = (f' <button class="works" type="button" aria-expanded="true">'
+                  f'▾ Работы<span class="cnt"> · {works}</span></button>')
     label = (f'<td class="t">{chevron}<span class="code">{esc(node["code"])}</span>'
-             f'{esc(node["title"])}</td>')
+             f'{esc(node["title"])}{action}</td>')
     return (f'<tr class="lvl{level} art">{label}{stage_cells(cells)}</tr>')
+
+
+def works_head(article: dict, variant: str) -> str:
+    """Заголовок блока работ — разделитель между двумя разложениями.
+
+    Без него строки работ читаются как продолжение списка подстатей, то есть как
+    слагаемые к уже видимым слагаемым, и сумма на глаз удваивается.
+    """
+    span = len(STAGES) + 3
+    return (f'<tr class="workshead kid k-{variant}a"><td colspan="{span}">'
+            f'Почему изменился итог {esc(article["code"])} — работы статьи и подстатей'
+            f'<span class="whsub">объясняют ТУ ЖЕ сумму, что и строки подстатей выше, '
+            f'другим разрезом; итог сходится из показанного</span></td></tr>')
 
 
 def mark_volume_steps(group: dict) -> dict:
@@ -873,7 +897,14 @@ def fragment(root: dict, kids: list[dict], article: dict, case: dict,
     rows = [article_row(root, 1, key=f"{variant}r")]
     for kid in kids:
         if kid["code"] == article["code"]:
-            rows.append(article_row(kid, 2, key=f"{variant}a"))
+            own_kids = case.get("article_kids") or []
+            rows.append(article_row(
+                kid, 2, key=f"{variant}a" if own_kids else None,
+                works=len(case["top"]) + len(case["partials"]) + len(case["partials_hidden"])))
+            for own in own_kids:
+                rows.append(article_row(own, 3).replace(
+                    'class="lvl3 art"', f'class="lvl3 art kid k-{variant}a"'))
+            rows.append(works_head(article, variant))
             shown = list(case["top"]) + list(case["partials"])
             rows += [group_row(g, variant) for g in shown]
             hidden = case["partials_hidden"]
@@ -915,6 +946,22 @@ tr.pos3 .volline { display:block; font-size:10.5px; color:var(--fg4);
 tr.pos3 .volline.chg { color:var(--info); }
 tr.pos3 td.num .qty { display:block; }
 tr.dimrow .nm { font-style:italic; }
+/* Действие «Работы» — подписанное, а не второй шеврон: разложений под строкой
+   статьи два (по подстатьям и по работам), и различать их обязано слово. */
+.works { border:1px solid var(--bd); background:var(--surface); color:var(--fg2);
+  border-radius:6px; font:inherit; font-size:11px; padding:0 6px; margin-left:8px;
+  cursor:pointer; white-space:nowrap; vertical-align:1px; }
+.works:hover { background:var(--hover); color:var(--fg); }
+/* Класс подписи назван `whsub`, а не `sub`: `.sub` на этой странице уже занят
+   подзаголовком страницы и несёт `max-width:70ch`, из-за чего текст заголовка
+   вёрстся в 486 px посреди строки шириной 1238 (замер 30.08.2026). */
+tr.workshead > td { background:var(--sechead); border-bottom:1px solid var(--bd);
+  font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--fg3);
+  font-weight:600; padding:7px 11px 6px 52px; }
+tr.workshead .whsub { display:block; margin-top:2px; font-size:11px; letter-spacing:0;
+  text-transform:none; font-weight:400; color:var(--fg4); }
+tr.lvl3 > td { background:var(--sunken); font-weight:400; }
+tr.lvl3 .t { padding-left:52px; color:var(--fg2); }
 </style>
 """
 
@@ -1269,9 +1316,11 @@ def load_case(cur, root_code: str, article_code: str) -> dict:
     groups = [mark_volume_steps(g) for g in load_groups(cur, article_code)]
     top, rest = explainers(groups)
     partials = sorted((g for g in rest if is_partial(g)), key=sort_key)
+    _, article_kids = load_tree(cur, article_code)
     return {
         "stages": list(STAGES), "basis": TAX[0],
-        "root": root, "kids": kids, "article": article, "top": top,
+        "root": root, "kids": kids, "article": article,
+        "article_kids": article_kids, "top": top,
         "partials": partials[:PARTIAL_CAP],
         "partials_hidden": partials[PARTIAL_CAP:],
         "rest": [g for g in rest if not is_partial(g)],
