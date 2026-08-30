@@ -47,13 +47,17 @@ TAX: tuple[str, dict] = ("gross", {})
 #: обязаны — иначе их деньги выпадут из сходимости.
 #:
 #: Допработы перечисляются ПОСТРОЧНО, как в паспорте (`_extras_by_category`),
-#: и ключ у них — `chapter_ref_raw`, ссылка «3.2.2» из «Сведений». Выбран по
-#: УНИКАЛЬНОСТИ, единственному свойству ключа, которое здесь вообще измеримо:
-#: внутри пары «предложение + статья» ссылка уникальна на всех 42 строках базы, а
-#: наименование — нет (40 групп вместо 42). Два случая склейки настоящие:
-#: предложения 34 и 39, статья 4.2.4 — одно наименование, ссылки 4.2.2.4 и
-#: 4.2.3.4, суммы 3,92 и 4,91 млн. Ключ по наименованию слепил бы их в одну
-#: строку, а на разных этапах такая склейка была бы ещё и невидимой.
+#: и ключ у них — `chapter_ref_raw`, ссылка «3.2.2» из «Сведений». Первое
+#: основание ключа — уникальность — второй тендер ОПРОВЕРГ: на строках со
+#: статьёй ссылка даёт группы с несколькими строками (блок замеров), причём
+#: наименования внутри таких групп СОВПАДАЮТ, а суммы разные — файл дробит
+#: одну работу на строки. Действующее основание другое: ссылка ГРУППИРУЕТ
+#: одну работу, а группа из нескольких строк помечается пилюлей «несколько
+#: строк сметы», как у позиций. Наименование ключом быть не может по-прежнему:
+#: оно склеивает РАЗНЫЕ работы (от пары 4.2.4 предложений 34 и 39 до «Стен»
+#: с четырьмя разными ссылками под одним словом), и такая склейка невидима.
+#: Ссылка не повторяется в разных статьях одного предложения (0 случаев),
+#: поэтому переход на поддерево (§2.1) новых склеек не добавил.
 #: Внутри статьи ссылка есть ВСЕГДА: `ck_..._unresolved_ref` разрешает NULL
 #: только вместе с NULL-статьёй, и таких строк со статьёй в базе ноль.
 #: Подпись строки — наименование с последнего этапа, где работа есть.
@@ -497,7 +501,7 @@ def corpus_stats(cur) -> dict:
 
     needed, sizes, moved, partial, multi, articles = [], [], 0, 0, 0, 0
     outside: list[int] = []
-    with_drilldown = wider = 0
+    with_drilldown = wider = no_own = 0
     first_stage, last_stage = STAGES[0][0], STAGES[-1][0]
 
     # Классы присутствия меряются ПО ВСЕЙ СМЕТЕ, а не по узлам: под моделью
@@ -505,7 +509,7 @@ def corpus_stats(cur) -> dict:
     # умножал бы её на глубину. Глобальный счёт отвечает на вопрос «сколько работ
     # действительно появилось и исчезло», очищенный и от глубины дерева, и от
     # уточнения классификации — статья в ключ не входит.
-    whole = born = gone = mid = holed = 0
+    whole = born = gone = mid = holed = zero_some = zero_after = 0
     global_groups: dict[object, dict[int, dict]] = defaultdict(dict)
     for node_groups in direct.values():
         for key, cells in node_groups.items():
@@ -519,6 +523,15 @@ def corpus_stats(cur) -> dict:
     groups_total = len(global_groups)
     for cells in global_groups.values():
         present = sorted(cells)
+        # Ноль — состояние строки («снято», §2.5), а не её отсутствие; счёт
+        # идёт ТОЙ ЖЕ моделью групп, что и экран, — прежние 507/294 считались
+        # ключом «статья + позиция» и с ревизией §2.1 перестали быть замером.
+        zeros = [s for s in present if cells[s]["amount"] == 0]
+        if zeros:
+            zero_some += 1
+            nonzero = [s for s in present if cells[s]["amount"] != 0]
+            if nonzero and max(zeros) > min(nonzero):
+                zero_after += 1
         if present != list(range(present[0], present[-1] + 1)):
             holed += 1
         elif len(present) == len(STAGES):
@@ -537,6 +550,10 @@ def corpus_stats(cur) -> dict:
         with_drilldown += 1
         if len(groups) > len(direct[cid]):
             wider += 1
+        # Живой случай для has_drilldown_rows (§2.1): кнопка обязана появиться
+        # у узла, все строки которого лежат у потомков.
+        if not direct[cid]:
+            no_own += 1
         wrapped = [{"id": key, "stages": cells} for key, cells in groups.items()]
         total = sum((contribution(g) for g in wrapped), Decimal(0))
         if abs(total) < MOVEMENT_FLOOR:
@@ -590,6 +607,88 @@ def corpus_stats(cur) -> dict:
     )
     no_catalog, no_article, no_amount, not_finite, no_quantity = cur.fetchone()
 
+    # Допработы: основание ключа §2.7 обязано пересниматься с базы, потому что
+    # первый его вариант («ссылка уникальна») второй тендер опроверг. Все числа
+    # — вся база; область группировки — та же, что у экрана: строки со статьёй,
+    # ключ `chapter_ref_raw`.
+    cur.execute(
+        """
+        select count(*), count(distinct proposal_id),
+               count(*) filter (where work_category_id is not null),
+               count(*) filter (where work_category_id is not null
+                                and chapter_ref_raw is null)
+        from estimate_additional_works
+        """
+    )
+    extras_rows, extras_proposals, extras_with_article, extras_article_no_ref = cur.fetchone()
+    cur.execute(
+        """
+        select count(*), count(*) filter (where n > 1),
+               count(*) filter (where n > 1 and titles > 1),
+               coalesce(string_agg(n::text, ', ' order by n desc)
+                        filter (where n > 1), '')
+        from (select count(*) as n, count(distinct title) as titles
+              from estimate_additional_works
+              where work_category_id is not null
+              group by proposal_id, work_category_id, chapter_ref_raw) g
+        """
+    )
+    (extras_groups_ref, extras_collisions,
+     extras_collisions_diff_title, extras_collision_sizes) = cur.fetchone()
+    cur.execute(
+        """
+        select count(*), count(*) filter (where refs > 1)
+        from (select count(distinct chapter_ref_raw) as refs
+              from estimate_additional_works
+              where work_category_id is not null
+              group by proposal_id, work_category_id, title) g
+        """
+    )
+    extras_groups_title, extras_title_merges = cur.fetchone()
+    cur.execute(
+        """
+        select count(*) from (
+          select 1 from estimate_additional_works
+          where work_category_id is not null
+          group by proposal_id, chapter_ref_raw
+          having count(distinct work_category_id) > 1) g
+        """
+    )
+    extras_cross_article = cur.fetchone()[0]
+    cur.execute(
+        """
+        with recursive tree as (
+          select id, parent_id, id as root from work_categories
+          union all
+          select wc.id, wc.parent_id, t.root
+          from work_categories wc join tree t on wc.parent_id = t.id
+        ),
+        direct_rows as (
+          select pi.proposal_id as prop, ch.work_category_id as cid,
+                 count(*) as np, 0 as ne
+          from position_items pi
+          join position_items ch
+            on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
+          where not pi.is_chapter and ch.work_category_id is not null
+          group by 1, 2
+          union all
+          select proposal_id, work_category_id, 0, count(*)
+          from estimate_additional_works
+          where work_category_id is not null
+          group by 1, 2
+        ),
+        per_node as (
+          select d.prop, t.root, sum(d.np) as np, sum(d.ne) as ne
+          from direct_rows d join tree t on t.id = d.cid
+          group by 1, 2
+        )
+        select count(*) filter (where ne > 0),
+               count(*) filter (where ne > 0 and np = 0)
+        from per_node
+        """
+    )
+    extras_subtree_pairs, extras_only_subtrees = cur.fetchone()
+
     ordered = sorted(needed)
     ordered_outside = sorted(outside)
 
@@ -635,6 +734,22 @@ def corpus_stats(cur) -> dict:
         "titles_multiline": titles_multiline,
         "with_drilldown": with_drilldown,
         "wider": wider,
+        "no_own": no_own,
+        "zero_some": zero_some,
+        "zero_after": zero_after,
+        "extras_rows": extras_rows,
+        "extras_proposals": extras_proposals,
+        "extras_with_article": extras_with_article,
+        "extras_article_no_ref": extras_article_no_ref,
+        "extras_groups_ref": extras_groups_ref,
+        "extras_collisions": extras_collisions,
+        "extras_collisions_diff_title": extras_collisions_diff_title,
+        "extras_collision_sizes": extras_collision_sizes,
+        "extras_groups_title": extras_groups_title,
+        "extras_title_merges": extras_title_merges,
+        "extras_cross_article": extras_cross_article,
+        "extras_subtree_pairs": extras_subtree_pairs,
+        "extras_only_subtrees": extras_only_subtrees,
         "no_catalog": no_catalog,
         "no_article": no_article,
         "no_amount": no_amount,
@@ -901,7 +1016,11 @@ def fragment(root: dict, kids: list[dict], article: dict, case: dict,
             own_kids = case.get("article_kids") or []
             rows.append(article_row(
                 kid, 2, key=f"{variant}k" if own_kids else None,
-                works=len(case["top"]) + len(case["partials"]) + len(case["partials_hidden"]),
+                # N на кнопке — число ГРУПП разложения поддерева, включая
+                # свёрнутые в «ещё…» и «прочие»: кнопка обещает объём блока,
+                # и число не зависит от того, что сейчас раскрыто (§2.1).
+                works=len(case["top"]) + len(case["partials"])
+                + len(case["partials_hidden"]) + len(case["rest"]),
                 works_key=f"{variant}w"))
             for own in own_kids:
                 rows.append(article_row(own, 3).replace(
@@ -1038,6 +1157,26 @@ MEASURES: list[tuple[str, object]] = [
     (f"…статей, где их больше {PARTIAL_CAP}", lambda d: f"{d['outside_over_cap']}"),
     ("Узлов, у которых в поддереве есть строки", lambda d: f"{d['with_drilldown']}"),
     ("…где поддерево ШИРЕ собственных строк узла", lambda d: f"{d['wider']}"),
+    ("…где СОБСТВЕННЫХ строк нет вовсе", lambda d: f"{d['no_own']}"),
+    ("Групп с нулевой суммой хотя бы на одном этапе",
+     lambda d: f"{d['zero_some']}"),
+    ("…где ноль пришёл ПОСЛЕ ненулевой суммы («снято»)",
+     lambda d: f"{d['zero_after']}"),
+    ("Допработ: строк / предложений / строк со статьёй (вся база)",
+     lambda d: f"{d['extras_rows']} / {d['extras_proposals']}"
+               f" / {d['extras_with_article']}"),
+    ("…групп по ссылке / по наименованию (строки со статьёй)",
+     lambda d: f"{d['extras_groups_ref']} / {d['extras_groups_title']}"),
+    ("…ссылок с несколькими строками (размеры групп)",
+     lambda d: f"{d['extras_collisions']} ({d['extras_collision_sizes']})"),
+    ("…из них с РАЗНЫМИ наименованиями внутри",
+     lambda d: f"{d['extras_collisions_diff_title']}"),
+    ("…наименований, склеивающих РАЗНЫЕ ссылки",
+     lambda d: f"{d['extras_title_merges']}"),
+    ("…ссылка в двух статьях предложения / со статьёй без ссылки",
+     lambda d: f"{d['extras_cross_article']} / {d['extras_article_no_ref']}"),
+    ("Поддеревьев с допработами / из них БЕЗ строк сметы (вся база)",
+     lambda d: f"{d['extras_subtree_pairs']} / {d['extras_only_subtrees']}"),
     ("Длина каталожного наименования: медиана / p75 / p90 / максимум",
      lambda d: f"{d['titles_median']:.0f} / {d['titles_p75']} / {d['titles_p90']}"
                f" / {d['titles_max']}"),
@@ -1174,9 +1313,10 @@ def section(case: dict, born: dict, move: dict, traces: list) -> str:
       <table>{measure_rows(traces)}</table>
       <p class="hint">Замер 30.08.2026, тот же участник и те же четыре этапа.
       «Строка-объяснитель» — ГРУППА РАЗЛОЖЕНИЯ, попавшая в число тех, чей накопленный
-      вклад объясняет 90 % движения статьи. Групп три вида, и ключ у каждого свой:
-      работа — «статья + каталожная позиция», допработа — «статья + наименование»,
-      строки без каталожной привязки — одна группа на статью. Критерий отбора —
+      вклад объясняет 90 % движения статьи. Групп три вида, и ключ у каждого свой
+      (§2.2): работа — каталожная позиция БЕЗ статьи в пределах поддерева, допработа —
+      ссылка «Сведений» (<code>chapter_ref_raw</code>), строки без каталожной
+      привязки — одна группа на поддерево. Критерий отбора —
       близость НАКОПЛЕННОГО вклада к движению статьи, а не доля суммы модулей:
       вклады гасят друг друга, и по модулям набралось бы больше строк, чем нужно.</p>
       <p class="hint"><b>Замер раскладки, Chrome, обе темы, 1280 и 1100 px:</b>
@@ -1254,10 +1394,12 @@ def section(case: dict, born: dict, move: dict, traces: list) -> str:
       статью по ОБЕИМ ветвям <code>v_category_totals</code>, поэтому без этих строк
       итог не сошёлся бы из показанных — что макет 30.08.2026 сначала и делал, пока
       сходимость не была померена машиной. Ключ между этапами у допработы — ССЫЛКА
-      «Сведений» (<code>chapter_ref_raw</code>), она же в пилюле: внутри пары
-      «предложение + статья» ссылка уникальна на всех 42 строках базы, а
-      наименование нет — 40 групп вместо 42, и две РАЗНЫЕ работы статьи 4.2.4
-      слиплись бы в одну. Подпись берётся с последнего этапа, поэтому
+      «Сведений» (<code>chapter_ref_raw</code>), она же в пилюле. Ссылка ГРУППИРУЕТ
+      одну работу, а не удостоверяет строку: группы из нескольких строк на базе
+      есть (блок замеров), наименования внутри них совпадают, и такая группа несёт
+      пилюлю «несколько строк сметы». Наименование ключом быть не может: оно
+      склеивает РАЗНЫЕ работы — от пары статьи 4.2.4 до «Стен» с четырьмя разными
+      ссылками — и склейка эта невидима. Подпись берётся с последнего этапа, поэтому
       переименование при сохранённой ссылке экран не покажет — это названная цена.
       Объёма у допработ нет, поэтому второго этажа в ячейке нет.</li>
       <li><b>Колонки «₽ за единицу» нет</b> — решение пользователя 30.08.2026.
