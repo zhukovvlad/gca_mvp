@@ -892,9 +892,10 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
   разделов между лотами законно повторяются и означают РАЗНЫЕ работы
   (`models.EstimateAdditionalWork`, §2.7 ревизия 31.08.2026); склеивать их одной
   ссылкой нельзя, а сходимость объединения не требует. `lot_key` попадает и в
-  `GroupInput.chapter_ref_raw`? — **нет**: в контракте ответа остаётся голая
-  ссылка (текст пилюли «допработы · 3.2.2», §2.11), а лот живёт только внутри
-  ключа группировки. Подпись — наименование с ПОСЛЕДНЕГО этапа присутствия
+  `GroupInput.chapter_ref_raw`? — **нет**: там остаётся голая ссылка (текст
+  пилюли, §2.11). Лот выходит в ответ ОТДЕЛЬНЫМИ полями — `row_key`
+  (идентичность строки) и `lot_key` (для пилюли, когда лотов больше одного), —
+  а внутри `GroupInput` живёт в `key`. Подпись — наименование с ПОСЛЕДНЕГО этапа присутствия
   (колонки собираются по возрастанию `stage_no`, присваивание перетирает
   прежнее — как `load_groups` генератора), внутри этапа — первая по паре
   `(proposal_id, ordinal)` (уже в SQL): `ordinal` уникален только внутри
@@ -1261,10 +1262,7 @@ class TestLoadGroups:
 (Если `round_payload(..., lots=2)` кладёт лоты в РАЗНЫЕ сметы — посмотреть, как
 устроен вызов в `test_round_import.py:43`, и построить смету с двумя
 предложениями тем способом, каким её строит он; предпосылка теста проверяется
-`assert`-ом выше и не даст тесту молча измерить не тот случай. Если две группы
-допработ различить в ответе нечем, кроме порядка, — это ожидаемо: `lot_key` в
-контракт не выходит, обе строки несут ссылку «1» и различаются наименованием,
-как и любые две разные работы.)
+`assert`-ом выше и не даст тесту молча измерить не тот случай.)
 
 Примечание для исполнителя: `chaptered` из тестов свода строит `summary`-блок
 сам — если хелперу выше нужен итог, скопировать словарь `summary` из
@@ -1377,7 +1375,8 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
     ).all()
     ordered = sorted(extra_rows, key=lambda r: column_of[r[0]])
     for estimate_id, lot_key, ref, title, amount, rows in ordered:
-        key = ("extra", lot_key, ref)   # лот в КЛЮЧЕ, но не в контракте ответа
+        key = ("extra", lot_key, ref)   # лот в ключе; в ответ он идёт полями
+                                        # row_key и lot_key (§2.11)
         group = groups.setdefault(key, {"kind": pd.KIND_ADDITIONAL_WORKS,
                                         "catalog_position_id": None, "chapter_ref_raw": ref,
                                         "title": title, "key": (lot_key, ref), "stages": {}})
@@ -1442,8 +1441,12 @@ def build_position_drilldown(db: Session, tender_id: int, work_category_id: int,
   (`"6+11"`); `null`, если объёма нет (допработы, unmatched, свёрнутые,
   absent). Форматирование разрядов и одного знака после запятой (§2.4) — на
   клиенте, Task 8.
-- Строка: `{kind, catalog_position_id, chapter_ref_raw, title, ambiguous,
-  group_count, cells, bargain, contribution {value, direction, reason: null}}`.
+- Строка: `{kind, row_key, catalog_position_id, chapter_ref_raw, lot_key, title,
+  ambiguous, group_count, cells, bargain, contribution {value, direction,
+  reason: null}}`. **`row_key`** — идентичность строки (вид плюс ключ
+  группировки), уникальная в пределах ответа: клиент берёт её ключом React как
+  есть. **`lot_key`** — лот из ключа группировки, только у
+  `kind = additional_works`, иначе `null`.
 - Проверки в `build_position_drilldown`, по порядку: тендер (`db.get(Tender)`,
   404 `tender_not_found` — «Свой код, а не get_tender», как у свода);
   `work_category_id` (`db.get(WorkCategory)`, 404 `work_category_not_found`);
@@ -2093,8 +2096,11 @@ export function formatQuantity(quantity: string | null): string | null;
 /** Устойчивый ключ строки для React — ПОЛЕ ОТВЕТА `row_key`, а не сборка из
  *  kind и ref: у двух допработ разных лотов ссылка одна (§2.7, §2.11). */
 export function drilldownRowKey(row: StagePositionsRow): string;
-/** Нужно ли называть лот в пилюлях: в ответе больше одного лота. */
+/** Нужно ли называть лот в пилюлях. Считаются РАЗЛИЧНЫЕ непустые `lot_key`
+ *  строк, а не строки: `rows.length > 1` было бы неверно — две допработы
+ *  ОДНОГО лота лота в пилюлю не приносят. */
 export function showsLot(rows: StagePositionsRow[]): boolean;
+//  реализация: new Set(rows.map((r) => r.lot_key).filter(Boolean)).size > 1
 ```
 
 `PositionCell` — ячейка работы, три этажа (§2.4): сумма (или подпись состояния
@@ -2135,10 +2141,20 @@ describe("drilldownRowKey и showsLot", () => {
   });
 
   it("лот в пилюле появляется только когда лотов в ответе больше одного (§2.7)", () => {
-    const two = [extra("additional_works:lot_1:1", "lot_1"), extra("additional_works:lot_2:1", "lot_2")];
-    const one = [extra("additional_works:lot_1:1", "lot_1")];
-    expect(showsLot(two)).toBe(true);
-    expect(showsLot(one)).toBe(false);
+    const twoLots = [extra("additional_works:lot_1:1", "lot_1"),
+                     extra("additional_works:lot_2:1", "lot_2")];
+    // Отрицательный случай — ДВЕ строки ОДНОГО лота: считать надо различные
+    // лоты, а не строки. Наивная реализация `rows.length > 1` краснеет здесь и
+    // только здесь (третий круг ревью плана 31.08.2026).
+    const oneLotTwoRows = [extra("additional_works:lot_1:1", "lot_1"),
+                           extra("additional_works:lot_1:2", "lot_1")];
+    const single = [extra("additional_works:lot_1:1", "lot_1")];
+    // И строки без лота (работы, свёрнутые) лота в пилюлю не приносят вовсе.
+    const noLots = [row("position"), row("rest", 2)];
+    expect(showsLot(twoLots)).toBe(true);
+    expect(showsLot(oneLotTwoRows)).toBe(false);
+    expect(showsLot(single)).toBe(false);
+    expect(showsLot(noLots)).toBe(false);
     expect(extraPill("1", "lot_2")).toBe("допработы · lot_2 · 1");
     expect(extraPill("1", null)).toBe("допработы · 1");
   });
@@ -2416,6 +2432,28 @@ describe("PositionDrilldown (§2.1, §2.12, §6.3)", () => {
     success();
     renderRows();
     expect(screen.getByText(extraPill("1.2"))).toBeInTheDocument();
+  });
+
+  it("две допработы одной ссылки из разных лотов подписаны ПОЛНЫМИ пилюлями и не схлопываются", () => {
+    // Единственный тест, который краснеет, если компонент не позовёт
+    // `showsLot` и продолжит печатать одну ссылку: отдельные тесты `showsLot` и
+    // `extraPill` при этом останутся зелёными, а на экране две РАЗНЫЕ работы
+    // снова станут неразличимы (третий круг ревью плана 31.08.2026).
+    const base = sampleStagePositions.rows.find((r) => r.kind === "additional_works")!;
+    success({
+      ...sampleStagePositions,
+      rows: [
+        { ...base, row_key: "additional_works:lot_1:1", chapter_ref_raw: "1",
+          lot_key: "lot_1", title: "Работа лота 1" },
+        { ...base, row_key: "additional_works:lot_2:1", chapter_ref_raw: "1",
+          lot_key: "lot_2", title: "Работа лота 2" },
+      ],
+    });
+    renderRows();
+    expect(screen.getByText(extraPill("1", "lot_1"))).toBeInTheDocument();
+    expect(screen.getByText(extraPill("1", "lot_2"))).toBeInTheDocument();
+    expect(screen.queryByText(extraPill("1"))).toBeNull();      // короткой пилюли быть не должно
+    expect(screen.getAllByTestId("drill-row-extra")).toHaveLength(2);   // строки не схлопнулись
   });
 
   it("исчезнувшая работа печатает «нет в файле», а не «снято» (§6.3)", () => {
@@ -2747,6 +2785,18 @@ git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, 
   — `gcTime: Infinity` и два теста (Tasks 8, 11); `has_drilldown_rows` у
   «Нераспределённого» — всегда `false` с тестом (Task 1); пути `docs/devlog/`
   и `$LASTEXITCODE` (Tasks 13, 14).
+- **Что нашли ТРЕТИЙ и ЧЕТВЁРТЫЙ круги ревью плана (31.08.2026):** ключ группы
+  из круга 2 не доходил до контракта — заведены `row_key` (идентичность строки
+  для React) и `lot_key` (лот в пилюле, когда лотов больше одного), а §2.3/§6.1
+  спеки и обзорные правила плана всё ещё несли старую четвёрку ключа порядка
+  (теперь правило кончается «ключом группировки, каким бы он ни был»). Затем:
+  поведение пилюли не было защищено КОМПОНЕНТНЫМ тестом — `showsLot` и
+  `extraPill` проверялись порознь, и компонент мог их не позвать при зелёных
+  тестах; у `showsLot` не было отрицательного случая «две строки одного лота»
+  (наивное `rows.length > 1` проходило); три пересказа контракта остались от
+  прежней редакции. Всё закрыто: тест компонента на две полные пилюли, счёт
+  РАЗЛИЧНЫХ лотов с тремя отрицательными случаями, пересказы приведены к
+  контракту.
 - **Что нашёл ВТОРОЙ круг ревью плана (31.08.2026):** область ключа допработ
   была расширена небезопасно — «склеим по смете, склейка видна пилюлей» неверно
   дважды: номера разделов между лотами законно повторяются
