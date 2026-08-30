@@ -64,9 +64,13 @@ TanStack Query + shadcn/ui + vitest.
 
 **Interfaces:**
 - Consumes: `ss.SummaryRow` (есть), `CellInput.row_count` (есть).
-- Produces: поле `has_drilldown_rows: bool` в каждом объекте `rows[*]` (и
-  рекурсивно в `children`, и в `unallocated` — правило одно на сериализатор).
-  Task 10 (фронт) читает его из `StageSummaryRow`.
+- Produces: поле `has_drilldown_rows: bool` в каждом объекте `rows[*]` и
+  рекурсивно в `children`. У `unallocated` поле **всегда `false`**: разложение
+  адресуется `work_category_id`, а у «Нераспределённого» его нет — эндпоинта для
+  этой строки не существует, и контракт не должен обещать раскрытие, которого
+  нельзя запросить (замечание ревью плана 31.08.2026; иначе фронт был бы
+  вынужден чинить ложь сервера своей проверкой `work_category_id !== null`).
+  Task 11 (фронт) читает поле из `StageSummaryRow`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -81,6 +85,14 @@ TanStack Query + shadcn/ui + vitest.
         assert by_code["2"]["has_drilldown_rows"] is True          # строки есть, суммы 60 -> 0
         empty = next(r for r in data["rows"] if all(c["rows"]["row_count"] == 0 for c in r["cells"]))
         assert empty["has_drilldown_rows"] is False
+
+    def test_unallocated_never_promises_a_drilldown(self, db_session, grid):
+        """У «Нераспределённого» нет work_category_id, значит нет и эндпоинта:
+        поле обязано быть false ДАЖЕ когда строки там есть."""
+        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        unallocated = data["unallocated"]
+        assert unallocated["has_drilldown_rows"] is False
+        assert unallocated["work_category_id"] is None
 
     def test_has_drilldown_rows_counts_both_branches_and_the_subtree(self, db_session, factories):
         """Негативные проверки §6.2/§6.3 на уровне свода: статья с ОДНИМИ
@@ -148,7 +160,11 @@ def _row(r: ss.SummaryRow) -> dict:
             # в одной выбранной колонке. row_count узла уже включает всё
             # поддерево по ОБЕИМ ветвям (позиции + допработы) — см. комментарий
             # у total_row_counts в services/stage_summary.compute_summary.
-            "has_drilldown_rows": any(c.rows.row_count > 0 for c in r.cells),
+            # У «Нераспределённого» — всегда false: разложение адресуется
+            # work_category_id, которого у этой строки нет, и обещать раскрытие,
+            # которого нельзя запросить, контракт не должен.
+            "has_drilldown_rows": (not r.is_unallocated
+                                   and any(c.rows.row_count > 0 for c in r.cells)),
             "cells": [_cell(c) for c in r.cells],
             ...
 ```
@@ -529,6 +545,24 @@ class TestComputeDrilldown:
                       if r.kind == pd.KIND_POSITION and r.catalog_position_id != 99
                       and r.contribution.value == D("1")]
         assert len(named_born) == pd.PARTIAL_CAP                            # десять поимённо
+        # Строки «прочие» здесь быть НЕ ДОЛЖНО: свёрнутые в мешок группы уже
+        # показаны и в третий класс не возвращаются. Без этой проверки дефект
+        # разбиения невидим — «прочие» с нулевым остатком не ломают сходимость
+        # (ревью плана 31.08.2026).
+        assert all(r.kind != pd.KIND_REST for r in out.rows)
+
+    def test_every_group_lands_in_exactly_one_class(self):
+        """Инвариант разбиения, который сходимость НЕ проверяет: каждая входная
+        группа показана ровно один раз — поимённо либо внутри одной свёрнутой."""
+        groups = ([one_stage_grp({0: "100", 1: "212"}, cpid=99)]
+                  + [one_stage_grp({1: "1"}, cpid=i) for i in range(1, 13)]      # 12 класса 2
+                  + [one_stage_grp({0: "7", 1: "7"}, cpid=i) for i in range(20, 25)])  # 5 в «прочие»
+        out = pd.compute_drilldown(COLS2, groups)
+        named = sum(1 for r in out.rows if r.group_count is None)
+        folded = sum(r.group_count for r in out.rows if r.group_count is not None)
+        assert named + folded == len(groups)
+        rest = next(r for r in out.rows if r.kind == pd.KIND_REST)
+        assert rest.group_count == 5
 
     def test_rest_carries_the_remainder_and_convergence_is_exact(self):
         groups = [one_stage_grp({0: "100", 1: "10"}, cpid=1),
@@ -579,6 +613,37 @@ class TestComputeDrilldown:
         g = one_stage_grp({0: "10", 1: "20"}, cpid=1, rows=2)
         out = pd.compute_drilldown(COLS2, [g])
         assert out.rows[0].ambiguous is True
+
+    def test_cancelling_contributions_do_not_stop_the_selection_early(self):
+        """§6.1: критерий — близость НАКОПЛЕННОГО вклада к движению статьи, а не
+        доля суммы модулей. Вклады +100 и −100 гасят друг друга, и после каждого
+        по отдельности накопленное далеко от delta = +10, поэтому берутся все три.
+        Порог по СУММЕ МОДУЛЕЙ (отвергнутая формулировка §3) остановился бы на
+        первой строке: 100 из 210 модулей — и разложение объявило бы объяснителем
+        строку, которая ничего не объясняет."""
+        groups = [one_stage_grp({0: "0", 1: "100"}, cpid=1),      # +100
+                  one_stage_grp({0: "100", 1: "0"}, cpid=2),      # -100
+                  one_stage_grp({0: "0", 1: "10"}, cpid=3)]       # +10
+        out = pd.compute_drilldown(COLS2, groups)
+        explainers = [r.catalog_position_id for r in out.rows if r.group_count is None]
+        assert sorted(explainers) == [1, 2, 3]
+        assert all(r.kind != pd.KIND_REST for r in out.rows)
+
+    def test_result_does_not_depend_on_the_order_of_input_groups(self):
+        """§2.3: ключ порядка полный, поэтому выдача БД на результат не влияет.
+        Без четвёртого компонента ключа (ссылка) две допработы с равным по модулю
+        вкладом здесь встали бы в порядке входа — и тест покраснел бы."""
+        groups = [one_stage_grp({0: "100", 1: "10"}, cpid=1),
+                  one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="3.2.2"),
+                  one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="3.2.10"),
+                  one_stage_grp({0: "5", 1: "5"}, cpid=7)]
+        straight = pd.compute_drilldown(COLS2, groups)
+        reversed_out = pd.compute_drilldown(COLS2, list(reversed(groups)))
+
+        def shape(out):
+            return [(r.kind, r.catalog_position_id, r.chapter_ref_raw, r.group_count) for r in out.rows]
+
+        assert shape(straight) == shape(reversed_out)
 ```
 
 - [ ] **Step 2: Прогнать, убедиться в падении** — `AttributeError: compute_drilldown`.
@@ -623,29 +688,37 @@ def compute_drilldown(columns: Sequence[DrillColumn], groups: Sequence[GroupInpu
         return DrilldownResult([], [], ss.REASON_UNKNOWN_VAT_BASE, basis)
 
     unavailable = [ss.REASON_UNKNOWN_VAT_BASE if c.vat_rate_base is None else None for c in columns]
-    rows_by_group = [(g, _row_from_group(g, group_cells(g, columns, basis))) for g in groups]
-    rows_by_group.sort(key=lambda gr: _order_key(gr[1].contribution.value, gr[0]))
+    pairs = [(g, _row_from_group(g, group_cells(g, columns, basis))) for g in groups]
+    # Разбиение на три класса — ПО ИНДЕКСАМ отсортированного списка, а не по
+    # `id()` уже собранных строк: у свёрнутой строки свой объект, её участники в
+    # `shown_rows` не попадают, и проверка «не показан» пропустила бы их в
+    # «прочие» второй раз — лишняя строка с нулевым остатком при зелёной
+    # сходимости (найдено ревью плана 31.08.2026). Каждая группа обязана попасть
+    # РОВНО В ОДИН класс, и здесь это видно из построения: три среза одного
+    # порядка, без пересечений.
+    order = sorted(range(len(pairs)), key=lambda i: _order_key(pairs[i][1].contribution.value, pairs[i][0]))
 
-    article_delta = sum((r.contribution.value for _, r in rows_by_group), Decimal(0))
+    article_delta = sum((r.contribution.value for _, r in pairs), Decimal(0))
     floor = (1 - COVERAGE) * abs(article_delta)
-    explainers: list[DrillRow] = []
     cumulative = Decimal(0)
-    queue = list(rows_by_group)
-    while queue and abs(article_delta - cumulative) > floor:
-        g, row = queue.pop(0)
-        explainers.append(row)
-        cumulative += row.contribution.value
+    taken = 0
+    while taken < len(order) and abs(article_delta - cumulative) > floor:
+        cumulative += pairs[order[taken]][1].contribution.value
+        taken += 1
+    explainer_idx = order[:taken]
+    tail_idx = order[taken:]
 
-    partial = [(g, r) for g, r in queue if len(g.stages) < len(columns)]
-    named, folded = partial[:PARTIAL_CAP], partial[PARTIAL_CAP:]
-    shown_rows = explainers + [r for _, r in named]
-    if folded:
-        folded_rows = [r for _, r in folded]
+    partial_idx = [i for i in tail_idx if len(pairs[i][0].stages) < len(columns)]
+    named_idx, folded_idx = partial_idx[:PARTIAL_CAP], partial_idx[PARTIAL_CAP:]
+    rest_idx = [i for i in tail_idx if i not in set(partial_idx)]
+
+    shown_rows = [pairs[i][1] for i in explainer_idx + named_idx]
+    if folded_idx:
+        folded_rows = [pairs[i][1] for i in folded_idx]
         amounts = [sum(money_at(r.cells[i]) for r in folded_rows) for i in range(len(columns))]
         shown_rows.append(_collapsed_row(KIND_COLLAPSED, folded_rows, amounts, columns, unavailable))
 
-    shown_keys = {id(r) for r in shown_rows}
-    rest_members = [r for _, r in rows_by_group if id(r) not in shown_keys]
+    rest_members = [pairs[i][1] for i in rest_idx]
     article_gross = [sum((g.stages[i].gross for g in groups if i in g.stages), Decimal(0))
                      for i in range(len(columns))]
     article_shown = [None if unavailable[i] else ss.to_shown(article_gross[i], columns[i].vat_rate_base, basis)
@@ -670,7 +743,11 @@ def compute_drilldown(columns: Sequence[DrillColumn], groups: Sequence[GroupInpu
 Замечания к реализации: `money_at` у `KIND_COLLAPSED`/`KIND_REST` читает
 `shown` при `state == amount` — свёрнутые входят в `shown_sum` своей суммой,
 поэтому сходимость точная по построению; `folded`-мешок кладётся ДО расчёта
-`rest`-остатка, чтобы остаток его учитывал.
+`rest`-остатка, чтобы остаток его учитывал. **Сходимость сама по себе НЕ
+доказывает правильности разбиения**: строка «прочие» несёт остаток, поэтому
+лишняя или потерянная группа оставляет её зелёной (ровно так пряталась ошибка
+`id()`-разбиения). Разбиение доказывают тесты на состав строк: сумма
+`group_count` свёрнутых плюс число поимённых равна числу входных групп.
 
 - [ ] **Step 4: Прогнать** — `uv run pytest tests/unit/test_position_drilldown.py -q` PASS;
   `uv run ruff check services/position_drilldown.py`.
@@ -735,9 +812,18 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
 - ключ группы допработ: `chapter_ref_raw`; подпись — наименование с ПОСЛЕДНЕГО
   этапа присутствия (колонки собираются по возрастанию `stage_no`, присваивание
   перетирает прежнее — как `load_groups` генератора), внутри этапа — первая по
-  `ordinal` (уже в SQL);
-- `quantities` — отсортированный tuple ненулевых… точнее: НЕ-None значений
-  `suggested_quantity`; `unit` — `min(symbol)`.
+  паре `(proposal_id, ordinal)` (уже в SQL): `ordinal` уникален только внутри
+  предложения, а группа берётся в пределах СМЕТЫ, у которой бывает несколько
+  лотов (§2.7, уточнение спеки 31.08.2026);
+- `quantities` — отсортированный tuple НЕ-None значений `suggested_quantity`;
+  `unit` — `min(symbol)`;
+- **неконечные суммы** (`NaN`, `±Infinity`): строка входит в счётчик
+  `GroupStage.rows` и НЕ входит в `gross` — то же правило, что у VIEW
+  `v_category_totals` (§1.7), иначе разложение не сойдётся со статьёй. Группа,
+  у которой на этапе ВСЕ строки неконечны, получает `gross = 0` при `rows > 0`,
+  то есть нулевое состояние («не оценивалась» / «снято»), а не `absent`: строка
+  в файле есть, и эквивалентность `estimate_rows == 0 ⟺ absent` (§2.11)
+  обязана держаться.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -758,7 +844,16 @@ import sqlalchemy as sa
 from crud import position_drilldown as crud_pd
 from crud import stage_summary as crud_ss
 from crud.common import DomainError
-from models import Estimate, Offer, PositionItem, TenderRound, WorkCategory
+from models import (
+    Estimate,
+    EstimateAdditionalWork,
+    Lot,
+    Offer,
+    PositionItem,
+    Proposal,
+    TenderRound,
+    WorkCategory,
+)
 from services import position_drilldown as pd_service
 from services.category_resolution import CategoryResolver
 from services.round_import import import_round
@@ -880,7 +975,114 @@ class TestLoadGroups:
         with count_queries(db_session) as c3:
             crud_pd.load_groups(db_session, three, subtree)
         assert c2["n"] == c3["n"]
+
+    def test_non_finite_row_counts_but_does_not_add_to_the_sum(self, db_session, grid):
+        """§1.7: правило конечности VIEW повторяется здесь, иначе разложение не
+        сойдётся со статьёй. Неконечную сумму на живой базе не встретить
+        (0 из 64 505) — ставим её UPDATE-ом, как и снятую привязку выше."""
+        estimates = estimates_of(db_session, grid.path)
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        before = crud_pd.load_groups(db_session, estimates, subtree)
+        work = next(g for g in before if g.kind == pd_service.KIND_POSITION)
+        first_stage = min(work.stages)
+        # Добавляем в ту же группу вторую строку с NaN: сумма не меняется,
+        # счётчик строк растёт. Строку берём копией существующей.
+        row = db_session.execute(
+            sa.select(PositionItem).where(PositionItem.catalog_position_id == work.catalog_position_id,
+                                          PositionItem.is_chapter.is_(False))
+        ).scalars().first()
+        db_session.add(PositionItem(proposal_id=row.proposal_id, chapter_item_id=row.chapter_item_id,
+                                    catalog_position_id=row.catalog_position_id, unit_id=row.unit_id,
+                                    job_title_in_proposal=row.job_title_in_proposal,
+                                    item_number_in_proposal="nan-1", is_chapter=False,
+                                    total_cost_total=D("NaN"), suggested_quantity=None))
+        db_session.flush()
+        after = crud_pd.load_groups(db_session, estimates, subtree)
+        same = next(g for g in after if g.catalog_position_id == work.catalog_position_id)
+        assert same.stages[first_stage].gross == work.stages[first_stage].gross     # сумма не поехала
+        assert same.stages[first_stage].rows == work.stages[first_stage].rows + 1   # строка посчитана
+
+    def test_several_rows_under_one_ref_are_one_group_titled_by_ordinal(self, db_session, factories):
+        """§2.7: ссылка ГРУППИРУЕТ работу (три такие группы на стенде: 5, 2, 2
+        строки). Здесь наименования РАЗНЫЕ — случай, на котором правило подписи
+        различимо: берётся первая по файлу, а группа несёт пилюлю."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        for n, rnd in rounds.items():
+            positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                                  article_smr="6", number="1"),
+                         position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
+                                  unit_cost_total="5.00", total_cost_total="5.00",
+                                  chapter_ref="1", number="2")]
+            import_round(db_session, tender_round=rnd,
+                         data=round_payload([proposal(
+                             positions, vat_rate="20",
+                             additional_works=additional_works_row(total="30.00"),
+                             # ДВЕ строки «Сведений» с ОДНОЙ ссылкой «1» и разными наименованиями
+                             additional_info=svedeniya_info("1 Первая по файлу - 10.00 руб.",
+                                                            "1 Вторая по файлу - 20.00 руб."))]),
+                         parser_version="4.0.0", import_job_id=None, replace=False,
+                         unit_resolver=UnitResolver(db_session),
+                         category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        groups = crud_pd.load_groups(db_session, estimates_of(db_session, offers), subtree)
+        extras = [g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS]
+        assert len(extras) == 1                                   # одна ссылка — одна группа
+        assert extras[0].title == "Первая по файлу"               # первая по (proposal_id, ordinal)
+        assert extras[0].stages[0].rows == 2                      # пилюля «несколько строк сметы»
+        assert extras[0].stages[0].gross == D("30.00")
+
+    def test_estimate_with_two_lots_merges_the_ref_across_proposals(self, db_session, factories):
+        """§2.7 (уточнение 31.08.2026): область ключа — СМЕТА, а не предложение.
+        Смет с несколькими предложениями в базе НЕТ (0 из 43), поэтому ветка
+        фикстурная: две одинаковые ссылки в двух лотах одной сметы дают ОДНУ
+        группу, подпись определена парой (proposal_id, ordinal), а склейка
+        видима пилюлей."""
+        tender = factories.TenderFactory.create()
+        rnd1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        rnd2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+        db_session.flush()
+        for rnd in (rnd1, rnd2):
+            positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                                  article_smr="6", number="1"),
+                         position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
+                                  unit_cost_total="5.00", total_cost_total="5.00",
+                                  chapter_ref="1", number="2")]
+            payload = proposal(positions, vat_rate="20",
+                               additional_works=additional_works_row(total="10.00"),
+                               additional_info=svedeniya_info("1 Работа лота - 10.00 руб."))
+            import_round(db_session, tender_round=rnd,
+                         data=round_payload([payload], lots=2),   # ДВА лота одной сметы
+                         parser_version="4.0.0", import_job_id=None, replace=False,
+                         unit_resolver=UnitResolver(db_session),
+                         category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        estimates = estimates_of(db_session, offers)
+        assert db_session.execute(
+            sa.select(sa.func.count()).select_from(Proposal).join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimates[0])).scalar_one() == 2   # предпосылка теста
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        extras = [g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS]
+        assert len(extras) == 1                                   # одна группа на смету
+        assert extras[0].stages[0].rows == 2 and extras[0].stages[0].gross == D("20.00")
+        works = [g for g in groups if g.kind == pd_service.KIND_POSITION]
+        assert len(works) == 1 and works[0].stages[0].rows == 2   # тот же закон у работ
 ```
+
+(Для последнего теста в импорты добавить `Lot` и `Proposal`. Если
+`round_payload(..., lots=2)` кладёт лоты в РАЗНЫЕ сметы — посмотреть, как
+устроен `import_round` в `test_round_import.py:43`, и построить смету с двумя
+предложениями тем способом, каким её строит он; предпосылка теста проверяется
+`assert`-ом выше и не даст тесту молча измерить не тот случай.)
 
 Примечание для исполнителя: `chaptered` из тестов свода строит `summary`-блок
 сам — если хелперу выше нужен итог, скопировать словарь `summary` из
@@ -973,9 +1175,14 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
             quantities=tuple(sorted(q for q in quantities if q is not None)), unit=unit)
 
     extra_rows = db.execute(
+        # Подпись внутри этапа — первая строка по паре (proposal_id, ordinal):
+        # ordinal уникален лишь в пределах предложения, а группа берётся в
+        # пределах СМЕТЫ, у которой бывает несколько лотов (§2.7).
         sa.select(Lot.estimate_id, EstimateAdditionalWork.chapter_ref_raw,
-                  sa.func.array_agg(aggregate_order_by(EstimateAdditionalWork.title,
-                                                       EstimateAdditionalWork.ordinal))[1],
+                  sa.func.array_agg(aggregate_order_by(
+                      EstimateAdditionalWork.title,
+                      EstimateAdditionalWork.proposal_id,
+                      EstimateAdditionalWork.ordinal))[1],
                   sa.func.sum(EstimateAdditionalWork.total_amount), sa.func.count())
         .select_from(EstimateAdditionalWork)
         .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
@@ -1111,14 +1318,44 @@ class TestEndpointContract:
         assert e.value.code == "too_few_offers"
 
     def test_empty_subtree_is_no_rows_in_subtree_not_an_error(self, db_session, grid):
-        empty_code = db_session.execute(
-            sa.select(WorkCategory.code)
-            .where(~WorkCategory.id.in_(sa.select(PositionItem.work_category_id)
-                                        .where(PositionItem.work_category_id.isnot(None))),
-                   WorkCategory.parent_id.is_(None))
-        ).scalars().first()
-        data = self._drill(db_session, grid, code=empty_code)
+        """Пустота проверяется ПО ОБЕИМ ветвям и ПО ВСЕМУ поддереву выбранных
+        смет, а не «по категориям, не встречающимся в position_items»: та
+        формулировка выбрала бы и корень со строками у потомка (живой узел «1»),
+        и статью с одними допработами — то есть тест мерил бы не то, что
+        обещает (ревью плана 31.08.2026). Предпосылку тест доказывает сам."""
+        estimates = estimates_of(db_session, grid.path)
+        # В grid заняты статьи «6» и «2»; «3» не заняты ни работой, ни допработой.
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "3"))
+        chapter = sa.orm.aliased(PositionItem)
+        positions_in_subtree = db_session.execute(
+            sa.select(sa.func.count()).select_from(PositionItem)
+            .join(chapter, sa.and_(chapter.id == PositionItem.chapter_item_id,
+                                   chapter.proposal_id == PositionItem.proposal_id))
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id.in_(estimates), PositionItem.is_chapter.is_(False),
+                   chapter.work_category_id.in_(subtree))).scalar_one()
+        extras_in_subtree = db_session.execute(
+            sa.select(sa.func.count()).select_from(EstimateAdditionalWork)
+            .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id.in_(estimates),
+                   EstimateAdditionalWork.work_category_id.in_(subtree))).scalar_one()
+        assert positions_in_subtree == 0 and extras_in_subtree == 0   # предпосылка теста
+        data = self._drill(db_session, grid, code="3")
         assert data["reason"] == "no_rows_in_subtree" and data["rows"] == []
+        assert data["convergence"] == []
+
+    def test_subtree_of_only_additional_works_gets_a_drilldown(self, db_session, factories):
+        """Негативная §6.2 и фикстура §5: статья, в поддереве которой ТОЛЬКО
+        допработы (на стенде таких поддеревьев нет — 0 из 143), разложение
+        получает; проверка одних `position_items` обязана здесь краснеть."""
+        tender, offers = _extras_only_grid(db_session, factories)
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "2"), offers)
+        assert data["reason"] is None
+        assert [r["kind"] for r in data["rows"] if r["group_count"] is None] == ["additional_works"]
+        assert all(c["converged"] is True for c in data["convergence"])
 
     def test_article_with_only_descendant_rows_gets_a_drilldown(self, db_session, factories):
         """Негативная §6.2: узел без собственных строк, но со строками потомка,
@@ -1169,7 +1406,52 @@ def _subtree_only_grid(db_session, factories):
 ```
 
 (Если код «6.1» в справочнике отсутствует — взять первую пару
-родитель/потомок из `WorkCategory`, как оговорено в Task 1.)
+родитель/потомок из `WorkCategory`, как оговорено в Task 1. Коды «2», «3», «6»,
+«6.1» в справочнике стенда есть — проверено 31.08.2026.)
+
+Вторая фикстура — поддерево, где ТОЛЬКО допработы. Статья допработы получает
+из строки-РАЗДЕЛА с тем же номером (`services/additional_works.
+categories_by_chapter_number` + `resolve_ref`), и раздел при этом может не
+нести ни одной работы — на этом фикстура и стоит:
+
+```python
+def _extras_only_grid(db_session, factories):
+    """Два раунда. Раздел 1 (статья 6) несёт работы; раздел 2 (статья 2) — ни
+    одной работы, только строку «Сведений» по ссылке «2». Поддерево статьи 2
+    состоит из одних допработ."""
+    tender = factories.TenderFactory.create()
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+    db_session.flush()
+    for n, extra in ((1, "24.00"), (2, "30.00")):
+        positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                              article_smr="6", number="1"),
+                     position(job_title="Работа фасада", unit="м2", quantity=1, suggested_quantity=1,
+                              unit_cost_total="100.00", total_cost_total="100.00",
+                              chapter_ref="1", number="2"),
+                     # раздел БЕЗ работ под ним — его статья живёт только допработой
+                     position(job_title="Раздел 2", is_chapter=True, chapter_number="2",
+                              article_smr="2", number="3")]
+        import_round(db_session, tender_round=rounds[n],
+                     data=round_payload([proposal(
+                         positions, vat_rate="20",
+                         additional_works=additional_works_row(total=extra),
+                         additional_info=svedeniya_info(f"2 Допработы участка - {extra} руб."))]),
+                     parser_version="4.0.0", import_job_id=None, replace=False,
+                     unit_resolver=UnitResolver(db_session),
+                     category_resolver=CategoryResolver.from_db(db_session))
+    db_session.flush()
+    offers = db_session.execute(
+        sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+    return tender, offers
+```
+
+Если импорт откажется принять раздел без строк под ним — положить под раздел 2
+работу и снять её `chapter_item_id`… нет: это подмена случая. Тогда завести
+допработу прямой вставкой `EstimateAdditionalWork(work_category_id=…)` в
+предложение и проверить, что резолв ссылки не нужен для чтения (`load_groups`
+читает поле, а не ссылку) — фикстура останется честной, а импорт останется
+проверенным в соседних тестах.
 
 Плюс HTTP-тест маршрута (клиент — как в соседних тестах роутера, поискать
 `client.get(f"/api/v1/tenders/{...}/stage-summary"` в
@@ -1480,8 +1762,16 @@ export function useStagePositions(tenderId: number | undefined, workCategoryId: 
     queryFn: () => tendersApi.stagePositions(tenderId as number, workCategoryId, offerIds),
     enabled: enabled && tenderId !== undefined && offerIds.length >= 1,
     // §6.3: раскрытие шлёт РОВНО ОДИН запрос и не шлёт повторно при
-    // сворачивании и повторном раскрытии — кэш ключа, без повторной загрузки.
+    // сворачивании и повторном раскрытии. Двух настроек мало по отдельности:
+    // `staleTime` держит данные свежими, пока запрос жив, а `gcTime` — сам
+    // запрос, когда наблюдателей не осталось. Наблюдателей теряет РЕАЛЬНЫЙ
+    // случай: блок работ подстатьи размонтируется вместе с ней, когда
+    // сворачивают статью-предка (свёрнутая строка детей не рендерит вовсе), и
+    // с дефолтным gcTime = 5 мин повторное раскрытие ушло бы за данными
+    // заново (ревью плана 31.08.2026 — прежняя редакция обещала «компонент
+    // остаётся смонтированным», что для потомков неверно).
     staleTime: Infinity,
+    gcTime: Infinity,
     retry: false,
   });
 }
@@ -1519,8 +1809,39 @@ describe("useStagePositions", () => {
     });
     expect(result.current.fetchStatus).toBe("idle");
   });
+
+  it("размонтирование и повторный монтаж НЕ шлют второй запрос (§6.3)", async () => {
+    // Реальный путь потери наблюдателя: свернули статью-предка — блок работ
+    // подстатьи размонтировался вместе с ней. Со `staleTime` без `gcTime`
+    // тест зелёный лишь пока не истёк сборщик кэша, поэтому здесь считаются
+    // ПОПАДАНИЯ В ХЕНДЛЕР, а не состояние хука.
+    const qc = createTestQueryClient();
+    let hits = 0;
+    server.use(
+      http.get("*/v1/tenders/:tenderId/stage-summary/:workCategoryId", () => {
+        hits += 1;
+        return HttpResponse.json(stagePositionsResponse());   // тот же payload, что хендлер по умолчанию
+      })
+    );
+    const first = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+    first.unmount();
+    const second = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
+    expect(hits).toBe(1);
+  });
 });
 ```
+
+Проверить перед реализацией, что `createTestQueryClient()` не задаёт своих
+`gcTime`/`staleTime`, которые перебили бы настройки хука; если задаёт —
+тест писать на клиенте с дефолтами, иначе он проверит настройку фабрики, а не
+хука. `stagePositionsResponse()` — фабрика минимального валидного ответа рядом
+с хендлером по умолчанию.
 
 Плюс: mock-фикстуры свода в тестах фронта получают `has_drilldown_rows`
 (tsc покажет все места — прогнать `npx tsc -b` и добить фикстуры).
@@ -1751,8 +2072,12 @@ export function PositionDrilldown(props: {
   articleCode: string;
   offerIds: number[];
   columnsCount: number;   // для colSpan = columnsCount + 3
-  open: boolean;          // блок скрыт шевроном корня или кнопкой — строки не рисуются,
-                          // но компонент ОСТАЁТСЯ смонтированным (кэш и счётчик N)
+  open: boolean;          // блок свёрнут своей кнопкой — строки не рисуются, но
+                          // компонент остаётся смонтированным. ВАЖНО: это верно
+                          // только пока видима сама строка статьи; свёрнутый
+                          // ПРЕДОК не рендерит детей вовсе, и блок подстатьи
+                          // размонтируется вместе с ней — повторный запрос там
+                          // держит не монтаж, а `gcTime: Infinity` хука (Task 8)
   onCount?: (n: number) => void;  // сообщить N родителю для подписи кнопки
 }): JSX.Element | null
 ```
@@ -1932,10 +2257,12 @@ git commit -m "feat(position-drilldown): фронт — блок разложе�
 - кнопка — `aria-expanded`, слово, а не второй шеврон; отдельна от шеврона
   подстатей;
 - `PositionDrilldown` монтируется после первого открытия
-  (`worksMountedIds.has(id)`), рисуется при `worksOpenIds.has(id)` И статья
-  видима (все предки раскрыты — компонент стоит в JSX под строкой статьи,
-  поэтому «предки раскрыты» уже обеспечено структурой: свёрнутый предок не
-  рендерит детей вовсе; передать `open={worksOpenIds.has(id)}`);
+  (`worksMountedIds.has(id)`), рисуется при `open={worksOpenIds.has(id)}`.
+  Видимость по предкам обеспечена структурой: свёрнутая строка детей не
+  рендерит, поэтому блок подстатьи исчезает вместе с ней — И РАЗМОНТИРУЕТСЯ.
+  Второго запроса после этого не будет благодаря `gcTime: Infinity` (Task 8), а
+  счётчик N переживает размонтирование потому, что живёт в состоянии
+  `StageSummaryTable`, а не внутри блока;
 - `StageSummaryTable` получает новые пропсы `tenderId: number` и
   `offerIds: number[]` (для запроса разложения) — прокинуть из
   `StageSummaryPage.tsx` (`<StageSummaryTable summary={summary} tenderId={id!}
@@ -2008,12 +2335,43 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     expect(screen.getByText(worksHeading("6"))).toBeInTheDocument();
   });
 
-  it("у «Нераспределённого» кнопки нет", () => {
+  it("у «Нераспределённого» кнопки нет (has_drilldown_rows там всегда false, Task 1)", () => {
     renderTable();
     expect(within(screen.getByTestId("row-unallocated")).queryByRole("button", { name: /Работы/ })).toBeNull();
   });
+
+  it("работы ПОДСТАТЬИ переживают сворачивание предка: назад — сразу с данными, без скелета", async () => {
+    const user = userEvent.setup();
+    successStagePositions();
+    // «6» — с детьми; работы открываем у РЕБЁНКА, затем сворачиваем родителя.
+    renderTable(summaryWith({ "6": true }));
+    const parent = screen.getByTestId(rowTestId("6"));
+    await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
+    const child = screen.getByTestId(rowTestId(childCodeOf("6")));
+    await user.click(within(child).getByRole("button", { name: /Работы/ }));
+    const n = drilldownGroupCount(sampleStagePositions.rows);
+    expect(screen.getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+
+    await user.click(within(parent).getByRole("button", { name: /Свернуть/ }));
+    expect(screen.queryByText(worksHeading(childCodeOf("6")))).toBeNull();   // блок ушёл вместе со строкой
+    await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
+    // Данные на месте, скелета нет, счётчик не потерян: раскрытие ребёнка и
+    // его блок восстанавливаются из состояния таблицы и кэша запроса.
+    expect(screen.getByText(worksHeading(childCodeOf("6")))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+  });
 });
 ```
+
+`childCodeOf(code)` — локальный хелпер: код первого ребёнка строки фикстуры.
+Если у фикстурной «6» детей нет — добавить одного в `sampleStageSummary`
+(с `has_drilldown_rows: true`) либо строить локальный `StageSummary` в этом
+блоке; строка «работы подстатьи» здесь не украшение, а единственный путь,
+которым блок теряет монтаж.
+
+**Отдельно:** «один запрос на раскрытие» этим тестом НЕ доказывается — хук
+здесь замокан, а сеть считает тест `useStagePositions` из Task 8. Здесь
+проверяется поведение экрана: строки вернулись без повторного скелета.
 
 `rowTestId(code)` — маленький локальный хелпер: найти в фикстуре строку по
 коду и вернуть `row-${work_category_id}` (data-testid строк уже устроен так,
@@ -2023,11 +2381,9 @@ describe("Кнопка «Работы · N» и вложенные раскры�
 `vi.mocked(useStagePositions).mockReturnValue({ isPending: false,
 isError: false, data: sampleStagePositions, refetch: vi.fn() } as never)`.
 
-Про «шеврон корня гасит всё»: в реализации блок работ ребёнка живёт в JSX под
-строкой ребёнка, и свёрнутый корень не рендерит детей вовсе — этот случай
-покрывается тестом раскрытий выше (блок «6» стоит под строкой «6» и виден,
-пока видима сама строка); отдельного теста на корень не надо, у корня-статьи
-блок гасится тем же правилом видимости строки.
+Про «шеврон корня гасит всё»: блок работ ребёнка живёт в JSX под строкой
+ребёнка, и свёрнутый корень не рендерит детей вовсе — это ровно последний тест
+блока, и он же проверяет, что потерянный монтаж не стоит второго запроса.
 
 - [ ] **Step 2: Прогнать, убедиться в падении.**
 - [ ] **Step 3: Реализовать.**
@@ -2082,10 +2438,10 @@ git commit -m "fix(position-drilldown): раскладка по замеру н�
 **Files:**
 - Modify: `AGENTS.md` (§11)
 - Modify: `docs/proposals/2026-08-25-tenders-model.md` (§4)
-- Create: `docs/insights/` — два файла (посмотреть именование соседних файлов
-  в каталоге и повторить стиль)
-- Create: devlog фичи (посмотреть, где лежат devlog фич 1–3 —
-  `docs/superpowers/devlogs/` или рядом — и положить туда же)
+- Create: `docs/insights/` — два файла (именование соседних: короткое
+  правило через дефисы, например `unobservable-in-the-runner.md`)
+- Create: `docs/devlog/2026-08-31-position-drilldown.md` (соседи —
+  `2026-08-27-stage-summary.md`, `2026-08-26-tenders-contour.md`)
 
 Содержание (спека §2.14):
 - [ ] **AGENTS §11**: добавить — `max-width` у `td` в АВТОРАЗМЕТКЕ не
@@ -2104,7 +2460,7 @@ git commit -m "fix(position-drilldown): раскладка по замеру н�
 - [ ] **Commit**:
 
 ```bash
-git add AGENTS.md docs/proposals/2026-08-25-tenders-model.md docs/insights/ docs/superpowers/
+git add AGENTS.md docs/proposals/2026-08-25-tenders-model.md docs/insights/ docs/devlog/
 git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, devlog"
 ```
 
@@ -2114,7 +2470,9 @@ git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, 
 
 - [ ] `cd backend && uv run ruff check . && uv run pytest -q` — зелёные.
 - [ ] `cd frontend && npm run lint && npx tsc -b && npm test` — зелёные.
-- [ ] `just ci` (не в конвейере; код возврата отдельно: `just ci > ci.log 2>&1; echo $?`).
+- [ ] `just ci` — **не в конвейере**, иначе код возврата будет от `tail`.
+  В PowerShell: `just ci *> ci.log; $LASTEXITCODE` (`$?` там boolean, а не код
+  процесса); в Bash-инструменте: `just ci > ci.log 2>&1; echo $?`.
   Флака `max_locks_per_transaction` — перепрогнать; `df -h /tmp` при
   подозрении на диск.
 - [ ] Пуш ветки `feat/position-drilldown`, PR со ссылками на спеку и план
@@ -2133,19 +2491,39 @@ git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, 
   запросы) — Tasks 5, 6; §2.12 (экран, ленивость, скелет, отказ) — Tasks
   8–11; §2.13 (сходимость) — Tasks 3, 5, 7; §2.14 (документы) — Task 13;
   §5 DoD 1–7 — Tasks 12 (1, 5, 6), 7 (2), 6 (3), 1/3/4/5/6 (4), 14 (7).
-- **Фикстуры DoD 4:** неизвестная база у конца/середины — Task 6; неконечная
-  сумма — предикат Task 4 (юнит на фильтр можно добавить при ревью Task 4);
-  строка без привязки — Task 4; статья только с допработами — Task 1 (свод) и
-  Task 5 (эндпоинт, хелпер `_subtree_only_grid`); несколько строк под одной
-  ссылкой с разными наименованиями (подпись по ordinal) — покрыта SQL
-  `array_agg(order by ordinal)` Task 4: добавить в Task 4 тест с двумя
-  строками «Сведений» с ОДНОЙ ссылкой в одном предложении (одна группа,
-  `ambiguous`, rows=2, подпись — первая по файлу) — исполнителю Task 4
-  включить его в Step 1 по образцу соседнего;
-  переименованная при сохранённой ссылке — Task 4
-  (`test_extras_are_rows_by_ref_and_title_comes_from_the_last_stage`);
-  статья с пустым поддеревом — Task 5; нулевое движение — Task 3; целиком
-  появившаяся — Task 3.
+- **Фикстуры DoD 4 — все с готовыми телами тестов, ни одна не отложена на
+  исполнителя** (правка по ревью плана 31.08.2026): неизвестная база у
+  конца/середины — Task 6; неконечная сумма —
+  `test_non_finite_row_counts_but_does_not_add_to_the_sum` (Task 4); строка без
+  привязки — `test_unmatched_rows_fold_into_one_group_per_subtree` (Task 4);
+  несколько строк под одной ссылкой с разными наименованиями и подпись по
+  `(proposal_id, ordinal)` —
+  `test_several_rows_under_one_ref_are_one_group_titled_by_ordinal` (Task 4);
+  смета из двух лотов —
+  `test_estimate_with_two_lots_merges_the_ref_across_proposals` (Task 4);
+  переименование при сохранённой ссылке —
+  `test_extras_are_rows_by_ref_and_title_comes_from_the_last_stage` (Task 4);
+  статья ТОЛЬКО с допработами — `_extras_only_grid` +
+  `test_subtree_of_only_additional_works_gets_a_drilldown` (Task 5) и
+  `test_has_drilldown_rows_counts_both_branches_and_the_subtree` (Task 1);
+  узел без собственных строк — `_subtree_only_grid` +
+  `test_article_with_only_descendant_rows_gets_a_drilldown` (Task 5); статья с
+  пустым поддеревом — `test_empty_subtree_is_no_rows_in_subtree_not_an_error`
+  (Task 5, предпосылку доказывает сам); нулевое движение и целиком появившаяся
+  — Task 3; гасящие вклады и независимость от порядка входа (§6.1) —
+  `test_cancelling_contributions_do_not_stop_the_selection_early` и
+  `test_result_does_not_depend_on_the_order_of_input_groups` (Task 3).
+- **Что нашёл круг ревью плана (31.08.2026) и где это теперь лежит:** повторный
+  учёт свёрнутых групп в «прочих» — разбиение по индексам плюс два теста
+  состава (Task 3, ложную зелень давала именно сходимость, которая остаётся
+  верной при лишней строке-остатке); отложенные на исполнителя тесты — внесены
+  телами (см. выше); тест пустого поддерева, который мерил не пустое поддерево
+  — переписан с доказательством предпосылки (Task 5); молча расширенная область
+  ключа допработ — **уточнение спеки §2.2/§2.7** плюс фикстура на смету из двух
+  лотов (Task 4); `staleTime` без `gcTime` при размонтировании блока подстатьи
+  — `gcTime: Infinity` и два теста (Tasks 8, 11); `has_drilldown_rows` у
+  «Нераспределённого» — всегда `false` с тестом (Task 1); пути `docs/devlog/`
+  и `$LASTEXITCODE` (Tasks 13, 14).
 - **Согласованность имён:** `pd.compute_drilldown`, `pd.GroupInput`,
   `pd.GroupStage`, `pd.DrillColumn`, `crud_pd.load_groups`,
   `crud_pd.subtree_ids`, `crud_pd.build_position_drilldown`,
