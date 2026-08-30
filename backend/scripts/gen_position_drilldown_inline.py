@@ -24,7 +24,8 @@ STAGES: list[tuple[int, int]] = [(1, 27), (2, 29), (3, 33), (4, 38)]
 ARTICLE = "8.3"
 ROOT = "8"
 #: Вторая статья: на четвёртом этапе подрядчик пересобрал пирог подготовки —
-#: одни работы сняты, другие появились. Разложение обязано это показывать.
+#: одни работы исчезли из файла, другие появились. Разложение обязано это
+#: показывать, и «исчезла» здесь не синоним «снята» (см. STATE_LABEL).
 #: Ключи псевдогрупп: у допработ и у строк без каталожной привязки нет
 #: каталожной позиции, поэтому ключ группы (§2.2) их не берёт, а показать их
 #: обязаны — иначе их деньги выпадут из сходимости.
@@ -41,8 +42,9 @@ ROOT_BORN = "3"
 MOVEMENT_FLOOR = Decimal("1e6")
 #: Доля движения статьи, которую обязаны объяснить показанные строки.
 COVERAGE = Decimal("0.9")
-#: Сколько появившихся и снятых работ показывается сверх объяснителей поимённо.
-#: «Работа исчезла из сметы» — качественно иной факт, чем «подешевела на 3 %», и
+#: Сколько появившихся и исчезнувших работ показывается сверх объяснителей
+#: поимённо. «Работы больше нет в файле» — качественно иной факт, чем
+#: «подешевела на 3 %», и
 #: стоит вопроса к подрядчику независимо от суммы (решение пользователя
 #: 30.08.2026). Потолок взят по замеру: таких строк вне объяснителей медиана 0 на
 #: статью при девятой децили 3, то есть пять покрывают почти все статьи целиком;
@@ -303,8 +305,17 @@ def volume_moved(group: dict) -> bool:
 
 
 def corpus_stats(cur) -> dict:
-    """Замер по ВСЕМ статьям участника, а не по одной показанной."""
-    per_article: dict[str, dict[int, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
+    """Замер по ВСЕМ статьям участника, а не по одной показанной.
+
+    Группы строятся ТОЙ ЖЕ моделью, что и разложение на экране (`load_groups`):
+    позиции, псевдогруппа допработ и псевдогруппа непривязанных строк. Первая
+    редакция читала только `position_items`, поэтому опубликованные числа
+    объяснителей считались по другому множеству, чем показывает макет: допработы
+    статей 3.2, 4.1.3 и 8.2.1 стоят на КОНЦАХ трассы и меняют и движение статьи, и
+    отбор строк. Замечание внешнего ревью 30.08.2026; замер обязан воспроизводить
+    алгоритм экрана, иначе он измеряет не его.
+    """
+    per_article: dict[str, dict[object, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
     for stage, proposal in STAGES:
         cur.execute(
             """
@@ -320,10 +331,25 @@ def corpus_stats(cur) -> dict:
             (proposal,),
         )
         for code, cat_id, amount, rows, volumes in cur.fetchall():
-            per_article[code][cat_id][stage] = {
+            key = UNMATCHED_KEY if cat_id is None else cat_id
+            per_article[code][key][stage] = {
                 "amount": Decimal(amount or 0),
                 "rows": rows,
                 "volumes": sorted(v for v in volumes if v is not None),
+            }
+        cur.execute(
+            """
+            select wc.code, sum(aw.total_amount), count(*)
+            from estimate_additional_works aw
+            join work_categories wc on wc.id = aw.work_category_id
+            where aw.proposal_id = %s
+            group by wc.code
+            """,
+            (proposal,),
+        )
+        for code, amount, rows in cur.fetchall():
+            per_article[code][EXTRA_KEY][stage] = {
+                "amount": Decimal(amount or 0), "rows": rows, "volumes": [],
             }
 
     needed, sizes, moved, partial, multi, articles = [], [], 0, 0, 0, 0
@@ -384,7 +410,8 @@ def corpus_stats(cur) -> dict:
                     break
     cur.execute(
         """
-        select length(cp.standard_job_title)
+        select length(cp.standard_job_title),
+               position(chr(10) in cp.standard_job_title) > 0
         from catalog_positions cp
         where cp.id in (
             select distinct pi.catalog_position_id from position_items pi
@@ -393,7 +420,24 @@ def corpus_stats(cur) -> dict:
         """,
         ([proposal for _, proposal in STAGES],),
     )
-    titles = sorted(r[0] for r in cur.fetchall())
+    rows_titles = cur.fetchall()
+    titles = sorted(r[0] for r in rows_titles)
+    titles_multiline = sum(1 for r in rows_titles if r[1])
+    cur.execute(
+        """
+        select length(wc.title)
+        from work_categories wc
+        where wc.id in (
+            select distinct ch.work_category_id
+            from position_items pi
+            join position_items ch
+              on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
+            where pi.proposal_id = any(%s) and not pi.is_chapter
+              and ch.work_category_id is not null)
+        """,
+        ([proposal for _, proposal in STAGES],),
+    )
+    article_titles = sorted(r[0] for r in cur.fetchall())
 
     # Узлы с ПРЯМЫМИ строками и «смешанные» узлы (есть и дети-статьи, и свои
     # работы) решают, где вообще появляется шеврон работ и к какой сумме считать
@@ -482,7 +526,14 @@ def corpus_stats(cur) -> dict:
         "titles_n": len(titles),
         "titles_median": statistics.median(titles),
         "titles_p90": titles[min(len(titles) - 1, int(len(titles) * 0.9))],
+        "titles_p75": titles[min(len(titles) - 1, int(len(titles) * 0.75))],
         "titles_max": max(titles),
+        "titles_multiline": titles_multiline,
+        "article_titles_n": len(article_titles),
+        "article_titles_median": statistics.median(article_titles),
+        "article_titles_p90": article_titles[
+            min(len(article_titles) - 1, int(len(article_titles) * 0.9))],
+        "article_titles_max": max(article_titles),
         "with_direct": len(with_direct),
         "mixed": mixed,
         "no_catalog": no_catalog,
@@ -836,8 +887,14 @@ def measure_rows(stats: dict) -> str:
         ("Групп с нулём хотя бы на одном этапе", f"{stats['zero_groups']}"),
         ("…где ноль пришёл ПОСЛЕ ненулевой суммы (состояние «снято»)",
          f"{stats['zero_after_priced']}"),
-        ("Длина каталожного наименования: медиана / p90 / максимум",
-         f"{stats['titles_median']:.0f} / {stats['titles_p90']} / {stats['titles_max']}"),
+        ("Длина каталожного наименования: медиана / p75 / p90 / максимум",
+         f"{stats['titles_median']:.0f} / {stats['titles_p75']} / {stats['titles_p90']}"
+         f" / {stats['titles_max']}"),
+        ("…из них с переводом строки внутри",
+         f"{stats['titles_multiline']} из {stats['titles_n']}"),
+        ("Длина наименования СТАТЬИ: медиана / p90 / максимум",
+         f"{stats['article_titles_median']:.0f} / {stats['article_titles_p90']}"
+         f" / {stats['article_titles_max']} ({stats['article_titles_n']} статей)"),
         ("Узлов классификатора с ПРЯМЫМИ строками", f"{stats['with_direct']}"),
         ("…из них имеют и детей-статьи, и свои работы",
          ", ".join(stats["mixed"]) or "нет"),
@@ -950,9 +1007,10 @@ def section(case: dict, born: dict, stats: dict) -> str:
     <b>{esc(article['code'])}</b> раскрыта до работ. Подстатья упала на
     <b>{mln(total_change)} млн</b>, и показанные {len(top)} строки объясняют
     <b>{share:.0f} %</b> этого падения. Под ними — {len(partials)}
-    {plural(len(partials), ("работа", "работы", "работ"))}, которые появились или были
-    сняты: их показывают ВСЕГДА, какой бы малой ни была сумма, потому что «работы
-    больше нет в смете» — другой факт, чем «подешевела на 3 %». Остальные
+    {plural(len(partials), ("работа", "работы", "работ"))}, которые появились или
+    исчезли из файла: их показывают ВСЕГДА, какой бы малой ни была сумма, потому
+    что «работы больше нет в файле» — другой факт, чем «подешевела на 3 %».
+    Остальные
     {len(rest)} свёрнуты в одну строку, чтобы итог сходился в каждой колонке.
     Различаются варианты только тем, где стоит объём заказчика.</p>
 
@@ -977,7 +1035,7 @@ def section(case: dict, born: dict, stats: dict) -> str:
       нельзя: исчезновение строки снятия НЕ доказывает. В колонке «Торг» у такой
       строки стоит пилюля, а не процент. А вот ВКЛАД считается от нуля — работа,
       которой на первом этапе не было, изменила статью ровно на свою сумму.</li>
-      <li><b>Появившиеся и снятые работы показываются поимённо всегда</b>, даже
+      <li><b>Появившиеся и исчезнувшие работы показываются поимённо всегда</b>, даже
       когда их сумма мала и в объяснители они не попали (решение пользователя
       30.08.2026). Сверх {PARTIAL_CAP} они сворачиваются в строку «ещё N работ
       появились или исчезли». Замер: таких строк вне объяснителей
@@ -987,14 +1045,18 @@ def section(case: dict, born: dict, stats: dict) -> str:
       больше {PARTIAL_CAP} — у {stats['outside_over_cap']}.
       Из {stats['explainers']} строк-объяснителей {stats['partial']} и сами есть не
       на всех этапах.</li>
-      <li><b>Дыр в середине не бывает — проверено.</b> Из {stats['groups_total']} групп
-      {stats['whole']} идут сквозь все выбранные этапы, {stats['born']} появились,
-      {stats['gone']} исчезли, {stats['mid']} есть только на средних, и НИ ОДНОЙ,
-      которая пропала бы на среднем этапе и вернулась. Если такая появится, средний
-      этап покажет <span class="flat">—</span> с пилюлей
-      <span class="pill">нет в файле</span>, а следующий — <span class="pill">появилась</span>:
-      правило не ломается, потому что «снято» считается по ВСЕМ предыдущим этапам,
-      а не по предыдущему шагу.</li>
+      <li><b>Дыра в середине — не гипотеза, а факт стенда.</b> Из
+      {stats['groups_total']} групп {stats['whole']} идут сквозь все выбранные этапы,
+      {stats['born']} появились, {stats['gone']} исчезли, {stats['mid']} есть только
+      на средних, и {stats['holed']} пропадает в середине и возвращается: это
+      ДОПРАБОТЫ статьи 3.2 — 29,5 млн на первом этапе, ничего на втором и третьем,
+      12,7 млн на четвёртом. Средние этапы получают <span class="flat">—</span>, переход
+      к ним — <span class="pill">нет в файле</span>, возврат —
+      <span class="pill">появилась</span>, а «Торг» считается процентом по концам.
+      Пилюля <span class="pill warn">снято</span> здесь не появляется ни разу, и это
+      правильно: файл не говорит, что работу сняли. Случай виден только потому, что
+      замер строит группы ТОЙ ЖЕ моделью, что и экран: пока он читал одни
+      <code>position_items</code>, дыр «не было ни одной».</li>
       <li><b>Неоднозначная группа помечается пилюлей «несколько строк сметы»</b> —
       решение секции <code>#naming</code>. Таких среди объяснителей
       {stats['multi']}.</li>
