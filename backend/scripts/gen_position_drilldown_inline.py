@@ -778,7 +778,7 @@ def stage_cells(cells: dict[int, dict], *, inline_volume: bool = False,
 
 
 def article_row(node: dict, level: int, *, key: str | None = None,
-                works: int | None = None) -> str:
+                works: int | None = None, works_key: str = "") -> str:
     """Строка статьи. `key` — шеврон классификатора, `works` — действие «Работы».
 
     Действие подписано словом, а не вторым шевроном: под строкой статьи живут ДВА
@@ -790,8 +790,9 @@ def article_row(node: dict, level: int, *, key: str | None = None,
                if key else '<span class="tw" aria-hidden="true"> </span>')
     action = ""
     if works is not None:
-        action = (f' <button class="works" type="button" aria-expanded="true">'
-                  f'▾ Работы<span class="cnt"> · {works}</span></button>')
+        action = (f' <button class="works" type="button" aria-expanded="true"'
+                  f' data-k="{works_key}"><span class="chev">▾</span> Работы'
+                  f'<span class="cnt"> · {works}</span></button>')
     label = (f'<td class="t">{chevron}<span class="code">{esc(node["code"])}</span>'
              f'{esc(node["title"])}{action}</td>')
     return (f'<tr class="lvl{level} art">{label}{stage_cells(cells)}</tr>')
@@ -804,7 +805,7 @@ def works_head(article: dict, variant: str) -> str:
     слагаемые к уже видимым слагаемым, и сумма на глаз удваивается.
     """
     span = len(STAGES) + 3
-    return (f'<tr class="workshead kid k-{variant}a"><td colspan="{span}">'
+    return (f'<tr class="workshead kid k-{variant}r k-{variant}w"><td colspan="{span}">'
             f'Почему изменился итог {esc(article["code"])} — работы статьи и подстатей'
             f'<span class="whsub">объясняют ТУ ЖЕ сумму, что и строки подстатей выше, '
             f'другим разрезом; итог сходится из показанного</span></td></tr>')
@@ -852,7 +853,7 @@ def group_row(group: dict, variant: str) -> str:
                   'объём менялся</span>')
     cells = stage_cells(group["stages"], inline_volume=variant.startswith("v2"),
                         group=group)
-    return f'<tr class="pos3 k-{variant}a"><td class="t">{name}{pills}</td>{cells}</tr>'
+    return f'<tr class="pos3 kid k-{variant}r k-{variant}w"><td class="t">{name}{pills}</td>{cells}</tr>'
 
 
 def bag_row(groups: list[dict], label: str, sub: str, variant: str,
@@ -865,7 +866,7 @@ def bag_row(groups: list[dict], label: str, sub: str, variant: str,
         cells[stage] = {"amount": total}
     body = (f'<td class="t"><span class="nm">{label}</span>'
             f'<span class="volline">{sub}</span></td>')
-    return (f'<tr class="pos3 {css} k-{variant}a">{body}'
+    return (f'<tr class="pos3 {css} kid k-{variant}r k-{variant}w">{body}'
             f'{stage_cells(cells, bare=True)}</tr>')
 
 
@@ -884,7 +885,7 @@ def rest_row(article: dict, shown: list[dict], count: int, variant: str) -> str:
     label = (f'<td class="t"><span class="nm">прочие {count} {word} статьи</span>'
              '<span class="volline">свёрнуто; несёт остаток, чтобы итог статьи сходился'
              '</span></td>')
-    return (f'<tr class="pos3 dimrow k-{variant}a">{label}'
+    return (f'<tr class="pos3 dimrow kid k-{variant}r k-{variant}w">{label}'
             f'{stage_cells(cells, bare=True)}</tr>')
 
 
@@ -899,11 +900,13 @@ def fragment(root: dict, kids: list[dict], article: dict, case: dict,
         if kid["code"] == article["code"]:
             own_kids = case.get("article_kids") or []
             rows.append(article_row(
-                kid, 2, key=f"{variant}a" if own_kids else None,
-                works=len(case["top"]) + len(case["partials"]) + len(case["partials_hidden"])))
+                kid, 2, key=f"{variant}k" if own_kids else None,
+                works=len(case["top"]) + len(case["partials"]) + len(case["partials_hidden"]),
+                works_key=f"{variant}w"))
             for own in own_kids:
                 rows.append(article_row(own, 3).replace(
-                    'class="lvl3 art"', f'class="lvl3 art kid k-{variant}a"'))
+                    'class="lvl3 art"',
+                    f'class="lvl3 art kid k-{variant}r k-{variant}k"'))
             rows.append(works_head(article, variant))
             shown = list(case["top"]) + list(case["partials"])
             rows += [group_row(g, variant) for g in shown]
@@ -919,7 +922,6 @@ def fragment(root: dict, kids: list[dict], article: dict, case: dict,
             rows.append(article_row(kid, 2))
     body = "<tbody>" + "".join(r.replace('class="lvl2 art"', f'class="lvl2 art kid k-{variant}r"')
                                for r in rows) + "</tbody>"
-    body = body.replace(f'class="pos3 k-{variant}a"', f'class="pos3 kid k-{variant}a"')
     return f'<div class="scroller"><table class="pass">{head}{body}</table></div>'
 
 
@@ -952,6 +954,7 @@ tr.dimrow .nm { font-style:italic; }
   border-radius:6px; font:inherit; font-size:11px; padding:0 6px; margin-left:8px;
   cursor:pointer; white-space:nowrap; vertical-align:1px; }
 .works:hover { background:var(--hover); color:var(--fg); }
+.works .chev { color:var(--fg3); }
 /* Класс подписи назван `whsub`, а не `sub`: `.sub` на этой странице уже занят
    подзаголовком страницы и несёт `max-width:70ch`, из-за чего текст заголовка
    вёрстся в 486 px посреди строки шириной 1238 (замер 30.08.2026). */
