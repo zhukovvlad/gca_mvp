@@ -25,8 +25,16 @@ ARTICLE = "8.3"
 ROOT = "8"
 #: Вторая статья: на четвёртом этапе подрядчик пересобрал пирог подготовки —
 #: одни работы сняты, другие появились. Разложение обязано это показывать.
-#: Ключ псевдогруппы допработ: они не строки сметы и каталожной позиции не имеют.
+#: Ключи псевдогрупп: у допработ и у строк без каталожной привязки нет
+#: каталожной позиции, поэтому ключ группы (§2.2) их не берёт, а показать их
+#: обязаны — иначе их деньги выпадут из сходимости.
 EXTRA_KEY = "additional_works"
+UNMATCHED_KEY = "unmatched"
+#: Порядок видов строк при равном по модулю вкладе: сначала работы, затем
+#: допработы, затем непривязанные строки. Ничья по модулю вклада возможна
+#: (нули, симметричные суммы), и без полного ключа порядок зависел бы от
+#: порядка выдачи БД. Сравнивать id СТРОКОЙ нельзя: "10" встанет раньше "2".
+KIND_RANK = {EXTRA_KEY: 1, UNMATCHED_KEY: 2}
 ARTICLE_BORN = "3.1"
 ROOT_BORN = "3"
 #: Статьи с движением меньше миллиона в разложении не нуждаются — оно там шум.
@@ -188,8 +196,11 @@ def load_groups(cur, code: str) -> list[dict]:
             (proposal, code),
         )
         for cat_id, title, amount, rows, volumes, unit in cur.fetchall():
+            key = UNMATCHED_KEY if cat_id is None else cat_id
             group = groups.setdefault(
-                cat_id, {"id": cat_id, "title": title or "без каталожной привязки", "stages": {}}
+                key,
+                {"id": key, "title": title or "Строки без каталожной привязки",
+                 "unmatched": cat_id is None, "stages": {}},
             )
             group["stages"][stage] = {
                 "amount": Decimal(amount or 0),
@@ -243,6 +254,14 @@ def contribution(group: dict) -> Decimal:
     return last - first
 
 
+def sort_key(group: dict) -> tuple[Decimal, int, int]:
+    """Полный ключ порядка строк разложения — см. `KIND_RANK`."""
+    key = group["id"]
+    rank = KIND_RANK.get(key, 0)
+    catalog_id = key if isinstance(key, int) else 0
+    return (-abs(contribution(group)), rank, catalog_id)
+
+
 def explainers(groups: list[dict]) -> tuple[list[dict], list[dict]]:
     """Строки, объясняющие COVERAGE движения статьи, и всё остальное.
 
@@ -266,7 +285,7 @@ def explainers(groups: list[dict]) -> tuple[list[dict], list[dict]]:
     этого порядок строк зависел бы от порядка выдачи БД.
     """
     total = sum((contribution(g) for g in groups), Decimal(0))
-    order = sorted(groups, key=lambda g: (-abs(contribution(g)), str(g["id"])))
+    order = sorted(groups, key=sort_key)
     if total == 0:
         return [], order
     cumulative, top = Decimal(0), []
@@ -342,6 +361,85 @@ def corpus_stats(cur) -> dict:
             if any(cell["rows"] > 1 for cell in group["stages"].values()):
                 multi += 1
 
+    # Нулевая сумма и длина наименования — тоже замеры, на которых стоят решения
+    # (§2.5 и §2.10 спеки), поэтому считаются здесь, а не разовым скриптом: спека
+    # цитирует ТОЛЬКО эту таблицу.
+    cur.execute(
+        "select count(*) filter (where total_cost_total = 0), count(*) "
+        "from position_items where not is_chapter"
+    )
+    rows_zero, rows_all = cur.fetchone()
+    zero_groups = zero_after_priced = 0
+    for groups in per_article.values():
+        for cells in groups.values():
+            values = [cells[s]["amount"] for s in sorted(cells)]
+            if any(v == 0 for v in values):
+                zero_groups += 1
+            priced = False
+            for value in values:
+                if value != 0:
+                    priced = True
+                elif priced:
+                    zero_after_priced += 1
+                    break
+    cur.execute(
+        """
+        select length(cp.standard_job_title)
+        from catalog_positions cp
+        where cp.id in (
+            select distinct pi.catalog_position_id from position_items pi
+            where pi.proposal_id = any(%s) and not pi.is_chapter
+              and pi.catalog_position_id is not null)
+        """,
+        ([proposal for _, proposal in STAGES],),
+    )
+    titles = sorted(r[0] for r in cur.fetchall())
+
+    # Узлы с ПРЯМЫМИ строками и «смешанные» узлы (есть и дети-статьи, и свои
+    # работы) решают, где вообще появляется шеврон работ и к какой сумме считать
+    # сходимость (§2.1, §2.13) — значит тоже замер, а не наблюдение.
+    cur.execute("select id, code, parent_id from work_categories")
+    parents = {row[0]: row[2] for row in cur.fetchall()}
+    codes = {}
+    cur.execute("select id, code from work_categories")
+    for cid, code in cur.fetchall():
+        codes[cid] = code
+    cur.execute(
+        """
+        select distinct ch.work_category_id
+        from position_items pi
+        join position_items ch
+          on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
+        where pi.proposal_id = any(%s) and not pi.is_chapter
+          and ch.work_category_id is not null
+        """,
+        ([proposal for _, proposal in STAGES],),
+    )
+    with_direct = {row[0] for row in cur.fetchall()}
+    # Порядок кодов — как в классификаторе («6» раньше «14»), а не лексикографический.
+    mixed = [codes[cid] for cid in sorted(
+        (cid for cid in with_direct
+         if any(parents.get(other) == cid for other in with_direct)),
+        key=lambda cid: [int(part) for part in codes[cid].split(".")])]
+
+    # Ветки, недостижимые на стенде: их ноль — тоже факт, и он объясняет, почему
+    # DoD требует фикстур, а не зелёного прогона (§5).
+    cur.execute(
+        """
+        select count(*) filter (where pi.catalog_position_id is null),
+               count(*) filter (where ch.work_category_id is null),
+               count(*) filter (where pi.total_cost_total is null),
+               count(*) filter (where pi.total_cost_total in
+                                ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)),
+               count(*) filter (where pi.suggested_quantity is null)
+        from position_items pi
+        left join position_items ch
+          on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
+        where not pi.is_chapter
+        """
+    )
+    no_catalog, no_article, no_amount, not_finite, no_quantity = cur.fetchone()
+
     ordered = sorted(needed)
     ordered_outside = sorted(outside)
 
@@ -377,6 +475,21 @@ def corpus_stats(cur) -> dict:
         "gone": gone,
         "mid": mid,
         "holed": holed,
+        "rows_zero": rows_zero,
+        "rows_all": rows_all,
+        "zero_groups": zero_groups,
+        "zero_after_priced": zero_after_priced,
+        "titles_n": len(titles),
+        "titles_median": statistics.median(titles),
+        "titles_p90": titles[min(len(titles) - 1, int(len(titles) * 0.9))],
+        "titles_max": max(titles),
+        "with_direct": len(with_direct),
+        "mixed": mixed,
+        "no_catalog": no_catalog,
+        "no_article": no_article,
+        "no_amount": no_amount,
+        "not_finite": not_finite,
+        "no_quantity": no_quantity,
     }
 
 
@@ -405,8 +518,8 @@ def volume_text(group: dict) -> tuple[str, bool]:
 #: `removed` — это ноль ПОСЛЕ ненулевой суммы. Первая редакция макета печатала
 #: «не оценивалась» и «снято» там, где строки в файле просто нет, — то есть
 #: утверждала снятие, которого файл не доказывает (замечание внешнего ревью
-#: 30.08.2026). Замер: строк ровно с нулевой суммой 6167 из 28 417 по всей базе,
-#: групп с настоящим `removed` у участника 294 — состояние не декоративное.
+#: 30.08.2026). Насколько это не мелочь — видно в блоке замеров секции: строк
+#: ровно с нулевой суммой и групп с настоящим `removed` там по счётчику.
 STATE_ABSENT = "absent"
 STATE_NOT_EVALUATED = "not_evaluated"
 STATE_REMOVED = "removed"
@@ -545,6 +658,11 @@ def group_row(group: dict, variant: str) -> str:
     full = esc(group["title"])
     name = f'<span class="nm" title="{full}">{full}</span>'
     pills = ""
+    if group.get("unmatched"):
+        pills += (' <span class="ambig" title="У строк нет каталожной привязки, ключ'
+                  ' группы их не берёт, и между этапами они не сопоставляются. На'
+                  ' исправных данных этой строки нет вовсе: её появление означает'
+                  ' недоработанный матчинг">без каталожной привязки</span>')
     if group.get("extra"):
         pills += (' <span class="ambig" title="Ветвь «дополнительные работы» сметы:'
                   ' каталожной привязки и объёма у них нет, между этапами они не'
@@ -713,6 +831,21 @@ def measure_rows(stats: dict) -> str:
          f"{stats['outside_median']:.0f} / {stats['outside_p90']} / {stats['outside_max']}"),
         ("…статей, где их нет вовсе", f"{stats['outside_zero']} из {stats['articles']}"),
         (f"…статей, где их больше {PARTIAL_CAP}", f"{stats['outside_over_cap']}"),
+        ("Строк сметы с суммой РОВНО НОЛЬ (вся база)",
+         f"{stats['rows_zero']} из {stats['rows_all']}"),
+        ("Групп с нулём хотя бы на одном этапе", f"{stats['zero_groups']}"),
+        ("…где ноль пришёл ПОСЛЕ ненулевой суммы (состояние «снято»)",
+         f"{stats['zero_after_priced']}"),
+        ("Длина каталожного наименования: медиана / p90 / максимум",
+         f"{stats['titles_median']:.0f} / {stats['titles_p90']} / {stats['titles_max']}"),
+        ("Узлов классификатора с ПРЯМЫМИ строками", f"{stats['with_direct']}"),
+        ("…из них имеют и детей-статьи, и свои работы",
+         ", ".join(stats["mixed"]) or "нет"),
+        ("Строк без каталожной привязки / без статьи (вся база)",
+         f"{stats['no_catalog']} / {stats['no_article']}"),
+        ("Строк без суммы / с неконечной суммой (вся база)",
+         f"{stats['no_amount']} / {stats['not_finite']}"),
+        ("Строк без suggested_quantity (вся база)", f"{stats['no_quantity']}"),
     ]
     return "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in measured)
 
@@ -722,38 +855,44 @@ ACCEPTED = "v2"
 
 
 def born_block(born: dict) -> str:
-    """Появление и снятие работы — на статье, где ровно это и произошло."""
+    """Появление и исчезновение работы — на статье, где ровно это и произошло."""
     article = born["article"]
     change = article["cells"][STAGES[-1][0]] - article["cells"][STAGES[0][0]]
     return (
-        '<p class="vh">Работа появилась или снята: та же грамматика, статья '
+        '<p class="vh">Работа появилась или исчезла из файла: та же грамматика, статья '
         f'{esc(article["code"])}</p>'
         '<p class="secsub">В статье 8.3 все три строки-объяснителя есть на всех '
-        'четырёх этапах, поэтому появление и снятие там не видно. Вот статья, где '
+        'четырёх этапах, поэтому появление и исчезновение там не видно. Вот статья, где '
         'произошло ровно это: на четвёртом этапе подрядчик <b>пересобрал пирог '
         f'подготовки</b>, и статья не подешевела, а ВЫРОСЛА на {mln(change)} млн. '
-        'Разложение показывает, чем: одна работа появилась, другая снята.</p>'
+        'Разложение показывает, чем: одни работы появились, другие исчезли.</p>'
         + fragment(born["root"], born["kids"], article, born, "v2b")
-        + '<div class="verdict"><b>Правило.</b> Строка, которой на этапе нет, несёт '
-        'пилюлю: <span class="pill">не оценивалась</span> до появления и '
-        '<span class="pill warn">снято</span> после снятия — те же слова, что в своде, '
-        'новых не заводится. В колонке «Торг» процента у такой строки не бывает: '
-        'делить не на что, там стоит та же пилюля. А вот <b>вклад считается от нуля</b>: '
-        'работа, которой на первом этапе не было, а на последнем есть на 22,8 млн, '
-        'изменила статью ровно на эти 22,8 млн. Иначе появившаяся работа выпала бы из '
-        'разложения, а разницу молча унесла бы строка «прочие».</div>'
+        + '<div class="verdict"><b>Правило: «нет в файле» и «снято» — РАЗНЫЕ факты, и '
+        'экран их не смешивает.</b> Строки, которой на этапе нет вовсе, состояние — '
+        '<span class="flat">—</span>, а переход к нему помечается пилюлей '
+        '<span class="pill">нет в файле</span>: исчезновение строки из файла НЕ '
+        'доказывает снятия работы — её могли переименовать, слить с другой строкой или '
+        'перенести в другую статью. Пилюля <span class="pill warn">снято</span> '
+        'достаётся только строке, которая в файле ЕСТЬ, а сумма у неё обнулена после '
+        'того, как цена была; <span class="pill">не оценивалась</span> — строке, которая '
+        'есть, но цены у неё не было ни разу. Словарь и матрица переходов взяты у свода '
+        'целиком, новых слов не заводится. В колонке «Торг» процента у такой строки не '
+        'бывает: делить не на что, там стоит та же пилюля. А вот <b>вклад считается от '
+        'нуля</b>: работа, которой на первом этапе не было, а на последнем есть на '
+        '22,8 млн, изменила статью ровно на эти 22,8 млн. Иначе появившаяся работа '
+        'выпала бы из разложения, а разницу молча унесла бы строка «прочие».</div>'
         '<div class="state info"><b>Второй сюжет той же таблицы.</b> Скачок на '
         'втором этапе, 25,8 → 58,9, сделан не работами, а ветвью ДОПОЛНИТЕЛЬНЫХ '
         'РАБОТ: 34,8 млн, которых нет ни на одном другом этапе. Вклад у этой строки '
         'нулевой — на первом и последнем этапах её нет, — и в объяснители изменения '
-        'она не попадает; показана она потому, что правило «появившееся и снятое '
+        'она не попадает; показана она потому, что правило «появившееся и исчезнувшее '
         'видно всегда» распространяется и на неё.</div>'
         '<div class="state info"><b>Чего экран не утверждает.</b> Здесь видно, что '
-        '«Геотекстиль 500 г/м2» снят, а «Геотекстильное полотно 150 г/м2» появилось — '
-        'на том же объёме 8 726,4 м². Человек прочитает это как ЗАМЕНУ материала, и '
-        'скорее всего будет прав. Но у нас нет основания это утверждать: каталожные '
-        'позиции разные, и «замена» — вывод читателя, а не факт файла. Экран показывает '
-        'снятие и появление рядом и молчит о связи между ними.</div>'
+        '«Геотекстиль 500 г/м2» исчез из файла, а «Геотекстильное полотно 150 г/м2» '
+        'появилось — на том же объёме 8 726,4 м². Человек прочитает это как ЗАМЕНУ '
+        'материала, и скорее всего будет прав. Но у нас нет основания это утверждать: '
+        'каталожные позиции разные, и «замена» — вывод читателя, а не факт файла. Экран '
+        'ставит исчезновение и появление рядом и молчит о связи между ними.</div>'
     )
 
 
@@ -828,12 +967,16 @@ def section(case: dict, born: dict, stats: dict) -> str:
       подсказке. Каталожные наименования: медиана 52 знака, девятая дециль 167,
       максимум 5077. Колонка подписи в своде зажата 250–420 px, и снимать зажим
       нельзя — раскрытие статей уже ломало раскладку (AGENTS §11).</li>
-      <li><b>Появление и снятие — те же пилюли, что в своде</b>
-      (<span class="pill">не оценивалась</span>, <span class="pill">появилась</span>,
-      <span class="pill warn">снято</span>), и новых слов не заводится. В колонке
-      «Торг» у такой строки стоит пилюля, а не процент: делить не на что. А вот
-      ВКЛАД считается от нуля — работа, которой на первом этапе не было, изменила
-      статью ровно на свою сумму.</li>
+      <li><b>Состояния и виды изменения взяты у свода ТИПАМИ, а не по смыслу.</b>
+      Строки нет в файле — <span class="flat">—</span>, переход к этому даёт
+      <span class="pill">нет в файле</span>; строка есть и не оценена —
+      <span class="pill">не оценивалась</span>; сумма обнулена после ненулевой —
+      <span class="pill warn">снято</span>; появление —
+      <span class="pill">появилась</span>, возврат суммы —
+      <span class="pill">вернулась</span>. Смешивать «нет в файле» со «снято»
+      нельзя: исчезновение строки снятия НЕ доказывает. В колонке «Торг» у такой
+      строки стоит пилюля, а не процент. А вот ВКЛАД считается от нуля — работа,
+      которой на первом этапе не было, изменила статью ровно на свою сумму.</li>
       <li><b>Появившиеся и снятые работы показываются поимённо всегда</b>, даже
       когда их сумма мала и в объяснители они не попали (решение пользователя
       30.08.2026). Сверх {PARTIAL_CAP} они сворачиваются в строку «ещё N работ
@@ -844,10 +987,14 @@ def section(case: dict, born: dict, stats: dict) -> str:
       больше {PARTIAL_CAP} — у {stats['outside_over_cap']}.
       Из {stats['explainers']} строк-объяснителей {stats['partial']} и сами есть не
       на всех этапах.</li>
-      <li><b>Дыр в середине не бывает — проверено.</b> Из 1017 групп 797 идут сквозь
-      все четыре этапа, 101 появилась, 110 снято, и НИ ОДНОЙ, которая пропала бы на
-      среднем этапе и вернулась. Если такая появится, средний этап покажет
-      <span class="pill">не оценивалась</span>, и правило не сломается.</li>
+      <li><b>Дыр в середине не бывает — проверено.</b> Из {stats['groups_total']} групп
+      {stats['whole']} идут сквозь все выбранные этапы, {stats['born']} появились,
+      {stats['gone']} исчезли, {stats['mid']} есть только на средних, и НИ ОДНОЙ,
+      которая пропала бы на среднем этапе и вернулась. Если такая появится, средний
+      этап покажет <span class="flat">—</span> с пилюлей
+      <span class="pill">нет в файле</span>, а следующий — <span class="pill">появилась</span>:
+      правило не ломается, потому что «снято» считается по ВСЕМ предыдущим этапам,
+      а не по предыдущему шагу.</li>
       <li><b>Неоднозначная группа помечается пилюлей «несколько строк сметы»</b> —
       решение секции <code>#naming</code>. Таких среди объяснителей
       {stats['multi']}.</li>
@@ -892,8 +1039,7 @@ def load_case(cur, root_code: str, article_code: str) -> dict:
     article = next(k for k in kids if k["code"] == article_code)
     groups = [mark_volume_steps(g) for g in load_groups(cur, article_code)]
     top, rest = explainers(groups)
-    partials = sorted((g for g in rest if is_partial(g)),
-                      key=lambda g: -abs(contribution(g)))
+    partials = sorted((g for g in rest if is_partial(g)), key=sort_key)
     return {
         "root": root, "kids": kids, "article": article, "top": top,
         "partials": partials[:PARTIAL_CAP],
