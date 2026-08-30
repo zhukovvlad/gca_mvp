@@ -25,6 +25,8 @@ ARTICLE = "8.3"
 ROOT = "8"
 #: Вторая статья: на четвёртом этапе подрядчик пересобрал пирог подготовки —
 #: одни работы сняты, другие появились. Разложение обязано это показывать.
+#: Ключ псевдогруппы допработ: они не строки сметы и каталожной позиции не имеют.
+EXTRA_KEY = "additional_works"
 ARTICLE_BORN = "3.1"
 ROOT_BORN = "3"
 #: Статьи с движением меньше миллиона в разложении не нуждаются — оно там шум.
@@ -130,6 +132,17 @@ def load_tree(cur, root_code: str = ROOT) -> tuple[dict, list[dict]]:
         )
         for cid, amount in cur.fetchall():
             direct[cid][stage] += Decimal(amount or 0)
+        cur.execute(
+            """
+            select aw.work_category_id, sum(aw.total_amount)
+            from estimate_additional_works aw
+            where aw.proposal_id = %s and aw.work_category_id is not null
+            group by aw.work_category_id
+            """,
+            (proposal,),
+        )
+        for cid, amount in cur.fetchall():
+            direct[cid][stage] += Decimal(amount or 0)
 
     def subtree(cid: int) -> list[int]:
         out = [cid]
@@ -183,6 +196,24 @@ def load_groups(cur, code: str) -> list[dict]:
                 "rows": rows,
                 "volumes": sorted(v for v in volumes if v is not None),
                 "unit": unit,
+            }
+        cur.execute(
+            """
+            select sum(aw.total_amount), count(*)
+            from estimate_additional_works aw
+            join work_categories wc on wc.id = aw.work_category_id
+            where aw.proposal_id = %s and wc.code = %s
+            """,
+            (proposal, code),
+        )
+        amount, rows = cur.fetchone()
+        if rows:
+            group = groups.setdefault(
+                EXTRA_KEY,
+                {"id": EXTRA_KEY, "title": "Дополнительные работы", "extra": True, "stages": {}},
+            )
+            group["stages"][stage] = {
+                "amount": Decimal(amount or 0), "rows": rows, "volumes": [], "unit": None,
             }
     return list(groups.values())
 
@@ -335,8 +366,8 @@ def stage_cells(cells: dict[int, dict], *, inline_volume: bool = False,
             continue
         amount = cell["amount"] if isinstance(cell, dict) else cell
         body = f'<span class="mny">{mln(amount)}</span>'
-        if inline_volume and group is not None:
-            volumes = "+".join(qty(v) for v in cell["volumes"]) or "—"
+        if inline_volume and group is not None and cell["volumes"]:
+            volumes = "+".join(qty(v) for v in cell["volumes"])
             tone = " chg" if group["_moved_at"].get(stage) else ""
             body += f'<span class="qty{tone}">{volumes}&nbsp;{esc(cell["unit"] or "")}</span>'
         if bare:
@@ -397,6 +428,10 @@ def group_row(group: dict, variant: str) -> str:
     full = esc(group["title"])
     name = f'<span class="nm" title="{full}">{full}</span>'
     pills = ""
+    if group.get("extra"):
+        pills += (' <span class="ambig" title="Ветвь «дополнительные работы» сметы:'
+                  ' каталожной привязки и объёма у них нет, между этапами они не'
+                  ' сопоставляются">дополнительные работы</span>')
     if ambiguous:
         pills += (' <span class="ambig" title="Несколько строк сметы в одной группе:'
                   ' сравнивается их сумма">несколько строк сметы</span>')
@@ -578,6 +613,12 @@ def born_block(born: dict) -> str:
         'работа, которой на первом этапе не было, а на последнем есть на 22,8 млн, '
         'изменила статью ровно на эти 22,8 млн. Иначе появившаяся работа выпала бы из '
         'разложения, а разницу молча унесла бы строка «прочие».</div>'
+        '<div class="state info"><b>Второй сюжет той же таблицы.</b> Скачок на '
+        'втором этапе, 25,8 → 58,9, сделан не работами, а ветвью ДОПОЛНИТЕЛЬНЫХ '
+        'РАБОТ: 34,8 млн, которых нет ни на одном другом этапе. Вклад у этой строки '
+        'нулевой — на первом и последнем этапах её нет, — и в объяснители изменения '
+        'она не попадает; показана она потому, что правило «появившееся и снятое '
+        'видно всегда» распространяется и на неё.</div>'
         '<div class="state info"><b>Чего экран не утверждает.</b> Здесь видно, что '
         '«Геотекстиль 500 г/м2» снят, а «Геотекстильное полотно 150 г/м2» появилось — '
         'на том же объёме 8 726,4 м². Человек прочитает это как ЗАМЕНУ материала, и '
@@ -678,6 +719,13 @@ def section(case: dict, born: dict, stats: dict) -> str:
       <li><b>Неоднозначная группа помечается пилюлей «несколько строк сметы»</b> —
       решение секции <code>#naming</code>. Таких среди объяснителей
       {stats['multi']}.</li>
+      <li><b>Дополнительные работы статьи — отдельная строка разложения.</b> Свод
+      считает статью по ОБЕИМ ветвям <code>v_category_totals</code>: позиции и
+      допработы (<code>category_rollup._build_node</code> складывает их в
+      <code>node.total</code>). Без этой строки итог статьи не сошёлся бы из
+      показанных — что макет 30.08.2026 сначала и делал, пока сходимость не была
+      померена машиной. Строка одна на статью: каталожной привязки и объёма у
+      допработ нет, сопоставлять их между этапами нечем.</li>
       <li><b>Колонки «₽ за единицу» нет</b> — решение пользователя 30.08.2026.
       Удельная цена выводится из суммы и объёма, а третья величина в ячейке
       перегружает строку.</li>
