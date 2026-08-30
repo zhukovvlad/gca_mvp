@@ -31,6 +31,13 @@ ROOT_BORN = "3"
 MOVEMENT_FLOOR = Decimal("1e6")
 #: Доля движения статьи, которую обязаны объяснить показанные строки.
 COVERAGE = Decimal("0.9")
+#: Сколько появившихся и снятых работ показывается сверх объяснителей поимённо.
+#: «Работа исчезла из сметы» — качественно иной факт, чем «подешевела на 3 %», и
+#: стоит вопроса к подрядчику независимо от суммы (решение пользователя
+#: 30.08.2026). Потолок взят по замеру: таких строк вне объяснителей медиана 0 на
+#: статью при девятой децили 3, то есть пять покрывают почти все статьи целиком;
+#: но у пяти статей из 76 их больше, а в худшей 49 — там остаток сворачивается.
+PARTIAL_CAP = 5
 
 
 def dsn() -> str:
@@ -404,6 +411,20 @@ def group_row(group: dict, variant: str) -> str:
     return f'<tr class="pos3 k-{variant}a"><td class="t">{name}{pills}</td>{cells}</tr>'
 
 
+def bag_row(groups: list[dict], label: str, sub: str, variant: str,
+            css: str = "dimrow") -> str:
+    """Свёрнутая группа строк: суммы по этапам без процентов и пилюль."""
+    cells = {}
+    for stage, _ in STAGES:
+        total = sum((g["stages"][stage]["amount"] for g in groups if stage in g["stages"]),
+                    Decimal(0))
+        cells[stage] = {"amount": total}
+    body = (f'<td class="t"><span class="nm">{label}</span>'
+            f'<span class="volline">{sub}</span></td>')
+    return (f'<tr class="pos3 {css} k-{variant}a">{body}'
+            f'{stage_cells(cells, bare=True)}</tr>')
+
+
 def rest_row(article: dict, shown: list[dict], count: int, variant: str) -> str:
     cells = {}
     for stage, _ in STAGES:
@@ -413,6 +434,8 @@ def rest_row(article: dict, shown: list[dict], count: int, variant: str) -> str:
         taken = sum((g["stages"][stage]["amount"] for g in shown if stage in g["stages"]),
                     Decimal(0))
         cells[stage] = {"amount": total - taken}
+    if count == 0:
+        return ""
     word = plural(count, ("строка", "строки", "строк"))
     label = (f'<td class="t"><span class="nm">прочие {count} {word} статьи</span>'
              '<span class="volline">свёрнуто; несёт остаток, чтобы итог статьи сходился'
@@ -421,8 +444,8 @@ def rest_row(article: dict, shown: list[dict], count: int, variant: str) -> str:
             f'{stage_cells(cells, bare=True)}</tr>')
 
 
-def fragment(root: dict, kids: list[dict], article: dict, top: list[dict],
-             rest: list[dict], variant: str) -> str:
+def fragment(root: dict, kids: list[dict], article: dict, case: dict,
+             variant: str) -> str:
     head = ('<thead><tr><th class="art">Статья классификатора</th>'
             + "".join(f'<th class="num">Этап {s}</th>' for s, _ in STAGES)
             + '<th class="num sep">Торг: первый → последний</th>'
@@ -431,8 +454,16 @@ def fragment(root: dict, kids: list[dict], article: dict, top: list[dict],
     for kid in kids:
         if kid["code"] == article["code"]:
             rows.append(article_row(kid, 2, key=f"{variant}a"))
-            rows += [group_row(g, variant) for g in top]
-            rows.append(rest_row(article, top, len(rest), variant))
+            shown = list(case["top"]) + list(case["partials"])
+            rows += [group_row(g, variant) for g in shown]
+            hidden = case["partials_hidden"]
+            if hidden:
+                word = plural(len(hidden), ("работа", "работы", "работ"))
+                rows.append(bag_row(
+                    hidden, f"ещё {len(hidden)} {word} появились или сняты",
+                    "свёрнуто; раскрывается по нажатию", variant, css="dimrow born"))
+                shown = shown + hidden
+            rows.append(rest_row(article, shown, len(case["rest"]), variant))
         else:
             rows.append(article_row(kid, 2))
     body = "<tbody>" + "".join(r.replace('class="lvl2 art"', f'class="lvl2 art kid k-{variant}r"')
@@ -538,7 +569,7 @@ def born_block(born: dict) -> str:
         'произошло ровно это: на четвёртом этапе подрядчик <b>пересобрал пирог '
         f'подготовки</b>, и статья не подешевела, а ВЫРОСЛА на {mln(change)} млн. '
         'Разложение показывает, чем: одна работа появилась, другая снята.</p>'
-        + fragment(born["root"], born["kids"], article, born["top"], born["rest"], "v2b")
+        + fragment(born["root"], born["kids"], article, born, "v2b")
         + '<div class="verdict"><b>Правило.</b> Строка, которой на этапе нет, несёт '
         'пилюлю: <span class="pill">не оценивалась</span> до появления и '
         '<span class="pill warn">снято</span> после снятия — те же слова, что в своде, '
@@ -559,6 +590,7 @@ def born_block(born: dict) -> str:
 def section(case: dict, born: dict, stats: dict) -> str:
     root, kids = case["root"], case["kids"]
     article, top, rest = case["article"], case["top"], case["rest"]
+    partials = case["partials"] + case["partials_hidden"]
     total_change = article["cells"][STAGES[-1][0]] - article["cells"][STAGES[0][0]]
     explained = sum((contribution(g) for g in top), Decimal(0))
     share = abs(explained / total_change * 100)
@@ -568,7 +600,7 @@ def section(case: dict, born: dict, stats: dict) -> str:
         blocks.append(
             f'<p class="vh">{title}<span class="cnt">{accepted}</span></p>'
             f'<p class="secsub">{lead}</p>'
-            + fragment(root, kids, article, top, rest, key)
+            + fragment(root, kids, article, case, key)
             + f'<div class="verdict{"" if tone == "ok" else " bad"}">{verdict}</div>'
         )
     joined = "".join(blocks) + born_block(born)
@@ -608,9 +640,12 @@ def section(case: dict, born: dict, stats: dict) -> str:
     <b>{esc(root['code'])} {esc(root['title'])}</b> раскрыта до подстатей, подстатья
     <b>{esc(article['code'])}</b> раскрыта до работ. Подстатья упала на
     <b>{mln(total_change)} млн</b>, и показанные {len(top)} строки объясняют
-    <b>{share:.0f} %</b> этого падения; остальные {len(rest)} свёрнуты в одну строку,
-    чтобы итог сходился в каждой колонке. Различаются варианты только тем, где стоит
-    объём заказчика.</p>
+    <b>{share:.0f} %</b> этого падения. Под ними — {len(partials)}
+    {plural(len(partials), ("работа", "работы", "работ"))}, которые появились или были
+    сняты: их показывают ВСЕГДА, какой бы малой ни была сумма, потому что «работы
+    больше нет в смете» — другой факт, чем «подешевела на 3 %». Остальные
+    {len(rest)} свёрнуты в одну строку, чтобы итог сходился в каждой колонке.
+    Различаются варианты только тем, где стоит объём заказчика.</p>
 
     {joined}
 
@@ -623,9 +658,23 @@ def section(case: dict, born: dict, stats: dict) -> str:
       подсказке. Каталожные наименования: медиана 52 знака, девятая дециль 167,
       максимум 5077. Колонка подписи в своде зажата 250–420 px, и снимать зажим
       нельзя — раскрытие статей уже ломало раскладку (AGENTS §11).</li>
-      <li><b>Появление и снятие — те же пилюли, что в своде.</b> Новых слов на этой
-      поверхности не заводится. Из {stats['explainers']} строк-объяснителей
-      {stats['partial']} есть не на всех этапах.</li>
+      <li><b>Появление и снятие — те же пилюли, что в своде</b>
+      (<span class="pill">не оценивалась</span>, <span class="pill">появилась</span>,
+      <span class="pill warn">снято</span>), и новых слов не заводится. В колонке
+      «Торг» у такой строки стоит пилюля, а не процент: делить не на что. А вот
+      ВКЛАД считается от нуля — работа, которой на первом этапе не было, изменила
+      статью ровно на свою сумму.</li>
+      <li><b>Появившиеся и снятые работы показываются поимённо всегда</b>, даже
+      когда их сумма мала и в объяснители они не попали (решение пользователя
+      30.08.2026). Сверх {PARTIAL_CAP} они сворачиваются в строку «ещё N работ
+      появились или сняты». Замер: таких строк вне объяснителей 114 на 76 статей —
+      медиана 0 на статью, девятая дециль 3, максимум 49; у 55 статей их нет вовсе.
+      Из {stats['explainers']} строк-объяснителей {stats['partial']} и сами есть не
+      на всех этапах.</li>
+      <li><b>Дыр в середине не бывает — проверено.</b> Из 1017 групп 797 идут сквозь
+      все четыре этапа, 101 появилась, 110 снято, и НИ ОДНОЙ, которая пропала бы на
+      среднем этапе и вернулась. Если такая появится, средний этап покажет
+      <span class="pill">не оценивалась</span>, и правило не сломается.</li>
       <li><b>Неоднозначная группа помечается пилюлей «несколько строк сметы»</b> —
       решение секции <code>#naming</code>. Таких среди объяснителей
       {stats['multi']}.</li>
@@ -654,12 +703,23 @@ def write_into_mockup(body: str) -> None:
     print(f"секция записана в {MOCKUP}")
 
 
+def is_partial(group: dict) -> bool:
+    return len(group["stages"]) < len(STAGES)
+
+
 def load_case(cur, root_code: str, article_code: str) -> dict:
     root, kids = load_tree(cur, root_code)
     article = next(k for k in kids if k["code"] == article_code)
     groups = [mark_volume_steps(g) for g in load_groups(cur, article_code)]
     top, rest = explainers(groups)
-    return {"root": root, "kids": kids, "article": article, "top": top, "rest": rest}
+    partials = sorted((g for g in rest if is_partial(g)),
+                      key=lambda g: -abs(contribution(g)))
+    return {
+        "root": root, "kids": kids, "article": article, "top": top,
+        "partials": partials[:PARTIAL_CAP],
+        "partials_hidden": partials[PARTIAL_CAP:],
+        "rest": [g for g in rest if not is_partial(g)],
+    }
 
 
 def main() -> None:
