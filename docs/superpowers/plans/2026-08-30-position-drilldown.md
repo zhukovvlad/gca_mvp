@@ -78,18 +78,18 @@ TanStack Query + shadcn/ui + vitest.
 ответа (рядом с `test_both_view_branches_and_additional_works_amount`):
 
 ```python
-    def test_has_drilldown_rows_true_for_article_with_rows_and_false_without(self, db_session, grid):
-        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+    def test_has_drilldown_rows_true_for_article_with_rows_and_false_without(self, db_session, drill_grid):
+        data = crud_ss.build_stage_summary(db_session, drill_grid.tender.id, drill_grid.path)
         by_code = {r["code"]: r for r in data["rows"]}
         assert by_code["6"]["has_drilldown_rows"] is True          # позиции есть
         assert by_code["2"]["has_drilldown_rows"] is True          # строки есть, суммы 60 -> 0
         empty = next(r for r in data["rows"] if all(c["rows"]["row_count"] == 0 for c in r["cells"]))
         assert empty["has_drilldown_rows"] is False
 
-    def test_unallocated_never_promises_a_drilldown(self, db_session, grid):
+    def test_unallocated_never_promises_a_drilldown(self, db_session, drill_grid):
         """У «Нераспределённого» нет work_category_id, значит нет и эндпоинта:
         поле обязано быть false ДАЖЕ когда строки там есть."""
-        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        data = crud_ss.build_stage_summary(db_session, drill_grid.tender.id, drill_grid.path)
         unallocated = data["unallocated"]
         assert unallocated["has_drilldown_rows"] is False
         assert unallocated["work_category_id"] is None
@@ -139,7 +139,12 @@ TanStack Query + shadcn/ui + vitest.
 Если резолвер не знает кода «6.1», взять из справочника любой существующий код
 потомка со своим родителем: `db_session.execute(sa.select(WorkCategory.code)
 .where(WorkCategory.parent_id.isnot(None))).first()` — и подставить его и код
-его родителя; тест не должен зависеть от конкретной пары.
+его родителя; тест не должен зависеть от конкретной пары. (Коды «2», «3», «6»,
+«6.1» в справочнике стенда есть — проверено 31.08.2026.)
+
+**Матчинг здесь запускать НЕ надо**, в отличие от тестов Task 4–6:
+`has_drilldown_rows` считается по `row_count`, а он не зависит от
+`catalog_position_id`. Достаточно `import_round`, как во всех тестах свода.
 
 - [ ] **Step 2: Прогнать тесты, убедиться в падении**
 
@@ -237,6 +242,13 @@ class GroupInput:
     chapter_ref_raw: str | None      # только у additional_works
     title: str
     stages: Mapping[int, GroupStage]  # индекс колонки -> данные
+    #: Ключ, по которому строки собраны в эту группу (§2.2): у работ —
+    #: каталожная позиция, у допработ — ПАРА «лот + ссылка» (§2.7), у
+    #: непривязанных — константа. В контракт ответа НЕ выходит, живёт только
+    #: внутри расчёта: им замыкается ключ порядка, иначе две допработы разных
+    #: лотов с одной ссылкой и равным по модулю вкладом ничем не разводятся —
+    #: `chapter_ref_raw` у них один и тот же (следствие ревизии ключа §2.7).
+    key: tuple = ()
 
 @dataclass(frozen=True)
 class DrillCell:
@@ -304,11 +316,12 @@ COLS4 = [col(0), col(1), col(2), col(3)]
 BASIS = ss.pick_tax_basis([c.vat_rate_base for c in COLS4])
 
 
-def grp(kind=pd.KIND_POSITION, cpid=1, ref=None, title="Работа", **stages) -> pd.GroupInput:
+def grp(kind=pd.KIND_POSITION, cpid=1, ref=None, title="Работа", key=None, **stages) -> pd.GroupInput:
     """stages: s0=..., s1=... — GroupStage по индексу колонки."""
     return pd.GroupInput(kind=kind, catalog_position_id=cpid if kind == pd.KIND_POSITION else None,
                          chapter_ref_raw=ref, title=title,
-                         stages={int(k[1:]): v for k, v in stages.items()})
+                         stages={int(k[1:]): v for k, v in stages.items()},
+                         key=key or ((cpid,) if kind == pd.KIND_POSITION else (ref,)))
 
 
 class TestGroupCells:
@@ -490,10 +503,11 @@ def compute_drilldown(columns: Sequence[DrillColumn], groups: Sequence[GroupInpu
 
 ```python
 def one_stage_grp(idx_amounts: dict[int, str], *, kind=pd.KIND_POSITION, cpid=1, ref=None,
-                  title="Работа", rows=1) -> pd.GroupInput:
+                  title="Работа", rows=1, key=None) -> pd.GroupInput:
     return pd.GroupInput(kind=kind, catalog_position_id=cpid if kind == pd.KIND_POSITION else None,
                          chapter_ref_raw=ref, title=title,
-                         stages={i: pd.GroupStage(D(a), rows) for i, a in idx_amounts.items()})
+                         stages={i: pd.GroupStage(D(a), rows) for i, a in idx_amounts.items()},
+                         key=key or ((cpid,) if kind == pd.KIND_POSITION else (ref,)))
 
 
 COLS2 = [col(0), col(3)]
@@ -531,6 +545,19 @@ class TestComputeDrilldown:
         # равный |вклад| 10: позиции раньше допработ; id числом (2 < 10); ссылки строкой
         assert head == [("position", 2, None), ("position", 10, None),
                         ("additional_works", None, "3.2.10"), ("additional_works", None, "3.2.2")]
+
+    def test_two_lots_with_one_ref_are_ordered_deterministically(self):
+        """Следствие ревизии ключа §2.7: у двух допработ РАЗНЫХ лотов ссылка
+        одна, вклад равный — тройка «модуль, вид, ссылка» их не разводит вовсе,
+        и порядок зависел бы от выдачи БД. Разводит ключ группировки."""
+        a = one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="1",
+                          key=("lot_2", "1"), title="Работа лота 2")
+        b = one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="1",
+                          key=("lot_1", "1"), title="Работа лота 1")
+        straight = [r.title for r in pd.compute_drilldown(COLS2, [a, b]).rows]
+        flipped = [r.title for r in pd.compute_drilldown(COLS2, [b, a]).rows]
+        assert straight == flipped
+        assert straight[:2] == ["Работа лота 1", "Работа лота 2"]
 
     def test_partial_cap_folds_the_tail_into_collapsed_row(self):
         # big объясняет 112 из delta=124 один: |124−112| = 12 <= 12.4 — отбор
@@ -652,8 +679,20 @@ class TestComputeDrilldown:
 
 ```python
 def _order_key(contribution: Decimal, g: GroupInput) -> tuple:
-    """§2.3/§2.9: полный ключ — иначе порядок зависел бы от выдачи БД; id ЧИСЛОМ."""
-    return (-abs(contribution), KIND_RANK.get(g.kind, 0), g.catalog_position_id or 0, g.chapter_ref_raw or "")
+    """§2.3/§2.9: полный ключ — иначе порядок зависел бы от выдачи БД; id ЧИСЛОМ.
+
+    Замыкается `g.key` — ключом группировки: тройки «модуль, вид, id/ссылка»
+    перестало хватать, когда в ключ допработы вошёл лот (§2.7): две работы
+    разных лотов с одной ссылкой и равным вкладом тройка не разводит вовсе.
+    Сравниваются кортежи одного вида (см. `_order_tag`), а не разнотипные."""
+    return (-abs(contribution), KIND_RANK.get(g.kind, 0), g.catalog_position_id or 0,
+            g.chapter_ref_raw or "", _order_tag(g.key))
+
+
+def _order_tag(key: tuple) -> str:
+    """Ключ группировки строкой — чтобы сравнение не упиралось в разные типы
+    (`int` у работ против `str` у лота и ссылки)."""
+    return "|".join(str(part) for part in key)
 
 
 def _row_from_group(g: GroupInput, cells: list[DrillCell]) -> DrillRow:
@@ -809,12 +848,17 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
   aw.chapter_ref_raw` (SQLAlchemy: `sa.func.array_agg(
   sa.dialects.postgresql.aggregate_order_by(EstimateAdditionalWork.title,
   EstimateAdditionalWork.ordinal))[1]`);
-- ключ группы допработ: `chapter_ref_raw`; подпись — наименование с ПОСЛЕДНЕГО
-  этапа присутствия (колонки собираются по возрастанию `stage_no`, присваивание
-  перетирает прежнее — как `load_groups` генератора), внутри этапа — первая по
-  паре `(proposal_id, ordinal)` (уже в SQL): `ordinal` уникален только внутри
-  предложения, а группа берётся в пределах СМЕТЫ, у которой бывает несколько
-  лотов (§2.7, уточнение спеки 31.08.2026);
+- ключ группы допработ: **пара `(lots.lot_key, chapter_ref_raw)`** — номера
+  разделов между лотами законно повторяются и означают РАЗНЫЕ работы
+  (`models.EstimateAdditionalWork`, §2.7 ревизия 31.08.2026); склеивать их одной
+  ссылкой нельзя, а сходимость объединения не требует. `lot_key` попадает и в
+  `GroupInput.chapter_ref_raw`? — **нет**: в контракте ответа остаётся голая
+  ссылка (текст пилюли «допработы · 3.2.2», §2.11), а лот живёт только внутри
+  ключа группировки. Подпись — наименование с ПОСЛЕДНЕГО этапа присутствия
+  (колонки собираются по возрастанию `stage_no`, присваивание перетирает
+  прежнее — как `load_groups` генератора), внутри этапа — первая по паре
+  `(proposal_id, ordinal)` (уже в SQL): `ordinal` уникален только внутри
+  предложения;
 - `quantities` — отсортированный tuple НЕ-None значений `suggested_quantity`;
   `unit` — `min(symbol)`;
 - **неконечные суммы** (`NaN`, `±Infinity`): строка входит в счётчик
@@ -855,7 +899,9 @@ from models import (
     WorkCategory,
 )
 from services import position_drilldown as pd_service
+from services import stage_summary as ss
 from services.category_resolution import CategoryResolver
+from services.matching import match_positions
 from services.round_import import import_round
 from services.unit_resolution import UnitResolver
 from tests.payloads import (
@@ -865,7 +911,10 @@ from tests.payloads import (
     round_payload,
     svedeniya_info,
 )
-from tests.integration.test_stage_summary_api import chaptered, count_queries, grid  # noqa: F401
+# `chaptered` и `count_queries` — обычные функции соседнего файла, их можно
+# импортировать; фикстуру `grid` — НЕ импортируем: своя `drill_grid` ниже
+# отличается запуском матчинга.
+from tests.integration.test_stage_summary_api import chaptered, count_queries
 
 pytestmark = pytest.mark.integration
 
@@ -882,6 +931,64 @@ def estimates_of(db, offer_ids):
 
 def category_id(db, code):
     return db.execute(sa.select(WorkCategory.id).where(WorkCategory.code == code)).scalar_one()
+
+
+def import_and_match(db, *, tender_round, data):
+    """Импорт раунда И МАТЧИНГ.
+
+    `import_round` матчинг НЕ вызывает — он только возвращает
+    `positions_to_match`, а каскад запускает пайплайн (докстрока
+    `services/round_import.import_round`, §2.5 п.5 её спеки). Без этого шага у
+    всех строк `catalog_position_id` остаётся NULL, и разложение видит одну
+    группу `unmatched` вместо работ — тесты этого файла молча мерили бы не тот
+    вид строк (ревью плана 31.08.2026).
+    """
+    outcome = import_round(db, tender_round=tender_round, data=data, parser_version="4.0.0",
+                           import_job_id=None, replace=False,
+                           unit_resolver=UnitResolver(db),
+                           category_resolver=CategoryResolver.from_db(db))
+    match_positions(db, outcome.positions_to_match)
+    db.flush()
+    return outcome
+
+
+@pytest.fixture
+def drill_grid(db_session, factories):
+    """Тот же тендер, что `grid` свода, но собранный С МАТЧИНГОМ.
+
+    Своя фикстура, а не переиспользование `grid`: соседнюю фикстуру нельзя
+    позвать функцией (это pytest-фикстура), а `match_positions` принимает
+    `PositionToMatch` из результата импорта, а не строки из БД — то есть
+    матчинг надо запускать В МОМЕНТ импорта. Тестам свода каталог не нужен, и
+    их фикстура остаётся как есть.
+
+    Суммы совпадают с `grid` (§ докстроки соседней фикстуры): р1 6→120, 2→60;
+    р2 6→96 плюс допработы 24, 2→0; р3 6→100; р4 6→90. `path` — трасса 1, 2, 4.
+    """
+    tender = factories.TenderFactory.create()
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2, 3, 4)}
+    db_session.flush()
+    payloads = {
+        1: [chaptered({"1": ("6", "120.00"), "2": ("2", "60.00")}, total="180.00")],
+        2: [chaptered({"1": ("6", "96.00"), "2": ("2", "0")}, total="120.00",
+                      additional=additional_works_row(total="24.00"))],
+        3: [chaptered({"1": ("6", "100.00")}, total="100.00")],
+        4: [chaptered({"1": ("6", "90.00")}, total="90.00")],
+    }
+    for n, rnd in rounds.items():
+        import_and_match(db_session, tender_round=rnd, data=round_payload(payloads[n]))
+    offers = db_session.execute(
+        sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+
+    class G:
+        pass
+    g = G()
+    g.tender = tender
+    g.rounds = rounds
+    g.offers = offers
+    g.path = [offers[0], offers[1], offers[3]]      # трасса 1, 2, 4
+    return g
 
 
 class TestLoadGroups:
@@ -901,11 +1008,8 @@ class TestLoadGroups:
                          position(job_title="Фасад корпуса", unit="м2", quantity=1, suggested_quantity=5,
                                   unit_cost_total="100.00", total_cost_total="100.00",
                                   chapter_ref="1", number="2")]
-            import_round(db_session, tender_round=rounds[n],
-                         data=round_payload([proposal(positions, vat_rate="20")]),
-                         parser_version="4.0.0", import_job_id=None, replace=False,
-                         unit_resolver=UnitResolver(db_session),
-                         category_resolver=CategoryResolver.from_db(db_session))
+            import_and_match(db_session, tender_round=rounds[n],
+                             data=round_payload([proposal(positions, vat_rate="20")]))
         db_session.flush()
         offers = db_session.execute(
             sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -935,13 +1039,10 @@ class TestLoadGroups:
                          position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
                                   unit_cost_total="5.00", total_cost_total="5.00",
                                   chapter_ref="1", number="2")]
-            import_round(db_session, tender_round=rnd,
-                         data=round_payload([proposal(positions, vat_rate="20",
-                                                      additional_works=additional_works_row(total="30.00"),
-                                                      additional_info=info[n])]),
-                         parser_version="4.0.0", import_job_id=None, replace=False,
-                         unit_resolver=UnitResolver(db_session),
-                         category_resolver=CategoryResolver.from_db(db_session))
+            import_and_match(db_session, tender_round=rnd,
+                             data=round_payload([proposal(positions, vat_rate="20",
+                                                          additional_works=additional_works_row(total="30.00"),
+                                                          additional_info=info[n])]))
         db_session.flush()
         offers = db_session.execute(
             sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -954,53 +1055,80 @@ class TestLoadGroups:
         assert extras[0].title == "Монолитные конструкции, уточнено"   # последний этап
         assert set(extras[0].stages) == {0, 1}
 
-    def test_unmatched_rows_fold_into_one_group_per_subtree(self, db_session, grid):
+    def test_unmatched_rows_fold_into_one_group_per_subtree(self, db_session, drill_grid):
         """Фикстурная ветка §5: привязку снимаем руками (на живой базе её
         снимает только недоработанный матчинг, 0 из 64 505)."""
         db_session.execute(sa.update(PositionItem).where(PositionItem.is_chapter.is_(False))
                            .values(catalog_position_id=None))
         db_session.flush()
         subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
-        estimates = estimates_of(db_session, grid.path)
+        estimates = estimates_of(db_session, drill_grid.path)
         groups = crud_pd.load_groups(db_session, estimates, subtree)
         unmatched = [g for g in groups if g.kind == pd_service.KIND_UNMATCHED]
         assert len(unmatched) == 1 and unmatched[0].title == crud_pd.UNMATCHED_TITLE
 
-    def test_query_count_does_not_grow_with_columns(self, db_session, grid):
+    def test_query_count_does_not_grow_with_columns(self, db_session, drill_grid):
         subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
-        two = estimates_of(db_session, grid.path[:2])
-        three = estimates_of(db_session, grid.path)
+        two = estimates_of(db_session, drill_grid.path[:2])
+        three = estimates_of(db_session, drill_grid.path)
         with count_queries(db_session) as c2:
             crud_pd.load_groups(db_session, two, subtree)
         with count_queries(db_session) as c3:
             crud_pd.load_groups(db_session, three, subtree)
         assert c2["n"] == c3["n"]
 
-    def test_non_finite_row_counts_but_does_not_add_to_the_sum(self, db_session, grid):
+    def test_non_finite_row_is_counted_but_left_out_of_the_sum(self, db_session, drill_grid):
         """§1.7: правило конечности VIEW повторяется здесь, иначе разложение не
-        сойдётся со статьёй. Неконечную сумму на живой базе не встретить
-        (0 из 64 505) — ставим её UPDATE-ом, как и снятую привязку выше."""
-        estimates = estimates_of(db_session, grid.path)
+        сойдётся со статьёй. Неконечных сумм на живой базе нет (0 из 64 505),
+        поэтому ветка ставится UPDATE-ом — как и снятая привязка выше; РУЧНАЯ
+        ВСТАВКА строки не годится: у `position_items` есть обязательные поля
+        (`position_key_in_proposal`), и тест ломался бы на них, а не на правиле."""
+        estimates = estimates_of(db_session, drill_grid.path)
         subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
         before = crud_pd.load_groups(db_session, estimates, subtree)
         work = next(g for g in before if g.kind == pd_service.KIND_POSITION)
-        first_stage = min(work.stages)
-        # Добавляем в ту же группу вторую строку с NaN: сумма не меняется,
-        # счётчик строк растёт. Строку берём копией существующей.
-        row = db_session.execute(
-            sa.select(PositionItem).where(PositionItem.catalog_position_id == work.catalog_position_id,
-                                          PositionItem.is_chapter.is_(False))
+        stage = min(work.stages)
+        # Ставим NaN ОДНОЙ строке группы на первом этапе: строка остаётся в
+        # файле (счётчик её видит), но в сумму не входит.
+        target = db_session.execute(
+            sa.select(PositionItem.id).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimates[stage], PositionItem.is_chapter.is_(False),
+                   PositionItem.catalog_position_id == work.catalog_position_id)
         ).scalars().first()
-        db_session.add(PositionItem(proposal_id=row.proposal_id, chapter_item_id=row.chapter_item_id,
-                                    catalog_position_id=row.catalog_position_id, unit_id=row.unit_id,
-                                    job_title_in_proposal=row.job_title_in_proposal,
-                                    item_number_in_proposal="nan-1", is_chapter=False,
-                                    total_cost_total=D("NaN"), suggested_quantity=None))
+        db_session.execute(sa.update(PositionItem).where(PositionItem.id == target)
+                           .values(total_cost_total=D("NaN")))
         db_session.flush()
         after = crud_pd.load_groups(db_session, estimates, subtree)
         same = next(g for g in after if g.catalog_position_id == work.catalog_position_id)
-        assert same.stages[first_stage].gross == work.stages[first_stage].gross     # сумма не поехала
-        assert same.stages[first_stage].rows == work.stages[first_stage].rows + 1   # строка посчитана
+        assert same.stages[stage].rows == work.stages[stage].rows          # строка посчитана
+        assert same.stages[stage].gross == work.stages[stage].gross - D("120.00")   # и вычтена из суммы
+
+    def test_group_of_only_non_finite_rows_is_zero_not_absent(self, db_session, drill_grid):
+        """Продолжение правила: у группы, где ВСЕ строки этапа неконечны, сумма
+        ноль при ненулевом счётчике — то есть ячейка получает нулевое состояние
+        («не оценивалась» / «снято»), а НЕ `absent`. Иначе поехала бы
+        эквивалентность §2.11 `estimate_rows == 0 ⟺ absent`: строка в файле
+        есть, и говорить «нет в файле» о ней нельзя."""
+        estimates = estimates_of(db_session, drill_grid.path)
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        stage = 0
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id.in_(
+                sa.select(PositionItem.id).join(Proposal, Proposal.id == PositionItem.proposal_id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimates[stage], PositionItem.is_chapter.is_(False))))
+            .values(total_cost_total=D("Infinity")))
+        db_session.flush()
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        work = next(g for g in groups if g.kind == pd_service.KIND_POSITION)
+        assert work.stages[stage].rows > 0 and work.stages[stage].gross == D("0")
+        columns = [pd_service.DrillColumn(offer_id=o, estimate_id=e, round_id=0, stage_no=i + 1,
+                                          label=None, held_on=None, vat_rate_base=D("20"))
+                   for i, (o, e) in enumerate(zip(drill_grid.path, estimates, strict=True))]
+        cells = pd_service.group_cells(work, columns, ss.pick_tax_basis([c.vat_rate_base for c in columns]))
+        assert cells[stage].state != "absent" and cells[stage].estimate_rows > 0
 
     def test_several_rows_under_one_ref_are_one_group_titled_by_ordinal(self, db_session, factories):
         """§2.7: ссылка ГРУППИРУЕТ работу (три такие группы на стенде: 5, 2, 2
@@ -1015,16 +1143,13 @@ class TestLoadGroups:
                          position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
                                   unit_cost_total="5.00", total_cost_total="5.00",
                                   chapter_ref="1", number="2")]
-            import_round(db_session, tender_round=rnd,
+            import_and_match(db_session, tender_round=rnd,
                          data=round_payload([proposal(
                              positions, vat_rate="20",
                              additional_works=additional_works_row(total="30.00"),
                              # ДВЕ строки «Сведений» с ОДНОЙ ссылкой «1» и разными наименованиями
                              additional_info=svedeniya_info("1 Первая по файлу - 10.00 руб.",
-                                                            "1 Вторая по файлу - 20.00 руб."))]),
-                         parser_version="4.0.0", import_job_id=None, replace=False,
-                         unit_resolver=UnitResolver(db_session),
-                         category_resolver=CategoryResolver.from_db(db_session))
+                                                            "1 Вторая по файлу - 20.00 руб."))]))
         db_session.flush()
         offers = db_session.execute(
             sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -1037,17 +1162,18 @@ class TestLoadGroups:
         assert extras[0].stages[0].rows == 2                      # пилюля «несколько строк сметы»
         assert extras[0].stages[0].gross == D("30.00")
 
-    def test_estimate_with_two_lots_merges_the_ref_across_proposals(self, db_session, factories):
-        """§2.7 (уточнение 31.08.2026): область ключа — СМЕТА, а не предложение.
-        Смет с несколькими предложениями в базе НЕТ (0 из 43), поэтому ветка
-        фикстурная: две одинаковые ссылки в двух лотах одной сметы дают ОДНУ
-        группу, подпись определена парой (proposal_id, ordinal), а склейка
-        видима пилюлей."""
+    def test_two_lots_keep_their_refs_apart_but_share_the_catalog_key(self, db_session, factories):
+        """§2.7 (ревизия 31.08.2026): номер раздела между лотами законно
+        означает РАЗНЫЕ работы, поэтому одна ссылка в двух лотах даёт ДВЕ
+        группы — склейка была бы невидимой, а сходимость объединения не требует
+        (две строки складываются в тот же итог). У РАБОТ правило обратное и это
+        не разнобой: каталожная позиция — идентичность каталога, и строки двух
+        лотов с одной позицией остаются ОДНОЙ группой. Многолотовых смет в базе
+        нет (0 из 43), ветка фикстурная."""
         tender = factories.TenderFactory.create()
-        rnd1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
-        rnd2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
         db_session.flush()
-        for rnd in (rnd1, rnd2):
+        for rnd in rounds.values():
             positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
                                   article_smr="6", number="1"),
                          position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
@@ -1056,33 +1182,39 @@ class TestLoadGroups:
             payload = proposal(positions, vat_rate="20",
                                additional_works=additional_works_row(total="10.00"),
                                additional_info=svedeniya_info("1 Работа лота - 10.00 руб."))
-            import_round(db_session, tender_round=rnd,
-                         data=round_payload([payload], lots=2),   # ДВА лота одной сметы
-                         parser_version="4.0.0", import_job_id=None, replace=False,
-                         unit_resolver=UnitResolver(db_session),
-                         category_resolver=CategoryResolver.from_db(db_session))
-        db_session.flush()
+            import_and_match(db_session, tender_round=rnd,
+                             data=round_payload([payload], lots=2))   # ДВА лота одной сметы
         offers = db_session.execute(
             sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
             .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
         estimates = estimates_of(db_session, offers)
+        # Предпосылка теста: смета действительно из двух лотов с двумя предложениями.
         assert db_session.execute(
             sa.select(sa.func.count()).select_from(Proposal).join(Lot, Lot.id == Proposal.lot_id)
-            .where(Lot.estimate_id == estimates[0])).scalar_one() == 2   # предпосылка теста
+            .where(Lot.estimate_id == estimates[0])).scalar_one() == 2
         subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
         groups = crud_pd.load_groups(db_session, estimates, subtree)
+
         extras = [g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS]
-        assert len(extras) == 1                                   # одна группа на смету
-        assert extras[0].stages[0].rows == 2 and extras[0].stages[0].gross == D("20.00")
+        assert len(extras) == 2                                  # по группе на лот
+        assert {g.chapter_ref_raw for g in extras} == {"1"}       # ссылка в контракте — голая
+        assert all(g.stages[0].rows == 1 and g.stages[0].gross == D("10.00") for g in extras)
+        # Обе группы живут на ОБОИХ этапах: ключ лота между этапами устойчив,
+        # пока подрядчик не переставил лоты (§2.7 — названная развилка).
+        assert all(set(g.stages) == {0, 1} for g in extras)
+
         works = [g for g in groups if g.kind == pd_service.KIND_POSITION]
-        assert len(works) == 1 and works[0].stages[0].rows == 2   # тот же закон у работ
+        assert len(works) == 1 and works[0].stages[0].rows == 2   # лот в ключ работы не входит
+        assert works[0].stages[0].gross == D("10.00")
 ```
 
-(Для последнего теста в импорты добавить `Lot` и `Proposal`. Если
-`round_payload(..., lots=2)` кладёт лоты в РАЗНЫЕ сметы — посмотреть, как
-устроен `import_round` в `test_round_import.py:43`, и построить смету с двумя
+(Если `round_payload(..., lots=2)` кладёт лоты в РАЗНЫЕ сметы — посмотреть, как
+устроен вызов в `test_round_import.py:43`, и построить смету с двумя
 предложениями тем способом, каким её строит он; предпосылка теста проверяется
-`assert`-ом выше и не даст тесту молча измерить не тот случай.)
+`assert`-ом выше и не даст тесту молча измерить не тот случай. Если две группы
+допработ различить в ответе нечем, кроме порядка, — это ожидаемо: `lot_key` в
+контракт не выходит, обе строки несут ссылку «1» и различаются наименованием,
+как и любые две разные работы.)
 
 Примечание для исполнителя: `chaptered` из тестов свода строит `summary`-блок
 сам — если хелперу выше нужен итог, скопировать словарь `summary` из
@@ -1169,16 +1301,17 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
         group = groups.setdefault(key, {
             "kind": pd.KIND_UNMATCHED if cat_id is None else pd.KIND_POSITION,
             "catalog_position_id": cat_id, "chapter_ref_raw": None,
-            "title": UNMATCHED_TITLE if cat_id is None else title, "stages": {}})
+            "title": UNMATCHED_TITLE if cat_id is None else title,
+            "key": (key,), "stages": {}})
         group["stages"][column_of[estimate_id]] = pd.GroupStage(
             gross=Decimal(amount or 0), rows=rows,
             quantities=tuple(sorted(q for q in quantities if q is not None)), unit=unit)
 
     extra_rows = db.execute(
-        # Подпись внутри этапа — первая строка по паре (proposal_id, ordinal):
-        # ordinal уникален лишь в пределах предложения, а группа берётся в
-        # пределах СМЕТЫ, у которой бывает несколько лотов (§2.7).
-        sa.select(Lot.estimate_id, EstimateAdditionalWork.chapter_ref_raw,
+        # Ключ группы — ЛОТ плюс ссылка: «3.2.2» в разных лотах законно означает
+        # разные работы (§2.7). Подпись внутри этапа — первая строка по паре
+        # (proposal_id, ordinal): ordinal уникален лишь внутри предложения.
+        sa.select(Lot.estimate_id, Lot.lot_key, EstimateAdditionalWork.chapter_ref_raw,
                   sa.func.array_agg(aggregate_order_by(
                       EstimateAdditionalWork.title,
                       EstimateAdditionalWork.proposal_id,
@@ -1189,20 +1322,21 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
         .join(Lot, Lot.id == Proposal.lot_id)
         .where(Lot.estimate_id.in_(list(estimate_ids)),
                EstimateAdditionalWork.work_category_id.in_(list(subtree)))
-        .group_by(Lot.estimate_id, EstimateAdditionalWork.chapter_ref_raw)
-        .order_by(Lot.estimate_id, EstimateAdditionalWork.chapter_ref_raw)
+        .group_by(Lot.estimate_id, Lot.lot_key, EstimateAdditionalWork.chapter_ref_raw)
+        .order_by(Lot.estimate_id, Lot.lot_key, EstimateAdditionalWork.chapter_ref_raw)
     ).all()
     ordered = sorted(extra_rows, key=lambda r: column_of[r[0]])
-    for estimate_id, ref, title, amount, rows in ordered:
-        key = ("extra", ref)
+    for estimate_id, lot_key, ref, title, amount, rows in ordered:
+        key = ("extra", lot_key, ref)   # лот в КЛЮЧЕ, но не в контракте ответа
         group = groups.setdefault(key, {"kind": pd.KIND_ADDITIONAL_WORKS,
                                         "catalog_position_id": None, "chapter_ref_raw": ref,
-                                        "title": title, "stages": {}})
+                                        "title": title, "key": (lot_key, ref), "stages": {}})
         group["title"] = title    # подпись с ПОСЛЕДНЕГО этапа присутствия (§2.7)
         group["stages"][column_of[estimate_id]] = pd.GroupStage(gross=Decimal(amount or 0), rows=rows)
 
     return [pd.GroupInput(kind=g["kind"], catalog_position_id=g["catalog_position_id"],
-                          chapter_ref_raw=g["chapter_ref_raw"], title=g["title"], stages=g["stages"])
+                          chapter_ref_raw=g["chapter_ref_raw"], title=g["title"],
+                          stages=g["stages"], key=g["key"])
             for g in groups.values()]
 ```
 
@@ -1277,10 +1411,10 @@ def build_position_drilldown(db: Session, tender_id: int, work_category_id: int,
 class TestEndpointContract:
     def _drill(self, db, grid, code="6", offers=None):
         return crud_pd.build_position_drilldown(
-            db, grid.tender.id, category_id(db, code), offers or grid.path)
+            db, drill_grid.tender.id, category_id(db, code), offers or drill_grid.path)
 
-    def test_response_shape_and_cell_row_invariant(self, db_session, grid):
-        data = self._drill(db_session, grid)
+    def test_response_shape_and_cell_row_invariant(self, db_session, drill_grid):
+        data = self._drill(db_session, drill_grid)
         assert data["work_category"]["code"] == "6" and data["reason"] is None
         assert [c["stage_no"] for c in data["columns"]] == [1, 2, 4]
         assert data["display"]["tax_basis"] == "gross" and data["display"]["reason"] == "single_rate"
@@ -1289,41 +1423,41 @@ class TestEndpointContract:
             for cell in row["cells"]:
                 assert (cell["estimate_rows"] == 0) == (cell["state"] == "absent")
 
-    def test_convergence_matches_the_summary_row_number(self, db_session, grid):
+    def test_convergence_matches_the_summary_row_number(self, db_session, drill_grid):
         """§2.13: article_amount == числу строки свода, shown_sum == article_amount."""
-        summary = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        summary = crud_ss.build_stage_summary(db_session, drill_grid.tender.id, drill_grid.path)
         summary_row = next(r for r in summary["rows"] if r["code"] == "6")
-        data = self._drill(db_session, grid)
+        data = self._drill(db_session, drill_grid)
         for idx, conv in enumerate(data["convergence"]):
             assert conv["converged"] is True
             expected = summary_row["cells"][idx]["amount"] or "0.00"
             assert conv["article_amount"] == expected == conv["shown_sum"]
 
-    def test_extras_money_is_inside_the_rows_or_totals_do_not_converge(self, db_session, grid):
+    def test_extras_money_is_inside_the_rows_or_totals_do_not_converge(self, db_session, drill_grid):
         """§1.5: сумма статьи в своде = позиции ПЛЮС допработы; в grid у статьи 6
         на этапе 2 допработы 24.00 — без их строки сходимость упала бы."""
-        data = self._drill(db_session, grid)
+        data = self._drill(db_session, drill_grid)
         kinds = {r["kind"] for r in data["rows"]}
         assert "additional_works" in kinds
         assert all(c["converged"] is True for c in data["convergence"])
 
-    def test_unknown_work_category_is_404(self, db_session, grid):
+    def test_unknown_work_category_is_404(self, db_session, drill_grid):
         with pytest.raises(DomainError) as e:
-            crud_pd.build_position_drilldown(db_session, grid.tender.id, 10**9, grid.path)
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, 10**9, drill_grid.path)
         assert e.value.status == 404 and e.value.code == crud_pd.CODE_WC_NOT_FOUND
 
-    def test_selection_refusals_are_the_summary_codes(self, db_session, grid):
+    def test_selection_refusals_are_the_summary_codes(self, db_session, drill_grid):
         with pytest.raises(DomainError) as e:
-            self._drill(db_session, grid, offers=[grid.path[0]])
+            self._drill(db_session, drill_grid, offers=[drill_grid.path[0]])
         assert e.value.code == "too_few_offers"
 
-    def test_empty_subtree_is_no_rows_in_subtree_not_an_error(self, db_session, grid):
+    def test_empty_subtree_is_no_rows_in_subtree_not_an_error(self, db_session, drill_grid):
         """Пустота проверяется ПО ОБЕИМ ветвям и ПО ВСЕМУ поддереву выбранных
         смет, а не «по категориям, не встречающимся в position_items»: та
         формулировка выбрала бы и корень со строками у потомка (живой узел «1»),
         и статью с одними допработами — то есть тест мерил бы не то, что
         обещает (ревью плана 31.08.2026). Предпосылку тест доказывает сам."""
-        estimates = estimates_of(db_session, grid.path)
+        estimates = estimates_of(db_session, drill_grid.path)
         # В grid заняты статьи «6» и «2»; «3» не заняты ни работой, ни допработой.
         subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "3"))
         chapter = sa.orm.aliased(PositionItem)
@@ -1342,7 +1476,7 @@ class TestEndpointContract:
             .where(Lot.estimate_id.in_(estimates),
                    EstimateAdditionalWork.work_category_id.in_(subtree))).scalar_one()
         assert positions_in_subtree == 0 and extras_in_subtree == 0   # предпосылка теста
-        data = self._drill(db_session, grid, code="3")
+        data = self._drill(db_session, drill_grid, code="3")
         assert data["reason"] == "no_rows_in_subtree" and data["rows"] == []
         assert data["convergence"] == []
 
@@ -1367,12 +1501,12 @@ class TestEndpointContract:
         assert data["reason"] is None and len(data["rows"]) >= 1
         assert all(c["converged"] is True for c in data["convergence"])
 
-    def test_query_count_does_not_grow_with_columns(self, db_session, grid):
+    def test_query_count_does_not_grow_with_columns(self, db_session, drill_grid):
         wc = category_id(db_session, "6")
         with count_queries(db_session) as c2:
-            crud_pd.build_position_drilldown(db_session, grid.tender.id, wc, grid.path[:2])
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, wc, drill_grid.path[:2])
         with count_queries(db_session) as c3:
-            crud_pd.build_position_drilldown(db_session, grid.tender.id, wc, grid.path)
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, wc, drill_grid.path)
         assert c2["n"] == c3["n"]
 ```
 
@@ -1393,11 +1527,8 @@ def _subtree_only_grid(db_session, factories):
                      position(job_title="Фасадная работа", unit="м2", quantity=1, suggested_quantity=1,
                               unit_cost_total=amount, total_cost_total=amount,
                               chapter_ref="1", number="2")]
-        import_round(db_session, tender_round=rounds[n],
-                     data=round_payload([proposal(positions, vat_rate="20")]),
-                     parser_version="4.0.0", import_job_id=None, replace=False,
-                     unit_resolver=UnitResolver(db_session),
-                     category_resolver=CategoryResolver.from_db(db_session))
+        import_and_match(db_session, tender_round=rounds[n],
+                         data=round_payload([proposal(positions, vat_rate="20")]))
     db_session.flush()
     offers = db_session.execute(
         sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -1431,14 +1562,11 @@ def _extras_only_grid(db_session, factories):
                      # раздел БЕЗ работ под ним — его статья живёт только допработой
                      position(job_title="Раздел 2", is_chapter=True, chapter_number="2",
                               article_smr="2", number="3")]
-        import_round(db_session, tender_round=rounds[n],
+        import_and_match(db_session, tender_round=rounds[n],
                      data=round_payload([proposal(
                          positions, vat_rate="20",
                          additional_works=additional_works_row(total=extra),
-                         additional_info=svedeniya_info(f"2 Допработы участка - {extra} руб."))]),
-                     parser_version="4.0.0", import_job_id=None, replace=False,
-                     unit_resolver=UnitResolver(db_session),
-                     category_resolver=CategoryResolver.from_db(db_session))
+                         additional_info=svedeniya_info(f"2 Допработы участка - {extra} руб."))]))
     db_session.flush()
     offers = db_session.execute(
         sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -1458,10 +1586,10 @@ def _extras_only_grid(db_session, factories):
 `backend/tests/integration/` и повторить паттерн):
 
 ```python
-    def test_http_route_returns_the_same_payload(self, client, db_session, grid):
+    def test_http_route_returns_the_same_payload(self, client, db_session, drill_grid):
         wc = category_id(db_session, "6")
-        offers = "&".join(f"offers={o}" for o in grid.path)
-        response = client.get(f"/api/v1/tenders/{grid.tender.id}/stage-summary/{wc}?{offers}")
+        offers = "&".join(f"offers={o}" for o in drill_grid.path)
+        response = client.get(f"/api/v1/tenders/{drill_grid.tender.id}/stage-summary/{wc}?{offers}")
         assert response.status_code == 200
         assert response.json()["work_category"]["code"] == "6"
 ```
@@ -1583,12 +1711,9 @@ class TestTaxAxis:
                   for n in range(1, len(rates) + 1)}
         db_session.flush()
         for n, rate in enumerate(rates, start=1):
-            import_round(db_session, tender_round=rounds[n],
+            import_and_match(db_session, tender_round=rounds[n],
                          data=round_payload([chaptered({"1": ("6", "120.00")}, vat_rate=rate,
-                                                       total="120.00")]),
-                         parser_version="4.0.0", import_job_id=None, replace=False,
-                         unit_resolver=UnitResolver(db_session),
-                         category_resolver=CategoryResolver.from_db(db_session))
+                                                       total="120.00")]))
         db_session.flush()
         offers = db_session.execute(
             sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
@@ -1837,11 +1962,15 @@ describe("useStagePositions", () => {
 });
 ```
 
-Проверить перед реализацией, что `createTestQueryClient()` не задаёт своих
-`gcTime`/`staleTime`, которые перебили бы настройки хука; если задаёт —
-тест писать на клиенте с дефолтами, иначе он проверит настройку фабрики, а не
-хука. `stagePositionsResponse()` — фабрика минимального валидного ответа рядом
-с хендлером по умолчанию.
+**Клиент здесь обязан быть именно `createTestQueryClient()`** — он задаёт
+`gcTime: 0, staleTime: 0` (`frontend/src/test/utils.tsx`), и это ровно то, что
+делает тест различающим: настройки ЗАПРОСА перебивают дефолты клиента, поэтому
+с `gcTime: Infinity` в хуке кэш переживает размонтирование, а без него
+пропадает немедленно и второй монтаж идёт в сеть. На клиенте со СТАНДАРТНЫМИ
+дефолтами (5 минут хранения) тест был бы зелёным и без исправления — то есть
+проверял бы ничего (замечание ревью плана 31.08.2026: прежняя редакция этой
+заметки предлагала именно такую замену). `stagePositionsResponse()` — фабрика
+минимального валидного ответа рядом с хендлером по умолчанию.
 
 Плюс: mock-фикстуры свода в тестах фронта получают `has_drilldown_rows`
 (tsc покажет все места — прогнать `npx tsc -b` и добить фикстуры).
@@ -2493,14 +2622,14 @@ git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, 
   §5 DoD 1–7 — Tasks 12 (1, 5, 6), 7 (2), 6 (3), 1/3/4/5/6 (4), 14 (7).
 - **Фикстуры DoD 4 — все с готовыми телами тестов, ни одна не отложена на
   исполнителя** (правка по ревью плана 31.08.2026): неизвестная база у
-  конца/середины — Task 6; неконечная сумма —
-  `test_non_finite_row_counts_but_does_not_add_to_the_sum` (Task 4); строка без
+  конца/середины — Task 6; неконечная сумма — `test_non_finite_row_is_counted_but_left_out_of_the_sum`
+  и `test_group_of_only_non_finite_rows_is_zero_not_absent` (Task 4); строка без
   привязки — `test_unmatched_rows_fold_into_one_group_per_subtree` (Task 4);
   несколько строк под одной ссылкой с разными наименованиями и подпись по
   `(proposal_id, ordinal)` —
   `test_several_rows_under_one_ref_are_one_group_titled_by_ordinal` (Task 4);
-  смета из двух лотов —
-  `test_estimate_with_two_lots_merges_the_ref_across_proposals` (Task 4);
+  смета из двух лотов (две группы допработ, одна группа работ) —
+  `test_two_lots_keep_their_refs_apart_but_share_the_catalog_key` (Task 4);
   переименование при сохранённой ссылке —
   `test_extras_are_rows_by_ref_and_title_comes_from_the_last_stage` (Task 4);
   статья ТОЛЬКО с допработами — `_extras_only_grid` +
@@ -2524,6 +2653,22 @@ git commit -m "docs(position-drilldown): AGENTS §11, рамка §4, insights, 
   — `gcTime: Infinity` и два теста (Tasks 8, 11); `has_drilldown_rows` у
   «Нераспределённого» — всегда `false` с тестом (Task 1); пути `docs/devlog/`
   и `$LASTEXITCODE` (Tasks 13, 14).
+- **Что нашёл ВТОРОЙ круг ревью плана (31.08.2026):** область ключа допработ
+  была расширена небезопасно — «склеим по смете, склейка видна пилюлей» неверно
+  дважды: номера разделов между лотами законно повторяются
+  (`models.EstimateAdditionalWork`), а пилюля второго наименования не
+  показывает, то есть склейка невидима; довод «иначе не сойдётся» тоже неверен —
+  две строки дают тот же итог. **Ключ стал парой `(lot_key, chapter_ref_raw)`,
+  спека §2.2/§2.7 переписана, развилка про устойчивость `lot_key` названа
+  явно**, тест перевёрнут (две группы вместо одной). Дальше: `import_round`
+  матчинг НЕ вызывает (это делает пайплайн) — фикстуры получили
+  `import_and_match` и собственную `drill_grid`, иначе все работы приходили бы
+  как `unmatched`; тест неконечной суммы вставлял `PositionItem` без
+  обязательного `position_key_in_proposal` — переписан на `UPDATE`, и добавлена
+  недостающая ветка «все строки этапа неконечны → ноль, а не `absent`»; заметка
+  у теста `gcTime` предлагала заменить тестовый клиент на клиент с дефолтами —
+  это убило бы различающую силу теста (`createTestQueryClient` ставит
+  `gcTime: 0` намеренно).
 - **Согласованность имён:** `pd.compute_drilldown`, `pd.GroupInput`,
   `pd.GroupStage`, `pd.DrillColumn`, `crud_pd.load_groups`,
   `crud_pd.subtree_ids`, `crud_pd.build_position_drilldown`,
