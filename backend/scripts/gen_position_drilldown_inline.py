@@ -31,11 +31,16 @@ ROOT = "8"
 #: обязаны — иначе их деньги выпадут из сходимости.
 #:
 #: Допработы перечисляются ПОСТРОЧНО, как в паспорте (`_extras_by_category`),
-#: и ключ у них — НАИМЕНОВАНИЕ: `chapter_ref_raw` в ключ не годится, он NULL у
-#: нераспределённой записи по конструкции таблицы (`ck_..._unresolved_ref`), а
-#: ключ, который бывает пустым, — не ключ. Одно наименование дважды в одной
-#: статье одного предложения встречается (2 случая по базе) и обрабатывается тем
-#: же правилом, что дубли каталожной позиции: пилюля «несколько строк сметы».
+#: и ключ у них — `chapter_ref_raw`, ссылка «3.2.2» из «Сведений». Выбран по
+#: УНИКАЛЬНОСТИ, единственному свойству ключа, которое здесь вообще измеримо:
+#: внутри пары «предложение + статья» ссылка уникальна на всех 42 строках базы, а
+#: наименование — нет (40 групп вместо 42). Два случая склейки настоящие:
+#: предложения 34 и 39, статья 4.2.4 — одно наименование, ссылки 4.2.2.4 и
+#: 4.2.3.4, суммы 3,92 и 4,91 млн. Ключ по наименованию слепил бы их в одну
+#: строку, а на разных этапах такая склейка была бы ещё и невидимой.
+#: Внутри статьи ссылка есть ВСЕГДА: `ck_..._unresolved_ref` разрешает NULL
+#: только вместе с NULL-статьёй, и таких строк со статьёй в базе ноль.
+#: Подпись строки — наименование с последнего этапа, где работа есть.
 EXTRA_KEY = "additional_works"
 UNMATCHED_KEY = "unmatched"
 #: Порядок видов строк при равном по модулю вкладе: сначала работы, затем
@@ -219,19 +224,22 @@ def load_groups(cur, code: str) -> list[dict]:
             }
         cur.execute(
             """
-            select aw.title, sum(aw.total_amount), count(*)
+            select aw.chapter_ref_raw, min(aw.title), sum(aw.total_amount), count(*)
             from estimate_additional_works aw
             join work_categories wc on wc.id = aw.work_category_id
             where aw.proposal_id = %s and wc.code = %s
-            group by aw.title
+            group by aw.chapter_ref_raw
             """,
             (proposal, code),
         )
-        for title, amount, rows in cur.fetchall():
-            key = (EXTRA_KEY, title)
+        for ref, title, amount, rows in cur.fetchall():
+            key = (EXTRA_KEY, ref)
             group = groups.setdefault(
-                key, {"id": key, "title": title, "extra": True, "stages": {}}
+                key, {"id": key, "title": title, "extra": True, "ref": ref, "stages": {}}
             )
+            # Подпись — наименование с ПОСЛЕДНЕГО этапа, где работа есть: этапы
+            # читаются по возрастанию, поэтому присваивание перетирает прежнее.
+            group["title"] = title
             group["stages"][stage] = {
                 "amount": Decimal(amount or 0), "rows": rows, "volumes": [], "unit": None,
             }
@@ -269,8 +277,8 @@ def sort_key(group: dict) -> tuple[Decimal, int, int, str]:
     kind = key[0] if isinstance(key, tuple) else key
     rank = KIND_RANK.get(kind, 0)
     catalog_id = key if isinstance(key, int) else 0
-    title = key[1] if isinstance(key, tuple) else ""
-    return (-abs(contribution(group)), rank, catalog_id, title)
+    ref = key[1] if isinstance(key, tuple) else ""
+    return (-abs(contribution(group)), rank, catalog_id, ref)
 
 
 def explainers(groups: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -348,16 +356,16 @@ def corpus_stats(cur) -> dict:
             }
         cur.execute(
             """
-            select wc.code, aw.title, sum(aw.total_amount), count(*)
+            select wc.code, aw.chapter_ref_raw, sum(aw.total_amount), count(*)
             from estimate_additional_works aw
             join work_categories wc on wc.id = aw.work_category_id
             where aw.proposal_id = %s
-            group by wc.code, aw.title
+            group by wc.code, aw.chapter_ref_raw
             """,
             (proposal,),
         )
-        for code, title, amount, rows in cur.fetchall():
-            per_article[code][(EXTRA_KEY, title)][stage] = {
+        for code, ref, amount, rows in cur.fetchall():
+            per_article[code][(EXTRA_KEY, ref)][stage] = {
                 "amount": Decimal(amount or 0), "rows": rows, "volumes": [],
             }
 
@@ -724,9 +732,11 @@ def group_row(group: dict, variant: str) -> str:
                   ' исправных данных этой строки нет вовсе: её появление означает'
                   ' недоработанный матчинг">без каталожной привязки</span>')
     if group.get("extra"):
-        pills += (' <span class="ambig" title="Строка «Сведений по дополнительным'
-                  ' работам»: каталожной привязки и объёма у неё нет, между этапами'
-                  ' такие строки сопоставляются по наименованию">допработы</span>')
+        ref = esc(str(group.get("ref") or "—"))
+        pills += (f' <span class="ambig" title="Строка «Сведений по дополнительным'
+                  f' работам», ссылка {ref}: каталожной привязки и объёма у неё нет,'
+                  f' между этапами такие строки сопоставляются ПО ССЫЛКЕ, а подпись'
+                  f' берётся с последнего этапа">допработы · {ref}</span>')
     if ambiguous:
         pills += (' <span class="ambig" title="Несколько строк сметы в одной группе:'
                   ' сравнивается их сумма">несколько строк сметы</span>')
@@ -1078,10 +1088,13 @@ def section(case: dict, born: dict, stats: dict) -> str:
       деньги свёрнуты в одну сумму на статью, а экрану нужны строки). Свод считает
       статью по ОБЕИМ ветвям <code>v_category_totals</code>, поэтому без этих строк
       итог не сошёлся бы из показанных — что макет 30.08.2026 сначала и делал, пока
-      сходимость не была померена машиной. Ключ между этапами у допработы —
-      НАИМЕНОВАНИЕ: это осознанная эвристика, а не вывод матчера, и её промах виден
-      читателю глазами. Объёма у допработ нет, поэтому второго этажа в ячейке нет, а
-      пилюля «допработы» говорит, что это другая ветвь файла.</li>
+      сходимость не была померена машиной. Ключ между этапами у допработы — ССЫЛКА
+      «Сведений» (<code>chapter_ref_raw</code>), она же в пилюле: внутри пары
+      «предложение + статья» ссылка уникальна на всех 42 строках базы, а
+      наименование нет — 40 групп вместо 42, и две РАЗНЫЕ работы статьи 4.2.4
+      слиплись бы в одну. Подпись берётся с последнего этапа, поэтому
+      переименование при сохранённой ссылке экран не покажет — это названная цена.
+      Объёма у допработ нет, поэтому второго этажа в ячейке нет.</li>
       <li><b>Колонки «₽ за единицу» нет</b> — решение пользователя 30.08.2026.
       Удельная цена выводится из суммы и объёма, а третья величина в ячейке
       перегружает строку.</li>
