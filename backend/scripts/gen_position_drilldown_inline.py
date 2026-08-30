@@ -19,13 +19,29 @@ from pathlib import Path
 
 import psycopg
 
-# Участник с четырьмя этапами (ООО «АНТТЕК») и его предложения по этапам.
-STAGES: list[tuple[int, int]] = [(1, 27), (2, 29), (3, 33), (4, 38)]
+# Скрипт запускается из `backend/`, но `python scripts/...` кладёт в путь
+# каталог скрипта, а не корень пакета — поэтому корень добавляется явно.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from money.vat import gross_to_net  # noqa: E402
+
+#: Трассы стенда, на которых стоит макет. Обе — ООО «АНТТЕК», четыре этапа.
+#: Второй тендер добавлен 30.08.2026 и изменил дизайн: у него РАСХОДЯТСЯ ставки
+#: НДС (20, 20, 22, 22), то есть свод показывает нетто, и в нём происходит
+#: уточнение классификации между этапами — работы съезжают в дочерние статьи.
+TRACE_ONE = [(1, 27), (2, 29), (3, 33), (4, 38)]
+TRACE_TWO = [(1, 47), (2, 52), (3, 57), (4, 62)]
+
+#: Текущая трасса; переключается в `main` на каждый случай.
+STAGES: list[tuple[int, int]] = TRACE_ONE
 ARTICLE = "8.3"
 ROOT = "8"
 #: Вторая статья: на четвёртом этапе подрядчик пересобрал пирог подготовки —
 #: одни работы исчезли из файла, другие появились. Разложение обязано это
 #: показывать, и «исчезла» здесь не синоним «снята» (см. STATE_LABEL).
+#: Ось показа и ставки этапов; заполняется в `main` на каждый случай.
+TAX: tuple[str, dict] = ("gross", {})
+
 #: Ключи псевдогрупп: у допработ и у строк без каталожной привязки нет
 #: каталожной позиции, поэтому ключ группы (§2.2) их не берёт, а показать их
 #: обязаны — иначе их деньги выпадут из сходимости.
@@ -50,6 +66,12 @@ UNMATCHED_KEY = "unmatched"
 KIND_RANK = {EXTRA_KEY: 1, UNMATCHED_KEY: 2}
 ARTICLE_BORN = "3.1"
 ROOT_BORN = "3"
+#: Третий случай: статья 10.6 второго тендера. На ней разом видно ось нетто,
+#: родителя с большим поддеревом и уточнение классификации без ложных «нет в
+#: файле»: собственные суммы 10.6 идут 83,7 → 81,2 → 0 → 0, а поддерево
+#: 83,7 → 91,0, потому что работы съехали в 10.6.1 и 10.6.3.
+ARTICLE_MOVE = "10.6"
+ROOT_MOVE = "10"
 #: Статьи с движением меньше миллиона в разложении не нуждаются — оно там шум.
 MOVEMENT_FLOOR = Decimal("1e6")
 #: Доля движения статьи, которую обязаны объяснить показанные строки.
@@ -60,8 +82,47 @@ COVERAGE = Decimal("0.9")
 #: стоит вопроса к подрядчику независимо от суммы (решение пользователя
 #: 30.08.2026). Потолок взят по замеру: таких строк вне объяснителей медиана 0 на
 #: статью при девятой децили 3, то есть пять покрывают почти все статьи целиком;
-#: но у пяти статей из 76 их больше, а в худшей 49 — там остаток сворачивается.
-PARTIAL_CAP = 5
+#: но на хвосте их бывает много, и там остаток сворачивается.
+#:
+#: Потолок 10 — пересчёт 30.08.2026 ПОСЛЕ перехода на поддерево и на втором
+#: тендере: девятая дециль стала 6 и 9 против прежних 3, потому что раскрытие
+#: узла показывает появления всего поддерева, а не только собственных строк.
+#: Прежние 5 выведены из замера, которого больше нет.
+PARTIAL_CAP = 10
+
+
+def tax_basis(cur) -> tuple[str, dict[int, Decimal]]:
+    """Ось показа и ставки этапов — правило свода (`pick_tax_basis`, `to_shown`).
+
+    Тендер «Cityzen Tr. 1 UB8b» дал первый на стенде случай РАСХОДЯЩИХСЯ ставок
+    (20, 20, 22, 22): при нескольких известных ставках свод показывает нетто, и
+    разложение обязано считать в тех же величинах — иначе оно не сойдётся к
+    строке, под которой стоит.
+    """
+    rates: dict[int, Decimal] = {}
+    for stage, proposal in STAGES:
+        cur.execute(
+            """
+            select coalesce(e.vat_rate_base_override, p.vat_rate)
+            from proposals p
+            join lots l on l.id = p.lot_id
+            join estimates e on e.id = l.estimate_id
+            where p.id = %s
+            """,
+            (proposal,),
+        )
+        rates[stage] = cur.fetchone()[0]
+    known = {r for r in rates.values() if r is not None}
+    return ("gross" if len(known) <= 1 else "net"), rates
+
+
+def to_shown(gross: Decimal, stage: int) -> Decimal:
+    """Валовая сумма в величину показа: при расходящихся ставках — нетто."""
+    basis, rates = TAX
+    rate = rates.get(stage)
+    if basis == "gross" or rate is None:
+        return gross
+    return gross_to_net(gross, rate)
 
 
 def dsn() -> str:
@@ -153,7 +214,7 @@ def load_tree(cur, root_code: str = ROOT) -> tuple[dict, list[dict]]:
             (proposal,),
         )
         for cid, amount in cur.fetchall():
-            direct[cid][stage] += Decimal(amount or 0)
+            direct[cid][stage] += to_shown(Decimal(amount or 0), stage)
         cur.execute(
             """
             select aw.work_category_id, sum(aw.total_amount)
@@ -164,7 +225,7 @@ def load_tree(cur, root_code: str = ROOT) -> tuple[dict, list[dict]]:
             (proposal,),
         )
         for cid, amount in cur.fetchall():
-            direct[cid][stage] += Decimal(amount or 0)
+            direct[cid][stage] += to_shown(Decimal(amount or 0), stage)
 
     def subtree(cid: int) -> list[int]:
         out = [cid]
@@ -189,25 +250,59 @@ def load_tree(cur, root_code: str = ROOT) -> tuple[dict, list[dict]]:
                             if any(v != 0 for v in k["cells"].values())]
 
 
+def subtree_ids(cur, code: str) -> list[int]:
+    """Идентификаторы статьи `code` и ВСЕХ её потомков.
+
+    Разложение раскрывает поддерево, а не собственные строки узла: строка свода
+    несёт итог поддерева, и объяснять она обязана именно его. Ревизия §2.1 от
+    30.08.2026 по второму тендеру стенда, где у статьи 10.6 собственные суммы
+    83,7 → 81,2 → 0 → 0, а поддерево 83,7 → 91,0: разложение по собственным
+    строкам написало бы «нет в файле» на каждой работе под строкой «+8,7 %».
+    Причина не в переезде денег, а в уточнении классификации на поздних этапах:
+    158 каталожных позиций съехали в ДОЧЕРНЮЮ статью, вверх ноль, вбок 51.
+    """
+    cur.execute("select id, code, parent_id from work_categories")
+    rows = cur.fetchall()
+    children = defaultdict(list)
+    by_code = {}
+    for cid, node_code, parent in rows:
+        children[parent].append(cid)
+        by_code[node_code] = cid
+
+    def walk(cid: int) -> list[int]:
+        out = [cid]
+        for kid in children[cid]:
+            out += walk(kid)
+        return out
+
+    return walk(by_code[code])
+
+
 def load_groups(cur, code: str) -> list[dict]:
-    """Группы «каталожная позиция» статьи `code` с суммами и объёмами по этапам."""
-    groups: dict[int, dict] = {}
+    """Группы разложения ПОДДЕРЕВА статьи `code` с суммами и объёмами по этапам.
+
+    Статья в ключ не входит: работа, уточнившая статью внутри поддерева (родитель
+    → потомок), обязана остаться ОДНОЙ строкой, иначе экран объявит исчезновение
+    там, где ничего не изменилось. См. `subtree_ids`.
+    """
+    ids = subtree_ids(cur, code)
+    groups: dict[object, dict] = {}
     for stage, proposal in STAGES:
         cur.execute(
             """
-            select pi.catalog_position_id, cp.standard_job_title,
+            select pi.catalog_position_id, min(cp.standard_job_title),
                    sum(pi.total_cost_total), count(*),
                    array_agg(distinct pi.suggested_quantity), min(u.symbol)
             from position_items pi
             join position_items ch
               on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
-            join work_categories wc on wc.id = ch.work_category_id
             left join catalog_positions cp on cp.id = pi.catalog_position_id
             left join units_of_measure u on u.id = pi.unit_id
-            where pi.proposal_id = %s and not pi.is_chapter and wc.code = %s
-            group by pi.catalog_position_id, cp.standard_job_title
+            where pi.proposal_id = %s and not pi.is_chapter
+              and ch.work_category_id = any(%s)
+            group by pi.catalog_position_id
             """,
-            (proposal, code),
+            (proposal, ids),
         )
         for cat_id, title, amount, rows, volumes, unit in cur.fetchall():
             key = UNMATCHED_KEY if cat_id is None else cat_id
@@ -217,7 +312,7 @@ def load_groups(cur, code: str) -> list[dict]:
                  "unmatched": cat_id is None, "stages": {}},
             )
             group["stages"][stage] = {
-                "amount": Decimal(amount or 0),
+                "amount": to_shown(Decimal(amount or 0), stage),
                 "rows": rows,
                 "volumes": sorted(v for v in volumes if v is not None),
                 "unit": unit,
@@ -231,11 +326,10 @@ def load_groups(cur, code: str) -> list[dict]:
             select aw.chapter_ref_raw, (array_agg(aw.title order by aw.ordinal))[1],
                    sum(aw.total_amount), count(*)
             from estimate_additional_works aw
-            join work_categories wc on wc.id = aw.work_category_id
-            where aw.proposal_id = %s and wc.code = %s
+            where aw.proposal_id = %s and aw.work_category_id = any(%s)
             group by aw.chapter_ref_raw
             """,
-            (proposal, code),
+            (proposal, ids),
         )
         for ref, title, amount, rows in cur.fetchall():
             key = (EXTRA_KEY, ref)
@@ -247,14 +341,11 @@ def load_groups(cur, code: str) -> list[dict]:
             # берётся первая по файлу строка группы (см. SQL выше).
             group["title"] = title
             group["stages"][stage] = {
-                "amount": Decimal(amount or 0), "rows": rows, "volumes": [], "unit": None,
+                "amount": to_shown(Decimal(amount or 0), stage),
+                "rows": rows, "volumes": [], "unit": None,
             }
     return list(groups.values())
 
-
-# --------------------------------------------------------------------------
-#  Разложение изменения на строки
-# --------------------------------------------------------------------------
 
 def first_last(cells: dict[int, object], get=lambda c: c["amount"]) -> tuple[Decimal, Decimal]:
     """Значения на ПЕРВОМ и ПОСЛЕДНЕМ выбранных этапах; отсутствие — ноль.
@@ -328,72 +419,125 @@ def volume_moved(group: dict) -> bool:
 
 
 def corpus_stats(cur) -> dict:
-    """Замер по ВСЕМ статьям участника, а не по одной показанной.
+    """Замер по ВСЕМ статьям участника — той же моделью, что и экран.
 
-    Группы строятся ТОЙ ЖЕ моделью, что и разложение на экране (`load_groups`):
-    позиции, псевдогруппа допработ и псевдогруппа непривязанных строк. Первая
-    редакция читала только `position_items`, поэтому опубликованные числа
-    объяснителей считались по другому множеству, чем показывает макет: допработы
-    статей 3.2, 4.1.3 и 8.2.1 стоят на КОНЦАХ трассы и меняют и движение статьи, и
-    отбор строк. Замечание внешнего ревью 30.08.2026; замер обязан воспроизводить
-    алгоритм экрана, иначе он измеряет не его.
+    С 30.08.2026 модель — ПОДДЕРЕВО (§2.1): единица замера — узел классификатора,
+    группы собираются по всем его потомкам, ключ работы — только каталожная
+    позиция. До ревизии замер считал собственные строки узла и потому мерил не
+    тот экран: половина «появлений» и «исчезновений» второго тендера стенда
+    оказалась уточнением классификации внутри поддерева.
     """
-    per_article: dict[str, dict[object, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
+    cur.execute("select id, code, parent_id from work_categories")
+    rows = cur.fetchall()
+    children = defaultdict(list)
+    codes = {}
+    for cid, code, parent in rows:
+        children[parent].append(cid)
+        codes[cid] = code
+
+    # (категория, ключ группы) -> этап -> ячейка
+    direct: dict[int, dict[object, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
     for stage, proposal in STAGES:
         cur.execute(
             """
-            select wc.code, pi.catalog_position_id,
+            select ch.work_category_id, pi.catalog_position_id,
                    sum(pi.total_cost_total), count(*), array_agg(distinct pi.suggested_quantity)
             from position_items pi
             join position_items ch
               on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
-            join work_categories wc on wc.id = ch.work_category_id
             where pi.proposal_id = %s and not pi.is_chapter
-            group by wc.code, pi.catalog_position_id
+              and ch.work_category_id is not null
+            group by ch.work_category_id, pi.catalog_position_id
             """,
             (proposal,),
         )
-        for code, cat_id, amount, rows, volumes in cur.fetchall():
+        for cid, cat_id, amount, count, volumes in cur.fetchall():
             key = UNMATCHED_KEY if cat_id is None else cat_id
-            per_article[code][key][stage] = {
-                "amount": Decimal(amount or 0),
-                "rows": rows,
+            direct[cid][key][stage] = {
+                "amount": to_shown(Decimal(amount or 0), stage),
+                "rows": count,
                 "volumes": sorted(v for v in volumes if v is not None),
             }
         cur.execute(
             """
-            select wc.code, aw.chapter_ref_raw, sum(aw.total_amount), count(*)
+            select aw.work_category_id, aw.chapter_ref_raw, sum(aw.total_amount), count(*)
             from estimate_additional_works aw
-            join work_categories wc on wc.id = aw.work_category_id
-            where aw.proposal_id = %s
-            group by wc.code, aw.chapter_ref_raw
+            where aw.proposal_id = %s and aw.work_category_id is not null
+            group by aw.work_category_id, aw.chapter_ref_raw
             """,
             (proposal,),
         )
-        for code, ref, amount, rows in cur.fetchall():
-            per_article[code][(EXTRA_KEY, ref)][stage] = {
-                "amount": Decimal(amount or 0), "rows": rows, "volumes": [],
+        for cid, ref, amount, count in cur.fetchall():
+            direct[cid][(EXTRA_KEY, ref)][stage] = {
+                "amount": to_shown(Decimal(amount or 0), stage),
+                "rows": count, "volumes": [],
             }
+
+    def walk(cid: int) -> list[int]:
+        out = [cid]
+        for kid in children[cid]:
+            out += walk(kid)
+        return out
+
+    def subtree_groups(cid: int) -> dict[object, dict[int, dict]]:
+        """Группы поддерева: одна каталожная позиция — одна группа, статья в ключ
+        не входит, поэтому уточнение статьи внутри поддерева группу не рвёт."""
+        merged: dict[object, dict[int, dict]] = defaultdict(dict)
+        for node in walk(cid):
+            for key, cells in direct[node].items():
+                for stage, cell in cells.items():
+                    prev = merged[key].get(stage)
+                    if prev is None:
+                        merged[key][stage] = dict(cell)
+                    else:
+                        prev["amount"] += cell["amount"]
+                        prev["rows"] += cell["rows"]
+                        prev["volumes"] = sorted(set(prev["volumes"]) | set(cell["volumes"]))
+        return merged
 
     needed, sizes, moved, partial, multi, articles = [], [], 0, 0, 0, 0
     outside: list[int] = []
-    whole = born = gone = mid = holed = groups_total = 0
+    with_drilldown = wider = 0
     first_stage, last_stage = STAGES[0][0], STAGES[-1][0]
-    for groups in per_article.values():
-        wrapped = [{"id": cid, "stages": cells} for cid, cells in groups.items()]
-        for group in wrapped:
-            groups_total += 1
-            present = sorted(group["stages"])
-            if present != list(range(present[0], present[-1] + 1)):
-                holed += 1
-            elif len(present) == len(STAGES):
-                whole += 1
-            elif present[0] != first_stage and present[-1] != last_stage:
-                mid += 1
-            elif present[0] != first_stage:
-                born += 1
-            else:
-                gone += 1
+
+    # Классы присутствия меряются ПО ВСЕЙ СМЕТЕ, а не по узлам: под моделью
+    # поддерева одна и та же группа живёт в каждом предке, и счёт по узлам
+    # умножал бы её на глубину. Глобальный счёт отвечает на вопрос «сколько работ
+    # действительно появилось и исчезло», очищенный и от глубины дерева, и от
+    # уточнения классификации — статья в ключ не входит.
+    whole = born = gone = mid = holed = 0
+    global_groups: dict[object, dict[int, dict]] = defaultdict(dict)
+    for node_groups in direct.values():
+        for key, cells in node_groups.items():
+            for stage, cell in cells.items():
+                prev = global_groups[key].get(stage)
+                if prev is None:
+                    global_groups[key][stage] = dict(cell)
+                else:
+                    prev["amount"] += cell["amount"]
+                    prev["rows"] += cell["rows"]
+    groups_total = len(global_groups)
+    for cells in global_groups.values():
+        present = sorted(cells)
+        if present != list(range(present[0], present[-1] + 1)):
+            holed += 1
+        elif len(present) == len(STAGES):
+            whole += 1
+        elif present[0] != first_stage and present[-1] != last_stage:
+            mid += 1
+        elif present[0] != first_stage:
+            born += 1
+        else:
+            gone += 1
+
+    for cid in codes:
+        groups = subtree_groups(cid)
+        if not groups:
+            continue
+        with_drilldown += 1
+        if len(groups) > len(direct[cid]):
+            wider += 1
+        wrapped = [{"id": key, "stages": cells} for key, cells in groups.items()]
         total = sum((contribution(g) for g in wrapped), Decimal(0))
         if abs(total) < MOVEMENT_FLOOR:
             continue
@@ -410,27 +554,11 @@ def corpus_stats(cur) -> dict:
             if any(cell["rows"] > 1 for cell in group["stages"].values()):
                 multi += 1
 
-    # Нулевая сумма и длина наименования — тоже замеры, на которых стоят решения
-    # (§2.5 и §2.10 спеки), поэтому считаются здесь, а не разовым скриптом: спека
-    # цитирует ТОЛЬКО эту таблицу.
     cur.execute(
         "select count(*) filter (where total_cost_total = 0), count(*) "
         "from position_items where not is_chapter"
     )
     rows_zero, rows_all = cur.fetchone()
-    zero_groups = zero_after_priced = 0
-    for groups in per_article.values():
-        for cells in groups.values():
-            values = [cells[s]["amount"] for s in sorted(cells)]
-            if any(v == 0 for v in values):
-                zero_groups += 1
-            priced = False
-            for value in values:
-                if value != 0:
-                    priced = True
-                elif priced:
-                    zero_after_priced += 1
-                    break
     cur.execute(
         """
         select length(cp.standard_job_title),
@@ -446,51 +574,6 @@ def corpus_stats(cur) -> dict:
     rows_titles = cur.fetchall()
     titles = sorted(r[0] for r in rows_titles)
     titles_multiline = sum(1 for r in rows_titles if r[1])
-    cur.execute(
-        """
-        select length(wc.title)
-        from work_categories wc
-        where wc.id in (
-            select distinct ch.work_category_id
-            from position_items pi
-            join position_items ch
-              on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
-            where pi.proposal_id = any(%s) and not pi.is_chapter
-              and ch.work_category_id is not null)
-        """,
-        ([proposal for _, proposal in STAGES],),
-    )
-    article_titles = sorted(r[0] for r in cur.fetchall())
-
-    # Узлы с ПРЯМЫМИ строками и «смешанные» узлы (есть и дети-статьи, и свои
-    # работы) решают, где вообще появляется шеврон работ и к какой сумме считать
-    # сходимость (§2.1, §2.13) — значит тоже замер, а не наблюдение.
-    cur.execute("select id, code, parent_id from work_categories")
-    parents = {row[0]: row[2] for row in cur.fetchall()}
-    codes = {}
-    cur.execute("select id, code from work_categories")
-    for cid, code in cur.fetchall():
-        codes[cid] = code
-    cur.execute(
-        """
-        select distinct ch.work_category_id
-        from position_items pi
-        join position_items ch
-          on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
-        where pi.proposal_id = any(%s) and not pi.is_chapter
-          and ch.work_category_id is not null
-        """,
-        ([proposal for _, proposal in STAGES],),
-    )
-    with_direct = {row[0] for row in cur.fetchall()}
-    # Порядок кодов — как в классификаторе («6» раньше «14»), а не лексикографический.
-    mixed = [codes[cid] for cid in sorted(
-        (cid for cid in with_direct
-         if any(parents.get(other) == cid for other in with_direct)),
-        key=lambda cid: [int(part) for part in codes[cid].split(".")])]
-
-    # Ветки, недостижимые на стенде: их ноль — тоже факт, и он объясняет, почему
-    # DoD требует фикстур, а не зелёного прогона (§5).
     cur.execute(
         """
         select count(*) filter (where pi.catalog_position_id is null),
@@ -526,7 +609,7 @@ def corpus_stats(cur) -> dict:
         "max_needed": max(needed),
         "under5": sum(1 for x in ordered if x <= 5),
         "over15": sum(1 for x in ordered if x > 15),
-        "explainers": len(needed) and sum(needed),
+        "explainers": sum(needed),
         "moved": moved,
         "partial": partial,
         "multi": multi,
@@ -544,32 +627,23 @@ def corpus_stats(cur) -> dict:
         "holed": holed,
         "rows_zero": rows_zero,
         "rows_all": rows_all,
-        "zero_groups": zero_groups,
-        "zero_after_priced": zero_after_priced,
         "titles_n": len(titles),
         "titles_median": statistics.median(titles),
-        "titles_p90": titles[min(len(titles) - 1, int(len(titles) * 0.9))],
         "titles_p75": titles[min(len(titles) - 1, int(len(titles) * 0.75))],
+        "titles_p90": titles[min(len(titles) - 1, int(len(titles) * 0.9))],
         "titles_max": max(titles),
         "titles_multiline": titles_multiline,
-        "article_titles_n": len(article_titles),
-        "article_titles_median": statistics.median(article_titles),
-        "article_titles_p90": article_titles[
-            min(len(article_titles) - 1, int(len(article_titles) * 0.9))],
-        "article_titles_max": max(article_titles),
-        "with_direct": len(with_direct),
-        "mixed": mixed,
+        "with_drilldown": with_drilldown,
+        "wider": wider,
         "no_catalog": no_catalog,
         "no_article": no_article,
         "no_amount": no_amount,
         "not_finite": not_finite,
         "no_quantity": no_quantity,
+        "basis": TAX[0],
+        "rates": sorted({str(r) for r in TAX[1].values()}),
     }
 
-
-# --------------------------------------------------------------------------
-#  Разметка
-# --------------------------------------------------------------------------
 
 def volume_text(group: dict) -> tuple[str, bool]:
     """Траектория объёма заказчика по этапам и признак «объём двигался»."""
@@ -879,58 +953,63 @@ VARIANTS = [
 ]
 
 
-def measure_rows(stats: dict) -> str:
-    measured = [
-        ("Групп разложения всего (работы, допработы, непривязанные строки)",
-         f"{stats['groups_total']}"),
-        ("…есть на всех выбранных этапах", f"{stats['whole']}"),
-        ("…появились (нет на первом, есть на последнем)", f"{stats['born']}"),
-        ("…исчезли (есть на первом, нет на последнем)", f"{stats['gone']}"),
-        ("…есть только на средних этапах (и не на первом, и не на последнем)",
-         f"{stats['mid']}"),
-        ("…с ДЫРОЙ в середине (пропала и вернулась)", f"{stats['holed']}"),
-        ("Статей с движением больше миллиона", f"{stats['articles']}"),
-        ("Строк, объясняющих 90 % движения статьи: медиана", f"{stats['median_needed']:.0f}"),
-        ("…три четверти статей", f"{stats['p75_needed']} и меньше"),
-        ("…девятая дециль", f"{stats['p90_needed']}"),
-        ("…худшая статья", f"{stats['max_needed']}"),
-        ("Статей, где хватает пяти строк", f"{stats['under5']} из {stats['articles']}"),
-        ("Статей, где нужно больше пятнадцати", f"{stats['over15']}"),
-        ("Всего групп в статье: медиана / максимум",
-         f"{stats['median_size']:.0f} / {stats['max_size']}"),
-        ("Строк-объяснителей всего", f"{stats['explainers']}"),
-        ("…у которых ДВИГАЛСЯ объём заказчика",
-         f"{stats['moved']} ({stats['moved'] * 100 // stats['explainers']} %)"),
-        ("…которые сами есть не на всех этапах", f"{stats['partial']}"),
-        ("…у которых на этапе несколько строк сметы", f"{stats['multi']}"),
-        ("Появлений и исчезновений ВНЕ объяснителей", f"{stats['outside_total']}"),
-        ("…на статью: медиана / девятая дециль / максимум",
-         f"{stats['outside_median']:.0f} / {stats['outside_p90']} / {stats['outside_max']}"),
-        ("…статей, где их нет вовсе", f"{stats['outside_zero']} из {stats['articles']}"),
-        (f"…статей, где их больше {PARTIAL_CAP}", f"{stats['outside_over_cap']}"),
-        ("Строк сметы с суммой РОВНО НОЛЬ (вся база)",
-         f"{stats['rows_zero']} из {stats['rows_all']}"),
-        ("Групп с нулём хотя бы на одном этапе", f"{stats['zero_groups']}"),
-        ("…где ноль пришёл ПОСЛЕ ненулевой суммы (состояние «снято»)",
-         f"{stats['zero_after_priced']}"),
-        ("Длина каталожного наименования: медиана / p75 / p90 / максимум",
-         f"{stats['titles_median']:.0f} / {stats['titles_p75']} / {stats['titles_p90']}"
-         f" / {stats['titles_max']}"),
-        ("…из них с переводом строки внутри",
-         f"{stats['titles_multiline']} из {stats['titles_n']}"),
-        ("Длина наименования СТАТЬИ: медиана / p90 / максимум",
-         f"{stats['article_titles_median']:.0f} / {stats['article_titles_p90']}"
-         f" / {stats['article_titles_max']} ({stats['article_titles_n']} статей)"),
-        ("Узлов классификатора с ПРЯМЫМИ строками", f"{stats['with_direct']}"),
-        ("…из них имеют и детей-статьи, и свои работы",
-         ", ".join(stats["mixed"]) or "нет"),
-        ("Строк без каталожной привязки / без статьи (вся база)",
-         f"{stats['no_catalog']} / {stats['no_article']}"),
-        ("Строк без суммы / с неконечной суммой (вся база)",
-         f"{stats['no_amount']} / {stats['not_finite']}"),
-        ("Строк без suggested_quantity (вся база)", f"{stats['no_quantity']}"),
-    ]
-    return "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in measured)
+#: Метрики блока замеров: подпись и как достать значение из `stats`.
+#: Колонок в таблице столько, сколько замеренных трасс — числа одного тендера
+#: слишком легко принять за свойство задачи, и второй тендер стенда это показал:
+#: сквозных групп 78 % против 27 %, объём двигался у 51 % строк против 13 %.
+MEASURES: list[tuple[str, object]] = [
+    ("Ось показа и ставки этапов",
+     lambda d: f"{d['basis']} ({', '.join(d['rates'])})"),
+    ("Групп работ во ВСЕЙ смете (ключ без статьи)",
+     lambda d: f"{d['groups_total']}"),
+    ("…есть на всех выбранных этапах", lambda d: f"{d['whole']}"),
+    ("…появились (нет на первом, есть на последнем)", lambda d: f"{d['born']}"),
+    ("…исчезли (есть на первом, нет на последнем)", lambda d: f"{d['gone']}"),
+    ("…есть только на средних этапах", lambda d: f"{d['mid']}"),
+    ("…с ДЫРОЙ в середине (пропала и вернулась)", lambda d: f"{d['holed']}"),
+    ("Статей с движением больше миллиона", lambda d: f"{d['articles']}"),
+    ("Строк, объясняющих 90 % движения: медиана", lambda d: f"{d['median_needed']:.0f}"),
+    ("…три четверти статей", lambda d: f"{d['p75_needed']} и меньше"),
+    ("…девятая дециль", lambda d: f"{d['p90_needed']}"),
+    ("…худшая статья", lambda d: f"{d['max_needed']}"),
+    ("Статей, где хватает пяти строк", lambda d: f"{d['under5']} из {d['articles']}"),
+    ("Статей, где нужно больше пятнадцати", lambda d: f"{d['over15']}"),
+    ("Групп в поддереве статьи: медиана / максимум",
+     lambda d: f"{d['median_size']:.0f} / {d['max_size']}"),
+    ("Строк-объяснителей всего", lambda d: f"{d['explainers']}"),
+    ("…у которых ДВИГАЛСЯ объём заказчика",
+     lambda d: f"{d['moved']} ({d['moved'] * 100 // max(d['explainers'], 1)} %)"),
+    ("…которые сами есть не на всех этапах", lambda d: f"{d['partial']}"),
+    ("…у которых на этапе несколько строк сметы", lambda d: f"{d['multi']}"),
+    ("Появлений и исчезновений ВНЕ объяснителей", lambda d: f"{d['outside_total']}"),
+    ("…на статью: медиана / девятая дециль / максимум",
+     lambda d: f"{d['outside_median']:.0f} / {d['outside_p90']} / {d['outside_max']}"),
+    ("…статей, где их нет вовсе", lambda d: f"{d['outside_zero']} из {d['articles']}"),
+    (f"…статей, где их больше {PARTIAL_CAP}", lambda d: f"{d['outside_over_cap']}"),
+    ("Узлов, у которых в поддереве есть строки", lambda d: f"{d['with_drilldown']}"),
+    ("…где поддерево ШИРЕ собственных строк узла", lambda d: f"{d['wider']}"),
+    ("Длина каталожного наименования: медиана / p75 / p90 / максимум",
+     lambda d: f"{d['titles_median']:.0f} / {d['titles_p75']} / {d['titles_p90']}"
+               f" / {d['titles_max']}"),
+    ("…из них с переводом строки внутри",
+     lambda d: f"{d['titles_multiline']} из {d['titles_n']}"),
+    ("Строк сметы с суммой РОВНО НОЛЬ (вся база)",
+     lambda d: f"{d['rows_zero']} из {d['rows_all']}"),
+    ("Строк без каталожной привязки / без статьи (вся база)",
+     lambda d: f"{d['no_catalog']} / {d['no_article']}"),
+    ("Строк без суммы / с неконечной суммой (вся база)",
+     lambda d: f"{d['no_amount']} / {d['not_finite']}"),
+    ("Строк без suggested_quantity (вся база)", lambda d: f"{d['no_quantity']}"),
+]
+
+
+def measure_rows(traces: list[tuple[str, dict]]) -> str:
+    head = "".join(f"<th>{esc(name)}</th>" for name, _ in traces)
+    out = [f"<tr><th></th>{head}</tr>"]
+    for label, read in MEASURES:
+        cells = "".join(f"<td>{esc(read(stats))}</td>" for _, stats in traces)
+        out.append(f"<tr><td>{esc(label)}</td>{cells}</tr>")
+    return "".join(out)
 
 
 #: Принятый вариант размещения объёма заказчика (решение пользователя 30.08.2026).
@@ -979,7 +1058,36 @@ def born_block(born: dict) -> str:
     )
 
 
-def section(case: dict, born: dict, stats: dict) -> str:
+def move_block(move: dict) -> str:
+    """Родитель, у которого работы съехали в дочерние статьи, на оси нетто."""
+    article, own = move["article"], move["own"]
+    stages = [s for s, _ in move["stages"]]
+    subtree_row = " → ".join(mln(article["cells"].get(s, Decimal(0))) for s in stages)
+    own_row = " → ".join(mln(own.get(s, Decimal(0))) for s in stages)
+    return (
+        '<p class="vh">Родитель, у которого работы уехали в подстатьи: статья '
+        f'{esc(article["code"])} второго тендера</p>'
+        '<p class="secsub">Здесь разом видны три вещи, которых нет на первом тендере: '
+        '<b>ставки этапов расходятся</b> (20, 20, 22, 22), поэтому свод и разложение '
+        'считают НЕТТО; <b>у статьи большое поддерево</b>; и между этапами произошло '
+        '<b>уточнение классификации</b> — работы съехали в дочерние статьи. Собственные '
+        f'суммы статьи идут {own_row} млн, а поддерево — {subtree_row} млн.</p>'
+        '<div class="verdict bad"><b>Так выглядела бы прежняя редакция.</b> Разложение '
+        'по СОБСТВЕННЫМ строкам узла написало бы «нет в файле» на каждой работе — под '
+        f'строкой свода, которая показывает {subtree_row} млн. Ни одна работа никуда не '
+        'девалась: она просто получила более точную статью, и деньги остались внутри того '
+        'же поддерева. Экран сообщал бы об исчезновении там, где не изменилось ничего.</div>'
+        + fragment(move["root"], move["kids"], article, move, "v2c")
+        + '<div class="verdict"><b>Разложение раскрывает ПОДДЕРЕВО, и потому объясняет '
+        'ровно ту сумму, под которой стоит.</b> Ключ работы — каталожная позиция БЕЗ '
+        'статьи, поэтому переезд родитель → потомок группу не рвёт. Уточнение '
+        'классификации при этом не пропадает из системы: у строки самой подстатьи в своде '
+        'появление видно и объяснимо — просто родитель больше не врёт, будто работа ушла '
+        'из его итога.</div>'
+    )
+
+
+def section(case: dict, born: dict, move: dict, traces: list) -> str:
     root, kids = case["root"], case["kids"]
     article, top, rest = case["article"], case["top"], case["rest"]
     partials = case["partials"] + case["partials_hidden"]
@@ -995,7 +1103,8 @@ def section(case: dict, born: dict, stats: dict) -> str:
             + fragment(root, kids, article, case, key)
             + f'<div class="verdict{"" if tone == "ok" else " bad"}">{verdict}</div>'
         )
-    joined = "".join(blocks) + born_block(born)
+    stats = traces[0][1]
+    joined = "".join(blocks) + born_block(born) + move_block(move)
     return f"""{SECTION_CSS}
   <section id="inline">
     <h2>Решение гейта: раскрытие живёт внутри свода</h2>
@@ -1012,7 +1121,7 @@ def section(case: dict, born: dict, stats: dict) -> str:
     базы, а не набирает руками.</p>
 
     <div class="measure">
-      <table>{measure_rows(stats)}</table>
+      <table>{measure_rows(traces)}</table>
       <p class="hint">Замер 30.08.2026, тот же участник и те же четыре этапа.
       «Строка-объяснитель» — ГРУППА РАЗЛОЖЕНИЯ, попавшая в число тех, чей накопленный
       вклад объясняет 90 % движения статьи. Групп три вида, и ключ у каждого свой:
@@ -1130,6 +1239,30 @@ def is_partial(group: dict) -> bool:
     return len(group["stages"]) < len(STAGES)
 
 
+def own_cells(cur, code: str) -> dict[int, Decimal]:
+    """Собственные суммы узла по этапам — без потомков.
+
+    Нужны ровно для одного: показать в макете, ЧЕМ разложение по поддереву
+    отличается от разложения по собственным строкам. В самом разложении эти
+    величины не участвуют.
+    """
+    out: dict[int, Decimal] = {}
+    for stage, proposal in STAGES:
+        cur.execute(
+            """
+            select coalesce(sum(pi.total_cost_total), 0)
+            from position_items pi
+            join position_items ch
+              on ch.id = pi.chapter_item_id and ch.proposal_id = pi.proposal_id
+            join work_categories wc on wc.id = ch.work_category_id
+            where pi.proposal_id = %s and not pi.is_chapter and wc.code = %s
+            """,
+            (proposal, code),
+        )
+        out[stage] = to_shown(Decimal(cur.fetchone()[0] or 0), stage)
+    return out
+
+
 def load_case(cur, root_code: str, article_code: str) -> dict:
     root, kids = load_tree(cur, root_code)
     article = next(k for k in kids if k["code"] == article_code)
@@ -1137,6 +1270,7 @@ def load_case(cur, root_code: str, article_code: str) -> dict:
     top, rest = explainers(groups)
     partials = sorted((g for g in rest if is_partial(g)), key=sort_key)
     return {
+        "stages": list(STAGES), "basis": TAX[0],
         "root": root, "kids": kids, "article": article, "top": top,
         "partials": partials[:PARTIAL_CAP],
         "partials_hidden": partials[PARTIAL_CAP:],
@@ -1145,11 +1279,25 @@ def load_case(cur, root_code: str, article_code: str) -> dict:
 
 
 def main() -> None:
+    global STAGES, TAX
     with psycopg.connect(dsn()) as con, con.cursor() as cur:
+        STAGES = TRACE_ONE
+        TAX = tax_basis(cur)
         main_case = load_case(cur, ROOT, ARTICLE)
         born_case = load_case(cur, ROOT_BORN, ARTICLE_BORN)
-        stats = corpus_stats(cur)
-    body = section(main_case, born_case, stats)
+        stats_one = corpus_stats(cur)
+
+        STAGES = TRACE_TWO
+        TAX = tax_basis(cur)
+        move_case = load_case(cur, ROOT_MOVE, ARTICLE_MOVE)
+        move_case["own"] = own_cells(cur, ARTICLE_MOVE)
+        stats_two = corpus_stats(cur)
+
+        STAGES = TRACE_ONE
+        TAX = tax_basis(cur)
+    body = section(main_case, born_case, move_case,
+                   [("Тендер «Генподряд»", stats_one),
+                    ("Тендер «Cityzen»", stats_two)])
     if "--write" in sys.argv[1:]:
         write_into_mockup(body)
     else:
