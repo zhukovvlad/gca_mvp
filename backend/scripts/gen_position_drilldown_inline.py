@@ -246,14 +246,29 @@ def contribution(group: dict) -> Decimal:
 def explainers(groups: list[dict]) -> tuple[list[dict], list[dict]]:
     """Строки, объясняющие COVERAGE движения статьи, и всё остальное.
 
-    Вклады могут гасить друг друга, поэтому критерий — не доля суммы модулей, а
-    близость НАКОПЛЕННОГО вклада к движению статьи: показанные строки обязаны
-    объяснять его, а не набирать девять десятых по абсолютной величине.
+    Условие отбора буквально:
+
+        abs(article_delta - cumulative) <= (1 - COVERAGE) * abs(article_delta)
+
+    проверяется ПОСЛЕ добавления очередной группы. Вклады гасят друг друга,
+    поэтому критерий — близость НАКОПЛЕННОГО вклада к движению статьи, а не доля
+    суммы модулей: по модулям набирается больше строк, которые ничего не
+    объясняют.
+
+    `article_delta == 0` — законный случай (статья не сдвинулась, хотя внутри
+    что-то менялось), и объяснять там нечего: пустой набор УЖЕ удовлетворяет
+    условию. Тогда экран несёт только появления с исчезновениями и остаток.
+    Прежняя редакция принудительно показывала одну строку — самую крупную по
+    модулю, — то есть объявляла объяснителем строку, которая ничего не объясняет
+    (замечание внешнего ревью 30.08.2026).
+
+    Ничья по модулю вклада разводится идентификатором каталожной позиции: без
+    этого порядок строк зависел бы от порядка выдачи БД.
     """
     total = sum((contribution(g) for g in groups), Decimal(0))
-    order = sorted(groups, key=lambda g: -abs(contribution(g)))
+    order = sorted(groups, key=lambda g: (-abs(contribution(g)), str(g["id"])))
     if total == 0:
-        return order[:1], order[1:]
+        return [], order
     cumulative, top = Decimal(0), []
     for group in order:
         cumulative += contribution(group)
@@ -293,15 +308,32 @@ def corpus_stats(cur) -> dict:
             }
 
     needed, sizes, moved, partial, multi, articles = [], [], 0, 0, 0, 0
+    outside: list[int] = []
+    whole = born = gone = mid = holed = groups_total = 0
+    first_stage, last_stage = STAGES[0][0], STAGES[-1][0]
     for groups in per_article.values():
         wrapped = [{"id": cid, "stages": cells} for cid, cells in groups.items()]
+        for group in wrapped:
+            groups_total += 1
+            present = sorted(group["stages"])
+            if present != list(range(present[0], present[-1] + 1)):
+                holed += 1
+            elif len(present) == len(STAGES):
+                whole += 1
+            elif present[0] != first_stage and present[-1] != last_stage:
+                mid += 1
+            elif present[0] != first_stage:
+                born += 1
+            else:
+                gone += 1
         total = sum((contribution(g) for g in wrapped), Decimal(0))
         if abs(total) < MOVEMENT_FLOOR:
             continue
         articles += 1
         sizes.append(len(wrapped))
-        top, _ = explainers(wrapped)
+        top, tail = explainers(wrapped)
         needed.append(len(top))
+        outside.append(sum(1 for g in tail if len(g["stages"]) < len(STAGES)))
         for group in top:
             if volume_moved(group):
                 moved += 1
@@ -311,9 +343,13 @@ def corpus_stats(cur) -> dict:
                 multi += 1
 
     ordered = sorted(needed)
+    ordered_outside = sorted(outside)
 
     def percentile(q: float) -> int:
         return ordered[min(len(ordered) - 1, int(len(ordered) * q))]
+
+    def percentile_outside(q: float) -> int:
+        return ordered_outside[min(len(ordered_outside) - 1, int(len(ordered_outside) * q))]
 
     return {
         "articles": articles,
@@ -329,6 +365,18 @@ def corpus_stats(cur) -> dict:
         "moved": moved,
         "partial": partial,
         "multi": multi,
+        "outside_total": sum(outside),
+        "outside_median": statistics.median(outside),
+        "outside_p90": percentile_outside(0.9),
+        "outside_max": max(outside),
+        "outside_zero": sum(1 for x in outside if x == 0),
+        "outside_over_cap": sum(1 for x in outside if x > PARTIAL_CAP),
+        "groups_total": groups_total,
+        "whole": whole,
+        "born": born,
+        "gone": gone,
+        "mid": mid,
+        "holed": holed,
     }
 
 
@@ -351,49 +399,118 @@ def volume_text(group: dict) -> tuple[str, bool]:
     return f"{body}&nbsp;{esc(unit or '')}".strip(), moved
 
 
+#: Состояния ячейки — ДОСЛОВНО словарь свода (`services/stage_summary.cell_states`).
+#: `absent` (строки нет в файле) и `not_evaluated` (строка есть, сумма ноль, цены
+#: не было ни разу) — РАЗНЫЕ факты, и «снято» из них не следует ни то, ни другое:
+#: `removed` — это ноль ПОСЛЕ ненулевой суммы. Первая редакция макета печатала
+#: «не оценивалась» и «снято» там, где строки в файле просто нет, — то есть
+#: утверждала снятие, которого файл не доказывает (замечание внешнего ревью
+#: 30.08.2026). Замер: строк ровно с нулевой суммой 6167 из 28 417 по всей базе,
+#: групп с настоящим `removed` у участника 294 — состояние не декоративное.
+STATE_ABSENT = "absent"
+STATE_NOT_EVALUATED = "not_evaluated"
+STATE_REMOVED = "removed"
+STATE_AMOUNT = "amount"
+
+STATE_LABEL = {
+    STATE_ABSENT: ('<span class="flat">—</span>', "Строки нет в файле этого этапа"),
+    STATE_NOT_EVALUATED: ('<span class="pill">не оценивалась</span>',
+                          "Строка в файле есть, цены у неё нет"),
+    STATE_REMOVED: ('<span class="pill warn">снято</span>',
+                    "Строка в файле есть, сумма обнулена после того, как цена была"),
+}
+
+#: Виды изменения — та же матрица переходов, что в своде (§2.6 спеки фичи 3).
+KIND_LABEL = {
+    "appeared": ('<span class="pill">появилась</span>', "Работа появилась в файле"),
+    "reappeared": ('<span class="pill">вернулась</span>', "Сумма вернулась после обнуления"),
+    "disappeared": ('<span class="pill">нет в файле</span>',
+                    "Строка исчезла из файла. Это НЕ доказывает снятия: работу могли "
+                    "переименовать, слить с другой строкой или перенести в другую статью"),
+    "removed": ('<span class="pill warn">снято</span>', "Сумма обнулена"),
+}
+
+
+def cell_states(gross_by_stage: list[Decimal | None]) -> list[str]:
+    """Копия правила свода: `removed` — по ВСЕМ предыдущим этапам, не по предыдущему."""
+    states, priced_before = [], False
+    for gross in gross_by_stage:
+        if gross is None:
+            states.append(STATE_ABSENT)
+        elif gross != 0:
+            states.append(STATE_AMOUNT)
+            priced_before = True
+        else:
+            states.append(STATE_REMOVED if priced_before else STATE_NOT_EVALUATED)
+    return states
+
+
+def change_kind(prev: str, cur: str) -> str | None:
+    """Матрица переходов свода, сокращённая до того, что печатается пилюлей."""
+    if prev == STATE_AMOUNT and cur == STATE_AMOUNT:
+        return None
+    if prev == STATE_AMOUNT and cur == STATE_REMOVED:
+        return "removed"
+    if prev == STATE_AMOUNT and cur == STATE_ABSENT:
+        return "disappeared"
+    if cur == STATE_AMOUNT and prev == STATE_REMOVED:
+        return "reappeared"
+    if cur == STATE_AMOUNT:
+        return "appeared"
+    return None
+
+
+def pill(markup_and_title: tuple[str, str]) -> str:
+    markup, title = markup_and_title
+    return markup.replace("<span ", f'<span title="{esc(title)}" ', 1)
+
+
 def stage_cells(cells: dict[int, dict], *, inline_volume: bool = False,
                 group: dict | None = None, bare: bool = False) -> str:
-    """Денежные ячейки строки: сумма, под ней изменение к предыдущему этапу."""
-    present = [s for s, _ in STAGES if s in cells]
-    out, previous = [], None
-    for stage, _ in STAGES:
-        cell = cells.get(stage)
-        if cell is None:
-            if present and stage > present[-1]:
-                out.append('<td class="num"><span class="pill warn">снято</span></td>')
-            else:
-                out.append('<td class="num"><span class="pill">не оценивалась</span></td>')
+    """Денежные ячейки строки: состояние или сумма, объём, изменение к предыдущему."""
+    gross = [None if s not in cells else cells[s]["amount"] for s, _ in STAGES]
+    states = cell_states(gross) if not bare else [STATE_AMOUNT] * len(STAGES)
+    out = []
+    for idx, (stage, _) in enumerate(STAGES):
+        state, amount = states[idx], gross[idx]
+        kind = change_kind(states[idx - 1], state) if idx else None
+        if state != STATE_AMOUNT:
+            body = pill(STATE_LABEL[state])
+            # «снято» в ячейке уже сказано состоянием — повторять его видом
+            # изменения не надо (правило повтора §2.6 спеки фичи 3).
+            if kind == "disappeared":
+                body = f'{body}<span class="dp">{pill(KIND_LABEL[kind])}</span>'
+            out.append(f'<td class="num">{body}</td>')
             continue
-        amount = cell["amount"] if isinstance(cell, dict) else cell
         body = f'<span class="mny">{mln(amount)}</span>'
-        if inline_volume and group is not None and cell["volumes"]:
-            volumes = "+".join(qty(v) for v in cell["volumes"])
+        if inline_volume and group is not None and cells[stage]["volumes"]:
+            volumes = "+".join(qty(v) for v in cells[stage]["volumes"])
             tone = " chg" if group["_moved_at"].get(stage) else ""
-            body += f'<span class="qty{tone}">{volumes}&nbsp;{esc(cell["unit"] or "")}</span>'
-        if bare:
+            body += f'<span class="qty{tone}">{volumes}&nbsp;{esc(cells[stage]["unit"] or "")}</span>'
+        if bare or idx == 0:
             pass
-        elif previous is None and stage == present[0] and present[0] != STAGES[0][0]:
-            body += '<span class="dp"><span class="pill">появилась</span></span>'
-        elif previous is not None:
-            text, tone = pct(amount, previous)
+        elif kind in KIND_LABEL:
+            body += f'<span class="dp">{pill(KIND_LABEL[kind])}</span>'
+        elif states[idx - 1] == STATE_AMOUNT:
+            text, tone = pct(amount, gross[idx - 1])
             body += f'<span class="dp {tone}">{text}</span>'
         out.append(f'<td class="num">{body}</td>')
-        previous = amount
-    first, last = first_last(cells)
-    text, tone = pct(last, first)
+
+    first = gross[0] or Decimal(0)
+    last = gross[-1] or Decimal(0)
     delta = last - first
-    born = STAGES[0][0] not in cells
-    died = STAGES[-1][0] not in cells
+    tone = "flat" if delta == 0 else ("up" if delta > 0 else "down")
     if bare:
         torg = '<span class="flat">—</span>'
-    elif born and present:
-        torg = '<span class="pill">появилась</span>'
-    elif died and present:
-        torg = '<span class="pill warn">снято</span>'
     else:
-        torg = f'<span class="{tone}">{text}</span>'
-    if born or died:
-        tone = "up" if delta > 0 else "down"
+        kind = change_kind(states[0], states[-1])
+        if kind in KIND_LABEL:
+            torg = pill(KIND_LABEL[kind])
+        elif states[0] == STATE_AMOUNT and states[-1] == STATE_AMOUNT:
+            text, ptone = pct(last, first)
+            torg = f'<span class="{ptone}">{text}</span>'
+        else:
+            torg = '<span class="flat">—</span>'
     out.append(f'<td class="num sep">{torg}</td>')
     out.append(f'<td class="num"><span class="{tone}">{mln(delta)}</span></td>')
     return "".join(out)
@@ -495,7 +612,7 @@ def fragment(root: dict, kids: list[dict], article: dict, case: dict,
             if hidden:
                 word = plural(len(hidden), ("работа", "работы", "работ"))
                 rows.append(bag_row(
-                    hidden, f"ещё {len(hidden)} {word} появились или сняты",
+                    hidden, f"ещё {len(hidden)} {word} появились или исчезли",
                     "свёрнуто; раскрывается по нажатию", variant, css="dimrow born"))
                 shown = shown + hidden
             rows.append(rest_row(article, shown, len(case["rest"]), variant))
@@ -570,6 +687,13 @@ VARIANTS = [
 
 def measure_rows(stats: dict) -> str:
     measured = [
+        ("Групп «статья + каталожная позиция» всего", f"{stats['groups_total']}"),
+        ("…есть на всех выбранных этапах", f"{stats['whole']}"),
+        ("…появились (нет на первом, есть на последнем)", f"{stats['born']}"),
+        ("…исчезли (есть на первом, нет на последнем)", f"{stats['gone']}"),
+        ("…есть только на средних этапах (и не на первом, и не на последнем)",
+         f"{stats['mid']}"),
+        ("…с ДЫРОЙ в середине (пропала и вернулась)", f"{stats['holed']}"),
         ("Статей с движением больше миллиона", f"{stats['articles']}"),
         ("Строк, объясняющих 90 % движения статьи: медиана", f"{stats['median_needed']:.0f}"),
         ("…три четверти статей", f"{stats['p75_needed']} и меньше"),
@@ -582,8 +706,13 @@ def measure_rows(stats: dict) -> str:
         ("Строк-объяснителей всего", f"{stats['explainers']}"),
         ("…у которых ДВИГАЛСЯ объём заказчика",
          f"{stats['moved']} ({stats['moved'] * 100 // stats['explainers']} %)"),
-        ("…которые есть не на всех этапах (появилась / снято)", f"{stats['partial']}"),
+        ("…которые сами есть не на всех этапах", f"{stats['partial']}"),
         ("…у которых на этапе несколько строк сметы", f"{stats['multi']}"),
+        ("Появлений и исчезновений ВНЕ объяснителей", f"{stats['outside_total']}"),
+        ("…на статью: медиана / девятая дециль / максимум",
+         f"{stats['outside_median']:.0f} / {stats['outside_p90']} / {stats['outside_max']}"),
+        ("…статей, где их нет вовсе", f"{stats['outside_zero']} из {stats['articles']}"),
+        (f"…статей, где их больше {PARTIAL_CAP}", f"{stats['outside_over_cap']}"),
     ]
     return "".join(f"<tr><td>{esc(k)}</td><td>{esc(v)}</td></tr>" for k, v in measured)
 
@@ -708,8 +837,11 @@ def section(case: dict, born: dict, stats: dict) -> str:
       <li><b>Появившиеся и снятые работы показываются поимённо всегда</b>, даже
       когда их сумма мала и в объяснители они не попали (решение пользователя
       30.08.2026). Сверх {PARTIAL_CAP} они сворачиваются в строку «ещё N работ
-      появились или сняты». Замер: таких строк вне объяснителей 114 на 76 статей —
-      медиана 0 на статью, девятая дециль 3, максимум 49; у 55 статей их нет вовсе.
+      появились или исчезли». Замер: таких строк вне объяснителей
+      {stats['outside_total']} на {stats['articles']} статей — медиана
+      {stats['outside_median']:.0f} на статью, девятая дециль {stats['outside_p90']},
+      максимум {stats['outside_max']}; у {stats['outside_zero']} статей их нет вовсе,
+      больше {PARTIAL_CAP} — у {stats['outside_over_cap']}.
       Из {stats['explainers']} строк-объяснителей {stats['partial']} и сами есть не
       на всех этапах.</li>
       <li><b>Дыр в середине не бывает — проверено.</b> Из 1017 групп 797 идут сквозь
