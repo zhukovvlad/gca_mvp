@@ -29,6 +29,13 @@ ROOT = "8"
 #: Ключи псевдогрупп: у допработ и у строк без каталожной привязки нет
 #: каталожной позиции, поэтому ключ группы (§2.2) их не берёт, а показать их
 #: обязаны — иначе их деньги выпадут из сходимости.
+#:
+#: Допработы перечисляются ПОСТРОЧНО, как в паспорте (`_extras_by_category`),
+#: и ключ у них — НАИМЕНОВАНИЕ: `chapter_ref_raw` в ключ не годится, он NULL у
+#: нераспределённой записи по конструкции таблицы (`ck_..._unresolved_ref`), а
+#: ключ, который бывает пустым, — не ключ. Одно наименование дважды в одной
+#: статье одного предложения встречается (2 случая по базе) и обрабатывается тем
+#: же правилом, что дубли каталожной позиции: пилюля «несколько строк сметы».
 EXTRA_KEY = "additional_works"
 UNMATCHED_KEY = "unmatched"
 #: Порядок видов строк при равном по модулю вкладе: сначала работы, затем
@@ -212,18 +219,18 @@ def load_groups(cur, code: str) -> list[dict]:
             }
         cur.execute(
             """
-            select sum(aw.total_amount), count(*)
+            select aw.title, sum(aw.total_amount), count(*)
             from estimate_additional_works aw
             join work_categories wc on wc.id = aw.work_category_id
             where aw.proposal_id = %s and wc.code = %s
+            group by aw.title
             """,
             (proposal, code),
         )
-        amount, rows = cur.fetchone()
-        if rows:
+        for title, amount, rows in cur.fetchall():
+            key = (EXTRA_KEY, title)
             group = groups.setdefault(
-                EXTRA_KEY,
-                {"id": EXTRA_KEY, "title": "Дополнительные работы", "extra": True, "stages": {}},
+                key, {"id": key, "title": title, "extra": True, "stages": {}}
             )
             group["stages"][stage] = {
                 "amount": Decimal(amount or 0), "rows": rows, "volumes": [], "unit": None,
@@ -256,12 +263,14 @@ def contribution(group: dict) -> Decimal:
     return last - first
 
 
-def sort_key(group: dict) -> tuple[Decimal, int, int]:
+def sort_key(group: dict) -> tuple[Decimal, int, int, str]:
     """Полный ключ порядка строк разложения — см. `KIND_RANK`."""
     key = group["id"]
-    rank = KIND_RANK.get(key, 0)
+    kind = key[0] if isinstance(key, tuple) else key
+    rank = KIND_RANK.get(kind, 0)
     catalog_id = key if isinstance(key, int) else 0
-    return (-abs(contribution(group)), rank, catalog_id)
+    title = key[1] if isinstance(key, tuple) else ""
+    return (-abs(contribution(group)), rank, catalog_id, title)
 
 
 def explainers(groups: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -339,16 +348,16 @@ def corpus_stats(cur) -> dict:
             }
         cur.execute(
             """
-            select wc.code, sum(aw.total_amount), count(*)
+            select wc.code, aw.title, sum(aw.total_amount), count(*)
             from estimate_additional_works aw
             join work_categories wc on wc.id = aw.work_category_id
             where aw.proposal_id = %s
-            group by wc.code
+            group by wc.code, aw.title
             """,
             (proposal,),
         )
-        for code, amount, rows in cur.fetchall():
-            per_article[code][EXTRA_KEY][stage] = {
+        for code, title, amount, rows in cur.fetchall():
+            per_article[code][(EXTRA_KEY, title)][stage] = {
                 "amount": Decimal(amount or 0), "rows": rows, "volumes": [],
             }
 
@@ -715,9 +724,9 @@ def group_row(group: dict, variant: str) -> str:
                   ' исправных данных этой строки нет вовсе: её появление означает'
                   ' недоработанный матчинг">без каталожной привязки</span>')
     if group.get("extra"):
-        pills += (' <span class="ambig" title="Ветвь «дополнительные работы» сметы:'
-                  ' каталожной привязки и объёма у них нет, между этапами они не'
-                  ' сопоставляются">дополнительные работы</span>')
+        pills += (' <span class="ambig" title="Строка «Сведений по дополнительным'
+                  ' работам»: каталожной привязки и объёма у неё нет, между этапами'
+                  ' такие строки сопоставляются по наименованию">допработы</span>')
     if ambiguous:
         pills += (' <span class="ambig" title="Несколько строк сметы в одной группе:'
                   ' сравнивается их сумма">несколько строк сметы</span>')
@@ -856,7 +865,8 @@ VARIANTS = [
 
 def measure_rows(stats: dict) -> str:
     measured = [
-        ("Групп «статья + каталожная позиция» всего", f"{stats['groups_total']}"),
+        ("Групп разложения всего (работы, допработы, непривязанные строки)",
+         f"{stats['groups_total']}"),
         ("…есть на всех выбранных этапах", f"{stats['whole']}"),
         ("…появились (нет на первом, есть на последнем)", f"{stats['born']}"),
         ("…исчезли (есть на первом, нет на последнем)", f"{stats['gone']}"),
