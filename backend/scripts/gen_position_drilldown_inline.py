@@ -58,6 +58,13 @@ TAX: tuple[str, dict] = ("gross", {})
 #: с четырьмя разными ссылками под одним словом), и такая склейка невидима.
 #: Ссылка не повторяется в разных статьях одного предложения (0 случаев),
 #: поэтому переход на поддерево (§2.1) новых склеек не добавил.
+#:
+#: РЕВИЗИЯ 31.08.2026 (третий круг ревью плана): полный ключ — ПАРА «лот +
+#: ссылка». Номера разделов между лотами законно повторяются и означают разные
+#: работы (`models.EstimateAdditionalWork`), а склейка по смете была бы
+#: невидимой. На стенде это ничего не меняет: многолотовых смет здесь нет вовсе
+#: (блок замеров, строка «Смет с несколькими лотами»), и группировка по одной
+#: ссылке даёт тот же результат, что по паре.
 #: Внутри статьи ссылка есть ВСЕГДА: `ck_..._unresolved_ref` разрешает NULL
 #: только вместе с NULL-статьёй, и таких строк со статьёй в базе ноль.
 #: Подпись строки — наименование с последнего этапа, где работа есть.
@@ -687,6 +694,19 @@ def corpus_stats(cur) -> dict:
         """
     )
     extras_subtree_pairs, extras_only_subtrees = cur.fetchone()
+    # Многолотовые сметы: у них ключ допработы обязан включать лот (§2.7).
+    # Замер печатается, а не пересказывается, по тому же правилу §1.2, что и
+    # остальные числа спеки.
+    cur.execute(
+        """
+        select count(*), count(*) filter (where lots > 1), count(*) filter (where proposals > 1)
+        from (select l.estimate_id, count(distinct l.id) as lots,
+                     count(distinct p.id) as proposals
+              from lots l left join proposals p on p.lot_id = l.id
+              group by l.estimate_id) g
+        """
+    )
+    estimates_total, estimates_multi_lot, estimates_multi_proposal = cur.fetchone()
 
     ordered = sorted(needed)
     ordered_outside = sorted(outside)
@@ -749,6 +769,9 @@ def corpus_stats(cur) -> dict:
         "extras_cross_article": extras_cross_article,
         "extras_subtree_pairs": extras_subtree_pairs,
         "extras_only_subtrees": extras_only_subtrees,
+        "estimates_total": estimates_total,
+        "estimates_multi_lot": estimates_multi_lot,
+        "estimates_multi_proposal": estimates_multi_proposal,
         "no_catalog": no_catalog,
         "no_article": no_article,
         "no_amount": no_amount,
@@ -1177,6 +1200,9 @@ MEASURES: list[tuple[str, object]] = [
      lambda d: f"{d['extras_cross_article']} / {d['extras_article_no_ref']}"),
     ("Поддеревьев с допработами / из них БЕЗ строк сметы (вся база)",
      lambda d: f"{d['extras_subtree_pairs']} / {d['extras_only_subtrees']}"),
+    ("Смет с несколькими лотами / предложениями (вся база)",
+     lambda d: f"{d['estimates_multi_lot']} / {d['estimates_multi_proposal']}"
+               f" из {d['estimates_total']}"),
     ("Длина каталожного наименования: медиана / p75 / p90 / максимум",
      lambda d: f"{d['titles_median']:.0f} / {d['titles_p75']} / {d['titles_p90']}"
                f" / {d['titles_max']}"),

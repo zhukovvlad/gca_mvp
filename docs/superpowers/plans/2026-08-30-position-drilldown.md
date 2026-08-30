@@ -13,7 +13,7 @@
 ось НДС фичи 3 типами), чтение в `crud/position_drilldown.py` постоянным числом
 запросов. Единственная правка контракта фичи 3 — булево `has_drilldown_rows` на
 строках свода. Разложение раскрывает ПОДДЕРЕВО статьи; ключ работы — каталожная
-позиция БЕЗ статьи; допработы построчно по `chapter_ref_raw`.
+позиция БЕЗ статьи; допработы построчно, ключ — пара `(lot_key, chapter_ref_raw)`.
 
 **Tech Stack:** FastAPI + SQLAlchemy + pytest (маркер `integration`); React +
 TanStack Query + shadcn/ui + vitest.
@@ -269,8 +269,16 @@ class DrillContribution:
 @dataclass(frozen=True)
 class DrillRow:
     kind: str                        # пять видов, включая KIND_COLLAPSED / KIND_REST
+    row_key: str                     # УСТОЙЧИВАЯ ИДЕНТИЧНОСТЬ строки в ответе
+                                     # (§2.11): вид плюс ключ группировки. Клиент
+                                     # берёт её ключом React как есть — свой ключ
+                                     # из kind + chapter_ref_raw у двух лотов
+                                     # совпал бы, и строки схлопнулись бы.
     catalog_position_id: int | None
     chapter_ref_raw: str | None
+    lot_key: str | None              # только у additional_works: лот из ключа
+                                     # группировки; в пилюлю попадает, лишь когда
+                                     # в ответе больше одного лота (§2.7)
     title: str
     ambiguous: bool                  # «несколько строк сметы»: rows > 1 хоть на одном этапе
     group_count: int | None          # только у свёрнутых
@@ -470,7 +478,10 @@ def compute_drilldown(columns: Sequence[DrillColumn], groups: Sequence[GroupInpu
 - вклад группы = `money_at(последняя) − money_at(первая)`;
 - `article_delta` = Σ вкладов всех групп (= движение суммы поддерева);
 - полный ключ порядка: `(-abs(contribution), KIND_RANK.get(kind, 0),
-  catalog_position_id or 0, chapter_ref_raw or "")` — id сравнивается ЧИСЛОМ;
+  catalog_position_id or 0, chapter_ref_raw or "", _order_tag(key))` — id
+  сравнивается ЧИСЛОМ, а ПОСЛЕДНИМ компонентом идёт ключ группировки, каким бы
+  он ни был (§2.3): у двух допработ разных лотов ссылка одна, и четвёрка их не
+  разводит;
 - объяснители: в порядке ключа, добавлять, ПОКА
   `abs(article_delta − cumulative) > (1 − COVERAGE) * abs(article_delta)`;
   при `article_delta == 0` объяснителей нет вовсе;
@@ -558,6 +569,21 @@ class TestComputeDrilldown:
         flipped = [r.title for r in pd.compute_drilldown(COLS2, [b, a]).rows]
         assert straight == flipped
         assert straight[:2] == ["Работа лота 1", "Работа лота 2"]
+
+    def test_row_key_is_unique_even_when_the_ref_is_shared(self):
+        """§2.11: идентичность строки — `row_key`, а не пара kind + ссылка. У двух
+        допработ разных лотов ссылка одна, и ключ, собранный из полей контракта,
+        схлопнул бы строки на экране."""
+        a = one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="1",
+                          key=("lot_1", "1"), title="Работа лота 1")
+        b = one_stage_grp({0: "10", 1: "20"}, kind=pd.KIND_ADDITIONAL_WORKS, ref="1",
+                          key=("lot_2", "1"), title="Работа лота 2")
+        rows = pd.compute_drilldown(COLS2, [a, b]).rows
+        keys = [r.row_key for r in rows]
+        assert len(keys) == len(set(keys))                       # уникальны в ответе
+        naive = [(r.kind, r.chapter_ref_raw) for r in rows if r.kind == pd.KIND_ADDITIONAL_WORKS]
+        assert len(set(naive)) == 1                              # наивный ключ бы схлопнул
+        assert {r.lot_key for r in rows if r.kind == pd.KIND_ADDITIONAL_WORKS} == {"lot_1", "lot_2"}
 
     def test_partial_cap_folds_the_tail_into_collapsed_row(self):
         # big объясняет 112 из delta=124 один: |124−112| = 12 <= 12.4 — отбор
@@ -700,10 +726,21 @@ def _row_from_group(g: GroupInput, cells: list[DrillCell]) -> DrillRow:
     reason = first.unavailable_reason or last.unavailable_reason
     bargain = ss.change_between(first.state, last.state, first.shown, last.shown, unavailable_reason=reason)
     value = money_at(last) - money_at(first)
-    return DrillRow(g.kind, g.catalog_position_id, g.chapter_ref_raw, g.title,
+    return DrillRow(g.kind, row_key(g.kind, g.key), g.catalog_position_id, g.chapter_ref_raw,
+                    lot_key=g.key[0] if g.kind == KIND_ADDITIONAL_WORKS else None,
+                    title=g.title,
                     ambiguous=any(c.estimate_rows > 1 for c in cells), group_count=None,
                     cells=cells, bargain=bargain,
                     contribution=DrillContribution(value, ss.direction_of(value)))
+
+
+def row_key(kind: str, key: tuple) -> str:
+    """Идентичность строки для клиента (§2.11): вид плюс ключ группировки.
+
+    Собирается ЗДЕСЬ, а не на клиенте: клиентский ключ из `kind` и
+    `chapter_ref_raw` совпал бы у двух допработ разных лотов, и React схлопнул
+    бы две строки в одну (третий круг ревью плана 31.08.2026)."""
+    return ":".join([kind, *(str(part) for part in key)])
 
 
 def _collapsed_row(kind: str, members: list[DrillRow], amounts: list[Decimal],
@@ -712,8 +749,11 @@ def _collapsed_row(kind: str, members: list[DrillRow], amounts: list[Decimal],
                        (), None, False, sum(m.cells[i].estimate_rows for m in members),
                        ss.Change(ss.KIND_NONE, None, None, None))
              for i in range(len(columns))]
-    return DrillRow(kind, None, None, "", ambiguous=False, group_count=len(members),
-                    cells=cells, bargain=ss.Change(ss.KIND_NONE, None, None, None),
+    # У свёрнутых строк ключа группировки нет — их идентичность это сам вид:
+    # обеих строк в ответе не больше одной каждой.
+    return DrillRow(kind, kind, None, None, None, "", ambiguous=False,
+                    group_count=len(members), cells=cells,
+                    bargain=ss.Change(ss.KIND_NONE, None, None, None),
                     contribution=DrillContribution(None, None))
 
 
@@ -1169,7 +1209,7 @@ class TestLoadGroups:
         (две строки складываются в тот же итог). У РАБОТ правило обратное и это
         не разнобой: каталожная позиция — идентичность каталога, и строки двух
         лотов с одной позицией остаются ОДНОЙ группой. Многолотовых смет в базе
-        нет (0 из 43), ветка фикстурная."""
+        нет (блок замеров: 0 и 0 из 43), ветка фикстурная."""
         tender = factories.TenderFactory.create()
         rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
         db_session.flush()
@@ -1206,6 +1246,16 @@ class TestLoadGroups:
         works = [g for g in groups if g.kind == pd_service.KIND_POSITION]
         assert len(works) == 1 and works[0].stages[0].rows == 2   # лот в ключ работы не входит
         assert works[0].stages[0].gross == D("10.00")
+
+        # И то же самое В ОТВЕТЕ: у строк разная идентичность, хотя ссылка одна.
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "6"), offers)
+        extra_rows = [r for r in data["rows"] if r["kind"] == "additional_works"]
+        assert len(extra_rows) == 2
+        assert len({r["row_key"] for r in extra_rows}) == 2       # ключи различны
+        assert {r["chapter_ref_raw"] for r in extra_rows} == {"1"}   # ссылка одна на обеих
+        assert {r["lot_key"] for r in extra_rows} == {"lot_1", "lot_2"}
+        assert all(c["converged"] is True for c in data["convergence"])
 ```
 
 (Если `round_payload(..., lots=2)` кладёт лоты в РАЗНЫЕ сметы — посмотреть, как
@@ -1619,8 +1669,9 @@ def _cell_json(c: pd.DrillCell) -> dict:
 
 
 def _row_json(r: pd.DrillRow) -> dict:
-    return {"kind": r.kind, "catalog_position_id": r.catalog_position_id,
-            "chapter_ref_raw": r.chapter_ref_raw, "title": r.title,
+    return {"kind": r.kind, "row_key": r.row_key,
+            "catalog_position_id": r.catalog_position_id,
+            "chapter_ref_raw": r.chapter_ref_raw, "lot_key": r.lot_key, "title": r.title,
             "ambiguous": r.ambiguous, "group_count": r.group_count,
             "cells": [_cell_json(c) for c in r.cells],
             "bargain": crud_ss.change_json(r.bargain),
@@ -1846,8 +1897,15 @@ export interface StagePositionsCell {
 
 export interface StagePositionsRow {
   kind: StagePositionsRowKind;
+  /** Устойчивая идентичность строки в ответе — ключ React берётся ОТСЮДА
+   *  (§2.11): свой ключ из kind + chapter_ref_raw совпал бы у двух допработ
+   *  разных лотов, и строки схлопнулись бы в одну. */
+  row_key: string;
   catalog_position_id: number | null;
   chapter_ref_raw: string | null;
+  /** Лот из ключа группировки; только у kind = "additional_works". В пилюлю
+   *  выносится, лишь когда в ответе больше одного лота (§2.7). */
+  lot_key: string | null;
   title: string;
   ambiguous: boolean;
   group_count: number | null;
@@ -2013,7 +2071,11 @@ export const worksHeading = (code: string) =>
 export const WORKS_SUBHEADING =
   "объясняют ту же сумму, что и строки подстатей выше, другим разрезом; итог сходится из показанного";
 export const AMBIGUOUS_PILL = "несколько строк сметы";
-export const extraPill = (ref: string) => `допработы · ${ref}`;
+/** Пилюля допработы. Лот называется ТОЛЬКО когда в ответе он не один: у двух
+ *  лотов ссылка совпадает, и без лота две разные работы выглядели бы
+ *  одинаково подписанными (§2.7); на одном лоте лишнего слова нет. */
+export const extraPill = (ref: string, lot?: string | null) =>
+  lot ? `допработы · ${lot} · ${ref}` : `допработы · ${ref}`;
 export const UNMATCHED_HINT =
   "У строк нет каталожной привязки — недоработан матчинг, строка диагностическая";
 export const collapsedTitle = (n: number) => string;   // «ещё N работ появились или исчезли»
@@ -2028,8 +2090,11 @@ export function drilldownGroupCount(rows: StagePositionsRow[]): number;
 /** Объём этапа: сырые значения через "+", каждое форматируется разрядами и
  *  не длиннее одного знака после запятой (§2.4): "6+11" -> "6 + 11". */
 export function formatQuantity(quantity: string | null): string | null;
-/** Устойчивый ключ строки для React: kind + id | ref. */
+/** Устойчивый ключ строки для React — ПОЛЕ ОТВЕТА `row_key`, а не сборка из
+ *  kind и ref: у двух допработ разных лотов ссылка одна (§2.7, §2.11). */
 export function drilldownRowKey(row: StagePositionsRow): string;
+/** Нужно ли называть лот в пилюлях: в ответе больше одного лота. */
+export function showsLot(rows: StagePositionsRow[]): boolean;
 ```
 
 `PositionCell` — ячейка работы, три этажа (§2.4): сумма (или подпись состояния
@@ -2046,13 +2111,38 @@ export function drilldownRowKey(row: StagePositionsRow): string;
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { drilldownGroupCount, formatQuantity } from "./drilldownData";
+import { drilldownGroupCount, drilldownRowKey, formatQuantity, showsLot } from "./drilldownData";
+import { extraPill } from "./drilldownCopy";
 import type { StagePositionsRow } from "@/types/domain";
 
 const row = (kind: StagePositionsRow["kind"], group_count: number | null = null) =>
-  ({ kind, group_count, catalog_position_id: null, chapter_ref_raw: null, title: "",
-     ambiguous: false, cells: [], bargain: { kind: "none", value: null, direction: null, reason: null },
+  ({ kind, row_key: kind, group_count, catalog_position_id: null, chapter_ref_raw: null,
+     lot_key: null, title: "", ambiguous: false, cells: [],
+     bargain: { kind: "none", value: null, direction: null, reason: null },
      contribution: { value: null, direction: null, reason: null } }) as StagePositionsRow;
+
+describe("drilldownRowKey и showsLot", () => {
+  const extra = (rowKey: string, lot: string | null) =>
+    ({ ...row("additional_works"), row_key: rowKey, chapter_ref_raw: "1", lot_key: lot });
+
+  it("ключ строки берётся из row_key: две допработы разных лотов не схлопываются", () => {
+    const rows = [extra("additional_works:lot_1:1", "lot_1"),
+                  extra("additional_works:lot_2:1", "lot_2")];
+    const keys = rows.map(drilldownRowKey);
+    expect(new Set(keys).size).toBe(2);
+    // наивный ключ из полей контракта дал бы одно и то же — вот он:
+    expect(new Set(rows.map((r) => `${r.kind}:${r.chapter_ref_raw}`)).size).toBe(1);
+  });
+
+  it("лот в пилюле появляется только когда лотов в ответе больше одного (§2.7)", () => {
+    const two = [extra("additional_works:lot_1:1", "lot_1"), extra("additional_works:lot_2:1", "lot_2")];
+    const one = [extra("additional_works:lot_1:1", "lot_1")];
+    expect(showsLot(two)).toBe(true);
+    expect(showsLot(one)).toBe(false);
+    expect(extraPill("1", "lot_2")).toBe("допработы · lot_2 · 1");
+    expect(extraPill("1", null)).toBe("допработы · 1");
+  });
+});
 
 describe("drilldownGroupCount", () => {
   it("считает свёрнутые по group_count, остальные по одному — N кнопки §2.1", () => {
@@ -2179,11 +2269,13 @@ git commit -m "feat(position-drilldown): фронт — ячейка работ�
 - Create: `frontend/src/pages/tenders/summary/PositionDrilldown.tsx`
 - Modify: `frontend/src/test/fixtures.ts` — добавить `sampleStagePositions`:
   валидный `StagePositions` с двумя колонками и четырьмя строками (position с
-  объёмом и `disappeared`-концом; additional_works с `chapter_ref_raw: "1.2"`;
-  collapsed с `group_count: 3`; rest с `group_count: 2`), `converged: true` в
-  обеих колонках; инварианты фикстуры — рядом в `fixtures.test.ts` по образцу
-  соседних (сходимость: сумма ячеек строк равна `article_amount` колонки;
-  `estimate_rows == 0 ⟺ state == "absent"`).
+  объёмом и `disappeared`-концом; additional_works с `chapter_ref_raw: "1.2"`,
+  `lot_key: "lot_1"`; collapsed с `group_count: 3`; rest с `group_count: 2`),
+  у каждой строки СВОЙ `row_key`, `converged: true` в обеих колонках; инварианты
+  фикстуры — рядом в `fixtures.test.ts` по образцу соседних (сходимость: сумма
+  ячеек строк равна `article_amount` колонки; `estimate_rows == 0 ⟺ state ==
+  "absent"`; `row_key` уникальны в наборе — инвариант §2.11, ради которого поле
+  и заведено).
 - Test: `frontend/src/pages/tenders/summary/PositionDrilldown.test.tsx`
 
 **Interfaces:**
@@ -2230,7 +2322,8 @@ export function PositionDrilldown(props: {
   `WORKS_SUBHEADING` второй строкой, colSpan на всю ширину), затем строки:
   - первая ячейка: наименование (`line-clamp-2` + полный текст в `title`,
     §2.10) и пилюли: `ambiguous` → `AMBIGUOUS_PILL`; `kind ===
-    "additional_works"` → `extraPill(chapter_ref_raw)`; `kind === "unmatched"`
+    "additional_works"` → `extraPill(chapter_ref_raw, showsLot(rows) ? lot_key : null)`;
+    `kind === "unmatched"`
     → пилюля с `UNMATCHED_HINT` в title; свёрнутые (`collapsed…`, `rest`) —
     `collapsedTitle(group_count)` / `restTitle(group_count)` вместо
     наименования, приглушённым тоном (`text-fg-tertiary`);
@@ -2239,7 +2332,8 @@ export function PositionDrilldown(props: {
     `none` → прочерк);
   - «Вклад» — число с тоном направления или прочерк (тот же приём, что
     `ContributionValue` свода).
-- Ключи строк — `drilldownRowKey`.
+- Ключи строк — `drilldownRowKey`, то есть `row.row_key`, а НЕ сборка из `kind`
+  и `chapter_ref_raw`: у двух допработ разных лотов ссылка одна (§2.11).
 
 - [ ] **Step 1: Написать падающие тесты** (`PositionDrilldown.test.tsx`).
   Мокать `useStagePositions` через `vi.mock("@/services/queries", …)` — тем же
