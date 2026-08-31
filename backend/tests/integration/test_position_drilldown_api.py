@@ -1,0 +1,408 @@
+"""Разложение статьи: чтение входов, сборка групп, HTTP-контракт (спека
+2026-08-30-position-drilldown-design.md §2.1, §2.2, §2.7, §2.11).
+
+Сметы строятся НАСТОЯЩИМ import_round — как в test_stage_summary_api.py."""
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+import sqlalchemy as sa
+
+from crud import position_drilldown as crud_pd
+from models import (
+    Estimate,
+    EstimateAdditionalWork,
+    Lot,
+    Offer,
+    PositionItem,
+    Proposal,
+    TenderRound,
+    WorkCategory,
+)
+from services import position_drilldown as pd_service
+from services import stage_summary as ss
+from services.category_resolution import CategoryResolver
+from services.matching import match_positions
+from services.round_import import import_round
+from services.unit_resolution import UnitResolver
+
+# `chaptered` и `count_queries` — обычные функции соседнего файла, их можно
+# импортировать; фикстуру `grid` — НЕ импортируем: своя `drill_grid` ниже
+# отличается запуском матчинга.
+from tests.integration.test_stage_summary_api import chaptered, count_queries
+from tests.payloads import (
+    additional_works_row,
+    position,
+    proposal,
+    round_payload,
+    svedeniya_info,
+)
+
+pytestmark = pytest.mark.integration
+
+D = Decimal
+
+
+def estimates_of(db, offer_ids):
+    return db.execute(
+        sa.select(Estimate.id).join(Offer, Offer.id == Estimate.offer_id)
+        .join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Estimate.offer_id.in_(offer_ids)).order_by(TenderRound.stage_no)
+    ).scalars().all()
+
+
+def category_id(db, code):
+    return db.execute(sa.select(WorkCategory.id).where(WorkCategory.code == code)).scalar_one()
+
+
+def import_and_match(db, *, tender_round, data):
+    """Импорт раунда И МАТЧИНГ.
+
+    `import_round` матчинг НЕ вызывает — он только возвращает
+    `positions_to_match`, а каскад запускает пайплайн (докстрока
+    `services/round_import.import_round`, §2.5 п.5 её спеки). Без этого шага у
+    всех строк `catalog_position_id` остаётся NULL, и разложение видит одну
+    группу `unmatched` вместо работ — тесты этого файла молча мерили бы не тот
+    вид строк (ревью плана 31.08.2026).
+    """
+    outcome = import_round(db, tender_round=tender_round, data=data, parser_version="4.0.0",
+                           import_job_id=None, replace=False,
+                           unit_resolver=UnitResolver(db),
+                           category_resolver=CategoryResolver.from_db(db))
+    match_positions(db, outcome.positions_to_match)
+    db.flush()
+    return outcome
+
+
+@pytest.fixture
+def drill_grid(db_session, factories):
+    """Тот же тендер, что `grid` свода, но собранный С МАТЧИНГОМ.
+
+    Своя фикстура, а не переиспользование `grid`: соседнюю фикстуру нельзя
+    позвать функцией (это pytest-фикстура), а `match_positions` принимает
+    `PositionToMatch` из результата импорта, а не строки из БД — то есть
+    матчинг надо запускать В МОМЕНТ импорта. Тестам свода каталог не нужен, и
+    их фикстура остаётся как есть.
+
+    Суммы совпадают с `grid` (§ докстроки соседней фикстуры): р1 6→120, 2→60;
+    р2 6→96 плюс допработы 24, 2→0; р3 6→100; р4 6→90. `path` — трасса 1, 2, 4.
+    """
+    tender = factories.TenderFactory.create()
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2, 3, 4)}
+    db_session.flush()
+    payloads = {
+        1: [chaptered({"1": ("6", "120.00"), "2": ("2", "60.00")}, total="180.00")],
+        2: [chaptered({"1": ("6", "96.00"), "2": ("2", "0")}, total="120.00",
+                      additional=additional_works_row(total="24.00"))],
+        3: [chaptered({"1": ("6", "100.00")}, total="100.00")],
+        4: [chaptered({"1": ("6", "90.00")}, total="90.00")],
+    }
+    for n, rnd in rounds.items():
+        import_and_match(db_session, tender_round=rnd, data=round_payload(payloads[n]))
+    offers = db_session.execute(
+        sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+
+    class G:
+        pass
+    g = G()
+    g.tender = tender
+    g.rounds = rounds
+    g.offers = offers
+    g.path = [offers[0], offers[1], offers[3]]      # трасса 1, 2, 4
+    return g
+
+
+class TestLoadGroups:
+    def test_same_catalog_position_in_parent_and_child_is_one_group(self, db_session, factories):
+        """Негативная §6.1: ключ группы — каталожная позиция БЕЗ статьи. Одна и
+        та же работа (то же наименование и единица => та же каталожная позиция,
+        matching get-or-create) на этапе 1 лежит в статье-родителе, на этапе 2 —
+        в статье-потомке; групп в поддереве родителя обязана быть ОДНА, без
+        исчезновения. Ключ со статьёй здесь краснеет двумя группами."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        parent_code, child_code = "6", "6.1"
+        for n, art in ((1, parent_code), (2, child_code)):
+            positions = [position(job_title="Раздел", is_chapter=True, chapter_number="1",
+                                  article_smr=art, number="1"),
+                         position(job_title="Фасад корпуса", unit="м2", quantity=1, suggested_quantity=5,
+                                  unit_cost_total="100.00", total_cost_total="100.00",
+                                  chapter_ref="1", number="2")]
+            import_and_match(db_session, tender_round=rounds[n],
+                             data=round_payload([proposal(positions, vat_rate="20")]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        estimates = estimates_of(db_session, offers)
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, parent_code))
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        works = [g for g in groups if g.kind == pd_service.KIND_POSITION]
+        assert len(works) == 1
+        assert set(works[0].stages) == {0, 1}          # оба этапа, исчезновения нет
+
+    def test_extras_are_rows_by_ref_and_title_comes_from_the_last_stage(self, db_session, factories):
+        """§2.7: две ссылки с одним наименованием — ДВЕ группы (ключ по
+        наименованию краснеет); подпись группы — с последнего этапа присутствия.
+
+        Поправка к брифу: ссылка «Сведений» резолвится в статью ТОЛЬКО по
+        точному совпадению с номером раздела (`resolve_ref`/
+        `categories_by_chapter_number`, `services/additional_works.py`) —
+        раздел с номером «1» ссылку «1.1» не резолвит. В брифе был один раздел
+        «1» под ссылки «1.1»/«1.2»; здесь — два раздела с НОМЕРАМИ, буквально
+        равными ссылкам, оба под статьёй «6». Также исправлена контрольная
+        сумма второго этапа (12.00 + 21.00 = 33.00, в брифе стояло 30.00 —
+        расшивка при перевесе разобранных строк над итогом отбрасывается
+        целиком, гейт §2.6 `parsed_sum > total`).
+        """
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        info = {
+            1: svedeniya_info("1.1 Монолитные конструкции - 10.00 руб.",
+                              "1.2 Монолитные конструкции - 20.00 руб."),
+            2: svedeniya_info("1.1 Монолитные конструкции, уточнено - 12.00 руб.",
+                              "1.2 Монолитные конструкции - 21.00 руб."),
+        }
+        totals = {1: "30.00", 2: "33.00"}
+        for n, rnd in rounds.items():
+            positions = [position(job_title="Раздел 1.1", is_chapter=True, chapter_number="1.1",
+                                  article_smr="6", number="1"),
+                         position(job_title="Раздел 1.2", is_chapter=True, chapter_number="1.2",
+                                  article_smr="6", number="2")]
+            import_and_match(db_session, tender_round=rnd,
+                             data=round_payload([proposal(positions, vat_rate="20",
+                                                          additional_works=additional_works_row(total=totals[n]),
+                                                          additional_info=info[n])]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        groups = crud_pd.load_groups(db_session, estimates_of(db_session, offers), subtree)
+        extras = sorted((g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS),
+                        key=lambda g: g.chapter_ref_raw)
+        assert [g.chapter_ref_raw for g in extras] == ["1.1", "1.2"]
+        assert extras[0].title == "Монолитные конструкции, уточнено"   # последний этап
+        assert set(extras[0].stages) == {0, 1}
+
+    def test_unmatched_rows_fold_into_one_group_per_subtree(self, db_session, drill_grid):
+        """Фикстурная ветка §5: привязку снимаем руками (на живой базе её
+        снимает только недоработанный матчинг, 0 из 64 505)."""
+        db_session.execute(sa.update(PositionItem).where(PositionItem.is_chapter.is_(False))
+                           .values(catalog_position_id=None))
+        db_session.flush()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        estimates = estimates_of(db_session, drill_grid.path)
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        unmatched = [g for g in groups if g.kind == pd_service.KIND_UNMATCHED]
+        assert len(unmatched) == 1 and unmatched[0].title == crud_pd.UNMATCHED_TITLE
+
+    def test_query_count_does_not_grow_with_columns(self, db_session, drill_grid):
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        two = estimates_of(db_session, drill_grid.path[:2])
+        three = estimates_of(db_session, drill_grid.path)
+        with count_queries(db_session) as c2:
+            crud_pd.load_groups(db_session, two, subtree)
+        with count_queries(db_session) as c3:
+            crud_pd.load_groups(db_session, three, subtree)
+        assert c2["n"] == c3["n"]
+
+    def test_non_finite_row_is_counted_but_left_out_of_the_sum(self, db_session, drill_grid):
+        """§1.7: правило конечности VIEW повторяется здесь, иначе разложение не
+        сойдётся со статьёй. Неконечных сумм на живой базе нет (0 из 64 505),
+        поэтому ветка ставится UPDATE-ом — как и снятая привязка выше; РУЧНАЯ
+        ВСТАВКА строки не годится: у `position_items` есть обязательные поля
+        (`position_key_in_proposal`), и тест ломался бы на них, а не на правиле."""
+        estimates = estimates_of(db_session, drill_grid.path)
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        before = crud_pd.load_groups(db_session, estimates, subtree)
+        work = next(g for g in before if g.kind == pd_service.KIND_POSITION)
+        stage = min(work.stages)
+        # Ставим NaN ОДНОЙ строке группы на первом этапе: строка остаётся в
+        # файле (счётчик её видит), но в сумму не входит.
+        target = db_session.execute(
+            sa.select(PositionItem.id).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimates[stage], PositionItem.is_chapter.is_(False),
+                   PositionItem.catalog_position_id == work.catalog_position_id)
+        ).scalars().first()
+        db_session.execute(sa.update(PositionItem).where(PositionItem.id == target)
+                           .values(total_cost_total=D("NaN")))
+        db_session.flush()
+        after = crud_pd.load_groups(db_session, estimates, subtree)
+        same = next(g for g in after if g.catalog_position_id == work.catalog_position_id)
+        assert same.stages[stage].rows == work.stages[stage].rows          # строка посчитана
+        assert same.stages[stage].gross == work.stages[stage].gross - D("120.00")   # и вычтена из суммы
+
+    def test_group_of_only_non_finite_rows_is_zero_not_absent(self, db_session, drill_grid):
+        """Продолжение правила: у группы, где ВСЕ строки этапа неконечны, сумма
+        ноль при ненулевом счётчике — то есть ячейка получает нулевое состояние
+        («не оценивалась» / «снято»), а НЕ `absent`. Иначе поехала бы
+        эквивалентность §2.11 `estimate_rows == 0 ⟺ absent`: строка в файле
+        есть, и говорить «нет в файле» о ней нельзя."""
+        estimates = estimates_of(db_session, drill_grid.path)
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        stage = 0
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id.in_(
+                sa.select(PositionItem.id).join(Proposal, Proposal.id == PositionItem.proposal_id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimates[stage], PositionItem.is_chapter.is_(False))))
+            .values(total_cost_total=D("Infinity")))
+        db_session.flush()
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        work = next(g for g in groups if g.kind == pd_service.KIND_POSITION)
+        assert work.stages[stage].rows > 0 and work.stages[stage].gross == D("0")
+        columns = [pd_service.DrillColumn(offer_id=o, estimate_id=e, round_id=0, stage_no=i + 1,
+                                          label=None, held_on=None, vat_rate_base=D("20"))
+                   for i, (o, e) in enumerate(zip(drill_grid.path, estimates, strict=True))]
+        cells = pd_service.group_cells(work, columns, ss.pick_tax_basis([c.vat_rate_base for c in columns]))
+        assert cells[stage].state != "absent" and cells[stage].estimate_rows > 0
+
+    def test_several_rows_under_one_ref_are_one_group_titled_by_ordinal(self, db_session, factories):
+        """§2.7: ссылка ГРУППИРУЕТ работу (три такие группы на стенде: 5, 2, 2
+        строки). Здесь наименования РАЗНЫЕ — случай, на котором правило подписи
+        различимо: берётся первая по файлу, а группа несёт пилюлю."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        for rnd in rounds.values():
+            positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                                  article_smr="6", number="1"),
+                         position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
+                                  unit_cost_total="5.00", total_cost_total="5.00",
+                                  chapter_ref="1", number="2")]
+            import_and_match(db_session, tender_round=rnd,
+                         data=round_payload([proposal(
+                             positions, vat_rate="20",
+                             additional_works=additional_works_row(total="30.00"),
+                             # ДВЕ строки «Сведений» с ОДНОЙ ссылкой «1» и разными наименованиями
+                             additional_info=svedeniya_info("1 Первая по файлу - 10.00 руб.",
+                                                            "1 Вторая по файлу - 20.00 руб."))]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        groups = crud_pd.load_groups(db_session, estimates_of(db_session, offers), subtree)
+        extras = [g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS]
+        assert len(extras) == 1                                   # одна ссылка — одна группа
+        assert extras[0].title == "Первая по файлу"               # первая по (proposal_id, ordinal)
+        assert extras[0].stages[0].rows == 2                      # пилюля «несколько строк сметы»
+        assert extras[0].stages[0].gross == D("30.00")
+
+    def test_two_lots_keep_their_refs_apart_but_share_the_catalog_key(self, db_session, factories):
+        """§2.7 (ревизия 31.08.2026): номер раздела между лотами законно
+        означает РАЗНЫЕ работы, поэтому одна ссылка в двух лотах даёт ДВЕ
+        группы — склейка была бы невидимой, а сходимость объединения не требует
+        (две строки складываются в тот же итог). У РАБОТ правило обратное и это
+        не разнобой: каталожная позиция — идентичность каталога, и строки двух
+        лотов с одной позицией остаются ОДНОЙ группой. Многолотовых смет в базе
+        нет (блок замеров: 0 и 0 из 43), ветка фикстурная.
+
+        Поправка к брифу: если ОБА лота несут в JSON свою агрегатную строку
+        допработ с ОДНИМ и тем же текстом «Сведений» (то, что кладёт сюда
+        `round_payload([payload], lots=2)` — один участник, продублированный
+        в оба лота), `services.additional_works.decide_owner` видит ДВУХ
+        владельцев и объявляет владельца неоднозначным: расшивка не
+        применяется НИ К ОДНОМУ лоту, а `chapter_ref_raw`/`work_category_id`
+        обеих строк остаются NULL — ветка проверяет как раз `decide_owner`, не
+        `load_groups`. Это уже покрыто модулем допработ отдельно; здесь строки
+        `estimate_additional_works` заводятся НАПРЯМУЮ (обычная фикстурная
+        конструкция, как и допускает докстрока брифа «ветка фикстурная»,
+        §2.7): позиции сметы по-прежнему идут настоящим импортом и матчингом,
+        а расшивку допработ по лотам строим сами, минуя `decide_owner`."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        subtree_category = category_id(db_session, "6")
+        for rnd in rounds.values():
+            positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                                  article_smr="6", number="1"),
+                         position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=1,
+                                  unit_cost_total="5.00", total_cost_total="5.00",
+                                  chapter_ref="1", number="2")]
+            payload = proposal(positions, vat_rate="20")
+            import_and_match(db_session, tender_round=rnd,
+                             data=round_payload([payload], lots=2))   # ДВА лота одной сметы
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        estimates = estimates_of(db_session, offers)
+        # Предпосылка теста: смета действительно из двух лотов с двумя предложениями.
+        assert db_session.execute(
+            sa.select(sa.func.count()).select_from(Proposal).join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimates[0])).scalar_one() == 2
+
+        # Допработы заводим напрямую: по одной строке с одной и той же ссылкой
+        # «1» на КАЖДЫЙ лот КАЖДОЙ сметы (обоих этапов).
+        for estimate_id in estimates:
+            lot_proposals = db_session.execute(
+                sa.select(Proposal.id).join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimate_id).order_by(Lot.lot_key)
+            ).scalars().all()
+            for proposal_id in lot_proposals:
+                db_session.add(EstimateAdditionalWork(
+                    proposal_id=proposal_id, ordinal=1, chapter_ref_raw="1",
+                    title="Работа лота", total_amount=D("10.00"),
+                    work_category_id=subtree_category,
+                    raw_line="1 Работа лота - 10.00 руб."))
+        db_session.flush()
+
+        subtree = crud_pd.subtree_ids(db_session, subtree_category)
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+
+        extras = [g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS]
+        assert len(extras) == 2                                  # по группе на лот
+        assert {g.chapter_ref_raw for g in extras} == {"1"}       # ссылка в контракте — голая
+        assert all(g.stages[0].rows == 1 and g.stages[0].gross == D("10.00") for g in extras)
+        # Обе группы живут на ОБОИХ этапах: ключ лота между этапами устойчив,
+        # пока подрядчик не переставил лоты (§2.7 — названная развилка).
+        assert all(set(g.stages) == {0, 1} for g in extras)
+
+        works = [g for g in groups if g.kind == pd_service.KIND_POSITION]
+        assert len(works) == 1 and works[0].stages[0].rows == 2   # лот в ключ работы не входит
+        assert works[0].stages[0].gross == D("10.00")
+
+        # Ответ уровня HTTP-контракта (build_position_drilldown, row_key,
+        # lot_key, convergence) — задача 5; здесь останавливаемся на групповом
+        # уровне, как предписывает бриф задачи 4.
+
+    def test_quantities_are_sorted_and_distinct_within_a_stage(self, db_session, factories):
+        """§2.4: объём этапа — МНОЖЕСТВО значений `suggested_quantity`, а не
+        мультимножество. Три строки одной каталожной позиции на одном этапе —
+        объёмы 5, 11, 5 — обязаны дать `quantities == (5, 11)`: дубль
+        схлопнут, порядок отсортирован, а `rows` при этом продолжает считать
+        ВСЕ ТРИ строки. Инвариант пин нужен здесь, а не только в
+        `services/position_drilldown.py`: `group_cells` сравнивает объёмы
+        МНОЖЕСТВАМИ (`set(quantities)`) именно потому, что этот SQL уже отдаёт
+        `array_agg(DISTINCT ...)`, отсортированный в Python, — без теста на
+        источнике это допущение ничем не закреплено."""
+        tender = factories.TenderFactory.create()
+        rnd = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        db_session.flush()
+        positions = [
+            position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                     article_smr="6", number="1"),
+            position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=5,
+                     unit_cost_total="5.00", total_cost_total="5.00", chapter_ref="1", number="2"),
+            position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=11,
+                     unit_cost_total="7.00", total_cost_total="7.00", chapter_ref="1", number="3"),
+            position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=5,
+                     unit_cost_total="3.00", total_cost_total="3.00", chapter_ref="1", number="4"),
+        ]
+        import_and_match(db_session, tender_round=rnd, data=round_payload([proposal(positions, vat_rate="20")]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        groups = crud_pd.load_groups(db_session, estimates_of(db_session, offers), subtree)
+        work = next(g for g in groups if g.kind == pd_service.KIND_POSITION)
+        assert work.stages[0].quantities == (D("5"), D("11"))     # дубль схлопнут, отсортировано
+        assert work.stages[0].rows == 3                            # счётчик строк дубль не теряет
