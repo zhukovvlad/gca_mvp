@@ -69,9 +69,16 @@ export function PositionCell({ cell }: { cell: StagePositionsCell }) {
       {/* Третий этаж есть только у строки, у которой вообще есть объём (§2.4,
           §6.3) — у допработы и диагностической строки его нет структурно. */}
       {formattedQuantity !== null && (
+        // Найдено сверкой с макетом (задача 12, DoD 6): без тона по умолчанию
+        // объём рендерился цветом ОСНОВНОГО текста — той же силы, что сумма
+        // строкой выше, — и третий этаж переставал читаться как подчинённый
+        // (§2.4). Макет держит то же правило: `.qty` приглушён ВСЕГДА,
+        // `.qty.chg` — единственное исключение (там уже с 30.08.2026 принят
+        // свой акцент, `text-warning-text`, тот же токен, что несёт
+        // несходящаяся ячейка свода, а не цвет макета).
         <div
           data-testid="cell-quantity"
-          className={cn("mt-0.5 text-2xs", quantity_changed && "text-warning-text")}
+          className={cn("mt-0.5 text-2xs", quantity_changed ? "text-warning-text" : "text-fg-tertiary")}
         >
           {formattedQuantity} {quantity_unit}
         </div>

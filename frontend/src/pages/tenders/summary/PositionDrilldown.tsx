@@ -5,10 +5,12 @@ import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { formatDecimalMoney } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { apiErrorCode, useStagePositions } from "@/services/queries";
 import type { StagePositionsRow, StageSummaryErrorCode } from "@/types/domain";
 
 import { ERROR_LABEL, REASON_LABEL } from "./cellCopy";
+import { FIRST_COL_CLASS } from "./cellLayout";
 import {
   AMBIGUOUS_PILL,
   DRILLDOWN_ERROR_LABEL,
@@ -131,7 +133,14 @@ function DrilldownRowPills({ row, lotShown }: { row: StagePositionsRow; lotShown
 function DrilldownRow({ row, rowKey, lotShown }: { row: StagePositionsRow; rowKey: string; lotShown: boolean }) {
   return (
     <TableRow data-testid={`drill-row-${ROW_TESTID[row.kind]}`} data-row-key={rowKey}>
-      <TableCell>
+      {/*
+        `pl-[52px]`, не `pl-8` (32px, шаг вложенности подстатей в
+        `StageSummaryTable.tsx`): найдено сверкой с макетом (задача 12, DoD
+        6) — `tr.pos3 .t { padding-left: 52px }`, ОДНИМ уровнем глубже
+        собственного отступа статьи-владельца. С `pl-8` строка работы визуально
+        читалась КАК СЕСТРА подстатьи, а не её ребёнок.
+      */}
+      <TableCell className={cn(FIRST_COL_CLASS, "bg-surface-sunken pl-[52px]")}>
         <div className="flex flex-col gap-1">
           <DrilldownRowTitle row={row} />
           <DrilldownRowPills row={row} lotShown={lotShown} />
@@ -261,9 +270,23 @@ export function PositionDrilldown({
 
   return (
     <>
-      <TableRow data-testid="drill-heading" className="bg-surface-sunken">
+      {/*
+        Найдено сверкой с макетом (задача 12, DoD 6): заголовок блока стоял
+        обычным предложением (13px, вес 500, цвет основного текста), а в
+        макете (`tr.workshead > td`) это «эркер» секции — 11px, вес 600,
+        КАПС, разрядка, приглушённый тон, подложка `--sechead`, — тот же
+        приём, что уже несёт заголовок «Этап N» шапки свода
+        (`StageSummaryTable.tsx`, `text-2xs uppercase tracking-wider
+        text-fg-tertiary`). Подложка — `bg-section-header`, а не
+        `bg-surface-sunken`: замер её `backgroundColor` на макете дал
+        rgb(250, 250, 247), а это ровно токен `--bg-section-header`
+        (`index.css`), не `--bg-surface-sunken`.
+      */}
+      <TableRow data-testid="drill-heading" className="bg-section-header">
         <TableCell colSpan={colSpan}>
-          <div className="font-medium">{worksHeading(articleCode)}</div>
+          <div className="text-2xs font-semibold uppercase tracking-wider text-fg-tertiary">
+            {worksHeading(articleCode)}
+          </div>
           <div className="text-2xs text-fg-tertiary">{WORKS_SUBHEADING}</div>
         </TableCell>
       </TableRow>

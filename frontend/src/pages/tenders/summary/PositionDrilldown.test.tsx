@@ -203,4 +203,62 @@ describe("PositionDrilldown (§2.1, §2.12, §6.3)", () => {
     renderRows({ onCount });
     expect(onCount).toHaveBeenCalledWith(drilldownGroupCount(sampleStagePositions.rows));
   });
+
+  /**
+   * Приёмка на стенде (задача 12) нашла раздутие колонки подписи до 5738 px:
+   * строка `DrilldownRow` рисовала первую ячейку БЕЗ `FIRST_COL_CLASS`
+   * (`cellLayout.ts`), и `TableCell` наследовал базовый `whitespace-nowrap`
+   * (`components/ui/table.tsx`) — одна строка со сплошным нередактированным
+   * текстом раздувала колонку ВСЕЙ таблицы (`table-layout: auto` делит
+   * ширину столбца между всеми ячейками одного индекса), включая короткие
+   * заголовки корневых статей. jsdom раскладку не считает (`docs/insights/
+   * unobservable-in-the-runner.md`), поэтому здесь проверяется ТОЛЬКО ЧЕМ
+   * раскладка запрошена — точно тот же приём, что и соседний тест таблицы
+   * свода (`StageSummaryTable.test.tsx`, «колонка классификатора зажата по
+   * ширине…»): что из запрошенного вышло на экране, проверяет замер в
+   * браузере (задача 12, `task-12-report.md`).
+   */
+  it("строка разложения делит ЗАЖИМ первой колонки со сводом — оба направления (задача 12)", () => {
+    success();
+    const { container } = renderRows();
+    const titleCells = Array.from(container.querySelectorAll('[data-testid^="drill-row-"] > td:first-child'));
+    expect(titleCells.length).toBeGreaterThan(0);
+    for (const cell of titleCells) {
+      expect(cell).toHaveClass("min-w-[250px]");
+      expect(cell).toHaveClass("max-w-[420px]");
+      expect(cell).toHaveClass("whitespace-normal");
+      // Второе утверждение не лишнее — ровно этот дефект стенд и нашёл:
+      // класса не было вовсе, и ячейка молча наследовала `whitespace-nowrap`
+      // примитива. Проверка ТОЛЬКО наличия своего класса дефект бы не
+      // ловила, если бы кто-то ОБА класса случайно проставил разом.
+      expect(cell).not.toHaveClass("whitespace-nowrap");
+      expect(cell).toHaveClass("align-top");
+    }
+  });
+
+  /**
+   * Второй дефект той же приёмки: заголовок «Почему изменился итог …» стоял
+   * обычным предложением (13px, вес 500, цвет основного текста, подложка
+   * `bg-surface-sunken`, неотличимая от рядовой вложенной строки) — в макете
+   * это малый капслок-«эркер» секции (§2.12 приёмки, `task-12-report.md`):
+   * тот же приём, что уже несёт заголовок «Этап N» шапки свода
+   * (`StageSummaryTable.tsx`). Оба направления — свой набор классов стоит, а
+   * прежний (неверный) снят — по тому же принципу, что и тест выше.
+   */
+  it("заголовок блока разложения несёт капслок-стиль эркера, а не текст обычного веса (задача 12)", () => {
+    success();
+    renderRows();
+    const headingRow = screen.getByTestId("drill-heading");
+    expect(headingRow).toHaveClass("bg-section-header");
+    expect(headingRow).not.toHaveClass("bg-surface-sunken");
+    const headingText = within(headingRow).getByText(worksHeading("3.1"));
+    expect(headingText).toHaveClass("text-2xs");
+    expect(headingText).toHaveClass("font-semibold");
+    expect(headingText).toHaveClass("uppercase");
+    expect(headingText).toHaveClass("tracking-wider");
+    expect(headingText).toHaveClass("text-fg-tertiary");
+    // Прежний вес — не рядом стоящий, а СНЯТЫЙ: правка меняла className
+    // целиком, а не добавляла классы поверх старых.
+    expect(headingText).not.toHaveClass("font-medium");
+  });
 });
