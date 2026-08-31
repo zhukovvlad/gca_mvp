@@ -243,13 +243,33 @@ function CategoryRowGroup({
               счётчика до первой загрузки, «Работы · N» после — N читается из
               `worksCounts` таблицы, а не из самого блока, поэтому переживает
               его размонтирование при сворачивании (докстрок `WorksProps`).
+
+              Полировка после мержа: сверка с макетом (задача 12, DoD 6) нашла
+              расхождение по внешнему виду и записала его долгом в
+              `task-12-report.md` §4/§8 и в девлоге (кнопка осталась НЕ
+              исправлена намеренно тогда, до отдельного прохода) — долг не
+              заведён отдельным пунктом `docs/TECH_DEBT.md`. Здесь этот долг
+              закрывается тремя
+              измеренными свойствами — радиус (4 → 6px, `rounded-[6px]`,
+              точного именованного токена между `--radius-sm` 4px и
+              `--radius-md` 8px в палитре нет), вертикальный отступ (2px →
+              0, `py-0.5` → `py-0`), и приведением ФОНА к
+              `--bg-surface`/`bg-surface` (rgb(255,255,255) в макете — та же
+              строка `bg-surface`, что уже стоит у ячейки статьи глубины 0
+              несколькими строками выше). Цвет текста — токеном, не литералом
+              макета: `--fg2` макета (rgb(90,93,102)) — это ТОЧНО
+              `--text-secondary` приложения (`index.css`), уже несомый классом
+              `text-fg-secondary`, которым выше в этом же файле красится
+              заголовок статьи (`depth === 0 ? "text-fg" : "text-fg-secondary"`)
+              — тот же муted-но-не-третичный токен, точное совпадение в обеих
+              темах, а не «ближайший» подбор.
             */}
             {showWorksButton && (
               <button
                 type="button"
                 aria-expanded={worksOpen}
                 onClick={() => works.onToggleWorks(worksId as number)}
-                className="shrink-0 rounded px-1.5 py-0.5 text-2xs font-normal text-fg-tertiary hover:bg-surface-sunken hover:text-fg"
+                className="shrink-0 rounded-[6px] bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-sunken hover:text-fg"
               >
                 {worksCount !== undefined ? `${WORKS_BUTTON_LABEL} · ${worksCount}` : WORKS_BUTTON_LABEL}
               </button>
