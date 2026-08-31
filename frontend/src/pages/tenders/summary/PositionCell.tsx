@@ -80,6 +80,24 @@ export function PositionCell({
   // контракта (§2.11): `estimate_rows === 0` бывает РОВНО у состояния
   // `absent` — там третьего этажа по-прежнему нет вовсе.
   const rowsLabel = estimate_rows > 0 ? estimateRowsLabel(estimate_rows) : null;
+  // Отдельно от `formattedQuantity`: `quantity_unit` нулим самостоятельно
+  // (контракт несёт его `string | null` независимо от количества, — ревью PR
+  // #35, второй круг), поэтому единица приклеивается к числу ТОЛЬКО когда
+  // обе части есть — иначе на этаже читалось бы «5 null», а число без
+  // единицы должно остаться просто числом.
+  const quantityLabel =
+    formattedQuantity === null
+      ? null
+      : quantity_unit === null
+        ? formattedQuantity
+        : `${formattedQuantity} ${quantity_unit}`;
+  // Части этажа объёма собираются, а не подставляются в один шаблон: список
+  // отфильтрован от `null` и склеен разделителем, поэтому ни одна из
+  // комбинаций (число строк одно / число строк + объём / число строк + объём
+  // без единицы) не требует своего условия, и появление ещё одного
+  // необязательного поля в будущем не сможет тихо просочиться строкой
+  // `"null"` на экран.
+  const tierText = [rowsLabel, quantityLabel].filter((part): part is string => part !== null).join(" · ");
 
   return (
     <TableCell
@@ -130,8 +148,7 @@ export function PositionCell({
             quantity_changed || rowCountChanged ? "text-warning-text" : "text-fg-tertiary"
           )}
         >
-          {rowsLabel}
-          {formattedQuantity !== null && ` · ${formattedQuantity} ${quantity_unit}`}
+          {tierText}
         </div>
       )}
       {!hideChange && (
