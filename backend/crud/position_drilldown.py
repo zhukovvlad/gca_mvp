@@ -100,6 +100,14 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
             gross=_gross(amount), rows=rows,
             quantities=tuple(sorted(q for q in quantities if q is not None)), unit=unit)
 
+    # Правило конечности (§1.7), то же самое, что у позиций выше и у
+    # `v_category_totals` (alembic/versions/2026_08_10_0010-category_totals_view.py):
+    # NaN/Infinity/-Infinity строка допработ СЧИТАЕТСЯ в счётчике строк, но не
+    # входит в сумму. Без этой замены `sum()` был бы NaN на любой такой строке,
+    # и `article_delta` в services/position_drilldown.py падал бы с
+    # decimal.InvalidOperation вместо того, чтобы просто вычесть строку из суммы.
+    finite_extra = sa.case((EstimateAdditionalWork.total_amount.in_(_NOT_FINITE), None),
+                           else_=EstimateAdditionalWork.total_amount)
     extra_rows = db.execute(
         # Ключ группы — ЛОТ плюс ссылка: «3.2.2» в разных лотах законно означает
         # разные работы (§2.7). Подпись внутри этапа — первая строка по паре
@@ -109,7 +117,7 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
                       EstimateAdditionalWork.title,
                       EstimateAdditionalWork.proposal_id,
                       EstimateAdditionalWork.ordinal))[1],
-                  sa.func.sum(EstimateAdditionalWork.total_amount), sa.func.count())
+                  sa.func.sum(finite_extra), sa.func.count())
         .select_from(EstimateAdditionalWork)
         .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)

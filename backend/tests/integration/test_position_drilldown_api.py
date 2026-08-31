@@ -266,6 +266,89 @@ class TestLoadGroups:
         cells = pd_service.group_cells(work, columns, ss.pick_tax_basis([c.vat_rate_base for c in columns]))
         assert cells[stage].state != "absent" and cells[stage].estimate_rows > 0
 
+    @pytest.mark.parametrize("bad", [D("NaN"), D("Infinity")], ids=["nan", "inf"])
+    def test_non_finite_extra_row_is_counted_but_left_out_of_the_sum(self, db_session, factories, bad):
+        """§1.7, ветка допработ: то же правило конечности, что для позиций
+        (`test_non_finite_row_is_counted_but_left_out_of_the_sum`), но у
+        `EstimateAdditionalWork.total_amount` — единственная сумма (`crud/
+        position_drilldown.py::load_groups`, ветка `extra_rows`) БЕЗ этого
+        правила до фикса шла в `sum()` необёрнутой, а `total_amount >= 0`
+        (единственный CHECK на колонке) NaN и `Infinity` пропускает
+        («'NaN'::numeric >= 0» и «'Infinity'::numeric >= 0» истинны в
+        Postgres) — значит строка была допустимой в базе, но валила сумму
+        статьи. Ставится UPDATE-ом на импортированную строку, а не вставкой:
+        у `estimate_additional_works` тоже есть обязательные поля
+        (`raw_line`), и вставка ломалась бы на них, а не на правиле.
+
+        `-Infinity` НЕ параметризован здесь (в отличие от позиций, где та же
+        троица испытана без проблем): проверено запуском — UPDATE с
+        `-Infinity` падает `CheckViolation` на `ck_estimate_additional_works_
+        total_amount` (`total_amount >= 0`), потому что «'-Infinity'::numeric
+        >= 0» ложно. У `position_items.total_cost_total` такого CHECK нет
+        (только допустимость статьи/источника категории), поэтому там все три
+        значения проходят; здесь `-Infinity` физически не может лежать в
+        колонке — тест на невозможном состоянии не нужен."""
+        tender = factories.TenderFactory.create()
+        rnd = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        db_session.flush()
+        positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                              article_smr="6", number="1")]
+        import_and_match(db_session, tender_round=rnd, data=round_payload([proposal(
+            positions, vat_rate="20",
+            additional_works=additional_works_row(total="30.00"),
+            additional_info=svedeniya_info("1 Первая по файлу - 10.00 руб.",
+                                           "1 Вторая по файлу - 20.00 руб."))]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        estimates = estimates_of(db_session, offers)
+        before = crud_pd.load_groups(db_session, estimates, subtree)
+        extra = next(g for g in before if g.kind == pd_service.KIND_ADDITIONAL_WORKS)
+        assert extra.stages[0].rows == 2 and extra.stages[0].gross == D("30.00")   # предпосылка
+        # Ordinal 1 — строка «Первая по файлу», 10.00: ставим её неконечной.
+        db_session.execute(sa.update(EstimateAdditionalWork)
+                           .where(EstimateAdditionalWork.ordinal == 1).values(total_amount=bad))
+        db_session.flush()
+        after = crud_pd.load_groups(db_session, estimates, subtree)
+        same = next(g for g in after if g.kind == pd_service.KIND_ADDITIONAL_WORKS)
+        assert same.stages[0].rows == 2                       # строка посчитана
+        assert same.stages[0].gross == D("20.00")              # 30 - 10 (неконечная вычтена)
+
+    def test_group_of_only_non_finite_extra_rows_is_zero_not_absent(self, db_session, factories):
+        """Продолжение правила для допработ (аналог
+        `test_group_of_only_non_finite_rows_is_zero_not_absent` у позиций):
+        группа, у которой ВСЕ строки этапа неконечны, обязана дать нулевую
+        сумму при ненулевом счётчике — ноль как СОСТОЯНИЕ, а не отсутствие
+        строки; иначе эквивалентность §2.11 `estimate_rows == 0 ⟺ absent`
+        поехала бы и здесь, во втором источнике групп."""
+        tender = factories.TenderFactory.create()
+        rnd = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        db_session.flush()
+        positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                              article_smr="6", number="1")]
+        import_and_match(db_session, tender_round=rnd, data=round_payload([proposal(
+            positions, vat_rate="20",
+            additional_works=additional_works_row(total="30.00"),
+            additional_info=svedeniya_info("1 Первая по файлу - 10.00 руб.",
+                                           "1 Вторая по файлу - 20.00 руб."))]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id)).scalars().all()
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "6"))
+        estimates = estimates_of(db_session, offers)
+        db_session.execute(sa.update(EstimateAdditionalWork).values(total_amount=D("Infinity")))
+        db_session.flush()
+        groups = crud_pd.load_groups(db_session, estimates, subtree)
+        extra = next(g for g in groups if g.kind == pd_service.KIND_ADDITIONAL_WORKS)
+        assert extra.stages[0].rows > 0 and extra.stages[0].gross == D("0")
+        columns = [pd_service.DrillColumn(offer_id=offers[0], estimate_id=estimates[0], round_id=0,
+                                          stage_no=1, label=None, held_on=None, vat_rate_base=D("20"))]
+        cells = pd_service.group_cells(extra, columns, ss.pick_tax_basis([c.vat_rate_base for c in columns]))
+        assert cells[0].state != "absent" and cells[0].estimate_rows > 0
+
     def test_several_rows_under_one_ref_are_one_group_titled_by_ordinal(self, db_session, factories):
         """§2.7: ссылка ГРУППИРУЕТ работу (три такие группы на стенде: 5, 2, 2
         строки). Здесь наименования РАЗНЫЕ — случай, на котором правило подписи
@@ -523,6 +606,38 @@ class TestEndpointContract:
         data = self._drill(db_session, drill_grid)
         kinds = {r["kind"] for r in data["rows"]}
         assert "additional_works" in kinds
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_non_finite_extra_row_does_not_crash_the_endpoint(self, db_session, factories):
+        """Регресс на найденный дефект: до фикса неконечная сумма допработ
+        доходила необёрнутой до `article_delta` в `services/position_drilldown
+        .py`. `_row_from_group` считает `contribution.value` ТОЛЬКО по ПЕРВОЙ
+        и ПОСЛЕДНЕЙ показанным колонкам (`money_at(last) - money_at(first)`) —
+        поэтому воспроизвести падение НЕ получилось бы на `drill_grid`, где
+        допработы статьи «6» живут лишь на СРЕДНЕМ этапе трассы: NaN там не
+        касается ни первой, ни последней колонки, `article_delta` остаётся
+        конечным, а расхождение видно только как `converged: false` (не как
+        исключение) — разные дефекты, и smoke-тест обязан бить именно по
+        тому пути, что уронил прод: `_extras_only_grid` даёт статью «2» с
+        ЕДИНСТВЕННОЙ группой (допработы), присутствующей на ОБОИХ этапах —
+        первом и последнем разом, — так что NaN на первом этапе гарантированно
+        входит в `contribution.value`, а значит и в `article_delta`, и цикл
+        отбора `abs(article_delta - cumulative) > floor` получает NaN по ОБЕ
+        стороны `>`: `Decimal('NaN') > Decimal('NaN')` поднимает
+        `decimal.InvalidOperation` в питоновском `decimal` (проверено
+        отдельно, см. отчёт задачи) — ровно тот путь, что бил прод."""
+        tender, offers = _extras_only_grid(db_session, factories)
+        estimates = estimates_of(db_session, offers)
+        db_session.execute(
+            sa.update(EstimateAdditionalWork)
+            .where(EstimateAdditionalWork.proposal_id.in_(
+                sa.select(Proposal.id).join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimates[0])))
+            .values(total_amount=D("NaN")))
+        db_session.flush()
+        # Не должно бросить decimal.InvalidOperation.
+        data = crud_pd.build_position_drilldown(db_session, tender.id, category_id(db_session, "2"), offers)
+        assert data["reason"] is None
         assert all(c["converged"] is True for c in data["convergence"])
 
     def test_unknown_work_category_is_404(self, db_session, drill_grid):
