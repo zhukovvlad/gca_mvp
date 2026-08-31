@@ -392,6 +392,98 @@ class TestAmounts:
         assert six["cells"][1]["amount"] != six["cells"][1]["additional_works_amount"]
         assert six["cells"][0]["additional_works_amount"] is None   # ветви нет вовсе
 
+    def test_has_drilldown_rows_true_for_article_with_rows_and_false_without(self, db_session, grid):
+        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        by_code = {r["code"]: r for r in data["rows"]}
+        assert by_code["6"]["has_drilldown_rows"] is True          # позиции есть
+        assert by_code["2"]["has_drilldown_rows"] is True          # раунд 1 несёт строку с суммой 60
+        empty = next(r for r in data["rows"] if all(c["rows"]["row_count"] == 0 for c in r["cells"]))
+        assert empty["has_drilldown_rows"] is False
+
+    def test_unallocated_never_promises_a_drilldown(self, db_session, factories):
+        """У «Нераспределённого» нет work_category_id, значит нет и эндпоинта:
+        поле обязано быть false ДАЖЕ когда строки там есть.
+
+        Не через `grid`: там «Нераспределённое» пусто (`row_count == 0` во
+        всех колонках) — проверка была бы истинна при ЛЮБОЙ реализации
+        (ревью 31.08.2026: с удалённым `not r.is_unallocated` тест на `grid`
+        оставался зелёным). Строка без `article_smr` — корневой раздел, у
+        которого резолвер не может унаследовать статью (родителя нет), поэтому
+        и раздел, и работа под ним получают `work_category_id = NULL`
+        (`services/category_resolution._article_for`, ветка `raw is None` →
+        `"unassigned"`) и уходят в bucket «Нераспределённое» `v_category_totals`."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+
+        def payload():
+            positions = [
+                position(job_title="Раздел без статьи", is_chapter=True, chapter_number="1", number="1"),
+                position(job_title="Работа без статьи", unit="м2", quantity=1, suggested_quantity=1,
+                         unit_cost_total="50.00", total_cost_total="50.00", chapter_ref="1", number="2"),
+            ]
+            summary = {JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", "50.00"),
+                       JSON_KEY_VAT_AMOUNT: summary_line("В том числе НДС", "0"),
+                       JSON_KEY_TOTAL_COST_EXCLUDING_VAT: summary_line("ИТОГО, руб. без учета НДС", "50.00")}
+            return proposal(positions, vat_rate="20", summary=summary)
+        for _n, rnd in rounds.items():
+            import_round(db_session, tender_round=rnd, data=round_payload([payload()]), parser_version="4.0.0",
+                         import_job_id=None, replace=False, unit_resolver=UnitResolver(db_session),
+                         category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)
+        ).scalars().all()
+        data = crud_ss.build_stage_summary(db_session, tender.id, offers)
+        unallocated = data["unallocated"]
+        # Премиса теста: строки в «Нераспределённом» РЕАЛЬНО есть хотя бы в
+        # одной колонке. Без этой проверки тест мог бы снова угаснуть молча.
+        assert any(c["rows"]["row_count"] > 0 for c in unallocated["cells"])
+        assert unallocated["has_drilldown_rows"] is False
+        assert unallocated["work_category_id"] is None
+
+    def test_has_drilldown_rows_counts_both_branches_and_the_subtree(self, db_session, factories):
+        """Негативные проверки §6.2/§6.3 на уровне свода: статья с ОДНИМИ
+        допработами и узел БЕЗ собственных строк, но со строками потомка,
+        оба получают True — проверка одних position_items или одних прямых
+        строк статьи обязана здесь краснеть."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        # Раздел 1 -> статья 6.1 (потомок 6, СОБСТВЕННЫХ строк у 6 нет);
+        # раздел 2 -> статья 2, работ ноль, только допработа по ссылке «2».
+        def payload(amount_61: str, extra: str):
+            positions = [
+                position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                         article_smr="6.1", number="1"),
+                position(job_title="Работа фасада", unit="м2", quantity=1, suggested_quantity=1,
+                         unit_cost_total=amount_61, total_cost_total=amount_61,
+                         chapter_ref="1", number="2"),
+                position(job_title="Раздел 2", is_chapter=True, chapter_number="2",
+                         article_smr="2", number="3"),
+            ]
+            summary = {JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", "144.00"),
+                       JSON_KEY_VAT_AMOUNT: summary_line("В том числе НДС", "0"),
+                       JSON_KEY_TOTAL_COST_EXCLUDING_VAT: summary_line("ИТОГО, руб. без учета НДС", "144.00")}
+            return proposal(positions, vat_rate="20", summary=summary,
+                            additional_works=additional_works_row(total=extra),
+                            additional_info=svedeniya_info(f"2 Допработы участка - {extra} руб."))
+        for _n, rnd in rounds.items():
+            import_round(db_session, tender_round=rnd,
+                         data=round_payload([payload("120.00", "24.00")]), parser_version="4.0.0",
+                         import_job_id=None, replace=False, unit_resolver=UnitResolver(db_session),
+                         category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)
+        ).scalars().all()
+        data = crud_ss.build_stage_summary(db_session, tender.id, offers)
+        by_code = {r["code"]: r for r in data["rows"]}
+        assert by_code["6"]["has_drilldown_rows"] is True   # поддерево: строки только у 6.1
+        assert by_code["2"]["has_drilldown_rows"] is True   # только допработы
+
     def test_states_along_selected_path(self, db_session, grid):
         body = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
         two = _row(body, "2")

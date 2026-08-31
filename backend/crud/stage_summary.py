@@ -204,6 +204,15 @@ def _row(r: ss.SummaryRow) -> dict:
             "code": None if r.ref is None else r.ref.code,
             "title": "Нераспределённое" if r.ref is None else r.ref.title,
             "is_unallocated": r.is_unallocated,
+            # §2.12 спеки фичи 4: есть ли в ПОДДЕРЕВЕ строки разложения хотя бы
+            # в одной выбранной колонке. row_count узла уже включает всё
+            # поддерево по ОБЕИМ ветвям (позиции + допработы) — см. комментарий
+            # у total_row_counts в services/stage_summary.compute_summary.
+            # У «Нераспределённого» — всегда false: разложение адресуется
+            # work_category_id, которого у этой строки нет, и обещать раскрытие,
+            # которого нельзя запросить, контракт не должен.
+            "has_drilldown_rows": (not r.is_unallocated
+                                   and any(c.rows.row_count > 0 for c in r.cells)),
             "cells": [_cell(c) for c in r.cells],
             "bargain": _change(r.bargain),
             "contribution": {"value": _money(r.contribution.value), "direction": r.contribution.direction,
