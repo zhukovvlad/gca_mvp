@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
 from config import settings
+from crud import position_drilldown as crud_position_drilldown
 from crud import stage_summary as crud_stage_summary
 from crud import tenders as crud_tenders
 from crud.common import DomainError
@@ -87,6 +88,17 @@ def stage_summary(tender_id: int, offers: list[int] = Query(default=[]), db: Ses
     """
     try:
         return decimal_json(crud_stage_summary.build_stage_summary(db, tender_id, offers))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.get("/{tender_id}/stage-summary/{work_category_id}")
+def stage_position_drilldown(tender_id: int, work_category_id: int,
+                             offers: list[int] = Query(default=[]), db: Session = Depends(get_db)):
+    """Разложение статьи свода по работам (спека 2026-08-30-position-drilldown-design.md §2.11)."""
+    try:
+        return decimal_json(crud_position_drilldown.build_position_drilldown(
+            db, tender_id, work_category_id, offers))
     except DomainError as e:
         raise_domain_error(e)
 

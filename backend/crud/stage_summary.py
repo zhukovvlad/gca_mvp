@@ -166,26 +166,34 @@ def load_inputs(db: Session, selection) -> list[ss.ColumnInput]:
     ]
 
 
-def _money(v: Decimal | None) -> str | None:
+def money_str(v: Decimal | None) -> str | None:
+    """Деньги в строку через `quantize_money` — ПУБЛИЧНОЕ правило сериализации,
+    одно на свод и на разложение статьи (`crud/position_drilldown.py`, спека
+    2026-08-30-position-drilldown-design.md §2.11): второй копии этого правила
+    быть не должно, иначе они разойдутся незаметно."""
     q = quantize_money(v)
     return None if q is None else str(q)
 
 
-def _pct(v: Decimal | None) -> str | None:
+def pct_str(v: Decimal | None) -> str | None:
+    """Процент в строку с одним знаком после запятой — то же правило одно на
+    свод и на разложение статьи, см. докстроку `money_str`."""
     return None if v is None else str(v.quantize(_PCT, rounding=ROUND_HALF_UP))
 
 
-def _change(c: ss.Change) -> dict:
-    value = _pct(c.value) if c.kind == ss.KIND_PERCENT else _money(c.value)
+def change_json(c: ss.Change) -> dict:
+    """Сериализация `ss.Change` — то же правило одно на свод и на разложение
+    статьи, см. докстроку `money_str`."""
+    value = pct_str(c.value) if c.kind == ss.KIND_PERCENT else money_str(c.value)
     return {"kind": c.kind, "value": value, "direction": c.direction, "reason": c.reason}
 
 
 def _cell(c: ss.Cell) -> dict:
-    return {"state": c.state, "amount": _money(c.shown), "amount_unavailable_reason": c.unavailable_reason,
-            "additional_works_amount": _money(c.additional_works_shown),
+    return {"state": c.state, "amount": money_str(c.shown), "amount_unavailable_reason": c.unavailable_reason,
+            "additional_works_amount": money_str(c.additional_works_shown),
             "rows": {"row_count": c.rows.row_count, "rows_with_amount": c.rows.rows_with_amount,
                      "rows_not_finite": c.rows.rows_not_finite},
-            "change": _change(c.change)}
+            "change": change_json(c.change)}
 
 
 def _total_cell(c: ss.TotalCell) -> dict:
@@ -193,10 +201,10 @@ def _total_cell(c: ss.TotalCell) -> dict:
     `additional_works_amount` (спека перечисляет их отсутствие явно). Отдельный
     сериализатор, а не `_cell`, потому что у типов теперь разные поля, а не
     только разные значения одних и тех же."""
-    return {"amount": _money(c.shown), "amount_unavailable_reason": c.unavailable_reason,
+    return {"amount": money_str(c.shown), "amount_unavailable_reason": c.unavailable_reason,
             "rows": {"row_count": c.rows.row_count, "rows_with_amount": c.rows.rows_with_amount,
                      "rows_not_finite": c.rows.rows_not_finite},
-            "change": _change(c.change)}
+            "change": change_json(c.change)}
 
 
 def _row(r: ss.SummaryRow) -> dict:
@@ -214,8 +222,8 @@ def _row(r: ss.SummaryRow) -> dict:
             "has_drilldown_rows": (not r.is_unallocated
                                    and any(c.rows.row_count > 0 for c in r.cells)),
             "cells": [_cell(c) for c in r.cells],
-            "bargain": _change(r.bargain),
-            "contribution": {"value": _money(r.contribution.value), "direction": r.contribution.direction,
+            "bargain": change_json(r.bargain),
+            "contribution": {"value": money_str(r.contribution.value), "direction": r.contribution.direction,
                              "reason": r.contribution.reason},
             "children": [_row(ch) for ch in r.children]}
 
@@ -263,12 +271,12 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
             "kind": "round", "offer_id": c.input.offer_id, "estimate_id": c.input.estimate_id,
             "round_id": c.input.round_id, "stage_no": c.input.stage_no, "label": c.input.label,
             "held_on": iso(c.input.held_on), "vat_rate_base": None if c.input.vat_rate_base is None else str(c.input.vat_rate_base),
-            "vat_state": c.vat_state, "total": _money(c.total_shown), "total_change": _change(c.total_change),
-            "bar_height_pct": _pct(c.bar_height_pct),
+            "vat_state": c.vat_state, "total": money_str(c.total_shown), "total_change": change_json(c.total_change),
+            "bar_height_pct": pct_str(c.bar_height_pct),
             "manual_overrides": {"count": c.input.overrides_count, "last_at": iso(c.input.overrides_last_at)},
-            "convergence": {"categories_sum": _money(c.convergence.categories_sum_gross),
-                            "file_total": _money(c.convergence.file_total_gross),
-                            "converged": c.convergence.converged, "delta": _money(c.convergence.delta),
+            "convergence": {"categories_sum": money_str(c.convergence.categories_sum_gross),
+                            "file_total": money_str(c.convergence.file_total_gross),
+                            "converged": c.convergence.converged, "delta": money_str(c.convergence.delta),
                             "reason": c.convergence.reason},
         } for c in result.columns],
         "rows": [_row(r) for r in result.rows],
@@ -280,6 +288,6 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
                     "price_level": "nominal"},
         "kpi": {"stages_selected": result.kpi.stages_selected, "stages_loaded": rounds_with_estimate,
                 "last_stage_positions": last_positions, "categories_with_amount": result.kpi.categories_with_amount,
-                "categories_total": result.kpi.categories_total, "first_to_last": _change(result.kpi.first_to_last)},
+                "categories_total": result.kpi.categories_total, "first_to_last": change_json(result.kpi.first_to_last)},
         "track": {"available": result.track.available, "reason": result.track.reason},
     }

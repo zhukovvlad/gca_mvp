@@ -10,6 +10,8 @@ import pytest
 import sqlalchemy as sa
 
 from crud import position_drilldown as crud_pd
+from crud import stage_summary as crud_ss
+from crud.common import DomainError
 from models import (
     Estimate,
     EstimateAdditionalWork,
@@ -369,9 +371,36 @@ class TestLoadGroups:
         assert len(works) == 1 and works[0].stages[0].rows == 2   # лот в ключ работы не входит
         assert works[0].stages[0].gross == D("10.00")
 
-        # Ответ уровня HTTP-контракта (build_position_drilldown, row_key,
-        # lot_key, convergence) — задача 5; здесь останавливаемся на групповом
-        # уровне, как предписывает бриф задачи 4.
+        # Ответ уровня HTTP-контракта: те же два лота обязаны остаться двумя
+        # РАЗЛИЧНЫМИ строками (row_key), делящими один и тот же голый
+        # chapter_ref_raw «1», с лотом в отдельном поле lot_key (§2.11).
+        #
+        # Суммы обоих лотов заведены выше ОДИНАКОВЫМИ на обоих этапах — годится
+        # для проверки идентичности группы, но не для видимости строки:
+        # `article_delta == 0` — законный случай БЕЗ единого объяснителя (§2.3),
+        # и обе строки ушли бы в свёрнутые «прочие» неразличимо. Здесь суммы
+        # второго этапа разводятся, чтобы у каждого лота появился свой ненулевой
+        # вклад и обе строки допработ остались показаны РАЗДЕЛЬНО — иначе
+        # row_key и lot_key ответа проверять было бы не на чем.
+        lot_1_proposals = sa.select(Proposal.id).join(Lot, Lot.id == Proposal.lot_id).where(
+            Lot.estimate_id == estimates[1], Lot.lot_key == "lot_1")
+        lot_2_proposals = sa.select(Proposal.id).join(Lot, Lot.id == Proposal.lot_id).where(
+            Lot.estimate_id == estimates[1], Lot.lot_key == "lot_2")
+        db_session.execute(sa.update(EstimateAdditionalWork)
+                           .where(EstimateAdditionalWork.proposal_id.in_(lot_1_proposals))
+                           .values(total_amount=D("22.00")))
+        db_session.execute(sa.update(EstimateAdditionalWork)
+                           .where(EstimateAdditionalWork.proposal_id.in_(lot_2_proposals))
+                           .values(total_amount=D("4.00")))
+        db_session.flush()
+
+        data = crud_pd.build_position_drilldown(db_session, tender.id, subtree_category, offers)
+        extra_rows = [r for r in data["rows"] if r["kind"] == pd_service.KIND_ADDITIONAL_WORKS]
+        assert len(extra_rows) == 2
+        assert len({r["row_key"] for r in extra_rows}) == 2
+        assert {r["chapter_ref_raw"] for r in extra_rows} == {"1"}
+        assert {r["lot_key"] for r in extra_rows} == {"lot_1", "lot_2"}
+        assert all(c["converged"] is True for c in data["convergence"])
 
     def test_quantities_are_sorted_and_distinct_within_a_stage(self, db_session, factories):
         """§2.4: объём этапа — МНОЖЕСТВО значений `suggested_quantity`, а не
@@ -406,3 +435,226 @@ class TestLoadGroups:
         work = next(g for g in groups if g.kind == pd_service.KIND_POSITION)
         assert work.stages[0].quantities == (D("5"), D("11"))     # дубль схлопнут, отсортировано
         assert work.stages[0].rows == 3                            # счётчик строк дубль не теряет
+
+
+def _subtree_only_grid(db_session, factories):
+    """Два раунда; все строки лежат в статье 6.1 — у статьи 6 собственных строк нет."""
+    tender = factories.TenderFactory.create()
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+    db_session.flush()
+    for n, amount in ((1, "120.00"), (2, "96.00")):
+        positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                              article_smr="6.1", number="1"),
+                     position(job_title="Фасадная работа", unit="м2", quantity=1, suggested_quantity=1,
+                              unit_cost_total=amount, total_cost_total=amount,
+                              chapter_ref="1", number="2")]
+        import_and_match(db_session, tender_round=rounds[n],
+                         data=round_payload([proposal(positions, vat_rate="20")]))
+    db_session.flush()
+    offers = db_session.execute(
+        sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+    return tender, offers
+
+
+def _extras_only_grid(db_session, factories):
+    """Два раунда. Раздел 1 (статья 6) несёт работы; раздел 2 (статья 2) — ни
+    одной работы, только строку «Сведений» по ссылке «2». Поддерево статьи 2
+    состоит из одних допработ.
+
+    Проверено запуском: импорт ПРИНИМАЕТ главу без единой строки под ней —
+    постобработка её не отбрасывает, а `decide_owner`/`resolve_ref` резолвят
+    ссылку «2» в `work_category_id` статьи «2» тем же путём, что и обычная
+    ссылка внутри непустого раздела. Обходной ORM-вставки (как в фикстуре
+    Task 4 для двух лотов) здесь не понадобилось — обычный `import_and_match`
+    заводит нужную картину."""
+    tender = factories.TenderFactory.create()
+    rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+    db_session.flush()
+    for n, extra in ((1, "24.00"), (2, "30.00")):
+        positions = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                              article_smr="6", number="1"),
+                     position(job_title="Работа фасада", unit="м2", quantity=1, suggested_quantity=1,
+                              unit_cost_total="100.00", total_cost_total="100.00",
+                              chapter_ref="1", number="2"),
+                     # раздел БЕЗ работ под ним — его статья живёт только допработой
+                     position(job_title="Раздел 2", is_chapter=True, chapter_number="2",
+                              article_smr="2", number="3")]
+        import_and_match(db_session, tender_round=rounds[n],
+                     data=round_payload([proposal(
+                         positions, vat_rate="20",
+                         additional_works=additional_works_row(total=extra),
+                         additional_info=svedeniya_info(f"2 Допработы участка - {extra} руб."))]))
+    db_session.flush()
+    offers = db_session.execute(
+        sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+    return tender, offers
+
+
+class TestEndpointContract:
+    def _drill(self, db, grid, code="6", offers=None):
+        return crud_pd.build_position_drilldown(
+            db, grid.tender.id, category_id(db, code), offers or grid.path)
+
+    def test_response_shape_and_cell_row_invariant(self, db_session, drill_grid):
+        data = self._drill(db_session, drill_grid)
+        assert data["work_category"]["code"] == "6" and data["reason"] is None
+        assert [c["stage_no"] for c in data["columns"]] == [1, 2, 4]
+        assert data["display"]["tax_basis"] == "gross" and data["display"]["reason"] == "single_rate"
+        for row in data["rows"]:
+            assert len(row["cells"]) == len(data["columns"])
+            for cell in row["cells"]:
+                assert (cell["estimate_rows"] == 0) == (cell["state"] == "absent")
+
+    def test_convergence_matches_the_summary_row_number(self, db_session, drill_grid):
+        """§2.13: article_amount == числу строки свода, shown_sum == article_amount."""
+        summary = crud_ss.build_stage_summary(db_session, drill_grid.tender.id, drill_grid.path)
+        summary_row = next(r for r in summary["rows"] if r["code"] == "6")
+        data = self._drill(db_session, drill_grid)
+        for idx, conv in enumerate(data["convergence"]):
+            assert conv["converged"] is True
+            expected = summary_row["cells"][idx]["amount"] or "0.00"
+            assert conv["article_amount"] == expected == conv["shown_sum"]
+
+    def test_extras_money_is_inside_the_rows_or_totals_do_not_converge(self, db_session, drill_grid):
+        """§1.5: сумма статьи в своде = позиции ПЛЮС допработы; в grid у статьи 6
+        на этапе 2 допработы 24.00 — без их строки сходимость упала бы."""
+        data = self._drill(db_session, drill_grid)
+        kinds = {r["kind"] for r in data["rows"]}
+        assert "additional_works" in kinds
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_unknown_work_category_is_404(self, db_session, drill_grid):
+        with pytest.raises(DomainError) as e:
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, 10**9, drill_grid.path)
+        assert e.value.status_code == 404 and e.value.code == crud_pd.CODE_WC_NOT_FOUND
+
+    def test_selection_refusals_are_the_summary_codes(self, db_session, drill_grid):
+        with pytest.raises(DomainError) as e:
+            self._drill(db_session, drill_grid, offers=[drill_grid.path[0]])
+        assert e.value.code == "too_few_offers"
+
+    def test_empty_subtree_is_no_rows_in_subtree_not_an_error(self, db_session, drill_grid):
+        """Пустота проверяется ПО ОБЕИМ ветвям и ПО ВСЕМУ поддереву выбранных
+        смет, а не «по категориям, не встречающимся в position_items»: та
+        формулировка выбрала бы и корень со строками у потомка (живой узел «1»),
+        и статью с одними допработами — то есть тест мерил бы не то, что
+        обещает (ревью плана 31.08.2026). Предпосылку тест доказывает сам."""
+        estimates = estimates_of(db_session, drill_grid.path)
+        # В grid заняты статьи «6» и «2»; «3» не заняты ни работой, ни допработой.
+        subtree = crud_pd.subtree_ids(db_session, category_id(db_session, "3"))
+        chapter = sa.orm.aliased(PositionItem)
+        positions_in_subtree = db_session.execute(
+            sa.select(sa.func.count()).select_from(PositionItem)
+            .join(chapter, sa.and_(chapter.id == PositionItem.chapter_item_id,
+                                   chapter.proposal_id == PositionItem.proposal_id))
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id.in_(estimates), PositionItem.is_chapter.is_(False),
+                   chapter.work_category_id.in_(subtree))).scalar_one()
+        extras_in_subtree = db_session.execute(
+            sa.select(sa.func.count()).select_from(EstimateAdditionalWork)
+            .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id.in_(estimates),
+                   EstimateAdditionalWork.work_category_id.in_(subtree))).scalar_one()
+        assert positions_in_subtree == 0 and extras_in_subtree == 0   # предпосылка теста
+        data = self._drill(db_session, drill_grid, code="3")
+        assert data["reason"] == "no_rows_in_subtree" and data["rows"] == []
+        assert data["convergence"] == []
+
+    def test_subtree_of_only_additional_works_gets_a_drilldown(self, db_session, factories):
+        """Негативная §6.2 и фикстура §5: статья, в поддереве которой ТОЛЬКО
+        допработы (на стенде таких поддеревьев нет — 0 из 143), разложение
+        получает; проверка одних `position_items` обязана здесь краснеть."""
+        tender, offers = _extras_only_grid(db_session, factories)
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "2"), offers)
+        assert data["reason"] is None
+        assert [r["kind"] for r in data["rows"] if r["group_count"] is None] == ["additional_works"]
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_article_with_only_descendant_rows_gets_a_drilldown(self, db_session, factories):
+        """Негативная §6.2: узел без собственных строк, но со строками потомка,
+        no_rows_in_subtree НЕ получает и отдаёт непустое разложение (живой
+        случай стенда: 18 и 22 таких узла по трассам, §1.7)."""
+        tender, offers = _subtree_only_grid(db_session, factories)
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "6"), offers)
+        assert data["reason"] is None and len(data["rows"]) >= 1
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_query_count_does_not_grow_with_columns(self, db_session, drill_grid):
+        wc = category_id(db_session, "6")
+        with count_queries(db_session) as c2:
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, wc, drill_grid.path[:2])
+        with count_queries(db_session) as c3:
+            crud_pd.build_position_drilldown(db_session, drill_grid.tender.id, wc, drill_grid.path)
+        assert c2["n"] == c3["n"]
+
+    def test_quantity_is_serialized_raw_not_formatted(self, db_session, drill_grid):
+        """§2.11: `quantity` — СЫРОЕ значение `suggested_quantity`, как оно лежит
+        в базе (пример спеки: `"8726.397168"`), а не разряды/один знак после
+        запятой (§2.4) — то форматирование клиентское (Task 9). `chaptered()`
+        задаёт `suggested_quantity=1` во всех раундах grid — раз объём не
+        менялся, `str(Decimal("1"))` обязано остаться голым «1», а не «1.0»
+        или «1,0»."""
+        data = self._drill(db_session, drill_grid)
+        work_row = next(r for r in data["rows"] if r["kind"] == pd_service.KIND_POSITION)
+        assert [c["quantity"] for c in work_row["cells"]] == ["1", "1", "1"]
+
+    def test_quantity_join_and_null_at_response_level(self, db_session, factories):
+        """§2.11, вторая половина правила `quantity` — не покрыта соседним
+        тестом (тот проверяет только «сырое против отформатированного» на
+        ОДНОМ значении). Здесь — два случая, оба живут в одной строке
+        `_cell_json`: несколько `suggested_quantity` на этапе join'ятся `+`
+        БЕЗ пробелов и в отсортированном порядке (разряды и пробел вокруг
+        `+` — клиентское форматирование, Task 9); у строки без объёма вовсе
+        (допработы) `quantity` — JSON `null`, а не пустая строка.
+
+        Обе группы заведены ТОЛЬКО в первом раунде (во втором — пустая глава
+        без работ и без допработ), поэтому обе — появившиеся/исчезнувшие
+        (класс 2 §2.3) и остаются показаны РАЗДЕЛЬНО, а не тонут в «прочих»
+        (тот самый урок из блока Task 4, задача 5)."""
+        tender = factories.TenderFactory.create()
+        r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+        db_session.flush()
+        positions_r1 = [
+            position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                     article_smr="6", number="1"),
+            # ДВЕ строки одного наименования и единицы — матчинг сведёт их в
+            # одну группу с двумя РАЗНЫМИ suggested_quantity на этом этапе.
+            position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=11,
+                     unit_cost_total="7.00", total_cost_total="7.00", chapter_ref="1", number="2"),
+            position(job_title="Работа", unit="м2", quantity=1, suggested_quantity=5,
+                     unit_cost_total="5.00", total_cost_total="5.00", chapter_ref="1", number="3"),
+        ]
+        import_and_match(db_session, tender_round=r1, data=round_payload([proposal(
+            positions_r1, vat_rate="20",
+            additional_works=additional_works_row(total="9.00"),
+            additional_info=svedeniya_info("1 Допработы - 9.00 руб."))]))
+        positions_r2 = [position(job_title="Раздел 1", is_chapter=True, chapter_number="1",
+                                 article_smr="6", number="1")]   # пустая глава — работа и допработы исчезли
+        import_and_match(db_session, tender_round=r2, data=round_payload([proposal(positions_r2, vat_rate="20")]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        data = crud_pd.build_position_drilldown(db_session, tender.id, category_id(db_session, "6"), offers)
+
+        work_row = next(r for r in data["rows"] if r["kind"] == pd_service.KIND_POSITION)
+        assert work_row["cells"][0]["quantity"] == "5+11"    # отсортировано, без пробелов
+        assert work_row["cells"][1]["quantity"] is None      # исчезла — absent, объёма нет
+
+        extra_row = next(r for r in data["rows"] if r["kind"] == pd_service.KIND_ADDITIONAL_WORKS)
+        assert extra_row["cells"][0]["quantity"] is None     # у допработ объёма нет вовсе — null, не ""
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_http_route_returns_the_same_payload(self, client, db_session, drill_grid):
+        wc = category_id(db_session, "6")
+        offers = "&".join(f"offers={o}" for o in drill_grid.path)
+        response = client.get(f"/api/v1/tenders/{drill_grid.tender.id}/stage-summary/{wc}?{offers}")
+        assert response.status_code == 200
+        assert response.json()["work_category"]["code"] == "6"

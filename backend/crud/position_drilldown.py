@@ -13,12 +13,15 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session, aliased
 
+from crud import stage_summary as crud_ss
+from crud.common import DomainError, iso
 from models import (
     CatalogPosition,
     EstimateAdditionalWork,
     Lot,
     PositionItem,
     Proposal,
+    Tender,
     UnitOfMeasure,
     WorkCategory,
 )
@@ -26,6 +29,10 @@ from services import position_drilldown as pd
 
 UNMATCHED_TITLE = "Строки без каталожной привязки"
 _NOT_FINITE = (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"))
+
+#: Шестая проверка сверх пяти проверок свода (спека §2.11): `work_category_id`
+#: не существует.
+CODE_WC_NOT_FOUND = "work_category_not_found"
 
 
 def _gross(amount: Decimal | None) -> Decimal:
@@ -125,3 +132,67 @@ def load_groups(db: Session, estimate_ids: Sequence[int], subtree: Sequence[int]
                           chapter_ref_raw=g["chapter_ref_raw"], title=g["title"],
                           stages=g["stages"], key=g["key"])
             for g in groups.values()]
+
+
+def _cell_json(c: pd.DrillCell) -> dict:
+    """`quantity` — СТРОКА с сырыми значениями `suggested_quantity` (§2.11:
+    пример показывает `"8726.397168"`), несколько — через `+`; `null`, если
+    объёма нет вовсе. Разрядность и один знак после запятой — на клиенте
+    (Task 9), здесь форматирования НЕТ."""
+    quantity = "+".join(str(q) for q in c.quantities) if c.quantities else None
+    return {"state": c.state, "amount": crud_ss.money_str(c.shown),
+            "amount_unavailable_reason": c.unavailable_reason,
+            "quantity": quantity, "quantity_unit": c.quantity_unit,
+            "quantity_changed": c.quantity_changed, "estimate_rows": c.estimate_rows,
+            "change": crud_ss.change_json(c.change)}
+
+
+def _row_json(r: pd.DrillRow) -> dict:
+    return {"kind": r.kind, "row_key": r.row_key,
+            "catalog_position_id": r.catalog_position_id,
+            "chapter_ref_raw": r.chapter_ref_raw, "lot_key": r.lot_key, "title": r.title,
+            "ambiguous": r.ambiguous, "group_count": r.group_count,
+            "cells": [_cell_json(c) for c in r.cells],
+            "bargain": crud_ss.change_json(r.bargain),
+            "contribution": {"value": crud_ss.money_str(r.contribution.value),
+                             "direction": r.contribution.direction, "reason": None}}
+
+
+def build_position_drilldown(db: Session, tender_id: int, work_category_id: int,
+                             offer_ids: Sequence[int]) -> dict:
+    """Разложение статьи свода по работам — эндпоинт (спека §2.11).
+
+    Проверки по порядку: тендер (свой код, не `get_tender` — как у свода),
+    статья, пять проверок выбора `crud_ss.validate_selection`. Ось измерения
+    считается ТЕМ ЖЕ кодом, что у свода (`crud_ss.load_inputs`), поэтому
+    разойтись с ним не может по построению (§2.8).
+    """
+    tender = db.get(Tender, tender_id)
+    if tender is None:
+        # Свой код, а не `get_tender` — как у свода (`crud_ss.build_stage_summary`).
+        raise DomainError(404, f"Тендер {tender_id} не найден.", code=crud_ss.CODE_TENDER_NOT_FOUND,
+                          context={"offers": sorted(offer_ids)})
+    category = db.get(WorkCategory, work_category_id)
+    if category is None:
+        raise DomainError(404, f"Статья {work_category_id} не найдена.", code=CODE_WC_NOT_FOUND,
+                          context={"offers": sorted(offer_ids)})
+    selection = crud_ss.validate_selection(db, tender_id, offer_ids)
+    inputs = crud_ss.load_inputs(db, selection)
+    columns = [pd.DrillColumn(offer_id=c.offer_id, estimate_id=c.estimate_id, round_id=c.round_id,
+                              stage_no=c.stage_no, label=c.label, held_on=c.held_on,
+                              vat_rate_base=c.vat_rate_base) for c in inputs]
+    estimate_ids = [c.estimate_id for c in columns]
+    groups = load_groups(db, estimate_ids, subtree_ids(db, work_category_id))
+    result = pd.compute_drilldown(columns, groups)
+    return {
+        "work_category": {"id": category.id, "code": category.code, "title": category.title},
+        "columns": [{"offer_id": c.offer_id, "estimate_id": c.estimate_id, "round_id": c.round_id,
+                     "stage_no": c.stage_no, "label": c.label, "held_on": iso(c.held_on)}
+                    for c in columns],
+        "display": {"tax_basis": result.display.basis, "reason": result.display.reason},
+        "rows": [_row_json(r) for r in result.rows],
+        "convergence": [{"stage_no": v.stage_no, "article_amount": crud_ss.money_str(v.article_amount),
+                         "shown_sum": crud_ss.money_str(v.shown_sum),
+                         "converged": v.converged, "reason": v.reason} for v in result.convergence],
+        "reason": result.reason,
+    }
