@@ -263,13 +263,35 @@ function CategoryRowGroup({
               заголовок статьи (`depth === 0 ? "text-fg" : "text-fg-secondary"`)
               — тот же муted-но-не-третичный токен, точное совпадение в обеих
               темах, а не «ближайший» подбор.
+
+              Второй круг полировки (ветка `feat/drilldown-polish`,
+              01.09.2026): продукт-оунер посмотрел на смёрженный экран и
+              указал, что кнопка по-прежнему читается как серый текст, а не
+              контрол — и был прав. Причина в том, что предыдущая сверка
+              (DoD 6, задача 12) сравнивала только радиус/отступ/цвет/фон и
+              ни разу не сравнивала `border` и `:hover` — ни для этой кнопки,
+              ни для какого-либо другого узла фичи (инсайт
+              `docs/insights/enumerate-the-rules-own-properties.md`).
+              Добавлены `border border-border-default` (макетная рамка —
+              `1px solid`, цвет `rgba(0,0,0,.14)`/`#3A4148` — точное
+              совпадение с `--border-default` приложения в обеих темах, тот
+              же идиом уже несёт вторичная кнопка,
+              `ui-domain/Button.tsx`), и `hover:bg-surface-hover` заменил
+              `hover:bg-surface-sunken` (макетный цвет наведения —
+              `#FAFAF7`/`#262B35` — это `--bg-surface-hover` приложения, а не
+              `--bg-surface-sunken`/`#F7F6F2`, другой токен). Отступ до
+              заголовка статьи (`margin-left: 8px` макета) отдельным классом
+              не добавлен: `gap-2` родительского `flex`
+              (`items-start gap-2` на строке контейнера первой ячейки) уже
+              даёт ровно 8px между всеми детьми, включая эту кнопку и
+              заголовок перед ней.
             */}
             {showWorksButton && (
               <button
                 type="button"
                 aria-expanded={worksOpen}
                 onClick={() => works.onToggleWorks(worksId as number)}
-                className="shrink-0 rounded-[6px] bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-sunken hover:text-fg"
+                className="shrink-0 rounded-[6px] border border-border-default bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-hover hover:text-fg"
               >
                 {worksCount !== undefined ? `${WORKS_BUTTON_LABEL} · ${worksCount}` : WORKS_BUTTON_LABEL}
               </button>

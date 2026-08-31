@@ -959,13 +959,28 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * на КЛАССЫ, тем же приёмом, что уже стоит у `PositionDrilldown.test.tsx`
    * (задача 12, п. 9.3): именно эти два класса дважды терялись в этой фиче
    * незамеченными до появления такой проверки.
+   *
+   * Второй круг (ветка `feat/drilldown-polish`): продукт-оунер посмотрел на
+   * смёрженный экран и указал, что кнопка по-прежнему читается как серый
+   * текст без явного признака интерактивности. Причина — предыдущая сверка с
+   * макетом (DoD 6, задача 12) сравнивала только радиус/отступ/цвет/фон и ни
+   * разу не сравнивала `border` и `:hover` (инсайт
+   * `docs/insights/enumerate-the-rules-own-properties.md`). Добавлены
+   * `border border-border-default` (макетное `1px solid var(--bd)`, точное
+   * совпадение токена в обеих темах) и `hover:bg-surface-hover` вместо
+   * `hover:bg-surface-sunken` (макетное `--hover`, другой токен — не тот, что
+   * стоял).
    */
-  it("кнопка «Работы» несёт токены макета — цвет и фон, не литералы (полировка после мержа)", () => {
+  it("кнопка «Работы» несёт токены макета — цвет, фон, рамку и hover, не литералы (полировка после мержа)", () => {
     renderTable(summaryWith({ "6": false, "2": true }));
     const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
     expect(button).toHaveClass("text-fg-secondary");
     expect(button).toHaveClass("bg-surface");
     expect(button).not.toHaveClass("text-fg-tertiary");
+    expect(button).toHaveClass("border");
+    expect(button).toHaveClass("border-border-default");
+    expect(button).toHaveClass("hover:bg-surface-hover");
+    expect(button).not.toHaveClass("hover:bg-surface-sunken");
   });
 
   /**
