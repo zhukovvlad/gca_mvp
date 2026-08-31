@@ -24,6 +24,7 @@ import type {
   ProjectPassport,
   ReviewQueueItem,
   StagePositions,
+  StagePositionsRow,
   StageSummary,
   StageSummaryCell,
   StageSummaryChange,
@@ -1974,7 +1975,12 @@ const stageSummaryRows: StageSummaryRow[] = [
         code: "6.99",
         title: "Прочее (фасады)",
         is_unallocated: false,
-        has_drilldown_rows: true,
+        // Аллоцированная статья БЕЗ строк в поддереве (§2.1) — Task 11 тестирует
+        // кнопку «Работы · N», чья видимость зависит от `has_drilldown_rows`, и
+        // ей нужен такой случай: до этой правки в фикстуре было три аллоцированных
+        // строки с `true` и ни одной с `false` (только у «Нераспределённого»,
+        // у которого разложение адресовать нечем вовсе — своя причина, §2.11).
+        has_drilldown_rows: false,
         cells: [
           stageSummaryCell("amount", "12.00", "0.00", "none", null, null, "first_column"),
           stageSummaryCell("amount", "24.00", "0.00", "percent", "100.0", "up", null),
@@ -2329,3 +2335,181 @@ export function stagePositionsResponse(workCategoryId = 22): StagePositions {
     reason: null,
   };
 }
+
+/**
+ * Фикстура разложения статьи для Task 10 (`PositionDrilldown.tsx`) и Task 11
+ * (`StageSummaryTable`, кнопка «Работы · N») — две колонки, четыре строки,
+ * по одной каждого «именного» вида плюс оба свёрнутых:
+ *
+ * - `position` — со своим объёмом (§2.4) на первой колонке и `disappeared`
+ *   на второй (§2.5, §6.3): работа была, в файле второго этапа её нет;
+ * - `additional_works` — `chapter_ref_raw: "1.2"`, `lot_key: "lot_1"` (§2.7);
+ * - `collapsed_appeared_disappeared` с `group_count: 3` (§2.3);
+ * - `rest` с `group_count: 2` (§2.3) — несёт остаток, поэтому сумма строк
+ *   сходится с `article_amount` в каждой колонке (§2.13), проверено
+ *   `fixtures.test.ts`.
+ *
+ * Свёрнутые строки не несут ни процентов, ни «Торга» (§2.3): их
+ * `cells[*].change.kind` — `"none"`, `bargain.kind` — `"none"`,
+ * `contribution.value` — `null`.
+ */
+const stagePositionsRows: StagePositionsRow[] = [
+  {
+    kind: "position",
+    row_key: "position:501",
+    catalog_position_id: 501,
+    chapter_ref_raw: null,
+    lot_key: null,
+    title: "Геотекстильное полотно 150 г/м²",
+    ambiguous: false,
+    group_count: null,
+    cells: [
+      {
+        state: "amount",
+        amount: "100.00",
+        amount_unavailable_reason: null,
+        quantity: "10",
+        quantity_unit: "м²",
+        quantity_changed: false,
+        estimate_rows: 1,
+        change: { kind: "none", value: null, direction: null, reason: "first_column" },
+      },
+      {
+        state: "absent",
+        amount: null,
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 0,
+        change: { kind: "disappeared", value: null, direction: null, reason: null },
+      },
+    ],
+    bargain: { kind: "disappeared", value: null, direction: null, reason: null },
+    contribution: { value: "-100.00", direction: "down", reason: null },
+  },
+  {
+    kind: "additional_works",
+    row_key: "additional_works:lot_1:1.2",
+    catalog_position_id: null,
+    chapter_ref_raw: "1.2",
+    lot_key: "lot_1",
+    title: "Подготовка основания под устройство гидроизоляции",
+    ambiguous: false,
+    group_count: null,
+    cells: [
+      {
+        state: "amount",
+        amount: "50.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 1,
+        change: { kind: "none", value: null, direction: null, reason: "first_column" },
+      },
+      {
+        state: "amount",
+        amount: "55.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 1,
+        change: { kind: "percent", value: "10.0", direction: "up", reason: null },
+      },
+    ],
+    bargain: { kind: "percent", value: "10.0", direction: "up", reason: null },
+    contribution: { value: "5.00", direction: "up", reason: null },
+  },
+  {
+    kind: "collapsed_appeared_disappeared",
+    row_key: "collapsed",
+    catalog_position_id: null,
+    chapter_ref_raw: null,
+    lot_key: null,
+    title: "",
+    ambiguous: false,
+    group_count: 3,
+    cells: [
+      {
+        state: "amount",
+        amount: "30.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 3,
+        change: { kind: "none", value: null, direction: null, reason: "first_column" },
+      },
+      {
+        state: "amount",
+        amount: "25.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 3,
+        change: { kind: "none", value: null, direction: null, reason: null },
+      },
+    ],
+    bargain: { kind: "none", value: null, direction: null, reason: null },
+    contribution: { value: null, direction: null, reason: null },
+  },
+  {
+    kind: "rest",
+    row_key: "rest",
+    catalog_position_id: null,
+    chapter_ref_raw: null,
+    lot_key: null,
+    title: "",
+    ambiguous: false,
+    group_count: 2,
+    cells: [
+      {
+        state: "amount",
+        amount: "20.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 2,
+        change: { kind: "none", value: null, direction: null, reason: "first_column" },
+      },
+      {
+        state: "amount",
+        amount: "15.00",
+        amount_unavailable_reason: null,
+        quantity: null,
+        quantity_unit: null,
+        quantity_changed: false,
+        estimate_rows: 2,
+        change: { kind: "none", value: null, direction: null, reason: null },
+      },
+    ],
+    bargain: { kind: "none", value: null, direction: null, reason: null },
+    contribution: { value: null, direction: null, reason: null },
+  },
+];
+
+/**
+ * Валидный ответ разложения статьи «6» на двух колонках (offer 7001 · этап 1,
+ * offer 7002 · этап 2) — фикстура для Task 10 (`PositionDrilldown.test.tsx`)
+ * и Task 11 (кнопка «Работы · N»); сходится с показанным итогом статьи в
+ * КАЖДОЙ колонке (§2.13): 100+50+30+20 = 200.00 на первой, 0+55+25+15 = 95.00
+ * на второй — инварианты в `fixtures.test.ts`.
+ */
+export const sampleStagePositions: StagePositions = {
+  work_category: { id: 22, code: "3.1", title: "Земляные работы" },
+  columns: [
+    { offer_id: 7001, estimate_id: 8001, round_id: 3001, stage_no: 1, label: null, held_on: null },
+    { offer_id: 7002, estimate_id: 8002, round_id: 3002, stage_no: 2, label: null, held_on: null },
+  ],
+  display: { tax_basis: "gross", reason: "single_rate" },
+  rows: stagePositionsRows,
+  convergence: [
+    { stage_no: 1, article_amount: "200.00", shown_sum: "200.00", converged: true, reason: null },
+    { stage_no: 2, article_amount: "95.00", shown_sum: "95.00", converged: true, reason: null },
+  ],
+  reason: null,
+};
