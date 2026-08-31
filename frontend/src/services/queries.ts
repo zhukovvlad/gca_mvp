@@ -1060,6 +1060,37 @@ export function useStageSummary(tenderId: number | undefined, offerIds: number[]
   });
 }
 
+/**
+ * Разложение статьи свода по этапам (спека 2026-08-30-position-drilldown-
+ * design.md §2.12). Раскрытие ленивое (§2.1) — `enabled` учитывает и флаг
+ * вызывающего, и наличие tenderId/offerIds, поэтому строка со свёрнутым
+ * блоком работ не шлёт запрос вовсе.
+ */
+export function useStagePositions(
+  tenderId: number | undefined,
+  workCategoryId: number,
+  offerIds: number[],
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: qk.tenders.stagePositions(tenderId ?? 0, workCategoryId, offerIds),
+    queryFn: () => tendersApi.stagePositions(tenderId as number, workCategoryId, offerIds),
+    enabled: enabled && tenderId !== undefined && offerIds.length >= 1,
+    // §6.3: раскрытие шлёт РОВНО ОДИН запрос и не шлёт повторно при
+    // сворачивании и повторном раскрытии. Двух настроек мало по отдельности:
+    // `staleTime` держит данные свежими, пока запрос жив, а `gcTime` — сам
+    // запрос, когда наблюдателей не осталось. Наблюдателей теряет РЕАЛЬНЫЙ
+    // случай: блок работ подстатьи размонтируется вместе с ней, когда
+    // сворачивают статью-предка (свёрнутая строка детей не рендерит вовсе), и
+    // с дефолтным gcTime = 5 мин повторное раскрытие ушло бы за данными
+    // заново (ревью плана 31.08.2026 — прежняя редакция обещала «компонент
+    // остаётся смонтированным», что для потомков неверно).
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+}
+
 function invalidateTender(qc: ReturnType<typeof useQueryClient>, tenderId: number) {
   qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.all });

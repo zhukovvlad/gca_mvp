@@ -23,6 +23,7 @@ import type {
   MatrixRow,
   ProjectPassport,
   ReviewQueueItem,
+  StagePositions,
   StageSummary,
   StageSummaryCell,
   StageSummaryChange,
@@ -1944,6 +1945,7 @@ const stageSummaryRows: StageSummaryRow[] = [
     code: "2",
     title: "Котлован",
     is_unallocated: false,
+    has_drilldown_rows: true,
     cells: [
       stageSummaryCell("amount", "60.00", "0.00", "none", null, null, "first_column"),
       stageSummaryCell("removed", null, null, "removed", null, null, null),
@@ -1958,6 +1960,7 @@ const stageSummaryRows: StageSummaryRow[] = [
     code: "6",
     title: "Фасадные работы",
     is_unallocated: false,
+    has_drilldown_rows: true,
     cells: [
       stageSummaryCell("amount", "120.00", "0.00", "none", null, null, "first_column"),
       stageSummaryCell("amount", "120.00", "0.00", "percent", "0.0", "flat", null),
@@ -1971,6 +1974,7 @@ const stageSummaryRows: StageSummaryRow[] = [
         code: "6.99",
         title: "Прочее (фасады)",
         is_unallocated: false,
+        has_drilldown_rows: true,
         cells: [
           stageSummaryCell("amount", "12.00", "0.00", "none", null, null, "first_column"),
           stageSummaryCell("amount", "24.00", "0.00", "percent", "100.0", "up", null),
@@ -1989,6 +1993,8 @@ const stageSummaryUnallocated: StageSummaryRow = {
   code: null,
   title: "Нераспределённое",
   is_unallocated: true,
+  /** «Нераспределённое» не несёт work_category_id — разложение адресовать нечем (§2.11). */
+  has_drilldown_rows: false,
   cells: [
     stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
     stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
@@ -2257,4 +2263,69 @@ export function stageSummaryWithUnknownSecondColumn(): StageSummary {
   base.total.cells = deriveTotalCells(base.columns, base.rows, base.unallocated);
 
   return base;
+}
+
+// ---------------------------------------------------------------------------
+//  Разложение статьи свода (спека 2026-08-30-position-drilldown-design.md
+//  §2.11): третий уровень свода. Минимальная валидная фикстура, а не зеркало
+//  какого-то реального узла sampleStageSummary — она нужна только тестам
+//  транспорта (Task 8), а не сходимости с конкретной статьёй.
+// ---------------------------------------------------------------------------
+
+/**
+ * Минимальный валидный ответ `GET .../stage-summary/{workCategoryId}` — две
+ * колонки (offer 7001, stage 1 и offer 7002, stage 2), одна строка `position`,
+ * сходящаяся с показанным итогом статьи в обеих колонках (§2.13).
+ * `workCategoryId` по умолчанию 22 — под него же заведён MSW-хендлер.
+ */
+export function stagePositionsResponse(workCategoryId = 22): StagePositions {
+  return {
+    work_category: { id: workCategoryId, code: "6", title: "Фасадные работы" },
+    columns: [
+      { offer_id: 7001, estimate_id: 8001, round_id: 3001, stage_no: 1, label: null, held_on: null },
+      { offer_id: 7002, estimate_id: 8002, round_id: 3002, stage_no: 2, label: null, held_on: null },
+    ],
+    display: { tax_basis: "gross", reason: "single_rate" },
+    rows: [
+      {
+        kind: "position",
+        row_key: "position:491",
+        catalog_position_id: 491,
+        chapter_ref_raw: null,
+        lot_key: null,
+        title: "Подготовка из щебня",
+        ambiguous: false,
+        group_count: null,
+        cells: [
+          {
+            state: "amount",
+            amount: "60.00",
+            amount_unavailable_reason: null,
+            quantity: "10",
+            quantity_unit: "м²",
+            quantity_changed: false,
+            estimate_rows: 1,
+            change: { kind: "none", value: null, direction: null, reason: "first_column" },
+          },
+          {
+            state: "amount",
+            amount: "60.00",
+            amount_unavailable_reason: null,
+            quantity: "10",
+            quantity_unit: "м²",
+            quantity_changed: false,
+            estimate_rows: 1,
+            change: { kind: "none", value: "0.0", direction: "flat", reason: null },
+          },
+        ],
+        bargain: { kind: "none", value: "0.0", direction: "flat", reason: null },
+        contribution: { value: "60.00", direction: "flat", reason: null },
+      },
+    ],
+    convergence: [
+      { stage_no: 1, article_amount: "60.00", shown_sum: "60.00", converged: true, reason: null },
+      { stage_no: 2, article_amount: "60.00", shown_sum: "60.00", converged: true, reason: null },
+    ],
+    reason: null,
+  };
 }

@@ -137,5 +137,14 @@ export const qk = {
     /** Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16). */
     stageSummary: (tenderId: number, offerIds: number[]) =>
       ["tenders", "stage-summary", tenderId, [...offerIds].sort((a, b) => a - b)] as const,
+    /**
+     * Разложение статьи свода (спека 2026-08-30-position-drilldown-design.md
+     * §2.12). Ключ канонический: сортировка offerIds — иначе тот же выбор,
+     * поданный в другом порядке, создал бы вторую запись кэша вместо
+     * попадания в ту же.
+     */
+    stagePositions: (tenderId: number, workCategoryId: number, offerIds: number[]) =>
+      ["tenders", "stage-positions", tenderId, workCategoryId,
+       [...offerIds].sort((a, b) => a - b)] as const,
   },
 };

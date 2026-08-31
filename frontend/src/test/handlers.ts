@@ -25,6 +25,7 @@ import {
   sampleMatrixCellDetail,
   sampleProjectPassport,
   sampleStageSummary,
+  stagePositionsResponse,
   stageSummaryAllUnknown,
   stageSummaryNet,
   stageSummaryWithUnknownSecondColumn,
@@ -1596,5 +1597,19 @@ export const handlers = [
       default:
         return HttpResponse.json(sampleStageSummary);
     }
+  }),
+  /**
+   * Разложение статьи свода (спека 2026-08-30-position-drilldown-design.md
+   * §2.11, Task 8): минимальная валидная фикстура, `work_category.id` — из
+   * параметра пути. Отдельного `handlerState` под неё пока не заведено —
+   * компоненты (Task 9-11) заведут переключатель исходов, когда он им
+   * понадобится; здесь только транспорт.
+   *
+   * Путь на сегмент длиннее хендлера свода выше — совпасть друг с другом они
+   * не могут (`:workCategoryId` — ровно один сегмент, не префикс), порядок
+   * объявления на матчинг не влияет.
+   */
+  http.get("/api/v1/tenders/:tenderId/stage-summary/:workCategoryId", ({ params }) => {
+    return HttpResponse.json(stagePositionsResponse(Number(params.workCategoryId)));
   }),
 ];

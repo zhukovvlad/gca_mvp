@@ -12,6 +12,7 @@ import {
   useDeleteTender,
   useImportJob,
   useRoundImportJobs,
+  useStagePositions,
   useStageSummary,
   useTender,
   useUpdateRound,
@@ -20,6 +21,7 @@ import {
 } from "./queries";
 import { qk } from "./queryKeys";
 import { handlerState, resetHandlerState } from "@/test/handlers";
+import { stagePositionsResponse } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 import type { ParticipantDeletionPreview } from "@/types/domain";
@@ -517,5 +519,67 @@ describe("useStageSummary", () => {
       wrapper: wrapperFor(qc),
     });
     expect(result.current.fetchStatus).toBe("idle");
+  });
+});
+
+/**
+ * `useStagePositions` (спека 2026-08-30-position-drilldown-design.md §2.12):
+ * попозиционное разложение статьи свода, третий уровень.
+ */
+describe("useStagePositions", () => {
+  afterEach(() => {
+    resetHandlerState();
+  });
+
+  it("грузит разложение и кладёт его под канонический ключ", async () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStagePositions(300, 22, [7002, 7001], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.work_category.id).toBe(22);
+    // ключ канонический: порядок id не создаёт второй записи кэша
+    expect(qc.getQueryData(qk.tenders.stagePositions(300, 22, [7001, 7002]))).toBeDefined();
+  });
+
+  it("enabled=false — запрос не уходит (ленивость §2.1)", () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStagePositions(300, 22, [7001, 7002], false), {
+      wrapper: wrapperFor(qc),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  it("размонтирование и повторный монтаж НЕ шлют второй запрос (§6.3)", async () => {
+    // Реальный путь потери наблюдателя: свернули статью-предка — блок работ
+    // подстатьи размонтировался вместе с ней. Со `staleTime` без `gcTime`
+    // тест зелёный лишь пока не истёк сборщик кэша, поэтому здесь считаются
+    // ПОПАДАНИЯ В ХЕНДЛЕР, а не состояние хука.
+    const qc = createTestQueryClient();
+    let hits = 0;
+    server.use(
+      http.get("/api/v1/tenders/:tenderId/stage-summary/:workCategoryId", () => {
+        hits += 1;
+        return HttpResponse.json(stagePositionsResponse());
+      })
+    );
+    const first = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+    first.unmount();
+    // Без gcTime у клиента задан gcTime: 0 (createTestQueryClient) — сборщик
+    // кэша сам планируется через setTimeout(0) при потере последнего
+    // наблюдателя. Отдать событийный цикл здесь ОБЯЗАТЕЛЬНО: без этого тика
+    // второй renderHook успевал бы застать запись кэша ещё не удалённой даже
+    // без `gcTime: Infinity` в хуке, и проверка не отличала бы исправный хук
+    // от сломанного (найдено самопроверкой задачи 8 — снятие `gcTime:
+    // Infinity` не краснило тест до этой правки).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
+    expect(hits).toBe(1);
   });
 });
