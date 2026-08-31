@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from money.vat import quantize_money
 from services import stage_summary as ss
 
 KIND_POSITION = "position"
@@ -268,6 +269,32 @@ def compute_drilldown(columns: Sequence[DrillColumn], groups: Sequence[GroupInpu
             convergence.append(DrillConvergence(column.stage_no, None, None, None, unavailable[i]))
             continue
         shown_sum = sum(money_at(r.cells[i]) for r in shown_rows)
-        convergence.append(DrillConvergence(column.stage_no, article_shown[i], shown_sum,
-                                            article_shown[i] == shown_sum, None))
+        # Сравнение — КВАНТОВАННОЕ, не сырых `Decimal`: `to_shown`/`gross_to_net`
+        # намеренно не округляют (`money/vat.py`) и считают в высокоточном
+        # `_VAT_CONTEXT` (100 знаков), а builtin `sum()` здесь стартует с
+        # `Decimal(0)` под АМБИЕНТНЫМ контекстом (28 знаков по умолчанию) —
+        # то самое «0 + x тихо срезает точность», уже описанное для
+        # `crud/comparison.py::_resolve_cell`. На нетто-оси с реальной, не
+        # подобранной вручную ставкой (120.00 / 1.22 — периодическая дробь)
+        # `article_shown[i]` и `shown_sum` — два МАТЕМАТИЧЕСКИ равных, но
+        # ПО-РАЗНОМУ округлённых на 100-м/28-м знаке представления одной и той
+        # же величины; сырое `==` ложно даёт `converged: false`, хотя обе стороны
+        # печатаются ОДНИМ и тем же `money_str` в один и тот же вид (найдено
+        # интеграционным тестом Task 6, юнит-тесты Task 3 избегали дела
+        # ставками, дающими конечную дробь). Квантование здесь — ТА ЖЕ
+        # операция, что `money_str` уже делает на границе ответа для обоих
+        # полей, просто применённая чуть раньше — ради самого булева вердикта.
+        #
+        # НЕ чинить накоплением `shown_sum` в высокой точности (`_VAT_CONTEXT`)
+        # вместо квантования: при БОЛЬШЕ ЧЕМ ОДНОЙ показанной строке это не
+        # восстанавливает точное равенство — Σ отдельно округлённых на пределе
+        # точности слагаемых не совпадает поразрядно с округлением их суммы
+        # (тест `test_net_axis_multi_group_convergence_is_exact`,
+        # `tests/unit/test_position_drilldown.py`). Квантование выбрано не как
+        # ослабленный допуск, а как сравнение НА ТОЙ ТОЧНОСТИ, в которой оба
+        # числа реально показаны читателю: иначе вердикт мог бы противоречить
+        # напечатанным рядом `article_amount`/`shown_sum` (оба через
+        # `money_str`) — false при внешне одинаковых "98.36" и "98.36".
+        converged = quantize_money(article_shown[i]) == quantize_money(shown_sum)
+        convergence.append(DrillConvergence(column.stage_no, article_shown[i], shown_sum, converged, None))
     return DrilldownResult(shown_rows, convergence, None, basis)

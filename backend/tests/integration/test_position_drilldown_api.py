@@ -658,3 +658,70 @@ class TestEndpointContract:
         response = client.get(f"/api/v1/tenders/{drill_grid.tender.id}/stage-summary/{wc}?{offers}")
         assert response.status_code == 200
         assert response.json()["work_category"]["code"] == "6"
+
+
+class TestTaxAxis:
+    """§2.8/§6.2 на настоящем импорте: то, что Task 3 доказал литералами —
+    ось `net` при расходящихся ставках и отказ/точечная разметка при
+    неизвестной базе — доказать на `import_and_match`, а не на `GroupInput`
+    руками.
+
+    `vat_rate=None` в `chaptered(...)` доходит до `Proposal.vat_rate` через
+    `services.estimate_import._vat_rate`, который отдаёт `None` НАПРЯМУЮ на
+    входном `None` (без подстановки ставки по умолчанию) — тот же путь,
+    что и форма payload парсера ≤3.0.0. Значит `TestVatAxis` соседнего файла
+    здесь не нужна: не пришлось стирать `Proposal.vat_rate` UPDATE-ом, ставка
+    неизвестна уже на входе, ровно как просит бриф."""
+
+    def _tender(self, db_session, factories, rates):
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n)
+                  for n in range(1, len(rates) + 1)}
+        db_session.flush()
+        for n, rate in enumerate(rates, start=1):
+            import_and_match(db_session, tender_round=rounds[n],
+                             data=round_payload([chaptered({"1": ("6", "120.00")}, vat_rate=rate,
+                                                           total="120.00")]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        return tender, offers
+
+    def test_mixed_rates_recompute_sums_to_net_and_still_converge(self, db_session, factories):
+        """Единственная группа статьи «6» несёт РАЗНЫЕ ставки (20 % и 22 %) при
+        ОДИНАКОВОЙ валовой сумме (120.00) на обоих этапах.
+
+        Поправка к брифу: несмотря на равную валовую сумму, вклад строки
+        считается в ПОКАЗАННЫХ (нетто) деньгах (`money_at` берёт `cell.shown`,
+        `services/position_drilldown.py`), а 120/1.20 != 120/1.22 — движение
+        статьи НЕНУЛЕВОЕ, единственная группа становится объяснителем
+        (`compute_drilldown`, покрытие 90% достигается первой же строкой) и
+        остаётся ОБЫЧНОЙ строкой `position`, а не сворачивается в `rest`.
+        Ряд из брифа («когда движение статьи ноль, всё уходит в rest») здесь
+        не воспроизводится буквально — она справедлива для ЕДИНОЙ ставки на
+        обоих этапах, не для разных ставок с равной валовой суммой; поэтому
+        индекс `rows[0]` действительно указывает на строку работы, а не на
+        свёрнутый остаток. Проверено запуском (см. отчёт задачи)."""
+        tender, offers = self._tender(db_session, factories, ["20", "22"])
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "6"), offers)
+        assert data["display"]["tax_basis"] == "net"
+        assert data["rows"][0]["kind"] == pd_service.KIND_POSITION      # не свёрнутый остаток
+        assert data["rows"][0]["cells"][0]["amount"] == "100.00"        # 120 / 1.20
+        assert all(c["converged"] is True for c in data["convergence"])
+
+    def test_unknown_base_at_the_endpoint_returns_empty_rows_with_reason(self, db_session, factories):
+        tender, offers = self._tender(db_session, factories, [None, "20"])
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "6"), offers)
+        assert data["reason"] == "unknown_vat_base" and data["rows"] == [] and data["convergence"] == []
+
+    def test_unknown_base_in_the_middle_marks_only_its_column(self, db_session, factories):
+        tender, offers = self._tender(db_session, factories, ["20", None, "20"])
+        data = crud_pd.build_position_drilldown(db_session, tender.id,
+                                                category_id(db_session, "6"), offers)
+        assert data["reason"] is None
+        middle = data["convergence"][1]
+        assert middle["converged"] is None and middle["reason"] == "unknown_vat_base"
+        assert data["rows"][0]["cells"][1]["amount_unavailable_reason"] == "unknown_vat_base"

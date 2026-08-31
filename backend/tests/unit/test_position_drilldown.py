@@ -234,6 +234,33 @@ class TestComputeDrilldown:
             shown = sum(pd.money_at(r.cells[idx]) for r in out.rows)
             assert conv.converged is True and conv.shown_sum == conv.article_amount == shown
 
+    def test_net_axis_multi_group_convergence_is_exact(self):
+        """Круг ревью Task 6: reviewer предлагал вместо квантования перед `==`
+        накапливать `shown_sum` в высокой точности `_VAT_CONTEXT` (как
+        `crud/comparison.py::own_net`, не начиная с `Decimal(0)` под амбиентным
+        контекстом) — якобы это даёт точное равенство БЕЗ допуска. Замерено: так
+        и есть, но ТОЛЬКО пока показанная строка одна (ровно случай
+        интеграционного теста Task 6, `TestTaxAxis` — там объяснитель ровно один,
+        и накопление одного слагаемого неотличимо от самого слагаемого). При
+        НЕСКОЛЬКИХ показанных строках высокоточное накопление точное равенство НЕ
+        восстанавливает: Σ отдельно округлённых на пределе точности слагаемых —
+        не то же самое число, что округление их суммы на том же пределе (не
+        ассоциативно). Четыре суммы ниже (ставка 22 %) — конкретный найденный
+        перебором контрпример: `gross_to_net(Σx)` и `Σ gross_to_net(x)`
+        расходятся В ПОСЛЕДНЕМ (100-м) знаке (`...5738` против `...5737`) — при
+        сравнении высокоточным `==` это красит `converged` в `False`, при
+        квантовании до копеек — нет, обе стороны дают одну и ту же сумму. На
+        3000 случайных многогрупповых наборов (четыре ставки НДС) высокоточное
+        накопление расходилось с `article_shown` 1196 раз (40%, расхождения до
+        3e-94) — квантованное сравнение не разошлось ни разу."""
+        cols = [col(0, "20"), col(1, "22")]
+        basis = ss.pick_tax_basis([c.vat_rate_base for c in cols])
+        assert basis.basis == ss.TAX_NET
+        amounts = ["7722.47", "1074.74", "7095.71", "7766.47"]   # не делятся на 22% нацело
+        groups = [one_stage_grp({0: a, 1: a}, cpid=i) for i, a in enumerate(amounts, start=1)]
+        out = pd.compute_drilldown(cols, groups)
+        assert all(c.converged is True for c in out.convergence)
+
     def test_empty_groups_is_no_rows_in_subtree(self):
         out = pd.compute_drilldown(COLS2, [])
         assert out.reason == pd.REASON_NO_ROWS_IN_SUBTREE and out.rows == [] and out.convergence == []
