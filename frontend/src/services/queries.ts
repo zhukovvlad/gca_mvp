@@ -546,6 +546,18 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
         }
         if (ownerRef?.tenderId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.review.all });
+          // Ревью PR #35, finding 2: раунд после ЗАМЕНЫ переиспользует ТУ ЖЕ
+          // строку `Offer` (`services/round_import.py`), значит id
+          // предложений не меняются и точечные ключи свода/разложения
+          // (построенные из этих id) остаются прежними — без инвалидации
+          // `useStageSummary` рефетчил бы по своему обычному `staleTime`, а
+          // `useStagePositions` с `staleTime: Infinity` (§6.3) не обновился бы
+          // НИКОГДА, и открытое разложение показывало бы старые деньги рядом
+          // со свежим сводом до перезагрузки страницы. Префиксные ключи —
+          // потому что здесь неизвестно, какие `offerIds` (и для разложения —
+          // какой `workCategoryId`) сейчас выбраны на экране.
+          qc.invalidateQueries({ queryKey: qk.tenders.stageSummaryForTender(ownerRef.tenderId) });
+          qc.invalidateQueries({ queryKey: qk.tenders.stagePositionsForTender(ownerRef.tenderId) });
         }
       }
       return job;
@@ -1056,6 +1068,37 @@ export function useStageSummary(tenderId: number | undefined, offerIds: number[]
     queryKey: qk.tenders.stageSummary(tenderId ?? 0, offerIds),
     queryFn: () => tendersApi.stageSummary(tenderId as number, offerIds),
     enabled: tenderId !== undefined && offerIds.length >= 1,
+    retry: false,
+  });
+}
+
+/**
+ * Разложение статьи свода по этапам (спека 2026-08-30-position-drilldown-
+ * design.md §2.12). Раскрытие ленивое (§2.1) — `enabled` учитывает и флаг
+ * вызывающего, и наличие tenderId/offerIds, поэтому строка со свёрнутым
+ * блоком работ не шлёт запрос вовсе.
+ */
+export function useStagePositions(
+  tenderId: number | undefined,
+  workCategoryId: number,
+  offerIds: number[],
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: qk.tenders.stagePositions(tenderId ?? 0, workCategoryId, offerIds),
+    queryFn: () => tendersApi.stagePositions(tenderId as number, workCategoryId, offerIds),
+    enabled: enabled && tenderId !== undefined && offerIds.length >= 1,
+    // §6.3: раскрытие шлёт РОВНО ОДИН запрос и не шлёт повторно при
+    // сворачивании и повторном раскрытии. Двух настроек мало по отдельности:
+    // `staleTime` держит данные свежими, пока запрос жив, а `gcTime` — сам
+    // запрос, когда наблюдателей не осталось. Наблюдателей теряет РЕАЛЬНЫЙ
+    // случай: блок работ подстатьи размонтируется вместе с ней, когда
+    // сворачивают статью-предка (свёрнутая строка детей не рендерит вовсе), и
+    // с дефолтным gcTime = 5 мин повторное раскрытие ушло бы за данными
+    // заново (ревью плана 31.08.2026 — прежняя редакция обещала «компонент
+    // остаётся смонтированным», что для потомков неверно).
+    staleTime: Infinity,
+    gcTime: Infinity,
     retry: false,
   });
 }

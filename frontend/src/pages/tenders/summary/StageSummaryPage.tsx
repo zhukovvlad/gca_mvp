@@ -176,7 +176,7 @@ export default function StageSummaryPage() {
       </p>
 
       <StageSummaryTrack summary={summary} />
-      <StageSummaryTable summary={summary} />
+      <StageSummaryTable summary={summary} tenderId={id!} offerIds={offerIds} />
     </div>
   );
 }

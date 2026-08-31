@@ -1229,6 +1229,15 @@ export interface StageSummaryRow {
   code: string | null;
   title: string;
   is_unallocated: boolean;
+  /**
+   * Есть ли у статьи попозиционное разложение (спека 2026-08-30-position-
+   * drilldown-design.md §2.12): единственная правка контракта фичи 3.
+   * Считается по ОБЕИМ ветвям и по всему поддереву — статья с одними
+   * допработами или без своих строк, но со строками потомков, тоже получает
+   * `true`. У «Нераспределённого» — всегда `false`: разложение адресуется
+   * `work_category_id`, которого у этой строки нет (`crud/stage_summary.py`).
+   */
+  has_drilldown_rows: boolean;
   cells: StageSummaryCell[];
   bargain: StageSummaryChange;
   contribution: { value: Decimal | null; direction: Direction | null; reason: StageSummaryContributionReason | null };
@@ -1313,6 +1322,85 @@ export interface StageSummaryErrorDetail {
   code: StageSummaryErrorCode;
   message: string;
   offers: number[];
+}
+
+// ---------------------------------------------------------------------------
+//  Попозиционное раскрытие статьи (спека 2026-08-30-position-drilldown-
+//  design.md §2.11, §2.12): третий уровень свода по этапам — GET
+//  /v1/tenders/{tender_id}/stage-summary/{work_category_id}?offers=…
+// ---------------------------------------------------------------------------
+
+export type StagePositionsRowKind =
+  | "position"
+  | "additional_works"
+  | "unmatched"
+  | "collapsed_appeared_disappeared"
+  | "rest";
+
+export interface StagePositionsCell {
+  state: CellState;
+  amount: Decimal | null;
+  amount_unavailable_reason: "unknown_vat_base" | null;
+  /** Сырые значения через "+" (несколько строк сметы) — формат берёт на себя клиент. */
+  quantity: string | null;
+  quantity_unit: string | null;
+  quantity_changed: boolean;
+  estimate_rows: number;
+  change: StageSummaryChange;
+}
+
+export interface StagePositionsRow {
+  kind: StagePositionsRowKind;
+  /**
+   * Устойчивая идентичность строки в ответе (§2.11) — ключ React берётся
+   * ОТСЮДА, а не собирается из `kind` + `chapter_ref_raw`: две строки
+   * `additional_works` разных лотов делят одну и ту же ссылку раздела и под
+   * собранным ключом схлопнулись бы в одну (третий круг ревью плана
+   * 31.08.2026). У свёрнутых строк здесь `"collapsed"`/`"rest"`.
+   */
+  row_key: string;
+  catalog_position_id: number | null;
+  chapter_ref_raw: string | null;
+  /**
+   * Лот из ключа группировки; заполнен ТОЛЬКО у `kind === "additional_works"`.
+   * В пилюлю экран выносит его лишь когда в ответе больше одного лота (§2.7) —
+   * иначе одинаковые ссылки одного лота получили бы лишнее слово в подписи.
+   */
+  lot_key: string | null;
+  title: string;
+  ambiguous: boolean;
+  /** У свёрнутых строк — сколько групп внутри; иначе `null`. */
+  group_count: number | null;
+  cells: StagePositionsCell[];
+  bargain: StageSummaryChange;
+  contribution: { value: Decimal | null; direction: Direction | null; reason: null };
+}
+
+export interface StagePositions {
+  work_category: { id: number; code: string; title: string };
+  columns: {
+    offer_id: number;
+    estimate_id: number;
+    round_id: number;
+    stage_no: number;
+    label: string | null;
+    held_on: string | null;
+  }[];
+  display: {
+    tax_basis: "gross" | "net" | "none";
+    reason: "single_rate" | "mixed_rates" | "no_known_rates";
+  };
+  rows: StagePositionsRow[];
+  /** Обещание §2.13, проверяемое тестом, а не глазами — сумма строк равна показанному итогу статьи. */
+  convergence: {
+    stage_no: number;
+    article_amount: Decimal | null;
+    shown_sum: Decimal | null;
+    converged: boolean | null;
+    reason: "unknown_vat_base" | null;
+  }[];
+  /** Статья без строк в поддереве ни в одной колонке — не ошибка (§2.11). */
+  reason: "no_rows_in_subtree" | "unknown_vat_base" | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,9 @@ import { cn } from "@/lib/utils";
 import type { StageSummary, StageSummaryColumn, StageSummaryRow } from "@/types/domain";
 
 import { REASON_LABEL } from "./cellCopy";
-import { cellAlignClass, isNumericChange } from "./cellLayout";
+import { cellAlignClass, FIRST_COL_CLASS, isNumericChange } from "./cellLayout";
+import { WORKS_BUTTON_LABEL } from "./drilldownCopy";
+import { PositionDrilldown } from "./PositionDrilldown";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
 
 /**
@@ -129,68 +131,59 @@ function ContributionValue({
   );
 }
 
+// `FIRST_COL_CLASS` (зажим ширины/перенос первой колонки, вся её история и
+// числа замеров) переехал в `cellLayout.ts` вместе с `cellAlignClass`,
+// `isNumericChange` (задача 12): `PositionDrilldown.tsx` красит строки той же
+// колонки той же таблицы, а этот файл уже импортирует `PositionDrilldown` для
+// собственной рекурсии — обратный импорт константы отсюда замкнул бы
+// модульный цикл. `cellLayout.ts` — нейтральный модуль-нейтральная площадка,
+// заведённая ровно для такого разделения (см. докстрок файла).
+
 /**
- * Колонка классификатора зажата по ширине — `min-width: 250px`,
- * `max-width: 420px`, ровно как на макете гейта 1 (`table.pass`,
- * `th.art, td.t`). Реализация это ограничение ПОТЕРЯЛА, и таблица с авторазметкой
- * отдавала колонке столько, сколько просило самое длинное наименование: замер на
- * стенде 28.08.2026 — при свёрнутых статьях 459,8 px (34 % контейнера) и всё
- * помещалось, при раскрытых 752,81 px (55,8 %), таблица становилась шире
- * контейнера на 253 px, и «Торг» с «Вкладом в итог» уезжали за правый край.
- *
- * Зажим ставится на ВСЕ ячейки первой колонки — шапку, строки статей и обе
- * строки подвала: ширину колонки в авторазметке диктует самая широкая ячейка, и
- * пропущенная строка вернула бы прежнее поведение целиком.
- *
- * `whitespace-normal` здесь — не украшение, а условие работы зажима: примитив
- * `TableCell`/`TableHead` из shadcn несёт `whitespace-nowrap`, и с ним
- * наименование не переносится вовсе. Он ломает строку ПО ПРОБЕЛАМ; за
- * одиночный длинный токен (слипшееся слово, код без пробелов) отвечают
- * `break-words` и `min-w-0` на самом наименовании ниже — первый разрешает
- * разрыв внутри слова, второй снимает `min-width: auto` у флекс-элемента, без
- * которого он не сузится. Три класса — три разные половины одной работы, и
- * снятие любого возвращает часть дефекта. Замер на стенде показал, чем это кончается:
- * колонка честно вставала в 446 px, а текст на 100 символов вылезал из своей
- * ячейки на 130 px и ЛОЖИЛСЯ ПОВЕРХ первой денежной колонки — 25 таких ячеек при
- * раскрытых статьях. То есть зажим без переноса делает хуже, чем его отсутствие.
- *
- * Вместе с зажимом строка содержимого ячейки выравнивается ПО ВЕРХУ
- * (`items-start` вместо `items-center`): наименование теперь бывает в две-три
- * строки, и при выравнивании по центру треугольник раскрытия и код статьи
- * уезжали бы к середине абзаца вместо его первой строки. То же у
- * «Нераспределённого» — наименование там короткое, но правило одно на колонку,
- * а не на строку.
- *
- * Про число 420: это ПОТОЛОК ПРЕДПОЧТИТЕЛЬНОЙ ширины, а не итоговой. При
- * `table-layout: auto` и `w-full` браузер сперва считает предпочтительные
- * ширины (тут `max-width` и связывает), а СВОБОДНОЕ место потом раздаёт поверх
- * — поэтому на широком окне замер показывает 446 px, и это не полработы.
- * Заработанный инвариант формулируется не «≤ 420 px», а «колонка не растёт от
- * содержимого»: замеры со свёрнутыми и раскрытыми статьями совпадают до сотых.
+ * Пропсы блока работ статьи — три независимых ключа раскрытия (§2.1) плюс
+ * то, что нужно самому запросу разложения (`tenderId`/`offerIds`) и рисовке
+ * (`columnsCount`). Ключи живут в состоянии `StageSummaryTable`, а не в
+ * `CategoryRowGroup`: рекурсия строит новое дерево компонентов при каждом
+ * раскрытии предка, и локальное состояние узла (в т.ч. счётчик N) умерло бы
+ * вместе со свёрнутым узлом — ровно то, чего ради заведён `worksMountedIds` и
+ * `Map<number, number>` счётчика на уровне таблицы, а не блока.
  */
-/*
-  `border-r` — разделитель закреплённой колонки. Макет рисует его тенью
-  (`box-shadow: 1px 0 0 0`), в реализации его не было вовсе (замер: `box-shadow:
-  none`), и колонка при прокрутке не отличалась от просто первой — а линия и есть
-  единственный признак того, что содержимое уезжает ПОД неё. Тенью не делаем:
-  граница живёт в той же системе, что остальные линии таблицы.
-*/
-const FIRST_COL_CLASS =
-  "sticky left-0 min-w-[250px] max-w-[420px] whitespace-normal border-r border-border-subtle align-top";
+interface WorksProps {
+  tenderId: number;
+  offerIds: number[];
+  columnsCount: number;
+  worksOpenIds: Set<number>;
+  worksMountedIds: Set<number>;
+  worksCounts: Map<number, number>;
+  onToggleWorks: (id: number) => void;
+  onCount: (id: number, n: number) => void;
+}
 
 function CategoryRowGroup({
   row,
   depth,
   expandedIds,
   onToggle,
+  works,
 }: {
   row: StageSummaryRow;
   depth: number;
   expandedIds: Set<number>;
   onToggle: (id: number) => void;
+  works: WorksProps;
 }) {
   const hasChildren = row.children.length > 0;
   const isOpen = row.work_category_id !== null && expandedIds.has(row.work_category_id);
+  // Кнопка «Работы · N» рисуется ПО ПОЛЮ `has_drilldown_rows` (§2.1, §6.3), а
+  // не по пустоте `children`: узел без своих строк, но со строками потомков
+  // (`1` на обоих трассах стенда), и статья с одними допработами и без детей
+  // классификатора вовсе — оба должны получить кнопку, а узел с детьми, но без
+  // строк своего поддерева (фикстурная «6.99») — не должен.
+  const worksId = row.work_category_id;
+  const showWorksButton = worksId !== null && row.has_drilldown_rows;
+  const worksOpen = worksId !== null && works.worksOpenIds.has(worksId);
+  const worksMounted = worksId !== null && works.worksMountedIds.has(worksId);
+  const worksCount = worksId !== null ? works.worksCounts.get(worksId) : undefined;
 
   return (
     <>
@@ -243,6 +236,24 @@ function CategoryRowGroup({
               </span>
             )}
             <span className={cn("min-w-0 break-words", depth === 0 ? "text-fg" : "text-fg-secondary")}>{row.title}</span>
+            {/*
+              Кнопка «Работы» — слово с `aria-expanded`, а не второй шеврон
+              (§2.1): она отдельна от шеврона подстатей выше и сворачивает
+              ТОЛЬКО блок работ, оставляя подстатьи на месте. Подпись без
+              счётчика до первой загрузки, «Работы · N» после — N читается из
+              `worksCounts` таблицы, а не из самого блока, поэтому переживает
+              его размонтирование при сворачивании (докстрок `WorksProps`).
+            */}
+            {showWorksButton && (
+              <button
+                type="button"
+                aria-expanded={worksOpen}
+                onClick={() => works.onToggleWorks(worksId as number)}
+                className="shrink-0 rounded px-1.5 py-0.5 text-2xs font-normal text-fg-tertiary hover:bg-surface-sunken hover:text-fg"
+              >
+                {worksCount !== undefined ? `${WORKS_BUTTON_LABEL} · ${worksCount}` : WORKS_BUTTON_LABEL}
+              </button>
+            )}
           </div>
         </TableCell>
         {row.cells.map((cell, index) => (
@@ -269,6 +280,12 @@ function CategoryRowGroup({
           <ContributionValue contribution={row.contribution} />
         </TableCell>
       </TableRow>
+      {/*
+        Порядок «сначала дети-статьи, потом работы» — как в спеке (§2.1): у
+        узла с обоими (фикстурные «6» и «14» на стенде) подстатьи повторяют
+        уже существующий порядок уровней свода, а работы всего поддерева идут
+        под ними.
+      */}
       {isOpen &&
         row.children.map((child) => (
           <CategoryRowGroup
@@ -277,16 +294,69 @@ function CategoryRowGroup({
             depth={depth + 1}
             expandedIds={expandedIds}
             onToggle={onToggle}
+            works={works}
           />
         ))}
+      {/*
+        Блок монтируется после ПЕРВОГО открытия (`worksMountedIds`) и остаётся
+        смонтированным при последующем сворачивании кнопкой — так живёт кэш
+        запроса (`gcTime`/`staleTime: Infinity`, Task 8) и счётчик N виден
+        сразу при повторном раскрытии. Видимость по раскрытым ПРЕДКАМ ничем
+        отдельным не гарантируется: свёрнутый предок не рендерит СВОИХ детей
+        вовсе (ветка `isOpen &&` выше на уровне предка), поэтому этот блок для
+        строки-потомка исчезает вместе с её собственной `<TableRow>` — и
+        РАЗМОНТИРУЕТСЯ, теряя локальное состояние; счётчик и факт «когда-либо
+        открывали» переживают это ровно потому, что живут в состоянии
+        `StageSummaryTable`, на уровень выше рекурсии, а не здесь.
+      */}
+      {worksMounted && (
+        <PositionDrilldown
+          tenderId={works.tenderId}
+          workCategoryId={worksId as number}
+          articleCode={row.code ?? ""}
+          offerIds={works.offerIds}
+          columnsCount={works.columnsCount}
+          open={worksOpen}
+          onCount={(n) => works.onCount(worksId as number, n)}
+        />
+      )}
     </>
   );
 }
 
-export function StageSummaryTable({ summary }: { summary: StageSummary }) {
+export function StageSummaryTable({
+  summary,
+  tenderId,
+  offerIds,
+}: {
+  summary: StageSummary;
+  tenderId: number;
+  offerIds: number[];
+}) {
   // Раскрытие статьи — по её id, а не по коду: коды статей ручного разноса
   // не гарантированно уникальны глобально, а id классификатора — да.
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+  // Три НЕЗАВИСИМЫХ ключа раскрытия блока работ (§2.1): открыт ли блок сейчас
+  // (`worksOpenIds`), открывали ли его хоть раз — компонент остаётся
+  // смонтированным ради кэша запроса и счётчика (`worksMountedIds`), и сам
+  // счётчик N по id статьи (`worksCounts`). Ни один из них не выводится из
+  // `expandedIds` подстатей и не хранится внутри `PositionDrilldown` — оба
+  // решения обсуждены в докстроке `WorksProps` и в блоке рендера выше.
+  const [worksOpenIds, setWorksOpenIds] = useState<Set<number>>(() => new Set());
+  const [worksMountedIds, setWorksMountedIds] = useState<Set<number>>(() => new Set());
+  // Что из роли `worksMountedIds` реально доказано тестами (задача 11,
+  // ревью): её ПРОВЕРЯЕМАЯ работа — не пускать запрос ДО первого раскрытия
+  // статьи (§2.1, «раскрытие ленивое»); тест на это есть и краснеет при
+  // порче условия монтажа. Заявленная в докстроке WorksProps вторая роль —
+  // «пережить закрытие своей же кнопки, не размонтируясь» — тестами НЕ
+  // доказана и, похоже, недоказуема: `queryFn` хука не принимает `signal`
+  // (нечего отменять), `staleTime`/`gcTime: Infinity` (Task 8) и дедуп
+  // запроса по ключу уже гарантируют мгновенный ответ из кэша при повторном
+  // монтировании — так что у «остаться смонтированным, а не пересоздаться»
+  // нет наблюдаемого следствия ни для сети, ни для экрана. Оставлена как
+  // есть, потому что это явное требование интерфейса задачи (три ключа,
+  // §2.1), а не потому что для этой конкретной роли нашёлся тест.
+  const [worksCounts, setWorksCounts] = useState<Map<number, number>>(() => new Map());
 
   function toggle(id: number) {
     setExpandedIds((prev) => {
@@ -297,7 +367,36 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
     });
   }
 
+  function toggleWorks(id: number) {
+    setWorksMountedIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+    setWorksOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleWorksCount(id: number, n: number) {
+    setWorksCounts((prev) => {
+      if (prev.get(id) === n) return prev;
+      const next = new Map(prev);
+      next.set(id, n);
+      return next;
+    });
+  }
+
   const { columns, rows, unallocated, total, display } = summary;
+  const works: WorksProps = {
+    tenderId,
+    offerIds,
+    columnsCount: columns.length,
+    worksOpenIds,
+    worksMountedIds,
+    worksCounts,
+    onToggleWorks: toggleWorks,
+    onCount: handleWorksCount,
+  };
 
   return (
     <div className="space-y-2">
@@ -337,6 +436,7 @@ export function StageSummaryTable({ summary }: { summary: StageSummary }) {
                 depth={0}
                 expandedIds={expandedIds}
                 onToggle={toggle}
+                works={works}
               />
             ))}
           </TableBody>

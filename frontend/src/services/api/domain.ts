@@ -39,6 +39,7 @@ import type {
   ReviewQueueParams,
   RoundImportJob,
   RoundInput,
+  StagePositions,
   StageSummary,
   TenderCard,
   TenderInput,
@@ -289,6 +290,14 @@ export const tendersApi = {
   stageSummary: (tenderId: number, offerIds: number[]): Promise<StageSummary> =>
     api
       .get<StageSummary>(`/v1/tenders/${tenderId}/stage-summary`, {
+        params: { offers: offerIds },
+        paramsSerializer: { indexes: null },
+      })
+      .then((r) => r.data),
+  /** Попозиционное раскрытие статьи свода (спека 2026-08-30-position-drilldown-design.md §2.11). */
+  stagePositions: (tenderId: number, workCategoryId: number, offerIds: number[]): Promise<StagePositions> =>
+    api
+      .get<StagePositions>(`/v1/tenders/${tenderId}/stage-summary/${workCategoryId}`, {
         params: { offers: offerIds },
         paramsSerializer: { indexes: null },
       })

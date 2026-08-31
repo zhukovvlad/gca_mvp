@@ -12,6 +12,7 @@ import {
   useDeleteTender,
   useImportJob,
   useRoundImportJobs,
+  useStagePositions,
   useStageSummary,
   useTender,
   useUpdateRound,
@@ -20,6 +21,7 @@ import {
 } from "./queries";
 import { qk } from "./queryKeys";
 import { handlerState, resetHandlerState } from "@/test/handlers";
+import { stagePositionsResponse } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 import type { ParticipantDeletionPreview } from "@/types/domain";
@@ -342,6 +344,62 @@ describe("useImportJob: инвалидация для раундового за�
   });
 
   /**
+   * Ревью PR #35, finding 2: после ЗАМЕНЫ раунда сервер переиспользует ТУ ЖЕ
+   * строку `Offer` (`services/round_import.py`: `on_conflict_do_nothing` по
+   * `(round_id, package_id)`), поэтому id предложений не меняются, и точечные
+   * ключи `qk.tenders.stageSummary`/`qk.tenders.stagePositions` (собранные из
+   * этих id) остаются ПРЕЖНИМИ. `useStagePositions` держит
+   * `staleTime: Infinity`/`gcTime: Infinity` (§6.3) — единственное, что может
+   * освежить его кэш, это инвалидация; без неё разложение показывало бы
+   * старые деньги рядом со свежим сводом до перезагрузки страницы. Проверяем
+   * ОБА префиксных ключа — свод и разложение, — а не только один: тест,
+   * проверяющий лишь `stageSummary`, не заметил бы половину дефекта, потому
+   * что именно у разложения нет иного способа обновиться, кроме инвалидации.
+   */
+  it("done-задание раунда инвалидирует ОБА префикса — stage-summary и stage-positions — для тендера", async () => {
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () =>
+        HttpResponse.json({
+          id: 82,
+          owner_type: "round",
+          tender_id: 300,
+          round_id: 3001,
+          estimate_ids: [8001, 8002],
+          estimates_created: 2,
+          filename: "round.xlsx",
+          file_sha256: "abc",
+          status: "done",
+          error_text: null,
+          warnings: [],
+          counters: {
+            positions_total: 0,
+            matched_cache: 0,
+            matched_exact: 0,
+            matched_nonposition: 0,
+            to_review: 0,
+          },
+          created_at: null,
+          started_at: null,
+          finished_at: null,
+        })
+      )
+    );
+
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderHook(() => useImportJob(82, { tenderId: 300, roundId: 3001 }), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.tenders.stageSummaryForTender(300)));
+      expect(keys).toContain(JSON.stringify(qk.tenders.stagePositionsForTender(300)));
+    });
+  });
+
+  /**
    * Договорный путь (`ownerRef.contractId`) этим finding'ом не тронут ни на
    * строку: тот же набор ключей, что и до фикса — карточка договора, история
    * загрузок договора, очередь ручного матчинга, корень паспорта, — и НИЧЕГО
@@ -517,5 +575,67 @@ describe("useStageSummary", () => {
       wrapper: wrapperFor(qc),
     });
     expect(result.current.fetchStatus).toBe("idle");
+  });
+});
+
+/**
+ * `useStagePositions` (спека 2026-08-30-position-drilldown-design.md §2.12):
+ * попозиционное разложение статьи свода, третий уровень.
+ */
+describe("useStagePositions", () => {
+  afterEach(() => {
+    resetHandlerState();
+  });
+
+  it("грузит разложение и кладёт его под канонический ключ", async () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStagePositions(300, 22, [7002, 7001], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.work_category.id).toBe(22);
+    // ключ канонический: порядок id не создаёт второй записи кэша
+    expect(qc.getQueryData(qk.tenders.stagePositions(300, 22, [7001, 7002]))).toBeDefined();
+  });
+
+  it("enabled=false — запрос не уходит (ленивость §2.1)", () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useStagePositions(300, 22, [7001, 7002], false), {
+      wrapper: wrapperFor(qc),
+    });
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  it("размонтирование и повторный монтаж НЕ шлют второй запрос (§6.3)", async () => {
+    // Реальный путь потери наблюдателя: свернули статью-предка — блок работ
+    // подстатьи размонтировался вместе с ней. Со `staleTime` без `gcTime`
+    // тест зелёный лишь пока не истёк сборщик кэша, поэтому здесь считаются
+    // ПОПАДАНИЯ В ХЕНДЛЕР, а не состояние хука.
+    const qc = createTestQueryClient();
+    let hits = 0;
+    server.use(
+      http.get("/api/v1/tenders/:tenderId/stage-summary/:workCategoryId", () => {
+        hits += 1;
+        return HttpResponse.json(stagePositionsResponse());
+      })
+    );
+    const first = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+    first.unmount();
+    // Без gcTime у клиента задан gcTime: 0 (createTestQueryClient) — сборщик
+    // кэша сам планируется через setTimeout(0) при потере последнего
+    // наблюдателя. Отдать событийный цикл здесь ОБЯЗАТЕЛЬНО: без этого тика
+    // второй renderHook успевал бы застать запись кэша ещё не удалённой даже
+    // без `gcTime: Infinity` в хуке, и проверка не отличала бы исправный хук
+    // от сломанного (найдено самопроверкой задачи 8 — снятие `gcTime:
+    // Infinity` не краснило тест до этой правки).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = renderHook(() => useStagePositions(300, 22, [7001, 7002], true), {
+      wrapper: wrapperFor(qc),
+    });
+    await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
+    expect(hits).toBe(1);
   });
 });

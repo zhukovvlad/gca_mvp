@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  sampleStagePositions,
   sampleStageSummary,
   stageSummaryAllUnknown,
   stageSummaryNet,
   stageSummaryWithUnknownSecondColumn,
 } from "./fixtures";
 import type {
+  StagePositions,
   StageSummary,
   StageSummaryCell,
   StageSummaryRow,
@@ -890,3 +892,57 @@ checkStageSummaryInvariants(sampleStageSummary, "sampleStageSummary");
 checkStageSummaryInvariants(stageSummaryNet(), "stageSummaryNet");
 checkStageSummaryInvariants(stageSummaryAllUnknown(), "stageSummaryAllUnknown");
 checkStageSummaryInvariants(stageSummaryWithUnknownSecondColumn(), "stageSummaryWithUnknownSecondColumn");
+
+// ============================================================================
+// Разложение статьи свода (спека 2026-08-30-position-drilldown-design.md
+// §2.11, §2.13; Task 10 плана) — три инварианта фикстуры `sampleStagePositions`,
+// по образцу проверок sampleStageSummary выше.
+// ============================================================================
+
+/**
+ * Инварианты `sampleStagePositions` (задача 10 плана):
+ *
+ * 1. Сходимость (§2.13) — сумма ячеек строк в каждой колонке равна
+ *    `article_amount` этой колонки: строка «прочие» несёт остаток, и это
+ *    обещание проверяется тестом, а не глазами (§2.13 находило пропажу
+ *    допработ, которую четыре пары глаз до того не увидели).
+ * 2. `estimate_rows == 0 ⟺ state == "absent"` (§2.11: `estimate_rows: 0`
+ *    возможен ТОЛЬКО при `state: absent` — эквивалентность, а не одностороннее
+ *    следствие).
+ * 3. `row_key` уникальны в наборе — ровно тот инвариант, ради которого поле
+ *    заведено (§2.11): устойчивая идентичность строки для React-ключа, а не
+ *    сборка из `kind` + `chapter_ref_raw`, которая схлопнула бы две допработы
+ *    разных лотов с одной ссылкой.
+ */
+function checkStagePositionsInvariants(fixture: StagePositions, label: string): void {
+  describe(`Инварианты ${label}`, () => {
+    it("сумма ячеек строк по колонке равна article_amount (§2.13)", () => {
+      fixture.convergence.forEach((column, index) => {
+        if (column.article_amount === null) return; // недоступная база НДС — своя ветка (§2.8), здесь не встречается
+        const sum = fixture.rows.reduce((acc, row) => {
+          const amount = row.cells[index].amount;
+          return amount === null ? acc : acc + parseFloat(amount);
+        }, 0);
+        expect(sum).toBeCloseTo(parseFloat(column.article_amount));
+        expect(column.shown_sum).not.toBeNull();
+        expect(parseFloat(column.shown_sum!)).toBeCloseTo(sum);
+        expect(column.converged).toBe(true);
+      });
+    });
+
+    it('estimate_rows == 0 ⟺ state == "absent" (§2.11)', () => {
+      for (const row of fixture.rows) {
+        for (const cell of row.cells) {
+          expect(cell.estimate_rows === 0).toBe(cell.state === "absent");
+        }
+      }
+    });
+
+    it("row_key уникальны в наборе (§2.11)", () => {
+      const keys = fixture.rows.map((row) => row.row_key);
+      expect(new Set(keys).size).toBe(keys.length);
+    });
+  });
+}
+
+checkStagePositionsInvariants(sampleStagePositions, "sampleStagePositions");
