@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { CellState, StagePositionsCell, StageSummaryChange } from "@/types/domain";
 
 import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
+import { estimateRowsLabel } from "./drilldownCopy";
 import { formatQuantity } from "./drilldownData";
 import { ChangeBadge } from "./SummaryCell";
 
@@ -40,13 +41,45 @@ function repeatsState(state: CellState, change: StageSummaryChange): boolean {
   return KIND_LABEL[change.kind] === STATE_LABEL[state];
 }
 
-export function PositionCell({ cell }: { cell: StagePositionsCell }) {
-  const { state, amount, amount_unavailable_reason, quantity, quantity_unit, quantity_changed, change } = cell;
+export function PositionCell({
+  cell,
+  rowCountChanged,
+}: {
+  cell: StagePositionsCell;
+  /**
+   * Число строк сметы группы сменилось относительно предыдущей колонки
+   * ПРИСУТСТВИЯ (пропуская `absent`) — та же ось, что `quantity_changed`
+   * несёт для объёма, но вычислена КЛИЕНТОМ из полной трассы `row.cells`
+   * (`drilldownData.ts::estimateRowsChangedPerCell`), а не сервером: контракт
+   * не меняется, факт уже есть на проводе (макет 2026-08-29, строка 461;
+   * закрывает бывший `docs/TECH_DEBT.md`, пункт 26).
+   */
+  rowCountChanged: boolean;
+}) {
+  const {
+    state,
+    amount,
+    amount_unavailable_reason,
+    quantity,
+    quantity_unit,
+    quantity_changed,
+    estimate_rows,
+    change,
+  } = cell;
   // Число печатается только в состоянии `amount` и только когда сумма не
   // погашена неизвестной базой НДС средней колонки (§2.8) — как у ячейки свода.
   const showsNumber = state === "amount" && !amount_unavailable_reason;
   const formattedQuantity = formatQuantity(quantity);
   const hideChange = amount_unavailable_reason !== null || repeatsState(state, change);
+  // Третий этаж есть, когда есть ЛИБО объём, ЛИБО хотя бы число строк сметы
+  // (найдено ревью PR #35, finding 3): у допработы и диагностической строки
+  // (`unmatched`) объёма нет структурно, но число строк сметы у них есть —
+  // прежде оно терялось целиком, и группа, у которой оно меняется между
+  // этапами (макет 2026-08-29, строка 461: «2 стр.» вместо «1 стр.» при той
+  // же наблюдаемой сумме), читалась только как изменение цены. Инвариант
+  // контракта (§2.11): `estimate_rows === 0` бывает РОВНО у состояния
+  // `absent` — там третьего этажа по-прежнему нет вовсе.
+  const rowsLabel = estimate_rows > 0 ? estimateRowsLabel(estimate_rows) : null;
 
   return (
     <TableCell
@@ -66,9 +99,12 @@ export function PositionCell({ cell }: { cell: StagePositionsCell }) {
           <StatusPill tone={CELL_STATE_TONE[state]} label={STATE_LABEL[state]} />
         )}
       </div>
-      {/* Третий этаж есть только у строки, у которой вообще есть объём (§2.4,
-          §6.3) — у допработы и диагностической строки его нет структурно. */}
-      {formattedQuantity !== null && (
+      {/* Третий этаж есть, когда есть число строк сметы ИЛИ объём (§2.4, §6.3,
+          finding 3 ревью PR #35) — у ячейки состояния `absent` нет ни того,
+          ни другого (`estimate_rows === 0`), и этаж по-прежнему не рендерится
+          вовсе, а не пустой. Порядок и разделитель — по макету 2026-08-29,
+          строки 445-461: «N стр. · объём единица». */}
+      {rowsLabel !== null && (
         // Найдено сверкой с макетом (задача 12, DoD 6): без тона по умолчанию
         // объём рендерился цветом ОСНОВНОГО текста — той же силы, что сумма
         // строкой выше, — и третий этаж переставал читаться как подчинённый
@@ -76,11 +112,26 @@ export function PositionCell({ cell }: { cell: StagePositionsCell }) {
         // `.qty.chg` — единственное исключение (там уже с 30.08.2026 принят
         // свой акцент, `text-warning-text`, тот же токен, что несёт
         // несходящаяся ячейка свода, а не цвет макета).
+        //
+        // Тон включается ЛИБО от `quantity_changed`, ЛИБО от `rowCountChanged`
+        // (бывший `docs/TECH_DEBT.md`, пункт 26): макет красит акцентом ВЕСЬ
+        // этаж целиком (строка 461, группа «Трассы…»), когда меняется число
+        // строк сметы при неизменном печатаемом объёме, — эмфаза одна на весь
+        // этаж, а не половина текста. Контракт при этом не тронут:
+        // `rowCountChanged` не новое поле ответа, а клиентская производная из
+        // `row.cells` (`drilldownData.ts::estimateRowsChangedPerCell`),
+        // посчитанная той же осью сравнения, что сервер уже применяет к
+        // `quantity_changed` — предыдущая колонка ПРИСУТСТВИЯ, а не соседняя
+        // по порядку.
         <div
           data-testid="cell-quantity"
-          className={cn("mt-0.5 text-2xs", quantity_changed ? "text-warning-text" : "text-fg-tertiary")}
+          className={cn(
+            "mt-0.5 text-2xs",
+            quantity_changed || rowCountChanged ? "text-warning-text" : "text-fg-tertiary"
+          )}
         >
-          {formattedQuantity} {quantity_unit}
+          {rowsLabel}
+          {formattedQuantity !== null && ` · ${formattedQuantity} ${quantity_unit}`}
         </div>
       )}
       {!hideChange && (

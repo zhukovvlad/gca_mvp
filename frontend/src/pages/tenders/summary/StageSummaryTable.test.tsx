@@ -1017,6 +1017,32 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
   });
 
+  /**
+   * Ревью PR #35, finding 4, на уровне экрана — где дефект реально виден
+   * пользователю. `unknown_vat_base` несёт пустой `rows` не потому, что в
+   * поддереве нет работ, а потому что сервер отказался их оценить (§2.8);
+   * до правки кнопка после загрузки всё равно печатала «Работы · 0», ложно
+   * утверждая отсутствие работ. Правильный итог — кнопка ОСТАЁТСЯ на своей
+   * подписи ДО первой загрузки (без «·»), как если бы счётчик так и не
+   * пришёл: родитель хранит счётчики в `Map` и не получает вызов `onCount`
+   * в этом состоянии (`PositionDrilldown.tsx`).
+   */
+  it("reason=unknown_vat_base: кнопка остаётся на «Работы» без «· 0» даже после загрузки (§2.8)", async () => {
+    const user = userEvent.setup();
+    mockedUseStagePositions.mockReturnValue({
+      isPending: false,
+      isError: false,
+      data: { ...sampleStagePositions, rows: [], convergence: [], reason: "unknown_vat_base" },
+      refetch: vi.fn(),
+    } as never);
+    renderTable();
+    const row = screen.getByTestId(rowTestId("2"));
+    const button = within(row).getByRole("button", { name: /Работы/ });
+    await user.click(button);
+    expect(within(row).getByRole("button", { name: "Работы" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /Работы ·/ })).toBeNull();
+  });
+
   it("шеврон корня гасит и подстатьи, и работы; их собственные ключи независимы", async () => {
     const user = userEvent.setup();
     successStagePositions();

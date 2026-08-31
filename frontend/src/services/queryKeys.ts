@@ -146,5 +146,30 @@ export const qk = {
     stagePositions: (tenderId: number, workCategoryId: number, offerIds: number[]) =>
       ["tenders", "stage-positions", tenderId, workCategoryId,
        [...offerIds].sort((a, b) => a - b)] as const,
+    /**
+     * Префикс свода И разложения по этапам одного тендера — инвалидировать
+     * ВСЕ комбинации `offerIds` (а у разложения ещё и `workCategoryId`) разом,
+     * не зная заранее, какой выбор сейчас открыт на экране (ревью PR #35,
+     * finding 2). Раунд после ЗАМЕНЫ переиспользует ТУ ЖЕ строку `Offer`
+     * (`services/round_import.py`: `on_conflict_do_nothing` по
+     * `(round_id, package_id)`), так что id предложений не меняются, и точечный
+     * ключ (`stageSummary`/`stagePositions` с конкретными `offerIds`) навсегда
+     * остался бы прежним — прогадать выбор невозможно, только инвалидировать
+     * ВЕСЬ префикс тендера. `staleTime: Infinity` у `useStagePositions` (§6.3)
+     * делает это ЕДИНСТВЕННЫМ способом освежить кэш разложения — без рефетча
+     * по времени и без смены ключа сам хук никогда не перезапросит данные
+     * заново.
+     *
+     * По умолчанию `invalidateQueries` матчит ПО ПРЕФИКСУ (`exact: false`), так
+     * что `["tenders", "stage-summary", tenderId]` попадает во ВСЕ записи
+     * `qk.tenders.stageSummary(tenderId, любые offerIds)`, а
+     * `["tenders", "stage-positions", tenderId]` — во ВСЕ записи
+     * `qk.tenders.stagePositions(tenderId, любой workCategoryId, любые
+     * offerIds)`. Отдельные функции здесь — а не общий `qk.tenders.all` —
+     * чтобы не задевать `tenders.list`/`tenders.card`/`tenders.roundJobs`
+     * тем же вызовом: они инвалидируются отдельно, своей логикой.
+     */
+    stageSummaryForTender: (tenderId: number) => ["tenders", "stage-summary", tenderId] as const,
+    stagePositionsForTender: (tenderId: number) => ["tenders", "stage-positions", tenderId] as const,
   },
 };

@@ -21,12 +21,12 @@ function cell(overrides: Partial<StagePositionsCell>): StagePositionsCell {
   };
 }
 
-function renderCell(c: StagePositionsCell) {
+function renderCell(c: StagePositionsCell, rowCountChanged = false) {
   return render(
     <table>
       <tbody>
         <tr>
-          <PositionCell cell={c} />
+          <PositionCell cell={c} rowCountChanged={rowCountChanged} />
         </tr>
       </tbody>
     </table>
@@ -56,7 +56,7 @@ describe("PositionCell — три этажа (§2.4)", () => {
       <table>
         <tbody>
           <tr>
-            <PositionCell cell={cell({ quantity: "6", quantity_unit: "шт" })} />
+            <PositionCell cell={cell({ quantity: "6", quantity_unit: "шт" })} rowCountChanged={false} />
           </tr>
         </tbody>
       </table>
@@ -64,9 +64,70 @@ describe("PositionCell — три этажа (§2.4)", () => {
     expect(screen.getByTestId("cell-quantity")).not.toHaveClass("text-warning-text");
   });
 
-  it("у ячейки без объёма третьего этажа нет (§6.3)", () => {
-    renderCell(cell({}));
+  it("у ячейки без объёма и без строк сметы третьего этажа нет (§6.3, absent)", () => {
+    // Инвариант контракта (§2.11): `estimate_rows === 0` бывает РОВНО у
+    // состояния `absent` — здесь третьего этажа нет вовсе, а не пустой.
+    renderCell(cell({ state: "absent", amount: null, estimate_rows: 0 }));
     expect(screen.queryByTestId("cell-quantity")).toBeNull();
+  });
+
+  /**
+   * Finding 3 ревью PR #35: контракт несёт `estimate_rows` в каждой ячейке, а
+   * `PositionCell` его прежде не читал вовсе — печатался только объём, и
+   * группа, у которой менялось ЧИСЛО строк сметы (например, допработа), могла
+   * быть прочитана только как изменение цены. У допработы и диагностической
+   * строки (`unmatched`) объёма нет структурно, но число строк есть — третий
+   * этаж обязан показать хотя бы его, без пустого «· » на месте объёма.
+   */
+  it("допработа/диагностическая строка без объёма печатает только число строк сметы", () => {
+    renderCell(cell({ quantity: null, quantity_unit: null, estimate_rows: 3 }));
+    const tier = screen.getByTestId("cell-quantity");
+    expect(tier).toHaveTextContent("3 стр.");
+    // Разделителя без объёма для него самого нет — иначе на этаже был бы
+    // хвост «· » без числа за ним.
+    expect(tier.textContent).not.toContain("·");
+  });
+
+  /**
+   * Макет 2026-08-29 (строка 461): группа «Трассы…» на одном из этапов несёт
+   * ДВЕ строки сметы вместо одной при ТОЙ ЖЕ печатаемой сумме объёма — именно
+   * этот случай доказывает, что счётчик статьи и объём это разные величины:
+   * до фикса такая перемена была видна только по значку изменения суммы,
+   * хотя сумма при этом могла и не подсказывать про перемену числа строк.
+   */
+  it("число строк сметы группы меняется между этапами при неизменном объёме (макет, строка 461)", () => {
+    const { rerender } = renderCell(cell({ quantity: "1", quantity_unit: "компл", estimate_rows: 1 }));
+    expect(screen.getByTestId("cell-quantity")).toHaveTextContent("1 стр. · 1 компл");
+    rerender(
+      <table>
+        <tbody>
+          <tr>
+            <PositionCell cell={cell({ quantity: "1", quantity_unit: "компл", estimate_rows: 2 })} rowCountChanged={false} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    expect(screen.getByTestId("cell-quantity")).toHaveTextContent("2 стр. · 1 компл");
+  });
+
+  /**
+   * Тот же угол, что и предыдущий тест, но про ТОН, а не про ТЕКСТ (бывший
+   * `docs/TECH_DEBT.md`, пункт 26): макет красит акцентом весь этаж объёма
+   * (`class="qty chg"`, строка 461), когда меняется число строк сметы, даже
+   * если печатаемый объём не поменялся. Источник факта — `rowCountChanged`,
+   * вычисленный клиентом из `row.cells` (`drilldownData.ts`,
+   * `estimateRowsChangedPerCell`), а НЕ второе поле контракта: `quantity_changed`
+   * здесь заведомо `false`, чтобы проверка не могла случайно пройти по старому
+   * условию.
+   */
+  it("тон этажа объёма включается и от смены числа строк — не только от quantity_changed (макет, строка 461)", () => {
+    renderCell(cell({ quantity: "1", quantity_unit: "компл", estimate_rows: 2, quantity_changed: false }), true);
+    expect(screen.getByTestId("cell-quantity")).toHaveClass("text-warning-text");
+  });
+
+  it("тон этажа объёма не включается, когда не поменялись ни объём, ни число строк", () => {
+    renderCell(cell({ quantity: "1", quantity_unit: "компл", estimate_rows: 2, quantity_changed: false }), false);
+    expect(screen.getByTestId("cell-quantity")).not.toHaveClass("text-warning-text");
   });
 
   it("состояние без суммы печатает подпись из STATE_LABEL, не число", () => {

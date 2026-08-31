@@ -24,7 +24,7 @@ import {
   restTitle,
   worksHeading,
 } from "./drilldownCopy";
-import { drilldownGroupCount, drilldownRowKey, showsLot } from "./drilldownData";
+import { drilldownGroupCount, drilldownRowKey, estimateRowsChangedPerCell, showsLot } from "./drilldownData";
 import { PositionCell } from "./PositionCell";
 import { ChangeBadge } from "./SummaryCell";
 
@@ -131,6 +131,13 @@ function DrilldownRowPills({ row, lotShown }: { row: StagePositionsRow; lotShown
  * был в той же слепой зоне: `key` React не наблюдаем тестом напрямую).
  */
 function DrilldownRow({ row, rowKey, lotShown }: { row: StagePositionsRow; rowKey: string; lotShown: boolean }) {
+  // Полная трасса строки уже здесь (`row.cells`, все колонки этапов) — этого
+  // достаточно, чтобы получить «число строк сметы сменилось с прошлого
+  // присутствия» БЕЗ изменения контракта (`drilldownData.ts`, докстрок
+  // `estimateRowsChangedPerCell`; закрывает бывший `docs/TECH_DEBT.md`,
+  // пункт 26). Считается один раз на рендер строки, а не внутри `PositionCell`
+  // — иначе каждой ячейке пришлось бы видеть соседние, которых у неё нет.
+  const rowCountChanged = estimateRowsChangedPerCell(row.cells);
   return (
     <TableRow data-testid={`drill-row-${ROW_TESTID[row.kind]}`} data-row-key={rowKey}>
       {/*
@@ -147,7 +154,7 @@ function DrilldownRow({ row, rowKey, lotShown }: { row: StagePositionsRow; rowKe
         </div>
       </TableCell>
       {row.cells.map((cell, index) => (
-        <PositionCell key={index} cell={cell} />
+        <PositionCell key={index} cell={cell} rowCountChanged={rowCountChanged[index]} />
       ))}
       <TableCell className="text-right tabular-nums">
         <ChangeBadge change={row.bargain} dashOnNone />
@@ -204,8 +211,22 @@ export function PositionDrilldown({
     onCountRef.current = onCount;
   });
 
+  // Ревью PR #35, finding 4: `reason` различает ДВА разных нуля. У
+  // `no_rows_in_subtree` пустой список — правда: в поддереве статьи
+  // действительно нет строк, и `drilldownGroupCount([]) === 0` обязан дойти
+  // до родителя — кнопка честно печатает «Работы · 0». У `unknown_vat_base`
+  // пустой список — НЕ факт о статье, а отказ сервера её оценить (§2.8):
+  // подстатья может нести сколько угодно работ, сервер просто не посчитал их
+  // при неизвестной базе НДС на первой/последней колонке. Раньше эффект
+  // репортил `drilldownGroupCount(data.rows)` БЕЗУСЛОВНО, до ветвлений по
+  // `reason` ниже, — и в этом состоянии кнопка лгала «Работы · 0», утверждая
+  // отсутствие работ там, где их присутствие просто нельзя оценить. Не
+  // вызывать `onCount` вовсе — родитель хранит счётчики в `Map`, различая
+  // «ещё не загружен» ОТСУТСТВИЕМ ключа (`StageSummaryTable.tsx`,
+  // `worksCount !== undefined`), и это ГОТОВОЕ представление «неизвестно»:
+  // отдельный сентинел вроде `-1` завёл бы второй способ сказать то же самое.
   useEffect(() => {
-    if (data) {
+    if (data && data.reason !== "unknown_vat_base") {
       onCountRef.current?.(drilldownGroupCount(data.rows));
     }
   }, [data]);

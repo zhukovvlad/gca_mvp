@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { StagePositionsRow } from "@/types/domain";
+import type { StagePositionsCell, StagePositionsRow } from "@/types/domain";
 
 import { extraPill } from "./drilldownCopy";
-import { drilldownGroupCount, drilldownRowKey, formatQuantity, showsLot } from "./drilldownData";
+import {
+  drilldownGroupCount,
+  drilldownRowKey,
+  estimateRowsChangedPerCell,
+  formatQuantity,
+  showsLot,
+} from "./drilldownData";
 
 const row = (kind: StagePositionsRow["kind"], group_count: number | null = null) =>
   ({
@@ -62,5 +68,55 @@ describe("formatQuantity", () => {
     expect(formatQuantity("8726.397168")?.replace(/\s/g, " ")).toBe("8 726,4");
     expect(formatQuantity("6+11")?.replace(/\s/g, " ")).toBe("6 + 11");
     expect(formatQuantity(null)).toBeNull();
+  });
+});
+
+describe("estimateRowsChangedPerCell", () => {
+  // Инвариант §2.11 (тот же, на который опирается `PositionCell`):
+  // `estimate_rows === 0` бывает РОВНО у состояния `absent` — значит
+  // «присутствует» здесь читается ровно как `estimate_rows > 0`, без
+  // отдельного поля состояния.
+  const cellAt = (estimate_rows: number): StagePositionsCell => ({
+    state: estimate_rows > 0 ? "amount" : "absent",
+    amount: estimate_rows > 0 ? "0" : null,
+    amount_unavailable_reason: null,
+    quantity: null,
+    quantity_unit: null,
+    quantity_changed: false,
+    estimate_rows,
+    change: { kind: "none", value: null, direction: null, reason: "first_column" },
+  });
+
+  it("первая колонка не бывает изменением — сравнивать не с чем (§2.4, тот же приём, что change_between)", () => {
+    expect(estimateRowsChangedPerCell([cellAt(1)])).toEqual([false]);
+  });
+
+  it("одинаковое число строк подряд — не изменение", () => {
+    expect(estimateRowsChangedPerCell([cellAt(1), cellAt(1)])).toEqual([false, false]);
+  });
+
+  it("число строк меняется между соседними присутствующими колонками", () => {
+    expect(estimateRowsChangedPerCell([cellAt(1), cellAt(2)])).toEqual([false, true]);
+  });
+
+  /**
+   * Правило сервера (`services/position_drilldown.py::group_cells`):
+   * `prev_quantities` продвигается ТОЛЬКО когда колонка присутствует
+   * (`if stage is not None`) — колонка `absent` пропускается, а не считается
+   * «сменой относительно пустоты». Сравнение здесь обязано быть с ПОСЛЕДНЕЙ
+   * присутствовавшей колонкой, не с предыдущей ПО ПОРЯДКУ: наивная реализация
+   * «сравнить с соседней слева» дала бы ложное срабатывание сразу после
+   * разрыва (колонка после `absent` читалась бы как «изменение от нуля»,
+   * хотя сама причина разрыва — отсутствие данных, а не смена числа строк).
+   */
+  it("разрыв (absent) в середине трассы пропускается — сравнение идёт с последней присутствовавшей колонкой", () => {
+    // 2, отсутствует, 2 — то же число строк ДО и ПОСЛЕ разрыва: изменения нет.
+    expect(estimateRowsChangedPerCell([cellAt(2), cellAt(0), cellAt(2)])).toEqual([false, false, false]);
+    // 2, отсутствует, 3 — число действительно сменилось относительно 2.
+    expect(estimateRowsChangedPerCell([cellAt(2), cellAt(0), cellAt(3)])).toEqual([false, false, true]);
+  });
+
+  it("сама отсутствующая колонка изменением не помечается — у absent нет третьего этажа вовсе", () => {
+    expect(estimateRowsChangedPerCell([cellAt(2), cellAt(0)])).toEqual([false, false]);
   });
 });

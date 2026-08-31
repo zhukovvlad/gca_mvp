@@ -546,6 +546,18 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
         }
         if (ownerRef?.tenderId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.review.all });
+          // Ревью PR #35, finding 2: раунд после ЗАМЕНЫ переиспользует ТУ ЖЕ
+          // строку `Offer` (`services/round_import.py`), значит id
+          // предложений не меняются и точечные ключи свода/разложения
+          // (построенные из этих id) остаются прежними — без инвалидации
+          // `useStageSummary` рефетчил бы по своему обычному `staleTime`, а
+          // `useStagePositions` с `staleTime: Infinity` (§6.3) не обновился бы
+          // НИКОГДА, и открытое разложение показывало бы старые деньги рядом
+          // со свежим сводом до перезагрузки страницы. Префиксные ключи —
+          // потому что здесь неизвестно, какие `offerIds` (и для разложения —
+          // какой `workCategoryId`) сейчас выбраны на экране.
+          qc.invalidateQueries({ queryKey: qk.tenders.stageSummaryForTender(ownerRef.tenderId) });
+          qc.invalidateQueries({ queryKey: qk.tenders.stagePositionsForTender(ownerRef.tenderId) });
         }
       }
       return job;

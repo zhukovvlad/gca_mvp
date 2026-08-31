@@ -344,6 +344,62 @@ describe("useImportJob: инвалидация для раундового за�
   });
 
   /**
+   * Ревью PR #35, finding 2: после ЗАМЕНЫ раунда сервер переиспользует ТУ ЖЕ
+   * строку `Offer` (`services/round_import.py`: `on_conflict_do_nothing` по
+   * `(round_id, package_id)`), поэтому id предложений не меняются, и точечные
+   * ключи `qk.tenders.stageSummary`/`qk.tenders.stagePositions` (собранные из
+   * этих id) остаются ПРЕЖНИМИ. `useStagePositions` держит
+   * `staleTime: Infinity`/`gcTime: Infinity` (§6.3) — единственное, что может
+   * освежить его кэш, это инвалидация; без неё разложение показывало бы
+   * старые деньги рядом со свежим сводом до перезагрузки страницы. Проверяем
+   * ОБА префиксных ключа — свод и разложение, — а не только один: тест,
+   * проверяющий лишь `stageSummary`, не заметил бы половину дефекта, потому
+   * что именно у разложения нет иного способа обновиться, кроме инвалидации.
+   */
+  it("done-задание раунда инвалидирует ОБА префикса — stage-summary и stage-positions — для тендера", async () => {
+    server.use(
+      http.get("/api/v1/import-jobs/:id", () =>
+        HttpResponse.json({
+          id: 82,
+          owner_type: "round",
+          tender_id: 300,
+          round_id: 3001,
+          estimate_ids: [8001, 8002],
+          estimates_created: 2,
+          filename: "round.xlsx",
+          file_sha256: "abc",
+          status: "done",
+          error_text: null,
+          warnings: [],
+          counters: {
+            positions_total: 0,
+            matched_cache: 0,
+            matched_exact: 0,
+            matched_nonposition: 0,
+            to_review: 0,
+          },
+          created_at: null,
+          started_at: null,
+          finished_at: null,
+        })
+      )
+    );
+
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderHook(() => useImportJob(82, { tenderId: 300, roundId: 3001 }), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.tenders.stageSummaryForTender(300)));
+      expect(keys).toContain(JSON.stringify(qk.tenders.stagePositionsForTender(300)));
+    });
+  });
+
+  /**
    * Договорный путь (`ownerRef.contractId`) этим finding'ом не тронут ни на
    * строку: тот же набор ключей, что и до фикса — карточка договора, история
    * загрузок договора, очередь ручного матчинга, корень паспорта, — и НИЧЕГО
