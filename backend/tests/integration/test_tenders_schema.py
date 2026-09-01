@@ -22,6 +22,38 @@ class TestTenderTables:
         with rejected(db_session, contains="uq_tenders_tender_number"):
             factories.TenderFactory.create(tender_number="T-1")
 
+    @pytest.mark.parametrize("n", [0, 1, 2])
+    def test_factory_minted_tender_number_never_collides_with_a_hand_written_one(
+        self, db_session, factories, n
+    ):
+        """`TenderFactory.tender_number` — `factory.Sequence`, а его счётчик
+        глобален на весь процесс pytest (общий на все файлы и, под xdist, на
+        воркер): где именно он окажется к моменту этого теста, зависит от
+        состава прогона, а не от этого теста.
+
+        Раньше фабрика минтила голое `f"Т-{n:04d}"` — то же пространство
+        значений, что и рукописные литералы вроде "Т-0001"
+        (`tests/integration/test_tenders_api.py::tender`). Когда счётчик
+        доходил до совпадающего `n`, INSERT падал `duplicate key value
+        violates unique constraint "uq_tenders_tender_number"` — плавающий
+        по составу тестов и раскладке xdist (симптом закрыт этим тестом,
+        а не конкретное число: см. докстринг `TenderFactory` в
+        `tests/factories.py`).
+
+        Кладём в базу РУКОПИСНЫЙ литерал СТАРОЙ формы прямо на значении
+        счётчика, которое сейчас заставим отдать фабрике — если бы фабрика
+        всё ещё минтила в то же пространство, тест упал бы тут же.
+        """
+        literal = f"Т-{n:04d}"
+        factories.TenderFactory.create(tender_number=literal)
+        db_session.flush()
+
+        factories.TenderFactory.reset_sequence(n, force=True)
+        minted = factories.TenderFactory.create()
+        db_session.flush()
+
+        assert minted.tender_number != literal
+
     @pytest.mark.parametrize("field", ["title", "tender_number"])
     def test_blank_text_rejected(self, db_session, factories, field):
         with rejected(db_session, contains=f"ck_tenders_{'title' if field == 'title' else 'number'}_not_blank"):
