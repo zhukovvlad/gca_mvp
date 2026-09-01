@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -984,16 +986,205 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * совпадение токена в обеих темах) и `hover:bg-surface-hover` вместо
    * `hover:bg-surface-sunken` (макетное `--hover`, другой токен — не тот, что
    * стоял).
+   *
+   * Третий круг: ВТОРОЙ круг сам оказался частичной сверкой — он добавил
+   * `border` и `:hover`, но не добавил `cursor`/`white-space` из ТОГО ЖЕ
+   * правила `.works` (мокет, спека
+   * `docs/superpowers/specs/2026-08-29-position-drilldown-mockup.html:775`),
+   * несмотря на то, что инсайт по итогам второго круга уже требовал держать
+   * список признаков ИЗ ПРАВИЛА, а не подмножеством. `WORKS_RULE_DECLARATIONS`
+   * переписывает ВСЕ одиннадцать деклараций правила буквально из текста
+   * мокета, и у каждой ровно одна диспозиция:
+   *   - `assert`  — свойство закрыто классом(ами) кнопки, проверяется здесь;
+   *   - `parent`  — свойство обеспечено НЕ кнопкой, а конкретным, тоже
+   *                 проверяемым фактом о родителе (не текстом в докстроке);
+   *   - `n/a`     — свойство неприменимо, и почему — тоже проверяемый факт;
+   *   - `reset`   — свойство закрыто БАЗОВЫМ СЛОЕМ фреймворка (CSS reset), а
+   *                 не классом, не родителем и не неприменимостью — см. ниже.
+   * Тип `WorksDeclaration` требует поле `disposition` у каждой записи —
+   * запись без диспозиции не компилируется.
+   *
+   * Четвёртый круг (инстанс 5, тот же файл): счёт «десять деклараций» из
+   * докстрока выше и `toHaveLength(10)` были НАБРАНЫ ЧЕЛОВЕКОМ по чтению
+   * строки 775 — и оба разошлись с правилом в ОДНУ И ТУ ЖЕ сторону:
+   * `font: inherit` не попал ни в список, ни в счёт, поэтому сверка
+   * подтверждала список сама собой, а не правило. Последствий не было —
+   * Preflight Tailwind ставит `font: inherit` каждой кнопке безусловно (см.
+   * диспозицию `reset` у записи `font` ниже), — но сама неполнота была той
+   * же формы, что инстансы 1–4 (`docs/insights/enumerate-the-rules-own-properties.md`).
+   * Фикс: число деклараций теперь СЧИТАНО из файла мокета функцией
+   * `worksRulePropertiesFromMockup` (ниже), а не напечатано текстом — тест
+   * «состав списка сверки совпадает с составом блока .works мокета» сравнивает
+   * МНОЖЕСТВА имён свойств, а не только длины (компенсирующая пара «лишняя +
+   * пропавшая декларация» дала бы совпадающую длину при разном составе).
+   * Извлечение — не парсер CSS общего вида: оно ищет ЛИТЕРАЛЬНЫЙ селектор
+   * `.works {` (ровно один раз во всём файле мокета — проверено `grep`) и
+   * бьёт содержимое блока по `;`, беря часть до первого `:` как имя
+   * свойства. `.works:hover {` и `.works .chev {` этим регулярным выражением
+   * не совпадают: после `.works` там не сразу идёт (опционально пробел и)
+   * `{`. Это закрывает КОНКРЕТНО тот пробел, который стоил инстанса 5:
+   * декларация, дописанная в мокет и не перенесённая сюда руками, теперь
+   * меняет состав множества `fromMockup` и красит тест «состав списка
+   * сверки…», а не только ждёт внимательного человека.
    */
-  it("кнопка «Работы» несёт токены макета — цвет, фон, рамку и hover, не литералы (полировка после мержа)", () => {
+  type WorksDeclaration =
+    | { property: string; mockup: string; disposition: "assert"; classes: string[] }
+    | { property: string; mockup: string; disposition: "parent" | "n/a" | "reset"; reason: string };
+
+  const WORKS_RULE_DECLARATIONS: WorksDeclaration[] = [
+    { property: "border", mockup: "1px solid var(--bd)", disposition: "assert", classes: ["border", "border-border-default"] },
+    { property: "background", mockup: "var(--surface)", disposition: "assert", classes: ["bg-surface"] },
+    { property: "color", mockup: "var(--fg2)", disposition: "assert", classes: ["text-fg-secondary"] },
+    { property: "border-radius", mockup: "6px", disposition: "assert", classes: ["rounded-[6px]"] },
+    {
+      property: "font",
+      mockup: "inherit",
+      disposition: "reset",
+      reason:
+        "Preflight Tailwind ставит `font: inherit` любой кнопке безусловно — из БАЗОВОГО СЛОЯ фреймворка, а не из класса этой кнопки, не из факта о родителе и не потому что свойство неприменимо. Верифицировано чтением `node_modules/tailwindcss/preflight.css`, блок селектора `button, input, select, optgroup, textarea, ::file-selector-button`, декларация `font: inherit;` внутри него (см. тест ниже — читает тот же файл, а не повторяет утверждение текстом).",
+    },
+    { property: "font-size", mockup: "11px", disposition: "assert", classes: ["text-2xs"] },
+    { property: "padding", mockup: "0 6px", disposition: "assert", classes: ["px-1.5", "py-0"] },
+    {
+      property: "margin-left",
+      mockup: "8px",
+      disposition: "parent",
+      reason: "родительский flex (`items-start gap-2` на строке контейнера) даёт 8px между всеми детьми, включая эту кнопку — своего класса отступа на кнопке нет и не должно появиться",
+    },
+    { property: "cursor", mockup: "pointer", disposition: "assert", classes: ["cursor-pointer"] },
+    { property: "white-space", mockup: "nowrap", disposition: "assert", classes: ["whitespace-nowrap"] },
+    {
+      property: "vertical-align",
+      mockup: "1px",
+      disposition: "n/a",
+      reason: "кнопка — ребёнок flex-контейнера (родитель несёт класс flex); vertical-align на flex-детей не действует, свойство мокета здесь неприменимо, а не пропущено",
+    },
+  ];
+
+  /**
+   * Достаёт имена CSS-свойств блока `.works { ... }` прямо из файла мокета —
+   * не парсер CSS общего вида, а извлечение ОДНОГО литерального блока (см.
+   * докстрок выше про то, почему регулярное выражение не путает его с
+   * `.works:hover {` / `.works .chev {`). Путь — относительно cwd прогона
+   * (`frontend/`, тот же приём, что `readFileSync("src/index.css", ...)` в
+   * `summaryTokens.test.ts`).
+   */
+  function worksRulePropertiesFromMockup(): string[] {
+    const html = readFileSync(
+      "../docs/superpowers/specs/2026-08-29-position-drilldown-mockup.html",
+      "utf8"
+    );
+    const match = html.match(/\.works\s*\{([^}]*)\}/);
+    if (!match) {
+      throw new Error("Блок `.works { ... }` не найден в файле мокета — путь или селектор разошлись с реальностью");
+    }
+    return match[1]
+      .split(";")
+      .map((decl) => decl.trim())
+      .filter(Boolean)
+      .map((decl) => decl.split(":")[0].trim());
+  }
+
+  /**
+   * Правило `.works:hover` (мокет, строка 778) — отдельный набор свойств.
+   * Тип уже — не `WorksDeclaration`, а его ветка `assert`: обе декларации
+   * `:hover` закрыты классом, третьей диспозиции здесь не бывает по смыслу
+   * правила (наведение — не про отступ и не про раскладку).
+   */
+  const WORKS_HOVER_DECLARATIONS: Extract<WorksDeclaration, { disposition: "assert" }>[] = [
+    { property: "background (:hover)", mockup: "var(--hover)", disposition: "assert", classes: ["hover:bg-surface-hover"] },
+    { property: "color (:hover)", mockup: "var(--fg)", disposition: "assert", classes: ["hover:text-fg"] },
+  ];
+
+  it(`правило .works — ${WORKS_RULE_DECLARATIONS.length} деклараций в списке сверки, число СЧИТАНО из файла мокета`, () => {
+    // Отдельная проверка длины раньше цикла: случайно урезанный (например,
+    // при рефакторинге) массив падает здесь, на очевидной причине, а не
+    // молча теряет декларацию где-то в цикле ниже. Число — НЕ литерал,
+    // набранный человеком (инстанс 5 показал, что человек и список расходятся
+    // с правилом в одну и ту же сторону и совпадение с литералом ничего не
+    // доказывает): оно посчитано извлечением из самого файла мокета.
+    const fromMockup = worksRulePropertiesFromMockup();
+    // Премисный факт: извлечение реально что-то нашло, а не молча вернуло
+    // пустоту (сломанный путь/регулярное выражение дал бы `toHaveLength(0)`
+    // и оба сравнения ниже были бы зелёными на пустом множестве).
+    expect(fromMockup.length).toBeGreaterThan(0);
+    expect(WORKS_RULE_DECLARATIONS).toHaveLength(fromMockup.length);
+  });
+
+  it("состав списка сверки совпадает с составом блока .works мокета — не только числом (инстанс 5)", () => {
+    // Числа могут случайно совпасть при разном составе (потерянная и лишняя
+    // декларация компенсируют друг друга) — здесь сверяются САМИ ИМЕНА
+    // свойств, множествами (порядок переноса не обязан повторять порядок
+    // мокета). Ровно это сравнение поймало бы инстанс 5: `font` был бы в
+    // `fromMockup`, но не в `fromList`.
+    const fromMockup = new Set(worksRulePropertiesFromMockup());
+    const fromList = new Set(WORKS_RULE_DECLARATIONS.map((d) => d.property));
+    expect(fromList).toEqual(fromMockup);
+  });
+
+  it.each(WORKS_RULE_DECLARATIONS)(
+    "правило .works, декларация $property: $mockup — диспозиция закрыта",
+    (decl) => {
+      renderTable(summaryWith({ "6": false, "2": true }));
+      const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
+
+      if (decl.disposition === "assert") {
+        for (const cls of decl.classes) {
+          expect(button).toHaveClass(cls);
+        }
+      } else if (decl.disposition === "parent") {
+        // margin-left: факт о РОДИТЕЛЕ, не о кнопке — снятие gap-2 с
+        // родителя должно уронить именно эту проверку.
+        expect(button.parentElement).toHaveClass("gap-2");
+      } else if (decl.disposition === "n/a") {
+        // vertical-align: неприменимость проверяется фактом (родитель —
+        // flex), а не только заявлена в докстроке.
+        expect(button.parentElement).toHaveClass("flex");
+      } else {
+        // disposition === "reset" (font: inherit). Классового утверждения
+        // здесь НЕ БЫВАЕТ — свойство не закрыто ни одним классом кнопки, и
+        // придумывать класс ради единообразия цикла значило бы утверждать
+        // неправду. Утверждение о САМОЙ КНОПКЕ в jsdom тоже невозможно:
+        // `vitest.config.ts` держит `css: false` (см. докстрок файла),
+        // jsdom не подключает и не разбирает `preflight.css`, поэтому
+        // computed style кнопки в этом прогоне не несёт последствий Preflight
+        // вовсе — проверка на кнопке была бы зелёной ПРИ ЛЮБОМ содержимом
+        // preflight.css, то есть ничего не доказывала бы (та самая
+        // vacuous-проверка, которой правило и было призвано избежать).
+        //
+        // Честная, машинно проверяемая часть заявления — сам факт декларации
+        // в ПОСТАВЛЯЕМОМ файле пакета: читается с диска (тот же приём, что
+        // `summaryTokens.test.ts` использует для `index.css`), а не заявляется
+        // текстом причины. Если Tailwind когда-нибудь перестанет ставить
+        // `font: inherit` кнопке в Preflight, это единственная проверка,
+        // которая покраснеет и укажет, что диспозиция `reset` больше не верна.
+        const preflight = readFileSync("node_modules/tailwindcss/preflight.css", "utf8");
+        const block = preflight.match(
+          /button,\s*input,\s*select,\s*optgroup,\s*textarea,\s*::file-selector-button\s*\{([^}]*)\}/
+        );
+        expect(block).not.toBeNull();
+        expect(block![1]).toContain("font: inherit");
+      }
+    }
+  );
+
+  it.each(WORKS_HOVER_DECLARATIONS)(
+    "правило .works:hover, декларация $property: $mockup — диспозиция закрыта",
+    (decl) => {
+      renderTable(summaryWith({ "6": false, "2": true }));
+      const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
+      for (const cls of decl.classes) {
+        expect(button).toHaveClass(cls);
+      }
+    }
+  );
+
+  it("кнопка «Работы» не несёт токены двух прошлых кругов полировки (регресс)", () => {
     renderTable(summaryWith({ "6": false, "2": true }));
     const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
-    expect(button).toHaveClass("text-fg-secondary");
-    expect(button).toHaveClass("bg-surface");
+    // Первый круг: слишком тёмный третичный текст вместо вторичного.
     expect(button).not.toHaveClass("text-fg-tertiary");
-    expect(button).toHaveClass("border");
-    expect(button).toHaveClass("border-border-default");
-    expect(button).toHaveClass("hover:bg-surface-hover");
+    // Второй круг: цвет наведения не того токена (--bg-surface-sunken).
     expect(button).not.toHaveClass("hover:bg-surface-sunken");
   });
 

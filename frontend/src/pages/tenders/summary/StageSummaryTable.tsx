@@ -296,13 +296,34 @@ function CategoryRowGroup({
               (`items-start gap-2` на строке контейнера первой ячейки) уже
               даёт ровно 8px между всеми детьми, включая эту кнопку и
               заголовок перед ней.
+
+              Третий круг (ветка `feat/drilldown-polish`, 01.09.2026): второй
+              круг сам оказался частичной сверкой — она добавила `border` и
+              `:hover`, но не проверила `cursor` и `white-space` из ТОГО ЖЕ
+              макетного правила (`.works`, спека мокета строка 775),
+              несмотря на то, что инсайт по итогам второго круга уже требовал
+              перечислять СВОЙСТВА ПРАВИЛА, а не выбранное подмножество.
+              Preflight Tailwind 4.2.4 не ставит курсор кнопке сам (проверено
+              по исходнику пакета: ни одного `cursor: pointer` в Preflight),
+              поэтому без класса указатель оставался обычной стрелкой —
+              очередная потерянная афорданса того же контрола. Добавлены
+              `cursor-pointer` (макетное `cursor: pointer`) и
+              `whitespace-nowrap` (макетное `white-space: nowrap`). Полный
+              перечень всех одиннадцати деклараций правила `.works` и диспозиция
+              каждой (assert / обеспечено родителем / неприменимо / обеспечено
+              базовым слоем фреймворка) — в
+              `StageSummaryTable.test.tsx`, тест «правило .works» ниже по
+              разделу «Кнопка «Работы»»; инсайт переписан
+              (`docs/insights/enumerate-the-rules-own-properties.md`) с этим
+              рецидивом как материалом, доказавшим, что прозаическое правило
+              «перечисляйте все свойства» само по себе поведение не меняет.
             */}
             {showWorksButton && (
               <button
                 type="button"
                 aria-expanded={worksOpen}
                 onClick={() => works.onToggleWorks(worksId as number)}
-                className="shrink-0 rounded-[6px] border border-border-default bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-hover hover:text-fg"
+                className="shrink-0 cursor-pointer whitespace-nowrap rounded-[6px] border border-border-default bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-hover hover:text-fg"
               >
                 {`${WORKS_BUTTON_LABEL} · ${row.drilldown_group_count}`}
               </button>
