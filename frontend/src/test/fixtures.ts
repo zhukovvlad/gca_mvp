@@ -1947,6 +1947,11 @@ const stageSummaryRows: StageSummaryRow[] = [
     title: "Котлован",
     is_unallocated: false,
     has_drilldown_rows: true,
+    // Согласовано с `has_drilldown_rows: true` выше (backend-тест
+    // `test_has_drilldown_rows_agrees_with_drilldown_group_count` требует,
+    // чтобы поле было > 0 ровно тогда, когда флаг истинен) — число условное,
+    // ветка `feat/drilldown-polish`.
+    drilldown_group_count: 4,
     cells: [
       stageSummaryCell("amount", "60.00", "0.00", "none", null, null, "first_column"),
       stageSummaryCell("removed", null, null, "removed", null, null, null),
@@ -1962,6 +1967,12 @@ const stageSummaryRows: StageSummaryRow[] = [
     title: "Фасадные работы",
     is_unallocated: false,
     has_drilldown_rows: true,
+    // Поддерево «6» включает СВОИ группы плюс группы ребёнка «6.99» — свёртка
+    // объединением ключей (`ss.rollup_group_counts`), не суммой, поэтому
+    // число не обязано быть суммой с `children[0].drilldown_group_count`
+    // (у которого 0). Условное значение, согласованное с `has_drilldown_rows:
+    // true` (ветка `feat/drilldown-polish`).
+    drilldown_group_count: 7,
     cells: [
       stageSummaryCell("amount", "120.00", "0.00", "none", null, null, "first_column"),
       stageSummaryCell("amount", "120.00", "0.00", "percent", "0.0", "flat", null),
@@ -1981,6 +1992,9 @@ const stageSummaryRows: StageSummaryRow[] = [
         // строки с `true` и ни одной с `false` (только у «Нераспределённого»,
         // у которого разложение адресовать нечем вовсе — своя причина, §2.11).
         has_drilldown_rows: false,
+        // 0 согласовано с `has_drilldown_rows: false` выше — статья без строк
+        // в своём поддереве не несёт ни одной группы разложения.
+        drilldown_group_count: 0,
         cells: [
           stageSummaryCell("amount", "12.00", "0.00", "none", null, null, "first_column"),
           stageSummaryCell("amount", "24.00", "0.00", "percent", "100.0", "up", null),
@@ -2001,6 +2015,8 @@ const stageSummaryUnallocated: StageSummaryRow = {
   is_unallocated: true,
   /** «Нераспределённое» не несёт work_category_id — разложение адресовать нечем (§2.11). */
   has_drilldown_rows: false,
+  /** Всегда 0 — та же причина, что у `has_drilldown_rows` (`crud/stage_summary.py`). */
+  drilldown_group_count: 0,
   cells: [
     stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
     stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),

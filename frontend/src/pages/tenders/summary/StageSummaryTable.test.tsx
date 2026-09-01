@@ -7,7 +7,6 @@ import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import { useStagePositions } from "@/services/queries";
 import type { StageSummary, StageSummaryCell, StageSummaryChange, StageSummaryRow, StageSummaryTotalCell } from "@/types/domain";
 import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
-import { drilldownGroupCount } from "./drilldownData";
 import { worksHeading } from "./drilldownCopy";
 import { StageSummaryTable } from "./StageSummaryTable";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
@@ -875,9 +874,12 @@ describe("Таблица свода — состояния по данным (с
  * `useStagePositions` замокан на весь файл (см. `vi.mock` выше) — сеть считает
  * тест хука самого запроса (Task 8, `queries.test.ts`); здесь проверяется
  * поведение ЭКРАНА: три ключа раскрытия (`expandedIds` — уже существующий,
- * `worksOpenIds`, `worksMountedIds`) не путают друг друга, счётчик переживает
- * сворачивание, а блок работ ПОДСТАТЬИ переживает потерю монтажа при
- * сворачивании предка.
+ * `worksOpenIds`, `worksMountedIds`) не путают друг друга, а блок работ
+ * ПОДСТАТЬИ переживает потерю монтажа при сворачивании предка. Счётчик N
+ * (ветка `feat/drilldown-polish`) сюда больше не относится: он приходит не из
+ * блока работ и не из этого хука, а прямо из поля `drilldown_group_count`
+ * строки сводки, и «переживает сворачивание» проверяется этим же файлом как
+ * тривиальное следствие того, что N — не состояние блока вовсе.
  */
 describe("Кнопка «Работы · N» и вложенные раскрытия (§2.1, §6.3)", () => {
   /**
@@ -887,14 +889,26 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * ребёнка, который фикстура уже несёт (Task 10 завёл его специально с
    * `false`, ради теста «по полю, а не по children» выше). Patch по коду на
    * любой глубине — то же дерево, что строит `CategoryRowGroup`.
+   *
+   * Ветка `feat/drilldown-polish`: рядом с `has_drilldown_rows` патчится и
+   * `drilldown_group_count` — поля не могут разойтись (тот же инвариант, что
+   * несёт backend-тест `test_has_drilldown_rows_agrees_with_drilldown_group_count`),
+   * а кнопка теперь читает именно `drilldown_group_count`. Включение флага у
+   * строки, чей фикстурный счётчик и так 0 (например, «6.99»), берёт условное
+   * число 3 — само число не важно ни одному тесту этого блока, важно только
+   * то, что оно СОГЛАСОВАНО с флагом.
    */
   function summaryWith(flags: Record<string, boolean>): StageSummary {
     function patch(rows: StageSummaryRow[]): StageSummaryRow[] {
-      return rows.map((row) => ({
-        ...row,
-        has_drilldown_rows: flags[row.code ?? ""] ?? row.has_drilldown_rows,
-        children: patch(row.children),
-      }));
+      return rows.map((row) => {
+        const hasDrilldown = flags[row.code ?? ""] ?? row.has_drilldown_rows;
+        return {
+          ...row,
+          has_drilldown_rows: hasDrilldown,
+          drilldown_group_count: hasDrilldown ? row.drilldown_group_count || 3 : 0,
+          children: patch(row.children),
+        };
+      });
     }
     return { ...sampleStageSummary, rows: patch(sampleStageSummary.rows) };
   }
@@ -1036,31 +1050,58 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     expect(mockedUseStagePositions).toHaveBeenLastCalledWith(300, expect.any(Number), [7001, 7002], true);
   });
 
-  it("после загрузки кнопка — «Работы · N», и N не пропадает при сворачивании (§2.1)", async () => {
+  /**
+   * Ветка `feat/drilldown-polish`: N — теперь ЧИСТАЯ функция строки сводки
+   * (`row.drilldown_group_count`), а не поздний репорт загрузившегося блока
+   * разложения. Это проверяется буквально — счётчик виден ДО ЛЮБОГО клика,
+   * `useStagePositions` при этом не настроен вовсе (мок молчит, никакого
+   * `successStagePositions()` здесь нет): будь число всё ещё завязано на
+   * блок, компонент либо не смог бы отрисовать кнопку с числом без данных
+   * хука, либо тест обманул бы себя, случайно настроив мок раньше.
+   */
+  it("кнопка несёт «Работы · N» уже на первом рендере — до любого клика (§2.1, ветка feat/drilldown-polish)", () => {
+    renderTable();
+    const row = screen.getByTestId(rowTestId("2"));
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    expect(n).toBeGreaterThan(0); // иначе тест не отличил бы «есть число» от «числа нет»
+    expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+  });
+
+  /**
+   * Второе требование брифа фичи (§2.1) — N не пропадает при сворачивании.
+   * С переездом счётчика в сводку это утверждение стало ТРИВИАЛЬНО верным
+   * (число — проп самой строки, блок разложения на него не влияет), но
+   * требование само по себе никуда не делось, и тест остаётся его сторожем:
+   * если завтра кто-то попробует снова читать N из блока (см. историю правки
+   * в докстроке `WorksProps`), это ровно тот тест, который должен покраснеть
+   * первым.
+   */
+  it("N не пропадает при раскрытии и сворачивании блока работ (§2.1)", async () => {
     const user = userEvent.setup();
     successStagePositions();
     renderTable();
     const row = screen.getByTestId(rowTestId("2"));
-    const button = within(row).getByRole("button", { name: /Работы/ });
-    expect(button).not.toHaveTextContent("·"); // до первой загрузки счётчика нет
-    await user.click(button);
-    const n = drilldownGroupCount(sampleStagePositions.rows);
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    const button = within(row).getByRole("button", { name: `Работы · ${n}` });
+    await user.click(button); // раскрыть
     expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
-    await user.click(within(row).getByRole("button", { name: `Работы · ${n}` }));
+    await user.click(within(row).getByRole("button", { name: `Работы · ${n}` })); // свернуть
     expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
   });
 
   /**
    * Ревью PR #35, finding 4, на уровне экрана — где дефект реально виден
    * пользователю. `unknown_vat_base` несёт пустой `rows` не потому, что в
-   * поддереве нет работ, а потому что сервер отказался их оценить (§2.8);
-   * до правки кнопка после загрузки всё равно печатала «Работы · 0», ложно
-   * утверждая отсутствие работ. Правильный итог — кнопка ОСТАЁТСЯ на своей
-   * подписи ДО первой загрузки (без «·»), как если бы счётчик так и не
-   * пришёл: родитель хранит счётчики в `Map` и не получает вызов `onCount`
-   * в этом состоянии (`PositionDrilldown.tsx`).
+   * поддереве нет работ, а потому что сервер отказался их оценить (§2.8).
+   * Раньше это означало, что кнопка не могла узнать N вовсе (число шло из
+   * блока, а блок в этом состоянии отказывался его сообщать) — и правильным
+   * итогом было держать кнопку без «·». Ветка `feat/drilldown-polish` меняет
+   * это: N — поле сводки, независимое от того, смог ли сервер ОЦЕНИТЬ суммы
+   * поддерева (§2.8 отвечает только за суммы, не за то, сколько работ там
+   * лежит) — кнопка обязана показать число И ДО, И ПОСЛЕ загрузки, а блок
+   * разложения при этом продолжает честно отказываться печатать строки.
    */
-  it("reason=unknown_vat_base: кнопка остаётся на «Работы» без «· 0» даже после загрузки (§2.8)", async () => {
+  it("reason=unknown_vat_base: кнопка всё равно несёт «Работы · N», блок при этом отказывается печатать строки (§2.8)", async () => {
     const user = userEvent.setup();
     mockedUseStagePositions.mockReturnValue({
       isPending: false,
@@ -1070,10 +1111,15 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     } as never);
     renderTable();
     const row = screen.getByTestId(rowTestId("2"));
-    const button = within(row).getByRole("button", { name: /Работы/ });
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    const button = within(row).getByRole("button", { name: `Работы · ${n}` });
+    // Число — ДО клика: сводка его несёт независимо от того, что вернёт хук.
+    expect(button).toBeInTheDocument();
     await user.click(button);
-    expect(within(row).getByRole("button", { name: "Работы" })).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: /Работы ·/ })).toBeNull();
+    // Число НЕ меняется на «· 0» и никуда не пропадает после загрузки отказа.
+    expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+    // Сам блок при этом честно отказывается — строк нет, есть только причина.
+    expect(screen.getByText(REASON_LABEL.unknown_vat_base)).toBeInTheDocument();
   });
 
   it("шеврон корня гасит и подстатьи, и работы; их собственные ключи независимы", async () => {
@@ -1119,36 +1165,46 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * ПРЕДОК — ребёнок вместе со своим блоком работ пропадает из DOM целиком
    * (`isOpen &&` предка не рендерит детей вовсе), а не просто прячется.
    * Раскрытие предка обратно обязано вернуть и раскрытые подстатьи, и открытый
-   * блок работ ребёнка, и счётчик — без нового запроса (`gcTime`/`staleTime:
-   * Infinity`, Task 8). Хук здесь замокан и всегда отдаёт успех синхронно,
-   * поэтому тест доказывает ровно то, что три ключа раскрытия и счётчик живут
-   * в состоянии `StageSummaryTable` НАД рекурсией и переживают размонтирование
-   * потомка — а не что-либо про сеть или про скелет: с синхронно резолвящимся
-   * моком скелет и не мог бы появиться, и тест о нём ничего не утверждает.
+   * блок работ ребёнка — без нового запроса (`gcTime`/`staleTime: Infinity`,
+   * Task 8). Хук здесь замокан и всегда отдаёт успех синхронно, поэтому тест
+   * доказывает ровно то, что два ключа раскрытия живут в состоянии
+   * `StageSummaryTable` НАД рекурсией и переживают размонтирование потомка —
+   * а не что-либо про сеть или про скелет: с синхронно резолвящимся моком
+   * скелет и не мог бы появиться, и тест о нём ничего не утверждает. Счётчик N
+   * этот сценарий вообще не испытывает (ветка `feat/drilldown-polish`): он —
+   * проп строки сводки, а не состояние, которое можно потерять вместе с
+   * блоком, и это отдельно проверяет тест «N не пропадает при раскрытии и
+   * сворачивании» выше; здесь он утверждается лишь как дополнительный сигнал
+   * того, что строка ребёнка — та же самая, а не пересозданная заново.
    *
    * Ребёнок «6.99» уже есть в фикстуре (Task 10, `has_drilldown_rows: false`) —
    * добавлять третьего ребёнка не потребовалось: `summaryWith` включает его
-   * флаг локально, для этого теста, не трогая фикстуру и не задевая тест
-   * «по полю, а не по children» выше.
+   * флаг (и заодно согласованный счётчик — см. докстрок `summaryWith`)
+   * локально, для этого теста, не трогая фикстуру и не задевая тест «по полю,
+   * а не по children» выше.
    */
-  it("работы ПОДСТАТЬИ переживают сворачивание предка: раскрытие, счётчик и данные возвращаются из состояния таблицы", async () => {
+  it("работы ПОДСТАТЬИ переживают сворачивание предка: раскрытие и данные возвращаются из состояния таблицы", async () => {
     const user = userEvent.setup();
     successStagePositions();
-    renderTable(summaryWith({ "6.99": true }));
+    const summary = summaryWith({ "6.99": true });
+    renderTable(summary);
+    const childCode = childCodeOf("6");
+    const n = findRowByCode(summary.rows, childCode)!.drilldown_group_count;
+    expect(n).toBeGreaterThan(0); // иначе тест не отличил бы «есть число» от «числа нет»
+
     const parent = screen.getByTestId(rowTestId("6"));
     await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
-    const childCode = childCodeOf("6");
     const child = screen.getByTestId(rowTestId(childCode));
-    await user.click(within(child).getByRole("button", { name: /Работы/ }));
-    const n = drilldownGroupCount(sampleStagePositions.rows);
-    expect(within(child).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+    await user.click(within(child).getByRole("button", { name: `Работы · ${n}` }));
+    expect(screen.getByText(worksHeading(childCode))).toBeInTheDocument();
 
     await user.click(within(parent).getByRole("button", { name: /Свернуть/ }));
     expect(screen.queryByText(worksHeading(childCode))).toBeNull(); // блок ушёл вместе со строкой
     await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
-    // Данные и счётчик не потеряны: раскрытие ребёнка и его блок
-    // восстанавливаются из состояния таблицы (worksOpenIds/worksMountedIds/
-    // worksCounts) и кэша запроса (Task 8).
+    // Раскрытие блока работ ребёнка восстанавливается из состояния таблицы
+    // (worksOpenIds/worksMountedIds) и кэша запроса (Task 8); счётчик — из
+    // строки сводки, которую передал сам вызывающий тест выше, и её потерять
+    // размонтированием ребёнка нечем.
     expect(screen.getByText(worksHeading(childCode))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
   });

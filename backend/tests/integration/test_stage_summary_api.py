@@ -529,6 +529,52 @@ class TestAmounts:
         assert body["columns"][2]["manual_overrides"] == {"count": 0, "last_at": None}
 
 
+class TestDrilldownGroupCount:
+    """`drilldown_group_count` — число ГРУПП разложения поддерева, видимое ДО
+    первой загрузки самого разложения (спека
+    2026-08-30-position-drilldown-design.md §2.1, §2.2). Кросс-проверка ПРОТИВ
+    `crud.position_drilldown.load_groups` (инвариант должен равняться числу,
+    которое строит сама функция групп разложения) живёт в соседнем файле
+    (`test_position_drilldown_api.py::TestDrilldownGroupCountMatchesLoadGroups`)
+    — там уже есть `crud_pd`, `drill_grid` и фикстуры с матчингом, а импорт их
+    сюда завёл бы цикл (`test_position_drilldown_api` сам импортирует
+    `chaptered`/`count_queries` ОТСЮДА). Здесь — то, что не нуждается в
+    матчинге: согласие с соседним полем `has_drilldown_rows` и бюджет запросов."""
+
+    def test_has_drilldown_rows_agrees_with_group_count_everywhere(self, db_session, grid):
+        """§2.12 несёт оба поля намеренно, а не как дубль: одно строится
+        счётчиком строк `v_category_totals`, другое — сверёткой ключей
+        `load_groups`. Они обязаны соглашаться на КАЖДОМ узле дерева и на
+        «Нераспределённом» — иначе один из двух посчитан неверно, даже если
+        каждый по отдельности выглядит правдоподобно."""
+        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+
+        def check(row):
+            assert (row["drilldown_group_count"] > 0) == row["has_drilldown_rows"]
+            for child in row["children"]:
+                check(child)
+
+        for row in data["rows"]:
+            check(row)
+        check(data["unallocated"])
+        # Предпосылка: дерево `grid` несёт и минимум один узел с группами
+        # (иначе проверка выше истинна тривиально на всех нулях), и минимум
+        # один узел без строк вовсе.
+        assert any(r["drilldown_group_count"] > 0 for r in data["rows"])
+        assert any(not r["has_drilldown_rows"] for r in data["rows"])
+
+    def test_unallocated_group_count_is_always_zero(self, db_session, grid):
+        data = crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert data["unallocated"]["drilldown_group_count"] == 0
+
+    def test_query_count_does_not_grow_with_columns(self, db_session, grid):
+        with count_queries(db_session) as two:
+            crud_ss.build_stage_summary(db_session, grid.tender.id, grid.a[:2])
+        with count_queries(db_session) as three:
+            crud_ss.build_stage_summary(db_session, grid.tender.id, grid.path)
+        assert three["n"] == two["n"]
+
+
 class TestVatAxis:
     def _set_rate(self, db, offer_id, rate):
         est = _estimate_of(db, offer_id)
