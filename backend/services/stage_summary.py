@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
@@ -395,6 +396,45 @@ def _total_endpoint_change(cells: Sequence[TotalCell]) -> Change:
     first, last = cells[0], cells[-1]
     reason = first.unavailable_reason or last.unavailable_reason
     return _numeric_change(first.shown, last.shown, reason=reason)
+
+
+def rollup_group_counts(categories: Sequence[CategoryRef], own_keys: Mapping[int, set]) -> dict[int, int]:
+    """Число ГРУПП разложения (`crud.position_drilldown.load_groups`) в
+    ПОДДЕРЕВЕ каждой статьи — контрпара `has_drilldown_rows` (спека
+    2026-08-30-position-drilldown-design.md §2.1, §2.2). `own_keys[id]` — ключи
+    групп СВОИХ строк статьи (без потомков), уже приведённые к тому же виду,
+    что строит `load_groups`: каталожная позиция БЕЗ статьи, пара «лот +
+    ссылка» у допработы, один сентинел на непривязанные строки.
+
+    Свёртка вверх по дереву — ОБЪЕДИНЕНИЕ множеств, а НЕ СУММА по детям: та же
+    каталожная позиция может лежать под статьёй-родителем на одном этапе и под
+    статьёй-потомком на другом (уточнение классификации между этапами, §1.9
+    спеки), и `load_groups` строит по ней РОВНО ОДНУ группу, потому что её
+    ключ — сама позиция, без статьи. Сумма по детям посчитала бы такую работу
+    дважды — ровно ту работу, ради устойчивости которой поддерево вообще
+    выбрано моделью разложения (§2.1). Дерево статей маленькое (на боевом
+    стенде 1365 различных пар «статья, каталожная позиция» против 362 статей
+    классификатора), поэтому держать множества в памяти и объединять их в
+    Python — дёшево; здесь это явное решение, а не побочный эффект удобства.
+    """
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for c in categories:
+        if c.parent_id is not None:
+            children_by_parent[c.parent_id].append(c.id)
+
+    counts: dict[int, int] = {}
+
+    def collect(category_id: int) -> set:
+        keys = set(own_keys.get(category_id, ()))
+        for child_id in children_by_parent.get(category_id, ()):
+            keys |= collect(child_id)
+        counts[category_id] = len(keys)
+        return keys
+
+    for c in categories:
+        if c.parent_id is None:
+            collect(c.id)
+    return counts
 
 
 def sort_key(ref: CategoryRef) -> int:

@@ -94,18 +94,23 @@ describe("PositionCell — три этажа (§2.4)", () => {
    * (`unit_id = NULL`) при количестве, которое известно; на боевом стенде
    * такое сочетание встречается (6 строк из 64505). До правки этаж собирался
    * шаблонной строкой, и `null` внутри нёе стрингифицировался в текст
-   * «null» — экран показывал «1 стр. · 5 null». Проверка на ОТСУТСТВИЕ
-   * текста «null», а не только на присутствие числа: тест, что проверяет
-   * лишь число, прошёл бы и с дефектом на месте.
+   * «null» — экран показывал «5 null». Счётчик строк здесь не печатается
+   * (одна строка сметы, число не менялось, §2.4 полировки после мержа), так
+   * что этаж целиком — объём. Проверка на ОТСУТСТВИЕ текста «null», а не
+   * только на присутствие числа: тест, что проверяет лишь число, прошёл бы и
+   * с дефектом на месте.
    */
   it("количество без единицы измерения не печатает слово null (ревью PR #35)", () => {
     renderCell(cell({ quantity: "5", quantity_unit: null, estimate_rows: 1 }));
     const tier = screen.getByTestId("cell-quantity");
-    expect(tier).toHaveTextContent("1 стр. · 5");
+    expect(tier).toHaveTextContent("5");
     expect(tier.textContent).not.toMatch(/null/i);
     // И никакого хвостового пробела после числа — единицы нет вовсе, а не
     // единица длиной в пробел.
     expect(tier.textContent).not.toMatch(/5\s$/);
+    // Счётчика строк на этаже нет вовсе — только объём (одна строка,
+    // число не менялось).
+    expect(tier.textContent).not.toMatch(/стр\./);
   });
 
   /**
@@ -114,10 +119,14 @@ describe("PositionCell — три этажа (§2.4)", () => {
    * этот случай доказывает, что счётчик статьи и объём это разные величины:
    * до фикса такая перемена была видна только по значку изменения суммы,
    * хотя сумма при этом могла и не подсказывать про перемену числа строк.
+   * Первая колонка (одна строка, число ещё не менялось) счётчик не печатает
+   * вовсе (§2.4 полировки после мержа) — только когда строк становится
+   * больше одной, счётчик появляется.
    */
   it("число строк сметы группы меняется между этапами при неизменном объёме (макет, строка 461)", () => {
     const { rerender } = renderCell(cell({ quantity: "1", quantity_unit: "компл", estimate_rows: 1 }));
-    expect(screen.getByTestId("cell-quantity")).toHaveTextContent("1 стр. · 1 компл");
+    expect(screen.getByTestId("cell-quantity")).toHaveTextContent("1 компл");
+    expect(screen.getByTestId("cell-quantity").textContent).not.toMatch(/стр\./);
     rerender(
       <table>
         <tbody>
@@ -197,5 +206,47 @@ describe("PositionCell — три этажа (§2.4)", () => {
     // где-то рядом с числом.
     expect(td).not.toHaveTextContent(formatDecimalMoney(null));
     expect(screen.queryByTestId("change")).toBeNull();
+  });
+});
+
+/**
+ * Полировка после мержа (§2.4 спеки): счётчик строк сметы печатается, когда
+ * их больше одной, ИЛИ когда их число сменилось с предыдущей колонки
+ * присутствия (`rowCountChanged`) — не при каждой непустой ячейке, как было
+ * раньше. Пять исходов, которые правило различает; макет (2026-08-29, строка
+ * 458) печатает счётчик безусловно и в этом расходится со спекой сознательно
+ * (расхождение записано в спеке, а не в макете).
+ */
+describe("PositionCell — видимость счётчика строк сметы (§2.4, полировка после мержа)", () => {
+  it("одна строка сметы с объёмом, число не менялось → печатается только объём", () => {
+    renderCell(cell({ quantity: "248", quantity_unit: "м²", estimate_rows: 1 }), false);
+    const tier = screen.getByTestId("cell-quantity");
+    expect(tier).toHaveTextContent("248 м²");
+    expect(tier.textContent).not.toMatch(/стр\./);
+  });
+
+  it("одна строка сметы без объёма (допработа), число не менялось → этажа нет вовсе", () => {
+    renderCell(cell({ quantity: null, quantity_unit: null, estimate_rows: 1 }), false);
+    expect(screen.queryByTestId("cell-quantity")).toBeNull();
+  });
+
+  it("несколько строк сметы → счётчик и объём вместе, «3 стр. · 248 м²»", () => {
+    renderCell(cell({ quantity: "248", quantity_unit: "м²", estimate_rows: 3 }), false);
+    expect(screen.getByTestId("cell-quantity")).toHaveTextContent("3 стр. · 248 м²");
+  });
+
+  it("падение с нескольких строк до одной → счётчик остаётся и печатается, выделен тоном", () => {
+    // `rowCountChanged=true` — та же ось, что `estimateRowsChangedPerCell`
+    // вычисляет клиентом (`drilldownData.ts`): без него ячейка была бы
+    // выделена тоном (ниже) без единой цифры, объясняющей выделение.
+    renderCell(cell({ quantity: "248", quantity_unit: "м²", estimate_rows: 1 }), true);
+    const tier = screen.getByTestId("cell-quantity");
+    expect(tier).toHaveTextContent("1 стр. · 248 м²");
+    expect(tier).toHaveClass("text-warning-text");
+  });
+
+  it("ячейка `absent` — по-прежнему без этажа вовсе, правило её не касается", () => {
+    renderCell(cell({ state: "absent", amount: null, quantity: null, quantity_unit: null, estimate_rows: 0 }), true);
+    expect(screen.queryByTestId("cell-quantity")).toBeNull();
   });
 });

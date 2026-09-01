@@ -1,5 +1,3 @@
-import { useEffect, useRef } from "react";
-
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -24,7 +22,7 @@ import {
   restTitle,
   worksHeading,
 } from "./drilldownCopy";
-import { drilldownGroupCount, drilldownRowKey, estimateRowsChangedPerCell, showsLot } from "./drilldownData";
+import { drilldownRowKey, estimateRowsChangedPerCell, showsLot } from "./drilldownData";
 import { PositionCell } from "./PositionCell";
 import { ChangeBadge } from "./SummaryCell";
 
@@ -35,9 +33,20 @@ import { ChangeBadge } from "./SummaryCell";
  *
  * Возвращает фрагмент `<TableRow>` и монтируется внутри `<TableBody>` под
  * строкой статьи (Task 11 владеет кнопкой «Работы · N» и состоянием
- * раскрытия — этот компонент только рисует строки и сообщает счётчик группой
- * вверх через `onCount`). Каждый тест поэтому оборачивает компонент в
- * `<table><tbody>` — фрагмент `<tr>` вне таблицы jsdom отвергает.
+ * раскрытия — этот компонент только рисует строки). Каждый тест поэтому
+ * оборачивает компонент в `<table><tbody>` — фрагмент `<tr>` вне таблицы
+ * jsdom отвергает.
+ *
+ * Число N кнопки «Работы» СЮДА больше не приходит и отсюда никуда не уходит
+ * (ветка `feat/drilldown-polish`, 01.09.2026): до правки компонент сообщал
+ * его наверх колбэком `onCount` по приходу данных разложения, и кнопка до
+ * первого клика не несла числа вовсе. Теперь единственный источник N —
+ * поле `StageSummaryRow.drilldown_group_count` сводки (`StageSummaryTable.tsx`),
+ * известное ДО загрузки этого компонента: он для числа кнопки больше не
+ * нужен, только для самих строк разложения. Ветка про `reason ===
+ * "unknown_vat_base"`, которая раньше не давала репортить лживый ноль, ушла
+ * вместе с колбэком — сколько работ несёт поддерево, не зависит от того,
+ * можно ли их оценить, и решает эту задачу сама сводка, а не отказ здесь.
  */
 
 /** Короткое имя вида строки для `data-testid` — используется тестами и
@@ -182,9 +191,6 @@ export interface PositionDrilldownProps {
    * заново — эту работу делает `staleTime`/`gcTime: Infinity` хука (Task 8).
    */
   open: boolean;
-  /** N кнопки «Работы · N» родителя — число ГРУПП разложения, включая
-   *  свёрнутые (§2.1), сообщается по приходу данных. */
-  onCount?: (n: number) => void;
 }
 
 export function PositionDrilldown({
@@ -194,42 +200,8 @@ export function PositionDrilldown({
   offerIds,
   columnsCount,
   open,
-  onCount,
 }: PositionDrilldownProps) {
   const { data, isPending, isError, error, refetch } = useStagePositions(tenderId, workCategoryId, offerIds, true);
-
-  // `onCount` живёт в рефе, а не в зависимостях эффекта: репорт идёт «по
-  // приходу данных», не «при каждой смене identity колбэка родителя» (Task
-  // 11 передаёт инлайновую функцию, которая пересоздаётся на каждый рендер, —
-  // с колбэком в зависимостях эффект стрелял бы на каждый ререндер родителя,
-  // а не только на приход `data`). Реф всегда несёт САМУЮ СВЕЖУЮ функцию, а не
-  // замыкание с монтажа, поэтому честная альтернатива `eslint-disable` не
-  // жертвует и правильностью: колбэк вызывается новейшим, просто не входит в
-  // список триггеров повторного запуска.
-  const onCountRef = useRef(onCount);
-  useEffect(() => {
-    onCountRef.current = onCount;
-  });
-
-  // Ревью PR #35, finding 4: `reason` различает ДВА разных нуля. У
-  // `no_rows_in_subtree` пустой список — правда: в поддереве статьи
-  // действительно нет строк, и `drilldownGroupCount([]) === 0` обязан дойти
-  // до родителя — кнопка честно печатает «Работы · 0». У `unknown_vat_base`
-  // пустой список — НЕ факт о статье, а отказ сервера её оценить (§2.8):
-  // подстатья может нести сколько угодно работ, сервер просто не посчитал их
-  // при неизвестной базе НДС на первой/последней колонке. Раньше эффект
-  // репортил `drilldownGroupCount(data.rows)` БЕЗУСЛОВНО, до ветвлений по
-  // `reason` ниже, — и в этом состоянии кнопка лгала «Работы · 0», утверждая
-  // отсутствие работ там, где их присутствие просто нельзя оценить. Не
-  // вызывать `onCount` вовсе — родитель хранит счётчики в `Map`, различая
-  // «ещё не загружен» ОТСУТСТВИЕМ ключа (`StageSummaryTable.tsx`,
-  // `worksCount !== undefined`), и это ГОТОВОЕ представление «неизвестно»:
-  // отдельный сентинел вроде `-1` завёл бы второй способ сказать то же самое.
-  useEffect(() => {
-    if (data && data.reason !== "unknown_vat_base") {
-      onCountRef.current?.(drilldownGroupCount(data.rows));
-    }
-  }, [data]);
 
   if (!open) return null;
 

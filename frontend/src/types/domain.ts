@@ -1238,6 +1238,20 @@ export interface StageSummaryRow {
    * `work_category_id`, которого у этой строки нет (`crud/stage_summary.py`).
    */
   has_drilldown_rows: boolean;
+  /**
+   * Число ГРУПП попозиционного разложения в поддереве статьи (спека
+   * 2026-08-30-position-drilldown-design.md §2.1, §2.2; ветка
+   * `feat/drilldown-polish`) — единственный источник N для кнопки
+   * «Работы · N»: до этой правки число приходило только ПОСЛЕ первой загрузки
+   * самого блока разложения (`PositionDrilldown` сообщал его вызовом
+   * `onCount`), и до клика кнопка не несла числа вовсе. Сервер считает то же
+   * значение НЕЗАВИСИМО от `has_drilldown_rows` (другим запросом, сверёткой
+   * ключей `load_groups`) и проверяет тестом, что они не могут разойтись:
+   * поле равно 0 ТОГДА И ТОЛЬКО ТОГДА, когда `has_drilldown_rows` ложно. У
+   * «Нераспределённого» — всегда 0 (`crud/stage_summary.py`), по той же
+   * причине, что и у `has_drilldown_rows`: адресовать разложение нечем.
+   */
+  drilldown_group_count: number;
   cells: StageSummaryCell[];
   bargain: StageSummaryChange;
   contribution: { value: Decimal | null; direction: Direction | null; reason: StageSummaryContributionReason | null };

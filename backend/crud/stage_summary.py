@@ -6,11 +6,12 @@
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from crud.common import DomainError, iso
 from crud.estimate_totals import estimate_totals_including_vat
@@ -18,6 +19,7 @@ from crud.project_passport import CATEGORY_TOTALS
 from models import (
     Contractor,
     Estimate,
+    EstimateAdditionalWork,
     EstimateCategoryOverride,
     Lot,
     Offer,
@@ -29,6 +31,7 @@ from models import (
     WorkCategory,
 )
 from money.vat import quantize_money
+from services import position_drilldown as posd
 from services import stage_summary as ss
 from services.category_rollup import CategoryRef, DirectTotals
 
@@ -151,6 +154,69 @@ def _overrides_by_estimate(db: Session, estimate_ids: list[int]) -> dict[int, tu
     return {e: found.get(e, (0, None)) for e in estimate_ids}
 
 
+def _own_group_keys_by_category(db: Session, estimate_ids: Sequence[int]) -> dict[int, set[tuple]]:
+    """Ключи групп разложения (§2.2 спеки фичи 4), СВОИ у каждой статьи — БЕЗ
+    свёртки по дереву поддерева (свёртка — `ss.rollup_group_counts`). Одним
+    запросом (`UNION ALL`) на весь свод, не на строку — бюджет фичи: один
+    лишний запрос, и он не растёт ни с числом колонок (только `estimate_ids`
+    в `IN`), ни с числом статей (читаем справочник целиком и раскладываем в
+    Python, тот же приём, что `crud.position_drilldown.subtree_ids`).
+
+    Ключ — ЗНАЧЕНИЕ БЕЗ СТАТЬИ, как у `load_groups`: каталожная позиция может
+    стоять под статьёй-родителем на одном этапе и под статьёй-потомком на
+    другом (уточнение классификации, §1.9), и объединение множеств у общего
+    предка обязано узнать в них ОДНУ работу — для этого категория не входит
+    в сам ключ, она только группирует ключи по узлу-владельцу (`category_id`
+    словаря результата).
+
+    `work_category_id IS NULL` с обеих сторон (глава без статьи / допработа
+    без статьи) исключён явно: такие строки не входят ни в один узел
+    классификатора и в разложение не попадают (§2.7, §1.7) — им сюда
+    заходить нечего."""
+    chapter = aliased(PositionItem)
+    position_q = (
+        sa.select(
+            chapter.work_category_id.label("category_id"),
+            sa.cast(PositionItem.catalog_position_id, sa.Text).label("key_a"),
+        )
+        .select_from(PositionItem)
+        .join(chapter, sa.and_(chapter.id == PositionItem.chapter_item_id,
+                               chapter.proposal_id == PositionItem.proposal_id))
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(estimate_ids), PositionItem.is_chapter.is_(False),
+               chapter.work_category_id.isnot(None))
+        .distinct()
+    )
+    extra_q = (
+        sa.select(
+            EstimateAdditionalWork.work_category_id.label("category_id"),
+            sa.cast(Lot.lot_key, sa.Text).label("key_a"),
+        )
+        .add_columns(sa.cast(EstimateAdditionalWork.chapter_ref_raw, sa.Text).label("key_b"))
+        .select_from(EstimateAdditionalWork)
+        .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(estimate_ids), EstimateAdditionalWork.work_category_id.isnot(None))
+        .distinct()
+    )
+    position_union = position_q.add_columns(sa.cast(sa.null(), sa.Text).label("key_b"),
+                                            sa.literal(posd.KIND_POSITION).label("kind"))
+    extra_union = extra_q.add_columns(sa.literal(posd.KIND_ADDITIONAL_WORKS).label("kind"))
+
+    out: dict[int, set[tuple]] = defaultdict(set)
+    for category_id, key_a, key_b, kind in db.execute(sa.union_all(position_union, extra_union)).all():
+        if kind == posd.KIND_POSITION:
+            # Непривязанная строка (`catalog_position_id IS NULL`) сворачивается
+            # в ОДИН сентинел на узел — та же логика, что даёт `load_groups`
+            # ОДНУ группу «Строки без каталожной привязки» на всё поддерево.
+            key = (posd.KIND_UNMATCHED,) if key_a is None else (posd.KIND_POSITION, key_a)
+        else:
+            key = (posd.KIND_ADDITIONAL_WORKS, key_a, key_b)
+        out[category_id].add(key)
+    return out
+
+
 def load_inputs(db: Session, selection) -> list[ss.ColumnInput]:
     estimate_ids = [estimate_id for _, estimate_id, _ in selection]
     direct = _direct_by_estimate(db, estimate_ids)
@@ -207,7 +273,7 @@ def _total_cell(c: ss.TotalCell) -> dict:
             "change": change_json(c.change)}
 
 
-def _row(r: ss.SummaryRow) -> dict:
+def _row(r: ss.SummaryRow, group_counts: Mapping[int, int]) -> dict:
     return {"work_category_id": None if r.ref is None else r.ref.id,
             "code": None if r.ref is None else r.ref.code,
             "title": "Нераспределённое" if r.ref is None else r.ref.title,
@@ -221,11 +287,19 @@ def _row(r: ss.SummaryRow) -> dict:
             # которого нельзя запросить, контракт не должен.
             "has_drilldown_rows": (not r.is_unallocated
                                    and any(c.rows.row_count > 0 for c in r.cells)),
+            # Число ГРУПП разложения поддерева (спека фичи 4 §2.1, «Работы · N»
+            # до первой загрузки самого разложения) — контрпара `has_drilldown_rows`
+            # выше: обе величины считаются НЕЗАВИСИМО (одна — по счётчику строк
+            # `v_category_totals`, другая — сверёткой ключей `load_groups`), но
+            # обязаны соглашаться (тест `test_has_drilldown_rows_agrees_with_
+            # drilldown_group_count`). У «Нераспределённого» — всегда 0: у него
+            # нет `work_category_id`, поэтому и точки в дереве группировки нет.
+            "drilldown_group_count": (0 if r.ref is None else group_counts.get(r.ref.id, 0)),
             "cells": [_cell(c) for c in r.cells],
             "bargain": change_json(r.bargain),
             "contribution": {"value": money_str(r.contribution.value), "direction": r.contribution.direction,
                              "reason": r.contribution.reason},
-            "children": [_row(ch) for ch in r.children]}
+            "children": [_row(ch, group_counts) for ch in r.children]}
 
 
 def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -> dict:
@@ -259,6 +333,9 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
     ).scalar_one()
     refs = [CategoryRef(id=c.id, code=c.code, title=c.title, parent_id=c.parent_id, is_bucket=c.is_bucket,
                         sort_order=c.sort_order) for c in db.execute(sa.select(WorkCategory)).scalars().all()]
+    estimate_ids = [c.estimate_id for c in columns]
+    own_group_keys = _own_group_keys_by_category(db, estimate_ids)
+    group_counts = ss.rollup_group_counts(refs, own_group_keys)
 
     result = ss.compute_summary(columns, refs)
 
@@ -279,8 +356,8 @@ def build_stage_summary(db: Session, tender_id: int, offer_ids: Sequence[int]) -
                             "converged": c.convergence.converged, "delta": money_str(c.convergence.delta),
                             "reason": c.convergence.reason},
         } for c in result.columns],
-        "rows": [_row(r) for r in result.rows],
-        "unallocated": _row(result.unallocated),
+        "rows": [_row(r, group_counts) for r in result.rows],
+        "unallocated": _row(result.unallocated, group_counts),
         "total": {"cells": [_total_cell(c) for c in result.total_cells]},
         "display": {"tax_basis": result.display.basis, "reason": result.display.reason,
                     "rates_by_column": None if result.display.rates_by_column is None

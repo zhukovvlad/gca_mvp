@@ -502,3 +502,61 @@ class TestZeroTotalWithRealRows:
 
         assert r.kpi.first_to_last == r.total_cells[-1].change
         assert r.kpi.first_to_last.kind == ss.KIND_PERCENT and r.kpi.first_to_last.value == D("-100")
+
+
+class TestRollupGroupCounts:
+    """`drilldown_group_count` — число ГРУПП разложения поддерева, контрпара
+    `has_drilldown_rows` (спека 2026-08-30-position-drilldown-design.md §2.1,
+    §2.2). `own_keys[id]` имитирует то, что действительно приходит из БД: ключи
+    групп СВОИХ строк статьи, приведённые к виду `load_groups` (позиция без
+    статьи, пара «лот+ссылка», сентинел непривязанных)."""
+
+    def _ref(self, id_: int, parent_id: int | None) -> CategoryRef:
+        return CategoryRef(id=id_, code=str(id_), title=str(id_), parent_id=parent_id,
+                          is_bucket=False, sort_order=id_)
+
+    def test_same_key_under_parent_and_child_counts_once(self):
+        """Ровно случай миграции классификации §1.9: работа лежит СВОЕЙ под
+        родителем на одном этапе и под потомком на другом — `own_keys` обеих
+        статей несёт один и тот же ключ (позиция без статьи в ключе), и
+        поддерево родителя обязано увидеть в них ОДНУ работу, не две. Сумма по
+        детям здесь дала бы 2 — guard-removal с суммой вместо объединения
+        обязан уронить именно эту проверку."""
+        parent, child = self._ref(1, None), self._ref(2, 1)
+        own_keys = {1: {("position", 42)}, 2: {("position", 42)}}
+
+        counts = ss.rollup_group_counts([parent, child], own_keys)
+
+        assert counts[1] == 1   # поддерево родителя — одна группа, не две
+        assert counts[2] == 1   # у самого потомка — тоже одна (его собственная)
+
+    def test_disjoint_children_keys_still_add_up(self):
+        """Санитарная проверка в другую сторону: объединение не должно терять
+        работы, когда ключи РАЗНЫЕ — три разные работы под разными узлами дают
+        три, не одну."""
+        parent, child_a, child_b = self._ref(1, None), self._ref(2, 1), self._ref(3, 1)
+        own_keys = {1: {("position", 1)}, 2: {("position", 2)}, 3: {("position", 3)}}
+
+        counts = ss.rollup_group_counts([parent, child_a, child_b], own_keys)
+
+        assert counts[1] == 3
+        assert counts[2] == 1
+        assert counts[3] == 1
+
+    def test_category_without_own_or_descendant_keys_is_zero(self):
+        parent, child = self._ref(1, None), self._ref(2, 1)
+
+        counts = ss.rollup_group_counts([parent, child], {})
+
+        assert counts[1] == 0 and counts[2] == 0
+
+    def test_unmatched_sentinel_stays_one_group_across_the_whole_subtree(self):
+        """§2.2/§2.7: непривязанные строки поддерева — ОДНА группа независимо от
+        того, у скольких узлов поддерева они лежат. Три узла со своим сентинелом
+        обязаны схлопнуться в единицу у общего предка, а не дать 3."""
+        root, a, b = self._ref(1, None), self._ref(2, 1), self._ref(3, 1)
+        own_keys = {1: {("unmatched",)}, 2: {("unmatched",)}, 3: {("unmatched",)}}
+
+        counts = ss.rollup_group_counts([root, a, b], own_keys)
+
+        assert counts[1] == 1

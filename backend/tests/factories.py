@@ -128,7 +128,21 @@ class TenderFactory(_BaseFactory):
     object = factory.SubFactory(ObjectFactory)
     rate_class = factory.SubFactory(RateClassFactory)
     title = "Генподряд на строительство"
-    tender_number = factory.Sequence(lambda n: f"Т-{n:04d}")
+    # "АВТО" — не косметика, а разделение пространств имён: `tender_number`
+    # несёт `uq_tenders_tender_number`, и это ГЛОБАЛЬНЫЙ счётчик
+    # `factory.Sequence` (общий на весь процесс pytest, продолжает считать
+    # через файлы и воркеры xdist). Пока фабрика минтит голое "Т-{n:04d}",
+    # она рано или поздно попадает в то же значение, что тест прибил руками
+    # литералом (было ровно так: `tests/integration/test_tenders_api.py`
+    # держит "Т-0001", и когда счётчик доходил до n=1, INSERT падал
+    # `duplicate key value violates unique constraint
+    # "uq_tenders_tender_number"`, `Key (tender_number)=(Т-0001)` — плавающий
+    # по составу и порядку тестов, а под pytest-xdist ещё и по раскладке по
+    # воркерам). Префикс "АВТО" — это ЗАБРОНИРОВАННОЕ подпространство для
+    # машинных номеров: ни один человек не пишет "Т-АВТО-0001" руками, поэтому
+    # он никогда не встретится с рукописным литералом. НЕ убирай его ради
+    # краткости — тогда защита снова ничего не защищает.
+    tender_number = factory.Sequence(lambda n: f"Т-АВТО-{n:04d}")
 
 
 class TenderRoundFactory(_BaseFactory):

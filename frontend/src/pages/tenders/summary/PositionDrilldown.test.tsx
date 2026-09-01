@@ -8,7 +8,6 @@ import type { StagePositionsRow } from "@/types/domain";
 
 import { KIND_LABEL, REASON_LABEL } from "./cellCopy";
 import { NO_ROWS_LABEL, RETRY_LABEL, UNMATCHED_HINT, UNMATCHED_PILL_LABEL, extraPill, worksHeading } from "./drilldownCopy";
-import { drilldownGroupCount } from "./drilldownData";
 import { PositionDrilldown } from "./PositionDrilldown";
 
 /**
@@ -33,7 +32,7 @@ const PROPS = {
   open: true,
 };
 
-function renderRows(props: Partial<typeof PROPS & { onCount: (n: number) => void }> = {}) {
+function renderRows(props: Partial<typeof PROPS> = {}) {
   return render(
     <table>
       <tbody>
@@ -190,52 +189,19 @@ describe("PositionDrilldown (§2.1, §2.12, §6.3)", () => {
     expect(screen.getAllByText(KIND_LABEL.disappeared).length).toBeGreaterThan(0);
   });
 
-  it("open=false не рисует строк, но запрос остаётся включённым (кэш и счётчик N)", () => {
+  /**
+   * Ветка `feat/drilldown-polish`: до правки этот тест доказывал, что запрос
+   * остаётся включённым, потому что от него зависел И кэш, И счётчик N
+   * кнопки-родителя (репортился колбэком `onCount`). N с тех пор — поле
+   * сводки (`StageSummaryTable.tsx`, `drilldown_group_count`) и от этого
+   * компонента больше не зависит вовсе; название теста сужено до того, что он
+   * реально доказывает — сохранение кэша хука при свёрнутом блоке (Task 8).
+   */
+  it("open=false не рисует строк, но запрос остаётся включённым (кэш, Task 8)", () => {
     success();
     renderRows({ open: false });
     expect(screen.queryAllByRole("row")).toHaveLength(0);
     expect(mocked).toHaveBeenCalledWith(300, 22, [7001, 7002], true);
-  });
-
-  it("onCount получает число групп с учётом свёрнутых (§2.1: N кнопки)", () => {
-    success();
-    const onCount = vi.fn();
-    renderRows({ onCount });
-    expect(onCount).toHaveBeenCalledWith(drilldownGroupCount(sampleStagePositions.rows));
-  });
-
-  /**
-   * Ревью PR #35, finding 4: `reason=unknown_vat_base` несёт пустой `rows`
-   * не потому, что в поддереве статьи нет работ, а потому что сервер
-   * отказался их оценить (§2.8 — неизвестная база НДС на первой/последней
-   * колонке). До правки эффект считал `drilldownGroupCount(data.rows)`
-   * БЕЗУСЛОВНО, до ветвления по `reason`, и репортил `0` — кнопка родителя
-   * лгала «Работы · 0», утверждая отсутствие работ там, где их присутствие
-   * просто нельзя оценить. `onCount` в этом состоянии не должен звонить
-   * ВООБЩЕ: родитель хранит счётчики в `Map` и трактует отсутствие ключа как
-   * «неизвестно» (`StageSummaryTable.tsx`) — ровно то представление, которое
-   * здесь нужно, без выдуманного сентинела.
-   */
-  it("reason=unknown_vat_base НЕ сообщает счётчик — родитель обязан остаться в состоянии «неизвестно»", () => {
-    success({ ...sampleStagePositions, rows: [], convergence: [], reason: "unknown_vat_base" });
-    const onCount = vi.fn();
-    renderRows({ onCount });
-    expect(onCount).not.toHaveBeenCalled();
-  });
-
-  /**
-   * Противоположный отказ — `no_rows_in_subtree` — это ПРАВДА о статье: строк
-   * нет ни в одной колонке, и `0` здесь не ложь, а точный факт. Тест стоит
-   * рядом с предыдущим намеренно: оба меняют один и тот же входной
-   * параметр (`reason`) и дают ПРОТИВОПОЛОЖНЫЙ вердикт по счётчику — свап
-   * веток в эффекте покраснил бы либо этот тест, либо предыдущий, а не
-   * остался бы незамеченным.
-   */
-  it("reason=no_rows_in_subtree сообщает счётчик 0 — это не отказ, а факт", () => {
-    success({ ...sampleStagePositions, rows: [], convergence: [], reason: "no_rows_in_subtree" });
-    const onCount = vi.fn();
-    renderRows({ onCount });
-    expect(onCount).toHaveBeenCalledWith(0);
   });
 
   /**

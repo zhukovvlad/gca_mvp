@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -7,7 +9,6 @@ import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import { useStagePositions } from "@/services/queries";
 import type { StageSummary, StageSummaryCell, StageSummaryChange, StageSummaryRow, StageSummaryTotalCell } from "@/types/domain";
 import { KIND_LABEL, REASON_LABEL, STATE_LABEL } from "./cellCopy";
-import { drilldownGroupCount } from "./drilldownData";
 import { worksHeading } from "./drilldownCopy";
 import { StageSummaryTable } from "./StageSummaryTable";
 import { ChangeBadge, SummaryCell, SummaryTotalCell } from "./SummaryCell";
@@ -875,9 +876,12 @@ describe("Таблица свода — состояния по данным (с
  * `useStagePositions` замокан на весь файл (см. `vi.mock` выше) — сеть считает
  * тест хука самого запроса (Task 8, `queries.test.ts`); здесь проверяется
  * поведение ЭКРАНА: три ключа раскрытия (`expandedIds` — уже существующий,
- * `worksOpenIds`, `worksMountedIds`) не путают друг друга, счётчик переживает
- * сворачивание, а блок работ ПОДСТАТЬИ переживает потерю монтажа при
- * сворачивании предка.
+ * `worksOpenIds`, `worksMountedIds`) не путают друг друга, а блок работ
+ * ПОДСТАТЬИ переживает потерю монтажа при сворачивании предка. Счётчик N
+ * (ветка `feat/drilldown-polish`) сюда больше не относится: он приходит не из
+ * блока работ и не из этого хука, а прямо из поля `drilldown_group_count`
+ * строки сводки, и «переживает сворачивание» проверяется этим же файлом как
+ * тривиальное следствие того, что N — не состояние блока вовсе.
  */
 describe("Кнопка «Работы · N» и вложенные раскрытия (§2.1, §6.3)", () => {
   /**
@@ -887,14 +891,26 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * ребёнка, который фикстура уже несёт (Task 10 завёл его специально с
    * `false`, ради теста «по полю, а не по children» выше). Patch по коду на
    * любой глубине — то же дерево, что строит `CategoryRowGroup`.
+   *
+   * Ветка `feat/drilldown-polish`: рядом с `has_drilldown_rows` патчится и
+   * `drilldown_group_count` — поля не могут разойтись (тот же инвариант, что
+   * несёт backend-тест `test_has_drilldown_rows_agrees_with_drilldown_group_count`),
+   * а кнопка теперь читает именно `drilldown_group_count`. Включение флага у
+   * строки, чей фикстурный счётчик и так 0 (например, «6.99»), берёт условное
+   * число 3 — само число не важно ни одному тесту этого блока, важно только
+   * то, что оно СОГЛАСОВАНО с флагом.
    */
   function summaryWith(flags: Record<string, boolean>): StageSummary {
     function patch(rows: StageSummaryRow[]): StageSummaryRow[] {
-      return rows.map((row) => ({
-        ...row,
-        has_drilldown_rows: flags[row.code ?? ""] ?? row.has_drilldown_rows,
-        children: patch(row.children),
-      }));
+      return rows.map((row) => {
+        const hasDrilldown = flags[row.code ?? ""] ?? row.has_drilldown_rows;
+        return {
+          ...row,
+          has_drilldown_rows: hasDrilldown,
+          drilldown_group_count: hasDrilldown ? row.drilldown_group_count || 3 : 0,
+          children: patch(row.children),
+        };
+      });
     }
     return { ...sampleStageSummary, rows: patch(sampleStageSummary.rows) };
   }
@@ -951,6 +967,228 @@ describe("Кнопка «Работы · N» и вложенные раскры�
   });
 
   /**
+   * Полировка после мержа: сверка с макетом (задача 12) нашла кнопку слишком
+   * тёмной (радиус, отступ, цвет, фон) и записала это долгом вместо правки.
+   * Продукт-оунер попросил довести до макета на смёрженном экране — фикс
+   * токенами (`text-fg-secondary`/`bg-surface`), а не литералом. jsdom не
+   * считает раскладку и computed style по CSS-переменным, поэтому проверка —
+   * на КЛАССЫ, тем же приёмом, что уже стоит у `PositionDrilldown.test.tsx`
+   * (задача 12, п. 9.3): именно эти два класса дважды терялись в этой фиче
+   * незамеченными до появления такой проверки.
+   *
+   * Второй круг (ветка `feat/drilldown-polish`): продукт-оунер посмотрел на
+   * смёрженный экран и указал, что кнопка по-прежнему читается как серый
+   * текст без явного признака интерактивности. Причина — предыдущая сверка с
+   * макетом (DoD 6, задача 12) сравнивала только радиус/отступ/цвет/фон и ни
+   * разу не сравнивала `border` и `:hover` (инсайт
+   * `docs/insights/enumerate-the-rules-own-properties.md`). Добавлены
+   * `border border-border-default` (макетное `1px solid var(--bd)`, точное
+   * совпадение токена в обеих темах) и `hover:bg-surface-hover` вместо
+   * `hover:bg-surface-sunken` (макетное `--hover`, другой токен — не тот, что
+   * стоял).
+   *
+   * Третий круг: ВТОРОЙ круг сам оказался частичной сверкой — он добавил
+   * `border` и `:hover`, но не добавил `cursor`/`white-space` из ТОГО ЖЕ
+   * правила `.works` (мокет, спека
+   * `docs/superpowers/specs/2026-08-29-position-drilldown-mockup.html:775`),
+   * несмотря на то, что инсайт по итогам второго круга уже требовал держать
+   * список признаков ИЗ ПРАВИЛА, а не подмножеством. `WORKS_RULE_DECLARATIONS`
+   * переписывает ВСЕ одиннадцать деклараций правила буквально из текста
+   * мокета, и у каждой ровно одна диспозиция:
+   *   - `assert`  — свойство закрыто классом(ами) кнопки, проверяется здесь;
+   *   - `parent`  — свойство обеспечено НЕ кнопкой, а конкретным, тоже
+   *                 проверяемым фактом о родителе (не текстом в докстроке);
+   *   - `n/a`     — свойство неприменимо, и почему — тоже проверяемый факт;
+   *   - `reset`   — свойство закрыто БАЗОВЫМ СЛОЕМ фреймворка (CSS reset), а
+   *                 не классом, не родителем и не неприменимостью — см. ниже.
+   * Тип `WorksDeclaration` требует поле `disposition` у каждой записи —
+   * запись без диспозиции не компилируется.
+   *
+   * Четвёртый круг (инстанс 5, тот же файл): счёт «десять деклараций» из
+   * докстрока выше и `toHaveLength(10)` были НАБРАНЫ ЧЕЛОВЕКОМ по чтению
+   * строки 775 — и оба разошлись с правилом в ОДНУ И ТУ ЖЕ сторону:
+   * `font: inherit` не попал ни в список, ни в счёт, поэтому сверка
+   * подтверждала список сама собой, а не правило. Последствий не было —
+   * Preflight Tailwind ставит `font: inherit` каждой кнопке безусловно (см.
+   * диспозицию `reset` у записи `font` ниже), — но сама неполнота была той
+   * же формы, что инстансы 1–4 (`docs/insights/enumerate-the-rules-own-properties.md`).
+   * Фикс: число деклараций теперь СЧИТАНО из файла мокета функцией
+   * `worksRulePropertiesFromMockup` (ниже), а не напечатано текстом — тест
+   * «состав списка сверки совпадает с составом блока .works мокета» сравнивает
+   * МНОЖЕСТВА имён свойств, а не только длины (компенсирующая пара «лишняя +
+   * пропавшая декларация» дала бы совпадающую длину при разном составе).
+   * Извлечение — не парсер CSS общего вида: оно ищет ЛИТЕРАЛЬНЫЙ селектор
+   * `.works {` (ровно один раз во всём файле мокета — проверено `grep`) и
+   * бьёт содержимое блока по `;`, беря часть до первого `:` как имя
+   * свойства. `.works:hover {` и `.works .chev {` этим регулярным выражением
+   * не совпадают: после `.works` там не сразу идёт (опционально пробел и)
+   * `{`. Это закрывает КОНКРЕТНО тот пробел, который стоил инстанса 5:
+   * декларация, дописанная в мокет и не перенесённая сюда руками, теперь
+   * меняет состав множества `fromMockup` и красит тест «состав списка
+   * сверки…», а не только ждёт внимательного человека.
+   */
+  type WorksDeclaration =
+    | { property: string; mockup: string; disposition: "assert"; classes: string[] }
+    | { property: string; mockup: string; disposition: "parent" | "n/a" | "reset"; reason: string };
+
+  const WORKS_RULE_DECLARATIONS: WorksDeclaration[] = [
+    { property: "border", mockup: "1px solid var(--bd)", disposition: "assert", classes: ["border", "border-border-default"] },
+    { property: "background", mockup: "var(--surface)", disposition: "assert", classes: ["bg-surface"] },
+    { property: "color", mockup: "var(--fg2)", disposition: "assert", classes: ["text-fg-secondary"] },
+    { property: "border-radius", mockup: "6px", disposition: "assert", classes: ["rounded-[6px]"] },
+    {
+      property: "font",
+      mockup: "inherit",
+      disposition: "reset",
+      reason:
+        "Preflight Tailwind ставит `font: inherit` любой кнопке безусловно — из БАЗОВОГО СЛОЯ фреймворка, а не из класса этой кнопки, не из факта о родителе и не потому что свойство неприменимо. Верифицировано чтением `node_modules/tailwindcss/preflight.css`, блок селектора `button, input, select, optgroup, textarea, ::file-selector-button`, декларация `font: inherit;` внутри него (см. тест ниже — читает тот же файл, а не повторяет утверждение текстом).",
+    },
+    { property: "font-size", mockup: "11px", disposition: "assert", classes: ["text-2xs"] },
+    { property: "padding", mockup: "0 6px", disposition: "assert", classes: ["px-1.5", "py-0"] },
+    {
+      property: "margin-left",
+      mockup: "8px",
+      disposition: "parent",
+      reason: "родительский flex (`items-start gap-2` на строке контейнера) даёт 8px между всеми детьми, включая эту кнопку — своего класса отступа на кнопке нет и не должно появиться",
+    },
+    { property: "cursor", mockup: "pointer", disposition: "assert", classes: ["cursor-pointer"] },
+    { property: "white-space", mockup: "nowrap", disposition: "assert", classes: ["whitespace-nowrap"] },
+    {
+      property: "vertical-align",
+      mockup: "1px",
+      disposition: "n/a",
+      reason: "кнопка — ребёнок flex-контейнера (родитель несёт класс flex); vertical-align на flex-детей не действует, свойство мокета здесь неприменимо, а не пропущено",
+    },
+  ];
+
+  /**
+   * Достаёт имена CSS-свойств блока `.works { ... }` прямо из файла мокета —
+   * не парсер CSS общего вида, а извлечение ОДНОГО литерального блока (см.
+   * докстрок выше про то, почему регулярное выражение не путает его с
+   * `.works:hover {` / `.works .chev {`). Путь — относительно cwd прогона
+   * (`frontend/`, тот же приём, что `readFileSync("src/index.css", ...)` в
+   * `summaryTokens.test.ts`).
+   */
+  function worksRulePropertiesFromMockup(): string[] {
+    const html = readFileSync(
+      "../docs/superpowers/specs/2026-08-29-position-drilldown-mockup.html",
+      "utf8"
+    );
+    const match = html.match(/\.works\s*\{([^}]*)\}/);
+    if (!match) {
+      throw new Error("Блок `.works { ... }` не найден в файле мокета — путь или селектор разошлись с реальностью");
+    }
+    return match[1]
+      .split(";")
+      .map((decl) => decl.trim())
+      .filter(Boolean)
+      .map((decl) => decl.split(":")[0].trim());
+  }
+
+  /**
+   * Правило `.works:hover` (мокет, строка 778) — отдельный набор свойств.
+   * Тип уже — не `WorksDeclaration`, а его ветка `assert`: обе декларации
+   * `:hover` закрыты классом, третьей диспозиции здесь не бывает по смыслу
+   * правила (наведение — не про отступ и не про раскладку).
+   */
+  const WORKS_HOVER_DECLARATIONS: Extract<WorksDeclaration, { disposition: "assert" }>[] = [
+    { property: "background (:hover)", mockup: "var(--hover)", disposition: "assert", classes: ["hover:bg-surface-hover"] },
+    { property: "color (:hover)", mockup: "var(--fg)", disposition: "assert", classes: ["hover:text-fg"] },
+  ];
+
+  it(`правило .works — ${WORKS_RULE_DECLARATIONS.length} деклараций в списке сверки, число СЧИТАНО из файла мокета`, () => {
+    // Отдельная проверка длины раньше цикла: случайно урезанный (например,
+    // при рефакторинге) массив падает здесь, на очевидной причине, а не
+    // молча теряет декларацию где-то в цикле ниже. Число — НЕ литерал,
+    // набранный человеком (инстанс 5 показал, что человек и список расходятся
+    // с правилом в одну и ту же сторону и совпадение с литералом ничего не
+    // доказывает): оно посчитано извлечением из самого файла мокета.
+    const fromMockup = worksRulePropertiesFromMockup();
+    // Премисный факт: извлечение реально что-то нашло, а не молча вернуло
+    // пустоту (сломанный путь/регулярное выражение дал бы `toHaveLength(0)`
+    // и оба сравнения ниже были бы зелёными на пустом множестве).
+    expect(fromMockup.length).toBeGreaterThan(0);
+    expect(WORKS_RULE_DECLARATIONS).toHaveLength(fromMockup.length);
+  });
+
+  it("состав списка сверки совпадает с составом блока .works мокета — не только числом (инстанс 5)", () => {
+    // Числа могут случайно совпасть при разном составе (потерянная и лишняя
+    // декларация компенсируют друг друга) — здесь сверяются САМИ ИМЕНА
+    // свойств, множествами (порядок переноса не обязан повторять порядок
+    // мокета). Ровно это сравнение поймало бы инстанс 5: `font` был бы в
+    // `fromMockup`, но не в `fromList`.
+    const fromMockup = new Set(worksRulePropertiesFromMockup());
+    const fromList = new Set(WORKS_RULE_DECLARATIONS.map((d) => d.property));
+    expect(fromList).toEqual(fromMockup);
+  });
+
+  it.each(WORKS_RULE_DECLARATIONS)(
+    "правило .works, декларация $property: $mockup — диспозиция закрыта",
+    (decl) => {
+      renderTable(summaryWith({ "6": false, "2": true }));
+      const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
+
+      if (decl.disposition === "assert") {
+        for (const cls of decl.classes) {
+          expect(button).toHaveClass(cls);
+        }
+      } else if (decl.disposition === "parent") {
+        // margin-left: факт о РОДИТЕЛЕ, не о кнопке — снятие gap-2 с
+        // родителя должно уронить именно эту проверку.
+        expect(button.parentElement).toHaveClass("gap-2");
+      } else if (decl.disposition === "n/a") {
+        // vertical-align: неприменимость проверяется фактом (родитель —
+        // flex), а не только заявлена в докстроке.
+        expect(button.parentElement).toHaveClass("flex");
+      } else {
+        // disposition === "reset" (font: inherit). Классового утверждения
+        // здесь НЕ БЫВАЕТ — свойство не закрыто ни одним классом кнопки, и
+        // придумывать класс ради единообразия цикла значило бы утверждать
+        // неправду. Утверждение о САМОЙ КНОПКЕ в jsdom тоже невозможно:
+        // `vitest.config.ts` держит `css: false` (см. докстрок файла),
+        // jsdom не подключает и не разбирает `preflight.css`, поэтому
+        // computed style кнопки в этом прогоне не несёт последствий Preflight
+        // вовсе — проверка на кнопке была бы зелёной ПРИ ЛЮБОМ содержимом
+        // preflight.css, то есть ничего не доказывала бы (та самая
+        // vacuous-проверка, которой правило и было призвано избежать).
+        //
+        // Честная, машинно проверяемая часть заявления — сам факт декларации
+        // в ПОСТАВЛЯЕМОМ файле пакета: читается с диска (тот же приём, что
+        // `summaryTokens.test.ts` использует для `index.css`), а не заявляется
+        // текстом причины. Если Tailwind когда-нибудь перестанет ставить
+        // `font: inherit` кнопке в Preflight, это единственная проверка,
+        // которая покраснеет и укажет, что диспозиция `reset` больше не верна.
+        const preflight = readFileSync("node_modules/tailwindcss/preflight.css", "utf8");
+        const block = preflight.match(
+          /button,\s*input,\s*select,\s*optgroup,\s*textarea,\s*::file-selector-button\s*\{([^}]*)\}/
+        );
+        expect(block).not.toBeNull();
+        expect(block![1]).toContain("font: inherit");
+      }
+    }
+  );
+
+  it.each(WORKS_HOVER_DECLARATIONS)(
+    "правило .works:hover, декларация $property: $mockup — диспозиция закрыта",
+    (decl) => {
+      renderTable(summaryWith({ "6": false, "2": true }));
+      const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
+      for (const cls of decl.classes) {
+        expect(button).toHaveClass(cls);
+      }
+    }
+  );
+
+  it("кнопка «Работы» не несёт токены двух прошлых кругов полировки (регресс)", () => {
+    renderTable(summaryWith({ "6": false, "2": true }));
+    const button = within(screen.getByTestId(rowTestId("2"))).getByRole("button", { name: /Работы/ });
+    // Первый круг: слишком тёмный третичный текст вместо вторичного.
+    expect(button).not.toHaveClass("text-fg-tertiary");
+    // Второй круг: цвет наведения не того токена (--bg-surface-sunken).
+    expect(button).not.toHaveClass("hover:bg-surface-sunken");
+  });
+
+  /**
    * Раскрытие ЛЕНИВОЕ (§2.1): монтаж `PositionDrilldown`, а значит и вызов
    * `useStagePositions`, обязан ждать ПЕРВОГО клика по кнопке КОНКРЕТНОЙ
    * строки — до этого ни одна статья, включая ту, что показывает кнопку, не
@@ -1003,31 +1241,58 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     expect(mockedUseStagePositions).toHaveBeenLastCalledWith(300, expect.any(Number), [7001, 7002], true);
   });
 
-  it("после загрузки кнопка — «Работы · N», и N не пропадает при сворачивании (§2.1)", async () => {
+  /**
+   * Ветка `feat/drilldown-polish`: N — теперь ЧИСТАЯ функция строки сводки
+   * (`row.drilldown_group_count`), а не поздний репорт загрузившегося блока
+   * разложения. Это проверяется буквально — счётчик виден ДО ЛЮБОГО клика,
+   * `useStagePositions` при этом не настроен вовсе (мок молчит, никакого
+   * `successStagePositions()` здесь нет): будь число всё ещё завязано на
+   * блок, компонент либо не смог бы отрисовать кнопку с числом без данных
+   * хука, либо тест обманул бы себя, случайно настроив мок раньше.
+   */
+  it("кнопка несёт «Работы · N» уже на первом рендере — до любого клика (§2.1, ветка feat/drilldown-polish)", () => {
+    renderTable();
+    const row = screen.getByTestId(rowTestId("2"));
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    expect(n).toBeGreaterThan(0); // иначе тест не отличил бы «есть число» от «числа нет»
+    expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+  });
+
+  /**
+   * Второе требование брифа фичи (§2.1) — N не пропадает при сворачивании.
+   * С переездом счётчика в сводку это утверждение стало ТРИВИАЛЬНО верным
+   * (число — проп самой строки, блок разложения на него не влияет), но
+   * требование само по себе никуда не делось, и тест остаётся его сторожем:
+   * если завтра кто-то попробует снова читать N из блока (см. историю правки
+   * в докстроке `WorksProps`), это ровно тот тест, который должен покраснеть
+   * первым.
+   */
+  it("N не пропадает при раскрытии и сворачивании блока работ (§2.1)", async () => {
     const user = userEvent.setup();
     successStagePositions();
     renderTable();
     const row = screen.getByTestId(rowTestId("2"));
-    const button = within(row).getByRole("button", { name: /Работы/ });
-    expect(button).not.toHaveTextContent("·"); // до первой загрузки счётчика нет
-    await user.click(button);
-    const n = drilldownGroupCount(sampleStagePositions.rows);
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    const button = within(row).getByRole("button", { name: `Работы · ${n}` });
+    await user.click(button); // раскрыть
     expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
-    await user.click(within(row).getByRole("button", { name: `Работы · ${n}` }));
+    await user.click(within(row).getByRole("button", { name: `Работы · ${n}` })); // свернуть
     expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
   });
 
   /**
    * Ревью PR #35, finding 4, на уровне экрана — где дефект реально виден
    * пользователю. `unknown_vat_base` несёт пустой `rows` не потому, что в
-   * поддереве нет работ, а потому что сервер отказался их оценить (§2.8);
-   * до правки кнопка после загрузки всё равно печатала «Работы · 0», ложно
-   * утверждая отсутствие работ. Правильный итог — кнопка ОСТАЁТСЯ на своей
-   * подписи ДО первой загрузки (без «·»), как если бы счётчик так и не
-   * пришёл: родитель хранит счётчики в `Map` и не получает вызов `onCount`
-   * в этом состоянии (`PositionDrilldown.tsx`).
+   * поддереве нет работ, а потому что сервер отказался их оценить (§2.8).
+   * Раньше это означало, что кнопка не могла узнать N вовсе (число шло из
+   * блока, а блок в этом состоянии отказывался его сообщать) — и правильным
+   * итогом было держать кнопку без «·». Ветка `feat/drilldown-polish` меняет
+   * это: N — поле сводки, независимое от того, смог ли сервер ОЦЕНИТЬ суммы
+   * поддерева (§2.8 отвечает только за суммы, не за то, сколько работ там
+   * лежит) — кнопка обязана показать число И ДО, И ПОСЛЕ загрузки, а блок
+   * разложения при этом продолжает честно отказываться печатать строки.
    */
-  it("reason=unknown_vat_base: кнопка остаётся на «Работы» без «· 0» даже после загрузки (§2.8)", async () => {
+  it("reason=unknown_vat_base: кнопка всё равно несёт «Работы · N», блок при этом отказывается печатать строки (§2.8)", async () => {
     const user = userEvent.setup();
     mockedUseStagePositions.mockReturnValue({
       isPending: false,
@@ -1037,10 +1302,15 @@ describe("Кнопка «Работы · N» и вложенные раскры�
     } as never);
     renderTable();
     const row = screen.getByTestId(rowTestId("2"));
-    const button = within(row).getByRole("button", { name: /Работы/ });
+    const n = sampleStageSummary.rows[0].drilldown_group_count;
+    const button = within(row).getByRole("button", { name: `Работы · ${n}` });
+    // Число — ДО клика: сводка его несёт независимо от того, что вернёт хук.
+    expect(button).toBeInTheDocument();
     await user.click(button);
-    expect(within(row).getByRole("button", { name: "Работы" })).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: /Работы ·/ })).toBeNull();
+    // Число НЕ меняется на «· 0» и никуда не пропадает после загрузки отказа.
+    expect(within(row).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+    // Сам блок при этом честно отказывается — строк нет, есть только причина.
+    expect(screen.getByText(REASON_LABEL.unknown_vat_base)).toBeInTheDocument();
   });
 
   it("шеврон корня гасит и подстатьи, и работы; их собственные ключи независимы", async () => {
@@ -1086,36 +1356,46 @@ describe("Кнопка «Работы · N» и вложенные раскры�
    * ПРЕДОК — ребёнок вместе со своим блоком работ пропадает из DOM целиком
    * (`isOpen &&` предка не рендерит детей вовсе), а не просто прячется.
    * Раскрытие предка обратно обязано вернуть и раскрытые подстатьи, и открытый
-   * блок работ ребёнка, и счётчик — без нового запроса (`gcTime`/`staleTime:
-   * Infinity`, Task 8). Хук здесь замокан и всегда отдаёт успех синхронно,
-   * поэтому тест доказывает ровно то, что три ключа раскрытия и счётчик живут
-   * в состоянии `StageSummaryTable` НАД рекурсией и переживают размонтирование
-   * потомка — а не что-либо про сеть или про скелет: с синхронно резолвящимся
-   * моком скелет и не мог бы появиться, и тест о нём ничего не утверждает.
+   * блок работ ребёнка — без нового запроса (`gcTime`/`staleTime: Infinity`,
+   * Task 8). Хук здесь замокан и всегда отдаёт успех синхронно, поэтому тест
+   * доказывает ровно то, что два ключа раскрытия живут в состоянии
+   * `StageSummaryTable` НАД рекурсией и переживают размонтирование потомка —
+   * а не что-либо про сеть или про скелет: с синхронно резолвящимся моком
+   * скелет и не мог бы появиться, и тест о нём ничего не утверждает. Счётчик N
+   * этот сценарий вообще не испытывает (ветка `feat/drilldown-polish`): он —
+   * проп строки сводки, а не состояние, которое можно потерять вместе с
+   * блоком, и это отдельно проверяет тест «N не пропадает при раскрытии и
+   * сворачивании» выше; здесь он утверждается лишь как дополнительный сигнал
+   * того, что строка ребёнка — та же самая, а не пересозданная заново.
    *
    * Ребёнок «6.99» уже есть в фикстуре (Task 10, `has_drilldown_rows: false`) —
    * добавлять третьего ребёнка не потребовалось: `summaryWith` включает его
-   * флаг локально, для этого теста, не трогая фикстуру и не задевая тест
-   * «по полю, а не по children» выше.
+   * флаг (и заодно согласованный счётчик — см. докстрок `summaryWith`)
+   * локально, для этого теста, не трогая фикстуру и не задевая тест «по полю,
+   * а не по children» выше.
    */
-  it("работы ПОДСТАТЬИ переживают сворачивание предка: раскрытие, счётчик и данные возвращаются из состояния таблицы", async () => {
+  it("работы ПОДСТАТЬИ переживают сворачивание предка: раскрытие и данные возвращаются из состояния таблицы", async () => {
     const user = userEvent.setup();
     successStagePositions();
-    renderTable(summaryWith({ "6.99": true }));
+    const summary = summaryWith({ "6.99": true });
+    renderTable(summary);
+    const childCode = childCodeOf("6");
+    const n = findRowByCode(summary.rows, childCode)!.drilldown_group_count;
+    expect(n).toBeGreaterThan(0); // иначе тест не отличил бы «есть число» от «числа нет»
+
     const parent = screen.getByTestId(rowTestId("6"));
     await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
-    const childCode = childCodeOf("6");
     const child = screen.getByTestId(rowTestId(childCode));
-    await user.click(within(child).getByRole("button", { name: /Работы/ }));
-    const n = drilldownGroupCount(sampleStagePositions.rows);
-    expect(within(child).getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
+    await user.click(within(child).getByRole("button", { name: `Работы · ${n}` }));
+    expect(screen.getByText(worksHeading(childCode))).toBeInTheDocument();
 
     await user.click(within(parent).getByRole("button", { name: /Свернуть/ }));
     expect(screen.queryByText(worksHeading(childCode))).toBeNull(); // блок ушёл вместе со строкой
     await user.click(within(parent).getByRole("button", { name: /Раскрыть/ }));
-    // Данные и счётчик не потеряны: раскрытие ребёнка и его блок
-    // восстанавливаются из состояния таблицы (worksOpenIds/worksMountedIds/
-    // worksCounts) и кэша запроса (Task 8).
+    // Раскрытие блока работ ребёнка восстанавливается из состояния таблицы
+    // (worksOpenIds/worksMountedIds) и кэша запроса (Task 8); счётчик — из
+    // строки сводки, которую передал сам вызывающий тест выше, и её потерять
+    // размонтированием ребёнка нечем.
     expect(screen.getByText(worksHeading(childCode))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: `Работы · ${n}` })).toBeInTheDocument();
   });

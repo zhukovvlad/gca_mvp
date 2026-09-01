@@ -575,6 +575,90 @@ def _extras_only_grid(db_session, factories):
     return tender, offers
 
 
+class TestDrilldownGroupCountMatchesLoadGroups:
+    """`drilldown_group_count` свода (`crud/stage_summary.py::_row`) — число
+    ГРУПП разложения поддерева, показанное ДО первой загрузки самого
+    разложения (спека 2026-08-30-position-drilldown-design.md §2.1). Хард-
+    инвариант: значение обязано РАВНЯТЬСЯ `len(load_groups(db, estimate_ids,
+    subtree_ids(db, category_id)))` — той же паре функций, что строит сами
+    группы разложения, а не пересказу их числа отдельной арифметикой.
+
+    Ключевая ловушка (§1.9, §2.2): свёртка count-а вверх по дереву — ОБЪЕДИНЕНИЕ
+    множеств ключей, а НЕ СУММА по детям, потому что `load_groups` держит
+    работу ОДНОЙ группой независимо от того, под какой статьёй поддерева она
+    лежит на каждом этапе — ровно случай миграции классификации
+    `test_same_catalog_position_in_parent_and_child_is_one_group` выше."""
+
+    def _expected(self, db, estimates, code):
+        subtree = crud_pd.subtree_ids(db, category_id(db, code))
+        return len(crud_pd.load_groups(db, estimates, subtree))
+
+    def test_matches_load_groups_for_several_categories(self, db_session, drill_grid):
+        """`drill_grid`: статья «6» несёт РАБОТЫ и ДОПРАБОТЫ (движение статьи
+        включает допработы, §1.5), статья «2» — только работы, исчезающие по
+        трассе. Обе — на настоящем импорте С МАТЧИНГОМ, иначе все позиции ушли
+        бы одной строкой `unmatched`, и виды групп было бы не на чем различить."""
+        summary = crud_ss.build_stage_summary(db_session, drill_grid.tender.id, drill_grid.path)
+        estimates = estimates_of(db_session, drill_grid.path)
+        by_code = {r["code"]: r for r in summary["rows"]}
+        for code in ("6", "2"):
+            expected = self._expected(db_session, estimates, code)
+            assert expected > 0   # предпосылка: сравнение не обесценено нулём с обеих сторон
+            assert by_code[code]["drilldown_group_count"] == expected
+
+    def test_matches_load_groups_when_rows_live_only_in_a_descendant(self, db_session, factories):
+        """Узел «6» без СОБСТВЕННЫХ строк вовсе — все лежат у потомка «6.1»
+        (§1.7: 18 и 22 таких узла на стенде). Проверяет согласие запроса и
+        свёртки на живом узле-«пустышке», а не только на узле с прямыми
+        строками."""
+        tender, offers = _subtree_only_grid(db_session, factories)
+        summary = crud_ss.build_stage_summary(db_session, tender.id, offers)
+        estimates = estimates_of(db_session, offers)
+        expected = self._expected(db_session, estimates, "6")
+        row = next(r for r in summary["rows"] if r["code"] == "6")
+        assert expected > 0
+        assert row["drilldown_group_count"] == expected
+
+    def test_matches_load_groups_for_subtree_with_additional_works(self, db_session, factories):
+        """Статья «2», в чьём поддереве ТОЛЬКО допработы (§6.2, на стенде таких
+        поддеревьев нет — 0 из 143, ветка фикстурная). Guard-removal
+        «игнорировать допработы» обязан уронить именно эту проверку."""
+        tender, offers = _extras_only_grid(db_session, factories)
+        summary = crud_ss.build_stage_summary(db_session, tender.id, offers)
+        estimates = estimates_of(db_session, offers)
+        expected = self._expected(db_session, estimates, "2")
+        row = next(r for r in summary["rows"] if r["code"] == "2")
+        assert expected > 0
+        assert row["drilldown_group_count"] == expected
+
+    def test_parent_child_migration_counts_as_one_not_two(self, db_session, factories):
+        """Негативная §1.9/§2.2: та же каталожная позиция — под статьёй-родителем
+        на этапе 1, под статьёй-потомком на этапе 2 (конструкция теста
+        `TestLoadGroups.test_same_catalog_position_in_parent_and_child_is_one_
+        group` выше). `load_groups` строит по ней ОДНУ группу; свёртка count-а
+        СУММОЙ по детям дала бы 2 — ровно guard-removal, который просит бриф
+        задачи (см. отчёт)."""
+        tender = factories.TenderFactory.create()
+        rounds = {n: factories.TenderRoundFactory.create(tender=tender, stage_no=n) for n in (1, 2)}
+        db_session.flush()
+        parent_code, child_code = "6", "6.1"
+        for n, art in ((1, parent_code), (2, child_code)):
+            positions = [position(job_title="Раздел", is_chapter=True, chapter_number="1",
+                                  article_smr=art, number="1"),
+                         position(job_title="Фасад корпуса", unit="м2", quantity=1, suggested_quantity=5,
+                                  unit_cost_total="100.00", total_cost_total="100.00",
+                                  chapter_ref="1", number="2")]
+            import_and_match(db_session, tender_round=rounds[n],
+                             data=round_payload([proposal(positions, vat_rate="20")]))
+        db_session.flush()
+        offers = db_session.execute(
+            sa.select(Offer.id).join(TenderRound, TenderRound.id == Offer.round_id)
+            .where(Offer.tender_id == tender.id).order_by(TenderRound.stage_no)).scalars().all()
+        summary = crud_ss.build_stage_summary(db_session, tender.id, offers)
+        row = next(r for r in summary["rows"] if r["code"] == parent_code)
+        assert row["drilldown_group_count"] == 1
+
+
 class TestEndpointContract:
     def _drill(self, db, grid, code="6", offers=None):
         return crud_pd.build_position_drilldown(

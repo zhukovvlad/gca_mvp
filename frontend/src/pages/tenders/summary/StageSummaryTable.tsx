@@ -140,13 +140,21 @@ function ContributionValue({
 // заведённая ровно для такого разделения (см. докстрок файла).
 
 /**
- * Пропсы блока работ статьи — три независимых ключа раскрытия (§2.1) плюс
+ * Пропсы блока работ статьи — два независимых ключа раскрытия (§2.1) плюс
  * то, что нужно самому запросу разложения (`tenderId`/`offerIds`) и рисовке
  * (`columnsCount`). Ключи живут в состоянии `StageSummaryTable`, а не в
  * `CategoryRowGroup`: рекурсия строит новое дерево компонентов при каждом
- * раскрытии предка, и локальное состояние узла (в т.ч. счётчик N) умерло бы
- * вместе со свёрнутым узлом — ровно то, чего ради заведён `worksMountedIds` и
- * `Map<number, number>` счётчика на уровне таблицы, а не блока.
+ * раскрытии предка, и локальное состояние узла умерло бы вместе со свёрнутым
+ * узлом — ровно то, чего ради заведён `worksMountedIds` на уровне таблицы, а
+ * не блока.
+ *
+ * Счётчика N здесь больше нет (ветка `feat/drilldown-polish`, 01.09.2026):
+ * до правки он приходил только ПОСЛЕ первой загрузки `PositionDrilldown`
+ * (через `Map<number, number>` и колбэк `onCount`), и до клика кнопка не
+ * несла числа вовсе. Число уже есть в самой строке сводки
+ * (`row.drilldown_group_count`) ДО того, как блок разложения вообще
+ * смонтирован — второй источник того же числа больше не нужен и мог бы
+ * разойтись с первым.
  */
 interface WorksProps {
   tenderId: number;
@@ -154,9 +162,7 @@ interface WorksProps {
   columnsCount: number;
   worksOpenIds: Set<number>;
   worksMountedIds: Set<number>;
-  worksCounts: Map<number, number>;
   onToggleWorks: (id: number) => void;
-  onCount: (id: number, n: number) => void;
 }
 
 function CategoryRowGroup({
@@ -183,7 +189,6 @@ function CategoryRowGroup({
   const showWorksButton = worksId !== null && row.has_drilldown_rows;
   const worksOpen = worksId !== null && works.worksOpenIds.has(worksId);
   const worksMounted = worksId !== null && works.worksMountedIds.has(worksId);
-  const worksCount = worksId !== null ? works.worksCounts.get(worksId) : undefined;
 
   return (
     <>
@@ -239,19 +244,88 @@ function CategoryRowGroup({
             {/*
               Кнопка «Работы» — слово с `aria-expanded`, а не второй шеврон
               (§2.1): она отдельна от шеврона подстатей выше и сворачивает
-              ТОЛЬКО блок работ, оставляя подстатьи на месте. Подпись без
-              счётчика до первой загрузки, «Работы · N» после — N читается из
-              `worksCounts` таблицы, а не из самого блока, поэтому переживает
-              его размонтирование при сворачивании (докстрок `WorksProps`).
+              ТОЛЬКО блок работ, оставляя подстатьи на месте. Подпись несёт
+              счётчик СРАЗУ, с первого рендера строки — N читается прямо из
+              `row.drilldown_group_count` сводки (единственный источник числа,
+              ветка `feat/drilldown-polish`, докстрок `WorksProps`), а не из
+              самого блока разложения: тот монтируется лениво, только после
+              первого клика (см. `worksMounted` ниже), и до правки кнопка была
+              обязана ждать его первого ответа, чтобы узнать N.
+              `showWorksButton` и ненулевой счётчик здесь ходят парой —
+              инвариант контракта, который проверяет и backend-тест
+              (`test_has_drilldown_rows_agrees_with_drilldown_group_count`).
+
+              Полировка после мержа: сверка с макетом (задача 12, DoD 6) нашла
+              расхождение по внешнему виду и записала его долгом в
+              `task-12-report.md` §4/§8 и в девлоге (кнопка осталась НЕ
+              исправлена намеренно тогда, до отдельного прохода) — долг не
+              заведён отдельным пунктом `docs/TECH_DEBT.md`. Здесь этот долг
+              закрывается тремя
+              измеренными свойствами — радиус (4 → 6px, `rounded-[6px]`,
+              точного именованного токена между `--radius-sm` 4px и
+              `--radius-md` 8px в палитре нет), вертикальный отступ (2px →
+              0, `py-0.5` → `py-0`), и приведением ФОНА к
+              `--bg-surface`/`bg-surface` (rgb(255,255,255) в макете — та же
+              строка `bg-surface`, что уже стоит у ячейки статьи глубины 0
+              несколькими строками выше). Цвет текста — токеном, не литералом
+              макета: `--fg2` макета (rgb(90,93,102)) — это ТОЧНО
+              `--text-secondary` приложения (`index.css`), уже несомый классом
+              `text-fg-secondary`, которым выше в этом же файле красится
+              заголовок статьи (`depth === 0 ? "text-fg" : "text-fg-secondary"`)
+              — тот же муted-но-не-третичный токен, точное совпадение в обеих
+              темах, а не «ближайший» подбор.
+
+              Второй круг полировки (ветка `feat/drilldown-polish`,
+              01.09.2026): продукт-оунер посмотрел на смёрженный экран и
+              указал, что кнопка по-прежнему читается как серый текст, а не
+              контрол — и был прав. Причина в том, что предыдущая сверка
+              (DoD 6, задача 12) сравнивала только радиус/отступ/цвет/фон и
+              ни разу не сравнивала `border` и `:hover` — ни для этой кнопки,
+              ни для какого-либо другого узла фичи (инсайт
+              `docs/insights/enumerate-the-rules-own-properties.md`).
+              Добавлены `border border-border-default` (макетная рамка —
+              `1px solid`, цвет `rgba(0,0,0,.14)`/`#3A4148` — точное
+              совпадение с `--border-default` приложения в обеих темах, тот
+              же идиом уже несёт вторичная кнопка,
+              `ui-domain/Button.tsx`), и `hover:bg-surface-hover` заменил
+              `hover:bg-surface-sunken` (макетный цвет наведения —
+              `#FAFAF7`/`#262B35` — это `--bg-surface-hover` приложения, а не
+              `--bg-surface-sunken`/`#F7F6F2`, другой токен). Отступ до
+              заголовка статьи (`margin-left: 8px` макета) отдельным классом
+              не добавлен: `gap-2` родительского `flex`
+              (`items-start gap-2` на строке контейнера первой ячейки) уже
+              даёт ровно 8px между всеми детьми, включая эту кнопку и
+              заголовок перед ней.
+
+              Третий круг (ветка `feat/drilldown-polish`, 01.09.2026): второй
+              круг сам оказался частичной сверкой — она добавила `border` и
+              `:hover`, но не проверила `cursor` и `white-space` из ТОГО ЖЕ
+              макетного правила (`.works`, спека мокета строка 775),
+              несмотря на то, что инсайт по итогам второго круга уже требовал
+              перечислять СВОЙСТВА ПРАВИЛА, а не выбранное подмножество.
+              Preflight Tailwind 4.2.4 не ставит курсор кнопке сам (проверено
+              по исходнику пакета: ни одного `cursor: pointer` в Preflight),
+              поэтому без класса указатель оставался обычной стрелкой —
+              очередная потерянная афорданса того же контрола. Добавлены
+              `cursor-pointer` (макетное `cursor: pointer`) и
+              `whitespace-nowrap` (макетное `white-space: nowrap`). Полный
+              перечень всех одиннадцати деклараций правила `.works` и диспозиция
+              каждой (assert / обеспечено родителем / неприменимо / обеспечено
+              базовым слоем фреймворка) — в
+              `StageSummaryTable.test.tsx`, тест «правило .works» ниже по
+              разделу «Кнопка «Работы»»; инсайт переписан
+              (`docs/insights/enumerate-the-rules-own-properties.md`) с этим
+              рецидивом как материалом, доказавшим, что прозаическое правило
+              «перечисляйте все свойства» само по себе поведение не меняет.
             */}
             {showWorksButton && (
               <button
                 type="button"
                 aria-expanded={worksOpen}
                 onClick={() => works.onToggleWorks(worksId as number)}
-                className="shrink-0 rounded px-1.5 py-0.5 text-2xs font-normal text-fg-tertiary hover:bg-surface-sunken hover:text-fg"
+                className="shrink-0 cursor-pointer whitespace-nowrap rounded-[6px] border border-border-default bg-surface px-1.5 py-0 text-2xs font-normal text-fg-secondary hover:bg-surface-hover hover:text-fg"
               >
-                {worksCount !== undefined ? `${WORKS_BUTTON_LABEL} · ${worksCount}` : WORKS_BUTTON_LABEL}
+                {`${WORKS_BUTTON_LABEL} · ${row.drilldown_group_count}`}
               </button>
             )}
           </div>
@@ -300,14 +374,16 @@ function CategoryRowGroup({
       {/*
         Блок монтируется после ПЕРВОГО открытия (`worksMountedIds`) и остаётся
         смонтированным при последующем сворачивании кнопкой — так живёт кэш
-        запроса (`gcTime`/`staleTime: Infinity`, Task 8) и счётчик N виден
-        сразу при повторном раскрытии. Видимость по раскрытым ПРЕДКАМ ничем
-        отдельным не гарантируется: свёрнутый предок не рендерит СВОИХ детей
-        вовсе (ветка `isOpen &&` выше на уровне предка), поэтому этот блок для
-        строки-потомка исчезает вместе с её собственной `<TableRow>` — и
-        РАЗМОНТИРУЕТСЯ, теряя локальное состояние; счётчик и факт «когда-либо
-        открывали» переживают это ровно потому, что живут в состоянии
-        `StageSummaryTable`, на уровень выше рекурсии, а не здесь.
+        запроса (`gcTime`/`staleTime: Infinity`, Task 8). Видимость по
+        раскрытым ПРЕДКАМ ничем отдельным не гарантируется: свёрнутый предок
+        не рендерит СВОИХ детей вовсе (ветка `isOpen &&` выше на уровне
+        предка), поэтому этот блок для строки-потомка исчезает вместе с её
+        собственной `<TableRow>` — и РАЗМОНТИРУЕТСЯ, теряя локальное
+        состояние; факт «когда-либо открывали» переживает это ровно потому,
+        что живёт в состоянии `StageSummaryTable`, на уровень выше рекурсии, а
+        не здесь. Счётчик N этой судьбы не разделяет вовсе (ветка
+        `feat/drilldown-polish`) — он на `row.drilldown_group_count` самой
+        строки сводки, которая никуда не размонтируется вместе с этим блоком.
       */}
       {worksMounted && (
         <PositionDrilldown
@@ -317,7 +393,6 @@ function CategoryRowGroup({
           offerIds={works.offerIds}
           columnsCount={works.columnsCount}
           open={worksOpen}
-          onCount={(n) => works.onCount(worksId as number, n)}
         />
       )}
     </>
@@ -336,12 +411,16 @@ export function StageSummaryTable({
   // Раскрытие статьи — по её id, а не по коду: коды статей ручного разноса
   // не гарантированно уникальны глобально, а id классификатора — да.
   const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
-  // Три НЕЗАВИСИМЫХ ключа раскрытия блока работ (§2.1): открыт ли блок сейчас
-  // (`worksOpenIds`), открывали ли его хоть раз — компонент остаётся
-  // смонтированным ради кэша запроса и счётчика (`worksMountedIds`), и сам
-  // счётчик N по id статьи (`worksCounts`). Ни один из них не выводится из
-  // `expandedIds` подстатей и не хранится внутри `PositionDrilldown` — оба
-  // решения обсуждены в докстроке `WorksProps` и в блоке рендера выше.
+  // Два НЕЗАВИСИМЫХ ключа раскрытия блока работ (§2.1): открыт ли блок сейчас
+  // (`worksOpenIds`) и открывали ли его хоть раз — компонент остаётся
+  // смонтированным ради кэша запроса (`worksMountedIds`). Ни один из них не
+  // выводится из `expandedIds` подстатей и не хранится внутри
+  // `PositionDrilldown` — решение обсуждено в докстроке `WorksProps` и в
+  // блоке рендера выше. Счётчика N третьим ключом здесь больше нет (ветка
+  // `feat/drilldown-polish`): раньше он жил тут же, в `Map<number, number>`,
+  // и добирался до кнопки колбэком `onCount` из `PositionDrilldown`; теперь
+  // кнопка читает `row.drilldown_group_count` сводки напрямую, и таблице
+  // нечего для него хранить.
   const [worksOpenIds, setWorksOpenIds] = useState<Set<number>>(() => new Set());
   const [worksMountedIds, setWorksMountedIds] = useState<Set<number>>(() => new Set());
   // Что из роли `worksMountedIds` реально доказано тестами (задача 11,
@@ -354,9 +433,8 @@ export function StageSummaryTable({
   // запроса по ключу уже гарантируют мгновенный ответ из кэша при повторном
   // монтировании — так что у «остаться смонтированным, а не пересоздаться»
   // нет наблюдаемого следствия ни для сети, ни для экрана. Оставлена как
-  // есть, потому что это явное требование интерфейса задачи (три ключа,
+  // есть, потому что это явное требование интерфейса задачи (два ключа,
   // §2.1), а не потому что для этой конкретной роли нашёлся тест.
-  const [worksCounts, setWorksCounts] = useState<Map<number, number>>(() => new Map());
 
   function toggle(id: number) {
     setExpandedIds((prev) => {
@@ -377,15 +455,6 @@ export function StageSummaryTable({
     });
   }
 
-  function handleWorksCount(id: number, n: number) {
-    setWorksCounts((prev) => {
-      if (prev.get(id) === n) return prev;
-      const next = new Map(prev);
-      next.set(id, n);
-      return next;
-    });
-  }
-
   const { columns, rows, unallocated, total, display } = summary;
   const works: WorksProps = {
     tenderId,
@@ -393,9 +462,7 @@ export function StageSummaryTable({
     columnsCount: columns.length,
     worksOpenIds,
     worksMountedIds,
-    worksCounts,
     onToggleWorks: toggleWorks,
-    onCount: handleWorksCount,
   };
 
   return (
