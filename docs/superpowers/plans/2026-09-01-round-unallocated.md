@@ -1166,7 +1166,7 @@ def diagnostics(db: Session, scope: RoundScope) -> list[dict]:
         title = scope.contractor_title[estimate.id]
         raw = db.execute(sa.select(EstimateRawData.raw_data).where(EstimateRawData.estimate_id == estimate.id)).scalar_one()
         lots = db.execute(
-            sa.select(Lot.lot_key, Lot.lot_title, Proposal.id).join(Proposal, Proposal.id == Lot.lot_id)
+            sa.select(Lot.lot_key, Lot.lot_title, Proposal.id).join(Proposal, Proposal.lot_id == Lot.id)
             .where(Lot.estimate_id == estimate.id).order_by(Proposal.id)
         ).all()
         for lot_key, lot_title, proposal_id in lots:
@@ -1880,8 +1880,15 @@ def _lock_scope(db: Session, tender_id: int, round_id: int) -> list[int]:
     `delete_round`, `delete_participant`) — те ждут нас, мы их. После их
     коммита смет может не остаться — это `round_has_no_offer_estimates` (§1.5)."""
     rnd = require_round(db, tender_id, round_id)
-    db.execute(sa.select(Tender.id).where(Tender.id == tender_id).with_for_update(key_share=True)).scalar_one()
-    db.execute(sa.select(TenderRound.id).where(TenderRound.id == rnd.id).with_for_update(key_share=True)).scalar_one()
+    # ИМЕННО `read=True, key_share=True`: это компилируется в `FOR KEY SHARE`.
+    # Одно `key_share=True` даёт `FOR NO KEY UPDATE` (проверено компиляцией под
+    # диалект PostgreSQL 01.09.2026, находка внешнего ревью плана), а он
+    # НЕсовместим сам с собой — второй раундовый писатель встал бы уже на
+    # тендере, и блокировки смет ниже перестали бы быть тем, что его держит.
+    db.execute(sa.select(Tender.id).where(Tender.id == tender_id)
+               .with_for_update(read=True, key_share=True)).scalar_one()
+    db.execute(sa.select(TenderRound.id).where(TenderRound.id == rnd.id)
+               .with_for_update(read=True, key_share=True)).scalar_one()
     ids = [e.id for e in offer_estimates(db, round_id)]      # ORDER BY Estimate.id — единственный источник порядка
     if not ids:
         raise DomainError(404, NO_OFFER_ESTIMATES_MESSAGE, code=CODE_NO_OFFER_ESTIMATES)
@@ -2156,6 +2163,15 @@ class TestTwoRoundWriters:
   1. Закомментировать цикл `for estimate_id in ids: lock_estimate(...)` в
      `_lock_scope` → `test_the_second_writer_waits_for_the_first_and_both_land`
      обязан краснеть на ассерте «второй писатель не ждёт первого».
+     Предпосылка этого красного: блокировки tender и round выше цикла —
+     настоящий `FOR KEY SHARE` (`with_for_update(read=True, key_share=True)`),
+     совместимый сам с собой. С `FOR NO KEY UPDATE` (одно `key_share=True`)
+     второй писатель ждал бы уже на тендере, снятие цикла ничего бы не
+     уронило, и зелёный означал бы «держит другой замок», а не «держит наш»
+     (находка внешнего ревью плана 01.09.2026; слой 8 `verifying-guards.md`).
+     Перед снятием защиты сверить компиляцию: `str(select(...).with_for_update(
+     read=True, key_share=True).compile(dialect=postgresql.dialect()))`
+     оканчивается на `FOR KEY SHARE`.
   2. В `crud/round_unallocated.offer_estimates` заменить `.order_by(Estimate.id)`
      на `.order_by(Estimate.id.desc())` → `test_estimates_are_locked_in_ascending_id_order`
      красный. (Просто УБРАТЬ `order_by` — снятие, которое тест не ловит: без
@@ -3045,6 +3061,13 @@ git commit -m "feat(round-unallocated): «разнести →» у строки
   разделов раунда во всех сметах предложений разом ([спека этапного
   разноса](docs/superpowers/specs/2026-09-01-round-unallocated-design.md) §2.3)».
   Инвариант §10 о нуле «Нераспределённого» НЕ правится (спека §3 п.6).
+- [ ] **Step 2а: `AGENTS.md` §11** — грабля SQLAlchemy: `with_for_update(key_share=True)`
+  компилируется в `FOR NO KEY UPDATE`, настоящий `FOR KEY SHARE` даёт только
+  `read=True, key_share=True`. Существующие `crud/tenders._lock_tender(exclusive=False)`
+  и `services/round_import.import_round` называют свою блокировку тендера
+  «FOR KEY SHARE», а берут `FOR NO KEY UPDATE` — сегодня это безвредно (все
+  писатели там взаимно исключают друг друга и так), но докстроки лгут;
+  правка их — отдельная запись в `TECH_DEBT.md`, не эта фича.
 - [ ] **Step 3: Devlog** — по образцу `2026-08-31-position-drilldown.md`:
   гейты и круги ревью; что сделано по задачам; отступления от плана;
   решения плана 1–8 и их судьба на ревью; негативные проверки задачи 7
