@@ -19,7 +19,9 @@ from crud.project_passport import _section_metrics  # ОДИН расчёт ст
 from models import (
     Contractor,
     Estimate,
+    EstimateAdditionalWork,
     EstimateCategoryOverride,
+    EstimateRawData,
     Lot,
     Offer,
     OfferPackage,
@@ -29,12 +31,25 @@ from models import (
     TenderRound,
     User,
 )
+from parser.constants import JSON_KEY_LOTS
 from services import round_unallocated as ru
+from services.additional_works import REASON_CANDIDATE_WITHOUT_ARTICLE, categories_by_chapter_number, resolve_ref
+from services.category_override import _overrides_of, _rows_of
+from services.category_resolution import CategoryResolver, RowKind
+from services.estimate_import import extract_positions, extract_single_proposal
 
 CODE_TENDER_NOT_FOUND = "tender_not_found"
 CODE_ROUND_NOT_FOUND = "round_not_found"
 CODE_NO_OFFER_ESTIMATES = "round_has_no_offer_estimates"
 NO_OFFER_ESTIMATES_MESSAGE = "Раунд или его сметы больше недоступны."
+
+#: Три границы §5.5 спеки разноса (`docs/superpowers/specs/2026-08-11-
+#: unallocated-category-override-design.md`), поимённо (спека этапного
+#: разноса §2.5): позиции вне структуры файла, предложения с погашенной
+#: привязкой по структуре, допработы без статьи, чья ссылка не разрешается.
+DIAG_OUTSIDE_STRUCTURE = "outside_structure"
+DIAG_STRUCTURE_DISABLED = "structure_disabled"
+DIAG_UNRESOLVED_REF = "unresolved_chapter_ref"
 
 
 class RoundMappingBroken(Exception):
@@ -192,3 +207,118 @@ def load_states(db: Session, scope: RoundScope) -> list[ru.SectionAggregate]:
     nodes = representative_nodes(db, scope.estimates[0])
     ordered_vectors = {k: [vectors[k].get(eid) for eid in ids] for k in vectors}
     return ru.aggregate(nodes, missing, ordered_vectors)
+
+
+def diagnostics(db: Session, scope: RoundScope) -> list[dict]:
+    """Границы §5.5 спеки разноса поимённо (спека этапного разноса §2.5).
+
+    План резолва — ТОТ ЖЕ, что у пересчёта (`apply_overrides`,
+    `services/category_override.py`), и идёт теми же шагами, в том же
+    порядке: позиции лота из `estimate_raw_data.raw_data` тем же
+    `extract_single_proposal`/`extract_positions`, что и там; строки и
+    действующие решения предложения тем же `_rows_of`/`_overrides_of`; тот же
+    `CategoryResolver.resolve_proposal(positions, overrides)`. Расхождение с
+    этим планом (например, доверие материализованному `work_category_id` без
+    пересчёта причины отказа) и есть тот приближённый селектор, ради снятия
+    которого написана эта функция (§1.4 спеки этапного разноса): допработа с
+    исходом «кандидат без статьи» разносом раздела закрывается и сюда не
+    попадает, а «нет кандидатов», «статьи различаются» и строка без ссылки
+    вовсе — границы.
+
+    `unresolved_chapter_ref` НИКОГДА не полагается на уже материализованный
+    `work_category_id`: причина отказа всегда пересчитывается свежим
+    `resolve_ref` (ревью после первого прохода задачи — доверие столбцу без
+    пересчёта и есть тот приближённый селектор, которого эта функция обязана
+    избегать; на согласованных данных оба пути совпадают, поэтому расхождение
+    видно только на устаревших — ровно та подмена, которую нельзя ловить
+    молчанием).
+
+    Погашенная структура (`structure_disabled`) — особый случай для допработ,
+    не только для самой структурной границы: при погашенной структуре
+    `categories_by_chapter_number` не отдаёт НИ ОДНОЙ настоящей статьи (все
+    кандидаты — `None`, см. `_disabled()` в `category_resolution.py`), поэтому
+    ЛЮБАЯ непустая ссылка сравнением через `resolve_ref` ушла бы в «кандидат
+    без статьи» и была бы ошибочно исключена — а разнос раздела здесь в
+    принципе невозможен, потому что разделов, годных для решения, нет вовсе
+    (§2.5, замер §1.2 спеки: строки АНТТЕК/ЕНИГЮН на 316,1 млн — именно такие
+    допработы). Поэтому под погашенной структурой сравнение причины не
+    вызывается: каждая непривязанная допработа — граница по определению.
+    `outside_structure`, наоборот, для погашенной структуры не отдаётся вовсе:
+    её `rows` там же, что и `structure_disabled.rows` (все НЕ-разделы), и
+    вторая запись задвоила бы счёт одних и тех же строк.
+
+    Диагностика НЕ проверяет биекцию `raw_data` ↔ `lots` (в отличие от
+    `_require_lot_bijection`/`_require_bijection` в `category_override.py`):
+    лот, который есть в БД, но пропал из `raw_data`, дал бы здесь пустые
+    `positions` и тихую пустую диагностику вместо `mapping_broken`/500,
+    которого требует спека; смета без `estimate_raw_data` уронила бы
+    `scalar_one()` непойманным `NoResultFound` вместо типизированной ошибки,
+    которую отдаёт `apply_overrides`. Сегодня оба случая недостижимы ТОЙ ЖЕ
+    гарантией, которую документирует `_require_lot_bijection` (импорт создаёт
+    ровно один `Lot` на ключ лота файла и никогда не удаляет обратно) — здесь
+    оставлен только этот комментарий, без охраны: третья копия одной и той же
+    проверки (`load_states`, `apply_overrides`, здесь) не входит в объём этой
+    задачи.
+
+    Гранулярность (решение плана, гейт 3): `outside_structure` и
+    `structure_disabled` — ОДНА запись на предложение (`rows` — число НЕ-
+    разделов файла позади этой границы: и позиции, и строки вне структуры —
+    при погашенной структуре это ЛЮБАЯ не-раздельная строка, потому что
+    границей становится предложение целиком), `unresolved_chapter_ref` — по
+    строке допработ (`rows` всегда 1). Порядок: сметы радиуса по
+    `estimate_id ASC` (несёт `scope.estimates`), внутри сметы — лоты по
+    `proposal_id`, внутри лота — сперва структурная граница (если есть),
+    затем допработы по `ordinal`.
+    """
+    resolver = CategoryResolver.from_db(db)
+    out: list[dict] = []
+    for estimate in scope.estimates:
+        title = scope.contractor_title[estimate.id]
+        raw = db.execute(
+            sa.select(EstimateRawData.raw_data).where(EstimateRawData.estimate_id == estimate.id)
+        ).scalar_one()
+        lots = db.execute(
+            sa.select(Lot.lot_key, Lot.lot_title, Proposal.id)
+            .join(Proposal, Proposal.lot_id == Lot.id)
+            .where(Lot.estimate_id == estimate.id)
+            .order_by(Proposal.id)
+        ).all()
+        for lot_key, lot_title, proposal_id in lots:
+            positions = extract_positions(extract_single_proposal((raw.get(JSON_KEY_LOTS) or {}).get(lot_key)))
+            _rows, ids_by_key = _rows_of(db, proposal_id)
+            resolution = resolver.resolve_proposal(positions, _overrides_of(db, ids_by_key))
+            extras = db.execute(
+                sa.select(EstimateAdditionalWork).where(EstimateAdditionalWork.proposal_id == proposal_id)
+                .order_by(EstimateAdditionalWork.ordinal)
+            ).scalars().all()
+            if resolution.structure_disabled:
+                out.append({
+                    "code": DIAG_STRUCTURE_DISABLED, "contractor_title": title, "title": lot_title,
+                    "rows": sum(1 for r in resolution.rows.values() if r.kind is not RowKind.CHAPTER),
+                })
+                # Структура погашена: разнос раздела здесь невозможен в принципе
+                # (нет ни одного раздела, годного для решения), поэтому причина
+                # `resolve_ref` не сравнивается вовсе — сравнение «кандидат без
+                # статьи» имело бы смысл только там, где разнос МОГ БЫ закрыть
+                # ссылку впоследствии. Каждая непривязанная допработа — граница.
+                for extra in extras:
+                    if extra.work_category_id is None:
+                        out.append({
+                            "code": DIAG_UNRESOLVED_REF, "contractor_title": title,
+                            "title": extra.title, "rows": 1,
+                        })
+                continue
+            if resolution.counters.rows_outside_structure:
+                out.append({
+                    "code": DIAG_OUTSIDE_STRUCTURE, "contractor_title": title, "title": lot_title,
+                    "rows": resolution.counters.rows_outside_structure,
+                })
+            by_number = categories_by_chapter_number(positions, resolution)
+            for extra in extras:
+                category_id, reason = resolve_ref(extra.chapter_ref_raw, by_number)
+                if category_id is None and reason != REASON_CANDIDATE_WITHOUT_ARTICLE:
+                    out.append({
+                        "code": DIAG_UNRESOLVED_REF, "contractor_title": title,
+                        "title": extra.title, "rows": 1,
+                    })
+    return out

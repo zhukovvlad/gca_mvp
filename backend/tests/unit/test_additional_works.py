@@ -23,6 +23,9 @@ from parser.constants import (
 )
 from services.additional_works import (
     LINE_RE,
+    REASON_AMBIGUOUS,
+    REASON_CANDIDATE_WITHOUT_ARTICLE,
+    REASON_NO_CANDIDATES,
     SVEDENIYA_KEY,
     build_rows,
     categories_by_chapter_number,
@@ -629,6 +632,16 @@ class TestBuildRowsMatrix:
         assert len(result.warnings) == 1
         assert "без ссылки" in result.warnings[0]
         assert "Прочие работы без номера раздела" in result.warnings[0]
+
+
+def test_resolve_ref_reasons_are_the_named_constants():
+    """Три причины отказа `resolve_ref` названы константами (спека этапного
+    разноса §2.5): `crud/round_unallocated.py` обязан сравнивать с именем, а
+    не ретипировать строку. Поведение не меняется — тексты те же, что были
+    литералами (проверено чтением `resolve_ref`)."""
+    assert resolve_ref("9", {}) == (None, REASON_NO_CANDIDATES)
+    assert resolve_ref("9", {"9": {None, 7}}) == (None, REASON_CANDIDATE_WITHOUT_ARTICLE)
+    assert resolve_ref("9", {"9": {7, 8}}) == (None, REASON_AMBIGUOUS)
 
 
 class TestDecideOwner:
