@@ -64,7 +64,7 @@ class ApplyResult:
     chapters_manual: int
 
 
-def _lock_estimate(db: Session, estimate_id: int) -> Estimate:
+def lock_estimate(db: Session, estimate_id: int) -> Estimate:
     """Блокировка строки сметы на весь пересчёт (спека §2.5).
 
     Держит два случая, оба достижимы при одном worker'е (импорт живёт в
@@ -142,7 +142,7 @@ def set_override(
     построению» верно для строки-результата, но не для того, кто и когда её
     поставил, — а в паспорте для банка автор решения и есть содержательная часть.
     """
-    _lock_estimate(db, estimate_id)
+    lock_estimate(db, estimate_id)
     _require_chapter_of(db, estimate_id, position_item_id)
     # Существование статьи проверяется ЗДЕСЬ, а не оставляется на FK: нарушение
     # FK вылетел бы из `flush` как `IntegrityError` и превратилось бы в `500`,
@@ -178,7 +178,7 @@ def clear_override(db: Session, *, estimate_id: int, position_item_id: int) -> A
     решения никогда не было, а другие решения этой сметы всё равно могли
     измениться с прошлого пересчёта.
     """
-    _lock_estimate(db, estimate_id)
+    lock_estimate(db, estimate_id)
     _require_chapter_of(db, estimate_id, position_item_id)
 
     existing = db.get(EstimateCategoryOverride, position_item_id)
@@ -197,9 +197,14 @@ def apply_overrides(db: Session, estimate_id: int, *, already_locked: bool = Fal
     снятие решения обязано вернуть раздел (и, если он был кандидатом, строку
     допработ) к тому, что дал бы пересчёт без решений вовсе — то есть записать
     `NULL`, а не оставить прежнее значение молча висеть.
+
+    Второй потребитель — `services/round_category_override.py`: раундовая
+    запись пишет решения сама и зовёт этот пересчёт по каждой offer-смете под
+    уже взятыми блокировками (`already_locked=True`) — закон материализации
+    один на оба маршрута (спека этапного разноса §2.4 п.4).
     """
     if not already_locked:
-        _lock_estimate(db, estimate_id)
+        lock_estimate(db, estimate_id)
 
     raw = db.execute(
         sa.select(EstimateRawData.raw_data).where(EstimateRawData.estimate_id == estimate_id)
