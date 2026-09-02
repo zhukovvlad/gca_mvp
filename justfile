@@ -203,7 +203,16 @@ ci-frontend: lint-frontend typecheck-frontend test-frontend
 #
 # Все проверки: бэкенд- и фронт-цепочки параллельно. Обязателен перед пушем.
 ci: ci-lock-backend
-    @( set -o pipefail; just ci-backend 2>&1 | sed -u 's/^/[be] /' ) & pid_be=$!;      ( set -o pipefail; just ci-frontend 2>&1 | sed -u 's/^/[fe] /' ) & pid_fe=$!;      rc_be=0; rc_fe=0;      wait $pid_be || rc_be=$?;      wait $pid_fe || rc_fe=$?;      echo;      if [ $rc_be -eq 0 ]; then echo "backend:  OK"; else echo "backend:  ПАДЕНИЕ (код $rc_be)"; fi;      if [ $rc_fe -eq 0 ]; then echo "frontend: OK"; else echo "frontend: ПАДЕНИЕ (код $rc_fe)"; fi;      if [ $rc_be -ne 0 ] || [ $rc_fe -ne 0 ]; then exit 1; fi;      echo "OK: все проверки прошли"
+    @( set -o pipefail; just ci-backend 2>&1 | sed -u 's/^/[be] /' ) & pid_be=$!;\
+     ( set -o pipefail; just ci-frontend 2>&1 | sed -u 's/^/[fe] /' ) & pid_fe=$!;\
+     rc_be=0; rc_fe=0;\
+     wait $pid_be || rc_be=$?;\
+     wait $pid_fe || rc_fe=$?;\
+     echo;\
+     if [ $rc_be -eq 0 ]; then echo "backend:  OK"; else echo "backend:  ПАДЕНИЕ (код $rc_be)"; fi;\
+     if [ $rc_fe -eq 0 ]; then echo "frontend: OK"; else echo "frontend: ПАДЕНИЕ (код $rc_fe)"; fi;\
+     if [ $rc_be -ne 0 ] || [ $rc_fe -ne 0 ]; then exit 1; fi;\
+     echo "OK: все проверки прошли"
 
 # === Coverage ===
 
