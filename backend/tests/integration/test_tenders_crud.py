@@ -153,6 +153,18 @@ class TestTenderCard:
         r2 = next(r for r in card["rounds"] if r["stage_no"] == 2)
         assert r2["baseline_estimate_id"] is None
 
+    def test_round_keys_are_the_old_ones_plus_the_counter(self, db_session, rectangular_grid):
+        card = crud_tenders.get_tender_card(db_session, rectangular_grid.tender.id)
+        assert set(card["rounds"][0]) == {"id", "stage_no", "label", "held_on", "latest_job", "current_job_id",
+                                          "baseline_estimate_id", "baseline_total_including_vat",
+                                          "unallocated_pending_sections"}
+        # У раунда ЕСТЬ offer-сметы (§2.6 требует `None` только при их
+        # отсутствии) — ведомость `P_A`/`P_B` плоская, без единого раздела,
+        # поэтому у обоих раундов решётки счётчик обязан быть настоящим НУЛЕМ,
+        # а не `None`: реализация, схлопывающая ноль в `None`, красила бы
+        # только предыдущий тест (`is None` у раунда БЕЗ offer-смет вовсе).
+        assert [r["unallocated_pending_sections"] for r in card["rounds"]] == [0, 0]
+
 
 class TestCurrentRoundJob:
     def test_done_job_with_full_set_is_current(self, db_session, full_grid):

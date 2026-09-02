@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Этапный разнос «Нераспределённого»: макет гейта 1</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1320px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar .sp { flex:1; }
+.mockbar button { font:inherit; font-size:12px; border:1px solid var(--bd); background:var(--surface);
+  color:var(--fg); border-radius:7px; padding:3px 9px; cursor:pointer; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:76ch; }
+.sub b { color:var(--fg); }
+section { margin-bottom:42px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:82ch; }
+.secsub b { color:var(--fg); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+.note { margin-top:12px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); max-width:88ch; }
+.note b { color:var(--fg); }
+.num { font-variant-numeric:tabular-nums; }
+
+/* ------- решётка карточки ------- */
+.card { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px; overflow-x:auto; }
+table.grid { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.grid th, table.grid td { border-bottom:1px solid var(--bd-subtle); padding:9px 13px;
+  text-align:left; vertical-align:top; }
+table.grid thead th { background:var(--sechead); font-weight:600; font-size:10.5px;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); vertical-align:top; }
+table.grid td.c { text-align:right; white-space:nowrap; }
+.pname { font-weight:600; }
+.pinn { font-size:11.5px; color:var(--fg3); }
+.tile { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--bd);
+  background:var(--surface); border-radius:8px; padding:5px 11px; font-variant-numeric:tabular-nums;
+  font-size:13px; cursor:pointer; }
+.tile.sel { border-color:var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.tile .chk { font-size:11px; }
+.rhead { display:flex; flex-direction:column; gap:5px; align-items:flex-start; }
+.rname { border:none; background:none; font:inherit; font-size:11px; font-weight:600;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--fg2); cursor:pointer;
+  padding:2px 6px; border-radius:6px; }
+.rname.sel { background:var(--accent-soft); color:var(--accent-text); }
+.rzn { display:inline-flex; align-items:center; gap:5px; font-size:11px; border-radius:7px;
+  padding:2px 8px; cursor:pointer; border:1px solid transparent; background:none; font:inherit;
+  letter-spacing:0; text-transform:none; font-weight:400; }
+.rzn.warn { color:var(--warn-text); background:var(--warn-soft); border-color:var(--warn-bd); }
+.rzn.quiet { color:var(--fg3); }
+.rzn.quiet:hover, .rzn.warn:hover { text-decoration:underline; }
+.dash { color:var(--fg4); }
+.pill { display:inline-block; font-size:11px; border-radius:999px; padding:2px 9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+
+/* ------- Sheet ------- */
+.sheetdemo { display:flex; gap:0; border:1px solid var(--bd-subtle); border-radius:12px; overflow:hidden; }
+.dim { flex:1; min-width:180px; background:color-mix(in srgb, var(--fg) 7%, var(--page));
+  display:flex; align-items:center; justify-content:center; color:var(--fg3); font-size:12px; }
+.sheet { width:620px; max-width:100%; background:var(--surface); border-left:1px solid var(--bd);
+  box-shadow:-12px 0 32px rgba(0,0,0,.08); }
+.sheet-h { padding:16px 20px 13px; border-bottom:1px solid var(--bd-subtle); }
+.sheet-h h3 { font-family:var(--font-serif); font-weight:600; font-size:24px; margin:0; }
+.sheet-h .meta { color:var(--fg2); font-size:12.5px; margin-top:2px; max-width:60ch; }
+.sheet-h .x { float:right; border:none; background:none; color:var(--fg3); font-size:16px; cursor:pointer; }
+.blockh { padding:13px 20px 9px; border-bottom:1px solid var(--bd-subtle); }
+.blockh h4 { margin:0; font-size:13.5px; font-weight:600; }
+.blockh p { margin:1px 0 0; font-size:11px; color:var(--fg3); }
+.sec-rows { padding:4px 8px 8px; }
+.srow { display:grid; grid-template-columns:1fr auto auto; gap:4px 12px; align-items:start;
+  padding:8px 6px; border-bottom:1px solid var(--bd-subtle); }
+.srow .ttl { min-width:0; }
+.srow .no { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; color:var(--fg3); margin-right:6px; }
+.srow .raw { font-size:11px; color:var(--fg3); margin-top:1px; }
+.srow .cnt { text-align:right; font-size:11.5px; color:var(--fg3); white-space:nowrap; padding-top:3px; }
+.btn { font:inherit; font-size:12px; border:1px solid var(--bd); background:var(--surface);
+  color:var(--fg); border-radius:7px; padding:4px 11px; cursor:pointer; white-space:nowrap; }
+.btn:hover { background:var(--hover); }
+.btn.ghost { border-color:transparent; color:var(--fg3); }
+.btn.ghost:hover { color:var(--warn-text); background:var(--warn-soft); }
+.d1 { padding-left:26px; } .d2 { padding-left:46px; }
+.mrow { display:grid; grid-template-columns:1fr auto; gap:4px 12px; align-items:start;
+  padding:8px 6px; border-bottom:1px solid var(--bd-subtle); }
+.cat { display:inline-block; font-size:11px; border-radius:6px; padding:1px 7px; margin-top:2px;
+  background:var(--accent-soft); border:1px solid var(--accent-bd); color:var(--accent-text); }
+.who { font-size:11px; color:var(--fg3); margin-top:2px; }
+.diag { padding:8px 6px; border-bottom:1px solid var(--bd-subtle); font-size:12.5px; }
+.diag .who2 { font-weight:600; }
+.diag .why { font-size:11px; color:var(--fg3); margin-top:1px; }
+.states { display:flex; flex-wrap:wrap; gap:14px; }
+.state { width:300px; background:var(--surface); border:1px solid var(--bd-subtle);
+  border-radius:12px; padding:14px 16px; }
+.state h5 { margin:0 0 8px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+.skel { height:12px; border-radius:6px; background:var(--sunken); margin:8px 0; }
+.skel.w60 { width:60%; } .skel.w80 { width:80%; }
+.errbox { padding:10px 12px; border-radius:8px; background:var(--warn-soft);
+  border:1px solid var(--warn-bd); color:var(--warn-text); font-size:12.5px; }
+
+/* ------- свод ------- */
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px; background:var(--surface); }
+table.sum { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.sum th, table.sum td { border-bottom:1px solid var(--bd-subtle); padding:6px 12px; vertical-align:baseline; }
+table.sum thead th { background:var(--sechead); font-weight:600; font-size:10.5px;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); text-align:right; }
+table.sum thead th:first-child { text-align:left; }
+table.sum td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.sum td.t { min-width:230px; }
+a.go { color:var(--warn-text); font-size:11.5px; text-decoration:none; white-space:nowrap; }
+a.go:hover { text-decoration:underline; }
+tr.mute td { color:var(--fg2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="mockbar">
+  <strong>Макет гейта 1 (ревизия 2)</strong> · этапный разнос «Нераспределённого» ·
+  закрывает долг №22 · данные — тендер 449-ТУ стенда, суммы иллюстративные
+  <span class="sp"></span>
+  <button id="theme" type="button">Тема</button>
+</div>
+
+<h1>Этапный разнос «Нераспределённого»</h1>
+<p class="sub">
+  Все сметы раунда рождаются из одного файла «Сводная таблица предложений» —
+  ведомость работ и клетки «Статья СМР» у них <b>одинаковы по построению</b>;
+  различаются подрядные значения (цены, количества, отклонения), структурные
+  поля и логические ключи общие. Поэтому разнос — <b>решение этапа</b>,
+  а не отдельного КП: одно действие применяется ко всем сметам раунда разом.
+  Денег в верстаке нет: разнос — настройка классификации ведомости; масштаб в
+  деньгах виден в строке «Нераспределённое» свода, откуда сюда и приходят.
+</p>
+
+<!-- ================= 1. Решётка карточки ================= -->
+<section>
+  <h2>1. Карточка тендера — триггер на заголовке этапа</h2>
+  <p class="secsub">
+    Плитки-суммы в ячейках — прежний <code>Toggle</code> выбора в свод, они не меняются.
+    Триггер разноса живёт в <b>заголовке этапа</b>: при наличии разделов без статьи —
+    тёплый бейдж со счётчиком, при нуле — тихое «разнести» (снять ошибочное ручное
+    решение можно и при нуле). У этапа без текущего набора смет триггера нет.
+  </p>
+
+  <div class="card">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Участник</th>
+          <th style="text-align:right">
+            <div class="rhead" style="align-items:flex-end">
+              <button class="rname" type="button">Этап 2</button>
+              <button class="rzn quiet" type="button">разнести</button>
+            </div>
+          </th>
+          <th style="text-align:right">
+            <div class="rhead" style="align-items:flex-end">
+              <button class="rname sel" type="button">Этап 3</button>
+              <button class="rzn warn" type="button">⚠ 24 раздела требуют решения — разнести</button>
+            </div>
+          </th>
+          <th style="text-align:right">
+            <div class="rhead" style="align-items:flex-end">
+              <button class="rname" type="button">Этап 4 · финал</button>
+              <button class="rzn warn" type="button">⚠ 24 раздела требуют решения — разнести</button>
+            </div>
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><div class="pname">АО «ГЭС КОНСТРАКШН»</div><div class="pinn">7701234567</div></td>
+          <td class="c"><span class="tile num">16 922 719 287,41</span></td>
+          <td class="c"><span class="tile sel num"><span class="chk">✓</span> 18 234 859 654,99</span></td>
+          <td class="c"><span class="tile sel num"><span class="chk">✓</span> 15 854 419 101,35</span></td>
+        </tr>
+        <tr>
+          <td><div class="pname">ООО «АНТТЕК»</div><div class="pinn">5009876543</div></td>
+          <td class="c"><span class="tile num">16 450 000 000,00</span></td>
+          <td class="c"><span class="tile num">15 633 000 000,00</span></td>
+          <td class="c"><span class="tile num">14 011 951 126,95</span></td>
+        </tr>
+        <tr>
+          <td><div class="pname">ООО «ЭРБЕК»</div><div class="pinn">7719453201</div></td>
+          <td class="c"><span class="tile num">17 959 445 428,57</span></td>
+          <td class="c"><span class="tile num">18 485 805 275,65</span></td>
+          <td class="c"><span class="dash" title="Не участвовал">—</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">
+    <b>Контракт URL:</b> открытие пишет <code>?unallocated=&lt;round_id&gt;</code>,
+    остальные параметры сохраняются; закрытие удаляет только <code>unallocated</code>.
+    Параметр принимается, лишь когда раунд принадлежит текущей карточке и у него есть
+    offer-сметы; чужой или устаревший id не запускает запрос вовсе. Радиус фичи —
+    все существующие <b>offer-сметы</b> раунда (baseline исключён); доступность НЕ
+    привязана к <code>current_round_job</code> — после удаления участника job
+    перестаёт быть текущим, но оставшиеся сметы существуют и участвуют в своде.
+    Счётчик — новое поле раунда в ответе карточки, тем же этапным агрегатором, что
+    GET, по уникальным <code>(lot_key, position_key_in_proposal)</code>; «требуют
+    решения» = <b>без решения + частичные + конфликтные</b> (частичный override
+    возможен и у раздела, которому файл уже назначил статью).
+  </p>
+</section>
+
+<!-- ================= 2. Sheet ================= -->
+<section>
+  <h2>2. Этапный Sheet-верстак разноса</h2>
+  <p class="secsub">
+    Правая выезжающая панель (shadcn <code>Sheet</code>). Ядро то же, что в панели
+    паспорта (дерево разделов, ручные решения, <code>Command</code>-выбор статьи),
+    но правая колонка — <b>счётчик позиций, не деньги</b>, и сортировка — файловый
+    порядок. В Popover выбора статьи — необязательное поле «Заметка»:
+    предзаполняется существующей, при различающихся показывает их и требует
+    явного выбора; тело PUT несёт заметку всегда (пустая — явный <code>null</code>),
+    молчаливого затирания нет. Решение по разделу применяется ко всем сметам
+    раунда в одной транзакции: либо везде, либо нигде.
+  </p>
+
+  <div class="sheetdemo">
+    <div class="dim">карточка тендера под затемнением</div>
+    <div class="sheet">
+      <div class="sheet-h">
+        <button class="x" type="button" aria-label="Закрыть">✕</button>
+        <h3>Разнос статей — Этап 3</h3>
+        <div class="meta">Ведомость одна на этап: решение по разделу применяется
+          ко всем сметам раунда (4 участника).</div>
+      </div>
+
+      <div class="blockh">
+        <h4>Требуют решения — 24</h4>
+        <p>Файловый порядок ведомости; счётчик «N позиций» — сколько строк
+          сдвинет решение на этом разделе: строки под вложенными разделами, у
+          которых своя статья в файле, оно не двигает, а разделы, где двигать
+          нечего, здесь не показываются вовсе. Здесь три из
+          четырёх состояний логического раздела: без решения · частичное
+          («разнесено не во всех сметах») · конфликт («решения в сметах
+          различаются» — по полному вектору: статьи, заметки или аудит).
+          Четвёртое, единое решение, — в блоке ниже.</p>
+      </div>
+      <div class="sec-rows">
+        <div class="srow">
+          <div class="ttl"><span class="no">14</span>SHELL &amp; CORE
+            <div class="raw">в файле стояло: «—»</div>
+          </div>
+          <div class="cnt">37 позиций</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow d1">
+          <div class="ttl"><span class="no">14.1.1.1</span>Маячковый ряд</div>
+          <div class="cnt">2 позиции</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow d1">
+          <div class="ttl"><span class="no">14.1.1.2</span>Транзитные шахты</div>
+          <div class="cnt">1 позиция</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow d1">
+          <div class="ttl"><span class="no">14.3.3</span>Водоснабжение (ГВС/ХВС), Канализация</div>
+          <div class="cnt">5 позиций</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow d1">
+          <div class="ttl"><span class="no">14.5</span>УБОРКА И ФИНИШНЫЙ КЛИНИНГ</div>
+          <div class="cnt">2 позиции</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow">
+          <div class="ttl"><span class="no">15</span>Рабочая документация</div>
+          <div class="cnt">1 позиция</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow">
+          <div class="ttl"><span class="no">12</span>Лифтовое оборудование
+            <div class="raw" style="color:var(--warn-text)">разнесено не во всех сметах: 3 из 4</div>
+          </div>
+          <div class="cnt">6 позиций</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow">
+          <div class="ttl"><span class="no">11</span>Слаботочные системы
+            <div class="raw" style="color:var(--warn-text)">решения в сметах различаются: статьи «10 · Слаботочка» против «11 · ИТП» — нераспределённых строк нет, но этап несогласован</div>
+          </div>
+          <div class="cnt">4 позиции</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+        <div class="srow">
+          <div class="ttl"><span class="no">16</span>Пусконаладочные работы
+            <div class="raw" style="color:var(--warn-text)">решения в сметах различаются: статья едина, различается аудит (авторы/даты) — повторное решение выравнивает</div>
+          </div>
+          <div class="cnt">3 позиции</div>
+          <button class="btn" type="button">Статья… ▾</button>
+        </div>
+      </div>
+
+      <div class="blockh" style="border-top:1px solid var(--bd-subtle)">
+        <h4>Разнесено вручную</h4>
+        <p>Только разделы с ЕДИНЫМ решением во всех offer-сметах раунда (единая статья,
+          заметка и аудит); частичные и конфликтные — выше, в «Требуют решения».
+          «Снять» убирает решение во всех сметах раунда.</p>
+      </div>
+      <div class="sec-rows">
+        <div class="mrow">
+          <div class="ttl"><span class="no">13</span>Благоустройство территории
+            <div><span class="cat">18 · Благоустройство</span></div>
+            <div class="who">analyst@mr-group.kz · 29.08.2026 · «код в файле нечитаем»</div>
+          </div>
+          <button class="btn ghost" type="button">снять</button>
+        </div>
+      </div>
+
+      <div class="blockh" style="border-top:1px solid var(--bd-subtle)">
+        <h4>Не закрывается разносом — 2 строки</h4>
+        <p>Три причины с кодами (границы §5.5 спеки разноса): позиция вне структуры
+          файла · <code>structure_disabled</code> · допработа с неразрешимой ссылкой.
+          Показаны присутствующие в данных; это диагностика, не действие. Ведро
+          <code>unallocated.extras</code> паспорта сюда не годится — оно шире границы
+          и содержит допработы, которые разнос раздела закроет.</p>
+      </div>
+      <div class="sec-rows">
+        <div class="diag">
+          <span class="who2">ООО «АНТТЕК»</span> · «c +6,650м до +16,500м»
+          <div class="why">допработа с неразрешимой ссылкой — статью не от кого наследовать</div>
+        </div>
+        <div class="diag">
+          <span class="who2">ООО «ЕНИГЮН КОНСТРАКШН»</span> · «Дополнительные работы»
+          <div class="why">допработа с неразрешимой ссылкой — статью не от кого наследовать</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>Входное множество агрегатора:</b> логические разделы, у которых хотя бы в
+    одной offer-смете эффективная статья отсутствует <b>или</b> существует хотя бы
+    один override, — раздел, корректно классифицированный файлом и не тронутый
+    рукой, в панель не попадает вовсе (иначе она включила бы весь справочник
+    ведомости). <b>Смешанные состояния — честно, а не молча:</b> по-сметный маршрут
+    разноса остаётся открытым (им пользуется паспорт), поэтому состояние
+    логического раздела внутри этого множества агрегируется по ПОЛНОМУ вектору
+    решения (статья, заметка, автор, дата) — разбиение исчерпывающее:
+    <b>без решения</b> (override нет ни в одной смете) ·
+    <b>частичное</b> (override есть не во всех) ·
+    <b>конфликт</b> (override есть во всех, но полные векторы различаются —
+    статьи, заметки ИЛИ аудит; без сравнения по полному вектору раздел с единой
+    статьёй и разошедшимся аудитом исчез бы из обоих блоков) ·
+    <b>единое ручное решение</b> (один полный вектор во всех — только такие
+    попадают в «Разнесено вручную»). Повторное решение выравнивает этап.
+    <b>Предикат no-op раундовой записи:</b> все текущие векторы одинаковы между
+    собой И их статья/заметка совпадают с телом PUT — иначе выбор новой статьи
+    при согласованном старом решении ошибочно счёлся бы no-op. Во всех остальных
+    случаях запись атомарно ставит единое решение И единый аудит во все
+    offer-сметы; простой фан-аут <code>set_override</code> не годится: при
+    совпадении содержимого он сохраняет старых автора и дату, и аудит раунда
+    остался бы разнородным.
+  </p>
+</section>
+
+<!-- ================= 2а. Состояния Sheet ================= -->
+<section>
+  <h2>2а. Служебные состояния Sheet</h2>
+  <p class="secsub">Свои loading / error / 404 — Sheet не наследует состояний карточки.
+    Ленивый <code>GET</code> уходит только при первом открытии.</p>
+  <div class="states">
+    <div class="state">
+      <h5>Загрузка</h5>
+      <div class="skel w80"></div>
+      <div class="skel"></div>
+      <div class="skel w60"></div>
+    </div>
+    <div class="state">
+      <h5>Ошибка</h5>
+      <div class="errbox">Не удалось загрузить нераспределённое.
+        <div style="margin-top:8px"><button class="btn" type="button">Повторить</button></div>
+      </div>
+    </div>
+    <div class="state">
+      <h5>404 — раунд недоступен</h5>
+      <div class="errbox">Раунд или его сметы больше недоступны.
+        <div style="margin-top:8px"><button class="btn" type="button">Обновить карточку</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. Свод ================= -->
+<section>
+  <h2>3. Свод по этапам — переход со строки «Нераспределённое»</h2>
+  <p class="secsub">
+    Ячейка строки получает действие «разнести →» — переход на карточку с
+    <code>?unallocated=&lt;round_id&gt;</code> по <code>columns[i].round_id</code>.
+    Ссылка есть, когда в колонке есть нераспределённые строки, — в том числе у
+    колонки с неизвестной базой НДС, где сумма скрыта: строки есть, и разнести их можно.
+  </p>
+
+  <div class="scroller">
+    <table class="sum">
+      <thead>
+        <tr>
+          <th>Статья</th>
+          <th>Этап 2</th>
+          <th>Этап 3</th>
+          <th>Этап 4 · финал</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="mute">
+          <td class="t">…статьи классификатора…</td>
+          <td class="n">…</td><td class="n">…</td><td class="n">…</td>
+        </tr>
+        <tr>
+          <td class="t" style="color:var(--fg2)">Нераспределённое</td>
+          <td class="n">0,00</td>
+          <td class="n">480 319 725,32<br><a class="go" href="#">разнести →</a></td>
+          <td class="n">436 837 492,50<br><a class="go" href="#">разнести →</a></td>
+        </tr>
+        <tr style="font-weight:600">
+          <td class="t">Итого</td>
+          <td class="n">16 922 719 287,41</td>
+          <td class="n">18 234 859 654,99</td>
+          <td class="n">15 854 419 101,35</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">
+    <b>После разноса и возврата</b> свод перечитан (мутация инвалидирует карточку
+    тендера, оба префикса свода и запрос нераспределённого раунда), строка
+    уменьшилась, у колонок этапа появилась подпись ручного разноса
+    (<code>manual_overrides</code>) — тот самый пункт, снятый из DoD свода 28.08 и
+    возвращаемый этой фичей. Остаток строки после полного разноса разделов
+    объясняется блоком диагностики Sheet — тремя причинами с кодами, поимённо;
+    на данных 449-ТУ присутствует одна (допработы с неразрешимой ссылкой), но
+    глобально их три.
+  </p>
+</section>
+
+</div>
+<script>
+var tb = document.getElementById('theme');
+tb.addEventListener('click', function(){
+  var r = document.documentElement;
+  var dark = r.getAttribute('data-theme') === 'dark' || (!r.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme', dark ? 'light' : 'dark');
+});
+</script>
+</body>
+</html>

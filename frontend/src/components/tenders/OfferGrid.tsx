@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, Trash2 } from "lucide-react";
 
 import { ParticipantDeleteDialog } from "@/components/tenders/ParticipantDeleteDialog";
+import { triggerLabel } from "@/components/unallocated/roundUnallocatedCopy";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,8 @@ interface OfferGridProps {
   onToggleOffer: (offerId: number) => void;
   /** Клик по имени участника — переключить разом все его сметы. */
   onSelectParticipant: (packageId: number) => void;
+  /** Клик по триггеру разноса в заголовке этапа (спека этапного разноса §2.7). */
+  onOpenUnallocated: (roundId: number) => void;
 }
 
 /**
@@ -50,6 +53,7 @@ export function OfferGrid({
   selectedOfferIds,
   onToggleOffer,
   onSelectParticipant,
+  onOpenUnallocated,
 }: OfferGridProps) {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
@@ -71,19 +75,37 @@ export function OfferGrid({
               <TableHead>Участник</TableHead>
               {card.rounds.map((round) => (
                 <TableHead key={round.id}>
-                  <button
-                    type="button"
-                    onClick={() => onSelectRound(round.id)}
-                    className={cn(
-                      "rounded-md px-2 py-1 text-left text-xs font-medium transition-colors",
-                      round.id === selectedRoundId
-                        ? "bg-accent-soft text-accent-text"
-                        : "text-fg-secondary hover:bg-surface-hover"
+                  {/* Триггер разноса (§2.7) — ОТДЕЛЬНЫЙ элемент под кнопкой этапа,
+                      ячейки-`Toggle` решётки он не трогает. */}
+                  <div className="flex flex-col items-start gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onSelectRound(round.id)}
+                      className={cn(
+                        "rounded-md px-2 py-1 text-left text-xs font-medium transition-colors",
+                        round.id === selectedRoundId
+                          ? "bg-accent-soft text-accent-text"
+                          : "text-fg-secondary hover:bg-surface-hover"
+                      )}
+                    >
+                      Этап {round.stage_no}
+                      {round.label ? ` · ${round.label}` : ""}
+                    </button>
+                    {round.unallocated_pending_sections !== null && (
+                      <button
+                        type="button"
+                        data-testid={`unallocated-trigger-${round.id}`}
+                        onClick={() => onOpenUnallocated(round.id)}
+                        className={cn(
+                          round.unallocated_pending_sections > 0
+                            ? "rounded-md border border-warning-border bg-warning-soft px-2 py-0.5 text-2xs text-warning-text hover:underline"
+                            : "text-2xs text-fg-tertiary hover:underline"
+                        )}
+                      >
+                        {triggerLabel(round.unallocated_pending_sections)}
+                      </button>
                     )}
-                  >
-                    Этап {round.stage_no}
-                    {round.label ? ` · ${round.label}` : ""}
-                  </button>
+                  </div>
                 </TableHead>
               ))}
               {isAdmin && <TableHead className="w-10" />}

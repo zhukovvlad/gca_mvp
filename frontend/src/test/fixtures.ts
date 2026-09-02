@@ -23,6 +23,7 @@ import type {
   MatrixRow,
   ProjectPassport,
   ReviewQueueItem,
+  RoundUnallocated,
   StagePositions,
   StagePositionsRow,
   StageSummary,
@@ -1778,9 +1779,9 @@ export const sampleTenderCard: TenderCard = {
   rounds: [
     { id: 3001, stage_no: 1, label: "Первичные предложения", held_on: "2026-06-01",
       latest_job: { id: 9101, status: "done", filename: "r1.xlsx", finished_at: "2026-06-02T10:00:00Z", created_at: "2026-06-02T09:00:00Z" },
-      current_job_id: 9101, baseline_estimate_id: 8100, baseline_total_including_vat: "1150.00" },
+      current_job_id: 9101, baseline_estimate_id: 8100, baseline_total_including_vat: "1150.00", unallocated_pending_sections: 24 },
     { id: 3002, stage_no: 2, label: null, held_on: null,
-      latest_job: null, current_job_id: null, baseline_estimate_id: null, baseline_total_including_vat: null },
+      latest_job: null, current_job_id: null, baseline_estimate_id: null, baseline_total_including_vat: null, unallocated_pending_sections: null },
   ],
   participants: [
     { package_id: 501, contractor_id: 20, title: "ООО Альфа", inn: "7700000001" },
@@ -2017,13 +2018,42 @@ const stageSummaryUnallocated: StageSummaryRow = {
   has_drilldown_rows: false,
   /** Всегда 0 — та же причина, что у `has_drilldown_rows` (`crud/stage_summary.py`). */
   drilldown_group_count: 0,
+  // Счётчики строк (задача 13 плана этапного разноса, спека §2.8) — НЕ все
+  // единицы по умолчанию: ячейке нужны и положительный, и нулевой
+  // `row_count`, иначе тест StageSummaryTable про «разнести →» проверял бы
+  // условие `row_count > 0` на фикстуре, где оно истинно всегда (или всегда
+  // ложно) — совпадение, а не разбор случаев. Колонка 0 (round_id 3001) и
+  // колонка 1 (round_id 3002, она же «неизвестная база НДС» у
+  // `stageSummaryWithUnknownSecondColumn`) несут строки-разделы без статьи —
+  // ссылка обязана появиться у обеих; колонка 2 (round_id 3004) уже разнесена
+  // раундом целиком — строк без статьи нет, ссылки не будет.
+  //
+  // Ревью задачи 13: `row_count = 0` у колонки 2 — не независимый выбор,
+  // а следствие равенства контракта (`backend/services/stage_summary.py`,
+  // `_gross_or_zero`: `CellInput.gross is None` ⟺ `row_count == 0`, и
+  // `cell_states` даёт `state = "absent"` ровно когда `gross is None`).
+  // Состояние «не оценивалась» с нулевым числом строк — форма, которую
+  // сервер произвести не может; колонка 2 несёт `state: "absent"`.
+  // Из этого следует и `contribution` строки ниже: она считается ТЕМИ ЖЕ
+  // концами, что и у обычной статьи (`_endpoints`/`contribution_between`),
+  // фиксирован у «Нераспределённого» только `bargain` — концевое состояние
+  // «absent» на последней колонке даёт `Contribution(null, null,
+  // "absent_endpoint")`, а не «0.00/flat» прежней (не-нулевой) фикстуры.
+  //
+  // `rows_with_amount` колонок 0 и 1 — РАВНО `row_count` (5 и 3), как было
+  // ДО этой правки (по умолчанию 1 = 1): падение до 0 включало бы значок
+  // неполноты «◐» и подсказку «учтено 0 из N строк» на КАЖДОМ полном рендере
+  // таблицы (и у «Нераспределённого», и — просуммированное с корневыми
+  // строками — у «Итого»), причём непроверенно и не по делу задачи: правка
+  // 13 должна вносить ровно один новый факт — нулевую колонку — а не менять
+  // читаемость двух положительных колонок заодно.
   cells: [
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column", 5, 5),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts", 3, 3),
+    stageSummaryCell("absent", null, null, "none", null, null, "no_amounts", 0, 0),
   ],
   bargain: { kind: "none", value: null, direction: null, reason: "unallocated" },
-  contribution: { value: "0.00", direction: "flat", reason: null },
+  contribution: { value: null, direction: null, reason: "absent_endpoint" },
   children: [],
 };
 
@@ -2528,4 +2558,32 @@ export const sampleStagePositions: StagePositions = {
     { stage_no: 2, article_amount: "95.00", shown_sum: "95.00", converged: true, reason: null },
   ],
   reason: null,
+};
+
+// Категории в conflict/manual ниже — реальные тройки id/code/title из
+// `sampleProjectPassport.category_options` (id 10/11/18 макета туда не входят:
+// сервер строит `conflict.categories` и поля ручной записи из того же
+// классификатора, что отдаётся клиенту как `category_options`, поэтому
+// фикстура с неразрешимыми id описывала бы невозможный ответ).
+export const sampleRoundUnallocated: RoundUnallocated = {
+  round: { id: 3001, stage_no: 1, label: "Первичные предложения", held_on: "2026-06-01" },
+  // Round 3001 в sampleTenderCard.cells несёт estimate_id только у package 501
+  // (package 502 — offer_id/estimate_id null) — то есть радиус разноса это
+  // одна offer-смета.
+  offers_count: 1,
+  sections: [
+    { lot_key: "lot_1", position_key_in_proposal: "3", parent_key: null, depth: 0, number: "14", title: "SHELL & CORE", smr_article_raw: "—", rows: 3, state: "unassigned" },
+    { lot_key: "lot_1", position_key_in_proposal: "4", parent_key: ["lot_1", "3"], depth: 1, number: "14.1", title: "Маячковый ряд", smr_article_raw: null, rows: 2, state: "unassigned" },
+    { lot_key: "lot_1", position_key_in_proposal: "20", parent_key: null, depth: 0, number: "12", title: "Лифтовое оборудование", smr_article_raw: null, rows: 6, state: "partial", partial: { assigned: 1, total: 2, notes: ["код в файле нечитаем"] } },
+    { lot_key: "lot_1", position_key_in_proposal: "30", parent_key: null, depth: 0, number: "11", title: "Слаботочные системы", smr_article_raw: null, rows: 4, state: "conflict", conflict: { categories: [{ id: 12, code: "08", title: "Слаботочные системы" }, { id: 11, code: "07", title: "Электромонтажные работы" }], notes: [null], audit_differs: false } },
+    { lot_key: "lot_1", position_key_in_proposal: "40", parent_key: null, depth: 0, number: "16", title: "Пусконаладочные работы", smr_article_raw: null, rows: 3, state: "conflict", conflict: { categories: [{ id: 13, code: "09", title: "Благоустройство" }], notes: [null], audit_differs: true } },
+  ],
+  manual: [
+    { lot_key: "lot_1", position_key_in_proposal: "50", number: "13", title: "Благоустройство территории", rows: 5, work_category_id: 13, category_code: "09", category_title: "Благоустройство", assigned_by_email: "analyst@mr-group.kz", assigned_at: "2026-08-29T10:00:00Z", note: "код в файле нечитаем" },
+  ],
+  diagnostics: [
+    { code: "unresolved_chapter_ref", contractor_title: "ООО «АНТТЕК»", title: "c +6,650м до +16,500м", rows: 1 },
+    { code: "unresolved_chapter_ref", contractor_title: "ООО «ЕНИГЮН КОНСТРАКШН»", title: "Дополнительные работы", rows: 1 },
+  ],
+  category_options: sampleProjectPassport.category_options,
 };

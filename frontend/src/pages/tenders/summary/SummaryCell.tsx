@@ -176,8 +176,15 @@ function incompletenessLabel(rows: StageSummaryCell["rows"]): string {
  * изменения) — им пользовалась строка «Итого». С ревизии §2.16 у итога СВОЙ
  * компонент {@link SummaryTotalCell}, и проп остался мёртвым вместе с абзацем
  * докстроки, который объяснял несуществующий механизм: снят 28.08.2026.
+ *
+ * Задача 13 плана этапного разноса (спека
+ * 2026-09-01-round-unallocated-design.md §2.8) возвращает `extra` — ТЕМ ЖЕ
+ * слотом, что уже несёт {@link SummaryTotalCell}: строка «Нераспределённое»
+ * кладёт туда ссылку «разнести →», когда у ячейки есть нераспределённые
+ * строки (`StageSummaryTable` решает условие показа, эта функция ничего о
+ * разносе не знает — только рисует переданный узел третьей строкой ячейки).
  */
-export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
+export function SummaryCell({ cell, extra }: { cell: StageSummaryCell; extra?: ReactNode }) {
   const { state, amount, amount_unavailable_reason, rows, change } = cell;
   const incomplete = rows.rows_with_amount < rows.row_count;
   const repeatsState = changeRepeatsState(state, change);
@@ -186,8 +193,16 @@ export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
   // прочерк, и выравнивать по верхней строке нечего.
   const showsNumber = state === "amount" && !amount_unavailable_reason;
   // Вторая ВИДИМАЯ строка: значок изменения (при `kind = 'none'` он в ячейке не
-  // рисует ничего, поэтому строкой не считается) либо подпись `extra`.
-  const hasSecondLine = !amount_unavailable_reason && !repeatsState && change.kind !== "none";
+  // рисует ничего, поэтому строкой не считается) либо подпись `extra`. Условие
+  // здесь ОБЯЗАНО быть тем же, каким ниже проверяется САМ рендер (`{extra &&
+  // …}`) — `Boolean(extra)`, а не `extra !== undefined`: render-prop, вызванный
+  // с условием (как `allocateLink` строки «Нераспределённое», задача 13
+  // этапного разноса), законно возвращает `null` — не только `undefined` —
+  // когда решает не рисовать ничего, и `null !== undefined` разошёлся бы с
+  // тем, что на самом деле легло в DOM (найдено внешним ревью: `hasSecondLine`
+  // резервировал вторую строку разметки на пустом слоте на каждом полном
+  // рендере таблицы, где `allocateLink` тестов отвечает `null`).
+  const hasSecondLine = (!amount_unavailable_reason && !repeatsState && change.kind !== "none") || Boolean(extra);
 
   /*
     Примитив `TableCell`, а не сырой `<td>`: у примитива `p-2`, и до этой правки
@@ -254,6 +269,7 @@ export function SummaryCell({ cell }: { cell: StageSummaryCell }) {
           <ChangeBadge change={change} />
         </div>
       )}
+      {extra && <div className="mt-0.5 text-2xs font-normal">{extra}</div>}
     </TableCell>
   );
 }

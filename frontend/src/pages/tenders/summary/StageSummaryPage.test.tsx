@@ -215,6 +215,38 @@ describe("Свод по этапам — страница (спека §2.2, §2
     renderSummary("/tenders/300/summary");
     expect(await screen.findByText(/Выберите предложения на решётке/)).toBeInTheDocument();
   });
+
+  /**
+   * «Разнести →» у строки «Нераспределённое» (спека
+   * 2026-09-01-round-unallocated-design.md §2.8, задача 13 плана): страница
+   * передаёт `StageSummaryTable` настоящий `Link` на карточку тендера с
+   * `?unallocated=<round_id>` — не `offer_id`/`estimate_id` (носитель разноса
+   * раунд, §2.1). Колонки 0 и 1 фикстуры (round_id 3001 и 3002) несут
+   * нераспределённые строки, колонка 2 (round_id 3004) — нет
+   * (`sampleStageSummary.unallocated.cells[].rows.row_count`, правка фикстуры
+   * задачи 13): ровно две ссылки, и обе названы явно, а не взята первая
+   * найденная. Ищутся `data-testid="allocate-<round_id>"` (несёт сам узел
+   * `StageSummaryPage.tsx`) — ревью нашло, что этот атрибут не проверялся
+   * нигде: без него тест не отличил бы «нужная ссылка своей колонки» от
+   * «любая ссылка с подходящим href», окажись их в разметке две с одинаковым
+   * текстом по ошибке индексации.
+   */
+  it("ссылка «разнести →» ведёт на карточку тендера с ?unallocated=<round_id> своей колонки", async () => {
+    renderSummary();
+    await screen.findByRole("table");
+    const first = screen.getByTestId(`allocate-${sampleStageSummary.columns[0].round_id}`);
+    const second = screen.getByTestId(`allocate-${sampleStageSummary.columns[1].round_id}`);
+    expect(first).toHaveAttribute("href", `/tenders/300?unallocated=${sampleStageSummary.columns[0].round_id}`);
+    expect(second).toHaveAttribute("href", `/tenders/300?unallocated=${sampleStageSummary.columns[1].round_id}`);
+    // Колонка 2 (round_id 3004) без нераспределённых строк не заводит своего testid.
+    expect(screen.queryByTestId(`allocate-${sampleStageSummary.columns[2].round_id}`)).toBeNull();
+
+    const links = screen.getAllByRole("link", { name: "разнести →" });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      `/tenders/300?unallocated=${sampleStageSummary.columns[0].round_id}`,
+      `/tenders/300?unallocated=${sampleStageSummary.columns[1].round_id}`,
+    ]);
+  });
 });
 
 /**

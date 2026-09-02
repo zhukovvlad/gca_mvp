@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 
 import { StatusPill } from "@/components/ui-domain/StatusPill";
@@ -403,10 +403,23 @@ export function StageSummaryTable({
   summary,
   tenderId,
   offerIds,
+  allocateLink,
 }: {
   summary: StageSummary;
   tenderId: number;
   offerIds: number[];
+  /**
+   * Ссылка «разнести →» строки «Нераспределённое» (спека
+   * 2026-09-01-round-unallocated-design.md §2.8, задача 13 плана) — по
+   * `round_id` КОЛОНКИ, не по `offer_id`/`estimate_id`: носитель разноса
+   * раунд (спека §2.1). ОБЯЗАТЕЛЬНЫЙ проп, а не опциональный — план прямо
+   * называет цену необязательности: кнопка нарисована и не подключена (тот
+   * же урок, что уже стоил фичи 4). Таблица решает только УСЛОВИЕ показа
+   * (`rows.row_count > 0`, задача 13), а не саму ссылку: тесты этого файла
+   * рендерят таблицу без роутера, и настоящий `Link` здесь упал бы —
+   * реальный узел строит вызывающий (`StageSummaryPage`).
+   */
+  allocateLink: (roundId: number) => ReactNode;
 }) {
   // Раскрытие статьи — по её id, а не по коду: коды статей ручного разноса
   // не гарантированно уникальны глобально, а id классификатора — да.
@@ -547,7 +560,11 @@ export function StageSummaryTable({
                 </div>
               </TableCell>
               {unallocated.cells.map((cell, index) => (
-                <SummaryCell key={index} cell={cell} />
+                <SummaryCell
+                  key={index}
+                  cell={cell}
+                  extra={cell.rows.row_count > 0 ? allocateLink(columns[index].round_id) : undefined}
+                />
               ))}
               {/*
                 «Торг» «Нераспределённого» — не процент (контракт §7 макета):

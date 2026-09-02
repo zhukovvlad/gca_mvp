@@ -243,6 +243,15 @@ def categories_by_chapter_number(
     return dict(by_number)
 
 
+#: Причины отказа `resolve_ref` (спека §2.5). Именованы отдельно (спека
+#: этапного разноса §2.5), чтобы `crud/round_unallocated.py` сравнивал с
+#: именем, а не ретипировал строку: поведение `resolve_ref` не меняется ни на
+#: символ, тексты — те же, что были литералами здесь.
+REASON_NO_CANDIDATES = "нет кандидатов"
+REASON_CANDIDATE_WITHOUT_ARTICLE = "кандидат без статьи"
+REASON_AMBIGUOUS = "статьи различаются"
+
+
 def resolve_ref(
     ref: str | None, by_number: Mapping[str, set[int | None]]
 ) -> tuple[int | None, str | None]:
@@ -262,11 +271,11 @@ def resolve_ref(
         return None, None
     candidates = by_number.get(ref)
     if not candidates:
-        return None, "нет кандидатов"
+        return None, REASON_NO_CANDIDATES
     if None in candidates:
-        return None, "кандидат без статьи"
+        return None, REASON_CANDIDATE_WITHOUT_ARTICLE
     if len(candidates) > 1:
-        return None, "статьи различаются"
+        return None, REASON_AMBIGUOUS
     return next(iter(candidates)), None
 
 

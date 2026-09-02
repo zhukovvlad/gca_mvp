@@ -12,13 +12,14 @@ import hashlib
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
 from config import settings
 from crud import position_drilldown as crud_position_drilldown
+from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
 from crud import tenders as crud_tenders
 from crud.common import DomainError
@@ -27,6 +28,7 @@ from models import ImportJob, ImportJobStatus, User, UserRole
 from responses import decimal_json
 from routers.domain_errors import raise_domain_error
 from routers.estimates import _read_within_limit, _validate_xlsx, job_response
+from services import round_category_override as rco
 from services.import_pipeline import run_import_job
 from services.maintenance import purge_files_best_effort
 from storage import Storage, get_storage
@@ -73,6 +75,12 @@ def get_tender(tender_id: int, db: Session = Depends(get_db)):
         return decimal_json(crud_tenders.get_tender_card(db, tender_id))
     except DomainError as e:
         raise_domain_error(e)
+    except crud_ru.RoundMappingBroken:
+        # Гейт-3, решение плана 4: расхождение проекций раунда должно ронять
+        # карточку с логом, а не молча отдавать её без счётчика (та же
+        # причина, что у GET §2.3 разноса).
+        log.error("Карточка тендера %s: проекции одного из раундов расходятся", tender_id, exc_info=True)
+        raise
 
 
 @router.get("/{tender_id}/stage-summary")
@@ -170,6 +178,125 @@ def list_round_import_jobs(tender_id: int, round_id: int, db: Session = Depends(
         return crud_tenders.list_round_import_jobs(db, tender_id, round_id)
     except DomainError as e:
         raise_domain_error(e)
+
+
+@router.get("/{tender_id}/rounds/{round_id}/unallocated")
+def round_unallocated(tender_id: int, round_id: int, db: Session = Depends(get_db)):
+    """Этапный разнос: разделы раунда без единого решения (спека этапного
+    разноса §2.3). Права — аутентификация роутера, `member` вправе."""
+    try:
+        return decimal_json(crud_ru.build_round_unallocated(db, tender_id, round_id))
+    except DomainError as e:
+        raise_domain_error(e)
+    except crud_ru.RoundMappingBroken:
+        log.error("Этапный разнос: проекции раунда %s расходятся", round_id, exc_info=True)
+        raise
+
+
+class RoundOverridePut(BaseModel):
+    lot_key: str
+    position_key_in_proposal: str
+    work_category_id: int
+    # ОБЯЗАТЕЛЬНОЕ nullable (спека этапного разноса §2.4): семантики «omitted»
+    # нет, тело всегда объявляет заметку целиком, явный null — явная очистка.
+    # Пустая и пробельная строка нормализуются в null валидатором ниже —
+    # решение оркестратора 02.09.2026 по находке ревью задачи 6 (НЕ решение
+    # пользователя: тот утверждал спеку, а этот случай спека не разбирает).
+    # Экран уже схлопывает пустое поле в null перед отправкой, нормализация на
+    # сервере делает это частью контракта, а не любезностью клиента, которую
+    # легко забыть у другого потребителя.
+    note: str | None = Field(max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def _blank_note_is_null(cls, value: str | None) -> str | None:
+        """Пустая или пробельная заметка становится `null` — только у
+        РАУНДОВОГО тела (задание, ГЕЙТ 3): без этого `""` у одной offer-сметы
+        и `null` у другой читались бы как РАЗНЫЕ значения полного вектора
+        (§2.2) и давали бы `conflict` по одной лишь орфографии отсутствия
+        заметки, хотя обе формы значат «заметки нет» — конфликт обязан
+        сигналить настоящее расхождение, а не два способа написать одно и то
+        же. Выразить «намеренно пустая, а не никакая» заметку пользователю
+        нечем, так что нормализация ничего не теряет.
+
+        Решение по трим на границах, а НЕ по содержимому: обрезается только
+        то, что определяет пустоту (`value.strip()`), сама сохранённая строка
+        реальной заметки идёт ДАЛЬШЕ нетронутой — ни в середине, ни по краям.
+        Точно так же — по-сметный роутер (`routers/category_overrides.py`) НЕ
+        трогается этим решением: спека требует его схему, сервис, панель и
+        хуки паспорта оставить как есть, и его `""` по-прежнему может дойти
+        до БД буквально — известный, принятый в стороне риск, не устраняемый
+        здесь.
+        """
+        if value is not None and value.strip() == "":
+            return None
+        return value
+
+
+class RoundOverrideDelete(BaseModel):
+    lot_key: str
+    position_key_in_proposal: str
+
+
+def _round_override(db: Session, action, **kwargs):
+    """Транзакцию ведёт роутер (§2.4): commit на успехе, rollback на любом
+    отказе. `set_round_override`/`clear_round_override` пишут и флешат
+    решения ДО пересчёта — отказ пересчёта (например `structure_disabled`)
+    застаёт уже флешнутые строки в сессии, и без rollback здесь они остались
+    бы видимыми. `RoundMappingBroken` — порча наших данных: лог и 500, как
+    `mapping_broken` по-сметного роутера.
+
+    `round_id` для лога берётся ИМЕННО из `kwargs["round_id"]`, а НЕ отдельным
+    позиционным параметром этой функции — план предлагал сигнатуру
+    `_round_override(db, round_id, action, **kwargs)`, но оба вызывающих ниже
+    обязаны класть `round_id` в `kwargs` тоже (он нужен самому сервису внутри
+    `action`), и тогда позиционный `round_id` ЗДЕСЬ получал бы то же имя
+    ВТОРОЙ раз через `**kwargs` при вызове — `TypeError: got multiple values
+    for argument 'round_id'` на КАЖДОМ вызове, что и произошло при первой
+    реализации по сценарию плана. Это дефект самого плана, не опечатка одной
+    реализации: НЕ возвращай `round_id` в сигнатуру этой функции отдельным
+    параметром — вернёшь и этот `TypeError`.
+    """
+    try:
+        result = action(db, **kwargs)
+        db.commit()
+    except DomainError as e:
+        db.rollback()
+        raise_domain_error(e)
+    except crud_ru.RoundMappingBroken:
+        db.rollback()
+        log.error("Этапный разнос: проекции раунда %s расходятся", kwargs["round_id"], exc_info=True)
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    return {"chapters_updated": result.chapters_updated,
+            "additional_works_updated": result.additional_works_updated,
+            "chapters_manual": result.chapters_manual}
+
+
+@router.put("/{tender_id}/rounds/{round_id}/category-overrides")
+def put_round_override(tender_id: int, round_id: int, body: RoundOverridePut, db: Session = Depends(get_db),
+                       current_user: User = Depends(get_current_user)):
+    """Единое решение по логическому разделу во ВСЕХ offer-сметах раунда
+    (§2.4). Права — аутентификация роутера, `member` вправе."""
+    return _round_override(db, rco.set_round_override, tender_id=tender_id, round_id=round_id,
+                           lot_key=body.lot_key, position_key_in_proposal=body.position_key_in_proposal,
+                           work_category_id=body.work_category_id, note=body.note, user_id=current_user.id)
+
+
+@router.delete("/{tender_id}/rounds/{round_id}/category-overrides")
+def delete_round_override(tender_id: int, round_id: int, body: RoundOverrideDelete, db: Session = Depends(get_db)):
+    """Снять решение во всех offer-сметах раунда; частичное и конфликтное
+    состояния тоже приводит к «без решения» (§2.4).
+
+    Логический ключ едет в ТЕЛЕ, не в пути (§2.4) — решение спеки, а не
+    недосмотр: `position_key_in_proposal` — строка из файла, её место в URL
+    потребовало бы экранирования без выгоды. Из этого следует, что клиент
+    ОБЯЗАН отправить тело у DELETE-запроса — фронтовый хук уже это делает
+    (значение уходит как payload запроса)."""
+    return _round_override(db, rco.clear_round_override, tender_id=tender_id, round_id=round_id,
+                           lot_key=body.lot_key, position_key_in_proposal=body.position_key_in_proposal)
 
 
 @router.delete("/{tender_id}/participants/{package_id}", status_code=status.HTTP_204_NO_CONTENT)

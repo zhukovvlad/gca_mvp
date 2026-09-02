@@ -1,17 +1,10 @@
-import { useState } from "react";
-
-import { Button } from "@/components/ui/button";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+  UnallocatedWorkbench,
+  type WorkbenchCopy,
+  type WorkbenchManualRow,
+  type WorkbenchSection,
+} from "@/components/unallocated/UnallocatedWorkbench";
 import { MoneyCell } from "@/components/ui-domain/MoneyCell";
-import { formatDate } from "@/lib/format";
 import { useClearCategoryOverride, useSetCategoryOverride } from "@/services/queries";
 import type {
   ProjectPassport,
@@ -28,6 +21,14 @@ import type {
  * `ProjectPassportPage.test.tsx`, там же и разводка `contractId`/`estimateId`);
  * этот компонент — только содержимое панели, всегда «развёрнутое», как только
  * смонтировано.
+ *
+ * Тонкая обёртка над презентационным ядром `UnallocatedWorkbench`
+ * (`components/unallocated/UnallocatedWorkbench.tsx`, план — задача 10):
+ * ядро несёт разметку дерева, popover выбора статьи и список ручных решений,
+ * здесь — только маппинг `ProjectPassport` в его пропсы, две денежные колонки
+ * и мутации по-сметного маршрута. Имя, пропсы, testid, тексты и сортировка —
+ * ПОСИМВОЛЬНО прежние (§3 п.5 спеки этапного разноса): `UnallocatedPanel.test.tsx`
+ * не правился при выделении ядра.
  *
  * Два блока с ОДНОЙ и ТОЙ же по имени, но РАЗНОЙ по смыслу колонкой денег
  * (замечание ревью задачи 4, актуальное и здесь):
@@ -51,83 +52,110 @@ export function UnallocatedPanel({
   contractId: number;
   estimateId: number;
 }) {
-  const roots = buildUnallocatedTree(passport.unallocated.sections);
   const setOverride = useSetCategoryOverride();
   const clearOverride = useClearCategoryOverride();
   const disabled = setOverride.isPending || clearOverride.isPending;
 
-  function pickCategory(positionItemId: number, option: ProjectPassportCategoryOption) {
+  const sections = passport.unallocated.sections.map(toPassportSection);
+  const manual = passport.manual_assignments.map(toPassportManualRow);
+
+  function pickCategory(section: PassportSection, option: ProjectPassportCategoryOption) {
     setOverride.mutate({
       contractId,
       estimateId,
-      positionItemId,
+      positionItemId: section.positionItemId,
       workCategoryId: option.id,
     });
   }
 
-  function clearAssignment(positionItemId: number) {
-    clearOverride.mutate({ contractId, estimateId, positionItemId });
+  function clearAssignment(row: PassportManualRow) {
+    clearOverride.mutate({ contractId, estimateId, positionItemId: row.positionItemId });
   }
 
   return (
     // Служебная зона разноса, не часть документа — на бумаге разносить нечем
     // (те же причины, что у ExpandToggle/переключателя нулевых в CategoryTable).
+    // Корень СТАЁТ здесь, а не в ядре: тест «панель помечена data-testid и не
+    // попадает в печатный поток» проверяет именно этот элемент.
     <section data-testid="unallocated-panel" data-print="hide" className="bg-surface">
-      <div className="border-b border-border-subtle px-4 py-3">
-        <h3 className="text-sm font-semibold text-fg">Разделы без статьи</h3>
-        <p className="text-2xs text-fg-tertiary">
-          Сумма — только нераспределённая часть поддерева; строки со своей файловой
-          статьёй в неё не входят.
-        </p>
-      </div>
-      <div className="px-2 py-1">
-        {roots.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-fg-tertiary">Разделов без статьи не осталось.</p>
-        ) : (
-          roots.map((node) => (
-            <SectionRow
-              key={node.position_item_id}
-              node={node}
-              depth={0}
-              categoryOptions={passport.category_options}
-              onPick={pickCategory}
-              disabled={disabled}
-            />
-          ))
-        )}
-      </div>
-
-      <div className="border-t border-b border-border-subtle px-4 py-3">
-        <h3 className="text-sm font-semibold text-fg">Разнесено вручную</h3>
-        <p className="text-2xs text-fg-tertiary">
-          Сумма — полная файловая свёртка раздела, без разбора вложенных решений.
-        </p>
-      </div>
-      <div className="px-2 py-1">
-        {passport.manual_assignments.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-fg-tertiary">Ручных решений пока нет.</p>
-        ) : (
-          passport.manual_assignments.map((assignment) => (
-            <ManualAssignmentRow
-              key={assignment.position_item_id}
-              assignment={assignment}
-              onClear={() => clearAssignment(assignment.position_item_id)}
-              disabled={disabled}
-            />
-          ))
-        )}
-      </div>
+      <UnallocatedWorkbench
+        sections={sections}
+        manual={manual}
+        categoryOptions={passport.category_options}
+        copy={PASSPORT_COPY}
+        testId={(section) => section.key}
+        compareSiblings={compareBySubtreeDesc}
+        renderAside={renderSectionAside}
+        renderManualAside={renderManualAside}
+        // По-сметный маршрут заметку с экрана не принимает — то же поведение,
+        // что и до выделения ядра (спека этапного разноса §3 п.5).
+        noteField={false}
+        onPick={(section, option) => pickCategory(section, option)}
+        onClear={clearAssignment}
+        disabled={disabled}
+      />
     </section>
   );
 }
 
+const PASSPORT_COPY: WorkbenchCopy = {
+  sectionsHeading: "Разделы без статьи",
+  sectionsHint:
+    "Сумма — только нераспределённая часть поддерева; строки со своей файловой " +
+    "статьёй в неё не входят.",
+  sectionsEmpty: "Разделов без статьи не осталось.",
+  manualHeading: "Разнесено вручную",
+  manualHint: "Сумма — полная файловая свёртка раздела, без разбора вложенных решений.",
+  manualEmpty: "Ручных решений пока нет.",
+};
+
 // ---------------------------------------------------------------------------
-//  Дерево нераспределённого
+//  Маппинг ProjectPassport → пропсы UnallocatedWorkbench
 // ---------------------------------------------------------------------------
 
-interface UnallocatedTreeNode extends ProjectPassportUnallocatedSection {
-  children: UnallocatedTreeNode[];
+interface PassportSection extends WorkbenchSection {
+  positionItemId: number;
+  amount: string | null;
+  subtreeAmount: string | null;
 }
+
+function toPassportSection(section: ProjectPassportUnallocatedSection): PassportSection {
+  return {
+    key: String(section.position_item_id),
+    parentKey:
+      section.parent_position_item_id === null ? null : String(section.parent_position_item_id),
+    number: section.number,
+    title: section.title,
+    smr_article_raw: section.smr_article_raw,
+    positionItemId: section.position_item_id,
+    amount: section.amount,
+    subtreeAmount: section.subtree_amount,
+  };
+}
+
+interface PassportManualRow extends WorkbenchManualRow {
+  positionItemId: number;
+  subtreeAmount: string | null;
+}
+
+function toPassportManualRow(assignment: ProjectPassportManualAssignment): PassportManualRow {
+  return {
+    key: String(assignment.position_item_id),
+    number: assignment.number,
+    title: assignment.title,
+    category_code: assignment.category_code,
+    category_title: assignment.category_title,
+    assigned_by_email: assignment.assigned_by_email,
+    assigned_at: assignment.assigned_at,
+    note: assignment.note,
+    positionItemId: assignment.position_item_id,
+    subtreeAmount: assignment.subtree_amount,
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  Сортировка сиблингов — по убыванию subtree_amount (задача 8, ревью 1)
+// ---------------------------------------------------------------------------
 
 /** Десятичное число в виде строки: `-?цифры[.цифры]` — тот же разбор, что у
  *  `src/lib/decimal.ts`; отдельная копия, а не импорт: там нет функции
@@ -160,297 +188,59 @@ function compareDecimalStrings(a: string, b: string): number {
 
 /** По убыванию `subtree_amount`; `null` — в конец; ничья — по возрастанию
  *  `position_item_id`, чтобы порядок был детерминирован (controller-notes). */
-function compareBySubtreeDesc(a: UnallocatedTreeNode, b: UnallocatedTreeNode): number {
-  if (a.subtree_amount === null && b.subtree_amount === null) {
-    return a.position_item_id - b.position_item_id;
+function compareBySubtreeDesc(a: PassportSection, b: PassportSection): number {
+  if (a.subtreeAmount === null && b.subtreeAmount === null) {
+    return a.positionItemId - b.positionItemId;
   }
-  if (a.subtree_amount === null) return 1;
-  if (b.subtree_amount === null) return -1;
+  if (a.subtreeAmount === null) return 1;
+  if (b.subtreeAmount === null) return -1;
 
-  const cmp = compareDecimalStrings(a.subtree_amount, b.subtree_amount);
-  return cmp !== 0 ? -cmp : a.position_item_id - b.position_item_id;
+  const cmp = compareDecimalStrings(a.subtreeAmount, b.subtreeAmount);
+  return cmp !== 0 ? -cmp : a.positionItemId - b.positionItemId;
 }
 
-/**
- * Плоский список `unallocated.sections[]` → дерево по `parent_position_item_id`.
- *
- * Сервер отдаёт список по глубине обхода (level-first) — раздельные ветки
- * дерева перемежаются в массиве, и рисовать его В ПОРЯДКЕ ПРИХОДА нарисовало
- * бы неверное дерево (controller-notes). Узел с `parent_position_item_id: null`
- * — вершина нераспределённой части, НЕ обязательно корень файловой структуры:
- * бэкенд перевешивает родителей внутрь нераспределённой выборки.
- */
-function buildUnallocatedTree(
-  sections: ProjectPassportUnallocatedSection[]
-): UnallocatedTreeNode[] {
-  const byId = new Map<number, UnallocatedTreeNode>();
-  for (const section of sections) {
-    byId.set(section.position_item_id, { ...section, children: [] });
-  }
+// ---------------------------------------------------------------------------
+//  Правая колонка — деньги (задача 9: manual-amount несёт subtree_amount)
+// ---------------------------------------------------------------------------
 
-  const roots: UnallocatedTreeNode[] = [];
-  for (const section of sections) {
-    const node = byId.get(section.position_item_id);
-    if (!node) continue;
-    if (section.parent_position_item_id === null) {
-      roots.push(node);
-      continue;
-    }
-    const parent = byId.get(section.parent_position_item_id);
-    if (parent) {
-      parent.children.push(node);
-    } else {
-      // Родителя нет среди sections[] — по правилам бэкенда такого не
-      // бывает (родители перевешиваются внутрь нераспределённой выборки,
-      // controller-notes), но проглатывать узел молча нельзя (finding I-4):
-      // без него раздел и его деньги пропали бы с единственного экрана, где
-      // их можно разнести, — без диагностики и без несовпадения счётчика.
-      // Деградация в плоский верхний уровень честнее, чем потеря узла.
-      roots.push(node);
-    }
-  }
-
-  function sortRec(nodes: UnallocatedTreeNode[]) {
-    nodes.sort(compareBySubtreeDesc);
-    for (const node of nodes) sortRec(node.children);
-  }
-  sortRec(roots);
-
-  return roots;
-}
-
-/** «5.1 Раздел «…»» либо просто заголовок, если номера нет — общая подпись
- *  раздела для aria-label кнопок панели (finding I-3: подпись обязана нести
- *  раздел, а не быть одной и той же на N строк). */
-function chapterLabel(section: { number: string | null; title: string }): string {
-  return section.number ? `${section.number} ${section.title}` : section.title;
-}
-
-function SectionRow({
-  node,
-  depth,
-  categoryOptions,
-  onPick,
-  disabled,
-}: {
-  node: UnallocatedTreeNode;
-  depth: number;
-  categoryOptions: ProjectPassportCategoryOption[];
-  onPick: (positionItemId: number, option: ProjectPassportCategoryOption) => void;
-  disabled: boolean;
-}) {
-  const indent = 12 + depth * 20;
-
+/*
+  ДВЕ суммы, не выбор одной из двух (правка ревью 1, finding C-1): спека §1.5
+  — «у узла нужны две суммы — своя и по поддереву», та же пара, что у статей
+  классификатора различает `own`/`total`. Свёртка поддерева — ПЕРВИЧНАЯ и
+  всегда на месте (её и защищает testid `subtree-amount-{id}`, независимо от
+  того, известно значение или нет — тот же принцип, что у `amount-cat-*` в
+  CategoryTable: имя testid называет ПОЛЕ, а не факт его наличия, поэтому `—`
+  под этим testid не значит подмену смысла, finding M-2). Своя сумма — ВТОРАЯ
+  строка, и появляется только когда известна: без неё узел со своими
+  деньгами и большим нераспределённым поддеревом ранжировался бы по одному
+  числу («цена решения»), а показывал другое.
+*/
+function renderSectionAside(section: PassportSection) {
   return (
-    <div data-testid={`unallocated-section-${node.position_item_id}`}>
-      <div
-        data-testid={`unallocated-section-row-${node.position_item_id}`}
-        className="grid grid-cols-[1fr_auto_auto] items-start gap-x-3 gap-y-1 border-b border-border-subtle py-2"
-        style={{ paddingLeft: indent }}
-      >
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-baseline gap-1.5">
-            {node.number && (
-              <span className="font-mono text-xs text-fg-tertiary">{node.number}</span>
-            )}
-            <span
-              data-testid={`unallocated-section-title-${node.position_item_id}`}
-              data-print="clamp"
-              className="line-clamp-2 min-w-0"
-            >
-              {node.title}
-            </span>
-          </div>
-          {node.smr_article_raw !== null && node.smr_article_raw.trim().length > 0 && (
-            <p className="text-2xs text-fg-tertiary">в файле стояло: «{node.smr_article_raw}»</p>
-          )}
-        </div>
-
-        {/*
-          ДВЕ суммы, не выбор одной из двух (правка ревью 1, finding C-1):
-          спека §1.5 — «у узла нужны две суммы — своя и по поддереву», та же
-          пара, что у статей классификатора различает `own`/`total`. Свёртка
-          поддерева — ПЕРВИЧНАЯ и всегда на месте (её и защищает testid
-          `subtree-amount-{id}`, независимо от того, известно значение или
-          нет — тот же принцип, что у `amount-cat-*` в CategoryTable: имя
-          testid называет ПОЛЕ, а не факт его наличия, поэтому `—` под этим
-          testid не значит подмену смысла, finding M-2). Своя сумма — ВТОРАЯ
-          строка, и появляется только когда известна: без неё узел со своими
-          деньгами и большим нераспределённым поддеревом ранжировался бы по
-          одному числу («цена решения»), а показывал другое.
-        */}
-        <div className="text-right">
-          <span data-testid={`subtree-amount-${node.position_item_id}`}>
-            <MoneyCell value={node.subtree_amount} />
+    <div className="text-right">
+      <span data-testid={`subtree-amount-${section.key}`}>
+        <MoneyCell value={section.subtreeAmount} />
+      </span>
+      {section.amount !== null && (
+        <p className="text-2xs text-fg-tertiary">
+          своя:{" "}
+          <span data-testid={`own-amount-${section.key}`}>
+            <MoneyCell value={section.amount} />
           </span>
-          {node.amount !== null && (
-            <p className="text-2xs text-fg-tertiary">
-              своя:{" "}
-              <span data-testid={`own-amount-${node.position_item_id}`}>
-                <MoneyCell value={node.amount} />
-              </span>
-            </p>
-          )}
-        </div>
-
-        <CategoryPicker
-          positionItemId={node.position_item_id}
-          label={chapterLabel(node)}
-          options={categoryOptions}
-          disabled={disabled}
-          onPick={(option) => onPick(node.position_item_id, option)}
-        />
-      </div>
-
-      {node.children.map((child) => (
-        <SectionRow
-          key={child.position_item_id}
-          node={child}
-          depth={depth + 1}
-          categoryOptions={categoryOptions}
-          onPick={onPick}
-          disabled={disabled}
-        />
-      ))}
+        </p>
+      )}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-//  Выбор статьи — Command внутри Popover, по category_options
-// ---------------------------------------------------------------------------
-
-function CategoryPicker({
-  positionItemId,
-  label,
-  options,
-  onPick,
-  disabled,
-}: {
-  positionItemId: number;
-  /** Раздел, на который действует кнопка — идёт в `aria-label` (finding I-3). */
-  label: string;
-  options: ProjectPassportCategoryOption[];
-  onPick: (option: ProjectPassportCategoryOption) => void;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-
+/** Сумма записи о ручном решении — `subtree_amount`, а не `amount` (задача 9):
+ *  файловая свёртка ВСЕГО поддерева раздела, цена решения. */
+function renderManualAside(row: PassportManualRow) {
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      {/*
-        Триггер НЕ несёт `role="combobox"` (в отличие от EntityCombobox): на
-        одной панели таких кнопок много, по одной на раздел, и общая
-        accessible-роль сделала бы их неотличимыми друг от друга для
-        `getByRole`. `data-testid` различает их ТОЛЬКО в тестах — для
-        скринридера testid не существует вовсе, различает его именно
-        `aria-label` ниже, с номером и названием раздела.
-      */}
-      <PopoverTrigger
-        render={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            data-testid={`pick-category-${positionItemId}`}
-            aria-label={`Отнести на статью: ${label}`}
-            disabled={disabled}
-          >
-            Отнести на статью…
-          </Button>
-        }
-      />
-      <PopoverContent className="w-80 p-0" align="end">
-        {/*
-          Справочник — 362 строки (докстрока `ProjectPassportCategoryOption`);
-          без поиска список неюзабелен. Источник — `category_options`, а НЕ
-          `categories`: `build_tree` прячет вложенные узлы без строк, и без
-          `category_options` половина справочника до аналитика не дошла бы.
-        */}
-        <Command>
-          <CommandInput placeholder="Код или название статьи…" />
-          <CommandList>
-            <CommandEmpty>Ничего не найдено</CommandEmpty>
-            <CommandGroup>
-              {options.map((option) => (
-                <CommandItem
-                  key={option.id}
-                  // Код и название вместе — встроенный фильтр `Command` ищет
-                  // подстроку/подпоследовательность именно в `value`, и без
-                  // названия здесь поиск по названию не работал бы вовсе.
-                  value={`${option.code} ${option.title}`}
-                  onSelect={() => {
-                    onPick(option);
-                    setOpen(false);
-                  }}
-                >
-                  <span className="font-mono text-xs text-fg-tertiary">{option.code}</span>
-                  <span className="truncate">{option.title}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-// ---------------------------------------------------------------------------
-//  Разнесено вручную
-// ---------------------------------------------------------------------------
-
-function ManualAssignmentRow({
-  assignment,
-  onClear,
-  disabled,
-}: {
-  assignment: ProjectPassportManualAssignment;
-  onClear: () => void;
-  disabled: boolean;
-}) {
-  return (
-    <div
-      data-testid={`manual-assignment-${assignment.position_item_id}`}
-      className="grid grid-cols-[1fr_auto_auto] items-start gap-x-3 gap-y-1 border-b border-border-subtle px-2 py-2"
-    >
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-baseline gap-1.5">
-          {assignment.number && (
-            <span className="font-mono text-xs text-fg-tertiary">{assignment.number}</span>
-          )}
-          <span data-print="clamp" className="line-clamp-2 min-w-0">
-            {assignment.title}
-          </span>
-        </div>
-        <p className="text-2xs text-fg-secondary">
-          → {assignment.category_code} «{assignment.category_title}»
-        </p>
-        <p className="text-2xs text-fg-tertiary">
-          {assignment.assigned_by_email} · {formatDate(assignment.assigned_at)}
-        </p>
-        {assignment.note && <p className="text-2xs text-fg-tertiary">{assignment.note}</p>}
-      </div>
-
-      <div className="text-right">
-        <span data-testid={`manual-amount-${assignment.position_item_id}`}>
-          <MoneyCell value={assignment.subtree_amount} />
-        </span>
-      </div>
-
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        disabled={disabled}
-        data-testid={`manual-remove-${assignment.position_item_id}`}
-        // Тот же довод, что у CategoryPicker (finding I-3): подпись несёт
-        // раздел, иначе N кнопок «Снять» звучат для скринридера одинаково.
-        aria-label={`Снять решение по разделу: ${chapterLabel(assignment)}`}
-        onClick={onClear}
-      >
-        Снять
-      </Button>
+    <div className="text-right">
+      <span data-testid={`manual-amount-${row.key}`}>
+        <MoneyCell value={row.subtreeAmount} />
+      </span>
     </div>
   );
 }

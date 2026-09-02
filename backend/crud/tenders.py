@@ -15,6 +15,7 @@ import logging
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload
 
+from crud import round_unallocated as crud_round_unallocated
 from crud.common import DomainError, clamp_page, iso, paginated, require_text, translating_integrity
 from crud.estimate_totals import estimate_total_including_vat
 from models import (
@@ -169,6 +170,9 @@ def get_tender_card(db: Session, tender_id: int) -> dict:
             "current_job_id": current.id if current else None,
             "baseline_estimate_id": baseline_id,
             "baseline_total_including_vat": _dec(estimate_total_including_vat(db, baseline_id)) if baseline_id else None,
+            # Спека этапного разноса §2.6: тем же агрегатором, что GET
+            # …/unallocated; null — у раунда нет offer-смет.
+            "unallocated_pending_sections": crud_round_unallocated.pending_sections_count(db, rnd.id),
         })
 
     cells = []

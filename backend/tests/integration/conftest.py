@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy as sa
 
-from models import Estimate, Lot, PositionItem, Proposal, UserRole, WorkCategory
+from models import Estimate, Lot, Offer, PositionItem, Proposal, UserRole, WorkCategory
 from services.category_resolution import CategoryResolver
 from services.estimate_import import import_estimate
 from services.import_owners import contract_estimate_owner
@@ -592,6 +592,148 @@ def unallocated_tree(db_session, make_imported_estimate):
         top_chapter_id=_chapter("9"),
         empty_chapter_id=_chapter("8"),
         mixed_top_chapter_id=_chapter("21"),
+    )
+
+
+@pytest.fixture
+def round_scene(db_session, factories):
+    """Тендер с двумя раундами через НАСТОЯЩИЙ `import_round` (см. докстроку
+    `unallocated_tree`: пересчёт разноса держит биекцию raw_data ↔ строки).
+    Раунд 1: три участника + baseline, у всех одна ведомость — «1» со статьёй
+    «6», её подраздел «1.1» БЕЗ своей статьи и без единой позиции (наследует
+    «6» от «1» — ревью Task 2 §B: отличает предикат «эффективной статьи нет»
+    от ошибочного «своего утверждения в файле нет», у которых на прежней
+    ведомости не было ни одного расходящегося случая), «14» → «14.1»/«14.3»
+    без статьи, «15» без статьи, допработы со ссылкой на «14» (кандидат без
+    статьи) и остаток без ссылки (граница §5.5).
+    Раунд 2: один участник, `chapter_number="прим."` — структура погашена.
+    «1.1» вставлена ПОСЛЕ собственной строки «1» (работа «2») и ДО «14»,
+    поэтому подтягивает готовый стек «1» как родителя и ничего не переносит из
+    поддерева «14» (порядок строк держит принадлежность разделу, не
+    `chapter_ref` — см. `services/category_resolution._resolve_stack`).
+
+    Под «15» — ВТОРАЯ, НЕ РАСЦЕНЁННАЯ позиция («Работа 11 без цены», обе
+    денежные клетки не заданы, поэтому `total_cost_total` уходит в БД `NULL`,
+    а не `0`, — правило проекта «пустая стоимость → NULL»). Это ревью Task 2:
+    без хотя бы одной непосредственной позиции без цены `rows` (полный
+    размер файлового поддерева) и `rows_priced` (расценённых строк) совпадают
+    на всех четырёх разделах, и подмена одной метрики на другую в
+    `representative_nodes` не красит НИ ОДИН тест. Числа спеки поэтому:
+    rows «14» = 3, «14.1» = 2, «14.3» = 1, «15» = 2 (rows_priced «15» —
+    ОДИН). Раньше «15» было 1 — стало 2 НАМЕРЕННО добавленной непосредственной
+    строкой; не «чинить» обратно."""
+    from parser.constants import (
+        JSON_KEY_TOTAL_COST_EXCLUDING_VAT,
+        JSON_KEY_TOTAL_COST_INCLUDING_VAT,
+        JSON_KEY_VAT_AMOUNT,
+    )
+    from services.round_import import import_round
+    from tests.payloads import (
+        additional_works_row,
+        baseline_proposal_block,
+        position,
+        proposal,
+        round_payload,
+        summary_line,
+        svedeniya_info,
+    )
+
+    def work(number, ref, amount):
+        return position(
+            job_title=f"Работа {number}", unit="м2", quantity=1, suggested_quantity=1,
+            unit_cost_total=amount, total_cost_total=amount, chapter_ref=ref, number=number,
+        )
+
+    def statement(*, inn, title):
+        positions = [
+            position(job_title="Раздел 1", is_chapter=True, chapter_number="1", article_smr="6", number="1"),
+            work("2", "1", "100.00"),
+            position(job_title="Подраздел 1.1", is_chapter=True, chapter_number="1.1", number="2a"),
+            position(job_title="SHELL & CORE", is_chapter=True, chapter_number="14", number="3"),
+            position(job_title="Подраздел 14.1", is_chapter=True, chapter_number="14.1", number="4"),
+            work("5", "14.1", "30.00"),
+            work("6", "14.1", "30.00"),
+            position(job_title="Подраздел 14.3", is_chapter=True, chapter_number="14.3", number="7"),
+            work("8", "14.3", "20.00"),
+            position(job_title="Рабочая документация", is_chapter=True, chapter_number="15", number="9"),
+            work("10", "15", "10.00"),
+            position(
+                job_title="Работа 11 без цены", unit="м2", quantity=1, suggested_quantity=1,
+                chapter_ref="15", number="11",
+            ),
+        ]
+        summary = {
+            JSON_KEY_TOTAL_COST_INCLUDING_VAT: summary_line("ИТОГО, руб. с учетом НДС", "220.00"),
+            JSON_KEY_VAT_AMOUNT: summary_line("В том числе НДС", "0"),
+            JSON_KEY_TOTAL_COST_EXCLUDING_VAT: summary_line("ИТОГО, руб. без учета НДС", "220.00"),
+        }
+        return proposal(
+            positions, inn=inn, title=title, vat_rate="20", summary=summary,
+            additional_works=additional_works_row(total="30.00"),
+            additional_info=svedeniya_info("14 Отделка - 24.00 руб."),
+        )
+
+    tender = factories.TenderFactory.create()
+    r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+    r2 = factories.TenderRoundFactory.create(tender=tender, stage_no=2)
+    db_session.flush()
+    base = baseline_proposal_block(
+        [position(job_title="База", unit="м2", unit_cost_total="9", total_cost_total="9")]
+    )
+    participants = [
+        statement(inn="7700000001", title="ООО А"),
+        statement(inn="7700000002", title="ООО Б"),
+        statement(inn="7700000003", title="ООО В"),
+    ]
+    import_round(
+        db_session, tender_round=r1, data=round_payload(participants, baseline=base),
+        parser_version="4.0.0", import_job_id=None, replace=False,
+        unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session),
+    )
+    broken = proposal(
+        [position(job_title="Примечание", number="3", chapter_number="прим.", is_chapter=True)],
+        inn="7700000001", title="ООО А",
+    )
+    import_round(
+        db_session, tender_round=r2, data=round_payload([broken]), parser_version="4.0.0",
+        import_job_id=None, replace=False, unit_resolver=UnitResolver(db_session),
+        category_resolver=CategoryResolver.from_db(db_session),
+    )
+    db_session.flush()
+
+    offer_ids = sa.select(Offer.id).where(Offer.round_id == r1.id)
+    estimates = db_session.execute(
+        sa.select(Estimate).where(Estimate.offer_id.in_(offer_ids)).order_by(Estimate.id)
+    ).scalars().all()
+    baseline_id = db_session.execute(
+        sa.select(Estimate.id).where(Estimate.round_id == r1.id)
+    ).scalar_one()
+
+    def chapter(estimate_id, number):
+        return db_session.execute(
+            sa.select(PositionItem)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(
+                Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(True),
+                PositionItem.chapter_number_in_proposal == number,
+            )
+        ).scalar_one()
+
+    # Ключ лота выводится из `lots.lot_key`, а не зашивается литералом "lot_1":
+    # это факт о том, как `round_payload`/`import_round` назвали лот в ЭТОМ
+    # прогоне, а не предположение о его имени (ревью Task 2 §G).
+    lot_key = db_session.execute(
+        sa.select(Lot.lot_key).where(Lot.estimate_id == estimates[0].id)
+    ).scalar_one()
+
+    return SimpleNamespace(
+        tender=tender, r1=r1, r2=r2, estimates=estimates,
+        estimate_ids=[e.id for e in estimates], baseline_id=baseline_id,
+        key14=(lot_key, chapter(estimates[0].id, "14").position_key_in_proposal),
+        key15=(lot_key, chapter(estimates[0].id, "15").position_key_in_proposal),
+        key1=(lot_key, chapter(estimates[0].id, "1").position_key_in_proposal),
+        chapter=chapter,
     )
 
 
