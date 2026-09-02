@@ -1,5 +1,7 @@
-"""Раундовая запись (спека этапного разноса §2.4, §4.2) — уровень сервиса."""
+"""Раундовая запись (спека этапного разноса §2.4, §4.2) — уровень сервиса и HTTP."""
 from __future__ import annotations
+
+import logging
 
 import pytest
 import sqlalchemy as sa
@@ -355,3 +357,384 @@ class TestAtomicity:
         assert db_session.execute(
             sa.select(sa.func.count()).select_from(PositionItem).where(PositionItem.category_source == "manual")
         ).scalar_one() == 0
+
+
+OVERRIDES = "/api/v1/tenders/{t}/rounds/{r}/category-overrides"
+
+
+def body14(scene, code_id, note="из http"):
+    return {"lot_key": scene.key14[0], "position_key_in_proposal": scene.key14[1],
+            "work_category_id": code_id, "note": note}
+
+
+class TestHttp:
+    def test_member_puts_and_gets_the_three_key_summary(self, member_client, db_session, round_scene, factories):
+        """Пункт B ревью: без ВТОРОГО пользователя «автор — запросивший member»
+        истинно только потому, что в таблице `users` он ОДИН — ревью доказало
+        это, подменив роутер на «взять первого пользователя таблицы», и тест
+        остался зелёным. Второй, лишний кандидат делает утверждение различающим:
+        `assigned_by` обязан совпасть ИМЕННО с `member_client.user.id`, а не с
+        любым существующим `User.id`."""
+        other = factories.UserFactory.create()
+        db_session.flush()
+        assert other.id != member_client.user.id
+
+        r = member_client.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id),
+                              json=body14(round_scene, cat(db_session, "20")))
+        assert r.status_code == 200, r.text
+        assert set(r.json()) == {"chapters_updated", "additional_works_updated", "chapters_manual"}
+        assert r.json()["chapters_updated"] == 9
+        assert {o.assigned_by for o in overrides_of(db_session, round_scene, "14")} == {member_client.user.id}
+
+    def test_note_omitted_is_422_and_note_null_is_accepted(self, member_client, db_session, round_scene):
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        without = {k: v for k, v in body14(round_scene, cat(db_session, "20")).items() if k != "note"}
+        assert member_client.put(url, json=without).status_code == 422          # omitted != null (§2.4)
+        assert member_client.put(url, json=body14(round_scene, cat(db_session, "20"), note=None)).status_code == 200
+        assert {o.note for o in overrides_of(db_session, round_scene, "14")} == {None}
+
+    @pytest.mark.parametrize("patch, status, code", [
+        ({"position_key_in_proposal": "999"}, 404, "section_not_found"),
+        ({"work_category_id": 10**9}, 404, "category_not_found"),
+    ])
+    def test_refusal_codes(self, member_client, db_session, round_scene, patch, status, code):
+        body = {**body14(round_scene, cat(db_session, "20")), **patch}
+        r = member_client.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id), json=body)
+        assert (r.status_code, r.json()["detail"]["code"]) == (status, code)
+
+    def test_position_key_is_422_not_a_chapter(self, member_client, db_session, round_scene):
+        work_key = db_session.execute(
+            sa.select(PositionItem.position_key_in_proposal).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == round_scene.estimates[0].id, PositionItem.is_chapter.is_(False)).limit(1)
+        ).scalar_one()
+        body = {**body14(round_scene, cat(db_session, "20")), "position_key_in_proposal": work_key}
+        r = member_client.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id), json=body)
+        assert (r.status_code, r.json()["detail"]["code"]) == (422, "not_a_chapter")
+
+    def test_disabled_structure_is_409_and_the_decision_is_rolled_back(self, member_client, db_session, round_scene):
+        """Как `test_a_refused_put_rolls_back`: решение флешнуто ДО того, как
+        пересчёт поднял `structure_disabled`; без `rollback()` в роутере строка
+        осталась бы. `db_session.commit()` фиксирует границу савпоинта."""
+        db_session.commit()
+        e = crud_ru.offer_estimates(db_session, round_scene.r2.id)[0]
+        key = db_session.execute(
+            sa.select(PositionItem.position_key_in_proposal).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id).where(Lot.estimate_id == e.id, PositionItem.is_chapter.is_(True))
+        ).scalar_one()
+        r = member_client.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r2.id),
+                              json={"lot_key": "lot_1", "position_key_in_proposal": key,
+                                    "work_category_id": cat(db_session, "20"), "note": None})
+        assert (r.status_code, r.json()["detail"]["code"]) == (409, "structure_disabled")
+        assert db_session.execute(sa.select(sa.func.count()).select_from(EstimateCategoryOverride)).scalar_one() == 0
+
+    def test_integrity_failure_from_recalculation_rolls_back_through_the_route(
+        self, member_client_no_raise, db_session, round_scene, monkeypatch
+    ):
+        """Пункт A ревью: `test_mapping_broken_is_500_and_logged` ниже ловит
+        `RoundMappingBroken` из РАЗРЕШЕНИЯ КЛЮЧА (`_resolve_key`) — оно
+        случается ДО всякой записи, так что `db.rollback()` в роутере там
+        отменять нечего, и его отсутствие невидимо: ревью убрало этот
+        `rollback()` из ветки `RoundMappingBroken`, и все 35 тестов остались
+        зелёными. Настоящий случай — отказ ЦЕЛОСТНОСТИ ИЗ ПЕРЕСЧЁТА
+        (`apply_overrides` поднимает `CategoryOverrideError` кодом, отличным
+        от `structure_disabled`, например при отсутствующем `raw_data`):
+        `set_round_override` к этому моменту уже записал и `flush`-нул
+        решения во ВСЕ offer-сметы, и только тогда пересчёт доходит до
+        последней и падает — как `TestAtomicity.test_a_failure_on_the_last_
+        estimate_leaves_no_estimate_changed`, но через РОУТЕР и HTTP, чтобы
+        стеречь именно роутерный `rollback()`, а не тестовый вызывающий код.
+        `db_session.commit()` фиксирует границу савпоинта ПЕРЕД рискованным
+        запросом — тем же приёмом, что у `test_disabled_structure_is_409_
+        and_the_decision_is_rolled_back` и у `TestAtomicity`.
+        """
+        import services.round_category_override as module
+        real = module.apply_overrides
+        last = round_scene.estimate_ids[-1]
+        observed: dict[str, int] = {}
+
+        def failing(db, estimate_id, **kw):
+            if estimate_id == last:
+                observed["overrides"] = db.execute(
+                    sa.select(sa.func.count()).select_from(EstimateCategoryOverride)
+                ).scalar_one()
+                raise module.CategoryOverrideError("mapping_broken", "искусственный отказ целостности на последней смете")
+            return real(db, estimate_id, **kw)
+
+        monkeypatch.setattr(module, "apply_overrides", failing)
+        db_session.commit()
+
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Collector(level=logging.ERROR)
+        router_log = logging.getLogger("routers.tenders")
+        router_log.addHandler(handler)
+        try:
+            r = member_client_no_raise.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id),
+                                           json=body14(round_scene, cat(db_session, "20")))
+        finally:
+            router_log.removeHandler(handler)
+
+        assert r.status_code == 500
+        assert any(rec.levelno == logging.ERROR for rec in captured)
+        # Решения ДЕЙСТВИТЕЛЬНО были флешнуты во все три сметы к моменту отказа
+        # (иначе итоговый ноль ниже доказывал бы только «писать было нечего»,
+        # не откат) — тот же довод, что у `TestAtomicity`.
+        assert observed.get("overrides") == 3
+        # ЭТА проверка и есть та, что падает без `db.rollback()` в роутере.
+        assert db_session.execute(sa.select(sa.func.count()).select_from(EstimateCategoryOverride)).scalar_one() == 0
+
+    def test_mapping_broken_is_500_and_logged(self, member_client_no_raise, db_session, round_scene):
+        e1 = round_scene.estimates[1]
+        ch = round_scene.chapter(e1.id, "15")
+        db_session.execute(sa.text("DELETE FROM position_items WHERE chapter_item_id = :cid"), {"cid": ch.id})
+        db_session.execute(sa.text("DELETE FROM position_items WHERE id = :cid"), {"cid": ch.id})
+        db_session.flush()
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Collector(level=logging.ERROR)
+        router_log = logging.getLogger("routers.tenders")
+        router_log.addHandler(handler)
+        try:
+            r = member_client_no_raise.put(OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id),
+                                           json={"lot_key": round_scene.key15[0], "position_key_in_proposal": round_scene.key15[1],
+                                                 "work_category_id": cat(db_session, "20"), "note": None})
+        finally:
+            router_log.removeHandler(handler)
+        assert r.status_code == 500
+        assert any(rec.levelno == logging.ERROR for rec in captured)
+
+    # --- Пункт C ревью: те же три отказа, уже покрытые на PUT выше
+    # (`not_a_chapter`, `structure_disabled`, `mapping_broken`), но никогда
+    # не пройденные через DELETE, хотя `clear_round_override` проходит ТУ ЖЕ
+    # разрешение ключа и ТОТ ЖЕ пересчёт (§2.4: «DELETE симметричен PUT через
+    # шаги 1-2»). Тела и глагол здесь — единственное отличие, поэтому не
+    # параметризую (PUT-версии уже существуют отдельными тестами, не
+    # переиспользуемыми напрямую из-за разных тел) — просто зеркалю их на DELETE.
+
+    def test_delete_not_a_chapter_is_422(self, member_client, db_session, round_scene):
+        work_key = db_session.execute(
+            sa.select(PositionItem.position_key_in_proposal).join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == round_scene.estimates[0].id, PositionItem.is_chapter.is_(False)).limit(1)
+        ).scalar_one()
+        r = member_client.request(
+            "DELETE", OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id),
+            json={"lot_key": round_scene.key14[0], "position_key_in_proposal": work_key},
+        )
+        assert (r.status_code, r.json()["detail"]["code"]) == (422, "not_a_chapter")
+
+    def test_delete_disabled_structure_is_409(self, member_client, db_session, round_scene, factories):
+        """Пункт C ревью — этот случай не зеркалится с PUT напрямую.
+        `clear_round_override` СНАЧАЛА удаляет решение по ЦЕЛЕВОМУ ключу и
+        только ПОТОМ пересчитывает, а `apply_overrides` поднимает
+        `structure_disabled` лишь когда `overrides` предложения НЕ пусты
+        (`services/category_override.py`: `if resolution.structure_disabled
+        and overrides`). У `round_scene.r2` в предложении ровно ОДНА позиция —
+        DELETE стирает решение на неё же ДО пересчёта, `overrides` пустеет, и
+        запрос молча получает 200 вместо 409 (проверено: с телом на `r2`,
+        как у PUT-теста, ответ реально был `200`, не `409` — первая версия
+        этого теста ловила именно эту ложную зелень).
+
+        Настоящий 409 требует предложения с ДВУМЯ разделами: один гасит
+        структуру ЦЕЛОГО предложения (`chapter_number="прим."`), второй не
+        участвует в этом DELETE и несёт УЖЕ существующее решение — оно
+        вставлено В ОБХОД домена (тем же приёмом, что у mapping_broken-тестов
+        файла), поскольку через API оно недостижимо: PUT на погашенную
+        структуру сам получил бы 409 и откатился (см. тест выше). Раунд
+        строится напрямую через `import_round`, как `round_scene`, — тем же
+        набором инструментов, без правки conftest.py.
+        """
+        from services.category_resolution import CategoryResolver
+        from services.round_import import import_round
+        from services.unit_resolution import UnitResolver
+        from tests.payloads import position, proposal, round_payload
+
+        broken_round = factories.TenderRoundFactory.create(tender=round_scene.tender, stage_no=42)
+        db_session.flush()
+        data = round_payload([proposal([
+            position(job_title="Раздел рабочий", is_chapter=True, chapter_number="14", number="1"),
+            position(job_title="Раздел с нечитаемым номером", is_chapter=True, chapter_number="прим.", number="2"),
+        ])])
+        import_round(db_session, tender_round=broken_round, data=data, parser_version="4.0.0",
+                    import_job_id=None, replace=False, unit_resolver=UnitResolver(db_session),
+                    category_resolver=CategoryResolver.from_db(db_session))
+        db_session.flush()
+
+        estimate_id = crud_ru.offer_estimates(db_session, broken_round.id)[0].id
+
+        def chapter_by_number(number):
+            return db_session.execute(
+                sa.select(PositionItem).join(Proposal, Proposal.id == PositionItem.proposal_id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimate_id, PositionItem.chapter_number_in_proposal == number)
+            ).scalar_one()
+
+        target = chapter_by_number("14")
+        survivor = chapter_by_number("прим.")
+
+        db_session.add(EstimateCategoryOverride(position_item_id=survivor.id, work_category_id=cat(db_session, "20"),
+                                                note=None, assigned_by=member_client.user.id, assigned_at=sa.func.now()))
+        db_session.flush()
+
+        r = member_client.request(
+            "DELETE", OVERRIDES.format(t=round_scene.tender.id, r=broken_round.id),
+            json={"lot_key": "lot_1", "position_key_in_proposal": target.position_key_in_proposal},
+        )
+        assert (r.status_code, r.json()["detail"]["code"]) == (409, "structure_disabled")
+
+    def test_delete_mapping_broken_is_500_and_logged(self, member_client_no_raise, db_session, round_scene):
+        e1 = round_scene.estimates[1]
+        ch = round_scene.chapter(e1.id, "15")
+        db_session.execute(sa.text("DELETE FROM position_items WHERE chapter_item_id = :cid"), {"cid": ch.id})
+        db_session.execute(sa.text("DELETE FROM position_items WHERE id = :cid"), {"cid": ch.id})
+        db_session.flush()
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Collector(level=logging.ERROR)
+        router_log = logging.getLogger("routers.tenders")
+        router_log.addHandler(handler)
+        try:
+            r = member_client_no_raise.request(
+                "DELETE", OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id),
+                json={"lot_key": round_scene.key15[0], "position_key_in_proposal": round_scene.key15[1]},
+            )
+        finally:
+            router_log.removeHandler(handler)
+        assert r.status_code == 500
+        assert any(rec.levelno == logging.ERROR for rec in captured)
+
+    def test_delete_with_a_body_clears_everywhere_and_missing_key_is_404(self, member_client, db_session, round_scene):
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        assert member_client.put(url, json=body14(round_scene, cat(db_session, "20"))).status_code == 200
+        r = member_client.request("DELETE", url, json={"lot_key": round_scene.key14[0],
+                                                       "position_key_in_proposal": round_scene.key14[1]})
+        assert r.status_code == 200
+        # Пункт D ревью: раньше проверялся только НАБОР ключей ответа — этого
+        # не хватило бы, чтобы поймать по-сметный результат ОДНОЙ сметы вместо
+        # суммы по раунду. Значения — те же, что в сервисном
+        # `TestDelete.test_removes_the_decision_from_every_estimate_and_returns_extras`
+        # (§1.4 спеки разноса: допработа со ссылкой «14» переезжает вместе с
+        # разделом), и `chapters_manual` — 0: решение снято, «ручных» строк
+        # у раздела «14» не осталось ни у одной offer-сметы.
+        assert r.json() == {"chapters_updated": 9, "additional_works_updated": 3, "chapters_manual": 0}
+        assert overrides_of(db_session, round_scene, "14") == [None, None, None]
+        r = member_client.request("DELETE", url, json={"lot_key": "lot_1", "position_key_in_proposal": "999"})
+        assert (r.status_code, r.json()["detail"]["code"]) == (404, "section_not_found")
+
+    def test_empty_note_normalises_to_null(self, member_client, db_session, round_scene):
+        """Решение пользователя 02.09.2026: пустая строка в раундовом теле PUT
+        становится `null`, а не буквальным `""`, ДО того, как сервис увидит
+        значение (валидатор `RoundOverridePut._blank_note_is_null`)."""
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        r = member_client.put(url, json=body14(round_scene, cat(db_session, "20"), note=""))
+        assert r.status_code == 200, r.text
+        assert {o.note for o in overrides_of(db_session, round_scene, "14")} == {None}
+
+    def test_whitespace_only_note_normalises_to_null(self, member_client, db_session, round_scene):
+        """Пробельная строка — та же пустота, что и `""` (правило по трим на
+        границах): табы, переводы строк и пробелы внутри и по краям, ничего
+        не остающееся после `strip()`."""
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        r = member_client.put(url, json=body14(round_scene, cat(db_session, "20"), note="  \t\n  "))
+        assert r.status_code == 200, r.text
+        assert {o.note for o in overrides_of(db_session, round_scene, "14")} == {None}
+
+    def test_real_note_with_surrounding_whitespace_is_stored_untrimmed(self, member_client, db_session, round_scene):
+        """Негативный к обоим тестам выше: решение о пустоте смотрит на
+        `value.strip()`, но СОХРАНЯЕТ исходную строку целиком — ни края, ни
+        середина настоящей заметки не обрезаются."""
+        note = "  реальная   заметка  "
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        r = member_client.put(url, json=body14(round_scene, cat(db_session, "20"), note=note))
+        assert r.status_code == 200, r.text
+        assert {o.note for o in overrides_of(db_session, round_scene, "14")} == {note}
+
+    def test_empty_string_then_null_is_not_a_conflict_and_keeps_the_first_audit(
+        self, member_client, db_session, round_scene, factories
+    ):
+        """Это и есть вред, который лечит нормализация (не голая проверка
+        итогового значения, а поведение НА ГРАНИЦЕ предиката no-op §2.4 п.3):
+        первый запрос кладёт `""`, второй, от ДРУГОГО пользователя, кладёт
+        `null` при той же статье. Без нормализации `("", cat) != (None, cat)`
+        не совпало бы с предикатом no-op — второй запрос ушёл бы в перезапись
+        и переставил аудит на второго пользователя, хотя содержательно ничего
+        не изменилось. С нормализацией оба запроса несут ОДНО и то же значение
+        `(None, cat)`, второй — no-op, аудит остаётся за первым автором, а
+        состояние раздела — `resolved`, не `conflict` (структурно раздел раунда
+        и не мог бы разойтись по сметам от одних только раундовых PUT: запись
+        атомарна и переписывает ВСЕ offer-сметы одним значением за один вызов,
+        так что расхождение между сметами эта пара вызовов доказать не может —
+        зато то, что предикат no-op их СЧИТАЕТ одним и тем же решением, а не
+        двумя разными, доказывает именно аудит, не тронутый вторым вызовом).
+        """
+        url = OVERRIDES.format(t=round_scene.tender.id, r=round_scene.r1.id)
+        code_id = cat(db_session, "20")
+        first_author = member_client.user.id
+
+        r1 = member_client.put(url, json=body14(round_scene, code_id, note=""))
+        assert r1.status_code == 200, r1.text
+
+        second_user = factories.UserFactory.create()
+        db_session.flush()
+        member_client.set_user(second_user)
+
+        r2 = member_client.put(url, json=body14(round_scene, code_id, note=None))
+        assert r2.status_code == 200, r2.text
+
+        rows = overrides_of(db_session, round_scene, "14")
+        assert {o.note for o in rows} == {None}
+        assert {o.assigned_by for o in rows} == {first_author}          # аудит НЕ переехал на second_user
+        assert state_of(db_session, round_scene, "14").state == ru.STATE_RESOLVED
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+class TestWriteRefusalsAcrossVerbs:
+    """Пункт C ревью: `tender_not_found`, `round_not_found` и
+    `round_has_no_offer_estimates` не доходили ни до одного теста ЧЕРЕЗ
+    РОУТЕР ни на одном глаголе — первые два не были покрыты вообще нигде,
+    даже на уровне сервиса; третий был покрыт только на уровне сервиса
+    (`TestKeyResolution.test_round_without_offer_estimates_is_404_before_
+    anything_else`), а маршрут не проверял никто. PUT и DELETE проходят ОДНУ
+    и ТУ ЖЕ `_lock_scope` (§2.4 п.1: тендер → раунд → сметы) ДО разрешения
+    ключа, поэтому один параметризованный класс достаточен на оба глагола —
+    тело запроса и метод HTTP единственное, что отличается, и оба явно
+    проверяются в каждом тесте (не просто «код есть где-то в наборе»).
+    """
+
+    @staticmethod
+    def _body(method, scene, db):
+        if method == "PUT":
+            return body14(scene, cat(db, "20"))
+        return {"lot_key": scene.key14[0], "position_key_in_proposal": scene.key14[1]}
+
+    def test_unknown_tender_is_404(self, member_client, db_session, round_scene, method):
+        url = OVERRIDES.format(t=10**9, r=round_scene.r1.id)
+        r = member_client.request(method, url, json=self._body(method, round_scene, db_session))
+        assert (r.status_code, r.json()["detail"]["code"]) == (404, "tender_not_found")
+
+    def test_round_of_another_tender_is_404(self, member_client, db_session, round_scene, factories, method):
+        other = factories.TenderFactory.create()
+        db_session.flush()
+        url = OVERRIDES.format(t=other.id, r=round_scene.r1.id)
+        r = member_client.request(method, url, json=self._body(method, round_scene, db_session))
+        assert (r.status_code, r.json()["detail"]["code"]) == (404, "round_not_found")
+
+    def test_round_without_offer_estimates_is_404(self, member_client, db_session, round_scene, factories, method):
+        empty = factories.TenderRoundFactory.create(tender=round_scene.tender, stage_no=3)
+        db_session.flush()
+        url = OVERRIDES.format(t=round_scene.tender.id, r=empty.id)
+        r = member_client.request(method, url, json=self._body(method, round_scene, db_session))
+        assert (r.status_code, r.json()["detail"]["code"]) == (404, "round_has_no_offer_estimates")
