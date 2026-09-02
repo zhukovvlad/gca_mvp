@@ -256,6 +256,9 @@ export interface TenderRoundRow {
   current_job_id: number | null;
   baseline_estimate_id: number | null;
   baseline_total_including_vat: Decimal | null;
+  /** Разделов раунда в состояниях unassigned+partial+conflict (спека этапного
+   *  разноса §2.6); null — у раунда нет offer-смет, триггер разноса не рисуется. */
+  unallocated_pending_sections: number | null;
 }
 
 export interface TenderParticipant {
@@ -317,6 +320,91 @@ export interface ParticipantDeletionPreview {
   positions_count: number;
   overrides_count: number;
   confirmation_token: string;
+}
+
+// ---------------------------------------------------------------------------
+//  Этапный разнос Нераспределённого (спека 2026-09-01-round-unallocated-design.md)
+// ---------------------------------------------------------------------------
+
+export type RoundSectionState = "unassigned" | "partial" | "conflict";
+export type SectionKey = [lot_key: string, position_key_in_proposal: string];
+
+export interface RoundSectionPartial {
+  assigned: number;
+  total: number;
+  notes: (string | null)[];
+}
+
+export interface RoundSectionConflict {
+  categories: { id: number; code: string; title: string }[];
+  notes: (string | null)[];
+  audit_differs: boolean;
+}
+
+interface RoundUnallocatedSectionBase {
+  lot_key: string;
+  position_key_in_proposal: string;
+  parent_key: SectionKey | null;
+  depth: number;
+  number: string | null;
+  title: string;
+  smr_article_raw: string | null;
+  rows: number;
+}
+
+export type RoundUnallocatedSection = RoundUnallocatedSectionBase & (
+  | { state: "unassigned" }
+  | { state: "partial"; partial: RoundSectionPartial }
+  | { state: "conflict"; conflict: RoundSectionConflict }
+);
+
+export interface RoundManualAssignment {
+  lot_key: string;
+  position_key_in_proposal: string;
+  number: string | null;
+  title: string;
+  rows: number;
+  work_category_id: number;
+  category_code: string;
+  category_title: string;
+  assigned_by_email: string;
+  assigned_at: string;
+  note: string | null;
+}
+
+export type RoundDiagnosticCode = "outside_structure" | "structure_disabled" | "unresolved_chapter_ref";
+
+export interface RoundDiagnostic {
+  code: RoundDiagnosticCode;
+  contractor_title: string;
+  title: string;
+  rows: number;
+}
+
+export interface RoundUnallocated {
+  round: { id: number; stage_no: number; label: string | null; held_on: string | null };
+  offers_count: number;
+  sections: RoundUnallocatedSection[];
+  manual: RoundManualAssignment[];
+  diagnostics: RoundDiagnostic[];
+  category_options: ProjectPassportCategoryOption[];
+}
+
+export interface SetRoundCategoryOverrideInput {
+  tenderId: number;
+  roundId: number;
+  lotKey: string;
+  positionKey: string;
+  workCategoryId: number;
+  /** ВСЕГДА уходит в тело: null — явная очистка (§2.4). */
+  note: string | null;
+}
+
+export interface ClearRoundCategoryOverrideInput {
+  tenderId: number;
+  roundId: number;
+  lotKey: string;
+  positionKey: string;
 }
 
 // ---------------------------------------------------------------------------

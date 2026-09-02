@@ -171,5 +171,7 @@ export const qk = {
      */
     stageSummaryForTender: (tenderId: number) => ["tenders", "stage-summary", tenderId] as const,
     stagePositionsForTender: (tenderId: number) => ["tenders", "stage-positions", tenderId] as const,
+    /** Нераспределённое раунда (спека этапного разноса §2.3). */
+    roundUnallocated: (tenderId: number, roundId: number) => ["tenders", "round-unallocated", tenderId, roundId] as const,
   },
 };

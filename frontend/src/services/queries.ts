@@ -1103,6 +1103,42 @@ export function useStagePositions(
   });
 }
 
+export function useRoundUnallocated(tenderId: number | undefined, roundId: number | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.tenders.roundUnallocated(tenderId ?? 0, roundId ?? 0),
+    queryFn: () => tendersApi.roundUnallocated(tenderId as number, roundId as number),
+    // Ленивый GET (§2.7): запрос уходит только при открытом Sheet; 404 не повторяется.
+    enabled: enabled && tenderId !== undefined && roundId !== undefined,
+    retry: false,
+  });
+}
+
+function invalidateAfterRoundOverride(qc: ReturnType<typeof useQueryClient>, tenderId: number, roundId: number) {
+  // §2.7: карточка (счётчик), ОБА префикса свода, сам верстак. Ничего договорного.
+  qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.stageSummaryForTender(tenderId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.stagePositionsForTender(tenderId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.roundUnallocated(tenderId, roundId) });
+}
+
+export function useSetRoundCategoryOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: tendersApi.setRoundCategoryOverride,
+    onSuccess: (_d, input) => invalidateAfterRoundOverride(qc, input.tenderId, input.roundId),
+    onError: toastApiError,
+  });
+}
+
+export function useClearRoundCategoryOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: tendersApi.clearRoundCategoryOverride,
+    onSuccess: (_d, input) => invalidateAfterRoundOverride(qc, input.tenderId, input.roundId),
+    onError: toastApiError,
+  });
+}
+
 function invalidateTender(qc: ReturnType<typeof useQueryClient>, tenderId: number) {
   qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.all });

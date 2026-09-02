@@ -8,10 +8,13 @@ import {
   apiErrorCode,
   apiErrorContext,
   apiErrorStatus,
+  useClearRoundCategoryOverride,
   useDeleteParticipant,
   useDeleteTender,
   useImportJob,
   useRoundImportJobs,
+  useRoundUnallocated,
+  useSetRoundCategoryOverride,
   useStagePositions,
   useStageSummary,
   useTender,
@@ -637,5 +640,108 @@ describe("useStagePositions", () => {
     });
     await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
     expect(hits).toBe(1);
+  });
+});
+
+describe("useRoundUnallocated", () => {
+  it("enabled=false — запрос не уходит (ленивый GET, §2.7)", () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useRoundUnallocated(300, 3001, false), { wrapper: wrapperFor(qc) });
+    expect(result.current.fetchStatus).toBe("idle");
+  });
+
+  it("грузит нераспределённое раунда 3001", async () => {
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useRoundUnallocated(300, 3001, true), { wrapper: wrapperFor(qc) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const sections = result.current.data?.sections ?? [];
+    expect(sections).toHaveLength(5);
+    expect(result.current.data?.offers_count).toBe(1);
+
+    // Форма переживает круговой путь через msw целиком, не только счётчики.
+    const partialSection = sections.find((s) => s.state === "partial");
+    if (partialSection?.state === "partial") {
+      expect(partialSection.partial).toEqual({ assigned: 1, total: 2, notes: ["код в файле нечитаем"] });
+    } else {
+      throw new Error("ожидался раздел в состоянии partial");
+    }
+
+    const conflictSections = sections.filter((s) => s.state === "conflict");
+    expect(conflictSections).toHaveLength(2);
+    const twoCategoryConflict = conflictSections.find((s) => s.state === "conflict" && s.conflict.categories.length === 2);
+    if (twoCategoryConflict?.state === "conflict") {
+      expect(twoCategoryConflict.conflict.categories).toHaveLength(2);
+    } else {
+      throw new Error("ожидался конфликт с двумя статьями");
+    }
+    const auditDiffersConflict = conflictSections.find((s) => s.state === "conflict" && s.conflict.audit_differs);
+    if (auditDiffersConflict?.state === "conflict") {
+      expect(auditDiffersConflict.conflict.audit_differs).toBe(true);
+    } else {
+      throw new Error("ожидался конфликт с расходящимся аудитом");
+    }
+
+    expect(result.current.data?.manual).toHaveLength(1);
+    expect(result.current.data?.manual?.[0]).toMatchObject({
+      work_category_id: 13,
+      category_code: "09",
+      category_title: "Благоустройство",
+    });
+
+    expect(result.current.data?.diagnostics).toHaveLength(2);
+
+    const nested = sections.find((s) => s.parent_key !== null);
+    expect(nested?.parent_key).toEqual(["lot_1", "3"]);
+  });
+
+  it("404 на раунде без offer-смет — ошибка, и запрос НЕ повторяется (retry: false, §2.7)", async () => {
+    let hits = 0;
+    server.use(
+      http.get("/api/v1/tenders/:id/rounds/:rid/unallocated", () => {
+        hits += 1;
+        return HttpResponse.json(
+          { detail: { code: "round_has_no_offer_estimates", message: "Раунд или его сметы больше недоступны." } },
+          { status: 404 }
+        );
+      })
+    );
+    const qc = createTestQueryClient();
+    const { result } = renderHook(() => useRoundUnallocated(300, 3002, true), { wrapper: wrapperFor(qc) });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiErrorStatus(result.current.error)).toBe(404);
+    expect(hits).toBe(1);
+  });
+});
+
+describe("раундовые мутации разноса (§2.7)", () => {
+  const EXPECTED = [
+    qk.tenders.card(300), qk.tenders.stageSummaryForTender(300),
+    qk.tenders.stagePositionsForTender(300), qk.tenders.roundUnallocated(300, 3001),
+  ].map((k) => JSON.stringify(k));
+
+  it("PUT несёт заметку явно (null тоже) и инвалидирует тендерную ветку — и ничего договорного", async () => {
+    const qc = createTestQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(() => useSetRoundCategoryOverride(), { wrapper: wrapperFor(qc) });
+    await act(() => result.current.mutateAsync({ tenderId: 300, roundId: 3001, lotKey: "lot_1", positionKey: "3", workCategoryId: 20, note: null }));
+    const body = handlerState.roundOverrideRequests[0].body as Record<string, unknown>;
+    expect("note" in body && body.note === null).toBe(true);
+    expect(body).toMatchObject({ lot_key: "lot_1", position_key_in_proposal: "3", work_category_id: 20 });
+    const keys = spy.mock.calls.map(([f]) => JSON.stringify(f?.queryKey));
+    expect(new Set(keys)).toEqual(new Set(EXPECTED));
+    // Негативно к перекрёстной инвалидации: ни один ключ не начинается с корней договорного контура.
+    expect(keys.some((k) => k.startsWith('["passport"') || k.startsWith('["contracts"'))).toBe(false);
+  });
+
+  it("DELETE несёт ключ в теле и инвалидирует тот же набор", async () => {
+    const qc = createTestQueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(() => useClearRoundCategoryOverride(), { wrapper: wrapperFor(qc) });
+    await act(() => result.current.mutateAsync({ tenderId: 300, roundId: 3001, lotKey: "lot_1", positionKey: "50" }));
+    expect(handlerState.roundOverrideRequests[0].method).toBe("DELETE");
+    // Точное равенство, не toMatchObject: утёкшее поле (note, work_category_id)
+    // прошло бы частичный матчер молча.
+    expect(handlerState.roundOverrideRequests[0].body).toEqual({ lot_key: "lot_1", position_key_in_proposal: "50" });
+    expect(new Set(spy.mock.calls.map(([f]) => JSON.stringify(f?.queryKey)))).toEqual(new Set(EXPECTED));
   });
 });

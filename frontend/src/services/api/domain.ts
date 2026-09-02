@@ -14,6 +14,8 @@ import type {
   InflationSeriesValue,
   BatchKindResult,
   CatalogPositionRow,
+  CategoryOverrideChangeSummary,
+  ClearRoundCategoryOverrideInput,
   ContractCard,
   ContractImportJob,
   ContractInput,
@@ -39,6 +41,8 @@ import type {
   ReviewQueueParams,
   RoundImportJob,
   RoundInput,
+  RoundUnallocated,
+  SetRoundCategoryOverrideInput,
   StagePositions,
   StageSummary,
   TenderCard,
@@ -302,4 +306,12 @@ export const tendersApi = {
         paramsSerializer: { indexes: null },
       })
       .then((r) => r.data),
+  roundUnallocated: (tenderId: number, roundId: number): Promise<RoundUnallocated> =>
+    api.get<RoundUnallocated>(`/v1/tenders/${tenderId}/rounds/${roundId}/unallocated`).then((r) => r.data),
+  setRoundCategoryOverride: ({ tenderId, roundId, lotKey, positionKey, workCategoryId, note }: SetRoundCategoryOverrideInput): Promise<CategoryOverrideChangeSummary> =>
+    api.put<CategoryOverrideChangeSummary>(`/v1/tenders/${tenderId}/rounds/${roundId}/category-overrides`,
+      { lot_key: lotKey, position_key_in_proposal: positionKey, work_category_id: workCategoryId, note }).then((r) => r.data),
+  clearRoundCategoryOverride: ({ tenderId, roundId, lotKey, positionKey }: ClearRoundCategoryOverrideInput): Promise<CategoryOverrideChangeSummary> =>
+    api.delete<CategoryOverrideChangeSummary>(`/v1/tenders/${tenderId}/rounds/${roundId}/category-overrides`,
+      { data: { lot_key: lotKey, position_key_in_proposal: positionKey } }).then((r) => r.data),
 };

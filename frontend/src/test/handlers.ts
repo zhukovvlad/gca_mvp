@@ -24,6 +24,7 @@ import {
   sampleMatrix,
   sampleMatrixCellDetail,
   sampleProjectPassport,
+  sampleRoundUnallocated,
   sampleStageSummary,
   stagePositionsResponse,
   stageSummaryAllUnknown,
@@ -183,6 +184,8 @@ interface HandlerState {
     | "one_offer_per_round"
     | "single_participant"
     | "offer_has_no_estimate";
+  /** Последние PUT и DELETE к category-overrides — для проверки тела. */
+  roundOverrideRequests: Array<{ method: string; body: Record<string, unknown> }>;
 }
 
 export const handlerState: HandlerState = {
@@ -213,6 +216,7 @@ export const handlerState: HandlerState = {
   roundUploadConflictCode: "replace_required",
   tenderDeleteOutcome: "ok",
   stageSummaryOutcome: "ok",
+  roundOverrideRequests: [],
 };
 
 export function resetHandlerState() {
@@ -238,6 +242,7 @@ export function resetHandlerState() {
   handlerState.roundUploadConflictCode = "replace_required";
   handlerState.tenderDeleteOutcome = "ok";
   handlerState.stageSummaryOutcome = "ok";
+  handlerState.roundOverrideRequests = [];
 }
 
 function page<T>(items: T[]) {
@@ -409,9 +414,10 @@ function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
     case "empty":
       // Раунд без единого job (файла нет) — латест job и текущий job тоже null,
       // и все ячейки раунда 3001 обязаны стать «не участвовал» (offer_id null).
+      // Разнос (§2.6): у раунда без offer-смет счётчик обязан стать null.
       return {
         ...sampleTenderCard,
-        rounds: [{ ...round1, latest_job: null, current_job_id: null }, round2],
+        rounds: [{ ...round1, latest_job: null, current_job_id: null, unallocated_pending_sections: null }, round2],
         cells: sampleTenderCard.cells.map((cell) =>
           cell.round_id === round1.id
             ? { ...cell, offer_id: null, estimate_id: null, total_including_vat: null }
@@ -435,6 +441,7 @@ function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
       // «выбрать единственную».
       return {
         ...sampleTenderCard,
+        rounds: [round1, { ...round2, unallocated_pending_sections: 0 }],
         cells: sampleTenderCard.cells.map((cell) =>
           cell.round_id === round2.id && cell.package_id === 501
             ? { ...cell, offer_id: 7003, estimate_id: 8003, total_including_vat: "1100.00" }
@@ -449,6 +456,7 @@ function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
       // что у Беты вообще нет плиток.
       return {
         ...sampleTenderCard,
+        rounds: [round1, { ...round2, unallocated_pending_sections: 0 }],
         cells: sampleTenderCard.cells.map((cell) => {
           if (cell.round_id === round2.id && cell.package_id === 501) {
             return { ...cell, offer_id: 7003, estimate_id: 8003, total_including_vat: "1100.00" };
@@ -468,6 +476,7 @@ function tenderCardFor(state: HandlerState["tenderRoundState"]): TenderCard {
       // сметы попало бы в выбор молча, без единой плитки на экране.
       return {
         ...sampleTenderCard,
+        rounds: [round1, { ...round2, unallocated_pending_sections: null }],
         cells: sampleTenderCard.cells.map((cell) =>
           cell.round_id === round2.id && cell.package_id === 501 ? { ...cell, offer_id: 7003 } : cell
         ),
@@ -1611,5 +1620,21 @@ export const handlers = [
    */
   http.get("/api/v1/tenders/:tenderId/stage-summary/:workCategoryId", ({ params }) => {
     return HttpResponse.json(stagePositionsResponse(Number(params.workCategoryId)));
+  }),
+  http.get("/api/v1/tenders/:id/rounds/:rid/unallocated", ({ params }) => {
+    if (Number(params.rid) === 3001) {
+      return HttpResponse.json(sampleRoundUnallocated);
+    }
+    return HttpResponse.json({ detail: { code: "round_has_no_offer_estimates", message: "Раунд или его сметы больше недоступны." } }, { status: 404 });
+  }),
+  http.put("/api/v1/tenders/:id/rounds/:rid/category-overrides", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.roundOverrideRequests.push({ method: "PUT", body });
+    return HttpResponse.json({ chapters_updated: 3, additional_works_updated: 1, chapters_manual: 3 });
+  }),
+  http.delete("/api/v1/tenders/:id/rounds/:rid/category-overrides", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.roundOverrideRequests.push({ method: "DELETE", body });
+    return HttpResponse.json({ chapters_updated: 3, additional_works_updated: 1, chapters_manual: 3 });
   }),
 ];
