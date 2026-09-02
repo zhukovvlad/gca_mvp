@@ -14,10 +14,23 @@
 > - `rows` у `sections[]` — ДОСТИЖИМЫЕ строки, а не полный размер файлового
 >   поддерева; полный остаётся только у `manual[]`.
 >
-> Ниже это задето в шести местах, каждое помечено `⚠ УСТАРЕЛО` по месту:
-> Global Constraints (два пункта), `ChapterNode.rows`, юнит-тест
-> `test_rows_is_the_node_rows_regardless_of_vectors`, тип
-> `RoundUnallocatedSectionBase.rows`, `PENDING_HINT`.
+> **Как читать эскизы ниже — правилом, а не списком.** Первая редакция этой
+> врезки перечисляла «шесть мест, каждое помечено», и перечень оказался
+> неполным: он собирался чтением, а не обходом (внешнее ревью нашло ещё
+> четыре). Перечень такого рода гниёт при первой же правке, поэтому здесь
+> стоит признак:
+>
+> **любой эскиз ниже, где встречаются `ChapterNode`, `SectionAggregate`,
+> `input_set`, `aggregate` или поле `rows` ответа, написан по ОТМЕНЁННОЙ
+> модели** — в нём нет `own_rows`/`reachable_rows`, нет фильтра достижимости и
+> `rows` везде значит полное файловое поддерево. Действующие подписи — в
+> `backend/services/round_unallocated.py` и `backend/crud/round_unallocated.py`.
+> Крупные блоки помечены `⚠ УСТАРЕЛО` по месту, но опираться надо на признак:
+> пометка — удобство, а не гарантия полноты.
+>
+> **Одно исключение, которое НЕ надо «чинить»:** `_manual_json` отдаёт
+> `a.node.rows`, и это верно и сегодня — у `manual[]` `rows` так и остался
+> полным файловым поддеревом. Отменено только `_section_json`.
 >
 > Текст плана НЕ переписан задним числом намеренно: план — артефакт гейта 3, и
 > расхождения с ним живут в devlog (§3 — девять отступлений, §9б — эта правка),
@@ -296,6 +309,8 @@ class ChapterNode:
 
 @dataclass(frozen=True)
 class SectionAggregate:
+    # ⚠ УСТАРЕЛО (см. врезку): добавилось reachable_rows — достижимые строки §2.2,
+    # они и идут в sections[].rows вместо node.rows.
     node: ChapterNode
     parent_key: SectionKey | None        # переподвешенный родитель внутри входного множества
     depth: int                           # глубина от переподвешенного корня
@@ -303,6 +318,8 @@ class SectionAggregate:
     vectors: tuple[Vector | None, ...]   # по сметам, порядок estimate_id ASC
 
 def classify(vectors: Sequence[Vector | None]) -> Classification
+# ⚠ УСТАРЕЛО (см. врезку): рядом появилась reachable_rows(nodes, missing_article),
+# а input_set берёт её результат четвёртым необязательным параметром.
 def input_set(nodes: Sequence[ChapterNode], missing_article: Mapping[SectionKey, bool],
               vectors: Mapping[SectionKey, Sequence[Vector | None]]) -> list[ChapterNode]
 def aggregate(nodes: Sequence[ChapterNode], missing_article: Mapping[SectionKey, bool],
@@ -409,6 +426,8 @@ class TestPartitionProperty:
             assert c.assigned == len(present) and c.total == n
 
 
+# ⚠ УСТАРЕЛО (см. врезку): у хелпера появился own_rows (по умолчанию равный
+# rows), а рядом — класс TestReachability на границу достижимости §2.2.
 def node(key, parent=None, raw=None, rows=1, number=None, title="р") -> ru.ChapterNode:
     return ru.ChapterNode(key=("lot_1", key), file_parent=None if parent is None else ("lot_1", parent),
                           number=number or key, title=title, smr_article_raw=raw, rows=rows)
@@ -417,6 +436,9 @@ def node(key, parent=None, raw=None, rows=1, number=None, title="р") -> ru.Chap
 NODES = [node("1"), node("14"), node("14.1", parent="14"), node("14.3", parent="14"), node("15")]
 
 
+# ⚠ УСТАРЕЛО В ЧАСТИ СОСТАВА (см. врезку): сами эти проверки остались верны и
+# зелены, но рядом появился класс TestReachability — граница §2.2, которой у
+# плана не было вовсе.
 class TestInputSet:
     def test_chapter_with_file_article_and_no_override_is_excluded(self):
         missing = {n.key: n.key[1] != "1" for n in NODES}          # у «1» статья есть
@@ -527,6 +549,8 @@ class Classification:
     audit_differs: bool
 
 
+# ⚠ УСТАРЕЛО (см. врезку) — повторный эскиз тех же дата-классов: у ChapterNode
+# нет own_rows, у SectionAggregate нет reachable_rows.
 @dataclass(frozen=True)
 class ChapterNode:
     key: SectionKey
@@ -582,7 +606,12 @@ def input_set(
     vectors: Mapping[SectionKey, Sequence[Vector | None]],
 ) -> list[ChapterNode]:
     """§2.2: эффективной статьи нет хотя бы в одной смете ИЛИ есть хотя бы
-    один override. Порядок `nodes` (файловый) сохраняется."""
+    один override. Порядок `nodes` (файловый) сохраняется.
+
+    ⚠ УСТАРЕЛО (см. врезку). Первый дизъюнкт требует ещё и ненулевой
+    достижимости: `missing_article.get(...) and reach.get(...) > 0`. Ко ВТОРОМУ
+    фильтр не применяется — решение, уже стоящее на узле, обязано остаться
+    видимым, иначе его нельзя снять."""
     return [
         n for n in nodes
         if missing_article.get(n.key, False) or any(v is not None for v in vectors.get(n.key, ()))
@@ -605,6 +634,8 @@ def aggregate(
     утверждением не доходит — правило Ф3 «утверждение файла сильнее
     наследования», — и вложенность обещала бы неправду).
     """
+    # ⚠ УСТАРЕЛО (см. врезку): свёртка достижимости считается ЗДЕСЬ один раз
+    # и передаётся и в input_set, и в каждый SectionAggregate.
     selected = input_set(nodes, missing_article, vectors)
     file_parent = {n.key: n.file_parent for n in nodes}
     in_set = {n.key for n in selected}
@@ -805,6 +836,9 @@ class TestStates:
         assert set(by) == {"14", "14.1", "14.3", "15"}          # «1» со статьёй «6» — вне множества
         assert all(a.classification.state == ru.STATE_UNASSIGNED for a in by.values())
 
+    # ⚠ УСТАРЕЛО (см. врезку): тест переименован в
+    # test_node_rows_is_the_full_file_subtree — node.rows таким и остался, но это
+    # метрика manual[]; на провод у sections[] идут достижимые строки.
     def test_rows_is_the_full_file_subtree(self, db_session, round_scene):
         by = states_by_number(db_session, round_scene)
         assert {n: a.node.rows for n, a in by.items()} == {"14": 3, "14.1": 2, "14.3": 1, "15": 1}
@@ -1021,6 +1055,8 @@ def representative_nodes(db: Session, estimate: Estimate) -> list[ru.ChapterNode
     ordered = sorted(metrics.items(), key=lambda kv: (kv[1].proposal_id, len(kv[1].position_key_in_proposal),
                                                       kv[1].position_key_in_proposal))
     return [
+        # ⚠ УСТАРЕЛО (см. врезку): узел собирается ещё и с own_rows=m.own_rows —
+        # прямыми строками раздела из того же `_section_metrics`.
         ru.ChapterNode(
             key=key_of[pid],
             file_parent=None if m.parent_position_item_id is None else key_of[m.parent_position_item_id],
@@ -1285,6 +1321,9 @@ class TestGet:
         top = next(s for s in body["sections"] if s["number"] == "14")
         assert set(top) == {"lot_key", "position_key_in_proposal", "parent_key", "depth", "number", "title",
                             "smr_article_raw", "rows", "state"}          # ни partial, ни conflict, ни денег
+        # ⚠ УСТАРЕЛО В ЧАСТИ СМЫСЛА (см. врезку): число 3 на этой сцене не
+        # изменилось (у «14» достижимость равна файловому поддереву), но
+        # означает оно теперь достижимые строки.
         assert (top["state"], top["rows"], top["parent_key"]) == ("unassigned", 3, None)
         child = next(s for s in body["sections"] if s["number"] == "14.1")
         assert child["parent_key"] == [top["lot_key"], top["position_key_in_proposal"]]
@@ -1386,6 +1425,8 @@ def _category_refs(db: Session) -> list[CategoryRef]:
 
 
 def _section_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef]) -> dict:
+    # ⚠ УСТАРЕЛО (см. врезку): "rows" здесь — a.reachable_rows, НЕ a.node.rows.
+    # У _manual_json ниже a.node.rows остаётся верным.
     c = a.classification
     body = {
         "lot_key": a.node.key[0], "position_key_in_proposal": a.node.key[1],
@@ -3142,7 +3183,10 @@ git commit -m "docs(round-unallocated): долг №22 закрыт, права 
 (`test_baseline_is_not_touched_by_the_same_selection`). §2.2 (входное множество,
 четыре состояния по полному вектору, представительная смета, `mapping_broken`
 500) — задачи 1, 2, 4. §2.3 (форма GET, `rows` = полное поддерево, без денег,
-три 404, `member`) — задачи 2, 4. §2.4 (ключ в теле, `note` обязательное
+три 404, `member`) — задачи 2, 4. **⚠ УСТАРЕЛО (см. врезку):** §2.2 несёт ещё
+и границу достижимости, а `rows` = полное поддерево осталось только у
+`manual[]`; покрытие обеих правок — `TestReachability` и
+`TestReachabilityBoundary`. §2.4 (ключ в теле, `note` обязательное
 nullable, таблица исходов ключа до no-op у PUT и DELETE, предикат из двух
 условий, атомарная перезапись с единым аудитом, `apply_overrides`, порядок
 блокировок) — задачи 6, 7, 8. §2.5 (три кода своим селектором, тот же план
