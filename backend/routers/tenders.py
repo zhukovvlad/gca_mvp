@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin
 from config import settings
 from crud import position_drilldown as crud_position_drilldown
+from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
 from crud import tenders as crud_tenders
 from crud.common import DomainError
@@ -170,6 +171,19 @@ def list_round_import_jobs(tender_id: int, round_id: int, db: Session = Depends(
         return crud_tenders.list_round_import_jobs(db, tender_id, round_id)
     except DomainError as e:
         raise_domain_error(e)
+
+
+@router.get("/{tender_id}/rounds/{round_id}/unallocated")
+def round_unallocated(tender_id: int, round_id: int, db: Session = Depends(get_db)):
+    """Этапный разнос: разделы раунда без единого решения (спека этапного
+    разноса §2.3). Права — аутентификация роутера, `member` вправе."""
+    try:
+        return decimal_json(crud_ru.build_round_unallocated(db, tender_id, round_id))
+    except DomainError as e:
+        raise_domain_error(e)
+    except crud_ru.RoundMappingBroken:
+        log.error("Этапный разнос: проекции раунда %s расходятся", round_id, exc_info=True)
+        raise
 
 
 @router.delete("/{tender_id}/participants/{package_id}", status_code=status.HTTP_204_NO_CONTENT)

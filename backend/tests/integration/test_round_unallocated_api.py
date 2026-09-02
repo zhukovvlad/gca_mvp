@@ -2,6 +2,8 @@
 (спека 2026-09-01-round-unallocated-design.md §2.2, §2.3, §2.5, §2.6, §4.1, §4.3)."""
 from __future__ import annotations
 
+import logging
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -24,6 +26,13 @@ pytestmark = pytest.mark.integration
 
 def cat(db, code):
     return db.execute(sa.select(WorkCategory.id).where(WorkCategory.code == code)).scalar_one()
+
+
+URL = "/api/v1/tenders/{t}/rounds/{r}/unallocated"
+
+
+def category_count(db):
+    return db.execute(sa.select(sa.func.count()).select_from(WorkCategory)).scalar_one()
 
 
 def _single_participant_scene(db_session, factories, participant):
@@ -458,3 +467,185 @@ class TestDiagnostics:
         outside = [d for d in diags if d["code"] == crud_ru.DIAG_OUTSIDE_STRUCTURE]
         assert len(outside) == 1 and outside[0]["rows"] == 2
         assert outside[0]["title"] == "Лот №1 - Тестовый"           # H: title раньше не проверялся
+
+
+class TestGet:
+    """GET §2.3 — тело этапного разноса: дискриминированный union (`partial`/
+    `conflict` только у своего состояния), денег в ответе нет."""
+
+    def test_member_gets_the_full_shape(self, member_client, db_session, round_scene):
+        r = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id))
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body) == {"round", "offers_count", "sections", "manual", "diagnostics", "category_options"}
+        assert body["round"] == {"id": round_scene.r1.id, "stage_no": 1, "label": None, "held_on": None}
+        assert body["offers_count"] == 3
+        top = next(s for s in body["sections"] if s["number"] == "14")
+        assert set(top) == {"lot_key", "position_key_in_proposal", "parent_key", "depth", "number", "title",
+                            "smr_article_raw", "rows", "state"}          # ни partial, ни conflict, ни денег
+        assert (top["state"], top["rows"], top["parent_key"]) == ("unassigned", 3, None)
+        child = next(s for s in body["sections"] if s["number"] == "14.1")
+        assert child["parent_key"] == [top["lot_key"], top["position_key_in_proposal"]]
+        # C: файловый порядок ведомости — родитель раньше потомка, не порядок
+        # поиска по номеру, которым живут `top`/`child` выше.
+        assert [s["number"] for s in body["sections"]] == ["14", "14.1", "14.3", "15"]
+        assert body["manual"] == []
+        # F: форма и порядок диагностики — сметы радиуса по `estimate_id ASC`
+        # (порядок участников фикстуры), не порядок, в котором их коды совпали.
+        assert all(set(d) == {"code", "contractor_title", "title", "rows"} for d in body["diagnostics"])
+        assert [(d["code"], d["contractor_title"]) for d in body["diagnostics"]] == [
+            ("unresolved_chapter_ref", "ООО А"),
+            ("unresolved_chapter_ref", "ООО Б"),
+            ("unresolved_chapter_ref", "ООО В"),
+        ]
+        # B: денег нет ни в одной записи `category_options`, не только в первой.
+        assert all(set(o) == {"id", "code", "title", "is_bucket"} for o in body["category_options"])
+        assert len(body["category_options"]) == category_count(db_session)
+        # D: порядок справочника — тот же, что несёт классификатор (`sort_order`),
+        # не порядок вставки/id; пин НЕЗАВИСИМЫМ запросом, без переиспользования
+        # `_category_options`.
+        expected_codes = [
+            row.code for row in
+            db_session.execute(sa.select(WorkCategory).order_by(WorkCategory.sort_order)).scalars()
+        ]
+        assert [o["code"] for o in body["category_options"]] == expected_codes
+
+    def test_partial_and_conflict_carry_their_blocks_and_resolved_goes_to_manual(
+        self, member_client, db_session, round_scene, admin_user
+    ):
+        e0, e1, e2 = round_scene.estimates
+        for e, code, note in zip((e0, e1, e2), ("20", "20", "16"), ("а", "б", "а"), strict=True):
+            set_override(db_session, estimate_id=e.id, position_item_id=round_scene.chapter(e.id, "14").id,
+                         work_category_id=cat(db_session, code), note=note, user_id=admin_user.id)
+        set_override(db_session, estimate_id=e0.id, position_item_id=round_scene.chapter(e0.id, "15").id,
+                     work_category_id=cat(db_session, "16"), note="только у первой", user_id=admin_user.id)
+        for e in (e0, e1, e2):
+            set_override(db_session, estimate_id=e.id, position_item_id=round_scene.chapter(e.id, "14.3").id,
+                         work_category_id=cat(db_session, "20"), note=None, user_id=admin_user.id)
+        body = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id)).json()
+        by = {s["number"]: s for s in body["sections"]}
+        assert by["14"]["state"] == "conflict"
+        # A: ключ состояния — дискриминированный union НА ПРОВОДЕ: у секции в
+        # `conflict` нет ключа `partial`, и наоборот у "15" ниже. Реализация,
+        # кладущая оба блока разом, красила бы прежние точечные проверки
+        # `by["14"]["conflict"][...]`/`by["15"]["partial"][...]` не глядя на
+        # лишний ключ — только `set(...) ==` его ловит.
+        assert set(by["14"]) == {"lot_key", "position_key_in_proposal", "parent_key", "depth", "number", "title",
+                                 "smr_article_raw", "rows", "state", "conflict"}
+        # B: денег нет и внутри блока `conflict`, и внутри каждой его категории.
+        assert set(by["14"]["conflict"]) == {"categories", "notes", "audit_differs"}
+        assert all(set(c) == {"id", "code", "title"} for c in by["14"]["conflict"]["categories"])
+        # E: полные тройки `{id, code, title}` — не только `code`: подмена
+        # `id`/`title` местами или на чужую статью прошла бы мимо прежней
+        # проверки одних кодов, а фронт предзаполняет пикер именно по `id`.
+        title20 = db_session.execute(sa.select(WorkCategory.title).where(WorkCategory.code == "20")).scalar_one()
+        title16 = db_session.execute(sa.select(WorkCategory.title).where(WorkCategory.code == "16")).scalar_one()
+        assert by["14"]["conflict"]["categories"] == [
+            {"id": cat(db_session, "20"), "code": "20", "title": title20},
+            {"id": cat(db_session, "16"), "code": "16", "title": title16},
+        ]
+        assert by["14"]["conflict"]["notes"] == ["а", "б"] and by["14"]["conflict"]["audit_differs"] is False
+        assert by["15"]["state"] == "partial"
+        assert set(by["15"]) == {"lot_key", "position_key_in_proposal", "parent_key", "depth", "number", "title",
+                                 "smr_article_raw", "rows", "state", "partial"}
+        assert by["15"]["partial"] == {"assigned": 1, "total": 3, "notes": ["только у первой"]}
+        assert "14.3" not in by
+        [manual] = body["manual"]
+        assert set(manual) == {"lot_key", "position_key_in_proposal", "number", "title", "rows", "work_category_id",
+                               "category_code", "category_title", "assigned_by_email", "assigned_at", "note"}
+        assert (manual["number"], manual["rows"], manual["category_code"], manual["note"]) == ("14.3", 1, "20", None)
+        assert manual["assigned_by_email"] == admin_user.email
+        # E: остальные поля `manual` были ЗАВЕДЕНЫ ключом, но не ЗНАЧЕНИЕМ —
+        # закрыть подмену `lot_key`/`position_key_in_proposal`/`title`/
+        # `work_category_id`/`category_title`, и что `assigned_at` — полный
+        # ISO-момент (`iso()` датавремени даёт разделитель "T"), а не голая дата.
+        assert manual["lot_key"] == round_scene.key14[0]
+        assert manual["position_key_in_proposal"] == round_scene.chapter(
+            round_scene.estimates[0].id, "14.3"
+        ).position_key_in_proposal
+        assert manual["title"] == "Подраздел 14.3"
+        assert manual["work_category_id"] == cat(db_session, "20")
+        assert manual["category_title"] == title20
+        assert "T" in manual["assigned_at"]
+
+    def test_unknown_tender_is_404_tender_not_found(self, member_client):
+        r = member_client.get(URL.format(t=999_999, r=1))
+        assert r.status_code == 404 and r.json()["detail"]["code"] == "tender_not_found"
+
+    def test_round_of_another_tender_is_404_round_not_found(self, member_client, db_session, round_scene, factories):
+        other = factories.TenderFactory.create()
+        db_session.flush()
+        r = member_client.get(URL.format(t=other.id, r=round_scene.r1.id))
+        assert r.status_code == 404 and r.json()["detail"]["code"] == "round_not_found"
+
+    def test_round_without_offer_estimates_is_404_with_the_spec_message(self, member_client, factories, db_session):
+        tender = factories.TenderFactory.create()
+        rnd = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        db_session.flush()
+        r = member_client.get(URL.format(t=tender.id, r=rnd.id))
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"code": "round_has_no_offer_estimates",
+                                      "message": "Раунд или его сметы больше недоступны."}
+
+    def test_mapping_broken_is_500_and_logged(self, member_client_no_raise, db_session, round_scene):
+        """Тот же приём и та же причина, что `test_mapping_broken_is_500_not_409`
+        по-сметного роутера: хендлер вешается ПРЯМО на логгер `routers.tenders`,
+        потому что `setup_logging()` сносит хендлеры root (и `caplog`)."""
+        e1 = round_scene.estimates[1]
+        ch = round_scene.chapter(e1.id, "15")
+        db_session.execute(sa.text("DELETE FROM position_items WHERE chapter_item_id = :cid"), {"cid": ch.id})
+        db_session.execute(sa.text("DELETE FROM position_items WHERE id = :cid"), {"cid": ch.id})
+        db_session.flush()
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Collector(level=logging.ERROR)
+        router_log = logging.getLogger("routers.tenders")
+        router_log.addHandler(handler)
+        try:
+            r = member_client_no_raise.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id))
+        finally:
+            router_log.removeHandler(handler)
+        assert r.status_code == 500
+        assert any(rec.levelno == logging.ERROR for rec in captured)
+
+    def test_round_with_a_real_label_and_held_on_round_trips(self, member_client, db_session, round_scene):
+        """G: `round_scene.r1` несёт `label=None`/`held_on=None` по построению
+        фикстуры, и другие тесты полагаются на эти `None` — значения меняются
+        ЗДЕСЬ, на объекте раунда, а не в самой фикстуре (иначе те тесты
+        покраснели бы). Без этого теста `label`/`held_on`, зашитые literal
+        `None` в сборке тела, красили бы всё до сих пор: `held_on` — колонка
+        `DATE`, и `DecimalJSONResponse` падает на любом типе, кроме `Decimal`
+        (сериализуемых строк/чисел/None) — не примени сборка `iso()`, боевой
+        раунд с настоящей датой отвечал бы 500, и ни один прежний тест
+        этого бы не заметил."""
+        round_scene.r1.label = "Этап опытный"
+        round_scene.r1.held_on = date(2026, 5, 12)
+        db_session.flush()
+        body = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id)).json()
+        assert body["round"] == {
+            "id": round_scene.r1.id, "stage_no": 1, "label": "Этап опытный", "held_on": "2026-05-12",
+        }
+
+    def test_file_classified_chapter_with_partial_override_carries_real_article_and_null_parent(
+        self, member_client, db_session, round_scene, admin_user
+    ):
+        """H: раздел «1» несёт СОБСТВЕННУЮ `smr_article_raw` из файла («6») и
+        входит во входное множество только через override (частичный здесь —
+        решение только у первой сметы). `aggregate()` делает узел со своим
+        `smr_article_raw` ВСЕГДА корнем своего кусочка (правило Ф3 — решение
+        предка до него не доходит), поэтому `parent_key` обязан быть `null`.
+        Сценарии без такого override (все прочие тесты этого класса) никогда
+        не касаются раздела с непустой `smr_article_raw`, и `None`, зашитый
+        literal в сборку тела, остался бы незамечен без этого теста."""
+        e0 = round_scene.estimates[0]
+        set_override(db_session, estimate_id=e0.id, position_item_id=round_scene.chapter(e0.id, "1").id,
+                     work_category_id=cat(db_session, "20"), note=None, user_id=admin_user.id)
+        body = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id)).json()
+        section = next(s for s in body["sections"] if s["number"] == "1")
+        assert section["state"] == "partial"
+        assert section["smr_article_raw"] == "6"
+        assert section["parent_key"] is None

@@ -14,8 +14,8 @@ from dataclasses import dataclass
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
-from crud.common import DomainError
-from crud.project_passport import _section_metrics  # ОДИН расчёт структуры на паспорт и раунд
+from crud.common import DomainError, iso
+from crud.project_passport import _category_options, _section_metrics  # ОДИН расчёт структуры на паспорт и раунд
 from models import (
     Contractor,
     Estimate,
@@ -30,12 +30,14 @@ from models import (
     Tender,
     TenderRound,
     User,
+    WorkCategory,
 )
 from parser.constants import JSON_KEY_LOTS
 from services import round_unallocated as ru
 from services.additional_works import REASON_CANDIDATE_WITHOUT_ARTICLE, categories_by_chapter_number, resolve_ref
 from services.category_override import _overrides_of, _rows_of
 from services.category_resolution import CategoryResolver, RowKind
+from services.category_rollup import CategoryRef
 from services.estimate_import import extract_positions, extract_single_proposal
 
 CODE_TENDER_NOT_FOUND = "tender_not_found"
@@ -322,3 +324,72 @@ def diagnostics(db: Session, scope: RoundScope) -> list[dict]:
                         "title": extra.title, "rows": 1,
                     })
     return out
+
+
+def _category_refs(db: Session) -> list[CategoryRef]:
+    """Тот же список, что собирает `get_project_passport` перед `_category_options`."""
+    return [
+        CategoryRef(id=c.id, code=c.code, title=c.title, parent_id=c.parent_id,
+                    is_bucket=c.is_bucket, sort_order=c.sort_order)
+        for c in db.execute(sa.select(WorkCategory)).scalars().all()
+    ]
+
+
+def _section_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef]) -> dict:
+    """Тело одного раздела §2.3: `partial`/`conflict` — дискриминированный
+    union, ключ есть ТОЛЬКО у своего состояния (`resolved` сюда не попадает —
+    вызывающий код отфильтровывает его для `manual`). Денег нет нигде."""
+    c = a.classification
+    body = {
+        "lot_key": a.node.key[0], "position_key_in_proposal": a.node.key[1],
+        "parent_key": None if a.parent_key is None else list(a.parent_key),
+        "depth": a.depth, "number": a.node.number, "title": a.node.title,
+        "smr_article_raw": a.node.smr_article_raw, "rows": a.node.rows, "state": c.state,
+    }
+    if c.state == ru.STATE_PARTIAL:
+        body["partial"] = {"assigned": c.assigned, "total": c.total, "notes": list(c.notes)}
+    elif c.state == ru.STATE_CONFLICT:
+        body["conflict"] = {
+            "categories": [{"id": i, "code": refs_by_id[i].code, "title": refs_by_id[i].title} for i in c.categories],
+            "notes": list(c.notes), "audit_differs": c.audit_differs,
+        }
+    return body
+
+
+def _manual_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef], email_of: dict[int, str]) -> dict:
+    """Тело одной строки `manual` §2.3 — состояние `resolved`. Все векторы
+    раздела равны (`classify`: `resolved` требует `assigned == total` и
+    единственное различное значение среди присутствующих), поэтому
+    `a.vectors[0]` — законный представитель: индекс не привилегирован, просто
+    любой слот годится. `None` в этом слоте недостижимо для `resolved` (в этом
+    состоянии `assigned == total`, то есть все слоты заполнены) — но если бы
+    порча агрегатора всё же протащила его сюда, `v.work_category_id` упал бы
+    голым `AttributeError` на `None`, не тихой подменой."""
+    v = a.vectors[0]          # resolved: один вектор во всех
+    return {
+        "lot_key": a.node.key[0], "position_key_in_proposal": a.node.key[1],
+        "number": a.node.number, "title": a.node.title, "rows": a.node.rows,
+        "work_category_id": v.work_category_id, "category_code": refs_by_id[v.work_category_id].code,
+        "category_title": refs_by_id[v.work_category_id].title,
+        "assigned_by_email": email_of[v.assigned_by], "assigned_at": iso(v.assigned_at), "note": v.note,
+    }
+
+
+def build_round_unallocated(db: Session, tender_id: int, round_id: int) -> dict:
+    """Тело GET §2.3: разделы, требующие решения, разнесённые вручную,
+    диагностика границ §5.5 и справочник статей целиком."""
+    scope = load_scope(db, tender_id, round_id)
+    states = load_states(db, scope)
+    refs = _category_refs(db)
+    refs_by_id = {r.id: r for r in refs}
+    authors = {a.vectors[0].assigned_by for a in states if a.classification.state == ru.STATE_RESOLVED}
+    email_of = dict(db.execute(sa.select(User.id, User.email).where(User.id.in_(authors or [-1]))).all())
+    rnd = scope.round
+    return {
+        "round": {"id": rnd.id, "stage_no": rnd.stage_no, "label": rnd.label, "held_on": iso(rnd.held_on)},
+        "offers_count": len(scope.estimates),
+        "sections": [_section_json(a, refs_by_id) for a in states if a.classification.state != ru.STATE_RESOLVED],
+        "manual": [_manual_json(a, refs_by_id, email_of) for a in states if a.classification.state == ru.STATE_RESOLVED],
+        "diagnostics": diagnostics(db, scope),
+        "category_options": _category_options(refs),
+    }
