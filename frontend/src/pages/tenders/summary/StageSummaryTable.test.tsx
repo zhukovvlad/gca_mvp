@@ -4,7 +4,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { sampleStagePositions, sampleStageSummary } from "@/test/fixtures";
+import { sampleStagePositions, sampleStageSummary, stageSummaryWithUnknownSecondColumn } from "@/test/fixtures";
 import { formatDecimalMoney, roundDecimalPercent } from "@/lib/format";
 import { useStagePositions } from "@/services/queries";
 import type { StageSummary, StageSummaryCell, StageSummaryChange, StageSummaryRow, StageSummaryTotalCell } from "@/types/domain";
@@ -34,7 +34,7 @@ const mockedUseStagePositions = vi.mocked(useStagePositions);
  * несёт `tender.id = 300` и участник с `offer_id` 7001/7002/7004 — значения
  * здесь те же, что у страницы в проде.
  */
-const TABLE_PROPS = { tenderId: 300, offerIds: [7001, 7002] };
+const TABLE_PROPS = { tenderId: 300, offerIds: [7001, 7002], allocateLink: () => null };
 
 /**
  * Таблица свода — состояния рисуются ПО ДАННЫМ, а не выводятся клиентом из
@@ -397,6 +397,71 @@ describe("Таблица свода — состояния по данным (с
     const td = screen.getByRole("cell");
     expect(td).toHaveClass(expected);
     expect(td).not.toHaveClass(expected === "align-top" ? "align-middle" : "align-top");
+  });
+
+  /**
+   * Проп `extra` (задача 13 плана этапного разноса, спека §2.8) — предикат
+   * «вторая строка есть» ОБЯЗАН совпадать с предикатом «вторая строка
+   * рисуется», а не разойтись на `null`. Найдено внешним ревью: до правки
+   * ячейка проверяла `extra !== undefined`, а рисовала строку условием
+   * `{extra && …}` — render-prop, вызванный УСЛОВНО (как `allocateLink»
+   * строки «Нераспределённое»: `extra={cond ? allocateLink(id) : undefined}`),
+   * законно возвращает `null`, и `null !== undefined`, но `null && …` не
+   * рисует ничего. Ячейка резервировала пустую вторую строку (`align-top` без
+   * единого видимого символа под суммой) КАЖДЫЙ раз, когда `allocateLink`
+   * теста отвечал `null` — а таких мест в файле по счёту ревью девятнадцать
+   * (`TABLE_PROPS.allocateLink: () => null`).
+   *
+   * Три входа с ОДНИМ и тем же `state`/`amount` (без числа, чтобы `showsNumber`
+   * не примешивал свою причину `align-top`): `extra` не передан вовсе,
+   * `extra=null` (то, что реально возвращает `allocateLink` теста) и
+   * `extra=<span/>` (то, что возвращает `allocateLink` страницы). Первые два
+   * ОБЯЗАНЫ выравниваться ОДИНАКОВО и ничего не рисовать во второй строке;
+   * третий — рисовать её.
+   */
+  it("extra=null выравнивается так же, как extra не передан вовсе — предикат разметки не расходится с предикатом рендера", () => {
+    const base = { ...sampleStageSummary.rows[0].cells[0], state: "not_evaluated", amount: null } as StageSummaryCell;
+
+    const { unmount: unmountNoExtra } = render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={base} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const noExtraCell = screen.getByRole("cell");
+    expect(noExtraCell).toHaveClass("align-middle");
+    unmountNoExtra();
+
+    const { unmount: unmountNullExtra } = render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={base} extra={null} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const nullExtraCell = screen.getByRole("cell");
+    // Тот же класс, что без `extra` вовсе — не «align-top» с пустой строкой внутри.
+    expect(nullExtraCell).toHaveClass("align-middle");
+    expect(nullExtraCell).not.toHaveClass("align-top");
+    unmountNullExtra();
+
+    render(
+      <table>
+        <tbody>
+          <tr>
+            <SummaryCell cell={base} extra={<span data-testid="extra-node">разнести →</span>} />
+          </tr>
+        </tbody>
+      </table>
+    );
+    const realExtraCell = screen.getByRole("cell");
+    expect(realExtraCell).toHaveClass("align-top");
+    expect(within(realExtraCell).getByTestId("extra-node")).toBeInTheDocument();
   });
 
   /**
@@ -866,6 +931,100 @@ describe("Таблица свода — состояния по данным (с
     const contributionValue = within(contributionCell).getByTestId("contribution-value");
     expect(contributionValue.textContent?.trim()).toBe("—");
     expect(contributionValue).toHaveAttribute("title", REASON_LABEL[child.contribution.reason!]);
+  });
+
+  /**
+   * «Разнести →» у строки «Нераспределённое» (спека
+   * 2026-09-01-round-unallocated-design.md §2.8, задача 13 плана): условие —
+   * СЧЁТЧИК строк ячейки (`rows.row_count > 0`), не сумма — колонка с
+   * неизвестной базой НДС прячет сумму, но её строки остаются разносимыми.
+   * Таблица решает только УСЛОВИЕ показа и передаёт `round_id` СВОЕЙ колонки;
+   * саму ссылку строит вызывающий (render-prop `allocateLink`) — таблица
+   * рендерится в тестах без роутера, и настоящий `Link` здесь упал бы.
+   *
+   * Ожидание — ЛИТЕРАЛ (`[3001, 3002]`), а не то же выражение-фильтр, что стоит
+   * в реализации (`StageSummaryTable.tsx`): вычисленное ожидание доказывает
+   * согласие с формулой, а не пришпиленный результат — тождественная копия
+   * условия в тесте осталась бы зелёной при любой правке условия, повторённой
+   * в обоих местах одинаково (ревью задачи 13). Литерал — round_id колонок 0 и
+   * 1 фикстуры (`stageSummaryColumns`, `frontend/src/test/fixtures.ts`).
+   *
+   * Два добавочных `expect` пиннят ПРЕДПОСЫЛКУ фикстуры (положительный и
+   * отрицательный случай оба существуют) — без них литерал мог бы совпасть
+   * случайно, если фикстура когда-нибудь потеряет один из двух случаев
+   * (`docs/insights/convergence-does-not-prove-partition.md` тем же приёмом,
+   * что там применён к разбиению, здесь применяется к списку вызовов).
+   */
+  it("«разнести →» зовётся ровно для колонок с нераспределёнными строками, по round_id колонки", () => {
+    const allocateLink = vi.fn((roundId: number) => <span data-testid={`allocate-${roundId}`}>разнести →</span>);
+    render(<StageSummaryTable summary={sampleStageSummary} {...TABLE_PROPS} allocateLink={allocateLink} />);
+    expect(allocateLink.mock.calls.map(([id]) => id)).toEqual([3001, 3002]);
+    expect(sampleStageSummary.unallocated.cells.some((c) => c.rows.row_count > 0)).toBe(true); // предпосылка: положительный случай есть
+    expect(sampleStageSummary.unallocated.cells.some((c) => c.rows.row_count === 0)).toBe(true); // и отрицательный тоже
+  });
+
+  /**
+   * Ревью задачи 13: тест выше утверждает ТОЛЬКО порядок и аргументы вызовов
+   * render-prop — он не смотрит, куда узел попадает в DOM. Перестановка вызова
+   * `allocateLink` в строку «Итого» (`total.cells.map`) с теми же id в том же
+   * порядке оставляла бы прежний тест зелёным. Спека §2.8 закрепляет действие
+   * ЗА ЯЧЕЙКОЙ СТРОКИ «Нераспределённое» — здесь `allocateLink` возвращает
+   * настоящий узел, и проверяется: узел лежит в ячейке СВОЕЙ колонки внутри
+   * `row-unallocated`, в ячейке колонки без решения (round_id 3004) его нет, и
+   * ни одна ДРУГАЯ строка таблицы такого узла не несёт.
+   *
+   * Красное состояние проверено вручную (ревью просило доказательство, не
+   * только заявление): временная правка `StageSummaryTable.tsx`, кладущая
+   * `extra` в `total.cells.map` вместо `unallocated.cells.map` при тех же
+   * `columns[index].round_id`, красит именно этот тест (узел не найден в
+   * `row-unallocated`) — и НЕ красит тест выше (порядок id тот же); правка
+   * отменена сразу после проверки, изменений в рабочем дереве не осталось.
+   */
+  it("«разнести →» рендерится в ячейке своей колонки строки «Нераспределённое», а не в другой строке", () => {
+    render(
+      <StageSummaryTable
+        summary={sampleStageSummary}
+        {...TABLE_PROPS}
+        allocateLink={(roundId) => <span data-testid={`allocate-${roundId}`}>разнести →</span>}
+      />
+    );
+    const unallocatedRow = screen.getByTestId("row-unallocated");
+    const unallocatedCells = within(unallocatedRow).getAllByRole("cell");
+    // Ячейка 0 — подпись строки; 1..3 — по одной на колонку, в порядке
+    // `columns`/`unallocated.cells` (та же индексация, что в реализации).
+    expect(within(unallocatedCells[1]).getByTestId("allocate-3001")).toBeInTheDocument();
+    expect(within(unallocatedCells[2]).getByTestId("allocate-3002")).toBeInTheDocument();
+    // Колонка 2 (round_id 3004) без нераспределённых строк — в её ячейке
+    // ссылки нет, и соседние колонки не просочились туда смещённым индексом.
+    expect(within(unallocatedCells[3]).queryByText("разнести →")).toBeNull();
+
+    // Негатив: действие принадлежит РОВНО строке «Нераспределённое» — ни одна
+    // другая строка (статьи, «Итого») его не несёт.
+    const otherRows = screen.getAllByRole("row").filter((row) => row !== unallocatedRow);
+    expect(otherRows.length).toBeGreaterThan(0); // премиса: в таблице есть другие строки, негатив не пуст
+    for (const row of otherRows) {
+      expect(within(row).queryByText("разнести →")).toBeNull();
+    }
+  });
+
+  /**
+   * У колонки с неизвестной базой НДС (`stageSummaryWithUnknownSecondColumn`,
+   * колонка индекса 1) сумма скрыта причиной `unknown_vat_base`, но её
+   * `rows.row_count` не меняется этой фикстурой (та же неполнота, что и в
+   * `sampleStageSummary`, откуда `stageSummaryWithUnknownSecondColumn` берёт
+   * базу через `JSON.parse(JSON.stringify(...))`) — строки остаются
+   * разносимыми, и ссылка обязана появиться, хотя ячейка не печатает суммы.
+   */
+  it("у колонки с неизвестной базой НДС ссылка есть — строки разносимы, хотя сумма скрыта", () => {
+    const allocateLink = vi.fn(() => <span>разнести →</span>);
+    render(
+      <StageSummaryTable
+        summary={stageSummaryWithUnknownSecondColumn()}
+        {...TABLE_PROPS}
+        allocateLink={allocateLink}
+      />
+    );
+    expect(allocateLink).toHaveBeenCalledWith(stageSummaryWithUnknownSecondColumn().columns[1].round_id);
   });
 });
 

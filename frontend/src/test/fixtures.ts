@@ -2018,13 +2018,42 @@ const stageSummaryUnallocated: StageSummaryRow = {
   has_drilldown_rows: false,
   /** Всегда 0 — та же причина, что у `has_drilldown_rows` (`crud/stage_summary.py`). */
   drilldown_group_count: 0,
+  // Счётчики строк (задача 13 плана этапного разноса, спека §2.8) — НЕ все
+  // единицы по умолчанию: ячейке нужны и положительный, и нулевой
+  // `row_count`, иначе тест StageSummaryTable про «разнести →» проверял бы
+  // условие `row_count > 0` на фикстуре, где оно истинно всегда (или всегда
+  // ложно) — совпадение, а не разбор случаев. Колонка 0 (round_id 3001) и
+  // колонка 1 (round_id 3002, она же «неизвестная база НДС» у
+  // `stageSummaryWithUnknownSecondColumn`) несут строки-разделы без статьи —
+  // ссылка обязана появиться у обеих; колонка 2 (round_id 3004) уже разнесена
+  // раундом целиком — строк без статьи нет, ссылки не будет.
+  //
+  // Ревью задачи 13: `row_count = 0` у колонки 2 — не независимый выбор,
+  // а следствие равенства контракта (`backend/services/stage_summary.py`,
+  // `_gross_or_zero`: `CellInput.gross is None` ⟺ `row_count == 0`, и
+  // `cell_states` даёт `state = "absent"` ровно когда `gross is None`).
+  // Состояние «не оценивалась» с нулевым числом строк — форма, которую
+  // сервер произвести не может; колонка 2 несёт `state: "absent"`.
+  // Из этого следует и `contribution` строки ниже: она считается ТЕМИ ЖЕ
+  // концами, что и у обычной статьи (`_endpoints`/`contribution_between`),
+  // фиксирован у «Нераспределённого» только `bargain` — концевое состояние
+  // «absent» на последней колонке даёт `Contribution(null, null,
+  // "absent_endpoint")`, а не «0.00/flat» прежней (не-нулевой) фикстуры.
+  //
+  // `rows_with_amount` колонок 0 и 1 — РАВНО `row_count` (5 и 3), как было
+  // ДО этой правки (по умолчанию 1 = 1): падение до 0 включало бы значок
+  // неполноты «◐» и подсказку «учтено 0 из N строк» на КАЖДОМ полном рендере
+  // таблицы (и у «Нераспределённого», и — просуммированное с корневыми
+  // строками — у «Итого»), причём непроверенно и не по делу задачи: правка
+  // 13 должна вносить ровно один новый факт — нулевую колонку — а не менять
+  // читаемость двух положительных колонок заодно.
   cells: [
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column"),
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
-    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts"),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "first_column", 5, 5),
+    stageSummaryCell("not_evaluated", null, null, "none", null, null, "no_amounts", 3, 3),
+    stageSummaryCell("absent", null, null, "none", null, null, "no_amounts", 0, 0),
   ],
   bargain: { kind: "none", value: null, direction: null, reason: "unallocated" },
-  contribution: { value: "0.00", direction: "flat", reason: null },
+  contribution: { value: null, direction: null, reason: "absent_endpoint" },
   children: [],
 };
 

@@ -176,7 +176,20 @@ export default function StageSummaryPage() {
       </p>
 
       <StageSummaryTrack summary={summary} />
-      <StageSummaryTable summary={summary} tenderId={id!} offerIds={offerIds} />
+      <StageSummaryTable
+        summary={summary}
+        tenderId={id!}
+        offerIds={offerIds}
+        allocateLink={(roundId) => (
+          <Link
+            to={`/tenders/${id}?unallocated=${roundId}`}
+            className="text-warning-text hover:underline"
+            data-testid={`allocate-${roundId}`}
+          >
+            разнести →
+          </Link>
+        )}
+      />
     </div>
   );
 }
