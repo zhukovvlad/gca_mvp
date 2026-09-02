@@ -85,7 +85,16 @@ export function UnallocatedSheet({
     // но ничто не мешает вызвать компонент так напрямую — гейт на входе дешевле
     // документации «так не делайте».
     <Sheet open={open && round !== undefined} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+      {/*
+        Ширина задаётся ТЕМ ЖЕ вариантным префиксом, что у базового компонента
+        (`data-[side=right]:sm:max-w-sm` в `ui/sheet.tsx`). Простое
+        `sm:max-w-2xl` не побеждает: у селектора с атрибутом специфичность
+        выше, а `tailwind-merge` видит два РАЗНЫХ ключа и не схлопывает их —
+        замер на стенде показал 384px вместо 672px, и наименования разделов
+        начинали переполнять свою колонку (AGENTS §11: специфичность утилит
+        shadcn поверх классов потребителя; мерить в браузере, а не полагать).
+      */}
+      <SheetContent side="right" className="w-full overflow-y-auto data-[side=right]:sm:max-w-2xl">
         {round && (
           <>
             <SheetHeader>
