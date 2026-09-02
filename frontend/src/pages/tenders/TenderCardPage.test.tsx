@@ -1,13 +1,13 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import TenderCardPage from "./TenderCardPage";
 import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
-import { sampleTenderCard } from "@/test/fixtures";
+import { sampleRoundUnallocated, sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 
@@ -18,12 +18,27 @@ import { createTestQueryClient, renderWithProviders } from "@/test/utils";
  * `BaselineStatus` даёт одно из четырёх состояний §2.14, действия правки и
  * удаления — только `admin`.
  */
+/** Зонд текущего URL (задача 12, §2.7): `useLocation` работает у любого узла
+ *  внутри `<MemoryRouter>`, ему не нужен собственный совпавший `<Route>` —
+ *  поэтому он просто сосед `<Routes>`, а не второй маршрут на тот же путь. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.search}</div>;
+}
+
+function currentSearch() {
+  return screen.getByTestId("location").textContent;
+}
+
 function renderCard(options?: Parameters<typeof renderWithProviders>[1] & { initialRoute?: string }) {
   const { initialRoute = "/tenders/300", ...rest } = options ?? {};
   return renderWithProviders(
-    <Routes>
-      <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
-    </Routes>,
+    <>
+      <Routes>
+        <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
+      </Routes>
+      <LocationProbe />
+    </>,
     { initialRoute, ...rest }
   );
 }
@@ -407,5 +422,128 @@ describe("Выбор предложений для свода (спека сво
       .getAllByRole("button")
       .filter((b) => b.getAttribute("aria-disabled") === "true");
     expect(unavailableTiles).toHaveLength(0);
+  });
+});
+
+/**
+ * Триггер разноса в заголовке этапа решётки и URL-контракт `?unallocated=`
+ * (спека этапного разноса §2.7, план — задача 12): три состояния триггера
+ * по счётчику `unallocated_pending_sections` раунда, открытие пишет параметр
+ * СОХРАНЯЯ прочие, закрытие удаляет только его, а чужой или устаревший
+ * `round_id` не запускает GET вовсе — проверка на уровне запроса, а не по
+ * видимому отсутствию Sheet (оно ничего не доказывает: и валидный, и
+ * невалидный id одинаково не показывают заголовок, пока запрос не ответил).
+ */
+describe("Триггер разноса и ?unallocated= (§2.7)", () => {
+  it("три состояния триггера: тёплый бейдж при 24, тихое «разнести» при 0, ничего при null", async () => {
+    // both-loaded трогает только счётчик раунда 3002 (0); 3001 остаётся
+    // дефолтным значением фикстуры — 24 (frontend/src/test/fixtures.ts).
+    handlerState.tenderRoundState = "both-loaded";
+    renderCard();
+    const badge = await screen.findByTestId("unallocated-trigger-3001");
+    expect(badge).toHaveTextContent("⚠ 24 раздела требуют решения — разнести");
+    // Находка B ревью: тёплый и тихий триггер обязаны различаться КЛАССОМ, не
+    // только текстом — иначе безусловный тёплый бокс красил бы и полностью
+    // разнесённый этап тревожным цветом, который спека резервирует за
+    // «больше нуля» (§2.7).
+    expect(badge).toHaveClass("border-warning-border", "bg-warning-soft");
+
+    const quiet = screen.getByTestId("unallocated-trigger-3002");
+    expect(quiet).toHaveTextContent(/^разнести$/);
+    expect(quiet).toHaveClass("text-fg-tertiary");
+    expect(quiet).not.toHaveClass("border-warning-border");
+  });
+
+  it("тихий триггер при нуле тоже кликабелен: открывает Sheet и пишет параметр — снять ошибочное решение можно и на полностью разнесённом этапе (A)", async () => {
+    // Находка A ревью: обёртка обработчика в guard "pending > 0" проходила бы
+    // все прежние тесты незамеченной — единственная причина, по которой §2.7
+    // держит триггер живым при нуле, это как раз возможность СНЯТЬ решение на
+    // уже разнесённом этапе.
+    handlerState.tenderRoundState = "both-loaded"; // 3002 -> 0, тихий триггер
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByTestId("unallocated-trigger-3002"));
+    expect(await screen.findByRole("heading", { name: "Разнос статей — Этап 2" })).toBeInTheDocument();
+    expect(currentSearch()).toBe("?unallocated=3002");
+  });
+
+  it("при null триггера нет", async () => {
+    // Состояние по умолчанию ("loaded"): у раунда 3002 unallocated_pending_sections
+    // — null (нет offer-смет) — кнопки в заголовке этапа не должно быть вовсе.
+    renderCard();
+    await screen.findByText("ООО Альфа");
+    expect(screen.queryByTestId("unallocated-trigger-3002")).toBeNull();
+  });
+
+  it("клик пишет ?unallocated=<round_id>, сохраняя ?round=; закрытие удаляет только unallocated", async () => {
+    const user = userEvent.setup();
+    renderCard({ initialRoute: "/tenders/300?round=3002" });
+
+    await user.click(await screen.findByTestId("unallocated-trigger-3001"));
+    expect(await screen.findByRole("heading", { name: "Разнос статей — Этап 1" })).toBeInTheDocument();
+    expect(currentSearch()).toBe("?round=3002&unallocated=3001");
+
+    // Имя кнопки закрытия Sheet — русифицированный sr-only текст примитива
+    // shadcn (frontend/src/components/ui/sheet.tsx: `<span class="sr-only">Закрыть</span>`).
+    await user.click(screen.getByRole("button", { name: /Close|Закрыть/ }));
+    await waitFor(() => expect(currentSearch()).toBe("?round=3002"));
+  });
+
+  it("чужой ?unallocated=999 и раунд без offer-смет (3002 при null) не запускают запрос", async () => {
+    let hits = 0;
+    server.use(
+      http.get("/api/v1/tenders/:id/rounds/:rid/unallocated", () => {
+        hits += 1;
+        return HttpResponse.json(sampleRoundUnallocated);
+      })
+    );
+
+    renderCard({ initialRoute: "/tenders/300?unallocated=999" });
+    await screen.findByText("ООО Альфа");
+    expect(screen.queryByRole("heading", { name: /Разнос статей/ })).toBeNull();
+
+    cleanup();
+    renderCard({ initialRoute: "/tenders/300?unallocated=3002" });
+    await screen.findByText("ООО Альфа");
+    expect(hits).toBe(0);
+  });
+
+  /**
+   * Находка D ревью — настоящий пробел поведения, не пробел теста: фоновый
+   * рефетч карточки может обнулить счётчик УЖЕ открытого раунда (его
+   * offer-сметы пропали). `unallocatedRound` тогда становится `undefined`, и
+   * проп `open` у `UnallocatedSheet` падает в `false` КАК ПРОП — колбэк
+   * `onOpenChange` у контролируемого диалога на смену пропа не зовётся (это
+   * не пользовательское закрытие), и мёртвый `?unallocated=` остался бы в
+   * адресе навсегда, если бы страница не сняла его сама.
+   *
+   * Открываем Sheet СРАЗУ по URL (без клика) — заодно доказывает прямую
+   * загрузку по ссылке; затем чиним карточку сервера так, будто раунд лишился
+   * offer-смет, и инвалидируем её тем же приёмом, что и тест «перезалив
+   * раунда» выше (реальный рефетч через `queryClient`, а не подмена состояния
+   * компонента напрямую).
+   */
+  it("рефетч карточки обнуляет счётчик открытого раунда — параметр снимается сам, Sheet закрывается (D)", async () => {
+    const queryClient = createTestQueryClient();
+    renderCard({ initialRoute: "/tenders/300?unallocated=3001", queryClient });
+
+    expect(await screen.findByRole("heading", { name: "Разнос статей — Этап 1" })).toBeInTheDocument();
+    expect(currentSearch()).toBe("?unallocated=3001");
+
+    server.use(
+      http.get("/api/v1/tenders/:id", () =>
+        HttpResponse.json({
+          ...sampleTenderCard,
+          rounds: sampleTenderCard.rounds.map((r) =>
+            r.id === 3001 ? { ...r, unallocated_pending_sections: null } : r
+          ),
+        })
+      )
+    );
+    await queryClient.invalidateQueries({ queryKey: qk.tenders.card(sampleTenderCard.id) });
+
+    await waitFor(() => expect(currentSearch()).toBe(""));
+    expect(screen.queryByRole("heading", { name: /Разнос статей/ })).toBeNull();
   });
 });

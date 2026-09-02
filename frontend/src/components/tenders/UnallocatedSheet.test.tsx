@@ -4,7 +4,7 @@ import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { UnallocatedSheet } from "./UnallocatedSheet";
-import { diagnosticsHeading, positionsLabel } from "@/components/unallocated/roundUnallocatedCopy";
+import { diagnosticsHeading, positionsLabel, triggerLabel } from "@/components/unallocated/roundUnallocatedCopy";
 import { handlerState } from "@/test/handlers";
 import { sampleRoundUnallocated, sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
@@ -456,5 +456,21 @@ describe("roundUnallocatedCopy — словоформы (§2.7)", () => {
     expect(diagnosticsHeading(1)).toBe("Не закрывается разносом — 1 строка");
     expect(diagnosticsHeading(2)).toBe("Не закрывается разносом — 2 строки");
     expect(diagnosticsHeading(5)).toBe("Не закрывается разносом — 5 строк");
+  });
+
+  // Находка C ревью задачи 12: единственный прогнанный аргумент был 24 — все
+  // прежние тесты (OfferGrid/TenderCardPage) кормят triggerLabel только этим
+  // числом. Хардкод формы глагола («требуют» без ветвления) survived бы
+  // незамеченным и ушёл бы в проде как «1 раздел требуют решения». Здесь все
+  // три формы слова «раздел» И обе формы глагола «требует/требуют» разом —
+  // включая ловушку «на -надцать» (11: числительное оканчивается на 1, но
+  // глагол всё равно «требуют», а не «требует»).
+  it("triggerLabel: обе формы глагола и три формы слова «раздел», включая ловушку 11 (1, 2, 5, 11, 21, 24)", () => {
+    expect(triggerLabel(1)).toBe("⚠ 1 раздел требует решения — разнести");
+    expect(triggerLabel(2)).toBe("⚠ 2 раздела требуют решения — разнести");
+    expect(triggerLabel(5)).toBe("⚠ 5 разделов требуют решения — разнести");
+    expect(triggerLabel(11)).toBe("⚠ 11 разделов требуют решения — разнести");
+    expect(triggerLabel(21)).toBe("⚠ 21 раздел требует решения — разнести");
+    expect(triggerLabel(24)).toBe("⚠ 24 раздела требуют решения — разнести");
   });
 });

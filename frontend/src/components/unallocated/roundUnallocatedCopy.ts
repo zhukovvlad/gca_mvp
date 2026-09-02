@@ -19,6 +19,21 @@ import type { RoundDiagnosticCode, RoundSectionConflict, RoundSectionPartial } f
  * с компонентом в одном файле (тот же приём, что у `drilldownCopy.ts`).
  */
 
+/** Тихий текст триггера при нулевом счётчике (§2.7): снять ошибочное решение
+ *  можно и при полностью разнесённом этапе — поэтому кнопка не исчезает, а
+ *  становится тише. */
+export const QUIET_TRIGGER = "разнести";
+
+/** Текст триггера в заголовке этапа решётки (§2.6, §2.7) — по значению
+ *  счётчика `unallocated_pending_sections` раунда: `0` уже отфильтрован от
+ *  `null` вызывающим кодом (`OfferGrid` рисует кнопку только когда счётчик не
+ *  `null`), здесь остаются только числа. */
+export function triggerLabel(pending: number): string {
+  if (pending === 0) return QUIET_TRIGGER;
+  const verb = pending % 10 === 1 && pending % 100 !== 11 ? "требует" : "требуют";
+  return `⚠ ${pending} раздел${pluralRu(pending)} ${verb} решения — разнести`;
+}
+
 export const sheetTitle = (stageNo: number) => `Разнос статей — Этап ${stageNo}`;
 
 export const sheetSubtitle = (offers: number) =>

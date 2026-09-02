@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 
@@ -7,6 +7,7 @@ import { RoundUploadPanel } from "@/components/tenders/RoundUploadPanel";
 import { BaselineStatus } from "@/components/tenders/BaselineStatus";
 import { OfferGrid } from "@/components/tenders/OfferGrid";
 import { TenderFormDialog } from "@/components/tenders/TenderFormDialog";
+import { UnallocatedSheet } from "@/components/tenders/UnallocatedSheet";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
@@ -119,6 +120,64 @@ export default function TenderCardPage() {
     next.set("round", String(roundId));
     setParams(next);
   }
+
+  // Sheet этапного разноса «Нераспределённого» (спека этапного разноса §2.7):
+  // параметр читается И ВАЛИДИРУЕТСЯ — принимается только раунд ТЕКУЩЕЙ
+  // карточки с ненулевым (не `null`) счётчиком, иначе чужой или устаревший id
+  // не запускает запрос вовсе (`round` в GET-хук уходит `undefined`,
+  // `enabled` гасит его). Открытие/закрытие правят ТОЛЬКО `?unallocated=` —
+  // остальные параметры (`?round=` и любые будущие) копируются как есть.
+  const unallocatedParam = params.get("unallocated");
+  const unallocatedRound =
+    unallocatedParam === null
+      ? undefined
+      : rounds.find((r) => r.id === Number(unallocatedParam) && r.unallocated_pending_sections !== null);
+
+  function openUnallocated(roundId: number) {
+    const next = new URLSearchParams(params);
+    next.set("unallocated", String(roundId));
+    setParams(next);
+  }
+
+  function closeUnallocated() {
+    const next = new URLSearchParams(params);
+    next.delete("unallocated");
+    setParams(next);
+  }
+
+  // Находка ревью задачи 12 (D): фоновый рефетч карточки может обнулить
+  // счётчик УЖЕ открытого раунда — его offer-сметы пропали (например, этап
+  // остался без единого участника). Тогда `unallocatedRound` выше становится
+  // `undefined`, и проп `open` у `UnallocatedSheet` падает в `false` КАК ПРОП
+  // — у контролируемого диалога это не пользовательское закрытие, и колбэк
+  // `onOpenChange` НЕ зовётся (симметричный путь — 404 «раунд/сметы больше
+  // недоступны» — Sheet замыкает сам, см. `handleRoundGone` в
+  // `UnallocatedSheet.tsx`; здесь это же самое, только причина обнаружена
+  // снаружи, самим Sheet'ом не видна). Без этого эффекта мёртвый
+  // `?unallocated=` остался бы в адресе навсегда.
+  //
+  // Эффект, а не правка состояния в теле рендера (тем приёмом, что
+  // `reconciledCard`/`renderedTenderId` в этом файле): та правка годится для
+  // СОБСТВЕННОГО состояния компонента, а `setParams` — это навигация роутера,
+  // внешняя по отношению к текущему рендеру. По этому же образцу уже правит
+  // адрес `ComparePage.tsx` (`target_month`/`single_rate`) — `useEffect` с
+  // `{ replace: true }`, чтобы автокоррекция не плодила лишние записи истории.
+  //
+  // Не бороться с пользователем во время загрузки: `cardQ.isPending` гасит
+  // эффект целиком — пока карточка не пришла, `rounds` пуст по построению
+  // (`card?.rounds ?? []`), и `unallocatedRound` был бы `undefined` НЕ ПОТОМУ,
+  // что раунд действительно недоступен, а потому, что карта ещё не загрузилась;
+  // выйти раньше здесь обязательно, иначе первый же рендер с валидным
+  // `?unallocated=` стёр бы параметр раньше, чем карточка успела бы его
+  // подтвердить.
+  useEffect(() => {
+    if (cardQ.isPending) return;
+    if (unallocatedParam !== null && unallocatedRound === undefined) {
+      const next = new URLSearchParams(params);
+      next.delete("unallocated");
+      setParams(next, { replace: true });
+    }
+  }, [cardQ.isPending, unallocatedParam, unallocatedRound, params, setParams]);
 
   // Участник, чьи сметы сейчас выбраны — вычисляется из ячеек, а не хранится
   // отдельным полем: набор offer_id и есть источник истины, второй копии
@@ -235,6 +294,7 @@ export default function TenderCardPage() {
           selectedOfferIds={selectedOfferIds}
           onToggleOffer={toggleOffer}
           onSelectParticipant={selectParticipant}
+          onOpenUnallocated={openUnallocated}
         />
       </div>
 
@@ -270,6 +330,14 @@ export default function TenderCardPage() {
         <NewRoundDialog tenderId={card.id} nextStageNo={nextStageNo} onOpenChange={setRoundFormOpen} />
       )}
       <RoundDeleteDialog tenderId={card.id} round={roundToDelete} onOpenChange={() => setRoundToDelete(null)} />
+      <UnallocatedSheet
+        tenderId={card.id}
+        round={unallocatedRound}
+        open={unallocatedRound !== undefined}
+        onOpenChange={(open) => {
+          if (!open) closeUnallocated();
+        }}
+      />
       <TenderDeleteDialog
         tender={deleteOpen ? card : null}
         onOpenChange={() => setDeleteOpen(false)}
