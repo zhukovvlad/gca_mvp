@@ -320,6 +320,12 @@ class TestCardShape:
         b = next(p for p in card["participants"] if p["inn"] == "7700000002")["package_id"]
         cell = next(c for c in card["cells"] if c["round_id"] == tender["round_id"] and c["package_id"] == b)
         assert cell["offer_id"] is None and cell["estimate_id"] is None
+        # Спека этапного разноса §2.6, читаная НАД ПРОВОДОМ (ни один прежний
+        # тест не вытягивал `unallocated_pending_sections` из настоящего HTTP-
+        # ответа карточки, только из вызова crud напрямую): у обоих раундов
+        # ЕСТЬ offer-сметы, а `P_A`/`P_B` несут плоскую ведомость без единого
+        # раздела — счётчик обязан быть 0, не `null`.
+        assert [r["unallocated_pending_sections"] for r in card["rounds"]] == [0, 0]
 
 
 class TestContractJobResponseUnchanged:

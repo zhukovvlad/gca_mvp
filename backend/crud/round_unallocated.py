@@ -375,6 +375,22 @@ def _manual_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef], ema
     }
 
 
+def pending_sections_count(db: Session, round_id: int) -> int | None:
+    """Счётчик карточки (спека этапного разноса §2.6) — ТЕМ ЖЕ агрегатором,
+    что GET §2.3 (`load_states`, вызванный по имени модуля - не вторая
+    формула): `None` только когда у раунда нет offer-смет (триггер экрана не
+    рисуется вовсе); иначе число логических разделов радиуса в состояниях
+    `PENDING_STATES` (`unassigned`/`partial`/`conflict`). `contractor_title={}`
+    у `RoundScope` — безопасное сокращение: `load_states` этого поля не
+    читает вовсе (оно нужно только `diagnostics`/`_manual_json` тела GET)."""
+    estimates = offer_estimates(db, round_id)
+    if not estimates:
+        return None
+    rnd = db.get(TenderRound, round_id)
+    scope = RoundScope(tender=db.get(Tender, rnd.tender_id), round=rnd, estimates=list(estimates), contractor_title={})
+    return sum(1 for a in load_states(db, scope) if a.classification.state in ru.PENDING_STATES)
+
+
 def build_round_unallocated(db: Session, tender_id: int, round_id: int) -> dict:
     """Тело GET §2.3: разделы, требующие решения, разнесённые вручную,
     диагностика границ §5.5 и справочник статей целиком."""

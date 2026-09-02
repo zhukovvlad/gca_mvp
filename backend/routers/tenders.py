@@ -74,6 +74,12 @@ def get_tender(tender_id: int, db: Session = Depends(get_db)):
         return decimal_json(crud_tenders.get_tender_card(db, tender_id))
     except DomainError as e:
         raise_domain_error(e)
+    except crud_ru.RoundMappingBroken:
+        # Гейт-3, решение плана 4: расхождение проекций раунда должно ронять
+        # карточку с логом, а не молча отдавать её без счётчика (та же
+        # причина, что у GET §2.3 разноса).
+        log.error("Карточка тендера %s: проекции одного из раундов расходятся", tender_id, exc_info=True)
+        raise
 
 
 @router.get("/{tender_id}/stage-summary")

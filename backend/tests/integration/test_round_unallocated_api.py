@@ -649,3 +649,76 @@ class TestGet:
         assert section["state"] == "partial"
         assert section["smr_article_raw"] == "6"
         assert section["parent_key"] is None
+
+
+class TestCardCounter:
+    """Счётчик карточки (§2.6): ТЕМ ЖЕ этапным агрегатором, что GET §2.3 —
+    общая функция, не вторая формула."""
+
+    def test_counter_equals_the_aggregator_on_the_same_data(self, db_session, round_scene, admin_user):
+        from crud import tenders as crud_tenders
+        e0 = round_scene.estimates[0]
+        set_override(db_session, estimate_id=e0.id, position_item_id=round_scene.chapter(e0.id, "1").id,
+                     work_category_id=cat(db_session, "20"), note=None, user_id=admin_user.id)   # partial у «1»
+        card = crud_tenders.get_tender_card(db_session, round_scene.tender.id)
+        r1 = next(r for r in card["rounds"] if r["id"] == round_scene.r1.id)
+        scope = crud_ru.load_scope(db_session, round_scene.tender.id, round_scene.r1.id)
+        pending = [a for a in crud_ru.load_states(db_session, scope) if a.classification.state in ru.PENDING_STATES]
+        assert r1["unallocated_pending_sections"] == len(pending) == 5     # 14, 14.1, 14.3, 15 + частичная «1»
+
+    def test_no_offer_estimates_is_null_and_disabled_structure_still_counts(self, db_session, round_scene, factories):
+        from crud import tenders as crud_tenders
+        empty = factories.TenderRoundFactory.create(tender=round_scene.tender, stage_no=3)
+        db_session.flush()
+        rounds = {r["id"]: r for r in crud_tenders.get_tender_card(db_session, round_scene.tender.id)["rounds"]}
+        assert rounds[empty.id]["unallocated_pending_sections"] is None
+        assert rounds[round_scene.r2.id]["unallocated_pending_sections"] == 1     # раздел «прим.» без статьи
+
+    def test_there_is_no_second_formula(self, db_session, round_scene, monkeypatch, member_client):
+        """Подмена агрегатора меняет ОБА ответа (§4.3): счётчик карточки и
+        `sections` GET читают один `load_states`.
+
+        Margin, зафиксированный ДО подмены: непатченное число pending-разделов
+        «1» обязано отличаться от значения, на которое подмена усечёт список
+        (1) — иначе тест выродился бы в тавтологию, случайно совпав с любой
+        независимой (второй) реализацией на сцене, которая тоже даёт 1."""
+        from crud import tenders as crud_tenders
+        scope = crud_ru.load_scope(db_session, round_scene.tender.id, round_scene.r1.id)
+        unpatched = sum(1 for a in crud_ru.load_states(db_session, scope) if a.classification.state in ru.PENDING_STATES)
+        assert unpatched == 4          # 14, 14.1, 14.3, 15 — margin, который держит тест не тавтологией
+        real = crud_ru.load_states
+        monkeypatch.setattr(crud_ru, "load_states", lambda db, scope: real(db, scope)[:1])
+        card = crud_tenders.get_tender_card(db_session, round_scene.tender.id)
+        body = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id)).json()
+        assert next(r for r in card["rounds"] if r["id"] == round_scene.r1.id)["unallocated_pending_sections"] == 1
+        assert len(body["sections"]) == 1
+
+
+class TestCardMappingBroken:
+    """Гейт-3, решение 4: расхождение проекций одного из раундов должно
+    ронять карточку тендера с логом, а не молча отдавать её без счётчика.
+    Тот же приём и та же причина, что у `TestGet.test_mapping_broken_is_500_
+    and_logged` маршрута этапного разноса (§2.4) — здесь цель другая: карточка
+    (`GET /api/v1/tenders/{tender_id}`), не `.../unallocated`."""
+
+    def test_mapping_broken_is_500_and_logged(self, member_client_no_raise, db_session, round_scene):
+        e1 = round_scene.estimates[1]
+        ch = round_scene.chapter(e1.id, "15")
+        db_session.execute(sa.text("DELETE FROM position_items WHERE chapter_item_id = :cid"), {"cid": ch.id})
+        db_session.execute(sa.text("DELETE FROM position_items WHERE id = :cid"), {"cid": ch.id})
+        db_session.flush()
+        captured: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Collector(level=logging.ERROR)
+        router_log = logging.getLogger("routers.tenders")
+        router_log.addHandler(handler)
+        try:
+            r = member_client_no_raise.get(f"/api/v1/tenders/{round_scene.tender.id}")
+        finally:
+            router_log.removeHandler(handler)
+        assert r.status_code == 500
+        assert any(rec.levelno == logging.ERROR for rec in captured)
