@@ -235,8 +235,10 @@ function toSheetManualRow(row: RoundManualAssignment): SheetManualRow {
 }
 
 /** Правая колонка дерева — счётчик позиций, НЕ деньги (§2.3: ответ раундового
- *  GET вообще не несёт сумм). `rows` — полный размер файлового поддерева,
- *  стабилен независимо от вложенных решений. */
+ *  GET вообще не несёт сумм). `rows` у `sections[]` — ДОСТИЖИМЫЕ строки
+ *  (§2.2): сколько строк сдвинет решение на этом разделе. У `manual[]` то же
+ *  имя значит другое — полное файловое поддерево; здесь рисуется только
+ *  первое. */
 function renderAside(section: SheetSection) {
   return (
     <div data-testid={`rows-${section.key}`} className="text-right text-2xs text-fg-tertiary">
