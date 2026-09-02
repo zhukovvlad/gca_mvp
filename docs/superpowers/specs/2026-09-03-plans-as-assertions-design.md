@@ -316,9 +316,10 @@ wc -l < backend/tests/unit/test_round_unallocated.py                          # 
 | Решения плана, которых нет в спеке | заголовок раздела | **6 / 27** |
 
 ```bash
-grep -lE '^\*\*(Спека|Spec)' docs/superpowers/plans/*.md | wc -l              # 27
-grep -lE '^\*\*(Ветка|Branch)' docs/superpowers/plans/*.md | wc -l            # 18
-grep -lE '^#{1,3} .*Global Constraints' docs/superpowers/plans/*.md | wc -l  # 26
+# TEMPLATE.md исключается: он сам заводится этой фичей и планом не является.
+for p in '^\*\*(Спека|Spec)' '^\*\*(Ветка|Branch)' '^#{1,3} .*Global Constraints'; do
+  grep -lE "$p" docs/superpowers/plans/*.md | grep -v TEMPLATE | wc -l
+done                                                            # 27, 18, 26
 ```
 
 Различие между «поле есть» и «сведение где-то упомянуто» здесь несущее. Поиск
