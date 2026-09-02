@@ -330,3 +330,129 @@ describe("CategoryPicker: повторное открытие — сброс с�
     expect(onPick).toHaveBeenCalledWith(OPTIONS[0], "а");
   });
 });
+
+describe("CategoryPicker: данные пришли при ОТКРЫТОМ поповере", () => {
+  /*
+    Внешнее ревью ветки (замечание кодекса, 02.09.2026). Два теста выше
+    закрывают ту же болезнь МЕЖДУ закрытием и повторным открытием: ревью
+    задачи 10 увидело класс и починило только половину — сброс на открытии.
+    Пока поповер ОТКРЫТ, `distinct`/`ambiguous` пересчитываются из пропсов на
+    каждый рендер, а `noteText`/`resolved` оставались с момента открытия, и
+    два производных от одного факта расходились между собой.
+
+    Путь в приложении узкий: `refetchOnWindowFocus` выключен глобально
+    (`App.tsx`), `staleTime` минута, инвалидация приходит только на успех
+    раундового PUT/DELETE, а поповер закрывается сам и на выборе статьи, и на
+    клике вне себя. Достижимый сценарий — инвалидация, ДОГНАВШАЯ уже открытый
+    следующий поповер (ответ PUT по разделу A пришёл, когда пользователь успел
+    открыть пикер раздела B). Тесты ниже утверждают КОНТРАКТ компонента, а не
+    воспроизводят этот сценарий: компонент экспортирован и переиспользуется, и
+    правило §2.7 не должно держаться на том, что props «обычно не меняются».
+  */
+
+  /** Рендерит пикер и отдаёт `rerenderWith` — перерисовку тем же `onPick`, но
+   *  с новым набором заметок: имитация прихода данных при открытом поповере. */
+  function renderPicker(notes: (string | null)[]) {
+    const onPick = vi.fn();
+    const ui = (next: (string | null)[]) => (
+      <CategoryPicker
+        testKey="k"
+        label="14 SHELL & CORE"
+        options={OPTIONS}
+        noteField={{ existingNotes: next }}
+        onPick={onPick}
+      />
+    );
+    const { rerender } = renderWithProviders(ui(notes));
+    return { onPick, rerenderWith: (next: (string | null)[]) => rerender(ui(next)) };
+  }
+
+  it("ставший неоднозначным снова требует явного выбора, а не шлёт прежнюю заметку", async () => {
+    const user = userEvent.setup();
+    const { onPick, rerenderWith } = renderPicker(["одна"]);
+
+    await openPopover(user);
+    expect(screen.getByLabelText("Заметка")).toHaveValue("одна");
+    expect(screen.getByRole("option", { name: optionName(OPTIONS[0]) })).not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+
+    // Поповер НЕ закрывался: пришли новые данные, заметки разошлись.
+    rerenderWith(["одна", "другая"]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: optionName(OPTIONS[0]) })).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
+    );
+    expect(screen.getByText("Заметки в сметах различаются — выберите, какую оставить:")).toBeInTheDocument();
+    expect(screen.getByLabelText("Заметка")).toHaveValue("");
+
+    // Пункт недоступен — попытка выбора не должна отправить НИЧЕГО.
+    await user.click(screen.getByRole("option", { name: optionName(OPTIONS[0]) }));
+    expect(onPick).not.toHaveBeenCalled();
+
+    // Явный выбор одной из них разблокирует, как и при обычном открытии.
+    await user.click(screen.getByRole("button", { name: "«другая»" }));
+    await user.click(screen.getByRole("option", { name: optionName(OPTIONS[0]) }));
+    expect(onPick).toHaveBeenCalledWith(OPTIONS[0], "другая");
+  });
+
+  it("ставший однозначным не остаётся заблокированным без выхода", async () => {
+    /*
+      Обратное направление того же расхождения, и оно ХУЖЕ: при
+      `ambiguous=false` кнопки-заметки — единственный способ переключить
+      `resolved` — не рендерятся вовсе, поэтому залипший `false` оставлял бы
+      пункты недоступными до закрытия поповера. Негативный к предыдущему
+      тесту: вход отличается только направлением смены набора.
+    */
+    const user = userEvent.setup();
+    const { onPick, rerenderWith } = renderPicker(["а", "б"]);
+
+    await openPopover(user);
+    expect(screen.getByRole("option", { name: optionName(OPTIONS[0]) })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+
+    rerenderWith(["а", "а"]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: optionName(OPTIONS[0]) })).not.toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
+    );
+    expect(screen.getByLabelText("Заметка")).toHaveValue("а");
+
+    await user.click(screen.getByRole("option", { name: optionName(OPTIONS[0]) }));
+    expect(onPick).toHaveBeenCalledWith(OPTIONS[0], "а");
+  });
+
+  it("тот же набор в другом порядке обхода НЕ трогает выбор пользователя", async () => {
+    /*
+      Граница правила: сброс привязан к СОСТАВУ различных заметок, а не к
+      идентичности массива пропсов. Иначе любой перерендер (а он приходит на
+      каждое обновление соседнего раздела) сбрасывал бы уже сделанный выбор и
+      набранный текст — правка лечила бы одно расхождение, заводя другое.
+      Порядок первого появления меняет `distinct`, поэтому набор здесь тот же
+      И в том же порядке, а массив — новый.
+    */
+    const user = userEvent.setup();
+    const { onPick, rerenderWith } = renderPicker(["а", "б"]);
+
+    await openPopover(user);
+    await user.click(screen.getByRole("button", { name: "«б»" }));
+    const field = screen.getByLabelText("Заметка");
+    await user.clear(field);
+    await user.type(field, "моя новая заметка");
+
+    rerenderWith(["а", "б"]);
+
+    expect(screen.getByLabelText("Заметка")).toHaveValue("моя новая заметка");
+    await user.click(screen.getByRole("option", { name: optionName(OPTIONS[0]) }));
+    expect(onPick).toHaveBeenCalledWith(OPTIONS[0], "моя новая заметка");
+  });
+});
