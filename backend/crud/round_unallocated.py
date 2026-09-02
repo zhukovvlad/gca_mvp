@@ -131,7 +131,16 @@ def _chapter_rows(db: Session, estimate_ids: list[int]):
 
 
 def representative_nodes(db: Session, estimate: Estimate) -> list[ru.ChapterNode]:
-    """Структура и `rows` - из `_section_metrics` представительной сметы.
+    """Структура, `rows` и `own_rows` - из `_section_metrics` представительной
+    сметы.
+
+    Из `_section_metrics` берутся ДВА разных счётчика строк, и путать их
+    нельзя: `rows` - полная файловая свёртка поддерева (подпись `manual[]`,
+    §2.3), `own_rows` - прямые не-раздельные строки САМОГО узла, вход свёртки
+    достижимости §2.2 (`ru.reachable_rows`). Обе величины считает одна и та же
+    функция паспорта - второй расчёт разошёлся бы с первым, а расхождение
+    отбора с паспортом ровно этим дефектом и было (§2.2 спеки, правка
+    02.09.2026).
 
     Порядок - ЧИСТЫЙ файловый порядок (лот по `proposal_id`, затем числовой
     порядок ключа позиции), БЕЗ группировки по глубине. Это НЕ тот же порядок,
@@ -167,7 +176,8 @@ def representative_nodes(db: Session, estimate: Estimate) -> list[ru.ChapterNode
         ru.ChapterNode(
             key=key_of[pid],
             file_parent=None if m.parent_position_item_id is None else key_of[m.parent_position_item_id],
-            number=m.number, title=m.title, smr_article_raw=m.smr_article_raw, rows=m.rows,
+            number=m.number, title=m.title, smr_article_raw=m.smr_article_raw,
+            rows=m.rows, own_rows=m.own_rows,
         )
         for pid, m in ordered
     ]
@@ -345,13 +355,19 @@ def _category_refs(db: Session) -> list[CategoryRef]:
 def _section_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef]) -> dict:
     """Тело одного раздела §2.3: `partial`/`conflict` — дискриминированный
     union, ключ есть ТОЛЬКО у своего состояния (`resolved` сюда не попадает —
-    вызывающий код отфильтровывает его для `manual`). Денег нет нигде."""
+    вызывающий код отфильтровывает его для `manual`). Денег нет нигде.
+
+    `rows` здесь — ДОСТИЖИМЫЕ строки (`a.reachable_rows`, §2.2), а НЕ
+    `a.node.rows`: подпись «N позиций» и условие показа раздела считаются одной
+    формулой. У `_manual_json` то же имя значит другое (полное файловое
+    поддерево) — расщепление смысла унаследовано от паспорта вместе с
+    правилом отбора и там же обосновано."""
     c = a.classification
     body = {
         "lot_key": a.node.key[0], "position_key_in_proposal": a.node.key[1],
         "parent_key": None if a.parent_key is None else list(a.parent_key),
         "depth": a.depth, "number": a.node.number, "title": a.node.title,
-        "smr_article_raw": a.node.smr_article_raw, "rows": a.node.rows, "state": c.state,
+        "smr_article_raw": a.node.smr_article_raw, "rows": a.reachable_rows, "state": c.state,
     }
     if c.state == ru.STATE_PARTIAL:
         body["partial"] = {"assigned": c.assigned, "total": c.total, "notes": list(c.notes)}
@@ -371,7 +387,12 @@ def _manual_json(a: ru.SectionAggregate, refs_by_id: dict[int, CategoryRef], ema
     любой слот годится. `None` в этом слоте недостижимо для `resolved` (в этом
     состоянии `assigned == total`, то есть все слоты заполнены) — но если бы
     порча агрегатора всё же протащила его сюда, `v.work_category_id` упал бы
-    голым `AttributeError` на `None`, не тихой подменой."""
+    голым `AttributeError` на `None`, не тихой подменой.
+
+    `rows` здесь — ПОЛНОЕ файловое поддерево (`a.node.rows`), не достижимые
+    строки: учётная запись «сколько лежит под этим решением по факту файла»
+    (§2.3, тот же выбор и та же причина, что у `_manual_assignments`
+    паспорта)."""
     v = a.vectors[0]          # resolved: один вектор во всех
     return {
         "lot_key": a.node.key[0], "position_key_in_proposal": a.node.key[1],

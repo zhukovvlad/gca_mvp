@@ -49,7 +49,13 @@ class ChapterNode:
     number: str | None
     title: str
     smr_article_raw: str | None
+    #: ПОЛНОЕ файловое поддерево узла — подпись `manual[]` (§2.3): учётная
+    #: запись «сколько лежит под этим решением по факту файла».
     rows: int
+    #: Прямые не-раздельные строки САМОГО узла — вход свёртки достижимости
+    #: (§2.2). Не выводится наружу: наружу идёт `SectionAggregate.
+    #: reachable_rows`, свёртка этого поля по наследующей части поддерева.
+    own_rows: int
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,10 @@ class SectionAggregate:
     depth: int
     classification: Classification
     vectors: tuple[Vector | None, ...]
+    #: Достижимые строки §2.2 — сколько строк сдвинет решение на этом узле;
+    #: подпись `sections[]` и одновременно условие показа (ОДНА формула, а не
+    #: две: невидимая на экране величина в условии и прятала фантомы).
+    reachable_rows: int
 
 
 T = TypeVar("T")
@@ -94,22 +104,86 @@ def classify(vectors: Sequence[Vector | None]) -> Classification:
     return Classification(state, assigned, total, categories, notes, audit_differs)
 
 
+def _inherits(key: SectionKey, node: ChapterNode, missing_article: Mapping[SectionKey, bool]) -> bool:
+    """Наследует ли узел статью предка — ТОТ ЖЕ предикат, что у
+    `_unallocated_sections._inherits` паспорта, переведённый на радиус раунда:
+    эффективной статьи нет (здесь — «хотя бы в одной offer-смете», §2.2) И
+    своего файлового утверждения нет.
+
+    Второй конъюнкт — правило Ф3 «утверждение файла сильнее наследования»:
+    ребёнок с любым СВОИМ утверждением не наследует ничего, даже если это
+    утверждение не дало ему статьи (нечитаемый префикс или код вне
+    справочника). Он сам кандидат на ручное решение, но решение ВЫШЕ него его
+    не тронет.
+    """
+    return missing_article.get(key, False) and node.smr_article_raw is None
+
+
+def reachable_rows(
+    nodes: Sequence[ChapterNode],
+    missing_article: Mapping[SectionKey, bool],
+) -> dict[SectionKey, int]:
+    """Достижимые строки §2.2 на каждый узел: свои прямые строки плюс то же
+    рекурсивно по НАСЛЕДУЮЩИМ детям (`_inherits`). Закон тот же, что у
+    `_unallocated_sections._unallocated_fold` паспорта, и по той же причине:
+    расчёт, разошедшийся с паспортом, и есть дефект, который эта функция
+    заводится закрыть.
+
+    Свои прямые строки узла входят ВСЕГДА, независимо от его собственного
+    `smr_article_raw`: решение на узле сильнее его же файлового утверждения.
+    Блокирующий ребёнок обрывает обход НА СЕБЕ — его поддерево целиком вне
+    свёртки предка, потому что цепочка наследования прервана выше него.
+
+    Считается по ВСЕМ `nodes`, а не по входному множеству: наследующий ребёнок
+    в множество попадает по построению (`_inherits` требует отсутствия статьи,
+    а это первый дизъюнкт §2.2), но полагаться на этот порядок незачем.
+    """
+    children: dict[SectionKey, list[ChapterNode]] = {}
+    for n in nodes:
+        if n.file_parent is not None:
+            children.setdefault(n.file_parent, []).append(n)
+    cache: dict[SectionKey, int] = {}
+
+    def _fold(n: ChapterNode) -> int:
+        if n.key not in cache:
+            cache[n.key] = n.own_rows + sum(
+                _fold(c) for c in children.get(n.key, ()) if _inherits(c.key, c, missing_article)
+            )
+        return cache[n.key]
+
+    return {n.key: _fold(n) for n in nodes}
+
+
 def input_set(
     nodes: Sequence[ChapterNode],
     missing_article: Mapping[SectionKey, bool],
     vectors: Mapping[SectionKey, Sequence[Vector | None]],
+    reach: Mapping[SectionKey, int] | None = None,
 ) -> list[ChapterNode]:
-    """§2.2: эффективной статьи нет хотя бы в одной смете ИЛИ есть хотя бы
-    один override. Порядок `nodes` (файловый) сохраняется.
+    """§2.2: (эффективной статьи нет хотя бы в одной смете И решение на узле
+    достигает хотя бы одной строки) ИЛИ есть хотя бы один override. Порядок
+    `nodes` (файловый) сохраняется.
+
+    **Достижимость правит только первый дизъюнкт.** Узел, на котором решение
+    уже стоит, остаётся видимым при любой достижимости — иначе решение нельзя
+    было бы снять; так же устроен и паспорт, чей `_manual_assignments` границу
+    §5.2 не применяет. Реализация, применившая фильтр к дизъюнкции целиком,
+    прошла бы все тесты состояний и заперла бы ручное решение навсегда.
+
+    `reach` — уже посчитанная свёртка (`reachable_rows`); `None` считает её на
+    месте. Параметр существует, чтобы `aggregate` не считал одну и ту же
+    свёртку дважды, а не как точка расширения.
 
     Ключ, отсутствующий в `missing_article`, читается как «статья есть»
     (`.get(k, False)`): умолчание превращает «неизвестно» в решение. Внутри
     чистого модуля с документированным входом это законно, но должно быть
     названо явно, а не подразумеваться.
     """
+    reach = reachable_rows(nodes, missing_article) if reach is None else reach
     return [
         n for n in nodes
-        if missing_article.get(n.key, False) or any(v is not None for v in vectors.get(n.key, ()))
+        if (missing_article.get(n.key, False) and reach.get(n.key, 0) > 0)
+        or any(v is not None for v in vectors.get(n.key, ()))
     ]
 
 
@@ -136,7 +210,8 @@ def aggregate(
     тот же пропуск терпит (`vectors.get(n.key, ())`) — асимметрия, а не
     гарантия.
     """
-    selected = input_set(nodes, missing_article, vectors)
+    reach = reachable_rows(nodes, missing_article)
+    selected = input_set(nodes, missing_article, vectors, reach)
     file_parent = {n.key: n.file_parent for n in nodes}
     in_set = {n.key for n in selected}
     parent_of: dict[SectionKey, SectionKey | None] = {}
@@ -160,6 +235,7 @@ def aggregate(
         SectionAggregate(
             node=n, parent_key=parent_of[n.key], depth=_depth(n.key),
             classification=classify(vectors[n.key]), vectors=tuple(vectors[n.key]),
+            reachable_rows=reach[n.key],
         )
         for n in selected
     ]

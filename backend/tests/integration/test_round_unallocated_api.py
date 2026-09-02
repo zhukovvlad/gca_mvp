@@ -12,7 +12,8 @@ import sqlalchemy as sa
 
 from crud import round_unallocated as crud_ru
 from crud.common import DomainError
-from models import PositionItem, WorkCategory
+from crud.project_passport import _manual_assignments, _section_metrics, _unallocated_sections
+from models import Lot, PositionItem, Proposal, WorkCategory
 from services import round_unallocated as ru
 from services.additional_works import parse_lines
 from services.category_override import set_override
@@ -85,6 +86,187 @@ def states_by_number(db, scene):
     return {a.node.number: a for a in crud_ru.load_states(db, scope)}
 
 
+def _phantom_scene(db_session, factories):
+    """Сцена с ОБОИМИ фантомными формами замера стенда 02.09.2026 плюс
+    настоящий раздел рядом — вход теста паритета §4.1.
+
+    | раздел | форма | достижимо |
+    |---|---|---|
+    | «20» → «20.1» со статьёй «6» и работой под ней | «10 Инженерные системы» | 0 |
+    | «21» без статьи, без детей, без позиций | заглавная строка сметы | 0 |
+    | «22» → «22.1» без статьи и с работой под ней | настоящий раздел | 1 |
+    | «22.2» с НЕЧИТАЕМЫМ утверждением файла и работой под ним | блокирующий узел | 1 |
+
+    «22» держит сцену честной: без него паритет доказывался бы на пустых
+    множествах («ноль равен нолю» — сходимость вместо состава), и реализация,
+    выбросившая ВСЁ, была бы зелёной. Два участника, а не один: множество
+    ключей — объединение по радиусу, и на одной смете этого не видно.
+
+    «22.2» существует ради ДВУХ мутантов, которых сцена без него не убивала.
+    Его код статьи `99.99` справочнику неизвестен, поэтому статьи он не даёт, а
+    `smr_article_raw` у него непустой — это и есть блокирующий узел в смысле
+    паспорта. Следствия, оба проверяемые: правило Ф3 обрывает свёртку «22» на
+    нём (снятие Ф3 из предиката наблюдаемо на живых данных, а не только в
+    юните), и у «22» становятся РАЗНЫМИ две метрики — полное файловое
+    поддерево 2 против достижимых 1, — без чего подмена `rows` на проводе
+    проходила бы зелёной.
+    """
+    def work(number, ref, amount):
+        return position(
+            job_title=f"Работа {number}", unit="м2", quantity=1, suggested_quantity=1,
+            unit_cost_total=amount, total_cost_total=amount, chapter_ref=ref, number=number,
+        )
+
+    def statement(inn, title):
+        return proposal(
+            [
+                position(job_title="Инженерные системы", is_chapter=True, chapter_number="20", number="1"),
+                position(job_title="Фасадное освещение", is_chapter=True, chapter_number="20.1",
+                         article_smr="6", number="2"),
+                work("3", "20.1", "100.00"),
+                position(job_title="Лот №1 - заголовок", is_chapter=True, chapter_number="21", number="4"),
+                position(job_title="SHELL & CORE", is_chapter=True, chapter_number="22", number="5"),
+                position(job_title="Подраздел 22.1", is_chapter=True, chapter_number="22.1", number="6"),
+                work("7", "22.1", "50.00"),
+                position(job_title="Подраздел 22.2", is_chapter=True, chapter_number="22.2",
+                         article_smr="99.99. Статьи с таким кодом в справочнике нет", number="8"),
+                work("9", "22.2", "70.00"),
+            ],
+            inn=inn, title=title,
+        )
+
+    tender = factories.TenderFactory.create()
+    r1 = factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+    db_session.flush()
+    import_round(
+        db_session, tender_round=r1,
+        data=round_payload([statement("7700000001", "ООО А"), statement("7700000002", "ООО Б")]),
+        parser_version="4.0.0", import_job_id=None, replace=False,
+        unit_resolver=UnitResolver(db_session), category_resolver=CategoryResolver.from_db(db_session),
+    )
+    db_session.flush()
+    return SimpleNamespace(tender=tender, r1=r1)
+
+
+class TestReachabilityBoundary:
+    """Граница §2.2 «решение до чего-нибудь дойдёт» на живых данных и ПАРИТЕТ
+    отбора с паспортом (§4.1, правка 02.09.2026 по замечанию пользователя).
+
+    Утверждение паритета — то, чего не было в первой редакции спеки, и его
+    отсутствие и есть причина правки: тринадцать потасковых ревью и весь §7
+    devlog проверяли отбор против правила ЭТОЙ спеки, замкнутой петлёй, а не
+    против уже утверждённой поверхности паспорта. Существовавший
+    `test_parity_with_the_by_estimate_service` сверяет ЗАПИСЬ, не ОТБОР.
+    """
+
+    def _keys(self, db, scene):
+        """Ключи раунда и ключи паспорта на представительной смете — в одном
+        виде `(lot_key, position_key_in_proposal)`, чтобы множества сравнивались
+        напрямую."""
+        scope = crud_ru.load_scope(db, scene.tender.id, scene.r1.id)
+        rnd = {a.node.key for a in crud_ru.load_states(db, scope)}
+        rep = scope.estimates[0]
+        metrics = _section_metrics(db, rep.id)
+        lot_key_of = dict(db.execute(
+            sa.select(Proposal.id, Lot.lot_key).join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == rep.id)
+        ).all())
+
+        def key(pid):
+            m = metrics[pid]
+            return (lot_key_of[m.proposal_id], m.position_key_in_proposal)
+
+        passport = {key(s["position_item_id"]) for s in _unallocated_sections(db, rep.id)}
+        passport |= {key(a["position_item_id"]) for a in _manual_assignments(db, rep.id)}
+        return rnd, passport
+
+    def test_both_phantom_shapes_are_out_and_the_real_section_stays(self, db_session, factories):
+        """Замер стенда, перенесённый в фикстуру: «20» несёт полное файловое
+        поддерево из ДВУХ строк (сам «20.1» и работа под ним) и ноль достижимых,
+        «21» — ноль и ноль, «22» — одну достижимую.
+
+        Расхождение двух метрик пришпилено на «20» ЯВНО, через
+        `representative_nodes`: у него `rows = 1` (работа под «20.1» лежит в его
+        файловом поддереве) при нулевой достижимости, и реализация,
+        оставившая в фильтре `node.rows`, вернула бы «20» во входное
+        множество. Без этой пары утверждений тест не отличал бы метрики: у
+        «22» и «22.1» они численно совпадают (`rows` считает только
+        НЕ-раздельные строки, а под «22» такая одна — «Работа 7»)."""
+        scene = _phantom_scene(db_session, factories)
+        by = states_by_number(db_session, scene)
+        assert set(by) == {"22", "22.1", "22.2"}            # «20» и «21» — фантомы, их нет
+        assert {n: a.reachable_rows for n, a in by.items()} == {"22": 1, "22.1": 1, "22.2": 1}
+        assert by["22"].node.rows == 2                      # ...против ДВУХ строк файлового поддерева
+        assert by["22.2"].parent_key is None                # блокирующий узел — корень своего кусочка (Ф3)
+
+        scope = crud_ru.load_scope(db_session, scene.tender.id, scene.r1.id)
+        raw = {n.number: n for n in crud_ru.representative_nodes(db_session, scope.estimates[0])}
+        assert (raw["20"].rows, raw["20"].own_rows) == (1, 0)   # файловое поддерево непусто, своих строк нет
+        assert (raw["21"].rows, raw["21"].own_rows) == (0, 0)   # заголовок без содержимого
+        # Блокирующим «22.2» делает именно ЭТА пара: статьи нет, а утверждение
+        # файла есть. Замер, а не предположение о том, как парсер разобрал код.
+        assert raw["22.2"].smr_article_raw is not None
+        assert by["22.2"].classification.state == ru.STATE_UNASSIGNED
+
+    def test_selection_matches_the_passport_key_for_key(self, db_session, factories):
+        """Паритет: множество ключей раунда РАВНО множеству ключей паспорта на
+        представительной смете. Не «раунд ⊆ паспорт» и не размеры — состав, в
+        обе стороны (урок «сходимость не доказывает разбиения»)."""
+        scene = _phantom_scene(db_session, factories)
+        rnd, passport = self._keys(db_session, scene)
+        assert rnd == passport
+        assert len(rnd) == 3                                # margin: множества не пусты
+
+    def test_parity_holds_on_the_shared_scene_too(self, db_session, round_scene):
+        """Тот же паритет на `round_scene` — ведомости без фантомов, где
+        раньше он держался случайно. Держит правку от перекоса в другую
+        сторону: фильтр, выбросивший лишнее, здесь стал бы красным."""
+        rnd, passport = self._keys(db_session, round_scene)
+        assert rnd == passport
+        assert len(rnd) == 4                                # 14, 14.1, 14.3, 15
+
+    def test_the_wire_carries_reachable_rows_in_sections(self, member_client, db_session, factories):
+        """НА ПРОВОДЕ, а не в агрегаторе: `sections[].rows` — достижимые
+        строки. У «22» две метрики расходятся (файловое поддерево 2, достижимо
+        1, потому что «22.2» блокирует), и подмена на `node.rows` в
+        `_section_json` наблюдаема только здесь: тесты уровня `load_states`
+        читают поля агрегата напрямую и такую подмену не видят вовсе."""
+        scene = _phantom_scene(db_session, factories)
+        body = member_client.get(URL.format(t=scene.tender.id, r=scene.r1.id)).json()
+        assert {s["number"] for s in body["sections"]} == {"22", "22.1", "22.2"}
+        assert {s["number"]: s["rows"] for s in body["sections"]} == {"22": 1, "22.1": 1, "22.2": 1}
+
+    def test_the_wire_carries_the_full_file_subtree_in_manual(
+        self, member_client, db_session, round_scene, admin_user
+    ):
+        """Парный к предыдущему и к §2.3: у `manual[]` то же имя значит ДРУГОЕ
+        — полное файловое поддерево. После полного решения по «14» достижимость
+        нуль (14.1/14.3 унаследовали и наследовать перестали), а под решением
+        по файлу лежат три строки, и запись обязана назвать три. Подмена
+        `manual[].rows` на достижимые дала бы здесь ноль."""
+        for e in round_scene.estimates:
+            set_override(db_session, estimate_id=e.id, position_item_id=round_scene.chapter(e.id, "14").id,
+                         work_category_id=cat(db_session, "20"), note=None, user_id=admin_user.id)
+        body = member_client.get(URL.format(t=round_scene.tender.id, r=round_scene.r1.id)).json()
+        row = next(m for m in body["manual"] if m["number"] == "14")
+        assert row["rows"] == 3
+        assert states_by_number(db_session, round_scene)["14"].reachable_rows == 0   # margin: метрики РАЗНЫЕ
+
+    def test_a_decision_on_an_unreachable_node_stays_removable(self, db_session, round_scene, admin_user):
+        """Второй дизъюнкт §2.2 фильтру НЕ подчиняется — на живых данных.
+        После полного решения по «14» её достижимость становится нулём
+        (14.1/14.3 унаследовали статью и наследовать перестали, своих строк у
+        «14» нет), и реализация, применившая фильтр к дизъюнкции целиком,
+        спрятала бы решение навсегда: снять его стало бы нечем."""
+        for e in round_scene.estimates:
+            set_override(db_session, estimate_id=e.id, position_item_id=round_scene.chapter(e.id, "14").id,
+                         work_category_id=cat(db_session, "20"), note=None, user_id=admin_user.id)
+        by = states_by_number(db_session, round_scene)
+        assert by["14"].classification.state == ru.STATE_RESOLVED
+        assert by["14"].reachable_rows == 0                 # решение больше ничего не двигает
+        assert by["14"].node.rows == 3                      # ...а под ним по файлу лежат три строки
+
+
 class TestStates:
     def test_input_set_excludes_file_classified_untouched_chapters(self, db_session, round_scene):
         by = states_by_number(db_session, round_scene)
@@ -100,9 +282,9 @@ class TestStates:
         # утверждения файла».
         assert "1.1" not in by
 
-    def test_rows_is_the_full_file_subtree(self, db_session, round_scene):
-        """`rows` — ПОЛНЫЙ размер файлового поддерева, а не число РАСЦЕНЁННЫХ
-        строк в нём (`rows_priced`, спека §2.3 прямо запрещает её здесь:
+    def test_node_rows_is_the_full_file_subtree(self, db_session, round_scene):
+        """`node.rows` — ПОЛНЫЙ размер файлового поддерева, а не число
+        РАСЦЕНЁННЫХ строк в нём (`rows_priced`, спека §2.3 прямо запрещает её:
         расценённость по-участниковая, а панель без денег). «15» несёт ДВЕ
         позиции в файле, из них расценена только ОДНА («Работа 11 без цены» —
         `total_cost_total IS NULL`), и `rows` обязан отдать 2, а не 1: без
@@ -120,22 +302,22 @@ class TestStates:
         ).scalar_one()
         assert priced == 1                                   # ровно одна из двух строк «15» расценена
 
-    def test_rows_stays_the_full_file_subtree_after_a_full_decision(self, db_session, round_scene, admin_user):
-        """§4.1: `rows` — свойство ФАЙЛА, не зависящее от того, что уже решено
-        внутри поддерева. На этой ведомости ДО решения три метрики совпадают
-        численно (3/2/1/1 для 14/14.1/14.3/15): полный размер файлового
-        поддерева (правильная метрика), число строк, ОСТАЮЩИХСЯ
-        нераспределёнными внутри поддерева (метрика паспорта
-        `_unallocated_sections`, спека запрещает её здесь §4.1), и
-        `rows_priced`. Поэтому `test_rows_is_the_full_file_subtree` в одиночку
-        не отличает верную реализацию от реализации, вернувшей любую из двух
-        неверных метрик — обе дали бы те же числа.
+    def test_node_rows_stays_the_full_file_subtree_after_a_full_decision(self, db_session, round_scene, admin_user):
+        """`node.rows` — свойство ФАЙЛА, не зависящее от того, что уже решено
+        внутри поддерева. Это метрика `manual[]` (§2.3), и именно её решение по
+        «14» не сдвигает: было 3, осталось 3.
 
-        Полное решение по «14» во всех трёх сметах гонит метрику паспорта в
-        НОЛЬ (внутри поддерева не осталось ни одной нераспределённой строки),
-        а размер файлового поддерева не меняется вовсе — это и есть случай,
-        который убивает реализацию, подставившую любую из двух неверных
-        метрик.
+        **Правка 02.09.2026.** Первая редакция этого теста утверждала большее:
+        что метрика паспорта (`_unallocated_sections`) здесь ЗАПРЕЩЕНА и
+        неверна. Это оказалось ошибкой спеки, а не свойством задачи, и заодно
+        ошибкой в описании самой метрики: `_unallocated_fold` паспорта считает
+        не «строки, ОСТАЮЩИЕСЯ нераспределёнными», а строки, до которых
+        решение на узле ДОЙДЁТ (`own_rows` берутся все, без разбора статей
+        детей — `_section_metrics`). Спека §2.3 отвергала третью, чужую
+        метрику, и под этим прикрытием во входное множество попадали разделы,
+        решение на которых не двигает ни строки, — замер стенда и замечание
+        пользователя (см. `TestReachabilityBoundary`). Достижимые строки
+        теперь и есть `sections[].rows`; здесь остаётся `manual[]`.
 
         Побочный эффект, который стоит закрепить тем же тестом: как только
         «14» решена во всех сметах, пересчёт материализует унаследованную
@@ -666,13 +848,28 @@ class TestCardCounter:
         pending = [a for a in crud_ru.load_states(db_session, scope) if a.classification.state in ru.PENDING_STATES]
         assert r1["unallocated_pending_sections"] == len(pending) == 5     # 14, 14.1, 14.3, 15 + частичная «1»
 
-    def test_no_offer_estimates_is_null_and_disabled_structure_still_counts(self, db_session, round_scene, factories):
+    def test_no_offer_estimates_is_null_and_disabled_structure_counts_zero(self, db_session, round_scene, factories):
+        """Два разных нуля и `null` между ними. `null` — у раунда без
+        offer-смет (триггер не рисуется вовсе). НОЛЬ — у раунда с погашенной
+        структурой, и это правка 02.09.2026: прежде счётчик отдавал здесь
+        ЕДИНИЦУ (раздел «прим.» без статьи попадал во входное множество), хотя
+        §2.5 той же спеки прямо говорит, что при погашенной структуре разнос
+        раздела невозможен в принципе — ни одного раздела, годного для решения,
+        нет. Замер сцены: единственная строка проекции и ЕСТЬ сам раздел
+        «прим.» (`is_chapter`), не-раздельных строк под ним ноль, поэтому
+        достижимых строк §2.2 ноль — и правило паспорта на той же смете тоже
+        отдаёт пустой список.
+
+        Граница остаётся видимой пользователю не бейджем, а блоком диагностики
+        §2.5, где у неё есть имя и число строк, — это и был замысел §2.5."""
         from crud import tenders as crud_tenders
         empty = factories.TenderRoundFactory.create(tender=round_scene.tender, stage_no=3)
         db_session.flush()
         rounds = {r["id"]: r for r in crud_tenders.get_tender_card(db_session, round_scene.tender.id)["rounds"]}
         assert rounds[empty.id]["unallocated_pending_sections"] is None
-        assert rounds[round_scene.r2.id]["unallocated_pending_sections"] == 1     # раздел «прим.» без статьи
+        assert rounds[round_scene.r2.id]["unallocated_pending_sections"] == 0
+        scope = crud_ru.load_scope(db_session, round_scene.tender.id, round_scene.r2.id)
+        assert [d["code"] for d in crud_ru.diagnostics(db_session, scope)] == [crud_ru.DIAG_STRUCTURE_DISABLED]
 
     def test_there_is_no_second_formula(self, db_session, round_scene, monkeypatch, member_client):
         """Подмена агрегатора меняет ОБА ответа (§4.3): счётчик карточки и

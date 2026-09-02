@@ -148,9 +148,13 @@ class TestPartitionProperty:
             ), vectors
 
 
-def node(key, parent=None, raw=None, rows=1, number=None, title="р") -> ru.ChapterNode:
+def node(key, parent=None, raw=None, rows=1, own_rows=None, number=None, title="р") -> ru.ChapterNode:
+    """`own_rows` по умолчанию равен `rows` — на плоском узле (без детей) это одно
+    и то же число, и прежние фикстуры файла остаются валидными. Тесты
+    достижимости §2.2 задают оба поля явно: там расхождение и есть предмет."""
     return ru.ChapterNode(key=("lot_1", key), file_parent=None if parent is None else ("lot_1", parent),
-                          number=number or key, title=title, smr_article_raw=raw, rows=rows)
+                          number=number or key, title=title, smr_article_raw=raw, rows=rows,
+                          own_rows=rows if own_rows is None else own_rows)
 
 
 NODES = [node("1"), node("14"), node("14.1", parent="14"), node("14.3", parent="14"), node("15")]
@@ -198,6 +202,127 @@ class TestInputSet:
         vectors = {n.key: [None, None] for n in NODES}
         vectors[("lot_1", "1")] = [None, vec()]              # override во ВТОРОЙ смете, не в первой
         assert ("lot_1", "1") in {n.key for n in ru.input_set(NODES, missing, vectors)}
+
+
+class TestReachability:
+    """Граница §2.2 «решение до чего-нибудь дойдёт» — правило паспорта
+    (`_unallocated_sections`, граница §5.2 спеки разноса), потерянное первой
+    редакцией спеки этапного разноса. Замер стенда, ради которого класс
+    существует: раздел «10 Инженерные системы» тендера 159-ТУ несёт 161 строку
+    файлового поддерева и НОЛЬ достижимых, потому что все его дети имеют свои
+    файловые статьи; правило паспорта на той же смете отдавало ноль разделов,
+    прежний отбор — три."""
+
+    def test_heading_without_children_and_without_rows_is_not_a_candidate(self):
+        """Заглавная строка сметы («Лот №1 - МИRА_Генподряд» на стенде):
+        раздел без статьи, без детей и без единой своей строки. Разносить
+        нечего, и паспорт его не показывает."""
+        nodes = [node("1", rows=0, own_rows=0)]
+        assert ru.input_set(nodes, {nodes[0].key: True}, {nodes[0].key: [None]}) == []
+
+    def test_parent_whose_only_child_carries_its_own_article_is_not_a_candidate(self):
+        """Форма «10 Инженерные системы» → «10.1» со своей валидной статьёй.
+        У родителя своих строк нет, а до строк ребёнка решение не дойдёт
+        (правило Ф3), поэтому кандидатом он не является — при том что ПОЛНОЕ
+        файловое поддерево у него ненулевое (`rows=5`): подмена достижимых
+        строк на `rows` оставила бы узел во множестве."""
+        nodes = [node("10", rows=5, own_rows=0), node("10.1", parent="10", rows=5, own_rows=5, raw="11.12")]
+        missing = {("lot_1", "10"): True, ("lot_1", "10.1"): False}   # у «10.1» статья есть
+        vectors = {n.key: [None] for n in nodes}
+        assert ru.input_set(nodes, missing, vectors) == []
+
+    def test_parent_whose_child_inherits_is_a_candidate(self):
+        """Негативный к предыдущему — вход отличается РОВНО одним
+        ограничением: у «10.1» нет ни статьи, ни своего утверждения, значит он
+        наследует, и решение на «10» дойдёт до его пяти строк."""
+        nodes = [node("10", rows=5, own_rows=0), node("10.1", parent="10", rows=5, own_rows=5)]
+        missing = {n.key: True for n in nodes}
+        vectors = {n.key: [None] for n in nodes}
+        out = {a.node.key[1]: a for a in ru.aggregate(nodes, missing, vectors)}
+        assert set(out) == {"10", "10.1"}
+        assert out["10"].reachable_rows == 5 and out["10.1"].reachable_rows == 5
+
+    def test_own_rows_count_even_under_the_nodes_own_raw_statement(self):
+        """Решение на узле сильнее его СОБСТВЕННОГО файлового утверждения (то
+        же правило, что у паспорта: `_unallocated_fold` берёт `own_rows`
+        безусловно). Узел с нечитаемым `smr_article_raw` и своими строками —
+        кандидат, хотя предок до него не дойдёт."""
+        nodes = [node("14.1", raw="9999", rows=2, own_rows=2)]
+        out = ru.aggregate(nodes, {nodes[0].key: True}, {nodes[0].key: [None]})
+        assert [a.reachable_rows for a in out] == [2]
+
+    #: Блокирующий узел в смысле паспорта — это НЕ «узел со статьёй»: статьи у
+    #: него как раз нет, а есть СВОЁ файловое утверждение, которое статьи не
+    #: дало (нечитаемый префикс, код вне справочника). Именно на такой форме
+    #: правило Ф3 наблюдаемо: у узла со статьёй его и без Ф3 отсекает первый
+    #: конъюнкт `_inherits`. Пара тестов ниже отличается РОВНО наличием
+    #: `smr_article_raw` у «10.1» — снятие Ф3 из предиката оставляло первую
+    #: редакцию этого класса зелёной.
+    BLOCKING_RAW = "9999"
+
+    def _chain(self, *, raw):
+        """«10» → «10.1» → «10.1.1»; все девять строк лежат под внуком, у «10»
+        и «10.1» своих строк нет. Эффективной статьи нет ни у одного — то есть
+        `missing_article` истинен всюду, и отличие только в `raw` у «10.1»."""
+        nodes = [
+            node("10", rows=9, own_rows=0),
+            node("10.1", parent="10", rows=9, own_rows=0, raw=raw),
+            node("10.1.1", parent="10.1", rows=9, own_rows=9),
+        ]
+        missing = {n.key: True for n in nodes}
+        return nodes, missing, {n.key: [None] for n in nodes}
+
+    def test_a_blocking_child_cuts_its_whole_subtree_not_only_itself(self):
+        """Свёртка обрывается НА блокирующем ребёнке: внук наследовал бы от
+        «10.1», но до него решение «10» не дойдёт — цепочка прервана выше.
+        Убивает и реализацию без Ф3 вовсе, и ту, что исключает блокирующего
+        ребёнка, но продолжает обход в его поддерево."""
+        nodes, missing, vectors = self._chain(raw=self.BLOCKING_RAW)
+        out = {a.node.key[1]: a.reachable_rows for a in ru.aggregate(nodes, missing, vectors)}
+        assert out == {"10.1": 9, "10.1.1": 9}      # «10» отпал: достижимых строк ноль
+
+    def test_the_same_chain_without_the_raw_statement_reaches_through(self):
+        """Положительная пара к предыдущему — вход отличается ТОЛЬКО пустым
+        `smr_article_raw` у «10.1»: цепочка наследует целиком, и «10»
+        достигает всех девяти строк."""
+        nodes, missing, vectors = self._chain(raw=None)
+        out = {a.node.key[1]: a.reachable_rows for a in ru.aggregate(nodes, missing, vectors)}
+        assert out == {"10": 9, "10.1": 9, "10.1.1": 9}
+
+    def test_reach_sums_through_a_chain_of_inheriting_descendants(self):
+        """Положительная пара к предыдущему: та же тройка, но «10.1» без своего
+        утверждения — достижимость складывается через всю цепочку."""
+        nodes = [
+            node("10", rows=9, own_rows=1),
+            node("10.1", parent="10", rows=8, own_rows=2),
+            node("10.1.1", parent="10.1", rows=6, own_rows=6),
+        ]
+        missing = {n.key: True for n in nodes}
+        out = {a.node.key[1]: a.reachable_rows for a in ru.aggregate(nodes, missing, {n.key: [None] for n in nodes})}
+        assert out == {"10": 9, "10.1": 8, "10.1.1": 6}
+
+    def test_unreachable_node_with_an_override_stays_in_the_set(self):
+        """Второй дизъюнкт §2.2 фильтру достижимости НЕ подчиняется: решение,
+        стоящее на узле с нулевой достижимостью, обязано остаться видимым —
+        иначе его нельзя снять. Так же устроен паспорт: `_manual_assignments`
+        границу §5.2 не применяет. Вход отличается от
+        `test_heading_without_children_and_without_rows_is_not_a_candidate`
+        РОВНО наличием override."""
+        nodes = [node("1", rows=0, own_rows=0)]
+        out = ru.aggregate(nodes, {nodes[0].key: True}, {nodes[0].key: [vec()]})
+        assert [a.node.key[1] for a in out] == ["1"]
+        assert out[0].classification.state == ru.STATE_RESOLVED and out[0].reachable_rows == 0
+
+    def test_reach_is_not_the_full_file_subtree(self):
+        """Пришпиливает РАСХОЖДЕНИЕ двух метрик на одном узле: `node.rows`
+        (полное файловое поддерево — подпись `manual[]`) и `reachable_rows`
+        (охват решения — подпись `sections[]`). Без этого теста реализация,
+        вернувшая `node.rows` из обеих, была бы зелёной всюду, где формы
+        совпадают."""
+        nodes = [node("10", rows=7, own_rows=2), node("10.1", parent="10", rows=5, own_rows=5, raw="11.12")]
+        missing = {("lot_1", "10"): True, ("lot_1", "10.1"): False}
+        out = ru.aggregate(nodes, missing, {n.key: [None] for n in nodes})
+        assert [(a.node.rows, a.reachable_rows) for a in out] == [(7, 2)]
 
 
 class TestRehang:
