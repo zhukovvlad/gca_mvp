@@ -2,6 +2,30 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **УСТАРЕЛО В ЧАСТИ ОТБОРА РАЗДЕЛОВ (02.09.2026).** План закрыт целиком, но
+> писался до правки спеки по замечанию пользователя, и **модель отбора у него
+> прежняя.** Действующее правило — [спека](../specs/2026-09-01-round-unallocated-design.md)
+> §2.2 «Достижимость» и §2.3; разбор — [devlog](../../devlog/2026-09-01-round-unallocated.md)
+> §9б. Коротко, что здесь читать как неверное:
+>
+> - раздел попадает во множество не при ЛЮБОМ отсутствии статьи, а только когда
+>   решение на нём достигает хотя бы одной строки (свёртка по наследующей части
+>   поддерева, правило Ф3) — либо когда на нём уже стоит override;
+> - `rows` у `sections[]` — ДОСТИЖИМЫЕ строки, а не полный размер файлового
+>   поддерева; полный остаётся только у `manual[]`.
+>
+> Ниже это задето в шести местах, каждое помечено `⚠ УСТАРЕЛО` по месту:
+> Global Constraints (два пункта), `ChapterNode.rows`, юнит-тест
+> `test_rows_is_the_node_rows_regardless_of_vectors`, тип
+> `RoundUnallocatedSectionBase.rows`, `PENDING_HINT`.
+>
+> Текст плана НЕ переписан задним числом намеренно: план — артефакт гейта 3, и
+> расхождения с ним живут в devlog (§3 — девять отступлений, §9б — эта правка),
+> а не правкой истории. Врезка стоит здесь потому, что пересказ правила и есть
+> место, где дефект однажды уже завёлся
+> ([инсайт](../../insights/parity-with-the-existing-surface.md)), — молча
+> оставленный устаревший пересказ завёл бы его снова.
+
 **Goal:** дать аналитику разнести разделы без статьи в сметах ПРЕДЛОЖЕНИЙ
 тендера — одним решением на логический раздел раунда, применяемым ко всем
 offer-сметам раунда разом, — и тем оживить подпись `manual_overrides` свода
@@ -48,6 +72,8 @@ xdist); React + TanStack Query + shadcn/ui + vitest + msw.
 - **Входное множество агрегатора** — логические разделы, у которых хотя бы в
   одной offer-смете эффективная статья отсутствует ИЛИ существует хотя бы один
   override (§2.2). Раздел со статьёй из файла и без решений в ответ не попадает.
+  **⚠ УСТАРЕЛО** (см. врезку): первый дизъюнкт требует ещё и ненулевой
+  достижимости.
 - **Четыре состояния по ПОЛНОМУ вектору
   `(work_category_id, note, assigned_by, assigned_at)`**: `unassigned`
   (override ни в одной), `partial` (не во всех), `conflict` (во всех, векторы
@@ -58,6 +84,8 @@ xdist); React + TanStack Query + shadcn/ui + vitest + msw.
   различающийся `is_chapter` — `mapping_broken`: 500 с логом, не 409 (§2.2, §2.4).
 - **`rows` — ПОЛНЫЙ размер файлового поддерева** (число позиций), стабилен и не
   зависит от вложенных решений; `rows_priced` НЕ отдаётся (§2.3).
+  **⚠ УСТАРЕЛО** (см. врезку): так теперь только у `manual[]`; у `sections[]`
+  `rows` — достижимые строки.
 - **Денег в ответе GET и в верстаке нет** (§2.3, §3 п.3).
 - **404-коды GET:** `tender_not_found`, `round_not_found` (раунд ищется
   парой), `round_has_no_offer_estimates` с текстом «Раунд или его сметы больше
@@ -263,6 +291,8 @@ class ChapterNode:
     title: str
     smr_article_raw: str | None
     rows: int                            # полный размер файлового поддерева
+    # ⚠ УСТАРЕЛО (см. врезку): рядом появилось own_rows — прямые строки узла,
+    # вход свёртки достижимости; достижимые идут в SectionAggregate.
 
 @dataclass(frozen=True)
 class SectionAggregate:
@@ -436,7 +466,10 @@ class TestAggregate:
 
     def test_rows_is_the_node_rows_regardless_of_vectors(self):
         """`rows` — полный размер файлового поддерева: конфликт при нуле
-        нераспределённых строк несёт ненулевой `rows` (§4.1)."""
+        нераспределённых строк несёт ненулевой `rows` (§4.1).
+
+        ⚠ УСТАРЕЛО (см. врезку): `node.rows` таким и остался, но на провод у
+        `sections[]` идут достижимые строки — см. `TestReachability`."""
         n14 = node("14", rows=3)
         out = ru.aggregate([n14], {n14.key: False}, {n14.key: [vec(category=10), vec(category=11)]})
         assert out[0].classification.state == ru.STATE_CONFLICT
@@ -2419,7 +2452,8 @@ interface RoundUnallocatedSectionBase {
   lot_key: string; position_key_in_proposal: string;
   parent_key: SectionKey | null;      // вершина нераспределённой части — null
   depth: number; number: string | null; title: string; smr_article_raw: string | null;
-  rows: number;                       // ПОЛНЫЙ размер файлового поддерева — подпись «N позиций»
+  rows: number;                       // ⚠ УСТАРЕЛО (см. врезку): у sections[] это
+                                      // ДОСТИЖИМЫЕ строки — подпись «N позиций»
 }
 export type RoundUnallocatedSection = RoundUnallocatedSectionBase & (
   | { state: "unassigned" }
@@ -2730,6 +2764,8 @@ export const sheetTitle = (stageNo: number) => `Разнос статей — Э
 export const sheetSubtitle = (offers: number) =>
   `Ведомость одна на этап: решение по разделу применяется ко всем сметам раунда (${offers} участник${pluralRu(offers)}).`;
 export const pendingHeading = (n: number) => `Требуют решения — ${n}`;
+// ⚠ УСТАРЕЛО (см. врезку) и вдвойне: полный текст берётся из макета (§3 devlog,
+// отступление 5), а смысл счётчика с 02.09.2026 — охват решения.
 export const PENDING_HINT = "Файловый порядок ведомости; счётчик — полный размер файлового поддерева.";
 export const MANUAL_HEADING = "Разнесено вручную";
 export const MANUAL_HINT = "Только разделы с единым решением во всех сметах раунда; «снять» убирает решение во всех сметах.";
