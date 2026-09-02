@@ -36,10 +36,21 @@ CODE_STRUCTURE_DISABLED = "structure_disabled"
 
 def _lock_scope(db: Session, tender_id: int, round_id: int) -> list[int]:
     """tender FOR KEY SHARE → round FOR KEY SHARE → offer-сметы FOR UPDATE по
-    `estimate_id ASC`. KEY SHARE совместим с параллельным раундовым писателем и
-    конфликтует с FOR UPDATE замены/удаления раунда (`import_round`,
-    `delete_round`, `delete_participant`) — те ждут нас, мы их. После их
-    коммита смет может не остаться — это `round_has_no_offer_estimates` (§1.5)."""
+    `estimate_id ASC`. KEY SHARE на тендере совместим с параллельным раундовым
+    писателем — этого мы и добиваемся; сериализация с соседями происходит НИЖЕ,
+    и точное место у каждого своё (уточнено финальным ревью ветки, первая
+    редакция валила всех троих в одну кучу «конфликтует по тендеру»):
+
+    - `import_round` (загрузка и замена файла раунда) берёт тендер
+      `FOR NO KEY UPDATE`, то есть с нашим KEY SHARE он СОВМЕСТИМ; расходимся мы
+      на строке раунда `FOR UPDATE` и на строках смет;
+    - `delete_round` берёт тендер тем же `FOR NO KEY UPDATE` (долг №26 — его
+      докстрока называет это «FOR KEY SHARE»), и снова разводит нас раунд;
+    - `delete_participant` строку раунда не трогает вовсе — с ним мы
+      встречаемся только на сметах.
+
+    После их коммита смет может не остаться — это
+    `round_has_no_offer_estimates` (§1.5)."""
     rnd = require_round(db, tender_id, round_id)
     # ИМЕННО `read=True, key_share=True`: это компилируется в `FOR KEY SHARE`.
     # Одно `key_share=True` даёт `FOR NO KEY UPDATE` (проверено компиляцией под
