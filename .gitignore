@@ -13,6 +13,10 @@ backend/logs/
 
 # Node
 node_modules/
+
+# Кэш eslint (`npm run lint --cache`): результат на файл, привязан к его mtime
+# и версии конфига. Локальный артефакт — в CI чистый checkout, кэша нет.
+.eslintcache
 frontend/dist/
 
 # Локальное файловое хранилище (LocalStorage, см. AGENTS.md §8)
