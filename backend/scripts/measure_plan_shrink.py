@@ -43,10 +43,7 @@ def classify(lang: str, body: list[str]) -> str:
     meaningful = [line for line in body if line.strip() and not line.strip().startswith("#")]
     if not meaningful:
         return "команды"
-    if all(
-        SIGNATURE.match(line) or line.strip().endswith((",", "(", ")", "]", '"""'))
-        for line in meaningful
-    ):
+    if all(SIGNATURE.match(line) or line.strip().endswith((",", "(", ")", "]", '"""')) for line in meaningful):
         return "интерфейс"
     return "тела реализации"
 
