@@ -14,9 +14,21 @@
   их не касается, и наказывать ими следующую фичу нельзя.
 
 Граница «первый кодовый коммит» ищется по линейному порядку `main`: первый
-после создания плана коммит, тронувший `backend/` или `frontend/`. Фичи в этом
-проекте идут последовательно, поэтому эвристика совпадает с началом реализации
-той же фичи; при параллельных ветках её пришлось бы уточнять.
+после создания плана коммит, тронувший ПРОДУКТОВЫЙ исходник — `backend/**/*.py`
+кроме `backend/scripts/`, либо `frontend/src/**/*.{ts,tsx}`.
+
+Оба исключения не косметические, их поймало внешнее ревью. Третий круг ревью
+плана `position-drilldown` (`ba9780d`) заодно поправил две строки в html-макете
+и 26 строк в `backend/scripts/gen_position_drilldown_inline.py`; правило «любой
+файл в `backend/` или `frontend/`» приняло этот круг за начало реализации, и
+два круга из четырёх уехали в графу «по ходу» (2/2 вместо 4/0).
+
+Правило «границей не может быть коммит, правящий план» рассматривалось и
+отвергнуто замером: коммиты реализации ставят в плане чекбоксы и правят его по
+ходу, поэтому граница уезжала за конец фичи и давала 75/9 вместо 54/30.
+
+Фичи в этом проекте идут последовательно, поэтому эвристика совпадает с началом
+реализации той же фичи; при параллельных ветках её пришлось бы уточнять.
 
 Зачем механически. Счёт по темам коммитов зависит от того, какие слова выбрал
 автор, и потому не воспроизводим: по подстроке «круг ревью плана» у плана #37
@@ -32,6 +44,7 @@ import re
 import subprocess
 
 CHECKBOX = re.compile(r"^[+-]\s*- \[[ x]\]")
+SOURCE = re.compile(r"^(backend/(?!scripts/).*\.py|frontend/src/.*\.tsx?)$")
 
 
 def git(*args: str) -> str:
@@ -52,6 +65,22 @@ def git(*args: str) -> str:
     ).stdout
 
 
+def source_touching_commits() -> set[str]:
+    """Коммиты, тронувшие продуктовый исходник — ОДНИМ проходом по истории.
+
+    `git show` на каждый коммит стоил бы сотен процессов и почти трёх минут;
+    здесь один `git log --name-only`, отдающий хэш и его файлы подряд.
+    """
+    found: set[str] = set()
+    current = ""
+    for line in git("log", "main", "--format=@%h", "--name-only").split("\n"):
+        if line.startswith("@"):
+            current = line[1:]
+        elif line.strip() and SOURCE.match(line.strip()):
+            found.add(current)
+    return found
+
+
 def changed_lines(commit: str, path: str) -> list[str]:
     diff = git("show", "--format=", "--unified=0", commit, "--", path)
     return [
@@ -64,7 +93,9 @@ def changed_lines(commit: str, path: str) -> list[str]:
 def main() -> None:
     order = [c for c in git("log", "main", "--reverse", "--format=%h").split("\n") if c]
     position = {commit: i for i, commit in enumerate(order)}
-    code_commits = {c for c in git("log", "main", "--format=%h", "--", "backend", "frontend").split("\n") if c}
+    # Границей считается ПРОДУКТОВЫЙ исходник, а не любой файл в дереве кода:
+    # `backend/scripts/` — инструменты, html-макет — не реализация.
+    with_source = source_touching_commits()
 
     plans = [
         p
@@ -80,7 +111,7 @@ def main() -> None:
             print(f"{path.split('/')[-1][:-3]:<44}{0:>8}{0:>8}{0:>9}{0:>7}")
             continue
         start = position.get(commits[0], 0)
-        first_code = next((i for i in range(start + 1, len(order)) if order[i] in code_commits), len(order))
+        first_code = next((i for i in range(start + 1, len(order)) if order[i] in with_source), len(order))
         gate, during, added = 0, 0, 0
         for commit in commits[1:]:
             body = changed_lines(commit, path)
