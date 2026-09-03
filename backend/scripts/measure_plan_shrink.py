@@ -33,6 +33,13 @@ SIGNATURE = re.compile(
 TEST_BODY = re.compile(r"\bdef test_|\bit\(|\bdescribe\(|^\s*assert ", re.M)
 SHELL = re.compile(r"^\s*(just|git|uv|npx|npm|cd|psql) ", re.M)
 
+# Windows-консоль по умолчанию cp1252, и первая же кириллическая строка вывода
+# роняет скрипт `UnicodeEncodeError`. Документированная команда обязана
+# работать без внешнего `PYTHONIOENCODING`, поэтому поток настраивается здесь.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+
 
 def classify(lang: str, body: list[str]) -> str:
     text = "\n".join(body)

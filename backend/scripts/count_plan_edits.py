@@ -42,19 +42,34 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 
 CHECKBOX = re.compile(r"^[+-]\s*- \[[ x]\]")
 SOURCE = re.compile(r"^(backend/(?!scripts/).*\.py|frontend/src/.*\.tsx?)$")
 
+# Windows-консоль по умолчанию cp1252, и первая же кириллическая строка вывода
+# роняет скрипт `UnicodeEncodeError`. Документированная команда обязана
+# работать без внешнего `PYTHONIOENCODING`, поэтому поток настраивается здесь.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+
 
 def git(*args: str) -> str:
-    """Git из КОРНЯ репозитория: пути в `ls-files` иначе зависят от cwd, и
-    запуск из `backend/` молча возвращал бы ноль планов."""
+    """Git из КОРНЯ репозитория, fail-closed.
+
+    Два требования, и оба выстраданы. Пути в `ls-files` зависят от cwd, поэтому
+    команда всегда идёт с `-C <корень>`: запуск из `backend/` иначе молча
+    возвращал бы ноль планов. И `check=True` — потому что счётчик, на котором
+    стоят v6.16 и инсайт §12, обязан падать, а не печатать правдоподобный ноль,
+    если ветки `main` нет, история обрезана или git отказал.
+    """
     root = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
         encoding="utf-8",
+        check=True,
     ).stdout.strip()
     return subprocess.run(
         ["git", "-C", root, *args],
@@ -62,7 +77,15 @@ def git(*args: str) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        check=True,
     ).stdout
+
+
+def require_full_history_of_main() -> None:
+    """Ветка `main` существует и история не обрезана — иначе счёт бессмыслен."""
+    git("rev-parse", "--verify", "main")
+    if git("rev-parse", "--is-shallow-repository").strip() == "true":
+        raise SystemExit("история обрезана (shallow clone) — счёт правок был бы неполным")
 
 
 def source_touching_commits() -> set[str]:
@@ -91,6 +114,7 @@ def changed_lines(commit: str, path: str) -> list[str]:
 
 
 def main() -> None:
+    require_full_history_of_main()
     order = [c for c in git("log", "main", "--reverse", "--format=%h").split("\n") if c]
     position = {commit: i for i, commit in enumerate(order)}
     # Границей считается ПРОДУКТОВЫЙ исходник, а не любой файл в дереве кода:
