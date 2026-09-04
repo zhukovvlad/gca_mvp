@@ -55,6 +55,18 @@ jobs:
         run: uv sync --locked
         working-directory: backend
 
+      - name: Check docs index (guard)
+        # Зеркалит тело рецепта `just check-agents-index` прямой командой, а не
+        # зовёт `just`: в обоих workflow `just` не упоминается ни разу, все шаги
+        # вызывают инструменты напрямую, и установка `just` дала бы новый способ
+        # упасть ДО запуска стража.
+        #
+        # Шаг стоит первым среди проверок: он read-only, не требует Postgres и
+        # идёт секунды, а набор тестов — семь минут. Дрейф документации незачем
+        # узнавать после них.
+        run: uv run --locked python scripts/check_agents_index.py
+        working-directory: backend
+
       - name: Lint (ruff)
         run: uv run --locked ruff check .
         working-directory: backend
