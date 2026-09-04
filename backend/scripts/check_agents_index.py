@@ -1,8 +1,9 @@
-"""Указатель §12, преамбула ревизий и архив `docs/AGENTS-revisions.md` — 11 проверок.
+"""Указатель §12, ревизии, архив и маршрутизатор §11 → `docs/pitfalls/` — 16 проверок.
 
 Скрипт read-only: он ничего не пишет и ничего не правит. Его предмет — не текст
-документов, а СТРУКТУРА двух списков, которые легко разъезжаются с реальностью:
-указателя инсайтов в §12 и перечня ревизий в преамбуле `AGENTS.md`.
+документов, а СТРУКТУРА трёх списков, которые легко разъезжаются с реальностью:
+указателя инсайтов в §12, перечня ревизий в преамбуле `AGENTS.md` и
+маршрутизатора граблей в §11.
 
 Почему скриптом, а не конвейером из `grep`. Прежние две команды DoD были
 переписаны трижды и трижды допускали ложный зелёный: сравнивали МОЩНОСТИ вместо
@@ -17,7 +18,7 @@
 скрывает дубликат, который они ищут. Остальные (3, 7, 9, 10, 11) — построчные
 условия и коллекций не сопоставляют вовсе.
 
-Что стерегут одиннадцать проверок:
+Что стерегут шестнадцать проверок:
 
 указатель §12
  1. строки указателя ↔ файлы `docs/insights/` — равенство множеств в обе
@@ -47,7 +48,28 @@
  9. если архивная запись несёт ссылку на спеку или devlog, строка преамбулы
     несёт хотя бы одну из них;
 10. каждая историческая строка несёт хотя бы один `§N`;
-11. каждая локальная ссылка архива разрешается в существующий файл.
+11. каждая локальная ссылка архива разрешается в существующий файл;
+
+маршрутизатор §11 и корпус `docs/pitfalls/`
+12. цели строк маршрутизации ↔ файлы `docs/pitfalls/` — равенство множеств в
+    обе стороны. Файл без строки в §11 и строка, ведущая в никуда, — это одно
+    свойство, а не два: вход, ломающий только одно из них, не существует;
+13. кратность строк маршрутизации: строк ровно столько, сколько уникальных
+    целей. Множества этого не ловят — вторая строка на `frontend.md` оставляет
+    их равными, а обещанных семи строк становится восемь;
+14. ни один пункт не сдублирован по всему корпусу. Сравнивается СВЁРНУТЫЙ
+    ПОЛНЫЙ текст пункта (пробелы свёрнуты, регистр сохранён), а не первая
+    строка: сравнение по началу запретило бы два разных пункта с одинаковым
+    зачином и проверяло бы лишь часть текста;
+15. каждый файл области несёт шапку «когда читать» — ровно одну;
+16. каждый файл области несёт хотя бы один распознанный пункт. Заведено
+    отдельно от 15: файл, из которого удалили все грабли, оставив шапку, прошёл
+    бы проверку «непуст», а читать в объявленной области было бы нечего.
+
+Проверки 15 и 16 держатся на том, что пункт распознаётся НЕЗАВИСИМО от шапки:
+`pitfall_items` не ищет шапку и не пропускает строки до неё. Стоило бы искать
+пункты после распознанной шапки — и снятие шапки красило бы сразу обе, то есть
+изолированного входа для 16 не существовало бы.
 
 Объявлением ревизии считается только СТРУКТУРНАЯ форма: строка преамбулы
 `> **v6.N (дата)` и заголовок `## v6.N` в архиве. Упоминание версии внутри
@@ -72,7 +94,15 @@ v6.12», и считать это объявлением значило бы о�
 * **полноту перечня разделов.** Проверка 10 требует хотя бы один `§N`, а не
   весь перечень тронутых разделов: строка `v6.16` с одним `§12`, без §9.1 и
   §9.2, её пройдёт. Вывести ожидаемый перечень из прозы врезки автоматически
-  нельзя — прозаический текст упоминает `§N` и по другим поводам.
+  нельзя — прозаический текст упоминает `§N` и по другим поводам;
+* **полноту переезда граблей.** «Сумма пунктов равна 46» стражем стоять не
+  может: это свойство ПЕРЕЕЗДА, а не установившегося состояния, и первая же
+  фича, заводящая граблю, красила бы его законно — страж, который учат глушить,
+  перестаёт стеречь вообще. Полнота сверена один раз разовым скриптом
+  посимвольно (`docs/devlog/2026-09-04-pitfalls-routing.md`);
+* **что нужный файл граблей прочитан.** Ни один скрипт не отличит «прочитал» от
+  «написал, что прочитал». Дисциплина чтения — пункт DoD §10, проверяемый
+  чтением на ревью, и названа она слабее механизма намеренно.
 
 Список файлов берётся с диска, а не из `git ls-files`: под `docs/` нет
 игнорируемых `.md`, зато новый файл проверяется раньше, чем попадёт в индекс.
@@ -93,6 +123,7 @@ AGENTS = ROOT / "AGENTS.md"
 ARCHIVE_REL = "docs/AGENTS-revisions.md"
 ARCHIVE = ROOT / ARCHIVE_REL
 INSIGHTS_REL = "docs/insights"
+PITFALLS_REL = "docs/pitfalls"
 
 TITLE_VERSION = re.compile(r"^#\s.*[—-]\s*(v6\.\d+)\s*$")
 PREAMBLE_DECL = re.compile(r"^> \*\*(v6\.\d+) \((\d{4}-\d{2}-\d{2})\)")
@@ -103,6 +134,13 @@ INDEX_ROW = re.compile(r"^- \*\*\[")
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 SECTION_REF = re.compile(r"§\d")
 SPEC_OR_DEVLOG = ("docs/superpowers/specs/", "docs/devlog/")
+
+# Шапка файла области — ровно одна строка, и её литерал закреплён здесь, а не
+# оставлен вкусу: иначе проверка 15 стерегла бы формулировку исполнителя.
+PITFALL_HEADER = re.compile(r"^\*\*Когда читать:\*\*")
+# Пункт — строка, начинающаяся с `- `: тот же формат, в котором пункты стояли в
+# §11. Предикат НЕ зависит от шапки, и это условие изолированности входов 15 и 16.
+PITFALL_ITEM = re.compile(r"^- ")
 
 # Windows-консоль по умолчанию cp1252, и первая же кириллическая строка вывода
 # роняет скрипт `UnicodeEncodeError`. Документированная команда обязана
@@ -138,11 +176,15 @@ def preamble_of(lines: list[str]) -> list[str]:
     return lines
 
 
-def index_rows_of(lines: list[str]) -> list[str]:
-    """Строки указателя §12."""
+def rows_under(lines: list[str], heading: str) -> list[str]:
+    """Строки вида `- **[название](путь)** — …` внутри одного раздела.
+
+    Форма у указателя §12 и у маршрутизатора §11 одна, поэтому предикат один:
+    строка-указатель, ведущая ссылкой в файл.
+    """
     start = None
     for i, line in enumerate(lines):
-        if line.startswith("## 12."):
+        if line.startswith(heading):
             start = i
             break
     if start is None:
@@ -154,6 +196,60 @@ def index_rows_of(lines: list[str]) -> list[str]:
         if INDEX_ROW.match(line):
             rows.append(line)
     return rows
+
+
+def index_rows_of(lines: list[str]) -> list[str]:
+    """Строки указателя §12."""
+    return rows_under(lines, "## 12.")
+
+
+def router_lines(lines: list[str]) -> list[str]:
+    """Строки маршрутизации §11, в порядке появления."""
+    return rows_under(lines, "## 11.")
+
+
+def router_targets(lines: list[str]) -> list[str]:
+    """Цели ссылок строк маршрутизации — СПИСКОМ, с кратностью.
+
+    Кратность несущая: проверка 13 ищет ровно тот дубликат, который множество
+    скрывает. Цели разрешаются от корня — там же, где лежит `AGENTS.md`.
+    """
+    targets = []
+    for row in router_lines(lines):
+        target = row_link(row)
+        if target is None:
+            continue
+        resolved = canonical(".", target)
+        targets.append(resolved if resolved is not None else target)
+    return targets
+
+
+def pitfall_items(path: Path) -> list[str]:
+    """СВЁРНУТЫЕ полные тексты пунктов файла области, в порядке появления.
+
+    Свёртка (пробелы схлопнуты, регистр сохранён) уместна именно здесь: два
+    пункта, различающиеся только пробелами, — это дубль. Посимвольная сверка
+    жила в разовом скрипте переезда, а не тут.
+
+    Шапку функция НЕ ищет и строки до неё НЕ пропускает: от этого зависит
+    изолированность входов проверок 15 и 16.
+    """
+    items: list[str] = []
+    current: list[str] | None = None
+    for line in read_lines(path):
+        if PITFALL_ITEM.match(line):
+            if current is not None:
+                items.append(" ".join(" ".join(current).split()))
+            current = [line]
+        elif current is not None:
+            if line.startswith("  "):
+                current.append(line)
+            else:
+                items.append(" ".join(" ".join(current).split()))
+                current = None
+    if current is not None:
+        items.append(" ".join(" ".join(current).split()))
+    return items
 
 
 def preamble_entries(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -364,6 +460,60 @@ def check_11() -> tuple[bool, list[str]]:
     return not details, details
 
 
+def check_12(lines: list[str], files: list[Path]) -> tuple[bool, list[str]]:
+    routed = set(router_targets(lines))
+    present = {path.relative_to(ROOT).as_posix() for path in files}
+    details = [f"файл области без строки маршрутизации в §11: {p}" for p in sorted(present - routed)]
+    details += [f"строка §11 ведёт в несуществующий файл области: {p}" for p in sorted(routed - present)]
+    return not details, details
+
+
+def check_13(lines: list[str]) -> tuple[bool, list[str]]:
+    """Кратность строк маршрутизации: множества дубликат как раз и скрывают."""
+    targets = router_targets(lines)
+    rows = router_lines(lines)
+    unique = set(targets)
+    if len(rows) == len(unique):
+        return True, []
+    duplicates = sorted(path for path, times in Counter(targets).items() if times > 1)
+    return False, [
+        f"строк маршрутизации {len(rows)}, уникальных целей {len(unique)}",
+        *(f"дубликат: {p}" for p in duplicates),
+    ]
+
+
+def check_14(files: list[Path]) -> tuple[bool, list[str]]:
+    seen: dict[str, str] = {}
+    details = []
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        for item in pitfall_items(path):
+            if item in seen:
+                details.append(f"пункт сдублирован: {seen[item]} и {rel} — «{item[:60]}…»")
+            else:
+                seen[item] = rel
+    return not details, details
+
+
+def check_15(files: list[Path]) -> tuple[bool, list[str]]:
+    details = []
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        times = sum(1 for line in read_lines(path) if PITFALL_HEADER.match(line))
+        if times != 1:
+            details.append(f"{rel}: строк шапки «Когда читать:» — {times}, а не одна")
+    return not details, details
+
+
+def check_16(files: list[Path]) -> tuple[bool, list[str]]:
+    details = [
+        f"{path.relative_to(ROOT).as_posix()}: ни одного распознанного пункта"
+        for path in files
+        if not pitfall_items(path)
+    ]
+    return not details, details
+
+
 def main() -> int:
     if not ARCHIVE.is_file():
         print(f"нет файла архива {ARCHIVE_REL}")
@@ -382,6 +532,8 @@ def main() -> int:
     preamble_declared = set(preamble_versions)
     archive = dict(archive_entries(archive_lines))
     archive_declared = set(archive)
+    pitfalls_dir = ROOT / PITFALLS_REL
+    pitfall_paths = sorted(pitfalls_dir.glob("*.md")) if pitfalls_dir.is_dir() else []
 
     results = [
         ("строки указателя §12 ↔ файлы docs/insights/ (множества в обе стороны)", check_1(rows, insight_files)),
@@ -395,10 +547,16 @@ def main() -> int:
         ("ссылки на спеку/devlog из архива есть в строке преамбулы", check_9(entries, archive, current)),
         ("историческая строка называет хотя бы один раздел", check_10(entries, current)),
         ("локальные ссылки архива разрешаются в существующие файлы", check_11()),
+        ("строки §11 ↔ файлы docs/pitfalls/ (множества в обе стороны)", check_12(agents, pitfall_paths)),
+        ("дубликатов строк маршрутизации §11 нет", check_13(agents)),
+        ("ни один пункт граблей не сдублирован (свёрнутый полный текст)", check_14(pitfall_paths)),
+        ("каждый файл области несёт шапку «Когда читать:»", check_15(pitfall_paths)),
+        ("каждый файл области несёт хотя бы один пункт", check_16(pitfall_paths)),
     ]
 
     print(f"AGENTS.md {current or '?'}: указатель §12 — {len(rows)} строк, инсайтов {len(insight_files)}; "
-          f"ревизий в преамбуле {len(preamble_declared)}, в архиве {len(archive_declared)}")
+          f"ревизий в преамбуле {len(preamble_declared)}, в архиве {len(archive_declared)}; "
+          f"маршрутизатор §11 — {len(router_lines(agents))} строк, файлов граблей {len(pitfall_paths)}")
     print()
     failed = 0
     for number, (name, (ok, details)) in enumerate(results, start=1):
