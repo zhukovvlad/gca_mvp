@@ -488,8 +488,8 @@ v6.17 как компромисс, за полгода съедает всю э�
    ```bash
    git grep -n "§9.4" -- backend docs \
      ':!docs/superpowers/specs/2026-09-05-history-out-design.md' \
-     ':!docs/superpowers/plans/2026-09-05-history-out.md' \
-     ':!docs/devlog/2026-09-05-history-out.md'
+     ':!docs/superpowers/plans/2026-09-07-history-out.md' \
+     ':!docs/devlog/2026-09-07-history-out.md'
    ```
 
    Ожидаемый результат — **ровно эти пятнадцать пар, и ничего больше**.
