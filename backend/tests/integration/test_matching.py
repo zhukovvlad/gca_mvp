@@ -804,7 +804,7 @@ class TestReviewMerge:
         assert cached.catalog_position_id == target.id
 
     def test_merge_leaves_no_cache_entry_on_to_review(self, db_session, factories, resolver):
-        """§9.4: слияние удаляет строку и не оставляет кэш-записей на TO_REVIEW."""
+        """`AGENTS.md` §5: слияние удаляет строку и не оставляет кэш-записей на TO_REVIEW."""
         contract = factories.ContractFactory.create()
         db_session.flush()
         to_review = self._to_review_with_positions(db_session, factories, resolver, contract)
@@ -927,7 +927,7 @@ class TestReviewSetKind:
 
 
 # ---------------------------------------------------------------------------
-#  §9.4: ручное решение переживает истечение auto-TTL
+#  `AGENTS.md` §10: ручное решение переживает истечение auto-TTL
 # ---------------------------------------------------------------------------
 
 class TestManualDecisionOutlivesAutoTtl:
