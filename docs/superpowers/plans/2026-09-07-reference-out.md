@@ -53,9 +53,14 @@ $SCRATCH/demo_guard.py              предъявитель отрицател�
 плана не запускаются буквально:
 
 ```powershell
-# PowerShell (основная оболочка проекта)
-$env:SCRATCH = Join-Path $env:TEMP "gca-reference-out"
-New-Item -ItemType Directory -Force $env:SCRATCH
+# PowerShell (основная оболочка проекта). Назначаются ОБЕ величины:
+# $SCRATCH раскрывает сам PowerShell, $env:SCRATCH читают дочерние процессы —
+# это разные переменные, и одной из них команды плана не запускаются.
+$SCRATCH = Join-Path $env:TEMP "gca-reference-out"
+$env:SCRATCH = $SCRATCH
+$repoRoot = git rev-parse --show-toplevel
+New-Item -ItemType Directory -Force $SCRATCH
+python -c "import os,sys; r=os.path.realpath(sys.argv[1]); s=os.path.realpath(os.environ['SCRATCH']); print(os.path.commonpath([r,s])); raise SystemExit(os.path.commonpath([r,s]) == r)" $repoRoot
 ```
 
 ```bash
@@ -65,18 +70,20 @@ export SCRATCH="${TEMP:-/tmp}/gca-reference-out" && mkdir -p "$SCRATCH"
 
 Требование к директории одно, и проверяется оно **структурно, а не по факту
 чистого дерева**: `$SCRATCH` лежит ВНЕ дерева репозитория, поэтому файлы оттуда
-закоммитить нельзя в принципе. Предъявление — сравнение путей:
+закоммитить нельзя в принципе. Последняя строка и есть предъявление: код **0**
+означает, что общий путь скретча и корня короче корня, то есть скретч снаружи.
 
-```bash
-git rev-parse --show-toplevel   # корень репозитория
-python -c "import os,sys;print(os.path.commonpath([os.environ['SCRATCH'],sys.argv[1]]))" <корень>
-```
+**Предикат предъявлен в обе стороны** (прогон на гейте 3):
 
-Общий префикс не должен совпадать с корнем репозитория. `git status
---porcelain` для этого не годится: **после `git add` он показывает staged-файлы
-буквой в первой колонке** (проверено: `A  <файл>`), то есть «пусто» после
-добавления — неверное ожидание, и утверждение об этом из предыдущей редакции
-плана снято.
+| Вход | Общий путь | Код |
+|---|---|---|
+| `$env:TEMP\gca-reference-out` | `C:\Users\zhukov_v` | **0** |
+| `<корень репозитория>\temp` | `C:\Users\zhukov_v\Projects\GCA_MVP` | **1** |
+
+`git status --porcelain` для этого не годится: **после `git add` он показывает
+staged-файлы буквой в первой колонке** (проверено прогоном: `A  <файл>`), то
+есть «пусто» после добавления — неверное ожидание, и утверждение об этом из
+предыдущей редакции плана снято.
 
 Причина самого требования не гигиена, а §9.1: скрипты в репозитории сделали бы
 правку «документацией с проверочным инструментарием» со своим набором условий,
