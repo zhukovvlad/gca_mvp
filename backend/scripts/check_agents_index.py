@@ -1,4 +1,4 @@
-"""Указатель §12, ревизии, архив и маршрутизатор §11 → `docs/pitfalls/` — 11 проверок.
+"""Указатель §12, ревизии, архив и маршрутизатор §11 → `docs/pitfalls/` — 12 проверок.
 
 Скрипт read-only: он ничего не пишет и ничего не правит. Его предмет — не текст
 документов, а СТРУКТУРА трёх списков, которые легко разъезжаются с реальностью:
@@ -21,7 +21,7 @@
 ищут. Остальные (6 и 11) — построчные условия наличия и коллекций не
 сопоставляют вовсе.
 
-Что стерегут одиннадцать проверок:
+Что стерегут двенадцать проверок:
 
 указатель §12
  1. строки указателя ↔ файлы `docs/insights/` — равенство множеств в обе
@@ -66,7 +66,14 @@
 10. каждый файл области несёт шапку «когда читать» — ровно одну;
 11. каждый файл области несёт хотя бы один распознанный пункт. Заведено
     отдельно от 10: файл, из которого удалили все грабли, оставив шапку, прошёл
-    бы проверку «непуст», а читать в объявленной области было бы нечего.
+    бы проверку «непуст», а читать в объявленной области было бы нечего;
+
+маршрут §2 → `docs/upstream-sources.md`
+12. §2 ссылается на существующий файл источников, у файла ровно одна шапка
+    «когда читать» и хотя бы одна строка данных таблицы. Три условия — три
+    отдельных входа. Тело считается СТРОКАМИ ТАБЛИЦЫ, а не любой прозой: файл
+    существует ради трёх зафиксированных SHA, и он же остаётся адресом «§2»,
+    который цитирует миграция `0002`.
 
 Проверки 10 и 11 держатся на том, что пункт распознаётся НЕЗАВИСИМО от шапки:
 `pitfall_items` не ищет шапку и не пропускает строки до неё. Стоило бы искать
@@ -133,6 +140,7 @@ ARCHIVE_REL = "docs/AGENTS-revisions.md"
 ARCHIVE = ROOT / ARCHIVE_REL
 INSIGHTS_REL = "docs/insights"
 PITFALLS_REL = "docs/pitfalls"
+UPSTREAM_REL = "docs/upstream-sources.md"
 
 TITLE_VERSION = re.compile(r"^#\s.*[—-]\s*(v6\.\d+)\s*$")
 PREAMBLE_DECL = re.compile(r"^> \*\*(v6\.\d+) \((\d{4}-\d{2}-\d{2})\)")
@@ -207,6 +215,21 @@ def rows_under(lines: list[str], heading: str, row: re.Pattern[str]) -> list[str
         if row.match(line):
             rows.append(line)
     return rows
+
+
+def section_of(lines: list[str], heading: str) -> list[str]:
+    """Строки раздела `heading` целиком — до следующего заголовка того же уровня."""
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith(heading):
+            start = i
+            break
+    if start is None:
+        return []
+    for j in range(start + 1, len(lines)):
+        if HEADING.match(lines[j]):
+            return lines[start:j]
+    return lines[start:]
 
 
 def index_rows_of(lines: list[str]) -> list[str]:
@@ -486,6 +509,44 @@ def check_11(files: list[Path]) -> tuple[bool, list[str]]:
     return not details, details
 
 
+def check_12(lines: list[str]) -> tuple[bool, list[str]]:
+    """§2 ↔ `docs/upstream-sources.md`: маршрут ведёт в файл, у файла шапка и тело.
+
+    Три условия и три отдельных входа, как у проверок 10 и 11: маршрут в никуда,
+    файл без шапки «когда читать», файл с шапкой и без таблицы. Разнесены потому,
+    что вход, ломающий ровно одно, обязан существовать для каждого — иначе
+    предъявить проверку красной по свойству нельзя.
+
+    Тело здесь — СТРОКА ДАННЫХ таблицы, а не любая непустая строка: файл
+    существует ради таблицы трёх исходных репозиториев с их SHA, и файл из одной
+    шапки и прозы прошёл бы проверку «непуст», не отвечая ни на один вопрос, ради
+    которого §2 на него ссылается.
+    """
+    details = []
+    targets = local_targets("\n".join(section_of(lines, "## 2.")))
+    if UPSTREAM_REL not in targets:
+        details.append(f"§2 не ссылается на {UPSTREAM_REL}; найдено: {sorted(targets) or 'ни одной ссылки'}")
+
+    path = ROOT / UPSTREAM_REL
+    if not path.is_file():
+        details.append(f"нет файла {UPSTREAM_REL}, на который ведёт §2")
+        return not details, details
+
+    file_lines = read_lines(path)
+    headers = sum(1 for line in file_lines if PITFALL_HEADER.match(line))
+    if headers != 1:
+        details.append(f"{UPSTREAM_REL}: строк шапки «Когда читать:» — {headers}, а не одна")
+
+    data_rows = [
+        line
+        for line in file_lines
+        if line.startswith("|") and set(line.replace("|", "").strip()) - set("-: ")
+    ]
+    if not data_rows:
+        details.append(f"{UPSTREAM_REL}: ни одной строки данных таблицы источников")
+    return not details, details
+
+
 def main() -> int:
     if not ARCHIVE.is_file():
         print(f"нет файла архива {ARCHIVE_REL}")
@@ -520,6 +581,7 @@ def main() -> int:
         ("ни один пункт граблей не сдублирован (свёрнутый полный текст)", check_9(pitfall_paths)),
         ("каждый файл области несёт шапку «Когда читать:»", check_10(pitfall_paths)),
         ("каждый файл области несёт хотя бы один пункт", check_11(pitfall_paths)),
+        ("§2 ↔ docs/upstream-sources.md (маршрут, шапка, таблица)", check_12(agents)),
     ]
 
     print(f"AGENTS.md {current or '?'}: указатель §12 — {len(rows)} строк, инсайтов {len(insight_files)}; "
