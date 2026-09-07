@@ -119,9 +119,13 @@ Task 5 (спека §2.8). Как в фиче 1: после мержа у них
 - Edit: `docs/pitfalls/process.md`
 
 **Interfaces**
-- Потребляет (существует, проверено `grep`-ом): `preamble_entries`,
-  `archive_entries`, `collect_references`, `read_lines`, `PREAMBLE_DECL`,
-  `ARCHIVE_DECL`, `VERSION`, `TITLE_VERSION`, `ARCHIVE_REL`.
+- Потребляет (существует, проверено `grep`-ом): `collect_references`,
+  `read_lines`, `preamble_of`, `PREAMBLE_DECL`, `ARCHIVE_DECL`, `VERSION`,
+  `TITLE_VERSION`, `ARCHIVE_REL`.
+- Заменяются: `preamble_entries` и `archive_entries` строили пары «версия +
+  её строки»; текст записи читали только снятые проверки. Становятся
+  `preamble_versions_of(lines) -> list[str]` (список — кратность нужна
+  проверке 4) и `archive_versions(lines) -> set[str]`.
 - Удаляются: `check_4`, `check_5`, `check_7`, `check_9`, `check_10` вместе с
   их строками в `results`.
 - Производит:
