@@ -10,7 +10,7 @@ import { renderWithProviders } from "@/test/utils";
 import { sampleInflationSeries } from "@/test/fixtures";
 
 /*
- * Вкладка рядов индексов на экране нормативов (§7 п. 3 в редакции v6.10).
+ * Вкладка рядов индексов на экране нормативов (§7.3 в редакции v6.10).
  *
  * Экран целиком под `RequireAdmin` (`App.tsx`), поэтому «кнопок правки нет у
  * `member`» проверяется НЕ здесь, а на `/compare` — там `member` бывает.
