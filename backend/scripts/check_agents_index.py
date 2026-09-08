@@ -312,6 +312,13 @@ REFERENCE_REL = "docs/reference"
 # за §11 (см. его докстринг) — не заводить исключений ради формы, потому что
 # исключение и есть дыра, которую находит следующий обход.
 SCREEN_ITEM_ROW = re.compile(r"^(\d+)\.\s+")
+# Название пункта маршрутизатора — полужирный зачин строки. Сверяется с той же
+# колонкой EXPECTED_SCREEN_ANCHORS, что и заголовок приёмника: иначе
+# маршрутизатор мог называть экран одним именем, а screens.md другим, и
+# читатель, идущий по §7.N, попадал бы в раздел с чужим названием. Пункт без
+# полужирного зачина даёт None и потому тоже расхождение — тот же обход
+# форматом, что закрыт расширением SCREEN_ITEM_ROW.
+SCREEN_ITEM_TITLE = re.compile(r"^\d+\.\s+\*\*(.+?)\*\*")
 # Заголовок файла-приёмника `## N. Название` — номер И ТЕКСТ, разделённые
 # РОВНО ОДНИМ пробелом. Ловит раздел, удалённый из screens.md при целом
 # маршрутизаторе (текста нет вовсе); раздел, у которого текст переименован при
@@ -478,16 +485,18 @@ def screen_router_pairs(lines: list[str]) -> list[tuple[str, str | None]]:
     его ловит сравнение с ожиданием в check_13, а не отдельная ветвь здесь —
     заводить вторую значило бы посчитать один вход дважды.
     """
-    pairs: list[tuple[str, str | None]] = []
+    triples: list[tuple[str, str | None, str | None]] = []
     for row in rows_under(lines, "## 7.", SCREEN_ITEM_ROW):
         number = SCREEN_ITEM_ROW.match(row).group(1)
+        title_match = SCREEN_ITEM_TITLE.match(row)
+        title = title_match.group(1).strip() if title_match else None
         anchor = None
         for target in LINK.findall(row):
             if SCREENS_REL in target and "#" in target:
                 anchor = "#" + target.split("#", 1)[1]
                 break
-        pairs.append((number, anchor))
-    return pairs
+        triples.append((number, title, anchor))
+    return triples
 
 
 def reference_files() -> list[Path]:
@@ -848,7 +857,7 @@ def check_12(lines: list[str]) -> tuple[bool, list[str]]:
 def check_13(lines: list[str]) -> tuple[bool, list[str]]:
     """§7 ↔ `docs/reference/screens.md`: состав маршрутизатора против EXPECTED_SCREEN_ANCHORS.
 
-    ПЯТЬ ветвей отчёта (по вызову `details.append`) и ДВЕНАДЦАТЬ входов. Инъективности
+    ШЕСТЬ ветвей отчёта (по вызову `details.append`) и ЧЕТЫРНАДЦАТЬ входов. Инъективности
     и полноты недостаточно (спека §2.9): перестановка двух якорей сохраняет и
     число строк, и биекцию. Поэтому пара «номер → якорь» сравнивается ПОПАРНО И
     ПОПОЗИЦИОННО против зафиксированного `EXPECTED_SCREEN_ANCHORS`, а заголовок
@@ -882,7 +891,22 @@ def check_13(lines: list[str]) -> tuple[bool, list[str]]:
        содержать их, иначе девятый раздел проходит и в маршрутизаторе (см. п.2
        выше — там его ловит ветвь кратности), и в файле-приёмнике незамеченным
        (1 — лишний раздел `## 9. …`).
-    Итого 1+3+3+4+1 = 12.
+    Итого 1+3+4+4+1+1 = 14.
+
+    Две ветви и два входа добавлены по внешнему ревью 09.09.2026, и оба места
+    были ЗАЯВЛЕНЫ проверяемыми, не будучи проверяемыми:
+
+    * сверка шла ПАРОЙ «номер → якорь», а ожидание держит тройку. Название
+      пункта маршрутизатора не сверялось ни с чем, и подмена
+      «**Договоры/Объекты**» на любое другое имя проходила зелёной —
+      воспроизведено. Теперь сравнивается тройка целиком, и подмена названия
+      это четвёртый вход ветви позиционного сравнения;
+    * заголовки приёмника складывались в СЛОВАРЬ по номеру, поэтому второй
+      «## 3. Нормативы» затирал первый и проходил зелёным — тоже
+      воспроизведено. Комментарий на этом месте объявлял дубль «свойством
+      переезда, не этой проверки»; это неверно — план требует РОВНО ОДИН
+      заголовок на единицу, а два одинаковых дают неоднозначные якоря.
+      Заведена отдельная ветвь.
 
     ПРЕДИКАТ ПУНКТА §7 (`SCREEN_ITEM_ROW`) намеренно широк — «N. …», без
     требования жирного маркера. Первая редакция требовала `**` и оставляла
@@ -920,28 +944,39 @@ def check_13(lines: list[str]) -> tuple[bool, list[str]]:
 
     file_lines = read_lines(path)
 
-    expected_router_pairs = tuple((number, anchor) for number, _heading, anchor in EXPECTED_SCREEN_ANCHORS)
     actual = screen_router_pairs(lines)
-    if len(actual) != len(expected_router_pairs):
+    if len(actual) != len(EXPECTED_SCREEN_ANCHORS):
         details.append(
-            f"маршрутизатор §7: пунктов {len(actual)}, а в EXPECTED_SCREEN_ANCHORS {len(expected_router_pairs)}"
+            f"маршрутизатор §7: пунктов {len(actual)}, а в EXPECTED_SCREEN_ANCHORS {len(EXPECTED_SCREEN_ANCHORS)}"
         )
 
-    for position, expected_pair in enumerate(expected_router_pairs):
-        if position < len(actual) and actual[position] != expected_pair:
+    for position, expected_triple in enumerate(EXPECTED_SCREEN_ANCHORS):
+        if position < len(actual) and actual[position] != expected_triple:
             details.append(
-                f"маршрутизатор §7, позиция {position + 1}: ожидалась пара {expected_pair}, "
+                f"маршрутизатор §7, позиция {position + 1}: ожидалась тройка {expected_triple}, "
                 f"а фактическая — {actual[position]}"
             )
 
-    # Заголовки screens.md — НОМЕР и ТЕКСТ вместе: словарь number -> title.
-    # Дубль номера (два «## 3. …») схлопывается в последнее вхождение — это
-    # свойство переезда, не этой проверки, и отдельным входом не заявлено.
-    actual_headings: dict[str, str] = {}
+    # Заголовки screens.md — НОМЕР и ТЕКСТ вместе. Собираются СПИСКОМ, а не
+    # словарём: словарь схлопывал дубль номера в последнее вхождение, и второй
+    # «## 3. Нормативы» проходил зелёным. План требует РОВНО ОДИН заголовок на
+    # единицу, то есть это требование, а не свойство переезда; вдобавок два
+    # одинаковых заголовка дают отрисовщику неоднозначные якоря.
+    seen_headings: list[tuple[str, str]] = []
     for line in file_lines:
         match = SCREEN_HEADING.match(line)
         if match:
-            actual_headings[match.group(1)] = match.group(2).rstrip()
+            seen_headings.append((match.group(1), match.group(2).rstrip()))
+    duplicated = sorted(
+        {number for number, _t in seen_headings
+         if [n for n, _ in seen_headings].count(number) > 1},
+        key=int,
+    )
+    if duplicated:
+        details.append(
+            f"{SCREENS_REL}: заголовки с номерами {duplicated} встречаются более одного раза"
+        )
+    actual_headings: dict[str, str] = dict(seen_headings)
 
     for number, heading_text, _anchor in EXPECTED_SCREEN_ANCHORS:
         if actual_headings.get(number) != heading_text:
