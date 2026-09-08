@@ -285,7 +285,7 @@ export default function StandardsPage() {
         </TabsContent>
 
         {/*
-          Ряды индексов инфляции (AGENTS.md §7 п. 3, v6.10). Экран целиком под
+          Ряды индексов инфляции (AGENTS.md §7.3, v6.10). Экран целиком под
           `RequireAdmin`, поэтому «кнопок правки нет у member» проверяется НЕ здесь,
           а на `/compare` — там `member` бывает.
         */}
