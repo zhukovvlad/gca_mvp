@@ -849,11 +849,56 @@ _NET_COST = (
     / (100 + DEVIATION_INPUTS.c.vat_rate_base)
 )
 
-#: Предикат «стоимость строки — NaN/Infinity» — тот же класс проверки, что
-#: `crud.project_passport._finite_amount`, но не общий с ней код: те же
-#: причины, что у `_declared_rates`/`_standard_in_display_rate` (модули
-#: сознательно не тянут друг друга, три строки дешевле дублировать, чем
-#: заводить межмодульный импорт приватного имени). Круг 3 (ре-ревью Codex,
+
+def _not_finite(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """«Значение колонки — NaN/Infinity», параметризовано КОЛОНКОЙ.
+
+    Единственная реализация правила в модуле: `_NOT_FINITE_COST` ниже — не
+    вторая копия того же перечисления (её и заменяет эта правка), а её
+    применение к `DEVIATION_INPUTS.c.unit_cost_total`
+    (`_NOT_FINITE_COST = _not_finite(...)`). Второй копии не заводим: обе
+    жили бы в одном файле в трёх строках друг от друга, а правило «живёт в
+    одном экземпляре» такого расстояния не разрешает.
+
+    `_price_ok`/`_weight_ok` ниже пользуются этой же функцией над ЛЮБОЙ
+    числовой колонкой. На сегодня это доказано на
+    `DEVIATION_INPUTS.c.unit_cost_total` и `PositionItem.unit_cost_total` — для
+    `_price_ok`; `_weight_ok` в этой задаче предъявлен только над
+    `DEVIATION_INPUTS.c.weight` (у `PositionItem` нет отдельной колонки «вес» —
+    её собирает VIEW из `COALESCE(suggested_quantity, quantity)`; своя площадка
+    появится задачей 2 плана, когда вес станет считаться на стороне
+    присутствия).
+
+    В `crud.project_passport` есть `_finite_amount(column)` — та же проверка,
+    уже параметризованная колонкой. Не переиспользована МЕЖДУ модулями по тем
+    же причинам, что у `_declared_rates`/`_standard_in_display_rate` (см.
+    комментарий `_NOT_FINITE_COST` ниже: модули сознательно не тянут друг у
+    друга приватные имена) — и добавляются два своих довода: полярность
+    обратная (`_finite_amount` истинна на ГОДНОМ значении, `_not_finite` — на
+    НЕГОДНОМ), и NULL-поведение разное. `_finite_amount` намеренно не
+    обрабатывает `NULL` отдельно (`NULL <> число` сам даёт `NULL`, что ведёт
+    себя как ложь ТОЛЬКО внутри `WHERE`/`CASE` — и там, где она применяется,
+    этого достаточно), а `_not_finite` — внутренний блок `_price_ok`/
+    `_weight_ok`, чья гарантия явного `FALSE` на пустом входе держится на
+    отдельном условии `column.is_not(None)` СНАРУЖИ; протаскивать это
+    допущение через границу модуля было бы менее прозрачно, чем три строки
+    сравнения.
+
+    PostgreSQL сравнивает `numeric NaN` с самим собой как РАВНОЕ (в отличие от
+    IEEE 754 `float`, где `nan == nan` ложно), поэтому `column ==
+    Decimal("NaN")` здесь рабочая проверка, а не всегда ложная.
+    """
+    return sa.or_(
+        column == Decimal("NaN"),
+        column == Decimal("Infinity"),
+        column == Decimal("-Infinity"),
+    )
+
+
+#: Предикат «стоимость строки — NaN/Infinity»: применение `_not_finite` к
+#: колонке цены VIEW-а. Почему правило не общее с `crud.project_passport.
+#: _finite_amount` — в докстроке `_not_finite`; здесь остаётся то, ради чего
+#: заведена сама константа. Круг 3 (ре-ревью Codex,
 #: PR #21, найдено оркестратором): без этого предиката `row_amount_incomplete`
 #: поднимался ТОЛЬКО от неизвестной базы НДС (`cell_unknown`), и строка с
 #: ИЗВЕСТНОЙ базой, но NaN/Infinity стоимостью (открытый хвост Ф4, §5.6),
@@ -861,11 +906,54 @@ _NET_COST = (
 #: полон» — тот самый инвариант, ради которого признак заводился («`SUM`
 #: игнорирует `NULL`, и без явного условия частичная сумма выглядела бы
 #: полной»), закрытый только наполовину.
-_NOT_FINITE_COST = sa.or_(
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("NaN"),
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("Infinity"),
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("-Infinity"),
-)
+_NOT_FINITE_COST = _not_finite(DEVIATION_INPUTS.c.unit_cost_total)
+
+
+def _price_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """SQL-сторона `money.price.is_price`: конечное значение больше нуля.
+
+    Функция ОТ КОЛОНКИ, а не готовое выражение над `DEVIATION_INPUTS`: тем же
+    предикатом пользуются и над `PositionItem.unit_cost_total` — колонкой,
+    куда сегодняшний VIEW не достаёт: миграция 0012 фильтрует
+    `WHERE pi.unit_cost_total IS NOT NULL`, и пустая цена в
+    `v_position_deviation_inputs` не появляется вовсе (строка просто
+    отсутствует, а не несёт `NULL`). Правило одно, площадок применения
+    несколько — вместо второй копии условия на каждой.
+
+    `column.is_not(None)` — не стилистика, а необходимое условие: SQL
+    трёхзначен, и без него на пустом входе `NOT(_not_finite(NULL))` и
+    `NULL > 0` дали бы не `FALSE`, а `NULL` — предикат перестал бы отличаться
+    от «неизвестно» ровно там, где обязан читаться как «не цена». Присутствие
+    этого условия в конъюнкции гарантирует итоговый `FALSE` независимо от
+    прочих операндов: в трёхзначной логике `FALSE AND NULL = FALSE`. Закрыто
+    тестом `test_price_predicate_sql.py::TestPriceOkOverPositionItem::
+    test_null_price_gives_false_not_null`.
+
+    Наивное «больше нуля» непригодно само по себе: `'NaN'::numeric > 0` и
+    `'Infinity'::numeric > 0` в PostgreSQL дают `TRUE` (спека §1.2, предъявлено
+    `test_price_predicate_sql.py::TestNaivePredicateIsNotEnough` на хранимой
+    колонке) — нефинитное исключается явно, тем же приёмом, что и
+    `_NOT_FINITE_COST`.
+    """
+    return sa.and_(column.is_not(None), sa.not_(_not_finite(column)), column > 0)
+
+
+def _weight_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """SQL-сторона `money.price.is_weight`: конечное значение больше нуля.
+
+    Формула совпадает с `_price_ok` — «конечно и больше нуля» правило заведено
+    одно, — но факт другой: у веса свой носитель (объём/количество позиции,
+    спека §2.1), и это отдельная функция, а не переиспользование `_price_ok`
+    под другим именем. Если правила когда-нибудь разойдутся, менять придётся
+    только одно место, не разбираясь, какой смысл где имелся в виду.
+
+    Площадка применения в этой задаче — ровно одна: `DEVIATION_INPUTS.c.weight`
+    (`test_price_predicate_sql.py::TestWeightOkOverDeviationInputsView`). Своей
+    колонки «вес» у `PositionItem` нет — VIEW собирает её как
+    `COALESCE(suggested_quantity, quantity)`; вторая площадка появится задачей
+    2 плана, когда вес будет считаться и на стороне присутствия.
+    """
+    return sa.and_(column.is_not(None), sa.not_(_not_finite(column)), column > 0)
 
 
 def _cell_weights_cte(scope_filters: list):
