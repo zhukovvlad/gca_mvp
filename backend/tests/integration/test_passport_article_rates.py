@@ -347,21 +347,22 @@ def test_every_contract_state_is_reachable_by_a_fixture_of_this_file(db_session,
     """DoD 16. Утверждение о ПОКРЫТИИ, а не о конкретном ответе: набор состояний,
     достигнутых фикстурами этого файла, обязан совпасть со списком контракта.
 
-    Реализация: фикстура строит по одному узлу на каждое состояние (девять плюс
+    Реализация: фикстура строит по одному узлу на каждое состояние (десять плюс
     `rate`) в ОДНОЙ смете и сверяет множество `rate_state` в ответе со списком
     §2.10. Иначе контракт снова разойдётся с автоматом — ровно так рассыпалась
     первая редакция спеки.
 
-    Все девять «тупиковых» состояний посажены на КОРНИ классификатора: корень
-    виден в ответе всегда (`build_tree`), независимо от строк-позиций, а
-    ставка статьи читается со строки-раздела (носителя), а не с позиций —
-    значит для каждого состояния достаточно одной-двух строк-носителей под
-    своим корнем, без единой обычной позиции. Только `volume_inconsistent`
-    вдобавок требует РЕБЁНКА в дереве КЛАССИФИКАТОРА (не в видимом дереве
-    паспорта — ребёнок в ответе может и не появиться, участие в свёртке
-    родителя от видимости не зависит, см. докстроку `_article_rates`):
-    родитель "11" получает перебор объёма от дочерней статьи "11.1", у которой
-    объём (20,00) больше объёма родителя (10,00) сверх допуска.
+    Все десять «тупиковых» состояний (включая `amount_zero`, план задача 6)
+    посажены на КОРНИ классификатора: корень виден в ответе всегда
+    (`build_tree`), независимо от строк-позиций, а ставка статьи читается со
+    строки-раздела (носителя), а не с позиций — значит для каждого состояния
+    достаточно одной-двух строк-носителей под своим корнем, без единой обычной
+    позиции. Только `volume_inconsistent` вдобавок требует РЕБЁНКА в дереве
+    КЛАССИФИКАТОРА (не в видимом дереве паспорта — ребёнок в ответе может и не
+    появиться, участие в свёртке родителя от видимости не зависит, см.
+    докстроку `_article_rates`): родитель "11" получает перебор объёма от
+    дочерней статьи "11.1", у которой объём (20,00) больше объёма родителя
+    (10,00) сверх допуска.
     """
     proposal = _proposal(factories)
     m2 = _unit_id(db_session, "M2")
@@ -407,8 +408,14 @@ def test_every_contract_state_is_reachable_by_a_fixture_of_this_file(db_session,
     _chapter(factories, proposal, category_id=volume_nonpositive.id, smr_article_raw="10",
               unit_id=m2, suggested_quantity=Decimal("0.00"), total_cost_total=Decimal("100.00"))
 
-    # 9. volume_inconsistent — перебор: дочерняя статья несёт больше объёма,
-    #    чем родитель (единица общая, разница больше допуска ε = 0,01 × n).
+    # 9. amount_zero — сумма статьи конечна и равна нулю; девятая проверка,
+    #    до сходимости детей (план задача 6, §2.10).
+    amount_zero = _category(db_session, "13")
+    _chapter(factories, proposal, category_id=amount_zero.id, smr_article_raw="13",
+              unit_id=m2, suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("0.00"))
+
+    # 10. volume_inconsistent — перебор: дочерняя статья несёт больше объёма,
+    #     чем родитель (единица общая, разница больше допуска ε = 0,01 × n).
     inconsistent_parent = _category(db_session, "11")
     inconsistent_child = _category(db_session, "11.1")
     _chapter(factories, proposal, category_id=inconsistent_parent.id, smr_article_raw="11",
@@ -416,7 +423,7 @@ def test_every_contract_state_is_reachable_by_a_fixture_of_this_file(db_session,
     _chapter(factories, proposal, category_id=inconsistent_child.id, smr_article_raw="11.1",
               unit_id=m2, suggested_quantity=Decimal("20.00"), total_cost_total=Decimal("2000.00"))
 
-    # 10. rate — годная статья без единой преграды.
+    # 11. rate — годная статья без единой преграды.
     rate_ok = _category(db_session, "12")
     _chapter(factories, proposal, category_id=rate_ok.id, smr_article_raw="12",
               unit_id=m2, suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("1000.00"))
@@ -424,6 +431,29 @@ def test_every_contract_state_is_reachable_by_a_fixture_of_this_file(db_session,
     passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
     observed = {node["rate_state"] for node in passport["categories"]}
     assert observed == {state.value for state in RateState}
+
+
+def test_amount_zero_reaches_the_passport_response_through_the_real_query(
+    db_session, factories
+):
+    """План задача 6 (§2.10): `test_article_rates.py` проверяет `AMOUNT_ZERO`
+    на чистом автомате в изоляции — это ДОПОЛНЕНИЕ, что `_carrier_rows_by_
+    category` (SQL) и `_article_rates` (свод) на самом деле доводят нулевую
+    сумму строки-раздела до JSON-ответа паспорта, а не теряют её по пути
+    (например, приведением к НДС, которое здесь НЕ читает базу вовсе —
+    `vat_rate_base` в фикстуре не задан, и `restate_gross` по докстроке
+    `fold_carrier_rows` в этом случае отдаёт нулевую сумму нетронутой)."""
+    proposal = _proposal(factories)
+    article = _category(db_session, "13")
+    _chapter(factories, proposal, category_id=article.id, smr_article_raw="13",
+              unit_id=_unit_id(db_session, "M2"),
+              suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("0.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    node = next(n for n in passport["categories"] if n["code"] == "13")
+    assert node["rate_state"] == "amount_zero"
+    assert (node["rate_note"], node["unit_rate"]) == (None, None)
+    assert node["unit"] == "м²"
 
 
 def test_the_rate_follows_the_display_axis(db_session, factories):
@@ -799,6 +829,68 @@ def test_a_non_empty_set_without_a_single_rate_is_a_real_zero(db_session, factor
     assert passport["rate_coverage"] == {
         "articles_with_rate": 0, "articles_total": 1,
         "money_share": Decimal("0"), "money_share_state": "complete",
+    }
+
+
+def test_amount_zero_is_excluded_from_the_coverage_set_and_from_money_share(
+    db_session, factories
+):
+    """Задача 6 (спека §2.10, DoD 9 новой редакции): состояние `AMOUNT_ZERO`
+    (девятая проверка `resolve_rate`) не входит в `articles_with_rate`, и её
+    собственные деньги (`node_total`) не входят в `covered` доли `money_share`
+    — обе величины, `articles_with_rate` в `_rate_coverage` и накопление
+    `covered`, фильтруют по `rate.state is RateState.RATE`, а `AMOUNT_ZERO` в
+    их число не входит. `articles_total` при этом не уменьшается: статья
+    остаётся в наборе, просто без ставки — это отдельное, самое важное
+    утверждение теста (иначе сдвинулся бы и знаменатель антицепи, и доля могла
+    бы случайно не измениться).
+
+    Ловушка (её и проверяет фикстура): сумма строки-носителя, которую видит
+    `fold_carrier_rows` (`total_cost_total` строки-РАЗДЕЛА с кодом), и
+    `node_total` статьи (сумма `is_chapter=false`-позиций под ней,
+    `v_category_totals`) — РАЗНЫЕ величины. Статья "6" несёт носитель с
+    `total_cost_total = 0,00` (отсюда `AMOUNT_ZERO`), но под тем же разделом
+    лежит СОБСТВЕННАЯ позиция на 700,00 — она и есть `node_total` статьи,
+    ненулевой, хотя сумма её носителя — ноль. Соседняя статья "7" несёт
+    настоящую ставку (носитель 1 000,00 / 10,00 м², своя позиция 300,00) — без
+    неё тест не отличил бы «выпала нужная статья» от «выпало всё».
+
+    Числа фикстуры: `articles_total = 2` (обе статьи названы, ни одна не
+    затеняет другую), `articles_with_rate = 1` (только "7"), знаменатель
+    `money_share` — 1 000,00 (700,00 статьи "6" + 300,00 статьи "7"),
+    числитель `covered` — только 300,00 статьи "7", доля — 30,00.
+
+    Снятие: без девятой проверки в `resolve_rate` статья "6" получила бы
+    состояние `RATE` (ставка 0,00 ₽/м² — числитель ноль, знаменатель десять) и
+    попала бы в охват — `articles_with_rate` стал бы 2, `money_share` — 100,00,
+    а `articles_total` остался бы 2 (само число статей набора от состояния
+    ставки не зависит).
+    """
+    proposal = _proposal(factories)
+    m2 = _unit_id(db_session, "M2")
+
+    amount_zero = _category(db_session, "6")
+    zero_chapter = _chapter(
+        factories, proposal, category_id=amount_zero.id, smr_article_raw="6",
+        unit_id=m2, suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("0.00"),
+    )
+    # Собственная позиция статьи "6" — источник её `node_total` (700,00),
+    # отдельный от суммы носителя (0,00): это и воспроизводит ловушку.
+    _position(factories, proposal, chapter=zero_chapter, total_cost_total=Decimal("700.00"))
+
+    rated = _category(db_session, "7")
+    rated_chapter = _chapter(
+        factories, proposal, category_id=rated.id, smr_article_raw="7",
+        unit_id=m2, suggested_quantity=Decimal("10.00"), total_cost_total=Decimal("1000.00"),
+    )
+    _position(factories, proposal, chapter=rated_chapter, total_cost_total=Decimal("300.00"))
+
+    passport = get_project_passport(db_session, proposal.lot.estimate.contract_id)
+    zero_node = next(n for n in passport["categories"] if n["code"] == "6")
+    assert zero_node["rate_state"] == "amount_zero"
+    assert passport["rate_coverage"] == {
+        "articles_with_rate": 1, "articles_total": 2,
+        "money_share": Decimal("30"), "money_share_state": "complete",
     }
 
 
