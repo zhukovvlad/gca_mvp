@@ -974,6 +974,291 @@ class TestPendingReviewIsExplained:
 
 
 # ---------------------------------------------------------------------------
+#  Третья причина пустоты — нет пригодной цены (задача 5 плана правила цены,
+#  спека §1.8, §2.9)
+# ---------------------------------------------------------------------------
+
+class TestUnmatchedReasonsIncludeWithoutPrice:
+    """`positions_without_price` — третья причина, рядом с `positions_pending_
+    review` и `positions_non_work` (спека §2.9).
+
+    До этой правки обе старые причины фильтровали только `unit_cost_total IS NOT
+    NULL`: ноль, отрицательная и нефинитная цена читались как «цена есть», и
+    причина «нет цены» не срабатывала НИ РАЗУ (§1.8 спеки), хотя на стенде цены
+    нет у 16,5 % позиций. Теперь предикат цены (`_price_ok`) делит все три причины
+    ПЕРВЫМ: у позиции либо есть пригодная цена (тогда её судьбу решает состояние
+    каталожной строки), либо нет (тогда причина — эта, независимо от каталожной
+    строки).
+    """
+
+    def _priced_work_count(self, factories, estimate_id: int) -> int:
+        """Четвёртая корзина («с ценой и работа») — независимый оракул из БД.
+
+        Не переиспользует `_price_ok`/`is_price` производственного кода: расчёт
+        сделан своей, отдельной проверкой (`price is not None and price.is_
+        finite() and price > 0`) над сырыми колонками — иначе тест доказывал бы
+        только согласие кода с самим собой, а не с правилом
+        (`docs/insights/claimed-property-needs-its-own-input.md`). Равенство
+        «три причины ответа + эта корзина = позиции сметы без разделов» проверяет
+        разбиение целиком, а не согласие счётчиков между собой (спека §2.9).
+        """
+        from models import CatalogPosition, Lot, PositionItem, Proposal
+
+        session = factories._session_holder["session"]
+        rows = session.execute(
+            sa.select(PositionItem.unit_cost_total, CatalogPosition.kind)
+            .select_from(PositionItem)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .outerjoin(CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id)
+            .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(False))
+        ).all()
+        count = 0
+        for price, kind in rows:
+            if kind != CatalogKind.POSITION.value:
+                continue
+            if price is None or not price.is_finite() or price <= 0:
+                continue
+            count += 1
+        return count
+
+    def test_all_three_unmatched_reasons_partition_non_chapter_positions(self, client, factories):
+        """Разбиение проверяется РАВЕНСТВОМ (спека §2.9), не согласием счётчиков
+        — и не ТОЛЬКО равенством: у равенства есть слепое пятно (переход позиции
+        между двумя счётчиками ВНУТРИ суммы его не портит), поэтому ниже отдельно
+        сверены и сами значения, а не только их сумма — с обеих поверхностей,
+        паспорта и матрицы (иначе для матрицы разбиение проверялось бы одним
+        нечувствительным равенством, а не значениями).
+
+        Восемь позиций без раздела, каждая — свой вход: расценённая работа
+        (корзина 4, вне ответа), расценённая-но-ждущая-матчинга
+        (`positions_pending_review`), расценённая-но-размеченная-не-работой
+        (`positions_non_work`), и ПЯТЬ разных состояний «без пригодной цены» —
+        по одному на каждую конкурирующую каталожную строку из обоих старых
+        условий (`cp.id IS NULL`, `TO_REVIEW`, `HEADER`/`TRASH`/`LOT_HEADER` —
+        здесь `TRASH`) плюс `POSITION`, то есть строку-РАБОТУ без изъятия. Все
+        пять обязаны попасть в ОДНУ причину — `positions_without_price` —
+        независимо от состояния каталожной строки.
+
+        Раздел заведён ОТДЕЛЬНО, БЕЗ пригодной цены — а не с ценой 500, как в
+        прежней редакции теста: раздел с валидной ценой никогда не доходит до
+        проверки `is_chapter` внутри `_without_price_condition` (у него и так
+        цена пригодна, условие `NOT _price_ok(...)` на нём ложно само по себе),
+        и подмена `is_chapter.is_(False)` на `sa.true()` там раньше НЕ роняла
+        ничего — ни под этой командой, ни на полном наборе (находка ревью).
+        Раздел без цены — единственный вход, который эту подмену ловит: без
+        фильтра `is_chapter` он попал бы в `positions_without_price` наравне с
+        обычной позицией, хотя разделы не должны входить ни в числитель, ни в
+        знаменатель вовсе.
+
+        Мутация, убирающая `_price_ok` из любого из трёх условий, роняет именно
+        это равенство: снятая позиция задваивается (считается и в старой
+        причине, и в `positions_without_price`), и сумма перестаёт совпадать со
+        знаменателем.
+        """
+        contract, estimate, proposal = _estimate_with(factories)
+
+        # Раздел БЕЗ пригодной цены — не считается вовсе, ни числителем, ни
+        # знаменателем, и это единственный вход, ловящий подмену `is_chapter`
+        # внутри `_without_price_condition` (см. докстроку выше).
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            is_chapter=True,
+            catalog_position=None,
+            unit_cost_total=None,
+            total_cost_total=None,
+        )
+
+        priced_work = factories.CatalogPositionFactory.create(kind=CatalogKind.POSITION.value)
+        _position(factories, proposal, priced_work, unit_cost="100", weight="10")
+
+        pending = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        _position(factories, proposal, pending, unit_cost="100", weight="10")
+
+        marked = factories.CatalogPositionFactory.create(kind=CatalogKind.HEADER.value)
+        _position(factories, proposal, marked, unit_cost="100", weight="10")
+
+        # Без цены и вовсе не сматчена (`cp.id IS NULL` — конкурент №1 pending_review).
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=None,
+            unit_cost_total=None,
+            suggested_quantity=Decimal("10"),
+            total_cost_total=None,
+        )
+        # Без цены (нулевая), каталожная строка ждёт матчинга (`TO_REVIEW` —
+        # конкурент №2 pending_review; недостающая до правки ревью пара).
+        pending_no_price = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=pending_no_price,
+            unit_cost_total=Decimal("0"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("0"),
+        )
+        # Без цены (тоже нулевая) и снова вовсе не сматчена — второй вход на
+        # `cp.id IS NULL`, но с ценой НОЛЬ, не пустой: именно на нём старое и
+        # новое разбиение расходятся по-настоящему (см. докстроку
+        # `test_unmatched_position_without_price_counts_once_as_without_price`).
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=None,
+            unit_cost_total=Decimal("0"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("0"),
+        )
+        # Без цены (отрицательная), но каталожная строка размечена как РАБОТА —
+        # предикат цены обязан сработать раньше состояния каталожной строки.
+        negative_price_work = factories.CatalogPositionFactory.create(kind=CatalogKind.POSITION.value)
+        _position(factories, proposal, negative_price_work, unit_cost="-5", weight="10")
+        # Без цены (нефинитная), каталожная строка уже разобрана как не-работа
+        # (`TRASH` — конкурент из `non_work`).
+        nonfinite_price_marked = factories.CatalogPositionFactory.create(kind=CatalogKind.TRASH.value)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=nonfinite_price_marked,
+            unit_cost_total=Decimal("NaN"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("NaN"),
+        )
+
+        totals = _passport(client, contract.id)["totals"]
+        matrix = _matrix(client)
+        priced_work_count = self._priced_work_count(factories, estimate.id)
+
+        assert priced_work_count == 1
+        total_non_chapter = 8
+        for source in (totals, matrix):
+            assert (
+                source["positions_pending_review"]
+                + source["positions_non_work"]
+                + source["positions_without_price"]
+                + priced_work_count
+            ) == total_non_chapter
+
+        # Значения по отдельности, а не только их сумма — равенство выше не
+        # чувствительно к переносу позиции МЕЖДУ pending_review и non_work
+        # (сумма трёх осталась бы той же), и без этих проверок такой перенос
+        # прошёл бы незамеченным на ОБЕИХ поверхностях.
+        assert totals["positions_pending_review"] == 1
+        assert totals["positions_non_work"] == 1
+        assert totals["positions_without_price"] == 5
+        assert matrix["positions_pending_review"] == 1
+        assert matrix["positions_non_work"] == 1
+        assert matrix["positions_without_price"] == 5
+
+    @pytest.mark.parametrize("price", [Decimal("0"), Decimal("-5"), Decimal("NaN")])
+    def test_position_without_price_is_never_counted_as_pending_review(self, client, factories, price):
+        """Вход, который старое условие (`unit_cost_total IS NOT NULL`) читало
+        неверно: ноль, отрицательная и нефинитная цена — все они «не `NULL`» и
+        потому проходили старую проверку как «цена есть», хотя расценённой такая
+        позиция не является.
+
+        `NULL` сюда НАМЕРЕННО не включён: он не проходил `IS NOT NULL` и до этой
+        правки, то есть на нём старое и новое поведение совпадают — возврат
+        `_price_ok` к `isnot(None)` этот вход не поймал бы. Именно этот случай
+        (позиция с пустой ценой в очереди Review) уже предъявлен
+        `test_unpriced_position_is_not_counted_as_pending_review` выше, и
+        дублировать его параметром означало бы завести мутационно немую копию.
+
+        Это же и предъявление слова «расценённых»: позиция с нулевой ценой
+        (некогда проходившая как priced, §1.8) больше не в очереди Review.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=position,
+            unit_cost_total=price,
+            suggested_quantity=Decimal("10"),
+            total_cost_total=price,
+        )
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_pending_review"] == 0
+        assert totals["positions_without_price"] == 1
+
+    def test_unmatched_position_without_price_counts_once_as_without_price(self, client, factories):
+        """Вход, на котором старое и новое разбиение ДЕЙСТВИТЕЛЬНО расходятся
+        (спека §2.9) — цена НОЛЬ, не пустая: под старым условием (`unit_cost_
+        total IS NOT NULL`) `0` проходит проверку («не `NULL`»), и позиция,
+        одновременно вовсе не сматченная (`catalog_position_id IS NULL`),
+        безусловно уходила в `positions_pending_review` (см. `test_
+        unmatched_position_is_pending_review` выше — та же форма входа, но с
+        пригодной ценой, и счётчик — тот же, старый). Под новым условием она
+        целиком уходит в `positions_without_price` и считается там РОВНО ОДИН
+        РАЗ, а не в обоих счётчиках.
+
+        Цена `None` здесь не годится: `NULL` не проходил старую проверку и
+        раньше — на нём старое и новое поведение совпадает (позиция была не
+        посчитана НИГДЕ), и мутация «вернуть `_price_ok` к `isnot(None)`» такой
+        вход не поймает (проверено прогоном мутации при ревью задачи).
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=None,
+            unit_cost_total=Decimal("0"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("0"),
+        )
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_without_price"] == 1
+        assert totals["positions_pending_review"] == 0
+        assert totals["positions_non_work"] == 0
+
+    @pytest.mark.parametrize(
+        "kind",
+        [CatalogKind.HEADER.value, CatalogKind.TRASH.value, CatalogKind.LOT_HEADER.value],
+    )
+    def test_marked_row_without_price_counts_as_without_price_not_non_work(self, client, factories, kind):
+        """Та же правка, что у `_pending_review_condition`, на другой причине:
+        разобранная не-работа (`HEADER`/`TRASH`/`LOT_HEADER`) с нулевой ценой —
+        до этой правки `unit_cost_total IS NOT NULL` пропускал ноль, и такая
+        позиция ошибочно попадала в `positions_non_work`, хотя настоящая причина
+        пустоты — отсутствие цены, а не разметка каталожной строки.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=kind)
+        factories.PositionItemFactory.create(
+            proposal=proposal,
+            catalog_position=position,
+            unit_cost_total=Decimal("0"),
+            suggested_quantity=Decimal("10"),
+            total_cost_total=Decimal("0"),
+        )
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_non_work"] == 0
+        assert totals["positions_without_price"] == 1
+
+    def test_all_unpriced_positions_report_positions_without_price(self, client, factories):
+        """Сегодняшнее «причина `no_price` не срабатывает никогда» (§1.8 спеки)
+        больше не выполняется: смета, где ВСЕ позиции без цены, а каталожные
+        строки размечены как работы (`kind='POSITION'`) — то есть VIEW и раньше,
+        и сейчас их не видел бы, но причина этого не была названа никогда, — даёт
+        непустой `positions_without_price` и на паспорте, и на матрице.
+        """
+        contract, _estimate, proposal = _estimate_with(factories)
+        for _ in range(3):
+            position = factories.CatalogPositionFactory.create(kind=CatalogKind.POSITION.value)
+            factories.PositionItemFactory.create(
+                proposal=proposal,
+                catalog_position=position,
+                unit_cost_total=None,
+                suggested_quantity=Decimal("10"),
+                total_cost_total=None,
+            )
+
+        totals = _passport(client, contract.id)["totals"]
+        assert totals["positions_without_price"] == 3
+        assert totals["positions_pending_review"] == 0
+        assert totals["positions_non_work"] == 0
+        assert _matrix(client)["positions_without_price"] == 3
+
+
+# ---------------------------------------------------------------------------
 #  Нетто-ось матрицы и паспорта (задача 3 пересчёта НДС, спека §2.4, §6)
 # ---------------------------------------------------------------------------
 
