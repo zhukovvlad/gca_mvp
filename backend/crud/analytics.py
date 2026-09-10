@@ -54,6 +54,7 @@ from models import (
     RateStandard,
     UnitOfMeasure,
 )
+from money.price import is_price, is_weight
 from money.vat import (
     AmountStatus,
     effective_display_rate,
@@ -181,13 +182,27 @@ def _contract_requisites(db: Session, contract_id: int) -> dict:
 
 
 def _priced_positions_select(estimate_id: int):
-    """Расценённые работы сметы — ровно состав строк VIEW, плюс сумма и единица.
+    """Расценённые работы сметы — ключевые ставки паспорта (`get_passport`).
+
+    **Фильтрует ЦЕНУ САМА** (`_price_ok`, задача 3 плана правила цены), а не
+    полагается на то, что негодную цену отсеял VIEW. До миграции 0016 (задача 4)
+    VIEW отсеивает только `unit_cost_total IS NOT NULL` — ноль, отрицательное и
+    `NaN`/`Infinity` доезжали бы сюда как цена (спека §1.1/§1.2), если бы этот
+    `where` на них не срабатывал. Это ОТДЕЛЬНОЕ утверждение, а не следствие
+    сужения VIEW: после задачи 4 `_price_ok` здесь окажется наложен НА УЖЕ
+    сузившую то же самое условие VIEW (конъюнкция предиката с самим собой),
+    поэтому состав выдачи не изменится ни на одну строку — независимость от
+    VIEW доказана тем, что предикат уже работает СЕЙЧАС, когда VIEW ещё не
+    сужен (`TestPassportKeyRatesPricePredicate`, `test_analytics_api.py`).
 
     `total_cost_total` и код единицы в VIEW не входят, поэтому доезжают join-ами.
     `deviation_pct` VIEW больше не несёт (миграция 0012): вместо него — база и
     целевая ставка НДС, из которых нетто и отклонение считает Python
-    (`_net_deviation`), одинаково для паспорта и drill-down (оба потребителя
-    этого select-а).
+    (`_net_deviation`).
+
+    Не потребитель drill-down (задача 3 развела их): drill-down обязан
+    показать и НЕВОШЕДШИЕ строки, а этот select их не видит по построению —
+    носитель drill-down теперь `_all_positions_select`.
     """
     return (
         sa.select(
@@ -206,7 +221,88 @@ def _priced_positions_select(estimate_id: int):
         .join(PositionItem, PositionItem.id == DEVIATION_INPUTS.c.position_item_id)
         .join(CatalogPosition, CatalogPosition.id == DEVIATION_INPUTS.c.catalog_position_id)
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == DEVIATION_INPUTS.c.unit_id)
-        .where(DEVIATION_INPUTS.c.estimate_id == estimate_id)
+        .where(
+            DEVIATION_INPUTS.c.estimate_id == estimate_id,
+            _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+        )
+    )
+
+
+def _all_positions_select(estimate_id: int):
+    """ВСЕ позиции работы сметы — носитель drill-down (`get_matrix_cell`,
+    задача 3 плана правила цены, спека §2.8): в отличие от
+    `_priced_positions_select`, без фильтра цены.
+
+    Читает `PositionItem` СВОИМИ join-ами, а не VIEW (решение о носителе,
+    отчёт задачи 2 плана правила цены): после задачи 4 невошедшие ценой строки
+    в VIEW жить не будут вовсе, а drill-down обязан показать ИХ ТОЖЕ — с
+    признаком невхождения и его причиной (спека §2.8: иначе ячейка `no_price`
+    открывалась бы пустым списком, и утверждение экрана «работа есть, цены
+    нет» нечем было бы проверить).
+
+    Норматив и база НДС не выводятся заново второй копией правила выбора —
+    они подтягиваются LEFT JOIN-ом к тому же `DEVIATION_INPUTS`, чьё правило
+    здесь ЕДИНСТВЕННОЕ. **ON этого JOIN-а несёт `_price_ok` ЯВНО** (правка
+    ревью, круг 1, блокер): без него норматив/база доезжали бы и до
+    НЕВОШЕДШЕЙ строки, пока сегодняшний VIEW (миграция 0012) их ещё не
+    исключил, — строка называла бы основание сравнения, которого не
+    производила (`standard_unit_rate`/`vat_rate_base` непустые при
+    `included=false`), и обещание задачи 4 «ответы drill-down не меняются
+    миграцией» было бы ложно уже сегодня и ничем не застраховано: сузив VIEW
+    вручную (добавив `_price_ok` в WHERE самого VIEW, а не в ON), можно было
+    бы обнулить оба поля молча, и набор остался бы зелёным. С `_price_ok`
+    прямо в ON поведение уже СЕЙЧАС равно тому, каким станет после задачи 4
+    (`test_matrix_cell_drilldown_excluded_row_has_no_standard_rate`).
+
+    Вес — `_PRESENCE_WEIGHT`, та же именованная копия правила `COALESCE(
+    suggested_quantity, quantity)`, что уже несёт сторона присутствия: у
+    `PositionItem` своей колонки «вес» нет, а копия правила ОДНА на все
+    площадки вне VIEW (докстрока `_PRESENCE_WEIGHT` ниже).
+
+    **Вторая копия условий VIEW.** `PositionItem.is_chapter.is_(False)` и
+    `CatalogPosition.kind == POSITION` дословно повторяют часть `WHERE`
+    текста миграции 0012 (`v_position_deviation_inputs`) — копия неизбежна
+    (этот select читает `PositionItem` напрямую, а не VIEW), но она НАЗВАНА
+    здесь этим абзацем и застрахована тестом ПОВЕДЕНИЯ, а не сверкой текста:
+    строка-раздел (`is_chapter=true`) и позиция каталожной строки НЕ
+    `POSITION` не обязаны появляться в drill-down
+    (`test_matrix_cell_drilldown_excludes_chapter_rows`,
+    `test_matrix_cell_drilldown_excludes_non_position_catalog_rows`).
+    """
+    return (
+        sa.select(
+            PositionItem.id.label("position_item_id"),
+            PositionItem.catalog_position_id,
+            PositionItem.job_title_in_proposal,
+            PositionItem.unit_cost_total,
+            _PRESENCE_WEIGHT.label("weight"),
+            DEVIATION_INPUTS.c.standard_unit_rate,
+            DEVIATION_INPUTS.c.vat_rate_base,
+            DEVIATION_INPUTS.c.vat_rate_target,
+            PositionItem.total_cost_total,
+            UnitOfMeasure.code.label("unit_code"),
+            CatalogPosition.standard_job_title,
+        )
+        .select_from(
+            sa.join(
+                PositionItem, CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id
+            )
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+            .outerjoin(
+                DEVIATION_INPUTS,
+                sa.and_(
+                    DEVIATION_INPUTS.c.position_item_id == PositionItem.id,
+                    _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+                ),
+            )
+        )
+        .where(
+            Lot.estimate_id == estimate_id,
+            PositionItem.is_chapter.is_(False),
+            CatalogPosition.kind == CatalogKind.POSITION.value,
+        )
     )
 
 
@@ -1695,17 +1791,80 @@ def _shape_matrix_rows(rows) -> list[dict]:
     return [shaped[cp] for cp in order]
 
 
+def _row_exclusion_reason(price: Decimal | None, weight: Decimal | None) -> str:
+    """Причина невхождения ОДНОЙ строки drill-down в ставку ячейки (задача 3
+    плана правила цены, спека §2.8).
+
+    **`not_finite` обязана проверяться ПЕРВОЙ — это реальный, наблюдаемый
+    приоритет** (правка ревью, круг 1): без него цена `-Infinity` ушла бы в
+    `negative` (`Decimal("-Infinity") < 0` не бросает и не различает
+    бесконечность от обычного отрицательного числа), а отрицательная цена при
+    НЕФИНИТНОМ весе ушла бы в `negative`, даже не заметив, что сам вклад
+    невычислим (`test_matrix_cell_drilldown_excluded_reason_not_finite_wins_
+    over_negative_price`, `..._with_nonfinite_weight`).
+
+    **Порядок между `no_weight` и `negative` НИЖЕ — не приоритет, а
+    ненаблюдаемое следствие того, что на ОДНОЙ строке (в отличие от агрегата
+    `_presence_row_flags`, где РАЗНЫЕ строки одной ячейки могут дать разные
+    флаги одновременно) эти два условия взаимно исключают друг друга по
+    значению `price`:** `no_weight` требует `is_price(price)` истинным (цена
+    конечна и `> 0`), `negative` требует `price < 0` — оба разом с одним и тем
+    же `price` не выполняются никогда, и переставленный порядок не меняет ни
+    одного ответа (подтверждено снятием — отчёт задачи, круг 1, правка 3).
+    Порядок оставлен таким же, как у `_cell_without_ingesting`, ради
+    единообразия чтения, а не потому что он что-то решает.
+
+    Фолбэк `no_price` всегда достижим: позиция уже исключена
+    (`not (is_price(price) and is_weight(weight))`), и если её не поймала ни
+    одна из трёх веток выше, цена пуста или ноль.
+    """
+    price_nonfinite = price is not None and not price.is_finite()
+    weight_nonfinite = weight is not None and not weight.is_finite()
+    if price_nonfinite or weight_nonfinite:
+        return "not_finite"
+    # Ниже порядок НЕНАБЛЮДАЕМ (см. докстроку) — оставлен для единообразия с
+    # `_cell_without_ingesting`, а не потому что одна ветка важнее другой.
+    if is_price(price) and not is_weight(weight):
+        return "no_weight"
+    if price is not None and price < 0:
+        return "negative"
+    return "no_price"
+
+
 def _cell_item(r) -> dict:
-    """Строка drill-down: валовое из файла, нетто из ячейки и база между ними.
+    """Строка drill-down: валовое из файла, нетто из ячейки, база между ними и
+    признак вхождения в ставку (задача 3 плана правила цены, спека §2.8).
 
     `unit_cost_total` НЕ трогается — это исходные деньги файла, и спека пересчёта
     §2.4 обещает их посимвольное совпадение. `unit_cost_net` добавляется рядом:
     без него человек складывал бы валовые, а ячейка показывала бы нетто
     (`test_matrix_cell_drilldown_survives_the_migration`).
+
+    Носитель — `_all_positions_select`: строка может быть НЕВОШЕДШЕЙ (её цена
+    или вес не проходят `is_price`/`is_weight`). Невошедшая строка несёт деньги
+    файла ДОСЛОВНО и причину невхождения (`excluded_reason`), но ОТКЛОНЕНИЕ для
+    неё не вычисляется вовсе (решение «чего не считать для невошедшей строки»):
+    норматив и база НДС ей не нужны ни для чего, и вызывать ради неё
+    `_net_deviation` значило бы приписать позиции факт, которого система не
+    утверждает. `deviation_pct`/`deviation_reason` невошедшей строки поэтому
+    пусты ОБА — и это не перегрузка смысла пустоты (`docs/insights/
+    one-value-two-states.md`): различитель — `included`, читаемое ПЕРВЫМ.
+    `deviation_reason` невошедшей строки никогда не `"no_rate"` — этот код
+    придуман для ЯЧЕЙКИ (`_cell_without_ingesting`), а не для позиции: у
+    позиционных поверхностей `deviation_reason` сохраняет сегодняшний перечень
+    значений (Global Constraints плана, ревизия §4 спеки §2.7).
     """
-    net, deviation_pct, reason = _net_deviation(
-        r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
-    )
+    included = is_price(r.unit_cost_total) and is_weight(r.weight)
+    if included:
+        net, deviation_pct, reason = _net_deviation(
+            r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
+        )
+        excluded_reason = None
+    else:
+        net = None
+        deviation_pct = None
+        reason = None
+        excluded_reason = _row_exclusion_reason(r.unit_cost_total, r.weight)
     return {
         "position_item_id": r.position_item_id,
         "job_title": r.job_title_in_proposal,
@@ -1718,29 +1877,33 @@ def _cell_item(r) -> dict:
         "standard_unit_rate": r.standard_unit_rate,
         "deviation_pct": deviation_pct,
         "deviation_reason": reason,
+        "included": included,
+        "excluded_reason": excluded_reason,
     }
 
 
 def get_matrix_cell(db: Session, *, contract_id: int, catalog_position_id: int) -> dict:
-    """Drill-down по ячейке (§6): позиции, из которых сложилась средневзвешенная ставка.
+    """Drill-down по ячейке (§6, задача 3 плана правила цены — спека §2.8):
+    ВСЕ позиции работы в последней смете договора, а не только вошедшие в
+    ставку.
 
-    Показывает именно те строки, которые участвовали в расчёте, — из последней сметы
-    договора и с `weight > 0`. Иначе человек, проверяя цифру, складывал бы не то, что
-    сложила система (ставка теперь нетто — спека пересчёта §2.4).
+    До этой задачи показывались только строки, участвовавшие в расчёте
+    (`weight > 0` поверх VIEW). Теперь носитель — `_all_positions_select`:
+    ячейка `rate_reason = "no_price"` (и любая другая пустая ставка) обязана
+    открыть НЕПУСТОЙ список строк с признаком невхождения и его причиной —
+    иначе утверждение экрана «работа есть, цены нет» нечем было бы проверить
+    (решение о носителе, отчёт задачи 2 плана правила цены).
     """
     estimate = get_latest_estimate(db, contract_id)
     if estimate is None:
         raise DomainError(404, f"У договора {contract_id} нет ни одной сметы.")
 
     rows = db.execute(
-        _priced_positions_select(estimate.id)
-        .where(
-            DEVIATION_INPUTS.c.catalog_position_id == catalog_position_id,
-            DEVIATION_INPUTS.c.weight > 0,
-        )
+        _all_positions_select(estimate.id)
+        .where(PositionItem.catalog_position_id == catalog_position_id)
         .order_by(
             PositionItem.total_cost_total.desc().nulls_last(),
-            DEVIATION_INPUTS.c.position_item_id,
+            PositionItem.id,
         )
     ).all()
 

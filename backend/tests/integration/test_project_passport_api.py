@@ -326,6 +326,49 @@ def test_direct_totals_stay_unknown_when_every_proposal_has_no_amount(db_session
     assert node["own_rows_not_finite"] == 0
 
 
+def test_own_rows_priced_ignores_the_unit_price_predicate(db_session, factories):
+    """Граница задачи 3 плана правила цены (`docs/superpowers/plans/
+    2026-09-09-price-predicate.md`): `own_rows_priced`/`rate_coverage` этой
+    поверхности считаются от конечности `total_cost_total`
+    (`_finite_amount`, этот модуль), а НЕ от предиката `money.price.is_price`
+    (`_price_ok`), заведённого задачей 3 для `unit_cost_total` в
+    `crud.analytics`. Оба модуля читают одну и ту же таблицу `position_items`,
+    но разными правилами по разным колонкам — Global Constraints плана прямо
+    называют счётчики полноты паспорта НЕИЗМЕННЫМИ по смыслу, и здесь это
+    доказано входом, на котором предикат `_price_ok`, будь он ошибочно
+    подмешан сюда, дал бы ДРУГОЙ ответ: три строки с нулевой, отрицательной и
+    нефинитной ценой ЗА ЕДИНИЦУ (`_price_ok` отверг бы все три) при конечном
+    положительном `total_cost_total` (`_finite_amount` принимает все три) —
+    обязаны по-прежнему считаться «расценёнными» здесь."""
+    category = _category(db_session, "1")
+    contract = factories.ContractFactory.create()
+    estimate = factories.EstimateFactory.create(contract=contract)
+    lot = factories.LotFactory.create(estimate=estimate)
+    proposal = factories.ProposalFactory.create(lot=lot, contractor=contract.contractor)
+    chapter = _chapter(factories, proposal, category_id=category.id)
+    _position(
+        factories, proposal, chapter=chapter,
+        unit_cost_total=Decimal("NaN"), total_cost_total=Decimal("1000.00"),
+    )
+    _position(
+        factories, proposal, chapter=chapter,
+        unit_cost_total=Decimal("-5"), total_cost_total=Decimal("500.00"),
+    )
+    _position(
+        factories, proposal, chapter=chapter,
+        unit_cost_total=Decimal("0"), total_cost_total=Decimal("250.00"),
+    )
+    db_session.flush()
+
+    result = get_project_passport(db_session, contract.id)
+    node = next(c for c in result["categories"] if c["id"] == category.id)
+
+    assert node["own"] == Decimal("1750.00")
+    assert node["own_rows"] == 3
+    assert node["own_rows_priced"] == 3
+    assert node["own_rows_not_finite"] == 0
+
+
 # ---------------------------------------------------------------------------
 #  4. Все 21 статья верхнего уровня доезжают в ответ
 # ---------------------------------------------------------------------------

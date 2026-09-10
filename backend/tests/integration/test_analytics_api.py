@@ -1291,16 +1291,28 @@ class TestNetDeviationNotFinite:
 class TestPassportSurvivesNonFiniteCost:
     """Воспроизведение дефекта 1 ЧЕРЕЗ САМ ЭНДПОИНТ паспорта (не только прямым
     вызовом `_net_deviation`) — оркестратор явно потребовал не верить одному
-    способу репродукции."""
+    способу репродукции.
+
+    **Правка задачи 3 плана правила цены.** До этой задачи нефинитная позиция
+    ПОПАДАЛА в `key_rates` с честной причиной `not_finite` — этот тест так и
+    проверял. Теперь `_priced_positions_select` фильтрует СВОИМ предикатом
+    (`_price_ok`), и нефинитная цена не проходит его вовсе: позиция пропадает
+    из СОСТАВА `key_rates`, а не только гасит своё отклонение. Смысл проверки
+    не изменился — эндпоинт по-прежнему обязан ответить 200, а не 500
+    (защита от `InvalidOperation` в `_passport_totals`/`_net_deviation` не
+    отменяется, она читает VIEW отдельно от `_priced_positions_select` и этой
+    задачей не тронута), — изменился только ожидаемый СОСТАВ списка."""
 
     @pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
     def test_non_finite_cost_with_standard_does_not_crash_passport(
         self, client, factories, db_session, bad
     ):
-        """До починки: `_passport_totals` сравнивает `deviation_pct > 0` на
-        `Decimal('NaN')` и бросает `decimal.InvalidOperation` — запрос
-        завершается 500-й (`TestClient` с `raise_server_exceptions=True`
-        поднимает это исключение прямо в тесте, см. `tests/conftest.py`)."""
+        """До починки дефекта 1: `_passport_totals` сравнивает `deviation_pct
+        > 0` на `Decimal('NaN')` и бросает `decimal.InvalidOperation` —
+        запрос завершается 500-й (`TestClient` с `raise_server_exceptions=
+        True` поднимает это исключение прямо в тесте, см. `tests/conftest.
+        py`). После задачи 3 плана правила цены нефинитная позиция ДОПОЛНИТЕЛЬНО
+        не должна попасть в `key_rates`."""
         contract = _contract_with_standard(
             factories, unit_cost_total=Decimal(bad), vat_rate=Decimal("20"),
             standard=Decimal("100"),
@@ -1309,22 +1321,91 @@ class TestPassportSurvivesNonFiniteCost:
 
         body = _passport(client, contract.id)
 
-        rate = body["key_rates"][0]
-        assert rate["deviation_pct"] is None
-        assert rate["deviation_reason"] == "not_finite"
-        # Причина обязана остаться ЧЕСТНОЙ, а не превратиться молча в
-        # «нет норматива» (§10) — норматив у этой позиции есть (100).
-        assert rate["standard_unit_rate"] is not None
-        # `over_standard` не должен посчитать нефинитную строку превышением
-        # (и не должен упасть, воспроизводя дефект 1).
+        # Единственная позиция сметы нефинитна — состав топа пуст.
+        assert body["key_rates"] == []
+        # `_passport_totals` читает VIEW независимо от `_priced_positions_
+        # select` (эта задача её не трогает) — счётчики остаются прежними:
+        # норматив у позиции есть, а `over_standard` не считает нефинитную
+        # строку превышением (и не падает, воспроизводя дефект 1).
         assert body["totals"]["over_standard"] == 0
         assert body["totals"]["with_standard"] == 1
+
+
+class TestPassportKeyRatesPricePredicate:
+    """`_priced_positions_select` фильтрует СВОИМ предикатом (`_price_ok`,
+    задача 3 плана правила цены), а не полагается на фильтр VIEW — сегодня
+    (миграция 0016 ещё не применена, задача 4) `v_position_deviation_inputs`
+    отсеивает только `unit_cost_total IS NOT NULL` (миграция 0012): ноль,
+    отрицательное и `NaN` доезжают до него как цена (спека §1.1/§1.2). Значит
+    если ЭТИ тесты зелёные уже СЕЙЧАС, до задачи 4, — исключение делает
+    `_priced_positions_select`, а не VIEW: ровно независимость от будущего
+    сужения, которую задача обязана предъявить ОТДЕЛЬНЫМ утверждением, а не
+    выводить из него.
+
+    **Посимвольный паритет на смете со всеми пригодными ценами** (правка
+    ревью, круг 1, правка 5) доказывает НЕ новый тест здесь, а нетронутый
+    `TestPassportKeyRates` (выше в этом файле): все его тесты используют
+    ТОЛЬКО пригодные цены, ни один не правлен этой задачей и ни один не
+    покраснел — значит `_price_ok` не отсекает на таких сметах ничего лишнего.
+    Заводить здесь третью копию той же мысли (после `test_excludes_a_zero_
+    price_position`/`test_excludes_a_negative_price_position`, которые уже
+    доказывают обратное — что предикат ОТСЕКАЕТ негодное) дороже, чем
+    сослаться на уже существующее зелёное.
+    """
+
+    def test_excludes_a_zero_price_position(self, client, factories):
+        contract, _estimate, proposal = _estimate_with(factories)
+        zero_priced = factories.CatalogPositionFactory.create(standard_job_title="Нулевая цена")
+        valid = factories.CatalogPositionFactory.create(standard_job_title="Годная цена")
+        _bare_position(factories, proposal, zero_priced, price=Decimal("0"), weight=Decimal("10"))
+        _bare_position(factories, proposal, valid, price=Decimal("100"), weight=Decimal("10"))
+
+        titles = [r["job_title"] for r in _passport(client, contract.id)["key_rates"]]
+        assert titles == [_job_title_of(factories, valid)]
+
+    def test_excludes_a_negative_price_position(self, client, factories):
+        contract, _estimate, proposal = _estimate_with(factories)
+        negative = factories.CatalogPositionFactory.create(standard_job_title="Отрицательная цена")
+        valid = factories.CatalogPositionFactory.create(standard_job_title="Годная цена")
+        _bare_position(factories, proposal, negative, price=Decimal("-50"), weight=Decimal("10"))
+        _bare_position(factories, proposal, valid, price=Decimal("100"), weight=Decimal("10"))
+
+        titles = [r["job_title"] for r in _passport(client, contract.id)["key_rates"]]
+        assert titles == [_job_title_of(factories, valid)]
+
+    def test_all_valid_prices_are_all_shown_with_their_raw_fields(self, client, factories):
+        """НЕ доказательство паритета (см. докстроку класса, правка 5 ревью):
+        только то, что предикат НЕ отсекает пригодные значения и не путает
+        порядок/поля двух позиций с разными цифрами. Три поля из десяти —
+        `job_title`, `unit_cost_total`, `total_cost_total` — намеренно, а не
+        случайно неполно."""
+        contract, _estimate, proposal = _estimate_with(factories)
+        first = factories.CatalogPositionFactory.create(standard_job_title="Первая работа")
+        second = factories.CatalogPositionFactory.create(standard_job_title="Вторая работа")
+        _position(factories, proposal, first, unit_cost="150", weight="4", total="5000")
+        _position(factories, proposal, second, unit_cost="80", weight="3", total="240")
+
+        key_rates = _passport(client, contract.id)["key_rates"]
+        assert [r["job_title"] for r in key_rates] == [
+            _job_title_of(factories, first),
+            _job_title_of(factories, second),
+        ]
+        assert Decimal(key_rates[0]["unit_cost_total"]) == Decimal("150")
+        assert Decimal(key_rates[0]["total_cost_total"]) == Decimal("5000")
+        assert Decimal(key_rates[1]["unit_cost_total"]) == Decimal("80")
+        assert Decimal(key_rates[1]["total_cost_total"]) == Decimal("240")
 
 
 class TestMatrixCellDrillDownSurvivesNonFiniteCost:
     """`get_matrix_cell`/`_cell_item` — ВТОРОЙ живой потребитель `_net_deviation`
     (drill-down матрицы, реально вызывается фронтендом, `MatrixCellDialog.tsx`,
-    в отличие от паспорта фазы 6). Чинится той же правкой `_net_deviation`."""
+    в отличие от паспорта фазы 6). Чинится той же правкой `_net_deviation`.
+
+    **Правка задачи 3 плана правила цены.** Нефинитная позиция больше не
+    ВХОДИТ в ставку ячейки (`is_price(NaN)` ложно), поэтому `_net_deviation`
+    для неё больше не вызывается вовсе — причина её отсутствия в расчёте
+    теперь `excluded_reason`, а не `deviation_reason` (решение «чего не
+    считать для невошедшей строки», отчёт задачи 3)."""
 
     def test_nan_cost_reports_the_reason_instead_of_crashing(self, client, factories, db_session):
         contract = _contract_with_standard(
@@ -1340,8 +1421,14 @@ class TestMatrixCellDrillDownSurvivesNonFiniteCost:
             },
         ).json()
         item = body["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "not_finite"
+        # Отклонение для невошедшей строки не вычисляется вовсе (решение «чего
+        # не считать для невошедшей строки») — раньше `_net_deviation`
+        # вызывался безусловно и `deviation_reason` был "not_finite"; теперь
+        # это поле пусто, а причина невхождения названа отдельным полем.
         assert item["deviation_pct"] is None
-        assert item["deviation_reason"] == "not_finite"
+        assert item["deviation_reason"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1557,234 @@ class TestMatrixCellDrillDownNetAxis:
         assert item["unit_cost_net"] is None
         assert item["deviation_pct"] is None
         assert item["deviation_reason"] == "unknown_vat_base"
+
+
+class TestMatrixCellDrilldownIncludedFlag:
+    """Признак вхождения строки в ставку ячейки на самой поверхности drill-down
+    (задача 3 плана правила цены, спека §2.8). Носитель — `_all_positions_
+    select`, а не `_priced_positions_select`: невошедшие ценой строки видны
+    ВСЕГДА (решение о носителе, отчёт задачи 2 плана правила цены), а не
+    только пока VIEW их не отсеял.
+
+    Помощники `_cell_for_positions`/`_row_and_cell` определены НИЖЕ по файлу
+    (задача 2) — тот же приём построчного входа, второй копии не заводится.
+    """
+
+    def _drilldown(self, client, contract, position):
+        return client.get(
+            "/api/v1/analytics/matrix/cell",
+            params={"contract_id": contract.id, "catalog_position_id": position.id},
+        ).json()
+
+    def test_matrix_cell_drilldown_shows_all_rows_including_priceless(self, client, factories):
+        """Ячейка `no_price` открывает НЕПУСТОЙ список строк — работа есть,
+        цены нет, и утверждение экрана есть чем проверить (спека §2.8).
+
+        Правка ревью, круг 1, правка 7: докстрока говорила про ячейку
+        `no_price`, а сам `rate_reason` ячейки не читался ни разу — предпосылка
+        была верна, но не утверждена. Здесь она проверяется явно, через ту же
+        `/matrix`, что и `_row_and_cell`."""
+        contract, position = _cell_for_positions(factories, [(None, Decimal("10"))])
+        cell = _row_and_cell(client, contract, position)[1]
+        assert cell["rate_reason"] == "no_price"
+
+        body = self._drilldown(client, contract, position)
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "no_price"
+
+    def test_matrix_cell_drilldown_excluded_reason_negative(self, client, factories):
+        contract, position = _cell_for_positions(factories, [(Decimal("-50"), Decimal("10"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "negative"
+
+    def test_matrix_cell_drilldown_excluded_reason_no_weight(self, client, factories):
+        contract, position = _cell_for_positions(factories, [(Decimal("100"), Decimal("0"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "no_weight"
+
+    def test_matrix_cell_drilldown_excluded_reason_not_finite_weight(self, client, factories):
+        """Второй операнд `or` в `_row_exclusion_reason` (вес нефинитен, а не
+        цена) — отличает эту ветку от соседнего теста на нефинитную ЦЕНУ
+        (`TestMatrixCellDrillDownSurvivesNonFiniteCost`): своим входом, как
+        того требует `docs/insights/claimed-property-needs-its-own-input.md`
+        — полнота предъявлений по ветвям не видит слабый предикат внутри уже
+        предъявленной ветви, если для второго операнда `or` нет своего входа."""
+        contract, position = _cell_for_positions(factories, [(Decimal("100"), Decimal("NaN"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "not_finite"
+
+    def test_matrix_cell_drilldown_excluded_reason_not_finite_wins_over_negative_price(
+        self, client, factories
+    ):
+        """Приоритет `not_finite` над `negative` — РЕАЛЬНЫЙ и наблюдаемый
+        (правка ревью, круг 1, правка 2), в отличие от порядка `no_weight`/
+        `negative` (см. `_row_exclusion_reason`). `Decimal("-Infinity") < 0`
+        не бросает и не отличается от обычного отрицательного числа — без
+        проверки `not_finite` ПЕРВОЙ эта строка ушла бы в `negative`."""
+        contract, position = _cell_for_positions(factories, [(Decimal("-Infinity"), Decimal("10"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "not_finite"
+
+    def test_matrix_cell_drilldown_excluded_reason_not_finite_wins_over_negative_price_with_nonfinite_weight(
+        self, client, factories
+    ):
+        """Парный вход к тесту выше (правка ревью, круг 1, правка 2): цена
+        отрицательна И конечна (`is_price`/`negative`-ветка формально
+        применима), но ВЕС нефинитен — без проверки `not_finite` ПЕРВОЙ
+        (до всякой проверки знака цены) строка ушла бы в `negative`, даже не
+        заметив, что сам вклад невычислим."""
+        contract, position = _cell_for_positions(factories, [(Decimal("-5"), Decimal("NaN"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["excluded_reason"] == "not_finite"
+
+    def test_matrix_cell_drilldown_included_row_has_empty_excluded_reason(self, client, factories):
+        contract, position = _cell_for_positions(factories, [(Decimal("100"), Decimal("10"))])
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is True
+        assert item["excluded_reason"] is None
+
+    def test_matrix_cell_drilldown_excluded_row_deviation_is_empty_not_a_second_meaning(
+        self, client, factories
+    ):
+        """Пара «`included=false` и пустое `deviation_reason`» предъявлена
+        ЯВНО (`docs/insights/one-value-two-states.md`): различитель —
+        `included`, читаемое первым, а не значение `deviation_reason` само по
+        себе — оно пусто здесь по ДРУГОЙ причине, чем у вошедшей строки без
+        норматива (`test_matrix_cell_drilldown_without_base_reports_the_
+        reason` выше). Контраст с ячейкой добавляет содержательное
+        утверждение (правка ревью, круг 1, правка 8, взамен тавтологии
+        `!= "no_rate"` сразу после `is None`): у ЯЧЕЙКИ той же пары (работа,
+        договор) `deviation_reason` — как раз `"no_rate"` (`_cell_without_
+        ingesting`), то есть один и тот же факт «сравнения не было» две
+        поверхности называют РАЗНЫМИ значениями по замыслу, а не случайно."""
+        contract, position = _cell_for_positions(factories, [(None, Decimal("10"))])
+        cell = _row_and_cell(client, contract, position)[1]
+        assert cell["deviation_reason"] == "no_rate"
+
+        item = self._drilldown(client, contract, position)["items"][0]
+        assert item["included"] is False
+        assert item["deviation_pct"] is None
+        assert item["deviation_reason"] is None
+
+    def test_matrix_cell_drilldown_excluded_row_has_no_standard_rate(self, client, factories):
+        """Блокер ревью, круг 1, правка 1: `_all_positions_select` подтягивает
+        норматив/базу НДС LEFT JOIN-ом к `DEVIATION_INPUTS` — без `_price_ok`
+        в ON этого JOIN-а невошедшая строка несла бы норматив/базу, которых
+        не производила (замерено ревью: `standard_unit_rate="100"`,
+        `vat_rate_base="0"` при `included=false`). Один вход, ОБЕ стороны:
+        невошедшая (цена ноль) — пустые норматив и база, вошедшая (цена 100)
+        — непустые."""
+        contract, position = _cell_for_positions(
+            factories,
+            [(Decimal("0"), Decimal("10")), (Decimal("100"), Decimal("10"))],
+            standard=Decimal("100"),
+        )
+        items = self._drilldown(client, contract, position)["items"]
+        excluded = next(i for i in items if not i["included"])
+        included = next(i for i in items if i["included"])
+        assert excluded["standard_unit_rate"] is None
+        assert excluded["vat_rate_base"] is None
+        assert included["standard_unit_rate"] is not None
+        assert included["vat_rate_base"] is not None
+
+    def test_matrix_cell_drilldown_amount_and_rate_match_the_cell(self, client, factories):
+        """Два ОТДЕЛЬНЫХ утверждения (спека §2.8): сумма НЕТТО-вкладов
+        вошедших строк равна `amount` ячейки, и она же, делённая на сумму
+        пригодных весов вошедших строк, равна `rate` — складывать вклады со
+        ставкой размерностно нельзя, одно из другого не следует. Вход несёт
+        ТРИ позиции с разными весами (не единица весом для всех — иначе
+        деление на сумму весов совпало бы со средним арифметическим и не
+        отличило бы верную формулу от ошибочной), из них одна ИСКЛЮЧЕНА
+        отрицательной ценой — доказывает, что исключённая строка не
+        просачивается во вклад.
+
+        Ставка НДС — 20 %, НЕ ноль (правка ревью, круг 1, правка 6): при
+        `vat_rate=0` (дефолт `_estimate_with`) `gross_to_net(x, 0) == x`, и
+        валовое неотличимо от нетто на входе вовсе — суммировался бы
+        `unit_cost_total`, а заявление говорит про `unit_cost_net`. Цены
+        подобраны так, чтобы нетто (`gross_to_net(120,20)=100`,
+        `gross_to_net(360,20)=300`) были точными без округления — иначе
+        поштучное квантование `unit_cost_net` могло бы разойтись с суммой,
+        квантованной ОДИН раз (тот же класс риска, что `test_sql_net_weight_
+        agrees_with_python`)."""
+        contract, _estimate, proposal = _estimate_with(factories, vat_rate=Decimal("20"))
+        position = factories.CatalogPositionFactory.create()
+        for price, weight in [
+            (Decimal("120"), Decimal("2")),
+            (Decimal("360"), Decimal("1")),
+            (Decimal("-5"), Decimal("10")),
+        ]:
+            _bare_position(factories, proposal, position, price=price, weight=weight)
+
+        cell = _row_and_cell(client, contract, position)[1]
+        body = self._drilldown(client, contract, position)
+        included_items = [i for i in body["items"] if i["included"]]
+        assert len(included_items) == 2
+
+        contributions = sum(
+            Decimal(i["unit_cost_net"]) * Decimal(i["weight"]) for i in included_items
+        )
+        weights = sum(Decimal(i["weight"]) for i in included_items)
+        assert quantize_money(contributions) == Decimal(cell["amount"])
+        assert quantize_money(contributions / weights) == Decimal(cell["rate"])
+
+    def test_matrix_cell_drilldown_is_scoped_to_the_requested_work(self, client, factories):
+        """Условие «строка принадлежит ЗАПРОШЕННОЙ работе»
+        (`PositionItem.catalog_position_id == catalog_position_id`) не
+        предъявлялось ни одним существующим тестом drill-down: все они
+        заводили ровно одну каталожную строку на смету, и её отсутствие
+        осталось бы незамеченным (снятием подтверждено, см. отчёт задачи).
+        Здесь — ДВЕ разные работы в одной смете, и запрос по одной не должен
+        показать строку соседней."""
+        contract, _estimate, proposal = _estimate_with(factories)
+        requested = factories.CatalogPositionFactory.create(standard_job_title="Запрошенная работа")
+        other = factories.CatalogPositionFactory.create(standard_job_title="Другая работа")
+        _bare_position(factories, proposal, requested, price=Decimal("100"), weight=Decimal("10"))
+        _bare_position(factories, proposal, other, price=Decimal("200"), weight=Decimal("5"))
+
+        body = self._drilldown(client, contract, requested)
+        assert len(body["items"]) == 1
+        assert Decimal(body["items"][0]["unit_cost_total"]) == Decimal("100")
+
+    def test_matrix_cell_drilldown_excludes_chapter_rows(self, client, factories):
+        """Копия условия VIEW `is_chapter=false` внутри `_all_positions_
+        select` (правка ревью, круг 1, правка 4) — названа в докстроке
+        `_all_positions_select` и застрахована здесь: строка-раздел не
+        обязана появляться в drill-down, даже если ей (вопреки обычному
+        импорту) сопоставлена та же каталожная строка, что обычной позиции.
+        Снятие ОБОИХ условий разом (`is_chapter`, `kind`) до этой правки не
+        роняло набор — вход заведён отдельно от соседнего теста ниже."""
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create()
+        factories.PositionItemFactory.create(
+            proposal=proposal, catalog_position=position, is_chapter=True,
+            unit_cost_total=Decimal("500"), suggested_quantity=Decimal("10"),
+            quantity=None, total_cost_total=None,
+        )
+        _bare_position(factories, proposal, position, price=Decimal("100"), weight=Decimal("10"))
+
+        items = self._drilldown(client, contract, position)["items"]
+        assert len(items) == 1
+        assert Decimal(items[0]["unit_cost_total"]) == Decimal("100")
+
+    def test_matrix_cell_drilldown_excludes_non_position_catalog_rows(self, client, factories):
+        """Копия условия VIEW `kind == POSITION` внутри `_all_positions_
+        select` (правка ревью, круг 1, правка 4): позиция каталожной строки,
+        ждущей разбора (`TO_REVIEW`), не обязана появляться в drill-down —
+        `catalog_position_id` у нужного запроса совпадает, но строка каталога
+        ещё не работа."""
+        contract, _estimate, proposal = _estimate_with(factories)
+        position = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+        _bare_position(factories, proposal, position, price=Decimal("100"), weight=Decimal("10"))
+
+        assert self._drilldown(client, contract, position)["items"] == []
 
 
 # ---------------------------------------------------------------------------
