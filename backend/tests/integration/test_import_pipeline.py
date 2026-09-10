@@ -254,6 +254,49 @@ class TestAtomicity:
             == 0
         )
 
+    def test_domain_price_warning_does_not_survive_a_crash_before_finalize(
+        self, job_env, monkeypatch
+    ):
+        """§5, задача 7 плана правила цены: предупреждение о состоянии домена
+        (`_price_domain_warnings` — здесь отрицательная цена за единицу)
+        описывает домен и обязано откатиться вместе с ним.
+
+        Прямое наблюдение, которого не хватало `test_estimate_import.py`
+        (тот файл вызывает `import_estimate` напрямую и никогда не видит
+        `import_jobs.warnings` — только возвращаемый `ImportOutcome`; ревью
+        задачи 7, правки 1 и 2). Здесь — полный пайплайн: строка с
+        отрицательной ценой доходит до конца `import_estimate` НОРМАЛЬНО (тот
+        же приём, что `test_crash_between_matching_and_final_leaves_no_estimate`
+        выше — падение после матчинга, patch `finalize_done`), предупреждение
+        уже лежит в возвращённом `domain_warnings`, и только ПОСЛЕДНЯЯ
+        операция транзакции (`finalize_done`) должна была записать его в
+        `import_jobs.warnings`. Она падает раньше — колонка остаётся тем же
+        `'[]'::jsonb`, которым создан job (`StatusWriter.fail` её не трогает).
+        """
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("падение между матчингом и финалом")
+
+        monkeypatch.setattr("services.import_pipeline.finalize_done", boom)
+
+        job = job_env.run(
+            payload_for(
+                job_env.contract,
+                [
+                    position(
+                        job_title="Работа",
+                        unit="шт",
+                        unit_cost_total="-5.00",
+                        total_cost_total="-50.00",
+                    )
+                ],
+            )
+        )
+
+        assert job.status == ImportJobStatus.error.value
+        assert job_env.estimates() == []
+        assert not any("отрицательная" in w for w in job.warnings)
+
     def test_catalog_rows_of_a_failed_import_are_rolled_back_too(self, job_env, monkeypatch):
         """Каталог наполняется в той же транзакции — TO_REVIEW-мусор не остаётся."""
         monkeypatch.setattr(
