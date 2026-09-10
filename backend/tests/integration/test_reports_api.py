@@ -1124,16 +1124,38 @@ def test_summary_survives_nan_amount_in_sort_key(client, factories):
     (он трапится) — раньше порядок задавал SQL `ORDER BY`, которому NaN
     безразличен. Путь падения СОЗДАН этой веткой, а не существовал раньше.
 
+    **Правка ревью задачи 4 плана правила цены (`crud/reports.py` — пятый
+    читатель VIEW, не названный планом).** До миграции 0016 «порченая» строка
+    заводилась нефинитной ЦЕНОЙ (`unit_cost="NaN"`) — так она доезжала до
+    VIEW (условие было только `IS NOT NULL`) и до суммы `amount` (`_fold_
+    summary_work`, `weighted_fact = unit_cost_total * weight`). После 0016
+    `v_position_deviation_inputs` сама фильтрует `unit_cost_total` предикатом
+    цены, и строка с нефинитной ценой в VIEW больше не появляется вовсе —
+    «Порченая работа» пропадала бы из свода целиком, а не доезжала бы до
+    сравнения ключей сортировки нефинитной, и тест зеленел БЫ БЕЗ защиты
+    (ловушка найдена ревью: 2 прохода что с защитой, что без — см. отчёт
+    задачи).
+
+    Правка: нефинитным теперь делается то, что реально входит в сумму, а
+    НЕ фильтруется миграцией — ВЕС (`weight="NaN"`), а не цена за единицу.
+    `unit_cost="100"` остаётся конечной и больше нуля — строка проходит
+    предикат VIEW и попадает в группу; `weighted_fact = unit_cost_total *
+    weight = 100 * NaN = NaN`, и `SUM` группы (`fact_amount_total`) —
+    нефинитен той же дорогой, что и раньше. Продакшен-защита (`_amount_sort_
+    key`) по-прежнему нужна: вес VIEW НЕ фильтрует (предикат цены — только
+    про `unit_cost_total`), и нефинитный вес — достижимый вход и сегодня.
+
     Два РАЗНЫХ каталожных объекта нужны нарочно: сортировка с одной строкой не
     вызывает сравнение ключей вовсе, а с двумя — обязана.
 
     Краснеет от: возврата `rows.sort` к ключу `-(r["amount"] or ZERO)` без
-    группировки по конечности — подтверждено снятием, см. отчёт задачи."""
+    группировки по конечности — подтверждено снятием ПОСЛЕ миграции 0016
+    (см. отчёт задачи, таблица «мутация → до → после»)."""
     contract, _estimate, proposal = _estimate_with(factories)
     normal = factories.CatalogPositionFactory.create(standard_job_title="Обычная работа")
     _position(factories, proposal, normal, unit_cost="100", weight="10")
     broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
-    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+    _position(factories, proposal, broken, unit_cost="100", weight="NaN")
 
     response = client.get(
         "/api/v1/reports/contract-summary", params={"contract_id": contract.id}
@@ -1146,13 +1168,19 @@ def test_bank_report_survives_nan_comparable_amount_in_sort_key(client, factorie
     (`_fold_bank_rows`, ключ по `comparable_amount`) — сортировка тоже перешла
     в Python этой веткой (§2.6) и тоже не защищена от нефинитной суммы.
 
+    **Правка ревью задачи 4 плана правила цены** — та же, что у теста выше:
+    нефинитным делается ВЕС (`weight="NaN"`), а цена за единицу остаётся
+    `unit_cost="100"` (конечная, больше нуля), иначе строка не пережила бы
+    предикат цены VIEW и пропала бы из свода целиком, не дойдя до сравнения
+    ключей сортировки.
+
     Норматив заведён на ОБЕИХ работах: без него `comparable_amount` был бы
     `None` (нет норматива — блокирующая причина ДО сортировки), и строка не
     попала бы в сравнение ключей вовсе — дефект остался бы незамеченным.
 
     Краснеет от: возврата `bucket.sort` к ключу `-(r["comparable_amount"] or
-    ZERO)` без группировки по конечности — подтверждено снятием, см. отчёт
-    задачи."""
+    ZERO)` без группировки по конечности — подтверждено снятием ПОСЛЕ миграции
+    0016 (см. отчёт задачи)."""
     rate_class = factories.RateClassFactory.create(title="Класс с порченой суммой")
     contract = factories.ContractFactory.create(rate_class=rate_class)
     _c, _e, proposal = _estimate_with(factories, contract=contract)
@@ -1162,7 +1190,7 @@ def test_bank_report_survives_nan_comparable_amount_in_sort_key(client, factorie
     _standard(factories, normal, rate_class, "100")
 
     broken = factories.CatalogPositionFactory.create(standard_job_title="Порченая работа")
-    _position(factories, proposal, broken, unit_cost="NaN", weight="5")
+    _position(factories, proposal, broken, unit_cost="100", weight="NaN")
     _standard(factories, broken, rate_class, "100")
 
     response = client.get(

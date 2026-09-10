@@ -11,13 +11,21 @@ python` (`test_analytics_api.py`): SQL-сторона собирается ИЗ 
 
 `TRUTH_TABLE` ниже — оракул фичи: та же пара «вход → ожидаемый ответ», что в
 `tests/unit/test_price_predicate.py::TRUTH_TABLE` (восемь входов; число задано
-длиной кортежа, не текстом). Это сознательное дублирование, не импорт — но
-каждый тест ниже сверяет ОБА факта с этим литералом отдельно: SQL-ответ равен
-оракулу, и Python-ответ (`is_price`/`is_weight`) равен ему же. Прежняя редакция
-файла сравнивала SQL с `is_price`/`is_weight` напрямую — то есть доказывала
-согласие двух площадок ДРУГ С ДРУГОМ, а не правильность каждой из них
-(находка ревью задачи 1): согласованная, но одинаково неверная пара прошла бы
-такую сверку тихо.
+длиной кортежа, не текстом). Это сознательное дублирование, не импорт — и
+почти каждый тест ниже сверяет ОБА факта с этим литералом отдельно: SQL-ответ
+равен оракулу, и Python-ответ (`is_price`/`is_weight`) равен ему же. Прежняя
+редакция файла сравнивала SQL с `is_price`/`is_weight` напрямую — то есть
+доказывала согласие двух площадок ДРУГ С ДРУГОМ, а не правильность каждой из
+них (находка ревью задачи 1): согласованная, но одинаково неверная пара прошла
+бы такую сверку тихо.
+
+**Исключение — `TestPriceFilteredOutOfDeviationInputsView` (ревью задачи 4).**
+После миграции 0016 сам VIEW фильтрует по предикату цены, и сверка `_price_ok`
+над строками, которые этот же `WHERE` уже пропустил, стала бы тавтологией
+(её докстрока объясняет почему). Класс проверяет ДРУГОЙ факт — что VIEW
+фильтрует, а не что предикат согласен с оракулом, — и не вызывает ни
+`_price_ok`, ни `is_price` внутри теста; оракул используется только чтобы
+разметить, каким входам полагается выжить.
 
 `NULL` в PostgreSQL трёхзначен: `NULL > 0` даёт не `FALSE`, а `NULL`. Сверка
 «в лоб» через `WHERE _price_ok(column)` эту разницу не поймала бы —
@@ -187,17 +195,44 @@ class TestPriceOkOverPositionItem:
         assert is_price(None) is False
 
 
-class TestPriceOkOverDeviationInputsView:
-    """`_price_ok` применим и ко второй площадке — колонке VIEW отклонений
-    (`DEVIATION_INPUTS.c.unit_cost_total`)."""
+class TestPriceFilteredOutOfDeviationInputsView:
+    """VIEW отклонений (`DEVIATION_INPUTS.c.unit_cost_total`) сам фильтрует по
+    предикату цены — факт о VIEW, а не о `_price_ok`: класс переименован
+    (был `TestPriceOkOverDeviationInputsView`) и внутри теста больше НЕТ ни
+    одного обращения к `_price_ok`/`is_price` — старые имя и первая строка
+    докстроки обещали бы применение, которого нет (находка ревью задачи 4).
+    Согласие `_price_ok` с оракулом на этой же колонке доказывал он ДО
+    миграции 0016 (см. историю ниже) — сегодня эту роль полностью несёт
+    `TestPriceOkOverPositionItem` (колонку `PositionItem.unit_cost_total`
+    VIEW не фильтрует вовсе).
 
-    def test_matches_the_oracle_on_non_null_inputs(self, db_session, factories):
-        """Пустого входа здесь нет: VIEW сам отсеивает `unit_cost_total IS NULL`
-        (`WHERE pi.unit_cost_total IS NOT NULL`, миграция 0012 — эта задача
-        условие не трогает; задача 4 плана заменит его предикатом). Пустой вход
-        для цены уже предъявлен классом выше, через `PositionItem`; дублировать
-        его здесь означало бы проверять то, что отфильтровал VIEW, а не то,
-        что делает `_price_ok`."""
+    **Правка задачи 4 плана (миграция 0016), находка её собственного ревью.**
+    До миграции 0016 VIEW отсеивал только `unit_cost_total IS NULL`, и все
+    семь непустых входов оракула доезжали до него; тест ниже сверял
+    `_price_ok` НАД ВЫЖИВШИМИ строками с оракулом — это было содержательной
+    проверкой согласия. После 0016 сам текст VIEW несёт в `WHERE` тот же
+    предикат «конечно и больше нуля», и строки, где он ложен, из VIEW пропадают
+    ФИЗИЧЕСКИ — их там больше нет вовсе, а не есть, но с `sql_ok = False`.
+    Прежняя форма («выбери строки по id, сверь длину со всеми непустыми входами
+    оракула, затем сверь _price_ok над каждой») после этого стала бы
+    тавтологией: `_price_ok` над строкой, которая по построению `WHERE` этот же
+    предикат уже прошла, обязана быть `True` всегда — тест перестал бы стеречь
+    что-либо, кроме факта, что VIEW вообще существует. И утверждение о длине
+    («ровно len(non_null_rows) строк») стало бы попросту ложным: набор упал бы
+    с 7 до 2. Это ОЖИДАЕМО и является прямым следствием фичи, а не поводом
+    подогнать число под вывод (задача 4, разбор её брифа) — смысл проверки
+    меняется с «предикат согласен с оракулом» на «VIEW фильтрует по предикату»,
+    и это разные факты: первый уже полностью доказан классом
+    `TestPriceOkOverPositionItem` выше (там VIEW ничего не фильтрует, видны все
+    восемь входов, включая пустой) — второй проверяется здесь.
+    """
+
+    def test_view_keeps_exactly_the_priced_positions(self, db_session, factories):
+        """Множество позиций, переживших VIEW, равно множеству входов, где
+        `is_price` истинна, — не шире (негодная цена не просочилась) и не уже
+        (пригодная цена не потерялась). Сверка по ИМЕНАМ входов, а не только
+        по числу: подмена состава при том же количестве строк осталась бы
+        незамеченной сверкой одной длины."""
         non_null_rows = tuple(row for row in TRUTH_TABLE if row[1] is not None)
         by_id = {
             _priced_item(factories, unit_cost_total=value).id: (name, value, expected)
@@ -205,20 +240,22 @@ class TestPriceOkOverDeviationInputsView:
         }
         db_session.flush()
 
-        rows = db_session.execute(
-            sa.select(
-                DEVIATION_INPUTS.c.position_item_id,
-                DEVIATION_INPUTS.c.unit_cost_total,
-                _price_ok(DEVIATION_INPUTS.c.unit_cost_total).label("sql_ok"),
-            ).where(DEVIATION_INPUTS.c.position_item_id.in_(list(by_id)))
-        ).all()
+        surviving_ids = set(
+            db_session.execute(
+                sa.select(DEVIATION_INPUTS.c.position_item_id).where(
+                    DEVIATION_INPUTS.c.position_item_id.in_(list(by_id))
+                )
+            ).scalars()
+        )
 
-        assert len(rows) == len(non_null_rows)
-        for position_id, stored, sql_ok in rows:
-            name, value, expected = by_id[position_id]
-            assert _same_value(stored, value), f"доставка входа «{name}»: сохранилось {stored!r}"
-            _assert_boolean(sql_ok, expected, where=f"SQL, вход «{name}»")
-            assert is_price(value) is expected, f"Python, вход «{name}»"
+        name_by_id = {pid: name for pid, (name, _value, _expected) in by_id.items()}
+        expected_names = {name for _pid, (name, _value, expected) in by_id.items() if expected}
+        surviving_names = {name_by_id[pid] for pid in surviving_ids}
+
+        assert surviving_names == expected_names, (
+            "VIEW обязан отдавать ровно позиции с конечной ценой больше нуля, "
+            f"выжили: {sorted(surviving_names)}, ожидались: {sorted(expected_names)}"
+        )
 
 
 class TestWeightOkOverDeviationInputsView:
@@ -227,7 +264,8 @@ class TestWeightOkOverDeviationInputsView:
     `unit_cost_total`), поэтому здесь достижимы ВСЕ входы оракула сразу,
     включая пустой — без обходного пути через `PositionItem`, который
     потребовался цене. Своей колонки «вес» у `PositionItem` нет: её собирает
-    VIEW, вторая площадка появится задачей 2 плана.
+    VIEW, а вторая площадка (`_cell_groups_cte`/`_cell_weights_cte`) появилась
+    задачей 2 плана.
     """
 
     def test_matches_the_oracle_on_every_input(self, db_session, factories):
