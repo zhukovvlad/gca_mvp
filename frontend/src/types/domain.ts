@@ -773,7 +773,16 @@ export interface MatrixCellItem {
   job_title: string;
   unit_code: string | null;
   weight: Decimal | null;
-  unit_cost_total: Decimal;
+  /**
+   * Валовое из файла. `null` достижим (замечание внешнего ревью Codex, №3):
+   * носитель — `_all_positions_select`, отдающий ВСЕ позиции, включая те, у
+   * которых `PositionItem.unit_cost_total` сохранён пустым (`excluded_
+   * reason: "no_price"` несёт как ноль, так и настоящий `NULL`). `Decimal`
+   * без `| null` был неверен — экран это уже переживал молча (`MoneyCell`/
+   * `formatDecimalMoney` трактуют `null` как «нет значения», прочерк), но
+   * тип обязан называть то, что реально приходит.
+   */
+  unit_cost_total: Decimal | null;
   /** Ставка без НДС — та, что вошла в ячейку; `null`, если строка не вошла или база неизвестна. */
   unit_cost_net: Decimal | null;
   vat_rate_base: Decimal | null;

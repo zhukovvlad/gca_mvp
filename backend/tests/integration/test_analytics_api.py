@@ -2008,6 +2008,36 @@ class TestMatrixCellDrilldownIncludedFlag:
         assert included["standard_unit_rate"] is not None
         assert included["vat_rate_base"] is not None
 
+    def test_matrix_cell_drilldown_excluded_row_by_weight_has_no_standard_rate(
+        self, client, factories
+    ):
+        """Тот же дефект, что чинился для ЦЕНЫ тестом выше (блокер ревью,
+        круг 1, правка 1), но обнаруженный для ВЕСА внешним ревью (Codex,
+        замечание 1) уже ПОСЛЕ той правки: `_all_positions_select` подтягивает
+        норматив/базу НДС LEFT JOIN-ом к `DEVIATION_INPUTS`, чьё ON несло
+        `_price_ok`, но не `_weight_ok`. `_cell_item.included` требует ОБА
+        предиката разом (`is_price(...) and is_weight(...)`), поэтому строка
+        с пригодной ценой и НЕПРИГОДНЫМ весом (здесь: ноль) получала
+        `included=False`, но норматив и база НДС всё равно приезжали от
+        JOIN-а, которому хватало одной цены — ровно то нарушение, ради
+        которого предикат в ON и был поставлен.
+
+        Один вход, обе стороны: невошедшая (вес ноль) — пустые норматив и
+        база, вошедшая (вес 10) — непустые."""
+        contract, position = _cell_for_positions(
+            factories,
+            [(Decimal("100"), Decimal("0")), (Decimal("100"), Decimal("10"))],
+            standard=Decimal("100"),
+        )
+        items = self._drilldown(client, contract, position)["items"]
+        excluded = next(i for i in items if not i["included"])
+        included = next(i for i in items if i["included"])
+        assert excluded["excluded_reason"] == "no_weight"
+        assert excluded["standard_unit_rate"] is None
+        assert excluded["vat_rate_base"] is None
+        assert included["standard_unit_rate"] is not None
+        assert included["vat_rate_base"] is not None
+
     def test_matrix_cell_drilldown_amount_and_rate_match_the_cell(self, client, factories):
         """Два ОТДЕЛЬНЫХ утверждения (спека §2.8): сумма НЕТТО-вкладов
         вошедших строк равна `amount` ячейки, и она же, делённая на сумму

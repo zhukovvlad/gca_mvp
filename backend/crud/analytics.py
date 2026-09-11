@@ -245,17 +245,21 @@ def _all_positions_select(estimate_id: int):
 
     Норматив и база НДС не выводятся заново второй копией правила выбора —
     они подтягиваются LEFT JOIN-ом к тому же `DEVIATION_INPUTS`, чьё правило
-    здесь ЕДИНСТВЕННОЕ. **ON этого JOIN-а несёт `_price_ok` ЯВНО** (правка
-    ревью, круг 1, блокер): без него норматив/база доезжали бы и до
-    НЕВОШЕДШЕЙ строки, пока сегодняшний VIEW (миграция 0012) их ещё не
-    исключил, — строка называла бы основание сравнения, которого не
-    производила (`standard_unit_rate`/`vat_rate_base` непустые при
-    `included=false`), и обещание задачи 4 «ответы drill-down не меняются
-    миграцией» было бы ложно уже сегодня и ничем не застраховано: сузив VIEW
-    вручную (добавив `_price_ok` в WHERE самого VIEW, а не в ON), можно было
-    бы обнулить оба поля молча, и набор остался бы зелёным. С `_price_ok`
-    прямо в ON поведение уже СЕЙЧАС равно тому, каким станет после задачи 4
-    (`test_matrix_cell_drilldown_excluded_row_has_no_standard_rate`).
+    здесь ЕДИНСТВЕННОЕ. **ON этого JOIN-а несёт `_price_ok` И `_weight_ok`
+    ЯВНО** (правка ревью, круг 1, блокер — и внешнее ревью Codex, круг фичи,
+    замечание 1 — по половине этой же дыры, оставленной ТОЙ правкой для
+    ВЕСА): без обоих предикатов норматив/база доезжали бы и до НЕВОШЕДШЕЙ
+    строки — `included` в `_cell_item` требует ОБА предиката разом
+    (`is_price(...) and is_weight(...)`), а ON проверял только цену, — строка
+    называла бы основание сравнения, которого не производила
+    (`standard_unit_rate`/`vat_rate_base` непустые при `included=false`), и
+    обещание задачи 4 «ответы drill-down не меняются миграцией» было бы ложно
+    уже сегодня и ничем не застраховано: сузив VIEW вручную (добавив оба
+    предиката в WHERE самого VIEW, а не в ON), можно было бы обнулить оба
+    поля молча, и набор остался бы зелёным. С обоими предикатами прямо в ON
+    поведение уже СЕЙЧАС равно тому, каким станет после задачи 4
+    (`test_matrix_cell_drilldown_excluded_row_has_no_standard_rate`,
+    `test_matrix_cell_drilldown_excluded_row_by_weight_has_no_standard_rate`).
 
     Вес — `_PRESENCE_WEIGHT`, та же именованная копия правила `COALESCE(
     suggested_quantity, quantity)`, что уже несёт сторона присутствия: у
@@ -298,6 +302,7 @@ def _all_positions_select(estimate_id: int):
                 sa.and_(
                     DEVIATION_INPUTS.c.position_item_id == PositionItem.id,
                     _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+                    _weight_ok(DEVIATION_INPUTS.c.weight),
                 ),
             )
         )
@@ -1254,6 +1259,14 @@ def _weight_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
     quantity, quantity)`, что несёт миграция 0012 текстом VIEW, нужная стороне
     присутствия, у которой своей колонки «вес» нет вовсе (см. докстроку
     `_PRESENCE_WEIGHT` ниже).
+
+    **Условие соединения `_all_positions_select`** (внешнее ревью Codex, круг
+    фичи price-predicate, замечание 1) — та же роль, что у `_price_ok` в том
+    же ON: без `_weight_ok` здесь строка с пригодной ценой и НЕПРИГОДНЫМ весом
+    получала бы `included=False` (`_cell_item` требует оба предиката разом),
+    но норматив и базу НДС от JOIN-а, которому хватало одной цены
+    (`test_matrix_cell_drilldown_excluded_row_by_weight_has_no_standard_rate`,
+    `backend/tests/integration/test_analytics_api.py`).
     """
     return sa.and_(column.is_not(None), sa.not_(_not_finite(column)), column > 0)
 

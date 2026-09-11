@@ -368,7 +368,33 @@ describe("Вес строки: маркер неполноты", () => {
     // если `aria-describedby` указывает в пустоту (постоянный id сноски — ровно
     // ради этого; собранный из `catalog_position_id` сослался бы на элемент,
     // которого на текущей странице нет).
-    expect(marker).toHaveAccessibleDescription(/база НДС известна не во всех договорах/i);
+    //
+    // Сноска обязана называть ОБЕ причины неполноты (замечание внешнего ревью
+    // Codex, №2, круг фичи price-predicate): `row_amount_incomplete` поднимает
+    // и неизвестная база НДС у входящей строки, И исключённая позиция с
+    // ненулевым/невычислимым вкладом (спека §2.6, таблица) — до этой правки
+    // текст называл только первую причину.
+    expect(marker).toHaveAccessibleDescription(/база нДС.*неизвестна/i);
+    expect(marker).toHaveAccessibleDescription(/ненулевым вкладом/i);
+  });
+
+  it("сноска не утверждает, что неполная строка прячет свою видимую ставку", async () => {
+    /**
+     * `rowFixture.cells` несёт `cellFixture` с `rate_reason: null` — ставка
+     * ПОКАЗАНА (спека §2.6: «пустой rate_reason вместе с поднятым флагом —
+     * законная и обязательная комбинация»). Старый текст сноски («такие
+     * ячейки не показаны») на этом входе был ложным диагнозом: ячейка этой
+     * же строки видна со ставкой, а не скрыта.
+     */
+    renderMatrix({
+      rows: [{ ...rowFixture, row_amount: "100.00", row_amount_incomplete: true }],
+    });
+
+    await screen.findByTestId("row-amount-incomplete");
+    expect(screen.getByText(/12\s000,50/)).toBeInTheDocument();
+
+    const note = screen.getByText(/ненулевым вкладом/i);
+    expect(note.textContent).not.toMatch(/такие ячейки не показаны/i);
   });
 
   it("не помечает строку с полным весом", async () => {
@@ -534,6 +560,35 @@ describe("«цены нет» отличимо от «работы нет в с�
     // не «больше нуля»: неточная проверка не заметила бы, если бы прочерк
     // ошибочно нарисовался и на самой ГП-0114.
     expect(screen.getAllByTitle("Работы нет в смете этого договора")).toHaveLength(2);
+  });
+});
+
+/**
+ * Подпись кнопки ячейки (замечание внешнего ревью Codex, №4, круг фичи
+ * price-predicate): «Показать позиции сметы, из которых сложилась ставка»
+ * стояла на КАЖДОЙ существующей ячейке безусловно, в том числе на ячейках с
+ * непустым `rate_reason` — там ставка не сложилась вовсе (`rate`/`amount`
+ * оба `null`, спека §2.5), и подпись обещала факт, которого нет.
+ */
+describe("Подпись кнопки ячейки не обещает несуществующую ставку", () => {
+  it("ячейка без ставки (rate_reason непуст) не говорит «из которых сложилась ставка»", async () => {
+    renderMatrix({
+      rows: [{ ...rowFixture, cells: [unratedCell("no_price")] }],
+    });
+    await screen.findByText(rowFixture.job_title);
+
+    const cell = clickableCellOf(rowFixture.job_title, "ГП-0114");
+    expect(cell.getAttribute("title")).not.toBe(
+      "Показать позиции сметы, из которых сложилась ставка"
+    );
+  });
+
+  it("ячейка со ставкой сохраняет прежнюю подпись", async () => {
+    renderMatrix();
+    await screen.findByText(rowFixture.job_title);
+
+    const cell = clickableCellOf(rowFixture.job_title, "ГП-0114");
+    expect(cell).toHaveAttribute("title", "Показать позиции сметы, из которых сложилась ставка");
   });
 });
 

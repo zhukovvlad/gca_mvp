@@ -216,6 +216,31 @@ describe("MatrixCellDialog: невошедшие строки — причина
 });
 
 /**
+ * Пустая ЦЕНА строки drill-down (замечание внешнего ревью Codex, №3, круг
+ * фичи price-predicate): `_all_positions_select` — носитель ВСЕХ позиций,
+ * включая те, что несут сохранённую пустую цену (`PositionItem.unit_cost_
+ * total IS NULL`) — и `_cell_item` отдаёт `unit_cost_total` дословно, БЕЗ
+ * подмены на ноль. `types/domain.ts::MatrixCellItem.unit_cost_total` был
+ * объявлен обязательным `Decimal` — реальный ответ этому противоречит
+ * (`unit_cost_total: null` достижимо на строке с `excluded_reason: "no_
+ * price"`), и присвоение `null` этому полю не должно было проходить
+ * тайпчек ДО правки типа (красным здесь — `just typecheck-frontend`, а не
+ * этот тест: vitest типы не проверяет и ошибку не покажет).
+ */
+describe("MatrixCellDialog: пустая цена строки (unit_cost_total: null)", () => {
+  it("валовая ставка пустой цены — прочерк, не мусор", async () => {
+    renderDialog({
+      items: [{ ...excludedItem("no_price"), unit_cost_total: null }],
+    });
+
+    // `MoneyCell`/`formatDecimalMoney` уже трактуют `null` как «нет значения»
+    // (тот же путь, что и `undefined`) — прочерк, а не `NaN`/`null`/пусто.
+    expect(await screen.findByTestId("item-gross")).toHaveTextContent("—");
+    expect(screen.getByTestId("item-deviation")).toHaveTextContent("цены нет");
+  });
+});
+
+/**
  * Сноска «средневзвешенная ставка» (§6; ревью задачи 9). Носитель списка
  * несёт и невошедшие строки — сноска обязана считать ВОШЕДШИЕ, а не
  * `detail.items.length`, и не обещать среднюю ставку там, где у ЯЧЕЙКИ (не у
