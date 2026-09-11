@@ -248,6 +248,82 @@ def _vat_rate(value: Any, problems: list[str], where: str) -> Decimal | None:
     return rate
 
 
+def _price_domain_warnings(
+    unit_cost_total: Decimal | None,
+    total_cost_total: Decimal | None,
+    where: str,
+    *,
+    is_chapter: bool,
+) -> list[str]:
+    """Предупреждения о состоянии УЖЕ сохранённых денежных полей строки.
+
+    Оба факта — о ДОМЕНЕ, а не о файле: `_money` уже отработала штатно,
+    значение легло в `Decimal` как есть, и предупреждение только называет
+    наблюдаемое сочетание двух колонок. Причина не утверждается (решение
+    пользователя 09.09.2026, спека правила цены §2.1
+    `docs/superpowers/specs/2026-09-09-price-predicate-design.md`): «Пусто,
+    ноль, отрицательное, `NaN`, плюс и минус бесконечность ценой не являются.
+    Причину отсутствия система не утверждает нигде» — то же относится и к
+    этим двум предупреждениям: «цена ноль» не означает «работа учтена в
+    другой строке» или что-то ещё.
+
+    **Пусто и ноль — разные входы.** Вторая проверка ниже требует именно
+    `price == 0`, а не «цена непригодна» в широком смысле спеки правила цены
+    §2.1 (там пусто и ноль равноправны — оба «не цена»): для ЭТОГО
+    предупреждения важен явный ноль, записанный в файле, а не отсутствие
+    записи. `AGENTS.md` §3 держит пустую стоимость как `NULL`, не как
+    замаскированный ноль, — предупреждение о «нуле, не совпавшем с итогом»
+    не должно всплывать там, где цены попросту нет.
+
+    **Конечность — до сравнения с нулём**, тем же приёмом, что `_vat_rate`
+    здесь же и `money.price.is_price`: `Decimal("NaN") < 0` бросает
+    `InvalidOperation`, а не отвечает `False`, и упавшее сравнение уронило бы
+    импорт там, где нужно только предупреждение. Нефинитная цена или
+    нефинитный итог не участвуют ни в одном из двух предупреждений: это не
+    отрицание и не совпадение с нулём, а отдельное состояние, которое эта
+    функция не описывает и не проверяет — если понадобится предупреждение о
+    нефинитных деньгах, оно заводится отдельно, а не подмешивается сюда.
+
+    **Итог сравнивается с нулём равенством, а не знаком.** У
+    `total_cost_total` нет `CHECK` на знак (отрицательные суммы в проекте
+    хранимы, `docs/pitfalls/backend.md`) — отрицательный итог при нулевой
+    цене такое же «не ноль», как и положительный.
+
+    **Противоречие «цена ноль при ненулевом итоге» проверяется только у
+    НЕ-разделов** (ре-ревью): у раздела (`is_chapter=True`) `total_cost_total`
+    — свёрнутый итог дочерних строк, а не произведение цены на объём (раздел
+    и не входит ни в одно из двух денежных полей, которые связывает это
+    правило, — он исключён из VIEW отклонений целиком, `AGENTS.md` §4, ровно
+    потому, что цены за единицу в смысле работы у него нет). Нулевая цена при
+    ненулевом свёрнутом итоге для раздела — НОРМАЛЬНАЯ форма, а не аномалия:
+    предупреждение здесь называло бы обычное устройство сметы противоречием.
+    На стенде это молчит случайно (сегодняшние разделы с нулевой ценой несут
+    и нулевой итог), а не потому, что раздел здесь не проверяется, — файл со
+    свёрнутым ненулевым итогом дал бы это предупреждение на КАЖДОМ разделе
+    вплоть до ограничителя `_squash`, заглушая настоящие проблемы позиций тем
+    же потоком. Отрицательная цена за единицу у раздела предупреждение
+    получает НАРАВНЕ с позицией — знак цены аномален независимо от того, что
+    именно строка несёт (объём или свод), а `is_chapter` этого не меняет.
+    """
+    found: list[str] = []
+    price = unit_cost_total
+    if price is None or not price.is_finite():
+        return found
+    if price < 0:
+        found.append(f"{where}: цена за единицу отрицательная ({price}), сохранена как есть")
+    elif (
+        not is_chapter
+        and price == 0
+        and total_cost_total is not None
+        and total_cost_total.is_finite()
+        and total_cost_total != 0
+    ):
+        found.append(
+            f"{where}: цена за единицу ноль, а итог по строке {total_cost_total} — не ноль"
+        )
+    return found
+
+
 def _text(value: Any) -> str | None:
     """Значение ячейки → текст либо None (пустая строка тоже None)."""
     if value is None:
@@ -424,6 +500,13 @@ def import_estimate(
 
     warnings: list[str] = []
     value_problems: list[str] = []
+    # Предупреждения о состоянии УЖЕ сохранённых денежных полей строки
+    # (спека правила цены §2.9: отрицательная цена; цена ноль при ненулевом
+    # итоге) — отдельный аккумулятор от `value_problems`: там значение
+    # подменяется на `NULL`, здесь сохраняется дословно, и общий хвост
+    # «…и ещё N» соврал бы про одно из двух, если бы список был общим
+    # (`_price_domain_warnings`, `_squash` с `tail=_DOMAIN_VALUE_TAIL`).
+    domain_value_problems: list[str] = []
     # Длинные наименования собираются по всем лотам и дают ОДНО предупреждение
     # на смету (см. `_long_title_warning`).
     long_titles: list[LongTitle] = []
@@ -546,6 +629,7 @@ def import_estimate(
             resolution=resolution,
             unit_resolver=unit_resolver,
             value_problems=value_problems,
+            domain_value_problems=domain_value_problems,
             warnings=warnings,
             long_titles=long_titles,
             lot_key=str(lot_key),
@@ -573,6 +657,7 @@ def import_estimate(
 
     warnings.extend(unit_resolver.unknown_warnings())
     warnings.extend(_squash(value_problems))
+    warnings.extend(_squash(domain_value_problems, tail=_DOMAIN_VALUE_TAIL))
     if long_titles:
         # Лот показывается по фактической многолотовости СМЕТЫ, а не по числу
         # лотов с длинными названиями: если длинная позиция одна, а лотов три,
@@ -982,6 +1067,7 @@ def _import_positions(
     resolution: ProposalResolution,
     unit_resolver: UnitResolver,
     value_problems: list[str],
+    domain_value_problems: list[str],
     warnings: list[str],
     long_titles: list[LongTitle],
     lot_key: str,
@@ -999,6 +1085,11 @@ def _import_positions(
     одному разу на лот, и складывай предупреждение внутри — файл с тремя лотами
     получил бы три почти одинаковых предупреждения и до десяти примеров в каждом.
     Собирается так же, как `value_problems`.
+
+    `domain_value_problems` — аккумулятор предупреждений §2.9 спеки правила
+    цены (отрицательная цена; цена ноль при ненулевом итоге строки), тоже на
+    всю смету: см. `_price_domain_warnings` и вызов `_squash` с
+    `tail=_DOMAIN_VALUE_TAIL` в `import_estimate`.
     """
     rows: list[PositionItem] = []
     to_match_source: list[tuple[PositionItem, str, ResolvedUnit]] = []
@@ -1063,6 +1154,20 @@ def _import_positions(
             category_source=decision.category_source,
         )
         rows.append(item)
+
+        # Спека правила цены §2.9: цена и итог уже легли в `item` как
+        # `Decimal` — предупреждение о состоянии домена, а не о разборе
+        # файла (см. `_price_domain_warnings`). Вызывается и для строк-
+        # разделов (`is_chapter=true`): фильтр по разделам стоит НИЖЕ, у
+        # `continue` каскада матчинга (см. разбор в отчёте задачи 7). Раздел
+        # передан своим `is_chapter` внутрь — противоречие «цена ноль при
+        # ненулевом итоге» для него не проверяется (см. докстроку функции),
+        # отрицательная цена проверяется как у любой строки.
+        domain_value_problems.extend(
+            _price_domain_warnings(
+                item.unit_cost_total, item.total_cost_total, where, is_chapter=is_chapter
+            )
+        )
 
         # Считаем по всем строкам с наименованием, включая разделы: подозрительна
         # сама длина поля, а не то, попадёт ли строка в каскад матчинга. В
@@ -1171,14 +1276,33 @@ def _preview(title: str) -> str:
     return flat[:LONG_TITLE_PREVIEW_CHARS].rstrip() + "…"
 
 
-def _squash(problems: list[str]) -> list[str]:
-    """Ограничивает поток однотипных предупреждений о значениях."""
+#: Хвост `_squash` по умолчанию — для `value_problems`, где непригодное
+#: значение ЗАМЕНЯЕТСЯ на `NULL` (`_money`/`_quantity`/`_vat_rate`).
+_NULLED_TAIL = "…и ещё {hidden} подобных значений записаны как NULL."
+
+#: Хвост для предупреждений `_price_domain_warnings` (спека правила цены
+#: §2.9, `docs/superpowers/specs/2026-09-09-price-predicate-design.md`):
+#: значения там сохраняются ДОСЛОВНО, и текст `_NULLED_TAIL` был бы неправдой
+#: об их собственном поведении.
+_DOMAIN_VALUE_TAIL = "…и ещё {hidden} строк с похожей проблемой цены."
+
+
+def _squash(problems: list[str], *, tail: str = _NULLED_TAIL) -> list[str]:
+    """Ограничивает поток однотипных предупреждений об одном классе проблем.
+
+    Ёмкость `MAX_VALUE_WARNINGS` — общая для всех вызывающих: смета на тысячи
+    строк не должна утопить остальные предупреждения потоком однотипных,
+    независимо от того, ЧТО это за класс проблем. Хвост параметризован именно
+    поэтому: `value_problems` (`_money`/`_quantity`/`_vat_rate`) и
+    `_price_domain_warnings` описывают РАЗНОЕ (замена на `NULL` против
+    дословного сохранения), и общий текст соврал бы про один из двух классов
+    — раньше это была отдельная функция-копия `_squash_domain_value_problems`,
+    и расхождение между ней и этой не стерегло ничто; параметр убирает саму
+    возможность разойтись.
+    """
     if not problems:
         return []
     if len(problems) <= MAX_VALUE_WARNINGS:
         return list(problems)
     hidden = len(problems) - MAX_VALUE_WARNINGS
-    return [
-        *problems[:MAX_VALUE_WARNINGS],
-        f"…и ещё {hidden} подобных значений записаны как NULL.",
-    ]
+    return [*problems[:MAX_VALUE_WARNINGS], tail.format(hidden=hidden)]

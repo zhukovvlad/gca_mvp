@@ -51,8 +51,10 @@ from models import (
     PositionItem,
     Proposal,
     RateClass,
+    RateStandard,
     UnitOfMeasure,
 )
+from money.price import is_price, is_weight
 from money.vat import (
     AmountStatus,
     effective_display_rate,
@@ -180,13 +182,30 @@ def _contract_requisites(db: Session, contract_id: int) -> dict:
 
 
 def _priced_positions_select(estimate_id: int):
-    """Расценённые работы сметы — ровно состав строк VIEW, плюс сумма и единица.
+    """Расценённые работы сметы — ключевые ставки паспорта (`get_passport`).
+
+    **Фильтрует ЦЕНУ САМА** (`_price_ok`, задача 3 плана правила цены), а не
+    полагается на то, что негодную цену отсеял VIEW. **Миграция 0016 (задача 4)
+    с тех пор сама сузила `v_position_deviation_inputs` тем же предикатом**, и
+    сегодня это `WHERE` — конъюнкция предиката с самим собой: VIEW уже не
+    отдаёт сюда ноль/отрицательное/`NaN`/`Infinity`, поэтому применение здесь
+    ИНЕРТНО по отношению к текущему тексту VIEW (см. докстроку `_price_ok` —
+    там названо, почему инертность не повод убирать условие и почему это не
+    наблюдается тестом). До задачи 4 картина была другой: VIEW отсеивал только
+    `unit_cost_total IS NOT NULL`, и без этого `where` ноль/отрицательное/`NaN`
+    доезжали бы сюда как цена (спека §1.1/§1.2) — это и было независимым
+    утверждением, доказанным тем, что предикат уже работал ДО сужения VIEW
+    (`TestPassportKeyRatesPricePredicate`, `test_analytics_api.py`, зелёный и
+    тогда, и сейчас).
 
     `total_cost_total` и код единицы в VIEW не входят, поэтому доезжают join-ами.
     `deviation_pct` VIEW больше не несёт (миграция 0012): вместо него — база и
     целевая ставка НДС, из которых нетто и отклонение считает Python
-    (`_net_deviation`), одинаково для паспорта и drill-down (оба потребителя
-    этого select-а).
+    (`_net_deviation`).
+
+    Не потребитель drill-down (задача 3 развела их): drill-down обязан
+    показать и НЕВОШЕДШИЕ строки, а этот select их не видит по построению —
+    носитель drill-down теперь `_all_positions_select`.
     """
     return (
         sa.select(
@@ -205,7 +224,93 @@ def _priced_positions_select(estimate_id: int):
         .join(PositionItem, PositionItem.id == DEVIATION_INPUTS.c.position_item_id)
         .join(CatalogPosition, CatalogPosition.id == DEVIATION_INPUTS.c.catalog_position_id)
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == DEVIATION_INPUTS.c.unit_id)
-        .where(DEVIATION_INPUTS.c.estimate_id == estimate_id)
+        .where(
+            DEVIATION_INPUTS.c.estimate_id == estimate_id,
+            _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+        )
+    )
+
+
+def _all_positions_select(estimate_id: int):
+    """ВСЕ позиции работы сметы — носитель drill-down (`get_matrix_cell`,
+    задача 3 плана правила цены, спека §2.8): в отличие от
+    `_priced_positions_select`, без фильтра цены.
+
+    Читает `PositionItem` СВОИМИ join-ами, а не VIEW (решение о носителе,
+    отчёт задачи 2 плана правила цены): после задачи 4 невошедшие ценой строки
+    в VIEW жить не будут вовсе, а drill-down обязан показать ИХ ТОЖЕ — с
+    признаком невхождения и его причиной (спека §2.8: иначе ячейка `no_price`
+    открывалась бы пустым списком, и утверждение экрана «работа есть, цены
+    нет» нечем было бы проверить).
+
+    Норматив и база НДС не выводятся заново второй копией правила выбора —
+    они подтягиваются LEFT JOIN-ом к тому же `DEVIATION_INPUTS`, чьё правило
+    здесь ЕДИНСТВЕННОЕ. **ON этого JOIN-а несёт `_price_ok` И `_weight_ok`
+    ЯВНО** (правка ревью, круг 1, блокер — и внешнее ревью Codex, круг фичи,
+    замечание 1 — по половине этой же дыры, оставленной ТОЙ правкой для
+    ВЕСА): без обоих предикатов норматив/база доезжали бы и до НЕВОШЕДШЕЙ
+    строки — `included` в `_cell_item` требует ОБА предиката разом
+    (`is_price(...) and is_weight(...)`), а ON проверял только цену, — строка
+    называла бы основание сравнения, которого не производила
+    (`standard_unit_rate`/`vat_rate_base` непустые при `included=false`), и
+    обещание задачи 4 «ответы drill-down не меняются миграцией» было бы ложно
+    уже сегодня и ничем не застраховано: сузив VIEW вручную (добавив оба
+    предиката в WHERE самого VIEW, а не в ON), можно было бы обнулить оба
+    поля молча, и набор остался бы зелёным. С обоими предикатами прямо в ON
+    поведение уже СЕЙЧАС равно тому, каким станет после задачи 4
+    (`test_matrix_cell_drilldown_excluded_row_has_no_standard_rate`,
+    `test_matrix_cell_drilldown_excluded_row_by_weight_has_no_standard_rate`).
+
+    Вес — `_PRESENCE_WEIGHT`, та же именованная копия правила `COALESCE(
+    suggested_quantity, quantity)`, что уже несёт сторона присутствия: у
+    `PositionItem` своей колонки «вес» нет, а копия правила ОДНА на все
+    площадки вне VIEW (докстрока `_PRESENCE_WEIGHT` ниже).
+
+    **Вторая копия условий VIEW.** `PositionItem.is_chapter.is_(False)` и
+    `CatalogPosition.kind == POSITION` дословно повторяют часть `WHERE`
+    текста миграции 0012 (`v_position_deviation_inputs`) — копия неизбежна
+    (этот select читает `PositionItem` напрямую, а не VIEW), но она НАЗВАНА
+    здесь этим абзацем и застрахована тестом ПОВЕДЕНИЯ, а не сверкой текста:
+    строка-раздел (`is_chapter=true`) и позиция каталожной строки НЕ
+    `POSITION` не обязаны появляться в drill-down
+    (`test_matrix_cell_drilldown_excludes_chapter_rows`,
+    `test_matrix_cell_drilldown_excludes_non_position_catalog_rows`).
+    """
+    return (
+        sa.select(
+            PositionItem.id.label("position_item_id"),
+            PositionItem.catalog_position_id,
+            PositionItem.job_title_in_proposal,
+            PositionItem.unit_cost_total,
+            _PRESENCE_WEIGHT.label("weight"),
+            DEVIATION_INPUTS.c.standard_unit_rate,
+            DEVIATION_INPUTS.c.vat_rate_base,
+            DEVIATION_INPUTS.c.vat_rate_target,
+            PositionItem.total_cost_total,
+            UnitOfMeasure.code.label("unit_code"),
+            CatalogPosition.standard_job_title,
+        )
+        .select_from(
+            sa.join(
+                PositionItem, CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id
+            )
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+            .outerjoin(
+                DEVIATION_INPUTS,
+                sa.and_(
+                    DEVIATION_INPUTS.c.position_item_id == PositionItem.id,
+                    _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+                    _weight_ok(DEVIATION_INPUTS.c.weight),
+                ),
+            )
+        )
+        .where(
+            Lot.estimate_id == estimate_id,
+            PositionItem.is_chapter.is_(False),
+            CatalogPosition.kind == CatalogKind.POSITION.value,
+        )
     )
 
 
@@ -472,11 +577,12 @@ def _empty_totals() -> dict:
         "over_standard": 0,
         "positions_pending_review": 0,
         "positions_non_work": 0,
+        "positions_without_price": 0,
     }
 
 
 def _pending_review_condition():
-    """Позиция расценена, но её работа ещё не утверждена в каталоге.
+    """Позиция С ПРИГОДНОЙ ЦЕНОЙ, чья работа ещё не утверждена в каталоге.
 
     Такая позиция **не попадает** в VIEW отклонений: он берёт только каталожные
     строки `kind='POSITION'` (§4), а свежая загрузка кладёт незнакомые работы в
@@ -488,6 +594,23 @@ def _pending_review_condition():
     сообщал «у позиций не заполнена цена за единицу» — то есть называл неверную
     причину. Ни один тест этого не поймал: в фикстурах каталожные строки создаются
     сразу `POSITION`. Тот же класс, что находка §2.2 брифинга — путь от пустой базы.
+
+    **Предикат цены делит причины ПЕРВЫМ (задача 5 плана правила цены, спека
+    §1.8/§2.9).** До этой правки условие проверяло только `unit_cost_total IS NOT
+    NULL`, и это разделяло непригодные значения на два РАЗНЫХ исхода, а не на
+    один. НУЛЕВАЯ, ОТРИЦАТЕЛЬНАЯ и НЕФИНИТНАЯ цена этот `IS NOT NULL` проходили
+    (формально они «не `NULL`») и потому, если каталожная строка ждала
+    матчинга, ошибочно попадали бы именно сюда: подсказка звала бы «разобрать
+    очередь», хотя настоящая причина пустоты — отсутствие цены. ПУСТАЯ
+    (`NULL`) цена, наоборот, тот же `IS NOT NULL` не проходила и не считалась
+    здесь вовсе — такая позиция была не ошибочно посчитана, а НЕВИДИМА ни для
+    одного из старых счётчиков (причина «нет цены» не срабатывала вовсе, 16,5 %
+    позиций стенда без цены). Теперь условие несёт `_price_ok` тем же
+    столбцом — ни пустая, ни нулевая, ни отрицательная, ни нефинитная цена не
+    входит сюда ни при каком состоянии каталожной строки, все они целиком
+    уходят в `_without_price_condition`
+    (`test_position_without_price_is_never_counted_as_pending_review`,
+    `test_unmatched_position_without_price_counts_once_as_without_price`).
 
     Считаются ровно два состояния, и оба означают «человеку есть что разобрать»:
 
@@ -505,7 +628,7 @@ def _pending_review_condition():
     """
     return sa.and_(
         PositionItem.is_chapter.is_(False),
-        PositionItem.unit_cost_total.isnot(None),
+        _price_ok(PositionItem.unit_cost_total),
         sa.or_(
             CatalogPosition.id.is_(None),
             CatalogPosition.kind == CatalogKind.TO_REVIEW.value,
@@ -514,21 +637,30 @@ def _pending_review_condition():
 
 
 def _non_work_condition():
-    """Позиция расценена, но её каталожная строка помечена как НЕ-работа.
+    """Позиция С ПРИГОДНОЙ ЦЕНОЙ, чья каталожная строка помечена как НЕ-работа.
 
     `HEADER`, `TRASH`, `LOT_HEADER` — уже разобранные строки (§5.4.3), и разбирать в
     них нечего. Но в VIEW отклонений они тоже не попадают (§4), то есть остаются
-    третьей причиной пустого паспорта — и она не равна ни «ждут матчинга», ни «нет
-    цены».
+    ОТДЕЛЬНОЙ причиной пустого паспорта — и она не равна ни «ждут матчинга», ни
+    «нет цены» (с появлением `_without_price_condition` причин уже три, и
+    называть эту «третьей» было бы порядковым, а не содержательным фактом).
 
     Счётчик появился как следствие правки по замечанию ревью: как только `HEADER`
-    перестал считаться «ожидающим матчинга», паспорт для сметы из одних таких строк
-    начал утверждать «у позиций не заполнена цена за единицу» — неправду, потому что
-    цена как раз заполнена. Экран не должен называть причину, которой не знает.
+    перестал считаться «ожидающим матчинга», паспорт для сметы из одних таких
+    строк начал утверждать «у позиций не заполнена цена за единицу» — неправду,
+    потому что цена как раз заполнена. Экран не должен называть причину, которой
+    не знает.
+
+    **Предикат цены делит причины ПЕРВЫМ (задача 5 плана правила цены, спека
+    §1.8/§2.9).** Условие несёт `_price_ok`, а не голое `IS NOT NULL`, той же
+    правкой и по той же причине, что у `_pending_review_condition`: разобранная
+    не-работа без пригодной цены — это `positions_without_price`, а не эта
+    причина, независимо от разметки её каталожной строки
+    (`test_marked_row_without_price_counts_as_without_price_not_non_work`).
     """
     return sa.and_(
         PositionItem.is_chapter.is_(False),
-        PositionItem.unit_cost_total.isnot(None),
+        _price_ok(PositionItem.unit_cost_total),
         CatalogPosition.kind.in_(
             [
                 CatalogKind.HEADER.value,
@@ -539,17 +671,73 @@ def _non_work_condition():
     )
 
 
-def _unmatched_counts_select():
-    """Оба счётчика непопадания в VIEW — ОДНИМ запросом.
+def _without_price_condition():
+    """Позиция БЕЗ пригодной цены — третья причина пустого паспорта и матрицы.
 
-    `FILTER` вместо двух запросов: обе выборки идут по одной и той же цепочке
-    позиция → предложение → лот → каталожная строка, и второй проход был бы платой
-    только за форму кода.
+    Заведена задачей 5 плана правила цены (спека §1.8, §2.9): до неё
+    `_pending_review_condition` и `_non_work_condition` фильтровали только
+    `unit_cost_total IS NOT NULL` — а это разделяет непригодные значения на ДВА
+    РАЗНЫХ исхода, не на один. НУЛЕВАЯ, ОТРИЦАТЕЛЬНАЯ и НЕФИНИТНАЯ цена этот
+    `IS NOT NULL` проходили (они «не `NULL`») и потому молча попадали в одну из
+    двух старых причин, если каталожная строка ждала матчинга либо была уже
+    разобрана как не-работа, — экран называл неверную причину. ПУСТАЯ (`NULL`)
+    цена, наоборот, не проходила тот же `IS NOT NULL` и не удовлетворяла ни
+    одному старому условию вовсе: такая позиция была не ошибочно посчитана, а
+    НЕВИДИМА ни для одного счётчика — тот же класс дефекта, что уже находил
+    прогон стенда на `TO_REVIEW` (см. докстроку `_pending_review_condition`), но
+    в крайней форме: причина «нет цены» не срабатывала вовсе. `money.price.
+    is_price`/`_price_ok` не делает разницы между этими исходами: пустая,
+    нулевая, отрицательная и нефинитная цена — все одинаково «не цена», и все
+    четыре теперь считаются здесь одной причиной, независимо от того, была ли
+    позиция прежде видна хоть где-то.
+
+    **Условие НЕ смотрит на `CatalogPosition.kind` вовсе** — в этом и состоит
+    разбиение: предикат цены делит все позиции ПЕРВЫМ, раньше состояния
+    каталожной строки. Позиция без пригодной цены считается здесь независимо от
+    того, ждёт ли её каталожная строка матчинга, размечена как не-работа или
+    вовсе отсутствует (`catalog_position_id IS NULL`) — ни одно из этих состояний
+    не уводит её в `_pending_review_condition`/`_non_work_condition`, потому что
+    там теперь тоже стоит `_price_ok` на том же столбце: конъюнкция `_price_ok(x)`
+    и `NOT(_price_ok(x))` не пересекается ни при каком `x`, включая `NULL`
+    (`_price_ok` явным `x.is_not(None)` первым конъюнктом гарантирует здесь и там
+    настоящий `FALSE`, а не трёхзначный `NULL`, — см. её докстроку).
+
+    Позиция, которая ОДНОВРЕМЕННО без пригодной цены и не сматчена (или ждёт
+    матчинга, или размечена как не-работа), считается здесь РОВНО ОДИН РАЗ.
+    Настоящий вход расхождения старого и нового разбиения — НУЛЕВАЯ, не пустая,
+    цена: под старым условием `0 IS NOT NULL` истинно, и такая позиция ушла бы в
+    `pending_review`/`non_work` по состоянию каталожной строки; под новым она
+    целиком уходит сюда
+    (`test_unmatched_position_without_price_counts_once_as_without_price`, вход
+    — нулевая цена). На пустой (`NULL`) цене старое и новое поведение
+    совпадают в другом смысле: обе НИКОГДА не относили такую позицию к старым
+    причинам — см. абзац выше про её невидимость.
+    """
+    return sa.and_(
+        PositionItem.is_chapter.is_(False),
+        sa.not_(_price_ok(PositionItem.unit_cost_total)),
+    )
+
+
+def _unmatched_counts_select():
+    """Три счётчика непопадания в VIEW — ОДНИМ запросом.
+
+    `FILTER` вместо трёх запросов: все три выборки идут по одной и той же цепочке
+    позиция → предложение → лот → каталожная строка, и лишние проходы были бы
+    платой только за форму кода.
+
+    Порядок причин задан предикатом цены (задача 5 плана правила цены, спека
+    §2.9): `_without_price_condition` смотрит на цену ПЕРВОЙ, а
+    `_pending_review_condition`/`_non_work_condition` требуют цену пригодной тем
+    же условием — отсюда причины не пересекаются по построению
+    (`test_all_three_unmatched_reasons_partition_non_chapter_positions`), а не
+    только по замеру на конкретных входах.
     """
     return (
         sa.select(
             sa.func.count().filter(_pending_review_condition()).label("pending_review"),
             sa.func.count().filter(_non_work_condition()).label("non_work"),
+            sa.func.count().filter(_without_price_condition()).label("without_price"),
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -560,6 +748,60 @@ def _unmatched_counts_select():
 
 def _passport_totals(db: Session, estimate_id: int, effective_rate: Decimal | None) -> dict:
     """Итоги по ВСЕЙ совокупности расценённых работ сметы.
+
+    **Состав «расценённых» намеренно задан VIEW-ом, и это осознанное решение,
+    а не пропуск (спека правила цены, задача 4 плана, ревью-находка и решение
+    оркестратора).** `positions_priced`/`with_standard`/`without_standard`/
+    `priced_amount` считаются прямым запросом к `DEVIATION_INPUTS` — тем, что
+    вернул `v_position_deviation_inputs`, без второго, собственного предиката
+    поверх него. Это отличает читателя от `_cell_groups_cte`/`_cell_weights_
+    cte` и `_priced_positions_select`/`_all_positions_select` (задачи 2 и 3
+    плана правила цены): тем читателям нужны либо строки, которых В VIEW НЕТ
+    (drill-down показывает невошедшие позиции), либо независимость от текста
+    VIEW на будущее (задача 4 не должна была менять их результат). Здесь ни
+    того ни другого: «расценённые позиции сметы» и есть ровно содержимое VIEW,
+    и второй фильтр поверх уже отфильтрованных строк был бы МЁРТВОЙ ЗАЩИТОЙ —
+    тем самым, что ревью этой фичи ловило трижды на других площадках
+    (`docs/insights/verifying-guards.md`).
+
+    Отсюда прямое следствие миграции 0016: до неё VIEW отдавал позицию с
+    нулевой, отрицательной или нефинитной ценой (условие было только
+    `unit_cost_total IS NOT NULL`), и такая позиция СЧИТАЛАСЬ расценённой —
+    тот же дефект счётчика, ради починки которого затеяна вся фича, только
+    на этой площадке, а не в `key_rates`/матрице. После миграции 0016 «расценена»
+    здесь означает «есть пригодная цена» (конечная и больше нуля), и это
+    делает имя `positions_priced` правдой, а не обещанием. Замер на входе
+    «одна позиция, цена NaN/Infinity/-Infinity, вес 1»: `positions_priced` и
+    `with_standard` были 1, стали 0; `priced_amount` был нефинитной строкой
+    (`'NaN'`/`'Infinity'`/`'-Infinity'`, просочившейся в JSON), стал `None`
+    (позиций для накопления не осталось вовсе); `over_standard` не менялся —
+    и до, и после равен 0 (`test_analytics_api.py::TestPassportSurvivesNon
+    FiniteCost`).
+
+    **Граница: «утечка нефинитного в `priced_amount` закрыта» верно ТОЛЬКО для
+    этого измеренного входа, не вообще** (ревью задачи 4, Правка 8). `priced_
+    amount` суммирует `PositionItem.total_cost_total` (через `restate_gross`,
+    выше), а VIEW фильтрует `unit_cost_total` — это РАЗНЫЕ хранимые колонки, и
+    предикат цены на вторую не распространяется. На измеренном входе они
+    совпадали случайно: `total_cost_total = unit_cost_total × weight`, и
+    нефинитная цена делала нефинитным ОБА поля сразу. Отдельно замерено:
+    позиция с ПРИГОДНОЙ ценой (`unit_cost_total = 100`, проходит VIEW) и
+    независимо испорченным `total_cost_total = NaN` (достижимо — импорт не
+    валидирует построчную арифметику) — эндпоинт по-прежнему отдаёт
+    `priced_amount = 'NaN'`. Это ДОФИЧЕВЫЙ, отдельный дефект (утечка
+    нефинитного значения в JSON через `restate_gross`, у которой ветка
+    `NOT_FINITE` возвращает `amount=gross`, а не `None`) — эта задача его не
+    чинит, он идёт в реестр долга.
+
+    Обещание Global Constraints фичи «счётчики полноты итогов паспорта не
+    меняют смысл» на эту функцию НЕ распространяется: оно про другой набор —
+    `positions_rows_priced`/`rows_priced`/`own_rows_priced`/`rows_with_amount`/
+    `rate_coverage` из `crud/project_passport.py`, все про конечный `total_
+    cost_total` и этой миграцией не тронуты. Эндпоинт, который использует
+    `_passport_totals` (`GET /api/v1/analytics/passport/{contract_id}`), — уже
+    убранный из навигации «паспорт фазы 6» (`docs/reference/screens.md`, п. про
+    `passport_top_n`); смена смысла счётчика реального пользователя сегодня не
+    касается.
 
     `over_standard` — сколько работ дороже норматива. Позиции без норматива в этот
     счётчик не входят и учтены отдельным (`without_standard`): §10 требует, чтобы
@@ -641,10 +883,16 @@ def _passport_totals(db: Session, estimate_id: int, effective_rate: Decimal | No
         "with_standard": counts_row.with_standard,
         "without_standard": counts_row.positions_priced - counts_row.with_standard,
         "over_standard": over_standard,
-        # Две причины пустого топа при непустой смете, и они РАЗНЫЕ: первую человек
-        # исправляет в очереди Review, вторую исправлять не нужно вовсе (§5.4.3).
+        # Три причины, по которым ЧАСТЬ позиций сметы не входит в топ (топ при этом
+        # может быть и непустым — эти счётчики говорят о позициях, а не о смете
+        # целиком; задача 5 плана правила цены, спека §1.8/§2.9), и они РАЗНЫЕ:
+        # первую человек исправляет в очереди Review, вторую исправлять не нужно
+        # вовсе (§5.4.3), третью исправляет заполнением цены за единицу — предикат
+        # цены (`_without_price_condition`) делит все три причины первым, поэтому
+        # они не пересекаются по построению.
         "positions_pending_review": counts.pending_review,
         "positions_non_work": counts.non_work,
+        "positions_without_price": counts.without_price,
     }
 
 
@@ -685,12 +933,23 @@ def scope_filters(
 
 
 def _cell_groups_cte(scope_filters: list):
-    """Слагаемые ячеек матрицы, в разрезе базы НДС (спека пересчёта §2.4, §6).
+    """Слагаемые ячеек матрицы, в разрезе базы НДС (спека пересчёта §2.4, §6;
+    правило цены — спека правила цены §2.2, §2.5).
 
-    Формула §6 дословно: слагаемые ячейки = `SUM(unit_cost_total * w)` и `SUM(w)`
-    только по строкам, где `unit_cost_total IS NOT NULL` и `w > 0`. Первое условие
-    уже держит VIEW, второе — `weight > 0` здесь; `NULL > 0` даёт `NULL`, поэтому
-    позиция без обоих количеств отсекается тем же условием, без отдельной проверки.
+    Строка **входит** в ячейку тогда и только тогда, когда её цена и вес оба
+    пригодны — `_price_ok`/`_weight_ok` (`money.price.is_price`/`is_weight`,
+    задача 1 плана правила цены), а не голое `weight > 0`, как было раньше.
+    Разница не косметическая: старое условие пропускало нулевую, отрицательную
+    и нефинитную цену в средневзвешенную ставку молча (спека §1.1 — 16,5 %
+    позиций стенда без цены доезжали как «цена = 0»); теперь такая строка не
+    входит в свёртку вовсе, и её судьбу (какую причину показать в пустой
+    ячейке, поднимать ли признак неполноты) решает сторона присутствия
+    (`_excluded_positions_cte`) — она же остаётся ЕДИНСТВЕННЫМ источником
+    этого решения и после того, как миграция 0016 (задача 4) сузила саму VIEW
+    тем же предикатом: такая строка сегодня не попадает сюда вообще (`WHERE`
+    ниже дублирует уже применённый VIEW-ом фильтр — инертно, см. докстроку
+    `_price_ok`), и если бы причина считалась здесь же, она пропадала бы
+    молча.
 
     Группировка ДОПОЛНИТЕЛЬНО идёт по `vat_rate_base` — уровню, на котором
     множитель пересчёта в нетто постоянен (замер Б задачи 0 пересчёта: время ниже
@@ -719,7 +978,11 @@ def _cell_groups_cte(scope_filters: list):
         .select_from(
             DEVIATION_INPUTS.join(latest, latest.c.estimate_id == DEVIATION_INPUTS.c.estimate_id)
         )
-        .where(DEVIATION_INPUTS.c.weight > 0, *scope_filters)
+        .where(
+            _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+            _weight_ok(DEVIATION_INPUTS.c.weight),
+            *scope_filters,
+        )
         .group_by(
             DEVIATION_INPUTS.c.catalog_position_id,
             DEVIATION_INPUTS.c.contract_id,
@@ -730,11 +993,22 @@ def _cell_groups_cte(scope_filters: list):
 
 
 def _fold_cell(groups) -> dict:
-    """Одна ячейка матрицы из групп по базе НДС (спека пересчёта §2.4, §6).
+    """Одна ячейка матрицы из групп по базе НДС — ветка «есть хотя бы одна
+    входящая позиция» (спека правила цены §2.5, Правило 1; спека пересчёта
+    НДС §2.4, §6). Ветку «входящих нет» строит `_cell_without_ingesting` —
+    у неё другой источник данных (сторона присутствия, не группы VIEW), и
+    смешивать их в одну функцию значило бы протащить VIEW туда, где миграция
+    0016 (задача 4) его уже не оставила.
 
     Ровно одна ячейка на пару (работа, договор), даже если у нескольких её
     предложений — одна и та же база НДС (`test_matrix_yields_one_cell_per_
     position_and_contract`): группировка SQL их уже слила в одну строку.
+
+    **Две оси ответа (спека §2.5).** `rate_reason` — почему нет ставки, `None`
+    означает ровно «ставка есть». `deviation_reason` — почему нет отклонения
+    ЯЧЕЙКИ; когда `rate_reason` не пуст, `deviation_reason` — всегда `no_rate`
+    (сравнивать нечего вообще, а не «сравнили и норматива не нашли» — это
+    другой факт, `no_standard`, и он законен только при посчитанной ставке).
 
     Хотя бы одна неизвестная база делает `rate`/`amount` пустыми ЦЕЛИКОМ: показать
     средневзвешенное по части строк значило бы выдать неполную величину за
@@ -762,21 +1036,24 @@ def _fold_cell(groups) -> dict:
                 "rate": None,
                 "amount": None,
                 "standard_unit_rate": group.standard_unit_rate,
+                "rate_reason": "unknown_vat_base",
                 "deviation_pct": None,
-                "deviation_reason": "unknown_vat_base",
+                "deviation_reason": "no_rate",
             }
         if not group.weight_total:
-            # Недостижимо сегодня: `_cell_groups_cte` фильтрует `weight > 0`, и
-            # группа не может существовать без хотя бы одной такой строки —
-            # SUM(weight) группы поэтому не бывает нулём/NULL. Оставлено защитой
-            # на случай будущей правки фильтра, с ПРАВИЛЬНОЙ (не заимствованной у
-            # соседней ветки) причиной — найдено ревью задачи 3.
+            # Недостижимо сегодня: `_cell_groups_cte` фильтрует входящие
+            # `_price_ok`/`_weight_ok`, и группа не может существовать без
+            # хотя бы одной такой строки — SUM(weight) группы поэтому не
+            # бывает нулём/NULL. Оставлено защитой на случай будущей правки
+            # фильтра, с ПРАВИЛЬНОЙ (не заимствованной у соседней ветки)
+            # причиной — найдено ревью задачи 3.
             return {
                 "rate": None,
                 "amount": None,
                 "standard_unit_rate": group.standard_unit_rate,
+                "rate_reason": "no_weight",
                 "deviation_pct": None,
-                "deviation_reason": "no_weight",
+                "deviation_reason": "no_rate",
             }
         net_cost += gross_to_net(group.weighted_cost, group.vat_rate_base)
         weight_total += group.weight_total
@@ -784,30 +1061,45 @@ def _fold_cell(groups) -> dict:
 
     rate = net_cost / weight_total if weight_total else None
 
-    # Дефект 1, третий экземпляр (ре-ревью Codex, PR #21, круг 3): `NaN`/
-    # `Infinity` в `unit_cost_total` доезжает сюда открытым хвостом Ф4 (§5.6) и
-    # тихо распространяется через SQL `SUM` (`weighted_cost`) и через
-    # `gross_to_net`/деление — `rate` (а с ним и `amount`, та же величина
-    # `net_cost`) становится нефинитным БЕЗ исключения. В отличие от
-    # `_net_deviation` (паспорт/drill-down), здесь под угрозой не только
-    # `deviation_pct`, а ДВА денежных поля ответа: аналитик увидел бы в ячейке
-    # матрицы буквальное `"NaN"`, подписанное `deviation_reason=None`/
-    # `"no_standard"` — то есть «нет норматива» вместо честного «величина не
-    # число». Матрица — поверхность, которую UI реально рисует (в отличие от
-    # паспорта фазы 6), так что утечка была бы видна аналитику напрямую.
+    # Дефект 1, третий экземпляр (ре-ревью Codex, PR #21, круг 3) описывал,
+    # как `NaN`/`Infinity` в `unit_cost_total` доезжает сюда открытым хвостом
+    # Ф4 (§5.6) и тихо распространяется через SQL `SUM` (`weighted_cost`) и
+    # через `gross_to_net`/деление. Это исторический механизм — предикат цены
+    # (`_price_ok`/`_weight_ok` в `_cell_groups_cte`, та же миграция 0016,
+    # что сузила саму VIEW) не пускает нефинитную и неположительную цену или
+    # вес в свод вообще: слагаемые `weighted_cost`/`weight_total` — SUM по
+    # PostgreSQL NUMERIC над уже конечными положительными величинами, а такая
+    # сумма конечна всегда (в отличие от `float`, переполнения в `Infinity`
+    # тут не бывает). `vat_rate_base` тоже конечна по построению — её парсит
+    # `estimate_import._vat_rate` тем же приёмом, что и `money.price.is_price`
+    # (сначала конечность, потом знак). А `weight_total`, из-за которого
+    # вообще идёт деление, к этой строке уже доказанно не нулевой (ветка
+    # `no_weight` выше). Значит сегодня у `rate = net_cost / weight_total`
+    # нет ни одного нефинитного или нулевого операнда, и ветка ниже —
+    # практически недостижима, тем же классом, что и `no_weight` (найдено
+    # ревью задач 4 и 9: текст пережил свой механизм).
     #
-    # Нефинитная `rate` прячет ОБА поля (`rate`/`amount`) целиком — та же
-    # логика, что уже применена к `unknown_vat_base`/`no_weight` выше: частичная
-    # величина хуже отсутствующей. `standard_unit_rate` не гасится (та же
-    # причина, что в докстроке функции) — норматив от НДС не зависит и остаётся
-    # нетто по определению независимо от годности факта.
+    # Её не снимают по той же причине, что и `no_weight`: это последний
+    # рубеж перед тем, как аналитик увидел бы в ячейке матрицы буквальное
+    # `"NaN"` — если однажды предикат ослабят или обойдут в другом месте,
+    # защита должна остаться на месте, а не исчезнуть вместе с комментарием.
+    # Единственный сегодняшний источник МЕТКИ `not_finite`, которую аналитик
+    # может увидеть на живой ячейке, — соседняя ветка ниже (ось
+    # `deviation_reason`): нефинитный НОРМАТИВ (`standard_unit_rate`),
+    # проскочивший мимо CHECK при живой, посчитанной `rate`. Нефинитная
+    # `rate` прячет ОБА поля (`rate`/`amount`) целиком — та же логика, что уже
+    # применена к `unknown_vat_base`/`no_weight` выше: частичная величина хуже
+    # отсутствующей. `standard_unit_rate` не гасится (та же причина, что в
+    # докстроке функции) — норматив от НДС не зависит и остаётся нетто по
+    # определению независимо от годности факта.
     if rate is not None and not rate.is_finite():
         return {
             "rate": None,
             "amount": None,
             "standard_unit_rate": standard,
+            "rate_reason": "not_finite",
             "deviation_pct": None,
-            "deviation_reason": "not_finite",
+            "deviation_reason": "no_rate",
         }
 
     deviation_pct = _deviation(rate, standard)
@@ -817,12 +1109,17 @@ def _fold_cell(groups) -> dict:
         # только если сам норматив окажется нефинитным — гипотетически
         # возможно, т.к. PostgreSQL считает `'NaN'::numeric > 0` ИСТИНОЙ и
         # CHECK `standard_unit_rate > 0` NaN не отсекает. `rate`/`amount`
-        # остаются видимыми (они настоящие числа), гасится только отклонение —
-        # тот же выбор, что у `_net_deviation`.
+        # остаются видимыми (они настоящие числа, ставка ЕСТЬ — `rate_reason`
+        # пуст), гасится только отклонение — тот же выбор, что у
+        # `_net_deviation`. Здесь `not_finite` — это ось `deviation_reason`
+        # («нефинитно отклонение»), а не ось `rate_reason` («нефинитна
+        # ставка») — тот же токен встречается в обеих осях с разным смыслом
+        # (спека §2.5).
         return {
             "rate": quantize_money(rate),
             "amount": quantize_money(net_cost),
             "standard_unit_rate": standard,
+            "rate_reason": None,
             "deviation_pct": None,
             "deviation_reason": "not_finite",
         }
@@ -831,6 +1128,7 @@ def _fold_cell(groups) -> dict:
         "rate": quantize_money(rate),
         "amount": quantize_money(net_cost),
         "standard_unit_rate": standard,
+        "rate_reason": None,
         "deviation_pct": deviation_pct,
         "deviation_reason": None if standard is not None else "no_standard",
     }
@@ -849,23 +1147,128 @@ _NET_COST = (
     / (100 + DEVIATION_INPUTS.c.vat_rate_base)
 )
 
-#: Предикат «стоимость строки — NaN/Infinity» — тот же класс проверки, что
-#: `crud.project_passport._finite_amount`, но не общий с ней код: те же
-#: причины, что у `_declared_rates`/`_standard_in_display_rate` (модули
-#: сознательно не тянут друг друга, три строки дешевле дублировать, чем
-#: заводить межмодульный импорт приватного имени). Круг 3 (ре-ревью Codex,
-#: PR #21, найдено оркестратором): без этого предиката `row_amount_incomplete`
-#: поднимался ТОЛЬКО от неизвестной базы НДС (`cell_unknown`), и строка с
-#: ИЗВЕСТНОЙ базой, но NaN/Infinity стоимостью (открытый хвост Ф4, §5.6),
-#: утекала бы своим весом в `row_amount`, отчитываясь при этом флагом «вес
-#: полон» — тот самый инвариант, ради которого признак заводился («`SUM`
-#: игнорирует `NULL`, и без явного условия частичная сумма выглядела бы
-#: полной»), закрытый только наполовину.
-_NOT_FINITE_COST = sa.or_(
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("NaN"),
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("Infinity"),
-    DEVIATION_INPUTS.c.unit_cost_total == Decimal("-Infinity"),
-)
+
+def _not_finite(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """«Значение колонки — NaN/Infinity», параметризовано КОЛОНКОЙ.
+
+    Единственная реализация правила в модуле. `_price_ok`/`_weight_ok` ниже и
+    `_presence_row_flags` (задача 2 плана правила цены) пользуются этой же
+    функцией над ЛЮБОЙ числовой колонкой — сегодня это доказано на
+    `DEVIATION_INPUTS.c.unit_cost_total`, `DEVIATION_INPUTS.c.weight`,
+    `PositionItem.unit_cost_total` и `_PRESENCE_WEIGHT` (COALESCE-выражение
+    веса на стороне присутствия). Второй копии условия не заводим: правило
+    цены обязано жить в одном экземпляре (спека §2.2), и на каждой новой
+    площадке добавляется применение функции, а не переписанное с нуля
+    перечисление трёх нефинитных значений.
+
+    В `crud.project_passport` есть `_finite_amount(column)` — та же проверка,
+    уже параметризованная колонкой. Не переиспользована МЕЖДУ модулями по тем
+    же причинам, что у `_declared_rates`/`_standard_in_display_rate` (модули
+    сознательно не тянут друг у друга приватные имена) — и добавляются два
+    своих довода: полярность обратная (`_finite_amount` истинна на ГОДНОМ
+    значении, `_not_finite` — на НЕГОДНОМ), и NULL-поведение разное.
+    `_finite_amount` намеренно не обрабатывает `NULL` отдельно (`NULL <>
+    число` сам даёт `NULL`, что ведёт себя как ложь ТОЛЬКО внутри
+    `WHERE`/`CASE` — и там, где она применяется, этого достаточно), а
+    `_not_finite` — внутренний блок `_price_ok`/`_weight_ok`, чья гарантия
+    явного `FALSE` на пустом входе держится на отдельном условии
+    `column.is_not(None)` СНАРУЖИ; протаскивать это допущение через границу
+    модуля было бы менее прозрачно, чем три строки сравнения.
+
+    PostgreSQL сравнивает `numeric NaN` с самим собой как РАВНОЕ (в отличие от
+    IEEE 754 `float`, где `nan == nan` ложно), поэтому `column ==
+    Decimal("NaN")` здесь рабочая проверка, а не всегда ложная.
+    """
+    return sa.or_(
+        column == Decimal("NaN"),
+        column == Decimal("Infinity"),
+        column == Decimal("-Infinity"),
+    )
+
+
+def _price_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """SQL-сторона `money.price.is_price`: конечное значение больше нуля.
+
+    Функция ОТ КОЛОНКИ, а не готовое выражение над `DEVIATION_INPUTS`: тем же
+    предикатом пользуются и над `PositionItem.unit_cost_total` — колонкой,
+    куда VIEW не достаёт вовсе: `PositionItem` несёт пустую цену как `NULL`,
+    а `v_position_deviation_inputs` такую строку просто не показывает (строка
+    отсутствует, а не несёт `NULL`) — что при тексте 0012 (`IS NOT NULL`), что
+    при тексте 0016 (предикат цены). Правило одно, площадок применения
+    несколько — вместо второй копии условия на каждой.
+
+    `column.is_not(None)` — не стилистика, а необходимое условие: SQL
+    трёхзначен, и без него на пустом входе `NOT(_not_finite(NULL))` и
+    `NULL > 0` дали бы не `FALSE`, а `NULL` — предикат перестал бы отличаться
+    от «неизвестно» ровно там, где обязан читаться как «не цена». Присутствие
+    этого условия в конъюнкции гарантирует итоговый `FALSE` независимо от
+    прочих операндов: в трёхзначной логике `FALSE AND NULL = FALSE`. Закрыто
+    тестом `test_price_predicate_sql.py::TestPriceOkOverPositionItem::
+    test_null_price_gives_false_not_null`.
+
+    Наивное «больше нуля» непригодно само по себе: `'NaN'::numeric > 0` и
+    `'Infinity'::numeric > 0` в PostgreSQL дают `TRUE` (спека §1.2, предъявлено
+    `test_price_predicate_sql.py::TestNaivePredicateIsNotEnough` на хранимой
+    колонке) — нефинитное исключается явно, тем же приёмом, что и
+    `_not_finite`.
+
+    Задача 2 плана правила цены добавила второе применение — `_cell_groups_
+    cte`/`_cell_weights_cte` фильтруют им `DEVIATION_INPUTS.c.unit_cost_total`.
+    На тот момент (до миграции 0016) VIEW отсеивал только `IS NOT NULL`, и
+    ноль/нефинитное доезжали как цена (спека §1.1/§1.2) — применение здесь
+    было НЕОБХОДИМЫМ и наблюдалось тестами напрямую.
+
+    **После миграции 0016 все ЧЕТЫРЕ продакшен-применения этой функции к
+    колонке VIEW (`_priced_positions_select`, `_cell_groups_cte`, `_cell_
+    weights_cte` и условие соединения в `_all_positions_select` — задача 3)
+    стали ИНЕРТНЫ по отношению к VIEW, и это ЗНАНИЕ, а не недосмотр** (найдено
+    ревью задачи 4). Сам VIEW теперь несёт тот же предикат в своём `WHERE`,
+    и `_price_ok(DEVIATION_INPUTS.c.unit_cost_total)` здесь — конъюнкция
+    условия с самим собой: снятие всех четырёх применений разом сегодня НЕ
+    роняет НИ ОДНОГО теста (замерено собственным прогоном `just test-backend-
+    parallel` с мутацией всех четырёх мест разом на `sa.true()`: 2646 passed,
+    0 failed, 6 skipped — весь backend-suite, а не выборка), включая тот тест
+    задачи 3, что предъявлял этот же предикат в условии соединения `_all_
+    positions_select` красным ДО миграции 0016 — сегодня он этого больше не
+    видит. Условия оставлены не ради наблюдаемой сейчас защиты, а по решению
+    3 плана фичи: состав каждого из этих ЧЕТЫРЁХ читателей — СВОЙ, а не заданный
+    VIEW-ом, и не должен зависеть от того, что именно исключает текст VIEW
+    сегодня — тот может измениться будущей миграцией (сузиться иначе, временно
+    расшириться, дать исключение) независимо от того, следят ли за этим
+    читатели. Это ровно противоположность `_passport_totals`
+    (`crud/analytics.py`, см. её докстроку): ТАМ второй фильтр был бы мёртвой
+    защитой, потому что состав ТОГО читателя ЗАДАН VIEW-ом намеренно; ЗДЕСЬ
+    состав читателей — их собственный факт, VIEW лишь однажды совпал с ним.
+    """
+    return sa.and_(column.is_not(None), sa.not_(_not_finite(column)), column > 0)
+
+
+def _weight_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """SQL-сторона `money.price.is_weight`: конечное значение больше нуля.
+
+    Формула совпадает с `_price_ok` — «конечно и больше нуля» правило заведено
+    одно, — но факт другой: у веса свой носитель (объём/количество позиции,
+    спека §2.1), и это отдельная функция, а не переиспользование `_price_ok`
+    под другим именем. Если правила когда-нибудь разойдутся, менять придётся
+    только одно место, не разбираясь, какой смысл где имелся в виду.
+
+    Площадки применения: `DEVIATION_INPUTS.c.weight`
+    (`test_price_predicate_sql.py::TestWeightOkOverDeviationInputsView`, и
+    теперь также `_cell_groups_cte`/`_cell_weights_cte` — задача 2) и
+    `_PRESENCE_WEIGHT` — именованная копия того же `COALESCE(suggested_
+    quantity, quantity)`, что несёт миграция 0012 текстом VIEW, нужная стороне
+    присутствия, у которой своей колонки «вес» нет вовсе (см. докстроку
+    `_PRESENCE_WEIGHT` ниже).
+
+    **Условие соединения `_all_positions_select`** (внешнее ревью Codex, круг
+    фичи price-predicate, замечание 1) — та же роль, что у `_price_ok` в том
+    же ON: без `_weight_ok` здесь строка с пригодной ценой и НЕПРИГОДНЫМ весом
+    получала бы `included=False` (`_cell_item` требует оба предиката разом),
+    но норматив и базу НДС от JOIN-а, которому хватало одной цены
+    (`test_matrix_cell_drilldown_excluded_row_by_weight_has_no_standard_rate`,
+    `backend/tests/integration/test_analytics_api.py`).
+    """
+    return sa.and_(column.is_not(None), sa.not_(_not_finite(column)), column > 0)
 
 
 def _cell_weights_cte(scope_filters: list):
@@ -879,14 +1282,28 @@ def _cell_weights_cte(scope_filters: list):
     с суммой показанных `cell.amount` (`test_row_amount_excludes_partially_
     unknown_cell`).
 
-    **Неполнота — ДВЕ разные причины, обе гасят ячейку одинаково** (круг 3):
-    `cell_unknown` — база НДС неизвестна хотя бы у одной строки ячейки;
-    `cell_not_finite` — стоимость хотя бы одной строки ячейки не число
-    (`_NOT_FINITE_COST`). Раздельные флаги — не для различения на экране
-    (признак строки один, `row_amount_incomplete`), а чтобы каждый считался по
-    СВОЕЙ, а не по чужой причине: слить их в один `bool_or` уже здесь значило
-    бы потерять возможность различить причины, если экран когда-нибудь
-    научится их показывать раздельно (тот же довод, что у `deviation_reason`).
+    **Входящие строки — `_price_ok`/`_weight_ok`, не голое `weight > 0`**
+    (задача 2 плана правила цены, та же правка, что у `_cell_groups_cte`):
+    нулевая, отрицательная и нефинитная цена сюда больше не доезжают.
+
+    **`cell_not_finite` (нефинитная цена среди входящих) отсюда УБРАН.** До
+    этой правки VIEW пропускал сюда любую цену, включая нефинитную (фильтр был
+    `weight > 0`, не `_price_ok`), и `bool_or` по стоимости ловил её здесь же.
+    Теперь входящие строки по определению `_price_ok` — конечны, — и признак
+    стал бы мёртвым (снятие фильтра его не воскрешает, воскрешает саму
+    неисправность; см. `docs/insights/verifying-guards.md`, слой 7: мёртвая
+    проверка хуже отсутствующей). Нефинитная позиция ЕСТЬ, но она больше не
+    входящая — её видит сторона присутствия (`_excluded_positions_cte`,
+    `any_not_finite`), и признак неполноты строки собирается ИЗ ДВУХ
+    источников в `get_matrix`: `cell_unknown` отсюда и `incomplete` оттуда, а
+    не из одного `bool_or` здесь. Это прямое требование решения о носителе
+    (отчёт задачи 2, §1.5 спеки): миграция 0016 (задача 4) с тех пор убрала
+    такую строку из VIEW насовсем, и признак не зависит от неё уже сегодня —
+    он был построен так заранее, чтобы сужение VIEW его не задело.
+
+    `cell_unknown` остаётся здесь: неизвестная база НДС у входящей строки —
+    факт со стороны VIEW, который задача 4 не трогает (COALESCE базы не
+    зависит от предиката цены), и вторую его копию заводить незачем.
     """
     latest = latest_estimates()
     return (
@@ -895,12 +1312,15 @@ def _cell_weights_cte(scope_filters: list):
             DEVIATION_INPUTS.c.contract_id.label("contract_id"),
             sa.func.sum(_NET_COST).label("cell_net"),
             sa.func.bool_or(DEVIATION_INPUTS.c.vat_rate_base.is_(None)).label("cell_unknown"),
-            sa.func.bool_or(_NOT_FINITE_COST).label("cell_not_finite"),
         )
         .select_from(
             DEVIATION_INPUTS.join(latest, latest.c.estimate_id == DEVIATION_INPUTS.c.estimate_id)
         )
-        .where(DEVIATION_INPUTS.c.weight > 0, *scope_filters)
+        .where(
+            _price_ok(DEVIATION_INPUTS.c.unit_cost_total),
+            _weight_ok(DEVIATION_INPUTS.c.weight),
+            *scope_filters,
+        )
         .group_by(DEVIATION_INPUTS.c.catalog_position_id, DEVIATION_INPUTS.c.contract_id)
         .cte("cell_weights")
     )
@@ -990,6 +1410,288 @@ def column_scope_filters(*, rate_class_id, date_from, date_to, latest) -> list:
     return conditions
 
 
+# ---------------------------------------------------------------------------
+#  Сторона присутствия (спека правила цены §2.4, §2.5, §2.6; отчёт задачи 2
+#  плана правила цены — "Решение о носителе"). Читает `PositionItem` напрямую,
+#  а не VIEW отклонений: миграция 0016 (задача 4) с тех пор сузила VIEW тем же
+#  предикатом цены, и совокупность работ, состав исключённых позиций и признак
+#  неполноты не зависят от этого сужения — они были построены НЕ через VIEW
+#  заранее, поэтому день, когда исключённые позиции пропали из VIEW, их не
+#  затронул.
+# ---------------------------------------------------------------------------
+
+def _presence_positions(latest):
+    """JOIN «позиция → её договор через последнюю смету» — общая основа обеих
+    сторон присутствия (`_presence_cte`, `_excluded_positions_cte`): обе
+    обязаны видеть один и тот же состав договоров, а не два похожих JOIN-а,
+    которые могут незаметно разойтись.
+    """
+    return (
+        sa.join(
+            PositionItem, CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id
+        )
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(latest, latest.c.estimate_id == Lot.estimate_id)
+        .join(Contract, Contract.id == latest.c.contract_id)
+    )
+
+
+def _presence_conditions(*, rate_class_id, date_from, date_to, latest) -> list:
+    """Условия присутствия: раздел не считается работой (§6), каталожная
+    строка обязана быть `kind='POSITION'`, плюс фильтры выборки
+    (`column_scope_filters` — то же правило даты, что у колонок матрицы).
+
+    Фильтр по `kind` здесь ЯВНЫЙ, а не унаследованный от VIEW: сторона
+    присутствия читает `PositionItem` напрямую, и без этого условия строка
+    каталога `TO_REVIEW`/`HEADER`/`TRASH` стала бы строкой матрицы — ровно то,
+    что сегодня исключает предложение `cp.kind = 'POSITION'` внутри
+    определения VIEW (миграция 0012). Проверено существующим тестом на смеси
+    кодов (`test_rows_are_catalog_positions_only`).
+    """
+    return [
+        PositionItem.is_chapter.is_(False),
+        CatalogPosition.kind == CatalogKind.POSITION.value,
+        *column_scope_filters(
+            rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+        ),
+    ]
+
+
+def _presence_cte(*, rate_class_id, date_from, date_to, latest):
+    """Присутствие «работа × договор» (спека §2.4): пара существует, если в
+    последней смете договора есть хотя бы одна позиция (`is_chapter=false`,
+    каталожная строка `kind='POSITION'`) на эту работу — **независимо от
+    цены**. Носитель — `PositionItem` (решение о носителе, см. докстроку
+    модуля выше): работа, у которой во всей выборке нет ни одной годной цены,
+    больше не исчезает из матрицы молча (спека §1.4), а становится строкой с
+    пустой ставкой.
+
+    Одним запросом задаёт и совокупность СТРОК матрицы (проекция на
+    `catalog_position_id`), и совокупность СУЩЕСТВОВАНИЯ ЯЧЕЕК (пара с
+    `contract_id`) — это одно правило присутствия, а не два похожих.
+    """
+    return (
+        sa.select(
+            PositionItem.catalog_position_id.label("catalog_position_id"),
+            Contract.id.label("contract_id"),
+        )
+        .select_from(_presence_positions(latest))
+        .where(
+            *_presence_conditions(
+                rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+            )
+        )
+        .group_by(PositionItem.catalog_position_id, Contract.id)
+        .cte("presence")
+    )
+
+
+#: Вес на стороне присутствия («Решение о весе», отчёт задачи 2) —
+#: ИМЕНОВАННАЯ копия правила, которое несёт миграция 0012 текстом VIEW
+#: (`COALESCE(pi.suggested_quantity, pi.quantity) AS weight`). Текст миграции
+#: заморожен (§9 AGENTS.md, downgrade обязан восстанавливать его дословно) —
+#: вторая площадка этого правила неизбежна, и Global Constraints плана
+#: требуют, чтобы она была НАЗВАНА (не инлайновым `COALESCE` посреди запроса,
+#: а отдельным выражением с говорящим именем) и стереглась ТЕСТОМ ПОВЕДЕНИЯ,
+#: а не сверкой текста: сверка текста зелена и когда оба текста ОДИНАКОВО
+#: неверны. Стережёт `test_presence_weight_agrees_with_view_weight` —
+#: сравнивает это выражение с `DEVIATION_INPUTS.c.weight` НА ОДНОЙ И ТОЙ ЖЕ
+#: строке позиции, а не тексты двух формул.
+_PRESENCE_WEIGHT = sa.func.coalesce(PositionItem.suggested_quantity, PositionItem.quantity)
+
+
+def _presence_row_flags(
+    price: sa.ColumnElement, weight: sa.ColumnElement
+) -> dict[str, sa.ColumnElement]:
+    """Классификация ОДНОЙ позиции на стороне присутствия — четыре именованных
+    условия, из которых `get_matrix` складывает причину пустой ячейки (спека
+    §2.5, Правило 2) и признак неполноты (спека §2.6). Считается по колонкам
+    `PositionItem`, не VIEW — см. докстроку `_excluded_positions_cte`.
+
+    Категории НЕ взаимоисключающие по построению (одна позиция может
+    формально подходить сразу под несколько — например, нефинитная цена при
+    отрицательном весе). Разрешение конкуренции — дело ВЫЗЫВАЮЩЕГО кода
+    (приоритет §2.5: `not_finite` > `no_weight` > `negative_only` >
+    `no_price`), не этой функции: она лишь называет факты, порядок им не
+    приписывает.
+
+    `flag` — признак неполноты ОДНОЙ позиции (спека §2.6, шесть строк
+    таблицы): нефинитная цена или нефинитный вес делают матричный вклад
+    невычислимым — флаг ДА безусловно, независимо от второй величины; иначе
+    флаг ДА тогда и только тогда, когда произведение цены на вес НЕНУЛЕВОЕ —
+    нулевая либо пустая цена и нулевой либо пустой вес дают нулевое
+    произведение, и флаг они не поднимают. `COALESCE(..., 0)` здесь заменяет
+    пустоту на ноль НАМЕРЕННО, в отличие от `_price_ok`/`_weight_ok`, где
+    пустота обязана читаться как «непригодно»: у веса на входе в SUM своя
+    роль (вклад), у веса на входе в предикат пригодности — своя, и это две
+    разные задачи одной и той же колонки.
+
+    `negative_only` НЕ проверяет конечность цены отдельным операндом (ре-ревью,
+    правка H, мутант M8-эквивалент: `'-Infinity'::numeric < 0` истинно, и
+    операнд конечности здесь был бы НЕНАБЛЮДАЕМ — приоритет §2.5 ставит
+    `not_finite` ВЫШЕ `negative_only`, и `_cell_without_ingesting` проверяет
+    `any_not_finite` первым; строка с `-Infinity` в цене уже поднимает
+    `price_nonfinite` для СЕБЯ ЖЕ, а значит и общий `any_not_finite` группы —
+    до `any_negative_only` в такой группе дело просто не доходит НИ ПРИ КАКОМ
+    входе. Оставлять недоказуемый операнд значило бы держать защиту, которая
+    читается как живая, но предъявить её отдельным входом нельзя — решение:
+    убрать его, а не маскировать привычной формой «на всякий случай».
+
+    `contribution_nonzero` тем же приёмом (ре-ревью) больше НЕ проверяет
+    `sa.not_(price_nonfinite)`/`sa.not_(weight_nonfinite)` отдельными
+    операндами: они читались как защита «не считать нефинитный вклад
+    ненулевым», но снятие обоих разом (мутация) не красит ни один тест —
+    операнды НЕНАБЛЮДАЕМЫ. Причина в самом выражении `flag` ниже: это `OR`
+    (`price_nonfinite`, `weight_nonfinite`, `contribution_nonzero`), и когда
+    любой из первых двух дизъюнктов истинен, `flag` уже `True` независимо от
+    третьего — какое бы значение `contribution_nonzero` ни принял. А когда
+    оба ложны, `sa.not_(...)` от ложного — тождественная истина, и она ничего
+    не меняет в `AND`. Проверено эмпирически (не только по построению): в
+    PostgreSQL `NaN != 0` — ИСТИНА (`SELECT 'NaN'::numeric != 0` → `true`), то
+    есть даже без вырезанных операндов `coalesce(price, 0) * coalesce(weight,
+    0) != 0` на нефинитном входе тоже дал бы `True` — то же значение, что и
+    прямой дизъюнкт, который уже сделал `flag` истинным. Решение то же, что у
+    `negative_only`: снять недоказуемые операнды, а не оставлять защиту,
+    которую нельзя предъявить отдельным входом.
+    """
+    price_nonfinite = sa.and_(price.is_not(None), _not_finite(price))
+    weight_nonfinite = sa.and_(weight.is_not(None), _not_finite(weight))
+    contribution_nonzero = sa.func.coalesce(price, 0) * sa.func.coalesce(weight, 0) != 0
+    return {
+        "not_finite": sa.or_(price_nonfinite, weight_nonfinite),
+        "no_weight": sa.and_(_price_ok(price), sa.not_(_weight_ok(weight))),
+        "negative_only": sa.and_(price.is_not(None), price < 0),
+        "flag": sa.or_(price_nonfinite, weight_nonfinite, contribution_nonzero),
+    }
+
+
+def _excluded_positions_cte(*, rate_class_id, date_from, date_to, latest):
+    """Позиции, ИСКЛЮЧЁННЫЕ из ставки ячейки (не входящие — `_price_ok` и
+    `_weight_ok` вместе НЕ выполнены), сведённые в разрезе ячейки (спека
+    §2.5, §2.6).
+
+    Единственный источник причины пустой ставки и признака неполноты для
+    невходящих позиций: решение о носителе требует читать их отсюда, а не из
+    `bool_or` по строкам VIEW — `_cell_weights_cte` эти строки больше не
+    видит (не проходят `_price_ok`/`_weight_ok`, см. её докстроку).
+
+    Присутствие (`_presence_cte`) гарантирует, что у ЛЮБОЙ пары (работа,
+    договор) есть хотя бы одна позиция `is_chapter=false`; если её нет среди
+    входящих (`cell_groups` пуст для этой пары), она обязана найтись здесь —
+    пустых с обеих сторон сразу не бывает. `get_matrix` полагается на это при
+    выборе ветки фолда ячейки.
+    """
+    price = PositionItem.unit_cost_total
+    weight = _PRESENCE_WEIGHT
+    ingesting = sa.and_(_price_ok(price), _weight_ok(weight))
+    flags = _presence_row_flags(price, weight)
+    return (
+        sa.select(
+            PositionItem.catalog_position_id.label("catalog_position_id"),
+            Contract.id.label("contract_id"),
+            sa.func.bool_or(flags["not_finite"]).label("any_not_finite"),
+            sa.func.bool_or(flags["no_weight"]).label("any_no_weight"),
+            sa.func.bool_or(flags["negative_only"]).label("any_negative_only"),
+            sa.func.bool_or(flags["flag"]).label("incomplete"),
+        )
+        .select_from(_presence_positions(latest))
+        .where(
+            sa.not_(ingesting),
+            *_presence_conditions(
+                rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+            ),
+        )
+        .group_by(PositionItem.catalog_position_id, Contract.id)
+        .cte("excluded_positions")
+    )
+
+
+def _presence_standards_cte(*, rate_class_id, date_from, date_to, latest):
+    """Норматив по паре (работа, договор), НЕЗАВИСИМО от цены и не через
+    VIEW: `_fold_cell` берёт норматив из `cell_groups`, а группа существует
+    только для входящих строк — ячейке без единой входящей взять норматив
+    неоткуда, хотя норматив от цены не зависит и гаснуть не обязан (спека
+    §2.5, §2.7 — тот же принцип, что уже держит `unknown_vat_base`/
+    `no_weight` внутри `_fold_cell`). После задачи 4 VIEW сузится тем же
+    предикатом цены, и для ячейки без входящих строк там норматива тоже не
+    найти — эта площадка обязана не зависеть от VIEW уже сейчас.
+
+    Условие диапазона дат — та же пара сравнений, что использует
+    `crud.rate_standards._standards_select` (`valid_from <= дата` и
+    `valid_to IS NULL OR valid_to > дата`), а не `daterange(...) @> ...`
+    текстом VIEW: разное написание одного и того же полуоткрытого интервала,
+    и площадка присутствия не обязана копировать SQL-синтаксис VIEW, только
+    его смысл. `EXCLUDE` на `rate_standards` держит не больше одной строки на
+    (работа, класс, дата) — `MIN` здесь способ вынести единственное значение
+    из `GROUP BY`, а не агрегация по-настоящему (тот же приём, что у
+    `_cell_groups_cte`).
+    """
+    comparison_date = sa.func.coalesce(latest.c.data_prepared_on_date, Contract.signed_date)
+    return (
+        sa.select(
+            PositionItem.catalog_position_id.label("catalog_position_id"),
+            Contract.id.label("contract_id"),
+            sa.func.min(RateStandard.standard_unit_rate).label("standard_unit_rate"),
+        )
+        .select_from(
+            _presence_positions(latest).outerjoin(
+                RateStandard,
+                sa.and_(
+                    RateStandard.catalog_position_id == PositionItem.catalog_position_id,
+                    RateStandard.rate_class_id == Contract.rate_class_id,
+                    RateStandard.valid_from <= comparison_date,
+                    sa.or_(
+                        RateStandard.valid_to.is_(None),
+                        RateStandard.valid_to > comparison_date,
+                    ),
+                ),
+            )
+        )
+        .where(
+            *_presence_conditions(
+                rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+            )
+        )
+        .group_by(PositionItem.catalog_position_id, Contract.id)
+        .cte("presence_standards")
+    )
+
+
+def _cell_without_ingesting(excluded_row, standard_unit_rate) -> dict:
+    """Ячейка, у которой нет ни одной входящей позиции (спека §2.5, Правило 2).
+
+    Приоритет причины СВЕРХУ ВНИЗ: `not_finite`, `no_weight`, `negative_only`,
+    `no_price` — одно значение, а не массив (у ячейки одна подпись на
+    экране), и порядок — правило спеки, а не случайность реализации.
+    `no_price` — фолбэк на случай, когда ни одна из трёх более сильных
+    категорий не сработала; присутствие гарантирует, что `excluded_row`
+    непуст (хотя бы одна позиция в нём есть), поэтому фолбэк всегда означает
+    «только нули и пустые», а не «данных нет вовсе».
+
+    `standard_unit_rate` передаётся СНАРУЖИ (`_presence_standards_cte`), а не
+    вычисляется здесь: норматив от цены не зависит и не гаснет вместе со
+    ставкой (парный тест `TestMatrixCellFoldSurvivesNonFiniteCost`, тот же
+    принцип, что у `unknown_vat_base`/`no_weight` внутри `_fold_cell`).
+    """
+    if excluded_row.any_not_finite:
+        reason = "not_finite"
+    elif excluded_row.any_no_weight:
+        reason = "no_weight"
+    elif excluded_row.any_negative_only:
+        reason = "negative_only"
+    else:
+        reason = "no_price"
+    return {
+        "rate": None,
+        "amount": None,
+        "standard_unit_rate": standard_unit_rate,
+        "rate_reason": reason,
+        "deviation_pct": None,
+        "deviation_reason": "no_rate",
+    }
+
+
 def get_matrix(
     db: Session,
     *,
@@ -1002,9 +1704,19 @@ def get_matrix(
 ) -> dict:
     """Сквозная матрица (§6, §7.5): строки — работы каталога, колонки — договоры.
 
-    Три запроса: колонки выборки, число строк, страница строк вместе с ячейками.
-    Ячейки едут в том же запросе, что строки, — их немного (страница × договоры), а
-    отдельный запрос потребовал бы повторить агрегацию.
+    Три запроса: колонки выборки, число строк, страница строк вместе с ячейками —
+    как и до задачи 2 плана правила цены (§1.4 спеки, раздел «Замер плана» отчёта
+    задачи: совокупность присутствия и причины исключённых позиций сложены В ТЕ ЖЕ
+    два запроса — `row_base`/`total` и финальный `rows` — а не вынесены в третий и
+    четвёртый; третий проход по данным (долг 13) этой задачей не заведён).
+
+    **Совокупность строк — присутствие (`_presence_cte`), не VIEW отклонений**
+    (спека §2.4, решение о носителе): работа, у которой во всей выборке нет ни
+    одной годной цены, теперь становится строкой с пустой ставкой, а не исчезает
+    молча. Ставка ячейки по-прежнему считается из VIEW (`_cell_groups_cte`) —
+    правило неизменно, меняется лишь то, что происходит, когда входящих строк
+    для ячейки НЕТ: причину и признак неполноты в этом случае называет
+    `_excluded_positions_cte`, а не отсутствие ячейки.
     """
     page = max(1, page)
     page_size = max(1, min(MATRIX_PAGE_SIZE_MAX, page_size))
@@ -1019,41 +1731,71 @@ def get_matrix(
     cell_groups = _cell_groups_cte(filters)
     cell_weights = _cell_weights_cte(filters)
 
+    latest = latest_estimates()
+    presence = _presence_cte(
+        rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+    )
+    excluded = _excluded_positions_cte(
+        rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+    )
+    presence_standards = _presence_standards_cte(
+        rate_class_id=rate_class_id, date_from=date_from, date_to=date_to, latest=latest
+    )
+
     row_totals = (
         sa.select(
-            cell_weights.c.catalog_position_id.label("catalog_position_id"),
+            presence.c.catalog_position_id.label("catalog_position_id"),
             # В вес входят ТОЛЬКО вычислимые ячейки — те, что видит аналитик
             # (спека §2.6, исключение: `SUM` игнорирует `NULL`, и без явного
             # `CASE` известная часть скрытой ячейки молча попала бы в вес).
-            # Круг 3 (ре-ревью Codex, PR #21): условие расширено на
-            # `cell_not_finite` — ячейка с известной базой, но NaN/Infinity
-            # стоимостью, гасится ТОЙ ЖЕ веткой, что и ячейка с неизвестной
-            # базой; иначе её нетто-вклад (сам нефинитный) утекал бы в
-            # `row_amount` под видом настоящей суммы.
+            # `COALESCE(cell_unknown, false)` учитывает и ячейки БЕЗ ИНГЕСТИРУЮЩЕЙ
+            # строки вовсе (`cell_weights` для них пуст — `LEFT JOIN` даёт `NULL`):
+            # такая ячейка не несёт суммы и не обязана нести признак «неизвестна
+            # база», СУMM игнорирует её `NULL` сама.
             sa.func.sum(
-                sa.case((
-                    sa.and_(
-                        cell_weights.c.cell_unknown.is_(False),
-                        cell_weights.c.cell_not_finite.is_(False),
-                    ),
-                    cell_weights.c.cell_net,
-                ))
+                sa.case(
+                    (
+                        sa.func.coalesce(cell_weights.c.cell_unknown, False).is_(False),
+                        cell_weights.c.cell_net,
+                    )
+                )
             ).label("row_amount"),
+            # Признак неполноты строки — из ДВУХ источников (решение о носителе,
+            # отчёт задачи 2): `cell_unknown` — неизвестная база НДС у входящей
+            # строки (сторона VIEW, миграция 0016/задача 4 её не касается);
+            # `excluded.incomplete` — исключённая позиция с ненулевым либо
+            # невычислимым вкладом (сторона присутствия, спека §2.6) —
+            # единственный источник и после того, как задача 4 убрала такие
+            # строки из VIEW насовсем.
             sa.func.bool_or(
-                sa.or_(cell_weights.c.cell_unknown, cell_weights.c.cell_not_finite)
+                sa.or_(
+                    sa.func.coalesce(cell_weights.c.cell_unknown, False),
+                    sa.func.coalesce(excluded.c.incomplete, False),
+                )
             ).label("row_amount_incomplete"),
         )
-        .group_by(cell_weights.c.catalog_position_id)
+        .select_from(
+            presence.outerjoin(
+                cell_weights,
+                sa.and_(
+                    cell_weights.c.catalog_position_id == presence.c.catalog_position_id,
+                    cell_weights.c.contract_id == presence.c.contract_id,
+                ),
+            ).outerjoin(
+                excluded,
+                sa.and_(
+                    excluded.c.catalog_position_id == presence.c.catalog_position_id,
+                    excluded.c.contract_id == presence.c.contract_id,
+                ),
+            )
+        )
+        .group_by(presence.c.catalog_position_id)
         .cte("row_totals")
     )
 
-    # Строки матрицы — каталожные POSITION (§6). Отдельного условия по `kind` здесь
-    # НЕТ, и это проверено: совокупность задана VIEW-ом (`cp.kind = 'POSITION'` в его
-    # определении), поэтому такое условие было бы мёртвым — снятие его не валит ни
-    # одного теста. Мёртвая проверка хуже отсутствующей: она читается как защита.
-    # Сохранность самого условия VIEW-а держит `test_deviations_view.py`, а
-    # соответствие объявления VIEW действительности — сверка с `information_schema`.
-    # Join к каталогу нужен за названием и единицей, а не за фильтром.
+    # Строки матрицы — присутствие (`_presence_cte`), которое само уже держит
+    # условие `kind='POSITION'` (`_presence_conditions`) — второй его копии здесь
+    # не заводим. Join к каталогу нужен за названием и единицей, а не за фильтром.
     row_base = sa.select(
         row_totals.c.catalog_position_id,
         row_totals.c.row_amount,
@@ -1076,7 +1818,9 @@ def get_matrix(
         row_base
         # Значимые работы сверху (§6.4), НЕИЗВЕСТНЫЕ — в конец (`COALESCE(…, 0)`
         # в вес не ставится: ноль увёл бы строку в середину сортировки и читался
-        # бы как «работы на ноль рублей», а не «сумма неизвестна»).
+        # бы как «работы на ноль рублей», а не «сумма неизвестна»). Это же место
+        # ставит в конец теперь и работу БЕЗ единой годной цены (`row_amount`
+        # для неё тоже `NULL`) — сортировка не менялась НИ ОДНОЙ строкой (§2.4).
         # catalog_position_id — тай-брейк, без него при равных суммах строка
         # могла бы попасть на две страницы сразу.
         .order_by(
@@ -1088,6 +1832,21 @@ def get_matrix(
         .subquery("page_rows")
     )
 
+    # Ячейки страницы — присутствие (не только `cell_groups`): работа страницы ×
+    # каждый договор, где она присутствует, даже без единой входящей позиции.
+    cell_pairs = (
+        sa.select(
+            page_rows.c.catalog_position_id.label("catalog_position_id"),
+            presence.c.contract_id.label("contract_id"),
+        )
+        .select_from(
+            page_rows.join(
+                presence, presence.c.catalog_position_id == page_rows.c.catalog_position_id
+            )
+        )
+        .subquery("cell_pairs")
+    )
+
     rows = db.execute(
         sa.select(
             page_rows.c.catalog_position_id,
@@ -1095,15 +1854,43 @@ def get_matrix(
             page_rows.c.unit_code,
             page_rows.c.row_amount,
             page_rows.c.row_amount_incomplete,
-            cell_groups.c.contract_id,
+            cell_pairs.c.contract_id,
             cell_groups.c.vat_rate_base,
             cell_groups.c.weighted_cost,
             cell_groups.c.weight_total,
             cell_groups.c.standard_unit_rate,
+            excluded.c.any_not_finite,
+            excluded.c.any_no_weight,
+            excluded.c.any_negative_only,
+            presence_standards.c.standard_unit_rate.label("presence_standard_unit_rate"),
         )
         .select_from(
             page_rows.join(
-                cell_groups, cell_groups.c.catalog_position_id == page_rows.c.catalog_position_id
+                cell_pairs, cell_pairs.c.catalog_position_id == page_rows.c.catalog_position_id
+            )
+            # LEFT JOIN — входящих групп у ячейки может не быть вовсе (§2.5
+            # Правило 2); `weighted_cost IS NULL` в результате отличает такую
+            # ячейку от настоящей группы (`_shape_matrix_rows`).
+            .outerjoin(
+                cell_groups,
+                sa.and_(
+                    cell_groups.c.catalog_position_id == cell_pairs.c.catalog_position_id,
+                    cell_groups.c.contract_id == cell_pairs.c.contract_id,
+                ),
+            )
+            .outerjoin(
+                excluded,
+                sa.and_(
+                    excluded.c.catalog_position_id == cell_pairs.c.catalog_position_id,
+                    excluded.c.contract_id == cell_pairs.c.contract_id,
+                ),
+            )
+            .outerjoin(
+                presence_standards,
+                sa.and_(
+                    presence_standards.c.catalog_position_id == cell_pairs.c.catalog_position_id,
+                    presence_standards.c.contract_id == cell_pairs.c.contract_id,
+                ),
             )
         )
         .order_by(
@@ -1134,11 +1921,17 @@ def _unmatched_in_scope(
     date_from: dt.date | None,
     date_to: dt.date | None,
 ) -> dict:
-    """Два счётчика непопадания в матрицу по договорам ВЫБОРКИ.
+    """Три счётчика непопадания в матрицу по договорам ВЫБОРКИ.
 
     Выборка та же, что у колонок (последние сметы договоров плюс фильтры класса и
     периода), поэтому счётчики отвечают именно про то, что человек смотрит. Считать по
     всей базе значило бы говорить о работах, которых на этом экране всё равно нет.
+
+    Третья причина — `positions_without_price` (задача 5 плана правила цены, спека
+    §1.8/§2.9): работа есть, она работа, но ни одной пригодной цены. Без неё экран
+    называл бы неверную причину пустоты ровно там, где цены не заполнены, — тот же
+    класс ошибки, что уже находил прогон стенда на `TO_REVIEW` (докстрока
+    `_pending_review_condition`).
 
     Возвращает `dict` под распаковку в ответ: имена ключей — часть контракта API, и
     держать их в одном месте надёжнее, чем повторять на стороне вызова.
@@ -1160,6 +1953,7 @@ def _unmatched_in_scope(
     return {
         "positions_pending_review": row.pending_review,
         "positions_non_work": row.non_work,
+        "positions_without_price": row.without_price,
     }
 
 
@@ -1174,8 +1968,17 @@ def _shape_matrix_rows(rows) -> list[dict]:
     ячейку матрицы (по одной на встретившуюся базу), поэтому здесь ДВА прохода:
     первый заводит скелет строки (по первой встреченной группе — job_title и
     unit_code от неё не зависят), второй собирает группы каждой ячейки и
-    сворачивает их `_fold_cell`-ом. Одного прохода недостаточно: группы одной
-    ячейки не обязаны идти в результате подряд.
+    сворачивает их. Одного прохода недостаточно: группы одной ячейки не обязаны
+    идти в результате подряд.
+
+    **Два пути свёртки ячейки** (спека §2.5): если среди строк ячейки есть хотя
+    бы одна ИНГЕСТИРУЮЩАЯ (`_fold_cell`, различитель — `weighted_cost is not
+    None`, LEFT JOIN с `cell_groups` иначе оставил бы её `NULL`), ставка
+    считается по ним; если нет — причину называет `_cell_without_ingesting` по
+    агрегатам присутствия (`excluded.any_*`), которые LEFT JOIN с `excluded`
+    несёт на ТОЙ ЖЕ строке результата. Присутствие (`_presence_cte`)
+    гарантирует, что для любой ячейки страницы сработает ровно одна из этих
+    двух веток — пустых с обеих сторон не бывает.
     """
     shaped: dict[int, dict] = {}
     order: list[int] = []
@@ -1199,23 +2002,90 @@ def _shape_matrix_rows(rows) -> list[dict]:
         groups[key].append(r)
 
     for catalog_position_id, contract_id in group_order:
-        shaped[catalog_position_id]["cells"].append(
-            {"contract_id": contract_id, **_fold_cell(groups[(catalog_position_id, contract_id)])}
-        )
+        cell_rows = groups[(catalog_position_id, contract_id)]
+        ingesting = [r for r in cell_rows if r.weighted_cost is not None]
+        if ingesting:
+            cell = _fold_cell(ingesting)
+        else:
+            cell = _cell_without_ingesting(cell_rows[0], cell_rows[0].presence_standard_unit_rate)
+        shaped[catalog_position_id]["cells"].append({"contract_id": contract_id, **cell})
     return [shaped[cp] for cp in order]
 
 
+def _row_exclusion_reason(price: Decimal | None, weight: Decimal | None) -> str:
+    """Причина невхождения ОДНОЙ строки drill-down в ставку ячейки (задача 3
+    плана правила цены, спека §2.8).
+
+    **`not_finite` обязана проверяться ПЕРВОЙ — это реальный, наблюдаемый
+    приоритет** (правка ревью, круг 1): без него цена `-Infinity` ушла бы в
+    `negative` (`Decimal("-Infinity") < 0` не бросает и не различает
+    бесконечность от обычного отрицательного числа), а отрицательная цена при
+    НЕФИНИТНОМ весе ушла бы в `negative`, даже не заметив, что сам вклад
+    невычислим (`test_matrix_cell_drilldown_excluded_reason_not_finite_wins_
+    over_negative_price`, `..._with_nonfinite_weight`).
+
+    **Порядок между `no_weight` и `negative` НИЖЕ — не приоритет, а
+    ненаблюдаемое следствие того, что на ОДНОЙ строке (в отличие от агрегата
+    `_presence_row_flags`, где РАЗНЫЕ строки одной ячейки могут дать разные
+    флаги одновременно) эти два условия взаимно исключают друг друга по
+    значению `price`:** `no_weight` требует `is_price(price)` истинным (цена
+    конечна и `> 0`), `negative` требует `price < 0` — оба разом с одним и тем
+    же `price` не выполняются никогда, и переставленный порядок не меняет ни
+    одного ответа (подтверждено снятием — отчёт задачи, круг 1, правка 3).
+    Порядок оставлен таким же, как у `_cell_without_ingesting`, ради
+    единообразия чтения, а не потому что он что-то решает.
+
+    Фолбэк `no_price` всегда достижим: позиция уже исключена
+    (`not (is_price(price) and is_weight(weight))`), и если её не поймала ни
+    одна из трёх веток выше, цена пуста или ноль.
+    """
+    price_nonfinite = price is not None and not price.is_finite()
+    weight_nonfinite = weight is not None and not weight.is_finite()
+    if price_nonfinite or weight_nonfinite:
+        return "not_finite"
+    # Ниже порядок НЕНАБЛЮДАЕМ (см. докстроку) — оставлен для единообразия с
+    # `_cell_without_ingesting`, а не потому что одна ветка важнее другой.
+    if is_price(price) and not is_weight(weight):
+        return "no_weight"
+    if price is not None and price < 0:
+        return "negative"
+    return "no_price"
+
+
 def _cell_item(r) -> dict:
-    """Строка drill-down: валовое из файла, нетто из ячейки и база между ними.
+    """Строка drill-down: валовое из файла, нетто из ячейки, база между ними и
+    признак вхождения в ставку (задача 3 плана правила цены, спека §2.8).
 
     `unit_cost_total` НЕ трогается — это исходные деньги файла, и спека пересчёта
     §2.4 обещает их посимвольное совпадение. `unit_cost_net` добавляется рядом:
     без него человек складывал бы валовые, а ячейка показывала бы нетто
     (`test_matrix_cell_drilldown_survives_the_migration`).
+
+    Носитель — `_all_positions_select`: строка может быть НЕВОШЕДШЕЙ (её цена
+    или вес не проходят `is_price`/`is_weight`). Невошедшая строка несёт деньги
+    файла ДОСЛОВНО и причину невхождения (`excluded_reason`), но ОТКЛОНЕНИЕ для
+    неё не вычисляется вовсе (решение «чего не считать для невошедшей строки»):
+    норматив и база НДС ей не нужны ни для чего, и вызывать ради неё
+    `_net_deviation` значило бы приписать позиции факт, которого система не
+    утверждает. `deviation_pct`/`deviation_reason` невошедшей строки поэтому
+    пусты ОБА — и это не перегрузка смысла пустоты (`docs/insights/
+    one-value-two-states.md`): различитель — `included`, читаемое ПЕРВЫМ.
+    `deviation_reason` невошедшей строки никогда не `"no_rate"` — этот код
+    придуман для ЯЧЕЙКИ (`_cell_without_ingesting`), а не для позиции: у
+    позиционных поверхностей `deviation_reason` сохраняет сегодняшний перечень
+    значений (Global Constraints плана, ревизия §4 спеки §2.7).
     """
-    net, deviation_pct, reason = _net_deviation(
-        r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
-    )
+    included = is_price(r.unit_cost_total) and is_weight(r.weight)
+    if included:
+        net, deviation_pct, reason = _net_deviation(
+            r.unit_cost_total, r.vat_rate_base, r.standard_unit_rate
+        )
+        excluded_reason = None
+    else:
+        net = None
+        deviation_pct = None
+        reason = None
+        excluded_reason = _row_exclusion_reason(r.unit_cost_total, r.weight)
     return {
         "position_item_id": r.position_item_id,
         "job_title": r.job_title_in_proposal,
@@ -1228,29 +2098,33 @@ def _cell_item(r) -> dict:
         "standard_unit_rate": r.standard_unit_rate,
         "deviation_pct": deviation_pct,
         "deviation_reason": reason,
+        "included": included,
+        "excluded_reason": excluded_reason,
     }
 
 
 def get_matrix_cell(db: Session, *, contract_id: int, catalog_position_id: int) -> dict:
-    """Drill-down по ячейке (§6): позиции, из которых сложилась средневзвешенная ставка.
+    """Drill-down по ячейке (§6, задача 3 плана правила цены — спека §2.8):
+    ВСЕ позиции работы в последней смете договора, а не только вошедшие в
+    ставку.
 
-    Показывает именно те строки, которые участвовали в расчёте, — из последней сметы
-    договора и с `weight > 0`. Иначе человек, проверяя цифру, складывал бы не то, что
-    сложила система (ставка теперь нетто — спека пересчёта §2.4).
+    До этой задачи показывались только строки, участвовавшие в расчёте
+    (`weight > 0` поверх VIEW). Теперь носитель — `_all_positions_select`:
+    ячейка `rate_reason = "no_price"` (и любая другая пустая ставка) обязана
+    открыть НЕПУСТОЙ список строк с признаком невхождения и его причиной —
+    иначе утверждение экрана «работа есть, цены нет» нечем было бы проверить
+    (решение о носителе, отчёт задачи 2 плана правила цены).
     """
     estimate = get_latest_estimate(db, contract_id)
     if estimate is None:
         raise DomainError(404, f"У договора {contract_id} нет ни одной сметы.")
 
     rows = db.execute(
-        _priced_positions_select(estimate.id)
-        .where(
-            DEVIATION_INPUTS.c.catalog_position_id == catalog_position_id,
-            DEVIATION_INPUTS.c.weight > 0,
-        )
+        _all_positions_select(estimate.id)
+        .where(PositionItem.catalog_position_id == catalog_position_id)
         .order_by(
             PositionItem.total_cost_total.desc().nulls_last(),
-            DEVIATION_INPUTS.c.position_item_id,
+            PositionItem.id,
         )
     ).all()
 

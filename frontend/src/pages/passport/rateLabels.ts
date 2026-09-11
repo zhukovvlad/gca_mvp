@@ -13,6 +13,13 @@ import type { MoneyShareState, RateNote, RateState } from "@/types/domain";
  * подпись, а три, выбранные по `rate_note` (см. `RATE_NOTE_LABEL` ниже,
  * решение У3 «б»).
  *
+ * `amount_zero` (правило цены, задача 6/9 плана 2026-09-09) — «сумма статьи
+ * равна нулю», НЕ «цены нет»: сумма ИЗВЕСТНА и равна нулю, а нулевая сумма
+ * отсутствия цен по позициям не доказывает (позиция без цены дала бы своей
+ * статье `null`, а не ноль). Тот же принцип различимости, что у `total`/
+ * `share_pct` узла (`types/domain.ts::ProjectPassportCategory`): `null` и
+ * ноль — разные факты, и здесь тоже.
+ *
  * `satisfies Record<RateState, string | null>`, а не аннотация типа: новое
  * состояние `RateState`, забытое в этой карте, обязано ронять `tsc`, а не
  * тихо превращаться в пустую клетку на экране.
@@ -32,6 +39,7 @@ export const RATE_STATE_LABEL = {
   unit_not_scalable: "не нормируется",
   volume_missing: "объём в смете не указан",
   volume_nonpositive: "объём не годится",
+  amount_zero: "сумма статьи равна нулю",
   volume_inconsistent: null,
   rate: null,
 } satisfies Record<RateState, string | null>;

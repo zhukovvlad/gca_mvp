@@ -34,6 +34,7 @@ from parser.postprocess import BASELINE_MISSING_TITLE
 from services.category_override import set_override
 from services.category_resolution import CategoryResolver
 from services.estimate_import import (
+    MAX_VALUE_WARNINGS,
     EstimateImportError,
     compare_header,
     import_estimate,
@@ -323,6 +324,451 @@ class TestMoneyAndQuantities:
 
         assert any("и ещё" in w for w in outcome.warnings)
         assert sum("мусор" in w for w in outcome.warnings) == 10
+
+
+# ---------------------------------------------------------------------------
+#  Два предупреждения спеки правила цены §2.9: отрицательная цена; цена ноль
+#  при ненулевом итоге (`docs/superpowers/specs/2026-09-09-price-predicate-
+#  design.md`)
+# ---------------------------------------------------------------------------
+
+class TestPriceDomainWarnings:
+    """Задача 7 плана правила цены: предупреждения о СОСТОЯНИИ уже
+    сохранённых денег строки.
+
+    Оба предупреждения пишет `import_estimate` — то есть сессия B (`AGENTS.md`
+    §5, docstring `import_estimate`: `db` — «сессия B, транзакция уже
+    открыта»): это не отдельный путь записи, а тот же список `warnings`, что
+    несёт остальные предупреждения СЕССИИ B (замена сметы, расхождение шапки —
+    `AGENTS.md` §5, а не спека правила цены), закоммиченный вызывающим
+    (`import_pipeline.finalize_done`) ПОСЛЕДНЕЙ операцией той же транзакции,
+    что и сам домен. Прямое наблюдение этого факта — в
+    `test_import_pipeline.py::TestAtomicity`, куда и до этой задачи ходят все
+    проверки атомарности `AGENTS.md` §5; здесь, в `import_estimate`, наблюдать
+    запись в `import_jobs.warnings` нечем — функция её не пишет вовсе.
+    """
+
+    def test_negative_unit_price_warns_and_keeps_value_verbatim(
+        self, db_session, factories, resolver
+    ):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="-50.00", total_cost_total="-500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("отрицательная" in w for w in outcome.warnings)
+        # `expire_all()` ДО чтения: без него `select` вернул бы уже
+        # закешированный в identity map Python-объект, который мы сами только
+        # что создали, и совпадение полей доказывало бы лишь то, что мы не
+        # перезаписали собственную переменную, а не то, что значение УШЛО в
+        # БД (находка ревью задачи 7, правка 9).
+        db_session.expire_all()
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        # Дословность — по чтению из БД, а не по факту, что импорт не упал
+        # (`docs/insights/verifying-guards.md`, слой 1): значение НЕ NULL и НЕ
+        # ноль, а ровно то, что пришло из файла.
+        assert item.unit_cost_total == Decimal("-50.00")
+        assert item.total_cost_total == Decimal("-500.00")
+
+    def test_zero_price_with_nonzero_total_warns_and_keeps_values_verbatim(
+        self, db_session, factories, resolver
+    ):
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="0", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("не ноль" in w for w in outcome.warnings)
+        db_session.expire_all()  # см. правку 9 выше — иначе чтение мимо БД
+        item = db_session.execute(
+            sa.select(PositionItem).join(Proposal).join(Lot).where(
+                Lot.estimate_id == outcome.estimate_id
+            )
+        ).scalar_one()
+        assert item.unit_cost_total == Decimal("0")
+        assert item.total_cost_total == Decimal("500.00")
+
+    def test_zero_price_with_zero_total_is_not_a_contradiction(self, db_session, factories, resolver):
+        """Ноль и ноль — обычная непосчитанная строка, а не противоречие."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="0", total_cost_total="0")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+        assert not any("отрицательная" in w for w in outcome.warnings)
+
+    def test_zero_price_with_empty_total_is_not_a_contradiction(self, db_session, factories, resolver):
+        """Итог не указан вовсе (`None`) — не «не ноль»: сравнивать не с чем."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="0")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_empty_price_with_nonzero_total_is_not_a_contradiction(self, db_session, factories, resolver):
+        """Пусто — не ноль: `AGENTS.md` §3 держит пустую стоимость как `NULL`,
+        не как замаскированный ноль, а спека правила цены §2.1 не даёт пустой
+        цене отдельного смысла сверх «не цена» — этого недостаточно, чтобы
+        считать пустую цену явным нулём, заявленным файлом.
+
+        Различие входов — «зачем задача не смешивает пустую и нулевую цену» —
+        не абстрактное: замер стенда `gca_dev` (спека правила цены §1.1)
+        показал 10 674 позиции без цены из 64 505, и `NULL`-цен среди них
+        ноль — состояние в базе фактически одно и записано нулём. Символьный
+        тест на настоящий `None` поэтому обязателен отдельно от теста на явный
+        `"0"`: реальные данные почти всегда несут именно ноль, и тест на
+        `None`, случись он единственным, не покрыл бы то, что происходит на
+        стенде.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_negative_price_does_not_also_report_zero_contradiction(
+        self, db_session, factories, resolver
+    ):
+        """Строка получает ровно одно предупреждение: «отрицательная», не оба.
+
+        Утверждение верное, но не мутанто-убивающее — честно про это (ревью
+        задачи 7, правка 4). Докстрока раньше заявляла, что тест стережёт
+        мутанта `price == 0` → `price <= 0`. Неверно, и проверено прогоном
+        дважды: (1) с `price <= 0` во второй проверке набор из 12 тестов
+        остаётся зелёным целиком; (2) с `if`/`elif`, превращённым в два
+        независимых `if` (при неизменном `price == 0`), тоже. Причина одна и
+        та же в обоих случаях: `price < 0` и `price == 0` (как и `price <= 0`
+        внутри домена, где `elif` вообще исполняется, `price >= 0`) —
+        взаимно исключающие условия ПО ЗНАЧЕНИЮ, а не по конструкции
+        `if`/`elif`; последняя тут ничего не решает и не может быть мутирована
+        так, чтобы это стало наблюдаемым.
+
+        Тест оставлен как документация факта (одна строка — одно
+        предупреждение), а не как защита от конкретной мутации: живого риска,
+        который он ловил бы, реализация не создаёт, потому что оба условия
+        математически не пересекаются ни при какой перестановке `if`/`elif`.
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="-10.00", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("отрицательная" in w for w in outcome.warnings)
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_nan_price_does_not_crash_and_is_not_flagged(self, db_session, factories, resolver):
+        """`Decimal("NaN") < 0` бросает `InvalidOperation`, а не отвечает `False`
+        (`money/price.py`, `_vat_rate`) — конечность обязана проверяться ДО
+        сравнения. Нефинитная цена — не отрицательная и не ноль: ни одно из
+        двух предупреждений эта задача не заводит про неё."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="NaN", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("отрицательная" in w for w in outcome.warnings)
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_negative_infinity_price_does_not_crash_and_is_not_flagged(
+        self, db_session, factories, resolver
+    ):
+        """Вход, которого не было (ревью задачи 7, правка 3): спека правила
+        цены §2.2 называет СЕМЬ входов предикатной сверки — пусто, ноль,
+        положительное, отрицательное, `NaN`, `+Infinity`, `-Infinity` — а
+        `-Infinity` не был предъявлен ни разу. Это не то же самое, что
+        `NaN`: `Decimal("-Infinity") < 0` НЕ бросает `InvalidOperation` (в
+        отличие от `NaN`, ordering для бесконечностей определён) — со снятой
+        проверкой `is_finite()` этот вход даёт ЛОЖНОЕ предупреждение
+        «отрицательная», молча, без исключения (`docs/pitfalls/backend.md`:
+        «у величины, чей знак участвует в решении, тест обязан покрыть ОБА
+        знака» — знак здесь ложно определяется КАК отрицательный, а не просто
+        не проверяется)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="-Infinity", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("отрицательная" in w for w in outcome.warnings)
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_positive_infinity_price_does_not_crash_and_is_not_flagged(
+        self, db_session, factories, resolver
+    ):
+        """Второй знак того же нефинитного входа (пара к тесту выше, тот же
+        пункт спеки §2.2). Отдельно от `-Infinity`: у `+Infinity` `price < 0`
+        и без `is_finite()` осталась бы ложной, поэтому она НЕ ловит мутанта
+        «снят `is_finite()` у цены» сама по себе — это честно проверено
+        мутационным прогоном (см. отчёт, правка 3) и не выдаётся за
+        независимую защиту; тест здесь ради полноты семи входов спеки, а не
+        ради уникального мутанта."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="Infinity", total_cost_total="500.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("отрицательная" in w for w in outcome.warnings)
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_infinite_total_does_not_trigger_zero_price_contradiction(
+        self, db_session, factories, resolver
+    ):
+        """Решение: нефинитный итог не считается «не нолём» для этого правила —
+        `Infinity != 0` не бросает, но и не является тем фактом, который правило
+        обещает («противоречие двух денежных КОЛОНОК файла», а не «итог не
+        является числом» — у последнего своя, здесь не заводимая история)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="0", total_cost_total="Infinity")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_negative_total_with_zero_price_still_warns(self, db_session, factories, resolver):
+        """У `total_cost_total` нет `CHECK` на знак (`docs/pitfalls/backend.md`):
+        отрицательный итог — тоже «не ноль», сравнение идёт равенством, а не
+        знаком."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="0", total_cost_total="-5.00")],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("не ноль" in w for w in outcome.warnings)
+
+    def test_no_domain_price_warnings_on_clean_estimate(self, db_session, factories, resolver):
+        """Негативный вход задачи: смета без единой такой строки предупреждений
+        спеки правила цены §2.9 не получает вовсе (`_default_position()` —
+        обычная расценённая строка: цена и итог положительны и совпадают по
+        знаку)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(contract)
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert not any("отрицательная" in w for w in outcome.warnings)
+        assert not any("цена за единицу ноль" in w for w in outcome.warnings)
+
+    def test_chapter_with_zero_price_and_nonzero_total_gets_no_contradiction_warning(
+        self, db_session, factories, resolver
+    ):
+        """Ре-ревью: раздел (`is_chapter=True`) несёт свёрнутый итог дочерних
+        строк, а не произведение цены на объём, — своей цены за единицу у
+        него нет вовсе. Нулевая цена при ненулевом свёрнутом итоге для
+        раздела НОРМАЛЬНАЯ форма, а не аномалия, и предупреждение
+        «цена ноль, а итог не ноль» не должно на него срабатывать (в отличие
+        от обычной позиции — `test_negative_total_with_zero_price_still_warns`
+        и соседние тесты того же предупреждения проверяют её отдельно).
+
+        Снятием показано, что условие СТЕРЕЖЁТСЯ: без `not is_chapter` внутри
+        `_price_domain_warnings` этот тест краснеет — см. отчёт правки 3."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(
+                    job_title="Раздел",
+                    is_chapter=True,
+                    chapter_number="1",
+                    unit_cost_total="0",
+                    total_cost_total="1000.00",
+                )
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_chapter_with_negative_price_still_warns(self, db_session, factories, resolver):
+        """Пара к тесту выше: отрицательная цена за единицу у раздела —
+        аномалия НАРАВНЕ с позицией (§2.9 не делает исключения по `is_chapter`
+        для этого предупреждения, только для противоречия «ноль/не ноль»).
+        `_price_domain_warnings` вызвана и здесь с `is_chapter=True`, и
+        предупреждение об отрицательной цене всё равно поднимается."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(
+                    job_title="Раздел",
+                    is_chapter=True,
+                    chapter_number="1",
+                    unit_cost_total="-10.00",
+                    total_cost_total="1000.00",
+                )
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("отрицательная" in w for w in outcome.warnings)
+
+    def test_domain_price_warnings_are_squashed_with_honest_tail(
+        self, db_session, factories, resolver
+    ):
+        """Поток: смета стенда несёт тысячи строк без цены — тот же `_squash`,
+        что стережёт `value_problems`, вызван с другим `tail=` (спека правила
+        цены §2.9; после правки 5 ревью — общая функция, а не копия): значения
+        здесь сохранены дословно, а не превращены в `NULL`, и текст по
+        умолчанию у `_squash` соврал бы."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(job_title=f"Работа {i}", unit="шт", unit_cost_total="-1.00", total_cost_total="0")
+                for i in range(30)
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert sum("отрицательная" in w for w in outcome.warnings) == 10
+        assert any("и ещё" in w and "похожей проблемой цены" in w for w in outcome.warnings)
+        assert not any("NULL" in w for w in outcome.warnings if "отрицательная" in w or "похожей проблемой" in w)
+
+    def test_domain_price_warnings_at_exactly_the_cap_get_no_tail(
+        self, db_session, factories, resolver
+    ):
+        """Граничный вход: РОВНО `MAX_VALUE_WARNINGS` строк — условие `_squash`
+        `len(problems) <= MAX_VALUE_WARNINGS` включает границу, хвоста быть не
+        должно (ревью задачи 7, правка 5: у ограничителя не было ни одного
+        граничного входа — «N-1 / N / N+1» покрыт был только у общего потока
+        `test_value_warnings_are_squashed`, у второго ограничителя не было
+        никакого)."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(job_title=f"Работа {i}", unit="шт", unit_cost_total="-1.00", total_cost_total="0")
+                for i in range(MAX_VALUE_WARNINGS)
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert sum("отрицательная" in w for w in outcome.warnings) == MAX_VALUE_WARNINGS
+        assert not any("и ещё" in w for w in outcome.warnings)
+
+    def test_negative_price_row_from_an_earlier_lot_is_rolled_back_with_the_rest_of_the_domain(
+        self, db_session, factories, resolver
+    ):
+        """Не проверка предупреждения — проверка того, что породившая его
+        строка не переживает откат, если импорт падает ПОЗЖЕ, в другом лоте.
+
+        Переименован и переписан по правке 1 ревью задачи 7: старое имя
+        (`test_price_warning_...`) утверждало, что тест наблюдает судьбу
+        ПРЕДУПРЕЖДЕНИЯ. Это неправда — на уровне `import_estimate` его
+        наблюдать нечем: функция не пишет `import_jobs.warnings`, только
+        возвращает `ImportOutcome`, и здесь она вообще не возвращает его
+        (падает раньше). Мутант «`_price_domain_warnings` всегда возвращает
+        `[]`» оставил бы старую версию этого теста зелёной — три его
+        утверждения были ИСКЛЮЧИТЕЛЬНО об отсутствии строк, что уже
+        стережёт `TestRejections::test_rejection_leaves_nothing_behind`.
+
+        Что тест ДЕЙСТВИТЕЛЬНО показывает и зачем: лот 1 обрабатывается
+        ЦЕЛИКОМ — строка с отрицательной ценой проходит `_import_positions`
+        и уже добавлена в сессию (`db.add_all` + `db.flush()`), то есть она
+        не «случайно не создана», а реально существовала и была уничтожена
+        откатом. Лот 2 нарушает гейт формы 1.1.0 (тот же приём, что
+        `TestAdditionalWorks.test_stale_1_1_0_shape_is_rejected`) и роняет
+        ВЕСЬ импорт уже ПОСЛЕ лота 1. Это необходимое, но не достаточное
+        условие утверждения плана «предупреждения пишет сессия B» — прямое
+        наблюдение отсутствия ТЕКСТА предупреждения в `import_jobs.warnings`
+        теперь есть отдельно, в
+        `test_import_pipeline.py::TestAtomicity::test_domain_price_warning_does_not_survive_a_crash_before_finalize`
+        (правка 2 того же ревью, область расширена туда явно).
+        """
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        stale_copy = position(
+            job_title="Дополнительные работы",
+            number=None,
+            chapter_number=None,
+            total_cost_total="300.00",
+        )
+        data = payload_for(
+            contract,
+            [position(job_title="Работа", unit="шт", unit_cost_total="-5.00", total_cost_total="-50.00")],
+        )
+        data["lots"]["lot_2"] = {
+            "lot_title": "Лот №2",
+            "proposals": {
+                "contractor_1": proposal(
+                    [stale_copy], additional_works=additional_works_row(total="300.00")
+                )
+            },
+            "baseline_proposal": {"title": "Расчетная стоимость отсутствует"},
+        }
+
+        with pytest.raises(EstimateImportError, match=re.escape("1.1.0")):
+            run_import(db_session, resolver, contract, data)
+        db_session.rollback()
+
+        estimate_count = db_session.execute(
+            sa.select(sa.func.count()).select_from(Estimate).where(Estimate.contract_id == contract.id)
+        ).scalar_one()
+        assert estimate_count == 0
+        negative_price_rows = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(PositionItem)
+            .where(PositionItem.unit_cost_total == Decimal("-5.00"))
+        ).scalar_one()
+        assert negative_price_rows == 0
 
 
 # ---------------------------------------------------------------------------

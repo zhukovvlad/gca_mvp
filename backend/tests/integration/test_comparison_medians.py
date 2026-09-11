@@ -11,6 +11,15 @@
 
 `rows[].medians` этот ключ не несёт НИКОГДА, ни в одном режиме, ни в одной
 корзине — им продолжает пользоваться голый `_median_dict`.
+
+**Отбор сравнимых ячеек — общий предикат `is_price`** (план фичи предиката
+цены `2026-09-09-price-predicate-design.md`, задача 8). Три теста в конце
+файла добавлены этой задачей и НЕ переписывают ничего из уже стоявших выше:
+доказательством того, что поведение НЕ изменилось на выборке с пригодными
+величинами, служит именно НЕТРОНУТЫЙ прогон всех тестов этого файла и файла
+`test_comparison_buckets.py` (`just test-int-local-k comparison` — весь
+экран, а не только медианы), а не какой-то один новый тест, сравнивающий
+вывод сам с собой (`docs/insights/parity-with-the-existing-surface.md`).
 """
 from __future__ import annotations
 
@@ -246,3 +255,159 @@ def test_single_mode_without_explicit_rate_uses_effective_rate_for_median(db_ses
         "shown_per_sqm обязан быть согласован с ОТДАННЫМ single_rate (предвыбором), "
         "а не с исходным (None) параметром запроса"
     )
+
+
+# ---------------------------------------------------------------------------
+#  8-10. Задача 8 плана: отбор сравнимых ячеек — общий предикат `is_price`,
+#       не собственная копия правила `!= 0` (см. `crud.comparison._compute_median`).
+# ---------------------------------------------------------------------------
+
+def test_all_priced_cells_keep_todays_comparable_count_and_ids(db_session, factories):
+    """Граница сохранения поведения — названа явно (план задачи 8, утверждение 1).
+
+    ДОКАЗЫВАЕТ, что поведение не изменилось на выборке без непригодных величин,
+    НЕ этот тест: доказательством служит нетронутый прогон семи тестов ВЫШЕ в
+    этом же файле (эта задача не правила в них ни строки) и всего экрана
+    сравнения целиком (`just test-int-local-k comparison`, включая
+    `test_comparison_buckets.py`) — см. `docs/insights/parity-with-the-
+    existing-surface.md`: паритет доказывает равенство с существующей
+    поверхностью на прогоне, а не тест, сравнивающий вывод сам с собой. Этот
+    тест — документирование факта на конкретных числах, а не независимое
+    доказательство.
+
+    Фикстура — `_three_bucket_contracts`, ТА ЖЕ, что у теста 1 выше: корзина
+    ДГП даёт net_per_sqm 1/2/3 — все конечны и положительны. `is_price`
+    пропускает каждую ровно так же, как раньше пропускало `!= 0`: состав и
+    порядок `contract_ids` не меняются.
+    """
+    ids = _three_bucket_contracts(db_session, factories)
+
+    agg = cmp.build_comparison(db_session, ids, vat_mode=cmp.VAT_MODE_NET)
+    median = _totals_median(agg, bucket=cmp.BUCKET_BASE)
+
+    assert median["value"] == Decimal("2"), "предпосылка: та же фикстура, что у теста 1"
+    assert median["comparable_count"] == 3, (
+        "все три ячейки конечны и положительны -> ни одна не гасится новым предикатом"
+    )
+    # Множеством, а не списком: порядок `contract_ids` — `signed_date DESC, id
+    # DESC` (`_load_columns`), решение другого правила, к предикату цены
+    # отношения не имеющее; сверять здесь нужно СОСТАВ, а не случайную для
+    # этого теста очерёдность дат.
+    assert set(median["contract_ids"]) == set(ids), (
+        "состав списка id не меняется на выборке без непригодных величин"
+    )
+
+
+def test_negative_net_per_sqm_is_excluded_and_the_median_disappears(db_session, factories):
+    """Отрицательная ячейка перестаёт быть сравнимой (план задачи 8, утверждения 2, 3).
+
+    Отрицательный `net_per_sqm` — не надуманный вход: знак
+    `position_items.total_cost_total` схемой не ограничен, `CHECK` на знак
+    нет (независимо подтверждено ревью). Здесь отрицательная ячейка ОДНА —
+    меняется именно ЧИСЛО сравнимых, а не итоговое значение симметричным
+    гашением пары.
+
+    Три договора, ставка НДС 0 % (нетто = валовое, площадь каждого — 100 м²):
+    1000 -> net_per_sqm 10; 3000 -> net_per_sqm 30; -500 -> net_per_sqm -5.
+
+    ДОФИЧЕВЫМ условием (`is not None and != 0`) все три считались бы
+    сравнимыми — `-5 != 0` истинно, и `sorted([-5, 10, 30])` дал бы медиану
+    10, то есть медиана БЫЛА БЫ. Новым условием (`is_price`) отрицательная
+    ячейка не проходит: сравнимых остаётся ДВА — меньше трёх (правило 5), и
+    медианы нет вовсе. Один вход предъявляет сразу оба утверждения плана:
+    падение `comparable_count` и исчезновение медианы, которая иначе была бы.
+
+    **Собственная предпосылка теста проверяется отдельно (ревью, правка 3).**
+    Три утверждения ниже про счётчик/состав/медиану НЕ отличают «c исключён,
+    потому что отрицателен» от «c не доехал до ячейки вовсе»: замерено, что
+    фикстура БЕЗ категории "1" у c (`state == cmp.ABSENT`, `net_per_sqm is
+    None`) даёт ТЕ ЖЕ три внешних результата — `comparable_count == 2`,
+    `contract_ids == {a, b}`, `value is None` — при СОВСЕМ другой причине.
+    Поэтому здесь дополнительно читается ОТДЕЛЬНАЯ ячейка договора `c` и
+    утверждается: величина ДОЕХАЛА (`net_per_sqm is not None`) И именно
+    ОТРИЦАТЕЛЬНА — не любая другая причина исключения.
+    """
+    a = fx.contract_with_area(
+        db_session, factories, {"1": ["1000.00"]}, vat_rate=Decimal("0"),
+        area_aboveground="50", area_underground="50",
+    )
+    b = fx.contract_with_area(
+        db_session, factories, {"1": ["3000.00"]}, vat_rate=Decimal("0"),
+        area_aboveground="50", area_underground="50",
+    )
+    c = fx.contract_with_area(
+        db_session, factories, {"1": ["-500.00"]}, vat_rate=Decimal("0"),
+        area_aboveground="50", area_underground="50",
+    )
+    ids = [a, b, c]
+
+    agg = cmp.build_comparison(db_session, ids, vat_mode=cmp.VAT_MODE_NET)
+    median = _totals_median(agg, bucket=cmp.BUCKET_TOTAL)
+
+    assert median["comparable_count"] == 2, (
+        "предпосылка нарушена, если жива старая копия правила: она пропустила бы "
+        "отрицательную ячейку как сравнимую, и счётчик остался бы 3"
+    )
+    # Множеством: порядок задаёт `signed_date DESC, id DESC` (`_load_columns`),
+    # не порядок вставки — здесь важен СОСТАВ, отсутствие `c`.
+    assert set(median["contract_ids"]) == {a, b}, (
+        "сравнимыми остаются a и b, отрицательный c выпадает"
+    )
+    assert median["value"] is None, (
+        "два сравнимых меньше трёх -> медианы нет, хотя дофичевым условием она бы была"
+    )
+
+    row_total = next(r for r in agg["rows"] if r["code"] == "1")
+    cell_c_total = next(cc for cc in row_total["cells"] if cc["contract_id"] == c)[cmp.BUCKET_TOTAL]
+    assert cell_c_total["net_per_sqm"] is not None, (
+        "предпосылка: величина ДОЕХАЛА до ячейки c — исключение не потому, что она "
+        "никогда не прибывала (ABSENT дал бы тот же None здесь и те же три утверждения выше)"
+    )
+    assert cell_c_total["net_per_sqm"] < 0, (
+        "и она именно ОТРИЦАТЕЛЬНА — а не любая другая непригодная причина"
+    )
+
+
+def test_non_finite_net_per_sqm_is_excluded_without_crashing():
+    """Нефинитная ячейка исключена, а не роняет сравнение (план задачи 8, утверждение 2).
+
+    Полный конвейер `build_comparison` НЕ умеет породить нефинитный
+    `net_per_sqm` — не потому что случая нет в жизни, а потому что каждый
+    слой на пути к нему нарочно бросает раньше, чем нефинитное значение
+    доедет: VIEW `v_category_totals` (миграция 0012) суммирует `total_cost_
+    total` с `FILTER (WHERE <> 'NaN' AND <> 'Infinity' AND <> '-Infinity')`,
+    а вся денежная арифметика этого модуля (`_VAT_CONTEXT`, `_DIV_CONTEXT`)
+    держит `traps=[Overflow, DivisionByZero, InvalidOperation]`. Поэтому вход
+    строится НАПРЯМУЮ на `_compute_median`, минуя `build_comparison`, тем же
+    типом `BucketCell`, каким пользуется сама функция — прямой вызов
+    приватной функции модуля в тестах этого файла уже есть прецедентом
+    (`test_comparison_inflation.py` вызывает `cmp._load_categories` так же).
+
+    Почему это не бесполезная проверка. ДОФИЧЕВОЕ условие (`!= 0`) NaN не
+    ловит: сравнение Decimal на неравенство с NaN не бросает и молча
+    истинно (`Decimal("NaN") != 0` -> `True`), то есть NaN прошла бы фильтр
+    и попала бы в `sorted(...)` вместе с двумя конечными значениями — а `<`
+    на NaN бросает `InvalidOperation` (спека §1.2). Значит старое условие на
+    этом входе не тихо ошибалось бы, а РОНЯЛО БЫ весь расчёт медианы. Новое
+    условие (`is_price`) проверяет конечность ДО сравнения со знаком и
+    отсеивает NaN на входе, до всякой сортировки.
+    """
+    def cell(value: Decimal | None) -> cmp.BucketCell:
+        return cmp.BucketCell(
+            net=None, shown=None, net_per_sqm=value, shown_per_sqm=None,
+            state=cmp.VALUE, deviation_pct=None, incomplete_reasons=frozenset(),
+        )
+
+    cells = {
+        1: cell(Decimal("10")),
+        2: cell(Decimal("20")),
+        3: cell(Decimal("NaN")),
+    }
+
+    result = cmp._compute_median(cells, [1, 2, 3])
+
+    assert result.comparable_count == 2, (
+        "NaN не конечна -> is_price ложен -> исключена, сравнимых остаётся ДВА"
+    )
+    assert result.contract_ids == [1, 2], "порядок сохраняет договоры 1 и 2, NaN-ячейка выпадает"
+    assert result.value is None, "два сравнимых меньше трёх -> медианы нет, а не мусор и не падение"

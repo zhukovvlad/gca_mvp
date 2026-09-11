@@ -135,6 +135,46 @@ describe("Таблица статей: единица, объём, ставка 
     expect(within(rate).getByText("дополнительные работы")).toBeInTheDocument();
   });
 
+  it("amount_zero → «сумма статьи равна нулю», отличимо от amount_missing НА ЭКРАНЕ", async () => {
+    /*
+      «04.01» в фикстуре несёт volume_missing по умолчанию — переопределён этим
+      тестом локально (msw-обработчик per-test, других тестов не задевает).
+      «05» («Фасадные работы») — корень, видимый БЕЗ разворота, несёт
+      no_carrier по умолчанию — тоже переопределён, чтобы поставить
+      amount_missing РЯДОМ с amount_zero в одном рендере.
+
+      Ревью задачи 9: прежняя проверка сравнивала `RATE_STATE_LABEL.amount_zero
+      !== RATE_STATE_LABEL.amount_missing` — карту саму с собой, а не экран.
+      Здесь оба состояния рендерятся ОДНОВРЕМЕННО и сверяются по своим
+      testid — наблюдение за ЭКРАНОМ, а не за словарём, из которого он читает.
+    */
+    withPassport((base) => ({
+      ...base,
+      categories: base.categories.map((c) => {
+        if (c.code === "04.01") {
+          return { ...c, rate_state: "amount_zero", unit: null, volume: null, unit_rate: null };
+        }
+        if (c.code === "05") {
+          return { ...c, rate_state: "amount_missing" };
+        }
+        return c;
+      }),
+    }));
+    renderPassport();
+    await screen.findByText("ГП-0212");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Развернуть статью 04" }));
+
+    const zeroRate = await screen.findByTestId("rate-cat-04.01");
+    const missingRate = screen.getByTestId("rate-cat-05");
+
+    expect(within(zeroRate).getByText("сумма статьи равна нулю")).toBeInTheDocument();
+    expect(within(missingRate).getByText("сумма не прочитана")).toBeInTheDocument();
+    // Различимость — по обе стороны: ни один узел не несёт подпись другого.
+    expect(within(zeroRate).queryByText("сумма не прочитана")).not.toBeInTheDocument();
+    expect(within(missingRate).queryByText("сумма статьи равна нулю")).not.toBeInTheDocument();
+  });
+
   it.each([
     { note: "mixed_units" as RateNote, caption: "объём смешан" },
     { note: "overshoot" as RateNote, caption: "объём не сходится" },
