@@ -599,6 +599,63 @@ class TestPriceDomainWarnings:
         assert not any("отрицательная" in w for w in outcome.warnings)
         assert not any("цена за единицу ноль" in w for w in outcome.warnings)
 
+    def test_chapter_with_zero_price_and_nonzero_total_gets_no_contradiction_warning(
+        self, db_session, factories, resolver
+    ):
+        """Ре-ревью: раздел (`is_chapter=True`) несёт свёрнутый итог дочерних
+        строк, а не произведение цены на объём, — своей цены за единицу у
+        него нет вовсе. Нулевая цена при ненулевом свёрнутом итоге для
+        раздела НОРМАЛЬНАЯ форма, а не аномалия, и предупреждение
+        «цена ноль, а итог не ноль» не должно на него срабатывать (в отличие
+        от обычной позиции — `test_negative_total_with_zero_price_still_warns`
+        и соседние тесты того же предупреждения проверяют её отдельно).
+
+        Снятием показано, что условие СТЕРЕЖЁТСЯ: без `not is_chapter` внутри
+        `_price_domain_warnings` этот тест краснеет — см. отчёт правки 3."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(
+                    job_title="Раздел",
+                    is_chapter=True,
+                    chapter_number="1",
+                    unit_cost_total="0",
+                    total_cost_total="1000.00",
+                )
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)  # не должно бросить
+
+        assert not any("не ноль" in w for w in outcome.warnings)
+
+    def test_chapter_with_negative_price_still_warns(self, db_session, factories, resolver):
+        """Пара к тесту выше: отрицательная цена за единицу у раздела —
+        аномалия НАРАВНЕ с позицией (§2.9 не делает исключения по `is_chapter`
+        для этого предупреждения, только для противоречия «ноль/не ноль»).
+        `_price_domain_warnings` вызвана и здесь с `is_chapter=True`, и
+        предупреждение об отрицательной цене всё равно поднимается."""
+        contract = factories.ContractFactory.create()
+        db_session.flush()
+        data = payload_for(
+            contract,
+            [
+                position(
+                    job_title="Раздел",
+                    is_chapter=True,
+                    chapter_number="1",
+                    unit_cost_total="-10.00",
+                    total_cost_total="1000.00",
+                )
+            ],
+        )
+
+        outcome = run_import(db_session, resolver, contract, data)
+
+        assert any("отрицательная" in w for w in outcome.warnings)
+
     def test_domain_price_warnings_are_squashed_with_honest_tail(
         self, db_session, factories, resolver
     ):

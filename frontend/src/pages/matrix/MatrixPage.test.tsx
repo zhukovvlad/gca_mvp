@@ -422,6 +422,51 @@ describe("Причина отсутствия ставки ячейки (rate_re
 });
 
 /**
+ * Причина отсутствия ОТКЛОНЕНИЯ при живой ставке (`deviation_reason`,
+ * `cellDeviationReason` в `MatrixPage.tsx`) — вторая ось §2.5, отдельная от
+ * `rate_reason` выше: здесь ставка ЕСТЬ, отклонения нет.
+ *
+ * Ре-ревью нашло дыру: мутант «`cellDeviationReason` всегда возвращает
+ * `undefined`» не красит НИ ОДИН тест файла (25 из 25 остаются зелёными).
+ * Причина — `cellFixture` по умолчанию несёт непустой `deviation_pct`, и
+ * `DeviationCell` в этой ветке вообще не смотрит на `reason` (пуст только
+ * `value` — сам процент — запускает подстановку причины). Ни разу не было
+ * входа с живой ставкой (`rate_reason: null`) и одновременно пустым
+ * отклонением по причине `not_finite` — единственный сегодняшний носитель
+ * этого кода: нефинитный НОРМАТИВ при посчитанной ставке (`_fold_cell`,
+ * `backend/crud/analytics.py`, ветка `deviation_reason: "not_finite"`).
+ */
+describe("Причина отсутствия отклонения при живой ставке (deviation_reason)", () => {
+  it("нефинитный норматив при живой ставке подписан «не число», а не дефолтным «нет норматива»", async () => {
+    renderMatrix({
+      rows: [
+        {
+          ...rowFixture,
+          cells: [{ ...cellFixture, deviation_pct: null, deviation_reason: "not_finite" }],
+        },
+      ],
+    });
+    await screen.findByText(rowFixture.job_title);
+
+    const cell = clickableCellOf(rowFixture.job_title, "ГП-0114");
+    expect(
+      within(cell).getByTitle("Величина — NaN/Infinity, а не число: сравнивать с нормативом нечего")
+    ).toBeInTheDocument();
+    /*
+      Наблюдаемо через `title`, не через видимый текст: `variant="compact"`
+      рисует прочерк «—» независимо от причины (как и у `unknown_vat_base`
+      выше) — тот же приём, что уже проверен ревью для соседнего теста.
+      Мутант «`cellDeviationReason` всегда `undefined`» подписал бы эту же
+      ячейку дефолтом `DeviationCell` — "no_standard" ("Нет норматива на дату
+      сметы — сравнивать не с чем"); его отсутствие здесь и красит мутанта.
+    */
+    expect(
+      within(cell).queryByTitle("Нет норматива на дату сметы — сравнивать не с чем")
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
  * Пять значений `rate_reason` (правило цены, спека §2.5; задача 9 плана
  * 2026-09-09) обязаны дать пять РАЗЛИЧНЫХ подписей ячейки — сведение любых
  * двух к одному тексту стёрло бы разницу между фактами («нет веса» и «цена
