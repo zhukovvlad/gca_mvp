@@ -419,6 +419,7 @@ export const sampleMatrixRows: MatrixRow[] = [
         amount: "10800450.00",
         standard_unit_rate: "10000.00",
         deviation_pct: "20.005000000000000000",
+        rate_reason: null,
         deviation_reason: null,
       },
       // Второй договор дешевле норматива — знак отклонения обязан быть виден.
@@ -428,6 +429,7 @@ export const sampleMatrixRows: MatrixRow[] = [
         amount: "7199550.00",
         standard_unit_rate: "10000.00",
         deviation_pct: "-5.000000000000000000",
+        rate_reason: null,
         deviation_reason: null,
       },
       // У третьего работы в смете нет вовсе: ячейки не будет — и это НЕ «нет
@@ -457,6 +459,8 @@ export const sampleMatrixRows: MatrixRow[] = [
         // Норматива нет вовсе (а не «база неизвестна») — отсюда deviation_reason.
         standard_unit_rate: null,
         deviation_pct: null,
+        // Ставка ЕСТЬ (rate_reason пуст) — deviation_reason законно "no_standard".
+        rate_reason: null,
         deviation_reason: "no_standard",
       },
     ],
@@ -471,6 +475,7 @@ export const sampleMatrix: Matrix = {
   page_size: 50,
   positions_pending_review: 0,
   positions_non_work: 0,
+  positions_without_price: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1192,6 +1197,8 @@ export const sampleMatrixCellDetail: MatrixCellDetail = {
       standard_unit_rate: "100.00",
       deviation_pct: "0.000000000000000000",
       deviation_reason: null,
+      included: true,
+      excluded_reason: null,
     },
     {
       position_item_id: 9002,
@@ -1205,6 +1212,8 @@ export const sampleMatrixCellDetail: MatrixCellDetail = {
       standard_unit_rate: "100.00",
       deviation_pct: "100.000000000000000000",
       deviation_reason: null,
+      included: true,
+      excluded_reason: null,
     },
   ],
 };

@@ -8,7 +8,8 @@ import { longJobTitle, sampleMatrix } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
-import type { MatrixCell, MatrixRow } from "@/types/domain";
+import { CELL_RATE_REASONS } from "@/types/domain";
+import type { CellRateReason, MatrixCell, Matrix, MatrixRow } from "@/types/domain";
 
 /**
  * Сквозная матрица (§6, §7.5).
@@ -18,11 +19,24 @@ import type { MatrixCell, MatrixRow } from "@/types/domain";
  * различимость «нет норматива» / «работы нет в смете» / «0 %», drill-down и фильтры.
  */
 
-function renderMatrix(overrides?: { rows: MatrixRow[] }) {
+/**
+ * `overrides` — частичный `Matrix`, а не только `rows`: правило цены (задача 9
+ * плана 2026-09-09) добавило `positions_without_price`, и тестам третьей причины
+ * пустоты нужно управлять им же, не трогая `handlerState` (`test/handlers.ts` не
+ * входит в файлы задачи 9). `total` по умолчанию считается от `rows.length`, как и
+ * раньше — переопределить можно явно через сам `overrides.total`.
+ */
+function renderMatrix(overrides?: Partial<Matrix>) {
   if (overrides) {
+    const rows = overrides.rows ?? sampleMatrix.rows;
     server.use(
       http.get("/api/v1/analytics/matrix", () =>
-        HttpResponse.json({ ...sampleMatrix, rows: overrides.rows, total: overrides.rows.length })
+        HttpResponse.json({
+          ...sampleMatrix,
+          ...overrides,
+          rows,
+          total: overrides.total ?? rows.length,
+        })
       )
     );
   }
@@ -40,8 +54,21 @@ const cellFixture: MatrixCell = {
   amount: "360015.00",
   standard_unit_rate: "10000.00",
   deviation_pct: "20.00",
+  rate_reason: null,
   deviation_reason: null,
 };
+
+/** Ячейка без ставки — носитель для теста пяти причин ниже: только `rate_reason` меняется. */
+function unratedCell(reason: CellRateReason): MatrixCell {
+  return {
+    ...cellFixture,
+    rate: null,
+    amount: null,
+    deviation_pct: null,
+    rate_reason: reason,
+    deviation_reason: "no_rate",
+  };
+}
 
 const rowFixture: MatrixRow = {
   catalog_position_id: 701,
@@ -59,6 +86,20 @@ const rowFixture: MatrixRow = {
  * кликабельных ячеек, и `getByTitle` находит их все сразу. Заодно это проверяет,
  * что ячейка стоит в колонке своего договора, — перепутанный порядок колонок
  * иначе прошёл бы незамеченным.
+ *
+ * **Находка задачи 9 (правило цены).** Прежняя версия сдвигала индекс на
+ * единицу, предполагая, что второй уровень шапки (строка договоров) не несёт
+ * колонки «Работа» — а `tanstack-table` кладёт placeholder именно в ПЕРВУЮ
+ * строку (`colSpan`-заголовки объектов), настоящий заголовок «Работа»
+ * оказывается во ВТОРОЙ строке рядом с договорами (проверено дампом DOM:
+ * `[Работа][ГП-0114][ГП-0131][ГП-0140]` — тот же порядок, что и в теле).
+ * Сдвиг оставался незамеченным восемь версий этого файла: у существующих
+ * фикстур сосед по индексу (следующий договор) тоже нёс валидную ячейку, а
+ * мок drill-down отвечает одними и теми же позициями независимо от того,
+ * какой договор кликнули (`http.get(".../matrix/cell", () =>
+ * HttpResponse.json(sampleMatrixCellDetail))` не смотрит на query). Задача 9
+ * впервые построила ряд, где сосед — прочерк `·` без кнопки, и разница между
+ * «индекс верный» и «индекс сдвинут» стала наблюдаемой.
  */
 function clickableCellOf(jobTitle: string, contractNumber: string): HTMLElement {
   const header = screen.getByRole("columnheader", { name: contractNumber });
@@ -66,9 +107,7 @@ function clickableCellOf(jobTitle: string, contractNumber: string): HTMLElement 
   const columnIndex = [...headerRow.children].indexOf(header);
 
   const row = screen.getByText(jobTitle).closest("tr") as HTMLElement;
-  // Шапка договоров — второй уровень, и в ней нет колонки «Работа»: в строке тела
-  // она первая, поэтому индекс сдвинут на единицу.
-  const cell = row.children[columnIndex + 1] as HTMLElement;
+  const cell = row.children[columnIndex] as HTMLElement;
   return within(cell).getByRole("button");
 }
 
@@ -351,27 +390,157 @@ describe("Вес строки: маркер неполноты", () => {
 });
 
 /**
- * Причина пустого отклонения на экране матрицы (спека пересчёта §2.5, §10;
- * задача 9). До этого шага `deviation_reason` доезжал до типа, но не до экрана:
- * `DeviationCell` подписывал любой пустой результат как «нет норматива», и
- * «неизвестна база НДС» визуально превращалась в неверное «нет норматива» —
- * при этом норматив (`standard_unit_rate`) у такой ячейки законно МОЖЕТ быть
- * показан (приложение оркестратора, п.3): пусто здесь только `rate`.
+ * Причина отсутствия ставки ячейки на экране матрицы (правило цены, спека §2.5;
+ * задача 9 плана 2026-09-09). До этой задачи один факт «база НДС неизвестна»
+ * жил в поле `deviation_reason`, и `DeviationCell` подписывал ЛЮБОЙ пустой
+ * результат как «нет норматива» — «неизвестна база НДС» визуально превращалась
+ * в неверное «нет норматива». Задача 9 развела причины по двум полям: ставки
+ * нет — `rate_reason`, отклонения нет при посчитанной ставке — `deviation_reason`
+ * (у него теперь `no_rate`, когда `rate_reason` непуст, и это не новый факт).
  */
-describe("Причина пустого отклонения в ячейке матрицы", () => {
+describe("Причина отсутствия ставки ячейки (rate_reason)", () => {
   it("ячейка без базы НДС не выдаёт себя за «нет норматива»", async () => {
     renderMatrix({
-      rows: [
-        {
-          ...rowFixture,
-          cells: [
-            { ...cellFixture, rate: null, deviation_pct: null, deviation_reason: "unknown_vat_base" },
-          ],
-        },
-      ],
+      rows: [{ ...rowFixture, cells: [unratedCell("unknown_vat_base")] }],
     });
 
-    expect(await screen.findByTitle(/база НДС не заявлена/i)).toBeInTheDocument();
+    expect(await screen.findByText("неизвестна база НДС")).toBeInTheDocument();
+    /*
+      Находка ревью: `queryByText("нет норматива")` в ячейке матрицы не может
+      совпасть НИКОГДА — `DeviationCell` в `variant="compact"` рисует прочерк
+      «—», а не слово «нет норматива» (тот текст — только у `variant="full"`,
+      паспорт/drill-down). Замерено: с отключённой веткой `rate_reason` (то
+      есть с прежним поведением, где `deviation_reason` пришлось бы читать как
+      "no_rate" → `DeviationCell` без причины → дефолт "no_standard") тест со
+      старой проверкой ПРОХОДИЛ — наблюдаемой она не была. `queryByTitle`
+      наблюдаем: компактный вариант всё равно кладёт `title` на прочерк, и
+      именно этот `title` был бы "Нет норматива на дату сметы…", если бы ветка
+      `rate_reason` не сработала.
+    */
     expect(screen.queryByTitle(/Нет норматива на дату сметы/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Пять значений `rate_reason` (правило цены, спека §2.5; задача 9 плана
+ * 2026-09-09) обязаны дать пять РАЗЛИЧНЫХ подписей ячейки — сведение любых
+ * двух к одному тексту стёрло бы разницу между фактами («нет веса» и «цена
+ * отрицательна» — наблюдаемо разные состояния присутствия). Различность
+ * предъявлена утверждением (`Set` дедуплицирует совпадения), а не осмотром.
+ */
+describe("Пять причин отсутствия ставки ячейки — пять разных подписей", () => {
+  /**
+   * Список причин берётся из `CELL_RATE_REASONS` (`types/domain.ts`) — того же
+   * места, что и сам тип `CellRateReason` (построен из `Record<CellRateReason,
+   * true>`, чья полнота стережёт `tsc`), а не переписан здесь литералом:
+   * шестая причина, забытая в рукописном списке, прошла бы тестом незамеченной
+   * (ревью задачи 9). Ожидаемый текст каждой причины — свой `Record`
+   * ниже: он тоже типизирован по `CellRateReason` и тоже не даст забыть ключ.
+   */
+  const EXPECTED_LABEL: Record<CellRateReason, string> = {
+    unknown_vat_base: "неизвестна база НДС",
+    not_finite: "не число",
+    no_weight: "нет веса",
+    negative_only: "цена отрицательна",
+    no_price: "цены нет",
+  };
+
+  it("каждая причина видна на экране РОВНО своим текстом, и ни один текст не повторяет другой", async () => {
+    const seenLabels = new Set<string>();
+    for (const reason of CELL_RATE_REASONS) {
+      const { unmount } = renderMatrix({
+        rows: [{ ...rowFixture, cells: [unratedCell(reason)] }],
+      });
+      await screen.findByText(rowFixture.job_title);
+      const label = clickableCellOf(rowFixture.job_title, "ГП-0114").textContent ?? "";
+      // Точное совпадение, а не «длина больше нуля» (ревью задачи 9): длина
+      // не отличила бы верный текст от опечатки или чужой подписи.
+      expect(label).toBe(EXPECTED_LABEL[reason]);
+      seenLabels.add(label);
+      unmount();
+    }
+
+    expect(seenLabels.size).toBe(CELL_RATE_REASONS.length);
+  });
+});
+
+/**
+ * «Цены нет» (объект ячейки ЕСТЬ, ставка пуста) отличимо от «работы нет в
+ * смете» (объекта ячейки нет вовсе) — правило цены сделало первое достижимым
+ * (позиция без пригодной цены теперь становится строкой матрицы, задача 2
+ * плана), и экран обязан различать эти два факта двумя разными наблюдениями,
+ * а не одним и тем же прочерком (§10).
+ */
+describe("«цены нет» отличимо от «работы нет в смете»", () => {
+  it("у ячейки с непригодной ценой есть объект, у отсутствующей работы — нет объекта вовсе", async () => {
+    renderMatrix({
+      rows: [{ ...rowFixture, cells: [unratedCell("no_price")] }],
+    });
+    await screen.findByText(rowFixture.job_title);
+
+    // Договор ГП-0114 (contract_id: 10): объект ячейки ЕСТЬ, кнопка кликабельна,
+    // подпись — «цены нет».
+    const pricedCell = clickableCellOf(rowFixture.job_title, "ГП-0114");
+    expect(within(pricedCell).getByText("цены нет")).toBeInTheDocument();
+
+    // Договоры ГП-0131/ГП-0140 (contract_id: 11/12): работы в смете нет вовсе —
+    // объекта ячейки нет, только прочерк с подсказкой про смету. Точное число
+    // (2 — ровно два оставшихся договора из трёх в `sampleMatrixColumns`), а
+    // не «больше нуля»: неточная проверка не заметила бы, если бы прочерк
+    // ошибочно нарисовался и на самой ГП-0114.
+    expect(screen.getAllByTitle("Работы нет в смете этого договора")).toHaveLength(2);
+  });
+});
+
+/**
+ * Третья причина пустой матрицы (правило цены, спека §2.9; задача 5/9 плана
+ * 2026-09-09): позиции существуют, пригодной цены у них нет. Текст обязан
+ * быть СВОИМ — не текстом очереди матчинга и не текстом «не-работы», иначе
+ * третья причина неотличима от одной из двух прежних.
+ *
+ * **Найдено ревью.** `_without_price_condition` (`backend/crud/analytics.py`)
+ * не смотрит на состояние каталожной строки вовсе — счётчик ничего не знает,
+ * разобран ли каталог у стоящих за ним позиций. Первая редакция текста
+ * утверждала «работы разобраны»: достижимый вход (все цены пустые, все
+ * каталожные строки в `TO_REVIEW`) даёт именно такую комбинацию счётчиков
+ * (пусто и очередь, и не-работа — предикат цены вычитает эти позиции из
+ * очереди первым) при том, что разобрано НИЧЕГО. Текст обязан называть
+ * только сам факт «цены нет», не утверждая ничего о каталоге.
+ */
+describe("Третья причина пустой матрицы: позиции без пригодной цены", () => {
+  it("показывает собственный текст, называющий только факт, а не состояние каталога", async () => {
+    renderMatrix({ rows: [], positions_without_price: 1200 });
+
+    const message = await screen.findByText(/1200 позиций/);
+    expect(message).toHaveTextContent(
+      "Сметы загружены, но у 1200 позиций нет пригодной цены (пустая, нулевая, отрицательная или не число) — сравнивать нечего."
+    );
+    expect(screen.queryByText(/ждут ручного матчинга/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/не-работа/)).not.toBeInTheDocument();
+    // Слово «разобран»/«разобраны» — это утверждение о СОСТОЯНИИ КАТАЛОГА,
+    // которого счётчик не проверяет; текст третьей причины не вправе его нести.
+    expect(message.textContent ?? "").not.toMatch(/разобран/);
+  });
+
+  /**
+   * Вход, которого не видел предыдущий тест: очередь матчинга (первая причина)
+   * И позиции без цены (третья причина) ненулевые ОДНОВРЕМЕННО — реальная
+   * ситуация, раз счётчики независимы (предикат цены делит их первым, а не
+   * состоянием каталога). Первая причина имеет приоритет показа, и её текст
+   * не обязан (и не должен) утверждать что-либо о позициях без цены — они
+   * тут просто не упомянуты, что и требуется.
+   */
+  it("очередь матчинга и позиции без цены ненулевые одновременно — приоритет у очереди, третий текст не всплывает", async () => {
+    renderMatrix({
+      rows: [],
+      positions_pending_review: 500,
+      positions_without_price: 1200,
+    });
+
+    expect(
+      await screen.findByText(/500 расценённых позиций ждут ручного матчинга/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/1200 позиций/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/нет пригодной цены/)).not.toBeInTheDocument();
   });
 });
