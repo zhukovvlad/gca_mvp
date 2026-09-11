@@ -2,7 +2,7 @@
 
 > **v6.21 (2026-09-11), по итогам фичи «правило цены»
 > ([спека](docs/superpowers/specs/2026-09-09-price-predicate-design.md) ·
-> [план](docs/superpowers/plans/2026-09-09-price-predicate.md)). ПРАВИТ
+> [devlog](docs/devlog/2026-09-09-price-predicate.md)). ПРАВИТ
 > ИНВАРИАНТ — §4 и §6; §3 не тронут ни одним символом.**
 >
 > **§4.** Список исключений VIEW `v_position_deviation_inputs` назван
