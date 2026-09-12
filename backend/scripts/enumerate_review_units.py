@@ -51,12 +51,42 @@ SEPARATOR = "---"
 
 # Раздел «Утверждения»: список после этой строки и до следующего жирного
 # заголовка раздела («Имена», «Проверка» и т.п. — форма `**Слово**` целиком на
-# своей строке). Пункт верхнего уровня — строка `- …` БЕЗ отступа; вложенный —
-# та же форма, но С отступом; продолжение — отступ без `- `.
+# своей строке, БЕЗ отступа: строка-продолжение пункта, целиком состоящая из
+# жирного текста (`  **термин**`), заголовком не считается — маркер сверяется
+# с НЕотступленной строкой, `.strip()` перед сравнением не делается). Пункт
+# верхнего уровня — строка `- …` БЕЗ отступа; вложенный — та же форма, но С
+# отступом; продолжение — отступ без `- `.
 ASSERTIONS_HEADER = "**Утверждения**"
 BOLD_HEADER = re.compile(r"^\*\*[^*]+\*\*\s*$")
 TOP_ITEM = re.compile(r"^- ")
 NESTED_ITEM = re.compile(r"^\s+- ")
+
+# Ограждённый блок кода (``` ... ```). Внутри него ни один структурный маркер
+# не действует — это решение ревью round 1 (I5): маркер внутри ограждения не
+# структурный маркер, а иллюстрация в тексте задачи, и разбор обязан её
+# игнорировать целиком, включая сами строки-ограничители.
+FENCE_MARKER = re.compile(r"^```")
+
+
+def _fenced_mask(lines: Sequence[str]) -> list[bool]:
+    """Для каждой строки — стоит ли она внутри ```-ограждения (сами границы — тоже внутри).
+
+    Ограждение переключается по каждой встреченной строке-ограничителю; сама
+    строка-ограничитель помечается «внутри» — она не структурный маркер, а
+    часть иллюстрации, и не обязана участвовать в поиске границ блока,
+    разделов или пунктов. Незакрытое до конца списка ограждение остаётся
+    открытым — это осознанно: недописанный пример не должен «раскрыть»
+    остаток документа обратно в структурный текст.
+    """
+    mask: list[bool] = []
+    inside = False
+    for line in lines:
+        if FENCE_MARKER.match(line.strip()):
+            inside = not inside
+            mask.append(True)
+        else:
+            mask.append(inside)
+    return mask
 
 
 def repo_root() -> Path:
@@ -93,9 +123,20 @@ def task_block(lines: list[str], task: int) -> list[str]:
     сообщения, поэтому здесь не бросается исключение и не возвращается
     какая-либо реплика текста — только пустота, которую вызывающий код
     проверяет сам.
+
+    Строки внутри ```-ограждения (`_fenced_mask`) в поиске границы не
+    участвуют: `### Task N:`, `### ` и голый `---`, встреченные там, — это
+    иллюстрация в тексте задачи (например, пример markdown в разделе
+    «Interfaces»), а не настоящая соседняя задача и не настоящий разделитель.
+    Без этого пропуска пример кода мог бы оборвать блок раньше времени или
+    заставить поиск заголовка найти чужой номер задачи внутри чужого примера.
     """
+    mask = _fenced_mask(lines)
+
     start = None
     for i, line in enumerate(lines):
+        if mask[i]:
+            continue
         match = TASK_HEADER.match(line)
         if match and match.group(1) == str(task):
             start = i
@@ -105,6 +146,8 @@ def task_block(lines: list[str], task: int) -> list[str]:
 
     end = len(lines)
     for i in range(start + 1, len(lines)):
+        if mask[i]:
+            continue
         if NEXT_HEADER.match(lines[i]) or lines[i].strip() == SEPARATOR:
             end = i
             break
@@ -126,6 +169,14 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
     (`;`, `.`) — функция перечисляет пункты, а не редактирует их прозу.
     Пункт из нескольких строк (продолжение — отступ без `- `) даёт ОДНУ пару:
     строки склеиваются пробелом.
+
+    Ограждённые ```-блоки (`_fenced_mask`) не участвуют ни в поиске самого
+    раздела, ни в поиске его конца, ни в разборе пунктов: строка внутри
+    ограждения никогда не заголовок, никогда не начало пункта — она
+    дописывается к тексту ТЕКУЩЕГО пункта как есть (включая саму строку
+    ограничителя), пока ограждение не закрылось. Так пример markdown внутри
+    пункта («вот как выглядит ```» и т.п.) не обрывает раздел раньше времени
+    и не превращает строку внутри примера в фантомный пункт.
     """
     if not block:
         return []
@@ -134,8 +185,12 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
         return []
     task = header.group(1)
 
+    mask = _fenced_mask(block)
+
     start = None
     for i, line in enumerate(block):
+        if mask[i]:
+            continue
         if line.strip() == ASSERTIONS_HEADER:
             start = i
             break
@@ -143,10 +198,16 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
         return []
 
     body: list[str] = []
-    for line in block[start + 1 :]:
-        if BOLD_HEADER.match(line.strip()):
+    body_fenced: list[bool] = []
+    for i in range(start + 1, len(block)):
+        # Заголовком-терминатором раздела считается только НЕотступленная
+        # строка целиком из жирного (I4): `.strip()` перед сравнением не
+        # делается, иначе строка-продолжение пункта вида `  **термин**`
+        # молча обрывает раздел, а всё, что после неё, теряется.
+        if not mask[i] and BOLD_HEADER.match(block[i]):
             break
-        body.append(line)
+        body.append(block[i])
+        body_fenced.append(mask[i])
 
     items: list[tuple[str, str]] = []
     top_number = 0
@@ -158,8 +219,12 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
         if current_id is not None:
             items.append((current_id, " ".join(current_text).strip()))
 
-    for line in body:
+    for line, fenced in zip(body, body_fenced, strict=True):
         if not line.strip():
+            continue
+        if fenced:
+            if current_id is not None:
+                current_text.append(line.strip())
             continue
         top_match = TOP_ITEM.match(line)
         nested_match = None if top_match else NESTED_ITEM.match(line)
@@ -171,9 +236,19 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
             current_text = [line[top_match.end() :].rstrip()]
         elif nested_match:
             flush()
-            nested_count += 1
-            letter = chr(ord("a") + nested_count - 1)
-            current_id = f"A{task}.{top_number}{letter}"
+            if top_number == 0:
+                # Вложенный пункт без родителя (сирота) — буквы внутри
+                # несуществующего верхнего пункта не бывает. Задача этого
+                # инструмента — не терять единицу знаменателя, поэтому пункт
+                # становится верхним, а не отбрасывается и не превращается в
+                # мусорный `A<задача>.0a` (Minor F11 круга 1).
+                top_number += 1
+                nested_count = 0
+                current_id = f"A{task}.{top_number}"
+            else:
+                nested_count += 1
+                letter = chr(ord("a") + nested_count - 1)
+                current_id = f"A{task}.{top_number}{letter}"
             current_text = [line[nested_match.end() :].rstrip()]
         elif current_id is not None:
             current_text.append(line.strip())
