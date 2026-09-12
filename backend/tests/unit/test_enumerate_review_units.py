@@ -1009,6 +1009,7 @@ def test_untracked_hunks_text_file_is_one_hunk_added_whole(
     assert len(hunks) == 1
     hunk = hunks[0]
     assert hunk.path == "new_file.txt"
+    assert hunk.context == "@@ -0,0 +1,3 @@"
     assert hunk.body == "+line one\n+line two\n+line three"
     assert (hunk.added, hunk.removed) == (3, 0)
 
@@ -1093,11 +1094,14 @@ def test_cli_hunks_output_is_tab_separated_four_fields_no_timestamp(tmp_path: Pa
 
     result = _cli_hunks_bytes(repo)
 
-    body = "-    return value > 0\n+    if not value.is_finite():\n+        return False"
-    expected_id = enumerate_review_units.hunk_id("backend/money/price.py", body)
+    # `H:c2008c37` — литерал, посчитанный отдельным вызовом `hashlib.sha256`
+    # ДО этого теста (ревью круга 1, Minor): вызов `hunk_id` здесь сверял бы
+    # оракул сам с собой — тавтология, которая осталась бы зелёной даже при
+    # сломанном `hunk_id`, лишь бы `_run_hunks` вызывал ту же (сломанную)
+    # функцию с теми же аргументами.
     # `os.linesep`: `print()` транслирует `\n` в `\r\n` на Windows даже когда
     # stdout — пайп подпроцесса (тот же приём, что в тестах `assertions`).
-    expected_line = f"{expected_id}\tbackend/money/price.py\t@@ -1,2 +1,3 @@\t+2/-1\n".replace("\n", os.linesep)
+    expected_line = "H:c2008c37\tbackend/money/price.py\t@@ -1,2 +1,3 @@\t+2/-1\n".replace("\n", os.linesep)
 
     assert result.returncode == 0
     assert result.stdout == expected_line.encode("utf-8")
@@ -1224,3 +1228,368 @@ def test_cli_hunks_earlier_duplicate_shifts_neighbor_suffixes(tmp_path: Path) ->
     assert ids4 == [raw, f"{raw}.2", f"{raw}.3", f"{raw}.4"]
     assert ids3[1] == f"{raw}.2"
     assert ids4[2] == f"{raw}.3"
+
+
+# =============================================================================
+# Круг 1 ревью: входы, где инструмент либо падает целиком, либо молча теряет
+# элемент знаменателя. Critical K1-K7, Important I1-I4.
+# =============================================================================
+
+
+# --- K1: неотслеживаемый КАТАЛОГ ---------------------------------------------
+
+
+def test_untracked_hunks_new_directory_recurses_into_its_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Новый каталог не сворачивается в одну запись `?? newdir/` — файлы внутри видны по отдельности.
+
+    По умолчанию `git status --porcelain` печатает НОВЫЙ каталог одной
+    записью `?? newdir/`, и файлы внутри (в том числе во вложенном
+    подкаталоге) не попадают в знаменатель вовсе — молчаливая потеря целой
+    поддиректории (найдено ревью круга 1, K1).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _write(repo, "newdir/one.txt", "a\n")
+    _write(repo, "newdir/sub/two.txt", "b\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert {h.path for h in hunks} == {"newdir/one.txt", "newdir/sub/two.txt"}
+
+
+# --- K2: неотслеживаемый путь с пробелом -------------------------------------
+
+
+def test_untracked_hunks_path_with_space_is_unquoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь с пробелом git заворачивает в кавычки — `core.quotepath=false` их не снимает.
+
+    `core.quotepath` влияет только на не-ASCII байты ВНУТРИ кавычек, не на
+    само решение кавычить путь с пробелом. Без снятия кавычек путь
+    `read_bytes()` получал бы буквальные `"` в имени и падал `OSError`
+    (найдено ревью круга 1, K2).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _write(repo, "spaced file.txt", "hello\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "spaced file.txt"
+    assert hunks[0].body == "+hello"
+
+
+# --- K3: неотслеживаемый текст не в UTF-8 ------------------------------------
+
+
+def test_untracked_hunks_non_utf8_text_falls_back_to_binary_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cp1251-текст без NUL-байта (эвристика двоичности его не ловит) — не крашит, а форма «добавление».
+
+    Текстовое тело над байтами, которые не декодируются как UTF-8, не
+    определено ничуть не меньше, чем у настоящего двоичного файла — падать
+    `UnicodeDecodeError`-ом и терять элемент знаменателя нельзя (найдено
+    ревью круга 1, K3).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    cp1251_bytes = "привет".encode("cp1251")
+    assert b"\x00" not in cp1251_bytes  # эвристика двоичности его не поймает
+    (repo / "cp1251.txt").write_bytes(cp1251_bytes)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "cp1251.txt"
+    assert hunk.context == "@@ binary @@"
+    assert hunk.body == f"+binary {hashlib.sha256(cp1251_bytes).hexdigest()}"
+    assert (hunk.added, hunk.removed) == (1, 0)
+
+
+# --- K4: невалидные UTF-8 байты в `git diff HEAD` ----------------------------
+
+
+def test_diff_hunks_non_utf8_tracked_content_does_not_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отслеживаемый файл с невалидными UTF-8 байтами (git печатает его как текст) не роняет чтение.
+
+    git считает файл текстом, если в нём нет NUL, даже если байты не образуют
+    валидный UTF-8, и печатает их как есть в `git diff HEAD`. Без
+    `errors="replace"` поток чтения `subprocess` ронял `AttributeError` на
+    `None`-`stdout` (найдено ревью круга 1, K4). Воспроизведено дословно как
+    в замечании: `bytes(range(50, 250))`, закоммичено и удалено.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    weird_bytes = bytes(range(50, 250))
+    assert b"\x00" not in weird_bytes
+    (repo / "weird.bin").write_bytes(weird_bytes)
+    _commit_all(repo)
+    (repo / "weird.bin").unlink()
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "weird.bin"]
+
+    assert len(hunks) == 1
+    assert (hunks[0].added, hunks[0].removed) == (0, 1)
+
+
+# --- K5/K6/K7: секция без единого `@@` и не двоичная -------------------------
+
+
+def test_diff_hunks_empty_file_added_gives_one_metadata_hunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Пустой файл, добавленный в индекс: секция без `@@` — не пропуск, а один синтетический hunk.
+
+    git печатает такую секцию без единого `@@` (нечего показывать), и файл
+    не появлялся в выводе никогда — при этом НЕотслеживаемый пустой файл уже
+    появлялся (см. `untracked_hunks`): две ветки расходились между собой на
+    одном и том же по смыслу событии (найдено ревью круга 1, K5).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    (repo / "empty.py").write_bytes(b"")
+    subprocess.run(["git", "add", "empty.py"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "empty.py"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ metadata @@"
+    assert hunk.body == "new file mode 100644\nindex 0000000..e69de29"
+    assert (hunk.added, hunk.removed) == (0, 0)
+
+
+def test_diff_hunks_pure_rename_gives_one_metadata_hunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Чистое переименование (`git mv`, без правки содержимого) — один синтетический hunk, не пропуск.
+
+    Решение оркестратора по скоупу круга 1: рассмотрено как «вне скоупа» в
+    отчёте задачи 2, это решение отменено — принцип A2.11 («молчаливый
+    пропуск запрещён») уже применён к двоичным файлам, и план показал
+    технику; выполнение того же принципа на переименовании — не новое
+    проектирование (найдено ревью круга 1, K6).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a.txt", "content\n")
+    _commit_all(repo)
+    subprocess.run(["git", "mv", "a.txt", "b.txt"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "b.txt"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ metadata @@"
+    assert hunk.body == "similarity index 100%\nrename from a.txt\nrename to b.txt"
+    assert (hunk.added, hunk.removed) == (0, 0)
+
+
+def test_diff_hunks_mode_only_change_gives_one_metadata_hunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Правка одного режима файла (`--chmod`, без правки содержимого) — один синтетический hunk.
+
+    Докстринг раньше называл это намеренным — намеренным быть не может:
+    знаменатель обязан содержать элемент на всякую правку, которую ревьюер
+    увидит в `git diff` (найдено ревью круга 1, K7).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "x.sh", "content\n")
+    _commit_all(repo)
+    subprocess.run(["git", "update-index", "--chmod=+x", "x.sh"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "x.sh"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ metadata @@"
+    assert hunk.body == "old mode 100644\nnew mode 100755"
+    assert (hunk.added, hunk.removed) == (0, 0)
+
+
+# --- I1: `splitlines()` рвёт больше, чем перевод строки ----------------------
+
+
+def test_diff_hunks_form_feed_inside_a_line_does_not_split_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`\\x0c` (form feed) внутри добавленной строки — часть ОДНОЙ строки тела, не граница.
+
+    `str.splitlines()` режет ещё по `\\x0b \\x0c \\x1c-\\x1e \\x85` и юникодным
+    U+2028/U+2029 — не только по `\\n`. Одна физическая строка git-диффа
+    `+beta\\x0cGAMMA` резалась бы на `+beta` (в теле) и `GAMMA` (без `+`,
+    отброшена молча) — часть добавленной строки терялась НЕЗАМЕТНО.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a.txt", "beta\n")
+    _commit_all(repo)
+    _write(repo, "a.txt", "beta\x0cGAMMA\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    assert len(hunks) == 1
+    assert hunks[0].body == "-beta\n+beta\x0cGAMMA"
+    assert (hunks[0].added, hunks[0].removed) == (1, 1)
+
+
+def test_diff_hunks_form_feed_does_not_collide_two_different_hunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Найденная ревью коллизия буквально: `beta`→`beta\\x0cGAMMA` и `beta`→`beta\\x0cDELTA` — РАЗНЫЕ id.
+
+    До фикса обе правки давали тело `-beta\\n+beta` (часть после `\\x0c`
+    рвалась и терялась), и оба файла сходились на ОДНОМ `hunk_id` — второй
+    становился фиктивным `.2`, хотя это два разных по смыслу hunk'а (найдено
+    ревью круга 1, I1).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a.txt", "beta\n")
+    _write(repo, "b.txt", "beta\n")
+    _commit_all(repo)
+    _write(repo, "a.txt", "beta\x0cGAMMA\n")
+    _write(repo, "b.txt", "beta\x0cDELTA\n")
+
+    monkeypatch.chdir(repo)
+    hunks = {h.path: h for h in enumerate_review_units.diff_hunks()}
+
+    assert hunks["a.txt"].body != hunks["b.txt"].body
+    id_a = enumerate_review_units.hunk_id("a.txt", hunks["a.txt"].body)
+    id_b = enumerate_review_units.hunk_id("b.txt", hunks["b.txt"].body)
+    assert id_a != id_b
+
+
+def test_untracked_hunks_form_feed_inside_a_line_does_not_split_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Тот же дефект `splitlines()`, вторая точка — построение тела untracked-файла."""
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _write(repo, "new.txt", "beta\x0cGAMMA\nsecond\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    assert hunks[0].body == "+beta\x0cGAMMA\n+second"
+    assert hunks[0].added == 2
+
+
+# --- I2: репозиторий без единого коммита -------------------------------------
+
+
+def test_cli_hunks_no_commits_yet_fails_with_a_clear_message_not_a_traceback(
+    tmp_path: Path,
+) -> None:
+    """`git diff HEAD` в репозитории без коммитов отказывает кодом 128 — падать можно, трассировкой нельзя.
+
+    Молча выдавать пустоту здесь нельзя (неотличимо от честного «нет
+    правок»), но и трассировка `CalledProcessError` — не годится: git уже
+    написал причину отказа в свой `stderr` (найдено ревью круга 1, I2).
+    """
+    repo = _init_hunks_repo(tmp_path)  # `git init`, но НИ ОДНОГО коммита
+
+    result = _cli_hunks_text(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    assert result.stderr.strip() != ""
+
+
+# --- I3: `--src-prefix`/`--dst-prefix` не стерегутся ничем -------------------
+
+
+def test_diff_hunks_survives_diff_noprefix_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`diff.noprefix=true` в чужом конфиге не должен ронять разбор — форсированные префиксы главнее.
+
+    При `diff.noprefix=true` `git diff` без явных `--src-prefix`/`--dst-prefix`
+    печатает `diff --git путь путь` и `+++ путь` вовсе БЕЗ `a/`/`b/` —
+    `DIFF_GIT_HEADER` и `_section_path` на такую строку не матчатся, секция
+    пропускается целиком, и КАЖДЫЙ отслеживаемый hunk исчезает молча (найдено
+    ревью круга 1, I3). Удаление обоих флагов оставляет 20 из 20 старых
+    тестов `hunks` зелёными — этот вход специально ставит конфиг, который их
+    не оставляет зелёными.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    subprocess.run(["git", "config", "diff.noprefix", "true"], cwd=repo, check=True)
+    _write(repo, "f.txt", "old\n")
+    _commit_all(repo)
+    _write(repo, "f.txt", "new\n")
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "f.txt"]
+
+    assert len(hunks) == 1
+    assert hunks[0].body == "-old\n+new"
+
+
+# --- Minor: `core.quotepath=false` не стерегётся -----------------------------
+
+
+def test_diff_hunks_survives_default_quotepath_with_cyrillic_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Кириллическое имя файла (репозиторий русскоязычный) не должно теряться без `quotepath=false`.
+
+    Без `-c core.quotepath=false` git заворачивает не-ASCII путь в кавычки с
+    восьмеричными escape-последовательностями (`"a/\\321\\204…"`) — ни
+    `DIFF_GIT_HEADER`, ни `_section_path` на такую строку не матчатся, и
+    hunk пропадает молча.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "файл.txt", "old\n")
+    _commit_all(repo)
+    _write(repo, "файл.txt", "new\n")
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "файл.txt"]
+
+    assert len(hunks) == 1
+    assert hunks[0].body == "-old\n+new"
+
+
+# --- I4: жадность разбора заголовка `diff --git` -----------------------------
+
+
+def test_diff_hunks_path_containing_the_diff_header_separator_substring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь, содержащий литеральную подстроку ` b/` (`x b/y.txt`), не должен резаться неверно.
+
+    Строка `diff --git a/x b/y.txt b/x b/y.txt` неоднозначна для наивного
+    `diff --git a/(.+) b/(.+)` — путь разобрался бы как `y.txt` вместо
+    `x b/y.txt` (найдено ревью круга 1, I4). Путь берётся из строк
+    `+++`/`---`, где разделитель — фиксированный префикс, а не поиск
+    подстроки.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "x b/y.txt", "old\n")
+    _commit_all(repo)
+    _write(repo, "x b/y.txt", "new\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "x b/y.txt"
+    assert hunks[0].body == "-old\n+new"
