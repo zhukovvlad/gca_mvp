@@ -43,8 +43,19 @@ from pathlib import Path
 # роняет скрипт `UnicodeEncodeError`. Документированная команда обязана
 # работать без внешнего `PYTHONIOENCODING`, поэтому поток настраивается здесь —
 # тот же приём, что в `count_plan_edits.py` и `check_agents_index.py`.
+#
+# ОБА потока, не только `stdout`: отказы `assertions` (задача не найдена, нет
+# раздела «Утверждения») печатаются в `stderr`, и без его настройки cp1252
+# заменяет кириллицу на `backslashreplace`-escape'ы — падения нет, но
+# сообщение нечитаемо, а «ёлочки» `«»` (cp1252 их кодирует байтом `0xab`)
+# вперемешку с ASCII-escape'ами дают поток, который не декодируется как UTF-8
+# вовсе (найдено ревью круга 2: `stderr` был настроен только наполовину —
+# `count_plan_edits.py`/`check_agents_index.py` несут тот же изъян, но чинить
+# их не в этой задаче).
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 # Заголовок задачи и граница блока: следующий заголовок ЛЮБОГО уровня `### ` —
 # или разделитель `---` на отдельной строке. `\d+` в TASK_HEADER не совпадает

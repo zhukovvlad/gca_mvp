@@ -585,6 +585,50 @@ def test_cli_missing_task_and_missing_section_report_different_messages(tmp_path
     assert "нет раздела «Утверждения»" not in missing_task.stderr
 
 
+def test_cli_stderr_is_valid_utf8_without_external_pythonioencoding(tmp_path: Path) -> None:
+    """`stderr` подкоманды `assertions` — валидный UTF-8 с русским текстом БЕЗ внешней `PYTHONIOENCODING`.
+
+    `just ci` эту переменную не выставляет, а `_run_assertions` наследует
+    окружение процесса pytest КАК ЕСТЬ — набор был зелёным два круга подряд
+    только потому, что переменная стояла в оболочке разработчика/оркестратора
+    (найдено ревью круга 2: тот же прогон, каким его выполнит `just ci`, дал
+    `1 failed`). Тест обязан явно СТРОИТЬ окружение подпроцесса БЕЗ неё
+    (`env.pop("PYTHONIOENCODING", None)`), а не полагаться на то, что её нет у
+    текущего процесса — иначе он наследует гигиену разработчика и ничего не
+    стережёт, ровно как сегодня.
+
+    До правки настраивался только `sys.stdout`: cp1252 отдавала кириллицу
+    `stderr` как `backslashreplace`-escape'ы, а кавычка-«ёлочка» (`«` — валидный
+    байт `0xab` в cp1252) вперемешку с этими escape'ами не декодировалась как
+    UTF-8 вовсе — сам `.decode("utf-8")` ниже часть утверждения: под дефектом
+    он бросал `UnicodeDecodeError`, а не просто давал «неправильный» текст.
+    """
+    repo = _init_repo(tmp_path)
+    env = {**os.environ}
+    env.pop("PYTHONIOENCODING", None)
+
+    def run(task: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "assertions", "--plan", "docs/superpowers/plans/test-plan.md", "--task", task],
+            cwd=repo,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+    missing_task = run("99")
+    missing_section = run("3")
+
+    assert missing_task.returncode != 0
+    assert missing_section.returncode != 0
+
+    missing_task_stderr = missing_task.stderr.decode("utf-8")
+    missing_section_stderr = missing_section.stderr.decode("utf-8")
+
+    assert "задача 99 не найдена" in missing_task_stderr
+    assert "нет раздела «Утверждения»" in missing_section_stderr
+
+
 def test_cli_does_not_modify_the_tree_or_the_index(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
 
