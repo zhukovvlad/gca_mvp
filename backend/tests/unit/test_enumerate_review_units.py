@@ -1,22 +1,36 @@
-"""Тесты подкоманды `assertions` перечислителя единиц ревью (задача 1).
+"""Тесты подкоманд `assertions` (задача 1) и `hunks` (задача 2) перечислителя.
 
 Скрипт read-only, и это касается и тестов: ни один из них не имеет права
-изменить рабочее дерево или индекс этого репозитория. Тестам, которым нужно
+изменить рабочее дерево или индекс ЭТОГО репозитория. Тестам, которым нужно
 состояние git (независимость `repo_root()` от текущего каталога, неизменность
-`git status --porcelain`), заводится СВОЙ временный репозиторий во временном
-каталоге pytest (`tmp_path` + `git init`) — рабочий репозиторий они не трогают
-вовсе.
+`git status --porcelain`, любой тест `diff_hunks`/`untracked_hunks`/CLI
+`hunks`), заводится СВОЙ временный репозиторий во временном каталоге pytest
+(`tmp_path` + `git init`) — рабочий репозиторий они не трогают вовсе.
 
-Тесты чистых функций (`task_block`, `assertion_items`, `emit`) обходятся без
-git и без файлов: план передаётся списком строк, как в реальном контракте.
+Тесты чистых функций (`task_block`, `assertion_items`, `emit`, `hunk_id`)
+обходятся без git и без файлов: вход передаётся строками/списками строк, как
+в реальном контракте.
+
+Тесты `hunks`, которым нужно СОДЕРЖИМОЕ временного репозитория (а не только
+его наличие), зовут `diff_hunks()`/`untracked_hunks()` НАПРЯМУЮ после
+`monkeypatch.chdir(repo)` — так же, как `repo_root()` полагается на cwd
+процесса, а не на `-C`. Это быстрее subprocess-прогона всего CLI и не менее
+честно: обе функции сами по себе — это подпроцессы `git`, а не мок.
+Read-only-гарантия (индекс не меняется) и формат вывода команды `hunks`
+проверяются subprocess-ом, как и у `assertions` — это гарантии CLI-обёртки,
+а не отдельных функций.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 import scripts.enumerate_review_units as enumerate_review_units
 
@@ -658,3 +672,555 @@ def test_cli_fenced_only_assertions_marker_is_treated_as_missing_section(tmp_pat
     assert result.returncode == 3
     assert result.stdout == ""
     assert result.stderr != ""
+
+
+# =============================================================================
+# `hunks` (задача 2)
+# =============================================================================
+
+
+def _init_hunks_repo(root: Path) -> Path:
+    """Пустой временный git-репозиторий с `core.autocrlf=false`.
+
+    `autocrlf` отключён нарочно: без этого git на Windows переписывает LF в
+    CRLF на чекауте (предупреждение реально всплывало в этой сессии при
+    ручной проверке сценариев) — тогда байтовое содержимое файла, записанное
+    тестом через `_write`, разошлось бы с тем, что видит `git diff`, и тесты
+    нормализации (сдвиг номеров строк, хвостовой пробел) перестали бы
+    что-либо доказывать.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=root, check=True)
+    return root
+
+
+def _write(repo: Path, rel_path: str, content: str) -> Path:
+    """Пишет `content` (UTF-8) по `rel_path` внутри `repo` — БАЙТАМИ, не `write_text`.
+
+    `Path.write_text` пропускает содержимое через текстовый режим платформы —
+    на Windows это перевод `\n` в `\r\n`, ровно ловушка, из-за которой скрипт
+    этого задания обязан читать/писать байты. Тесты нормализации без этого
+    были бы недоказательны: расхождение шло бы от записи теста, а не от кода.
+    """
+    path = repo / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content.encode("utf-8"))
+    return path
+
+
+def _commit_all(repo: Path, message: str = "init") -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+
+
+def _cli_hunks_text(cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "hunks"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def _cli_hunks_bytes(cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    """Тот же прогон, БЕЗ `text=True` — как `_run_assertions_bytes` у задачи 1."""
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "hunks"],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
+    )
+
+
+# --- hunk_id: оракул, посчитан оркестратором независимо от этого модуля -----
+
+PRICE_ORACLE_BODY = "\n".join(
+    [
+        "+    if not value.is_finite():",
+        "+        return False",
+        "-    return value > 0",
+    ]
+)
+
+
+def test_hunk_id_known_input_known_output_price_py() -> None:
+    """Известный вход (путь + тело буквально из брифа) — известный ответ.
+
+    Не пересказ алгоритма и не сверка с самим собой: значение `H:c81dd3dd`
+    взято из задания и посчитано оркестратором отдельной программой.
+    """
+    assert enumerate_review_units.hunk_id("backend/money/price.py", PRICE_ORACLE_BODY) == "H:c81dd3dd"
+
+
+def test_hunk_id_same_body_different_path_gives_different_id() -> None:
+    """Тот же текст тела при ДРУГОМ пути — ДРУГОЙ id: путь входит в хэш.
+
+    Сверяется с литералом `H:2292efa1` из задания, а не с результатом вызова
+    `hunk_id` для первого пути — иначе тест доказывал бы только то, что
+    функция способна вернуть два разных значения на разных входах, что верно
+    даже для сломанной реализации (например, «хэш только пути»).
+    """
+    assert enumerate_review_units.hunk_id("backend/money/other.py", PRICE_ORACLE_BODY) == "H:2292efa1"
+
+
+def test_hunk_id_form_is_H_colon_eight_hex() -> None:
+    identifier = enumerate_review_units.hunk_id("any/path.py", "+line")
+    assert re.fullmatch(r"H:[0-9a-f]{8}", identifier)
+
+
+# --- diff_hunks: текстовые hunk'и --------------------------------------------
+
+
+def test_diff_hunks_basic_text_hunk_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Путь, контекст `@@`, тело и счётчик одного простого текстового hunk'а.
+
+    Ожидаемое тело — буквальный вывод `git diff HEAD` на этом сценарии,
+    снятый независимо от парсера (прямым прогоном git) ДО того, как этот
+    тест был написан, а не пересчитанный тем же кодом, который проверяется.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "backend/money/price.py", "def f(value):\n    return value > 0\n")
+    _commit_all(repo)
+    _write(
+        repo,
+        "backend/money/price.py",
+        "def f(value):\n    if not value.is_finite():\n        return False\n",
+    )
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "backend/money/price.py"
+    assert hunk.context == "@@ -1,2 +1,3 @@"
+    assert hunk.body == "-    return value > 0\n+    if not value.is_finite():\n+        return False"
+    assert (hunk.added, hunk.removed) == (2, 1)
+
+
+def test_diff_hunks_sees_staged_and_unstaged_parts_of_the_same_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Файл, часть которого застейджена, а часть нет, даёт hunk'и ОБОИХ видов.
+
+    `git diff HEAD` (не `--cached`, не голый `git diff`) обязана видеть и то,
+    что уже в индексе, и то, что ещё нет, ОДНИМ вызовом. Два region'а этого
+    файла разнесены на 30 строк-заполнителей — заведомо больше контекста
+    diff'а по умолчанию (3 строки), иначе git мог бы слить их в один hunk и
+    тест перестал бы различать «два hunk'а» от «один большой».
+    """
+    filler = "\n".join(f"filler {i}" for i in range(30))
+    base = f"TOP\n{filler}\nold_a\n{filler}\nold_b\nBOTTOM\n"
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "region.txt", base)
+    _commit_all(repo)
+
+    staged_only = base.replace("old_a", "new_a")
+    _write(repo, "region.txt", staged_only)
+    subprocess.run(["git", "add", "region.txt"], cwd=repo, check=True)
+
+    both = staged_only.replace("old_b", "new_b")
+    _write(repo, "region.txt", both)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "region.txt"]
+
+    assert len(hunks) == 2
+    assert hunks[0].body == "-old_a\n+new_a"
+    assert hunks[1].body == "-old_b\n+new_b"
+
+
+def test_diff_hunks_line_shift_gives_the_same_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Тот же hunk со сдвинутыми номерами строк даёт ТОТ ЖЕ id.
+
+    Два репозитория с РАЗНЫМ числом строк-заполнителей перед одинаковой
+    правкой: заголовок `@@` у них заведомо разный (номера строк реально
+    сдвинуты), а тело — байт в байт одно и то же. Доказывает, что заголовок
+    `@@` не участвует в теле/хэше — а не пересказывает это утверждение.
+    """
+
+    def make(root: Path, filler_lines: int) -> None:
+        pad = "\n".join(f"pad{i}" for i in range(filler_lines))
+        _write(root, "backend/money/price.py", f"{pad}\ndef f(value):\n    return value > 0\n")
+        _commit_all(root)
+        _write(
+            root,
+            "backend/money/price.py",
+            f"{pad}\ndef f(value):\n    if not value.is_finite():\n        return False\n",
+        )
+
+    repo_a = _init_hunks_repo(tmp_path / "a")
+    make(repo_a, filler_lines=1)
+    monkeypatch.chdir(repo_a)
+    hunks_a = enumerate_review_units.diff_hunks()
+
+    repo_b = _init_hunks_repo(tmp_path / "b")
+    make(repo_b, filler_lines=9)
+    monkeypatch.chdir(repo_b)
+    hunks_b = enumerate_review_units.diff_hunks()
+
+    assert len(hunks_a) == 1
+    assert len(hunks_b) == 1
+    assert hunks_a[0].context != hunks_b[0].context
+    assert hunks_a[0].body == hunks_b[0].body
+    id_a = enumerate_review_units.hunk_id(hunks_a[0].path, hunks_a[0].body)
+    id_b = enumerate_review_units.hunk_id(hunks_b[0].path, hunks_b[0].body)
+    assert id_a == id_b
+
+
+def test_diff_hunks_trailing_whitespace_is_normalized_away(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Добавленный хвостовой пробел на изменённой строке — ТОТ ЖЕ id.
+
+    Вход обязан реально нести пробел: версия `trailing` заканчивает
+    добавленную строку тремя пробелами, версия `clean` — нет. Оба тела
+    сравниваются с независимо написанным ожиданием, а не друг с другом
+    напрямую, чтобы падение нормализации было видно и по форме тела.
+    """
+    repo_clean = _init_hunks_repo(tmp_path / "clean")
+    _write(repo_clean, "f.txt", "value = 1\n")
+    _commit_all(repo_clean)
+    _write(repo_clean, "f.txt", "value = 2\n")
+
+    repo_trailing = _init_hunks_repo(tmp_path / "trailing")
+    _write(repo_trailing, "f.txt", "value = 1\n")
+    _commit_all(repo_trailing)
+    _write(repo_trailing, "f.txt", "value = 2   \n")
+
+    monkeypatch.chdir(repo_clean)
+    hunks_clean = enumerate_review_units.diff_hunks()
+    monkeypatch.chdir(repo_trailing)
+    hunks_trailing = enumerate_review_units.diff_hunks()
+
+    expected_body = "-value = 1\n+value = 2"
+    assert hunks_clean[0].body == expected_body
+    assert hunks_trailing[0].body == expected_body
+    assert enumerate_review_units.hunk_id("f.txt", hunks_clean[0].body) == enumerate_review_units.hunk_id(
+        "f.txt", hunks_trailing[0].body
+    )
+
+
+# --- diff_hunks: двоичные hunk'и (три независимых входа) ---------------------
+
+BINARY_OLD = b"OLD-CONTENT\x00\x01\x02binary"
+BINARY_NEW = b"NEW-CONTENT\x00\x03\x04binary"
+BINARY_ADDED = b"ADDED-CONTENT\x00\x05binary"
+
+
+def test_diff_hunks_binary_file_added(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "x\n")
+    _commit_all(repo)
+    (repo / "new.bin").write_bytes(BINARY_ADDED)
+    subprocess.run(["git", "add", "new.bin"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "new.bin"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ binary @@"
+    assert hunk.body == f"+binary {hashlib.sha256(BINARY_ADDED).hexdigest()}"
+    assert (hunk.added, hunk.removed) == (1, 0)
+
+
+def test_diff_hunks_binary_file_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_hunks_repo(tmp_path)
+    (repo / "old.bin").write_bytes(BINARY_OLD)
+    _commit_all(repo)
+    (repo / "old.bin").unlink()
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "old.bin"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ binary @@"
+    assert hunk.body == f"-binary {hashlib.sha256(BINARY_OLD).hexdigest()}"
+    assert (hunk.added, hunk.removed) == (0, 1)
+
+
+def test_diff_hunks_binary_file_modified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_hunks_repo(tmp_path)
+    (repo / "x.bin").write_bytes(BINARY_OLD)
+    _commit_all(repo)
+    (repo / "x.bin").write_bytes(BINARY_NEW)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "x.bin"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ binary @@"
+    expected_body = f"-binary {hashlib.sha256(BINARY_OLD).hexdigest()}\n+binary {hashlib.sha256(BINARY_NEW).hexdigest()}"
+    assert hunk.body == expected_body
+    assert (hunk.added, hunk.removed) == (1, 1)
+
+
+def test_diff_hunks_binary_add_and_modify_to_same_bytes_give_different_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`A → B` и `C → B` различаются: тело несёт СТАРЫЙ хэш, не только новый.
+
+    Односторонняя форма `+binary <sha256 текущего>` отождествила бы эти две
+    разные правки — обе кончаются одним и тем же `B`, и у неё не было бы как
+    отличить «откуда» правка пришла.
+    """
+    repo_from_a = _init_hunks_repo(tmp_path / "from_a")
+    (repo_from_a / "x.bin").write_bytes(b"AAAA\x00side")
+    _commit_all(repo_from_a)
+    (repo_from_a / "x.bin").write_bytes(BINARY_NEW)
+
+    repo_from_c = _init_hunks_repo(tmp_path / "from_c")
+    (repo_from_c / "x.bin").write_bytes(b"CCCC\x00side")
+    _commit_all(repo_from_c)
+    (repo_from_c / "x.bin").write_bytes(BINARY_NEW)
+
+    monkeypatch.chdir(repo_from_a)
+    body_from_a = next(h for h in enumerate_review_units.diff_hunks() if h.path == "x.bin").body
+    monkeypatch.chdir(repo_from_c)
+    body_from_c = next(h for h in enumerate_review_units.diff_hunks() if h.path == "x.bin").body
+
+    assert body_from_a != body_from_c
+    id_from_a = enumerate_review_units.hunk_id("x.bin", body_from_a)
+    id_from_c = enumerate_review_units.hunk_id("x.bin", body_from_c)
+    assert id_from_a != id_from_c
+
+
+# --- untracked_hunks ----------------------------------------------------------
+
+
+def test_untracked_hunks_text_file_is_one_hunk_added_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "README.md", "keep\n")
+    _commit_all(repo)
+    _write(repo, "new_file.txt", "line one\nline two   \nline three\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "new_file.txt"
+    assert hunk.body == "+line one\n+line two\n+line three"
+    assert (hunk.added, hunk.removed) == (3, 0)
+
+
+def test_untracked_hunks_ignored_file_gives_none_two_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Неотслеживаемый неигнорируемый файл — один hunk; игнорируемый — ноль.
+
+    Два входа рядом, а не рассуждение по одному: `visible.txt` не в
+    `.gitignore`, `ignored.txt` — в нём. Список результата обязан содержать
+    только первый.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, ".gitignore", "ignored.txt\n")
+    _commit_all(repo)
+    _write(repo, "visible.txt", "hello\n")
+    _write(repo, "ignored.txt", "should not appear\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert [h.path for h in hunks] == ["visible.txt"]
+
+
+def test_untracked_hunks_binary_file_uses_binary_add_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Неотслеживаемый ДВОИЧНЫЙ файл — форма «добавление» таблицы двоичных.
+
+    Решение оркестратора по неоднозначности: не текстовое тело над байтами
+    (оно над ними не определено), а та же форма, что у добавленного
+    двоичного файла из `diff_hunks`.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "README.md", "keep\n")
+    _commit_all(repo)
+    (repo / "blob.bin").write_bytes(BINARY_ADDED)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "blob.bin"
+    assert hunk.context == "@@ binary @@"
+    assert hunk.body == f"+binary {hashlib.sha256(BINARY_ADDED).hexdigest()}"
+    assert (hunk.added, hunk.removed) == (1, 0)
+
+
+# --- CLI `hunks`: формат, read-only, порядок, суффиксы дублей ----------------
+
+
+def test_cli_hunks_empty_tree_is_exit_zero_with_empty_output(tmp_path: Path) -> None:
+    """Пустое дерево (нет diff'а, нет untracked) — пустой вывод, код 0: не отказ."""
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a.txt", "content\n")
+    _commit_all(repo)
+
+    result = _cli_hunks_text(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_cli_hunks_output_is_tab_separated_four_fields_no_timestamp(tmp_path: Path) -> None:
+    """Побайтный оракул строки вывода: id, путь, контекст, счётчик — через TAB, без меток времени.
+
+    Как и у `assertions` (F5 круга 1 той задачи): раунд-трип «два прогона
+    равны» не ловит метку времени грубой точности. Здесь сразу сравнение с
+    ЗАРАНЕЕ известными байтами.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "backend/money/price.py", "def f(value):\n    return value > 0\n")
+    _commit_all(repo)
+    _write(
+        repo,
+        "backend/money/price.py",
+        "def f(value):\n    if not value.is_finite():\n        return False\n",
+    )
+
+    result = _cli_hunks_bytes(repo)
+
+    body = "-    return value > 0\n+    if not value.is_finite():\n+        return False"
+    expected_id = enumerate_review_units.hunk_id("backend/money/price.py", body)
+    # `os.linesep`: `print()` транслирует `\n` в `\r\n` на Windows даже когда
+    # stdout — пайп подпроцесса (тот же приём, что в тестах `assertions`).
+    expected_line = f"{expected_id}\tbackend/money/price.py\t@@ -1,2 +1,3 @@\t+2/-1\n".replace("\n", os.linesep)
+
+    assert result.returncode == 0
+    assert result.stdout == expected_line.encode("utf-8")
+
+
+def test_cli_hunks_does_not_modify_the_tree_or_the_index(tmp_path: Path) -> None:
+    """Индекс и дерево не меняются — проверено СЛЕДСТВИЕМ, не временем файла.
+
+    Неотслеживаемый файл до прогона числится в `git status --porcelain` как
+    `??`; после прогона — по-прежнему `??`, а не `A ` (что означало бы, что
+    скрипт сделал `git add`/`git add -N`). Сверка `mtime` `.git/index` для
+    этого не годится: его обновляет и сам `git status`, и тест краснел бы по
+    причине, к скрипту не относящейся.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a.txt", "content\n")
+    _commit_all(repo)
+    _write(repo, "a.txt", "content\nchanged\n")
+    _write(repo, "untracked.txt", "new\n")
+
+    def status() -> str:
+        return subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+
+    before = status()
+    assert before != ""
+    assert "?? untracked.txt" in before
+
+    result = _cli_hunks_text(repo)
+    assert result.returncode == 0
+
+    after = status()
+    assert "?? untracked.txt" in after
+    assert after == before
+
+
+def test_cli_hunks_order_matches_path_sort(tmp_path: Path) -> None:
+    """Три правленных файла — вывод в порядке сортировки путей, не создания/правки.
+
+    Три ОТСЛЕЖИВАЕМЫХ файла в одном каталоге git и так обходит по имени —
+    этот случай сам по себе не отличил бы явную сортировку от совпадения
+    (проверено мутацией: удаление `sorted(...)` в `_run_hunks` эту версию
+    теста не красит). Поэтому здесь дополнительно ТРЕТИЙ файл —
+    неотслеживаемый, из ДРУГОГО источника (`untracked_hunks`, а не
+    `diff_hunks`), с путём, который по алфавиту должен встать МЕЖДУ двумя
+    отслеживаемыми. `diff_hunks()` и `untracked_hunks()` — два отдельных
+    списка, конкатенация которых без явной сортировки ВСЕГДА кладёт весь
+    результат `untracked_hunks()` последним, независимо от алфавита; только
+    сортировка по пути в `_run_hunks` создаёт межисточниковое чередование.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "b_tracked.txt", "old\n")
+    _write(repo, "d_tracked.txt", "old\n")
+    _commit_all(repo)
+    _write(repo, "b_tracked.txt", "new\n")
+    _write(repo, "d_tracked.txt", "new\n")
+    _write(repo, "c_untracked.txt", "new file\n")
+
+    result = _cli_hunks_text(repo)
+    paths = [line.split("\t")[1] for line in result.stdout.splitlines() if line]
+
+    assert paths == ["b_tracked.txt", "c_untracked.txt", "d_tracked.txt"]
+
+
+GAP = "\n".join(f"g{i}" for i in range(20))
+
+
+def _dup_content(markers: list[str]) -> str:
+    """Строки-маркеры, разнесённые `GAP`-ом (20 строк) — заведомо разные hunk'и.
+
+    20 строк заполнителя — больше 2×3 (контекст diff'а по умолчанию), иначе
+    git мог бы слить соседние изменения в один hunk, и тест перестал бы
+    различать «N дублей» от «один большой hunk».
+    """
+    return (f"\n{GAP}\n").join(markers) + "\n"
+
+
+def test_cli_hunks_duplicate_bodies_get_positional_dot_suffixes(tmp_path: Path) -> None:
+    """Три hunk'а с одинаковым нормализованным телом в одном файле — `H:xxxx`, `.2`, `.3`."""
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "dup.txt", _dup_content(["DUP_OLD"] * 3))
+    _commit_all(repo)
+    _write(repo, "dup.txt", _dup_content(["DUP_NEW"] * 3))
+
+    result = _cli_hunks_text(repo)
+    ids = [line.split("\t")[0] for line in result.stdout.splitlines() if line.split("\t")[1] == "dup.txt"]
+
+    raw = ids[0]
+    assert re.fullmatch(r"H:[0-9a-f]{8}", raw)
+    assert ids == [raw, f"{raw}.2", f"{raw}.3"]
+
+
+def test_cli_hunks_earlier_duplicate_shifts_neighbor_suffixes(tmp_path: Path) -> None:
+    """Появление дубликата РАНЬШЕ по порядку сдвигает суффиксы соседей (спека §3.10).
+
+    Не рассуждение, а отдельный вход: тройка правок (как в тесте выше) и
+    отдельно четвёрка — та же тройка плюс ЕЩЁ ОДНА правка того же
+    нормализованного тела, стоящая в файле ПЕРВОЙ. В тройке второй элемент
+    несёт `.2`; в четвёрке та же по смыслу позиция (теперь третья по счёту)
+    несёт уже `.3` — суффикс пересчитан заново, а не унаследован.
+    """
+    repo3 = _init_hunks_repo(tmp_path / "three")
+    _write(repo3, "dup.txt", _dup_content(["DUP_OLD"] * 3))
+    _commit_all(repo3)
+    _write(repo3, "dup.txt", _dup_content(["DUP_NEW"] * 3))
+    result3 = _cli_hunks_text(repo3)
+    ids3 = [line.split("\t")[0] for line in result3.stdout.splitlines() if line.split("\t")[1] == "dup.txt"]
+
+    repo4 = _init_hunks_repo(tmp_path / "four")
+    _write(repo4, "dup.txt", _dup_content(["DUP_OLD"] * 4))
+    _commit_all(repo4)
+    _write(repo4, "dup.txt", _dup_content(["DUP_NEW"] * 4))
+    result4 = _cli_hunks_text(repo4)
+    ids4 = [line.split("\t")[0] for line in result4.stdout.splitlines() if line.split("\t")[1] == "dup.txt"]
+
+    raw = ids3[0]
+    assert ids3 == [raw, f"{raw}.2", f"{raw}.3"]
+    assert ids4 == [raw, f"{raw}.2", f"{raw}.3", f"{raw}.4"]
+    assert ids3[1] == f"{raw}.2"
+    assert ids4[2] == f"{raw}.3"
