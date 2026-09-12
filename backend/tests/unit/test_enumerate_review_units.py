@@ -617,3 +617,44 @@ def test_cli_empty_assertions_section_is_exit_zero_with_empty_output(tmp_path: P
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_cli_fenced_only_assertions_marker_is_treated_as_missing_section(tmp_path: Path) -> None:
+    """Critical (round 2): `**Утверждения**` ТОЛЬКО внутри ```-ограждения — не раздел.
+
+    До этой правки `_run_assertions` искал строку `**Утверждения**` СВОИМ,
+    наивным (не знающим про ограждения) предикатом — второй копией того же
+    признака, который `assertion_items` уже проверял fence-aware способом
+    после круга 1. Единственное вхождение `**Утверждения**` внутри примера
+    markdown в разделе «Interfaces» (иллюстрация того, как выглядит заголовок,
+    а не сам раздел) наивная предпроверка засчитывала как «раздел есть»: отказ
+    3 не срабатывал, `assertion_items` честно возвращал `[]`, и
+    `_run_assertions` печатал ПУСТОЙ stdout с кодом 0 — задача без утверждений
+    становилась неотличима от задачи с законно пустым разделом (найдено ревью
+    round 2, единственное Critical). Правка убрала вторую копию признака:
+    теперь и разбор, и предпроверка отказа спрашивают одну и ту же
+    `_assertions_header_index`.
+    """
+    repo = _init_repo(tmp_path)
+    plan_dir = repo / "docs" / "superpowers" / "plans"
+    plan_path = plan_dir / "fenced-marker-plan.md"
+    plan_path.write_text(
+        "### Task 1: Задача, где раздел только в примере кода\n"
+        "\n"
+        "**Interfaces**\n"
+        "\n"
+        "```\n"
+        "**Утверждения**\n"
+        "- вот так будет выглядеть заголовок раздела — это пример, не раздел;\n"
+        "```\n"
+        "\n"
+        "**Проверка**\n"
+        "- зелёная.\n",
+        encoding="utf-8",
+    )
+
+    result = _run_assertions(repo, "docs/superpowers/plans/fenced-marker-plan.md", "1")
+
+    assert result.returncode == 3
+    assert result.stdout == ""
+    assert result.stderr != ""

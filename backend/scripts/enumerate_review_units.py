@@ -89,6 +89,36 @@ def _fenced_mask(lines: Sequence[str]) -> list[bool]:
     return mask
 
 
+def _assertions_header_index(block: Sequence[str], mask: Sequence[bool]) -> int | None:
+    """Индекс строки `**Утверждения**` в `block`, единственный источник правды.
+
+    Единственное место, которое РЕШАЕТ, есть ли у задачи раздел «Утверждения»:
+    и `assertion_items` (разбор пунктов), и `_run_assertions` (код возврата)
+    обязаны спрашивать именно эту функцию, а не заводить свой поиск этой же
+    строки. До круга 1 ревью оба места искали `**Утверждения**` одинаково
+    наивно (без учёта ```-ограждений) и потому СОГЛАСОВАННО ошибались; когда
+    круг 1 сделал `assertion_items` fence-aware, а `_run_assertions` — нет,
+    признак раздвоился: маркер `**Утверждения**` ТОЛЬКО внутри примера кода
+    заставлял наивную половину (`_run_assertions`) считать раздел существующим,
+    а fence-aware половину (`assertion_items`) — честно возвращать `[]`, и
+    задача без утверждений давала код 0 с пустым stdout (найдено ревью round
+    2, Critical). Один источник правды делает такое расхождение невозможным
+    структурно, а не только сегодня.
+
+    `mask` — параметр, а не пересчёт внутри: единственный вызывающий, у
+    которого уже есть маска для СВОИХ прочих нужд (`assertion_items`), не
+    обязан считать ```-ограждения дважды; `_run_assertions`, которому маска
+    больше ни для чего не нужна, считает её один раз специально для этого
+    вызова.
+    """
+    for i, line in enumerate(block):
+        if mask[i]:
+            continue
+        if line.strip() == ASSERTIONS_HEADER:
+            return i
+    return None
+
+
 def repo_root() -> Path:
     """Корень репозитория — по ТЕКУЩЕМУ каталогу процесса, а не по `__file__`.
 
@@ -187,13 +217,7 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
 
     mask = _fenced_mask(block)
 
-    start = None
-    for i, line in enumerate(block):
-        if mask[i]:
-            continue
-        if line.strip() == ASSERTIONS_HEADER:
-            start = i
-            break
+    start = _assertions_header_index(block, mask)
     if start is None:
         return []
 
@@ -277,6 +301,15 @@ def _run_assertions(plan: str, task: int) -> int:
     пустой список в stdout с кодом 0 — тишина с нулевым кодом читалась бы как
     «у задачи нет утверждений», что для первого случая неверно, а для второго
     неотличимо от настоящей пустой задачи.
+
+    Наличие раздела проверяется ЧЕРЕЗ `_assertions_header_index` — ТУ ЖЕ
+    функцию, которой пользуется `assertion_items`, а не собственным поиском
+    строки `**Утверждения**`. Так и был устроен этот отказ до круга 2: свой
+    наивный (не знающий про ```-ограждения) поиск здесь СОГЛАСОВАННО, но
+    неверно совпадал со старой наивной версией `assertion_items` — а когда
+    круг 1 сделал `assertion_items` fence-aware, эта копия осталась наивной и
+    стала давать код 0 с пустым stdout на разделе, целиком спрятанном внутри
+    примера кода (найдено ревью round 2, Critical).
     """
     root = repo_root()
     plan_path = root / plan
@@ -286,7 +319,7 @@ def _run_assertions(plan: str, task: int) -> int:
     if not block:
         print(f"задача {task} не найдена в плане {plan}", file=sys.stderr)
         return 2
-    if not any(line.strip() == ASSERTIONS_HEADER for line in block):
+    if _assertions_header_index(block, _fenced_mask(block)) is None:
         print(f"в задаче {task} плана {plan} нет раздела «Утверждения»", file=sys.stderr)
         return 3
 
