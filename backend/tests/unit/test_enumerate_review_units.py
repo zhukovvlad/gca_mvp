@@ -432,6 +432,90 @@ def test_emit_accepts_rows_of_different_width(capsys: object) -> None:
 # --- repo_root и CLI (subprocess, свой временный git-репозиторий) -----------
 
 
+# CI на ubuntu-latest красил восемь тестов этого модуля тремя разными
+# причинами, и все три — молчаливое допущение теста об умолчаниях ЭТОЙ
+# (Windows) машины, не о продукте (см. `ci-linux-findings.md`,
+# `.superpowers/sdd/2026-09-12-review-presentation-phase/`):
+#
+# * глобальный `~/.gitconfig` с identity здесь есть, на CI — нет: коммит
+#   внутри ЛЮБОГО временного репозитория без СВОЕЙ identity отказывает
+#   `Author identity unknown`, и это касается ВЛОЖЕННЫХ репозиториев
+#   (submodule-чекаутов) ровно так же, как верхнего;
+# * `core.fileMode` — умолчание Windows `false`, Linux `true`: правка режима
+#   файла со стороны индекса (`update-index --chmod`) видна только при
+#   `false`;
+# * `core.symlinks` определяет, различает ли git режим файла на диске от
+#   записанного в индексе — а платформозависимая конструкция смены типа
+#   через `update-index --cacheinfo` держалась на этом молча.
+#
+# Единственное лекарство — ОДИН помощник, через который заводится КАЖДЫЙ
+# временный репозиторий модуля (верхний и вложенный), с ЯВНОЙ, не
+# платформенной базой. Тест, которому нужно ДРУГОЕ значение, передаёт его
+# явно и говорит в СВОЁМ докстринге, почему — зелёный прогон при умолчаниях
+# ЭТОЙ машины доказательством больше не считается.
+
+
+def _configure_deterministic_git_repo(
+    repo: Path,
+    *,
+    user_email: str = "test@example.com",
+    user_name: str = "test",
+    file_mode: bool = False,
+    symlinks: bool = False,
+    autocrlf: bool = False,
+) -> None:
+    """Детерминированная база конфига на УЖЕ СУЩЕСТВУЮЩЕМ репозитории.
+
+    Отдельно от `_init_git_repo`, потому что не каждый временный репозиторий
+    этого модуля заводится `git init` НАПРЯМУЮ — чекаут подмодуля
+    (`git submodule add`) уже существует к моменту, когда ему нужна эта база.
+    """
+    config_values = {
+        "user.email": user_email,
+        "user.name": user_name,
+        "commit.gpgsign": "false",
+        "core.fileMode": "true" if file_mode else "false",
+        "core.symlinks": "true" if symlinks else "false",
+        "core.autocrlf": "true" if autocrlf else "false",
+    }
+    for key, value in config_values.items():
+        subprocess.run(["git", "config", key, value], cwd=repo, check=True)
+
+
+def _init_git_repo(
+    repo: Path,
+    *,
+    mkdir: bool = True,
+    user_email: str = "test@example.com",
+    user_name: str = "test",
+    file_mode: bool = False,
+    symlinks: bool = False,
+    autocrlf: bool = False,
+) -> Path:
+    """`git init` + детерминированная база конфига — ЕДИНСТВЕННАЯ точка входа.
+
+    Каждый временный репозиторий этого модуля, верхний ИЛИ вложенный, обязан
+    заводиться через эту функцию (или, для репозитория, созданного не `git
+    init`, — через `_configure_deterministic_git_repo` на нём). Умолчания
+    параметров — явная база (`user.email`/`user.name` иначе коммит
+    невозможен без глобального конфига; `commit.gpgsign=false` — чужая
+    подпись не должна ломать чужой прогон; `core.fileMode`/`core.symlinks`/
+    `core.autocrlf` — явными значениями, а не умолчанием платформы).
+    """
+    if mkdir:
+        repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    _configure_deterministic_git_repo(
+        repo,
+        user_email=user_email,
+        user_name=user_name,
+        file_mode=file_mode,
+        symlinks=symlinks,
+        autocrlf=autocrlf,
+    )
+    return repo
+
+
 def _init_repo(tmp_path: Path) -> Path:
     """Свой временный git-репозиторий с одним планом и одной коммиченной правкой.
 
@@ -439,10 +523,11 @@ def _init_repo(tmp_path: Path) -> Path:
     статус: штатный момент запуска перечислителя — грязное дерево незакоммиченной
     задачи. Поэтому после коммита плана в дереве остаётся одна незакоммиченная
     правка отслеживаемого файла и один неотслеживаемый файл.
+
+    Заводится через `_init_git_repo` — единую точку входа временных
+    репозиториев этого модуля, см. её докстринг.
     """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    _init_git_repo(tmp_path, mkdir=False)
 
     plan_dir = tmp_path / "docs" / "superpowers" / "plans"
     plan_dir.mkdir(parents=True)
@@ -725,22 +810,24 @@ def test_cli_fenced_only_assertions_marker_is_treated_as_missing_section(tmp_pat
 # =============================================================================
 
 
-def _init_hunks_repo(root: Path) -> Path:
-    """Пустой временный git-репозиторий с `core.autocrlf=false`.
+def _init_hunks_repo(root: Path, *, file_mode: bool = False, symlinks: bool = False) -> Path:
+    """Пустой временный git-репозиторий — заведён через `_init_git_repo`.
 
-    `autocrlf` отключён нарочно: без этого git на Windows переписывает LF в
-    CRLF на чекауте (предупреждение реально всплывало в этой сессии при
-    ручной проверке сценариев) — тогда байтовое содержимое файла, записанное
-    тестом через `_write`, разошлось бы с тем, что видит `git diff`, и тесты
+    `autocrlf` всегда `false` (не параметризовано — ниже ни один тест не
+    просит другого): без этого git на Windows переписывает LF в CRLF на
+    чекауте (предупреждение реально всплывало в этой сессии при ручной
+    проверке сценариев) — тогда байтовое содержимое файла, записанное тестом
+    через `_write`, разошлось бы с тем, что видит `git diff`, и тесты
     нормализации (сдвиг номеров строк, хвостовой пробел) перестали бы
     что-либо доказывать.
+
+    `file_mode`/`symlinks` — база `False`/`False` (детерминированная, не
+    платформенная). Тест, которому нужно ДРУГОЕ значение, передаёт его явно:
+    смена режима файла со стороны индекса требует `file_mode=False` (см.
+    `test_diff_hunks_mode_only_change_gives_one_metadata_hunk`), смена ТИПА
+    файла — `symlinks=True` (см. `_make_type_change_repo`).
     """
-    root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
-    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=root, check=True)
-    return root
+    return _init_git_repo(root, file_mode=file_mode, symlinks=symlinks, autocrlf=False)
 
 
 def _write(repo: Path, rel_path: str, content: str) -> Path:
@@ -1540,8 +1627,15 @@ def test_diff_hunks_mode_only_change_gives_one_metadata_hunk(
     Докстринг раньше называл это намеренным — намеренным быть не может:
     знаменатель обязан содержать элемент на всякую правку, которую ревьюер
     увидит в `git diff` (найдено ревью круга 1, K7).
+
+    `file_mode=False` — явно, а не унаследовано молча: `update-index --chmod`
+    пишет режим в ИНДЕКС, а при `core.fileMode=true` (умолчание Linux) git
+    берёт режим из РАБОЧЕГО дерева и правки не видит вовсе — записей 0,
+    элементов 0 (Причина 2 восьми падений CI, замерено оркестратором и
+    независимо этой же командой в `ci-linux-findings.md`). При
+    `file_mode=False` (Windows, и здесь — явно) записей 1, элементов 1.
     """
-    repo = _init_hunks_repo(tmp_path)
+    repo = _init_hunks_repo(tmp_path, file_mode=False)
     _write(repo, "x.sh", "content\n")
     _commit_all(repo)
     subprocess.run(["git", "update-index", "--chmod=+x", "x.sh"], cwd=repo, check=True)
@@ -1889,8 +1983,13 @@ def test_diff_hunks_mode_only_change_at_ambiguous_path(
     Тот же класс неоднозначности на секции БЕЗ единого `@@` и БЕЗ `Binary
     files … differ` — `_metadata_only_hunk` раньше тоже получал путь из
     строки `diff --git`.
+
+    `file_mode=False` — явно, по той же причине, что и у
+    `test_diff_hunks_mode_only_change_gives_one_metadata_hunk`: без него на
+    `core.fileMode=true` (Linux) правки режима не видно вовсе (Причина 2
+    находок CI).
     """
-    repo = _init_hunks_repo(tmp_path)
+    repo = _init_hunks_repo(tmp_path, file_mode=False)
     d = repo / "x b"
     d.mkdir(parents=True)
     (d / "mode.sh").write_bytes(b"content\n")
@@ -2009,30 +2108,54 @@ def test_assertion_items_unindented_paragraph_ends_item_without_becoming_one() -
 
 
 def _make_type_change_repo(root: Path) -> Path:
-    """Репозиторий с ОДНИМ файлом, тип которого сменён: обычный файл → симлинк.
+    """Репозиторий с ОДНИМ файлом, тип которого сменён: симлинк → обычный файл.
 
     Реального OS-симлинка на Windows без прав может не быть — вход строится
-    так, как называет замечание N1: `git update-index --add --cacheinfo
-    120000,<sha>,<путь>` подменяет РЕЖИМ файла в ИНДЕКСЕ на `120000`
-    (симлинк), не трогая реальные байты на диске. `git diff HEAD` (не
-    `--cached`) при этом читает содержимое из РАБОЧЕГО ДЕРЕВА (оно не
-    изменилось) и режим — из индекса (изменился) и печатает это КАК СМЕНУ
-    ТИПА: `git diff --raw -z HEAD` даёт РОВНО ОДНУ запись со статусом `T`, а
-    `git diff HEAD` — ДВЕ секции патча (удаление старого типа, добавление
-    нового) для ОДНОГО и того же пути. Это и есть вход, на котором ложный
-    инвариант «секций ровно столько, сколько записей» (BLOCKER N1) рвался.
+    со стороны БАЗЫ ОБЪЕКТОВ, не индекса: `git mktree`/`commit-tree` кладут в
+    `HEAD` (и, через `git read-tree HEAD`, в индекс) запись-симлинк (режим
+    `120000`) для `f.txt` с содержимым блоба, ПОБУКВЕННО равным содержимому
+    обычного файла, который лежит в рабочем дереве (записан напрямую
+    `write_bytes`, никогда не проходил через `git add`). Старая конструкция
+    (`git update-index --add --cacheinfo 120000,<sha>,<путь>` поверх обычного
+    коммита) меняла режим со стороны ИНДЕКСА напрямую, минуя `lstat`
+    рабочего дерева, и потому результат НЕ зависел от `core.symlinks` —
+    именно там расходилась платформа (Причина 3 восьми падений CI): чужой
+    старый вход давал разный статус на разных сочетаниях `core.fileMode`/
+    `core.symlinks` непредсказуемо для тестов, которые их не пиновали.
+
+    Эта конструкция, наоборот, ЗАВИСИТ от `core.symlinks` предсказуемо и
+    единообразно (замерено оркестратором при всех четырёх сочетаниях
+    `core.fileMode`×`core.symlinks`, воспроизведено здесь независимо):
+    `symlinks=true` даёт `status=T`, ОДНУ запись `--raw` и ДВЕ секции патча
+    (удаление старого типа, добавление нового) НЕЗАВИСИМО от `core.fileMode`;
+    `symlinks=false` даёт `status=M`, одну запись и одну секцию — при
+    `core.symlinks=false` git не отличает по `lstat` обычный файл на диске от
+    того, что было бы у него, будь это распакованный симлинк, и показывает
+    смену содержимого, а не типа. Отсюда пин `symlinks=True` ниже — без него
+    этот вход перестаёт быть входом BLOCKER N1 вовсе, а не просто иначе его
+    показывает.
     """
-    repo = _init_hunks_repo(root)
-    _write(repo, "f.txt", "hello world content here\n")
-    _commit_all(repo)
-    target_sha = subprocess.run(
+    repo = _init_hunks_repo(root, symlinks=True)
+    content = b"hello world content here\n"
+    target_blob = subprocess.run(
         ["git", "hash-object", "-w", "--stdin"],
-        cwd=repo, input="target.txt", capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    subprocess.run(
-        ["git", "update-index", "--add", "--cacheinfo", f"120000,{target_sha},f.txt"],
-        cwd=repo, check=True,
-    )
+        cwd=repo, input=b"hello world content here", capture_output=True, check=True,
+    ).stdout.strip().decode()
+    mktree_input = f"120000 blob {target_blob}\tf.txt\n".encode()
+    tree = subprocess.run(
+        ["git", "mktree"], cwd=repo, input=mktree_input, capture_output=True, check=True,
+    ).stdout.strip().decode()
+    commit = subprocess.run(
+        ["git", "commit-tree", tree, "-m", "init"], cwd=repo, capture_output=True, check=True,
+    ).stdout.strip().decode()
+    subprocess.run(["git", "update-ref", "HEAD", commit], cwd=repo, check=True)
+    # Синхронизировать ИНДЕКС с `HEAD` (запись-симлинк), не трогая рабочее
+    # дерево — иначе `f.txt` был бы неотслеживаемым, а не сменившим тип.
+    subprocess.run(["git", "read-tree", "HEAD"], cwd=repo, check=True)
+    # Рабочее дерево — ОБЫЧНЫЙ файл, записанный БАЙТАМИ напрямую, без
+    # `git add`: именно расхождение реального `lstat` с записью в индексе и
+    # есть смена типа, которую `core.symlinks=true` делает видимой.
+    (repo / "f.txt").write_bytes(content)
     return repo
 
 
@@ -2050,12 +2173,19 @@ def test_diff_hunks_type_change_gives_two_hunks_not_a_crash(
     удаление старого + добавление нового), а запись `--raw` для него — ОДНА
     со статусом `T`: старый код увидел бы 1 != N где-то ещё в этом дереве и
     упал бы уже на первом же прогоне с несовпадением. Обе секции здесь —
-    ТЕКСТОВЫЕ (есть `+++`/`---`, `core.symlinks=false` заставляет git
-    показать содержимое симлинка как текст), и путь для ОБЕИХ — один и тот
-    же, путь ЕДИНСТВЕННОЙ записи `T`: правило «`T` владеет двумя смежными
-    секциями» живёт в `_sections_per_record`, а раздачу делает
-    `_assign_sections`. Сломай это правило (отдай `T` одну секцию) — и этот
-    вход краснеет громким отказом, а не тихой потерей элемента.
+    ТЕКСТОВЫЕ (есть `+++`/`---`, содержимое обеих сторон — обычный текст), и
+    путь для ОБЕИХ — один и тот же, путь ЕДИНСТВЕННОЙ записи `T`: правило
+    «`T` владеет двумя смежными секциями» живёт в `_sections_per_record`, а
+    раздачу делает `_assign_sections`. Сломай это правило (отдай `T` одну
+    секцию) — и этот вход краснеет громким отказом, а не тихой потерей
+    элемента.
+
+    `_make_type_change_repo` пинует `core.symlinks=true` явно (см. её
+    докстринг и Причину 3 `ci-linux-findings.md`): без него — измерено — тот
+    же вход даёт `status=M` и ОДИН hunk вместо двух, независимо от
+    `core.fileMode`; с ним — `status=T` и эти самые два hunk'а при ОБОИХ
+    значениях `core.fileMode` (замерено оркестратором при всех четырёх
+    сочетаниях).
     """
     repo = _make_type_change_repo(tmp_path)
 
@@ -2621,13 +2751,31 @@ def _build_two_submodules_repo(root: Path) -> tuple[Path, dict[str, tuple[str, s
 
     repo = _init_hunks_repo(root / "main")
     for name in inner_specs:
+        # `-c core.autocrlf=false` (и соседние) — НА САМОЙ команде `submodule
+        # add`, а не только постфактум `_configure_deterministic_git_repo`
+        # ниже: она делает checkout ОДНИМ действием, и если у машины (или её
+        # глобального `~/.gitconfig`) `core.autocrlf=true`, чекаут сразу же
+        # переписывает LF в CRLF — тогда файл на диске расходится с тем, что
+        # закоммичено (LF, см. `_init_hunks_repo`), и подмодуль оказывается
+        # "dirty" ДО того, как тест вообще что-то тронул (найдено здесь же:
+        # `git status --porcelain` внутри чекаута показывал `M f.txt` при
+        # побайтно одинаковом содержимом обеих версий). Конфиг, поставленный
+        # ПОСЛЕ уже случившегося чекаута, эту порчу не отменяет.
         subprocess.run(
             [
-                "git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                "git", "-c", "protocol.file.allow=always",
+                "-c", "core.fileMode=false", "-c", "core.symlinks=false", "-c", "core.autocrlf=false",
+                "submodule", "add", "-q",
                 (root / name).as_uri(), name,
             ],
             cwd=repo, check=True,
         )
+        # Чекаут подмодуля — СВОЙ вложенный `.git`, независимый от родителя:
+        # identity туда не наследуется автоматически (Причина 1 восьми
+        # падений CI, `ci-linux-findings.md`) — без этого пинка коммит внутри
+        # него (ниже, сдвиг указателя) отказывает `Author identity unknown`
+        # там, где нет глобального `~/.gitconfig` (на CI, не на этой машине).
+        _configure_deterministic_git_repo(repo / name)
     _write(repo, "top.txt", "top\n")
     _commit_all(repo)
 
@@ -2968,13 +3116,13 @@ def _init_nested_repo(parent: Path, rel_path: str, *, with_commit: bool) -> Path
 
     `with_commit=False` — вложенный репозиторий БЕЗ единого коммита (`git init`
     и ничего больше): `HEAD` в нём не существует, `rev-parse HEAD` отказывает.
+
+    Заводится через `_init_git_repo` — ту же единственную точку входа, что и
+    внешний репозиторий: вложенный репозиторий получает СВОЮ детерминированную
+    identity независимо от того, коммитим мы в нём или нет.
     """
-    nested = parent / rel_path
-    nested.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+    nested = _init_git_repo(parent / rel_path)
     if with_commit:
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=nested, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=nested, check=True)
         (nested / "file.txt").write_text("content\n", encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=nested, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=nested, check=True)
