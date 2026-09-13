@@ -1334,15 +1334,23 @@ def test_untracked_hunks_path_with_space_is_unquoted(
 # --- K3: неотслеживаемый текст не в UTF-8 ------------------------------------
 
 
-def test_untracked_hunks_non_utf8_text_falls_back_to_binary_form(
+def test_untracked_hunks_non_utf8_text_without_nul_is_a_text_hunk_not_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """cp1251-текст без NUL-байта (эвристика двоичности его не ловит) — не крашит, а форма «добавление».
+    """cp1251-текст без NUL-байта (эвристика двоичности его не ловит) — текстовый hunk, не двоичный.
 
-    Текстовое тело над байтами, которые не декодируются как UTF-8, не
-    определено ничуть не меньше, чем у настоящего двоичного файла — падать
-    `UnicodeDecodeError`-ом и терять элемент знаменателя нельзя (найдено
-    ревью круга 1, K3).
+    Круг 3 внешнего ревью (Important I3, открыт с первой волны): двоичность
+    здесь определяется ЕДИНСТВЕННЫМ признаком — нулевым байтом, тем же, что
+    и у git. До этой правки НЕ декодируемый как UTF-8, но БЕЗ NUL контент
+    получал СВОЙ, ВТОРОЙ признак двоичности (`try: raw_bytes.decode("utf-8")`)
+    здесь, которого у git (а значит и у `diff_hunks` для того же,
+    ЗАСТЕЙДЖЕННОГО файла) нет вовсе — git считает его текстом всегда, когда
+    в нём нет NUL. Тот же файл, untracked и staged, расходился на РАЗНЫХ
+    ветвях построения тела и получал РАЗНЫЙ `H:` от одного `git add`
+    (найдено внешним ревью: `H:00e486cf` untracked против `H:86cec3f6`
+    staged). Padать `UnicodeDecodeError`-ом по-прежнему нельзя — тело просто
+    не требует валидного UTF-8 вовсе, оно строится из СЫРЫХ байт строки, а
+    для показа декодируется с `errors="replace"` (см. `Hunk`).
     """
     repo = _init_hunks_repo(tmp_path)
     _write(repo, "keep.txt", "keep\n")
@@ -1357,9 +1365,38 @@ def test_untracked_hunks_non_utf8_text_falls_back_to_binary_form(
     assert len(hunks) == 1
     hunk = hunks[0]
     assert hunk.path == "cp1251.txt"
-    assert hunk.context == "@@ binary @@"
-    assert hunk.body == f"+binary {hashlib.sha256(cp1251_bytes).hexdigest()}"
+    assert hunk.context == "@@ -0,0 +1,1 @@"
+    assert hunk.raw_body == b"+" + cp1251_bytes
     assert (hunk.added, hunk.removed) == (1, 0)
+
+
+def test_untracked_then_staged_non_utf8_without_nul_file_gives_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important I3: не-UTF-8 файл БЕЗ NUL-байта — untracked и staged дают ОДИН и тот же `H:`.
+
+    Прямое предъявление второго входа замечания: `git add` не правка
+    содержимого, а до этой правки он менял `H:` файла, у которого нет ни NUL
+    (эвристику двоичности не проходит), ни валидного UTF-8 (untracked-ветка
+    считала его двоичным СВОИМ признаком, staged — git всегда текстом).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    cp1251_bytes = "привет".encode("cp1251")
+    assert b"\x00" not in cp1251_bytes
+    (repo / "cp1251.txt").write_bytes(cp1251_bytes)
+
+    monkeypatch.chdir(repo)
+    untracked_hunk = next(h for h in enumerate_review_units.untracked_hunks() if h.path == "cp1251.txt")
+    id_untracked = enumerate_review_units.hunk_id(untracked_hunk.path, untracked_hunk.raw_body)
+
+    subprocess.run(["git", "add", "cp1251.txt"], cwd=repo, check=True)
+    staged_hunk = next(h for h in enumerate_review_units.diff_hunks() if h.path == "cp1251.txt")
+    id_staged = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.raw_body)
+
+    assert untracked_hunk.raw_body == staged_hunk.raw_body
+    assert id_untracked == id_staged
 
 
 # --- K4: невалидные UTF-8 байты в `git diff HEAD` ----------------------------
@@ -2023,44 +2060,21 @@ def test_cli_hunks_type_change_does_not_crash_the_whole_run(tmp_path: Path) -> N
     assert len(set(f_txt_ids)) == 2  # разные тела — разные `H:`, не дубль
 
 
-def test_resolve_ambiguous_header_path_picks_the_pair_present_in_the_known_set() -> None:
-    """Заголовок с ДВУМЯ вхождениями ` b/` разрешается по членству в множестве, не по жадности regex.
-
-    `x b/y.bin` внутри заголовка `diff --git a/x b/y.bin b/x b/y.bin` даёт
-    ТРИ кандидатных разреза литеральной подстроки ` b/`; только тот, что
-    целиком совпадает с реальной парой из `--raw`, входит в множество.
-    """
-    known_pairs = {("x b/y.bin", "x b/y.bin")}
-    result = enumerate_review_units._resolve_ambiguous_header_path(
-        "diff --git a/x b/y.bin b/x b/y.bin", known_pairs
-    )
-    assert result == ("x b/y.bin", "x b/y.bin")
-
-
-def test_resolve_ambiguous_header_path_raises_value_error_when_nothing_matches() -> None:
-    """Ни один разрез не входит в множество — контролируемый `ValueError`, не тихая выдумка пути.
-
-    «Не терять и не путать элемент знаменателя молча»: лучше явный отказ,
-    пойманный `_run_hunks` (см. `test_run_hunks_generic_exception_is_a_clean_message_not_a_traceback`),
-    чем угаданный (и, возможно, неверный) путь.
-    """
-    with pytest.raises(ValueError):
-        enumerate_review_units._resolve_ambiguous_header_path(
-            "diff --git a/unknown.bin b/unknown.bin", set()
-        )
-
-
 def test_run_hunks_generic_exception_is_a_clean_message_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """BLOCKER N1: ЛЮБОЕ исключение перечисления — сообщение и код 3, не traceback.
+    """BLOCKER N1 + Important I2: ЛЮБОЕ исключение перечисления — сообщение с ТИПОМ и код 3, не traceback.
 
-    До правки `_run_hunks` ловил только `subprocess.CalledProcessError` —
-    `RuntimeError`/`ValueError` из разрешения пути выходили трассировкой.
-    Здесь `diff_hunks` подменена так, чтобы бросить произвольный `ValueError`
-    (не обязательно тот же путь, которым падал реальный N1, — важно само
-    свойство «функция это ловит», а не воспроизведение сценария целиком,
-    которое уже отдельно доказано `test_cli_hunks_type_change_does_not_crash_the_whole_run`).
+    До круга 2 `_run_hunks` ловил только `subprocess.CalledProcessError` —
+    любое другое исключение выходило трассировкой. Круг 3 (Important I2)
+    добавил требование к САМОМУ сообщению: голый `str(error)` неотличим от
+    законного отказа git — внедрённая программная ошибка выглядела бы как
+    обычное сообщение (`'str' object has no attribute 'decode'`), а не как
+    сигнал «сломался сам инструмент». Здесь `diff_hunks` подменена так, чтобы
+    бросить произвольный `ValueError` (не обязательно тот же путь, которым
+    падал реальный N1, — важно само свойство «функция это ловит и называет
+    тип», а не воспроизведение сценария целиком, которое уже отдельно
+    доказано `test_cli_hunks_type_change_does_not_crash_the_whole_run`).
     """
 
     def boom() -> list[enumerate_review_units.Hunk]:
@@ -2074,6 +2088,7 @@ def test_run_hunks_generic_exception_is_a_clean_message_not_a_traceback(
     assert code == 3
     assert captured.out == ""
     assert "Traceback" not in captured.err
+    assert "ValueError" in captured.err
     assert "нарочная поломка перечисления для теста" in captured.err
 
 
@@ -2114,3 +2129,175 @@ def test_untracked_then_staged_trailing_nbsp_file_gives_the_same_id(
     # с id по хэшируемому — расхождение здесь и было бы BLOCKER N2.
     id_from_displayed_body = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.body)
     assert id_from_displayed_body == id_staged
+
+
+# =============================================================================
+# Внешняя волна, круг 3 (external-findings-round3.md): пути НИКОГДА не читаются
+# из текста патча — `git diff --raw -z HEAD` их единственный источник, а патч
+# каждого файла забирается отдельным вызовом `git diff HEAD -- <путь>`.
+# =============================================================================
+
+
+def test_diff_hunks_mutually_ambiguous_renames_give_two_distinct_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Замер круга 3: два переименования с ПОБУКВЕННО ОДИНАКОВЫМ заголовком секции.
+
+    `a` → `"c b/d"` и `"a b/c"` → `d` — оба дают у `git diff HEAD` СТРОКУ
+    `diff --git a/a b/c b/d`, слово в слово одинаковую: в заголовке физически
+    нет информации, которая отличала бы одну правку от другой (M2 —
+    построено и проверено оркестратором лично). Никакой разбор ЭТОГО текста
+    не может дать верный ответ — не потому что разбор недостаточно умный, а
+    потому что ответа в этом тексте нет. До круга 3 резолвер молча брал
+    ПЕРВЫЙ подходящий разрез заголовка: один путь исчезал из знаменателя,
+    другой дублировался, `rc=0`, `stderr` пуст — тихая порча знаменателя,
+    один из самых опасных исходов для этого инструмента (хуже честного
+    отказа). После круга 3 путь приходит не из этого текста вовсе, а из
+    `git diff --raw -z HEAD` (`_raw_diff_records`) — заголовок текста патча
+    для пути больше не читается нигде, и обе секции корректно разрешаются в
+    СВОИ, РАЗНЫЕ пути.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    (repo / "a").write_bytes(b"content-a\n")
+    ab_dir = repo / "a b"
+    ab_dir.mkdir()
+    (ab_dir / "c").write_bytes(b"content-abc\n")
+    _write(repo, "plain.txt", "plain old\n")
+    _commit_all(repo)
+
+    cb_dir = repo / "c b"
+    cb_dir.mkdir()
+    subprocess.run(["git", "mv", "a", "c b/d"], cwd=repo, check=True)
+    subprocess.run(["git", "mv", "a b/c", "d"], cwd=repo, check=True)
+    _write(repo, "plain.txt", "plain new\n")
+
+    # Свидетель: заголовки секций ДЕЙСТВИТЕЛЬНО побуквенно совпадают —
+    # без этого свидетеля тест мог бы молча перестать проверять то, что
+    # заявляет (найденное дерево перестало бы быть враждебным).
+    raw_diff = subprocess.run(
+        ["git", "-c", "core.quotepath=false", "diff", "HEAD", "--no-color", "--find-renames"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    headers = [line for line in raw_diff.splitlines() if line.startswith("diff --git")]
+    assert headers.count("diff --git a/a b/c b/d") == 2
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    paths = sorted(h.path for h in hunks if h.path in {"c b/d", "d"})
+    assert paths == ["c b/d", "d"]
+    rename_cb_d = next(h for h in hunks if h.path == "c b/d")
+    rename_d = next(h for h in hunks if h.path == "d")
+    assert rename_cb_d.body == "similarity index 100%\nrename from a\nrename to c b/d"
+    assert rename_d.body == "similarity index 100%\nrename from a b/c\nrename to d"
+    assert any(h.path == "plain.txt" for h in hunks)
+
+
+def _build_quote_path_repo(root: Path, blob_content: bytes, quoted_path: str) -> Path:
+    """Репозиторий, где `HEAD` несёт файл с ЛИТЕРАЛЬНОЙ кавычкой в имени — БЕЗ ЕГО checkout'а.
+
+    Windows не позволяет создать файл с `"` в имени НИКАКИМ штатным
+    способом (Win32 API отвергает этот символ) — ни через Python, ни через
+    `git checkout`/`git add`, которые сами используют тот же API (проверено:
+    `git update-index --add --cacheinfo` на таком пути отвечает `fatal: git
+    update-index: --cacheinfo cannot add a"b.txt`). Дерево строится ЦЕЛИКОМ
+    через git-плампинг, который никогда не трогает рабочую директорию:
+    `git hash-object -w --stdin` кладёт блоб в object database без файла на
+    диске, `git mktree` строит дерево из произвольных имён (включая
+    кавычку) БЕЗ проверки, что путь допустим для текущей ОС, `git
+    commit-tree` строит коммит из дерева, а `git update-ref HEAD` наводит на
+    него HEAD — ни один из этих шагов не читает и не пишет рабочую
+    директорию. Текущий индекс/дерево остаются ПУСТЫМИ для этого пути (в
+    этом свежем репозитории ничего, кроме `keep.txt`, никогда не
+    добавлялось) — поэтому `git diff HEAD` видит файл как УДАЛЁННЫЙ
+    (в `HEAD` есть, в текущем состоянии — нет), что для целей этого теста
+    ничем не хуже правки: он проходит ТОЧНО ТУ ЖЕ цепочку («raw` даёт путь →
+    патч по этому пути отдельным вызовом → секция разобрана по виду»), что и
+    любая другая правка, и вообще не касается частей кода, зависящих от
+    того, добавлен файл или удалён. На CI (`ubuntu-latest`) такое имя —
+    обычный файл, и там достаточно было бы обычного `_write`+`_commit_all`;
+    здесь используется техника, которая работает на ОБЕИХ платформах
+    одинаково, поэтому применена без ветвления по ОС.
+    """
+    repo = _init_hunks_repo(root)
+    quoted_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=blob_content, capture_output=True, check=True,
+    ).stdout.strip().decode()
+    (repo / "keep.txt").write_bytes(b"keep\n")
+    keep_blob = subprocess.run(
+        ["git", "hash-object", "-w", str(repo / "keep.txt")], cwd=repo, capture_output=True, check=True,
+    ).stdout.strip().decode()
+    mktree_input = f"100644 blob {quoted_blob}\t{quoted_path}\n100644 blob {keep_blob}\tkeep.txt\n".encode()
+    tree = subprocess.run(["git", "mktree"], cwd=repo, input=mktree_input, capture_output=True, check=True).stdout.strip().decode()
+    commit = subprocess.run(["git", "commit-tree", tree, "-m", "init"], cwd=repo, capture_output=True, check=True).stdout.strip().decode()
+    subprocess.run(["git", "update-ref", "HEAD", commit], cwd=repo, check=True)
+    # `keep.txt` РЕАЛЬНО существует на диске и добавляется штатно — он здесь
+    # свидетель, что обычные файлы рядом с враждебным путём не страдают.
+    subprocess.run(["git", "add", "keep.txt"], cwd=repo, check=True)
+    return repo
+
+
+def test_diff_hunks_quoted_path_text_file_resolves_to_the_exact_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь с кавычкой (`a"b.txt`) — ТЕКСТОВАЯ секция, путь верный, не `/a\\"b.txt"`.
+
+    До круга 3 путь такой секции читался из заголовка `diff --git
+    "a/a\\"b.txt" "b/a\\"b.txt"` — git ВСЕГДА заворачивает путь с
+    embedded-кавычкой в кавычки и экранирует её (`\\"`) НЕЗАВИСИМО от
+    `core.quotepath` (эта настройка гасит только octal-escape не-ASCII
+    байт, а не необходимость экранировать саму кавычку), и наивная резка по
+    фиксированному префиксу `"+++ b/"` возвращала БЫ `/a\\"b.txt"` —
+    путь, которого не существует (M1). `git diff --raw -z` эту секцию ВООБЩЕ
+    не экранирует — путь приходит верным по построению.
+    """
+    repo = _build_quote_path_repo(tmp_path, b"line one\nline two\n", 'a"b.txt')
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    hunk = next(h for h in hunks if h.path == 'a"b.txt')
+    assert hunk.body == "-line one\n-line two"
+    assert (hunk.added, hunk.removed) == (0, 2)
+    assert not any(h.path != 'a"b.txt' and "keep" not in h.path for h in hunks)
+
+
+def test_diff_hunks_quoted_path_binary_file_resolves_to_the_exact_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """То же имя (`a"c.bin`) для ДВОИЧНОГО файла — путь верный, не отказ кодом 3 с пустым выводом.
+
+    Второй, отдельный вход замечания: у двоичной секции нет `+++`/`---`
+    вовсе, и до круга 3 путь для неё разрешался ЕЩЁ более хрупким способом
+    (перебор разрезов заголовка по множеству известных пар) — на этом же
+    имени старый резолвер бросал `ValueError` («секция не начинается с …»,
+    воспроизведено оркестратором до этой правки), что при единственном
+    изменённом файле в дереве превращало ВЕСЬ прогон в `rc=3` с пустым
+    выводом.
+    """
+    content = b"\x00\x01BINARYDATA"
+    repo = _build_quote_path_repo(tmp_path, content, 'a"c.bin')
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    hunk = next(h for h in hunks if h.path == 'a"c.bin')
+    assert hunk.context == "@@ binary @@"
+    assert hunk.body == f"-binary {hashlib.sha256(content).hexdigest()}"
+    assert (hunk.added, hunk.removed) == (0, 1)
+
+
+def test_cli_hunks_quoted_path_does_not_crash_the_whole_run(tmp_path: Path) -> None:
+    """Путь с кавычкой на уровне CLI: `rc=0`, никакой трассировки, никакого пустого отказа.
+
+    Прямое предъявление формулировки замечания «не `rc=3` с пустым выводом» —
+    в подпроцессе, той же командой, которой пользуется ревьюер.
+    """
+    repo = _build_quote_path_repo(tmp_path, b"\x00\x01BINARYDATA", 'a"c.bin')
+
+    result = _cli_hunks_text(repo)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    rows = [line.split("\t") for line in result.stdout.splitlines() if line]
+    assert any(row[1] == 'a"c.bin' for row in rows)
