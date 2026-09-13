@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2771,3 +2772,187 @@ def test_assign_sections_refusal_message_carries_the_breaking_path() -> None:
 
     # Секция досталась `a.txt`; обделена ВТОРАЯ запись — её и называет локатор.
     assert "b.txt" in str(excinfo.value)
+
+
+# =============================================================================
+# Круг 6 внешнего ревью (external-findings-round6.md): B1-B3.
+# =============================================================================
+
+
+def test_diff_hunks_survives_wide_diff_context_and_inter_hunk_context_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1: `diff.context`/`diff.interHunkContext`, выставленные широко, не должны сливать элементы.
+
+    Докстринг `_whole_diff_args` называет измеренный вход: файл из 30 строк с
+    правками в строках 3 и 21 при умолчании git даёт ДВА элемента (`H:c0d940f2`,
+    `H:e4177606`), а при `diff.context=10` — уже ОДИН (`H:f7a52fb9`, все
+    идентификаторы другие) — соседние правки молча сливаются в один hunk, и
+    таблица предъявления начинает ссылаться на идентификаторы, которых у
+    следующего читателя не будет. Инструмент форсирует `-U3
+    --inter-hunk-context=0` на команде патча — те же значения, что умолчания
+    git, — чтобы чужой конфиг не мог сдвинуть эту границу. Вход здесь ВДВОЕ
+    шире измеренного слияния (20, не 10), с запасом: два элемента обязаны
+    остаться двумя.
+
+    Убери форсирование этих двух флагов из `_whole_diff_args` — и этот тест
+    покраснеет: `len(hunks)` станет 1, а не 2.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    subprocess.run(["git", "config", "diff.context", "20"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "diff.interHunkContext", "20"], cwd=repo, check=True)
+
+    lines = [f"line {i}\n" for i in range(1, 31)]
+    _write(repo, "f.txt", "".join(lines))
+    _commit_all(repo)
+    lines[2] = "line 3 CHANGED\n"
+    lines[20] = "line 21 CHANGED\n"
+    _write(repo, "f.txt", "".join(lines))
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "f.txt"]
+
+    assert len(hunks) == 2
+
+
+def test_untracked_then_staged_gitattributes_no_diff_file_gives_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: закоммиченный `.gitattributes` (`*.log -diff`) — untracked и staged дают ОДИН и тот же `H:`.
+
+    Рецидив BLOCKER 3: до круга 6 двоичность неотслеживаемого файла решалась
+    ЕДИНСТВЕННЫМ признаком — нулевым байтом (`untracked_hunks`), — а git на
+    отслеживаемой стороне спрашивает АТРИБУТ `diff` ПЕРВЫМ и только при его
+    отсутствии смотрит на содержимое. Правило `-diff` не несёт нулевого байта
+    вовсе, поэтому untracked-ветка по старому признаку шла ТЕКСТОМ, а
+    staged-ветка (сам git) — ДВОИЧНОЙ формой: один `git add`, не менявший ни
+    байта в файле, менял его `H:`. Инструмент теперь спрашивает то же самое,
+    что и git (`_diff_attributes`/`_is_binary_for_git`), на неотслеживаемой
+    стороне тоже — обе ветки решают ОДИНАКОВО.
+
+    Верни на неотслеживаемой стороне признак «только нулевой байт» — и этот
+    тест покраснеет: `untracked_hunk.context` станет обычным текстовым
+    `@@ -0,0 +1,N @@` вместо `@@ binary @@`, и `id_untracked != id_staged`.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, ".gitattributes", "*.log -diff\n")
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _write(repo, "n.log", "first line\nsecond line\n")
+
+    monkeypatch.chdir(repo)
+    untracked_hunk = next(h for h in enumerate_review_units.untracked_hunks() if h.path == "n.log")
+    id_untracked = enumerate_review_units.hunk_id(untracked_hunk.path, untracked_hunk.raw_body)
+
+    subprocess.run(["git", "add", "n.log"], cwd=repo, check=True)
+
+    # Свидетель: git САМ считает `n.log` двоичным из-за атрибута — не выдумка теста.
+    witness = subprocess.run(
+        ["git", "diff", "HEAD", "--no-color"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "Binary files" in witness
+
+    staged_hunk = next(h for h in enumerate_review_units.diff_hunks() if h.path == "n.log")
+    id_staged = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.raw_body)
+
+    assert untracked_hunk.context == "@@ binary @@"
+    assert staged_hunk.context == "@@ binary @@"
+    assert untracked_hunk.body == staged_hunk.body
+    assert id_untracked == id_staged
+
+
+def _documented_hunks_commands() -> list[list[str]]:
+    """Три команды `hunks`, взятые ДОСЛОВНО из фенса `docs/process/implementation.md`.
+
+    Извлекается ИМЕННО фенс с командами (маркер — третья команда, статуса
+    `status --untracked-files=all`, она уникальна в файле), а не переписывается
+    в тесте по памяти: B2 сверяет документ с кодом ИСПОЛНЕНИЕМ, и списанные
+    руками токены были бы тем же самым чтением, которое и подвело документ до
+    круга 6 (он называл команд две вместо трёх).
+
+    Строки внутри фенса склеены по обратному слэшу в конце строки (перенос
+    команды на следующую строку), а сами команды разделены пустой строкой.
+    """
+    doc_path = SCRIPT_PATH.parents[2] / "docs" / "process" / "implementation.md"
+    text = doc_path.read_text(encoding="utf-8")
+    match = re.search(
+        r"```\n(git -c core\.quotepath=false diff HEAD.*?"
+        r"git -c core\.quotepath=false status --porcelain --untracked-files=all)\n```",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None, "фенс с тремя командами не найден в implementation.md"
+    joined = re.sub(r"\\\n\s*", " ", match.group(1))
+    commands = [line.strip() for line in joined.split("\n") if line.strip()]
+    assert len(commands) == 3, f"ожидались три команды, найдено {len(commands)}: {commands!r}"
+    return [shlex.split(command) for command in commands]
+
+
+def test_documented_hunks_commands_match_the_tool_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2: ВСЕ ТРИ документированные команды дают побайтно то же, что запускает инструмент.
+
+    До круга 6 документ приводил только ДВЕ команды из трёх — третья
+    (`git status --porcelain`, неотслеживаемые файлы) упоминалась прозой, и в
+    ней вовсе отсутствовал `--untracked-files=all` — а этот флаг НЕСУЩИЙ (круг
+    1, K1): без него новый каталог сворачивается в одну запись `?? newdir/`, и
+    все файлы внутри пропадают из знаменателя.
+
+    Команды здесь не переписываются по памяти — они парсятся из САМОГО файла
+    (`_documented_hunks_commands`). А вызовы `git`, которые реально делает
+    инструмент, перехватываются на лету: `subprocess.run` подменён шпионом,
+    который всё равно исполняет настоящий git и возвращает настоящий
+    результат, — сравниваются РЕАЛЬНЫЕ байты обеих сторон, а не переписанные
+    вручную аргументы одной из них.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "f.txt", "old\n")
+    _commit_all(repo)
+    _write(repo, "f.txt", "new\n")
+    _write(repo, "untracked.txt", "added\n")
+    # Каталог, а не только плоский файл: без `--untracked-files=all` `git
+    # status --porcelain` свернул бы его в одну запись `?? newdir/`, и вывод
+    # третьей команды перестал бы совпадать с тем, что реально видит
+    # инструмент, — без этого узла тест B2 не был бы чувствителен к K1.
+    _write(repo, "newdir/inside.txt", "added\n")
+
+    documented = _documented_hunks_commands()
+
+    monkeypatch.chdir(repo)
+    real_run = subprocess.run
+    captured: list[tuple[list[str], bytes]] = []
+
+    def spying_run(args, *pargs, **kwargs):
+        completed = real_run(args, *pargs, **kwargs)
+        if args and args[0] == "git":
+            stdout = completed.stdout
+            if isinstance(stdout, str):
+                stdout = stdout.encode("utf-8", errors="replace")
+            captured.append((list(args), stdout if stdout is not None else b""))
+        return completed
+
+    monkeypatch.setattr(subprocess, "run", spying_run)
+
+    enumerate_review_units.diff_hunks()
+    enumerate_review_units.untracked_hunks()
+
+    whole_diff_call = next(
+        (args, out)
+        for args, out in captured
+        if args[:5] == ["git", "-c", "core.quotepath=false", "diff", "HEAD"]
+    )
+    raw_diff_call = next((args, out) for args, out in captured if "--raw" in args)
+    status_call = next(
+        (args, out) for args, out in captured if args[:4] == ["git", "-c", "core.quotepath=false", "status"]
+    )
+    tool_calls = [whole_diff_call, raw_diff_call, status_call]
+
+    assert len(documented) == len(tool_calls) == 3
+    for doc_tokens, (tool_args, tool_output) in zip(documented, tool_calls, strict=True):
+        doc_result = real_run(doc_tokens, cwd=repo, capture_output=True, check=True)
+        assert doc_result.stdout == tool_output, f"документ: {doc_tokens}\nинструмент: {tool_args}"
