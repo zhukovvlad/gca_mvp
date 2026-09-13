@@ -3003,6 +3003,12 @@ def test_untracked_hunks_nested_git_repo_with_commit_is_one_synthetic_element(
     чужой `.git` — и до правки `read_bytes()` на этом пути падал
     `PermissionError` (Windows) / `IsADirectoryError` (POSIX), роняя ВЕСЬ
     перечислитель, а не один элемент знаменателя.
+
+    `hunk.path` — БЕЗ хвостовой косой черты (круг 8 внешнего ревью): слеш,
+    которым `git status` помечает каталог, — оформление ЭТОЙ команды, а не
+    часть пути, и `_nested_repo_hunk` снимает его, чтобы тот же вложенный
+    репозиторий после `git add` (путь идёт уже от `--raw`, там слеша не
+    бывает) давал ТОТ ЖЕ `H:` (см. `test_nested_repo_git_add_keeps_the_same_identity`).
     """
     repo = _init_hunks_repo(tmp_path)
     _write(repo, "keep.txt", "keep\n")
@@ -3015,7 +3021,7 @@ def test_untracked_hunks_nested_git_repo_with_commit_is_one_synthetic_element(
 
     assert len(hunks) == 1
     hunk = hunks[0]
-    assert hunk.path == "vendor/"
+    assert hunk.path == "vendor"
     assert hunk.context == "@@ nested-repo @@"
     assert hunk.body == f"+nested-repo HEAD {expected_head}"
     assert (hunk.added, hunk.removed) == (1, 0)
@@ -3040,7 +3046,7 @@ def test_untracked_hunks_nested_git_repo_without_commits_does_not_crash(
 
     assert len(hunks) == 1
     hunk = hunks[0]
-    assert hunk.path == "empty_vendor/"
+    assert hunk.path == "empty_vendor"
     assert hunk.context == "@@ nested-repo @@"
     assert hunk.body == "+nested-repo HEAD (no commits)"
     assert (hunk.added, hunk.removed) == (1, 0)
@@ -3066,10 +3072,10 @@ def test_untracked_hunks_ordinary_directory_still_expands_next_to_nested_repo(
     hunks = enumerate_review_units.untracked_hunks()
 
     paths = {h.path for h in hunks}
-    assert paths == {"plain_dir/one.txt", "vendor/"}
-    nested_hunk = next(h for h in hunks if h.path == "vendor/")
+    assert paths == {"plain_dir/one.txt", "vendor"}
+    nested_hunk = next(h for h in hunks if h.path == "vendor")
     assert nested_hunk.context == "@@ nested-repo @@"
-    assert all(h.context != "@@ nested-repo @@" for h in hunks if h.path != "vendor/")
+    assert all(h.context != "@@ nested-repo @@" for h in hunks if h.path != "vendor")
 
 
 def test_cli_hunks_survives_nested_git_repo(tmp_path: Path) -> None:
@@ -3090,6 +3096,120 @@ def test_cli_hunks_survives_nested_git_repo(tmp_path: Path) -> None:
     lines = [line for line in result.stdout.splitlines() if line]
     assert len(lines) == 1
     fields = lines[0].split("\t")
-    assert fields[1] == "vendor/"
+    assert fields[1] == "vendor"
     assert fields[2] == "@@ nested-repo @@"
     assert fields[3] == "+1/-0"
+
+
+# =============================================================================
+# Круг 8 внешнего ревью (external-findings-round8.md): рецидив BLOCKER —
+# вложенный репозиторий, которого ещё нет в `HEAD`, менял `H:`, путь, контекст
+# И форму тела от одного `git add`, не тронувшего ни байта содержимого.
+# Untracked-ветка строила синтетическую форму круга 7, а застейдженный гитлинк
+# шёл обычным текстовым разбором патча (`--raw` показывает режим `160000`).
+# =============================================================================
+
+
+def test_nested_repo_untracked_and_staged_give_the_same_identity(tmp_path: Path) -> None:
+    """BLOCKER круга 8: `H:`, путь, контекст и счётчик СОВПАДАЮТ до и после `git add`.
+
+    Тот же вложенный репозиторий (с коммитом): CLI `hunks` ДО `git add` идёт
+    untracked-веткой (`?? vendor/`, `_nested_repo_hunk` через
+    `untracked_hunks`), ПОСЛЕ — застейдженным гитлинком (`--raw` статус `A`,
+    режим `160000`; патч несёт `new file mode 160000`), который `diff_hunks`
+    перехватывает (`_is_new_gitlink_section`) и отдаёт ТОЙ ЖЕ функции. До
+    правки первая строка несла путь `vendor/`, контекст `@@ nested-repo @@` и
+    тело `+nested-repo HEAD <sha>`, а вторая — путь `vendor`, контекст
+    `@@ -0,0 +1 @@` и тело `+Subproject commit <sha>`: расходилось ВСЁ —
+    путь, контекст, форма тела и, следом, `H:` — хотя `git add` не изменил в
+    репозитории `vendor` ни одного байта. Сверяются ВСЕ четыре поля строки
+    вывода, а не только её длина — это именно то, что находка круга 8 требует
+    предъявить (не «длина совпала», а «H:, путь, контекст и счётчик
+    совпадают»).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _init_nested_repo(repo, "vendor", with_commit=True)
+
+    before = _cli_hunks_text(repo)
+    assert before.returncode == 0
+    assert before.stderr == ""
+    before_lines = [line for line in before.stdout.splitlines() if line]
+    assert len(before_lines) == 1
+    before_fields = before_lines[0].split("\t")
+
+    subprocess.run(["git", "add", "vendor"], cwd=repo, check=True)
+
+    after = _cli_hunks_text(repo)
+    assert after.returncode == 0
+    assert after.stderr == ""
+    after_lines = [line for line in after.stdout.splitlines() if line]
+    assert len(after_lines) == 1
+    after_fields = after_lines[0].split("\t")
+
+    assert before_fields == after_fields, (before_fields, after_fields)
+    assert before_fields[1] == "vendor"
+    assert before_fields[2] == "@@ nested-repo @@"
+    assert before_fields[3] == "+1/-0"
+
+
+def test_nested_repo_without_commits_stable_across_a_failed_git_add(tmp_path: Path) -> None:
+    """BLOCKER круга 8, второй вход: вложенный репозиторий БЕЗ коммитов.
+
+    `git add` на репозиторий без единого коммита ОТКАЗЫВАЕТ (git не может
+    прочитать `HEAD`, которого там нет, — измерено: `error: 'empty_vendor/'
+    does not have a commit checked out`), поэтому untracked-ветка остаётся
+    ЕДИНСТВЕННЫМ источником и до, и после попытки — вывод `hunks` обязан быть
+    побайтно тем же самым, а путь — канонический, без хвостового слеша.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _init_nested_repo(repo, "empty_vendor", with_commit=False)
+
+    before = _cli_hunks_text(repo)
+    assert before.returncode == 0
+    assert before.stderr == ""
+
+    add_attempt = subprocess.run(
+        ["git", "add", "empty_vendor"], cwd=repo, capture_output=True, text=True, check=False
+    )
+    assert add_attempt.returncode != 0
+
+    after = _cli_hunks_text(repo)
+    assert after.returncode == 0
+    assert after.stderr == ""
+
+    assert before.stdout == after.stdout
+    fields = next(line for line in before.stdout.splitlines() if line).split("\t")
+    assert fields[1] == "empty_vendor"
+    assert fields[2] == "@@ nested-repo @@"
+    assert fields[3] == "+1/-0"
+
+
+def test_diff_hunks_existing_submodule_pointer_move_stays_a_text_hunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ГРАНИЦА круга 8: подмодуль, УЖЕ существующий в `HEAD`, — НЕ вложенный репозиторий круга 8.
+
+    `_is_new_gitlink_section` реагирует ТОЛЬКО на буквальную строку `new file
+    mode 160000` — секция сдвинутого указателя несёт `index <old>..<new>
+    160000` (файл уже существовал, старая сторона не `/dev/null`), этой строки
+    у неё нет. Использует то же дерево, что тесты круга 5
+    (`_build_two_submodules_repo`) — они уже сверяют ТЕЛО (`Subproject commit
+    <old>`/`<new>`), эта проверка добавляет КОНТЕКСТ: он обязан остаться
+    обычным (`@@ -1 +1 @@`), а не переехать на `@@ nested-repo @@`. Ослабление
+    признака (например, проверка по вхождению одной подстроки `160000` без
+    слов `new file mode`) красит и тесты круга 5, и этот тест одновременно —
+    оба стерегут одну и ту же границу с двух разных сторон.
+    """
+    repo, shas = _build_two_submodules_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    hunks = enumerate_review_units.diff_hunks()
+    by_path = {h.path: h for h in hunks if h.path in shas}
+    assert sorted(by_path) == ["s1", "s2"]
+    for name, hunk in by_path.items():
+        assert hunk.context != "@@ nested-repo @@", name
+        assert hunk.context == "@@ -1 +1 @@", name
