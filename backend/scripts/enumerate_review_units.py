@@ -11,14 +11,24 @@
 Идентификатор пункта «Утверждения» — `A<задача>.<номер>` для пункта верхнего
 уровня (нумерация с единицы) и `A<задача>.<номер><буква>` для вложенного
 пункта (буква — `a`, `b`, … — считается заново внутри КАЖДОГО верхнего
-пункта, а не сквозно по задаче). Пункт, продолженный на следующей строке без
-своего `- `, даёт ОДНУ строку вывода: текст продолжения дописывается
-пробелом, а не заводит новый пункт.
+пункта, а не сквозно по задаче). Пункт, продолженный на следующей строке БЕЗ
+своего `- `, НО С ОТСТУПОМ, даёт ОДНУ строку вывода: текст продолжения
+дописывается пробелом, а не заводит новый пункт. Неотступленная непунктовая
+строка (прозаический абзац рядом со списком) продолжением НЕ считается — она
+заканчивает текущий пункт и сама пунктом не становится (см. `assertion_items`).
 
 Идентификатор hunk'а — `H:<8 hex>`, схема и нормализация тела описаны у
-`hunk_id`. `argparse` заведён сразу с подпарсерами (задача 1 уже это учла),
-и `emit` печатает строки ЛЮБОЙ ширины: два поля у `assertions`, четыре у
-`hunks`.
+`hunk_id`; хэшируются СЫРЫЕ БАЙТЫ тела (`Hunk.raw_body`), а не декодированная
+строка для показа (`Hunk.body`) — см. `Hunk`. Путь секции для ЛЮБОГО вида
+правки (текст, двоичный файл, переименование, смена режима) берётся из
+`git diff --raw -z HEAD` (`_raw_diff_records`), а не из заголовка `diff
+--git`, который неоднозначен на путях с литеральной подстрокой ` b/`.
+Обнаружение переименований форсировано (`--find-renames`) независимо от
+пользовательского `diff.renames`. Пустой файл, добавленный в рабочее дерево
+и позже застейдженный тем же `git add`, даёт ОДИН и тот же `H:` — каноническая
+форма `@@ -0,0 +1,0 @@` с пустым телом, общая для untracked- и staged-ветки.
+`argparse` заведён сразу с подпарсерами (задача 1 уже это учла), и `emit`
+печатает строки ЛЮБОЙ ширины: два поля у `assertions`, четыре у `hunks`.
 
 Запуск (путь `--plan` — от корня репозитория, независимо от того, откуда
 запущена сама команда):
@@ -94,35 +104,48 @@ class Hunk:
     независимое от `hunk_id` наблюдение, напечатанное как `+N/-M`, а не
     производная от строки `body`, которую вызывающему коду пришлось бы
     пересчитывать самому.
+
+    `raw_body` — то же самое нормализованное тело, но СЫРЫМИ БАЙТАМИ, а не
+    декодированной строкой: именно его, а не `body`, обязан хэшировать
+    `hunk_id` (см. `_run_hunks`). Для секций, которые `git diff HEAD` печатает
+    валидным текстом (двоичные и metadata-hunk'и строятся из sha256-хэшей и
+    ASCII-описаний git, untracked-текст уже декодирован строго), `raw_body ==
+    body.encode("utf-8")` — расхождение возможно только у текстового hunk'а
+    ОТСЛЕЖИВАЕМОГО файла, чьё содержимое не образует валидный UTF-8: `body`
+    там decode'ится с `errors="replace"` (см. `_git_bytes`/`diff_hunks`) и
+    несёт `U+FFFD` вместо байта, а `raw_body` несёт байт как есть. `body`
+    остаётся текстовым полем нарочно — это то, что видит человек и с чем
+    сверяются тесты этого модуля; `raw_body` — то, с чем сверяется идентичность
+    элемента знаменателя (найдено внешним ревью, BLOCKER 1: разные
+    невалидные-UTF-8 правки одного файла схлопывались в один и тот же `U+FFFD`
+    ДО хэширования и получали один `H:` на двух разных правках).
     """
 
     path: str
     context: str
     body: str
+    raw_body: bytes
     added: int
     removed: int
 
 
-# `diff --git a/<путь> b/<путь>` — заголовок секции файла. Скрипт форсирует
-# `--src-prefix=a/ --dst-prefix=b/` при вызове `git diff`, поэтому путь у
-# НЕпереименованного файла одинаков в обеих группах, и группа 2 (новая
-# сторона) — источник пути для ПЕРЕИМЕНОВАНИЯ и для секций без единого `@@`
-# (см. `_metadata_only_hunk`), где строк `---`/`+++` нет вовсе.
-#
-# У самой этой строки есть неоднозначность (найдено ревью круга 1, I4): путь,
-# содержащий литеральную подстроку ` b/`, совпадает с разделителем между
-# двумя половинами строки — путь `x b/y.txt` разобрался бы как `y.txt`.
-# Секция с содержательным `@@`-hunk'ом эту неоднозначность не несёт: там путь
-# берётся из строк `+++`/`---` (см. `_section_path`), у которых разделитель —
-# ФИКСИРОВАННЫЙ 6-символьный префикс, а не поиск подстроки. Для двоичных и
-# metadata-секций (эта строка — единственный источник пути) неоднозначность
-# на путях с ` b/`/` and b/` внутри остаётся непочиненной — вне охвата этого
-# раунда ревью, найденный дефект был предъявлен именно на текстовом hunk'е.
-DIFF_GIT_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$")
+# `diff --git a/<путь> b/<путь>` — заголовок секции файла. Раньше путь для
+# двоичных и metadata-секций (там нет строк `+++`/`---`) брался ИЗ этой самой
+# строки — и она неоднозначна по построению: путь, содержащий литеральную
+# подстроку ` b/`, совпадает с разделителем между двумя половинами строки
+# (`diff --git a/x b/y.bin b/x b/y.bin` разобралась бы неверно). Починка
+# круга 1 (I4) сузила эту неоднозначность до двоичных/metadata-секций, но не
+# закрыла её — и внешнее ревью предъявило ровно этот вход, уронив весь
+# перечислитель (BLOCKER 2). Путь для ВСЕХ секций теперь берётся из
+# `_raw_diff_records` (`git diff --raw -z HEAD`) — заголовок `diff --git`
+# после этого используется только чтобы найти НАЧАЛО секции (см.
+# `_section_bounds`), а не чтобы извлечь из него путь.
 
 # `Binary files X and Y differ` — единственный маркер, который у git ЕСТЬ у
-# двоичной секции ВМЕСТО `@@`-hunk'ов. X/Y — `a/<путь>`, `b/<путь>` или
-# буквально `/dev/null` (сторона отсутствует: файл добавлен или удалён).
+# двоичной секции ВМЕСТО `@@`-hunk'ов. Используется только для ОБНАРУЖЕНИЯ
+# двоичной секции (`match(...) is not None`) — пути X/Y (`a/<путь>`,
+# `b/<путь>` или `/dev/null`) больше не разбираются из этой строки, они уже
+# известны из `_raw_diff_records`.
 BINARY_DIFFER = re.compile(r"^Binary files (.+) and (.+) differ$")
 
 # Заголовок текстового hunk'а: `@@ -l,s +l,s @@`, часто с хвостовым текстом
@@ -270,6 +293,21 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
     Пункт из нескольких строк (продолжение — отступ без `- `) даёт ОДНУ пару:
     строки склеиваются пробелом.
 
+    Чего функция НЕ делает: неотступленная непунктовая строка (прозаический
+    абзац внутри раздела — например, врезка к задаче между двумя пунктами)
+    молча ЗАВЕРШАЕТ текущий пункт и сама пунктом не становится — её текст не
+    дописывается никуда и в вывод не попадает. Это осознанное решение, а не
+    пропуск: план разрешает продолжением ТОЛЬКО ОТСТУПЛЕННУЮ строку (см.
+    `docs/process/implementation.md`, «Схема идентификаторов»), а реализация
+    раньше дописывала к последнему пункту ЛЮБУЮ непунктовую строку, отступ или
+    нет, — врезка о задаче становилась частью текста последнего утверждения
+    (найдено внешним ревью, замечание 5). Отказывать при такой строке тоже
+    нельзя: замер по корпусу `docs/superpowers/plans/` показал живые планы с
+    неотступленными непунктовыми строками внутри «Утверждения» (например,
+    `2026-09-09-price-predicate.md`, задача 6) — отказ сломал бы разбор
+    законного плана. Прозаический абзац — не элемент знаменателя (единица это
+    пункт списка), поэтому его тихий пропуск не меняет счёт пунктов.
+
     Ограждённые ```-блоки (`_fenced_mask`) не участвуют ни в поиске самого
     раздела, ни в поиске его конца, ни в разборе пунктов: строка внутри
     ограждения никогда не заголовок, никогда не начало пункта — она
@@ -344,8 +382,21 @@ def assertion_items(block: list[str]) -> list[tuple[str, str]]:
                 letter = chr(ord("a") + nested_count - 1)
                 current_id = f"A{task}.{top_number}{letter}"
             current_text = [line[nested_match.end() :].rstrip()]
-        elif current_id is not None:
-            current_text.append(line.strip())
+        elif line[:1] in (" ", "\t"):
+            # Отступленное продолжение пункта — план разрешает только его
+            # (замечание 5): дописывается к тексту ТЕКУЩЕГО пункта, если он
+            # есть, иначе (отступ раньше первого пункта — не бывает валидно)
+            # молча пропускается.
+            if current_id is not None:
+                current_text.append(line.strip())
+        else:
+            # Неотступленная непунктовая строка — прозаический абзац.
+            # Заканчивает текущий пункт (что накоплено — записывается) и НЕ
+            # становится новым пунктом: знаменатель не меняется, единица
+            # знаменателя — пункт списка, а не прозаический абзац рядом с ним.
+            flush()
+            current_id = None
+            current_text = []
     flush()
     return items
 
@@ -437,37 +488,38 @@ def _git_bytes(args: list[str]) -> bytes:
     return completed.stdout
 
 
-def _diff_sections(diff_text: str) -> list[list[str]]:
-    """Разбивает вывод `git diff` на секции по одному файлу — списки строк.
+def _section_bounds(lines: Sequence[str]) -> list[tuple[int, int]]:
+    """Индексы `[start, end)` каждой секции `diff --git …` в списке строк.
 
     Границей секции служит строка `diff --git …`: она у git ЕСТЬ всегда,
     для любого изменённого файла, независимо от того, текстовый он или
-    двоичный, добавлен, удалён или изменён. Пустой `diff_text` (чистое дерево
-    против `HEAD`) даёт пустой список секций — это законный вход, не отказ.
+    двоичный, добавлен, удалён или изменён. Пустой список строк (чистое
+    дерево против `HEAD`) даёт пустой список границ — это законный вход, не
+    отказ.
 
-    Разбито по `"\\n"`, а не `.splitlines()`: у `str.splitlines()` границей
-    считается ещё десяток юникодных разделителей (`\\x0b`, `\\x0c`, `\\x1c`-
-    `\\x1e`, `\\x85`, U+2028, U+2029) — символ вроде `\\x0c` внутри РЕАЛЬНОЙ
-    строки содержимого рвёт её на две строки таблицы, и вторая половина
-    теряет свой префикс `+`/`-` и выпадает из тела молча. Хуже того, два
-    РАЗНЫХ hunk'а, чьи добавленные строки различаются только текстом ПОСЛЕ
-    такого разделителя, после такого разрыва дают ОДИНАКОВОЕ тело и
-    сталкивающийся `hunk_id` (найдено ревью круга 1, I1). `text=True` уже
-    привёл `\\r\\n` к `\\n` на этапе чтения — `"\\n"` здесь единственный
-    оставшийся настоящий разделитель строк.
+    Возвращает ГРАНИЦЫ, а не сами секции: `diff_hunks` строит из ОДНОГО
+    прогона `git diff` и текстовое, и байтовое представление (`raw = _git_bytes(...)`,
+    `text = raw.decode(..., errors="replace")`), и оба разбиты по `"\\n"` на
+    одинаковое число строк с одинаковым порядком (перевод строки `\\n` —
+    однобайтовый ASCII-символ, который никогда не участвует ни в какой
+    многобайтовой UTF-8-последовательности и никогда не заменяется на
+    `U+FFFD`, поэтому граница между строками у текста и у байтов совпадает
+    ВСЕГДА, даже если содержимое строки — невалидный UTF-8). Одни и те же
+    индексы, посчитанные один раз по текстовому списку (маркеры `diff --git
+    `/`@@`/`Binary files … differ` — все ASCII, decode с `errors="replace"`
+    их не искажает), нарезают ОБА списка синхронно — байтовый список нужен
+    ровно там, где решается замечание 1 (RAW BODY текстового hunk'а).
     """
-    sections: list[list[str]] = []
-    current: list[str] | None = None
-    for line in diff_text.split("\n"):
+    bounds: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, line in enumerate(lines):
         if line.startswith("diff --git "):
-            if current is not None:
-                sections.append(current)
-            current = [line]
-        elif current is not None:
-            current.append(line)
-    if current is not None:
-        sections.append(current)
-    return sections
+            if start is not None:
+                bounds.append((start, i))
+            start = i
+    if start is not None:
+        bounds.append((start, len(lines)))
+    return bounds
 
 
 def _normalized_hunk_lines(lines: Iterable[str]) -> tuple[str, int, int]:
@@ -475,10 +527,16 @@ def _normalized_hunk_lines(lines: Iterable[str]) -> tuple[str, int, int]:
 
     Строки контекста (пробел в начале) и `\\ No newline at end of file`
     (обратный слэш) сюда не попадают — это ЕДИНСТВЕННОЕ место, где решается,
-    что считается телом hunk'а, и `hunk_id` пользуется ровно этим телом, а не
-    пересчитывает правило само. `added`/`removed` — счёт строк `+` и `-` СРЕДИ
-    ЭТИХ ЖЕ строк, до `rstrip`: хвостовый пробел меняет тело (после нормализации
-    — не меняет, снят), но не меняет то, `+` это строка или `-`.
+    что считается ТЕКСТОВЫМ (декодированным) телом hunk'а — полем `body`,
+    которое видит человек и с которым сверяются тесты этого модуля.
+    `added`/`removed` — счёт строк `+` и `-` СРЕДИ ЭТИХ ЖЕ строк, до `rstrip`:
+    хвостовый пробел меняет тело (после нормализации — не меняет, снят), но
+    не меняет то, `+` это строка или `-`.
+
+    Хэш-значимое поле — `raw_body` (см. `Hunk`, `_normalized_hunk_lines_bytes`,
+    замечание 1) — эта функция его не считает: `body` может нести `U+FFFD`
+    вместо невалидного UTF-8-байта, и хэшировать его СНОВА означало бы
+    повторить дефект, который замечание 1 как раз чинит.
     """
     body_lines: list[str] = []
     added = 0
@@ -493,24 +551,55 @@ def _normalized_hunk_lines(lines: Iterable[str]) -> tuple[str, int, int]:
     return "\n".join(body_lines), added, removed
 
 
-def _text_hunks_in_section(path: str, section: Sequence[str]) -> list[Hunk]:
+def _normalized_hunk_lines_bytes(lines: Iterable[bytes]) -> bytes:
+    """Байтовый двойник `_normalized_hunk_lines` — тело для `hunk_id`, не для человека.
+
+    Тот же отбор (только строки `+`/`-`) и та же нормализация (хвостовые
+    пробельные байты сняты), но НА СЫРЫХ БАЙТАХ секции `git diff`, а не на
+    строке, декодированной с `errors="replace"`. Это чинит BLOCKER 1
+    внешнего ревью: `_git_bytes(...).decode("utf-8", errors="replace")`
+    заменяет ЛЮБОЙ невалидный UTF-8-байт одним и тем же `U+FFFD` ДО
+    хэширования, и две РАЗНЫЕ невалидные правки одного файла (например, байт
+    `0xFF` против байта `0xFE` в одной и той же позиции) схлопывались в
+    ОДНО и то же тело и получали ОДИН и тот же `H:` — потеря данных перед
+    SHA-256, а не криптографическая коллизия. Идентичность элемента
+    знаменателя и его текстовое отображение — разные вещи (см. `Hunk.raw_body`):
+    `errors="replace"` допустим для показа человеку и недопустим для
+    хэширования.
+    """
+    body_lines: list[bytes] = []
+    for line in lines:
+        if line.startswith(b"+") or line.startswith(b"-"):
+            body_lines.append(line.rstrip())
+    return b"\n".join(body_lines)
+
+
+def _text_hunks_in_section(path: str, section: Sequence[str], raw_section: Sequence[bytes]) -> list[Hunk]:
     """Текстовые hunk'и одной секции `diff --git` — по заголовкам `@@`.
 
     Секция без единого `@@` (например, чистая смена режима файла без правки
     содержимого) даёт пустой список — это не ошибка и не двоичный файл, а
     третий, вырожденный случай: у файла в этом прогоне попросту нет ни одного
     hunk'а знаменателя.
+
+    `raw_section` — байтовый двойник `section` (та же секция, та же нарезка
+    границ `@@`, см. `_section_bounds`): из него строится `Hunk.raw_body`
+    (замечание 1), пока `section` по-прежнему источник `Hunk.body` и
+    заголовка `@@` для человека.
     """
     starts = [i for i, line in enumerate(section) if HUNK_HEADER.match(line)]
     hunks: list[Hunk] = []
     for position, start in enumerate(starts):
         end = starts[position + 1] if position + 1 < len(starts) else len(section)
         body, added, removed = _normalized_hunk_lines(section[start + 1 : end])
-        hunks.append(Hunk(path=path, context=section[start], body=body, added=added, removed=removed))
+        raw_body = _normalized_hunk_lines_bytes(raw_section[start + 1 : end])
+        hunks.append(
+            Hunk(path=path, context=section[start], body=body, raw_body=raw_body, added=added, removed=removed)
+        )
     return hunks
 
 
-def _binary_hunk(root: Path, path: str, old_side: str, new_side: str) -> Hunk:
+def _binary_hunk(root: Path, status: str, old_path: str, new_path: str) -> Hunk:
     """Синтетический hunk двоичной секции — по симметричной таблице задачи.
 
     `git diff` не умеет строить `+`/`-` строки по двоичному содержимому,
@@ -521,62 +610,51 @@ def _binary_hunk(root: Path, path: str, old_side: str, new_side: str) -> Hunk:
     односторонняя форма `+binary <sha256 текущего>` их бы отождествила —
     и оставила удалённый файл вовсе без тела, потому что текущего содержимого
     у него нет. Контекст фиксирован — `@@ binary @@` — одинаков для всех трёх
-    видов правки; вид определяют сами вызывающие по `/dev/null` в `old_side`
-    (правки нет — файл добавлен) и `new_side` (файл удалён).
+    видов правки.
+
+    Вид правки определяется по `status` — первой букве записи `git diff --raw`
+    (`_raw_diff_records`), а не по строкам `Binary files X and Y differ`/
+    `/dev/null`: `A` (добавлен) — путь есть только в рабочем дереве, `D`
+    (удалён) — только в `HEAD`, всё остальное (`M`, `R`, `C`, `T`…) — правка,
+    у которой РЕАЛЬНО существуют обе стороны. `old_path`/`new_path` — тоже из
+    `_raw_diff_records`, а не разобраны из текста секции (замечание 2:
+    разбор пути из строки заголовка неоднозначен по построению и роняет весь
+    перечислитель на пути вроде `x b/y.bin`). Переименованный ДВОИЧНЫЙ файл с
+    изменённым содержимым — законный вход, где `old_path != new_path` даже
+    для одной и той же секции (git печатает `rename from`/`rename to` И
+    `Binary files … differ` в одной секции сразу, если сходство ниже 100%, но
+    выше порога `--find-renames`), поэтому обе стороны читаются НЕЗАВИСИМО по
+    СВОЕМУ пути, а не по одному общему.
     """
     context = "@@ binary @@"
-    if old_side == "/dev/null":
-        new_bytes = (root / path).read_bytes()
+    kind = status[0]
+    if kind == "A":
+        new_bytes = (root / new_path).read_bytes()
         return Hunk(
-            path=path,
+            path=new_path,
             context=context,
             body=f"+binary {hashlib.sha256(new_bytes).hexdigest()}",
+            raw_body=f"+binary {hashlib.sha256(new_bytes).hexdigest()}".encode(),
             added=1,
             removed=0,
         )
-    if new_side == "/dev/null":
-        old_bytes = _git_bytes(["show", f"HEAD:{path}"])
+    if kind == "D":
+        old_bytes = _git_bytes(["show", f"HEAD:{old_path}"])
         return Hunk(
-            path=path,
+            path=old_path,
             context=context,
             body=f"-binary {hashlib.sha256(old_bytes).hexdigest()}",
+            raw_body=f"-binary {hashlib.sha256(old_bytes).hexdigest()}".encode(),
             added=0,
             removed=1,
         )
-    old_bytes = _git_bytes(["show", f"HEAD:{path}"])
-    new_bytes = (root / path).read_bytes()
+    old_bytes = _git_bytes(["show", f"HEAD:{old_path}"])
+    new_bytes = (root / new_path).read_bytes()
     body = f"-binary {hashlib.sha256(old_bytes).hexdigest()}\n+binary {hashlib.sha256(new_bytes).hexdigest()}"
-    return Hunk(path=path, context=context, body=body, added=1, removed=1)
+    return Hunk(path=new_path, context=context, body=body, raw_body=body.encode(), added=1, removed=1)
 
 
-def _section_path(section: Sequence[str]) -> str | None:
-    """Путь секции из строк `+++ b/…`/`--- a/…` — однозначно, в отличие от `diff --git`.
-
-    Строка `+++ b/<путь>` (или `--- a/<путь>`, если сторона `+++` —
-    `/dev/null`, то есть файл удалён) режется по ФИКСИРОВАННОМУ 6-символьному
-    префиксу (`"+++ b/"`/`"--- a/"`), а не по поиску подстроки-разделителя —
-    поэтому путь, содержащий `" b/"` внутри себя (`x b/y.txt`), режется верно
-    (см. `DIFF_GIT_HEADER`, I4 круга 1). Такие строки есть у ЛЮБОЙ секции с
-    содержательным `@@`-hunk'ом; у двоичных и metadata-секций их нет вовсе —
-    там `None`, и вызывающий код обязан сам упасть на `diff --git`.
-
-    Хвостовой `rstrip("\\t")` обязателен: у пути с пробелом git сам дописывает
-    ОДИН хвостовой таб после имени в строках `---`/`+++` (гасит собственную
-    неоднозначность формата unified diff, где после таба исторически могла
-    идти метка времени) — без снятия этот таб становился частью пути, и
-    `x b/y.txt` превращался бы в `"x b/y.txt\\t"`. Замечено на этом же входе,
-    что чинит I4, при подготовке доказательства, а не найдено ревью отдельно.
-    """
-    for line in section:
-        if line.startswith("+++ ") and line[4:] != "/dev/null":
-            return line[6:].rstrip("\t")
-    for line in section:
-        if line.startswith("--- ") and line[4:] != "/dev/null":
-            return line[6:].rstrip("\t")
-    return None
-
-
-def _metadata_only_hunk(path: str, section: Sequence[str]) -> Hunk:
+def _metadata_only_hunk(root: Path, path: str, status: str, section: Sequence[str]) -> Hunk:
     """Синтетический hunk секции БЕЗ единого `@@` и без `Binary files … differ`.
 
     Три известных вида такой секции — чистое переименование (`similarity
@@ -590,41 +668,108 @@ def _metadata_only_hunk(path: str, section: Sequence[str]) -> Hunk:
     правку строками `+`/`-`, строится детерминированный синтетический hunk, а
     не пропуск.
 
-    Тело — сами описательные строки git ЭТОЙ секции (без первой, `diff --git
-    …`: путь уже извлечён из неё вызывающим кодом), непустые, со снятым
-    хвостовым пробелом, склеенные `\n` — не выдумка, а то, что git и так
-    напечатал; разные виды правки различаются между собой этим же телом (у
-    переименования — `rename from`/`rename to`, у смены режима — `old
-    mode`/`new mode`, у пустого добавления — `new file mode`).
+    **Особый случай (замечание 3): добавление ПУСТОГО файла.** Один и тот же
+    пустой файл, добавленный в рабочее дерево (untracked) и застейдженный тем
+    же `git add`, — ОДНО и то же событие знаменателя, и обязан давать ОДИН и
+    тот же `H:`. До правки они расходились: untracked-ветка (`untracked_hunks`)
+    строит `@@ -0,0 +1,0 @@` с пустым телом (ей неоткуда взять `new file
+    mode` — git ещё не видел файл), а эта функция строила `@@ metadata @@` с
+    телом `"new file mode 100644"` — тот же файл получал два разных `H:` от
+    ОДНОГО `git add`, ничего не поменявшего в содержимом (найдено внешним
+    ревью, BLOCKER 3). Выбрана каноническая форма untracked-ветки: она ничего
+    не ВЫДУМЫВАЕТ (staged-ветке пришлось бы напечатать `new file mode`,
+    которого у untracked-файла нет и быть не может), а не наоборот.
+    Обнаруживается по `status == "A"` (файла не было в `HEAD`) И пустому
+    содержимому по пути `new_path` в рабочем дереве — оба признака идут из
+    машинного источника (`_raw_diff_records` и реальные байты файла), не из
+    предположения о форме секции.
+
+    Тело ОСТАЛЬНЫХ (не этого особого) видов секции — сами описательные
+    строки git ЭТОЙ секции (без первой, `diff --git …`: путь уже известен из
+    `_raw_diff_records`), непустые, со снятым хвостовым пробелом, склеенные
+    `\n` — не выдумка, а то, что git и так напечатал; разные виды правки
+    различаются между собой этим же телом (у переименования — `rename
+    from`/`rename to`, у смены режима — `old mode`/`new mode`).
 
     Строка `index <старый>..<новый> [режим]` ИСКЛЮЧЕНА из тела нарочно
-    (найдено финальным сквозным ревью, S4). У пустого добавленного файла эта
-    строка — единственный источник хэшей блоба (`index 0000000..e69de29`), и
-    ширина каждого хэша в ней следует НЕ содержанию правки, а git-настройке
-    `core.abbrev`: `-c core.abbrev=4` печатает `index 0000..e69d`,
-    `core.abbrev=40` — полные 40 hex того же блоба. Без исключения один и тот
-    же сценарий на двух машинах с разным `core.abbrev` (сегодня этот вызов
-    git его не форсирует ничем) давал бы РАЗНЫЙ `hunk_id` — знаменатель
-    переставал бы быть воспроизводимым, хотя дерево одно и то же. Строка
-    `index …` — блобовая бухгалтерия git, а не содержание правки: она не
-    входит в тело и у ТЕКСТОВОГО hunk'а (`_normalized_hunk_lines` берёт
-    только строки `@@`-hunk'а, а строка `index` стоит ДО первого `@@` и туда
-    не попадает) — здесь то же решение применено к секции, где `@@` нет
-    вовсе. Переименование и смена режима строку `index ` не несут (проверено
-    тестом на каждый вид отдельно), так что исключение меняет только случай
-    добавления пустого файла. Альтернатива — форсировать `-c
-    core.abbrev=40` на вызове `git diff` — отвергнута: она привязывала бы
-    стабильность ко ВСЕМ вызовам git этого модуля разом ради одного частного
-    случая, тогда как исключение строки решает вопрос ровно там, где он
-    возникает. Контекст фиксирован — `@@ metadata @@` — так же, как у
-    двоичных hunk'ов вид различает не контекст, а тело. `added`/`removed` —
-    оба 0: секция не несёт ни одной строки содержимого.
+    (найдено финальным сквозным ревью, S4): ширина хэшей в ней следует
+    git-настройке `core.abbrev`, а не содержанию правки, и без исключения
+    один и тот же сценарий на двух машинах с разным `core.abbrev` давал бы
+    РАЗНЫЙ `hunk_id`. Переименование и смена режима строку `index ` не несут
+    (проверено тестом на каждый вид отдельно). Контекст фиксирован — `@@
+    metadata @@`; `added`/`removed` — оба 0.
     """
+    if status == "A" and (root / path).read_bytes() == b"":
+        return Hunk(path=path, context="@@ -0,0 +1,0 @@", body="", raw_body=b"", added=0, removed=0)
     descriptive = [
         line.rstrip() for line in section[1:] if line.strip() and not line.startswith("index ")
     ]
     body = "\n".join(descriptive)
-    return Hunk(path=path, context="@@ metadata @@", body=body, added=0, removed=0)
+    return Hunk(path=path, context="@@ metadata @@", body=body, raw_body=body.encode(), added=0, removed=0)
+
+
+_RAW_STATUS_LINE = re.compile(r"^:\d+ \d+ [0-9a-f]+ [0-9a-f]+ (\S+)$")
+
+
+def _raw_diff_records() -> list[tuple[str, str, str]]:
+    """`(status, old_path, new_path)` на секцию, в ТОМ ЖЕ порядке, что и `git diff HEAD`.
+
+    Источник — `git diff --raw -z HEAD --find-renames`: поля разделены NUL, а
+    не пробелом и не склейкой `a/<путь> b/<путь>` в одну строку. Путь с
+    пробелом, табом или буквальной подстрокой ` b/` внутри (`x b/y.bin`) не
+    создаёт НИКАКОЙ неоднозначности — в отличие от заголовка `diff --git
+    a/<путь> b/<путь>`, который совмещает обе стороны в одну строку через
+    ` b/` и на таком пути ломается по построению (найдено внешним ревью,
+    BLOCKER 2: секция `x b/y.bin` роняла весь перечислитель кодом 2). Каждая
+    запись — `:<old-mode> <new-mode> <old-sha> <new-sha> <статус>`, затем один
+    путь (добавление/удаление/правка) или два (`R`/`C` — переименование или
+    копия: старый путь, новый путь).
+
+    `--find-renames` — ТА ЖЕ настройка, что форсирует `diff_hunks` на
+    основном вызове (замечание 4): расхождение в её выборе между этим
+    вызовом и основным дало бы РАЗНОЕ число секций (переименование против
+    удаления+добавления) и разрушило бы поразрядное соответствие с
+    `_section_bounds`, на котором строится вся эта функция.
+
+    Порядок записей здесь СОВПАДАЕТ с порядком секций `diff --git` основного
+    вызова (проверено эмпирически на смеси переименования, правки, двоичного
+    добавления и добавления пустого файла в одном дереве — обе команды обходят
+    один и тот же внутренний список файлов git, только рендерят его разными
+    форматами) — `diff_hunks` полагается на это поразрядно, без отдельной
+    сверки путей. Расхождение числа записей с числом секций — сигнал
+    рассинхронизации источников, а не тихая порча одной строки: `diff_hunks`
+    останавливается явной ошибкой, а не приписывает правку не тому файлу.
+    """
+    raw = _git_bytes(
+        [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--raw",
+            "-z",
+            "HEAD",
+            "--find-renames",
+        ]
+    )
+    fields = raw.decode("utf-8", errors="replace").split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
+    records: list[tuple[str, str, str]] = []
+    i = 0
+    while i < len(fields):
+        meta = fields[i]
+        i += 1
+        match = _RAW_STATUS_LINE.match(meta)
+        status = match.group(1) if match else ""
+        old_path = fields[i]
+        i += 1
+        if status[:1] in ("R", "C"):
+            new_path = fields[i]
+            i += 1
+        else:
+            new_path = old_path
+        records.append((status, old_path, new_path))
+    return records
 
 
 def diff_hunks() -> list[Hunk]:
@@ -634,17 +779,33 @@ def diff_hunks() -> list[Hunk]:
     команда, которая одновременно видит и то, что уже в индексе, и то, что
     ещё нет: файл, часть которого застейджена, а часть нет, даёт hunk'и обоих
     видов сам по себе, без отдельной ветки кода на этот случай. Индекс не
-    трогается — читаются только `diff HEAD` и, для двоичных файлов, блоб
-    `HEAD` и рабочее дерево; `git add -N` нигде не вызывается.
+    трогается — читаются только `diff HEAD` (плюс `diff --raw -z HEAD` для
+    путей, см. `_raw_diff_records`) и, для двоичных файлов, блоб `HEAD` и
+    рабочее дерево; `git add -N` нигде не вызывается.
 
     Флаги `--src-prefix=a/ --dst-prefix=b/` форсируют разбор `diff --git a/…
     b/…` независимо от `diff.noprefix`/`diff.mnemonicPrefix` в чужом
     `gitconfig`; `--no-color --no-ext-diff --no-textconv` убирают источники
     недетерминизма (ANSI-коды, внешний diff-драйвер, textconv-фильтр),
-    которые исказили бы разбор, не будучи ошибкой git.
+    которые исказили бы разбор, не будучи ошибкой git. `--find-renames`
+    (замечание 4) форсирует обнаружение переименований независимо от
+    пользовательского `diff.renames` — без него один и тот же rename давал
+    один hunk на машине с `diff.renames=true` и два (удаление + добавление)
+    на машине с `diff.renames=false`.
+
+    Читается ОДИН раз байтами (`_git_bytes`, не `_git_text`): текстовое
+    представление для разбора секций/заголовков получается ЛОКАЛЬНЫМ
+    `raw.decode("utf-8", errors="replace")`, а не вторым вызовом git — так
+    исключён риск, что дерево изменится МЕЖДУ двумя прогонами `git diff`, и
+    гарантировано (см. `_section_bounds`), что байтовые и текстовые строки
+    нарезаны в ТОЧНОСТИ одинаково. `errors="replace"` здесь по-прежнему
+    решает то же, что и раньше (git считает файл текстом без NUL-байта, даже
+    если байты не образуют валидный UTF-8) — но теперь ТОЛЬКО для показа
+    человеку (`Hunk.body`) и для поиска маркеров (все они ASCII); хэшируемое
+    `Hunk.raw_body` строится из `raw`, а не из `text` (замечание 1).
     """
     root = repo_root()
-    raw = _git_text(
+    raw = _git_bytes(
         [
             "-c",
             "core.quotepath=false",
@@ -653,22 +814,32 @@ def diff_hunks() -> list[Hunk]:
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
+            "--find-renames",
             "--src-prefix=a/",
             "--dst-prefix=b/",
         ]
     )
+    text = raw.decode("utf-8", errors="replace")
+    text_lines = text.split("\n")
+    raw_lines = raw.split(b"\n")
+    bounds = _section_bounds(text_lines)
+    records = _raw_diff_records()
+    if len(bounds) != len(records):
+        raise RuntimeError(
+            f"число секций `git diff HEAD` ({len(bounds)}) не совпало с числом "
+            f"записей `git diff --raw -z HEAD` ({len(records)}) — источники путей "
+            "рассинхронизированы, перечисление остановлено, чтобы не приписать "
+            "правку не тому файлу"
+        )
     hunks: list[Hunk] = []
-    for section in _diff_sections(raw):
-        header = DIFF_GIT_HEADER.match(section[0])
-        if header is None:
-            continue
-        path = _section_path(section) or header.group(2)
+    for (start, end), (status, old_path, new_path) in zip(bounds, records, strict=True):
+        section = text_lines[start:end]
+        raw_section = raw_lines[start:end]
         binary_line = next((line for line in section if BINARY_DIFFER.match(line)), None)
         if binary_line is not None:
-            old_side, new_side = BINARY_DIFFER.match(binary_line).groups()
-            hunks.append(_binary_hunk(root, path, old_side, new_side))
+            hunks.append(_binary_hunk(root, status, old_path, new_path))
             continue
-        text_hunks = _text_hunks_in_section(path, section)
+        text_hunks = _text_hunks_in_section(new_path, section, raw_section)
         if text_hunks:
             hunks.extend(text_hunks)
         else:
@@ -676,7 +847,7 @@ def diff_hunks() -> list[Hunk]:
             # режима, добавление пустого файла и т.п. — знаменатель не
             # теряет элемент (K5/K6/K7 круга 1), а получает синтетический
             # hunk по той же технике, что и двоичные.
-            hunks.append(_metadata_only_hunk(path, section))
+            hunks.append(_metadata_only_hunk(root, new_path, status, section))
     return hunks
 
 
@@ -752,7 +923,7 @@ def untracked_hunks() -> list[Hunk]:
     становится строкой `+` (хвостовые пробелы сняты той же нормализацией,
     что и у обычного hunk'а), `removed` — всегда 0, а число `added` равно
     числу строк файла. Разбито по `"\\n"`, не `.splitlines()` — та же причина,
-    что и у `_diff_sections` (I1 круга 1): лишний юникодный разделитель внутри
+    что и у `_section_bounds` (I1 круга 1): лишний юникодный разделитель внутри
     строки файла рвёт её и меняет тело/id непредсказуемо.
     """
     root = repo_root()
@@ -766,38 +937,51 @@ def untracked_hunks() -> list[Hunk]:
         raw_bytes = (root / path).read_bytes()
         if b"\x00" in raw_bytes[:8000]:
             body = f"+binary {hashlib.sha256(raw_bytes).hexdigest()}"
-            hunks.append(Hunk(path=path, context="@@ binary @@", body=body, added=1, removed=0))
+            hunks.append(Hunk(path=path, context="@@ binary @@", body=body, raw_body=body.encode(), added=1, removed=0))
             continue
         try:
             decoded = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
             body = f"+binary {hashlib.sha256(raw_bytes).hexdigest()}"
-            hunks.append(Hunk(path=path, context="@@ binary @@", body=body, added=1, removed=0))
+            hunks.append(Hunk(path=path, context="@@ binary @@", body=body, raw_body=body.encode(), added=1, removed=0))
             continue
         lines = decoded.split("\n")
         if lines and lines[-1] == "":
             lines.pop()
         body = "\n".join(f"+{content.rstrip()}" for content in lines)
         context = f"@@ -0,0 +1,{len(lines)} @@"
-        hunks.append(Hunk(path=path, context=context, body=body, added=len(lines), removed=0))
+        hunks.append(Hunk(path=path, context=context, body=body, raw_body=body.encode(), added=len(lines), removed=0))
     return hunks
 
 
-def hunk_id(path: str, body: str) -> str:
-    """`H:<8 hex>` — первые 8 hex от `sha256(path + "\\n" + body)`, UTF-8.
+def hunk_id(path: str, body: str | bytes) -> str:
+    """`H:<8 hex>` — первые 8 hex от `sha256(path.encode("utf-8") + b"\\n" + body)`.
 
-    `body` приходит УЖЕ нормализованным (см. `Hunk.body`): это значит, что
-    сдвиг номеров строк в заголовке `@@` (в саму хэшируемую строку не входит)
-    и хвостовой пробел на изменённой строке (снят до вызова этой функции) не
-    меняют идентификатор — а тот же текст в другом файле меняет, потому что
-    `path` — часть хэшируемой строки. Известный вход с известным ответом
-    (оракул задачи, посчитан независимо от этого модуля): путь
-    `backend/money/price.py` и тело из строк `+    if not value.is_finite():`,
-    `+        return False`, `-    return value > 0` (склеены `\\n`) дают ровно
-    `H:c81dd3dd`; тот же текст при пути `backend/money/other.py` — ровно
-    `H:2292efa1`.
+    `body` — СЫРЫЕ БАЙТЫ, если вызывающий код уже их построил (`_run_hunks`
+    передаёт `hunk.raw_body`, см. замечание 1), либо строка — тогда она
+    кодируется как UTF-8 здесь же. Обе ветки дают ОДИНАКОВЫЙ хэш для одного
+    и того же ASCII/UTF-8-валидного содержимого — конкатенация байт двух
+    закодированных кусков равна кодированию их конкатенации, так как UTF-8
+    без состояния между символами, — поэтому существующий вызов с `str`
+    (тесты, `Hunk.body` для двоичных/metadata-hunk'ов, где тело и так строится
+    из ASCII: sha256-хэшей и описательных строк git) не меняет значение.
+    Расходятся они только там, где `body`-строка несла бы `U+FFFD` вместо
+    невалидного UTF-8-байта — а это ровно тот путь (`Hunk.raw_body`
+    текстового hunk'а отслеживаемого файла), который замечание 1 и чинит.
+
+    `body` приходит УЖЕ нормированным (см. `Hunk.raw_body`/`Hunk.body`): это
+    значит, что сдвиг номеров строк в заголовке `@@` (в саму хэшируемую
+    строку не входит) и хвостовой пробел на изменённой строке (снят до
+    вызова этой функции) не меняют идентификатор — а тот же текст в другом
+    файле меняет, потому что `path` — часть хэшируемой строки. Известный вход
+    с известным ответом (оракул задачи, посчитан независимо от этого
+    модуля): путь `backend/money/price.py` и тело из строк `+    if not
+    value.is_finite():`, `+        return False`, `-    return value > 0`
+    (склеены `\\n`) дают ровно `H:c81dd3dd`; тот же текст при пути
+    `backend/money/other.py` — ровно `H:2292efa1`.
     """
-    digest = hashlib.sha256(f"{path}\n{body}".encode()).hexdigest()
+    body_bytes = body.encode("utf-8") if isinstance(body, str) else body
+    digest = hashlib.sha256(path.encode("utf-8") + b"\n" + body_bytes).hexdigest()
     return f"H:{digest[:8]}"
 
 
@@ -825,18 +1009,24 @@ def _run_hunks() -> int:
     неотличима от честного «нет правок»), но ПОНЯТНЫМ сообщением, а не
     трассировкой `CalledProcessError` (найдено ревью круга 1, I2) — `git`
     уже написал причину в свой `stderr`, этот код только не даёт ей потеряться
-    за трассировкой интерпретатора.
+    за трассировкой интерпретатора. `error.stderr` теперь БАЙТЫ (`diff_hunks`
+    читает git через `_git_bytes`, не `_git_text`, см. замечание 1) —
+    декодируется здесь тем же `errors="replace"`, что и раньше, это сообщение
+    для человека, не хэшируемое значение.
     """
     try:
         hunks = sorted(diff_hunks() + untracked_hunks(), key=lambda hunk: hunk.path)
     except subprocess.CalledProcessError as error:
-        message = (error.stderr or str(error)).strip()
+        stderr = error.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        message = (stderr or str(error)).strip()
         print(f"git отказал: {message}", file=sys.stderr)
         return 2
     seen: dict[str, int] = {}
     rows: list[tuple[str, str, str, str]] = []
     for hunk in hunks:
-        raw_id = hunk_id(hunk.path, hunk.body)
+        raw_id = hunk_id(hunk.path, hunk.raw_body)
         count = seen.get(raw_id, 0) + 1
         seen[raw_id] = count
         display_id = raw_id if count == 1 else f"{raw_id}.{count}"

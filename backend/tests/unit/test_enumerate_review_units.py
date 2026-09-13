@@ -1402,6 +1402,13 @@ def test_diff_hunks_empty_file_added_gives_one_metadata_hunk(
     не появлялся в выводе никогда — при этом НЕотслеживаемый пустой файл уже
     появлялся (см. `untracked_hunks`): две ветки расходились между собой на
     одном и том же по смыслу событии (найдено ревью круга 1, K5).
+
+    Форма — КАНОНИЧЕСКАЯ, та же, что у untracked-ветки (`@@ -0,0 +1,0 @@`,
+    пустое тело), а не `@@ metadata @@` с `"new file mode 100644"`: внешнее
+    ревью (BLOCKER 3) показало, что ОДИН и тот же пустой файл до и после
+    `git add` иначе получал бы ДВА разных `H:` от события, не менявшего в
+    файле ни байта. См. `test_untracked_then_staged_empty_file_gives_the_same_id`
+    ниже — прямое доказательство равенства id.
     """
     repo = _init_hunks_repo(tmp_path)
     _write(repo, "keep.txt", "keep\n")
@@ -1414,12 +1421,8 @@ def test_diff_hunks_empty_file_added_gives_one_metadata_hunk(
 
     assert len(hunks) == 1
     hunk = hunks[0]
-    assert hunk.context == "@@ metadata @@"
-    # Строка `index 0000000..e69de29` НЕ входит в тело (S4, финальное сквозное
-    # ревью): ширина её хэшей следует `core.abbrev`, не содержанию правки — см.
-    # `test_diff_hunks_empty_file_added_metadata_id_is_independent_of_core_abbrev`
-    # ниже, которая красна без этого исключения.
-    assert hunk.body == "new file mode 100644"
+    assert hunk.context == "@@ -0,0 +1,0 @@"
+    assert hunk.body == ""
     assert (hunk.added, hunk.removed) == (0, 0)
 
 
@@ -1438,6 +1441,12 @@ def test_diff_hunks_empty_file_added_metadata_id_is_independent_of_core_abbrev(
     то же (найдено финальным сквозным ревью, Critical S4). Два независимых
     репозитория с явно РАЗНЫМ `core.abbrev` — вход, а не рассуждение: один и
     тот же `git add` пустого файла обязан дать один и тот же `H:` в обоих.
+
+    После BLOCKER 3 (внешнее ревью) секция пустого добавленного файла вообще
+    не строит тело из описательных строк git — она уходит по канонической
+    форме untracked-ветки (`@@ -0,0 +1,0 @@`, пустое тело) и строку `index `
+    не читает вовсе; тест остаётся в силе (id по-прежнему не зависит от
+    `core.abbrev`), но по более сильной причине, чем раньше.
     """
 
     def hunk_id_for(root: Path, abbrev: str) -> str:
@@ -1661,9 +1670,12 @@ def test_diff_hunks_path_containing_the_diff_header_separator_substring(
 
     Строка `diff --git a/x b/y.txt b/x b/y.txt` неоднозначна для наивного
     `diff --git a/(.+) b/(.+)` — путь разобрался бы как `y.txt` вместо
-    `x b/y.txt` (найдено ревью круга 1, I4). Путь берётся из строк
-    `+++`/`---`, где разделитель — фиксированный префикс, а не поиск
-    подстроки.
+    `x b/y.txt` (найдено ревью круга 1, I4). Путь берётся из
+    `git diff --raw -z HEAD` (`_raw_diff_records`), а не из этой строки —
+    после BLOCKER 2 внешнего ревью это верно для ЛЮБОЙ секции, не только
+    текстовой (см. `test_diff_hunks_binary_modified_at_path_containing_diff_header_separator`
+    ниже — тот же вход на двоичной и metadata-секции, где раньше падал ВЕСЬ
+    перечислитель).
     """
     repo = _init_hunks_repo(tmp_path)
     _write(repo, "x b/y.txt", "old\n")
@@ -1676,3 +1688,252 @@ def test_diff_hunks_path_containing_the_diff_header_separator_substring(
     assert len(hunks) == 1
     assert hunks[0].path == "x b/y.txt"
     assert hunks[0].body == "-old\n+new"
+
+
+# =============================================================================
+# Внешнее ревью (2026-09-12-review-presentation-phase): BLOCKER 1-3, замечания 4-5.
+# =============================================================================
+
+
+# --- BLOCKER 1: `errors="replace"` схлопывал разные невалидные-UTF-8 правки --
+
+
+def test_diff_hunks_two_different_non_utf8_edits_give_different_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER 1: байт `0xFF` и байт `0xFE` в той же позиции той же строки — РАЗНЫЕ `H:`.
+
+    Тело отслеживаемого файла без NUL-байта, но с невалидным UTF-8-байтом, —
+    git печатает его как ТЕКСТ (та же ситуация, что и K4). Раньше `hunk_id`
+    хэшировал `Hunk.body` — строку, декодированную из `git diff HEAD` с
+    `errors="replace"`: ЛЮБОЙ невалидный байт становится ОДНИМ и тем же
+    `U+FFFD` ДО хэширования, и потому байт `0xFF` и байт `0xFF` — разные по
+    смыслу правки одного файла — давали ОДИН и тот же `H:` (найдено внешним
+    ревью). `hunk_id` теперь получает `Hunk.raw_body` — сырые байты; тело
+    ДЛЯ ЧЕЛОВЕКА (`Hunk.body`) при этом у обеих правок совпадает буквально
+    (обе несут один и тот же `U+FFFD`) — это и есть доказательство, что
+    расхождение идёт именно от перехода на `raw_body`, а не от чего-то ещё.
+    """
+    repo_ff = _init_hunks_repo(tmp_path / "ff")
+    (repo_ff / "bad.txt").write_bytes(b"line\n")
+    _commit_all(repo_ff)
+    (repo_ff / "bad.txt").write_bytes(b"line\nADD\xffMORE\n")
+
+    repo_fe = _init_hunks_repo(tmp_path / "fe")
+    (repo_fe / "bad.txt").write_bytes(b"line\n")
+    _commit_all(repo_fe)
+    (repo_fe / "bad.txt").write_bytes(b"line\nADD\xfeMORE\n")
+
+    monkeypatch.chdir(repo_ff)
+    hunk_ff = next(h for h in enumerate_review_units.diff_hunks() if h.path == "bad.txt")
+    monkeypatch.chdir(repo_fe)
+    hunk_fe = next(h for h in enumerate_review_units.diff_hunks() if h.path == "bad.txt")
+
+    # Одно и то же декодированное тело для человека — старый дефект был бы
+    # НЕВИДИМ на уровне `body`, только на уровне `raw_body`/`hunk_id`.
+    assert hunk_ff.body == hunk_fe.body
+    assert hunk_ff.raw_body != hunk_fe.raw_body
+
+    id_ff = enumerate_review_units.hunk_id(hunk_ff.path, hunk_ff.raw_body)
+    id_fe = enumerate_review_units.hunk_id(hunk_fe.path, hunk_fe.raw_body)
+    assert id_ff != id_fe
+
+
+# --- BLOCKER 2: путь двоичной/metadata-секции разбирался из `diff --git` ----
+
+
+def test_diff_hunks_binary_modified_at_path_containing_diff_header_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER 2: двоичный файл по пути `x b/y.bin` не роняет весь перечислитель.
+
+    Заголовок `diff --git a/x b/y.bin b/x b/y.bin` неоднозначен для разбора
+    по подстроке ` b/`; у двоичной секции нет строк `+++`/`---`, на которые
+    можно было бы упасть, поэтому старый код резолвил путь ИЗ этой строки,
+    получал НЕВЕРНЫЙ путь и падал `git отказал: ... does not exist in
+    'HEAD'` — весь `hunks` возвращал код 2, знаменатель исчезал целиком
+    (воспроизведено внешним ревью буквально на этом входе). Второй, ДРУГОЙ
+    изменённый файл рядом (`other.txt`) — свидетель того, что вся команда
+    выживает, а не только этот один путь.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "other.txt", "old\n")
+    ambiguous_dir = repo / "x b"
+    ambiguous_dir.mkdir(parents=True)
+    ambiguous = ambiguous_dir / "y.bin"
+    ambiguous.write_bytes(BINARY_OLD)
+    _commit_all(repo)
+    _write(repo, "other.txt", "new\n")
+    ambiguous.write_bytes(BINARY_NEW)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    paths = {h.path for h in hunks}
+    assert paths == {"other.txt", "x b/y.bin"}
+    hunk = next(h for h in hunks if h.path == "x b/y.bin")
+    assert hunk.context == "@@ binary @@"
+    expected_body = (
+        f"-binary {hashlib.sha256(BINARY_OLD).hexdigest()}\n"
+        f"+binary {hashlib.sha256(BINARY_NEW).hexdigest()}"
+    )
+    assert hunk.body == expected_body
+
+
+def test_diff_hunks_binary_rename_at_ambiguous_path_with_changed_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Переименование ДВОИЧНОГО файла на путь с ` b/` внутри, с изменённым содержимым.
+
+    Второй вход замечания BLOCKER 2. Секция такой правки несёт И
+    `rename from`/`rename to` (старый путь ≠ новый путь), И `Binary files …
+    differ` в ОДНОЙ секции — обе стороны обязаны читаться по СВОЕМУ пути
+    (старая — `git show HEAD:<старый>`, новая — рабочее дерево по <новому>),
+    а не по одному общему, который `_binary_hunk` использовал раньше.
+    Сходство достаточно высокое (один изменённый байт в большом файле), чтобы
+    git всё ещё распознал это как переименование, а не удаление+добавление.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    base = bytes(range(256)) * 20
+    d = repo / "x b"
+    d.mkdir(parents=True)
+    (d / "old.bin").write_bytes(base)
+    _commit_all(repo)
+    subprocess.run(["git", "mv", "x b/old.bin", "x b/new.bin"], cwd=repo, check=True)
+    modified = bytearray(base)
+    modified[100] = 0xAB
+    (d / "new.bin").write_bytes(bytes(modified))
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "x b/new.bin"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ binary @@"
+    expected_body = (
+        f"-binary {hashlib.sha256(base).hexdigest()}\n"
+        f"+binary {hashlib.sha256(bytes(modified)).hexdigest()}"
+    )
+    assert hunk.body == expected_body
+
+
+def test_diff_hunks_mode_only_change_at_ambiguous_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Третий вход замечания: metadata-секция (смена режима) по пути с ` b/` внутри.
+
+    Тот же класс неоднозначности на секции БЕЗ единого `@@` и БЕЗ `Binary
+    files … differ` — `_metadata_only_hunk` раньше тоже получал путь из
+    строки `diff --git`.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    d = repo / "x b"
+    d.mkdir(parents=True)
+    (d / "mode.sh").write_bytes(b"content\n")
+    _commit_all(repo)
+    subprocess.run(["git", "update-index", "--chmod=+x", "x b/mode.sh"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "x b/mode.sh"]
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.context == "@@ metadata @@"
+    assert hunk.body == "old mode 100644\nnew mode 100755"
+
+
+# --- BLOCKER 3: пустой файл меняет `H:` от одного `git add` -----------------
+
+
+def test_untracked_then_staged_empty_file_gives_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER 3: пустой файл до и после `git add` — ОДИН и тот же `H:`.
+
+    `git add` не правка содержимого файла — он как был пустым, так и остался.
+    Документ обещает: нетронутый hunk сохраняет идентификатор. Раньше
+    untracked-ветка (`@@ -0,0 +1,0 @@`, пустое тело) и staged-ветка
+    (`@@ metadata @@`, тело `"new file mode 100644"`, выдуманное из строки,
+    которой у untracked-файла нет) расходились и давали два разных `H:` на
+    одном и том же событии (найдено внешним ревью).
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    (repo / "e.py").write_bytes(b"")
+
+    monkeypatch.chdir(repo)
+    untracked_hunk = next(h for h in enumerate_review_units.untracked_hunks() if h.path == "e.py")
+    id_untracked = enumerate_review_units.hunk_id(untracked_hunk.path, untracked_hunk.raw_body)
+
+    subprocess.run(["git", "add", "e.py"], cwd=repo, check=True)
+    staged_hunk = next(h for h in enumerate_review_units.diff_hunks() if h.path == "e.py")
+    id_staged = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.raw_body)
+
+    assert untracked_hunk.context == staged_hunk.context == "@@ -0,0 +1,0 @@"
+    assert untracked_hunk.body == staged_hunk.body == ""
+    assert id_untracked == id_staged
+
+
+# --- Замечание 4: `diff.renames` пользователя не форсировался ---------------
+
+
+def test_diff_hunks_pure_rename_is_one_hunk_regardless_of_diff_renames_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Замечание 4: `--find-renames` форсирован — чужой `diff.renames` не влияет.
+
+    Без форсирования один и тот же `git mv` давал ОДИН metadata-hunk на
+    репозитории с `diff.renames=true` и ДВА hunk'а (удаление + добавление) на
+    репозитории с `diff.renames=false` — тот же класс недетерминизма, что уже
+    чинили у `core.abbrev` (найдено внешним ревью).
+    """
+
+    def make(root: Path, renames: str) -> list[enumerate_review_units.Hunk]:
+        repo = _init_hunks_repo(root)
+        subprocess.run(["git", "config", "diff.renames", renames], cwd=repo, check=True)
+        _write(repo, "a.txt", "content\n")
+        _commit_all(repo)
+        subprocess.run(["git", "mv", "a.txt", "b.txt"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        return [h for h in enumerate_review_units.diff_hunks() if h.path in {"a.txt", "b.txt"}]
+
+    hunks_true = make(tmp_path / "true", "true")
+    hunks_false = make(tmp_path / "false", "false")
+
+    assert len(hunks_true) == 1
+    assert len(hunks_false) == 1
+    assert hunks_true[0].context == "@@ metadata @@"
+    assert hunks_false[0].context == "@@ metadata @@"
+    assert hunks_true[0].body == hunks_false[0].body
+    id_true = enumerate_review_units.hunk_id(hunks_true[0].path, hunks_true[0].raw_body)
+    id_false = enumerate_review_units.hunk_id(hunks_false[0].path, hunks_false[0].raw_body)
+    assert id_true == id_false
+
+
+# --- Замечание 5: непунктовая строка дописывалась к пункту без разбора отступа --
+
+
+def test_assertion_items_unindented_paragraph_ends_item_without_becoming_one() -> None:
+    """Замечание 5: пункт, неотступленный абзац, ещё пункт — ДВА пункта, первый БЕЗ абзаца.
+
+    План разрешает продолжением ТОЛЬКО отступленную строку
+    (`docs/process/implementation.md`, «Схема идентификаторов»). Реализация
+    раньше дописывала к последнему пункту ЛЮБУЮ непунктовую строку — отступ
+    был не при чём — и врезка к задаче становилась частью текста последнего
+    утверждения (найдено внешним ревью). Отказывать на таком входе тоже
+    нельзя: замер по `docs/superpowers/plans/` показал живые планы с такими
+    врезками (`2026-09-09-price-predicate.md`, задача 6) — неотступленный
+    абзац заканчивает пункт и сам пунктом не становится, знаменатель не
+    меняется.
+    """
+    lines = [
+        "### Task 1: X",
+        "**Утверждения**",
+        "- first",
+        "unindented paragraph",
+        "- second",
+    ]
+    block = enumerate_review_units.task_block(lines, 1)
+    items = enumerate_review_units.assertion_items(block)
+    assert items == [("A1.1", "first"), ("A1.2", "second")]
