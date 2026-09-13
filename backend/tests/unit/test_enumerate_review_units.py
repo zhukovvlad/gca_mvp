@@ -1646,7 +1646,7 @@ def test_cli_hunks_no_commits_yet_fails_with_a_clear_message_not_a_traceback(
     assert result.stderr.strip() != ""
 
 
-# --- I3: `--src-prefix`/`--dst-prefix` не стерегутся ничем -------------------
+# --- I3: настройка ВИДА путей в патче не должна менять знаменатель -----------
 
 
 def test_diff_hunks_survives_diff_noprefix_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2162,8 +2162,10 @@ def test_untracked_then_staged_trailing_nbsp_file_gives_the_same_id(
 
 # =============================================================================
 # Внешняя волна, круг 3 (external-findings-round3.md): пути НИКОГДА не читаются
-# из текста патча — `git diff --raw -z HEAD` их единственный источник, а патч
-# каждого файла забирается отдельным вызовом `git diff HEAD -- <путь>`.
+# из текста патча — `git diff --raw -z HEAD` их единственный источник. Способ
+# ЗАБРАТЬ патч круг 3 выбрал неверно (отдельный вызов `git diff HEAD -- <путь>`
+# на файл, то есть путь как pathspec) и круг 4 его заменил одним патчем на всё
+# дерево; входы ниже от этого не устарели — они про ПУТИ, а не про способ.
 # =============================================================================
 
 
@@ -2240,10 +2242,10 @@ def _build_quote_path_repo(root: Path, blob_content: bytes, quoted_path: str) ->
     этом свежем репозитории ничего, кроме `keep.txt`, никогда не
     добавлялось) — поэтому `git diff HEAD` видит файл как УДАЛЁННЫЙ
     (в `HEAD` есть, в текущем состоянии — нет), что для целей этого теста
-    ничем не хуже правки: он проходит ТОЧНО ТУ ЖЕ цепочку («raw` даёт путь →
-    патч по этому пути отдельным вызовом → секция разобрана по виду»), что и
-    любая другая правка, и вообще не касается частей кода, зависящих от
-    того, добавлен файл или удалён. На CI (`ubuntu-latest`) такое имя —
+    ничем не хуже правки: он проходит ТОЧНО ТУ ЖЕ цепочку («`--raw -z` даёт
+    путь → секция из общего патча достаётся этой записи по порядку → тело
+    разобрано по виду секции»), что и любая другая правка, и вообще не
+    касается частей кода, зависящих от того, добавлен файл или удалён. На CI (`ubuntu-latest`) такое имя —
     обычный файл, и там достаточно было бы обычного `_write`+`_commit_all`;
     здесь используется техника, которая работает на ОБЕИХ платформах
     одинаково, поэтому применена без ветвления по ОС.
@@ -2576,3 +2578,196 @@ def test_run_hunks_turns_the_assignment_refusal_into_a_message_and_code_3(
     assert "RuntimeError" in captured.err
     assert "перечисление невозможно" in captured.err
     assert "Traceback" not in captured.err
+
+
+# =============================================================================
+# Внешняя волна, круг 5 (external-findings-round5.md): последняя настройка,
+# менявшая ЧИСЛО секций на запись. `diff.submodule` рисует подмодуль тремя
+# разными способами, и при значении `diff` счёт СХОДИТСЯ, а привязка — нет:
+# под путём первого подмодуля печатается тело файла из второго, rc=0.
+# Рядом — `diff.ignoreSubmodules`, которая выкидывает подмодуль из ОБОИХ
+# выводов сразу: отказа нет, но элемент знаменателя исчезает молча.
+# =============================================================================
+
+
+def _build_two_submodules_repo(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
+    """Дерево с ДВУМЯ подмодулями: у первого внутренний diff ПУСТ, у второго — два файла.
+
+    Асимметрия здесь и есть вход: при `diff.submodule=diff` git разворачивает
+    ВНУТРЕННИЙ diff каждого подмодуля вместо строки `Subproject commit`. У
+    первого подмодуля указатель сдвинут ПУСТЫМ коммитом — внутренний diff
+    пуст, и секций он не даёт НИ ОДНОЙ; второй меняет два файла и даёт ДВЕ.
+    Итого две записи `--raw` и две секции — суммы сходятся, громкий отказ не
+    срабатывает, и раздача по порядку отдаёт первую секцию (тело `s2/a.txt`)
+    записи `s1`. Симметричное дерево (по одному файлу в каждом подмодуле) это
+    НЕ предъявляет: там 2 записи и 2 секции разошлись бы только телами, а
+    здесь путь получает содержимое ЧУЖОГО подмодуля.
+
+    Возвращает репозиторий и словарь `путь → (старый sha, новый sha)` — по
+    ним тест сверяет, что тело каждого элемента принадлежит СВОЕМУ подмодулю,
+    а не только что элементов двое.
+
+    `protocol.file.allow=always` обязателен: git по умолчанию запрещает
+    `file://`-транспорт для подмодулей (CVE-2022-39253), и без него
+    `submodule add` отказывает.
+    """
+    inner_specs = {"s1": ["f.txt"], "s2": ["a.txt", "b.txt"]}
+    for name, files in inner_specs.items():
+        inner = _init_hunks_repo(root / name)
+        for index, rel in enumerate(files):
+            _write(inner, rel, f"{name}-{index}\n")
+        _commit_all(inner)
+
+    repo = _init_hunks_repo(root / "main")
+    for name in inner_specs:
+        subprocess.run(
+            [
+                "git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                (root / name).as_uri(), name,
+            ],
+            cwd=repo, check=True,
+        )
+    _write(repo, "top.txt", "top\n")
+    _commit_all(repo)
+
+    shas: dict[str, tuple[str, str]] = {}
+    for name in inner_specs:
+        work = repo / name
+        old = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        if name == "s1":
+            # Пустой коммит: указатель сдвинулся, внутренний diff ПУСТ.
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "move"], cwd=work, check=True)
+        else:
+            for index, rel in enumerate(inner_specs[name]):
+                _write(work, rel, f"{name}-{index}-changed\n")
+            subprocess.run(["git", "commit", "-qam", "two files"], cwd=work, check=True)
+        new = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        shas[name] = (old, new)
+    return repo, shas
+
+
+def _assert_each_submodule_carries_its_own_pointer(
+    hunks: list[enumerate_review_units.Hunk], shas: dict[str, tuple[str, str]]
+) -> None:
+    """Ровно два элемента, и тело каждого — сдвиг указателя СВОЕГО подмодуля.
+
+    Счёт проверять мало: при `diff.submodule=diff` счёт как раз сходится, а
+    тело `s1` несёт содержимое `s2/a.txt`. Сверка идёт с ПОЛНЫМИ sha, взятыми
+    у самих подмодулей (`git rev-parse`), а не с выводом инструмента — это
+    внешний оракул, а не сверщик, делящий предикат с генератором. Полные
+    40 hex здесь законны: строка `Subproject commit` печатает sha целиком при
+    любом `core.abbrev` (проверено на значениях 4, 12 и 40), в отличие от
+    строки `index …`, которую тело metadata-hunk'а поэтому и не включает.
+    """
+    by_path = {hunk.path: hunk for hunk in hunks if hunk.path in shas}
+    assert sorted(by_path) == ["s1", "s2"]
+    for name, (old, new) in shas.items():
+        assert by_path[name].body == f"-Subproject commit {old}\n+Subproject commit {new}", name
+
+
+def test_diff_hunks_submodule_diff_rendering_does_not_bind_a_foreign_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER S1: `diff.submodule=diff` — счёт сходится, а тело достаётся ЧУЖОМУ пути.
+
+    Самый опасный из трёх видов рендеринга: 2 записи и 2 секции, поэтому
+    `_assign_sections` НЕ отказывает, и раздача по порядку молча отдаёт
+    секцию `s2/a.txt` записи `s1`. Воспроизведено оркестратором на коде
+    круга 4: `s1` получал тело `-a\\n+aX`, `s2` — `-b\\n+bX`, `rc=0`, `stderr`
+    пуст. Стережёт это `--submodule=short` на команде патча: он заставляет git
+    печатать одну строку `Subproject commit` на подмодуль при ЛЮБОМ значении
+    настройки.
+    """
+    repo, shas = _build_two_submodules_repo(tmp_path)
+    subprocess.run(["git", "config", "diff.submodule", "diff"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    _assert_each_submodule_carries_its_own_pointer(enumerate_review_units.diff_hunks(), shas)
+
+
+def test_diff_hunks_submodule_log_rendering_still_yields_both_elements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER S1, второй вид: `diff.submodule=log` — секций НОЛЬ, весь знаменатель терялся.
+
+    `log` рендерит подмодуль списком коммитов, БЕЗ единой строки `diff --git `
+    — 2 записи против 0 секций, суммы не сходятся, и круг 4 отвечал громким
+    отказом `rc=3`. Отказ честнее молчания, но знаменатель всё равно
+    отсутствует, а причина — чужой конфиг, а не дерево. С `--submodule=short`
+    оба элемента на месте и несут свои указатели.
+    """
+    repo, shas = _build_two_submodules_repo(tmp_path)
+    subprocess.run(["git", "config", "diff.submodule", "log"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    _assert_each_submodule_carries_its_own_pointer(enumerate_review_units.diff_hunks(), shas)
+
+
+def test_diff_hunks_ignore_submodules_config_does_not_drop_the_pointer_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Вторая половина того же греха: `diff.ignoreSubmodules=all` — элемента НЕТ ВОВСЕ.
+
+    Найдено при замере круга 5 сверх текста замечаний. Эта настройка меняет
+    не рендеринг, а СОСТАВ: подмодуль исчезает СРАЗУ из обоих выводов (0
+    записей и 0 секций вместо 2 и 2), поэтому суммы сходятся, отказ не
+    срабатывает — и сдвиг указателя подмодуля просто не попадает в
+    знаменатель ревью, с кодом 0 и пустым `stderr`. Не «правка не тому
+    файлу», а «правки нет вовсе» — тот же кардинальный грех другой стороной.
+    Стережёт `--ignore-submodules=none`, и он обязан стоять на ОБЕИХ
+    командах: на одной он вернул бы расхождение сумм вместо верного ответа.
+
+    `submodule.<имя>.ignore=all` — та же настройка, заданная поимённо, и
+    проверяется здесь же: она выбивает ОДИН подмодуль из двух, то есть
+    меняет знаменатель тише, чем `diff.ignoreSubmodules`, и потому опаснее.
+    """
+    repo, shas = _build_two_submodules_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    subprocess.run(["git", "config", "diff.ignoreSubmodules", "all"], cwd=repo, check=True)
+    _assert_each_submodule_carries_its_own_pointer(enumerate_review_units.diff_hunks(), shas)
+
+    subprocess.run(["git", "config", "--unset", "diff.ignoreSubmodules"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "submodule.s1.ignore", "all"], cwd=repo, check=True)
+    _assert_each_submodule_carries_its_own_pointer(enumerate_review_units.diff_hunks(), shas)
+
+
+def test_assignment_breakpoint_names_a_path_for_each_kind_of_disagreement() -> None:
+    """I3: сообщение отказа обязано назвать ПУТЬ, а не только `M, M, M, …`.
+
+    На дереве из ста записей список статусов не локатор: воспроизводить по
+    нему нечего. Проверяются все три ветви — секций не хватило (путь ПЕРВОЙ
+    обделённой записи, а не последней сошедшейся), секций больше нужного
+    (путь последней записи, после которой остался хвост) и вырожденный случай
+    «записей нет вовсе».
+    """
+    records = [("M", "a.txt", "a.txt"), ("T", "t.txt", "t.txt"), ("D", "z.txt", "z.txt")]
+
+    # Записи требуют 1+2+1=4 секции; их 2 — обделена запись `t.txt`, не `z.txt`.
+    short = enumerate_review_units._assignment_breakpoint(records, 2)
+    assert "t.txt" in short and "z.txt" not in short and "T" in short
+
+    # Секций 5 при нужных 4 — хвост после последней записи.
+    surplus = enumerate_review_units._assignment_breakpoint(records, 5)
+    assert "z.txt" in surplus
+
+    assert "3" in enumerate_review_units._assignment_breakpoint([], 3)
+
+
+def test_assign_sections_refusal_message_carries_the_breaking_path() -> None:
+    """Тот же локатор — в самом сообщении `RuntimeError`, а не только в хелпере.
+
+    Проверка на уровне, где дефект живёт для ЧИТАТЕЛЯ: человек видит текст
+    исключения, а не возврат вспомогательной функции.
+    """
+    records = [("M", "a.txt", "a.txt"), ("M", "b.txt", "b.txt")]
+
+    with pytest.raises(RuntimeError) as excinfo:
+        enumerate_review_units._assign_sections(records, [(0, 5)])
+
+    # Секция досталась `a.txt`; обделена ВТОРАЯ запись — её и называет локатор.
+    assert "b.txt" in str(excinfo.value)
