@@ -2956,3 +2956,140 @@ def test_documented_hunks_commands_match_the_tool_byte_for_byte(
     for doc_tokens, (tool_args, tool_output) in zip(documented, tool_calls, strict=True):
         doc_result = real_run(doc_tokens, cwd=repo, capture_output=True, check=True)
         assert doc_result.stdout == tool_output, f"документ: {doc_tokens}\nинструмент: {tool_args}"
+
+
+# =============================================================================
+# Круг 7 внешнего ревью (external-findings-round7.md): BLOCKER N1.
+# =============================================================================
+
+
+def _init_nested_repo(parent: Path, rel_path: str, *, with_commit: bool) -> Path:
+    """Вложенный git-репозиторий внутри `parent` — СВОЙ `.git`, независимый от внешнего.
+
+    `with_commit=False` — вложенный репозиторий БЕЗ единого коммита (`git init`
+    и ничего больше): `HEAD` в нём не существует, `rev-parse HEAD` отказывает.
+    """
+    nested = parent / rel_path
+    nested.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+    if with_commit:
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=nested, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=nested, check=True)
+        (nested / "file.txt").write_text("content\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=nested, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=nested, check=True)
+    return nested
+
+
+def _nested_repo_head_sha(nested: Path) -> str:
+    """`HEAD` вложенного репозитория, посчитанный НЕЗАВИСИМО от `enumerate_review_units`."""
+    return subprocess.run(
+        ["git", "-C", str(nested), "rev-parse", "HEAD"],
+        cwd=nested,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+
+
+def test_untracked_hunks_nested_git_repo_with_commit_is_one_synthetic_element(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER N1: вложенный репозиторий С коммитом — РОВНО ОДИН синтетический hunk, не падение.
+
+    Воспроизведение из находки: `git status --porcelain --untracked-files=all`
+    печатает `?? vendor/` ОДНОЙ записью — git принципиально не спускается в
+    чужой `.git` — и до правки `read_bytes()` на этом пути падал
+    `PermissionError` (Windows) / `IsADirectoryError` (POSIX), роняя ВЕСЬ
+    перечислитель, а не один элемент знаменателя.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    nested = _init_nested_repo(repo, "vendor", with_commit=True)
+    expected_head = _nested_repo_head_sha(nested)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "vendor/"
+    assert hunk.context == "@@ nested-repo @@"
+    assert hunk.body == f"+nested-repo HEAD {expected_head}"
+    assert (hunk.added, hunk.removed) == (1, 0)
+
+
+def test_untracked_hunks_nested_git_repo_without_commits_does_not_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER N1, второй вход: вложенный репозиторий БЕЗ единого коммита.
+
+    `git rev-parse HEAD` внутри него отказывает (нет ветки, нет коммита) — это
+    ЗАКОННЫЙ вход, названный находкой явно, и он не должен уронить прогон
+    исключением.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _init_nested_repo(repo, "empty_vendor", with_commit=False)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.path == "empty_vendor/"
+    assert hunk.context == "@@ nested-repo @@"
+    assert hunk.body == "+nested-repo HEAD (no commits)"
+    assert (hunk.added, hunk.removed) == (1, 0)
+
+
+def test_untracked_hunks_ordinary_directory_still_expands_next_to_nested_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Регрессия K1, третий вход находки: обычный каталог по-прежнему разворачивается в файлы.
+
+    Оба случая в ОДНОМ дереве: обычный каталог (без своего `.git`) обязан
+    по-прежнему давать один элемент на файл (K1, круг 1), а вложенный
+    репозиторий — ровно один синтетический элемент (N1, круг 7); один прогон
+    не должен путать эти два случая друг с другом.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _write(repo, "plain_dir/one.txt", "a\n")
+    _init_nested_repo(repo, "vendor", with_commit=True)
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.untracked_hunks()
+
+    paths = {h.path for h in hunks}
+    assert paths == {"plain_dir/one.txt", "vendor/"}
+    nested_hunk = next(h for h in hunks if h.path == "vendor/")
+    assert nested_hunk.context == "@@ nested-repo @@"
+    assert all(h.context != "@@ nested-repo @@" for h in hunks if h.path != "vendor/")
+
+
+def test_cli_hunks_survives_nested_git_repo(tmp_path: Path) -> None:
+    """Круг 7 воспроизведение буквально: CLI `hunks` больше не падает кодом 3 на вложенном репозитории.
+
+    Находка воспроизвела: `rc=3, строк 0, stderr: PermissionError`. После
+    правки — код 0, ровно одна строка вывода, с полями пятого вида секции.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    _init_nested_repo(repo, "vendor", with_commit=True)
+
+    result = _cli_hunks_text(repo)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    lines = [line for line in result.stdout.splitlines() if line]
+    assert len(lines) == 1
+    fields = lines[0].split("\t")
+    assert fields[1] == "vendor/"
+    assert fields[2] == "@@ nested-repo @@"
+    assert fields[3] == "+1/-0"
