@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1649,15 +1650,21 @@ def test_cli_hunks_no_commits_yet_fails_with_a_clear_message_not_a_traceback(
 
 
 def test_diff_hunks_survives_diff_noprefix_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`diff.noprefix=true` в чужом конфиге не должен ронять разбор — форсированные префиксы главнее.
+    """`diff.noprefix=true` в чужом конфиге не должен ронять разбор — путь не из текста патча.
 
-    При `diff.noprefix=true` `git diff` без явных `--src-prefix`/`--dst-prefix`
-    печатает `diff --git путь путь` и `+++ путь` вовсе БЕЗ `a/`/`b/` —
-    `DIFF_GIT_HEADER` и `_section_path` на такую строку не матчатся, секция
-    пропускается целиком, и КАЖДЫЙ отслеживаемый hunk исчезает молча (найдено
-    ревью круга 1, I3). Удаление обоих флагов оставляет 20 из 20 старых
-    тестов `hunks` зелёными — этот вход специально ставит конфиг, который их
-    не оставляет зелёными.
+    При `diff.noprefix=true` `git diff` печатает `diff --git путь путь` и
+    `+++ путь` вовсе БЕЗ префиксов `a/`/`b/`. Круг 1 разбирал путь из этих
+    строк по ФИКСИРОВАННОМУ префиксу, и такой конфиг молча выбрасывал КАЖДЫЙ
+    отслеживаемый hunk (найдено ревью круга 1, I3); тогда это стерегли
+    форсированные `--src-prefix`/`--dst-prefix`.
+
+    С круга 3 путь не читается из текста патча вовсе (он из
+    `git diff --raw -z HEAD`), а строка `diff --git ` служит только маркером
+    ГРАНИЦЫ секции — форсирование префиксов стало лишним и снято. Этот вход
+    стережёт ИМЕННО ТО, что осталось: ни `--no-prefix`, ни любая другая
+    настройка ВИДА путей в патче не должна влиять ни на число элементов, ни
+    на привязку тела к пути. Верни сюда разбор пути из `+++`/`diff --git` —
+    и этот тест снова покраснеет, уже без всяких флагов.
     """
     repo = _init_hunks_repo(tmp_path)
     subprocess.run(["git", "config", "diff.noprefix", "true"], cwd=repo, check=True)
@@ -1681,20 +1688,39 @@ def test_diff_hunks_survives_default_quotepath_with_cyrillic_filename(
     """Кириллическое имя файла (репозиторий русскоязычный) не должно теряться без `quotepath=false`.
 
     Без `-c core.quotepath=false` git заворачивает не-ASCII путь в кавычки с
-    восьмеричными escape-последовательностями (`"a/\\321\\204…"`) — ни
-    `DIFF_GIT_HEADER`, ни `_section_path` на такую строку не матчатся, и
-    hunk пропадает молча.
+    восьмеричными escape-последовательностями (`"\\321\\204…"`). ГДЕ именно
+    это до сих пор важно — ИЗМЕРЕНО снятием флага по одной команде за раз:
+
+    * `git status --porcelain` (неотслеживаемые файлы, `untracked_hunks`) —
+      флаг ЛОМАЕТСЯ при снятии: путь приходит манглированным, и чтение файла
+      падает `FileNotFoundError: …\\\\321\\\\204\\\\320\\\\260…`. Здесь флаг
+      несущий, и именно поэтому вход ниже несёт и НЕОТСЛЕЖИВАЕМЫЙ файл, а не
+      только отслеживаемый;
+    * `git diff --raw -z HEAD` (`_raw_diff_records`) — формат `-z` НЕ кавычит
+      путь ВООБЩЕ, ни при каком значении `core.quotepath` (проверено
+      hexdump-ом вывода при `quotepath=true` и `quotepath=false`: байты пути
+      одинаковы), поэтому снятие флага здесь ничего не меняет;
+    * патч (`_whole_diff_args`) — путь из его текста не читается вовсе с
+      круга 3, поэтому и здесь снятие флага ничего не меняет.
+
+    На двух последних командах флаг оставлен как страховка на случай, если
+    кто-нибудь снова начнёт читать путь из текста патча, и эта оговорка
+    записана здесь честно, а не выдана за несущую гарантию.
     """
     repo = _init_hunks_repo(tmp_path)
     _write(repo, "файл.txt", "old\n")
     _commit_all(repo)
     _write(repo, "файл.txt", "new\n")
+    _write(repo, "новый.txt", "untracked\n")
 
     monkeypatch.chdir(repo)
     hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "файл.txt"]
+    untracked = [h for h in enumerate_review_units.untracked_hunks() if h.path == "новый.txt"]
 
     assert len(hunks) == 1
     assert hunks[0].body == "-old\n+new"
+    assert len(untracked) == 1
+    assert untracked[0].body == "+untracked"
 
 
 # --- I4: жадность разбора заголовка `diff --git` -----------------------------
@@ -2024,8 +2050,11 @@ def test_diff_hunks_type_change_gives_two_hunks_not_a_crash(
     со статусом `T`: старый код увидел бы 1 != N где-то ещё в этом дереве и
     упал бы уже на первом же прогоне с несовпадением. Обе секции здесь —
     ТЕКСТОВЫЕ (есть `+++`/`---`, `core.symlinks=false` заставляет git
-    показать содержимое симлинка как текст), и путь для каждой берётся
-    `_text_section_path`, однозначно и НЕЗАВИСИМО от второй секции.
+    показать содержимое симлинка как текст), и путь для ОБЕИХ — один и тот
+    же, путь ЕДИНСТВЕННОЙ записи `T`: правило «`T` владеет двумя смежными
+    секциями» живёт в `_sections_per_record`, а раздачу делает
+    `_assign_sections`. Сломай это правило (отдай `T` одну секцию) — и этот
+    вход краснеет громким отказом, а не тихой потерей элемента.
     """
     repo = _make_type_change_repo(tmp_path)
 
@@ -2301,3 +2330,249 @@ def test_cli_hunks_quoted_path_does_not_crash_the_whole_run(tmp_path: Path) -> N
     assert result.stderr == ""
     rows = [line.split("\t") for line in result.stdout.splitlines() if line]
     assert any(row[1] == 'a"c.bin' for row in rows)
+
+
+# =============================================================================
+# Внешняя волна, круг 4 (external-findings-round4.md): pathspec — это ШАБЛОН,
+# а не имя файла. Круг 3 передавал путь записи `--raw` обратно git'у как
+# pathspec, и ТОТ ЖЕ класс дефекта (элемент знаменателя достался не тому файлу
+# либо пропал МОЛЧА, с кодом 0) переехал в новый механизм. Круг 4 убирает
+# pathspec вовсе: ОДИН патч на всё дерево плюс ОДНА листовка `--raw -z`,
+# секции раздаются записям ПО ПОРЯДКУ (`_assign_sections`), `T` владеет двумя.
+# =============================================================================
+
+
+def _build_tree_with_subdirectory(root: Path) -> Path:
+    """Дерево из трёх отслеживаемых правок в РАЗНЫХ каталогах плюс неотслеживаемый файл.
+
+    Форма входа BLOCKER P1 буквально: правки лежат и в `backend/`, и в
+    `docs/`, и в корне, а документированная команда ревьюера начинается с
+    `cd backend` — то есть исполняется ИЗ ПОДКАТАЛОГА. Неотслеживаемый файл
+    добавлен нарочно: `git status --porcelain` всегда печатает путь от корня,
+    поэтому на круге 3 он ОДИН и уцелевал, маскируя потерю остальных.
+    """
+    repo = _init_hunks_repo(root)
+    _write(repo, "backend/money.py", "a\n")
+    _write(repo, "docs/note.md", "b\n")
+    _write(repo, "root.txt", "c\n")
+    _commit_all(repo)
+    _write(repo, "backend/money.py", "aX\n")
+    _write(repo, "docs/note.md", "bX\n")
+    _write(repo, "root.txt", "cX\n")
+    _write(repo, "backend/untracked.py", "u\n")
+    return repo
+
+
+def test_cli_hunks_from_a_subdirectory_gives_the_same_output_as_from_the_root(tmp_path: Path) -> None:
+    """BLOCKER P1: документированный `cd backend && … hunks` обязан дать ТОТ ЖЕ знаменатель.
+
+    Пути записей `git diff --raw` — от КОРНЯ репозитория, а pathspec
+    разрешается от ТЕКУЩЕГО каталога. Круг 3 передавал первое как второе, и
+    из `backend/` три отслеживаемых файла из четырёх исчезали МОЛЧА, с кодом
+    возврата 0 и пустым `stderr` (воспроизведено оркестратором: `rows=4` из
+    корня против `rows=1` из `backend/`, причём уцелевшая строка — как раз
+    неотслеживаемый файл, который идёт мимо `diff`).
+
+    Сравниваются ПОБАЙТНО оба вывода целиком, а не только их длина: сдвиг
+    привязки, сохранивший число строк, тоже обязан краснеть.
+    """
+    repo = _build_tree_with_subdirectory(tmp_path)
+
+    from_root = _cli_hunks_bytes(repo)
+    from_subdir = _cli_hunks_bytes(repo / "backend")
+
+    assert from_root.returncode == 0, from_root.stderr
+    assert from_subdir.returncode == 0, from_subdir.stderr
+    assert from_subdir.stdout == from_root.stdout
+    rows = [line.split("\t") for line in from_root.stdout.decode("utf-8").splitlines() if line]
+    assert [row[1] for row in rows] == [
+        "backend/money.py",
+        "backend/untracked.py",
+        "docs/note.md",
+        "root.txt",
+    ]
+
+
+def test_cli_hunks_from_a_subdirectory_survives_diff_relative_config(tmp_path: Path) -> None:
+    """Та же потеря знаменателя другим путём: пользовательский `diff.relative=true`.
+
+    Убрать pathspec — необходимо, но НЕ достаточно: при `diff.relative=true`
+    git и в патче, и в `--raw` показывает ТОЛЬКО поддерево текущего каталога,
+    и прогон из `backend/` снова терял бы всё остальное. Замерено на дереве с
+    девятью записями: из подкаталога `diff.relative=true` оставляет ОДНУ
+    запись в `--raw` и одну секцию в патче. Стережёт это `--no-relative`, и
+    он обязан стоять на ОБЕИХ командах — эта проверка красна, если его снять
+    с любой из них.
+    """
+    repo = _build_tree_with_subdirectory(tmp_path)
+    subprocess.run(["git", "config", "diff.relative", "true"], cwd=repo, check=True)
+
+    from_root = _cli_hunks_bytes(repo)
+    from_subdir = _cli_hunks_bytes(repo / "backend")
+
+    assert from_root.returncode == 0, from_root.stderr
+    assert from_subdir.returncode == 0, from_subdir.stderr
+    assert from_subdir.stdout == from_root.stdout
+    rows = [line.split("\t") for line in from_root.stdout.decode("utf-8").splitlines() if line]
+    assert [row[1] for row in rows] == [
+        "backend/money.py",
+        "backend/untracked.py",
+        "docs/note.md",
+        "root.txt",
+    ]
+
+
+def test_diff_hunks_glob_magic_in_a_plain_filename_does_not_bind_a_foreign_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER P2: `a[bc]d.txt` рядом с `abd.txt` — ДВА элемента, и тела не перепутаны.
+
+    Имена обычные — никакой «магии» в них нет, это ровно форма маршрута
+    JS/TS `[id].tsx`, и Windows такие файлы создаёт. Но pathspec трактует
+    `[bc]` как класс символов, и `a[bc]d.txt` как ШАБЛОН совпадает ещё и с
+    `abd.txt` (а также с `acd.txt`). Круг 3 давал на два файла ТРИ строки:
+    путь `a[bc]d.txt` дважды, и под одним из них лежало тело ЧУЖОГО файла
+    `abd.txt` (воспроизведено оркестратором буквально).
+
+    Проверяется не только счёт, но и СОСТАВ: тело каждого пути сверено со
+    своим — счёт сошёлся бы и при перепутанных телах.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "a[bc]d.txt", "one\n")
+    _write(repo, "abd.txt", "two\n")
+    _commit_all(repo)
+    _write(repo, "a[bc]d.txt", "oneX\n")
+    _write(repo, "abd.txt", "twoX\n")
+
+    monkeypatch.chdir(repo)
+    hunks = enumerate_review_units.diff_hunks()
+
+    assert sorted(h.path for h in hunks) == ["a[bc]d.txt", "abd.txt"]
+    bodies = {h.path: h.body for h in hunks}
+    assert bodies["a[bc]d.txt"] == "-one\n+oneX"
+    assert bodies["abd.txt"] == "-two\n+twoX"
+
+
+def test_diff_hunks_directory_replaced_by_a_file_does_not_pull_in_the_subtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER P3: каталог `pkg/` заменён ФАЙЛОМ `pkg` — элементов ровно столько, сколько записей.
+
+    Имена здесь совсем обычные, символов шаблона нет вовсе: дефект даёт САМА
+    СЕМАНТИКА pathspec — путь, совпавший с каталогом, забирает ВСЁ его
+    поддерево, и `--literal-pathspecs` этого не чинит (рекурсия по каталогу
+    не магия шаблона). Круг 3 на ЧЕТЫРЁХ записях `--raw` печатал ШЕСТЬ
+    элементов: тела `pkg/a.txt` и `pkg/b.txt` доставались ещё и пути `pkg`
+    (воспроизведено оркестратором: `H:5bf1c15a | pkg | '-x'` рядом с
+    `H:08b495c4 | pkg/a.txt | '-x'`).
+
+    `git add -A` обязателен: без него новый файл `pkg` остаётся
+    неотслеживаемым и в `git diff --raw` не попадает вовсе — тогда записи,
+    чей pathspec совпадёт с каталогом, просто не будет, и вход перестанет
+    предъявлять дефект.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "pkg/a.txt", "x\n")
+    _write(repo, "pkg/b.txt", "y\n")
+    _write(repo, "other.txt", "z\n")
+    _commit_all(repo)
+    shutil.rmtree(repo / "pkg")
+    _write(repo, "pkg", "now a file\n")
+    _write(repo, "other.txt", "zX\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+    monkeypatch.chdir(repo)
+    records = enumerate_review_units._raw_diff_records()
+    hunks = enumerate_review_units.diff_hunks()
+
+    assert sorted(record[2] for record in records) == ["other.txt", "pkg", "pkg/a.txt", "pkg/b.txt"]
+    assert len(hunks) == len(records)
+    bodies = {h.path: h.body for h in hunks}
+    assert sorted(bodies) == ["other.txt", "pkg", "pkg/a.txt", "pkg/b.txt"]
+    assert bodies["pkg"] == "+now a file"
+    assert bodies["pkg/a.txt"] == "-x"
+    assert bodies["pkg/b.txt"] == "-y"
+
+
+def test_sections_per_record_gives_two_sections_to_a_type_change_and_one_to_everything_else() -> None:
+    """Правило `T` предъявлено ПРЯМО, а не только через свои последствия.
+
+    Смена ТИПА файла — единственный измеренный статус, у которого записей и
+    секций РАЗНОЕ число: одна запись `--raw` со статусом `T`, две смежные
+    секции патча (unified-diff рендерит смену типа как удаление старого типа
+    плюс добавление нового). Измерено на трёх формах: обычный → симлинк,
+    симлинк → обычный и смена типа при ПОБАЙТНО одинаковом блобе.
+
+    Остальные статусы меряны на дереве с восемью статусами разом — у каждого
+    ровно одна секция; `R` проверяется с баллом сходства (`R100`), потому что
+    сравнение идёт по первому символу.
+    """
+    assert enumerate_review_units._sections_per_record("T") == 2
+    for status in ("M", "A", "D", "R100", "C75", ""):
+        assert enumerate_review_units._sections_per_record(status) == 1, status
+
+
+def test_assign_sections_distributes_in_order_and_gives_the_type_change_both_sections() -> None:
+    """Раздача ПО ПОРЯДКУ: каждой записи — её секции, `T` — две смежные.
+
+    Порядок записей `--raw` и секций патча совпадает элемент в элемент — это
+    ИЗМЕРЕНО (дерево с восемью статусами разом), и здесь проверяется, что код
+    раздаёт именно так: запись `T` забирает ДВЕ смежные секции, соседние
+    записи получают свои, а не сдвинутые на одну.
+    """
+    records = [("M", "a.txt", "a.txt"), ("T", "t.txt", "t.txt"), ("D", "z.txt", "z.txt")]
+    bounds = [(0, 5), (5, 9), (9, 13), (13, 20)]
+
+    assignments = enumerate_review_units._assign_sections(records, bounds)
+
+    assert assignments == [
+        (("M", "a.txt", "a.txt"), [(0, 5)]),
+        (("T", "t.txt", "t.txt"), [(5, 9), (9, 13)]),
+        (("D", "z.txt", "z.txt"), [(13, 20)]),
+    ]
+
+
+def test_assign_sections_refuses_loudly_when_the_counts_disagree() -> None:
+    """Расхождение сумм — ГРОМКИЙ отказ с числами и статусами, а не сдвиг привязки.
+
+    Кардинальный грех этого инструмента — приписать правку не тому файлу или
+    потерять её МОЛЧА, с кодом 0. Если у неизмеренного статуса вдруг окажется
+    не то число секций, сумма не сойдётся — и тогда единственный допустимый
+    исход это отказ, называющий число записей, число секций и ВСЕ статусы,
+    чтобы случай можно было воспроизвести и измерить. Догадка запрещена даже
+    тогда, когда «очевидно», какая секция чья.
+    """
+    records = [("M", "a.txt", "a.txt"), ("M", "b.txt", "b.txt")]
+    bounds = [(0, 5), (5, 9), (9, 13)]
+
+    with pytest.raises(RuntimeError) as excinfo:
+        enumerate_review_units._assign_sections(records, bounds)
+
+    message = str(excinfo.value)
+    assert "2" in message and "3" in message
+    assert "M, M" in message
+
+
+def test_run_hunks_turns_the_assignment_refusal_into_a_message_and_code_3(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Громкий отказ доходит до пользователя сообщением и кодом 3, а не трассировкой.
+
+    Отказ `_assign_sections` — это `RuntimeError` из `diff_hunks()`; общая
+    сеть `except Exception` в `_run_hunks` обязана превратить его в строку
+    `stderr` с ИМЕНЕМ типа и код возврата `3`, при ПУСТОМ `stdout`: частичный
+    знаменатель хуже отсутствующего, потому что выглядит полным.
+    """
+    def boom() -> list[object]:
+        raise RuntimeError("перечисление невозможно: записей 2, секций 3")
+
+    monkeypatch.setattr(enumerate_review_units, "diff_hunks", boom)
+
+    code = enumerate_review_units._run_hunks()
+
+    captured = capsys.readouterr()
+    assert code == 3
+    assert captured.out == ""
+    assert "RuntimeError" in captured.err
+    assert "перечисление невозможно" in captured.err
+    assert "Traceback" not in captured.err
