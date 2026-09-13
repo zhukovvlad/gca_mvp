@@ -1937,3 +1937,180 @@ def test_assertion_items_unindented_paragraph_ends_item_without_becoming_one() -
     block = enumerate_review_units.task_block(lines, 1)
     items = enumerate_review_units.assertion_items(block)
     assert items == [("A1.1", "first"), ("A1.2", "second")]
+
+
+# =============================================================================
+# Внешняя волна, круг 2 (external-findings-round2.md): BLOCKER N1, BLOCKER N2.
+# =============================================================================
+
+
+def _make_type_change_repo(root: Path) -> Path:
+    """Репозиторий с ОДНИМ файлом, тип которого сменён: обычный файл → симлинк.
+
+    Реального OS-симлинка на Windows без прав может не быть — вход строится
+    так, как называет замечание N1: `git update-index --add --cacheinfo
+    120000,<sha>,<путь>` подменяет РЕЖИМ файла в ИНДЕКСЕ на `120000`
+    (симлинк), не трогая реальные байты на диске. `git diff HEAD` (не
+    `--cached`) при этом читает содержимое из РАБОЧЕГО ДЕРЕВА (оно не
+    изменилось) и режим — из индекса (изменился) и печатает это КАК СМЕНУ
+    ТИПА: `git diff --raw -z HEAD` даёт РОВНО ОДНУ запись со статусом `T`, а
+    `git diff HEAD` — ДВЕ секции патча (удаление старого типа, добавление
+    нового) для ОДНОГО и того же пути. Это и есть вход, на котором ложный
+    инвариант «секций ровно столько, сколько записей» (BLOCKER N1) рвался.
+    """
+    repo = _init_hunks_repo(root)
+    _write(repo, "f.txt", "hello world content here\n")
+    _commit_all(repo)
+    target_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo, input="target.txt", capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"120000,{target_sha},f.txt"],
+        cwd=repo, check=True,
+    )
+    return repo
+
+
+def test_diff_hunks_type_change_gives_two_hunks_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER N1: смена ТИПА файла (обычный → симлинк, режим `120000`) — два hunk'а, не отказ.
+
+    До этой правки `diff_hunks` сопоставляла секции `git diff HEAD` и записи
+    `git diff --raw -z HEAD` ПОЗИЦИОННО (`zip(bounds, records, strict=True)`)
+    и падала на расхождении их числа (`RuntimeError`, не пойманным
+    `_run_hunks`, — вся команда роняла трассировку и терялся ВЕСЬ
+    знаменатель, воспроизведено оркестратором буквально: `rc=1, строк 0`).
+    Здесь секций для `f.txt` — ДВЕ (`git diff HEAD` рендерит смену типа как
+    удаление старого + добавление нового), а запись `--raw` для него — ОДНА
+    со статусом `T`: старый код увидел бы 1 != N где-то ещё в этом дереве и
+    упал бы уже на первом же прогоне с несовпадением. Обе секции здесь —
+    ТЕКСТОВЫЕ (есть `+++`/`---`, `core.symlinks=false` заставляет git
+    показать содержимое симлинка как текст), и путь для каждой берётся
+    `_text_section_path`, однозначно и НЕЗАВИСИМО от второй секции.
+    """
+    repo = _make_type_change_repo(tmp_path)
+
+    monkeypatch.chdir(repo)
+    hunks = [h for h in enumerate_review_units.diff_hunks() if h.path == "f.txt"]
+
+    assert len(hunks) == 2
+    bodies = {h.body for h in hunks}
+    assert bodies == {"-hello world content here", "+hello world content here"}
+    counts = {(h.added, h.removed) for h in hunks}
+    assert counts == {(0, 1), (1, 0)}
+
+
+def test_cli_hunks_type_change_does_not_crash_the_whole_run(tmp_path: Path) -> None:
+    """BLOCKER N1 на уровне CLI: `hunks` не отказывает кодом 1 с трассировкой на смене типа файла.
+
+    Побочный, но обязательный по условию приёмки эффект: рядом с f.txt в том
+    же дереве стоит ДРУГОЙ, не менявшийся файл (`_init_hunks_repo` сам ничего
+    не коммитит сверх того, что попросили, поэтому здесь его не нужно
+    заводить отдельно) — важно само отсутствие трассировки и кода `1`.
+    """
+    repo = _make_type_change_repo(tmp_path)
+
+    result = _cli_hunks_text(repo)
+
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stderr == ""
+    rows = [line.split("\t") for line in result.stdout.splitlines() if line]
+    f_txt_ids = [row[0] for row in rows if row[1] == "f.txt"]
+    assert len(f_txt_ids) == 2
+    assert len(set(f_txt_ids)) == 2  # разные тела — разные `H:`, не дубль
+
+
+def test_resolve_ambiguous_header_path_picks_the_pair_present_in_the_known_set() -> None:
+    """Заголовок с ДВУМЯ вхождениями ` b/` разрешается по членству в множестве, не по жадности regex.
+
+    `x b/y.bin` внутри заголовка `diff --git a/x b/y.bin b/x b/y.bin` даёт
+    ТРИ кандидатных разреза литеральной подстроки ` b/`; только тот, что
+    целиком совпадает с реальной парой из `--raw`, входит в множество.
+    """
+    known_pairs = {("x b/y.bin", "x b/y.bin")}
+    result = enumerate_review_units._resolve_ambiguous_header_path(
+        "diff --git a/x b/y.bin b/x b/y.bin", known_pairs
+    )
+    assert result == ("x b/y.bin", "x b/y.bin")
+
+
+def test_resolve_ambiguous_header_path_raises_value_error_when_nothing_matches() -> None:
+    """Ни один разрез не входит в множество — контролируемый `ValueError`, не тихая выдумка пути.
+
+    «Не терять и не путать элемент знаменателя молча»: лучше явный отказ,
+    пойманный `_run_hunks` (см. `test_run_hunks_generic_exception_is_a_clean_message_not_a_traceback`),
+    чем угаданный (и, возможно, неверный) путь.
+    """
+    with pytest.raises(ValueError):
+        enumerate_review_units._resolve_ambiguous_header_path(
+            "diff --git a/unknown.bin b/unknown.bin", set()
+        )
+
+
+def test_run_hunks_generic_exception_is_a_clean_message_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BLOCKER N1: ЛЮБОЕ исключение перечисления — сообщение и код 3, не traceback.
+
+    До правки `_run_hunks` ловил только `subprocess.CalledProcessError` —
+    `RuntimeError`/`ValueError` из разрешения пути выходили трассировкой.
+    Здесь `diff_hunks` подменена так, чтобы бросить произвольный `ValueError`
+    (не обязательно тот же путь, которым падал реальный N1, — важно само
+    свойство «функция это ловит», а не воспроизведение сценария целиком,
+    которое уже отдельно доказано `test_cli_hunks_type_change_does_not_crash_the_whole_run`).
+    """
+
+    def boom() -> list[enumerate_review_units.Hunk]:
+        raise ValueError("нарочная поломка перечисления для теста")
+
+    monkeypatch.setattr(enumerate_review_units, "diff_hunks", boom)
+
+    code = enumerate_review_units._run_hunks()
+    captured = capsys.readouterr()
+
+    assert code == 3
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+    assert "нарочная поломка перечисления для теста" in captured.err
+
+
+def test_untracked_then_staged_trailing_nbsp_file_gives_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER N2: хвостовой NBSP (`U+00A0`) — untracked и staged дают ОДИН и тот же `H:`.
+
+    До правки `body` резался `str.rstrip()` (снимает ЛЮБОЙ юникодный
+    пробел — NBSP в том числе), а `raw_body` — `bytes.rstrip()` (только
+    ASCII) — на файле БЕЗ единого изменённого байта `git add` менял `H:`
+    (тот же класс, что BLOCKER 3, но в общем виде, не только для пустого
+    файла). Второй вход из замечания — id, посчитанный ЧЕРЕЗ показанное тело
+    (`hunk.body`), обязан совпасть с id через хэшируемое (`hunk.raw_body`):
+    до правки они были РАЗНЫМИ представлениями одного события и это
+    расхождение пришлось бы проверять отдельно.
+    """
+    repo = _init_hunks_repo(tmp_path)
+    _write(repo, "keep.txt", "keep\n")
+    _commit_all(repo)
+    content = "alpha \nbeta\n"
+    (repo / "n.txt").write_bytes(content.encode("utf-8"))
+
+    monkeypatch.chdir(repo)
+    untracked_hunk = next(h for h in enumerate_review_units.untracked_hunks() if h.path == "n.txt")
+    id_untracked = enumerate_review_units.hunk_id(untracked_hunk.path, untracked_hunk.raw_body)
+
+    subprocess.run(["git", "add", "n.txt"], cwd=repo, check=True)
+    staged_hunk = next(h for h in enumerate_review_units.diff_hunks() if h.path == "n.txt")
+    id_staged = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.raw_body)
+
+    assert " " in untracked_hunk.body  # NBSP — не ASCII-пробел, остаётся значащим
+    assert untracked_hunk.body == staged_hunk.body
+    assert untracked_hunk.raw_body == staged_hunk.raw_body
+    assert id_untracked == id_staged
+
+    # Второй вход замечания: id по НАПЕЧАТАННОМУ (показанному) телу совпадает
+    # с id по хэшируемому — расхождение здесь и было бы BLOCKER N2.
+    id_from_displayed_body = enumerate_review_units.hunk_id(staged_hunk.path, staged_hunk.body)
+    assert id_from_displayed_body == id_staged
