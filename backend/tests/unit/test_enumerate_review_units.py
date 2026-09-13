@@ -1415,8 +1415,47 @@ def test_diff_hunks_empty_file_added_gives_one_metadata_hunk(
     assert len(hunks) == 1
     hunk = hunks[0]
     assert hunk.context == "@@ metadata @@"
-    assert hunk.body == "new file mode 100644\nindex 0000000..e69de29"
+    # Строка `index 0000000..e69de29` НЕ входит в тело (S4, финальное сквозное
+    # ревью): ширина её хэшей следует `core.abbrev`, не содержанию правки — см.
+    # `test_diff_hunks_empty_file_added_metadata_id_is_independent_of_core_abbrev`
+    # ниже, которая красна без этого исключения.
+    assert hunk.body == "new file mode 100644"
     assert (hunk.added, hunk.removed) == (0, 0)
+
+
+def test_diff_hunks_empty_file_added_metadata_id_is_independent_of_core_abbrev(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S4: id metadata-hunk'а пустого добавленного файла не зависит от `core.abbrev`.
+
+    Секция такой правки несёт строку `index 0000000..e69de29`, чья длина хэшей
+    СЛЕДУЕТ git-настройке `core.abbrev`, а не содержанию правки:
+    `git -c core.abbrev=4 diff` печатает `index 0000..e69d`, `core.abbrev=40` —
+    полные 40 hex того же блоба (проверено вручную оркестратором до этого
+    теста). Без исключения строки `index ` из тела `_metadata_only_hunk` один и
+    тот же сценарий на двух машинах с разным `core.abbrev` давал бы РАЗНЫЙ
+    `H:` — знаменатель переставал бы быть воспроизводимым, хотя дерево одно и
+    то же (найдено финальным сквозным ревью, Critical S4). Два независимых
+    репозитория с явно РАЗНЫМ `core.abbrev` — вход, а не рассуждение: один и
+    тот же `git add` пустого файла обязан дать один и тот же `H:` в обоих.
+    """
+
+    def hunk_id_for(root: Path, abbrev: str) -> str:
+        repo = _init_hunks_repo(root)
+        subprocess.run(["git", "config", "core.abbrev", abbrev], cwd=repo, check=True)
+        _write(repo, "keep.txt", "keep\n")
+        _commit_all(repo)
+        (repo / "empty.py").write_bytes(b"")
+        subprocess.run(["git", "add", "empty.py"], cwd=repo, check=True)
+
+        monkeypatch.chdir(repo)
+        hunk = next(h for h in enumerate_review_units.diff_hunks() if h.path == "empty.py")
+        return enumerate_review_units.hunk_id(hunk.path, hunk.body)
+
+    id_short_abbrev = hunk_id_for(tmp_path / "short", "4")
+    id_long_abbrev = hunk_id_for(tmp_path / "long", "40")
+
+    assert id_short_abbrev == id_long_abbrev
 
 
 def test_diff_hunks_pure_rename_gives_one_metadata_hunk(
