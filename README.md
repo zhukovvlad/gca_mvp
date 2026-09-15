@@ -4,8 +4,26 @@
 2024–2027 со сквозным сравнением работ между объектами и годами, нормативами по
 классам объектов, паспортом объекта и выгрузками в Excel.
 
-Полная инструкция проекта — **[AGENTS.md](AGENTS.md)** (единственный источник
-истины по архитектуре и порядку работ). `CLAUDE.md` — указатель на него.
+Полная инструкция проекта — **[AGENTS.md](AGENTS.md)** (источник истины по
+архитектурным инвариантам и процессу разработки). `CLAUDE.md` — указатель на него.
+
+## Что уже работает
+
+Восемь экранов; полные описания — [`docs/reference/screens.md`](docs/reference/screens.md),
+перечень — [AGENTS.md §7](AGENTS.md).
+
+1. **Договоры/Объекты** — карточка договора, загрузка XLSX, история загрузок и замен.
+2. **Ручной матчинг** — очередь `TO_REVIEW` для позиций, которые не сматчились автоматически.
+3. **Нормативы** (`admin`) — классы, ставки, периоды действия, ряды индексов инфляции
+   и переутверждение с коэффициентом.
+4. **Паспорт проекта** — `/contracts/:id/passport`: ТЭП, коммерческие условия, свод
+   по статьям классификатора с ₽/м², объёмами и ставками; печатная форма.
+5. **Сквозная матрица** — работы × договоры, отклонения от нормативов, drill-down
+   до позиций сметы.
+6. **Отчёты** — три файла Excel: свод по договору, «для банка», сравнение договоров.
+7. **Сравнение договоров** — `/compare`, статьи × договоры с приведением к одному
+   ценовому уровню по индексам инфляции; вход из списка договоров, пункта в меню нет.
+8. **Тендеры** — `/tenders`, решётка «участники × раунды», свод по этапам.
 
 ## Происхождение кода
 
@@ -17,7 +35,10 @@ CRUD/роутеров/тестов) импортирован из
 переносится из [zhukovvlad/tenders-go](https://github.com/zhukovvlad/tenders-go)
 @ `121718bf45df`, парсер XLSX — из
 [zhukovvlad/parser_tender_xlsx](https://github.com/zhukovvlad/parser_tender_xlsx)
-@ `0e178c097d80` (см. AGENTS.md §2).
+@ `0e178c097d80`.
+
+Полные SHA, что из каждого источника берётся и что не берётся, и границы
+«эквивалентного переноса» схемы — [`docs/upstream-sources.md`](docs/upstream-sources.md).
 
 ## Стек
 
@@ -25,22 +46,23 @@ CRUD/роутеров/тестов) импортирован из
   PostgreSQL 16 + pgvector. Без брокеров: длинные операции — `BackgroundTasks`
   + таблица `import_jobs`.
 - **Парсер смет:** openpyxl + spaCy с моделью `ru_core_news_sm` (лемматизация
-  наименований работ). Обе версии закреплены точно и ставятся обычным
-  `uv sync` — отдельного `spacy download` не нужно. Их смена меняет результат
-  нормализации, а значит требует миграции каталога и кэша матчинга
-  (AGENTS.md §11).
+  наименований работ). Версии spaCy, модели и словарей pymorphy3 закреплены
+  точно и ставятся обычным `uv sync` — отдельного `spacy download` не нужно.
+  Их смена меняет результат нормализации, а значит требует миграции каталога и
+  кэша матчинга — обоснование в комментарии `backend/pyproject.toml`, требование
+  детерминированности — в [`docs/pitfalls/parser.md`](docs/pitfalls/parser.md).
 - **Хранилище исходных XLSX:** локальная директория за абстракцией `Storage`
   (путь — `STORAGE_DIR`, по умолчанию `./storage`, в `.gitignore`). Имя на диске —
   непрозрачный uuid, оригинальное имя только в БД; выдача — через авторизованный
   эндпоинт, статики над директорией нет (AGENTS.md §8).
-- **Frontend:** React + TS, Vite, shadcn/ui, Tailwind, TanStack Query,
+- **Frontend:** React 19 + TS, Vite, shadcn/ui, Tailwind 4, TanStack Query,
   TanStack Table, Recharts.
 - Task runner — [`just`](https://github.com/casey/just); Python-окружение — `uv`.
 
 ## ВАЖНО: один worker
 
 MVP запускается **строго с одним worker-процессом uvicorn** — это условие
-корректности startup-recovery загрузок (`import_jobs`, AGENTS.md §3, §6).
+корректности startup-recovery загрузок (`import_jobs`, AGENTS.md §3, §5).
 `just dev-backend` уже настроен правильно; никаких `--workers N`.
 
 Обслуживание при старте (recovery зависших заданий импорта + ретенция файлов
@@ -49,6 +71,19 @@ error-заданий) выполняется в `lifespan` приложения.
 `RUN_STARTUP_MAINTENANCE=false` отключает обслуживание — она нужна тестам и не
 предназначена для прода.
 
+## Требования
+
+- **Python 3.12** и [`uv`](https://docs.astral.sh/uv/) — backend.
+- **Node.js 24+** — frontend (`frontend/.nvmrc`; на node 20 vitest зависает на
+  перехвате blob-ответа в MSW).
+- [`just`](https://github.com/casey/just) — все команды ниже.
+- **Локальный PostgreSQL 16 + pgvector** на порту `5459`: портативный кластер
+  (conda-forge/micromamba) в `%LOCALAPPDATA%\Programs\udp-pgtest`, общий для
+  проектов на машине (установлен как `udp-pgtest`), GCA живёт в нём базами
+  `gca_dev` / `gca_test`. Репозиторий кластер **не устанавливает** — `just
+  pg-test-start` поднимает уже установленный, `just pg-test-stop` гасит; без
+  него рецепты падают с «Локальный Postgres не установлен».
+
 ## Быстрый старт
 
 ```bash
@@ -56,13 +91,13 @@ just install          # backend (uv sync) + frontend (npm ci)
 cp backend/.env.example backend/.env   # заполнить SECRET_KEY (openssl rand -hex 32)
 cp .env.test.example .env.test         # для локальных тестов
 just db-dev-init      # создать gca_dev на локальном кластере + миграции
-just create-user admin@example.com admin   # первый пользователь
+just create-user admin@example.com admin   # первый пользователь (пароль — интерактивно)
 just dev-backend      # http://localhost:8259 (один worker!)
 just dev-frontend     # http://localhost:5173
 ```
 
-Локальная БД — портативный PostgreSQL 16 + pgvector на порту `5459`
-(кластер общий для проектов на машине, GCA живёт в базах `gca_dev` / `gca_test`).
+Полезное рядом: `just db-migrate` (миграции на dev-БД), `just db-web`
+(веб-просмотр таблиц кластера, нужен pgweb), `just --list` (все рецепты).
 
 ## Тесты и линт
 
@@ -70,31 +105,57 @@ just dev-frontend     # http://localhost:5173
 just test             # backend (pytest) + frontend (vitest)
 just lint             # ruff + eslint
 just typecheck-frontend
-just ci               # всё в форме CI (ruff + pytest + eslint + tsc + vitest) — перед пушем
+just ci               # всё в форме CI — обязательно перед пушем
 ```
+
+`just ci` — это `uv lock --check` и страж документации, затем две независимые
+цепочки **параллельно**: бэкенд (ruff → `alembic check` → pytest на нескольких
+воркерах) и фронт (eslint → tsc → vitest). Полный прогон — 7–9 минут.
+Если он упал сотнями ошибок `out of shared memory` на этапе setup — это
+известный класс отказа параллельного прогона ([`docs/TECH_DEBT.md`](docs/TECH_DEBT.md),
+запись 1), а не ваш код: перезапустите.
+
+**Правки только в `docs/` и в `AGENTS.md`** освобождены от кодовых цепочек, но
+не от стража документации — для них команда `just check-agents-index`
+(AGENTS.md §9.3).
 
 Integration-тесты требуют `TEST_DATABASE_URL` (см. `.env.test.example`); имя
 тестовой БД обязано оканчиваться на `_test` — conftest делает `DROP SCHEMA`
-перед прогоном.
+перед прогоном. Реальные сметы не коммитим: `samples/` в `.gitignore`, для
+тестов — обезличенный `fixtures/gp_estimate_fixture.xlsx`.
 
-## Статус (фазы AGENTS.md §9)
+## Документация
 
-- [x] Фаза 0 — **условно**: выполнена на одном доступном реальном образце вместо
-      требуемых 2–3, покрытие форматов ограничено. Развилка §6 закрыта: вес позиции —
-      `suggested_quantity` («Предлагаемое количество»), подтверждено на 1828 из 1828
-      расценённых строк; вывод внесён в AGENTS.md §4/§6. Замеры, ограничения fixture
-      и открытые риски — [docs/phase0-input-data.md](docs/phase0-input-data.md);
-      **дополнительные образцы нужны до пилотной приёмки парсера**.
-- [x] Фаза 1 — инициализация, перенос boilerplate, чистка (LLM/PDF/MinIO/организации/УПД-домен)
-- [x] Фаза 2 — схема БД (contracts, estimates, каталог, нормативы, VIEW отклонений).
-      Отступления от исходников — [docs/phase2-schema.md](docs/phase2-schema.md)
-- [x] Фаза 3 — парсер XLSX (`backend/parser/`). Отступления от исходника, замеры
-      и открытые риски — [docs/phase3-parser.md](docs/phase3-parser.md).
-      Проверено на одном реальном образце — см. оговорку фазы 0
-- [x] Фаза 4 — импорт + матчинг (хранилище файлов, две сессии, каскад,
-      идемпотентность/409/replace, эндпоинты загрузки и поллинга).
-      Решения фазы, отступления и открытые вопросы —
-      [docs/phase4-import.md](docs/phase4-import.md)
-- [ ] Фаза 5 — CRUD и Review. Брифинг на старт —
-      [docs/phase5-start.md](docs/phase5-start.md)
-- [ ] Фаза 6 — аналитика (паспорт, матрица, отчёты)
+Таксономия — [AGENTS.md §9.2](AGENTS.md); коротко, что где искать:
+
+| Где | Что |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | архитектурные инварианты и процесс разработки |
+| [`docs/reference/`](docs/reference/) | сегодняшнее состояние: [схема](docs/reference/schema.md), [экраны](docs/reference/screens.md), [денежные оси](docs/reference/money-axes.md) |
+| [`docs/process/`](docs/process/) | протокол работы над задачей ([реализация и ревью](docs/process/implementation.md)) |
+| [`docs/superpowers/specs/`](docs/superpowers/specs/), [`plans/`](docs/superpowers/plans/) | дизайн и план каждой фичи |
+| [`docs/devlog/`](docs/devlog/) | что сделано фичей, замеры, отступления от плана |
+| [`docs/insights/`](docs/insights/) | выстраданные правила работы (указатель — AGENTS.md §12) |
+| [`docs/pitfalls/`](docs/pitfalls/) | известные грабли стека и домена по областям (маршрутизатор — AGENTS.md §11) |
+| [`docs/TECH_DEBT.md`](docs/TECH_DEBT.md) | известные проблемы действующего кода |
+| [`docs/proposals/`](docs/proposals/) | проработанные и осознанно отложенные решения |
+| [`docs/AGENTS-revisions.md`](docs/AGENTS-revisions.md) | полный текст прошедших ревизий `AGENTS.md` |
+
+## Статус
+
+**Фазы 0–7 пройдены, фаза 7 — последняя.** Единица работы с 05.08.2026 —
+**фича**: брейншторм → спека → план → реализация → devlog, три гейта
+(AGENTS.md §9.1). Ревизия v6.19 (07.09.2026) сняла фазу как веху процесса
+совсем — новых фаз он не заводит; отчёты и рамки фаз (`docs/phaseN-*.md`)
+остаются как история и не поддерживаются.
+
+Сделанное после фаз живёт в [`docs/devlog/`](docs/devlog/) по фиче на файл —
+там же тендерный контур, паспорт проекта, сравнение договоров, приведение по
+инфляции, разнос «Нераспределённого» и правило цены.
+
+Открытая оговорка фазы 0 остаётся в силе: развилка «вес позиции —
+`suggested_quantity`» подтверждена на 1828 из 1828 расценённых строк, но
+покрытие форматов ограничено набором доступных образцов —
+[`docs/phase0-input-data.md`](docs/phase0-input-data.md). Регрессия парсера
+гоняется по локальному корпусу `samples/` скриптами
+`backend/scripts/snapshot_parse_samples.py` и `compare_parse_snapshots.py`.
