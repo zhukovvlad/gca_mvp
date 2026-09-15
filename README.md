@@ -134,6 +134,18 @@ CRUD/роутеров/тестов) импортирован из
 - Расхождение шапки файла с карточкой договора или участника — предупреждение;
   карточка из файла не обновляется.
 
+**Откуда это взято.** Сам парсер — перенос `app/excel_parser/` и
+`app/constants.py` из
+[`parser_tender_xlsx@0e178c097d80`](https://github.com/zhukovvlad/parser_tender_xlsx/tree/0e178c097d80),
+адаптированный под смету ГП: один участник, нет колонки «Расчётная стоимость»,
+заполнено «Предлагаемое количество». Схема БД, в которую ложится разобранное, —
+эквивалентный перенос миграций `cmd/internal/db/migration/` из
+[`tenders-go@121718bf45df`](https://github.com/zhukovvlad/tenders-go/tree/121718bf45df)
+(оттуда же взята как референс логика транзакции `ImportFullTender`, портированная
+на Python в `services/estimate_import.py`). Ревизии зафиксированы; что именно
+берётся, что не берётся и где проходит граница «эквивалентного переноса» —
+[`docs/upstream-sources.md`](docs/upstream-sources.md).
+
 Подробности и замеры — [`docs/phase3-parser.md`](docs/phase3-parser.md), спеки
 [колонок по заголовкам](docs/superpowers/specs/2026-08-25-parser-columns-by-header-design.md)
 и [тендерного контура](docs/superpowers/specs/2026-08-26-tenders-contour-design.md).
