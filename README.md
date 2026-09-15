@@ -107,6 +107,76 @@ CRUD/роутеров/тестов) импортирован из
 десятичные строки, ни одного `float`; литералы ошибок Excel (`#DIV/0!`, `#N/A`,
 `#REF!`) гасятся в `null`, даты — в ISO-строки.
 
+**Что получается на выходе.** Форма JSON — сокращённо, реальные значения из
+`fixtures/gp_estimate_fixture.xlsx`:
+
+```jsonc
+{
+  "tender_id": "001-ТУ",                       // шапка документа
+  "tender_title": "\"Тестовый ЖК_Генподряд\"",
+  "tender_object": "Тестовый ЖК Корпус 1",
+  "tender_address": "г. Тестоград, ул. Примерная, вл 1",
+  "executor": { "executor_name": null, "executor_phone": null, "executor_date": null },
+  "lots": {
+    "lot_1": {                                  // ключ на лот, по порядку в файле
+      "lot_title": "Лот №1 - Тестовый ЖК_Генподряд",
+      "proposals": {
+        "contractor_1": {                       // блок участника; в сводной таблице их N
+          "title": "…", "inn": "…", "address": "…", "accreditation": "…",
+          "contractor_coordinate": "J6",        // геометрия заголовка блока на листе
+          "contractor_width": 11, "contractor_height": 1,
+          "vat_rate": "20",                     // из шапки ценового блока; null, если не заявлена
+          "contractor_items": {
+            "positions": {
+              "1": {                            // ключ — порядковый номер обхода, не строка листа
+                "number": "1", "chapter_number": "1", "article_smr": null,
+                "job_title": "Лот №1 - Тестовый ЖК_Генподряд",
+                "is_chapter": true, "chapter_ref": null,
+                "unit_cost": { "materials": null, "works": null, "indirect_costs": null, "total": null },
+                "total_cost": { "materials": "6239190245.62", "works": "5350556581.73",
+                                "indirect_costs": "2422204300.18", "total": "14011951126.95" }
+              },
+              "3": {
+                "number": "3", "chapter_number": null, "article_smr": null,
+                "job_title": "Банковская гарантия на авансовые платежи",
+                "job_title_normalized": "банковский гарантия на авансовый платёж",
+                "comment_organizer": null, "unit": "компл",
+                "quantity": 1,                  // объём организатора
+                "suggested_quantity": 1,        // объём участника — вес позиции в матрице
+                "unit_cost":  { "materials": "0", "works": "118856000",
+                                "indirect_costs": "0", "total": "118856000" },
+                "total_cost": { "materials": "0", "works": "118856000",
+                                "indirect_costs": "0", "total": "118856000" },
+                "total_cost_for_organizer_quantity": "118856000",
+                "comment_contractor": null,
+                "is_chapter": false, "chapter_ref": "1.1"
+              }
+              // … ещё 2574 позиции
+            },
+            "summary": {
+              "total_cost_including_vat":  { "job_title": "ИТОГО, руб. с учетом НДС", "total_cost": { "total": "14011952626.95" } },
+              "vat_amount":                { "job_title": "В том числе НДС",          "total_cost": { "total": "2335325437.83" } },
+              "total_cost_excluding_vat":  { "job_title": "ИТОГО, руб. без учета НДС","total_cost": { "total": "11676627189.12" } }
+            },
+            "additional_works": { "job_title": "Дополнительные работы", "source_row": 2587,
+                                  "total_cost": { "total": "1500" } }
+          },
+          "additional_info": { "График производства работ, в соответствии с шаблоном": "Представлено" }
+        }
+      },
+      "baseline_proposal": { "title": "Расчетная стоимость отсутствует" }  // заглушка, если файл её не несёт
+    }
+  }
+}
+```
+
+Денежные значения — всегда строки (`Decimal` без потерь) либо `null`; объёмы
+приходят числом, как лежат в ячейке. Строки-разделы живут в том же `positions`,
+отличает их `is_chapter`. Ключи структуры менять нельзя: их читает импорт, а
+`parsed_data` уже загруженных заданий неизменяем — поэтому смена контракта
+поднимает `PARSER_VERSION` (`4.0.0`, история мажоров — в
+[estimate.py](backend/parser/estimate.py)).
+
 **Один файл → N смет.** Разобранный JSON целиком ложится в
 `import_jobs.parsed_data` вместе с `parser_version`, дальше путь определяет
 владелец задания (AGENTS.md §5):
