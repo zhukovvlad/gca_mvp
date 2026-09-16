@@ -102,6 +102,21 @@ GROUP BY 1, 2, 3, 4, 5
 
 CATALOG_SQL = "SELECT kind, count(*) FROM catalog_positions GROUP BY 1"
 
+#: Состав цены по всей базе: тождество «работы + материалы + косвенные = итог»
+#: спека цитирует как основание условного обещания.
+MIX_SQL = """
+SELECT count(*) AS rows_all,
+       count(*) FILTER (
+           WHERE total_cost_works IS NOT NULL
+             AND total_cost_materials IS NOT NULL
+             AND total_cost_indirect_costs IS NOT NULL) AS rows_with_mix,
+       count(*) FILTER (
+           WHERE abs(coalesce(total_cost_works, 0) + coalesce(total_cost_materials, 0)
+                     + coalesce(total_cost_indirect_costs, 0) - total_cost_total) <= 0.01
+           ) AS rows_mix_sums_to_total
+FROM position_items WHERE is_chapter = false
+"""
+
 SPLIT_MONEY_SQL = """
 WITH g AS (
   SELECT r.stage_no, pi.catalog_position_id AS work_id, ch.work_category_id AS art,
@@ -233,6 +248,26 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
                 number_pairs += 1
                 kept += sorted(by_stage[a]) == sorted(by_stage[b])
 
+    # Сколько работ хоть раз двинулись: основание «правило отсекает мало».
+    # Состав в счёт НЕ идёт — он подпись, а не критерий (см. mix_only ниже).
+    changed = mix_only = 0
+    for series in by_work.values():
+        moved = mix_moved = False
+        for prev, cur in zip(series, series[1:]):
+            if prev is None and cur is None:
+                continue
+            if prev is None or cur is None:
+                moved = True
+                continue
+            if (prev["amount"] != cur["amount"] or prev["qty"] != cur["qty"]
+                    or (prev["num"] / prev["den"] if prev["den"] else None)
+                    != (cur["num"] / cur["den"] if cur["den"] else None)):
+                moved = True
+            if (tuple(prev[f"unit_{n}"] / prev["den"] for n in TRIPLE) if prev["den"] else None)                     != (tuple(cur[f"unit_{n}"] / cur["den"] for n in TRIPLE) if cur["den"] else None):
+                mix_moved = True
+        changed += moved
+        mix_only += mix_moved and not moved
+
     aw = fetch(conn, AW_SQL.format(join=TRACE_JOIN), (tender, participant))
     aw_per_stage = defaultdict(Decimal)
     for row in aw:
@@ -248,6 +283,7 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
         "partial_cells": partial, "worst_price": worst,
         "moves": [((a, b), len(w), len(arts)) for (a, b), w in sorted(moves.items())],
         "numbers_kept": kept, "numbers_pairs": number_pairs,
+        "changed_works": changed, "mix_only_works": mix_only,
         "aw_rows": len(aw),
         "aw_by_lot_id": len({(row[3], row[2]) for row in aw}),
         "aw_by_lot_key": len({(row[1], row[2]) for row in aw}),
@@ -263,6 +299,8 @@ def collect() -> dict:
                       (tender, participant))[0]
         return {
             "catalog": fetch(conn, CATALOG_SQL),
+            "mix": dict(zip(("строк базы", "с полным составом", "состав сходится с итогом"),
+                            fetch(conn, MIX_SQL)[0])),
             "edge": dict(zip(EDGE_NAMES, fetch(conn, EDGE_SQL)[0])),
             "traces": [trace_measurements(conn, t, p) for t, p in TRACES],
             "split": {"works": split[0], "split_works": split[1],
@@ -281,6 +319,11 @@ def main() -> None:
     for kind, count in data["catalog"]:
         print(f"  {kind}: {count}")
     print("  фильтр kind='POSITION' оставил бы книгу пустой")
+    print()
+
+    print("=== СОСТАВ ЦЕНЫ ПО ВСЕЙ БАЗЕ ===")
+    for name, value in data["mix"].items():
+        print(f"  {name}: {value}")
     print()
 
     print("=== КРАЕВЫЕ ЗНАЧЕНИЯ, обе трассы ===")
@@ -307,6 +350,8 @@ def main() -> None:
                   f"({round(100 * count / total)}%)")
         print(f"  номер строки совпал у соседних этапов: "
               f"{t['numbers_kept']} из {t['numbers_pairs']}")
+        print(f"  работ, двинувшихся хоть раз: {t['changed_works']} из {t['works']}; "
+              f"только состав: {t['mix_only_works']}")
         print(f"  допработы: строк {t['aw_rows']}; ключей по lots.id "
               f"{t['aw_by_lot_id']}, по lot_key {t['aw_by_lot_key']}")
         print("    суммы по этапам: "

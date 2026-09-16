@@ -117,6 +117,9 @@ SELECT r.stage_no,
        sum(pi.total_cost_works) FILTER (WHERE {finite('pi.total_cost_works')}) AS c_works,
        sum(pi.total_cost_materials) FILTER (WHERE {finite('pi.total_cost_materials')}) AS c_materials,
        sum(pi.total_cost_indirect_costs) FILTER (WHERE {finite('pi.total_cost_indirect_costs')}) AS c_indirect,
+       count(*) FILTER (WHERE {finite('pi.total_cost_works')}
+                          AND {finite('pi.total_cost_materials')}
+                          AND {finite('pi.total_cost_indirect_costs')}) AS rows_with_mix,
        -- объём присутствия (для показа) и объём пригодных строк (для цены)
        sum(pi.suggested_quantity) FILTER (WHERE {finite('pi.suggested_quantity')}) AS qty,
        count(*) FILTER (WHERE {PRICE_OK} AND {WEIGHT_OK}) AS rows_priced,
@@ -144,7 +147,6 @@ LEFT JOIN work_categories wc ON wc.id = ch.work_category_id
 LEFT JOIN catalog_positions cp ON cp.id = pi.catalog_position_id
 LEFT JOIN units_of_measure u ON u.id = pi.unit_id
 WHERE pk.tender_id = %s AND c.title = %s
-  AND (cp.kind IS NULL OR cp.kind NOT IN ('HEADER', 'TRASH'))
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
 """
 
@@ -177,6 +179,15 @@ GROUP BY 1, 2, 3, 4, 5, 6
 NBSP = " "
 COMPONENTS = ("works", "materials", "indirect")
 UNALLOCATED = ("—", "Нераспределённое")
+
+#: Виды каталожной строки, которые НЕ являются работой. Их деньги свод считает
+#: наравне с работами, поэтому из книги они не выбрасываются, а собираются в
+#: названную диагностическую группу на статью.
+NON_WORK_KINDS = {
+    "HEADER": "Строки, размеченные как заголовок раздела",
+    "LOT_HEADER": "Строки, размеченные как заголовок лота",
+    "TRASH": "Строки, размеченные как мусор",
+}
 BRIEF_LIMIT = 2
 
 
@@ -210,13 +221,24 @@ def load():
 
 def blank(kind: str) -> dict:
     cell = {"kind": kind, "amount": Decimal(0), "rows_all": 0, "rows_with_amount": 0,
-            "rows_priced": 0, "numbers": []}
+            "rows_with_mix": 0, "rows_priced": 0, "numbers": []}
     if kind != "additional":
         cell.update({"qty": Decimal(0), "price_num": Decimal(0), "price_den": Decimal(0)})
         for name in COMPONENTS:
             cell[name] = Decimal(0)
             cell[f"unit_{name}_num"] = Decimal(0)
     return cell
+
+
+def mix_complete(cell) -> bool:
+    """Полон ли состав группы.
+
+    Три компонента объявлены nullable, и тождество «Δ работы + Δ материалы +
+    Δ косвенные = Δ суммы» держится ТОЛЬКО когда состав есть у всех строк,
+    вошедших в сумму. Иначе тройка гасится целиком: частичное разложение
+    выглядит полным и молча не сходится с Δ суммы.
+    """
+    return cell is not None and cell["rows_with_mix"] == cell["rows_with_amount"]
 
 
 def dec(value) -> Decimal:
@@ -261,21 +283,28 @@ def build(stages, positions, additional):
     for row in positions:
         (stage_no, article_id, code, article_title, work_id, work_title, catalog_kind,
          unit, rows_all, rows_with_amount, amount, c_works, c_materials, c_indirect,
-         qty, rows_priced, price_num, price_den,
+         rows_with_mix, qty, rows_priced, price_num, price_den,
          unit_works_num, unit_materials_num, unit_indirect_num, numbers) = row
         article = (code, article_title) if article_id is not None else UNALLOCATED
+        # Ни одна строка не выбрасывается: `v_category_totals` фильтра по виду
+        # каталожной записи НЕ имеет (миграция 0012, `WHERE pi.is_chapter =
+        # false`), поэтому книга обязана сохранить каждый рубль свода. Неработы
+        # и непривязанные строки уходят в НАЗВАННЫЕ диагностические группы, а не
+        # пропадают.
         if work_id is None:
-            # Непривязанная строка: явный синтетический ключ, одна диагностическая
-            # группа на статью. На стенде недостижимо — 0 из 55 265.
             key = ("unmatched", article, "unmatched")
             title = "Непривязанные строки сметы"
+        elif catalog_kind in NON_WORK_KINDS:
+            key = ("nonwork", article, catalog_kind)
+            title = NON_WORK_KINDS[catalog_kind]
         else:
             key = ("work", article, work_id)
             title = work_title
         index = idx_of[stage_no]
-        cell = cells[key][index] or blank("work")
+        cell = cells[key][index] or blank(key[0])
         cell["rows_all"] += rows_all
         cell["rows_with_amount"] += rows_with_amount
+        cell["rows_with_mix"] += rows_with_mix
         cell["rows_priced"] += rows_priced
         cell["amount"] += dec(amount)
         cell["qty"] += dec(qty)
@@ -406,7 +435,8 @@ def render_rows(keys, cells, meta, routes, stages):
     for key in keys:
         info = meta[key]
         series = cells[key]
-        row_class = {"additional": ' class="aw"', "unmatched": ' class="um"'}.get(info["kind"], "")
+        row_class = {"additional": ' class="aw"', "unmatched": ' class="um"',
+                     "nonwork": ' class="um"'}.get(info["kind"], "")
         code, title = info["article"]
         tds = [f'<td class="code">{escape(code)}</td>',
                f'<td class="art">{escape(title)}</td>',
@@ -431,12 +461,19 @@ def render_rows(keys, cells, meta, routes, stages):
             pct = (f'{(end / start - 1) * 100:+.1f}'.replace(".", ",") + f"{NBSP}%"
                    if first is not None and start > 0 else "—")
             tds.append(f'<td class="num">{pct}</td>')
-        for name in COMPONENTS:
-            if info["kind"] == "additional":
-                tds.append('<td class="num mix">—</td>')
-                continue
-            diff = (last[name] if last else Decimal(0)) - (first[name] if first else Decimal(0))
-            tds.append(f'<td class="num mix">{money(diff) if diff != 0 else "—"}</td>')
+        # Разложение обещает тождество с Δ суммы, поэтому печатается ТОЛЬКО когда
+        # состав полон на обоих концах. Отсутствующий конец полон по построению:
+        # его вклад — ноль по всем трём составляющим.
+        if info["kind"] == "additional":
+            tds += ['<td class="num mix">—</td>'] * len(COMPONENTS)
+        elif not all(mix_complete(end_cell) for end_cell in (first, last)
+                     if end_cell is not None):
+            tds.append('<td class="num state mix" colspan="3">состав неполон</td>')
+        else:
+            for name in COMPONENTS:
+                diff = ((last[name] if last else Decimal(0))
+                        - (first[name] if first else Decimal(0)))
+                tds.append(f'<td class="num mix">{money(diff) if diff != 0 else "—"}</td>')
 
         tds.append(f'<td class="full">{completeness(series, stages)}</td>')
         steps = routes[key]

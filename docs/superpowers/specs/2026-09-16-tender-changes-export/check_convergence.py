@@ -1,8 +1,17 @@
-"""Сходимость листа: сумма строк макета против суммы того же в БД, по этапам.
+"""Сходимость листа со СВОДОМ: сумма строк макета против суммы двух ветвей.
 
-Обещание дизайна — «подытоги статей сходятся с карточкой тендера». Здесь оно
-проверяется, а не объявляется: сумма всех строк листа на каждом этапе
-сравнивается с суммой двух ветвей свода прямо из БД.
+Обещание дизайна — «лист сохраняет каждый рубль свода». Здесь оно проверяется,
+а не объявляется.
+
+Сторона БД повторяет правило `v_category_totals` (миграция 0012) ДОСЛОВНО:
+`WHERE pi.is_chapter = false` плюс ветвь `estimate_additional_works`, с тем же
+правилом конечности — и БЕЗ фильтра по виду каталожной строки, которого у
+свода нет. Прежняя редакция добавляла сюда `JOIN catalog_positions` и отсев
+`HEADER`/`TRASH`, то есть сравнивала генератор с отфильтрованной копией его
+собственного правила, а заодно выбрасывала непривязанные строки, которые книга
+обязана включать. На стенде расхождения не возникало только потому, что каталог
+целиком в `TO_REVIEW`; после промоушена каталога (фича А1) проверка молча
+разошлась бы с картой тендера.
 """
 from __future__ import annotations
 
@@ -27,8 +36,7 @@ SELECT r.stage_no,
           FROM lots l
           JOIN proposals p ON p.lot_id = l.id
           JOIN position_items pi ON pi.proposal_id = p.id AND pi.is_chapter = false
-          JOIN catalog_positions cp ON cp.id = pi.catalog_position_id
-         WHERE l.estimate_id = e.id AND cp.kind <> 'HEADER' AND cp.kind <> 'TRASH') AS positions_sum,
+         WHERE l.estimate_id = e.id) AS positions_sum,
        (SELECT coalesce(sum(aw.total_amount) FILTER (
                   WHERE aw.total_amount IS NOT NULL
                     AND aw.total_amount <> 'NaN'::numeric
