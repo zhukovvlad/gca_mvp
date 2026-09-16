@@ -25,7 +25,8 @@ from __future__ import annotations
 import sys
 from decimal import Decimal
 
-from gen_mockup import MONEY_ONLY_KINDS, amount_of, build, mix_complete, render_rows, route
+from gen_mockup import (MONEY_ONLY_KINDS, amount_of, build, delta_identity_holds,
+                        mix_complete, money_round, render_rows, route)
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -94,6 +95,10 @@ def main() -> None:
         position(1, 34, "POSITION", amount="100.00", works="40.00",
                  materials="50.00", indirect="10.005"),
         position(2, 34, "POSITION"),
+        # НЕРАСПРЕДЕЛИМОСТЬ ОКРУГЛЕНИЯ: каждая Δ состава печатается 0,00,
+        # а Δ суммы — 0,01. Свёрнутая проверка это пропускала.
+        position(2, 35, "POSITION", amount="0.012", works="0.004",
+                 materials="0.004", indirect="0.004", qty="1"),
         # конечной суммы нет вовсе
         position(1, 32, "POSITION", amount=None),
         position(2, 32, "POSITION"),
@@ -132,27 +137,42 @@ def main() -> None:
     check("«конечной суммы нет» — состояние, а не ноль",
           amount_of(cells[absent_sum][0]) is None, failures)
 
+    # Пропущенный компонент ловится ПОСТРОЧНОЙ полнотой — это первое условие.
     missing_part = next(key for key in cells if key[2] == 30)
     check("состав с пропущенным компонентом признан неполным",
           not mix_complete(cells[missing_part][0]), failures)
-
-    not_summing = next(key for key in cells if key[2] == 31)
-    check("состав, не складывающийся в итог, признан неполным",
-          not mix_complete(cells[not_summing][0]), failures)
-
-    # Граница и накопление: допуска у равенства нет намеренно.
-    one_kopeck = next(key for key in cells if key[2] == 33)
-    check("расхождение ровно в копейку признано неполнотой",
-          not mix_complete(cells[one_kopeck][0]), failures)
-
-    accumulated = next(key for key in cells if key[2] == 34)
-    cell = cells[accumulated][0]
-    check("две строки по полкопейки накопили копейку и признаны неполнотой",
-          cell["rows_with_mix"] == cell["rows_with_amount"] and not mix_complete(cell),
+    check("он же не проходит тождество на печатаемых Δ",
+          not delta_identity_holds(cells[missing_part][0], cells[missing_part][-1]),
           failures)
+
+    # Остальные три ловятся ВТОРЫМ условием: построчно они полны, а печатаемые
+    # Δ не сходятся. Проверять их построчной полнотой нельзя — она зелёная.
+    for work_id, name in ((31, "состав, не складывающийся в итог"),
+                          (33, "расхождение ровно в копейку"),
+                          (34, "накопленные две полкопейки")):
+        key = next(k for k in cells if k[2] == work_id)
+        cell = cells[key][0]
+        check(f"{name}: построчно полон",
+              cell["rows_with_mix"] == cell["rows_with_amount"], failures)
+        check(f"{name}: тождество на печатаемых Δ не держится",
+              not delta_identity_holds(cells[key][0], cells[key][-1]), failures)
 
     exact = next(key for key in cells if key[2] == 11)
     check("сошедшийся состав признан полным", mix_complete(cells[exact][0]), failures)
+    check("тождество на печатаемых Δ держится у сошедшейся строки",
+          delta_identity_holds(cells[exact][0], cells[exact][-1]), failures)
+
+    # Округление не распределяется: три по 0,004 печатаются нулями, итог — копейкой.
+    indivisible = next(key for key in cells if key[2] == 35)
+    check("нераспределимость округления поймана",
+          not delta_identity_holds(cells[indivisible][0], cells[indivisible][-1]),
+          failures)
+
+    # Граница HALF_UP против HALF_EVEN: банковское округление дало бы 0,00.
+    check("0,005 округляется ВВЕРХ (ROUND_HALF_UP)",
+          money_round(Decimal("0.005")) == Decimal("0.01"), failures)
+    check("0,015 округляется вверх тем же правилом",
+          money_round(Decimal("0.015")) == Decimal("0.02"), failures)
 
     print()
     if failures:

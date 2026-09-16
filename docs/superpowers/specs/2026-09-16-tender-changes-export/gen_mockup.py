@@ -43,7 +43,7 @@ from __future__ import annotations
 import os
 import sys
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from html import escape
 
 import psycopg
@@ -82,13 +82,9 @@ def finite(expr: str) -> str:
             f"AND {expr} <> 'Infinity'::numeric AND {expr} <> '-Infinity'::numeric")
 
 
-#: Точность денег: два знака. Тождество состава проверяется на ИТОГЕ ГРУППЫ,
-#: приведённом к этой точности, и допуска не имеет.
-#:
-#: Построчный допуск «не больше копейки» был ошибкой: он копится. Двадцать шесть
-#: строк — двадцать шесть копеек, а между двумя концами Δ вдвое больше, и лист
-#: печатает деньги с двумя знаками, то есть расхождение НАБЛЮДАЕМО. Обещать
-#: тождество и допускать накопление нельзя одновременно.
+#: Точность денег на листе — два знака: `FMT_MONEY = '#,##0.00'`
+#: (`backend/services/excel.py`). Тождество состава обязано держаться именно на
+#: ПЕЧАТАЕМЫХ величинах, поэтому и проверка, и показ идут через `money_round`.
 MONEY_PRECISION = Decimal("0.01")
 
 TENDER_SQL = """
@@ -211,10 +207,31 @@ NON_WORK_KINDS = {
 BRIEF_LIMIT = 2
 
 
+def money_round(value, places: int = 2) -> Decimal:
+    """Денежное округление проекта: ROUND_HALF_UP, дословно как `finance.py`.
+
+    Правило скопировано, а не импортировано: обвязка спеки не тянет приложение
+    (§9.1). Расхождение с оригиналом ловит DoD — реализация обязана звать
+    `finance.money_round`, а не своё написание.
+
+    `Decimal.quantize` без `rounding` берёт правило контекста, то есть
+    ROUND_HALF_EVEN, — на `.005` это даёт «вниз», а деньги в РФ округляются
+    вверх. Прежняя редакция этого модуля звала `quantize` без аргумента.
+    """
+    exp = Decimal(f"0.{'0' * places}") if places > 0 else Decimal("1")
+    return Decimal(value).quantize(exp, rounding=ROUND_HALF_UP)
+
+
 def money(value) -> str:
+    """Деньги — с ДВУМЯ знаками, как их напечатает лист.
+
+    Округлять показ грубее проверки нельзя: округление не распределяется по
+    слагаемым, и тройка, сошедшаяся до копейки, на рублях снова разъедется.
+    """
     if value is None:
         return "—"
-    return f"{Decimal(value).quantize(Decimal('1')):,}".replace(",", NBSP)
+    whole, _, frac = f"{money_round(value):.2f}".partition(".")
+    return f"{int(whole):,}".replace(",", NBSP) + "," + frac
 
 
 def quantity(value) -> str:
@@ -274,11 +291,33 @@ def mix_complete(cell) -> bool:
     двумя знаками. Обещать тождество и допускать накопление одновременно
     нельзя; выбрано тождество.
     """
-    if cell is None or cell["rows_with_mix"] != cell["rows_with_amount"]:
+    return cell is not None and cell["rows_with_mix"] == cell["rows_with_amount"]
+
+
+def delta_identity_holds(first, last) -> bool:
+    """Держится ли тождество на ПЕЧАТАЕМЫХ Δ-колонках.
+
+    Лист печатает три Δ состава отдельными колонками и Δ суммы — четвёртой, все
+    с двумя знаками. Округление НЕ РАСПРЕДЕЛЯЕТСЯ по слагаемым, поэтому
+    проверять свёрнутую сумму бесполезно: `0,004 + 0,004 + 0,004` против
+    `0,012` сходится до округления и печатается как `0,00 + 0,00 + 0,00` против
+    `0,01`. Сравнивать надо ровно те числа, которые попадут в ячейки.
+
+    Отсутствующий конец полон по построению: его вклад — ноль по всем четырём
+    величинам.
+    """
+    if not all(mix_complete(end) for end in (first, last) if end is not None):
         return False
-    parts = sum((cell[name] for name in COMPONENTS), Decimal(0))
-    return (parts.quantize(MONEY_PRECISION)
-            == cell["amount"].quantize(MONEY_PRECISION))
+    # Конец, у которого суммы нет вовсе, тождество проверить не даёт: сравнивать
+    # тройку не с чем. Три колонки гасятся вместе с Δ суммы.
+    if any(amount_of(end) is None for end in (first, last) if end is not None):
+        return False
+    parts = sum((money_round((last[name] if last else Decimal(0))
+                             - (first[name] if first else Decimal(0)))
+                 for name in COMPONENTS), Decimal(0))
+    total = money_round((amount_of(last) if last else Decimal(0))
+                        - (amount_of(first) if first else Decimal(0)))
+    return parts == total
 
 
 def dec(value) -> Decimal:
@@ -509,13 +548,15 @@ def render_rows(keys, cells, meta, routes, stages):
         # его вклад — ноль по всем трём составляющим.
         if info["kind"] in MONEY_ONLY_KINDS:
             tds += ['<td class="num mix">—</td>'] * len(COMPONENTS)
-        elif not all(mix_complete(end_cell) for end_cell in (first, last)
-                     if end_cell is not None):
+        elif not delta_identity_holds(first, last):
             tds.append('<td class="num state mix" colspan="3">состав неполон</td>')
         else:
+            # Печатаются РОВНО те округлённые величины, на которых проверено
+            # тождество: показывать одно, а проверять другое — тот же дефект,
+            # только спрятанный на шаг дальше.
             for name in COMPONENTS:
-                diff = ((last[name] if last else Decimal(0))
-                        - (first[name] if first else Decimal(0)))
+                diff = money_round((last[name] if last else Decimal(0))
+                                   - (first[name] if first else Decimal(0)))
                 tds.append(f'<td class="num mix">{money(diff) if diff != 0 else "—"}</td>')
 
         tds.append(f'<td class="full">{completeness(series, stages)}</td>')
