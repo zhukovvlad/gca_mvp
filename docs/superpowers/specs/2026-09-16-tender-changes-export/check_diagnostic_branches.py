@@ -10,6 +10,13 @@
 только о коде, который эти данные разбирает. Числа в нём — обвязка, их можно
 заменить любыми другими той же природы.
 
+**Что этот прогон НЕ доказывает.** Построчный счётчик полноты состава считает
+SQL, и здесь он подаётся готовым — значит классификация строки «три конечные
+составляющие есть» этим прогоном не проверена, её обязан предъявить
+интеграционный тест (DoD 15). Проверено здесь другое, и оно не менее важно:
+разбор по ветвям, гашение величин у денежных ветвей, маршрут — и РАВЕНСТВО
+состава итогу, которое считается на агрегате группы уже в Python.
+
 Запуск:  python check_diagnostic_branches.py
 Код возврата 1, если хоть одна проверка не прошла.
 """
@@ -30,9 +37,9 @@ def position(stage, work_id, kind, *, amount="100", works="40", materials="50",
              indirect="10", qty="2", rows=1, article=ARTICLE):
     """Строка в форме `GROUPS_SQL` — двадцать три поля в том же порядке."""
     dec = lambda v: Decimal(v) if v is not None else None  # noqa: E731
+    # Построчное условие SQL — ТОЛЬКО полнота данных, без равенства: равенство
+    # утверждается про итог группы и считается на нём.
     full_mix = all(v is not None for v in (works, materials, indirect))
-    sums_up = full_mix and amount is not None and abs(
-        dec(works) + dec(materials) + dec(indirect) - dec(amount)) <= Decimal("0.01")
     return (
         stage, article[0], article[1], article[2], work_id,
         f"Работа {work_id}" if work_id else None, kind, "м2",
@@ -40,7 +47,7 @@ def position(stage, work_id, kind, *, amount="100", works="40", materials="50",
         rows if amount is not None else 0,      # rows_with_amount
         dec(amount),
         dec(works), dec(materials), dec(indirect),
-        rows if sums_up else 0,                 # rows_with_mix — с равенством
+        rows if (full_mix and amount is not None) else 0,   # rows_with_mix
         dec(qty),
         rows if amount is not None else 0,      # rows_priced
         dec(amount), dec(qty),                  # price_num, price_den
@@ -77,6 +84,16 @@ def main() -> None:
         position(1, 31, "POSITION", amount="100", works="10",
                  materials="10", indirect="10"),
         position(2, 31, "POSITION"),
+        # ГРАНИЦА: ровно копейка расхождения на одной строке
+        position(1, 33, "POSITION", amount="100.00", works="40.00",
+                 materials="50.00", indirect="10.01"),
+        position(2, 33, "POSITION"),
+        # НАКОПЛЕНИЕ: две строки группы по полкопейки в одну сторону дают копейку
+        position(1, 34, "POSITION", amount="100.00", works="40.00",
+                 materials="50.00", indirect="10.005"),
+        position(1, 34, "POSITION", amount="100.00", works="40.00",
+                 materials="50.00", indirect="10.005"),
+        position(2, 34, "POSITION"),
         # конечной суммы нет вовсе
         position(1, 32, "POSITION", amount=None),
         position(2, 32, "POSITION"),
@@ -122,6 +139,20 @@ def main() -> None:
     not_summing = next(key for key in cells if key[2] == 31)
     check("состав, не складывающийся в итог, признан неполным",
           not mix_complete(cells[not_summing][0]), failures)
+
+    # Граница и накопление: допуска у равенства нет намеренно.
+    one_kopeck = next(key for key in cells if key[2] == 33)
+    check("расхождение ровно в копейку признано неполнотой",
+          not mix_complete(cells[one_kopeck][0]), failures)
+
+    accumulated = next(key for key in cells if key[2] == 34)
+    cell = cells[accumulated][0]
+    check("две строки по полкопейки накопили копейку и признаны неполнотой",
+          cell["rows_with_mix"] == cell["rows_with_amount"] and not mix_complete(cell),
+          failures)
+
+    exact = next(key for key in cells if key[2] == 11)
+    check("сошедшийся состав признан полным", mix_complete(cells[exact][0]), failures)
 
     print()
     if failures:

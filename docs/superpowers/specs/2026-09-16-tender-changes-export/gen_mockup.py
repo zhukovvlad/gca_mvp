@@ -82,9 +82,14 @@ def finite(expr: str) -> str:
             f"AND {expr} <> 'Infinity'::numeric AND {expr} <> '-Infinity'::numeric")
 
 
-#: Допуск равенства состава итогу. Копейка: деньги в файле хранятся с двумя
-#: знаками, и различие меньше копейки — представление, а не расхождение.
-MIX_TOLERANCE = "0.01"
+#: Точность денег: два знака. Тождество состава проверяется на ИТОГЕ ГРУППЫ,
+#: приведённом к этой точности, и допуска не имеет.
+#:
+#: Построчный допуск «не больше копейки» был ошибкой: он копится. Двадцать шесть
+#: строк — двадцать шесть копеек, а между двумя концами Δ вдвое больше, и лист
+#: печатает деньги с двумя знаками, то есть расхождение НАБЛЮДАЕМО. Обещать
+#: тождество и допускать накопление нельзя одновременно.
+MONEY_PRECISION = Decimal("0.01")
 
 TENDER_SQL = """
 SELECT t.tender_number, t.title, o.title AS object_title, o.address
@@ -121,17 +126,14 @@ SELECT r.stage_no,
        sum(pi.total_cost_works) FILTER (WHERE {finite('pi.total_cost_works')}) AS c_works,
        sum(pi.total_cost_materials) FILTER (WHERE {finite('pi.total_cost_materials')}) AS c_materials,
        sum(pi.total_cost_indirect_costs) FILTER (WHERE {finite('pi.total_cost_indirect_costs')}) AS c_indirect,
-       -- Полный состав требует трёх вещей разом: конечного итога, конечных
-       -- составляющих И РАВЕНСТВА их суммы итогу. Импорт читает четыре величины
-       -- независимо, ограничения схемы нет — значит все четыре бывают конечны, а
-       -- разложение всё равно не сходится, и тройка Δ соврала бы тождеством.
+       -- ПОСТРОЧНОЕ условие — только полнота данных: у строки есть конечный итог
+       -- и все три конечные составляющие. Равенство здесь НЕ проверяется: оно
+       -- утверждается про итог группы и считается на нём (`mix_complete`),
+       -- иначе построчный допуск копился бы по строкам группы.
        count(*) FILTER (WHERE {finite('pi.total_cost_total')}
                           AND {finite('pi.total_cost_works')}
                           AND {finite('pi.total_cost_materials')}
-                          AND {finite('pi.total_cost_indirect_costs')}
-                          AND abs(pi.total_cost_works + pi.total_cost_materials
-                                  + pi.total_cost_indirect_costs
-                                  - pi.total_cost_total) <= {MIX_TOLERANCE}) AS rows_with_mix,
+                          AND {finite('pi.total_cost_indirect_costs')}) AS rows_with_mix,
        -- объём присутствия (для показа) и объём пригодных строк (для цены)
        sum(pi.suggested_quantity) FILTER (WHERE {finite('pi.suggested_quantity')}) AS qty,
        count(*) FILTER (WHERE {PRICE_OK} AND {WEIGHT_OK}) AS rows_priced,
@@ -256,14 +258,27 @@ def blank(kind: str) -> dict:
 
 
 def mix_complete(cell) -> bool:
-    """Полон ли состав группы.
+    """Полон ли состав группы — два независимых условия, оба обязательны.
 
-    Три компонента объявлены nullable, и тождество «Δ работы + Δ материалы +
-    Δ косвенные = Δ суммы» держится ТОЛЬКО когда состав есть у всех строк,
-    вошедших в сумму. Иначе тройка гасится целиком: частичное разложение
-    выглядит полным и молча не сходится с Δ суммы.
+    1. **Данные полны построчно:** у каждой строки, вошедшей в сумму, есть все
+       три конечные составляющие (счётчик из SQL). Компоненты объявлены
+       `nullable`, и пропуск одного делает разложение частичным.
+    2. **Итог группы сходится ТОЧНО** на точности показа: сумма трёх
+       агрегатов, приведённая к копейке, равна приведённому к копейке итогу.
+       Импорт читает четыре величины независимо, `CHECK`-а на их согласие в
+       схеме нет.
+
+    Допуска у второго условия нет намеренно. Построчный допуск «не больше
+    копейки» копится: двадцать шесть строк дают двадцать шесть копеек, а между
+    концами Δ вдвое больше — и это видно на листе, который печатает деньги с
+    двумя знаками. Обещать тождество и допускать накопление одновременно
+    нельзя; выбрано тождество.
     """
-    return cell is not None and cell["rows_with_mix"] == cell["rows_with_amount"]
+    if cell is None or cell["rows_with_mix"] != cell["rows_with_amount"]:
+        return False
+    parts = sum((cell[name] for name in COMPONENTS), Decimal(0))
+    return (parts.quantize(MONEY_PRECISION)
+            == cell["amount"].quantize(MONEY_PRECISION))
 
 
 def dec(value) -> Decimal:
