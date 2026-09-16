@@ -82,6 +82,10 @@ def finite(expr: str) -> str:
             f"AND {expr} <> 'Infinity'::numeric AND {expr} <> '-Infinity'::numeric")
 
 
+#: Допуск равенства состава итогу. Копейка: деньги в файле хранятся с двумя
+#: знаками, и различие меньше копейки — представление, а не расхождение.
+MIX_TOLERANCE = "0.01"
+
 TENDER_SQL = """
 SELECT t.tender_number, t.title, o.title AS object_title, o.address
 FROM tenders t
@@ -117,13 +121,17 @@ SELECT r.stage_no,
        sum(pi.total_cost_works) FILTER (WHERE {finite('pi.total_cost_works')}) AS c_works,
        sum(pi.total_cost_materials) FILTER (WHERE {finite('pi.total_cost_materials')}) AS c_materials,
        sum(pi.total_cost_indirect_costs) FILTER (WHERE {finite('pi.total_cost_indirect_costs')}) AS c_indirect,
-       -- Полный состав требует И конечного итога: иначе строка с нефинитным
-       -- итогом и полными компонентами компенсирует строку с конечным итогом и
-       -- пропущенным компонентом, и счётчики сходятся при неполном составе.
+       -- Полный состав требует трёх вещей разом: конечного итога, конечных
+       -- составляющих И РАВЕНСТВА их суммы итогу. Импорт читает четыре величины
+       -- независимо, ограничения схемы нет — значит все четыре бывают конечны, а
+       -- разложение всё равно не сходится, и тройка Δ соврала бы тождеством.
        count(*) FILTER (WHERE {finite('pi.total_cost_total')}
                           AND {finite('pi.total_cost_works')}
                           AND {finite('pi.total_cost_materials')}
-                          AND {finite('pi.total_cost_indirect_costs')}) AS rows_with_mix,
+                          AND {finite('pi.total_cost_indirect_costs')}
+                          AND abs(pi.total_cost_works + pi.total_cost_materials
+                                  + pi.total_cost_indirect_costs
+                                  - pi.total_cost_total) <= {MIX_TOLERANCE}) AS rows_with_mix,
        -- объём присутствия (для показа) и объём пригодных строк (для цены)
        sum(pi.suggested_quantity) FILTER (WHERE {finite('pi.suggested_quantity')}) AS qty,
        count(*) FILTER (WHERE {PRICE_OK} AND {WEIGHT_OK}) AS rows_priced,
@@ -230,13 +238,20 @@ def load():
 
 
 def blank(kind: str) -> dict:
+    """Ячейка. Технические поля есть у ВСЕХ ветвей, гасятся только при выводе.
+
+    Прежняя редакция не заводила `qty`, `price_*` и состав денежным ветвям — и
+    `build()` падал на них `KeyError: 'qty'`, потому что агрегировал безусловно.
+    На стенде это недостижимо (каталог целиком в `TO_REVIEW`), и поймал дефект
+    синтетический вход `check_diagnostic_branches.py`. Скрывать величину надо
+    там, где её показывают, а не там, где её складывают.
+    """
     cell = {"kind": kind, "amount": Decimal(0), "rows_all": 0, "rows_with_amount": 0,
-            "rows_with_mix": 0, "rows_priced": 0, "numbers": []}
-    if kind not in MONEY_ONLY_KINDS:
-        cell.update({"qty": Decimal(0), "price_num": Decimal(0), "price_den": Decimal(0)})
-        for name in COMPONENTS:
-            cell[name] = Decimal(0)
-            cell[f"unit_{name}_num"] = Decimal(0)
+            "rows_with_mix": 0, "rows_priced": 0, "numbers": [],
+            "qty": Decimal(0), "price_num": Decimal(0), "price_den": Decimal(0)}
+    for name in COMPONENTS:
+        cell[name] = Decimal(0)
+        cell[f"unit_{name}_num"] = Decimal(0)
     return cell
 
 
