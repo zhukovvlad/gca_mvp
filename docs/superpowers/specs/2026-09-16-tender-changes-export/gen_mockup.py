@@ -117,7 +117,11 @@ SELECT r.stage_no,
        sum(pi.total_cost_works) FILTER (WHERE {finite('pi.total_cost_works')}) AS c_works,
        sum(pi.total_cost_materials) FILTER (WHERE {finite('pi.total_cost_materials')}) AS c_materials,
        sum(pi.total_cost_indirect_costs) FILTER (WHERE {finite('pi.total_cost_indirect_costs')}) AS c_indirect,
-       count(*) FILTER (WHERE {finite('pi.total_cost_works')}
+       -- Полный состав требует И конечного итога: иначе строка с нефинитным
+       -- итогом и полными компонентами компенсирует строку с конечным итогом и
+       -- пропущенным компонентом, и счётчики сходятся при неполном составе.
+       count(*) FILTER (WHERE {finite('pi.total_cost_total')}
+                          AND {finite('pi.total_cost_works')}
                           AND {finite('pi.total_cost_materials')}
                           AND {finite('pi.total_cost_indirect_costs')}) AS rows_with_mix,
        -- объём присутствия (для показа) и объём пригодных строк (для цены)
@@ -183,6 +187,12 @@ UNALLOCATED = ("—", "Нераспределённое")
 #: Виды каталожной строки, которые НЕ являются работой. Их деньги свод считает
 #: наравне с работами, поэтому из книги они не выбрасываются, а собираются в
 #: названную диагностическую группу на статью.
+#: Ветви, у которых на листе есть ТОЛЬКО сумма. Объём, цена за единицу, состав и
+#: номера строк им неприменимы по смыслу: допработа несёт в файле одну сумму, а
+#: диагностическая группа собирает разнородные строки, у которых общей единицы
+#: нет. Прежняя редакция объявляла это в спеке, но печатала им всё как работам.
+MONEY_ONLY_KINDS = ("additional", "nonwork", "unmatched")
+
 NON_WORK_KINDS = {
     "HEADER": "Строки, размеченные как заголовок раздела",
     "LOT_HEADER": "Строки, размеченные как заголовок лота",
@@ -222,7 +232,7 @@ def load():
 def blank(kind: str) -> dict:
     cell = {"kind": kind, "amount": Decimal(0), "rows_all": 0, "rows_with_amount": 0,
             "rows_with_mix": 0, "rows_priced": 0, "numbers": []}
-    if kind != "additional":
+    if kind not in MONEY_ONLY_KINDS:
         cell.update({"qty": Decimal(0), "price_num": Decimal(0), "price_den": Decimal(0)})
         for name in COMPONENTS:
             cell[name] = Decimal(0)
@@ -369,7 +379,10 @@ def route(key, cells, meta, articles_by_stage, stages):
                     words.append("часть пришла из " + brief(removed))
         elif prev is not None and cur is None:
             words.append("исчезла из КП")
-        elif prev is None and cur is not None and any(c is not None for c in series[:i]):
+        elif prev is None and cur is not None:
+            # Любой переход «нет → есть» структурен. Прежняя редакция требовала,
+            # чтобы строка встречалась ЕЩЁ РАНЬШЕ, и оставляла шаг Э1→Э2 без
+            # причины у всякой строки, появившейся на втором этапе.
             words.append("появилась в КП")
 
         if prev is not None and cur is not None:
@@ -379,7 +392,7 @@ def route(key, cells, meta, articles_by_stage, stages):
                     words.append("сумма недоступна")
             elif prev_amount != cur_amount:
                 words.append("сумма")
-            if info["kind"] != "additional":
+            if info["kind"] not in MONEY_ONLY_KINDS:
                 if prev["qty"] != cur["qty"]:
                     words.append("объём")
                 if unit_price(prev) != unit_price(cur):
@@ -400,7 +413,7 @@ def completeness(series, stages) -> str:
         parts = []
         if cell["rows_with_amount"] < cell["rows_all"]:
             parts.append(f"сумма {cell['rows_with_amount']}/{cell['rows_all']}")
-        if cell["kind"] != "additional" and cell["rows_priced"] < cell["rows_all"]:
+        if cell["kind"] not in MONEY_ONLY_KINDS and cell["rows_priced"] < cell["rows_all"]:
             parts.append(f"цена {cell['rows_priced']}/{cell['rows_all']}")
         if parts:
             notes.append(f"Э{stages[index][0]}: " + ", ".join(parts))
@@ -411,7 +424,7 @@ def cell_html(cell) -> str:
     if cell is None:
         # Отсутствие строки на этапе — нулевой вклад в ЭТУ статью, а не пустота.
         return '<td class="dash">—</td>' * 4
-    if cell["kind"] == "additional":
+    if cell["kind"] in MONEY_ONLY_KINDS:
         value = amount_of(cell)
         amount_td = ('<td class="num state">суммы нет</td>' if value is None
                      else f'<td class="num strong">{money(value)}</td>')
@@ -464,7 +477,7 @@ def render_rows(keys, cells, meta, routes, stages):
         # Разложение обещает тождество с Δ суммы, поэтому печатается ТОЛЬКО когда
         # состав полон на обоих концах. Отсутствующий конец полон по построению:
         # его вклад — ноль по всем трём составляющим.
-        if info["kind"] == "additional":
+        if info["kind"] in MONEY_ONLY_KINDS:
             tds += ['<td class="num mix">—</td>'] * len(COMPONENTS)
         elif not all(mix_complete(end_cell) for end_cell in (first, last)
                      if end_cell is not None):

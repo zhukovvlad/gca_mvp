@@ -268,6 +268,14 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
         changed += moved
         mix_only += mix_moved and not moved
 
+    # Самая тяжёлая группа и доля пустых косвенных — спека цитирует обе.
+    max_rows = max((cell["rows_all"] for series in by_art.values()
+                    for cell in series if cell is not None), default=0)
+    indirect_zero = sum(1 for series in by_art.values() for cell in series
+                        if cell is not None and cell["indirect"] == 0)
+    cells_total = sum(1 for series in by_art.values() for cell in series
+                      if cell is not None)
+
     aw = fetch(conn, AW_SQL.format(join=TRACE_JOIN), (tender, participant))
     aw_per_stage = defaultdict(Decimal)
     for row in aw:
@@ -284,6 +292,17 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
         "moves": [((a, b), len(w), len(arts)) for (a, b), w in sorted(moves.items())],
         "numbers_kept": kept, "numbers_pairs": number_pairs,
         "changed_works": changed, "mix_only_works": mix_only,
+        "max_rows_in_group": max_rows,
+        "cells_total": cells_total, "indirect_zero_cells": indirect_zero,
+        "transitions": sum(len({(tuple(sorted(by_stage.get(a, set()))),
+                                 tuple(sorted(by_stage.get(b, set()))))
+                                for a, b in zip(stages, stages[1:])
+                                if by_stage.get(a) and by_stage.get(b)
+                                and by_stage[a] != by_stage[b]})
+                           for by_stage in [arts[w] for w in arts]) and len({
+            (tuple(sorted(arts[w].get(a, set()))), tuple(sorted(arts[w].get(b, set()))))
+            for w in arts for a, b in zip(stages, stages[1:])
+            if arts[w].get(a) and arts[w].get(b) and arts[w][a] != arts[w][b]}),
         "aw_rows": len(aw),
         "aw_by_lot_id": len({(row[3], row[2]) for row in aw}),
         "aw_by_lot_key": len({(row[1], row[2]) for row in aw}),
@@ -352,6 +371,11 @@ def main() -> None:
               f"{t['numbers_kept']} из {t['numbers_pairs']}")
         print(f"  работ, двинувшихся хоть раз: {t['changed_works']} из {t['works']}; "
               f"только состав: {t['mix_only_works']}")
+        print(f"  строк сметы в самой тяжёлой группе: {t['max_rows_in_group']}; "
+              f"различных переходов между статьями: {t['transitions']}")
+        print(f"  ячеек с нулевыми косвенными: {t['indirect_zero_cells']} "
+              f"из {t['cells_total']} "
+              f"({round(100 * t['indirect_zero_cells'] / t['cells_total'])}%)")
         print(f"  допработы: строк {t['aw_rows']}; ключей по lots.id "
               f"{t['aw_by_lot_id']}, по lot_key {t['aw_by_lot_key']}")
         print("    суммы по этапам: "
