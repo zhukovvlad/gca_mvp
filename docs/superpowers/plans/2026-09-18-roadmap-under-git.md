@@ -34,10 +34,13 @@
   PowerShell нет `&&` и `||`: цепочки пишутся `;` либо `if ($?)`. Рекурсивное
   удаление — `Remove-Item -LiteralPath … -Recurse -Force` одной оболочкой, а не
   `rm -rf`.
-- **Кириллица:** `read_text(encoding="utf-8")` при чтении, `PYTHONIOENCODING=utf-8`
-  при печати из дочернего python. Существующие файлы править точечно, а не
-  перезаписью целиком: перезапись переводит файл в LF и делает `git status`
-  грязным при пустом `git diff`.
+- **Кириллица:** `read_text(encoding="utf-8")` при чтении; при печати из
+  дочернего python — `$env:PYTHONIOENCODING = "utf-8"`, назначенная **в блоке
+  инициализации**, а не префиксом команды: POSIX-форма `VAR=value python …` в
+  PowerShell не запускается, поэтому все команды плана начинаются прямо с
+  `python`. Существующие файлы править точечно, а не перезаписью целиком:
+  перезапись переводит файл в LF и делает `git status` грязным при пустом
+  `git diff`.
 - **Ни один тест не пишет в рабочий репозиторий.** Входы собираются списками
   строк, отсутствие файла подменяется через `monkeypatch` модульной константы
   `ROOT` — образец `backend/tests/unit/test_check_agents_index.py`.
@@ -188,15 +191,15 @@ def main(argv: list[str]) -> int          # 0 — сошлось, 1 — расх
   «Команд проверки» (PowerShell основная, Bash альтернативой). Обе величины,
   `$SCRATCH` и `$env:SCRATCH`, назначаются: дочерний `python` читает вторую.
   Последняя строка блока обязана вернуть **0** — скретч вне дерева репозитория.
-- `PYTHONIOENCODING=utf-8 python -m pytest "$SCRATCH" --collect-only -q` —
+- `python -m pytest "$SCRATCH" --collect-only -q` —
   выбор **ДО** задачи: **ноль собранных тестов** при СУЩЕСТВУЮЩЕМ каталоге,
   печатается «no tests collected», код возврата **5**. Код здесь не ноль, и это
   ожидаемо: предмет замера — число собранных, а не код. На несуществующем пути
   та же команда даёт код **4** и замером не является вовсе.
-- `PYTHONIOENCODING=utf-8 python -m pytest "$SCRATCH/test_verify_roadmap_move.py" -q`
+- `python -m pytest "$SCRATCH/test_verify_roadmap_move.py" -q`
   — **ПОСЛЕ** задачи: **7 собранных и 7 пройденных**, код **0** (зелень и шесть
   негативных утверждений выше).
-- `PYTHONIOENCODING=utf-8 python "$SCRATCH/verify_roadmap_move.py"
+- `python "$SCRATCH/verify_roadmap_move.py"
   "C:/Users/zhukov_v/Projects/GCA_MVP/tasks/ROADMAP.md" docs/product-roadmap.md`
   — код **0**, без конвейера.
 - `just test-unit-k check_agents_index` — **9** и до, и после: репозиторных
@@ -452,7 +455,7 @@ def check_18(lines: list[str]) -> tuple[bool, list[str]]
 - `just ci` целиком — зелёный, дважды, без конвейера.
 - `just check-agents-index` — **18 из 18**, код 0.
 - `just test-unit-k check_agents_index` — **19**.
-- `PYTHONIOENCODING=utf-8 python "$SCRATCH/verify_roadmap_move.py"
+- `python "$SCRATCH/verify_roadmap_move.py"
   "C:/Users/zhukov_v/Projects/GCA_MVP/tasks/ROADMAP.md" docs/product-roadmap.md`
   после шага 3 обязан вернуть **2** с названной причиной «нет источника»:
   источник удалён, и молчаливый ноль здесь был бы ложью.
@@ -477,6 +480,7 @@ def check_18(lines: list[str]) -> tuple[bool, list[str]]
   # $env:SCRATCH читают дочерние процессы — это разные переменные.
   $SCRATCH = Join-Path $env:TEMP "gca-roadmap-under-git"
   $env:SCRATCH = $SCRATCH
+  $env:PYTHONIOENCODING = "utf-8"   # кириллица в выводе дочернего python
   $repoRoot = git rev-parse --show-toplevel
   New-Item -ItemType Directory -Force $SCRATCH
   python -c "import os,sys; r=os.path.realpath(sys.argv[1]); s=os.path.realpath(os.environ['SCRATCH']); raise SystemExit(os.path.commonpath([r,s]) == r)" $repoRoot
@@ -485,6 +489,7 @@ def check_18(lines: list[str]) -> tuple[bool, list[str]]
   ```bash
   # Bash, если задача исполняется из него
   export SCRATCH="${TEMP:-/tmp}/gca-roadmap-under-git"
+  export PYTHONIOENCODING=utf-8
   mkdir -p "$SCRATCH"
   ```
 
