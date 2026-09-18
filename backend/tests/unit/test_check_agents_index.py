@@ -1,4 +1,15 @@
-"""Тесты check_17 стража документации (§9.1 ↔ docs/process/implementation.md).
+"""Тесты check_17 и check_18 стража документации (маршруты §9.1 и §9.2).
+
+check_18 (§9.2 ↔ docs/product-roadmap.md) устроена тем же контрактом, что
+check_17, плюс ветвь КРАТНОСТИ шапки «Когда читать:» по образцу check_12.
+Четыре её ветви предъявляются восемью входами, и у кратности предъявлены ОБЕ
+границы — 0 и 2: односторонний предикат пропустил бы вторую шапку по
+построению (`docs/insights/enumerate-the-rules-own-properties.md`). Участие в
+прогоне `main()` проверяется по СТРОКЕ ОТЧЁТА этой проверки, а не по одному
+коду возврата: пока идёт фича-ревизия, `main()` законно возвращает 1 из-за
+проверки версий, и утверждение «сняли регистрацию — стало 1» было бы зелено
+всегда (`docs/insights/claimed-property-needs-its-own-input.md`).
+
 
 ТРИ ветви отчёта check_17 доказываются НЕСКОЛЬКИМИ входами — ветвь 2 («не
 ссылается») уронить можно КАЧЕСТВЕННО разными способами (см. докстринг самого
@@ -202,13 +213,17 @@ def test_check_17_participates_in_main_run(capsys):
 
     Вызывается настоящий `main()` на реальном дереве репозитория (только
     чтение, ROOT не подменяется). Без строки регистрации `check_17` в
-    `results` страж напечатал бы «16 из 16» с кодом возврата 0 — «пропавшая»
-    17-я проверка молча перестаёт исполняться (ревью, круг 1, I3).
+    `results` страж напечатал бы «17 из 17» с кодом возврата 0 — «пропавшая»
+    проверка молча перестаёт исполняться (ревью, круг 1, I3).
+
+    Знаменатель здесь ОБЯЗАН называться числом и обязан расти вместе с
+    набором: он и есть то, чем «пропавшая проверка» обнаруживается. Фича
+    «дорожная карта под гит» довела его с 17 до 18.
     """
     code = guard.main()
     output = capsys.readouterr().out
     assert code == 0
-    assert "Итог: 17 из 17." in output
+    assert "Итог: 18 из 18." in output
 
 
 def test_check_17_break_yields_exit_code_1_via_main(monkeypatch):
@@ -226,3 +241,270 @@ def test_check_17_break_yields_exit_code_1_via_main(monkeypatch):
     """
     monkeypatch.setattr(guard, "IMPL_REL", "docs/process/does-not-exist.md")
     assert guard.main() == 1
+
+
+# --- check_18: §9.2 ↔ docs/product-roadmap.md (маршрут, шапка) ----------------
+
+
+def _section_9_2_with_link(target: str = guard.ROADMAP_REL) -> list[str]:
+    """Минимальный §9.2 с markdown-ссылкой на `target` внутри своего тела.
+
+    Форма — как у настоящего AGENTS.md: `### 9.2.` зажат между `### 9.1.` и
+    `### 9.3.`, и `subsection_of` режет срез по ближайшему из них. Клетка
+    таблицы с голым бэктиком стоит здесь намеренно: она есть и в реальном
+    документе, и зелень обязана держаться НЕ на ней.
+    """
+    return [
+        "## 9. Процесс разработки",
+        "",
+        "### 9.1. Цикл фичи (единица работы)",
+        "",
+        "Текст §9.1, не относящийся к §9.2.",
+        "",
+        "### 9.2. Таксономия документов",
+        "",
+        f"| Дорожная карта | `{guard.ROADMAP_REL}` | направления развития |",
+        "",
+        f"Карта — [`{target}`]({target}) — живёт постоянно.",
+        "",
+        "### 9.3. Ветвление, проверки, PR",
+        "",
+        "Текст §9.3.",
+    ]
+
+
+def _report_line(output: str, needle: str) -> str:
+    """Строка отчёта `main()`, содержащая `needle`.
+
+    Строка ищется по ИМЕНИ РЕГИСТРАЦИИ проверки: имя в `results` — литерал и
+    от подменяемых констант не зависит. Поиск по подменённому пути дал бы
+    `StopIteration` — искал бы то, чего проверка не печатает.
+    """
+    return next(line for line in output.splitlines() if needle in line)
+
+
+ROADMAP_CHECK_NAME = "docs/product-roadmap.md (маршрут"
+
+
+def _roadmap_root(tmp_path, headers: int):
+    """Временный ROOT, где карта несёт ровно `headers` шапок «Когда читать:».
+
+    Пишется в `tmp_path`, а не в рабочий репозиторий: ветвь кратности иначе
+    потребовала бы портить отслеживаемый файл.
+    """
+    path = tmp_path / guard.ROADMAP_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = ["**Когда читать:** выбираешь следующую фичу." for _ in range(headers)]
+    path.write_text("\n".join(body + ["", "# Дорожная карта", ""]), encoding="utf-8")
+    return tmp_path
+
+
+def test_check_18_green_on_well_formed_section():
+    """Базовая зелень: подраздел есть, ссылка есть, файл есть, шапка одна.
+
+    ROOT не подменяется — `docs/product-roadmap.md` в реальном репозитории уже
+    существует (заведён задачей 1 этой же фичи) и несёт ровно одну шапку. Вход
+    доказывает, что предикат не тождественно красный.
+    """
+    ok, details = guard.check_18(_section_9_2_with_link())
+    assert ok is True
+    assert details == []
+
+
+def test_check_18_red_when_subsection_absent():
+    """Ветвь 1: подраздела «### 9.2.» нет вовсе — ранний возврат, ОДНА запись.
+
+    Вход несёт §9 БЕЗ «### 9.2.», причём ссылка на карту в нём ЕСТЬ — в §9.1.
+    Одного наличия ссылки где-то в §9 недостаточно, а судить о файле и шапке,
+    когда самого подраздела нет, не из чего.
+    """
+    lines = [
+        "## 9. Процесс разработки",
+        "",
+        "### 9.1. Цикл фичи (единица работы)",
+        "",
+        f"Ссылка есть, но не в §9.2: [`{guard.ROADMAP_REL}`]({guard.ROADMAP_REL}).",
+    ]
+    ok, details = guard.check_18(lines)
+    assert ok is False
+    assert len(details) == 1
+    assert "подраздела" in details[0] and "9.2" in details[0]
+
+
+def test_check_18_red_when_9_2_has_no_local_links_at_all():
+    """Ветвь 2, вход (а): в §9.2 нет ни одной локальной ссылки вовсе.
+
+    Самый бедный вход ветви: множество целей ПУСТО. Отчёт обязан это назвать
+    («ни одной ссылки»), а не молча сказать «не ссылается» — причина у пустого
+    и у чужого множества разная.
+    """
+    lines = [
+        "## 9. Процесс разработки",
+        "",
+        "### 9.2. Таксономия документов",
+        "",
+        "Таблица классов без единой ссылки.",
+        "",
+        "### 9.3. Ветвление, проверки, PR",
+    ]
+    ok, details = guard.check_18(lines)
+    assert ok is False
+    assert len(details) == 1
+    assert "не ссылается" in details[0]
+    assert "ни одной ссылки" in details[0]
+
+
+def test_check_18_red_when_roadmap_is_a_bare_backtick_path():
+    """Ветвь 2, вход (б): путь стоит ГОЛОЙ подстрокой в бэктиках, без ссылки.
+
+    Вход не гипотетический, а неизбежный: клетка «Где» строки «Дорожная карта»
+    несёт ровно этот путь голым бэктиком, как все тринадцать её соседок. Здесь
+    он единственный носитель пути в §9.2 — и проверка обязана НЕ засчитать его
+    за маршрут, иначе она стерегла бы форму таблицы вместо ссылки, и
+    абзац-маршрут можно было бы удалить незаметно.
+    """
+    lines = [
+        "## 9. Процесс разработки",
+        "",
+        "### 9.2. Таксономия документов",
+        "",
+        f"| Дорожная карта | `{guard.ROADMAP_REL}` | направления развития |",
+        "",
+        "### 9.3. Ветвление, проверки, PR",
+    ]
+    # Свидетельство, что дыра реальна: подстрока в срезе ЕСТЬ, а цели ссылки нет.
+    section = guard.subsection_of(lines, "### 9.2.")
+    assert guard.ROADMAP_REL in "\n".join(section)
+    assert guard.ROADMAP_REL not in guard.local_targets("\n".join(section))
+
+    ok, details = guard.check_18(lines)
+    assert ok is False
+    assert len(details) == 1
+    assert "не ссылается" in details[0]
+
+
+def test_check_18_red_when_9_2_links_to_another_existing_file():
+    """Ветвь 2, вход (в): §9.2 ссылается на ДРУГОЙ существующий локальный файл.
+
+    Отличает «ссылка есть» от «ссылка ведёт на карту»: ослабленный предикат
+    `if not targets:` держал бы вход зелёным, потому что множество целей
+    НЕПУСТО. Цель взята существующая и настоящая — так §9.2 ссылается на спеку
+    «история наружу» и без этой фичи, — чтобы вход отличался от (а) ровно
+    содержимым множества, а не его наличием.
+    """
+    other = "docs/superpowers/specs/2026-09-05-history-out-design.md"
+    assert (guard.ROOT / other).is_file()
+
+    ok, details = guard.check_18(_section_9_2_with_link(target=other))
+    assert ok is False
+    assert len(details) == 1
+    assert "не ссылается" in details[0]
+
+
+def test_check_18_ignores_link_that_lives_in_sibling_subsection():
+    """Ветвь 2, вход (г): ссылка на карту стоит в СОСЕДНЕМ подразделе.
+
+    Прямая проверка границы: `section_of(lines, "## 9.")` вернула бы весь §9
+    вместе с §9.1 и §9.3, и чужая ссылка удовлетворила бы условие «§9.2
+    ссылается на карту» ложно. `check_18` берёт `subsection_of`, и в его срез
+    ссылки соседей не попадают.
+    """
+    lines = [
+        "## 9. Процесс разработки",
+        "",
+        "### 9.1. Цикл фичи (единица работы)",
+        "",
+        f"Ссылка §9.1 — [`{guard.ROADMAP_REL}`]({guard.ROADMAP_REL}).",
+        "",
+        "### 9.2. Таксономия документов",
+        "",
+        "Здесь §9.2 на карту не ссылается вовсе.",
+        "",
+        "### 9.3. Ветвление, проверки, PR",
+        "",
+        f"И ссылка §9.3 — [`{guard.ROADMAP_REL}`]({guard.ROADMAP_REL}).",
+    ]
+    whole_section_9 = guard.section_of(lines, "## 9.")
+    assert guard.ROADMAP_REL in guard.local_targets("\n".join(whole_section_9))
+
+    ok, details = guard.check_18(lines)
+    assert ok is False
+    assert len(details) == 1
+    assert "не ссылается" in details[0]
+
+
+def test_check_18_red_when_roadmap_missing_on_disk(monkeypatch, tmp_path):
+    """Ветвь 3: подраздел и ссылка на месте, но файла карты нет на диске.
+
+    `ROOT` подменяется на пустой временный каталог, а не правится рабочий
+    репозиторий. Ранний возврат после этой ветви несущий: шапку считать не из
+    чего, и без возврата одна поломка красила бы заодно ветвь 4.
+    """
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    ok, details = guard.check_18(_section_9_2_with_link())
+    assert ok is False
+    assert len(details) == 1
+    assert guard.ROADMAP_REL in details[0]
+    assert "нет файла" in details[0]
+
+
+def test_check_18_red_when_roadmap_has_no_header(monkeypatch, tmp_path):
+    """Ветвь 4, граница 0: у карты нет шапки «Когда читать:» вовсе."""
+    monkeypatch.setattr(guard, "ROOT", _roadmap_root(tmp_path, headers=0))
+    ok, details = guard.check_18(_section_9_2_with_link())
+    assert ok is False
+    assert len(details) == 1
+    assert "шапки" in details[0]
+    assert "— 0" in details[0]
+
+
+def test_check_18_red_when_roadmap_has_two_headers(monkeypatch, tmp_path):
+    """Ветвь 4, граница 2: у карты ДВЕ шапки «Когда читать:».
+
+    Вторая граница кратности предъявляется отдельным входом намеренно:
+    односторонний предикат («шапка есть») пропустил бы этот вход зелёным, а
+    две шапки — ровно то состояние, которым кончилось бы слияние карты с
+    другим документом.
+    """
+    monkeypatch.setattr(guard, "ROOT", _roadmap_root(tmp_path, headers=2))
+    ok, details = guard.check_18(_section_9_2_with_link())
+    assert ok is False
+    assert len(details) == 1
+    assert "шапки" in details[0]
+    assert "— 2" in details[0]
+
+
+def test_check_18_participates_in_main_run(capsys):
+    """`check_18` реально исполняется внутри `main()`, а не только существует.
+
+    Утверждение предъявляется по СТРОКЕ ОТЧЁТА этой проверки, а не по коду
+    возврата `main()`: пока идёт фича-ревизия, код законно равен 1 из-за
+    проверки версий, и утверждение «сняли регистрацию — стало 1» было бы
+    зелено всегда, ничего не стерегая. Строка же исчезает вместе с
+    регистрацией — и знаменатель «из 18» падает до «из 17».
+    """
+    guard.main()
+    output = capsys.readouterr().out
+    assert "из 18." in output
+    assert _report_line(output, ROADMAP_CHECK_NAME).strip().startswith("18. [OK ]")
+
+
+def test_check_18_break_shows_fail_in_main_run(monkeypatch, capsys):
+    """Поломка check_18 доходит до ОТЧЁТА и до кода возврата `main()`.
+
+    `ROADMAP_REL` подменяется на несуществующий путь — константа, которую
+    видит только `check_18`, поэтому остальные семнадцать проверок
+    отрабатывают на настоящем дереве без изменений. Красной обязана стать
+    именно строка восемнадцатой проверки: код возврата 1 сам по себе сейчас
+    ничего не доказывает, потому что страж законно красен проверкой версий.
+
+    Строка отчёта ищется по ИМЕНИ РЕГИСТРАЦИИ, а не по подменённому пути —
+    см. `_report_line`.
+    """
+    monkeypatch.setattr(guard, "ROADMAP_REL", "docs/does-not-exist-roadmap.md")
+    code = guard.main()
+    output = capsys.readouterr().out
+
+    assert _report_line(output, ROADMAP_CHECK_NAME).strip().startswith("18. [FAIL]")
+    assert "does-not-exist-roadmap.md" in output
+    assert code == 1
