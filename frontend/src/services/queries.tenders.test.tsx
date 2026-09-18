@@ -18,13 +18,14 @@ import {
   useStagePositions,
   useStageSummary,
   useTender,
+  useTenderChangesExport,
   useUpdateRound,
   useUpdateTender,
   useUploadRound,
 } from "./queries";
 import { qk } from "./queryKeys";
 import { handlerState, resetHandlerState } from "@/test/handlers";
-import { stagePositionsResponse } from "@/test/fixtures";
+import { sampleTenderCard, stagePositionsResponse } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
 import type { ParticipantDeletionPreview } from "@/types/domain";
@@ -52,6 +53,63 @@ describe("useTender", () => {
 
     expect(result.current.data?.id).toBe(300);
     expect(result.current.data?.cells).toHaveLength(4);
+  });
+});
+
+/**
+ * `useTenderChangesExport` — книга «Изменения КП» (спека
+ * 2026-09-16-tender-changes-export-design.md §2.1, §2.11, план фичи, Task 5).
+ * Вход мутации — ОДИН `tenderId`, без предложений: книга собирается по всем
+ * сравнимым участникам, выбор на решётке карточки сюда не входит (A5.9
+ * предъявляет страница, здесь — контракт самого хука и транспорта).
+ */
+describe("useTenderChangesExport", () => {
+  it("запрашивает книгу по id тендера и отдаёт Blob", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useTenderChangesExport(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let blob: Blob | undefined;
+    await act(async () => {
+      blob = await result.current.mutateAsync(sampleTenderCard.id);
+    });
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(handlerState.lastChangesExportTenderId).toBe(sampleTenderCard.id);
+  });
+
+  /**
+   * `responseType: "blob"` меняет форму ТЕЛА ОТКАЗА тоже — axios отдаёт JSON
+   * сервера блобом, а не разобранным объектом (то самое обстоятельство, ради
+   * которого заведён `reportErrorMessage`/`toastReportError`: `apiErrorCode`
+   * его не разбирает и не обязан — этот путь БЛОБА проверяется здесь
+   * отдельно, транспортно, а что ЧЕЛОВЕК видит текст сервера, а не «Request
+   * failed with status code 422», предъявляет `TenderCardPage.test.tsx`
+   * (A5.10) тем же приёмом, что и у трёх выгрузок §7.6.
+   */
+  it("422 no_comparable_participants доезжает статусом 422 и телом-блобом с тем же detail, что и у соседних выгрузок", async () => {
+    handlerState.changesExportOutcome = "no_comparable";
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useTenderChangesExport(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.mutateAsync(sampleTenderCard.id);
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(apiErrorStatus(caught)).toBe(422);
+    const data = (caught as { response?: { data?: unknown } })?.response?.data;
+    expect(data).toBeInstanceOf(Blob);
+    const parsed = JSON.parse(await (data as Blob).text()) as { detail: { code: string; message: string } };
+    expect(parsed.detail.code).toBe("no_comparable_participants");
+    expect(parsed.detail.message).toMatch(/В тендере нет участников с двумя и более сметами/);
   });
 });
 

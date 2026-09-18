@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Download, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { RoundDeleteDialog } from "@/components/tenders/RoundDeleteDialog";
 import { RoundUploadPanel } from "@/components/tenders/RoundUploadPanel";
@@ -39,7 +39,13 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
-import { useCreateRound, useDeleteTender, useRoundImportJobs, useTender } from "@/services/queries";
+import {
+  useCreateRound,
+  useDeleteTender,
+  useRoundImportJobs,
+  useTender,
+  useTenderChangesExport,
+} from "@/services/queries";
 import type { RoundImportJob, TenderCard, TenderRoundRow } from "@/types/domain";
 
 /**
@@ -212,6 +218,12 @@ export default function TenderCardPage() {
   [...selectedOfferIds].sort((a, b) => a - b).forEach((offerId) => summaryParams.append("offers", String(offerId)));
   const summaryHref = `/tenders/${card?.id}/summary?${summaryParams.toString()}`;
 
+  // Книга «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md
+  // §2.1, §2.11): собирается по ВСЕМ участникам тендера с двумя и более
+  // сметами, поэтому кнопка НЕ зависит от `selectedOfferIds` — в отличие от
+  // «Свода по этапам» выше, ей нечего выбирать на решётке.
+  const changesExport = useTenderChangesExport();
+
   if (cardQ.isPending) {
     return (
       <div className="container-page py-8">
@@ -277,15 +289,25 @@ export default function TenderCardPage() {
             ? `выбрано ${selectedOfferIds.size} ${estimateWordFor(selectedOfferIds.size)} · ${selectedParticipant.title}`
             : "Выберите этапы одного участника, чтобы собрать свод"}
         </p>
-        {selectedOfferIds.size >= 2 ? (
-          <Button variant="outline" render={<Link to={summaryHref} />}>
-            Свод по этапам ({selectedOfferIds.size})
+        <div className="flex flex-wrap items-center gap-2">
+          {selectedOfferIds.size >= 2 ? (
+            <Button variant="outline" render={<Link to={summaryHref} />}>
+              Свод по этапам ({selectedOfferIds.size})
+            </Button>
+          ) : (
+            <Button variant="outline" disabled title="выберите хотя бы два этапа">
+              Свод по этапам ({selectedOfferIds.size})
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            disabled={changesExport.isPending}
+            onClick={() => changesExport.mutate(card.id)}
+          >
+            <Download className="size-4" />
+            {changesExport.isPending ? "Готовлю файл…" : "Изменения КП"}
           </Button>
-        ) : (
-          <Button variant="outline" disabled title="выберите хотя бы два этапа">
-            Свод по этапам ({selectedOfferIds.size})
-          </Button>
-        )}
+        </div>
       </div>
 
       <div className="mt-3">

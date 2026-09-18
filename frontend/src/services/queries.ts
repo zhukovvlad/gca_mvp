@@ -1051,6 +1051,31 @@ export function useTender(id: number | undefined) {
   return useQuery({ queryKey: qk.tenders.card(id ?? 0), queryFn: () => tendersApi.get(id as number), enabled: id !== undefined });
 }
 
+/**
+ * Выгрузка «Изменения КП» — книга на всех участников тендера с двумя и более
+ * сметами (спека 2026-09-16-tender-changes-export-design.md §2.1, §2.11).
+ *
+ * Живёт рядом с тремя выгрузками §7.6 (`useContractSummaryReport`,
+ * `useComparisonReport`, `useBankComparisonReport`) и по той же схеме: `blob`
+ * → `saveBlob`, отказ разбирает `toastReportError` — ТЕМ ЖЕ путём, каким она
+ * достаёт сообщение сервера из блоб-ответа у трёх соседей. Без этого разбора
+ * `422 no_comparable_participants` показался бы тостом «Request failed with
+ * status code 422» вместо текста сервера (план фичи, Task 5).
+ *
+ * Книга собирается по ВСЕМ участникам и ВСЕМ их этапам — выбор предложений на
+ * решётке карточки сюда не входит, поэтому вход мутации один: `tenderId`.
+ */
+export function useTenderChangesExport() {
+  return useMutation({
+    mutationFn: async (tenderId: number) => {
+      const blob = await tendersApi.changesExport(tenderId);
+      saveBlob(blob, "Изменения КП.xlsx");
+      return blob;
+    },
+    onError: toastReportError,
+  });
+}
+
 export function useRoundImportJobs(tenderId: number | undefined, roundId: number | undefined) {
   return useQuery({
     queryKey: qk.tenders.roundJobs(tenderId ?? 0, roundId ?? 0),

@@ -426,6 +426,50 @@ describe("Выбор предложений для свода (спека сво
 });
 
 /**
+ * Кнопка «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md
+ * §2.1, §2.11, план фичи, Task 5) — книга собирается по ВСЕМ участникам
+ * тендера с двумя и более сметами, поэтому кнопка стоит рядом со «Сводом по
+ * этапам», но, в отличие от него, НЕ зависит от выбора плиток на решётке.
+ */
+describe("Кнопка «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md §2.1, §2.11)", () => {
+  it("активна без единого выбранного этапа и запрашивает книгу по id тендера карточки", async () => {
+    const user = userEvent.setup();
+    renderCard();
+    await screen.findByText("ООО Альфа");
+
+    // Ничего не выбрано на решётке — «Свод по этапам» неактивен, а «Изменения
+    // КП» ему не пара в этом смысле: ей нечего выбирать (спека §2.1 — книга
+    // на всех участников и все их этапы).
+    expect(screen.getByRole("button", { name: /Свод по этапам/ })).toBeDisabled();
+    const button = screen.getByRole("button", { name: /Изменения КП/ });
+    expect(button).toBeEnabled();
+
+    await user.click(button);
+
+    await waitFor(() =>
+      expect(handlerState.lastChangesExportTenderId).toBe(sampleTenderCard.id)
+    );
+  });
+
+  it("422 no_comparable_participants доходит до человека ТЕКСТОМ СЕРВЕРА, а не «Request failed with status code 422»", async () => {
+    handlerState.changesExportOutcome = "no_comparable";
+    const user = userEvent.setup();
+    renderCard();
+    await screen.findByText("ООО Альфа");
+
+    await user.click(screen.getByRole("button", { name: /Изменения КП/ }));
+
+    // Блоб-ответ разбирается тем же путём, что у трёх выгрузок §7.6
+    // (`toastReportError`/`reportErrorMessage`) — без него человек увидел бы
+    // англоязычную заглушку axios вместо причины отказа.
+    expect(
+      await screen.findByText(/В тендере нет участников с двумя и более сметами/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Request failed with status code/)).not.toBeInTheDocument();
+  });
+});
+
+/**
  * Триггер разноса в заголовке этапа решётки и URL-контракт `?unallocated=`
  * (спека этапного разноса §2.7, план — задача 12): три состояния триггера
  * по счётчику `unallocated_pending_sections` раунда, открытие пишет параметр
