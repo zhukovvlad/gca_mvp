@@ -888,6 +888,29 @@ class TestSheetNames:
         assert names[3] == long_name[:31]
         assert names[4].endswith(" (2)") and len(names[4]) <= 31
 
+    def test_h2_review_dedupes_by_casefold_not_literal_string(self):
+        """Внешнее ревью (H2): Excel и openpyxl считают имена листов
+        регистронезависимо. Три имени по 31 знаку, различающихся только
+        регистром, обязаны разводиться суффиксами так же, как буквально
+        совпадающие, а не считаться тремя разными именами."""
+        upper = "X" * 31
+        lower = "x" * 31
+        mixed = "X" * 30 + "x"
+        names = ce.sheet_names([upper, lower, mixed])
+        assert len({n.casefold() for n in names}) == 3
+        assert all(len(n) <= 31 for n in names)
+        assert names[0] == upper
+        # Д5 внешнего ревью: casefold() — инструмент СРАВНЕНИЯ, а не построения
+        # имени. Мутант, который строит суффиксное имя из `base.casefold()`
+        # (а не из `base`), отдал бы ['XXX…X', 'xxx…x (2)', 'xxx…x (3)'] —
+        # третье имя потеряло бы РЕГИСТР — и прошёл бы прежние проверки:
+        # `.endswith(" (2)")`/`.endswith(" (3)")` не смотрят на префикс, а
+        # `lower` совпадает с собственным casefold и ничего не показал бы.
+        # Точное совпадение строки ловит потерю регистра именно там, где
+        # входное имя было в верхнем регистре («mixed»).
+        assert names[1] == lower[: 31 - len(" (2)")] + " (2)"
+        assert names[2] == mixed[: 31 - len(" (3)")] + " (3)"
+
 
 # --------------------------------------------------------------------------
 # A2.37, A2.38 — порядок строк листа, article_sort_key.

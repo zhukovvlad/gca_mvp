@@ -4,9 +4,47 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
+import { vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CURRENT_USER_QUERY_KEY } from "@/hooks/useAuth";
 import type { User } from "@/types/auth";
+
+/**
+ * Перехват `saveBlob` (`services/queries.ts`, три выгрузки §7.6 и «Изменения
+ * КП»). jsdom не даёт `URL.createObjectURL`, и `saveBlob` тихо ничего не
+ * делает без него — этим пользуются тесты, которым нужен только факт запроса.
+ * Здесь наоборот: нужно ДОКАЗАТЬ, какое имя дошло бы до диска (внешнее ревью
+ * H3: имя обязано нести номер тендера, а не быть зашитой строкой), поэтому
+ * оба API подставляются, а клик по временной ссылке перехватывается ДО того,
+ * как jsdom пожалуется на переход по `blob:`-адресу.
+ */
+export function spyOnDownload() {
+  const filenames: string[] = [];
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  const originalCreateElement = document.createElement.bind(document);
+  Object.defineProperty(URL, "createObjectURL", { value: () => "blob:test", configurable: true });
+  Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, configurable: true });
+  const createElementSpy = vi
+    .spyOn(document, "createElement")
+    .mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+      const element = originalCreateElement(tagName, options);
+      if (tagName === "a") {
+        (element as HTMLAnchorElement).click = () => {
+          filenames.push((element as HTMLAnchorElement).download);
+        };
+      }
+      return element;
+    });
+  return {
+    lastFilename: () => filenames.at(-1),
+    restore: () => {
+      createElementSpy.mockRestore();
+      Object.defineProperty(URL, "createObjectURL", { value: originalCreateObjectURL, configurable: true });
+      Object.defineProperty(URL, "revokeObjectURL", { value: originalRevokeObjectURL, configurable: true });
+    },
+  };
+}
 
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({

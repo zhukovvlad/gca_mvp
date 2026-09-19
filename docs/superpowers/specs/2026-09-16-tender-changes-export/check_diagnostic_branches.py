@@ -108,6 +108,12 @@ def main() -> None:
         # конечной суммы нет вовсе
         position(1, 32, "POSITION", amount=None),
         position(2, 32, "POSITION"),
+        # Н1 внешнего ревью: цены нет на первом этапе (нулевой вес — знаменатель
+        # матрицы гасит цену), появилась на втором. Это переход ДОСТУПНОСТИ, а
+        # не изменение цены: печатать «цена»/«состав» здесь нельзя (спека §2.7:
+        # числовые основания требуют ОБЕИХ ячеек).
+        position(1, 40, "POSITION", qty="0"),
+        position(2, 40, "POSITION"),
     ]
     extras = [additional(1, "3.2.2"), additional(2, "3.2.2", amount="20")]
 
@@ -173,6 +179,18 @@ def main() -> None:
     check("нераспределимость округления поймана",
           not delta_identity_holds(cells[indivisible][0], cells[indivisible][-1]),
           failures)
+
+    # Н1 внешнего ревью: асимметрия доступности цены/состава не равна их
+    # изменению. «Объём» — числовое основание, которому асимметрия ЦЕНЫ не
+    # мешает: он печатается как обычно.
+    price_gap = next(key for key in cells if key[2] == 40)
+    price_gap_steps = routes[price_gap]
+    check("переход «цены нет → цена появилась» не печатает «цена»",
+          not any("цена" in step for step in price_gap_steps), failures)
+    check("тот же переход не печатает «состав»",
+          not any("состав" in step for step in price_gap_steps), failures)
+    check("несвязанное числовое основание («объём») печатается как обычно",
+          any("объём" in step for step in price_gap_steps), failures)
 
     # Граница HALF_UP против HALF_EVEN: банковское округление дало бы 0,00.
     check("0,005 округляется ВВЕРХ (ROUND_HALF_UP)",

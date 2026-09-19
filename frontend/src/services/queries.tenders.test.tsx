@@ -27,7 +27,7 @@ import { qk } from "./queryKeys";
 import { handlerState, resetHandlerState } from "@/test/handlers";
 import { sampleTenderCard, stagePositionsResponse } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { createTestQueryClient } from "@/test/utils";
+import { createTestQueryClient, spyOnDownload } from "@/test/utils";
 import type { ParticipantDeletionPreview } from "@/types/domain";
 
 function wrapperFor(queryClient: ReturnType<typeof createTestQueryClient>) {
@@ -72,11 +72,39 @@ describe("useTenderChangesExport", () => {
 
     let blob: Blob | undefined;
     await act(async () => {
-      blob = await result.current.mutateAsync(sampleTenderCard.id);
+      blob = await result.current.mutateAsync({
+        tenderId: sampleTenderCard.id,
+        tenderNumber: sampleTenderCard.tender_number,
+      });
     });
 
     expect(blob).toBeInstanceOf(Blob);
     expect(handlerState.lastChangesExportTenderId).toBe(sampleTenderCard.id);
+  });
+
+  /**
+   * Внешнее ревью H3: имя файла зашивало «Изменения КП.xlsx» — книги разных
+   * тендеров были неразличимы на диске, хотя сервер уже отдаёт номер в
+   * `Content-Disposition` (`safe_filename_part`). Номер с `/` (нумерация
+   * «12/2025» законна) не должен ломать сохранение — фронт обязан чистить
+   * его тем же способом, что и бэкенд.
+   */
+  it("имя файла несёт номер тендера, а «/» в номере не ломает сохранение", async () => {
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(() => useTenderChangesExport(), {
+      wrapper: wrapperFor(queryClient),
+    });
+    const download = spyOnDownload();
+    try {
+      await act(async () => {
+        await result.current.mutateAsync({ tenderId: sampleTenderCard.id, tenderNumber: "12/2025" });
+      });
+
+      expect(download.lastFilename()).toBe("Изменения КП 12-2025.xlsx");
+      expect(download.lastFilename()).not.toContain("/");
+    } finally {
+      download.restore();
+    }
   });
 
   /**
@@ -98,7 +126,10 @@ describe("useTenderChangesExport", () => {
     let caught: unknown;
     await act(async () => {
       try {
-        await result.current.mutateAsync(sampleTenderCard.id);
+        await result.current.mutateAsync({
+          tenderId: sampleTenderCard.id,
+          tenderNumber: sampleTenderCard.tender_number,
+        });
       } catch (err) {
         caught = err;
       }

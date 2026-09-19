@@ -908,6 +908,26 @@ function saveBlob(blob: Blob, filename: string): void {
 }
 
 /**
+ * Часть имени файла, свободная от разделителей пути — фронтовый эквивалент
+ * `backend/responses.py::safe_filename_part` (внешнее ревью H3). Номер
+ * тендера/договора вида «12/2025» — законная нумерация, а не опечатка, и `/`
+ * в имени файла браузер и Windows трактуют как разделитель пути: часть имени
+ * после него ушла бы не в файл, а в путь. `fallback` — обязательный параметр
+ * без значения по умолчанию, по той же причине, что и у именованного
+ * `fallback` бэкендового хелпера (в TS он позиционный — keyword-only здесь
+ * нет): слово по умолчанию было бы скрытой договорённостью, а не контрактом
+ * вызывающего.
+ */
+function safeFilenamePart(value: string, fallback: string): string {
+  let cleaned = value;
+  for (const bad of ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]) {
+    cleaned = cleaned.split(bad).join("-");
+  }
+  cleaned = cleaned.trim();
+  return cleaned || fallback;
+}
+
+/**
  * Причина отказа выгрузки — из блоба.
  *
  * `responseType: "blob"` меняет форму тела: при отказе `axios` отдаёт JSON сервера
@@ -1063,13 +1083,21 @@ export function useTender(id: number | undefined) {
  * status code 422» вместо текста сервера (план фичи, Task 5).
  *
  * Книга собирается по ВСЕМ участникам и ВСЕМ их этапам — выбор предложений на
- * решётке карточки сюда не входит, поэтому вход мутации один: `tenderId`.
+ * решётке карточки сюда не входит, поэтому вход мутации несёт `tenderId` и
+ * `tenderNumber` — номер идёт от вызывающего, тем же приёмом, каким
+ * `useContractSummaryReport` принимает готовое `filename`.
+ *
+ * **Имя файла несёт номер тендера** (внешнее ревью H3): зашитое имя
+ * «Изменения КП.xlsx» не различало книги разных тендеров на диске, хотя
+ * сервер уже отдаёт номер в `Content-Disposition` — атрибут `download`
+ * браузера его молча перекрывал. `safeFilenamePart` чистит номер тем же
+ * набором символов, что и серверный `responses.safe_filename_part`.
  */
 export function useTenderChangesExport() {
   return useMutation({
-    mutationFn: async (tenderId: number) => {
+    mutationFn: async ({ tenderId, tenderNumber }: { tenderId: number; tenderNumber: string }) => {
       const blob = await tendersApi.changesExport(tenderId);
-      saveBlob(blob, "Изменения КП.xlsx");
+      saveBlob(blob, `Изменения КП ${safeFilenamePart(tenderNumber, "тендер")}.xlsx`);
       return blob;
     },
     onError: toastReportError,

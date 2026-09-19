@@ -464,9 +464,14 @@ def route(key, cells, meta, articles_by_stage, stages):
             if info["kind"] not in MONEY_ONLY_KINDS:
                 if prev["qty"] != cur["qty"]:
                     words.append("объём")
-                if unit_price(prev) != unit_price(cur):
+                # Числовые основания «цена» и «состав» требуют ОБЕИХ ячеек
+                # (спека §2.7): переход «цены нет → цена появилась» — не
+                # изменение цены, сравнивать нечего, если одной стороны нет.
+                prev_price, cur_price = unit_price(prev), unit_price(cur)
+                if prev_price is not None and cur_price is not None and prev_price != cur_price:
                     words.append("цена")
-                if per_unit_mix(prev) != per_unit_mix(cur):
+                prev_mix, cur_mix = per_unit_mix(prev), per_unit_mix(cur)
+                if prev_mix is not None and cur_mix is not None and prev_mix != cur_mix:
                     words.append("состав")
         if words:
             steps.append(f"Э{s_prev}→Э{s_cur}: " + ", ".join(words))

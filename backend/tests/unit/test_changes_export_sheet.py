@@ -19,6 +19,7 @@ Task 4, «Утверждения»).
 """
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
 from io import BytesIO
 
@@ -572,6 +573,33 @@ class TestSheetNamesMatchOrder:
         expected = ce.sheet_names(["Бета", "Альфа"])
         assert wb.sheetnames == expected
         assert len(wb.sheetnames) == 2
+
+
+# --------------------------------------------------------------------------
+# Внешнее ревью H2: имена листов разводятся регистронезависимо, и книга не
+# выходит за формат 31 знак. Дефект виден только на ФАКТИЧЕСКИХ
+# `wb.sheetnames` после `openpyxl.load_workbook` — сам хелпер может отдать
+# буквально разные строки, а Excel/openpyxl схлопнут их сами и молча допишут
+# суффикс, раздув имя за 31 знак с `UserWarning`.
+# --------------------------------------------------------------------------
+
+
+class TestSheetNamesCaseInsensitiveDedup:
+    def test_h2_review_actual_workbook_sheetnames_are_deduped_case_insensitively(self):
+        upper = "X" * 31
+        lower = "x" * 31
+        mixed = "X" * 30 + "x"
+        s1 = sheet_of(stages(1), groups=[group_row(1)], title=upper)
+        s2 = sheet_of(stages(1), groups=[group_row(1)], title=lower)
+        s3 = sheet_of(stages(1), groups=[group_row(1)], title=mixed)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            wb = book_of(s1, s2, s3)
+        title_warnings = [w for w in caught if "more than 31 characters" in str(w.message)]
+        assert not title_warnings
+        assert len(wb.sheetnames) == 3
+        assert len({name.casefold() for name in wb.sheetnames}) == 3
+        assert all(len(name) <= 31 for name in wb.sheetnames)
 
 
 # --------------------------------------------------------------------------

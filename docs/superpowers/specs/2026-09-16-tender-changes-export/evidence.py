@@ -221,12 +221,26 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
     by_work, _ = series_of(rows, by_article=False)
 
     abs_move = unit_move = pairs = 0
+    #: Прямое разбиение пар, где признак ПО АБСОЛЮТУ сработал бы ОШИБОЧНО —
+    #: сырые суммы разошлись, а настоящего движения состава не было. Две
+    #: причины: `mix_volume_only` — обе стороны сравнимы, состав на единицу
+    #: РАВЕН (объём вырос, доли не изменились, §2.7); `mix_trigger_total` —
+    #: та же ситуация ПЛЮС случаи, где сравнивать на единицу нечего вовсе
+    #: (одной или обеим сторонам не хватает цены). Считаются ПОПАРНО, а не
+    #: арифметикой `abs_move - unit_move`: та разница честна как отдельное
+    #: число, но занижает счёт на редкую границу, где сырые суммы СОВПАЛИ, а
+    #: состав на единицу всё равно разошёлся (объём изменился при неизменных
+    #: абсолютах, суженный ТОЛЬКО набором изменённых полей) — ровно один такой
+    #: случай есть на трассе «3 · АНТТЕК» (внешнее ревью, круг 2: 1603 − 1508
+    #: = 95, а прямой счёт даёт 96).
+    mix_volume_only = mix_trigger_total = 0
     for series in by_work.values():
         for prev, cur in zip(series, series[1:]):
             if prev is None or cur is None:
                 continue
             pairs += 1
-            abs_move += tuple(prev[n] for n in TRIPLE) != tuple(cur[n] for n in TRIPLE)
+            abs_differs = tuple(prev[n] for n in TRIPLE) != tuple(cur[n] for n in TRIPLE)
+            abs_move += abs_differs
             # СОСТАВ на единицу — тройка компонентов, а не цена: деление
             # price_num/price_den мерило бы движение цены и выдавало его за
             # движение состава.
@@ -234,7 +248,17 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
                          if prev["den"] else None)
             unit_cur = (tuple(cur[f"unit_{n}"] / cur["den"] for n in TRIPLE)
                         if cur["den"] else None)
-            unit_move += unit_prev != unit_cur
+            comparable = unit_prev is not None and unit_cur is not None
+            # Числовое основание засчитывается ТОЛЬКО когда обе стороны
+            # доступны (то же правило, что в продукте и в прототипе, §2.7):
+            # переход «цены нет → цена появилась» — асимметрия доступности,
+            # а не движение состава. Один `None` не значит «отличается».
+            unit_differs = comparable and unit_prev != unit_cur
+            unit_move += unit_differs
+            if abs_differs and not unit_differs:
+                mix_trigger_total += 1
+                if comparable:
+                    mix_volume_only += 1
 
     worst = None
     partial = 0
@@ -281,11 +305,19 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
             if prev is None or cur is None:
                 moved = True
                 continue
-            if (prev["amount"] != cur["amount"] or prev["qty"] != cur["qty"]
-                    or (prev["num"] / prev["den"] if prev["den"] else None)
-                    != (cur["num"] / cur["den"] if cur["den"] else None)):
+            # Цена — числовое основание: асимметрия доступности («цены нет →
+            # цена появилась») не равна изменению, сравнивать нечего, если
+            # одной стороны нет (то же правило, что у СОСТАВА чуть ниже).
+            price_prev = prev["num"] / prev["den"] if prev["den"] else None
+            price_cur = cur["num"] / cur["den"] if cur["den"] else None
+            price_changed = price_prev is not None and price_cur is not None and price_prev != price_cur
+            if prev["amount"] != cur["amount"] or prev["qty"] != cur["qty"] or price_changed:
                 moved = True
-            if (tuple(prev[f"unit_{n}"] / prev["den"] for n in TRIPLE) if prev["den"] else None)                     != (tuple(cur[f"unit_{n}"] / cur["den"] for n in TRIPLE) if cur["den"] else None):
+            mix_prev = (tuple(prev[f"unit_{n}"] / prev["den"] for n in TRIPLE)
+                       if prev["den"] else None)
+            mix_cur = (tuple(cur[f"unit_{n}"] / cur["den"] for n in TRIPLE)
+                      if cur["den"] else None)
+            if mix_prev is not None and mix_cur is not None and mix_prev != mix_cur:
                 mix_moved = True
         changed += moved
         mix_only += mix_moved and not moved
@@ -308,6 +340,7 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
         "works": len(by_work), "rows": len(by_art),
         "gone_article": gone_count(by_art), "gone_work": gone_count(by_work),
         "pairs": pairs, "mix_abs": abs_move, "mix_unit": unit_move,
+        "mix_volume_only": mix_volume_only, "mix_trigger_total": mix_trigger_total,
         "late": sum(1 for s in by_art.values() if s[0] is None and any(c for c in s)),
         "early": sum(1 for s in by_art.values() if s[-1] is None and any(c for c in s)),
         "partial_cells": partial, "worst_price": worst,
@@ -380,6 +413,8 @@ def main() -> None:
               f"по работе: {t['gone_work']}; ЛОЖНЫХ: {t['gone_article'] - t['gone_work']}")
         print(f"  пар «работа × соседние этапы»: {t['pairs']}; состав двинулся "
               f"по абсолюту {t['mix_abs']}, по составу на единицу {t['mix_unit']}")
+        print(f"  признак по абсолюту сработал бы ошибочно: {t['mix_trigger_total']} пар "
+              f"(из них рост объёма при неизменном составе: {t['mix_volume_only']})")
         print(f"  строк, начинающихся позже Э{t['stages'][0]}: {t['late']}; "
               f"кончающихся раньше Э{t['stages'][-1]}: {t['early']}")
         print(f"  ячеек с частичной ценой: {t['partial_cells']}")

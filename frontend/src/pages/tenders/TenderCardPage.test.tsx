@@ -9,7 +9,7 @@ import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
 import { sampleRoundUnallocated, sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { createTestQueryClient, renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, spyOnDownload } from "@/test/utils";
 
 /**
  * Карточка тендера (спека §2.13, §2.14, задача 12): решётка участник×раунд —
@@ -449,6 +449,29 @@ describe("Кнопка «Изменения КП» (спека 2026-09-16-tender
     await waitFor(() =>
       expect(handlerState.lastChangesExportTenderId).toBe(sampleTenderCard.id)
     );
+  });
+
+  /**
+   * Внешнее ревью H3: `useTenderChangesExport` принимает номер тендера от
+   * вызывающего (тем же приёмом, что `useContractSummaryReport` принимает
+   * `filename`) — карточка обязана его передать, а не звать хук с одним
+   * `tenderId`, иначе имя файла на диске осталось бы зашитой строкой,
+   * неразличимой между тендерами.
+   */
+  it("имя скачанного файла несёт номер тендера карточки, а не зашитую строку", async () => {
+    const user = userEvent.setup();
+    renderCard();
+    await screen.findByText("ООО Альфа");
+
+    const download = spyOnDownload();
+    try {
+      await user.click(screen.getByRole("button", { name: /Изменения КП/ }));
+      await waitFor(() => expect(download.lastFilename()).toBeDefined());
+      expect(download.lastFilename()).toContain(sampleTenderCard.tender_number);
+      expect(download.lastFilename()).not.toBe("Изменения КП.xlsx");
+    } finally {
+      download.restore();
+    }
   });
 
   it("422 no_comparable_participants доходит до человека ТЕКСТОМ СЕРВЕРА, а не «Request failed with status code 422»", async () => {

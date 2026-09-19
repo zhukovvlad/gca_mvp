@@ -302,7 +302,7 @@ export default function TenderCardPage() {
           <Button
             variant="outline"
             disabled={changesExport.isPending}
-            onClick={() => changesExport.mutate(card.id)}
+            onClick={() => changesExport.mutate({ tenderId: card.id, tenderNumber: card.tender_number })}
           >
             <Download className="size-4" />
             {changesExport.isPending ? "Готовлю файл…" : "Изменения КП"}

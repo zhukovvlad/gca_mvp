@@ -644,7 +644,15 @@ def sheet_names(titles: Sequence[str]) -> list[str]:
     совпадений суффиксами ` (2)`, ` (3)` — обрезка ПОВТОРЯЕТСЯ ПОСЛЕ добавления
     суффикса, иначе разведённое имя вышло бы за формат (решение плана). Имя,
     ставшее пустым после чистки, заменяется на `Участник N` (N — порядковый
-    номер участника, 1-based)."""
+    номер участника, 1-based).
+
+    **Разведение — по `casefold()`, а не по буквальной строке** (внешнее
+    ревью H2): Excel и `openpyxl` сравнивают имена листов регистронезависимо,
+    поэтому «AAAA» и «aaaa» — одно и то же имя книги, даже когда хелпер увидел
+    бы в них две разные строки. Не разведя их сам, хелпер отдал бы `openpyxl`
+    два «разных» имени по 31 знаку, а тот доразвёл бы их СВОИМ суффиксом без
+    повторной обрезки — и книга вышла бы за формат с `UserWarning`. Отображаемый
+    регистр при этом сохраняется: `casefold()` участвует только в сравнении."""
     used: set[str] = set()
     result: list[str] = []
     for index, title in enumerate(titles, start=1):
@@ -653,11 +661,11 @@ def sheet_names(titles: Sequence[str]) -> list[str]:
             base = f"Участник {index}"[:_SHEET_NAME_LIMIT]
         name = base
         suffix_no = 2
-        while name in used:
+        while name.casefold() in used:
             suffix = f" ({suffix_no})"
             name = base[: _SHEET_NAME_LIMIT - len(suffix)] + suffix
             suffix_no += 1
-        used.add(name)
+        used.add(name.casefold())
         result.append(name)
     return result
 
