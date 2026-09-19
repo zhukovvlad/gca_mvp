@@ -68,8 +68,9 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import status
+from fastapi import Response, status
 from fastapi.responses import JSONResponse
 
 
@@ -98,3 +99,48 @@ def decimal_json(content: Any, status_code: int = status.HTTP_200_OK) -> Decimal
     отдал бы float (см. модульную документацию).
     """
     return DecimalJSONResponse(content, status_code=status_code)
+
+
+# --- Ответы-выгрузки xlsx (перенесены из `routers/reports.py`, план фичи
+# «Выгрузка Изменения КП», Task 1) ---
+#
+# Второе написание этого правила в другом роутере (`routers/tenders.py`,
+# задача 5 того же плана) разъехалось бы с первым: оба хелпера здесь — общая
+# точка правды для файла, а не два параллельных.
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def xlsx_response(content: bytes, filename: str) -> Response:
+    """Ответ с готовой книгой xlsx: `bytes` целиком в памяти, не `StreamingResponse`.
+
+    Starlette итерирует файловый объект `StreamingResponse` построчно и не
+    закрывает хендл (грабля фазы 4) — здесь книга уже собрана, и правильный
+    ответ отдаёт её содержимое целиком.
+
+    Имя файла уезжает в `filename*=UTF-8''<percent>` (percent-кодирование):
+    русские буквы и `/` в номере тендера/договора искажаются либо ломают путь
+    в ASCII-форме `filename=`, поэтому она здесь не заводится вовсе.
+    """
+    return Response(
+        content=content,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+def safe_filename_part(value: str, *, fallback: str) -> str:
+    """Убирает из части имени файла то, что ломает путь.
+
+    Номер договора/тендера приходит из карточки и может содержать `/` или `\\`
+    (нумерация вида «12/2025» встречается), а такой символ в имени файла
+    Windows и часть браузеров трактуют как разделитель пути.
+
+    `fallback` — ОБЯЗАТЕЛЬНЫЙ именованный параметр, а не зашитое в хелпере
+    слово: книга тендера, подписавшаяся словом «договор» по умолчанию общего
+    хелпера, была бы скрытой договорённостью, а не контрактом каждого
+    вызывающего (план фичи «Выгрузка Изменения КП», решение 2).
+    """
+    for bad in '/\\:*?"<>|':
+        value = value.replace(bad, "-")
+    return value.strip() or fallback

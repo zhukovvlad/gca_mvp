@@ -22,11 +22,14 @@ import datetime as dt
 import re
 from collections.abc import Iterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
+from starlette.responses import Response, StreamingResponse
 
-from responses import _decimal_encoder
+from responses import XLSX_MEDIA_TYPE, _decimal_encoder, safe_filename_part, xlsx_response
 
 # Контракт данных, который обещает бэкенд и разбирает фронт: `-?цифры[.цифры]`.
 # Тот же литерал, что `DECIMAL_RE` в `frontend/src/lib/format.ts` — именно его
@@ -184,3 +187,113 @@ def test_the_encoder_still_refuses_a_type_it_does_not_know():
     """
     with pytest.raises(TypeError, match="date"):
         _decimal_encoder(dt.date(2026, 8, 10))
+
+
+# --- Задача 1 плана «Выгрузка Изменения КП»: перенос хелпера ответа xlsx ---
+#
+# `xlsx_response` и `safe_filename_part` переезжают из `routers/reports.py` в
+# `backend/responses.py` нетронутыми по поведению (план, Task 1) — второй
+# роутер (`tenders.py`, задача 5) не должен получить второе написание одного и
+# того же правила.
+
+
+def test_xlsx_response_is_a_plain_bytes_response_not_a_streaming_one():
+    """Утверждение 1 задачи 1: `xlsx_response` отдаёт `bytes`, а не
+    `StreamingResponse` с файловым объектом — Starlette итерирует такой объект
+    построчно и не закрывает хендл (грабля фазы 4, спека §2.11).
+    """
+    content = b"PK\x03\x04-fake-xlsx-bytes"
+    response = xlsx_response(content, "test.xlsx")
+
+    assert isinstance(response, Response)
+    assert not isinstance(response, StreamingResponse)
+    assert response.body == content
+    assert response.media_type == XLSX_MEDIA_TYPE
+
+
+def test_xlsx_response_content_disposition_is_percent_encoded_utf8_only():
+    """Утверждение 2: заголовок ответа — `Content-Disposition: attachment;
+    filename*=UTF-8''<percent>`, где `<percent>` — `quote(filename)`; форма
+    ASCII `filename=` не заводится вовсе — русские буквы в ней искажаются
+    (спека §2.11).
+    """
+    filename = "Свод расценок ГП-0212.xlsx"
+    response = xlsx_response(b"stub", filename)
+
+    assert response.headers["content-disposition"] == (
+        f"attachment; filename*=UTF-8''{quote(filename)}"
+    )
+
+
+def test_safe_filename_part_replaces_every_forbidden_character_with_a_dash():
+    """Утверждение 3 (часть первая): `safe_filename_part` заменяет каждый
+    символ из `/\\:*?"<>|` на `-` (спека §2.11).
+    """
+    value = 'a/b\\c:d*e?f"g<h>i|j'
+    assert safe_filename_part(value, fallback="x") == "a-b-c-d-e-f-g-h-i-j"
+
+
+def test_safe_filename_part_falls_back_to_the_required_keyword_when_empty():
+    """Утверждение 3 (часть вторая): строку, ставшую пустой после чистки и
+    `strip`, `safe_filename_part` заменяет на значение ОБЯЗАТЕЛЬНОГО именованного
+    параметра `fallback`. Зашитого слова в общем хелпере нет: книга тендера,
+    подписавшаяся словом «договор», была бы скрытой договорённостью, а не
+    контрактом (план, решение 2) — поэтому `fallback` обязан приниматься только
+    по имени, а не позиционно и не молчаливым умолчанием.
+
+    Пустая строка после `strip` — только у пустого/пробельного значения:
+    символ из запрещённого набора заменяется на `-`, а `-` не пробел и `strip`
+    его не съедает (следующий тест разбирает именно этот вход отдельно, чтобы
+    не спутать два разных случая).
+    """
+    assert safe_filename_part("", fallback="иное значение") == "иное значение"
+    assert safe_filename_part("   ", fallback="иное значение") == "иное значение"
+
+    with pytest.raises(TypeError):
+        safe_filename_part("x", "позиционный fallback запрещён")
+    with pytest.raises(TypeError):
+        safe_filename_part("x")
+
+
+def test_existing_reports_pass_the_literal_fallback_that_reproduces_pre_move_behavior():
+    """Утверждение 4: три существующих отчёта передают `fallback="договор"` и
+    отдают то же имя файла, что до переноса, на входе из одних запрещённых
+    символов.
+
+    На входе из одних символов `/\\:*?"<>|` фолбэк НЕ включается ни до переноса,
+    ни после: замена даёт строку из одних `-`, а `strip` дефис не убирает —
+    поэтому это утверждение о РЕГРЕССИИ (то же самое преобразование, что было),
+    а не о срабатывании фолбэка на этом конкретном входе. Именно фолбэк —
+    настоящее слово «договор», а не произвольная строка-заглушка вроде `"x"» —
+    предъявлен явно: и как значение параметра в вызове (та же строка, что была
+    зашита в прежнем приватном хелпере), и грепом по местам исходника, где
+    `routers/reports.py` реально строит динамическую часть имени файла. Мест
+    ДВА (`contract_summary` и `_comparison_filename` внутри `comparison_report`):
+    у `bank_comparison` имя файла фиксировано и `safe_filename_part` не зовёт
+    вовсе, поэтому «три отчёта» — это три ЭНДПОИНТА, а не три вызова хелпера.
+    """
+    only_forbidden = '/\\:*?"<>|'
+    assert safe_filename_part(only_forbidden, fallback="договор") == "---------"
+
+    source = Path(__file__).resolve().parents[2] / "routers" / "reports.py"
+    text = source.read_text(encoding="utf-8")
+    assert text.count('fallback="договор"') == 2, (
+        "оба места, где отчёты строят часть имени файла, обязаны называть "
+        "fallback явно словом «договор» — тем же, что было зашито в общем "
+        "хелпере до переноса"
+    )
+
+
+def test_reports_router_keeps_no_local_rewrite_of_the_moved_helpers():
+    """Утверждение 6: в `routers/reports.py` не остаётся ни одного собственного
+    написания ни хелпера ответа, ни чистки имени — второе написание
+    разъехалось бы с первым (спека §2.11). Проверяется импортированным модулем,
+    а не текстом: совпадение по identity доказывает, что вызывается тот же
+    объект, а не одноимённая копия.
+    """
+    import routers.reports as reports_module
+
+    assert not hasattr(reports_module, "_xlsx")
+    assert not hasattr(reports_module, "_safe_filename_part")
+    assert reports_module.xlsx_response is xlsx_response
+    assert reports_module.safe_filename_part is safe_filename_part

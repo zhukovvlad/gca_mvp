@@ -186,6 +186,17 @@ interface HandlerState {
     | "offer_has_no_estimate";
   /** Последние PUT и DELETE к category-overrides — для проверки тела. */
   roundOverrideRequests: Array<{ method: string; body: Record<string, unknown> }>;
+  /**
+   * Исход `GET /api/v1/tenders/:id/changes-export` (спека
+   * 2026-09-16-tender-changes-export-design.md §2.1, §2.11, план фичи, Task
+   * 5): `ok` — книга (непустой blob с настоящим media type, тем же приёмом,
+   * что у трёх выгрузок §7.6 выше); `no_comparable` — структурированный `422`
+   * СЕРВЕРНЫМ текстом, которым тест проверяет, что `toastReportError` достаёт
+   * сообщение из блоб-ответа, а не подменяет его строкой axios.
+   */
+  changesExportOutcome: "ok" | "no_comparable";
+  /** Последний id тендера, для которого запрашивалась книга «Изменения КП». */
+  lastChangesExportTenderId: number | null;
 }
 
 export const handlerState: HandlerState = {
@@ -217,6 +228,8 @@ export const handlerState: HandlerState = {
   tenderDeleteOutcome: "ok",
   stageSummaryOutcome: "ok",
   roundOverrideRequests: [],
+  changesExportOutcome: "ok",
+  lastChangesExportTenderId: null,
 };
 
 export function resetHandlerState() {
@@ -243,6 +256,8 @@ export function resetHandlerState() {
   handlerState.tenderDeleteOutcome = "ok";
   handlerState.stageSummaryOutcome = "ok";
   handlerState.roundOverrideRequests = [];
+  handlerState.changesExportOutcome = "ok";
+  handlerState.lastChangesExportTenderId = null;
 }
 
 function page<T>(items: T[]) {
@@ -1606,6 +1621,33 @@ export const handlers = [
       default:
         return HttpResponse.json(sampleStageSummary);
     }
+  }),
+  /**
+   * Книга «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md
+   * §2.1, §2.11, план фичи, Task 5). Тот же приём блоб-ответа, что у выгрузок
+   * §7.6 выше: настоящий media type xlsx на успехе, структурированный `422`
+   * СЕРВЕРНЫМ текстом на отказе — им тест `useTenderChangesExport` проверяет,
+   * что `toastReportError` достаёт сообщение из блоба, а не из `err.message`.
+   */
+  http.get("/api/v1/tenders/:id/changes-export", ({ params }) => {
+    handlerState.lastChangesExportTenderId = Number(params.id);
+    if (handlerState.changesExportOutcome === "no_comparable") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "no_comparable_participants",
+            message: "В тендере нет участников с двумя и более сметами — сравнивать нечего.",
+          },
+        },
+        { status: 422 }
+      );
+    }
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    });
   }),
   /**
    * Разложение статьи свода (спека 2026-08-30-position-drilldown-design.md

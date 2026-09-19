@@ -18,17 +18,20 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
 from config import settings
+from crud import changes_export as crud_changes_export
 from crud import position_drilldown as crud_position_drilldown
 from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
 from crud import tenders as crud_tenders
 from crud.common import DomainError
 from database import get_db, get_session_factory
-from models import ImportJob, ImportJobStatus, User, UserRole
-from responses import decimal_json
+from models import ImportJob, ImportJobStatus, Tender, User, UserRole
+from responses import decimal_json, safe_filename_part, xlsx_response
 from routers.domain_errors import raise_domain_error
 from routers.estimates import _read_within_limit, _validate_xlsx, job_response
+from services import changes_export as changes_export_sheet
 from services import round_category_override as rco
+from services.excel_changes_export import build_changes_export
 from services.import_pipeline import run_import_job
 from services.maintenance import purge_files_best_effort
 from storage import Storage, get_storage
@@ -109,6 +112,57 @@ def stage_position_drilldown(tender_id: int, work_category_id: int,
             db, tender_id, work_category_id, offers))
     except DomainError as e:
         raise_domain_error(e)
+
+
+@router.get("/{tender_id}/changes-export")
+def changes_export(tender_id: int, db: Session = Depends(get_db)):
+    """Книга «Изменения КП» — лист на каждого участника с двумя и более сметами
+    (спека 2026-09-16-tender-changes-export-design.md §2.1, §2.11; план фичи,
+    Task 5).
+
+    Хендлер только СВЯЗЫВАЕТ чтение (`crud.changes_export.load_book`) со
+    сборкой книги (`services.excel_changes_export.build_changes_export`) —
+    собственной арифметики здесь нет: второй экземпляр правила, посчитанный
+    прямо в роутере, разошёлся бы с первым (тот же довод, что у `stage_summary`
+    и у выгрузок `routers/reports.py`).
+
+    Между ними — ОБЯЗАТЕЛЬНОЕ преобразование типов `services.changes_export.
+    build_sheet`: `load_book` отдаёт `list[SheetInput]` (сырые счётчики,
+    задача 3), `build_changes_export` принимает готовые `Sheet` (свёртка, Δ,
+    тождество состава — задача 2). Это не арифметика роутера — `build_sheet`
+    целиком живёт в чистом слое задачи 2, роутер лишь применяет его к каждому
+    участнику, как применяет `xlsx_response`/`safe_filename_part` к готовому
+    результату.
+
+    Отказы `crud.changes_export.load_book` — `404 tender_not_found` (тендера
+    нет) и `422 no_comparable_participants` (ни одного участника с двумя и
+    более сметами) — уезжают объектом `detail` через `raise_domain_error`, как
+    и остальные кодированные отказы этого роутера.
+
+    Права — чтение: `admin` и `member`, без отдельной зависимости на роль —
+    маршрутизатор целиком под `dependencies=[Depends(get_current_user)]`
+    (`main.py`), тем же способом, что `get_tender` и `stage_summary` выше.
+
+    Имя файла — номер тендера через `safe_filename_part` с фолбэком
+    `"тендер"` (план фичи, решение 2): книга тендера не подписывается словом
+    «договор», зашитым в фолбэк отчётов `routers/reports.py`.
+    """
+    try:
+        raw_sheets = crud_changes_export.load_book(db, tender_id)
+    except DomainError as e:
+        raise_domain_error(e)
+
+    sheets = [changes_export_sheet.build_sheet(raw) for raw in raw_sheets]
+
+    # `db.get` не добавляет запроса: `load_book` уже прочитал этот тендер
+    # (проверка на 404) в ТОЙ ЖЕ сессии, и объект живёт в identity map.
+    tender = db.get(Tender, tender_id)
+    content = build_changes_export(
+        sheets,
+        tender_header={"tender_number": tender.tender_number, "tender_title": tender.title},
+    )
+    number = safe_filename_part(tender.tender_number, fallback="тендер")
+    return xlsx_response(content, f"Изменения КП {number}.xlsx")
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
