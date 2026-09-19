@@ -636,6 +636,67 @@ class TestRoute:
         no_moves = sheet_of(stages(2), groups=[group_row(1, catalog_position_id=1, amount="100", numbers=())])
         assert no_moves.moves_note == "переездов нет"
 
+    def test_review_d2_route_price_and_mix_require_both_cells_available(self):
+        """Ревью финального (Д2): числовые основания «цена» и «состав»
+        обязаны требовать присутствия ОБЕИХ величин — тем же правилом, что уже
+        действует для «сумма» (A2.22). Вход: ставки [20, None, 20], одна и та
+        же группа на всех трёх этапах. До правки `unit_price.value != None` и
+        `_per_unit_mix(...) != None` читаются как движение, хотя недоступна
+        только база НДС этапа 2 — маршрут ложно утверждает «цена, состав»."""
+        sheet = sheet_of(
+            stages_rates(["20", None, "20"]),
+            groups=[
+                group_row(1, catalog_position_id=1, amount="100", quantity="2",
+                          price_num="100", price_den="2", works="40", materials="50",
+                          indirect="10", numbers=()),
+                group_row(2, catalog_position_id=1, amount="100", quantity="2",
+                          price_num="100", price_den="2", works="40", materials="50",
+                          indirect="10", numbers=()),
+                group_row(3, catalog_position_id=1, amount="100", quantity="2",
+                          price_num="100", price_den="2", works="40", materials="50",
+                          indirect="10", numbers=()),
+            ],
+        )
+        row = find_row(sheet, ce.KIND_WORK, ARTICLE_A, 1)
+        assert row.route == ["Э1→Э2: сумма недоступна", "Э2→Э3: сумма недоступна"]
+        assert not any("цена" in s for s in row.route)
+        assert not any("состав" in s for s in row.route)
+
+    def test_review_d2_route_price_den_zero_on_one_side_is_no_price_not_change(self):
+        """Родственный вход (Д2): `price_den=0` на одной стороне (все строки
+        нерасценены) — это «цены нет» (`AGENTS.md`: ноль/пустая цена значит
+        только «цены нет»), а не «цена изменилась». До правки отсутствие цены
+        на одном конце читается как её появление и печатает «цена, состав»."""
+        sheet = sheet_of(stages(2), groups=[
+            group_row(1, catalog_position_id=1, amount="100", quantity="2",
+                      price_num="0", price_den="0", rows_priced=0, rows_with_mix=0, numbers=()),
+            group_row(2, catalog_position_id=1, amount="100", quantity="2",
+                      price_num="100", price_den="2", numbers=()),
+        ])
+        row = find_row(sheet, ce.KIND_WORK, ARTICLE_A, 1)
+        assert row.route == []
+
+    def test_review_d2_route_still_prints_price_and_mix_when_both_cells_available(self):
+        """Обратная сторона Д2 (слой 14 `docs/insights/verifying-guards.md`:
+        предъявлять и то состояние, которое выбранная ветка вытесняет). На
+        ОБЫЧНОМ входе — обе базы НДС известны, цена за единицу и состав НА
+        ЕДИНИЦУ реально различаются, объём тот же — слова «цена» и «состав»
+        обязаны по-прежнему печататься. Без этого входа охрана Д2 остаётся
+        зелёной и тогда, когда оба слова не печатаются НИКОГДА: замер ревью
+        показал, что замена обоих условий на `if False:` не роняла ни одного
+        теста выборки `changes_export`."""
+        sheet = sheet_of(stages(2), groups=[
+            group_row(1, catalog_position_id=1, amount="100", quantity="2",
+                      price_num="100", price_den="2", works="40", materials="50",
+                      indirect="10", numbers=()),
+            # цена за единицу 50 → 70; состав на единицу (20, 25, 5) → (45, 20, 5)
+            group_row(2, catalog_position_id=1, amount="140", quantity="2",
+                      price_num="140", price_den="2", works="90", materials="40",
+                      indirect="10", numbers=()),
+        ])
+        row = find_row(sheet, ce.KIND_WORK, ARTICLE_A, 1)
+        assert row.route == ["Э1→Э2: сумма, цена, состав"]
+
 
 # --------------------------------------------------------------------------
 # A2.28-A2.33 — ось НДС, подытоги, общий итог.
@@ -718,6 +779,28 @@ class TestVatAxisAndTotals:
         assert subtotal.by_stage[0].value == D("0")
         assert subtotal.by_stage[0].reason is None
         assert subtotal.by_stage[0].incomplete is True
+
+    def test_review_d4_partial_cell_raises_subtotal_and_grand_incomplete(self):
+        """Ревью финального (Д4, план — решение 10, `AGENTS.md` §6): ячейка,
+        где `rows_with_amount < rows_all` (частичная свёртка, а НЕ `amount.value
+        is None`), обязана поднимать `incomplete` подытога статьи и общего
+        итога — тот же факт, что уже поднимает `row.delta_amount.incomplete`
+        (A2.33) для строки. До правки подытог поднимает `incomplete` только
+        когда сумма ячейки целиком недоступна, и частичная сумма (1 строка из
+        2) вносится молча. ВАЖНО: подытог обязан остаться ЧИСЛОМ."""
+        sheet = sheet_of(stages(2), groups=[
+            group_row(1, catalog_position_id=1, amount="100", rows_all=2, rows_with_amount=1,
+                      rows_with_mix=1, numbers=()),
+            group_row(2, catalog_position_id=1, amount="130", numbers=()),
+        ])
+        row = find_row(sheet, ce.KIND_WORK, ARTICLE_A, 1)
+        assert row.delta_amount.incomplete is True  # уже верно (A2.33), контроль входа
+
+        subtotal = next(s for s in sheet.subtotals if s.article == ARTICLE_A)
+        assert subtotal.by_stage[0].value == D("100")
+        assert subtotal.by_stage[0].incomplete is True
+        assert sheet.grand_by_stage[0].value == D("100")
+        assert sheet.grand_by_stage[0].incomplete is True
 
     def test_a2_32_only_two_delta_fields_and_grand_by_stage_is_per_stage_not_delta(self):
         """A2.32: Δ считают ровно два поля — Subtotal.delta и Sheet.grand_delta;

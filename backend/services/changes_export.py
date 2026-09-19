@@ -585,11 +585,12 @@ def _route_for(
             if kind not in MONEY_ONLY_KINDS:
                 if prev_cell.quantity != cur_cell.quantity:
                     words.append("объём")
-                if prev_cell.unit_price.value != cur_cell.unit_price.value:
+                prev_price, cur_price = prev_cell.unit_price.value, cur_cell.unit_price.value
+                if prev_price is not None and cur_price is not None and prev_price != cur_price:
                     words.append("цена")
                 prev_mix = _per_unit_mix(slots[i - 1], stages[i - 1], tax_basis, axis_reason[i - 1]) if slots[i - 1] else None
                 cur_mix = _per_unit_mix(slots[i], stages[i], tax_basis, axis_reason[i]) if slots[i] else None
-                if prev_mix != cur_mix:
+                if prev_mix is not None and cur_mix is not None and prev_mix != cur_mix:
                     words.append("состав")
 
         if words:
@@ -768,6 +769,14 @@ def build_sheet(data: SheetInput) -> Sheet:
                     # неполным — решение плана, «две недоступности разведены».
                     incomplete = True
                     continue
+                if cell.rows_with_amount < cell.rows_all:
+                    # Частичная свёртка ЯЧЕЙКИ (сумма есть, но не по всем
+                    # строкам группы) — тот же факт, что `_row_delta_amount`
+                    # уже поднимает у СТРОКИ (план, решение 10; AGENTS.md §6,
+                    # приём `row_amount`/`row_amount_incomplete`): исключённая
+                    # позиция не гасит подытог, но обязана пометить его неполным,
+                    # иначе частичная сумма вносится молча.
+                    incomplete = True
                 total += cell.amount.value
             by_stage.append(Money(total, None, incomplete))
         subtotals.append(

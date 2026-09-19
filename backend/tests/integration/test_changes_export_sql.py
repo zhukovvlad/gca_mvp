@@ -304,6 +304,82 @@ class TestThreeSets:
         assert group.components.works == D("110.00")
         assert group.components.materials == D("30.00")   # NULL строки — не ноль, а отсутствие вклада
 
+    def test_review_d3_absolute_components_use_amount_set_not_own_finiteness(self, db_session, factories):
+        """Ревью финального (Д3): состав АБСОЛЮТНЫЙ обязан свёртываться по
+        множеству СУММЫ (спека §2.4, таблица «состав абсолютный — по
+        множеству суммы»), а не по конечности самой составляющей. Строка `b`
+        без итога (`total=None`) не входит ни в `amount`, ни в
+        `rows_with_amount` — но её конечные составляющие (5.00/-12.00/7.00)
+        до правки всё равно попадают в `c_works`/`c_materials`/`c_indirect`,
+        потому что фильтр смотрел на саму составляющую, а не на итог строки.
+
+        Все три составляющие строки `b` НЕНУЛЕВЫЕ намеренно: с нулём в
+        третьей фильтр `c_indirect` не был бы предъявлен вовсе — сумма с
+        исключённым нулём и без него совпадает, и снятие фильтра осталось бы
+        зелёным. Их сумма при этом ноль (5 − 12 + 7), чтобы протечка НЕ была
+        видна на уровне итога и ловилась именно составом."""
+        groups = self._one_group(db_session, factories, rows_kwargs=[
+            dict(key="a", number="1", total=D("100.00"), works=D("60.00"),
+                 materials=D("30.00"), indirect=D("10.00")),
+            dict(key="b", number="2", total=None, works=D("5.00"),
+                 materials=D("-12.00"), indirect=D("7.00")),
+        ])
+        group = groups[0]
+        assert group.rows_all == 2
+        assert group.rows_with_amount == 1
+        assert group.amount == D("100.00")
+        # Строка с конечным итогом и NULL-составляющей по-прежнему обязана
+        # ловиться первым условием тождества (rows_with_mix) — не предмет
+        # этого теста, покрыто соседним test_rows_with_mix_requires_all_three_components_finite.
+        assert group.components.works == D("60.00")      # НЕ 65.00
+        assert group.components.materials == D("30.00")  # НЕ 18.00
+        assert group.components.indirect == D("10.00")   # НЕ 17.00
+
+
+# ---------------------------------------------------------------------------
+#  Ревью финального (Д3): та же ошибка на уровне листа — Δ состава не должна
+#  показывать фиктивное движение из строки, у которой итога нет вовсе.
+# ---------------------------------------------------------------------------
+
+class TestAbsoluteMixIgnoresRowsWithoutTotal:
+    def test_missing_total_row_does_not_move_absolute_components_on_export(self, db_session, factories):
+        """Строка `b` без итога уходит из состава на этапе 2 (её там нет
+        вовсе), строка `a` не меняется между этапами — Δ состава обязана
+        остаться нулевой, а не напечатать -5.00/+12.00/-7.00 (задание — вход
+        интеграционный, через фабрики).
+
+        Составляющие строки `b` ненулевые ВСЕ ТРИ (иначе третий фильтр не
+        предъявлен, см. соседний тест) и в сумме дают ноль — тождество
+        `_row_delta_components` при протечке остаётся верным, и красноту даёт
+        именно НЕВЕРНОЕ Δ состава, а не погашение его причиной."""
+        tender = factories.TenderFactory.create()
+        r1 = _round(factories, tender, 1)
+        r2 = _round(factories, tender, 2)
+        db_session.flush()
+        package, _ = _participant(factories, tender, title="ООО Состав без суммы")
+        est1, _l1, prop1 = _estimate(factories, round_=r1, package=package)
+        est2, _l2, prop2 = _estimate(factories, round_=r2, package=package)
+        cat6 = _category_id(db_session, "6")
+        catalog_position = factories.CatalogPositionFactory.create(kind=CatalogKind.TO_REVIEW.value)
+
+        chapter1 = _chapter(factories, prop1, category_id=cat6)
+        _row(factories, prop1, chapter1, key="a", number="1", catalog_position=catalog_position,
+             total=D("100.00"), works=D("60.00"), materials=D("30.00"), indirect=D("10.00"))
+        _row(factories, prop1, chapter1, key="b", number="2", catalog_position=catalog_position,
+             total=None, works=D("5.00"), materials=D("-12.00"), indirect=D("7.00"))
+
+        chapter2 = _chapter(factories, prop2, category_id=cat6)
+        _row(factories, prop2, chapter2, key="a", number="1", catalog_position=catalog_position,
+             total=D("100.00"), works=D("60.00"), materials=D("30.00"), indirect=D("10.00"))
+        db_session.flush()
+
+        sheets = crud_cx.load_book(db_session, tender.id)
+        built = svc_cx.build_sheet(sheets[0])
+        row = next(r for r in built.rows if r.kind == svc_cx.KIND_WORK)
+
+        assert row.delta_amount.value == D("0.00")
+        assert row.delta_components == svc_cx.Components(D("0.00"), D("0.00"), D("0.00"))
+
 
 # ---------------------------------------------------------------------------
 #  Ревью после гейта 3: числители состава НА ЕДИНИЦУ обязаны идти от

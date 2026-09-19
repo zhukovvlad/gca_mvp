@@ -413,6 +413,37 @@ class TestSubtotalIncompleteStaysNumeric:
         note_text = ws.cell(subtotal_row, note_col).value
         assert note_text and "Э1" in note_text
 
+    def test_review_d4_partial_cell_subtotal_gets_fill_and_note_stays_numeric(self):
+        """Ревью финального (Д4): та же заливка и та же соседняя колонка
+        «Полнота», что A4.9 уже проверяет для ячейки БЕЗ конечной суммы,
+        обязаны появиться и для ЧАСТИЧНОЙ ячейки (`rows_with_amount < rows_all`,
+        сумма при этом ЕСТЬ). До правки задачи сервисного слоя эта ячейка
+        не поднимала `incomplete`, и билдер книги печатал число без заливки
+        и без строки в «Полноте» — молчаливая частичная свёртка."""
+        sheet = sheet_of(
+            stages(2),
+            groups=[
+                group_row(1, catalog_position_id=1, amount="100", rows_all=2, rows_with_amount=1,
+                          rows_with_mix=1),
+                group_row(2, catalog_position_id=1, amount="130"),
+            ],
+        )
+        wb = book_of(sheet)
+        ws = wb[wb.sheetnames[0]]
+        hr = header_row(ws)
+        block_header = hr + len(sheet.rows) + 3
+        subtotal_row = block_header + 1
+        n_stages = 2
+        stage1_cell = ws.cell(subtotal_row, 4)
+        note_col = 4 + n_stages + 1
+
+        assert stage1_cell.value == 100
+        assert isinstance(stage1_cell.value, int | float)
+        assert stage1_cell.value != ece.TEXT_NO_AMOUNT
+        assert stage1_cell.fill.fgColor.rgb not in (None, "00000000")
+        note_text = ws.cell(subtotal_row, note_col).value
+        assert note_text and "Э1" in note_text
+
 
 # --------------------------------------------------------------------------
 # A4.10 — ячейка без пригодной цены несёт текст TEXT_NO_PRICE.
