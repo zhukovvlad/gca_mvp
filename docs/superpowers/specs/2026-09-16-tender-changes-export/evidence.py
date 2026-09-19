@@ -103,17 +103,39 @@ GROUP BY 1, 2, 3, 4, 5
 CATALOG_SQL = "SELECT kind, count(*) FROM catalog_positions GROUP BY 1"
 
 #: Состав цены по всей базе: тождество «работы + материалы + косвенные = итог»
-#: спека цитирует как основание условного обещания.
+#: спека цитирует как основание условного обещания. БЕЗ ДОПУСКА — спека сама
+#: запрещает допуск у этого условия (построчный «не больше копейки» копится),
+#: поэтому замер обязан считать точное равенство, а не `abs(...) <= 0.01`.
+#:
+#: Полнота состава считается КОНЕЧНОСТЬЮ, а не `IS NOT NULL`: реализация
+#: (`crud.changes_export._finite`) отбрасывает ещё `NaN` и `±Infinity`, и более
+#: слабый предикат замера подтверждал бы утверждение спеки «три КОНЕЧНЫЕ
+#: составляющие» строками, которых код в состав не берёт.
+#:
+#: «Не больше копейки» — тоже замер, а не подпись: счётчик расхождений ограничен
+#: копейкой, поэтому строка, вышедшая из этой полосы, в него не попадёт, число
+#: спеки разойдётся с базой и `check_spec_numbers.py` покраснеет.
 MIX_SQL = """
 SELECT count(*) AS rows_all,
        count(*) FILTER (
            WHERE total_cost_works IS NOT NULL
+             AND total_cost_works NOT IN ('NaN', 'Infinity', '-Infinity')
              AND total_cost_materials IS NOT NULL
-             AND total_cost_indirect_costs IS NOT NULL) AS rows_with_mix,
+             AND total_cost_materials NOT IN ('NaN', 'Infinity', '-Infinity')
+             AND total_cost_indirect_costs IS NOT NULL
+             AND total_cost_indirect_costs NOT IN ('NaN', 'Infinity', '-Infinity')
+             AND total_cost_total IS NOT NULL
+             AND total_cost_total NOT IN ('NaN', 'Infinity', '-Infinity')) AS rows_with_mix,
        count(*) FILTER (
-           WHERE abs(coalesce(total_cost_works, 0) + coalesce(total_cost_materials, 0)
-                     + coalesce(total_cost_indirect_costs, 0) - total_cost_total) <= 0.01
-           ) AS rows_mix_sums_to_total
+           WHERE total_cost_works + total_cost_materials + total_cost_indirect_costs
+                 = total_cost_total
+           ) AS rows_mix_exact,
+       count(*) FILTER (
+           WHERE total_cost_works + total_cost_materials + total_cost_indirect_costs
+                 <> total_cost_total
+             AND abs(total_cost_works + total_cost_materials
+                     + total_cost_indirect_costs - total_cost_total) <= 0.01
+           ) AS rows_mix_diff
 FROM position_items WHERE is_chapter = false
 """
 
@@ -318,7 +340,8 @@ def collect() -> dict:
                       (tender, participant))[0]
         return {
             "catalog": fetch(conn, CATALOG_SQL),
-            "mix": dict(zip(("строк базы", "с полным составом", "состав сходится с итогом"),
+            "mix": dict(zip(("строк базы", "с тремя конечными составляющими",
+                             "сходится точно", "расходится в пределах копейки"),
                             fetch(conn, MIX_SQL)[0])),
             "edge": dict(zip(EDGE_NAMES, fetch(conn, EDGE_SQL)[0])),
             "traces": [trace_measurements(conn, t, p) for t, p in TRACES],

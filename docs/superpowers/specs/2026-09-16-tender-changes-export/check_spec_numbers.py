@@ -47,6 +47,12 @@ def claims(data: dict) -> list[tuple[str, str, str]]:
     Проверяется АБЗАЦ, содержащий и значение, и якорь: строка для markdown
     слишком мелкая единица — текст переносится, и число с якорем оказываются
     на соседних строках одного утверждения.
+
+    Соседства по абзацу мало, когда в абзаце несколько чисел: якорь «держится
+    ТОЧНО» подтверждался абзацем, где рядом стоит другое число, и возврат
+    построчного допуска в `MIX_SQL` не красил стража (предъявлено снятием).
+    Поэтому у такого числа якорь — ФРАЗА с местом под значение (`{}`): она
+    обязана совпасть целиком, и подстановка чужого числа её рвёт.
     """
     by_trace = {(t["tender"], t["participant"]): t for t in data["traces"]}
     main = by_trace[MAIN]
@@ -61,7 +67,15 @@ def claims(data: dict) -> list[tuple[str, str, str]]:
         ("каталог стенда", spaced(catalog["TO_REVIEW"]), "TO_REVIEW"),
         ("строк обеих трасс", spaced(edge["строк"]), "0 из"),
         ("строк с нулевой ценой", spaced(edge["цена = 0"]), "unit_cost_total = 0"),
-        ("строк базы с составом", spaced(data["mix"]["строк базы"]), "строках базы"),
+        ("строк базы", spaced(data["mix"]["строк базы"]), "из {} строк базы"),
+        ("строк с тремя конечными составляющими",
+         spaced(data["mix"]["с тремя конечными составляющими"]),
+         "все {} несут три конечные составляющие"),
+        ("состав сходится точно", spaced(data["mix"]["сходится точно"]),
+         "держится ТОЧНО у {} из"),
+        ("состав расходится в пределах копейки",
+         spaced(data["mix"]["расходится в пределах копейки"]),
+         "у оставшихся {} расхождение не больше копейки"),
         ("работ основной трассы", spaced(main["works"]), "из 877"),
         ("строк листа", spaced(main["rows"]), "из 1 365"),
         ("исчезновений со статьёй", spaced(main["gone_article"]), "исчезновений"),
@@ -109,14 +123,20 @@ def main() -> None:
     with open(SPEC, encoding="utf-8") as handle:
         text = handle.read().replace(NBSP, " ")
     # Абзац — блок между пустыми строками. Строка таблицы markdown тоже абзац
-    # для этой цели: она целиком на одной строке.
-    blocks = [block for block in text.split(chr(10) * 2) if block.strip()]
+    # для этой цели: она целиком на одной строке. Пробельные последовательности
+    # внутри абзаца схлопываются: фразовый якорь обязан совпадать через перенос
+    # строки, иначе он держался бы за вёрстку, а не за текст.
+    blocks = [" ".join(block.split()) for block in text.split(chr(10) * 2) if block.strip()]
 
     data = collect()
     checked = claims(data)
     failures = []
     for what, value, anchor in checked:
-        hit = any(value in block and anchor in block for block in blocks)
+        if "{}" in anchor:
+            phrase = anchor.replace("{}", value)
+            hit = any(phrase in block for block in blocks)
+        else:
+            hit = any(value in block and anchor in block for block in blocks)
         if not hit:
             failures.append((what, value, anchor))
         print(f"  {'OK ' if hit else 'НЕТ'} {what}: {value}")
