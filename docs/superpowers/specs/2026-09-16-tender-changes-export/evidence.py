@@ -139,6 +139,47 @@ SELECT count(*) AS rows_all,
 FROM position_items WHERE is_chapter = false
 """
 
+#: ВНЕШНИЙ ОРАКУЛ ПРОИСХОЖДЕНИЯ остатка (внешнее ревью, круг 4). Величина
+#: остатка — не его причина: «не больше 0,014 ₽» совместимо с округлением, но
+#: не устанавливает его. Происхождение устанавливают СТРОКИ, а не свёртки.
+#:
+#: Остаток свёртки раскладывается точно на два слагаемых:
+#:   `Σ_все total_X − Σ_пригодные (unit_X × объём)`
+#:     = `Σ_пригодные (total_X − unit_X × объём)`   ← построчное округление
+#:     + `Σ_непригодные total_X`                    ← включение непригодной строки
+#: Этот запрос меряет ОБА по всей базе, а не по избранным клеткам:
+#:   • совпадает ли `total_X` с `round(unit_X × объём, 2)` у каждой пригодной
+#:     строки и каков худший остаток — если совпадает у всех, первое слагаемое
+#:     И ЕСТЬ округление до копейки, а не «похоже на него»;
+#:   • несёт ли хоть одна НЕпригодная строка ненулевую составляющую — если ни
+#:     одна, второе слагаемое ноль не по устройству счётчика, а по данным.
+#: Второй ноль ДОСТИЖИМ: строка без цены за единицу, но с ненулевой
+#: составляющей, сделала бы его единицей. Такой вопрос — «какой вход сделал бы
+#: ноль единицей» — задаётся каждому нулю, стоящему в тексте доказательством.
+ROUNDING_SQL = f"""
+WITH priced AS (
+  SELECT unit_cost_works uw, unit_cost_materials um, unit_cost_indirect_costs ui,
+         total_cost_works tw, total_cost_materials tm, total_cost_indirect_costs ti,
+         suggested_quantity q
+  FROM position_items pi
+  WHERE is_chapter = false AND {PRICE_OK} AND {WEIGHT_OK}
+)
+SELECT (SELECT count(*) FROM priced) AS priced_rows,
+       (SELECT count(*) FROM priced
+         WHERE tw = round(uw * q, 2)
+           AND tm = round(um * q, 2)
+           AND ti = round(ui * q, 2)) AS rows_are_rounded,
+       (SELECT max(greatest(abs(tw - uw * q), abs(tm - um * q), abs(ti - ui * q)))
+          FROM priced) AS worst_residue,
+       (SELECT count(*) FROM position_items pi
+         WHERE is_chapter = false AND NOT ({PRICE_OK} AND {WEIGHT_OK})) AS unpriced_rows,
+       (SELECT count(*) FROM position_items pi
+         WHERE is_chapter = false AND NOT ({PRICE_OK} AND {WEIGHT_OK})
+           AND (coalesce(total_cost_works, 0) <> 0
+             OR coalesce(total_cost_materials, 0) <> 0
+             OR coalesce(total_cost_indirect_costs, 0) <> 0)) AS unpriced_with_money
+"""
+
 SPLIT_MONEY_SQL = """
 WITH g AS (
   SELECT r.stage_no, pi.catalog_position_id AS work_id, ch.work_category_id AS art,
@@ -242,18 +283,32 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
     #:     пара в `other` попасть не может ПО УСТРОЙСТВУ. Отдельная редакция
     #:     §2.7 утверждала обратное — «такие пары считаются отдельно, их
     #:     ноль», — и это был ноль недостижимости, а не замер (внешнее ревью,
-    #:     круг 3, вторая находка). Механизм считает `mix_priced_set_move`.
-    #:   • `mix_priced_set_move` — внутри `mix_volume_move`: пары, где
-    #:     ИЗМЕНИЛОСЬ ЧИСЛО РАСЦЕНЁННЫХ СТРОК. Там движение `den` — это
-    #:     доступность цены, а не движение физического объёма, и величина
-    #:     названа своим именем вместо того, чтобы прятаться внутри «объёма».
+    #:     круг 3, вторая находка). Что тут наблюдаемо,
+    #:     считают `mix_priced_rows_move` и `mix_qty_move` — без вывода о том,
+    #:     какая из двух величин двинула знаменатель.
+    #:   • `mix_priced_rows_move` — внутри `mix_volume_move`: пары, где
+    #:     ИЗМЕНИЛОСЬ ЧИСЛО пригодных строк. Имя говорит ровно это, и ни слова
+    #:     о причине (внешнее ревью, круг 4). Прежнее имя `mix_priced_set_move`
+    #:     обещало МНОЖЕСТВО, а считало ЧИСЛО: равное количество не исключает
+    #:     замены одной пригодной строки другой. Членство измерить нельзя —
+    #:     у строки сметы нет удостоверения, устойчивого между этапами (§1.3),
+    #:     и ровно поэтому фича сопоставляет по каталожной позиции. Причинной
+    #:     атрибуции («значит, двигалась доступность, а не объём») здесь тоже
+    #:     нет: оба механизма могут сработать в одной паре, и на стенде так и
+    #:     происходит.
+    #:   • `mix_qty_move` — внутри `mix_volume_move`: пары, где двинулся
+    #:     ФИЗИЧЕСКИЙ объём, то есть вес ВСЕХ строк клетки, а не только
+    #:     пригодных. Величина, которой прежняя редакция текста приписывала
+    #:     противоположное: на стенде физический объём двигался во ВСЕХ парах.
     #:   • `mix_volume_exact` — внутри `mix_volume_move`: пары, где абсолютная
     #:     тройка В ТОЧНОСТИ есть удельный числитель на ОБЕИХ сторонах. Тогда
     #:     `abs = доля × den` на каждой стороне, значит расхождение абсолютов
     #:     объясняется сменой ИСПОЛЬЗУЕМОГО объёма ЦЕЛИКОМ. Именно
     #:     используемого: `den` считается под фильтром пригодности, поэтому
-    #:     «целиком» относится к нему, а не к физическому объёму — разницу
-    #:     между ними и показывает `mix_priced_set_move`.
+    #:     «целиком» относится к нему, а не к физическому объёму. Обе
+    #:     величины стоят рядом счётчиками `mix_qty_move` и
+    #:     `mix_priced_rows_move`; какой из них двинул `den` в конкретной
+    #:     паре, замер не разделяет и не утверждает.
     #:   • `mix_exact_gap` — наибольшее по всем НЕ попавшим в `exact` парам
     #:     расхождение `|unit_* − *|` на стороне. Остаток обязан быть ЧИСЛОМ,
     #:     а не оговоркой «причина, но не доказанно единственная»: на стенде
@@ -270,7 +325,7 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
     #: ревью, круг 2: 1603 − 1508 = 95, а прямой счёт даёт 96).
     mix_volume_move = mix_volume_other = mix_trigger_total = 0
     mix_den_up = mix_den_down = mix_volume_exact = 0
-    mix_priced_set_move = mix_not_comparable = 0
+    mix_priced_rows_move = mix_qty_move = mix_not_comparable = 0
     mix_exact_gap = Decimal(0)
     for series in by_work.values():
         for prev, cur in zip(series, series[1:]):
@@ -306,11 +361,13 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
                             mix_den_up += 1
                         else:
                             mix_den_down += 1
-                        # Движение `den` бывает двух родов: изменился объём
-                        # тех же расценённых строк — или изменился САМ СОСТАВ
-                        # расценённого множества, то есть доступность цены.
+                        # Две НАБЛЮДАЕМЫЕ величины рядом, без вывода о том,
+                        # какая из них двинула `den`: число пригодных строк и
+                        # вес ВСЕХ строк клетки. Они не исключают друг друга.
                         if prev["rows_priced"] != cur["rows_priced"]:
-                            mix_priced_set_move += 1
+                            mix_priced_rows_move += 1
+                        if prev["qty"] != cur["qty"]:
+                            mix_qty_move += 1
                         # Используемый объём объясняет расхождение ЦЕЛИКОМ
                         # только там, где абсолютная тройка и есть удельный
                         # числитель: иначе в абсолюте сидит что-то ещё.
@@ -410,7 +467,8 @@ def trace_measurements(conn, tender: int, participant: str) -> dict:
         "mix_volume_move": mix_volume_move, "mix_volume_other": mix_volume_other,
         "mix_den_up": mix_den_up, "mix_den_down": mix_den_down,
         "mix_volume_exact": mix_volume_exact, "mix_exact_gap": mix_exact_gap,
-        "mix_priced_set_move": mix_priced_set_move,
+        "mix_priced_rows_move": mix_priced_rows_move,
+        "mix_qty_move": mix_qty_move,
         "mix_not_comparable": mix_not_comparable,
         "mix_trigger_total": mix_trigger_total,
         "late": sum(1 for s in by_art.values() if s[0] is None and any(c for c in s)),
@@ -449,6 +507,12 @@ def collect() -> dict:
                              "сходится точно", "расходится в пределах копейки"),
                             fetch(conn, MIX_SQL)[0])),
             "edge": dict(zip(EDGE_NAMES, fetch(conn, EDGE_SQL)[0])),
+            "rounding": dict(zip(("пригодных строк",
+                                  "из них равны round(unit × объём, 2)",
+                                  "худший остаток строки",
+                                  "непригодных строк",
+                                  "из них несут составляющие"),
+                                 fetch(conn, ROUNDING_SQL)[0])),
             "traces": [trace_measurements(conn, t, p) for t, p in TRACES],
             "split": {"works": split[0], "split_works": split[1],
                       "money_all": split[2], "money_split": split[3]},
@@ -473,6 +537,11 @@ def main() -> None:
         print(f"  {name}: {value}")
     print()
 
+    print("=== ОРАКУЛ ОКРУГЛЕНИЯ, вся база ===")
+    for name, value in data["rounding"].items():
+        print(f"  {name}: {value}")
+    print()
+
     print("=== КРАЕВЫЕ ЗНАЧЕНИЯ, обе трассы ===")
     for name, value in data["edge"].items():
         print(f"  {name}: {value}")
@@ -491,8 +560,9 @@ def main() -> None:
               f"{t['mix_volume_move']} — рост {t['mix_den_up']}, "
               f"убыль {t['mix_den_down']}, объяснено используемым объёмом целиком "
               f"{t['mix_volume_exact']} (остаток — копейки, не больше "
-              f"{t['mix_exact_gap']}), из них смена расценённого множества "
-              f"{t['mix_priced_set_move']}; иная причина при сравнимых "
+              f"{t['mix_exact_gap']}); двинулся физический объём в "
+              f"{t['mix_qty_move']}, число пригодных строк в "
+              f"{t['mix_priced_rows_move']}; иная причина при сравнимых "
               f"сторонах: {t['mix_volume_other']})")
         print(f"  строк, начинающихся позже Э{t['stages'][0]}: {t['late']}; "
               f"кончающихся раньше Э{t['stages'][-1]}: {t['early']}")
