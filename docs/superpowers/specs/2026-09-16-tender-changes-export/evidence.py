@@ -156,6 +156,19 @@ FROM position_items WHERE is_chapter = false
 #: Второй ноль ДОСТИЖИМ: строка без цены за единицу, но с ненулевой
 #: составляющей, сделала бы его единицей. Такой вопрос — «какой вход сделал бы
 #: ноль единицей» — задаётся каждому нулю, стоящему в тексте доказательством.
+#:
+#: Комплемент берётся через `IS NOT TRUE`, а НЕ через `NOT (...)` (внешнее
+#: ревью, круг 5). Трёхзначная логика SQL: при `NULL` в цене или весе внутренний
+#: предикат даёт `NULL`, `NOT NULL` — тоже `NULL`, и `WHERE` выбрасывает строку
+#: из ОБЕИХ подвыборок. Ровно названный выше контрпример — строка без цены с
+#: ненулевой составляющей — при `NULL`-цене не увеличил бы счётчик: вопрос
+#: «какой вход сделал бы ноль единицей» был задан, а ответ предикат принять не
+#: мог. `NULL`-вес в базе есть (2 строки), и разбиение сходилось лишь потому,
+#: что у них второй конъюнкт ЛОЖЕН.
+#:
+#: `rows_all` — сторож САМОГО РАЗБИЕНИЯ: `пригодные + непригодные = все`.
+#: Без него дыра в комплементе молча уменьшала бы обе части, и каждая по
+#: отдельности выглядела бы правдоподобной.
 ROUNDING_SQL = f"""
 WITH priced AS (
   SELECT unit_cost_works uw, unit_cost_materials um, unit_cost_indirect_costs ui,
@@ -172,12 +185,15 @@ SELECT (SELECT count(*) FROM priced) AS priced_rows,
        (SELECT max(greatest(abs(tw - uw * q), abs(tm - um * q), abs(ti - ui * q)))
           FROM priced) AS worst_residue,
        (SELECT count(*) FROM position_items pi
-         WHERE is_chapter = false AND NOT ({PRICE_OK} AND {WEIGHT_OK})) AS unpriced_rows,
+         WHERE is_chapter = false
+           AND ({PRICE_OK} AND {WEIGHT_OK}) IS NOT TRUE) AS unpriced_rows,
        (SELECT count(*) FROM position_items pi
-         WHERE is_chapter = false AND NOT ({PRICE_OK} AND {WEIGHT_OK})
+         WHERE is_chapter = false
+           AND ({PRICE_OK} AND {WEIGHT_OK}) IS NOT TRUE
            AND (coalesce(total_cost_works, 0) <> 0
              OR coalesce(total_cost_materials, 0) <> 0
-             OR coalesce(total_cost_indirect_costs, 0) <> 0)) AS unpriced_with_money
+             OR coalesce(total_cost_indirect_costs, 0) <> 0)) AS unpriced_with_money,
+       (SELECT count(*) FROM position_items WHERE is_chapter = false) AS rows_all
 """
 
 SPLIT_MONEY_SQL = """
@@ -511,7 +527,8 @@ def collect() -> dict:
                                   "из них равны round(unit × объём, 2)",
                                   "худший остаток строки",
                                   "непригодных строк",
-                                  "из них несут составляющие"),
+                                  "из них несут составляющие",
+                                  "строк базы всего"),
                                  fetch(conn, ROUNDING_SQL)[0])),
             "traces": [trace_measurements(conn, t, p) for t, p in TRACES],
             "split": {"works": split[0], "split_works": split[1],
