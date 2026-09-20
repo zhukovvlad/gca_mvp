@@ -314,4 +314,14 @@ export const tendersApi = {
   clearRoundCategoryOverride: ({ tenderId, roundId, lotKey, positionKey }: ClearRoundCategoryOverrideInput): Promise<CategoryOverrideChangeSummary> =>
     api.delete<CategoryOverrideChangeSummary>(`/v1/tenders/${tenderId}/rounds/${roundId}/category-overrides`,
       { data: { lot_key: lotKey, position_key_in_proposal: positionKey } }).then((r) => r.data),
+  /**
+   * Книга «Изменения КП» — лист на каждого участника с двумя и более сметами
+   * (спека 2026-09-16-tender-changes-export-design.md §2.1, §2.11). Собирается
+   * по ВСЕМ этапам всех сравнимых участников — выбор на решётке карточки
+   * здесь не участвует, поэтому вход один: `tenderId`.
+   */
+  changesExport: (tenderId: number): Promise<Blob> =>
+    api
+      .get<Blob>(`/v1/tenders/${tenderId}/changes-export`, { responseType: "blob" })
+      .then((r) => r.data),
 };

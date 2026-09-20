@@ -23,21 +23,27 @@
 Имя файла уезжает в `filename*=UTF-8''…` (percent-кодирование): в нём русские буквы
 и номер договора, а `filename=` в ASCII их не переносит — браузер получил бы
 искажённое имя.
+
+**`xlsx_response` и `safe_filename_part` — в `backend/responses.py`** (план
+фичи «Выгрузка Изменения КП», Task 1): второй роутер (`routers/tenders.py`)
+зовёт те же функции, и второе написание здесь разъехалось бы с первым. Три
+отчёта этого файла называют фолбэк явно словом «договор» — тем же, что было
+зашито в прежнем приватном хелпере.
 """
 from __future__ import annotations
 
 import datetime as dt
 import logging
 from decimal import Decimal
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from crud import comparison as crud_comparison
 from crud import reports as crud_reports
 from crud.common import DomainError
 from database import get_db
+from responses import safe_filename_part, xlsx_response
 from routers.domain_errors import raise_domain_error
 from services.excel_comparison import build_comparison_sheet
 from services.excel_reports import build_bank_comparison, build_contract_summary
@@ -45,28 +51,6 @@ from services.excel_reports import build_bank_comparison, build_contract_summary
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
 log = logging.getLogger(__name__)
-
-XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-def _xlsx(content: bytes, filename: str) -> Response:
-    return Response(
-        content=content,
-        media_type=XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-    )
-
-
-def _safe_filename_part(value: str) -> str:
-    """Убирает из части имени файла то, что ломает путь.
-
-    Номер договора приходит из карточки и может содержать `/` или `\\` (нумерация
-    вида «12/2025» встречается), а такой символ в имени файла Windows и часть
-    браузеров трактуют как разделитель пути.
-    """
-    for bad in '/\\:*?"<>|':
-        value = value.replace(bad, "-")
-    return value.strip() or "договор"
 
 
 @router.get("/contract-summary")
@@ -80,9 +64,9 @@ def contract_summary(
     except DomainError as e:
         raise_domain_error(e)
     content = build_contract_summary(data, generated_at=dt.date.today())
-    number = _safe_filename_part(data["header"]["contract_number"])
+    number = safe_filename_part(data["header"]["contract_number"], fallback="договор")
     log.info("report_contract_summary contract=%s rows=%s", contract_id, len(data["rows"]))
-    return _xlsx(content, f"Свод расценок {number}.xlsx")
+    return xlsx_response(content, f"Свод расценок {number}.xlsx")
 
 
 @router.get("/bank-comparison")
@@ -106,7 +90,7 @@ def bank_comparison(
         len(data["sections"]),
         data["totals"]["works"],
     )
-    return _xlsx(content, "Сравнение с нормативами.xlsx")
+    return xlsx_response(content, "Сравнение с нормативами.xlsx")
 
 
 #: Сколько номеров договоров помещается в имя файла до того, как оно станет
@@ -122,12 +106,14 @@ _MAX_NUMBERS_IN_FILENAME = 3
 def _comparison_filename(columns: list[dict]) -> str:
     if not columns:
         # Пустая выборка — законный ответ (`resolve_selection`), и имя обязано
-        # это признавать. `_safe_filename_part` отдал бы здесь своё умолчание
+        # это признавать. `safe_filename_part` отдал бы здесь свой фолбэк
         # «договор», то есть «Сравнение договоров договор.xlsx».
         return "Сравнение договоров.xlsx"
     if len(columns) > _MAX_NUMBERS_IN_FILENAME:
         return f"Сравнение договоров ({len(columns)}).xlsx"
-    numbers = _safe_filename_part("-".join(column["contract_number"] for column in columns))
+    numbers = safe_filename_part(
+        "-".join(column["contract_number"] for column in columns), fallback="договор"
+    )
     return f"Сравнение договоров {numbers}.xlsx"
 
 
@@ -200,4 +186,4 @@ def comparison_report(
         "report_comparison contracts=%s rows=%s",
         len(selection.contract_ids), len(data["rows"]),
     )
-    return _xlsx(content, _comparison_filename(data["columns"]))
+    return xlsx_response(content, _comparison_filename(data["columns"]))
