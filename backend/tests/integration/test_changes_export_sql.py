@@ -430,8 +430,9 @@ class TestUnitComponentsNumUsesUnitCost:
 class TestRouteIgnoresVolumeOnlyGrowthAsComposition:
     def test_volume_growth_alone_is_not_reported_as_composition_change(self, db_session, factories):
         """Спека §2.7: основание «состав» считается НА ЕДИНИЦУ объёма именно
-        потому, что по абсолютам один лишь рост объёма выглядел бы сменой
-        состава. Вход: `unit_cost_*` и цена (`unit_cost_total`) НЕ меняются
+        потому, что по абсолютам изменение объёма при неизменных долях
+        выглядело бы сменой состава. Здесь взято движение вверх.
+        Вход: `unit_cost_*` и цена (`unit_cost_total`) НЕ меняются
         между этапами, `suggested_quantity` УДВАИВАЕТСЯ — маршрут обязан
         назвать «объём» и НЕ назвать «состав»."""
         tender = factories.TenderFactory.create()

@@ -570,7 +570,7 @@ class TestRoute:
 
     def test_a2_23_mix_route_basis_is_per_unit_not_absolute(self):
         """A2.23: основание «состав» считается НА ЕДИНИЦУ объёма — по абсолютам
-        один лишь рост объёма выглядел бы сменой состава."""
+        изменение объёма при неизменных долях выглядело бы сменой состава."""
         sheet = sheet_of(stages(2), groups=[
             group_row(1, catalog_position_id=1, quantity="2", amount="100", works="40", materials="50",
                       indirect="10", price_num="100", price_den="2",
