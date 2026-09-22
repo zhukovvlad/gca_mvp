@@ -62,6 +62,10 @@ RAW_SQL_INDEXES = {
     "uq_estimates_offer",               # UNIQUE (offer_id) WHERE offer_id IS NOT NULL — 0015
     "uq_estimates_round",               # UNIQUE (round_id) WHERE round_id IS NOT NULL — 0015
     "uq_import_jobs_active_round",      # UNIQUE (round_id) WHERE ... NOT IN terminal — 0015
+    # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status='active' — 0017
+    "uq_work_families_active_name_unit",
+    "uq_context_buckets_position_category",  # UNIQUE (catalog_position_id, COALESCE(work_category_id,-1)) — 0017
+    "uq_catalog_contexts_default_per_bucket",  # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — 0017
 }
 
 

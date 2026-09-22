@@ -387,6 +387,22 @@ _DOMAIN_TABLES = (
     # бы их в базе, и соседние тесты видели бы чужой справочник.
     "inflation_index_values",
     "inflation_series",
+    # Семантический контур (миграция 0017), все шесть таблиц — ЯВНО, а не в
+    # расчёте на каскад от catalog_positions ниже:
+    #   - work_families каскадом НЕ очистится вовсе — на неё ссылается
+    #     catalog_contexts, а не наоборот, и TRUNCATE catalog_positions CASCADE
+    #     до неё не доходит (семьи пережили бы тест, и частичная уникальность
+    #     имени среди active сделала бы порядок тестов значимым);
+    #   - остальные пять очистились бы каскадом СЛУЧАЙНО (через
+    #     catalog_positions -> context_buckets -> catalog_contexts -> ...) —
+    #     защитой, которой никто не объявлял, и которую снимет правка любого
+    #     внешнего ключа молча. Перечисление говорит то же самое явно.
+    "semantic_events",
+    "context_members",
+    "context_routing_rules",
+    "catalog_contexts",
+    "context_buckets",
+    "work_families",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",
