@@ -39,6 +39,7 @@ from models import Contract, ImportJob, ImportJobStatus, TenderRound
 from parser import EstimateParseError, parse_estimate
 from parser.sanitize_text import NormalizationUnavailableError
 from services.category_resolution import CategoryResolver
+from services.context_routing import RoutingError, route_positions
 from services.estimate_import import EstimateImportError, import_estimate
 from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
@@ -282,7 +283,7 @@ def run_import_job(
                 positions_to_match = outcome.positions_to_match
                 domain_warnings = outcome.warnings
                 estimates_created = 1
-                log_estimate_ids = [outcome.estimate_id]
+                estimate_ids = [outcome.estimate_id]
             else:
                 tender_round = db.get(TenderRound, context.round_id)
                 if tender_round is None:
@@ -299,7 +300,7 @@ def run_import_job(
                 positions_to_match = round_outcome.positions_to_match
                 domain_warnings = round_outcome.warnings
                 estimates_created = round_outcome.estimates_created
-                log_estimate_ids = round_outcome.estimate_ids
+                estimate_ids = round_outcome.estimate_ids
             deadline.check("импорт")
 
             # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:
@@ -311,6 +312,14 @@ def run_import_job(
             match = match_positions(db, positions_to_match)
             deadline.check("матчинг")
 
+            # Членства строятся МЕЖДУ матчингом и финалом, в той же транзакции
+            # сессии B (§5, план задачи 5): позиции уже сопоставлены с
+            # каталогом (`catalog_position_id` заполнен), а `done` со
+            # счётчиками ещё не записан. Отказ маршрутизации (`RoutingError`)
+            # роняет job тем же путём, что и `EstimateImportError` — откат
+            # домена целиком, включая уже вставленные членства.
+            routing_outcome = route_positions(db, estimate_ids=estimate_ids)
+
             finalize_done(
                 db,
                 job_id,
@@ -321,10 +330,11 @@ def run_import_job(
             )
 
         log.info(
-            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s",
+            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s, маршрутизация=%s",
             job_id,
-            log_estimate_ids,
+            estimate_ids,
             match.counters.as_dict(),
+            routing_outcome,
         )
 
     except StorageFileNotFound:
@@ -337,6 +347,9 @@ def run_import_job(
         status.fail(str(exc))
     except EstimateImportError as exc:
         log.warning("Задание %d: смета не импортирована: %s", job_id, exc)
+        status.fail(str(exc))
+    except RoutingError as exc:
+        log.warning("Задание %d: маршрутизация отказала: %s", job_id, exc)
         status.fail(str(exc))
     except NormalizationUnavailableError as exc:
         # Тихая деградация здесь недопустима: нелемматизированная строка развела бы
