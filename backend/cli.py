@@ -10,6 +10,7 @@ from database import SessionLocal
 from db_guard import ensure_mutation_allowed
 from models import User, UserRole
 from security import hash_password
+from services.work_families import load_seed
 
 
 @click.group()
@@ -50,6 +51,28 @@ def create_user(email: str, role: str, password: str) -> None:
         db.commit()
         db.refresh(user)
         click.echo(f"Пользователь создан: id={user.id} email={user.email} role={role}")
+    finally:
+        db.close()
+
+
+@cli.command("seed-work-families")
+def seed_work_families() -> None:
+    """Загрузить 42 начальные семьи работ из `backend/seeds/work_families_initial.json`.
+
+    Идемпотентно: повторный запуск не создаёт дублей и не трогает правок
+    пользователя (`services/work_families.load_seed`, план фичи «Семьи и
+    контексты», задача 7).
+    """
+    _guard("seed-work-families")
+    db = SessionLocal()
+    try:
+        report = load_seed(db)
+        db.commit()
+        click.echo(
+            f"Семьи работ: создано={report.created}, "
+            f"пропущено (уже существуют)={report.skipped_existing}, "
+            f"с определением в файле={report.with_definition}"
+        )
     finally:
         db.close()
 

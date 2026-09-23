@@ -1,0 +1,254 @@
+[
+  {
+    "seed_key": "fam-01",
+    "title": "Геотекстиль",
+    "unit": "M2",
+    "definition": "Должны совпасть упоминание текстиля и его характеристик. Других работ кроме геотекстиля в данной строке быть не должно"
+  },
+  {
+    "seed_key": "fam-02",
+    "title": "Посадка растений",
+    "unit": "PCS",
+    "definition": "В данную группу попадает посадка растений безотносительно того, кустарник это или дерево. Измеряются количеством в штуках. Трава и газоны сюда не входит."
+  },
+  {
+    "seed_key": "fam-03",
+    "title": "Покраска стен",
+    "unit": "M2",
+    "definition": "Измеряется в м2 площади стен. Другие работ, кроме покраски в данном пункте нет."
+  },
+  {
+    "seed_key": "fam-04",
+    "title": "ЦПС",
+    "unit": "M2",
+    "definition": "Только стяжка в м2. Других работ в данном семействе нет."
+  },
+  {
+    "seed_key": "fam-05",
+    "title": "Устройство пола",
+    "unit": "M2",
+    "definition": "Устройство пирога пола в м2. Включает в себя разные слои пола."
+  },
+  {
+    "seed_key": "fam-06",
+    "title": "Устройство армокаркасов",
+    "unit": "TON",
+    "definition": "Устройство арматуры. Обысно просто арматура в тоннах, но в строке может указана и проволока для нее."
+  },
+  {
+    "seed_key": "fam-07",
+    "title": "Устройство жб конструкций",
+    "unit": "M3",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-08",
+    "title": "Грунт растительный",
+    "unit": "M3",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-09",
+    "title": "МАФ",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-10",
+    "title": "Подпорные стены",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-11",
+    "title": "Навигационные элементы",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-12",
+    "title": "Светильники",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-13",
+    "title": "Ворота",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-14",
+    "title": "Двери",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-15",
+    "title": "Лифты",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-16",
+    "title": "Укладка гидроизоляции",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-17",
+    "title": "Шинопроводы",
+    "unit": "M",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-18",
+    "title": "Облицовка керамогранитом",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-19",
+    "title": "Устройство песчаного основания",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-20",
+    "title": "Посадка \"многолетников и почвопокровных\"",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-21",
+    "title": "Светопрозрачные перегородки",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-22",
+    "title": "Устройство каркасов витражных систем",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-23",
+    "title": "Обработка бетона",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-24",
+    "title": "Обработка потолка",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-25",
+    "title": "Устройство потолка",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-26",
+    "title": "Устройство стен",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-27",
+    "title": "Устройство жб конструкций кровли, проездов и пр.",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-28",
+    "title": "Ниппели пожаротушения",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-29",
+    "title": "Земляные работы",
+    "unit": "M3",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-30",
+    "title": "Люки и крышки колодцев",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-31",
+    "title": "Лестницы",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-32",
+    "title": "Инъекционные трубки",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-33",
+    "title": "Извещатели",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-34",
+    "title": "Инфраструктура лифтов",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-35",
+    "title": "Плиты ЦСП",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-36",
+    "title": "Грязезащитные коврики",
+    "unit": "M2",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-37",
+    "title": "Отдельные фундаменты",
+    "unit": "M3",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-38",
+    "title": "Индивидуальный МАФ",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-39",
+    "title": "Мусорные контейнеры",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-40",
+    "title": "Люки в чистом полу",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-41",
+    "title": "Опоры и закладные для ворот",
+    "unit": "PCS",
+    "definition": null
+  },
+  {
+    "seed_key": "fam-42",
+    "title": "Подключение оборудования к электросети",
+    "unit": "SET",
+    "definition": null
+  }
+]
