@@ -226,7 +226,9 @@ _EXPECTED_REQUIRED_KEYS: dict[str, frozenset[str]] = {
 }
 
 _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
-    ("context_created", "origin"): frozenset({"import", "backfill", "split", "review_merge"}),
+    ("context_created", "origin"): frozenset(
+        {"import", "backfill", "split", "review_merge", "stale_accepted"}
+    ),
     ("members_moved", "reason"): frozenset({"manual", "stale_accepted", "review_merge"}),
     ("context_archived", "reason"): frozenset({"operator", "review_merge", "context_merge"}),
     ("family_created", "origin"): frozenset({"seed", "operator"}),

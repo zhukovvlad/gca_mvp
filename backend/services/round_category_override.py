@@ -127,6 +127,11 @@ def _recompute(db: Session, estimate_ids: list[int]) -> ApplyResult:
         chapters += r.chapters_updated
         extras += r.additional_works_updated
         manual += r.chapters_manual
+
+    # `membership_state` (спека §2.5) приводит `apply_overrides` в цикле выше —
+    # по всем позициям каждой сметы раунда; эффективная статья позиции
+    # зависит только от разделов её же предложения, поэтому отдельного
+    # приведения по раунду здесь нет.
     return ApplyResult(chapters, extras, manual)
 
 

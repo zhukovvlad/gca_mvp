@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 import services.context_routing as context_routing_module
 from models import (
@@ -55,10 +55,13 @@ from models import (
     ContextMember,
     ContextRoutingRule,
     DecisionSource,
+    MembershipState,
+    PositionItem,
     RoutedBy,
     SemanticState,
 )
 from services.context_routing import (
+    NO_CATEGORY_SENTINEL,
     ChapterContext,
     RulePredicate,
     chapter_context,
@@ -116,6 +119,21 @@ REFUSE_RULE_DOES_NOT_COVER = "rule_does_not_cover"
 #: прежних операций; отказ на входные данные ЭТОЙ операции план не называет,
 #: тот же приём, что семь кодов выше).
 REFUSE_NOT_CONFLICTED = "not_conflicted"
+#: Задача 10 («принять предложение переноса», спека §2.8): эффективная статья
+#: позиции успела измениться между показом предложения и принятием под
+#: блокировкой (сверх плана — тот же приём, что коды выше). Отказ несёт
+#: свежее `TransferProposal` атрибутом `new_proposal` (может быть `None`,
+#: если позиция успела вернуться в `CURRENT`). Тем же кодом отказывает и
+#: гонка на целевой корзине: если корзина, найденная ПОСЛЕ блокировки по
+#: свежей статье, не входит в заблокированный набор — значит она появилась
+#: МЕЖДУ первым чтением и локом, и держать её мы не можем; отказ и здесь
+#: несёт свежее предложение.
+REFUSE_CATEGORY_CHANGED = "category_changed"
+#: Задача 10, сверх плана: принятие предложения на `CURRENT`-членстве —
+#: переносить нечего, `transfer_proposal` на нём уже вернул бы `None`. Свой
+#: код, а не `REFUSE_INVALID_MEMBERSHIP`: членство существует и валидно,
+#: просто не устарело.
+REFUSE_NOT_STALE = "not_stale"
 
 
 @dataclass(frozen=True)
@@ -870,3 +888,363 @@ def accept_target_decision(db: Session, *, position_item_ids: list[int], actor_i
     db.flush()
 
     return len(unique_ids)
+
+
+# ---------------------------------------------------------------------------
+#  Каскадные события (задача 10, спека §2.5, §2.8): ручной разнос помечает
+#  членства `STALE`, предложение и принятие переноса.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RefreshReport:
+    """Итог приведения `membership_state` к вычисляемому предикату — три
+    исхода ПОРОЗНЬ (решение оркестратора): один счётчик «затронуто» не
+    отличил бы приведение в `CURRENT` от приведения в `STALE`."""
+
+    marked_stale: int
+    marked_current: int
+    unchanged: int
+
+
+def refresh_membership_states(db: Session, *, position_item_ids: list[int]) -> RefreshReport:
+    """Приводит хранимое `membership_state` к вычисляемому предикату — В ОБЕ
+    СТОРОНЫ (спека §2.5, DoD 12; решение оркестратора):
+
+    `STALE` ⇔ `COALESCE(bucket.work_category_id, -1) <>
+    COALESCE(эффективная статья позиции, -1)`; иначе `CURRENT`. В Python
+    сравнение `bucket.work_category_id != effective` даёт тот же ответ БЕЗ
+    сентинела: `None != None` — `False` (обе стороны «нет статьи», не стало),
+    `None != N` — `True` (стало), `N != M` — как обычно; сентинел
+    (`NO_CATEGORY_SENTINEL`) нужен только SQL-версии предиката
+    (`stale_mismatch_report`), где `NULL` не совпадает сам с собой.
+
+    Затрагивает ТОЛЬКО строки с явным членством (`context_members` по
+    `position_item_id`) — строки-разделы и несопоставленные позиции членства
+    не имеют по построению (спека §2.2) и пропускаются молча тем же `IN`,
+    не отдельной веткой. Пустой `position_item_ids` — тот же путь, не особый
+    случай: `IN (пусто)` не находит строк, дальнейшее тело — no-op, `flush`
+    ничего не коммитит (нет грязных объектов), `RefreshReport(0, 0, 0)`
+    возвращается тем же кодом, что и на непустом входе без изменений.
+    Ранний выход на пустом списке, условный `flush` и дедупликация
+    `position_item_ids` были ТРЕМЯ эквивалентными решениями — ни одно не
+    меняет результат ни на одном входе, убраны.
+
+    Пишет `members_marked_stale` (`count`, `trigger='category_override'`) на
+    КАЖДЫЙ контекст, где хотя бы одно его членство стало `STALE` в ЭТОМ
+    вызове (спека §2.14); при нуле — событие не пишется. Предмет события —
+    контекст, ДО которого домаршрутизации ещё не дошло: разнос помечает
+    несоответствие, не переносит (перенос — `accept_transfer`, отдельная
+    операция).
+    """
+    members = (
+        db.execute(sa.select(ContextMember).where(ContextMember.position_item_id.in_(position_item_ids)))
+        .scalars()
+        .all()
+    )
+
+    marked_stale = marked_current = unchanged = 0
+    stale_by_context: dict[int, int] = {}
+
+    for member in members:
+        bucket = db.get(ContextBucket, member.bucket_id)
+        effective = context_routing_module.effective_category_id(db, member.position_item_id)
+        desired_stale = bucket.work_category_id != effective
+        desired = MembershipState.STALE.value if desired_stale else MembershipState.CURRENT.value
+        if member.membership_state == desired:
+            unchanged += 1
+            continue
+        member.membership_state = desired
+        if desired_stale:
+            marked_stale += 1
+            stale_by_context[member.context_id] = stale_by_context.get(member.context_id, 0) + 1
+        else:
+            marked_current += 1
+
+    db.flush()
+
+    for context_id, count in stale_by_context.items():
+        record_event(
+            db,
+            event_type="members_marked_stale",
+            context_id=context_id,
+            payload={"count": count, "trigger": "category_override"},
+        )
+
+    return RefreshReport(marked_stale, marked_current, unchanged)
+
+
+def stale_mismatch_report(db: Session) -> list[int]:
+    """Сверка DoD 12 НЕЗАВИСИМЫМ запросом (решение оркестратора) — не через
+    `effective_category_id`: сверщик, делящий предикат с генератором,
+    доказывает согласованность, а не правильность.
+
+    Свой SQL: `position_items → chapter_item_id → её строка-раздел →
+    work_category_id` (тот же ОДИН уровень, что материализован резолвером —
+    статья раздела уже несёт унаследованное значение, спека §1.7, дальше
+    цепочку ходить не нужно) против `context_buckets.work_category_id`
+    членства, с тем же `COALESCE(-1)`, что у предиката выше.
+
+    Возвращает `position_item_id` членств, у которых ХРАНИМОЕ
+    `membership_state` НЕ РАВНО вычисленному этим запросом.
+    """
+    chapter = aliased(PositionItem)
+    computed_stale = sa.func.coalesce(chapter.work_category_id, NO_CATEGORY_SENTINEL) != sa.func.coalesce(
+        ContextBucket.work_category_id, NO_CATEGORY_SENTINEL
+    )
+    stored_stale = ContextMember.membership_state == MembershipState.STALE.value
+
+    rows = db.execute(
+        sa.select(ContextMember.position_item_id)
+        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+        .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
+        .join(ContextBucket, ContextBucket.id == ContextMember.bucket_id)
+        .where(computed_stale != stored_stale)
+        .order_by(ContextMember.position_item_id)
+    ).scalars().all()
+    return list(rows)
+
+
+def _resolve_target_context(
+    db: Session, *, bucket: ContextBucket, chapters: ChapterContext
+) -> tuple[CatalogContext, int | None, str]:
+    """Обычная маршрутизация БЕЗ единой записи (спека §2.8): правило по
+    возрастанию `ordinal`, иначе действующий контекст по умолчанию — та же
+    логика, что `context_routing._apply_routing`, но БЕЗ ветки «ручное
+    решение сильнее правила»: и предложение переноса, и его принятие вправе
+    переопределить прежний ручной выбор члена — оператор явно решает
+    перенести устаревшее членство, это не переоценка импортом (решение
+    исполнителя: спека §2.8 такую переоценку правилом не запрещает, а
+    молчаливое сохранение `routed_by='manual'` при явном переносе оператором
+    оставило бы будущий импорт неспособным поправить маршрут).
+
+    Возвращает `(context, routing_rule_id, routed_by)`.
+    """
+    rules = (
+        db.execute(
+            sa.select(ContextRoutingRule)
+            .where(ContextRoutingRule.bucket_id == bucket.id)
+            .order_by(ContextRoutingRule.ordinal)
+        )
+        .scalars()
+        .all()
+    )
+    for rule in rules:
+        if evaluate_predicate(rule.predicate, chapters):
+            return db.get(CatalogContext, rule.context_id), rule.id, RoutedBy.rule.value
+    return context_routing_module._live_default_context(db, bucket.id), None, RoutedBy.default.value
+
+
+def _lookup_bucket(db: Session, *, catalog_position_id: int, work_category_id: int | None) -> ContextBucket | None:
+    """Ищет существующую корзину «написание × статья» БЕЗ создания (спека
+    §2.8: предложение переноса не пишет ни строки — корзина цели может ещё
+    не существовать, и это законный исход, а не ошибка)."""
+    return db.execute(
+        sa.select(ContextBucket).where(
+            ContextBucket.catalog_position_id == catalog_position_id,
+            ContextBucket.work_category_id == work_category_id,
+        )
+    ).scalar_one_or_none()
+
+
+@dataclass(frozen=True)
+class TransferProposal:
+    """Предложение переноса устаревшего членства — вычисляется, не хранится
+    (спека §2.8). `None` у `transfer_proposal` для `CURRENT`-членства.
+
+    **Решение оркестратора** (отступление от типа плана):
+    `proposed_bucket_id`/`proposed_context_id` — `int | None`, а не `int`:
+    корзины цели может ещё не быть, тогда оба поля `None`, и текст «корзина
+    будет создана при принятии» несёт сам факт `None`, отдельного поля для
+    него не заводится.
+    """
+
+    position_item_id: int
+    current_context_id: int
+    proposed_bucket_id: int | None
+    proposed_context_id: int | None
+    effective_category_id: int | None
+
+
+def transfer_proposal(db: Session, *, position_item_id: int) -> TransferProposal | None:
+    """Вычисляет предложение переноса БЕЗ единой записи (спека §2.8).
+
+    `None` — членство `CURRENT`: переносить некуда, оно уже в правильной
+    корзине. Для `STALE` — корзина по паре «то же написание × текущая
+    эффективная статья», и в ней контекст обычной маршрутизацией
+    (`_resolve_target_context`). Корзины цели может ещё не быть — тогда
+    `proposed_bucket_id`/`proposed_context_id` — `None`.
+    """
+    member = db.get(ContextMember, position_item_id)
+    if member is None:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            f"позиция {position_item_id} без членства",
+            position_item_ids=[position_item_id],
+        )
+    if member.membership_state != MembershipState.STALE.value:
+        return None
+
+    current_bucket = db.get(ContextBucket, member.bucket_id)
+    chapters = chapter_context(db, position_item_id)
+    effective = chapters.category_id
+
+    target_bucket = _lookup_bucket(
+        db, catalog_position_id=current_bucket.catalog_position_id, work_category_id=effective
+    )
+    if target_bucket is None:
+        return TransferProposal(
+            position_item_id=position_item_id,
+            current_context_id=member.context_id,
+            proposed_bucket_id=None,
+            proposed_context_id=None,
+            effective_category_id=effective,
+        )
+
+    target_context, _rule_id, _routed_by = _resolve_target_context(db, bucket=target_bucket, chapters=chapters)
+    return TransferProposal(
+        position_item_id=position_item_id,
+        current_context_id=member.context_id,
+        proposed_bucket_id=target_bucket.id,
+        proposed_context_id=target_context.id,
+        effective_category_id=effective,
+    )
+
+
+def accept_transfer(
+    db: Session, *, position_item_id: int, expected_category_id: int | None, actor_id: int
+) -> int:
+    """Принимает предложение переноса под блокировкой и с перечитыванием
+    (спека §2.8): `FOR UPDATE` на членство (взято ПЕРВЫМ же запросом — до
+    ЛЮБОГО другого чтения) и на корзины (текущую и цели, если она уже
+    существует, по возрастанию `id`), заново считает эффективную статью.
+
+    Раскрывшееся расхождение (`fresh_effective != expected_category_id`, ЛИБО
+    целевая корзина, найденная свежей статьёй, не входит в набор, который мы
+    реально держим под локом — гонка на СОЗДАНИИ корзины между первым чтением
+    и локом) отказывает `REFUSE_CATEGORY_CHANGED`-ом с НОВЫМ предложением
+    атрибутом `new_proposal`, ничего не перенося. Совпадение — членство
+    маршрутизируется в корзину цели обычной маршрутизацией (корзина и
+    контекст по умолчанию создаются при необходимости,
+    `origin='stale_accepted'`), `membership_state` становится `CURRENT`,
+    пишется `members_moved` (`reason='stale_accepted'`).
+
+    **Принятие сбрасывает `routed_by='manual'`, если оно было**: предложение
+    и его принятие маршрутизируют ОДНОЙ и той же функцией
+    (`_resolve_target_context`), которая не несёт ветки «ручное решение
+    сильнее правила» — показанное оператору предложение и то, что реально
+    исполняется, обязаны совпадать, а принятие — явная операция оператора,
+    вправе переопределить прежний ручной выбор (решение исполнителя задачи
+    10; спека §2.8 явно этот случай не называет, оставлено на исполнителя).
+
+    Raises:
+        ContextOperationError: `position_item_id` без членства
+            (`REFUSE_INVALID_MEMBERSHIP`, оба чтения — до и после лока);
+            членство `CURRENT`, а не `STALE` (`REFUSE_NOT_STALE`, сверх
+            плана — переносить нечего, `transfer_proposal` на нём вернул бы
+            `None`); статья/целевая корзина разошлись с показанным
+            (`REFUSE_CATEGORY_CHANGED`, см. выше).
+
+    Возвращает число перенесённых членств (1).
+    """
+    member = db.execute(
+        sa.select(ContextMember).where(ContextMember.position_item_id == position_item_id).with_for_update()
+    ).scalar_one_or_none()
+    if member is None:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            f"позиция {position_item_id} без членства",
+            position_item_ids=[position_item_id],
+        )
+    if member.membership_state != MembershipState.STALE.value:
+        raise ContextOperationError(
+            REFUSE_NOT_STALE,
+            f"членство {position_item_id} не устарело (CURRENT) — переносить нечего",
+            position_item_id=position_item_id,
+        )
+
+    current_bucket = db.get(ContextBucket, member.bucket_id)
+    catalog_position_id = current_bucket.catalog_position_id
+    chapters = chapter_context(db, position_item_id)
+    candidate_effective = chapters.category_id
+    candidate_target_bucket = _lookup_bucket(
+        db, catalog_position_id=catalog_position_id, work_category_id=candidate_effective
+    )
+
+    bucket_ids = sorted(
+        {member.bucket_id} | ({candidate_target_bucket.id} if candidate_target_bucket is not None else set())
+    )
+    lock_buckets(db, bucket_ids, exclusive=True)
+    db.expire_all()  # см. докстроку модуля — иначе следующий db.get вернёт кэш
+
+    # Перечитывание — не только состояния, но и существования (спека §2.8):
+    # членство могло уйти каскадом МЕЖДУ первым чтением и блокировкой (тот же
+    # приём, что NIT-2 в `move_members`).
+    member = db.execute(
+        sa.select(ContextMember).where(ContextMember.position_item_id == position_item_id).with_for_update()
+    ).scalar_one_or_none()
+    if member is None:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            f"позиция {position_item_id} без членства (после блокировки)",
+            position_item_ids=[position_item_id],
+        )
+
+    chapters = chapter_context(db, position_item_id)
+    fresh_effective = chapters.category_id
+    if fresh_effective != expected_category_id:
+        raise ContextOperationError(
+            REFUSE_CATEGORY_CHANGED,
+            f"эффективная статья позиции {position_item_id} изменилась: ожидалась "
+            f"{expected_category_id!r}, сейчас {fresh_effective!r}",
+            position_item_id=position_item_id,
+            new_proposal=transfer_proposal(db, position_item_id=position_item_id),
+        )
+
+    # Статья совпала с ожидаемой, но КОРЗИНА цели могла родиться МЕЖДУ
+    # первым чтением (candidate_target_bucket) и локом —
+    # `bucket_ids` заперт ДО этого рождения и её не держит. Перечитываем
+    # корзину цели СВЕЖЕЙ (уже под локом на всём, что мы держим) и отказываем,
+    # если она не входит в заблокированный набор: держать её мы не можем, а
+    # маршрутизировать в незапертую корзину — races с любой операцией,
+    # берущей на неё `FOR UPDATE` (разделить/слить/архивировать, задача 6).
+    fresh_target_bucket = _lookup_bucket(
+        db, catalog_position_id=catalog_position_id, work_category_id=fresh_effective
+    )
+    if fresh_target_bucket is not None and fresh_target_bucket.id not in bucket_ids:
+        raise ContextOperationError(
+            REFUSE_CATEGORY_CHANGED,
+            f"целевая корзина позиции {position_item_id} изменилась между чтением и "
+            "блокировкой (гонка на создании корзины)",
+            position_item_id=position_item_id,
+            new_proposal=transfer_proposal(db, position_item_id=position_item_id),
+        )
+
+    catalog_position = db.get(CatalogPosition, catalog_position_id)
+    new_bucket, _bucket_created, _ctx_created = context_routing_module._get_or_create_bucket_with_default_context(
+        db,
+        catalog_position=catalog_position,
+        work_category_id=fresh_effective,
+        chain=chapters.chain,
+        origin="stale_accepted",
+    )
+    target_context, matched_rule_id, routed_by_value = _resolve_target_context(
+        db, bucket=new_bucket, chapters=chapters
+    )
+
+    from_context_id = member.context_id
+    member.context_id = target_context.id
+    member.bucket_id = new_bucket.id
+    member.routed_by = routed_by_value
+    member.routing_rule_id = matched_rule_id
+    member.membership_state = MembershipState.CURRENT.value
+    db.flush()
+
+    record_event(
+        db,
+        event_type="members_moved",
+        context_id=target_context.id,
+        actor_id=actor_id,
+        payload={"from_context_id": from_context_id, "moved_members": 1, "reason": "stale_accepted"},
+    )
+
+    return 1
