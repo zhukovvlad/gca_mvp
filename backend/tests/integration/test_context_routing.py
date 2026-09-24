@@ -933,9 +933,13 @@ class TestLockBucketsMissingBucketRaises:
         with pytest.raises(RoutingError) as excinfo:
             lock_buckets(db_session, [real_bucket_id, missing_id], exclusive=False)
 
+        # Id сравниваются множеством из списка в сообщении, а не подстрокой:
+        # при real_bucket_id = 1 подстрока «1» есть и внутри missing_id.
         message = str(excinfo.value)
-        assert str(missing_id) in message
-        assert str(real_bucket_id) not in message
+        listed = re.search(r"\[([\d,\s]+)\]", message)
+        assert listed is not None, message
+        named_ids = {int(part) for part in listed.group(1).split(",")}
+        assert named_ids == {missing_id}
 
 
 # ---------------------------------------------------------------------------
