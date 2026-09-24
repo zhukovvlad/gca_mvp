@@ -50,7 +50,7 @@ os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 #: реальных оферт: samples/ не коммитится, AGENTS.md §9). Любой пропуск вне
 #: реестра — прежде всего skip барьеров db_engine — роняет прогон: зелёный
 #: код возврата при молча пропущенном integration-слое и есть главный дефект,
-#: который эта защита исключает (P1 ревью PR #15; снятие 7 реестра фичи).
+#: который эта защита исключает.
 _ALLOWED_SKIPS = (
     ("tests/test_auth_coverage.py", "Публичный endpoint — auth не требуется"),
     ("tests/unit/parser/test_estimate.py", "Каталог samples/ пуст или отсутствует"),
@@ -334,7 +334,7 @@ def client(db_session) -> Iterator:
 
     `client.auth_state["role"] = UserRole.member` переключает роль текущего
     пользователя — так проверяются 403 у CRUD фазы 5 (право `admin` на заведение
-    карточек, §6.2 отчёта фазы 5). Тот же приём, что у `committing_client`.
+    карточек). Тот же приём, что у `committing_client`.
     """
     from unittest.mock import MagicMock
 

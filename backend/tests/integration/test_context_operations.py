@@ -140,8 +140,7 @@ def _seed_default_member(db_session, factories):
 @contextlib.contextmanager
 def _capturing_sql(session):
     """Перехватывает КАЖДЫЙ SQL-текст, реально отправленный на этом
-    соединении, через `before_cursor_execute` (MAJOR-1, ревью задачи 6
-    раунд 3) — то, что предлагает сам отчёт ревью: режим лока проверяется
+    соединении, через `before_cursor_execute`: режим лока проверяется
     компиляцией РЕАЛЬНОГО запроса операции, а не намерением вызова и не
     отдельным тестом `lock_buckets` из задачи 4, который не видит, какой
     `exclusive` передаёт вызывающий."""
@@ -176,8 +175,8 @@ def _find_bucket_lock_statement(statements: list[str]) -> tuple[int, str]:
 
 def _precondition_read_indices(statements: list[str]) -> list[int]:
     """Индексы ВСЕХ `SELECT`, читающих `context_members`/
-    `context_routing_rules`, по ВСЕМУ списку (не только после лока) —
-    NIT-R2-1 (ревью задачи 6, раунд 2): прежняя версия искала только ПОСЛЕ
+    `context_routing_rules`, по ВСЕМУ списку (не только после лока):
+    прежняя версия искала только ПОСЛЕ
     индекса лока, поэтому сравнение позиций было тавтологией (истинно по
     построению, а не по факту, что запросы шли раньше)."""
     indices = []
@@ -192,7 +191,7 @@ def _precondition_read_indices(statements: list[str]) -> list[int]:
 
 # ---------------------------------------------------------------------------
 #  Режим блокировки — компиляцией РЕАЛЬНОГО запроса каждой из четырёх
-#  операций, а не намерением вызова (A6.9; MAJOR-1, ревью задачи 6 раунд 3:
+#  операций, а не намерением вызова (A6.9):
 #  `split_context`/`move_members` с `exclusive=False` проходили весь набор
 #  незамеченными — задача 4 компилирует только сам `lock_buckets`, не видя,
 #  какой `exclusive` передаёт вызывающая операция).
@@ -207,8 +206,7 @@ class TestAllFourOperationsCompileToForUpdateBeforePreconditionReads:
         КОНКРЕТНОЙ операции (0 для трёх из четырёх; у `move_members` — 1:
         предварительная проверка существования членств нужна ДО того, как
         известно, какую корзину блокировать — сама проверка не несёт
-        решения, оно принимается ПОСЛЕ перечитывания, ревью задачи 6 раунд
-        2, NIT-R2-1). Число проверяется ТОЧНО — лишнее чтение до лока для
+        решения, оно принимается ПОСЛЕ перечитывания). Число проверяется ТОЧНО — лишнее чтение до лока для
         операции, где `pre_lock_reads_allowed=0`, тоже обязано покраснеть.
         Хотя бы одно чтение ПОСЛЕ лока обязательно всегда — иначе
         перечитывание ничем не подтверждено."""
@@ -342,8 +340,7 @@ class TestSplitWithExecutableRule:
         assert unrelated_member.routed_by == RoutedBy.default.value
 
     def test_rule_ordinal_is_max_plus_one_in_the_bucket(self, db_session, factories):
-        # Правило обязано ПОКРЫВАТЬ выбранное членство (MINOR-3, ревью
-        # задачи 6 раунд 3) — позиция строится с реальным разделом,
+        # Правило обязано ПОКРЫВАТЬ выбранное членство — позиция строится с реальным разделом,
         # совпадающим с предикатом нового правила, а правило-сосед метит в
         # ДРУГОЙ раздел, чтобы не затенять его.
         user = factories.UserFactory.create()
@@ -356,8 +353,7 @@ class TestSplitWithExecutableRule:
         default_ctx = db_session.get(CatalogContext, member.context_id)
 
         other_ctx = _context(db_session, bucket)
-        # ДВА существующих правила с РАЗНЫМИ ordinal (NIT-R2-3, ревью задачи
-        # 6 раунд 2) — одного было недостаточно, чтобы отличить «истинный
+        # ДВА существующих правила с РАЗНЫМИ ordinal — одного было недостаточно, чтобы отличить «истинный
         # максимум» от «ordinal первого правила в списке» (запрос сортирует
         # по возрастанию, первый элемент — МЕНЬШИЙ, не максимум): второе
         # правило стоит РАНЬШЕ (`ordinal=2`), первым в списке, а истинный
@@ -425,7 +421,6 @@ class TestSplitWithExecutableRule:
 
 # ---------------------------------------------------------------------------
 #  Разделить с правилом — правило обязано ПОКРЫВАТЬ выбранные членства
-#  (MINOR-3, ревью задачи 6 раунд 3, решение оркестратора)
 # ---------------------------------------------------------------------------
 
 class TestSplitRuleMustCoverSelectedMembers:
@@ -513,8 +508,7 @@ class TestSplitRuleMustCoverSelectedMembers:
         self, db_session, factories
     ):
         """Число в отказе — СЧЁТ, а не константа `1`: вход из ДВУХ
-        непокрытых членств отличил бы разницу (тот же приём, каким ревью
-        задачи 6 предлагало закрыть NIT-1)."""
+        непокрытых членств отличил бы разницу."""
         user = factories.UserFactory.create()
         proposal, _ = _proposal(factories)
         chapter_a = _chapter(factories, proposal, title="Секция Раз", chapter_number="1")
@@ -542,11 +536,11 @@ class TestSplitRuleMustCoverSelectedMembers:
     def test_refusal_names_exactly_the_uncovered_member_not_the_covered_one(
         self, db_session, factories
     ):
-        """NIT-R2-2 (ревью задачи 6, раунд 2): вход СМЕШАННЫЙ — одно
+        """Вход СМЕШАННЫЙ — одно
         членство правило РЕАЛЬНО покрывает, другое нет. `position_item_ids`
         отказа обязан назвать ТОЛЬКО непокрытое (и его count — 1, а не 2):
         на входах, где выбранные == непокрытым целиком, список отказа от
-        «всех выбранных» не отличить (R45 отчёта ревью, был зелёным)."""
+        «всех выбранных» не отличить."""
         user = factories.UserFactory.create()
         proposal, _ = _proposal(factories)
         covered_chapter = _chapter(
@@ -582,7 +576,7 @@ class TestSplitRuleMustCoverSelectedMembers:
         assert covered_member.context_id == default_ctx.id  # ничего не записалось
 
     def test_covered_member_stays_in_the_new_context_after_reroute(self, db_session, factories):
-        """Утверждение MINOR-3: покрытое правилом членство НЕ откатывается
+        """Покрытое правилом членство НЕ откатывается
         молча при повторной переоценке маршрутизации (следующий импорт той
         же позиции, `_apply_routing` переоценивает не-`manual` членства)."""
         user = factories.UserFactory.create()
@@ -607,7 +601,7 @@ class TestSplitRuleMustCoverSelectedMembers:
 
 
 # ---------------------------------------------------------------------------
-#  Разделить — без правила (спека §2.4, решение оркестратора брифа)
+#  Разделить — без правила (спека §2.4)
 # ---------------------------------------------------------------------------
 
 class TestSplitWithoutRuleOnTheDefaultContext:
@@ -653,7 +647,7 @@ class TestSplitWithoutRuleOnTheDefaultContext:
             rule=None, actor_id=user.id,
         )
 
-        # NIT-3 (ревью задачи 6 раунд 3): сравнение через `==` с id СВЕЖЕГО
+        # Сравнение через `==` с id СВЕЖЕГО
         # умолчания (выборка по `is_default AND archived_at IS NULL`), а не
         # `!=` с двумя другими контекстами — иначе импорт в КАКОЙ-ТО третий
         # (несуществующий) контекст остался бы незамеченным.
@@ -883,9 +877,9 @@ class TestMergeContexts:
         assert new_member.routed_by == RoutedBy.rule.value
         assert new_member.routing_rule_id == rule.id
 
-        # MINOR-2 (ревью задачи 6 раунд 3): сверка по всей базе В МЕСТЕ, где
+        # Сверка по всей базе В МЕСТЕ, где
         # правило РЕАЛЬНО было под угрозой — `source` только что архивирован
-        # слиянием, и БЕЗ перевода правила (M16 отчёта ревью) оно осталось бы
+        # слиянием, и БЕЗ перевода правила оно осталось бы
         # висеть именно на нём.
         dangling = db_session.execute(
             sa.text(
@@ -1149,7 +1143,7 @@ class TestArchiveContextRefusals:
         db_session.flush()
 
         # Второе членство — число в отказе обязано быть СЧЁТОМ, а не
-        # константой `1` (NIT-1, ревью задачи 6 раунд 3): вход с одним
+        # константой `1`: вход с одним
         # членством не отличает подсчёт от заглушки.
         proposal2, _ = _proposal(factories)
         position2 = _position(factories, proposal2, catalog_position=cp)
@@ -1176,7 +1170,7 @@ class TestArchiveContextRefusals:
             context=empty_ctx, user=user,
         )
         # Второе правило — та же причина, что у числа членств: счёт, а не
-        # константа `1` (NIT-1).
+        # константа `1`.
         _rule(
             db_session, bucket, ordinal=2,
             predicate={"kind": PREDICATE_CHAPTER_CHAIN_CONTAINS, "value": "y"},
@@ -1191,7 +1185,7 @@ class TestArchiveContextRefusals:
         assert excinfo.value.code == REFUSE_INCOMING_RULES
         assert excinfo.value.count == 2
 
-        # MINOR-2 (ревью задачи 6 раунд 3): сверка по всей базе В МЕСТЕ, где
+        # Сверка по всей базе В МЕСТЕ, где
         # правило РЕАЛЬНО под угрозой — оба правила ведут именно в
         # `empty_ctx`, и отказ обязан оставить его НЕ архивным.
         dangling = db_session.execute(
@@ -1340,7 +1334,7 @@ class TestArchiveContextPositiveInput:
 
 class TestNoRoutingRulesDroppedEventAnywhere:
     def test_structural_absence_across_all_operations(self, db_session, factories):
-        """NIT-4 (ревью задачи 6 раунд 3): `archive_context` теперь тоже
+        """`archive_context` теперь тоже
         участвует в сцене (раньше проверялись только слияние и перенос), и
         сливаемый источник несёт РЕАЛЬНОЕ правило — запись
         `routing_rules_dropped`, УСЛОВНАЯ на «есть ли у источника правила»,

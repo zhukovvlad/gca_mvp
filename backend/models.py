@@ -820,7 +820,7 @@ class EstimateAdditionalWork(Base):
     """Расшивка агрегатной строки «Дополнительные работы» по строкам «Сведений
     по дополнительным работам» (фаза 7, спека Ф4, миграция 0007).
 
-    Висит на `proposal_id`, а не на `estimate_id` (отступление от брифа, спека
+    Висит на `proposal_id`, а не на `estimate_id` (спека
     §2.3): деньги агрегатной строки принадлежат конкретному предложению, и
     резолв ссылки в статью определён В ЕГО ПРЕДЕЛАХ, а не в пределах сметы
     (спека §2.5) — номера разделов между лотами могут повторяться.
@@ -1336,7 +1336,7 @@ SEMANTIC_EVENT_TYPES = (
 #: Десять списков значений `IN (...)` — тоже продублированы в миграции 0017
 #: литералом (та же дисциплина, что у CK_*: миграция не импортирует models.py,
 #: см. докстринг модуля миграции), и та же parity-проверка их сравнивает
-#: (доработка задачи 1, R3: список `IN (...)` — тоже CHECK, и расхождение в
+#: (список `IN (...)` — тоже CHECK, и расхождение в
 #: нём миграция/models.py прежде ничем не ловилось).
 FAMILY_STATUSES = _sql_str_list(FamilyStatus)
 SEMANTIC_KINDS = _sql_str_list(SemanticKind)
@@ -1361,8 +1361,7 @@ CK_FAMILY_AUTHOR_IFF_NOT_SEED = "(created_by IS NULL) = (seed_key IS NOT NULL)"
 #: Пара `num_nonnulls(work_family_id, family_source, family_at) IN (0, 3)` плюс
 #: `(family_source = 'manual') = (family_by IS NOT NULL)` пропускала одинокий
 #: `family_by` при трёх пустых полях: `NULL = 'manual'` даёт `NULL`, а `CHECK`
-#: отвергает только `FALSE` (`docs/pitfalls/db.md`, найдено внешним ревью
-#: спеки семей работ 22.09.2026, до написания кода).
+#: отвергает только `FALSE` (`docs/pitfalls/db.md`).
 CK_CONTEXT_FAMILY_PROVENANCE = (
     "(work_family_id IS NULL AND family_source IS NULL AND family_at IS NULL AND family_by IS NULL) "
     "OR (work_family_id IS NOT NULL AND family_source IS NOT NULL AND family_at IS NOT NULL "
@@ -1628,9 +1627,8 @@ class SemanticEvent(Base):
     §2.3, §2.14).
 
     Предмет определяется ЗАКРЫТЫМ множеством типов (`CK_EVENT_SUBJECT_BY_TYPE`),
-    а не префиксом имени `family_%` — приём отвергнут внешним ревью спеки
-    22.09.2026 именно на примере `family_assigned` (переименовано в
-    `context_family_assigned`, предмет — контекст).
+    а не префиксом имени `family_%`: пример — `family_assigned` (переименовано
+    в `context_family_assigned`, предмет — контекст).
     """
     __tablename__ = "semantic_events"
 

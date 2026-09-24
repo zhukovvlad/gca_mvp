@@ -7,8 +7,7 @@
 Seed-файл `backend/seeds/work_families_initial.json` собран заново из
 `tasks/catalog-pilot-2026-09-18/razmetka-101.xlsx` скриптом
 `tasks/catalog-families-work/build_work_families_seed.py` (файл вне гита,
-скрипт — тоже; команда запуска и контроль 42/6/36 — в отчёте
-`tasks/catalog-families-work/task7-executor.md`).
+скрипт — тоже).
 
 42/6/36 — НЕЗАВИСИМЫЕ литералы теста, не `len()` того же файла в обе
 стороны (план, задача 7, «Проверка»).
@@ -243,11 +242,10 @@ def test_load_seed_repeat_run_is_idempotent_and_preserves_user_edit(db_session):
 
 
 def test_load_seed_rename_does_not_duplicate_and_name_unit_search_would_have(db_session):
-    """Главный вход брифа: переименование семьи, повторный seed, второго
+    """Переименование семьи, повторный seed, второго
     черновика нет.
 
-    Что держит каждая часть (MINOR-3, ревью задачи 7 Round 2— уточнение
-    докстроки, чтобы она называла ровно то, что предъявляет тест):
+    Что держит каждая часть:
 
     * `report.created == 0` и `total == EXPECTED_TOTAL` — сам факт
       «дубля нет» — это и есть утверждение «поиск по паре „имя × единица“
@@ -299,7 +297,7 @@ def _write_seed_file(tmp_path, records) -> Path:
 
 
 def test_load_seed_refuses_unresolvable_unit_and_writes_nothing(db_session, tmp_path):
-    """IMPORTANT-1 (ревью задачи 7 Round 2): `load_seed` не молчит на
+    """`load_seed` не молчит на
     неизвестной единице — как и `create_family`, отказывает
     `REFUSE_UNKNOWN_UNIT`, называя `seed_key` и единицу. Проверка ВСЕХ
     записей идёт ДО первой вставки: ни «плохая», ни предшествующая ей
@@ -328,7 +326,7 @@ def test_load_seed_refuses_unresolvable_unit_and_writes_nothing(db_session, tmp_
 
 
 def test_load_seed_normalizes_blank_definition_to_null(db_session, tmp_path):
-    """MINOR-2 (ревью задачи 7 Round 2): `load_seed` нормализует
+    """`load_seed` нормализует
     пустое/пробельное `definition` файла в `NULL` — тем же правилом, что
     `create_family`/`update_family` (`_normalize_definition`), а не хранит
     его строкой из пробелов."""
@@ -513,8 +511,8 @@ def test_update_family_not_found_refuses(db_session, factories):
 
 def test_activate_without_definition_refuses_before_any_flush(db_session, factories):
     """`REFUSE_ACTIVATE_WITHOUT_DEFINITION` проверяется в коде ДО базы: отказ
-    обязан произойти БЕЗ единого `flush` (план, задача 7, «Решения
-    оркестратора»; независимый счётчик, никаких sleep)."""
+    обязан произойти БЕЗ единого `flush` (план, задача 7;
+    независимый счётчик, никаких sleep)."""
     user = factories.UserFactory.create()
     fam = create_family(
         db_session, title="Без определения", unit_name=None, definition=None,
@@ -549,7 +547,7 @@ def test_activate_with_whitespace_only_definition_refuses(db_session, factories)
     поэтому проверяет `activate_family` на `definition IS NULL`, а не на
     ветку `.strip()` предиката `_has_definition` — её отдельно и напрямую
     проверяет `test_activate_blank_definition_set_by_direct_update_refuses`
-    ниже (IMPORTANT-3, ревью задачи 7 Round 2: этот тест был ложно-зелёным
+    ниже (этот тест был ложно-зелёным
     относительно своего имени)."""
     user = factories.UserFactory.create()
     fam = create_family(
@@ -563,7 +561,7 @@ def test_activate_with_whitespace_only_definition_refuses(db_session, factories)
 
 
 def test_activate_blank_definition_set_by_direct_update_refuses(db_session, factories):
-    """IMPORTANT-3 (ревью задачи 7 Round 2): вход, который реально проверяет
+    """Вход, который реально проверяет
     ветку `.strip()` предиката `_has_definition` внутри `activate_family` —
     `definition` кладётся пробельной строкой ПРЯМОЙ правкой в обход
     `create_family` (черновик — `CHECK` активации на `draft` не смотрит), а
@@ -706,7 +704,7 @@ def test_same_name_and_unit_in_draft_pass(db_session, factories):
 
 def test_same_name_and_unit_in_archived_pass(db_session, factories):
     """Архивирование ставится прямой правкой — операции архивирования в
-    задаче 7 нет (план, задача 7, «Решения оркестратора»)."""
+    задаче 7 нет (план, задача 7)."""
     user = factories.UserFactory.create()
     title = f"Дублирующее имя (archived) {_uid()}"
     f1 = create_family(db_session, title=title, unit_name="M2", definition=None, actor_id=user.id)
@@ -774,7 +772,7 @@ def test_seed_command_passes_guard_when_prod(monkeypatch):
 def test_seed_command_success_path_persists_and_prints_report(
     committing_session_factory, monkeypatch
 ):
-    """H:aa1a09b8 / IMPORTANT-2 (ревью задачи 7 Round 2): счастливый путь
+    """Счастливый путь
     команды не был проверен НИ ОДНИМ тестом — снятие `db.commit()` в теле
     `seed_work_families` оставалось зелёным на всём наборе. Гоняем команду
     на настоящей тестовой базе через `committing_session_factory`
@@ -1148,7 +1146,7 @@ class TestArchiveFamily:
         assert exc.value.code == REFUSE_FAMILY_NOT_FOUND
 
     def test_already_archived_refuses_without_second_event(self, db_session, factories):
-        """Round 2, F8 (решение оркестратора): повторное архивирование уже
+        """Повторное архивирование уже
         архивной семьи отказывает, называя статус `archived`, а не молча
         переустанавливает `archived_at` и не пишет второе `family_archived`."""
         user = factories.UserFactory.create()
@@ -1178,7 +1176,7 @@ class TestMergeFamilies:
     def test_success_moves_links_preserves_provenance_archives_source(
         self, db_session, factories
     ):
-        """Round 2, F5 (решение оркестратора): назначение и слияние делают
+        """Назначение и слияние делают
         РАЗНЫЕ пользователи — `assigner`/`merger`. С ОДНИМ и тем же актёром
         баг «слияние переписывает family_by актёром СЛИЯНИЯ» был бы
         невидим (совпадение id ничего не доказывает); с разными — виден
@@ -1349,7 +1347,7 @@ class TestMergeFamilies:
     def test_context_reassigned_away_between_listing_and_lock_is_excluded(
         self, committing_db, committing_factories, committing_session_factory
     ):
-        """Round 2, F4 (решение оркестратора): защита сверх явного плана
+        """Защита сверх явного плана
         нуждается в НАСТОЯЩЕМ входе — другая, ПОЛНОСТЬЮ ЗАКОММИЧЕННАЯ сессия
         переводит контекст на ТРЕТЬЮ семью РОВНО МЕЖДУ листингом кандидатов
         (уже выполненным запросом внутри `merge_families`) и локом контекстов
@@ -1450,7 +1448,7 @@ def _count_query_indices(statements, table):
 
 def _plain_read_indices(statements, table):
     """Индексы `SELECT`-ов по `table` БЕЗ `FOR UPDATE`/`FOR SHARE` — обычные
-    `db.get()`, не лок (NIT-R2-1, задача 6: по ВСЕМУ списку запросов, не
+    `db.get()`, не лок (по ВСЕМУ списку запросов, не
     только после лока)."""
     indices = []
     for index, statement in enumerate(statements):
@@ -1571,17 +1569,17 @@ class TestFamilyLockCompilation:
 #  `test_context_concurrency.py`, задача 6): другая закоммиченная сессия
 #  меняет СТАТУС (атрибут ORM-объекта, кэшируемый identity map) МЕЖДУ первым
 #  чтением этой сессии и локом — снятие `db.expire_all()` у `merge_families`
-#  красит именно этот тест (см. отчёт task8-executor.md).
+#  красит именно этот тест.
 #
 #  `test_set_unit_rereads_link_count`/`test_archive_family_rereads_link_count`
 #  ниже — НЕ проверка перечитывания как механизма (число привязок — результат
 #  `COUNT(*)`, а не атрибут ORM-объекта: identity map его не кэширует, и
 #  `db.expire_all()` на него не влияет вовсе — проверено прогоном при попытке
-#  RED, см. отчёт), а обычные позитивные интеграционные проверки: привязка,
+#  RED), а обычные позитивные интеграционные проверки: привязка,
 #  созданная ДРУГОЙ, полностью закоммиченной сессией, видна операции. Реальная
 #  проверка «счёт читается ПОСЛЕ лока, не до» — `_count_query_indices` в
 #  `TestFamilyLockCompilation` (компиляцией SQL, RED — перемещением строки с
-#  `COUNT` перед локом, см. отчёт).
+#  `COUNT` перед локом).
 # ---------------------------------------------------------------------------
 
 
@@ -1679,7 +1677,7 @@ class TestFamilyRereadAfterLock:
 #  архивирования» (план, Task 8, «Утверждения»; спека §2.8). Потоки
 #  освобождаются и дожидаются в `finally` (задача 6, урок).
 #
-#  Round 2 ревью (F1, F2, F3): свидетель — ТОЛЬКО `pg_blocking_pids()`
+#  Свидетель — ТОЛЬКО `pg_blocking_pids()`
 #  КОНКРЕТНОГО backend'а плюс текст его запроса (не общий счётчик по базе:
 #  ассерт зелен и когда ждёт посторонний backend, `docs/pitfalls/db.md`).
 #  Второй поток освобождается СРАЗУ после того, как свидетель разрешился
@@ -1687,7 +1685,7 @@ class TestFamilyRereadAfterLock:
 #  потока: если сперва ждать до 30 с окончания A и только потом освобождать
 #  B, а у B в обёртке СВОЙ независимый таймаут 30 с, отсчитывающийся с
 #  МОМЕНТА, когда B встала на паузу, — B успевает истечь ПРЕЖДЕ, чем до неё
-#  доходит очередь (ошибка раунда 1: тест красил `release не пришёл вовремя`,
+#  доходит очередь (тест красил `release не пришёл вовремя`,
 #  а не дедлок). `_WITNESS_TIMEOUT < _RELEASE_TIMEOUT` — инвариант, который
 #  это и не даёт повториться (тот же приём, что
 #  `test_context_concurrency.py`: `_RACE_WITNESS_TIMEOUT < _A_RELEASE_TIMEOUT`).
@@ -1765,7 +1763,7 @@ def _wait_paused_or_blocked(
     (иначе тест ждал бы `_WITNESS_TIMEOUT` даже там, где ответ известен сразу
     же). Возвращает `True`, если сработало ИМЕННО блокирование лока (для
     диагностики; не фатально ни в одном случае — исход проверяется по
-    данным, F2)."""
+    данным)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if pending_event.is_set():
@@ -1791,7 +1789,7 @@ def _wait_for_pid(pid_holder: dict[str, int], key: str, *, timeout: float = _WIT
 def _terminate_backend(session_factory, pid: int | None) -> None:
     """Обрубает зависший backend отдельной пробной сессией — иначе упавший
     тест оставляет держателя лока живым до `TRUNCATE` следующего теста
-    (F3: используется, когда `join()` истёк, а поток всё ещё жив)."""
+    (используется, когда `join()` истёк, а поток всё ещё жив)."""
     if pid is None:
         return
     try:
@@ -1888,7 +1886,7 @@ class TestMergeVsMergeNoDeadlock:
                 )
 
                 # Освобождаем ОБА потока СРАЗУ после разрешения свидетеля —
-                # НЕ после join() первого (см. докстроку раздела, Round 2 F1).
+                # НЕ после join() первого (см. докстроку раздела).
                 # `Event.set()` на уже установленном `Event` — не-оп; если B
                 # ещё не дошла до своей паузы (застряла в реальном локе),
                 # `release["B"].set()` просто ждёт своего часа безвредно.
@@ -2044,7 +2042,7 @@ class TestAssignVsArchiveRace:
         привязок и отказывает — архивной семьи с живой привязкой не
         возникает.
 
-        Round 2 (F2): пауза B — на событии `before_flush` СЕССИИ B (ПОСЛЕ
+        Пауза B — на событии `before_flush` СЕССИИ B (ПОСЛЕ
         собственных проверок статуса/единицы, КОГДА `context.work_family_id`
         уже присвоен в Python, но ДО того, как `UPDATE` реально уйдёт в
         Postgres), а не на `record_event`. Важность момента: сам `UPDATE`
@@ -2056,9 +2054,9 @@ class TestAssignVsArchiveRace:
         паузы (`record_event`, ПОСЛЕ `db.flush()`) поэтому не давала снять
         RED: `UPDATE` уже ушёл, неявный FK-лок уже взят, и A всё равно
         блокировалась и отказывала — RED со снятым `FOR SHARE` не
-        воспроизводился (см. отчёт, находка раунда 2 при попытке снятия).
+        воспроизводился.
         Пауза ДО `flush()` — единственная точка, где B ещё НЕ держит НИ
-        явного, НИ неявного (FK) лока: A с M4 (без `FOR SHARE`) успевает
+        явного, НИ неявного (FK) лока: A (без `FOR SHARE`) успевает
         целиком — лок, `COUNT=0`, архивирование, коммит — прежде чем `UPDATE`
         B вообще отправлен; когда B наконец коммитит, FK лишь проверяет, что
         строка `work_families` СУЩЕСТВУЕТ (она существует — архивная, но не
@@ -2122,8 +2120,8 @@ class TestAssignVsArchiveRace:
             ta.start()
             assert _wait_for_pid(pid_holder, "a", timeout=_WITNESS_TIMEOUT)
             # Свидетель — pg_blocking_pids() КОНКРЕТНОГО backend'а A плюс
-            # текст его запроса (F3), не общий счётчик. НЕ фатален
-            # (записывается, не форсирует исход) — с M4 (FOR SHARE снят)
+            # текст его запроса, не общий счётчик. НЕ фатален
+            # (записывается, не форсирует исход) — со снятым FOR SHARE
             # A НЕ блокируется вовсе, и это законный, ожидаемый RED-путь.
             a_blocked_on_b = _wait_until_backend_blocks(
                 committing_session_factory, pid=pid_holder["a"], contains="work_families",
@@ -2146,7 +2144,7 @@ class TestAssignVsArchiveRace:
         assert not tb.is_alive()
         assert not ta.is_alive()
 
-        # Исход — ПЕРВЫМ (F2): прямая проверка инварианта по данным. RED
+        # Исход — ПЕРВЫМ: прямая проверка инварианта по данным. RED
         # снятия `FOR SHARE` красит ИМЕННО это — архивная семья с живой
         # привязкой становится физически достижимой.
         committing_db.refresh(family)

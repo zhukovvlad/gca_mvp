@@ -7,8 +7,7 @@ HTTP-слой поверх готовых сервисов задач 4, 6-10 (`
 переписываются. Здесь: тела запросов/ответов, права, **управление
 транзакцией** (образец — `routers/review.py`) и трансляция трёх доменных
 исключений сервисов в HTTP через `raise_domain_error`
-(`routers/domain_errors.py`) — решение оркестратора плана (задача 12,
-«Решения оркестратора»).
+(`routers/domain_errors.py`).
 
 **Права.** Каждый маршрут несёт СВОЙ `Depends(require_admin)` (не общий
 роутерный `dependencies=`) — так проверка «`member` отвергнут на КАЖДОМ»
@@ -125,12 +124,11 @@ def _status_for_code(code: str) -> int:
 
 
 def _json_safe(value: object) -> object:
-    """Приводит значение контекста отказа к JSON-совместимому виду
-    (ревью задачи 12, B1): `accept_transfer` кладёт в контекст `new_proposal`
+    """Приводит значение контекста отказа к JSON-совместимому виду:
+    `accept_transfer` кладёт в контекст `new_proposal`
     — `TransferProposal`, обычный `@dataclass`, не сериализуемый штатным
     JSON-кодером FastAPI/Starlette (`TypeError: Object of type
-    TransferProposal is not JSON serializable`, зафиксировано зондом
-    ревью). Рекурсивно разворачивает dataclass-ы (включая вложенные и внутри
+    TransferProposal is not JSON serializable`). Рекурсивно разворачивает dataclass-ы (включая вложенные и внутри
     списков/словарей) в обычные `dict`/`list` — а не точечно зовёт
     `_serialize_transfer_proposal` только для одного известного поля: любой
     БУДУЩИЙ контекст отказа, кладущий dataclass, ловится тем же путём, а не
@@ -151,7 +149,7 @@ def _domain_error(exc: WorkFamilyError | ContextOperationError) -> DomainError:
     """`WorkFamilyError`/`ContextOperationError` несут `code` и контекст
     именованными атрибутами (`**context` конструктора, не словарём) —
     `vars(exc)` минус `code` и есть контекст отказа. Каждое значение
-    проходит через `_json_safe` (см. её докстринг, B1 ревью) — контекст
+    проходит через `_json_safe` (см. её докстринг) — контекст
     обязан долетать до `HTTPException` сериализуемым, а не падать в
     Starlette дальше по цепочке."""
     context = {
@@ -162,7 +160,7 @@ def _domain_error(exc: WorkFamilyError | ContextOperationError) -> DomainError:
 
 @contextlib.contextmanager
 def _mutating(db: Session):
-    """Одна транзакция на маршрут (план, задача 12, «Решения оркестратора»):
+    """Одна транзакция на маршрут:
     успех коммитит, отказ сервиса откатывает и транслирует в `HTTPException`
     через `raise_domain_error`, любое другое исключение откатывает и летит
     дальше — тот же протокол, что `routers/review.py`."""
@@ -240,7 +238,7 @@ class CreateFamilyRequest(BaseModel):
 
 
 class UpdateFamilyRequest(BaseModel):
-    """`unit_name` — решение оркестратора (ревью задачи 12, I1): спека §2.10
+    """`unit_name`: спека §2.10
     описывает правку единицы семьи как операцию экрана («недоступна, пока
     привязки есть, и подпись называет их число»), а Task 12 не заводила ей
     отдельного маршрута из восемнадцати — эта задача не меняет их множество

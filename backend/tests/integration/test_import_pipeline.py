@@ -286,8 +286,8 @@ class TestAtomicity:
 
         Прямое наблюдение, которого не хватало `test_estimate_import.py`
         (тот файл вызывает `import_estimate` напрямую и никогда не видит
-        `import_jobs.warnings` — только возвращаемый `ImportOutcome`; ревью
-        задачи 7, правки 1 и 2). Здесь — полный пайплайн: строка с
+        `import_jobs.warnings` — только возвращаемый `ImportOutcome`).
+        Здесь — полный пайплайн: строка с
         отрицательной ценой доходит до конца `import_estimate` НОРМАЛЬНО (тот
         же приём, что `test_crash_between_matching_and_final_leaves_no_estimate`
         выше — падение после матчинга, patch `finalize_done`), предупреждение

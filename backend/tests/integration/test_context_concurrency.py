@@ -9,10 +9,9 @@
   через `route_position`, И `TestImportBatchVsArchive`, партия через
   `route_positions` — РЕАЛЬНЫЙ путь продакшена, `services/import_pipeline.py`
   зовёт именно её с `estimate_ids`, `route_position` там не вызывается ни
-  разу; раунд 2 отчёта — исходный набор гонял только `route_position`, и
+  разу; исходный набор гонял только `route_position`, и
   дыра «`route_positions` берёт свой собственный `FOR SHARE` в другом месте
-  кода» осталась бы непроверенной, тем же классом, что нашло ревью задачи
-  4) — маршрутизация берёт `FOR SHARE`, архивирование — `FOR UPDATE`;
+  кода» осталась бы непроверенной) — маршрутизация берёт `FOR SHARE`, архивирование — `FOR UPDATE`;
   непустого архивного контекста не возникает ни в одном порядке ни у одной
   из двух функций;
 * **появление входящего правила против архивирования**
@@ -21,8 +20,7 @@
   не заводит»), поэтому вход построен на операции, которую задача 6
   ДЕЙСТВИТЕЛЬНО владеет и которая заводит НОВОЕ входящее правило на
   существующем контексте — `merge_contexts` (правило источника переводится
-  на цель, спека §2.4). Решение сверх брифа, задача 6 — см. отчёт
-  `tasks/catalog-families-work/task6-executor.md`;
+  на цель, спека §2.4);
 * **перечитывание после блокировки** (`TestArchiveRereadsAfterLock`) —
   без потоков: вторая сессия коммитит изменение МЕЖДУ моментом, когда
   `archive_context` первый раз (до лока) прочитала строку контекста, и
@@ -80,20 +78,19 @@ from services.context_routing import (
 
 pytestmark = pytest.mark.integration
 
-_LOCK_WAIT_TIMEOUT = 30.0  # окно — 30 с, не 5 (брифом)
+_LOCK_WAIT_TIMEOUT = 30.0  # окно — 30 с, не 5
 _JOIN_TIMEOUT = 30.0
 
-# ИНВАРИАНТ (MAJOR-R2-1, ревью задачи 6, раунд 2): в порядке 1
+# ИНВАРИАНТ: в порядке 1
 # `TestImportVsArchive`/`TestImportBatchVsArchive` окно свидетеля ОБЯЗАНО
-# быть короче окна ожидания A освобождения. Раунд 3 сделал свидетель
-# нефатальным (MINOR-1), но окна остались 30 с (свидетель, через
+# быть короче окна ожидания A освобождения. Свидетель
+# нефатален, но окна остались 30 с (свидетель, через
 # `_LOCK_WAIT_TIMEOUT`) и 15 с (A) — при снятом `FOR SHARE` события идут
 # так: B не блокируется и коммитит сразу; главный поток сидит в свидетеле
 # 30 с; через 15 с A бросает `AssertionError` внутри `patched_record_event`
 # и её ТРАНЗАКЦИЯ ОТКАТЫВАЕТСЯ. Архивирования не происходит вовсе, и тест
-# падает на `assert not errors`, а не на заявленном исходе плана (найдено
-# ревью задачи 6, раунд 2: снятием `FOR SHARE`, ряды R01/R02 отчёта
-# ревью — комментарий предыдущей редакции об этом ошибался). Единственная
+# падает на `assert not errors`, а не на заявленном исходе плана (проверено
+# снятием `FOR SHARE`). Единственная
 # защита от этого — ЯВНЫЙ порядок окон: свидетель короче отпуска A.
 _RACE_WITNESS_TIMEOUT = 10.0
 _A_RELEASE_TIMEOUT = 30.0
@@ -236,7 +233,7 @@ class TestImportVsArchive:
                 a_paused.set()
                 # ИНВАРИАНТ: этот таймаут ОБЯЗАН быть длиннее
                 # `_RACE_WITNESS_TIMEOUT` ниже — см. комментарий у
-                # определения констант (MAJOR-R2-1).
+                # определения констант.
                 assert a_release.wait(timeout=_A_RELEASE_TIMEOUT), "release A не пришёл вовремя"
             return original_record_event(db, event_type=event_type, **kwargs)
 
@@ -282,16 +279,13 @@ class TestImportVsArchive:
                 tb.start()
                 assert b_started.wait(timeout=10)
 
-                # Свидетель НЕ фатален здесь (MINOR-1, ревью задачи 6,
-                # раунд 3): результат только ЗАПИСЫВАЕТСЯ. Окно свидетеля —
+                # Свидетель НЕ фатален здесь: результат только ЗАПИСЫВАЕТСЯ.
+                # Окно свидетеля —
                 # `_RACE_WITNESS_TIMEOUT` (10 с), КОРОЧЕ `_A_RELEASE_TIMEOUT`
                 # (30 с) выше: иначе при снятом `FOR SHARE` (B не
                 # блокируется вовсе) A бросает `AssertionError` и
                 # ОТКАТЫВАЕТСЯ раньше, чем этот опрос закончится, и тест
-                # падает на `assert not errors`, а не на исходе плана
-                # (MAJOR-R2-1, ревью задачи 6 раунд 2 — предыдущая редакция
-                # этого комментария заявляла обратное, не проверив
-                # прогоном).
+                # падает на `assert not errors`, а не на исходе плана.
                 blocked = _wait_until_backend_blocks(
                     committing_session_factory, pid=pid_holder["pid"], contains="FOR SHARE",
                     timeout=_RACE_WITNESS_TIMEOUT,
@@ -317,7 +311,7 @@ class TestImportVsArchive:
             .where(ContextMember.context_id == default_ctx_id)
         ).scalar_one()
         # Исход плана — ПЕРВЫМ: непустой архивный контекст не возникает.
-        # Снятие `FOR SHARE` обязано красить ИМЕННО эти ассерты (MINOR-1).
+        # Снятие `FOR SHARE` обязано красить ИМЕННО эти ассерты.
         assert archived.archived_at is not None
         assert member_count == 0  # непустого архивного контекста не возникло
         assert b_result["context_id"] == successor_id
@@ -445,7 +439,7 @@ class TestImportVsArchive:
 #  `services/import_pipeline.py` зовёт именно `route_positions` — у неё
 #  СВОЙ вызов `lock_buckets(db, list(existing_bucket_ids), exclusive=False)`
 #  (context_routing.py, отдельная строка от `route_position`), и утверждения
-#  выше его не касаются вовсе (раунд 2 отчёта).
+#  выше его не касаются вовсе.
 # ---------------------------------------------------------------------------
 
 class TestImportBatchVsArchive:
@@ -477,7 +471,7 @@ class TestImportBatchVsArchive:
             if event_type == "context_archived":
                 a_paused.set()
                 # ИНВАРИАНТ: длиннее `_RACE_WITNESS_TIMEOUT` ниже —
-                # см. комментарий у определения констант (MAJOR-R2-1).
+                # см. комментарий у определения констант.
                 assert a_release.wait(timeout=_A_RELEASE_TIMEOUT), "release A не пришёл вовремя"
             return original_record_event(db, event_type=event_type, **kwargs)
 
@@ -528,14 +522,13 @@ class TestImportBatchVsArchive:
                 tb.start()
                 assert b_started.wait(timeout=10)
 
-                # Свидетель НЕ фатален здесь (MINOR-1, ревью задачи 6,
-                # раунд 3) — только записывается; исход проверяется первым,
-                # ниже. Окно — `_RACE_WITNESS_TIMEOUT` (10 с), КОРОЧЕ
+                # Свидетель НЕ фатален здесь — только записывается; исход
+                # проверяется первым, ниже. Окно — `_RACE_WITNESS_TIMEOUT`
+                # (10 с), КОРОЧЕ
                 # `_A_RELEASE_TIMEOUT` (30 с) выше: иначе при снятом
                 # `FOR SHARE` A бросает `AssertionError` и откатывается
                 # раньше, чем этот опрос закончится, и тест падает на
-                # `assert not errors`, а не на исходе (MAJOR-R2-1, ревью
-                # задачи 6 раунд 2).
+                # `assert not errors`, а не на исходе.
                 blocked = _wait_until_backend_blocks(
                     committing_session_factory, pid=pid_holder["pid"], contains="FOR SHARE",
                     timeout=_RACE_WITNESS_TIMEOUT,
@@ -560,7 +553,7 @@ class TestImportBatchVsArchive:
             .select_from(ContextMember)
             .where(ContextMember.context_id == default_ctx_id)
         ).scalar_one()
-        # Исход плана — ПЕРВЫМ (MINOR-1), свидетель — вторым.
+        # Исход плана — ПЕРВЫМ, свидетель — вторым.
         assert archived.archived_at is not None
         assert member_count == 0  # непустого архивного контекста не возникло
         assert b_result["context_id"] == successor_id
@@ -682,7 +675,7 @@ class TestImportBatchVsArchive:
 
 # ---------------------------------------------------------------------------
 #  Появление входящего правила против архивирования — оба порядка
-#  (предусловие 2, спека §2.8; конструкция сверх брифа — см. докстроку модуля)
+#  (предусловие 2, спека §2.8; см. докстроку модуля)
 # ---------------------------------------------------------------------------
 
 def _make_bucket_with_rule_source_and_empty_target(committing_db, committing_factories):
@@ -936,7 +929,7 @@ class TestArchiveRereadsAfterLock:
         (`REFUSE_DEFAULT_WITHOUT_SUCCESSOR`). Без потоков — чистая
         последовательность двух РЕАЛЬНЫХ (коммитящих) сессий; настоящая
         конкурентность здесь не нужна, нужна только сама СТАЛОСТЬ
-        identity map (см. отчёт `task6-executor.md` — RED-прогон со снятым
+        identity map (RED-прогон со снятым
         `db.expire_all()`)."""
         proposal, _ = _proposal(committing_factories)
         cp = committing_factories.CatalogPositionFactory.create()
@@ -984,10 +977,10 @@ class TestArchiveRereadsAfterLock:
 
 
 class TestSplitContextRereadsAfterLock:
-    """MAJOR-2 (ревью задачи 6, раунд 3): `split_context` тоже вызывает
-    `db.expire_all()` после `lock_buckets`, но до этой правки ничто не
-    стерегло, что перечитывание реально нужно — снятие `expire_all()`
-    проходило весь набор незамеченным (M07 отчёта ревью). Тот же
+    """`split_context` тоже вызывает
+    `db.expire_all()` после `lock_buckets` — без перечитывания
+    снятие `expire_all()`
+    проходило бы весь набор незамеченным. Тот же
     приём, что `TestArchiveRereadsAfterLock`: без потоков, вторая
     (настоящая) сессия архивирует контекст-ИСТОЧНИК разделения МЕЖДУ
     первым чтением этой сессии и локом."""
@@ -1031,9 +1024,9 @@ class TestSplitContextRereadsAfterLock:
 
 
 class TestMoveMembersRereadsAfterLock:
-    """MAJOR-2 (ревью задачи 6, раунд 3): то же для `move_members` — цель
+    """То же для `move_members` — цель
     переноса архивируется ДРУГОЙ сессией между первым чтением этой сессии
-    и локом (M08 отчёта ревью)."""
+    и локом."""
 
     def test_target_archived_between_first_read_and_lock_is_caught(
         self, committing_db, committing_factories, committing_session_factory
@@ -1071,7 +1064,7 @@ class TestMoveMembersRereadsAfterLock:
     def test_member_vanishing_between_the_lock_and_the_reread_is_refused_not_keyerror(
         self, committing_db, committing_factories, committing_session_factory
     ):
-        """NIT-2 (ревью задачи 6, раунд 3): членство может уйти КАСКАДОМ
+        """Членство может уйти КАСКАДОМ
         (замена/удаление сметы, спека §2.8) уже ПОСЛЕ того, как
         `move_members` взяла лок корзины — удаление позиции само в протокол
         блокировки корзины не входит и `FOR UPDATE` его не задерживает. Без

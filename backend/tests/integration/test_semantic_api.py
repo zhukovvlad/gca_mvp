@@ -402,7 +402,7 @@ class TestFamilies:
         assert detail["family_id"] == 999999999
 
     def test_patch_family_unit_name_reaches_set_unit(self, admin_client, db_session, factories):
-        """I1 (ревью задачи 12): `PATCH` с `unit_name` реально доходит до
+        """`PATCH` с `unit_name` реально доходит до
         `set_unit` — успех без привязок, единица меняется; неизвестная
         единица — код `unknown_unit`; живая привязка — `409` с `count`."""
         fam = _family(db_session, admin_client.user, title="СменаЕдиницы", unit_name="M2")
@@ -451,10 +451,10 @@ class TestFamilies:
     def test_list_families_context_count_supports_zero_and_multiple(
         self, admin_client, db_session, factories
     ):
-        """I5 (ревью задачи 12): единственное проверенное значение `1`
-        (M8: `count(*)` вместо `count(CatalogContext.id)` на outer join —
+        """Проверяются 0 и 2, не только `1`:
+        `count(*)` вместо `count(CatalogContext.id)` на outer join —
         у семьи без контекстов outer join даёт одну строку с NULL,
-        `count(*)` посчитал бы её единицей вместо нуля)."""
+        `count(*)` посчитал бы её единицей вместо нуля."""
         m2 = _unit_id(db_session, "M2")
         zero = _family(db_session, admin_client.user, title="БезКонтекстов", unit_name="M2")
         many = _family(db_session, admin_client.user, title="СДвумяКонтекстами", unit_name="M2")
@@ -482,12 +482,12 @@ class TestFamilies:
 class TestContextsQueue:
     def _scene(self, db_session, factories):
         """Пять контекстов: устаревшее членство, конфликтное И устаревшее
-        разом, конфликтное БЕЗ устаревания (I4, ревью задачи 12), пустой
+        разом, конфликтное БЕЗ устаревания, пустой
         (без членств) и обычный. Вход со STALE и conflict_at ОДНОВРЕМЕННО
         обязан попасть в ОБА первых фильтра (план, задача 12,
         «Утверждения»); вход с ТОЛЬКО conflict_at обязан НЕ попасть в
         `has_stale_members=True` — иначе фильтр устаревших слит с
-        конфликтным (M5 ревью, «выжил» на прежней сцене)."""
+        конфликтным."""
         cp1 = factories.CatalogPositionFactory.create(standard_job_title="Штукатурка стен")
         cp2 = factories.CatalogPositionFactory.create(standard_job_title="Окраска потолка")
         cp3 = factories.CatalogPositionFactory.create(standard_job_title="Пустой контекст")
@@ -539,8 +539,8 @@ class TestContextsQueue:
         assert ids["stale"] in stale_ids
         assert ids["both"] in stale_ids
         assert ids["plain"] not in stale_ids
-        # I4 (ревью задачи 12): конфликт БЕЗ устаревания не попадает в
-        # `has_stale_members=True` — иначе фильтр слит с конфликтным (M5).
+        # Конфликт БЕЗ устаревания не попадает в
+        # `has_stale_members=True` — иначе фильтр слит с конфликтным.
         assert ids["conflict_only"] not in stale_ids
 
         stale_false = admin_client.get(f"{BASE}/contexts", params={"has_stale_members": False})
@@ -584,13 +584,13 @@ class TestContextsQueue:
         by_state = admin_client.get(f"{BASE}/contexts", params={"semantic_state": "SUGGESTED"})
         state_ids = {row["id"] for row in by_state.json()["items"]}
         assert ids["stale"] in state_ids
-        # I6 (ревью задачи 12): и НЕсовпадающий вход — все контексты сцены
-        # SUGGESTED, NOT_APPLICABLE не встречается вовсе (M7, «выжил»).
+        # И НЕсовпадающий вход — все контексты сцены
+        # SUGGESTED, NOT_APPLICABLE не встречается вовсе.
         by_other_state = admin_client.get(f"{BASE}/contexts", params={"semantic_state": "NOT_APPLICABLE"})
         assert ids["stale"] not in {row["id"] for row in by_other_state.json()["items"]}
 
     def test_catalog_query_matches_percent_literally(self, admin_client, db_session, factories):
-        """m3 (ревью задачи 12): `%` в `catalog_query` — буквальный текст, а
+        """`%` в `catalog_query` — буквальный текст, а
         не метасимвол `ILIKE`. Без экранирования `40%состав` стал бы
         паттерном «40, что угодно, состав» и совпал бы ТАКЖЕ со строкой
         без буквального `%` (`cp_wildcard_like` ниже) — решающий негативный
@@ -611,9 +611,9 @@ class TestContextsQueue:
     def test_semantic_kind_name_role_and_category_filters_both_sides(
         self, admin_client, db_session, factories
     ):
-        """I6 (ревью задачи 12): `semantic_kind`, `name_role`,
-        `work_category_id` — ни один не передавал ни один тест (grep
-        ревьюера). Два контекста с РАЗНЫМИ значениями по каждой оси, обе
+        """`semantic_kind`, `name_role`,
+        `work_category_id` — ни один не передавал ни один тест.
+        Два контекста с РАЗНЫМИ значениями по каждой оси, обе
         стороны каждого фильтра."""
         cat_x, cat_y = _leaf_category_ids(db_session, 2)
         cp_work = factories.CatalogPositionFactory.create(standard_job_title="Ось WORK")
@@ -704,10 +704,10 @@ class TestContextCard:
         proposal = _proposal(factories)
         chapter = _chapter(factories, proposal, title="Стены", category_id=category_id, category_source="manual")
         bucket = _bucket(db_session, catalog_position=cp, work_category_id=category_id)
-        # Изначальный вид — SYSTEM, а не WORK, которым ниже подтверждается
-        # (I3, ревью задачи 12, M24): без этого разрыва тест не отличал бы
+        # Изначальный вид — SYSTEM, а не WORK, которым ниже подтверждается:
+        # без этого разрыва тест не отличал бы
         # применение `body.kind` от его игнорирования — оба дали бы WORK.
-        # `comparability_reason` — непустое значение (I3, M9 «выжил»).
+        # `comparability_reason` — непустое значение.
         ctx = _context(
             db_session, bucket,
             semantic_kind=SemanticKind.SYSTEM.value,
@@ -715,8 +715,8 @@ class TestContextCard:
         )
         position = _position(factories, proposal, chapter=chapter, catalog_position=cp)
         _member(db_session, position, ctx)
-        # Второе членство — число членств обязано быть ≥ 2 (I3, M20
-        # «выжил», урок «числа ≥ 2»), не единственное проверенное значение.
+        # Второе членство — число членств обязано быть ≥ 2, не единственное
+        # проверенное значение.
         position_two = _position(factories, proposal, catalog_position=cp, title="Кладка кирпича, доп. позиция")
         _member(db_session, position_two, ctx)
 
@@ -760,7 +760,7 @@ class TestContextCard:
     def test_card_reports_dictionary_version_from_context_not_hardcoded(
         self, admin_client, db_session, factories
     ):
-        """I3 (ревью задачи 12, M10 «выжил»): фикстура версии словаря — 2,
+        """Фикстура версии словаря — 2,
         а не совпадающая с константой `PLACE_DICTIONARY_VERSION` (обычно 1)
         — иначе тест не отличил бы честное чтение поля от захардкоженной
         единицы. Ни одна операция теста НЕ вызывает `POST .../name-role`:
@@ -800,7 +800,7 @@ class TestContextOperations:
         assert body["context_unit_id"] == m2
 
     def test_assign_family_null_removes_family(self, admin_client, db_session, factories):
-        """m5 (ревью задачи 12): снятие семьи (`family_id: null`) не было
+        """Снятие семьи (`family_id: null`) не было
         покрыто ни одним тестом."""
         m2 = _unit_id(db_session, "M2")
         cp = factories.CatalogPositionFactory.create(unit_id=m2)
@@ -857,7 +857,7 @@ class TestContextOperations:
     def test_split_context_with_valid_rule_registers_routing_rule(
         self, admin_client, db_session, factories
     ):
-        """m5 (ревью задачи 12): счастливый путь разделения С правилом
+        """Счастливый путь разделения С правилом
         (`rule_id is not None`) не был покрыт — только `без правила` и
         `с невалидным правилом`."""
         proposal = _proposal(factories)
@@ -937,7 +937,7 @@ class TestContextOperations:
         assert without_successor.status_code == 409
         without_successor_detail = without_successor.json()["detail"]
         assert without_successor_detail["code"] == context_operations.REFUSE_DEFAULT_WITHOUT_SUCCESSOR
-        # I2 (ревью задачи 12, A12.4): отказ обязан называть корзину, а не
+        # Отказ (A12.4) обязан называть корзину, а не
         # только код.
         assert without_successor_detail["bucket_id"] == bucket3.id
 
@@ -987,7 +987,7 @@ class TestMembers:
         assert response.json()["moved_members"] == 1
 
     def test_move_members_different_bucket_names_bucket_ids(self, admin_client, db_session, factories):
-        """I2 (ревью задачи 12, A12.4): `REFUSE_DIFFERENT_BUCKET` через API
+        """`REFUSE_DIFFERENT_BUCKET` через API (A12.4)
         не вызывался вовсе — членство и цель в РАЗНЫХ корзинах, отказ обязан
         назвать обе."""
         cp_a = factories.CatalogPositionFactory.create()
@@ -1065,8 +1065,7 @@ class TestMembers:
     def _stale_transfer_scene(self, db_session, factories):
         """STALE-членство с ДВУМЯ существующими корзинами — исходной
         (статья `cat_b`, устарела) и целевой по СВЕЖЕЙ эффективной статье
-        (`cat_a`, из раздела). Тот же приём, что зонд ревью
-        (`task12-backup/probe_test.py.txt`)."""
+        (`cat_a`, из раздела)."""
         cat_a, cat_b = _leaf_category_ids(db_session, 2)
         cp = factories.CatalogPositionFactory.create()
         proposal = _proposal(factories)
@@ -1081,10 +1080,10 @@ class TestMembers:
     def test_accept_transfer_category_changed_carries_json_safe_new_proposal(
         self, admin_client, db_session, factories
     ):
-        """B1 (BLOCKER, ревью задачи 12): `_domain_error` клала в контекст
+        """`_domain_error` клала в контекст
         `vars(exc)` БЕЗ преобразования — `new_proposal` (dataclass
         `TransferProposal`) не сериализуется штатным JSON-кодером, и маршрут
-        падал `500` (зонд ревью: `TypeError: Object of type TransferProposal
+        падал `500` (`TypeError: Object of type TransferProposal
         is not JSON serializable`). `expected_category_id=cat_b` — то, что
         показало БЫ старое (устаревшее) предложение, а не свежее."""
         pos, cat_a, cat_b = self._stale_transfer_scene(db_session, factories)
@@ -1112,9 +1111,9 @@ class TestMembers:
     def test_domain_error_rolls_back_partial_writes(
         self, committing_client, committing_session_factory, monkeypatch
     ):
-        """I7 (ревью задачи 12): в транзакционной фикстуре сервис отказывает
+        """В транзакционной фикстуре сервис отказывает
         ДО любой записи, и `commit` вместо `rollback` в `_mutating` ничем не
-        отличим от правильного отката (M2 ревью, «выжил»). Здесь —
+        отличим от правильного отката. Здесь —
         `committing_client` (настоящий `commit`/`rollback` на реальном
         Postgres) и сервис, подменённый на «сначала запись, потом отказ»:
         если `_mutating` коммитит вместо отката, вставленная семья

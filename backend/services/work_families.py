@@ -14,8 +14,7 @@
 `NULL` (то же самое, что делает `CHECK`, чьё выражение —
 `definition IS NOT NULL AND btrim(definition) <> ''`): без этого правила
 активация с определением из одних пробелов проходила бы код и падала бы
-только на базе с непонятным `IntegrityError` (решение оркестратора брифа
-задачи 7, см. отчёт `tasks/catalog-families-work/task7-executor.md`).
+только на базе с непонятным `IntegrityError`.
 
 Единица семьи (`unit_id`) резолвится из текста ЧЕРЕЗ `UnitResolver`
 (`services/unit_resolution.py`) — как при импорте, тем же самым способом:
@@ -24,7 +23,7 @@
 
 Коды отказов сверх плана (задача 7 заводит только `WorkFamilyError` и
 `REFUSE_ACTIVATE_WITHOUT_DEFINITION` по имени из плана; остальные —
-решение исполнителя, см. отчёт):
+сверх плана):
 `REFUSE_FAMILY_NOT_FOUND`, `REFUSE_UPDATE_ARCHIVED` (правка архивной семьи),
 `REFUSE_ACTIVATE_NOT_DRAFT` (активация не из `draft`), `REFUSE_UNKNOWN_UNIT`
 (ручное создание с единицей, которую `UnitResolver` не резолвит — семья без
@@ -38,14 +37,13 @@
 плана (`REFUSE_UNIT_MISMATCH`, `REFUSE_FAMILY_NOT_ACTIVE`,
 `REFUSE_UNIT_CHANGE_WITH_LINKS`, `REFUSE_ARCHIVE_WITH_LINKS`,
 `REFUSE_MERGE_UNIT_MISMATCH`, `REFUSE_MERGE_INACTIVE`) плюс коды сверх
-плана (решение исполнителя, отчёт `tasks/catalog-families-work/
-task8-executor.md`): `REFUSE_CONTEXT_NOT_FOUND`, `REFUSE_CONTEXT_NOT_APPLICABLE`
+плана: `REFUSE_CONTEXT_NOT_FOUND`, `REFUSE_CONTEXT_NOT_APPLICABLE`
 (вид/подтверждение вида на `NOT_APPLICABLE`-контексте — своя причина у
 `confirm_kind`/`unconfirm_kind`, а не пересечение с шестью плановыми),
 `REFUSE_MERGE_SAME_FAMILY`, `REFUSE_INVALID_KIND`, `REFUSE_INVALID_NAME_ROLE`.
 
-Порядок блокировок «семья раньше контекста» — решение оркестратора брифа
-задачи 8: `assign_family` берёт `FOR SHARE` на назначаемую семью (прежняя
+Порядок блокировок «семья раньше контекста»:
+`assign_family` берёт `FOR SHARE` на назначаемую семью (прежняя
 семья контекста не блокируется — она не меняется и не проверяется) ДО
 `FOR UPDATE` на контекст; `merge_families` берёт `FOR UPDATE` на обе семьи
 по возрастанию `id`, затем `FOR UPDATE` на переводимые контексты, тоже по
@@ -104,7 +102,7 @@ class WorkFamilyError(Exception):
 #: Имя из плана (Task 7, Interfaces) — активация без определения.
 REFUSE_ACTIVATE_WITHOUT_DEFINITION = "activate_without_definition"
 
-#: Коды сверх плана (решение исполнителя, см. докстроку модуля и отчёт).
+#: Коды сверх плана (см. докстроку модуля).
 REFUSE_FAMILY_NOT_FOUND = "family_not_found"
 REFUSE_UPDATE_ARCHIVED = "update_archived"
 REFUSE_ACTIVATE_NOT_DRAFT = "activate_not_draft"
@@ -123,8 +121,7 @@ REFUSE_MERGE_UNIT_MISMATCH = "merge_unit_mismatch"
 #: (`role='source'|'target'`, `status`), не отдельные коды.
 REFUSE_MERGE_INACTIVE = "merge_inactive"
 
-#: Коды сверх плана — задача 8 (решение исполнителя, см. отчёт
-#: `tasks/catalog-families-work/task8-executor.md`).
+#: Коды сверх плана — задача 8.
 REFUSE_CONTEXT_NOT_FOUND = "context_not_found"
 #: `confirm_kind`/`unconfirm_kind` на `NOT_APPLICABLE`-контексте: решения о
 #: виде для строк-разделов/мусора бессмысленны (спека §2.5) — своя причина,
@@ -164,7 +161,7 @@ def _has_definition(value: str | None) -> bool:
 def _normalize_definition(value: str | None) -> str | None:
     """Пустая/пробельная строка хранится как `NULL` — семья без определения
     не отличается тем, ПУСТУЮ строку ей приписали или вовсе ничего не
-    приписывали (решение оркестратора брифа задачи 7)."""
+    приписывали."""
     return value if _has_definition(value) else None
 
 
@@ -177,8 +174,7 @@ def create_family(
     actor_id: int,
 ) -> WorkFamily:
     """Заводит семью вручную: `created_by=actor_id`, `seed_key=NULL`,
-    `status='draft'`, `family_created` с `origin='operator'` (план, задача 7,
-    «Решения оркестратора»).
+    `status='draft'`, `family_created` с `origin='operator'` (план, задача 7).
 
     Raises:
         WorkFamilyError: `unit_name` задан, но `UnitResolver` не резолвит его
@@ -226,7 +222,7 @@ def update_family(
 ) -> WorkFamily:
     """Правит имя и/или определение семьи. `None` у параметра значит «не
     трогать это поле» — вызывающий передаёт только то, что реально меняется
-    (план, задача 7, «Решения оркестратора»: `changed` только по реально
+    (план, задача 7: `changed` только по реально
     изменившимся полям, пустой аудит запрещён спекой §2.14).
 
     Допустима в любом статусе, КРОМЕ `archived`.
@@ -329,7 +325,7 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
 
 def load_seed(db: Session, *, path: Path = SEED_PATH) -> SeedReport:
     """Загружает `path` идемпотентно: совпадение при повторном запуске ищется
-    ТОЛЬКО по `seed_key` (план, задача 7, «Решения оркестратора») — найдена
+    ТОЛЬКО по `seed_key` (план, задача 7) — найдена
     запись — ни одно её поле не трогается (ни имя, ни определение, ни
     статус, ни единица): «не трогает правок пользователя». Поиск по паре
     «имя × единица» здесь не участвует вовсе: после переименования он завёл
@@ -346,8 +342,7 @@ def load_seed(db: Session, *, path: Path = SEED_PATH) -> SeedReport:
             `unit_name`). Проверяются ВСЕ записи файла ДО первой вставки —
             отказ на записи №K не должен оставить в базе записи №1..K-1: та
             же дисциплина «молчаливая потеря идентичности недопустима», что
-            и в `create_family` (докстрока модуля, решение оркестратора
-            Round 2 ревью задачи 7).
+            и в `create_family` (докстрока модуля).
     """
     records: list[dict[str, object]] = json.loads(Path(path).read_bytes().decode("utf-8"))
 
@@ -389,7 +384,7 @@ def load_seed(db: Session, *, path: Path = SEED_PATH) -> SeedReport:
             title=record["title"],
             unit_id=resolved.unit_id,
             # Пустое/пробельное определение — NULL, тем же правилом, что и
-            # create_family/update_family (MINOR-2, ревью задачи 7 Round 2).
+            # create_family/update_family.
             definition=_normalize_definition(record["definition"]),
             status=FamilyStatus.draft.value,
             created_by=None,
@@ -457,7 +452,7 @@ def assign_family(
     """Назначает семью контексту либо снимает её (`family_id=None`) — спека
     §2.7 «Назначение семьи контексту».
 
-    Порядок блокировок «семья раньше контекста» (решение оркестратора брифа):
+    Порядок блокировок «семья раньше контекста»:
     `family_id` задан — `FOR SHARE` на НАЗНАЧАЕМУЮ семью (прежняя семья
     контекста, если была, НЕ блокируется — она не меняется и не проверяется),
     затем `FOR UPDATE` на контекст. Это и есть протокол, которым архивирование
@@ -617,7 +612,7 @@ def archive_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily:
     Raises:
         WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья
             уже архивирована, перечитанное (`REFUSE_FAMILY_NOT_ACTIVE`,
-            называет статус `archived` — решение оркестратора, раунд 2 ревью:
+            называет статус `archived`:
             повторное архивирование иначе молча переустановило бы
             `archived_at` и записало бы второе `family_archived`); есть хотя
             бы один привязанный контекст, перечитанное
@@ -819,8 +814,7 @@ def confirm_kind(
     `semantic_state`-независимая семья контекста этим вызовом НЕ трогаются —
     вид и семья разные оси (спека §2.5).
 
-    Вызов на УЖЕ `CONFIRMED` контексте (решение оркестратора, раунд 2 ревью)
-    — НЕ-ОП, если `kind` не меняет фактическое значение (`kind=None` либо
+    Вызов на УЖЕ `CONFIRMED` контексте — НЕ-ОП, если `kind` не меняет фактическое значение (`kind=None` либо
     `kind` равен текущему `semantic_kind`): поле не трогается, событие не
     пишется. Единственный смысл повторного вызова на `CONFIRMED` —
     ПЕРЕОПРЕДЕЛИТЬ вид на ДРУГОЕ значение (тогда это обычная запись:
@@ -829,8 +823,8 @@ def confirm_kind(
     при `kind=None` — там меняются `source`/`state`, а не только `kind`.
 
     `FOR UPDATE` на строку контекста, перечитывание `semantic_state` ПОСЛЕ
-    лока (решение оркестратора: гонок по этой операции план не утверждает,
-    блокировка — ради перечитывания состояния, не ради сериализации).
+    лока: гонок по этой операции план не утверждает,
+    блокировка — ради перечитывания состояния, не ради сериализации.
 
     Raises:
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
@@ -888,11 +882,9 @@ def unconfirm_kind(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
     """Снимает подтверждение вида: `CONFIRMED → SUGGESTED`, вид
     ПЕРЕСЧИТЫВАЕТСЯ ПРАВИЛОМ (`classify_kind` от единицы каталожной строки
     контекста — НЕ сохраняется прежнее значение), `source='rule'`,
-    автор/время очищены (спека §2.5, таблица переходов, решение оркестратора
-    брифа задачи 8).
+    автор/время очищены (спека §2.5, таблица переходов).
 
-    Вызов на УЖЕ `SUGGESTED` контексте (решение оркестратора, раунд 2 ревью)
-    — НЕ-ОП: снимать нечего (подтверждения не было), поле не трогается,
+    Вызов на УЖЕ `SUGGESTED` контексте — НЕ-ОП: снимать нечего (подтверждения не было), поле не трогается,
     событие не пишется — без этой проверки повторный вызов молча
     переустановил бы `semantic_kind_at` и записал бы второе `kind_set` с
     `from == to`, хотя ничего в состоянии контекста не изменилось.
@@ -957,7 +949,7 @@ def set_name_role(db: Session, *, context_id: int, role: str, actor_id: int) -> 
 
     `FOR UPDATE` на строку контекста, перечитывание не несёт домена (роль не
     зависит от чужого перечитываемого состояния), но лок — той же дисциплины
-    ради (решение оркестратора брифа задачи 8).
+    ради.
 
     Raises:
         WorkFamilyError: `role` вне `NameRole` (`REFUSE_INVALID_NAME_ROLE`,

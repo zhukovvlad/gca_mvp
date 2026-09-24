@@ -3,8 +3,7 @@
 журнала и обязательный состав `payload` на каждый тип, провалидированный ДО
 обращения к базе.
 
-Доработка после независимого ревью (второй круг): ревью лично воспроизвело
-две дыры, которые прежний набор тестов не видел — (1) подмену
+Закрывает две дыры, которые прежний набор тестов не видел — (1) подмену
 `context_family_assigned.source` с `FamilySource` на `DecisionSource` (обе
 дают строку `'manual'`, поэтому старые enum-тесты этого не ловили), и (2)
 создание `SemanticEvent`/`db.add` ДО валидации (старые тесты доказывали
@@ -111,7 +110,7 @@ def _count_events(db_session) -> int:
 
 def _rejected(db_session, event_type, payload, **kwargs) -> SemanticEventError:
     """Вызывает `record_event`, ожидает `SemanticEventError`, и доказывает,
-    что отказ произошёл ДО базы (доработка I3 после ревью — прежние тесты
+    что отказ произошёл ДО базы: прежние тесты
     доказывали только «исключение не `IntegrityError`» и «счётчик строк не
     изменился БЕЗ явного `flush`», а обе эти проверки истинны и в дыре
     «`db.add` до валидации»/«валидация после `flush`»: раз `record_event` не
@@ -123,13 +122,6 @@ def _rejected(db_session, event_type, payload, **kwargs) -> SemanticEventError:
     базу до отказа) или если бы `db.add` состоялся раньше валидации (а этот
     `flush()` теста тогда бы её отправил), оба случая изменили бы счётчик
     строк здесь. Возвращает исключение — для проверки текста сообщения.
-
-    (Доработка второго круга ревью, Z2: раньше здесь был ещё один «свидетель»
-    — отсутствие незафлашенного `SemanticEvent` в `db_session.new`. Он не
-    добавлял отдельного доказательства: с явным `flush()` и сверкой счётчика
-    строк любая из двух дыр — «db.add до валидации» или «валидация после
-    flush» — уже красит тест, так что вторая проверка не ловит ничего, чего
-    не поймала бы первая; удалён по решению оркестратора.)
     """
     count_before = _count_events(db_session)
     with pytest.raises(SemanticEventError) as exc_info:
@@ -256,7 +248,7 @@ class TestExactlyFifteenTypes:
 
 
 class TestRequiredKeysMatchIndependentLiteral:
-    """Доработка после ревью: прежде оракул набора обязательных ключей на
+    """Оракул набора обязательных ключей на
     ТИП «висел на одной строке» — типы проверялись независимо
     (`TestExactlyFifteenTypes`), а СОСТАВ ключей каждого типа сверялся
     только опосредованно, через параметризацию, построенную ИЗ САМОГО
@@ -269,7 +261,7 @@ class TestRequiredKeysMatchIndependentLiteral:
 
 
 class TestEnumValuesMatchIndependentLiteral:
-    """I1 доработки после ревью: ревью лично воспроизвело дыру — подмена
+    """Подмена
     `context_family_assigned.source` с `FamilySource` на `DecisionSource`
     (обе содержат `'manual'`) оставляла прежний набор тестов зелёным. Полное
     равенство словарей с независимым литералом (строки, не перечисления)
@@ -292,7 +284,7 @@ _ENUM_KEY_CASES = sorted(_EXPECTED_ENUM_VALUES)
 
 
 class TestEnumValuesAcceptedAndRejected:
-    """I1 доработки после ревью, поведенческая часть: перебор ЛИТЕРАЛА (не
+    """Поведенческая часть: перебор ЛИТЕРАЛА (не
     модуля) — каждое легальное значение долетает до базы, ровно одно чужое
     на каждую пару (тип, ключ) отказывает, называя и ключ, и само значение."""
 
@@ -325,7 +317,7 @@ class TestEnumValuesAcceptedAndRejected:
 
 # ---------------------------------------------------------------------------
 #  2. Неизвестный тип; отсутствующий обязательный ключ назван по имени —
-#     И НЕ называет присутствующие (I2 доработки после ревью)
+#     И НЕ называет присутствующие
 # ---------------------------------------------------------------------------
 
 class TestUnknownTypeAndMissingKey:
@@ -338,7 +330,7 @@ class TestUnknownTypeAndMissingKey:
         assert "totally_unknown_type" in str(error)
 
     def test_missing_required_key_names_it_and_not_the_present_one(self, db_session, factories):
-        """I2 доработки после ревью: сообщение обязано называть ИМЕННО
+        """Сообщение обязано называть ИМЕННО
         отсутствующий ключ и НЕ называть присутствующий — сообщение вида
         «отсутствуют обязательные ключи: bucket_id, origin» (весь список,
         включая присутствующий `origin`) тоже красило бы прежнюю проверку
@@ -404,7 +396,7 @@ class TestSubjectFollowsType:
     def test_both_subjects_at_once_rejected(self, db_session, factories):
         """Оба субъекта разом на КОНТЕКСТНОМ типе — ветка `_validate_subject`:
         `event_type in CONTEXT_EVENT_TYPES` → `family_id is not None`.
-        Семейный тип с обоими id — отдельная ветка, тест ниже (I4)."""
+        Семейный тип с обоими id — отдельная ветка, тест ниже."""
         ctx = _context(db_session, factories)
         fam = _family(db_session, factories)
         payload = {"bucket_id": 1, "origin": "import"}
@@ -414,7 +406,7 @@ class TestSubjectFollowsType:
         assert "context_created" in str(error)
 
     def test_family_type_with_both_context_and_family_id_rejected(self, db_session, factories):
-        """I4 доработки после ревью: ветка `_validate_subject`
+        """Ветка `_validate_subject`
         `event_type in FAMILY_EVENT_TYPES` → `context_id is not None` не
         была пробита ОТДЕЛЬНО от контекстной (`test_both_subjects_at_once_rejected`
         выше берёт контекстный тип с обоими id — это семейный тип с обоими
@@ -434,8 +426,8 @@ class TestSubjectFollowsType:
 
 
 # ---------------------------------------------------------------------------
-#  4b. family_updated.changed — форма содержимого (решение оркестратора,
-#      отдельная проверка рядом с обязательными ключами, EVENT_REQUIRED_KEYS
+#  4b. family_updated.changed — форма содержимого
+#      (отдельная проверка рядом с обязательными ключами, EVENT_REQUIRED_KEYS
 #      остаётся dict[str, frozenset[str]] — присутствие ключа `changed`
 #      держит он, форму его содержимого — эта проверка)
 # ---------------------------------------------------------------------------
@@ -448,7 +440,7 @@ class TestFamilyUpdatedChangedShape:
         assert "changed" in str(error)
 
     def test_changed_integer_not_a_list_rejected(self, db_session, factories):
-        """M3 доработки после ревью: `5` — свой собственный свидетель,
+        """`5` — свой собственный свидетель,
         отдельный от строки выше (строка тоже «не список», но у неё есть
         длина и она итерируема — код обязан проверять именно `isinstance(x,
         list)`, а не что-то вроде «есть len()»)."""
@@ -464,7 +456,7 @@ class TestFamilyUpdatedChangedShape:
         assert "changed" in str(error)
 
     def test_changed_item_not_a_dict_rejected(self, db_session, factories):
-        """M3 доработки после ревью: различитель против `in`-проверки на
+        """Различитель против `in`-проверки на
         строке без проверки типа — если бы код проверял только
         `item_key not in item`, строка `'fieldfromto'` прошла бы, потому что
         `'field' in 'fieldfromto'` истинно КАК ПОДСТРОКА, и то же для
@@ -511,7 +503,7 @@ class TestFamilyUpdatedChangedShape:
 
 
 # ---------------------------------------------------------------------------
-#  M1 доработки после ревью: нехэшируемое значение перечислимого ключа и
+#  Нехэшируемое значение перечислимого ключа и
 #     payload, не являющийся объектом, — SemanticEventError, а НЕ TypeError
 # ---------------------------------------------------------------------------
 
@@ -526,7 +518,7 @@ class TestNonHashableAndNonDictPayload:
         assert "origin" in str(error)
 
     def test_non_dict_payload_none_rejected_not_type_error(self, db_session, factories):
-        """Доработка второго круга ревью (Z1): `payload = None` — не
+        """`payload = None` — не
         объект и не итерируем вовсе. Без проверки `isinstance(payload,
         Mapping)` код упал бы уже на ПЕРВОЙ итерации `key not in payload`
         внутри вычисления отсутствующих ключей — `TypeError: argument of
@@ -538,7 +530,7 @@ class TestNonHashableAndNonDictPayload:
     def test_non_dict_payload_with_required_key_names_as_items_rejected_not_type_error(
         self, db_session, factories
     ):
-        """Доработка второго круга ревью (Z1): различитель против слабого
+        """Различитель против слабого
         прежнего входа `[1, 2, 3]`, который отказывал уже на проверке
         отсутствующих ключей («bucket_id»/«origin» не среди элементов 1, 2,
         3) и НИКОГДА не добирался до самой проверки `isinstance` — удали
@@ -559,7 +551,7 @@ class TestNonHashableAndNonDictPayload:
 
 
 # ---------------------------------------------------------------------------
-#  M2 доработки после ревью: историческое имя `family_assigned` —
+#  Историческое имя `family_assigned` —
 #     неизвестный ТИП (не входит в закрытый список пятнадцати вовсе),
 #     отказ SemanticEventError, а не KeyError
 # ---------------------------------------------------------------------------
@@ -583,7 +575,7 @@ class TestHistoricalNameIsUnknownType:
 
 
 # ---------------------------------------------------------------------------
-#  M4 доработки после ревью: позитивные входы со значением None там, где
+#  Позитивные входы со значением None там, где
 #     ключ обязателен, но значение легитимно пусто
 # ---------------------------------------------------------------------------
 
@@ -649,7 +641,7 @@ class TestExternalCrossCheckWithSchema:
 # ---------------------------------------------------------------------------
 #  6. Перебор EVENT_REQUIRED_KEYS: валидная запись на каждый тип, и отказ
 #     по каждому отдельно убранному обязательному ключу (называет ЕГО и
-#     только его — I2)
+#     только его)
 # ---------------------------------------------------------------------------
 
 _TYPE_KEY_PAIRS = [

@@ -17,7 +17,7 @@ payload схемой не выражается — его держит вали�
 Закрытые множества перечислимых ключей (``origin``, ``reason``, ``source``,
 ``trigger``) — из спеки §2.14, кроме ``source``: спека не сводит его в
 множество, а закрывает через прикладной смысл ключа (Global Constraints
-задачи, решение оркестратора). ``kind_set.source`` и ``name_role_set.source``
+задачи). ``kind_set.source`` и ``name_role_set.source``
 берут значения из ``DecisionSource`` (обе колонки контекста —
 ``semantic_kind_source``/``name_role_source`` — того же типа, §2.3);
 ``context_family_assigned.source`` — из ``FamilySource`` (колонка
@@ -102,7 +102,7 @@ EVENT_REQUIRED_KEYS: dict[str, frozenset[str]] = {
 }
 
 #: (тип события, ключ payload) → допустимые значения перечислимого ключа
-#: (спека §2.14; `source` — решение оркестратора, см. докстринг модуля).
+#: (спека §2.14; `source` — см. докстринг модуля).
 EVENT_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("context_created", "origin"): frozenset(
         {"import", "backfill", "split", "review_merge", "stale_accepted"}
@@ -151,7 +151,7 @@ _CHANGED_ITEM_REQUIRED_KEYS = ("field", "from", "to")
 
 def _validate_family_updated_changed(payload: Mapping[str, object]) -> None:
     """`family_updated.changed` — НЕПУСТОЙ список, каждый элемент которого
-    несёт `field`, `from`, `to` (решение оркестратора: `EVENT_REQUIRED_KEYS`
+    несёт `field`, `from`, `to`: `EVENT_REQUIRED_KEYS`
     остаётся `dict[str, frozenset[str]]` — присутствие ключа `changed` на
     верхнем уровне держит этот словарь как и раньше; форма СОДЕРЖИМОГО
     списка — отдельная проверка, потому что `frozenset` ключей не способен
@@ -207,7 +207,7 @@ def _validate_payload(event_type: str, payload: object) -> None:
         # `TypeError`: либо `value` нехэшируемо (список, словарь), либо его
         # `__eq__`/`__hash__` сам отказывается сравниваться с чем-либо из
         # множества. `TypeError` наружу нарушил бы контракт «любой отказ —
-        # SemanticEventError» (M1) — в обоих случаях.
+        # SemanticEventError» — в обоих случаях.
         try:
             is_allowed = value in allowed
         except TypeError:
