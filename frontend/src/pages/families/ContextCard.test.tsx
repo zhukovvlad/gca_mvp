@@ -169,7 +169,7 @@ describe("ContextCard", () => {
     // Целевой контекст — выбор из живых соседей по корзине (П6), не ввод id:
     // фикстура контекста 603 несёт ровно одного живого соседа, id 760.
     await user.click(await screen.findByRole("combobox", { name: "Целевой контекст" }));
-    await user.click(await screen.findByText("контекст #760"));
+    await user.click(await screen.findByRole("option", { name: "контекст #760" }));
     await user.click(screen.getByRole("button", { name: "Перенести" }));
 
     await waitFor(() =>
@@ -328,7 +328,7 @@ describe("ContextCard", () => {
     await user.click(screen.getByLabelText("Выбрать позицию 71002"));
     // Фикстура контекста 601 несёт ровно одного живого соседа, id 750.
     await user.click(screen.getByRole("combobox", { name: "Целевой контекст для переноса выбранных" }));
-    await user.click(await screen.findByText("контекст #750"));
+    await user.click(await screen.findByRole("option", { name: "контекст #750" }));
     await user.click(screen.getByRole("button", { name: "Перенести выбранные" }));
 
     await waitFor(() =>
@@ -348,7 +348,7 @@ describe("ContextCard", () => {
     );
 
     await user.click(screen.getByRole("combobox", { name: "Слить контекст в целевой" }));
-    await user.click(await screen.findByText("контекст #750"));
+    await user.click(await screen.findByRole("option", { name: "контекст #750" }));
     await user.click(screen.getByRole("button", { name: "Слить контексты" }));
 
     await waitFor(() =>
