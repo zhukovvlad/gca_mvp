@@ -10,6 +10,7 @@ from database import SessionLocal
 from db_guard import ensure_mutation_allowed
 from models import User, UserRole
 from security import hash_password
+from services.catalog_backfill import etc_category_share, run_backfill
 from services.work_families import load_seed
 
 
@@ -72,6 +73,41 @@ def seed_work_families() -> None:
             f"Семьи работ: создано={report.created}, "
             f"пропущено (уже существуют)={report.skipped_existing}, "
             f"с определением в файле={report.with_definition}"
+        )
+    finally:
+        db.close()
+
+
+@cli.command("backfill-contexts")
+def backfill_contexts() -> None:
+    """Разовый проход по существующему каталогу: маршрутизировать все ещё
+    не обработанные строки сметы в контексты (`services/catalog_backfill.
+    run_backfill`, план фичи «Семьи и контексты», задача 11).
+
+    Идемпотентно: повторный запуск на неизменных данных не создаёт ни одной
+    строки и не меняет ни одного поля. Порядок запуска — миграция → seed
+    (`seed-work-families`) → этот проход (спека §2.9): семьи контекстам не
+    назначаются автоматически, проход от seed не зависит, но обратный
+    порядок запутал бы отчёты.
+    """
+    _guard("backfill-contexts")
+    db = SessionLocal()
+    try:
+        report = run_backfill(db)
+        etc_count, etc_total = etc_category_share(db)
+        etc_pct = (etc_count / etc_total * 100) if etc_total else 0
+        click.echo(
+            f"Корзин создано={report.buckets_created}, "
+            f"контекстов создано={report.contexts_created}, "
+            f"членств создано={report.members_created}, "
+            f"строк без корзины={report.rows_without_bucket}, "
+            f"изменено полей при пересчёте словаря={report.fields_changed}"
+        )
+        click.echo(f"Контексты по роли имени: {report.by_name_role}")
+        click.echo(f"Контексты по виду: {report.by_semantic_kind}")
+        click.echo(
+            f"Членств в корзинах статьи «Прочее»: {etc_count} из {etc_total} "
+            f"({etc_pct:.1f}%)"
         )
     finally:
         db.close()
