@@ -52,6 +52,8 @@ from services.work_families import (
     REFUSE_ACTIVATE_NOT_DRAFT,
     REFUSE_ACTIVATE_WITHOUT_DEFINITION,
     REFUSE_ARCHIVE_WITH_LINKS,
+    REFUSE_BLANK_TITLE,
+    REFUSE_CONTEXT_ARCHIVED,
     REFUSE_CONTEXT_NOT_FOUND,
     REFUSE_FAMILY_NOT_ACTIVE,
     REFUSE_FAMILY_NOT_FOUND,
@@ -395,6 +397,19 @@ def test_create_family_blank_definition_normalizes_to_null(db_session, factories
     assert fam.definition is None
 
 
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_create_family_blank_title_refuses_as_a_domain_error(db_session, factories, title):
+    """Пустое/пробельное имя — доменный отказ (`REFUSE_BLANK_TITLE`), а не
+    `IntegrityError` от `ck_work_families_title_not_blank`, дошедший до
+    маршрута непойманным 500."""
+    user = factories.UserFactory.create()
+    with pytest.raises(WorkFamilyError) as exc:
+        create_family(
+            db_session, title=title, unit_name=None, definition=None, actor_id=user.id,
+        )
+    assert exc.value.code == REFUSE_BLANK_TITLE
+
+
 # ---------------------------------------------------------------------------
 #  update_family: правка, `changed`, запрет на archived.
 # ---------------------------------------------------------------------------
@@ -462,6 +477,27 @@ def test_update_family_clearing_definition_to_blank_is_recorded_as_null(db_sessi
     assert events[-1].payload["changed"] == [
         {"field": "definition", "from": "Было", "to": None}
     ]
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_update_family_blank_title_refuses_and_leaves_title_untouched(
+    db_session, factories, title
+):
+    """Пустое/пробельное имя на правке — доменный отказ
+    (`REFUSE_BLANK_TITLE`), не `IntegrityError`; `None` остаётся законным «не
+    трогать» (проверено смежными тестами выше) — отказывает именно РЕАЛЬНО
+    переданная пустая строка."""
+    user = factories.UserFactory.create()
+    fam = create_family(
+        db_session, title="Имя останется", unit_name=None, definition=None, actor_id=user.id,
+    )
+    with pytest.raises(WorkFamilyError) as exc:
+        update_family(
+            db_session, family_id=fam.id, title=title, definition=None, actor_id=user.id,
+        )
+    assert exc.value.code == REFUSE_BLANK_TITLE
+    db_session.refresh(fam)
+    assert fam.title == "Имя останется"
 
 
 def test_update_family_allowed_when_active(db_session, factories):
@@ -931,6 +967,25 @@ class TestAssignFamily:
         assert exc.value.code == REFUSE_UNIT_MISMATCH
         assert exc.value.family_unit_id is None
         assert exc.value.context_unit_id == m2
+
+    def test_archived_context_refuses(self, db_session, factories):
+        """Архивный контекст «выведен из обращения» (спека §2.8) — семью на
+        него не назначить, тем же кодом, что операции `context_operations`."""
+        user = factories.UserFactory.create()
+        unit = _unit_id(db_session, "M2")
+        context, _cp = _routed_context(db_session, factories, unit_id=unit)
+        family = _active_family(
+            db_session, title=f"Архивный контекст {_uid()}", unit_name="M2", actor_id=user.id
+        )
+        context.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+        db_session.expire(context)
+
+        with pytest.raises(WorkFamilyError) as exc:
+            assign_family(
+                db_session, context_id=context.id, family_id=family.id, actor_id=user.id
+            )
+        assert exc.value.code == REFUSE_CONTEXT_ARCHIVED
 
     def test_requires_active_draft_refuses(self, db_session, factories):
         context, _cp = _routed_context(db_session, factories, unit_id=None)

@@ -170,14 +170,13 @@ describe("ContextCard", () => {
     // фикстура контекста 603 несёт ровно одного живого соседа, id 760.
     await user.click(await screen.findByRole("combobox", { name: "Целевой контекст" }));
     await user.click(await screen.findByText("контекст #760"));
-    await user.type(screen.getByLabelText("Причина"), "решение оператора");
     await user.click(screen.getByRole("button", { name: "Перенести" }));
 
     await waitFor(() =>
       expect(handlerState.lastMoveMembersRequest).toEqual({
         position_item_ids: [CONFLICT_POSITION_ITEM_IDS[1]],
         target_context_id: 760,
-        reason: "решение оператора",
+        reason: "manual",
       })
     );
   });
@@ -330,14 +329,13 @@ describe("ContextCard", () => {
     // Фикстура контекста 601 несёт ровно одного живого соседа, id 750.
     await user.click(screen.getByRole("combobox", { name: "Целевой контекст для переноса выбранных" }));
     await user.click(await screen.findByText("контекст #750"));
-    await user.type(screen.getByLabelText("Причина переноса выбранных"), "перенос оператором");
     await user.click(screen.getByRole("button", { name: "Перенести выбранные" }));
 
     await waitFor(() =>
       expect(handlerState.lastMoveMembersRequest).toEqual({
         position_item_ids: [71002],
         target_context_id: 750,
-        reason: "перенос оператором",
+        reason: "manual",
       })
     );
   });

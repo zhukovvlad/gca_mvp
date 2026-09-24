@@ -102,6 +102,7 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_families.REFUSE_INVALID_KIND,
         work_families.REFUSE_INVALID_NAME_ROLE,
         work_families.REFUSE_MERGE_SAME_FAMILY,
+        work_families.REFUSE_BLANK_TITLE,
         context_operations.REFUSE_DIFFERENT_BUCKET,
         context_operations.REFUSE_INVALID_MEMBERSHIP,
         context_operations.REFUSE_INVALID_NEW_DEFAULT,

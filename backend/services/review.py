@@ -62,7 +62,7 @@ from models import (
     SemanticState,
     WorkFamily,
 )
-from services.context_routing import chapter_context, evaluate_predicate, lock_buckets, route_position
+from services.context_routing import chapter_context, evaluate_predicate, lock_buckets
 from services.matching import NORM_VERSION, cache_key
 from services.semantic_events import record_event
 from services.unit_resolution import UnitResolver
@@ -240,20 +240,38 @@ def _conflict_warning(
 
 
 def _resolve_target_bucket(
-    db: Session, *, target_catalog_position: CatalogPosition, work_category_id: int | None
+    db: Session, *, target_catalog_position: CatalogPosition, work_category_id: int | None,
+    source_bucket_id: int,
 ) -> tuple[ContextBucket, bool]:
     """Get-or-create корзины цели с той же эффективной статьёй, что у корзины
     источника (спека §2.8) — заводит и её контекст по умолчанию, если корзина
     только что создана, `origin='review_merge'` (обязательное условие §2.14).
-    Цепочка разделов для нового контекста — намеренно ПУСТАЯ (тот же приём и
-    то же обоснование, что `context_operations._classify_new_context_semantics`:
-    у группы перенесённых членств нет ОДНОЙ образцовой цепочки).
+
+    Цепочка разделов для НОВОГО контекста — цепочка ПРЕДСТАВИТЕЛЬНОГО членства
+    корзины источника (членства с наименьшим `position_item_id` среди
+    переносимых слиянием — тот же приём, что
+    `catalog_backfill._representative_position_id`), а не пустая: у группы
+    перенесённых членств действительно нет ОДНОЙ образцовой цепочки, но взять
+    чью-то, а не никакую, существенно для `LOCATION_ONLY`-имени под рабочим
+    разделом — на пустой цепочке роль пересчиталась бы в
+    `insufficient_description`, хотя состав описан не хуже, чем был у
+    источника (тот же дефект, что нашла и исправила задача 11 для пересчёта
+    словаря). Корзина источника без единого членства — законный редкий
+    случай, тогда цепочка остаётся пустой (взять представителя не у кого).
     """
+    representative_id = db.execute(
+        sa.select(sa.func.min(ContextMember.position_item_id))
+        .select_from(ContextMember)
+        .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .where(CatalogContext.bucket_id == source_bucket_id)
+    ).scalar_one()
+    chain = chapter_context(db, representative_id).chain if representative_id is not None else ()
+
     bucket, created, _context_created = context_routing_module._get_or_create_bucket_with_default_context(
         db,
         catalog_position=target_catalog_position,
         work_category_id=work_category_id,
-        chain=(),
+        chain=chain,
         origin="review_merge",
     )
     return bucket, created
@@ -265,14 +283,20 @@ def _route_member_into_bucket(db: Session, *, member: ContextMember, target_buck
     действующее умолчание), — и записывает решение на `member` (`context_id`,
     `bucket_id`, `routed_by`, `routing_rule_id`). Возвращает новый `context_id`.
 
-    Используется ТОЛЬКО для членств `routed_by='manual'`: обычный
-    `route_position` оставляет их нетронутыми БЕЗ ИСКЛЮЧЕНИЙ («ручное решение
-    сильнее правила», спека §2.4) — верно, пока корзина, к которой был
-    адресован ручной выбор, продолжает существовать. Здесь корзина
-    ЦЕЛИКОМ упраздняется слиянием (её собственный контекст архивируется и
-    перевешивается на корзину цели, спека §2.8), поэтому решение оператора
-    воспроизводится заново — теми же двумя шагами, какими воспользовалась бы
-    обычная маршрутизация, — уже В КОРЗИНЕ ЦЕЛИ."""
+    Используется для ЛЮБОГО членства переносимой корзины, независимо от
+    `routed_by`: корзина, в которой оно стояло, ЦЕЛИКОМ упраздняется слиянием
+    (её собственный контекст архивируется и перевешивается на корзину цели,
+    спека §2.8), поэтому решение — правило, умолчание или прежний ручной выбор
+    — воспроизводится заново теми же двумя шагами, какими воспользовалась бы
+    обычная маршрутизация, уже В КОРЗИНЕ ЦЕЛИ (`target_bucket` — та самая
+    корзина, что уже взята под замок вызывающим `reconcile_contexts`; общая
+    маршрутизация по ТЕКУЩЕЙ эффективной статье позиции сюда не годится — она
+    вправе выбрать СОВСЕМ ДРУГУЮ корзину, вне набора локов слияния и в обход
+    §2.8, требующего переноса ровно в корзину цели той же статьи, что у
+    источника). `membership_state` эта функция не трогает — устаревшее
+    (`STALE`) членство источника остаётся `STALE` и в корзине цели: перенос
+    по новой статье — отдельное решение оператора (`accept_transfer`), не
+    следствие слияния."""
     rules = (
         db.execute(
             sa.select(ContextRoutingRule)
@@ -303,11 +327,13 @@ def _transfer_members(
     db: Session, *, contexts: list[CatalogContext], target_bucket: ContextBucket
 ) -> tuple[dict[tuple[int, int], int], list[str]]:
     """Переносит ВСЕ членства контекстов `contexts` (корзины источника) в
-    `target_bucket` — «обычной маршрутизацией цели» (спека §2.8): не-`manual`
-    членства идут через `route_position(origin='review_merge')` буквально,
-    `manual` — через `_route_member_into_bucket` (см. её докстроку). Помечает
-    конфликтные членства (`conflict_at`/`conflict_from_context_id`, спека
-    §2.3, §2.8) по правилу `_conflict_warning`.
+    `target_bucket` — «обычной маршрутизацией цели» (спека §2.8): ОБА пути,
+    `manual` и не-`manual`, идут через `_route_member_into_bucket` (см. её
+    докстроку) — членство остаётся тем же фактом, каким бы `routed_by` оно ни
+    несло, и маршрутизируется ВНУТРИ уже определённой и заблокированной
+    `target_bucket`, а не по текущей эффективной статье позиции заново.
+    Помечает конфликтные членства (`conflict_at`/`conflict_from_context_id`,
+    спека §2.3, §2.8) по правилу `_conflict_warning`.
 
     Возвращает `(moved_counts, warnings)`: `moved_counts` — счёт перенесённых
     членств по паре `(new_context_id, from_context_id)`, ключ для события
@@ -335,13 +361,7 @@ def _transfer_members(
 
     for member in members:
         from_context_id = original_context_by_member[member.position_item_id]
-        if member.routed_by == RoutedBy.manual.value:
-            new_context_id = _route_member_into_bucket(db, member=member, target_bucket=target_bucket)
-        else:
-            new_member = route_position(
-                db, position_item_id=member.position_item_id, origin="review_merge"
-            )
-            new_context_id = new_member.context_id
+        new_context_id = _route_member_into_bucket(db, member=member, target_bucket=target_bucket)
 
         moved_counts[(new_context_id, from_context_id)] = (
             moved_counts.get((new_context_id, from_context_id), 0) + 1
@@ -429,8 +449,9 @@ def reconcile_contexts(
     `merge_into_position_outcome`, встаёт ПЕРЕД `DELETE` каталожной строки
     (шаг 4) и ПОСЛЕ `UPDATE position_items`/записи `matching_cache` (шаги 1,
     2) — важно, что `position_items.catalog_position_id` уже указывает на
-    цель к этому моменту: `route_position`, вызванная отсюда, разрешает
-    корзину именно по нему.
+    цель к этому моменту: `chapter_context`, которую читает
+    `_route_member_into_bucket` при подборе правила внутри корзины цели,
+    разрешает цепочку разделов позиции именно по нему.
 
     Для каждой корзины источника: находит либо заводит корзину цели с той же
     эффективной статьёй (`_resolve_target_bucket`); переносит её членства
@@ -468,6 +489,7 @@ def reconcile_contexts(
             db,
             target_catalog_position=target_catalog_position,
             work_category_id=source_bucket.work_category_id,
+            source_bucket_id=source_bucket.id,
         )
         resolved.append((source_bucket, target_bucket, target_created))
 

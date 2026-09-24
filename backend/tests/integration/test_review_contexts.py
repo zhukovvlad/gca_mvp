@@ -28,6 +28,7 @@ from models import (
     ContextRoutingRule,
     DecisionSource,
     MembershipState,
+    NameRole,
     RoutedBy,
     SemanticEvent,
     SemanticKind,
@@ -380,6 +381,121 @@ class TestManualMembershipDuringMerge:
             "moved_members": 1,
             "reason": "review_merge",
         }
+
+
+class TestStaleMembershipDuringMerge:
+    """Устаревшее (`STALE`) членство исходной корзины — эффективная статья
+    позиции разошлась с `work_category_id` корзины после ручного разноса —
+    переносится в корзину цели той же ОБЫЧНОЙ маршрутизацией, что и
+    `CURRENT`, и остаётся `STALE`: перенос по НОВОЙ статье слиянием не
+    делается — это отдельное решение оператора (`accept_transfer`).
+    Параметризовано по `routed_by` источника: до слияния оба варианта
+    (правило/умолчание и ручной выбор) обязаны вести себя одинаково."""
+
+    @pytest.mark.parametrize("mark_manual", [False, True])
+    def test_stale_member_stays_stale_in_the_target_bucket(self, db_session, factories, mark_manual):
+        user = factories.UserFactory.create()
+        scene = _simple_scene(db_session, factories)
+        if mark_manual:
+            # Тот же приём, что `TestManualMembershipDuringMerge`: перенос в
+            # СВОЙ ЖЕ контекст меняет только `routed_by` на `manual`.
+            move_members(
+                db_session,
+                position_item_ids=[scene.source_item_id],
+                target_context_id=scene.source_context_id,
+                actor_id=user.id,
+                reason="manual",
+            )
+        member = _member(db_session, scene.source_item_id)
+        expected_routed_by = RoutedBy.manual.value if mark_manual else member.routed_by
+        assert member.routed_by == expected_routed_by
+        member.membership_state = MembershipState.STALE.value
+        db_session.flush()
+
+        outcome = merge_into_position_outcome(
+            db_session, to_review_id=scene.source_cp_id, target_id=scene.target_cp_id
+        )
+        assert outcome.moved_positions == 1
+
+        moved_member = _member(db_session, scene.source_item_id)
+        assert moved_member.context_id == scene.target_context_id
+        assert moved_member.bucket_id == scene.target_bucket_id
+        assert moved_member.membership_state == MembershipState.STALE.value
+
+        # Ни одной лишней корзины: членство осталось ВНУТРИ уже определённой
+        # и заблокированной корзины цели, а не уехало по текущей эффективной
+        # статье позиции в другую (не взятую под замок слияния) корзину.
+        bucket_count = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(ContextBucket)
+            .where(ContextBucket.catalog_position_id == scene.target_cp_id)
+        ).scalar_one()
+        assert bucket_count == 1
+
+
+class TestMergeCreatesTargetBucketWithRepresentativeChain:
+    def test_fresh_target_default_context_keeps_work_title_under_a_chapter(
+        self, db_session, factories
+    ):
+        """Слияние, заводящее НОВУЮ корзину цели (статья источника ещё не
+        встречалась у цели), читает роль имени её свежего контекста по
+        умолчанию по цепочке ПРЕДСТАВИТЕЛЬНОГО членства корзины источника, не
+        по пустой — иначе `LOCATION_ONLY` под рабочим разделом теряет
+        рабочее имя."""
+        unit_id = _unit_id(db_session, "M2")
+        # Роль имени НОВОГО контекста цели классифицируется по СОБСТВЕННОМУ
+        # `standard_job_title` ЦЕЛЕВОЙ каталожной строки (`target_cp`) —
+        # `chain` лишь подсказывает рабочий раздел рядом; для проверки
+        # `LOCATION_ONLY` имя цели ТОЖЕ обязано быть местом, тем же текстом,
+        # что и переносимая позиция источника.
+        target_cp = _catalog_row(
+            factories, kind=CatalogKind.POSITION.value, unit_id=unit_id, title="Корпус 1"
+        )
+        # Источник — та же роль-достойная форма имени (классифицируется
+        # независимо от цели, СОБСТВЕННЫМ `standard_job_title` + цепочкой
+        # своего раздела) — предпосылка теста нужна на ОБОИХ; название другое
+        # ("Корпус 2"), чтобы не столкнуться с target_cp по уникальному
+        # индексу (написание × единица).
+        source_cp = _catalog_row(
+            factories, kind=CatalogKind.TO_REVIEW.value, unit_id=unit_id, title="Корпус 2"
+        )
+        # Целевая позиция роутится обычным путём — её корзина у target_cp
+        # несёт `work_category_id=None`.
+        target_item, _target_member = _routed_position(
+            db_session, factories, catalog_position=target_cp, title="Целевая позиция"
+        )
+
+        cat_a = _leaf_category_ids(db_session, 1)[0]
+        source_proposal = _proposal(factories)
+        source_chapter = _chapter(
+            factories, source_proposal, title="Монтаж витражей", category_id=cat_a
+        )
+        source_item = _position(
+            factories, source_proposal, chapter=source_chapter, catalog_position=source_cp,
+            title="Корпус 1",
+        )
+        source_member = route_position(db_session, position_item_id=source_item.id)
+        source_bucket = db_session.get(ContextBucket, source_member.bucket_id)
+        assert source_bucket.work_category_id == cat_a  # предпосылка — своя статья, не None
+        source_ctx = db_session.get(CatalogContext, source_member.context_id)
+        assert source_ctx.name_role == NameRole.LOCATION_ONLY.value  # предпосылка
+        assert source_ctx.comparability_reason is None  # рабочий раздел найден при создании
+
+        outcome = merge_into_position_outcome(
+            db_session, to_review_id=source_cp.id, target_id=target_cp.id
+        )
+        assert outcome.moved_positions == 1
+
+        moved_member = _member(db_session, source_item.id)
+        # Новая корзина цели — статья cat_a у target_cp встречается впервые.
+        assert moved_member.bucket_id != _member(db_session, target_item.id).bucket_id
+        new_bucket = db_session.get(ContextBucket, moved_member.bucket_id)
+        assert new_bucket.catalog_position_id == target_cp.id
+        assert new_bucket.work_category_id == cat_a
+
+        new_context = _context(db_session, moved_member.context_id)
+        assert new_context.name_role == NameRole.LOCATION_ONLY.value
+        assert new_context.comparability_reason is None
 
 
 # ---------------------------------------------------------------------------

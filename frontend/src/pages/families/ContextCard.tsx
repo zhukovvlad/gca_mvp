@@ -112,11 +112,9 @@ export function ContextCard({ contextId }: ContextCardProps) {
   const [ruleLevel, setRuleLevel] = useState("");
 
   const [bulkTarget, setBulkTarget] = useState<number | null>(null);
-  const [bulkReasonInput, setBulkReasonInput] = useState("");
 
   const [conflictMove, setConflictMove] = useState<ContextMemberRow | null>(null);
   const [conflictMoveTarget, setConflictMoveTarget] = useState<number | null>(null);
-  const [conflictMoveReason, setConflictMoveReason] = useState("");
 
   const [mergeTarget, setMergeTarget] = useState<number | null>(null);
   const [newDefaultInput, setNewDefaultInput] = useState("");
@@ -356,7 +354,6 @@ export function ContextCard({ contextId }: ContextCardProps) {
                                   onClick={() => {
                                     setConflictMove(member);
                                     setConflictMoveTarget(null);
-                                    setConflictMoveReason("");
                                   }}
                                 >
                                   Перенести в другой контекст
@@ -472,28 +469,22 @@ export function ContextCard({ contextId }: ContextCardProps) {
               getLabel={bucketTargetLabel}
               placeholder="Целевой контекст"
             />
-            <Label htmlFor="bulk-move-reason" className="sr-only">Причина переноса выбранных</Label>
-            <Input
-              id="bulk-move-reason"
-              className="w-56"
-              placeholder="причина"
-              value={bulkReasonInput}
-              onChange={(e) => setBulkReasonInput(e.target.value)}
-            />
             <Button
               variant="outline"
               disabled={
                 moveMembers.isPending ||
                 selectedIdList.length === 0 ||
-                bulkTarget === null ||
-                !bulkReasonInput.trim()
+                bulkTarget === null
               }
               onClick={() =>
                 moveMembers.mutate(
                   {
                     position_item_ids: selectedIdList,
                     target_context_id: bulkTarget as number,
-                    reason: bulkReasonInput.trim(),
+                    // Причина переноса — не свободный текст с экрана: сервис
+                    // принимает в этом маршруте только "manual" (спека §2.8,
+                    // §2.14 — журнал переноса вручную).
+                    reason: "manual",
                   },
                   { onSuccess: () => setSelectedIds(new Set()) }
                 )
@@ -683,26 +674,18 @@ export function ContextCard({ contextId }: ContextCardProps) {
               getLabel={bucketTargetLabel}
               placeholder="Целевой контекст"
             />
-            <Label htmlFor="conflict-move-reason">Причина</Label>
-            <Input
-              id="conflict-move-reason"
-              value={conflictMoveReason}
-              onChange={(e) => setConflictMoveReason(e.target.value)}
-            />
           </div>
           <DialogFooter>
             <Button
-              disabled={
-                moveMembers.isPending ||
-                conflictMoveTarget === null ||
-                !conflictMoveReason.trim()
-              }
+              disabled={moveMembers.isPending || conflictMoveTarget === null}
               onClick={() => {
                 if (!conflictMove || conflictMoveTarget === null) return;
                 moveMembers.mutate({
                   position_item_ids: [conflictMove.position_item_id],
                   target_context_id: conflictMoveTarget,
-                  reason: conflictMoveReason.trim(),
+                  // См. комментарий у «Перенести выбранные» — причина не
+                  // вводится оператором, сервис принимает только "manual".
+                  reason: "manual",
                 });
                 setConflictMove(null);
               }}

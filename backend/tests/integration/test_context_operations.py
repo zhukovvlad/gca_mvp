@@ -762,6 +762,39 @@ class TestSplitWithoutRuleOnANonDefaultContext:
         assert new_member.context_id == default_ctx.id
 
 
+class TestSplitPreservesLocationOnlyUnderWorkChapter:
+    def test_new_context_keeps_work_title_from_representative_chain(self, db_session, factories):
+        """Роль имени нового контекста читается по цепочке ПРЕДСТАВИТЕЛЬНОГО
+        переносимого членства (наименьший `position_item_id`), не по
+        пустой — иначе `LOCATION_ONLY` под рабочим разделом теряет рабочее
+        имя и приобретает `insufficient_description`, хотя состав описан не
+        хуже, чем был у источника."""
+        user = factories.UserFactory.create()
+        proposal, _ = _proposal(factories)
+        chapter = _chapter(factories, proposal, title="Монтаж витражей")
+        # `classify_name_role` читает `catalog_position.standard_job_title`,
+        # НЕ `job_title_in_proposal` (`context_routing._create_default_context`)
+        # — оба обязаны нести "Корпус 1", иначе роль классифицируется по
+        # чужому тексту.
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Корпус 1")
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Корпус 1"
+        )
+        member = route_position(db_session, position_item_id=position.id)
+        source_ctx = db_session.get(CatalogContext, member.context_id)
+        assert source_ctx.name_role == NameRole.LOCATION_ONLY.value  # предпосылка
+        assert source_ctx.comparability_reason is None  # рабочий раздел найден при создании
+
+        result = split_context(
+            db_session, context_id=source_ctx.id, position_item_ids=[position.id],
+            rule=None, actor_id=user.id,
+        )
+
+        new_context = db_session.get(CatalogContext, result.new_context_id)
+        assert new_context.name_role == NameRole.LOCATION_ONLY.value
+        assert new_context.comparability_reason is None
+
+
 class TestSplitRefusals:
     def test_empty_position_item_ids_is_refused(self, db_session, factories):
         user = factories.UserFactory.create()
@@ -1063,6 +1096,23 @@ class TestMoveMembersRefusals:
             move_members(
                 db_session, position_item_ids=[position.id], target_context_id=target.id,
                 actor_id=user.id, reason="совсем-не-то",
+            )
+        assert excinfo.value.code == REFUSE_INVALID_REASON
+
+    @pytest.mark.parametrize("reason", ["stale_accepted", "review_merge"])
+    def test_reasons_of_other_operations_are_refused_here(self, db_session, factories, reason):
+        """`stale_accepted` и `review_merge` — реальные значения в журнале
+        (принятие предложения переноса и слияние в Review пишут их сами), но
+        не ручной перенос: эта функция подписывает членство только
+        `"manual"`, а не любой строкой из общего алфавита событий."""
+        user = factories.UserFactory.create()
+        bucket, default_ctx, position, cp = _seed_default_member(db_session, factories)
+        target = _context(db_session, bucket)
+
+        with pytest.raises(ContextOperationError) as excinfo:
+            move_members(
+                db_session, position_item_ids=[position.id], target_context_id=target.id,
+                actor_id=user.id, reason=reason,
             )
         assert excinfo.value.code == REFUSE_INVALID_REASON
 

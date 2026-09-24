@@ -359,6 +359,26 @@ class TestFamilies:
         assert archived_detail["code"] == work_families.REFUSE_ARCHIVE_WITH_LINKS
         assert archived_detail["count"] == 1
 
+    def test_create_with_whitespace_only_title_gives_422_not_500(self, admin_client):
+        """`min_length=1` на `CreateFamilyRequest.title` пропускает
+        пробельную строку — сервис обязан отказать доменным кодом до
+        `IntegrityError` от `ck_work_families_title_not_blank`."""
+        response = admin_client.post(
+            f"{BASE}/families", json={"title": "   ", "unit_name": None, "definition": None}
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == work_families.REFUSE_BLANK_TITLE
+
+    def test_update_with_whitespace_only_title_gives_422_not_500(self, admin_client):
+        created = admin_client.post(
+            f"{BASE}/families", json={"title": "Имя остаётся", "unit_name": None, "definition": None}
+        )
+        family_id = created.json()["id"]
+
+        response = admin_client.patch(f"{BASE}/families/{family_id}", json={"title": "   "})
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == work_families.REFUSE_BLANK_TITLE
+
     def test_list_families_filters_by_unit(self, admin_client, db_session):
         m2 = _unit_id(db_session, "M2")
         pcs = _unit_id(db_session, "PCS")
@@ -1233,6 +1253,28 @@ class TestMembers:
         response = admin_client.post(
             f"{BASE}/members/move",
             json={"position_item_ids": [pos.id], "target_context_id": target.id, "reason": "не по спеку"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == context_operations.REFUSE_INVALID_REASON
+
+    @pytest.mark.parametrize("reason", ["stale_accepted", "review_merge"])
+    def test_move_members_rejects_reasons_reserved_for_other_operations(
+        self, admin_client, db_session, factories, reason
+    ):
+        """`stale_accepted`/`review_merge` — причины, которые в журнал пишут
+        `accept_transfer` и слияние в Review соответственно, не ручной
+        перенос: клиент этого маршрута не вправе подписать ими членство,
+        даже хотя обе строки входят в общий алфавит `members_moved.reason`."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        target = _context(db_session, bucket)
+        proposal = _proposal(factories)
+        pos = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, pos, target)
+
+        response = admin_client.post(
+            f"{BASE}/members/move",
+            json={"position_item_ids": [pos.id], "target_context_id": target.id, "reason": reason},
         )
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == context_operations.REFUSE_INVALID_REASON

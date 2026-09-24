@@ -107,6 +107,13 @@ REFUSE_FAMILY_NOT_FOUND = "family_not_found"
 REFUSE_UPDATE_ARCHIVED = "update_archived"
 REFUSE_ACTIVATE_NOT_DRAFT = "activate_not_draft"
 REFUSE_UNKNOWN_UNIT = "unknown_unit"
+#: Пустое/пробельное имя семьи — доменный отказ ПЕРВОЙ линией (та же
+#: дисциплина, что `_has_definition`/`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`),
+#: а не `IntegrityError` от `ck_work_families_title_not_blank`, дошедший до
+#: `_mutating` непойманным 500: `CreateFamilyRequest.title` несёт
+#: `min_length=1`, что пропускает `"   "`, `UpdateFamilyRequest.title` —
+#: вовсе без ограничения.
+REFUSE_BLANK_TITLE = "blank_title"
 
 #: Шесть имён из плана (Task 8, Interfaces).
 REFUSE_UNIT_MISMATCH = "unit_mismatch"
@@ -123,6 +130,13 @@ REFUSE_MERGE_INACTIVE = "merge_inactive"
 
 #: Коды сверх плана — задача 8.
 REFUSE_CONTEXT_NOT_FOUND = "context_not_found"
+#: Тот же код (то же строковое значение), что `context_operations.
+#: REFUSE_CONTEXT_ARCHIVED` — архивный контекст «выведен из обращения»
+#: (спека §2.8) одинаково для операций `context_operations` И операций ЭТОГО
+#: модуля над контекстом (`assign_family`, `confirm_kind`, `unconfirm_kind`,
+#: `set_name_role`): один факт, одна причина отказа, не два разных предиката
+#: одного и того же.
+REFUSE_CONTEXT_ARCHIVED = "context_archived"
 #: `confirm_kind`/`unconfirm_kind` на `NOT_APPLICABLE`-контексте: решения о
 #: виде для строк-разделов/мусора бессмысленны (спека §2.5) — своя причина,
 #: не пересекается ни с одним из шести кодов плана.
@@ -158,6 +172,13 @@ def _has_definition(value: str | None) -> bool:
     return value is not None and value.strip() != ""
 
 
+def _has_title(value: str | None) -> bool:
+    """Непустое, непробельное имя — то же правило, что и `CHECK`
+    `ck_work_families_title_not_blank` (`btrim(title) <> ''`), выполненное в
+    Python до обращения к базе (та же дисциплина, что `_has_definition`)."""
+    return value is not None and value.strip() != ""
+
+
 def _normalize_definition(value: str | None) -> str | None:
     """Пустая/пробельная строка хранится как `NULL` — семья без определения
     не отличается тем, ПУСТУЮ строку ей приписали или вовсе ничего не
@@ -177,11 +198,19 @@ def create_family(
     `status='draft'`, `family_created` с `origin='operator'` (план, задача 7).
 
     Raises:
-        WorkFamilyError: `unit_name` задан, но `UnitResolver` не резолвит его
-            (`REFUSE_UNKNOWN_UNIT`) — семья БЕЗ единицы (`unit_name=None`)
-            допустима, а вот названная неизвестная единица молча потеряла бы
-            идентичность (докстрока `services/unit_resolution.py`).
+        WorkFamilyError: `title` пуст/пробелен (`REFUSE_BLANK_TITLE`,
+            проверяется ПЕРВЫМ, до чтения базы — та же дисциплина, что
+            `REFUSE_INVALID_REASON` у `move_members`); `unit_name` задан, но
+            `UnitResolver` не резолвит его (`REFUSE_UNKNOWN_UNIT`) — семья
+            БЕЗ единицы (`unit_name=None`) допустима, а вот названная
+            неизвестная единица молча потеряла бы идентичность (докстрока
+            `services/unit_resolution.py`).
     """
+    if not _has_title(title):
+        raise WorkFamilyError(
+            REFUSE_BLANK_TITLE, f"имя семьи пусто или состоит из пробелов: {title!r}", title=title
+        )
+
     resolver = UnitResolver(db)
     resolved = resolver.resolve(unit_name)
     if resolved.is_unknown:
@@ -228,9 +257,18 @@ def update_family(
     Допустима в любом статусе, КРОМЕ `archived`.
 
     Raises:
-        WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья
-            архивирована (`REFUSE_UPDATE_ARCHIVED`).
+        WorkFamilyError: `title` задан, но пуст/пробелен
+            (`REFUSE_BLANK_TITLE`, проверяется ПЕРВЫМ, до чтения базы — `None`
+            остаётся законным «не трогать это поле», а вот РЕАЛЬНО переданная
+            пустая строка — попытка стереть обязательное имя); семья не
+            найдена (`REFUSE_FAMILY_NOT_FOUND`); семья архивирована
+            (`REFUSE_UPDATE_ARCHIVED`).
     """
+    if title is not None and not _has_title(title):
+        raise WorkFamilyError(
+            REFUSE_BLANK_TITLE, f"имя семьи пусто или состоит из пробелов: {title!r}", title=title
+        )
+
     family = db.get(WorkFamily, family_id)
     if family is None:
         raise WorkFamilyError(
@@ -461,6 +499,9 @@ def assign_family(
 
     Raises:
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
+            контекст архивирован, ПЕРЕЧИТАННОЕ после лока
+            (`REFUSE_CONTEXT_ARCHIVED` — архивный контекст выведен из
+            обращения, спека §2.8, тем же кодом, что `context_operations`);
             семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья не `active`,
             ПЕРЕЧИТАННОЕ после лока (`REFUSE_FAMILY_NOT_ACTIVE`, называет
             статус); единица семьи не совпадает с единицей каталожной строки
@@ -483,7 +524,13 @@ def assign_family(
     _lock_contexts(db, [context_id])  # FOR UPDATE
     db.expire_all()  # см. докстроку модуля — иначе следующий db.get вернёт кэш
 
-    context = db.get(CatalogContext, context_id)
+    context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED,
+            f"контекст {context_id} архивирован",
+            context_id=context_id,
+        )
     old_family_id = context.work_family_id
     now = _now()
 
@@ -828,7 +875,10 @@ def confirm_kind(
 
     Raises:
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
-            контекст `NOT_APPLICABLE`, перечитанное (`REFUSE_CONTEXT_NOT_APPLICABLE`
+            контекст архивирован, ПЕРЕЧИТАННОЕ после лока
+            (`REFUSE_CONTEXT_ARCHIVED` — как в `context_operations`: архивный
+            контекст выведен из обращения, спека §2.8); контекст
+            `NOT_APPLICABLE`, перечитанное (`REFUSE_CONTEXT_NOT_APPLICABLE`
             — свой код сверх плана: решение о виде для строки-раздела/мусора
             бессмысленно, спека §2.5); `kind` задан, но вне `SemanticKind`
             (`REFUSE_INVALID_KIND`).
@@ -843,6 +893,12 @@ def confirm_kind(
     db.expire_all()
 
     context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED,
+            f"контекст {context_id} архивирован",
+            context_id=context_id,
+        )
     if context.semantic_state == SemanticState.NOT_APPLICABLE.value:
         raise WorkFamilyError(
             REFUSE_CONTEXT_NOT_APPLICABLE,
@@ -894,7 +950,9 @@ def unconfirm_kind(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
 
     Raises:
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
-            контекст `NOT_APPLICABLE`, перечитанное
+            контекст архивирован, ПЕРЕЧИТАННОЕ после лока
+            (`REFUSE_CONTEXT_ARCHIVED` — как в `context_operations`); контекст
+            `NOT_APPLICABLE`, перечитанное
             (`REFUSE_CONTEXT_NOT_APPLICABLE`).
     """
     context = db.get(CatalogContext, context_id)
@@ -907,6 +965,12 @@ def unconfirm_kind(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
     db.expire_all()
 
     context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED,
+            f"контекст {context_id} архивирован",
+            context_id=context_id,
+        )
     if context.semantic_state == SemanticState.NOT_APPLICABLE.value:
         raise WorkFamilyError(
             REFUSE_CONTEXT_NOT_APPLICABLE,
@@ -954,7 +1018,9 @@ def set_name_role(db: Session, *, context_id: int, role: str, actor_id: int) -> 
     Raises:
         WorkFamilyError: `role` вне `NameRole` (`REFUSE_INVALID_NAME_ROLE`,
             проверяется ПЕРВЫМ, до чтения базы); контекст не найден
-            (`REFUSE_CONTEXT_NOT_FOUND`).
+            (`REFUSE_CONTEXT_NOT_FOUND`); контекст архивирован, ПЕРЕЧИТАННОЕ
+            после лока (`REFUSE_CONTEXT_ARCHIVED` — как в
+            `context_operations`).
     """
     if role not in _NAME_ROLE_VALUES:
         raise WorkFamilyError(
@@ -971,6 +1037,12 @@ def set_name_role(db: Session, *, context_id: int, role: str, actor_id: int) -> 
     db.expire_all()
 
     context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED,
+            f"контекст {context_id} архивирован",
+            context_id=context_id,
+        )
     old_role = context.name_role
     context.name_role = role
     context.name_role_source = DecisionSource.manual.value

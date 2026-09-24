@@ -45,6 +45,7 @@ from unittest import mock
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 
 import services.context_operations as context_operations_module
 import services.context_routing as context_routing_module
@@ -53,6 +54,7 @@ from models import (
     ContextBucket,
     ContextMember,
     DecisionSource,
+    MembershipState,
     NameRole,
     PositionItem,
     SemanticKind,
@@ -65,10 +67,12 @@ from services.context_operations import (
     REFUSE_INCOMING_RULES,
     REFUSE_INVALID_MEMBERSHIP,
     ContextOperationError,
+    accept_transfer,
     archive_context,
     merge_contexts,
     move_members,
     split_context,
+    transfer_proposal,
 )
 from services.context_routing import (
     PREDICATE_CHAPTER_CHAIN_CONTAINS,
@@ -909,6 +913,152 @@ class TestMergeVsArchive:
             )
         ).scalar_one()
         assert dangling == 0
+
+
+# ---------------------------------------------------------------------------
+#  `accept_transfer` против `move_members` на ОДНОЙ корзине — без дедлока
+# ---------------------------------------------------------------------------
+
+class TestAcceptTransferVsMoveMembersNoDeadlock:
+    """`accept_transfer` и `move_members`, взявшиеся за ОДНО и то же
+    устаревшее членство X одной корзины, обязаны разойтись без дедлока: обе
+    операции берут корзину ПЕРВОЙ (общий порядок ветки — корзина раньше
+    членства), значит при столкновении одна просто встаёт в очередь на
+    корзину, вторая заканчивает и отпускает оба лока, очередь освобождается.
+
+    Пауза ставится ПОСЛЕ ПЕРВОГО реально взятого лока `accept_transfer` —
+    БЕЗ ПРЕДПОЛОЖЕНИЯ, что это корзина: слушатель на самой сессии A ловит
+    строчный `FOR UPDATE` на `context_members`, а обёртка
+    `lock_buckets` ловит лок корзины — сработает ровно один из двух,
+    смотря какой лок код реально берёт первым. Тест ничего не знает заранее
+    о порядке — тем и годится как регрессия: если порядок внутри
+    `accept_transfer` перевернуть обратно (членство раньше корзины), B
+    успевает захватить корзину, пока A ещё держит только членство, и на
+    втором локе каждой стороны образуется цикл — настоящий `DeadlockDetected`
+    от PostgreSQL, `assert not errors` ниже это ловит (проверено снятием
+    защиты — порядок временно возвращён, тест сам падает на этом ассерте, не
+    на догадке)."""
+
+    def test_accept_transfer_and_move_members_on_the_same_membership_finish_without_deadlock(
+        self, committing_db, committing_factories, committing_session_factory
+    ):
+        user = committing_factories.UserFactory.create()
+        committing_db.commit()
+
+        proposal, _ = _proposal(committing_factories)
+        cp = committing_factories.CatalogPositionFactory.create()
+        item_x = _position(committing_factories, proposal, catalog_position=cp, title="X")
+        committing_db.commit()
+
+        member_x = route_position(committing_db, position_item_id=item_x.id)
+        bucket_id = member_x.bucket_id
+        default_context_id = member_x.context_id
+        committing_db.commit()
+
+        # Членство X помечено устаревшим НАПРЯМУЮ, без реального разноса
+        # статьи — эффективная статья (`None`) остаётся той же, что у
+        # текущей корзины, поэтому предложение переноса указывает на ТУ ЖЕ
+        # корзину: `accept_transfer` берёт под лок ровно `bucket_id` — ту же
+        # единственную корзину, что и `move_members` (это и есть сцена,
+        # нужная тесту, — обе операции конкурируют за ОДНУ корзину).
+        member_x_row = committing_db.get(ContextMember, item_x.id)
+        member_x_row.membership_state = MembershipState.STALE.value
+        committing_db.commit()
+
+        proposal_x = transfer_proposal(committing_db, position_item_id=item_x.id)
+        assert proposal_x is not None
+        assert proposal_x.proposed_bucket_id == bucket_id
+        expected_category_id = proposal_x.effective_category_id
+
+        pause_armed = {"value": True}
+        first_lock_paused = threading.Event()
+        first_lock_release = threading.Event()
+        errors: list[str] = []
+        a_result: dict[str, object] = {}
+        b_result: dict[str, object] = {}
+        pid_holder: dict[str, int] = {}
+
+        def _pause_once():
+            if pause_armed["value"]:
+                pause_armed["value"] = False
+                first_lock_paused.set()
+                assert first_lock_release.wait(timeout=_A_RELEASE_TIMEOUT), (
+                    "release A не пришёл вовремя"
+                )
+
+        original_lock_buckets = context_operations_module.lock_buckets
+
+        def patched_lock_buckets(db, bucket_ids, *, exclusive):
+            result = original_lock_buckets(db, bucket_ids, exclusive=exclusive)
+            _pause_once()
+            return result
+
+        def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            if "context_members" in statement and "FOR UPDATE" in statement:
+                _pause_once()
+
+        def thread_a():
+            try:
+                with committing_session_factory() as dbA:
+                    pid_holder["a"] = dbA.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    conn = dbA.connection()
+                    event.listen(conn, "after_cursor_execute", _after_cursor_execute)
+                    try:
+                        accept_transfer(
+                            dbA, position_item_id=item_x.id,
+                            expected_category_id=expected_category_id, actor_id=user.id,
+                        )
+                    finally:
+                        event.remove(conn, "after_cursor_execute", _after_cursor_execute)
+                    dbA.commit()
+                    a_result["transferred"] = True
+            except Exception as exc:  # noqa: BLE001 — ловим DeadlockDetected и прочее
+                errors.append(f"a: {type(exc).__name__}: {exc}")
+
+        def thread_b():
+            try:
+                with committing_session_factory() as dbB:
+                    pid_holder["b"] = dbB.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    move_members(
+                        dbB, position_item_ids=[item_x.id], target_context_id=default_context_id,
+                        actor_id=user.id, reason="manual",
+                    )
+                    dbB.commit()
+                    b_result["moved"] = True
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"b: {type(exc).__name__}: {exc}")
+
+        ta = threading.Thread(target=thread_a, name="a", daemon=True)
+        tb = threading.Thread(target=thread_b, name="b", daemon=True)
+        try:
+            with mock.patch.object(
+                context_operations_module, "lock_buckets", side_effect=patched_lock_buckets
+            ):
+                ta.start()
+                assert first_lock_paused.wait(timeout=_LOCK_WAIT_TIMEOUT), (
+                    "A не встала на паузу после своего первого лока"
+                )
+
+                tb.start()
+                assert _wait_for_pid(pid_holder, "b", timeout=_LOCK_WAIT_TIMEOUT)
+                assert _wait_until_backend_blocks(
+                    committing_session_factory, pid=pid_holder["b"], contains="",
+                    timeout=_LOCK_WAIT_TIMEOUT,
+                ), "B не встала в очередь на лок, который держит A"
+
+                first_lock_release.set()
+                ta.join(timeout=_JOIN_TIMEOUT)
+                tb.join(timeout=_JOIN_TIMEOUT)
+        finally:
+            first_lock_release.set()
+            ta.join(timeout=_JOIN_TIMEOUT)
+            tb.join(timeout=_JOIN_TIMEOUT)
+
+        assert not errors, errors
+        assert not ta.is_alive()
+        assert not tb.is_alive()
+        assert a_result.get("transferred") is True
+        assert b_result.get("moved") is True
 
 
 # ---------------------------------------------------------------------------

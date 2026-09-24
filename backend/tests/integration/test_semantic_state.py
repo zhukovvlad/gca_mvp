@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import uuid
 
 import pytest
@@ -37,6 +38,7 @@ from services.context_routing import route_position
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind
 from services.unit_resolution import UnitResolver
 from services.work_families import (
+    REFUSE_CONTEXT_ARCHIVED,
     REFUSE_CONTEXT_NOT_APPLICABLE,
     REFUSE_CONTEXT_NOT_FOUND,
     REFUSE_INVALID_KIND,
@@ -306,6 +308,47 @@ class TestNotApplicableRefusesBoth:
         with pytest.raises(WorkFamilyError) as exc:
             unconfirm_kind(db_session, context_id=context.id, actor_id=user.id)
         assert exc.value.code == REFUSE_CONTEXT_NOT_APPLICABLE
+
+
+# ---------------------------------------------------------------------------
+#  Архивный контекст «выведен из обращения» (спека §2.8) — тем же кодом, что
+#  `context_operations`, а не молча принимает правку.
+# ---------------------------------------------------------------------------
+
+
+class TestArchivedContextRefusesFamilyOperations:
+    def test_confirm_kind_on_archived_refuses(self, db_session, factories):
+        context, _cp = _routed_context(db_session, factories, unit_id=None)
+        context.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+        db_session.expire(context)
+        user = factories.UserFactory.create()
+        with pytest.raises(WorkFamilyError) as exc:
+            confirm_kind(db_session, context_id=context.id, kind=None, actor_id=user.id)
+        assert exc.value.code == REFUSE_CONTEXT_ARCHIVED
+
+    def test_unconfirm_kind_on_archived_refuses(self, db_session, factories):
+        context, _cp = _routed_context(db_session, factories, unit_id=None)
+        context.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+        db_session.expire(context)
+        user = factories.UserFactory.create()
+        with pytest.raises(WorkFamilyError) as exc:
+            unconfirm_kind(db_session, context_id=context.id, actor_id=user.id)
+        assert exc.value.code == REFUSE_CONTEXT_ARCHIVED
+
+    def test_set_name_role_on_archived_refuses(self, db_session, factories):
+        context, _cp = _routed_context(db_session, factories, unit_id=None)
+        context.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+        db_session.expire(context)
+        user = factories.UserFactory.create()
+        with pytest.raises(WorkFamilyError) as exc:
+            set_name_role(
+                db_session, context_id=context.id, role=NameRole.GENERIC_WORK.value,
+                actor_id=user.id,
+            )
+        assert exc.value.code == REFUSE_CONTEXT_ARCHIVED
 
 
 # ---------------------------------------------------------------------------

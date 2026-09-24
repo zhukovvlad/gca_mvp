@@ -2459,6 +2459,21 @@ export const handlers = [
   http.post("/api/v1/semantic/members/move", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;
     handlerState.lastMoveMembersRequest = body;
+    // Настоящий сервис допускает на этом маршруте только "manual" — оператор
+    // не вправе подписать перенос чужой причиной журнала (review_merge,
+    // stale_accepted — они пишутся автоматом другими операциями).
+    if (body.reason !== "manual") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "invalid_reason",
+            message: `недопустимая причина переноса: ${JSON.stringify(body.reason)}`,
+            reason: body.reason,
+          },
+        },
+        { status: 422 }
+      );
+    }
     const ids = body.position_item_ids as number[];
     return HttpResponse.json({ target_context_id: body.target_context_id, moved_members: ids.length });
   }),

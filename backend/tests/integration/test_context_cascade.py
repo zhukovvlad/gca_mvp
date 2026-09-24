@@ -1200,8 +1200,11 @@ class TestAcceptTransferRefusesOnCurrentMembership:
 
 class TestAcceptTransferCompilesToForUpdateBeforeReread:
     """Компиляция РЕАЛЬНОГО SQL — членство и корзина цели блокируются
-    `FOR UPDATE` (не `FOR SHARE`/`NO KEY`), и перечитывание статьи
-    (`position_items`) идёт ПОСЛЕ блокировки корзин, а не до неё."""
+    `FOR UPDATE` (не `FOR SHARE`/`NO KEY`); замок корзин идёт РАНЬШЕ замка
+    членства (общий порядок ветки «корзина → членство», тот же, что у
+    `move_members`/`merge_contexts`/`split_context`/слияния в Review — ни у
+    одной другой мутации членство не запирается первым), и перечитывание
+    статьи (`position_items`) идёт ПОСЛЕ блокировки членства, а не до неё."""
 
     def _stale_scene_with_existing_target(self, db, factories, admin_user):
         shared_title = f"Работа лока {_uid()}"
@@ -1252,7 +1255,7 @@ class TestAcceptTransferCompilesToForUpdateBeforeReread:
         db.expire_all()
         return target_work_id
 
-    def test_locks_membership_and_target_bucket_for_update_before_rereading_the_category(
+    def test_locks_buckets_before_membership_and_rereads_after(
         self, db_session, factories, admin_user
     ):
         target_work_id = self._stale_scene_with_existing_target(db_session, factories, admin_user)
@@ -1265,38 +1268,32 @@ class TestAcceptTransferCompilesToForUpdateBeforeReread:
                 expected_category_id=proposal.effective_category_id, actor_id=admin_user.id,
             )
 
-        member_lock_idx, member_lock_stmt = _find_lock_statement(statements, "context_members")
-        assert "FOR UPDATE" in member_lock_stmt
-        assert "FOR SHARE" not in member_lock_stmt
-        assert "KEY SHARE" not in member_lock_stmt
-        assert "NO KEY" not in member_lock_stmt
-        # Единственный законный запрос ДО лока членства — ленивая подгрузка
-        # ОБЪЕКТА теста (`admin_user`, вне тела accept_transfer, таблица
-        # `users`); ни один запрос к `context_buckets`/`context_routing_rules`/
-        # `position_items` (маршрутизационные предусловия) до лока идти не
-        # должен.
-        routing_reads_before_lock = [
-            s for s in statements[:member_lock_idx]
-            if any(t in s for t in ("context_buckets", "context_routing_rules", "position_items"))
-        ]
-        assert not routing_reads_before_lock, (
-            f"чтение маршрутизационного предусловия ДО лока членства: {routing_reads_before_lock!r}"
-        )
-
         bucket_lock_idx, bucket_lock_stmt = _find_lock_statement(statements, "context_buckets")
         assert "FOR UPDATE" in bucket_lock_stmt
         assert "FOR SHARE" not in bucket_lock_stmt
         assert "KEY SHARE" not in bucket_lock_stmt
         assert "NO KEY" not in bucket_lock_stmt
-        assert bucket_lock_idx > member_lock_idx
+
+        member_lock_idx, member_lock_stmt = _find_lock_statement(statements, "context_members")
+        assert "FOR UPDATE" in member_lock_stmt
+        assert "FOR SHARE" not in member_lock_stmt
+        assert "KEY SHARE" not in member_lock_stmt
+        assert "NO KEY" not in member_lock_stmt
+
+        # Общий порядок ветки — «корзина → членство», не наоборот: замок
+        # корзин (текущей и, если уже существует, целевой) обязан идти
+        # РАНЬШЕ замка на само членство.
+        assert bucket_lock_idx < member_lock_idx, (
+            "членство заперто раньше корзин — нарушение общего порядка блокировок ветки"
+        )
 
         reread_indices = [
             i for i, s in enumerate(statements)
-            if i > bucket_lock_idx and "position_items" in s and s.lstrip().upper().startswith("SELECT")
+            if i > member_lock_idx and "position_items" in s and s.lstrip().upper().startswith("SELECT")
         ]
         assert reread_indices, (
             "перечитывание статьи (position_items) обязано идти ПОСЛЕ блокировки "
-            "корзин, а не до неё"
+            "членства, а не до неё"
         )
 
 

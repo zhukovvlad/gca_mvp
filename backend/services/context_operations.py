@@ -68,7 +68,7 @@ from services.context_routing import (
     evaluate_predicate,
     lock_buckets,
 )
-from services.semantic_events import EVENT_ENUM_VALUES, record_event
+from services.semantic_events import record_event
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind, classify_name_role
 
 
@@ -146,23 +146,33 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _classify_new_context_semantics(catalog_position: CatalogPosition) -> dict[str, object]:
+def _classify_new_context_semantics(
+    catalog_position: CatalogPosition, *, chain: tuple[str, ...] = ()
+) -> dict[str, object]:
     """Вид, роль и `semantic_state` нового контекста — ТЕМИ ЖЕ правилами, что
     при создании контекста на импорте (`context_routing._create_default_context`).
     `_create_default_context` не переиспользуется целиком: она безусловно ставит `is_default=True`,
     что для контекста-приёмника разделённых членств неверно (и вставка
     временного `is_default=True` до снятия флага у старого нарушила бы
     частичный уникальный индекс посреди flush'а в ветке «разделение без
-    правила»). Цепочка разделов — намеренно ПУСТАЯ (`chain=()`): у нового
-    контекста разделения нет ОДНОЙ позиции, чью цепочку можно было бы
-    считать образцовой для всех перенесённых членств разом (они могли прийти
-    из разных строк цепочки), а вид/роль здесь — SUGGESTION, а не финальное
-    решение (спека §2.5); оператор, разделивший корзину, эту роль при
-    необходимости поправит вручную.
+    правила»).
+
+    Цепочка разделов (`chain`) — у группы перенесённых членств действительно
+    нет ОДНОЙ образцовой цепочки (они могли прийти из разных строк цепочки),
+    но взять чью-то, а не никакую, существенно для `LOCATION_ONLY`-имени под
+    рабочим разделом: на пустой цепочке роль пересчиталась бы в
+    `insufficient_description`, хотя состав описан не хуже, чем был (тот же
+    дефект, что нашла и исправила задача 11 для пересчёта словаря). Вызывающий
+    передаёт цепочку ПРЕДСТАВИТЕЛЬНОГО членства (наименьший
+    `position_item_id` среди переносимых); умолчание `()` — для контекста БЕЗ
+    единого переносимого членства (свежий пустой контекст по умолчанию взамен
+    разделённого), где представителя нет по построению. Вид/роль здесь в
+    любом случае SUGGESTION, а не финальное решение (спека §2.5); оператор,
+    разделивший корзину, при необходимости поправит их вручную.
     """
     unit_norm = context_routing_module._unit_norm_of(catalog_position)
     semantic_kind = classify_kind(unit_norm)
-    role_outcome = classify_name_role(catalog_position.standard_job_title, chapter_chain=())
+    role_outcome = classify_name_role(catalog_position.standard_job_title, chapter_chain=chain)
     semantic_state = (
         SemanticState.NOT_APPLICABLE.value
         if catalog_position.kind in context_routing_module._NOT_APPLICABLE_CATALOG_KINDS
@@ -183,13 +193,15 @@ def _create_context(
     catalog_position: CatalogPosition,
     is_default: bool,
     actor_id: int,
+    chain: tuple[str, ...] = (),
 ) -> CatalogContext:
     """Создаёт контекст разделения (спека §2.4, §2.14): `origin='split'`
     ВСЕГДА — этот модуль создаёт контексты только операцией «разделить».
     Пишет `context_created` (обязательное условие для КАЖДОГО создания
-    контекста, спека §2.14)."""
+    контекста, спека §2.14). `chain` — см. докстроку
+    `_classify_new_context_semantics`."""
     now = _now()
-    semantics = _classify_new_context_semantics(catalog_position)
+    semantics = _classify_new_context_semantics(catalog_position, chain=chain)
     context = CatalogContext(
         bucket_id=bucket.id,
         is_default=is_default,
@@ -363,8 +375,14 @@ def split_context(
     bucket = db.get(ContextBucket, bucket_id)
     catalog_position = db.get(CatalogPosition, bucket.catalog_position_id)
 
+    # Цепочка представителя — членство с наименьшим `position_item_id` среди
+    # переносимых (см. докстроку `_classify_new_context_semantics`), не
+    # пустая: иначе `LOCATION_ONLY`-имя под рабочим разделом теряло бы
+    # рабочее имя при разделении.
+    representative_chain = chapter_context(db, min(unique_ids)).chain
     target = _create_context(
-        db, bucket=bucket, catalog_position=catalog_position, is_default=False, actor_id=actor_id
+        db, bucket=bucket, catalog_position=catalog_position, is_default=False, actor_id=actor_id,
+        chain=representative_chain,
     )
 
     new_rule_id: int | None = None
@@ -565,16 +583,22 @@ def move_members(
     одному `members_moved` на каждый исходный контекст (предмет события —
     ЦЕЛЬ, `from_context_id` — источник, спека §2.14).
 
+    `reason` допускает только `"manual"`: эта операция — ручной перенос
+    оператором, а не канал для записи в журнал причин других операций
+    (`stale_accepted` пишет `accept_transfer`, `review_merge` — слияние в
+    Review; каждая — напрямую своим событием, не через эту функцию). Более
+    широкое множество `EVENT_ENUM_VALUES[("members_moved", "reason")]`
+    описывает журнал в целом, а не то, что вправе заявить вызывающий здесь.
+
     Raises:
-        ContextOperationError: `reason` вне `EVENT_ENUM_VALUES[("members_moved",
-            "reason")]` (`REFUSE_INVALID_REASON`, проверяется первым — до
-            любого чтения базы); `position_item_ids` пуст или содержит id без
-            членства (`REFUSE_INVALID_MEMBERSHIP`); цель не найдена
-            (`REFUSE_CONTEXT_NOT_FOUND`); членства и цель — в разных корзинах
-            (`REFUSE_DIFFERENT_BUCKET`); цель архивна, перечитанное
-            (`REFUSE_CONTEXT_ARCHIVED`).
+        ContextOperationError: `reason` не `"manual"` (`REFUSE_INVALID_REASON`,
+            проверяется первым — до любого чтения базы); `position_item_ids`
+            пуст или содержит id без членства (`REFUSE_INVALID_MEMBERSHIP`);
+            цель не найдена (`REFUSE_CONTEXT_NOT_FOUND`); членства и цель — в
+            разных корзинах (`REFUSE_DIFFERENT_BUCKET`); цель архивна,
+            перечитанное (`REFUSE_CONTEXT_ARCHIVED`).
     """
-    allowed_reasons = EVENT_ENUM_VALUES[("members_moved", "reason")]
+    allowed_reasons = {"manual"}
     if reason not in allowed_reasons:
         raise ContextOperationError(
             REFUSE_INVALID_REASON,
@@ -1109,19 +1133,31 @@ def accept_transfer(
     db: Session, *, position_item_id: int, expected_category_id: int | None, actor_id: int
 ) -> int:
     """Принимает предложение переноса под блокировкой и с перечитыванием
-    (спека §2.8): `FOR UPDATE` на членство (взято ПЕРВЫМ же запросом — до
-    ЛЮБОГО другого чтения) и на корзины (текущую и цели, если она уже
-    существует, по возрастанию `id`), заново считает эффективную статью.
+    (спека §2.8): корзины (текущая и цели, если она уже существует, по
+    возрастанию `id`) — ПЕРВЫМИ, тем же порядком, что у любой другой мутации
+    ветки («корзина → членство», не наоборот — см. `move_members`,
+    `merge_contexts`, `split_context`, слияние в Review); `FOR UPDATE` на само
+    членство берётся ПОСЛЕ них. Обе блокировки существуют до чтения
+    `member.bucket_id`, использованного для выбора набора корзин, БЕЗ лока —
+    поэтому после лока на членство `bucket_id` перечитывается и сверяется с
+    запертым набором: если корзина членства успела смениться (гонка с
+    `move_members`/слиянием/разделением МЕЖДУ этим первым чтением и локом на
+    членство), запертый набор больше не описывает её положение, и операция
+    отказывает НОВЫМ предложением, а не молча правит не ту корзину. Тем же
+    перечитыванием заново проверяется и `membership_state` — членство могло
+    стать `CURRENT` (другой `accept_transfer`, тот же перенос) между первым,
+    незапертым чтением и локом.
 
-    Раскрывшееся расхождение (`fresh_effective != expected_category_id`, ЛИБО
-    целевая корзина, найденная свежей статьёй, не входит в набор, который мы
-    реально держим под локом — гонка на СОЗДАНИИ корзины между первым чтением
-    и локом) отказывает `REFUSE_CATEGORY_CHANGED`-ом с НОВЫМ предложением
-    атрибутом `new_proposal`, ничего не перенося. Совпадение — членство
-    маршрутизируется в корзину цели обычной маршрутизацией (корзина и
-    контекст по умолчанию создаются при необходимости,
-    `origin='stale_accepted'`), `membership_state` становится `CURRENT`,
-    пишется `members_moved` (`reason='stale_accepted'`).
+    Раскрывшееся расхождение (корзина членства сменилась; ЛИБО
+    `fresh_effective != expected_category_id`; ЛИБО целевая корзина, найденная
+    свежей статьёй, не входит в набор, который мы реально держим под локом —
+    гонка на СОЗДАНИИ корзины между первым чтением и локом) отказывает
+    `REFUSE_CATEGORY_CHANGED`-ом с НОВЫМ предложением атрибутом
+    `new_proposal`, ничего не перенося. Совпадение — членство маршрутизируется
+    в корзину цели обычной маршрутизацией (корзина и контекст по умолчанию
+    создаются при необходимости, `origin='stale_accepted'`),
+    `membership_state` становится `CURRENT`, пишется `members_moved`
+    (`reason='stale_accepted'`).
 
     **Принятие сбрасывает `routed_by='manual'`, если оно было**: предложение
     и его принятие маршрутизируют ОДНОЙ и той же функцией
@@ -1134,15 +1170,16 @@ def accept_transfer(
     Raises:
         ContextOperationError: `position_item_id` без членства
             (`REFUSE_INVALID_MEMBERSHIP`, оба чтения — до и после лока);
-            членство `CURRENT`, а не `STALE` (`REFUSE_NOT_STALE`, сверх
-            плана — переносить нечего, `transfer_proposal` на нём вернул бы
-            `None`); статья/целевая корзина разошлись с показанным
-            (`REFUSE_CATEGORY_CHANGED`, см. выше).
+            членство `CURRENT`, а не `STALE`, при первом ИЛИ повторном
+            (после лока) чтении (`REFUSE_NOT_STALE`, сверх плана — переносить
+            нечего, `transfer_proposal` на нём вернул бы `None`);
+            статья/целевая корзина/корзина самого членства разошлись с
+            показанным (`REFUSE_CATEGORY_CHANGED`, см. выше).
 
     Возвращает число перенесённых членств (1).
     """
     member = db.execute(
-        sa.select(ContextMember).where(ContextMember.position_item_id == position_item_id).with_for_update()
+        sa.select(ContextMember).where(ContextMember.position_item_id == position_item_id)
     ).scalar_one_or_none()
     if member is None:
         raise ContextOperationError(
@@ -1182,6 +1219,25 @@ def accept_transfer(
             REFUSE_INVALID_MEMBERSHIP,
             f"позиция {position_item_id} без членства (после блокировки)",
             position_item_ids=[position_item_id],
+        )
+    if member.bucket_id not in bucket_ids:
+        # Корзина членства сменилась МЕЖДУ незапертым чтением выше и локом на
+        # само членство (гонка с `move_members`/слиянием/разделением на ЭТОМ
+        # членстве, взявшими корзину раньше нас по общему порядку) — набор,
+        # который мы держим под локом, больше не её место, маршрутизировать
+        # в него нельзя.
+        raise ContextOperationError(
+            REFUSE_CATEGORY_CHANGED,
+            f"корзина членства {position_item_id} изменилась между чтением и "
+            "блокировкой (гонка на переносе того же членства)",
+            position_item_id=position_item_id,
+            new_proposal=transfer_proposal(db, position_item_id=position_item_id),
+        )
+    if member.membership_state != MembershipState.STALE.value:
+        raise ContextOperationError(
+            REFUSE_NOT_STALE,
+            f"членство {position_item_id} не устарело (CURRENT) — переносить нечего (после блокировки)",
+            position_item_id=position_item_id,
         )
 
     chapters = chapter_context(db, position_item_id)
