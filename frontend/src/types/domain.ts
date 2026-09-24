@@ -2069,3 +2069,272 @@ export interface ComparisonParams {
    */
   target_month?: string;
 }
+
+// ---------------------------------------------------------------------------
+//  Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10;
+//  API — `backend/routers/semantic.py`, `backend/crud/semantic.py`)
+// ---------------------------------------------------------------------------
+
+export type WorkFamilyStatus = "draft" | "active" | "archived";
+
+/** Строка `GET /v1/semantic/families` (`crud/semantic.py::list_families`). */
+export interface WorkFamily {
+  id: number;
+  title: string;
+  unit_id: number | null;
+  unit_code: string | null;
+  definition: string | null;
+  status: WorkFamilyStatus;
+  seed_key: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+  activated_by: number | null;
+  activated_at: string | null;
+  archived_at: string | null;
+  /** Число привязанных контекстов — держит отказы правки единицы/архивирования. */
+  context_count: number;
+}
+
+export interface WorkFamilyInput {
+  title: string;
+  unit_name?: string | null;
+  definition?: string | null;
+}
+
+/**
+ * `PATCH /v1/semantic/families/:id` (`UpdateFamilyRequest`). `unit_name`
+ * отсутствует в теле и `unit_name: null` — РАЗНЫЕ входы («не трогать» vs
+ * «снять единицу»); транспорт различает их присутствием ключа, поэтому
+ * поле опционально, а не жёстко типизировано `string | null`.
+ */
+export interface WorkFamilyPatch {
+  title?: string;
+  definition?: string | null;
+  unit_name?: string | null;
+}
+
+export interface MergeFamiliesResult {
+  source_family_id: number;
+  target_family_id: number;
+  moved_contexts: number;
+}
+
+export type SemanticKind = "WORK" | "SYSTEM" | "UNKNOWN";
+export type DecisionSource = "rule" | "manual";
+export type NameRole = "WORK" | "LOCATION_ONLY" | "GENERIC_WORK";
+export type SemanticState = "SUGGESTED" | "CONFIRMED" | "NOT_APPLICABLE";
+export type ComparabilityReason = "insufficient_description";
+export type FamilySource = "manual" | "suggestion";
+
+/** Строка `GET /v1/semantic/contexts` (`crud/semantic.py::list_contexts`). */
+export interface ContextRow {
+  id: number;
+  bucket_id: number;
+  is_default: boolean;
+  semantic_kind: SemanticKind;
+  semantic_kind_source: DecisionSource;
+  name_role: NameRole;
+  name_role_source: DecisionSource;
+  semantic_state: SemanticState;
+  comparability_reason: ComparabilityReason | null;
+  work_family_id: number | null;
+  family_title: string | null;
+  work_category_id: number | null;
+  work_category_code: string | null;
+  work_category_title: string | null;
+  catalog_position_id: number;
+  standard_job_title: string;
+  unit_code: string | null;
+  archived_at: string | null;
+}
+
+export interface ContextsPage {
+  items: ContextRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Фильтры очереди контекстов (`ContextFilters` бэкенда). Три булевых
+ * признака — независимые оси: `true`/`false` фильтруют обе стороны,
+ * отсутствие поля фильтр не применяет вовсе (три отдельных контрола на
+ * экране, план задачи 12, «Утверждения»).
+ */
+export interface ContextsParams {
+  catalog_query?: string;
+  work_category_id?: number;
+  semantic_kind?: SemanticKind;
+  name_role?: NameRole;
+  semantic_state?: SemanticState;
+  has_stale_members?: boolean;
+  has_conflicting_members?: boolean;
+  has_no_members?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SemanticEventEntry {
+  id: number;
+  event_type: string;
+  payload: unknown;
+  actor_id: number | null;
+  created_at: string;
+}
+
+/** `GET /v1/semantic/contexts/:id` (`crud/semantic.py::context_card`). */
+export interface ContextCardData {
+  id: number;
+  bucket_id: number;
+  is_default: boolean;
+  archived_at: string | null;
+  catalog_position_id: number;
+  standard_job_title: string;
+  unit_id: number | null;
+  unit_code: string | null;
+  work_category_id: number | null;
+  work_category_code: string | null;
+  work_category_title: string | null;
+  /** Источник разноса статьи у представительного членства (`file`/`manual`). */
+  work_category_source: string | null;
+  semantic_kind: SemanticKind;
+  semantic_kind_source: DecisionSource;
+  semantic_kind_by: number | null;
+  semantic_kind_at: string | null;
+  name_role: NameRole;
+  name_role_source: DecisionSource;
+  name_role_by: number | null;
+  name_role_at: string | null;
+  place_dictionary_version: number;
+  comparability_reason: ComparabilityReason | null;
+  semantic_state: SemanticState;
+  work_family_id: number | null;
+  family_title: string | null;
+  family_source: FamilySource | null;
+  family_by: number | null;
+  family_at: string | null;
+  member_count: number;
+  /**
+   * Соседи по корзине (той же `bucket_id`) — живые И архивные, упорядочены
+   * по id (`backend/crud/semantic.py::context_card`). Цель слияния/переноса
+   * выбирается из них (живых, кроме текущего контекста), а не вводится id
+   * вручную — решение оркестратора, план задачи 13.
+   */
+  bucket_contexts: BucketContextOption[];
+  /**
+   * Членства поштучно (`backend/crud/semantic.py::context_card`) —
+   * ограничено бэкендом (`CONTEXT_MEMBERS_PAGE_CAP`), `members_truncated`
+   * отмечает обрезку. `member_count` выше остаётся ПОЛНЫМ счётчиком
+   * независимо от обрезки этого списка.
+   */
+  members: ContextMemberRow[];
+  members_truncated: boolean;
+  events: SemanticEventEntry[];
+}
+
+/** Один сосед по корзине — `ContextCardData.bucket_contexts`. */
+export interface BucketContextOption {
+  id: number;
+  is_default: boolean;
+  archived_at: string | null;
+  member_count: number;
+}
+
+export type MembershipState = "CURRENT" | "STALE";
+export type RoutedBy = "default" | "rule" | "manual";
+
+/** Одна строка `ContextCardData.members` — членство позиции в контексте. */
+export interface ContextMemberRow {
+  position_item_id: number;
+  /** Название работы ПО СМЕТЕ (`job_title_in_proposal`) — может расходиться с каталожным. */
+  job_title: string;
+  estimate_id: number;
+  membership_state: MembershipState;
+  /** Не `null` — членство в конфликте решений при слиянии Review (§2.5). */
+  conflict_at: string | null;
+  conflict_from_context_id: number | null;
+  routed_by: RoutedBy;
+}
+
+export interface ConfirmKindInput {
+  kind: SemanticKind | null;
+}
+
+export interface SetNameRoleInput {
+  role: NameRole;
+}
+
+export interface AssignFamilyInput {
+  family_id: number | null;
+}
+
+export interface SplitRulePredicate {
+  kind: string;
+  value: string;
+  level?: number | null;
+}
+
+export interface SplitContextInput {
+  position_item_ids: number[];
+  rule?: SplitRulePredicate | null;
+}
+
+export interface SplitContextResult {
+  new_context_id: number;
+  moved_members: number;
+  rule_id: number | null;
+  default_replaced: boolean;
+}
+
+export interface MergeContextsResult {
+  source_context_id: number;
+  target_context_id: number;
+  moved_members: number;
+}
+
+export interface ArchiveContextInput {
+  new_default_context_id?: number | null;
+}
+
+export interface MoveMembersInput {
+  position_item_ids: number[];
+  target_context_id: number;
+  reason: string;
+}
+
+export interface MoveMembersResult {
+  target_context_id: number;
+  moved_members: number;
+}
+
+/** `GET /v1/semantic/members/:id/transfer-proposal` (`proposal: null`, если членство `CURRENT`). */
+export interface TransferProposal {
+  position_item_id: number;
+  current_context_id: number;
+  proposed_bucket_id: number;
+  proposed_context_id: number | null;
+  effective_category_id: number;
+}
+
+export interface TransferProposalResponse {
+  position_item_id: number;
+  proposal: TransferProposal | null;
+}
+
+export interface AcceptTransferInput {
+  expected_category_id?: number | null;
+}
+
+export interface AcceptTransferResult {
+  position_item_id: number;
+  moved_members: number;
+}
+
+export interface AcceptTargetDecisionInput {
+  position_item_ids: number[];
+}
+
+export interface AcceptTargetDecisionResult {
+  updated_members: number;
+}

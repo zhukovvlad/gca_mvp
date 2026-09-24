@@ -13,6 +13,7 @@ import AdminUsers from "@/pages/admin/AdminUsers";
 import ComparePage from "@/pages/compare/ComparePage";
 import ContractCardPage from "@/pages/contracts/ContractCardPage";
 import ContractsPage from "@/pages/contracts/ContractsPage";
+import FamiliesPage from "@/pages/families/FamiliesPage";
 import MatrixPage from "@/pages/matrix/MatrixPage";
 import ProjectPassportPage from "@/pages/passport/ProjectPassportPage";
 import ReportsPage from "@/pages/reports/ReportsPage";
@@ -108,6 +109,11 @@ export default function App() {
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/reports" element={<ReportsPage />} />
                 <Route element={<RequireAdmin />}>
+                  {/*
+                    Семьи и контексты (спека 2026-09-22-catalog-families-design.md
+                    §2.10) — право `admin`, тем же входом, что и «Нормативы».
+                  */}
+                  <Route path="/families" element={<FamiliesPage />} />
                   {/* Нормативы — право `admin` по букве §3. */}
                   <Route path="/standards" element={<StandardsPage />} />
                   {/* Настройки печатной формы — того же рода, что классы и нормативы (§3). */}

@@ -28,13 +28,22 @@ from models import (
     CatalogPosition,
     ContextBucket,
     ContextMember,
+    Lot,
     MembershipState,
     PositionItem,
+    Proposal,
     SemanticEvent,
     UnitOfMeasure,
     WorkCategory,
     WorkFamily,
 )
+
+#: Потолок числа членств, отдаваемых карточкой контекста поштучно — экран не
+#: может проверять/предлагать действия по членству, не видя его id, а
+#: `member_count` был только агрегатом. Отдельная константа, а не литерал в
+#: запросе: тест переопределяет её монки-патчем, чтобы проверить
+#: `members_truncated` не заводя 500+ строк в БД.
+CONTEXT_MEMBERS_PAGE_CAP = 500
 
 
 @dataclass(frozen=True)
@@ -269,7 +278,14 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     одной корзины написание и эффективная статья одинаковы по построению,
     `services/context_routing.py`), вид с источником, роль имени с
     источником и версией словаря, `comparability_reason`, семья с
-    источником назначения, число членств и журнал событий (по времени).
+    источником назначения, число членств (`member_count`, всегда полное),
+    соседей по корзине (`bucket_contexts` — id, `is_default`, `archived_at`,
+    `member_count` КАЖДОГО контекста той же `bucket_id`, включая архивные;
+    цель слияния/переноса выбирается из живых соседей), членства поштучно
+    (`members` — id позиции, название работы по смете, id сметы, состояние
+    членства, конфликт и его источник, `routed_by`; ограничено
+    `CONTEXT_MEMBERS_PAGE_CAP`, обрезка отмечена `members_truncated`) и
+    журнал событий (по времени).
 
     `None`, если контекст не найден — роутер переводит это в 404.
     """
@@ -312,6 +328,57 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         .where(ContextMember.context_id == context_id)
     ).scalar_one()
 
+    # Соседи по корзине (та же `bucket_id`) — цель для слияния/переноса
+    # (спека §2.4: разделение оставляет несколько контекстов на одной
+    # корзине, слияние допустимо только внутри неё). Живые И архивные — оба
+    # нужны экрану: архивные не предлагаются целью, но названы должны быть
+    # видимо ПОЧЕМУ их нет в выборе, а не молчаливым отсутствием. ОДИН
+    # агрегирующий запрос (`GROUP BY`, `outerjoin` на членства) — не растёт
+    # с числом соседей, тот же приём, что у списка членств выше.
+    bucket_context_rows = db.execute(
+        sa.select(
+            CatalogContext.id,
+            CatalogContext.is_default,
+            CatalogContext.archived_at,
+            sa.func.count(ContextMember.position_item_id).label("member_count"),
+        )
+        .select_from(CatalogContext)
+        .outerjoin(ContextMember, ContextMember.context_id == CatalogContext.id)
+        .where(CatalogContext.bucket_id == context.bucket_id)
+        .group_by(CatalogContext.id)
+        .order_by(CatalogContext.id)
+    ).all()
+
+    # Членства поштучно: экран решает, какое действие предложить
+    # КОНКРЕТНОМУ членству (перенос устаревшего,
+    # решение цели конфликтного), и без id и состояния по каждому это
+    # неисполнимо — `member_count` выше это только агрегат. ОДИН ограниченный
+    # запрос (`LIMIT CAP + 1`, не завязанный на число строк выдачи) —
+    # не N+1: число запросов не растёт вместе с числом членств, а `+1`
+    # к лимиту отличает «ровно потолок» от «больше потолка» без отдельного
+    # count-запроса. `member_count` остаётся ПОЛНЫМ (запрос выше), а не
+    # длиной этого списка — список может быть обрезан, счётчик всегда точен.
+    member_rows = db.execute(
+        sa.select(
+            ContextMember.position_item_id,
+            PositionItem.job_title_in_proposal.label("job_title"),
+            Lot.estimate_id,
+            ContextMember.membership_state,
+            ContextMember.conflict_at,
+            ContextMember.conflict_from_context_id,
+            ContextMember.routed_by,
+        )
+        .select_from(ContextMember)
+        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(ContextMember.context_id == context_id)
+        .order_by(ContextMember.position_item_id)
+        .limit(CONTEXT_MEMBERS_PAGE_CAP + 1)
+    ).all()
+    members_truncated = len(member_rows) > CONTEXT_MEMBERS_PAGE_CAP
+    member_rows = member_rows[:CONTEXT_MEMBERS_PAGE_CAP]
+
     events = (
         db.execute(
             sa.select(SemanticEvent)
@@ -352,6 +419,28 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "family_by": context.family_by,
         "family_at": context.family_at,
         "member_count": member_count,
+        "bucket_contexts": [
+            {
+                "id": row.id,
+                "is_default": row.is_default,
+                "archived_at": row.archived_at,
+                "member_count": row.member_count,
+            }
+            for row in bucket_context_rows
+        ],
+        "members": [
+            {
+                "position_item_id": row.position_item_id,
+                "job_title": row.job_title,
+                "estimate_id": row.estimate_id,
+                "membership_state": row.membership_state,
+                "conflict_at": row.conflict_at,
+                "conflict_from_context_id": row.conflict_from_context_id,
+                "routed_by": row.routed_by,
+            }
+            for row in member_rows
+        ],
+        "members_truncated": members_truncated,
         "events": [
             {
                 "id": event.id,

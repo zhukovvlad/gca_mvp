@@ -1,9 +1,11 @@
 import type { ContractListParams } from "./api/domain";
 import type {
   ComparisonParams,
+  ContextsParams,
   MatrixParams,
   RateStandardParams,
   ReviewQueueParams,
+  WorkFamilyStatus,
 } from "@/types/domain";
 
 /**
@@ -173,5 +175,19 @@ export const qk = {
     stagePositionsForTender: (tenderId: number) => ["tenders", "stage-positions", tenderId] as const,
     /** Нераспределённое раунда (спека этапного разноса §2.3). */
     roundUnallocated: (tenderId: number, roundId: number) => ["tenders", "round-unallocated", tenderId, roundId] as const,
+  },
+
+  /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */
+  workFamilies: {
+    all: ["work-families"] as const,
+    list: (status?: WorkFamilyStatus, unitId?: number) =>
+      ["work-families", "list", status ?? "any", unitId ?? null] as const,
+  },
+
+  /** Контексты каталога — очередь и карточка (спека §2.10). */
+  semanticContexts: {
+    all: ["semantic-contexts"] as const,
+    list: (params?: ContextsParams) => ["semantic-contexts", "list", params ?? {}] as const,
+    card: (id: number) => ["semantic-contexts", "card", id] as const,
   },
 };

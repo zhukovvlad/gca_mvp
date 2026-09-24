@@ -37,14 +37,38 @@ import type {
   Comparison,
   ComparisonBucketCell,
   ComparisonMedian,
+  ContextCardData,
+  ContextMemberRow,
+  ContextRow,
   InflationSeries,
   ComparisonVatMode,
   EstimateRow,
   ImportJobStatus,
   ProjectPassport,
   RoundImportJob,
+  SemanticEventEntry,
   TenderCard,
+  WorkFamily,
 } from "@/types/domain";
+
+/**
+ * Фикстура контекста — полная форма карточки (`ContextCardData`) плюс три
+ * булевых признака ПРО ЧЛЕНСТВА, которых сама карточка не несёт
+ * (`crud/semantic.py::context_card` отдаёт членства поштучно, но агрегатных
+ * флагов устаревшего/конфликтного членства у контекста нет — они существуют
+ * только как предикаты фильтра очереди, `crud/semantic.py::ContextFilters`,
+ * и из `members` фикстуры не выводятся). Флаги здесь нужны,
+ * чтобы очередь `/v1/semantic/contexts` могла отвечать на
+ * `has_stale_members`/`has_conflicting_members`/`has_no_members` тем же
+ * способом, что и бэкенд — тремя независимыми предикатами, а не одним
+ * общим, — и вырезаются перед сериализацией в JSON (`toContextRow`/
+ * `toContextCard`): наружу уходит ровно форма ответа бэкенда, не более.
+ */
+interface SemanticContextFixture extends ContextCardData {
+  hasStaleMembers: boolean;
+  hasConflictingMembers: boolean;
+  hasNoMembers: boolean;
+}
 
 /**
  * Мутируемое состояние обработчиков. Сбрасывается между тестами через
@@ -197,6 +221,461 @@ interface HandlerState {
   changesExportOutcome: "ok" | "no_comparable";
   /** Последний id тендера, для которого запрашивалась книга «Изменения КП». */
   lastChangesExportTenderId: number | null;
+
+  /**
+   * Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10;
+   * `backend/routers/semantic.py`). Мутируемый массив — CRUD-хендлеры пишут
+   * в него напрямую, `resetHandlerState()` возвращает `initialWorkFamilies()`.
+   */
+  workFamilies: WorkFamily[];
+  nextWorkFamilyId: number;
+  lastCreateFamilyRequest: Record<string, unknown> | null;
+  lastUpdateFamilyRequest: { id: number; body: Record<string, unknown> } | null;
+  lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
+
+  /** Контексты каталога — очередь и карточка (спека §2.10). */
+  semanticContexts: SemanticContextFixture[];
+  lastConfirmKindRequest: { contextId: number; body: Record<string, unknown> } | null;
+  lastSetNameRoleRequest: { contextId: number; body: Record<string, unknown> } | null;
+  lastAssignFamilyRequest: { contextId: number; body: Record<string, unknown> } | null;
+  lastSplitContextRequest: { contextId: number; body: Record<string, unknown> } | null;
+  lastMergeContextRequest: { contextId: number; targetContextId: number } | null;
+  lastArchiveContextRequest: { contextId: number; body: Record<string, unknown> } | null;
+  lastMoveMembersRequest: Record<string, unknown> | null;
+  lastAcceptTransferRequest: { positionItemId: number; body: Record<string, unknown> } | null;
+  lastAcceptTargetDecisionRequest: number[] | null;
+}
+
+// ---------------------------------------------------------------------------
+//  Семьи и контексты — фикстуры (спека 2026-09-22-catalog-families-design.md
+//  §2.7, §2.10).
+// ---------------------------------------------------------------------------
+
+/**
+ * `position_item_id` мембершипов, на которых завязаны действия карточки
+ * контекста (`ContextCard.tsx`): строки членств фикстуры несут эти id, а
+ * обработчики `transfer-proposal`/`transfer`/`accept-target-decision` отвечают
+ * по ним, поэтому тесты ссылаются на те же константы.
+ */
+export const STALE_POSITION_ITEM_ID = 9101;
+export const CURRENT_POSITION_ITEM_ID = 9102;
+export const CONFLICT_POSITION_ITEM_IDS = [9201, 9202];
+
+function isoNow(): string {
+  return "2026-09-24T10:00:00Z";
+}
+
+/**
+ * 42 черновика — штатное первое состояние после seed (план задачи 7 и
+ * задачи 13, «Утверждения»). `id` 1 несёт определение и две привязки (правка
+ * единицы и архивирование должны отказать и назвать число); `id` 2 —
+ * черновик БЕЗ определения (кнопка активации недоступна). Семьи 43-44 не
+ * входят в 42: они не `draft`, и их присутствие в фикстуре доказывает, что
+ * счёт «42» на экране — результат ФИЛЬТРА по статусу, а не длины массива.
+ */
+function initialWorkFamilies(): WorkFamily[] {
+  const drafts: WorkFamily[] = Array.from({ length: 42 }, (_, i) => {
+    const id = i + 1;
+    const linked = id === 1;
+    const hasDefinition = id === 1;
+    return {
+      id,
+      title: id === 2 ? "Устройство покрытий полов" : `Семья работ №${id}`,
+      // id 5 — «Кв. метр» справочника `/api/units` (`src/test/handlers.ts`
+      // ниже): фильтр по единице (P2) должен опираться на РЕАЛЬНЫЙ каталог
+      // единиц, а не на произвольное число, которого там нет.
+      unit_id: 5,
+      unit_code: "M2",
+      definition: hasDefinition
+        ? "Оштукатуривание стен и потолков цементно-песчаным раствором."
+        : null,
+      status: "draft",
+      seed_key: `seed-${id}`,
+      created_by: null,
+      created_at: isoNow(),
+      updated_at: isoNow(),
+      activated_by: null,
+      activated_at: null,
+      archived_at: null,
+      context_count: linked ? 2 : 0,
+    };
+  });
+  const active: WorkFamily = {
+    id: 43,
+    title: "Кровельные работы",
+    // Другая единица (id 3, «Куб. метр») — фильтр по единице (P2) обязан
+    // РАЗЛИЧАТЬ семьи, а не только принимать значение.
+    unit_id: 3,
+    unit_code: "M3",
+    definition: "Устройство кровельного покрытия.",
+    status: "active",
+    seed_key: null,
+    created_by: 1,
+    created_at: isoNow(),
+    updated_at: isoNow(),
+    activated_by: 1,
+    activated_at: isoNow(),
+    archived_at: null,
+    context_count: 0,
+  };
+  const archived: WorkFamily = {
+    id: 44,
+    title: "Демонтажные работы (снята)",
+    unit_id: 5,
+    unit_code: "M2",
+    definition: "Демонтаж конструкций.",
+    status: "archived",
+    seed_key: null,
+    created_by: 1,
+    created_at: isoNow(),
+    updated_at: isoNow(),
+    activated_by: 1,
+    activated_at: isoNow(),
+    archived_at: isoNow(),
+    context_count: 0,
+  };
+  return [...drafts, active, archived];
+}
+
+/**
+ * Шесть контекстов, по одному на состояние, которое проверяют тесты экрана:
+ * обычный, устаревшее членство, конфликт решений, `insufficient_description`
+ * без семьи, пустой (без членств), архивный (доказывает отсутствие действия
+ * восстановления).
+ */
+function initialSemanticContexts(): SemanticContextFixture[] {
+  const base = {
+    is_default: false,
+    unit_id: 11,
+    unit_code: "м2",
+    work_category_id: 77,
+    work_category_code: "05.02",
+    work_category_title: "Отделочные работы",
+    work_category_source: "file",
+    place_dictionary_version: 1,
+    events: [] as SemanticEventEntry[],
+  };
+  const event = (id: number, type: string): SemanticEventEntry => ({
+    id,
+    event_type: type,
+    payload: {},
+    actor_id: 1,
+    created_at: isoNow(),
+  });
+  /**
+   * Членство поштучно — по умолчанию `CURRENT`, без
+   * конфликта; переопределения задают `STALE`/`conflict_at` там, где тест
+   * этого требует. Каждая фикстура-контекст сама решает, какие членства ей
+   * нести, — список НЕ вычисляется из `hasStaleMembers`/`hasConflictingMembers`
+   * (те остаются флагами ТОЛЬКО для фильтра очереди, как и на бэкенде).
+   */
+  const member = (
+    positionItemId: number,
+    jobTitle: string,
+    overrides: Partial<Omit<ContextMemberRow, "position_item_id" | "job_title">> = {}
+  ): ContextMemberRow => ({
+    position_item_id: positionItemId,
+    job_title: jobTitle,
+    estimate_id: 5001,
+    membership_state: "CURRENT",
+    conflict_at: null,
+    conflict_from_context_id: null,
+    routed_by: "default",
+    ...overrides,
+  });
+
+  const ordinary: SemanticContextFixture = {
+    ...base,
+    id: 601,
+    bucket_id: 701,
+    archived_at: null,
+    catalog_position_id: 8001,
+    standard_job_title: "Штукатурка стен цементно-песчаным раствором",
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: 1,
+    family_title: "Семья работ №1",
+    family_source: "manual",
+    family_by: 1,
+    family_at: isoNow(),
+    member_count: 3,
+    bucket_contexts: [
+      { id: 601, is_default: true, archived_at: null, member_count: 3 },
+      { id: 750, is_default: false, archived_at: null, member_count: 1 },
+    ],
+    members: [
+      member(71001, "Штукатурка стен, ось А-Б"),
+      member(71002, "Штукатурка стен, ось Б-В"),
+      member(71003, "Штукатурка стен, ось В-Г"),
+    ],
+    members_truncated: false,
+    events: [event(1, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  const stale: SemanticContextFixture = {
+    ...base,
+    id: 602,
+    bucket_id: 702,
+    archived_at: null,
+    catalog_position_id: 8002,
+    standard_job_title: "Устройство покрытий полов из линолеума",
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 2,
+    bucket_contexts: [{ id: 602, is_default: true, archived_at: null, member_count: 2 }],
+    members: [
+      member(STALE_POSITION_ITEM_ID, "Устройство покрытий полов, ось 1", {
+        membership_state: "STALE",
+      }),
+      member(CURRENT_POSITION_ITEM_ID, "Устройство покрытий полов, ось 2"),
+    ],
+    members_truncated: false,
+    events: [event(2, "context_created"), event(3, "members_marked_stale")],
+    hasStaleMembers: true,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  const conflicted: SemanticContextFixture = {
+    ...base,
+    id: 603,
+    bucket_id: 703,
+    archived_at: null,
+    catalog_position_id: 8003,
+    standard_job_title: "Отделка потолков водоэмульсионным составом",
+    semantic_kind: "WORK",
+    semantic_kind_source: "manual",
+    semantic_kind_by: 1,
+    semantic_kind_at: isoNow(),
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "CONFIRMED",
+    work_family_id: 1,
+    family_title: "Семья работ №1",
+    family_source: "manual",
+    family_by: 1,
+    family_at: isoNow(),
+    member_count: 2,
+    bucket_contexts: [
+      { id: 603, is_default: true, archived_at: null, member_count: 2 },
+      { id: 760, is_default: false, archived_at: null, member_count: 0 },
+    ],
+    members: [
+      member(CONFLICT_POSITION_ITEM_IDS[0], "Отделка потолков, ось 1", {
+        conflict_at: isoNow(),
+        conflict_from_context_id: 601,
+        routed_by: "manual",
+      }),
+      member(CONFLICT_POSITION_ITEM_IDS[1], "Отделка потолков, ось 2", {
+        conflict_at: isoNow(),
+        conflict_from_context_id: 601,
+        routed_by: "manual",
+      }),
+    ],
+    members_truncated: false,
+    events: [event(4, "context_created"), event(5, "context_merged")],
+    hasStaleMembers: false,
+    hasConflictingMembers: true,
+    hasNoMembers: false,
+  };
+
+  const insufficientDescription: SemanticContextFixture = {
+    ...base,
+    id: 604,
+    bucket_id: 704,
+    archived_at: null,
+    catalog_position_id: 8004,
+    standard_job_title: "Светильники",
+    // Другая статья, чем у остальных пяти фикстур (77/«Отделочные работы»):
+    // фильтр по статье (P2) обязан РАЗЛИЧАТЬ контексты, а не только принимать значение.
+    work_category_id: 88,
+    work_category_code: "07.01",
+    work_category_title: "Электромонтажные работы",
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "GENERIC_WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: "insufficient_description",
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 4,
+    bucket_contexts: [{ id: 604, is_default: true, archived_at: null, member_count: 4 }],
+    members: [
+      member(74001, "Светильники, секция 1"),
+      member(74002, "Светильники, секция 2"),
+      member(74003, "Светильники, секция 3"),
+      member(74004, "Светильники, секция 4"),
+    ],
+    members_truncated: false,
+    events: [event(6, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  const empty: SemanticContextFixture = {
+    ...base,
+    id: 605,
+    bucket_id: 705,
+    archived_at: null,
+    catalog_position_id: 8005,
+    standard_job_title: "Разборка временных перегородок",
+    semantic_kind: "SYSTEM",
+    semantic_kind_source: "manual",
+    semantic_kind_by: 1,
+    semantic_kind_at: isoNow(),
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "CONFIRMED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 0,
+    bucket_contexts: [{ id: 605, is_default: false, archived_at: null, member_count: 0 }],
+    members: [],
+    members_truncated: false,
+    events: [event(7, "context_created"), event(8, "members_moved")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: true,
+  };
+
+  const archivedContext: SemanticContextFixture = {
+    ...base,
+    id: 606,
+    bucket_id: 706,
+    archived_at: isoNow(),
+    catalog_position_id: 8006,
+    standard_job_title: "Гидроизоляция фундамента (снят)",
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 0,
+    bucket_contexts: [{ id: 606, is_default: false, archived_at: isoNow(), member_count: 0 }],
+    members: [],
+    members_truncated: false,
+    events: [event(9, "context_created"), event(10, "context_archived")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: true,
+  };
+
+  return [ordinary, stale, conflicted, insufficientDescription, empty, archivedContext];
+}
+
+/** Проекция фикстуры в форму ответа `GET /v1/semantic/contexts` — ровно поля `ContextRow`, три служебных флага не уходят наружу. */
+function toContextRow(fixture: SemanticContextFixture): ContextRow {
+  return {
+    id: fixture.id,
+    bucket_id: fixture.bucket_id,
+    is_default: fixture.is_default,
+    semantic_kind: fixture.semantic_kind,
+    semantic_kind_source: fixture.semantic_kind_source,
+    name_role: fixture.name_role,
+    name_role_source: fixture.name_role_source,
+    semantic_state: fixture.semantic_state,
+    comparability_reason: fixture.comparability_reason,
+    work_family_id: fixture.work_family_id,
+    family_title: fixture.family_title,
+    work_category_id: fixture.work_category_id,
+    work_category_code: fixture.work_category_code,
+    work_category_title: fixture.work_category_title,
+    catalog_position_id: fixture.catalog_position_id,
+    standard_job_title: fixture.standard_job_title,
+    unit_code: fixture.unit_code,
+    archived_at: fixture.archived_at,
+  };
+}
+
+/** Проекция фикстуры в форму ответа `GET /v1/semantic/contexts/:id` — ровно поля `ContextCardData`, три служебных флага не уходят наружу. */
+function toContextCard(fixture: SemanticContextFixture): ContextCardData {
+  return {
+    id: fixture.id,
+    bucket_id: fixture.bucket_id,
+    is_default: fixture.is_default,
+    archived_at: fixture.archived_at,
+    catalog_position_id: fixture.catalog_position_id,
+    standard_job_title: fixture.standard_job_title,
+    unit_id: fixture.unit_id,
+    unit_code: fixture.unit_code,
+    work_category_id: fixture.work_category_id,
+    work_category_code: fixture.work_category_code,
+    work_category_title: fixture.work_category_title,
+    work_category_source: fixture.work_category_source,
+    semantic_kind: fixture.semantic_kind,
+    semantic_kind_source: fixture.semantic_kind_source,
+    semantic_kind_by: fixture.semantic_kind_by,
+    semantic_kind_at: fixture.semantic_kind_at,
+    name_role: fixture.name_role,
+    name_role_source: fixture.name_role_source,
+    name_role_by: fixture.name_role_by,
+    name_role_at: fixture.name_role_at,
+    place_dictionary_version: fixture.place_dictionary_version,
+    comparability_reason: fixture.comparability_reason,
+    semantic_state: fixture.semantic_state,
+    work_family_id: fixture.work_family_id,
+    family_title: fixture.family_title,
+    family_source: fixture.family_source,
+    family_by: fixture.family_by,
+    family_at: fixture.family_at,
+    member_count: fixture.member_count,
+    bucket_contexts: fixture.bucket_contexts,
+    members: fixture.members,
+    members_truncated: fixture.members_truncated,
+    events: fixture.events,
+  };
 }
 
 export const handlerState: HandlerState = {
@@ -230,6 +709,21 @@ export const handlerState: HandlerState = {
   roundOverrideRequests: [],
   changesExportOutcome: "ok",
   lastChangesExportTenderId: null,
+  workFamilies: initialWorkFamilies(),
+  nextWorkFamilyId: 1000,
+  lastCreateFamilyRequest: null,
+  lastUpdateFamilyRequest: null,
+  lastMergeFamiliesRequest: null,
+  semanticContexts: initialSemanticContexts(),
+  lastConfirmKindRequest: null,
+  lastSetNameRoleRequest: null,
+  lastAssignFamilyRequest: null,
+  lastSplitContextRequest: null,
+  lastMergeContextRequest: null,
+  lastArchiveContextRequest: null,
+  lastMoveMembersRequest: null,
+  lastAcceptTransferRequest: null,
+  lastAcceptTargetDecisionRequest: null,
 };
 
 export function resetHandlerState() {
@@ -258,6 +752,21 @@ export function resetHandlerState() {
   handlerState.roundOverrideRequests = [];
   handlerState.changesExportOutcome = "ok";
   handlerState.lastChangesExportTenderId = null;
+  handlerState.workFamilies = initialWorkFamilies();
+  handlerState.nextWorkFamilyId = 1000;
+  handlerState.lastCreateFamilyRequest = null;
+  handlerState.lastUpdateFamilyRequest = null;
+  handlerState.lastMergeFamiliesRequest = null;
+  handlerState.semanticContexts = initialSemanticContexts();
+  handlerState.lastConfirmKindRequest = null;
+  handlerState.lastSetNameRoleRequest = null;
+  handlerState.lastAssignFamilyRequest = null;
+  handlerState.lastSplitContextRequest = null;
+  handlerState.lastMergeContextRequest = null;
+  handlerState.lastArchiveContextRequest = null;
+  handlerState.lastMoveMembersRequest = null;
+  handlerState.lastAcceptTransferRequest = null;
+  handlerState.lastAcceptTargetDecisionRequest = null;
 }
 
 function page<T>(items: T[]) {
@@ -1679,5 +2188,321 @@ export const handlers = [
     const body = (await request.json()) as Record<string, unknown>;
     handlerState.roundOverrideRequests.push({ method: "DELETE", body });
     return HttpResponse.json({ chapters_updated: 3, additional_works_updated: 1, chapters_manual: 3 });
+  }),
+
+  // ---------------------------------------------------------------------
+  //  Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10,
+  //  `backend/routers/semantic.py`) — восемнадцать маршрутов под `admin`.
+  // ---------------------------------------------------------------------
+
+  http.get("/api/v1/semantic/families", ({ request }) => {
+    const url = new URL(request.url);
+    const status = url.searchParams.get("status");
+    const unitId = url.searchParams.get("unit_id");
+    const items = handlerState.workFamilies.filter((family) => {
+      if (status && family.status !== status) return false;
+      if (unitId && String(family.unit_id) !== unitId) return false;
+      return true;
+    });
+    return HttpResponse.json({ items });
+  }),
+
+  http.post("/api/v1/semantic/families", async ({ request }) => {
+    const body = (await request.json()) as { title: string; unit_name?: string | null; definition?: string | null };
+    handlerState.lastCreateFamilyRequest = body;
+    const id = handlerState.nextWorkFamilyId++;
+    const family: WorkFamily = {
+      id,
+      title: body.title,
+      unit_id: body.unit_name ? 11 : null,
+      unit_code: body.unit_name ?? null,
+      definition: body.definition ?? null,
+      status: "draft",
+      seed_key: null,
+      created_by: 1,
+      created_at: isoNow(),
+      updated_at: isoNow(),
+      activated_by: null,
+      activated_at: null,
+      archived_at: null,
+      context_count: 0,
+    };
+    handlerState.workFamilies.push(family);
+    return HttpResponse.json(family, { status: 201 });
+  }),
+
+  http.patch("/api/v1/semantic/families/:id", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastUpdateFamilyRequest = { id, body };
+    const family = handlerState.workFamilies.find((f) => f.id === id);
+    if (!family) {
+      return HttpResponse.json({ detail: `семья ${id} не найдена` }, { status: 404 });
+    }
+    if ("unit_name" in body && family.context_count > 0) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "unit_change_with_links",
+            message: `у семьи ${id} есть привязанные контексты: ${family.context_count}`,
+            family_id: id,
+            count: family.context_count,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    if (typeof body.title === "string") family.title = body.title;
+    if ("definition" in body) family.definition = (body.definition as string | null) ?? null;
+    if ("unit_name" in body) {
+      const unitName = body.unit_name as string | null;
+      family.unit_code = unitName;
+      family.unit_id = unitName ? 11 : null;
+    }
+    family.updated_at = isoNow();
+    return HttpResponse.json(family);
+  }),
+
+  http.post("/api/v1/semantic/families/:id/activate", ({ params }) => {
+    const id = Number(params.id);
+    const family = handlerState.workFamilies.find((f) => f.id === id);
+    if (!family) {
+      return HttpResponse.json({ detail: `семья ${id} не найдена` }, { status: 404 });
+    }
+    if (!family.definition || !family.definition.trim()) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "activate_without_definition",
+            message: `семья ${id} не может быть активирована без определения`,
+            family_id: id,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    family.status = "active";
+    family.activated_by = 1;
+    family.activated_at = isoNow();
+    return HttpResponse.json(family);
+  }),
+
+  http.post("/api/v1/semantic/families/:id/archive", ({ params }) => {
+    const id = Number(params.id);
+    const family = handlerState.workFamilies.find((f) => f.id === id);
+    if (!family) {
+      return HttpResponse.json({ detail: `семья ${id} не найдена` }, { status: 404 });
+    }
+    if (family.context_count > 0) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "archive_with_links",
+            message: `у семьи ${id} есть привязанные контексты: ${family.context_count}`,
+            family_id: id,
+            count: family.context_count,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    family.status = "archived";
+    family.archived_at = isoNow();
+    return HttpResponse.json(family);
+  }),
+
+  http.post("/api/v1/semantic/families/:id/merge", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { target_family_id: number };
+    handlerState.lastMergeFamiliesRequest = { id, targetFamilyId: body.target_family_id };
+    const source = handlerState.workFamilies.find((f) => f.id === id);
+    if (source) source.status = "archived";
+    return HttpResponse.json({ source_family_id: id, target_family_id: body.target_family_id, moved_contexts: 1 });
+  }),
+
+  http.get("/api/v1/semantic/contexts", ({ request }) => {
+    const url = new URL(request.url);
+    const params = url.searchParams;
+    const catalogQuery = (params.get("catalog_query") ?? "").trim().toLowerCase();
+    const workCategoryId = params.get("work_category_id");
+    const semanticKind = params.get("semantic_kind");
+    const nameRole = params.get("name_role");
+    const semanticState = params.get("semantic_state");
+    const hasStale = params.get("has_stale_members");
+    const hasConflicting = params.get("has_conflicting_members");
+    const hasNoMembers = params.get("has_no_members");
+    const limit = Number(params.get("limit") ?? 50);
+    const offset = Number(params.get("offset") ?? 0);
+
+    const filtered = handlerState.semanticContexts.filter((c) => {
+      if (catalogQuery && !c.standard_job_title.toLowerCase().includes(catalogQuery)) return false;
+      if (workCategoryId && String(c.work_category_id) !== workCategoryId) return false;
+      if (semanticKind && c.semantic_kind !== semanticKind) return false;
+      if (nameRole && c.name_role !== nameRole) return false;
+      if (semanticState && c.semantic_state !== semanticState) return false;
+      if (hasStale !== null && c.hasStaleMembers !== (hasStale === "true")) return false;
+      if (hasConflicting !== null && c.hasConflictingMembers !== (hasConflicting === "true")) return false;
+      if (hasNoMembers !== null && c.hasNoMembers !== (hasNoMembers === "true")) return false;
+      return true;
+    });
+
+    const page = filtered.slice(offset, offset + limit).map(toContextRow);
+    return HttpResponse.json({ items: page, total: filtered.length, limit, offset });
+  }),
+
+  http.get("/api/v1/semantic/contexts/:id", ({ params }) => {
+    const id = Number(params.id);
+    const context = handlerState.semanticContexts.find((c) => c.id === id);
+    if (!context) {
+      return HttpResponse.json({ detail: `Контекст ${id} не найден.` }, { status: 404 });
+    }
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/kind", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastConfirmKindRequest = { contextId, body };
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.semantic_state === "NOT_APPLICABLE") {
+      return HttpResponse.json(
+        { detail: { code: "context_not_applicable", message: "контекст неприменим", context_id: contextId } },
+        { status: 409 }
+      );
+    }
+    if (typeof body.kind === "string") context.semantic_kind = body.kind as ContextCardData["semantic_kind"];
+    context.semantic_kind_source = "manual";
+    context.semantic_kind_by = 1;
+    context.semantic_kind_at = isoNow();
+    context.semantic_state = "CONFIRMED";
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/name-role", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastSetNameRoleRequest = { contextId, body };
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    context.name_role = body.role as ContextCardData["name_role"];
+    context.name_role_source = "manual";
+    context.name_role_by = 1;
+    context.name_role_at = isoNow();
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/family", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as { family_id: number | null };
+    handlerState.lastAssignFamilyRequest = { contextId, body };
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (body.family_id === null) {
+      context.work_family_id = null;
+      context.family_title = null;
+      context.family_source = null;
+      context.family_by = null;
+      context.family_at = null;
+    } else {
+      const family = handlerState.workFamilies.find((f) => f.id === body.family_id);
+      if (!family) {
+        return HttpResponse.json(
+          { detail: { code: "family_not_found", message: `семья ${body.family_id} не найдена`, family_id: body.family_id } },
+          { status: 404 }
+        );
+      }
+      context.work_family_id = family.id;
+      context.family_title = family.title;
+      context.family_source = "manual";
+      context.family_by = 1;
+      context.family_at = isoNow();
+    }
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/split", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as { position_item_ids: number[]; rule?: unknown };
+    handlerState.lastSplitContextRequest = { contextId, body };
+    return HttpResponse.json({
+      new_context_id: 9999,
+      moved_members: body.position_item_ids.length,
+      rule_id: body.rule ? 1 : null,
+      default_replaced: !body.rule,
+    });
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/merge", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as { target_context_id: number };
+    handlerState.lastMergeContextRequest = { contextId, targetContextId: body.target_context_id };
+    return HttpResponse.json({ source_context_id: contextId, target_context_id: body.target_context_id, moved_members: 1 });
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/archive", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastArchiveContextRequest = { contextId, body };
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.member_count > 0) {
+      return HttpResponse.json(
+        { detail: { code: "context_not_empty", message: "в контексте есть членства", context_id: contextId, member_count: context.member_count } },
+        { status: 409 }
+      );
+    }
+    context.archived_at = isoNow();
+    return HttpResponse.json({ context_id: contextId, archived: true });
+  }),
+
+  http.post("/api/v1/semantic/members/move", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastMoveMembersRequest = body;
+    const ids = body.position_item_ids as number[];
+    return HttpResponse.json({ target_context_id: body.target_context_id, moved_members: ids.length });
+  }),
+
+  http.get("/api/v1/semantic/members/:id/transfer-proposal", ({ params }) => {
+    const positionItemId = Number(params.id);
+    if (positionItemId === STALE_POSITION_ITEM_ID) {
+      return HttpResponse.json({
+        position_item_id: positionItemId,
+        proposal: {
+          position_item_id: positionItemId,
+          current_context_id: 602,
+          proposed_bucket_id: 750,
+          proposed_context_id: 751,
+          effective_category_id: 88,
+        },
+      });
+    }
+    return HttpResponse.json({ position_item_id: positionItemId, proposal: null });
+  }),
+
+  http.post("/api/v1/semantic/members/:id/transfer", async ({ params, request }) => {
+    const positionItemId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastAcceptTransferRequest = { positionItemId, body };
+    if (positionItemId !== STALE_POSITION_ITEM_ID) {
+      return HttpResponse.json(
+        { detail: { code: "not_stale", message: `членство ${positionItemId} не устарело`, position_item_id: positionItemId } },
+        { status: 409 }
+      );
+    }
+    return HttpResponse.json({ position_item_id: positionItemId, moved_members: 1 });
+  }),
+
+  http.post("/api/v1/semantic/members/accept-target-decision", async ({ request }) => {
+    const body = (await request.json()) as { position_item_ids: number[] };
+    handlerState.lastAcceptTargetDecisionRequest = body.position_item_ids;
+    const allConflicted = body.position_item_ids.every((id) => CONFLICT_POSITION_ITEM_IDS.includes(id));
+    if (!allConflicted) {
+      return HttpResponse.json(
+        { detail: { code: "not_conflicted", message: "членство не в конфликте", position_item_ids: body.position_item_ids } },
+        { status: 409 }
+      );
+    }
+    return HttpResponse.json({ updated_members: body.position_item_ids.length });
   }),
 ];

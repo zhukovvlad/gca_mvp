@@ -22,6 +22,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
 
+import crud.semantic as crud_semantic
 import services.work_families as work_families
 from models import (
     CatalogContext,
@@ -777,6 +778,272 @@ class TestContextCard:
     def test_card_not_found_gives_404(self, admin_client):
         response = admin_client.get(f"{BASE}/contexts/999999999")
         assert response.status_code == 404
+
+    def test_card_lists_members_with_job_title_and_estimate(self, admin_client, db_session, factories):
+        """Экран не может предложить действие по членству, не видя его id
+        и состояния — `member_count` был только агрегатом. `members` несёт
+        id позиции, её название ПО
+        СМЕТЕ (`job_title_in_proposal`, не каталожное имя — они могут
+        расходиться) и id сметы, куда эта позиция ведёт."""
+        # id лота обязан отличаться от id сметы: при совпадении (на свежей базе
+        # последовательности идут вровень) `Proposal.lot_id` вместо
+        # `Lot.estimate_id` прошёл бы сверку `estimate_id` ниже.
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        if lot.id == estimate.id:
+            lot = factories.LotFactory.create(estimate=estimate)
+        assert lot.id != estimate.id
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Кладка кирпича")
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        position_a = _position(factories, proposal, catalog_position=cp, title="Кладка кирпича, поз. А")
+        position_b = _position(factories, proposal, catalog_position=cp, title="Кладка кирпича, поз. Б")
+        _member(db_session, position_a, ctx)
+        _member(db_session, position_b, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        assert body["member_count"] == 2
+        assert body["members_truncated"] is False
+        members = body["members"]
+        assert len(members) == 2
+        # Порядок — по `position_item_id`, тот же детерминизм, что у
+        # представительного членства карточки выше.
+        ids = [m["position_item_id"] for m in members]
+        assert ids == sorted(ids)
+        by_id = {m["position_item_id"]: m for m in members}
+        assert by_id[position_a.id]["job_title"] == "Кладка кирпича, поз. А"
+        assert by_id[position_b.id]["job_title"] == "Кладка кирпича, поз. Б"
+        assert by_id[position_a.id]["estimate_id"] == estimate.id
+        assert by_id[position_b.id]["estimate_id"] == estimate.id
+        assert by_id[position_a.id]["membership_state"] == MembershipState.CURRENT.value
+
+    def test_card_member_reports_stale_and_conflict_fields(self, admin_client, db_session, factories):
+        """Устаревшее и конфликтное членства несут РАЗНЫЕ факты (спека §2.5):
+        `membership_state=STALE` у одного, `conflict_at`/
+        `conflict_from_context_id` у другого — экран различает их действия
+        («принять предложение переноса» / «принять решение цели») ИМЕННО по
+        этим полям, а не по догадке."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        # Другая корзина — обязана нести ДРУГУЮ статью: без неё вторая
+        # безстатейная корзина той же строки нарушила бы
+        # `uq_context_buckets_position_category` (COALESCE(work_category_id, -1)).
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+
+        stale_position = _position(factories, proposal, catalog_position=cp, title="Устаревшее членство")
+        _member(db_session, stale_position, ctx, membership_state=MembershipState.STALE.value)
+
+        conflicted_position = _position(factories, proposal, catalog_position=cp, title="Конфликтное членство")
+        _member(
+            db_session, conflicted_position, ctx,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        by_id = {m["position_item_id"]: m for m in card.json()["members"]}
+
+        stale = by_id[stale_position.id]
+        assert stale["membership_state"] == MembershipState.STALE.value
+        assert stale["conflict_at"] is None
+        assert stale["conflict_from_context_id"] is None
+
+        conflicted = by_id[conflicted_position.id]
+        assert conflicted["membership_state"] == MembershipState.CURRENT.value
+        assert conflicted["conflict_at"] is not None
+        assert conflicted["conflict_from_context_id"] == other_ctx.id
+        assert conflicted["routed_by"] == RoutedBy.manual.value
+
+    def test_card_members_truncated_at_cap_member_count_stays_full(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Потолок — монки-патч константы, не 501 реальная строка:
+        `member_count` обязан остаться ПОЛНЫМ (3), а `members` — обрезанным
+        до потолка (2), с `members_truncated=True`."""
+        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        for i in range(3):
+            position = _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}")
+            _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        assert body["member_count"] == 3
+        assert len(body["members"]) == 2
+        assert body["members_truncated"] is True
+
+    def test_card_members_exactly_at_cap_are_not_truncated(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Вторая граница потолка: РОВНО потолок членств — не обрезка.
+        `members_truncated` обязан быть `False`, иначе `>=` вместо `>`
+        (или `LIMIT CAP` без `+1`) прошёл бы тест «больше потолка» выше."""
+        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        for i in range(2):
+            position = _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}")
+            _member(db_session, position, ctx)
+        db_session.flush()
+
+        body = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
+        assert body["member_count"] == 2
+        assert len(body["members"]) == 2
+        assert body["members_truncated"] is False
+
+    def test_card_members_ordered_by_position_even_when_inserted_in_reverse(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Порядок по `position_item_id` — свойство запроса, а не порядка
+        вставки: членства заводятся в ОБРАТНОМ порядке id, и при потолке 2 из 3
+        карточка обязана отдать два НАИМЕНЬШИХ id, по возрастанию."""
+        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        positions = [
+            _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}") for i in range(3)
+        ]
+        for position in reversed(positions):
+            _member(db_session, position, ctx)
+            db_session.flush()
+
+        body = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
+        expected = sorted(p.id for p in positions)[:2]
+        assert [m["position_item_id"] for m in body["members"]] == expected
+
+    def test_card_members_query_count_independent_of_member_count(
+        self, admin_client, db_session, factories
+    ):
+        """Тот же приём, что `test_list_contexts_query_count_independent_
+        of_row_count`: число запросов карточки не растёт вместе с числом
+        членств — один ограниченный запрос членств, а не N+1 по каждому."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+
+        def _context_with_n_members(n: int) -> CatalogContext:
+            cp = factories.CatalogPositionFactory.create()
+            bucket = _bucket(db_session, catalog_position=cp)
+            ctx = _context(db_session, bucket)
+            for i in range(n):
+                position = _position(factories, proposal, catalog_position=cp, title=f"Поз {i}")
+                _member(db_session, position, ctx)
+            db_session.flush()
+            return ctx
+
+        ctx_small = _context_with_n_members(2)
+        with _capturing_sql(db_session) as statements_small:
+            response_small = admin_client.get(f"{BASE}/contexts/{ctx_small.id}")
+        assert response_small.status_code == 200
+        assert len(response_small.json()["members"]) == 2
+        count_small = len(statements_small)
+
+        ctx_large = _context_with_n_members(10)
+        with _capturing_sql(db_session) as statements_large:
+            response_large = admin_client.get(f"{BASE}/contexts/{ctx_large.id}")
+        assert response_large.status_code == 200
+        assert len(response_large.json()["members"]) == 10
+        count_large = len(statements_large)
+
+        assert count_small == count_large, (count_small, count_large)
+
+    def test_card_lists_bucket_contexts_including_archived(
+        self, admin_client, db_session, factories
+    ):
+        """Соседи по корзине — цель слияния/переноса (спека §2.4): живой сосед
+        видим и годится в цель, архивный видим, но остаётся вне выбора (это
+        решает фронт по `archived_at`, бэкенд лишь называет факт). Три
+        контекста ОДНОЙ корзины: под тестом (default), живой сосед с двумя
+        членствами, архивный сосед без членств — `member_count` у каждого
+        свой, не спутан с чужим."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, is_default=True)
+        sibling_live = _context(db_session, bucket, is_default=False)
+        sibling_archived = _context(
+            db_session, bucket, is_default=False, archived_at=_now()
+        )
+        for i in range(2):
+            position = _position(factories, proposal, catalog_position=cp, title=f"Сосед {i}")
+            _member(db_session, position, sibling_live)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        by_id = {row["id"]: row for row in card.json()["bucket_contexts"]}
+        assert set(by_id) == {ctx.id, sibling_live.id, sibling_archived.id}
+        assert by_id[ctx.id]["is_default"] is True
+        assert by_id[ctx.id]["archived_at"] is None
+        assert by_id[ctx.id]["member_count"] == 0
+        assert by_id[sibling_live.id]["is_default"] is False
+        assert by_id[sibling_live.id]["archived_at"] is None
+        assert by_id[sibling_live.id]["member_count"] == 2
+        assert by_id[sibling_archived.id]["archived_at"] is not None
+        assert by_id[sibling_archived.id]["member_count"] == 0
+        # Порядок — по id, тот же детерминизм, что у `members`.
+        ids = [row["id"] for row in card.json()["bucket_contexts"]]
+        assert ids == sorted(ids)
+
+    def test_card_bucket_contexts_query_count_independent_of_sibling_count(
+        self, admin_client, db_session, factories
+    ):
+        """Тот же приём, что у `members`: число запросов карточки не растёт
+        вместе с числом соседей по корзине — один агрегирующий запрос."""
+
+        def _context_with_n_siblings(n: int) -> CatalogContext:
+            cp = factories.CatalogPositionFactory.create()
+            bucket = _bucket(db_session, catalog_position=cp)
+            ctx = _context(db_session, bucket, is_default=True)
+            for _ in range(n):
+                _context(db_session, bucket, is_default=False)
+            db_session.flush()
+            return ctx
+
+        ctx_small = _context_with_n_siblings(2)
+        with _capturing_sql(db_session) as statements_small:
+            response_small = admin_client.get(f"{BASE}/contexts/{ctx_small.id}")
+        assert response_small.status_code == 200
+        assert len(response_small.json()["bucket_contexts"]) == 3
+        count_small = len(statements_small)
+
+        ctx_large = _context_with_n_siblings(6)
+        with _capturing_sql(db_session) as statements_large:
+            response_large = admin_client.get(f"{BASE}/contexts/{ctx_large.id}")
+        assert response_large.status_code == 200
+        assert len(response_large.json()["bucket_contexts"]) == 7
+        count_large = len(statements_large)
+
+        assert count_small == count_large, (count_small, count_large)
 
 
 # ---------------------------------------------------------------------------

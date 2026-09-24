@@ -8,6 +8,16 @@
 import api from "@/lib/api";
 import type { ID } from "@/types/common";
 import type {
+  AcceptTargetDecisionInput,
+  AcceptTargetDecisionResult,
+  AcceptTransferInput,
+  AcceptTransferResult,
+  ArchiveContextInput,
+  AssignFamilyInput,
+  ConfirmKindInput,
+  ContextCardData,
+  ContextsPage,
+  ContextsParams,
   InflationSeries,
   InflationSeriesInput,
   InflationSeriesPatch,
@@ -26,7 +36,11 @@ import type {
   EstimateVatState,
   ImportJob,
   ManualKind,
+  MergeContextsResult,
+  MergeFamiliesResult,
   MergeResult,
+  MoveMembersInput,
+  MoveMembersResult,
   ObjectItem,
   ObjectInput,
   Paginated,
@@ -42,15 +56,22 @@ import type {
   RoundImportJob,
   RoundInput,
   RoundUnallocated,
+  SetNameRoleInput,
   SetRoundCategoryOverrideInput,
+  SplitContextInput,
+  SplitContextResult,
   StagePositions,
   StageSummary,
   TenderCard,
   TenderInput,
   TenderRow,
+  TransferProposalResponse,
   UploadEstimateInput,
   UploadRoundInput,
   Unit,
+  WorkFamily,
+  WorkFamilyInput,
+  WorkFamilyPatch,
 } from "@/types/domain";
 
 // ---------------------------------------------------------------------------
@@ -323,5 +344,82 @@ export const tendersApi = {
   changesExport: (tenderId: number): Promise<Blob> =>
     api
       .get<Blob>(`/v1/tenders/${tenderId}/changes-export`, { responseType: "blob" })
+      .then((r) => r.data),
+};
+
+// ---------------------------------------------------------------------------
+//  Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10,
+//  `backend/routers/semantic.py`) — право `admin` на каждом маршруте.
+// ---------------------------------------------------------------------------
+
+export const semanticApi = {
+  listFamilies: (params?: { status?: WorkFamily["status"]; unit_id?: number }): Promise<WorkFamily[]> =>
+    api
+      .get<{ items: WorkFamily[] }>("/v1/semantic/families", { params })
+      .then((r) => r.data.items),
+
+  createFamily: (input: WorkFamilyInput): Promise<WorkFamily> =>
+    api.post<WorkFamily>("/v1/semantic/families", input).then((r) => r.data),
+
+  updateFamily: (id: number, input: WorkFamilyPatch): Promise<WorkFamily> =>
+    api.patch<WorkFamily>(`/v1/semantic/families/${id}`, input).then((r) => r.data),
+
+  activateFamily: (id: number): Promise<WorkFamily> =>
+    api.post<WorkFamily>(`/v1/semantic/families/${id}/activate`).then((r) => r.data),
+
+  archiveFamily: (id: number): Promise<WorkFamily> =>
+    api.post<WorkFamily>(`/v1/semantic/families/${id}/archive`).then((r) => r.data),
+
+  mergeFamilies: (id: number, targetFamilyId: number): Promise<MergeFamiliesResult> =>
+    api
+      .post<MergeFamiliesResult>(`/v1/semantic/families/${id}/merge`, { target_family_id: targetFamilyId })
+      .then((r) => r.data),
+
+  listContexts: (params?: ContextsParams): Promise<ContextsPage> =>
+    api.get<ContextsPage>("/v1/semantic/contexts", { params }).then((r) => r.data),
+
+  contextCard: (id: number): Promise<ContextCardData> =>
+    api.get<ContextCardData>(`/v1/semantic/contexts/${id}`).then((r) => r.data),
+
+  confirmKind: (contextId: number, input: ConfirmKindInput): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/kind`, input).then((r) => r.data),
+
+  setNameRole: (contextId: number, input: SetNameRoleInput): Promise<ContextCardData> =>
+    api
+      .post<ContextCardData>(`/v1/semantic/contexts/${contextId}/name-role`, input)
+      .then((r) => r.data),
+
+  assignFamily: (contextId: number, input: AssignFamilyInput): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/family`, input).then((r) => r.data),
+
+  splitContext: (contextId: number, input: SplitContextInput): Promise<SplitContextResult> =>
+    api.post<SplitContextResult>(`/v1/semantic/contexts/${contextId}/split`, input).then((r) => r.data),
+
+  mergeContexts: (contextId: number, targetContextId: number): Promise<MergeContextsResult> =>
+    api
+      .post<MergeContextsResult>(`/v1/semantic/contexts/${contextId}/merge`, { target_context_id: targetContextId })
+      .then((r) => r.data),
+
+  archiveContext: (contextId: number, input: ArchiveContextInput): Promise<{ context_id: number; archived: boolean }> =>
+    api
+      .post<{ context_id: number; archived: boolean }>(`/v1/semantic/contexts/${contextId}/archive`, input)
+      .then((r) => r.data),
+
+  moveMembers: (input: MoveMembersInput): Promise<MoveMembersResult> =>
+    api.post<MoveMembersResult>("/v1/semantic/members/move", input).then((r) => r.data),
+
+  transferProposal: (positionItemId: number): Promise<TransferProposalResponse> =>
+    api
+      .get<TransferProposalResponse>(`/v1/semantic/members/${positionItemId}/transfer-proposal`)
+      .then((r) => r.data),
+
+  acceptTransfer: (positionItemId: number, input: AcceptTransferInput): Promise<AcceptTransferResult> =>
+    api
+      .post<AcceptTransferResult>(`/v1/semantic/members/${positionItemId}/transfer`, input)
+      .then((r) => r.data),
+
+  acceptTargetDecision: (input: AcceptTargetDecisionInput): Promise<AcceptTargetDecisionResult> =>
+    api
+      .post<AcceptTargetDecisionResult>("/v1/semantic/members/accept-target-decision", input)
       .then((r) => r.data),
 };
