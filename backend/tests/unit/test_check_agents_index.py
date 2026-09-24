@@ -1,4 +1,16 @@
-"""Тесты check_17 и check_18 стража документации (маршруты §9.1 и §9.2).
+"""Тесты check_13, check_17 и check_18 стража документации.
+
+check_13 (§7 ↔ docs/reference/screens.md против EXPECTED_SCREEN_ANCHORS)
+получила здесь ОДИН вход задачи 14 фичи «семьи и контексты»: девятый пункт
+маршрутизатора совпадает с `EXPECTED_SCREEN_ANCHORS` позиционно (ветвь 3
+зелёная), но `screens.md` во временном ROOT несёт только восемь заголовков
+`## N.` — девятого нет. Утверждение задачи (план `2026-09-22-catalog-families`,
+Task 14): «девятый пункт §7 без соответствующего `## 9.` в `screens.md`
+обязан покрасить проверку 13», предъявляемое СНЯТИЕМ, а не объявлением —
+без правки `EXPECTED_SCREEN_ANCHORS`/`screens.md`/§7 одним и тем же коммитом
+этот вход остаётся красным (`docs/insights/replaying-new-rules.md`).
+
+Тесты check_17 и check_18 стража документации (маршруты §9.1 и §9.2).
 
 check_18 (§9.2 ↔ docs/product-roadmap.md) устроена тем же контрактом, что
 check_17, плюс ветвь КРАТНОСТИ шапки «Когда читать:» по образцу check_12.
@@ -28,6 +40,62 @@ docs/insights/testing-races-verify-by-removing-guard.md). Отдельно за�
 реальном дереве (только для чтения).
 """
 import scripts.check_agents_index as guard
+
+# --- check_13: §7 ↔ docs/reference/screens.md, против EXPECTED_SCREEN_ANCHORS ---
+
+
+def _router_section_from_expected_anchors() -> list[str]:
+    """§7 маршрутизатор с девятью пунктами, ПОЗИЦИОННО совпадающими с
+    `EXPECTED_SCREEN_ANCHORS` — номер, жирное название, ссылка на screens.md с
+    точным якорем ожидания. Построена ИЗ константы, а не литералом рядом с ней:
+    иначе тест и код могли бы разойтись при следующей правке ожидания, и
+    расхождение осталось бы незамеченным.
+    """
+    lines = ["## 7. Экраны фронтенда", ""]
+    for number, title, anchor in guard.EXPECTED_SCREEN_ANCHORS:
+        lines.append(f"{number}. **{title}** — описание ([описание]({guard.SCREENS_REL}{anchor})).")
+    return lines
+
+
+def _screens_missing_ninth_heading(tmp_path) -> None:
+    """Временный `screens.md`, несущий заголовки `## N.` ТОЛЬКО для восьми
+    первых пунктов ожидания — девятого («## 9. …») нет вовсе.
+
+    Пишется в `tmp_path`, а не в рабочий репозиторий: снимает защиту, не портя
+    отслеживаемый файл.
+    """
+    path = tmp_path / guard.SCREENS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = ["**Когда читать:** уточняешь, что показывает экран.", ""]
+    for number, title, _anchor in guard.EXPECTED_SCREEN_ANCHORS:
+        if number == "9":
+            continue
+        body.append(f"## {number}. {title}")
+        body.append("")
+        body.append(f"{number}. текст раздела.")
+        body.append("")
+    path.write_text("\n".join(body), encoding="utf-8")
+
+
+def test_check_13_red_when_ninth_router_item_has_no_matching_screens_heading(monkeypatch, tmp_path):
+    """Девятый пункт §7 существует и совпадает с `EXPECTED_SCREEN_ANCHORS` на
+    своей позиции (тройка «номер → название → якорь» верна), но `screens.md`
+    не несёт заголовка `## 9.` — приёмник не правили тем же коммитом.
+
+    Это ровно вход, которым задача 14 предъявляет своё утверждение снятием:
+    без правки трёх мест разом (§7, `EXPECTED_SCREEN_ANCHORS`, `## 9.` в
+    `screens.md`) проверка 13 обязана красить именно эту ветвь — «заголовок не
+    найден буквально», а не молчать и не красить кратность (пунктов
+    маршрутизатора по-прежнему девять, ветвь 2 остаётся зелёной).
+    """
+    _screens_missing_ninth_heading(tmp_path)
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+
+    ok, details = guard.check_13(_router_section_from_expected_anchors())
+    assert ok is False
+    assert len(details) == 1
+    assert "## 9." in details[0]
+    assert "не найден" in details[0]
 
 
 def _section_with_link(target: str = guard.IMPL_REL) -> list[str]:
