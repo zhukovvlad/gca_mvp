@@ -382,6 +382,21 @@ def _unit_norm_of(catalog_position: CatalogPosition) -> str:
     return catalog_position.unit.code
 
 
+def _lock_catalog_position_share(db: Session, catalog_position_id: int) -> None:
+    """`FOR SHARE` на ОДНУ строку `catalog_positions` — сериализует создание
+    первого (default) контекста корзины против `set_kind(HEADER|TRASH)`
+    (`services/review.py::set_kind`, `_lock_rows`, `FOR UPDATE` на ту же
+    таблицу): `FOR SHARE` несовместим с `FOR UPDATE`, поэтому один из двух
+    ждёт коммита другого — гонка «создание контекста импортом против
+    разметки Review» закрыта тем же примитивом, что и остальные гонки
+    задачи 8 (`docs/pitfalls/db.md`)."""
+    db.execute(
+        sa.select(CatalogPosition.id)
+        .where(CatalogPosition.id == catalog_position_id)
+        .with_for_update(read=True)
+    ).one()
+
+
 def _create_default_context(
     db: Session,
     *,
@@ -399,7 +414,24 @@ def _create_default_context(
     правилом: ось вида и факт «есть решение оператора» разные вещи (§2.5).
     Пишет `context_created` с `bucket_id` и `origin` — обязательное условие
     задачи (спека §2.14).
-    """
+
+    `kind` каталожной строки читается ПОД `FOR SHARE`
+    (`_lock_catalog_position_share`) И ПЕРЕЧИТЫВАЕТСЯ ПОСЛЕ лока
+    (`db.expire` + повторный `db.get`) — иначе конкурентный
+    `set_kind(HEADER|TRASH)`, успевший закоммититься МЕЖДУ первым чтением
+    строки (вызывающим, `route_position`/`route_positions`) и созданием
+    этого контекста, остался бы незамеченным: контекст родился бы
+    `SUGGESTED`, хотя строка уже не работа. Порядок «каталожная строка →
+    корзина» (докстрока модуля, §2.8) этим не нарушается для СУЩЕСТВУЮЩИХ
+    корзин — эта функция вызывается ТОЛЬКО когда корзина только что создана
+    этой же сессией и ещё никому, кроме неё, не видна
+    (`_get_or_create_bucket_with_default_context`), так что лок на строку
+    каталога здесь не может встретить конкурента, ждущего лока на саму
+    корзину."""
+    _lock_catalog_position_share(db, catalog_position.id)
+    db.expire(catalog_position)
+    catalog_position = db.get(CatalogPosition, catalog_position.id)  # ПЕРЕЧИТАННОЕ после лока
+
     now = _now()
     unit_norm = _unit_norm_of(catalog_position)
     semantic_kind = classify_kind(unit_norm)

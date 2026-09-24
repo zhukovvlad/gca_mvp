@@ -2371,6 +2371,13 @@ export const handlers = [
         { status: 409 }
       );
     }
+    if (body.unconfirm === true) {
+      context.semantic_kind_source = "rule";
+      context.semantic_kind_by = null;
+      context.semantic_kind_at = isoNow();
+      context.semantic_state = "SUGGESTED";
+      return HttpResponse.json(toContextCard(context));
+    }
     if (typeof body.kind === "string") context.semantic_kind = body.kind as ContextCardData["semantic_kind"];
     context.semantic_kind_source = "manual";
     context.semantic_kind_by = 1;

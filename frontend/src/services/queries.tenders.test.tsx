@@ -806,6 +806,7 @@ describe("раундовые мутации разноса (§2.7)", () => {
   const EXPECTED = [
     qk.tenders.card(300), qk.tenders.stageSummaryForTender(300),
     qk.tenders.stagePositionsForTender(300), qk.tenders.roundUnallocated(300, 3001),
+    qk.semanticContexts.all,
   ].map((k) => JSON.stringify(k));
 
   it("PUT несёт заметку явно (null тоже) и инвалидирует тендерную ветку — и ничего договорного", async () => {

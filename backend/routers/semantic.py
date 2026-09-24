@@ -78,6 +78,8 @@ _STATUS_CONFLICT = frozenset(
         work_families.REFUSE_UPDATE_ARCHIVED,
         work_families.REFUSE_ACTIVATE_NOT_DRAFT,
         work_families.REFUSE_ACTIVATE_WITHOUT_DEFINITION,
+        work_families.REFUSE_CLEAR_DEFINITION_ACTIVE,
+        work_families.REFUSE_DUPLICATE_ACTIVE_FAMILY,
         work_families.REFUSE_UNIT_MISMATCH,
         work_families.REFUSE_FAMILY_NOT_ACTIVE,
         work_families.REFUSE_UNIT_CHANGE_WITH_LINKS,
@@ -260,6 +262,11 @@ class MergeFamilyRequest(BaseModel):
 
 class ConfirmKindRequest(BaseModel):
     kind: SemanticKind | None = None
+    #: Обратный переход `CONFIRMED → SUGGESTED` (спека §2.5, таблица
+    #: переходов) — тем же маршрутом, что и подтверждение: `True` зовёт
+    #: `unconfirm_kind` (вид пересчитывается правилом), `kind` в этом случае
+    #: не участвует.
+    unconfirm: bool = False
 
 
 class SetNameRoleRequest(BaseModel):
@@ -343,9 +350,15 @@ def update_family_route(
     db: Session = Depends(get_db),
 ):
     with _mutating(db):
+        # `definition` — та же дисциплина, что `unit_name`: отсутствие поля в
+        # теле и явный `null` РАЗЛИЧИМЫ (`work_families.UNSET` — «не
+        # трогать», иначе «явный вход», доменное решение о нём — внутри
+        # `update_family`).
+        definition_kwargs: dict[str, object] = {}
+        if "definition" in body.model_fields_set:
+            definition_kwargs["definition"] = body.definition
         family = work_families.update_family(
-            db, family_id=family_id, title=body.title, definition=body.definition,
-            actor_id=admin.id,
+            db, family_id=family_id, title=body.title, actor_id=admin.id, **definition_kwargs,
         )
         if "unit_name" in body.model_fields_set:
             family = work_families.set_unit(
@@ -447,10 +460,13 @@ def confirm_kind_route(
     db: Session = Depends(get_db),
 ):
     with _mutating(db):
-        work_families.confirm_kind(
-            db, context_id=context_id, kind=body.kind.value if body.kind is not None else None,
-            actor_id=admin.id,
-        )
+        if body.unconfirm:
+            work_families.unconfirm_kind(db, context_id=context_id, actor_id=admin.id)
+        else:
+            work_families.confirm_kind(
+                db, context_id=context_id, kind=body.kind.value if body.kind is not None else None,
+                actor_id=admin.id,
+            )
     return crud_semantic.context_card(db, context_id=context_id)
 
 

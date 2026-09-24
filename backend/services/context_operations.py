@@ -692,6 +692,10 @@ def move_members(
         member.bucket_id = bucket_id
         member.routed_by = RoutedBy.manual.value
         member.routing_rule_id = None
+        # Оператор явно выбрал целевой контекст — конфликт решён, обе
+        # колонки очищаются вместе (иначе CHECK CK_MEMBER_CONFLICT_PAIR).
+        member.conflict_at = None
+        member.conflict_from_context_id = None
     db.flush()
 
     for from_context_id, count in from_counts.items():

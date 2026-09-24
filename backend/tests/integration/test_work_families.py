@@ -53,8 +53,10 @@ from services.work_families import (
     REFUSE_ACTIVATE_WITHOUT_DEFINITION,
     REFUSE_ARCHIVE_WITH_LINKS,
     REFUSE_BLANK_TITLE,
+    REFUSE_CLEAR_DEFINITION_ACTIVE,
     REFUSE_CONTEXT_ARCHIVED,
     REFUSE_CONTEXT_NOT_FOUND,
+    REFUSE_DUPLICATE_ACTIVE_FAMILY,
     REFUSE_FAMILY_NOT_ACTIVE,
     REFUSE_FAMILY_NOT_FOUND,
     REFUSE_MERGE_INACTIVE,
@@ -421,7 +423,7 @@ def test_update_family_rename_records_single_changed_field(db_session, factories
         db_session, title="Старое имя", unit_name=None, definition=None, actor_id=user.id,
     )
     updated = update_family(
-        db_session, family_id=fam.id, title="Новое имя", definition=None, actor_id=user.id,
+        db_session, family_id=fam.id, title="Новое имя", actor_id=user.id,
     )
     assert updated.title == "Новое имя"
     events = _events(db_session, fam.id, "family_updated")
@@ -493,7 +495,7 @@ def test_update_family_blank_title_refuses_and_leaves_title_untouched(
     )
     with pytest.raises(WorkFamilyError) as exc:
         update_family(
-            db_session, family_id=fam.id, title=title, definition=None, actor_id=user.id,
+            db_session, family_id=fam.id, title=title, actor_id=user.id,
         )
     assert exc.value.code == REFUSE_BLANK_TITLE
     db_session.refresh(fam)
@@ -508,10 +510,32 @@ def test_update_family_allowed_when_active(db_session, factories):
     )
     activate_family(db_session, family_id=fam.id, actor_id=user.id)
     updated = update_family(
-        db_session, family_id=fam.id, title="Актив (правка)", definition=None,
+        db_session, family_id=fam.id, title="Актив (правка)",
         actor_id=user.id,
     )
     assert updated.title == "Актив (правка)"
+
+
+def test_update_family_clearing_definition_of_active_family_is_a_domain_refusal(
+    db_session, factories
+):
+    """`definition=None` ПЕРЕДАННЫЙ ЯВНО — не «не трогать» (то у этой
+    функции значение по умолчанию, см. `test_update_family_allowed_when_active`
+    выше, где `definition` не передан вовсе), а «снять определение»; у
+    `active` семьи это нарушило бы `CK_FAMILY_ACTIVE_NEEDS_DEFINITION`."""
+    user = factories.UserFactory.create()
+    fam = create_family(
+        db_session, title="Актив с определением", unit_name=None, definition="Определение",
+        actor_id=user.id,
+    )
+    activate_family(db_session, family_id=fam.id, actor_id=user.id)
+    with pytest.raises(WorkFamilyError) as exc:
+        update_family(
+            db_session, family_id=fam.id, title=None, definition=None, actor_id=user.id,
+        )
+    assert exc.value.code == REFUSE_CLEAR_DEFINITION_ACTIVE
+    db_session.refresh(fam)
+    assert fam.definition == "Определение"
 
 
 def test_update_family_archived_refuses(db_session, factories):
@@ -524,7 +548,7 @@ def test_update_family_archived_refuses(db_session, factories):
     db_session.flush()
     with pytest.raises(WorkFamilyError) as exc:
         update_family(
-            db_session, family_id=fam.id, title="Новое имя", definition=None,
+            db_session, family_id=fam.id, title="Новое имя",
             actor_id=user.id,
         )
     assert exc.value.code == REFUSE_UPDATE_ARCHIVED
@@ -534,7 +558,7 @@ def test_update_family_not_found_refuses(db_session, factories):
     user = factories.UserFactory.create()
     with pytest.raises(WorkFamilyError) as exc:
         update_family(
-            db_session, family_id=999_999_999, title="x", definition=None,
+            db_session, family_id=999_999_999, title="x",
             actor_id=user.id,
         )
     assert exc.value.code == REFUSE_FAMILY_NOT_FOUND
@@ -709,11 +733,17 @@ def test_check_still_rejects_direct_update_with_blank_definition(db_session, fac
 
 
 # ---------------------------------------------------------------------------
-#  Активные дубли имени × единицы — IntegrityError; в draft/archived — проходят.
+#  Активные дубли имени × единицы — доменный отказ (REFUSE_DUPLICATE_ACTIVE_
+#  FAMILY), не сырой IntegrityError; в draft/archived — проходят.
 # ---------------------------------------------------------------------------
 
 
-def test_activate_duplicate_active_name_and_unit_rejected(db_session, factories):
+def test_activate_duplicate_active_name_and_unit_is_a_domain_refusal(db_session, factories):
+    """Черновики МОГУТ делить нормализованные имя и единицу (частичный
+    уникальный индекс держит их только среди `active`, см.
+    `test_same_name_and_unit_in_draft_pass` ниже) — активация ВТОРОГО такого
+    черновика поэтому обычный вход, доменный отказ, а не необработанный
+    `IntegrityError` от `uq_work_families_active_name_unit`."""
     user = factories.UserFactory.create()
     title = f"Штукатурка стен {_uid()}"
     f1 = create_family(
@@ -725,8 +755,10 @@ def test_activate_duplicate_active_name_and_unit_rejected(db_session, factories)
         actor_id=user.id,
     )
     activate_family(db_session, family_id=f1.id, actor_id=user.id)
-    with rejected(db_session, contains='"uq_work_families_active_name_unit"'):
+    with pytest.raises(WorkFamilyError) as exc:
         activate_family(db_session, family_id=f2.id, actor_id=user.id)
+    assert exc.value.code == REFUSE_DUPLICATE_ACTIVE_FAMILY
+    assert exc.value.duplicate_family_id == f1.id
 
 
 def test_same_name_and_unit_in_draft_pass(db_session, factories):
@@ -1563,6 +1595,22 @@ class TestFamilyLockCompilation:
         assert count_indices, "не найден запрос COUNT привязок по catalog_contexts"
         assert min(count_indices) > lock_i, "число привязок обязано читаться ПОСЛЕ лока семьи"
 
+    def test_activate_family_for_update_with_reread(self, db_session, factories):
+        user = factories.UserFactory.create()
+        family = create_family(
+            db_session, title=f"Лок активации {_uid()}", unit_name=None,
+            definition="Определение", actor_id=user.id,
+        )
+        db_session.expire(family)  # см. комментарий в test_set_unit_for_update_with_reread
+        with _capturing_sql(db_session) as statements:
+            activate_family(db_session, family_id=family.id, actor_id=user.id)
+
+        lock_i, lock_statement = _find_lock_statement(statements, "work_families", mode="FOR UPDATE")
+        assert "FOR SHARE" not in lock_statement
+        plain_reads = _plain_read_indices(statements, "work_families")
+        assert len([i for i in plain_reads if i < lock_i]) == 1, "ровно одно чтение до лока (существование)"
+        assert [i for i in plain_reads if i > lock_i], "нет перечитывания статуса после лока"
+
     def test_archive_family_for_update_with_reread(self, db_session, factories):
         user = factories.UserFactory.create()
         family = _active_family(
@@ -1724,6 +1772,34 @@ class TestFamilyRereadAfterLock:
             )
         assert exc.value.code == REFUSE_MERGE_INACTIVE
         assert exc.value.role == "target"
+        assert exc.value.status == FamilyStatus.archived.value
+
+    def test_activate_family_rereads_status_after_concurrent_archive(
+        self, committing_db, committing_factories, committing_session_factory
+    ):
+        """Тот же приём, что `test_merge_families_rereads_target_status`
+        выше: другая, полностью закоммиченная сессия архивирует семью МЕЖДУ
+        первым чтением этой сессии и локом активации. Без `FOR UPDATE` +
+        перечитывания активация не заметила бы архивирование и переписала бы
+        статус обратно на `active`, оставив `archived_at` заполненным —
+        нарушение `draft -> active -> archived`."""
+        user = committing_factories.UserFactory.create()
+        family = create_family(
+            committing_db, title=f"Перечит. активации {_uid()}", unit_name=None,
+            definition="Определение", actor_id=user.id,
+        )
+        committing_db.commit()
+
+        primed = committing_db.get(WorkFamily, family.id)
+        assert primed.status == FamilyStatus.draft.value
+
+        with committing_session_factory() as other:
+            archive_family(other, family_id=family.id, actor_id=user.id)
+            other.commit()
+
+        with pytest.raises(WorkFamilyError) as exc:
+            activate_family(committing_db, family_id=family.id, actor_id=user.id)
+        assert exc.value.code == REFUSE_ACTIVATE_NOT_DRAFT
         assert exc.value.status == FamilyStatus.archived.value
 
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   useClearCategoryOverride,
+  useClearRoundCategoryOverride,
   useCreateContract,
   useDeleteContract,
   useImportJob,
@@ -13,6 +14,7 @@ import {
   useProjectPassport,
   useSetCategoryOverride,
   useSetEstimateVat,
+  useSetRoundCategoryOverride,
   useUpdateContract,
   useUpdateContractor,
   useUpdateObject,
@@ -207,6 +209,30 @@ describe("инвалидация паспорта проекта источни�
     await waitFor(() => {
       const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
       expect(keys).toContain(JSON.stringify(qk.passport.all));
+    });
+  });
+
+  it("завершённый импорт инвалидирует контексты каталога", async () => {
+    // Импорт создаёт/обновляет членства контекстов (счётчики на карточках
+    // экрана /families) — без этой инвалидации открытый заранее экран
+    // показывал бы прежние счётчики весь staleTime.
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    server.use(
+      http.get("/api/v1/estimates/jobs/:jobId", () =>
+        HttpResponse.json({ ...sampleImportJobs[0], id: 78, status: "done" })
+      )
+    );
+
+    renderHook(() => useImportJob(78, { contractId: 12 }), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+
+    await waitFor(() => {
+      const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+      expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
     });
   });
 
@@ -470,6 +496,87 @@ describe("useSetCategoryOverride / useClearCategoryOverride: инвалидац�
     expect(queryClient.getQueryState(otherPassportKey)?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(otherCardKey)?.isInvalidated).toBe(false);
   });
+
+  it("назначение и снятие статьи инвалидируют контексты каталога", async () => {
+    // `membership_state` контекста (CURRENT/STALE) зависит от статьи
+    // раздела — без этой инвалидации карточка/очередь экрана /families,
+    // открытые заранее, продолжали бы показывать прежнее состояние.
+    const setClient = createTestQueryClient();
+    const setInvalidateSpy = vi.spyOn(setClient, "invalidateQueries");
+
+    const { result: setResult } = renderHook(() => useSetCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={setClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await setResult.current.mutateAsync({
+        estimateId: 11, positionItemId: 42, workCategoryId: 20, contractId: 5,
+      });
+    });
+    const setKeys = setInvalidateSpy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(setKeys).toContain(JSON.stringify(qk.semanticContexts.all));
+
+    const clearClient = createTestQueryClient();
+    const clearInvalidateSpy = vi.spyOn(clearClient, "invalidateQueries");
+    const { result: clearResult } = renderHook(() => useClearCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={clearClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await clearResult.current.mutateAsync({ estimateId: 11, positionItemId: 42, contractId: 7 });
+    });
+    const clearKeys = clearInvalidateSpy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(clearKeys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+});
+
+/**
+ * `useSetRoundCategoryOverride`/`useClearRoundCategoryOverride` — тот же
+ * факт, что и у сметного разноса выше, только на стороне раунда тендера:
+ * `membership_state` контекста зависит от статьи, назначенной строке
+ * раунда.
+ */
+describe("useSetRoundCategoryOverride / useClearRoundCategoryOverride: инвалидация контекстов каталога", () => {
+  it("назначение статьи раунда инвалидирует контексты каталога", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useSetRoundCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        tenderId: 1, roundId: 2, lotKey: "lot-1", positionKey: "pos-1", workCategoryId: 20,
+        note: null,
+      });
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+
+  it("снятие статьи раунда инвалидирует контексты каталога", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useClearRoundCategoryOverride(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        tenderId: 1, roundId: 2, lotKey: "lot-1", positionKey: "pos-1",
+      });
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
 });
 
 /**
@@ -608,5 +715,32 @@ describe("useMergeReview: тосты различают вид, а не нали
 
     expect(warningSpy).not.toHaveBeenCalled();
     expect(successSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("слияние архивирует и переселяет контексты — инвалидирует контексты каталога", async () => {
+    server.use(
+      http.post("/api/v1/review/:id/merge", () =>
+        HttpResponse.json({
+          to_review_id: 10,
+          target: mergeTarget,
+          moved_positions: 3,
+          warnings: [],
+        })
+      )
+    );
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useMergeReview(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ toReviewId: 10, targetId: 801 });
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
   });
 });

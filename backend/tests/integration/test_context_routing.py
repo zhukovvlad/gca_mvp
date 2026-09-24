@@ -18,11 +18,14 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 from sqlalchemy.dialects import postgresql
 
 import services.context_routing as context_routing_module
 from models import (
     CatalogContext,
+    CatalogKind,
+    CatalogPosition,
     ContextBucket,
     ContextMember,
     ContextRoutingRule,
@@ -1145,12 +1148,76 @@ class TestForShareLockContract:
 
 
 # ---------------------------------------------------------------------------
-#  Контракт `FOR SHARE` на `route_positions` — три те же входа, что у
-#  `route_position`, но проверены на пакетной функции: `route_position` берёт
-#  лок для ОДНОЙ уже разрешённой корзины, `route_positions` — для СПИСКА уже
-#  разрешённых корзин разом, и это отдельный путь кода, требующий своего
-#  предъявителя (`_lock_statement`/`lock_buckets` вызывается из другого места).
+#  Новый контекст читает `kind` каталожной строки под замком — гонка
+#  «создание контекста импортом против `set_kind(HEADER|TRASH)`». Приём
+#  БЕЗ потоков — тот же, что `test_work_families.py::
+#  TestFamilyRereadAfterLock` (задача 8): другая, ПОЛНОСТЬЮ закоммиченная
+#  сессия меняет `kind` (атрибут ORM-объекта, кэшируемый identity map)
+#  МЕЖДУ первым чтением ЭТОЙ сессии и локом создания контекста.
 # ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _capturing_sql(session):
+    """Перехватывает каждый SQL-текст, реально отправленный на этом
+    соединении — тот же приём, что `test_work_families.py::_capturing_sql`
+    (локальная копия, докстрока модуля: наборы помощников друг у друга не
+    импортируют)."""
+    statements: list[str] = []
+
+    def _listener(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", _listener)
+    try:
+        yield statements
+    finally:
+        event.remove(connection, "before_cursor_execute", _listener)
+
+
+class TestNewContextRereadsCatalogKindAfterLock:
+    def test_new_default_context_locks_catalog_position_for_share(self, db_session, factories):
+        proposal, _ = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        position = _position(factories, proposal, catalog_position=cp)
+
+        with _capturing_sql(db_session) as statements:
+            route_position(db_session, position_item_id=position.id)
+
+        lock_statement = next(
+            (
+                s for s in statements
+                if "catalog_positions" in s and " FOR SHARE" in s and "FOR UPDATE" not in s
+            ),
+            None,
+        )
+        assert lock_statement is not None, (
+            "нет FOR SHARE на catalog_positions среди:\n" + "\n---\n".join(statements)
+        )
+
+    def test_new_context_is_not_applicable_when_kind_becomes_header_before_lock(
+        self, committing_db, committing_factories, committing_session_factory
+    ):
+        proposal, _ = _proposal(committing_factories)
+        cp = committing_factories.CatalogPositionFactory.create()
+        position = _position(committing_factories, proposal, catalog_position=cp)
+        committing_db.commit()
+
+        primed = committing_db.get(CatalogPosition, cp.id)
+        assert primed.kind == CatalogKind.POSITION.value
+
+        with committing_session_factory() as other:
+            other_cp = other.get(CatalogPosition, cp.id)
+            other_cp.kind = CatalogKind.HEADER.value
+            other.commit()
+
+        # Бакет для этой каталожной строки ещё не существует — маршрутизация
+        # заводит НОВЫЙ контекст по умолчанию (путь, который и обязан
+        # перечитать `kind`).
+        member = route_position(committing_db, position_item_id=position.id)
+        context = committing_db.get(CatalogContext, member.context_id)
+        assert context.semantic_state == SemanticState.NOT_APPLICABLE.value
+
 
 class TestRoutePositionsForShareLockContract:
     def test_existing_for_update_delays_route_positions_until_released(

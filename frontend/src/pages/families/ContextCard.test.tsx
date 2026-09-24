@@ -270,6 +270,34 @@ describe("ContextCard", () => {
     );
   });
 
+  it("подтверждённый вид несёт кнопку снятия подтверждения, отправляющую unconfirm", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={SYSTEM_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Разборка временных перегородок")).toBeInTheDocument()
+    );
+
+    await user.click(screen.getByRole("button", { name: "Снять подтверждение" }));
+
+    await waitFor(() =>
+      expect(handlerState.lastConfirmKindRequest).toEqual({
+        contextId: SYSTEM_CONTEXT_ID,
+        body: { unconfirm: true },
+      })
+    );
+  });
+
+  it("неподтверждённый вид не несёт кнопки снятия подтверждения", async () => {
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Штукатурка стен, ось А-Б")).toBeInTheDocument()
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Снять подтверждение" })
+    ).not.toBeInTheDocument();
+  });
+
   it("переопределение роли БЕЗ выбора уходит с ТЕКУЩЕЙ ролью карточки, не с WORK по умолчанию", async () => {
     const user = userEvent.setup();
     // Контекст 604 несёт GENERIC_WORK.

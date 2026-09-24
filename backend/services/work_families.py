@@ -63,6 +63,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import services.context_routing as context_routing_module
@@ -84,6 +85,15 @@ from services.unit_resolution import NO_UNIT_NORM, UnitResolver
 
 #: `backend/seeds/work_families_initial.json` (план, задача 7, Interfaces).
 SEED_PATH: Path = Path(__file__).resolve().parent.parent / "seeds" / "work_families_initial.json"
+
+#: Сентинел «поле не передано вовсе» — отличим от `definition=None`
+#: («передано явно, значит снять определение»), тот же приём, что
+#: `crud/contracts.py::UNSET`. `update_family` по умолчанию остаётся
+#: обратно совместимой: вызывающий, который просто передаёт `None`, не
+#: зовя этот сентинел явно, получает СТАРОЕ поведение «не трогать» только
+#: если использует сам сентинел как значение по умолчанию — HTTP-слой
+#: (`routers/semantic.py`) различает вход через `model_fields_set`.
+UNSET = object()
 
 
 class WorkFamilyError(Exception):
@@ -107,6 +117,15 @@ REFUSE_FAMILY_NOT_FOUND = "family_not_found"
 REFUSE_UPDATE_ARCHIVED = "update_archived"
 REFUSE_ACTIVATE_NOT_DRAFT = "activate_not_draft"
 REFUSE_UNKNOWN_UNIT = "unknown_unit"
+#: Черновики МОГУТ делить нормализованные имя и единицу (частичный
+#: уникальный индекс `uq_work_families_active_name_unit` держит их только
+#: среди `active`) — активация ВТОРОГО такого черновика поэтому обычный,
+#: достижимый вход, а не программная ошибка: доменный отказ ПЕРВОЙ линией
+#: (проверка под тем же `FOR UPDATE`, что и перечитывание статуса), плюс
+#: перехват `IntegrityError` именно этого индекса ВТОРОЙ линией — гонка
+#: ДВУХ РАЗНЫХ черновиков, активируемых одновременно, не закрыта локом на
+#: одну семью (`activate_family` блокирует только СВОЮ строку).
+REFUSE_DUPLICATE_ACTIVE_FAMILY = "duplicate_active_family"
 #: Пустое/пробельное имя семьи — доменный отказ ПЕРВОЙ линией (та же
 #: дисциплина, что `_has_definition`/`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`),
 #: а не `IntegrityError` от `ck_work_families_title_not_blank`, дошедший до
@@ -147,6 +166,11 @@ REFUSE_MERGE_SAME_FAMILY = "merge_same_family"
 #: домены модуля).
 REFUSE_INVALID_KIND = "invalid_kind"
 REFUSE_INVALID_NAME_ROLE = "invalid_name_role"
+#: `update_family(definition=None)` — явная просьба снять определение (не
+#: «не трогать», см. `UNSET`). У `active` семьи это разрушило бы
+#: `CK_FAMILY_ACTIVE_NEEDS_DEFINITION` — доменный отказ ПЕРВОЙ линией, той
+#: же дисциплиной, что `REFUSE_ACTIVATE_WITHOUT_DEFINITION`.
+REFUSE_CLEAR_DEFINITION_ACTIVE = "clear_definition_active"
 
 #: Белые списки допустимых значений — сверка ПЕРЕД записью в базу, не после
 #: отказа `CHECK` (докстрока модуля, задача 7, «первая линия защиты»).
@@ -177,6 +201,25 @@ def _has_title(value: str | None) -> bool:
     `ck_work_families_title_not_blank` (`btrim(title) <> ''`), выполненное в
     Python до обращения к базе (та же дисциплина, что `_has_definition`)."""
     return value is not None and value.strip() != ""
+
+
+def _duplicate_active_family_id(
+    db: Session, *, family_id: int, title: str, unit_id: int | None
+) -> int | None:
+    """Id уже АКТИВНОЙ семьи с тем же нормализованным именем и единицей,
+    исключая саму `family_id` — то же выражение, что частичный уникальный
+    индекс `uq_work_families_active_name_unit` (`lower(btrim(title))`,
+    `COALESCE(unit_id, -1)`, `WHERE status = 'active'`), выполненное в
+    Python до `flush` (первая линия — `activate_family`)."""
+    unit_clause = WorkFamily.unit_id.is_(None) if unit_id is None else WorkFamily.unit_id == unit_id
+    return db.execute(
+        sa.select(WorkFamily.id).where(
+            WorkFamily.status == FamilyStatus.active.value,
+            WorkFamily.id != family_id,
+            sa.func.lower(sa.func.btrim(WorkFamily.title)) == sa.func.lower(sa.func.btrim(title)),
+            unit_clause,
+        )
+    ).scalars().first()
 
 
 def _normalize_definition(value: str | None) -> str | None:
@@ -246,13 +289,23 @@ def update_family(
     *,
     family_id: int,
     title: str | None,
-    definition: str | None,
+    definition: str | None | object = UNSET,
     actor_id: int,
 ) -> WorkFamily:
-    """Правит имя и/или определение семьи. `None` у параметра значит «не
-    трогать это поле» — вызывающий передаёт только то, что реально меняется
-    (план, задача 7: `changed` только по реально
-    изменившимся полям, пустой аудит запрещён спекой §2.14).
+    """Правит имя и/или определение семьи.
+
+    `title`: `None` значит «не трогать это поле» — вызывающий передаёт
+    только то, что реально меняется (план, задача 7: `changed` только по
+    реально изменившимся полям, пустой аудит запрещён спекой §2.14).
+
+    `definition`: ТРИ различимых входа, не два. Непереданный параметр
+    (значение по умолчанию `UNSET`) — «не трогать», как и `title=None`.
+    Переданный явный `None` — «снять определение»: у `draft`-семьи снимает,
+    у `active` — доменный отказ (`CK_FAMILY_ACTIVE_NEEDS_DEFINITION` не
+    допускает активную семью без определения). Переданная строка — новое
+    значение (пустая/пробельная нормализуется в `NULL`, как и везде в этом
+    модуле). HTTP-слой (`routers/semantic.py::update_family_route`) строит
+    этот вход из `body.model_fields_set`, тем же приёмом, что и `unit_name`.
 
     Допустима в любом статусе, КРОМЕ `archived`.
 
@@ -262,7 +315,8 @@ def update_family(
             остаётся законным «не трогать это поле», а вот РЕАЛЬНО переданная
             пустая строка — попытка стереть обязательное имя); семья не
             найдена (`REFUSE_FAMILY_NOT_FOUND`); семья архивирована
-            (`REFUSE_UPDATE_ARCHIVED`).
+            (`REFUSE_UPDATE_ARCHIVED`); явный `definition=None` на `active`
+            семье (`REFUSE_CLEAR_DEFINITION_ACTIVE`).
     """
     if title is not None and not _has_title(title):
         raise WorkFamilyError(
@@ -280,12 +334,18 @@ def update_family(
             f"семья {family_id} архивирована — правка недоступна",
             family_id=family_id,
         )
+    if definition is None and family.status == FamilyStatus.active.value:
+        raise WorkFamilyError(
+            REFUSE_CLEAR_DEFINITION_ACTIVE,
+            f"семья {family_id} активна — снять определение нельзя",
+            family_id=family_id,
+        )
 
     changed: list[dict[str, object]] = []
     if title is not None and title != family.title:
         changed.append({"field": "title", "from": family.title, "to": title})
         family.title = title
-    if definition is not None:
+    if definition is not UNSET:
         normalized = _normalize_definition(definition)
         if normalized != family.definition:
             changed.append({"field": "definition", "from": family.definition, "to": normalized})
@@ -312,25 +372,41 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
     """Переводит семью `draft -> active`, заполняя пару
     `activated_by`/`activated_at` целиком (план, задача 7).
 
-    Порядок проверок: семья найдена → статус `draft` → определение непусто.
-    Все три — ПЕРВОЙ ЛИНИЕЙ в Python, до `db.flush()`: ни один из трёх
-    отказов не мутирует сессию. `CHECK` схемы
-    (`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`) — ВТОРАЯ линия, независимая от
-    этой функции (прямой `UPDATE` в обход неё по-прежнему получает
-    `IntegrityError`, `test_work_families.py`).
+    Порядок проверок: семья найдена → `FOR UPDATE` на неё, тем же локом, что
+    `archive_family`/`set_unit`/`merge_families` (задача 8) →
+    перечитывание (`db.expire_all()`) → статус `draft` → определение
+    непусто. Без лока и перечитывания конкурентное архивирование, успевшее
+    закоммититься МЕЖДУ первым чтением и обновлением, осталось бы
+    незамеченным: активация переписала бы статус обратно на `active`,
+    оставив `archived_at` заполненным — нарушение `draft -> active ->
+    archived` (гонка «активация против архивирования», тот же класс, что
+    «назначение против архивирования» у `assign_family`/`archive_family`).
+    `CHECK` схемы (`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`) — ВТОРАЯ линия,
+    независимая от этой функции (прямой `UPDATE` в обход неё по-прежнему
+    получает `IntegrityError`, `test_work_families.py`).
 
     Raises:
         WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья
-            не в статусе `draft` (`REFUSE_ACTIVATE_NOT_DRAFT`, покрывает и
-            `active`, и `archived` — при трёх статусах всего второй код не
-            нужен); определение пусто/пробельно/`NULL`
-            (`REFUSE_ACTIVATE_WITHOUT_DEFINITION`).
+            не в статусе `draft`, ПЕРЕЧИТАННОЕ после лока
+            (`REFUSE_ACTIVATE_NOT_DRAFT`, покрывает и `active`, и `archived`
+            — при трёх статусах всего второй код не нужен); определение
+            пусто/пробельно/`NULL` (`REFUSE_ACTIVATE_WITHOUT_DEFINITION`);
+            уже есть активная семья с тем же нормализованным именем и
+            единицей — первой линией через SELECT под локом, либо второй
+            линией через перехват `IntegrityError` от
+            `uq_work_families_active_name_unit` (`REFUSE_DUPLICATE_ACTIVE_FAMILY`
+            в обоих случаях, см. докстроку константы).
     """
     family = db.get(WorkFamily, family_id)
     if family is None:
         raise WorkFamilyError(
             REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
         )
+
+    _lock_families(db, [family_id], exclusive=True)  # FOR UPDATE
+    db.expire_all()
+
+    family = db.get(WorkFamily, family_id)  # ПЕРЕЧИТАННОЕ после лока
     if family.status != FamilyStatus.draft.value:
         raise WorkFamilyError(
             REFUSE_ACTIVATE_NOT_DRAFT,
@@ -344,11 +420,40 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
             f"семья {family_id} не может быть активирована без определения",
             family_id=family_id,
         )
+    duplicate_id = _duplicate_active_family_id(
+        db, family_id=family_id, title=family.title, unit_id=family.unit_id
+    )
+    if duplicate_id is not None:
+        raise WorkFamilyError(
+            REFUSE_DUPLICATE_ACTIVE_FAMILY,
+            f"семья {family_id}: уже есть активная семья {duplicate_id} с тем же "
+            "именем и единицей",
+            family_id=family_id,
+            duplicate_family_id=duplicate_id,
+        )
 
     family.status = FamilyStatus.active.value
     family.activated_by = actor_id
     family.activated_at = _now()
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        # Вторая линия — гонка ДВУХ РАЗНЫХ черновиков, активируемых
+        # одновременно: проверка выше держит `FOR UPDATE` только на СВОЮ
+        # семью, поэтому конкурентная активация другого черновика с тем же
+        # именем/единицей может проскочить её и столкнуться здесь (см.
+        # докстроку `REFUSE_DUPLICATE_ACTIVE_FAMILY`). Чужой `IntegrityError`
+        # пробрасывается дальше НЕПЕРЕВЕДЁННЫМ — эта линия ловит ИМЕННО
+        # нарушение `uq_work_families_active_name_unit`, не любой отказ базы.
+        db.rollback()
+        if "uq_work_families_active_name_unit" not in str(exc.orig):
+            raise
+        raise WorkFamilyError(
+            REFUSE_DUPLICATE_ACTIVE_FAMILY,
+            f"семья {family_id}: конфликт активного имени и единицы "
+            "(параллельная активация)",
+            family_id=family_id,
+        ) from exc
 
     unit_norm = family.unit.code if family.unit_id is not None else NO_UNIT_NORM
     record_event(

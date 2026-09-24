@@ -422,6 +422,75 @@ class TestFamilies:
         assert detail["code"] == work_families.REFUSE_FAMILY_NOT_FOUND
         assert detail["family_id"] == 999999999
 
+    def test_activate_duplicate_active_name_and_unit_gives_409_not_500(
+        self, admin_client, db_session
+    ):
+        """Черновики могут делить нормализованные имя и единицу — второй
+        такой черновик обычный, достижимый вход. Активировать его при уже
+        активном первом — доменный отказ, а не необработанная ошибка базы."""
+        title = "Штукатурка стен API-дубль"
+        first = work_families.create_family(
+            db_session, title=title, unit_name="M2", definition="Определение А",
+            actor_id=admin_client.user.id,
+        )
+        second = work_families.create_family(
+            db_session, title=title, unit_name="M2", definition="Определение Б",
+            actor_id=admin_client.user.id,
+        )
+        db_session.commit()
+
+        activated_first = admin_client.post(f"{BASE}/families/{first.id}/activate")
+        assert activated_first.status_code == 200
+
+        activated_second = admin_client.post(f"{BASE}/families/{second.id}/activate")
+        assert activated_second.status_code == 409
+        detail = activated_second.json()["detail"]
+        assert detail["code"] == work_families.REFUSE_DUPLICATE_ACTIVE_FAMILY
+        assert detail["duplicate_family_id"] == first.id
+
+    def test_patch_explicit_null_definition_clears_draft_family(self, admin_client, db_session):
+        fam = _family(
+            db_session, admin_client.user, title="Черновик с определением",
+            unit_name=None, definition="Было", active=False,
+        )
+        db_session.commit()
+
+        response = admin_client.patch(
+            f"{BASE}/families/{fam.id}", json={"definition": None}
+        )
+        assert response.status_code == 200
+        assert response.json()["definition"] is None
+
+    def test_patch_omitted_definition_leaves_it_untouched(self, admin_client, db_session):
+        fam = _family(
+            db_session, admin_client.user, title="Черновик, поле не передано",
+            unit_name=None, definition="Остаётся", active=False,
+        )
+        db_session.commit()
+
+        response = admin_client.patch(f"{BASE}/families/{fam.id}", json={"title": "Переименовано"})
+        assert response.status_code == 200
+        assert response.json()["definition"] == "Остаётся"
+
+    def test_patch_explicit_null_definition_on_active_family_is_domain_refusal(
+        self, admin_client, db_session
+    ):
+        fam = _family(
+            db_session, admin_client.user, title="Активная с определением",
+            unit_name=None, definition="Было", active=True,
+        )
+        db_session.commit()
+
+        response = admin_client.patch(
+            f"{BASE}/families/{fam.id}", json={"definition": None}
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == work_families.REFUSE_CLEAR_DEFINITION_ACTIVE
+
+        db_session.expire_all()
+        untouched = db_session.get(WorkFamily, fam.id)
+        assert untouched.definition == "Было"
+
     def test_patch_family_unit_name_reaches_set_unit(self, admin_client, db_session, factories):
         """`PATCH` с `unit_name` реально доходит до
         `set_unit` — успех без привязок, единица меняется; неизвестная
@@ -777,6 +846,28 @@ class TestContextCard:
         # Журнал по времени — неубывающая последовательность created_at.
         timestamps = [event["created_at"] for event in body["events"]]
         assert timestamps == sorted(timestamps)
+
+    def test_unconfirm_kind_route_recomputes_by_rule(self, admin_client, db_session, factories):
+        """`unconfirm: true` в теле того же маршрута `POST .../kind`
+        возвращает подтверждённый вид к `SUGGESTED`, вид пересчитан
+        правилом (`source='rule'`), а не сохранён прежним."""
+        m2 = _unit_id(db_session, "M2")
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Стяжка пола", unit_id=m2)
+        proposal = _proposal(factories)
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, semantic_kind=SemanticKind.SYSTEM.value)
+        position = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, position, ctx)
+
+        confirmed = admin_client.post(f"{BASE}/contexts/{ctx.id}/kind", json={"kind": "WORK"})
+        assert confirmed.status_code == 200
+        assert confirmed.json()["semantic_state"] == "CONFIRMED"
+
+        unconfirmed = admin_client.post(f"{BASE}/contexts/{ctx.id}/kind", json={"unconfirm": True})
+        assert unconfirmed.status_code == 200
+        body = unconfirmed.json()
+        assert body["semantic_state"] == "SUGGESTED"
+        assert body["semantic_kind_source"] == DecisionSource.rule.value
 
     def test_card_reports_dictionary_version_from_context_not_hardcoded(
         self, admin_client, db_session, factories

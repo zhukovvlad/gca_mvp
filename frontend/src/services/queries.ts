@@ -548,6 +548,12 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
         }
       }
       if (job.status === "done") {
+        // Успешный импорт создаёт/обновляет корзины, контексты и членства
+        // (спека контура §2.9) — счётчики на карточках и сама очередь
+        // экрана `/families`, открытого до загрузки, иначе оставались бы
+        // прежними до истечения `staleTime`. Общая для ОБОИХ владельцев,
+        // не привязана к `contractId`/`tenderId` отдельно.
+        qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
         if (ownerRef?.contractId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.review.all });
           // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
@@ -605,10 +611,17 @@ export function useCatalogSearch(q: string, unitId?: number) {
   });
 }
 
-/** Слияние меняет и очередь, и каталог, и нормативы могли переехать на цель. */
+/**
+ * Слияние меняет и очередь, и каталог, и нормативы могли переехать на цель.
+ * Решения Review (слияние, `set_kind`) архивируют и переселяют контексты
+ * каталога, меняют `semantic_state` строк-разделов/мусора — без этой
+ * инвалидации экран `/families`, открытый заранее, показывал бы прежнюю
+ * очередь/карточку контекста до истечения `staleTime`.
+ */
 function invalidateAfterReviewDecision(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.review.all });
   qc.invalidateQueries({ queryKey: qk.catalog.all });
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
 }
 
 export function useMergeReview() {
@@ -823,6 +836,10 @@ export function useSetCategoryOverride() {
       // без этой инвалидации она оставалась бы устаревшей для ЛЮБОГО потребителя
       // `qk.contracts.card`, не только для формы замены (находка ревью PR #16).
       qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
+      // Разнос меняет `membership_state` членств контекста (CURRENT/STALE) —
+      // очередь/карточка экрана `/families`, открытые заранее, иначе
+      // держали бы прежнее состояние до истечения `staleTime`.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
     },
     onError: toastApiError,
   });
@@ -836,6 +853,7 @@ export function useClearCategoryOverride() {
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
       qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
     },
     onError: toastApiError,
   });
@@ -1193,6 +1211,9 @@ function invalidateAfterRoundOverride(qc: ReturnType<typeof useQueryClient>, ten
   qc.invalidateQueries({ queryKey: qk.tenders.stageSummaryForTender(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.stagePositionsForTender(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.roundUnallocated(tenderId, roundId) });
+  // Тот же факт, что у сметного разноса (`useSetCategoryOverride`):
+  // `membership_state` контекста зависит от статьи строки раунда.
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
 }
 
 export function useSetRoundCategoryOverride() {

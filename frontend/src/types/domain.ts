@@ -2258,7 +2258,11 @@ export interface ContextMemberRow {
 }
 
 export interface ConfirmKindInput {
-  kind: SemanticKind | null;
+  kind?: SemanticKind | null;
+  /** Обратный переход `CONFIRMED → SUGGESTED` — тем же маршрутом, что и
+   * подтверждение (спека §2.5, таблица переходов). `kind` при этом не
+   * передаётся. */
+  unconfirm?: boolean;
 }
 
 export interface SetNameRoleInput {

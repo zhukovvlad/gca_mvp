@@ -1085,6 +1085,30 @@ class TestMoveMembers:
         assert by_source == {other_source.id: 1, default_ctx.id: 1}
         assert all(e.payload["reason"] == "manual" for e in events)
 
+    def test_moving_a_conflicting_member_clears_both_conflict_columns(self, db_session, factories):
+        user = factories.UserFactory.create()
+        bucket, default_ctx, position, cp = _seed_default_member(db_session, factories)
+        other_source = _context(db_session, bucket)
+        target = _context(db_session, bucket)
+
+        member = db_session.get(ContextMember, position.id)
+        member.conflict_at = _now()
+        member.conflict_from_context_id = other_source.id
+        db_session.flush()
+
+        moved = move_members(
+            db_session, position_item_ids=[position.id], target_context_id=target.id,
+            actor_id=user.id, reason="manual",
+        )
+        assert moved == 1
+
+        db_session.expire_all()
+        member = db_session.get(ContextMember, position.id)
+        assert member.context_id == target.id
+        assert member.routed_by == RoutedBy.manual.value
+        assert member.conflict_at is None
+        assert member.conflict_from_context_id is None
+
 
 class TestMoveMembersRefusals:
     def test_invalid_reason_is_refused_before_any_read(self, db_session, factories):

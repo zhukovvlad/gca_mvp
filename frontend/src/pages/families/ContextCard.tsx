@@ -521,6 +521,18 @@ export function ContextCard({ contextId }: ContextCardProps) {
             >
               Подтвердить вид
             </Button>
+            {/* Обратный переход CONFIRMED -> SUGGESTED (спека §2.5) — кнопка
+                видна ТОЛЬКО у подтверждённого вида, тем же маршрутом, что и
+                подтверждение. */}
+            {card.semantic_state === "CONFIRMED" && (
+              <Button
+                variant="outline"
+                disabled={confirmKind.isPending}
+                onClick={() => confirmKind.mutate({ contextId, input: { unconfirm: true } })}
+              >
+                Снять подтверждение
+              </Button>
+            )}
           </div>
         </div>
 
