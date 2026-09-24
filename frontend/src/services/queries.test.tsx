@@ -1,13 +1,15 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   useClearCategoryOverride,
   useCreateContract,
   useDeleteContract,
   useImportJob,
+  useMergeReview,
   useProjectPassport,
   useSetCategoryOverride,
   useSetEstimateVat,
@@ -518,5 +520,93 @@ describe("useSetEstimateVat: инвалидация паспорта догов�
     expect(queryClient.getQueryState(passportKey)?.isInvalidated).toBe(true);
     // Договор 99 ни при чём — его кэш не должен шевельнуться.
     expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+});
+
+/**
+ * `useMergeReview` (спека `2026-09-22-catalog-families-design.md` §2.8; план,
+ * задача 9): `warnings` — аддитивное поле ответа слияния. Три утверждения из
+ * плана различают ВИД тоста и его кратность, а не наличие: `toast.success` о
+ * выполненном слиянии есть **всегда** («тоста нет» было бы ложным
+ * утверждением при любом входе), поэтому тесты проверяют:
+ * непустой `warnings` → `toast.warning` с текстом предупреждения; пустой
+ * `warnings` → ни одного `toast.warning`; `toast.success` — РОВНО один в
+ * обоих случаях (предупреждение не заменяет и не дублирует подтверждение
+ * успеха).
+ */
+describe("useMergeReview: тосты различают вид, а не наличие", () => {
+  const mergeTarget = {
+    id: 801,
+    standard_job_title: "Стяжка цементная",
+    normalized_job_title: "стяжка цементный",
+    kind: "POSITION",
+    unit_id: 5,
+    unit_code: "M2",
+    unit_name: "Кв. метр",
+  };
+
+  // `vi.spyOn` на `toast.*` держит счётчик вызовов через границы тестов
+  // (vitest здесь не настроен на автосброс) — без восстановления второй тест
+  // унаследовал бы вызов первого и «пустой warnings» ложно считался бы
+  // непустым.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("непустой warnings вызывает toast.warning с текстом предупреждения", async () => {
+    server.use(
+      http.post("/api/v1/review/:id/merge", () =>
+        HttpResponse.json({
+          to_review_id: 10,
+          target: mergeTarget,
+          moved_positions: 3,
+          warnings: ["Слияние свело разные семьи работ: «А» и «Б»."],
+        })
+      )
+    );
+    const successSpy = vi.spyOn(toast, "success");
+    const warningSpy = vi.spyOn(toast, "warning");
+
+    const { result } = renderHook(() => useMergeReview(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={createTestQueryClient()}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ toReviewId: 10, targetId: 801 });
+    });
+
+    expect(warningSpy).toHaveBeenCalledTimes(1);
+    expect(warningSpy).toHaveBeenCalledWith("Слияние свело разные семьи работ: «А» и «Б».");
+    // Третье утверждение — отдельное, не подразумеваемое: предупреждение не
+    // заменяет и не дублирует подтверждение успеха.
+    expect(successSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("пустой warnings не вызывает ни одного toast.warning", async () => {
+    server.use(
+      http.post("/api/v1/review/:id/merge", () =>
+        HttpResponse.json({
+          to_review_id: 10,
+          target: mergeTarget,
+          moved_positions: 3,
+          warnings: [],
+        })
+      )
+    );
+    const successSpy = vi.spyOn(toast, "success");
+    const warningSpy = vi.spyOn(toast, "warning");
+
+    const { result } = renderHook(() => useMergeReview(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={createTestQueryClient()}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ toReviewId: 10, targetId: 801 });
+    });
+
+    expect(warningSpy).not.toHaveBeenCalled();
+    expect(successSpy).toHaveBeenCalledTimes(1);
   });
 });

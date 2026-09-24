@@ -606,9 +606,18 @@ export function useMergeReview() {
       reviewApi.merge(toReviewId, targetId),
     onSuccess: (result) => {
       invalidateAfterReviewDecision(qc);
+      // Существующий тост успеха остаётся РОВНО ОДИН независимо от warnings
+      // (спека §2.8): предупреждение о конфликте дополняет подтверждение
+      // слияния, а не заменяет и не дублирует его.
       toast.success(
         `Слито с «${result.target.standard_job_title}»: перенесено позиций — ${result.moved_positions}`
       );
+      // `member`, выполняющий слияние, экрана семей не видит вовсе (он под
+      // `RequireAdmin`) — тост здесь единственное место, где он узнаёт о
+      // конфликте разошедшихся решений.
+      for (const warning of result.warnings) {
+        toast.warning(warning);
+      }
     },
     onError: toastApiError,
   });

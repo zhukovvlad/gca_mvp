@@ -465,6 +465,10 @@ export interface MergeResult {
   to_review_id: number;
   target: CatalogPositionRow & { normalized_job_title: string; kind: string };
   moved_positions: number;
+  /** Предупреждения о конфликте семантических решений при слиянии контекстов
+   * (спека `2026-09-22-catalog-families-design.md` §2.8); пустой массив в
+   * подавляющем большинстве слияний. */
+  warnings: string[];
 }
 
 export interface BatchKindResult {

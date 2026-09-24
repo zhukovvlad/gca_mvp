@@ -111,6 +111,11 @@ REFUSE_INVALID_REASON = "invalid_reason"
 #: корзины перехватит позицию первым (спека §2.4: первое сработавшее правило
 #: по возрастанию `ordinal` побеждает).
 REFUSE_RULE_DOES_NOT_COVER = "rule_does_not_cover"
+#: Задача 9 («принять решение цели», спека §2.8): членство без конфликта
+#: (сверх плана — план называет только предусловия архивирования и трёх
+#: прежних операций; отказ на входные данные ЭТОЙ операции план не называет,
+#: тот же приём, что семь кодов выше).
+REFUSE_NOT_CONFLICTED = "not_conflicted"
 
 
 @dataclass(frozen=True)
@@ -776,3 +781,92 @@ def archive_context(
         actor_id=actor_id,
         payload={"reason": "operator"},
     )
+
+
+# ---------------------------------------------------------------------------
+#  Принять решение цели (задача 9, спека §2.8 «Слияние в Review»)
+# ---------------------------------------------------------------------------
+
+def accept_target_decision(db: Session, *, position_item_ids: list[int], actor_id: int) -> int:
+    """Оператор принимает решение ЦЕЛИ по конфликтным членствам, возникшим
+    при слиянии в Review (спека §2.8): снимает `conflict_at` и
+    `conflict_from_context_id` ВМЕСТЕ — `CHECK` равносильности
+    (`ck_context_members_conflict_pair`) иначе отвергнет строку, будь снята
+    только одна колонка. `context_id` и `membership_state` не трогает:
+    позиция уже лежит в правильной корзине (маршрут актуален), а «перенести в
+    другой контекст» — это отдельная операция `move_members`, не эта.
+
+    `actor_id` принимается по сигнатуре плана (Task 9, Interfaces); в фиче 1
+    для этого перехода нет своего типа события (§2.14 не называет такого) —
+    поэтому он не пишется в журнал, а `actor_id` не используется в теле
+    (решение сверх плана задачи 9).
+
+    `FOR UPDATE` — на корзину(ы) членств, а не на единую цель: в отличие от
+    `move_members`, у конфликтных членств нет ОДНОЙ общей цели, и они не
+    обязаны лежать в одной корзине.
+
+    Raises:
+        ContextOperationError: `position_item_ids` пуст либо содержит id без
+            членства, ПЕРЕЧИТАННОЕ после блокировки (`REFUSE_INVALID_MEMBERSHIP`);
+            хотя бы одно членство без конфликта (`REFUSE_NOT_CONFLICTED`, код
+            сверх плана) — называет ИМЕННО неконфликтные id, а не все входные.
+    """
+    if not position_item_ids:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            "принятие решения цели требует хотя бы одно членство",
+            position_item_ids=[],
+        )
+
+    unique_ids = list(dict.fromkeys(position_item_ids))
+    members = (
+        db.execute(sa.select(ContextMember).where(ContextMember.position_item_id.in_(unique_ids)))
+        .scalars()
+        .all()
+    )
+    found_by_id = {member.position_item_id: member for member in members}
+    missing = sorted(pid for pid in unique_ids if pid not in found_by_id)
+    if missing:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            f"позиции без членства: {missing}",
+            position_item_ids=missing,
+        )
+
+    bucket_ids = sorted({member.bucket_id for member in found_by_id.values()})
+    lock_buckets(db, bucket_ids, exclusive=True)
+    db.expire_all()  # см. докстроку модуля — иначе следующий db.get вернёт кэш
+
+    # Перечитывание существования — не только состояния конфликта: членство
+    # могло уйти каскадом МЕЖДУ первым чтением и блокировкой (тот же приём,
+    # что NIT-2 в `move_members`).
+    members = (
+        db.execute(sa.select(ContextMember).where(ContextMember.position_item_id.in_(unique_ids)))
+        .scalars()
+        .all()
+    )
+    found_by_id = {member.position_item_id: member for member in members}
+    missing = sorted(pid for pid in unique_ids if pid not in found_by_id)
+    if missing:
+        raise ContextOperationError(
+            REFUSE_INVALID_MEMBERSHIP,
+            f"позиции без членства (после блокировки): {missing}",
+            position_item_ids=missing,
+        )
+
+    not_conflicted = sorted(pid for pid, member in found_by_id.items() if member.conflict_at is None)
+    if not_conflicted:
+        raise ContextOperationError(
+            REFUSE_NOT_CONFLICTED,
+            f"членства без конфликта не могут принять решение цели: {not_conflicted}",
+            position_item_ids=not_conflicted,
+            count=len(not_conflicted),
+        )
+
+    for pid in unique_ids:
+        member = found_by_id[pid]
+        member.conflict_at = None
+        member.conflict_from_context_id = None
+    db.flush()
+
+    return len(unique_ids)

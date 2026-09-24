@@ -1005,6 +1005,7 @@ export const handlers = [
         unit_name: "Кв. метр",
       },
       moved_positions: 42,
+      warnings: [],
     });
   }),
   http.post("/api/v1/review/:id/kind", async ({ params, request }) => {
