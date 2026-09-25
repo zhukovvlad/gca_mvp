@@ -2114,12 +2114,35 @@ export interface WorkFamilyPatch {
   unit_name?: string | null;
 }
 
-export type SemanticKind = "WORK" | "SYSTEM" | "UNKNOWN";
-export type DecisionSource = "rule" | "manual";
-export type NameRole = "WORK" | "LOCATION_ONLY" | "GENERIC_WORK";
-export type SemanticState = "SUGGESTED" | "CONFIRMED" | "NOT_APPLICABLE";
-export type ComparabilityReason = "insufficient_description";
-export type FamilySource = "manual" | "suggestion";
+/**
+ * Значения закрытых множеств домена — рядом с типами, которые из них
+ * выведены (`(typeof X_VALUES)[number]`), а не отдельным литералом типа.
+ * Причина: спека §2.2 экрана «Семьи и контексты» требует подписи на КАЖДОЕ
+ * значение каждого типа (`frontend/src/pages/families/labels.ts` и его
+ * тест), а до этой правки у типов не было рантайм-массива значений — тест
+ * не мог перебрать значения типа, только угадать их литералом и разойтись с
+ * типом молча. Забытое здесь значение теперь не компилируется в
+ * `labels.ts` (`Record<T, string>` требует всех ключей `(typeof
+ * X_VALUES)[number]`) — тип и массив исключают рассинхронизацию по
+ * построению, а не соглашением.
+ */
+export const SEMANTIC_KIND_VALUES = ["WORK", "SYSTEM", "UNKNOWN"] as const;
+export type SemanticKind = (typeof SEMANTIC_KIND_VALUES)[number];
+
+export const DECISION_SOURCE_VALUES = ["rule", "manual"] as const;
+export type DecisionSource = (typeof DECISION_SOURCE_VALUES)[number];
+
+export const NAME_ROLE_VALUES = ["WORK", "LOCATION_ONLY", "GENERIC_WORK"] as const;
+export type NameRole = (typeof NAME_ROLE_VALUES)[number];
+
+export const SEMANTIC_STATE_VALUES = ["SUGGESTED", "CONFIRMED", "NOT_APPLICABLE"] as const;
+export type SemanticState = (typeof SEMANTIC_STATE_VALUES)[number];
+
+export const COMPARABILITY_REASON_VALUES = ["insufficient_description"] as const;
+export type ComparabilityReason = (typeof COMPARABILITY_REASON_VALUES)[number];
+
+export const FAMILY_SOURCE_VALUES = ["manual", "suggestion"] as const;
+export type FamilySource = (typeof FAMILY_SOURCE_VALUES)[number];
 
 /** Строка `GET /v1/semantic/contexts` (`crud/semantic.py::list_contexts`). */
 export interface ContextRow {
