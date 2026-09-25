@@ -2114,12 +2114,6 @@ export interface WorkFamilyPatch {
   unit_name?: string | null;
 }
 
-export interface MergeFamiliesResult {
-  source_family_id: number;
-  target_family_id: number;
-  moved_contexts: number;
-}
-
 export type SemanticKind = "WORK" | "SYSTEM" | "UNKNOWN";
 export type DecisionSource = "rule" | "manual";
 export type NameRole = "WORK" | "LOCATION_ONLY" | "GENERIC_WORK";

@@ -1371,6 +1371,8 @@ export function useUpdateWorkFamily() {
       semanticApi.updateFamily(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Имя семьи денормализовано в карточку контекста (`family_title`).
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья обновлена");
     },
     onError: toastApiError,
@@ -1383,6 +1385,8 @@ export function useActivateWorkFamily() {
     mutationFn: (id: number) => semanticApi.activateFamily(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Статус семьи виден в карточке и очереди контекстов.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья активирована");
     },
     onError: toastApiError,
@@ -1395,6 +1399,8 @@ export function useArchiveWorkFamily() {
     mutationFn: (id: number) => semanticApi.archiveFamily(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Статус семьи виден в карточке и очереди контекстов.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья архивирована");
     },
     onError: toastApiError,
@@ -1441,9 +1447,9 @@ export function useConfirmKind() {
   return useMutation({
     mutationFn: ({ contextId, input }: { contextId: number; input: ConfirmKindInput }) =>
       semanticApi.confirmKind(contextId, input),
-    onSuccess: (_, { contextId }) => {
+    onSuccess: (_, { contextId, input }) => {
       invalidateContext(qc, contextId);
-      toast.success("Вид подтверждён");
+      toast.success(input.unconfirm ? "Подтверждение вида снято" : "Вид подтверждён");
     },
     onError: toastApiError,
   });

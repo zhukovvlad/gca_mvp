@@ -68,13 +68,12 @@ class ContextFilters:
 #  Семьи
 # ---------------------------------------------------------------------------
 
-def list_families(db: Session, *, status: str | None, unit_id: int | None) -> list[dict]:
-    """Список семей с фильтром по статусу/единице и числом привязанных
-    контекстов у КАЖДОЙ (спека §2.10; план, задача 12, «Утверждения») — то
-    самое число, на которое ссылаются отказы правки единицы и
-    архивирования (`REFUSE_UNIT_CHANGE_WITH_LINKS`/`REFUSE_ARCHIVE_WITH_LINKS`,
-    `services/work_families.py`)."""
-    stmt = (
+def _family_row_select():
+    """Строитель строки семьи, общий для списка (`list_families`) и
+    сериализации ответов мутаций (`routers/semantic.py::_serialize_family`)
+    — одна форма на оба пути, а не два независимых набора колонок, которые
+    молча разойдутся при следующей правке."""
+    return (
         sa.select(
             WorkFamily.id,
             WorkFamily.title,
@@ -94,33 +93,54 @@ def list_families(db: Session, *, status: str | None, unit_id: int | None) -> li
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == WorkFamily.unit_id)
         .outerjoin(CatalogContext, CatalogContext.work_family_id == WorkFamily.id)
         .group_by(WorkFamily.id, UnitOfMeasure.code)
-        .order_by(WorkFamily.id)
     )
+
+
+def _family_row_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "title": row.title,
+        "unit_id": row.unit_id,
+        "unit_code": row.unit_code,
+        "definition": row.definition,
+        "status": row.status,
+        "seed_key": row.seed_key,
+        "created_by": row.created_by,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "activated_by": row.activated_by,
+        "activated_at": row.activated_at,
+        "archived_at": row.archived_at,
+        "context_count": row.context_count,
+    }
+
+
+def list_families(db: Session, *, status: str | None, unit_id: int | None) -> list[dict]:
+    """Список семей с фильтром по статусу/единице и числом привязанных
+    контекстов у КАЖДОЙ (спека §2.10; план, задача 12, «Утверждения») — то
+    самое число, на которое ссылаются отказы правки единицы и
+    архивирования (`REFUSE_UNIT_CHANGE_WITH_LINKS`/`REFUSE_ARCHIVE_WITH_LINKS`,
+    `services/work_families.py`)."""
+    stmt = _family_row_select().order_by(WorkFamily.id)
     if status is not None:
         stmt = stmt.where(WorkFamily.status == status)
     if unit_id is not None:
         stmt = stmt.where(WorkFamily.unit_id == unit_id)
 
     rows = db.execute(stmt).all()
-    return [
-        {
-            "id": row.id,
-            "title": row.title,
-            "unit_id": row.unit_id,
-            "unit_code": row.unit_code,
-            "definition": row.definition,
-            "status": row.status,
-            "seed_key": row.seed_key,
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-            "activated_by": row.activated_by,
-            "activated_at": row.activated_at,
-            "archived_at": row.archived_at,
-            "context_count": row.context_count,
-        }
-        for row in rows
-    ]
+    return [_family_row_to_dict(row) for row in rows]
+
+
+def get_family_row(db: Session, *, family_id: int) -> dict | None:
+    """Строка ОДНОЙ семьи, той же формы, что строка списка (`list_families`)
+    — переиспользуется сериализацией ответов мутаций
+    (`routers/semantic.py::_serialize_family`), чтобы `unit_code` и
+    `context_count` были в ответе `create`/`update`/`activate`/`archive`/
+    `merge`, а не только в `GET /families`."""
+    row = db.execute(_family_row_select().where(WorkFamily.id == family_id)).first()
+    if row is None:
+        return None
+    return _family_row_to_dict(row)
 
 
 # ---------------------------------------------------------------------------

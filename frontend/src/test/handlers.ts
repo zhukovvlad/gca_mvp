@@ -2329,7 +2329,13 @@ export const handlers = [
     handlerState.lastMergeFamiliesRequest = { id, targetFamilyId: body.target_family_id };
     const source = handlerState.workFamilies.find((f) => f.id === id);
     if (source) source.status = "archived";
-    return HttpResponse.json({ source_family_id: id, target_family_id: body.target_family_id, moved_contexts: 1 });
+    const target = handlerState.workFamilies.find((f) => f.id === body.target_family_id);
+    if (!target) {
+      return HttpResponse.json({ detail: `семья ${body.target_family_id} не найдена` }, { status: 404 });
+    }
+    // Ответ — строка ЦЕЛЕВОЙ семьи (форма списка), как у остальных мутаций.
+    target.context_count += 1;
+    return HttpResponse.json(target);
   }),
 
   http.get("/api/v1/semantic/contexts", ({ request }) => {

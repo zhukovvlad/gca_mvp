@@ -5,8 +5,11 @@ import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  useActivateWorkFamily,
+  useArchiveWorkFamily,
   useClearCategoryOverride,
   useClearRoundCategoryOverride,
+  useConfirmKind,
   useCreateContract,
   useDeleteContract,
   useImportJob,
@@ -19,6 +22,7 @@ import {
   useUpdateContractor,
   useUpdateObject,
   useUpdateRateClass,
+  useUpdateWorkFamily,
 } from "./queries";
 import { qk } from "./queryKeys";
 import {
@@ -742,5 +746,106 @@ describe("useMergeReview: тосты различают вид, а не нали
 
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+});
+
+/**
+ * Мутации семей, меняющие то, что показывают контексты (имя, статус
+ * активации, архивирование) — семья видна в карточке контекста
+ * (`family_title`), поэтому её правка обязана инвалидировать очередь и
+ * карточку контекстов, а не только список семей. `useMergeWorkFamilies` уже
+ * делает это (проверяется отдельно); здесь — три оставшиеся мутации.
+ */
+describe("useUpdateWorkFamily / useActivateWorkFamily / useArchiveWorkFamily: инвалидация контекстов каталога", () => {
+  it("правка семьи (имя) инвалидирует список семей и контексты каталога", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useUpdateWorkFamily(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ id: 2, input: { title: "Переименована" } });
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.workFamilies.all));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+
+  it("активация семьи инвалидирует список семей и контексты каталога", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useActivateWorkFamily(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync(1);
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.workFamilies.all));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+
+  it("архивирование семьи инвалидирует список семей и контексты каталога", async () => {
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useArchiveWorkFamily(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync(43);
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(qk.workFamilies.all));
+    expect(keys).toContain(JSON.stringify(qk.semanticContexts.all));
+  });
+});
+
+/**
+ * `useConfirmKind` обслуживает ОДНИМ маршрутом два разных действия оператора
+ * — подтверждение вида и снятие подтверждения (`unconfirm: true`, спека §2.5,
+ * таблица переходов). Тост обязан называть то действие, которое реально
+ * произошло, а не всегда один и тот же текст.
+ */
+describe("useConfirmKind: тост различает подтверждение и снятие", () => {
+  it("подтверждение вида показывает «Вид подтверждён»", async () => {
+    const successSpy = vi.spyOn(toast, "success");
+
+    const { result } = renderHook(() => useConfirmKind(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={createTestQueryClient()}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ contextId: 601, input: { kind: "WORK" } });
+    });
+
+    expect(successSpy).toHaveBeenCalledWith("Вид подтверждён");
+  });
+
+  it("снятие подтверждения показывает «Подтверждение вида снято»", async () => {
+    const successSpy = vi.spyOn(toast, "success");
+
+    const { result } = renderHook(() => useConfirmKind(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={createTestQueryClient()}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ contextId: 601, input: { unconfirm: true } });
+    });
+
+    expect(successSpy).toHaveBeenCalledWith("Подтверждение вида снято");
   });
 });

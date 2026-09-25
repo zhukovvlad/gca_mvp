@@ -37,7 +37,6 @@ import type {
   ImportJob,
   ManualKind,
   MergeContextsResult,
-  MergeFamiliesResult,
   MergeResult,
   MoveMembersInput,
   MoveMembersResult,
@@ -370,9 +369,9 @@ export const semanticApi = {
   archiveFamily: (id: number): Promise<WorkFamily> =>
     api.post<WorkFamily>(`/v1/semantic/families/${id}/archive`).then((r) => r.data),
 
-  mergeFamilies: (id: number, targetFamilyId: number): Promise<MergeFamiliesResult> =>
+  mergeFamilies: (id: number, targetFamilyId: number): Promise<WorkFamily> =>
     api
-      .post<MergeFamiliesResult>(`/v1/semantic/families/${id}/merge`, { target_family_id: targetFamilyId })
+      .post<WorkFamily>(`/v1/semantic/families/${id}/merge`, { target_family_id: targetFamilyId })
       .then((r) => r.data),
 
   listContexts: (params?: ContextsParams): Promise<ContextsPage> =>

@@ -408,7 +408,10 @@ class TestFamilies:
             f"{BASE}/families/{source.id}/merge", json={"target_family_id": target.id}
         )
         assert response.status_code == 200
-        assert response.json()["moved_contexts"] == 1
+        # Ответ — строка ЦЕЛЕВОЙ семьи (форма списка), не сводка `moved_contexts`
+        # (последняя проверяется через её `context_count`, задача формы ответа).
+        assert response.json()["id"] == target.id
+        assert response.json()["context_count"] == 1
 
         # Источник и цель совпадают — 422, код merge_same_family.
         same = admin_client.post(f"{BASE}/families/{target.id}/merge", json={"target_family_id": target.id})
@@ -605,6 +608,66 @@ class TestFamilies:
         rows = {row["id"]: row for row in listed.json()["items"]}
         assert rows[zero.id]["context_count"] == 0
         assert rows[many.id]["context_count"] == 2
+
+    def test_mutation_responses_match_list_row_shape(self, admin_client, db_session, factories):
+        """Ответ КАЖДОЙ мутации, отдающей семью (`create`/`update`/`activate`/
+        `archive`/`merge`), несёт РОВНО те же ключи, что строка списка
+        (`GET /families`) — независимый литерал множества ключей `WorkFamily`
+        (`frontend/src/types/domain.ts`), а не подмножество/надмножество.
+        `unit_code` и `context_count` при этом верны на семье с двумя
+        привязанными контекстами (`update`, затем цель `merge`)."""
+        family_row_keys = frozenset({
+            "id", "title", "unit_id", "unit_code", "definition", "status",
+            "seed_key", "created_by", "created_at", "updated_at",
+            "activated_by", "activated_at", "archived_at", "context_count",
+        })
+        m2 = "M2"
+
+        created = admin_client.post(
+            f"{BASE}/families",
+            json={"title": "Форма ответа мутации", "unit_name": m2, "definition": "Определение"},
+        )
+        assert created.status_code == 201
+        assert set(created.json().keys()) == family_row_keys
+        family_id = created.json()["id"]
+
+        activated = admin_client.post(f"{BASE}/families/{family_id}/activate")
+        assert activated.status_code == 200
+        assert set(activated.json().keys()) == family_row_keys
+
+        unit_id = _unit_id(db_session, m2)
+        for _ in range(2):
+            cp = factories.CatalogPositionFactory.create(unit_id=unit_id)
+            bucket = _bucket(db_session, catalog_position=cp)
+            ctx = _context(db_session, bucket)
+            ctx.work_family_id = family_id
+            ctx.family_source = "manual"
+            ctx.family_by = admin_client.user.id
+            ctx.family_at = _now()
+        db_session.flush()
+
+        updated = admin_client.patch(f"{BASE}/families/{family_id}", json={"title": "Переименовано в мутации"})
+        assert updated.status_code == 200
+        assert set(updated.json().keys()) == family_row_keys
+        assert updated.json()["unit_code"] == m2
+        assert updated.json()["context_count"] == 2
+
+        target = _family(db_session, admin_client.user, title="Цель слияния формы", unit_name=m2)
+        merged = admin_client.post(
+            f"{BASE}/families/{family_id}/merge", json={"target_family_id": target.id}
+        )
+        assert merged.status_code == 200
+        assert set(merged.json().keys()) == family_row_keys
+        assert merged.json()["unit_code"] == m2
+        assert merged.json()["context_count"] == 2
+
+        empty = admin_client.post(
+            f"{BASE}/families", json={"title": "Для архивации формы", "unit_name": None, "definition": None}
+        )
+        empty_id = empty.json()["id"]
+        archived = admin_client.post(f"{BASE}/families/{empty_id}/archive")
+        assert archived.status_code == 200
+        assert set(archived.json().keys()) == family_row_keys
 
 
 # ---------------------------------------------------------------------------

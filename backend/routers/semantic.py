@@ -202,21 +202,14 @@ def _read_domain_errors(fn, /, *args, **kwargs):
 #  Сериализация
 # ---------------------------------------------------------------------------
 
-def _serialize_family(family) -> dict:
-    return {
-        "id": family.id,
-        "title": family.title,
-        "unit_id": family.unit_id,
-        "definition": family.definition,
-        "status": family.status,
-        "seed_key": family.seed_key,
-        "created_by": family.created_by,
-        "created_at": family.created_at,
-        "updated_at": family.updated_at,
-        "activated_by": family.activated_by,
-        "activated_at": family.activated_at,
-        "archived_at": family.archived_at,
-    }
+def _serialize_family(db: Session, family_id: int) -> dict:
+    """Ответ мутации семьи — той же формы, что строка списка (`GET
+    /families`, `crud/semantic.py::list_families`): `unit_code` и
+    `context_count` читаются заново (мутация уже закоммичена к этому
+    вызову), а не берутся с ORM-объекта, на котором их нет."""
+    row = crud_semantic.get_family_row(db, family_id=family_id)
+    assert row is not None, f"семья {family_id} исчезла между мутацией и сериализацией ответа"
+    return row
 
 
 def _serialize_transfer_proposal(proposal) -> dict | None:
@@ -340,7 +333,7 @@ def create_family_route(
             db, title=body.title, unit_name=body.unit_name, definition=body.definition,
             actor_id=admin.id,
         )
-    return _serialize_family(family)
+    return _serialize_family(db, family.id)
 
 
 @router.patch("/families/{family_id}")
@@ -365,7 +358,7 @@ def update_family_route(
             family = work_families.set_unit(
                 db, family_id=family_id, unit_name=body.unit_name, actor_id=admin.id
             )
-    return _serialize_family(family)
+    return _serialize_family(db, family.id)
 
 
 @router.post("/families/{family_id}/activate")
@@ -376,7 +369,7 @@ def activate_family_route(
 ):
     with _mutating(db):
         family = work_families.activate_family(db, family_id=family_id, actor_id=admin.id)
-    return _serialize_family(family)
+    return _serialize_family(db, family.id)
 
 
 @router.post("/families/{family_id}/archive")
@@ -387,7 +380,7 @@ def archive_family_route(
 ):
     with _mutating(db):
         family = work_families.archive_family(db, family_id=family_id, actor_id=admin.id)
-    return _serialize_family(family)
+    return _serialize_family(db, family.id)
 
 
 @router.post("/families/{family_id}/merge")
@@ -398,11 +391,13 @@ def merge_families_route(
     db: Session = Depends(get_db),
 ):
     with _mutating(db):
-        moved = work_families.merge_families(
+        work_families.merge_families(
             db, source_family_id=family_id, target_family_id=body.target_family_id,
             actor_id=admin.id,
         )
-    return {"source_family_id": family_id, "target_family_id": body.target_family_id, "moved_contexts": moved}
+    # Ответ — строка ЦЕЛЕВОЙ (пережившей) семьи, той же формы, что список:
+    # источник ушёл в архив, дальнейшая работа продолжается с целью.
+    return _serialize_family(db, body.target_family_id)
 
 
 # ---------------------------------------------------------------------------
