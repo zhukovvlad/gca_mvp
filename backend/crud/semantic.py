@@ -30,7 +30,7 @@ ORM-связь не читается в цикле по строкам — ин�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
@@ -693,21 +693,18 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     # к лимиту отличает «ровно потолок» от «больше потолка» без отдельного
     # count-запроса. `member_count` остаётся ПОЛНЫМ (запрос выше), а не
     # длиной этого списка — список может быть обрезан, счётчик всегда точен.
+    # Строка членства — ТА ЖЕ, что строит `list_group_members` (спека §2.8
+    # п. 3): один общий строитель запроса (`_group_members_query`) и одна
+    # функция строки (`_member_row_to_dict`) на оба потребителя, а не два
+    # независимых набора колонок, которые молча разойдутся. Селектор «весь
+    # контекст, любое состояние» — та же форма, что берёт экран без
+    # `chapter_item_id`/`no_chapter` (весь контекст целиком).
     member_rows = db.execute(
-        sa.select(
-            ContextMember.position_item_id,
-            PositionItem.job_title_in_proposal.label("job_title"),
-            Lot.estimate_id,
-            ContextMember.membership_state,
-            ContextMember.conflict_at,
-            ContextMember.conflict_from_context_id,
-            ContextMember.routed_by,
+        _group_members_query(
+            context_id=context_id,
+            selector=GroupSelector(chapter_item_id=None, no_chapter=False),
+            state="all",
         )
-        .select_from(ContextMember)
-        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
-        .join(Proposal, Proposal.id == PositionItem.proposal_id)
-        .join(Lot, Lot.id == Proposal.lot_id)
-        .where(ContextMember.context_id == context_id)
         .order_by(ContextMember.position_item_id)
         .limit(CONTEXT_MEMBERS_PAGE_CAP + 1)
     ).all()
@@ -767,18 +764,7 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
             }
             for row in bucket_context_rows
         ],
-        "members": [
-            {
-                "position_item_id": row.position_item_id,
-                "job_title": row.job_title,
-                "estimate_id": row.estimate_id,
-                "membership_state": row.membership_state,
-                "conflict_at": row.conflict_at,
-                "conflict_from_context_id": row.conflict_from_context_id,
-                "routed_by": row.routed_by,
-            }
-            for row in member_rows
-        ],
+        "members": [_member_row_to_dict(row) for row in member_rows],
         "members_truncated": members_truncated,
         "events": [
             {
@@ -791,3 +777,171 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
             for event in events
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+#  Членства группы — постраничный список и полный набор id (спека
+#  `2026-09-25-families-screen-design.md` §2.8 п. 3)
+# ---------------------------------------------------------------------------
+
+#: Состояние членства, по которому фильтрует список группы (спека §2.8 п. 3):
+#: `stale` — `membership_state = STALE`, `conflict` — `conflict_at IS NOT
+#: NULL`. Оси независимы (докстрока модуля выше про три ЖЕ независимых
+#: признака очереди) — одно и то же членство может быть и STALE, и
+#: конфликтным разом, а фильтр здесь выбирает РОВНО одну из осей, не обе.
+GroupState = Literal["all", "stale", "conflict"]
+
+
+@dataclass(frozen=True)
+class GroupSelector:
+    """Группа членств контекста — по ближайшему разделу ЕЁ ПОЗИЦИИ (тот же
+    ключ, что группирует `member_paths`, спека §2.8 п. 2, 3):
+    `chapter_item_id=X` — только позиции раздела X; `no_chapter=True` —
+    только позиции БЕЗ раздела (`chapter_item_id IS NULL`, схемой
+    допустимо); ни то ни другое (`chapter_item_id=None`, `no_chapter=False`)
+    — ВЕСЬ контекст, тем же путём экран берёт id всех конфликтных членств
+    для «Принять решение цели» (спека §2.8 п. 3). Оба разом — противоречие
+    («раздел X» и «без раздела» одновременно невозможны); роутер отвергает
+    такой вход `422` ДО вызова этого модуля, здесь предполагается уже
+    провалидированный вход."""
+
+    chapter_item_id: int | None
+    no_chapter: bool
+
+
+def _group_base_query(*, context_id: int, selector: GroupSelector, state: GroupState):
+    """Базовый фильтр членств ОДНОЙ группы контекста — `context_id`,
+    ближайший раздел позиции (`GroupSelector`) и состояние (`GroupState`) —
+    единственное место, где эти три условия записаны. Колонка всего одна,
+    `position_item_id`: `list_group_member_ids` использует запрос НАПРЯМУЮ
+    (список id не нуждается в join'ах на `Proposal`/`Lot` — спека §2.8 п. 3,
+    «id — восемь байт»), `_group_members_query` достраивает поверх него
+    строку членства карточки/`list_group_members` (см. её докстроку)."""
+    stmt = (
+        sa.select(ContextMember.position_item_id)
+        .select_from(ContextMember)
+        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+        .where(ContextMember.context_id == context_id)
+    )
+    if selector.chapter_item_id is not None:
+        stmt = stmt.where(PositionItem.chapter_item_id == selector.chapter_item_id)
+    elif selector.no_chapter:
+        stmt = stmt.where(PositionItem.chapter_item_id.is_(None))
+    if state == "stale":
+        stmt = stmt.where(ContextMember.membership_state == MembershipState.STALE.value)
+    elif state == "conflict":
+        stmt = stmt.where(ContextMember.conflict_at.isnot(None))
+    return stmt
+
+
+def _group_members_query(*, context_id: int, selector: GroupSelector, state: GroupState):
+    """Строка членства ОДНОЙ группы — ТА ЖЕ форма колонок, что карточка
+    строит для `members[]` (`context_card` выше) и что отдаёт
+    `list_group_members` (спека §2.8 п. 3): один набор колонок на оба
+    потребителя, а не два независимых, которые молча разойдутся. Достраивает
+    `_group_base_query` join'ами на `Proposal`/`Lot` (название работы по
+    смете, id сметы) и колонками состояния членства — `join`, не `outerjoin`:
+    у членства всегда есть позиция, у позиции всегда предложение и лот
+    (та же гарантия, что у исходного запроса `context_card`, из которого
+    этот код вынесен без изменения формы)."""
+    return (
+        _group_base_query(context_id=context_id, selector=selector, state=state)
+        .add_columns(
+            PositionItem.job_title_in_proposal.label("job_title"),
+            Lot.estimate_id,
+            ContextMember.membership_state,
+            ContextMember.conflict_at,
+            ContextMember.conflict_from_context_id,
+            ContextMember.routed_by,
+        )
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+    )
+
+
+def _member_row_to_dict(row) -> dict:
+    """Форма строки членства — та же, что была у `members[]` карточки ДО
+    этой задачи, и что несёт `list_group_members` (спека §2.8 п. 3): одна
+    функция на оба потребителя запроса `_group_members_query`."""
+    return {
+        "position_item_id": row.position_item_id,
+        "job_title": row.job_title,
+        "estimate_id": row.estimate_id,
+        "membership_state": row.membership_state,
+        "conflict_at": row.conflict_at,
+        "conflict_from_context_id": row.conflict_from_context_id,
+        "routed_by": row.routed_by,
+    }
+
+
+def _context_exists_and_total(db: Session, *, context_id: int, query) -> tuple[bool, int]:
+    """Существование контекста и итог фильтра ОДНИМ SELECT (спека §2.8 п. 3:
+    «оба — ровно два запроса»): скаляр «контекст существует» и скаляр
+    `COUNT(*)` подзапроса `query` — оба вложенными скалярными подзапросами
+    БЕЗ отдельного `FROM` у внешнего запроса (`SELECT (subq1), (subq2)`),
+    то есть один текст SQL, один round-trip. Решение о 404 входит в этот же
+    запрос: контекста нет — вызывающий код возвращает `None` БЕЗ второго
+    запроса, а не тратит его на пустую страницу."""
+    row = db.execute(
+        sa.select(
+            sa.select(sa.literal(1))
+            .where(CatalogContext.id == context_id)
+            .exists()
+            .label("context_exists"),
+            sa.select(sa.func.count())
+            .select_from(query.subquery())
+            .scalar_subquery()
+            .label("total"),
+        )
+    ).one()
+    return row.context_exists, row.total
+
+
+def list_group_members(
+    db: Session, *, context_id: int, selector: GroupSelector, state: GroupState,
+    limit: int, offset: int,
+) -> dict | None:
+    """Постраничный список членств ОДНОЙ группы — спека §2.8 п. 3: галочка
+    группы на экране раскрывает её позиции постранично ИМЕННО этим запросом,
+    а не обрезанным списком карточки (`CONTEXT_MEMBERS_PAGE_CAP` выше).
+
+    РОВНО два запроса, включая решение о 404 (план, Task 4, «Утверждения»):
+    первый — `_context_exists_and_total` (существование контекста и `total`
+    ОДНИМ SELECT, см. её докстроку); контекста нет — `None` без второго
+    запроса, роутер переводит в `404`. Второй — сама страница,
+    `ORDER BY position_item_id` (тот же порядок, что у представителя
+    карточки), `LIMIT`/`OFFSET`.
+    """
+    query = _group_members_query(context_id=context_id, selector=selector, state=state)
+    context_exists, total = _context_exists_and_total(db, context_id=context_id, query=query)
+    if not context_exists:
+        return None
+
+    rows = db.execute(
+        query.order_by(ContextMember.position_item_id).offset(offset).limit(limit)
+    ).all()
+    return {
+        "items": [_member_row_to_dict(row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def list_group_member_ids(
+    db: Session, *, context_id: int, selector: GroupSelector, state: GroupState,
+) -> dict | None:
+    """Полный список id членств группы, БЕЗ обрезки (спека §2.8 п. 3: тот же
+    набор, что галочка группы передаёт целиком в «Разделить…»/«Перенести…»,
+    включая позиции, не загруженные на экран, — их тела уже принимают
+    список произвольной длины). Та же дисциплина «ровно два запроса,
+    включая 404», что `list_group_members` (см. её докстроку и
+    `_context_exists_and_total`); второй запрос здесь — список id, не
+    страница, и он ничем не ограничен."""
+    query = _group_base_query(context_id=context_id, selector=selector, state=state)
+    context_exists, total = _context_exists_and_total(db, context_id=context_id, query=query)
+    if not context_exists:
+        return None
+
+    ids = db.execute(query.order_by(ContextMember.position_item_id)).scalars().all()
+    return {"position_item_ids": list(ids), "total": total}

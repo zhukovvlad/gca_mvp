@@ -1,6 +1,8 @@
-"""API семантического контура — восемнадцать маршрутов под `/api/v1/semantic`,
+"""API семантического контура — двадцать маршрутов под `/api/v1/semantic`,
 все под правом `admin` (спека `2026-09-22-catalog-families-design.md` §2.7,
-§2.10; план, задача 12).
+§2.10; план, задача 12; чтение членств группы — план
+`2026-09-25-families-screen.md`, задача 4, спека
+`2026-09-25-families-screen-design.md` §2.8 п. 3).
 
 HTTP-слой поверх готовых сервисов задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) — они не
@@ -446,6 +448,64 @@ def context_card_route(
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
     return card
+
+
+def _group_selector(chapter_item_id: int | None, no_chapter: bool) -> crud_semantic.GroupSelector:
+    """`chapter_item_id` и `no_chapter=True` вместе — противоречие («раздел
+    X» и «без раздела» разом невозможны, спека §2.8 п. 3) — `422`
+    НЕКОДИРОВАННЫМ текстом, тем же путём, что и другие структурно неверные
+    входы этого роутера (например, `split` с битым правилом)."""
+    if chapter_item_id is not None and no_chapter:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "chapter_item_id и no_chapter=true нельзя передавать одновременно.",
+        )
+    return crud_semantic.GroupSelector(chapter_item_id=chapter_item_id, no_chapter=no_chapter)
+
+
+@router.get("/contexts/{context_id}/members")
+def list_group_members_route(
+    context_id: int,
+    chapter_item_id: int | None = Query(default=None),
+    no_chapter: bool = Query(default=False),
+    state: crud_semantic.GroupState = Query(default="all"),
+    limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Постраничный список членств ОДНОЙ группы контекста (спека §2.8 п. 3):
+    галочка группы карточки раскрывает её позиции ИМЕННО этим запросом, а
+    не обрезанным списком карточки. Без `chapter_item_id`/`no_chapter` —
+    группа «весь контекст»."""
+    selector = _group_selector(chapter_item_id, no_chapter)
+    result = crud_semantic.list_group_members(
+        db, context_id=context_id, selector=selector, state=state, limit=limit, offset=offset,
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
+    return result
+
+
+@router.get("/contexts/{context_id}/member-ids")
+def list_group_member_ids_route(
+    context_id: int,
+    chapter_item_id: int | None = Query(default=None),
+    no_chapter: bool = Query(default=False),
+    state: crud_semantic.GroupState = Query(default="all"),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Полный список id членств группы, БЕЗ обрезки и без `limit`/`offset`
+    (спека §2.8 п. 3): тот же набор, что галочка группы передаёт целиком в
+    «Разделить…»/«Перенести…»."""
+    selector = _group_selector(chapter_item_id, no_chapter)
+    result = crud_semantic.list_group_member_ids(
+        db, context_id=context_id, selector=selector, state=state,
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
+    return result
 
 
 # ---------------------------------------------------------------------------

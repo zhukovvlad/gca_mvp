@@ -1,5 +1,7 @@
-"""API семантического контура — восемнадцать маршрутов `/api/v1/semantic`
-(спека `2026-09-22-catalog-families-design.md` §2.10; план, задача 12).
+"""API семантического контура — двадцать маршрутов `/api/v1/semantic`
+(спека `2026-09-22-catalog-families-design.md` §2.10; план, задача 12; чтение
+членств группы — план `2026-09-25-families-screen.md`, задача 4, спека
+`2026-09-25-families-screen-design.md` §2.8 п. 3).
 
 Сервисы задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) сами не
@@ -8,9 +10,9 @@
 `list_contexts`.
 
 Помощники (`_proposal`, `_chapter`, `_position`, `_leaf_category_ids`,
-`_bucket`, `_context`, `_member`, `_rule`, `_family`) — ЛОКАЛЬНАЯ копия
-(докстрока `test_context_operations.py`: наборы помощников тестов друг у
-друга не импортируют).
+`_bucket`, `_context`, `_member`, `_rule`, `_family`, `_bulk_members`) —
+ЛОКАЛЬНАЯ копия (докстрока `test_context_operations.py`: наборы помощников
+тестов друг у друга не импортируют).
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ from models import (
     FamilyStatus,
     MembershipState,
     NameRole,
+    PositionItem,
     RoutedBy,
     SemanticKind,
     SemanticState,
@@ -54,11 +57,13 @@ pytestmark = pytest.mark.integration
 BASE = "/api/v1/semantic"
 
 # ---------------------------------------------------------------------------
-#  Литерал восемнадцати маршрутов плана (Task 12, Interfaces) — НЕЗАВИСИМЫЙ
-#  от `app.routes`: перебор прав обязан ловить забытый `require_admin` на
-#  ОДНОМ маршруте, а не читать список из того же дерева, которое проверяет.
+#  Литерал двадцати маршрутов плана (Task 12, Interfaces; + два маршрута
+#  чтения членств группы, план `2026-09-25-families-screen.md`, задача 4) —
+#  НЕЗАВИСИМЫЙ от `app.routes`: перебор прав обязан ловить забытый
+#  `require_admin` на ОДНОМ маршруте, а не читать список из того же дерева,
+#  которое проверяет.
 # ---------------------------------------------------------------------------
-EIGHTEEN_ROUTES: tuple[tuple[str, str], ...] = (
+TWENTY_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/semantic/families"),
     ("POST", "/api/v1/semantic/families"),
     ("PATCH", "/api/v1/semantic/families/1"),
@@ -73,12 +78,14 @@ EIGHTEEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/v1/semantic/contexts/1/split"),
     ("POST", "/api/v1/semantic/contexts/1/merge"),
     ("POST", "/api/v1/semantic/contexts/1/archive"),
+    ("GET", "/api/v1/semantic/contexts/1/members"),
+    ("GET", "/api/v1/semantic/contexts/1/member-ids"),
     ("POST", "/api/v1/semantic/members/move"),
     ("GET", "/api/v1/semantic/members/1/transfer-proposal"),
     ("POST", "/api/v1/semantic/members/1/transfer"),
     ("POST", "/api/v1/semantic/members/accept-target-decision"),
 )
-assert len(EIGHTEEN_ROUTES) == 18
+assert len(TWENTY_ROUTES) == 20
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +233,55 @@ def _family(db, admin, *, title="Семья", unit_name=None, definition="Опр
     return fam
 
 
+def _bulk_members(db, factories, *, context, count: int) -> list[int]:
+    """`count` строк-позиций (без раздела) и членств контекста ОДНИМ
+    `executemany` на таблицу (`sa.insert`, core, не ORM-фабрика на штуку) —
+    план, Task 4, «Проверка»: группа из 520 нужна нескольким тестам, и
+    `factories.PositionItemFactory.create` в цикле флашит на КАЖДУЮ строку,
+    заметно медленнее core-вставки. Раздела у позиций нет — эти тесты берут
+    группу «весь контекст» (`GroupSelector(None, False)`), а не конкретный
+    раздел. Возвращает id новых позиций (порядок вставки — по возрастанию,
+    БД сама назначает id по возрастающей последовательности)."""
+    proposal = _proposal(factories)
+    db.execute(
+        sa.insert(PositionItem),
+        [
+            {
+                "proposal_id": proposal.id,
+                "position_key_in_proposal": f"bulk_{i}",
+                "job_title_in_proposal": f"Массовая позиция {i}",
+                "is_chapter": False,
+            }
+            for i in range(count)
+        ],
+    )
+    position_ids = list(
+        db.execute(
+            sa.select(PositionItem.id)
+            .where(PositionItem.proposal_id == proposal.id)
+            .order_by(PositionItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(position_ids) == count
+    db.execute(
+        sa.insert(ContextMember),
+        [
+            {
+                "position_item_id": pid,
+                "context_id": context.id,
+                "bucket_id": context.bucket_id,
+                "membership_state": MembershipState.CURRENT.value,
+                "routed_by": RoutedBy.default.value,
+            }
+            for pid in position_ids
+        ],
+    )
+    db.flush()
+    return position_ids
+
+
 @contextlib.contextmanager
 def _capturing_sql(session):
     """Перехватывает каждый SQL-текст, реально отправленный на этом
@@ -283,10 +339,10 @@ def _collect_semantic_routes() -> set[tuple[str, str]]:
     return {(method, path) for method, path in all_routes if path.startswith(BASE)}
 
 
-#: Та же восемнадцать маршрутов, но ШАБЛОНАМИ пути — так их несёт
-#: `app.routes` (`{family_id}`, а не подставленный `1` из EIGHTEEN_ROUTES,
-#: который existует ради HTTP-вызовов теста прав).
-EIGHTEEN_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+#: Те же двадцать маршрутов, но ШАБЛОНАМИ пути — так их несёт
+#: `app.routes` (`{family_id}`, а не подставленный `1` из TWENTY_ROUTES,
+#: который существует ради HTTP-вызовов теста прав).
+TWENTY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", f"{BASE}/families"),
         ("POST", f"{BASE}/families"),
@@ -302,37 +358,40 @@ EIGHTEEN_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{BASE}/contexts/{{context_id}}/split"),
         ("POST", f"{BASE}/contexts/{{context_id}}/merge"),
         ("POST", f"{BASE}/contexts/{{context_id}}/archive"),
+        ("GET", f"{BASE}/contexts/{{context_id}}/members"),
+        ("GET", f"{BASE}/contexts/{{context_id}}/member-ids"),
         ("POST", f"{BASE}/members/move"),
         ("GET", f"{BASE}/members/{{position_item_id}}/transfer-proposal"),
         ("POST", f"{BASE}/members/{{position_item_id}}/transfer"),
         ("POST", f"{BASE}/members/accept-target-decision"),
     }
 )
-assert len(EIGHTEEN_ROUTE_TEMPLATES) == 18
+assert len(TWENTY_ROUTE_TEMPLATES) == 20
 
 
-def test_route_set_under_prefix_equals_eighteen_literal():
+def test_route_set_under_prefix_equals_twenty_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
-    равно литералу восемнадцати (план, задача 12, «Утверждения») —
+    равно литералу двадцати (план, задача 12, «Утверждения»; два маршрута
+    членств группы — план `2026-09-25-families-screen.md`, задача 4) —
     единственное место, где такое утверждение осмысленно (задача 6 роутера
     ещё не заводила); маршрута восстановления архивного контекста
     (`…/restore`) в нём нет."""
     collected = _collect_semantic_routes()
-    assert collected == EIGHTEEN_ROUTE_TEMPLATES
+    assert collected == TWENTY_ROUTE_TEMPLATES
     assert not any(path.endswith("/restore") for _method, path in collected)
 
 
 # ---------------------------------------------------------------------------
-#  Права: КАЖДЫЙ из восемнадцати маршрутов
+#  Права: КАЖДЫЙ из двадцати маршрутов
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("method,path", EIGHTEEN_ROUTES)
+@pytest.mark.parametrize("method,path", TWENTY_ROUTES)
 def test_member_rejected_on_every_route(method, path, member_client):
     response = member_client.request(method, path)
     assert response.status_code == 403, f"{method} {path} -> {response.status_code}"
 
 
-@pytest.mark.parametrize("method,path", EIGHTEEN_ROUTES)
+@pytest.mark.parametrize("method,path", TWENTY_ROUTES)
 def test_unauthenticated_rejected_on_every_route(method, path, anon_client):
     response = anon_client.request(method, path)
     assert response.status_code in (401, 403), f"{method} {path} -> {response.status_code}"
@@ -1478,6 +1537,16 @@ class TestContextCard:
         for position in reversed(positions):
             _member(db_session, position, ctx)
             db_session.flush()
+        # Обратный порядок членств сам по себе не ловит снятый `ORDER BY`:
+        # план может вести соединение от `position_items`, чья куча лежит по
+        # возрастанию id. `UPDATE` двух наименьших позиций уносит их новые
+        # версии в конец кучи — без `ORDER BY` они вышли бы последними.
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id.in_(sorted(p.id for p in positions)[:2]))
+            .values(job_title_in_proposal=PositionItem.job_title_in_proposal + " (правка)")
+        )
+        db_session.flush()
 
         body = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
         expected = sorted(p.id for p in positions)[:2]
@@ -2285,6 +2354,448 @@ class TestContextCard:
         count_large = len(statements_large)
 
         assert count_small == count_large, (count_small, count_large)
+
+
+# ---------------------------------------------------------------------------
+#  Членства группы — `GET /members`, `GET /member-ids` (спека
+#  `2026-09-25-families-screen-design.md` §2.8 п. 3; план
+#  `2026-09-25-families-screen.md`, задача 4)
+# ---------------------------------------------------------------------------
+
+class TestGroupMembers:
+    def test_chapter_no_chapter_and_whole_context_selectors(
+        self, admin_client, db_session, factories
+    ):
+        """Один контекст с позициями под ДВУМЯ разделами и одной БЕЗ
+        раздела: `chapter_item_id=A` отдаёт только позиции A, `no_chapter=
+        true` — только без раздела, ни то ни другое — ВЕСЬ контекст (план,
+        Task 4, «Утверждения»)."""
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        chapter_a = _chapter(factories, proposal, title="Раздел А членств")
+        chapter_b = _chapter(factories, proposal, title="Раздел Б членств")
+        pos_a1 = _position(factories, proposal, chapter=chapter_a, catalog_position=cp, title="А-1")
+        pos_a2 = _position(factories, proposal, chapter=chapter_a, catalog_position=cp, title="А-2")
+        pos_b = _position(factories, proposal, chapter=chapter_b, catalog_position=cp, title="Б-1")
+        pos_none = _position(factories, proposal, catalog_position=cp, title="Без раздела членств")
+        for pos in (pos_a1, pos_a2, pos_b, pos_none):
+            _member(db_session, pos, ctx)
+        db_session.flush()
+
+        by_chapter_a = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"chapter_item_id": chapter_a.id}
+        )
+        assert by_chapter_a.status_code == 200
+        body_a = by_chapter_a.json()
+        assert body_a["total"] == 2
+        assert {m["position_item_id"] for m in body_a["items"]} == {pos_a1.id, pos_a2.id}
+
+        by_no_chapter = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"no_chapter": True}
+        )
+        assert by_no_chapter.status_code == 200
+        body_none = by_no_chapter.json()
+        assert body_none["total"] == 1
+        assert [m["position_item_id"] for m in body_none["items"]] == [pos_none.id]
+
+        whole = admin_client.get(f"{BASE}/contexts/{ctx.id}/members")
+        assert whole.status_code == 200
+        body_whole = whole.json()
+        assert body_whole["total"] == 4
+        assert {m["position_item_id"] for m in body_whole["items"]} == {
+            pos_a1.id, pos_a2.id, pos_b.id, pos_none.id,
+        }
+
+    def test_member_ids_chapter_filter_matches_members_filter(
+        self, admin_client, db_session, factories
+    ):
+        """`member-ids` фильтрует ТЕМИ ЖЕ условиями, что `members` — тот же
+        набор, что галочка группы передаёт в «Разделить…»/«Перенести…»
+        (спека §2.8 п. 3)."""
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        chapter = _chapter(factories, proposal, title="Раздел для member-ids")
+        pos_in = _position(factories, proposal, chapter=chapter, catalog_position=cp, title="В разделе")
+        pos_out = _position(factories, proposal, catalog_position=cp, title="Без раздела для member-ids")
+        _member(db_session, pos_in, ctx)
+        _member(db_session, pos_out, ctx)
+        db_session.flush()
+
+        response = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/member-ids", params={"chapter_item_id": chapter.id}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["position_item_ids"] == [pos_in.id]
+
+    @pytest.mark.parametrize("path_suffix", ["members", "member-ids"])
+    def test_chapter_and_no_chapter_together_gives_422(
+        self, admin_client, path_suffix
+    ):
+        """`chapter_item_id` и `no_chapter=true` вместе — противоречие
+        («раздел X» и «без раздела» разом невозможны, спека §2.8 п. 3) —
+        `422` на ОБОИХ маршрутах. Контекст нарочно НЕСУЩЕСТВУЮЩИЙ: вход
+        отвергается ДО обращения к crud (`_group_selector` роутера), значит
+        `422`, а не `404`, независимо от того, существует ли контекст."""
+        response = admin_client.get(
+            f"{BASE}/contexts/999999999/{path_suffix}",
+            params={"chapter_item_id": 1, "no_chapter": True},
+        )
+        assert response.status_code == 422
+
+    def test_state_filters_are_independent_axes(self, admin_client, db_session, factories):
+        """`state=stale` фильтрует `membership_state=STALE`, `state=conflict`
+        — `conflict_at IS NOT NULL` (спека §2.8 п. 3) — независимые оси:
+        членство, отмеченное ОБЕИМИ, входит в оба фильтра, а «ни то ни
+        другое» — ни в один."""
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+
+        pos_both = _position(factories, proposal, catalog_position=cp, title="И то и другое")
+        _member(
+            db_session, pos_both, ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+        )
+        pos_stale_only = _position(factories, proposal, catalog_position=cp, title="Только устарело")
+        _member(db_session, pos_stale_only, ctx, membership_state=MembershipState.STALE.value)
+        pos_conflict_only = _position(factories, proposal, catalog_position=cp, title="Только конфликт")
+        _member(
+            db_session, pos_conflict_only, ctx,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+        )
+        pos_neither = _position(factories, proposal, catalog_position=cp, title="Ни то ни другое")
+        _member(db_session, pos_neither, ctx)
+        db_session.flush()
+
+        stale = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"state": "stale"}
+        ).json()
+        assert {m["position_item_id"] for m in stale["items"]} == {pos_both.id, pos_stale_only.id}
+
+        conflict = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"state": "conflict"}
+        ).json()
+        assert {m["position_item_id"] for m in conflict["items"]} == {
+            pos_both.id, pos_conflict_only.id,
+        }
+
+        everything = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"state": "all"}
+        ).json()
+        assert everything["total"] == 4
+
+    def test_member_ids_full_list_no_truncation_on_group_of_520(
+        self, admin_client, db_session, factories
+    ):
+        """Группа в тысячи позиций — `member-ids` отдаёт ПОЛНЫЙ список без
+        обрезки (спека §2.8 п. 3: тот же приём, что снял
+        `CONTEXT_MEMBERS_PAGE_CAP=500` карточки). 520 — специально БОЛЬШЕ
+        старого потолка карточки, план, Task 4, «Проверка»."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+        position_ids = _bulk_members(db_session, factories, context=ctx, count=520)
+
+        response = admin_client.get(f"{BASE}/contexts/{ctx.id}/member-ids")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 520
+        assert len(body["position_item_ids"]) == 520
+        assert sorted(body["position_item_ids"]) == sorted(position_ids)
+
+    def test_members_paginated_last_page_of_group_of_520(
+        self, admin_client, db_session, factories
+    ):
+        """`limit=100, offset=500` на группе из 520 — 20 строк, `total=520`,
+        порядок по `position_item_id` (план, Task 4, «Утверждения»): точные
+        id страницы, не только её длина."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+        position_ids = _bulk_members(db_session, factories, context=ctx, count=520)
+        expected_page = sorted(position_ids)[500:520]
+
+        response = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"limit": 100, "offset": 500}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 520
+        assert len(body["items"]) == 20
+        assert [m["position_item_id"] for m in body["items"]] == expected_page
+        assert (body["limit"], body["offset"]) == (100, 500)
+
+        # Последняя страница короче ЛЮБОГО limit >= 20, поэтому сама по себе
+        # не видит, дошёл ли `limit` до запроса: полная страница из середины —
+        # ровно 100 id, не умолчание 50.
+        middle = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"limit": 100, "offset": 100}
+        ).json()
+        assert [m["position_item_id"] for m in middle["items"]] == sorted(position_ids)[100:200]
+
+    def test_members_nonexistent_context_gives_404(self, admin_client):
+        response = admin_client.get(f"{BASE}/contexts/999999999/members")
+        assert response.status_code == 404
+
+    def test_member_ids_nonexistent_context_gives_404(self, admin_client):
+        response = admin_client.get(f"{BASE}/contexts/999999999/member-ids")
+        assert response.status_code == 404
+
+    def test_members_exactly_two_statements_on_small_and_large_group(
+        self, admin_client, db_session, factories
+    ):
+        """Ровно 2 запроса на группах из 5 и из 520 позиций (план, Task 4,
+        «Утверждения»): счётчик+существование одним SELECT и страница —
+        число не растёт вместе с размером группы."""
+        cp_small = factories.CatalogPositionFactory.create()
+        bucket_small = _bucket(db_session, catalog_position=cp_small)
+        ctx_small = _context(db_session, bucket_small)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx_small, count=5)
+
+        with _capturing_sql(db_session) as statements_small:
+            response_small = admin_client.get(f"{BASE}/contexts/{ctx_small.id}/members")
+        assert response_small.status_code == 200
+        assert len(statements_small) == 2, statements_small
+
+        cp_large = factories.CatalogPositionFactory.create()
+        bucket_large = _bucket(db_session, catalog_position=cp_large)
+        ctx_large = _context(db_session, bucket_large)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx_large, count=520)
+
+        with _capturing_sql(db_session) as statements_large:
+            response_large = admin_client.get(f"{BASE}/contexts/{ctx_large.id}/members")
+        assert response_large.status_code == 200
+        assert len(statements_large) == 2, statements_large
+
+    def test_member_ids_exactly_two_statements_on_small_and_large_group(
+        self, admin_client, db_session, factories
+    ):
+        """То же для `member-ids` (план, Task 4, «Утверждения»)."""
+        cp_small = factories.CatalogPositionFactory.create()
+        bucket_small = _bucket(db_session, catalog_position=cp_small)
+        ctx_small = _context(db_session, bucket_small)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx_small, count=5)
+
+        with _capturing_sql(db_session) as statements_small:
+            response_small = admin_client.get(f"{BASE}/contexts/{ctx_small.id}/member-ids")
+        assert response_small.status_code == 200
+        assert len(statements_small) == 2, statements_small
+
+        cp_large = factories.CatalogPositionFactory.create()
+        bucket_large = _bucket(db_session, catalog_position=cp_large)
+        ctx_large = _context(db_session, bucket_large)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx_large, count=520)
+
+        with _capturing_sql(db_session) as statements_large:
+            response_large = admin_client.get(f"{BASE}/contexts/{ctx_large.id}/member-ids")
+        assert response_large.status_code == 200
+        assert len(statements_large) == 2, statements_large
+
+    @pytest.mark.parametrize("path_suffix", ["members", "member-ids"])
+    @pytest.mark.parametrize("shape", ["empty_context", "empty_group"])
+    def test_existing_context_with_empty_group_gives_200_total_zero_not_404(
+        self, admin_client, db_session, factories, path_suffix, shape
+    ):
+        """Вытесняемое состояние ветки `404`: контекст СУЩЕСТВУЕТ, но группа
+        пуста — `200` с `total = 0` и пустым списком, а не `404`. Два входа:
+        контекст без единого членства (ловит «существование» по членствам,
+        а не по `catalog_contexts`) и контекст с членством, у которого
+        выбранный раздел пуст (ловит «нет строк — значит нет контекста»)."""
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        empty_chapter = _chapter(factories, proposal, title="Пустой раздел группы")
+        params = {}
+        if shape == "empty_group":
+            pos = _position(factories, proposal, catalog_position=cp, title="Вне пустого раздела")
+            _member(db_session, pos, ctx)
+            params = {"chapter_item_id": empty_chapter.id}
+        db_session.flush()
+
+        response = admin_client.get(f"{BASE}/contexts/{ctx.id}/{path_suffix}", params=params)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 0
+        listed = body["items"] if path_suffix == "members" else body["position_item_ids"]
+        assert listed == []
+
+    @pytest.mark.parametrize("path_suffix", ["members", "member-ids"])
+    def test_chapter_and_no_chapter_together_gives_422_on_existing_context(
+        self, admin_client, db_session, factories, path_suffix
+    ):
+        """`422` на противоречивом селекторе — и у СУЩЕСТВУЮЩЕГО контекста с
+        членством в выбранном разделе: без проверки роутера crud молча взял
+        бы `chapter_item_id` и ответил `200`. Каждый селектор ПО ОТДЕЛЬНОСТИ
+        на том же контексте — не `422`."""
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        chapter = _chapter(factories, proposal, title="Раздел для 422")
+        pos = _position(factories, proposal, chapter=chapter, catalog_position=cp, title="В разделе 422")
+        _member(db_session, pos, ctx)
+        db_session.flush()
+
+        url = f"{BASE}/contexts/{ctx.id}/{path_suffix}"
+        both = admin_client.get(url, params={"chapter_item_id": chapter.id, "no_chapter": True})
+        assert both.status_code == 422
+        assert admin_client.get(url, params={"chapter_item_id": chapter.id}).status_code == 200
+        assert admin_client.get(url, params={"no_chapter": True}).status_code == 200
+
+    def test_member_ids_forwards_no_chapter_and_state(self, admin_client, db_session, factories):
+        """`member-ids` передаёт в фильтр ОБА параметра, не только
+        `chapter_item_id`: `no_chapter=true` — только позиции без раздела,
+        `state=stale`/`state=conflict` — только такие членства (тот же набор,
+        что экран берёт для «Принять решение цели» и пакета)."""
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+        chapter = _chapter(factories, proposal, title="Раздел member-ids состояний")
+        pos_stale = _position(factories, proposal, chapter=chapter, catalog_position=cp, title="Устар. в разделе")
+        _member(db_session, pos_stale, ctx, membership_state=MembershipState.STALE.value)
+        pos_conflict = _position(factories, proposal, catalog_position=cp, title="Конфликт без раздела")
+        _member(db_session, pos_conflict, ctx, conflict_at=_now(), conflict_from_context_id=other_ctx.id)
+        pos_plain = _position(factories, proposal, catalog_position=cp, title="Обычная без раздела")
+        _member(db_session, pos_plain, ctx)
+        db_session.flush()
+
+        url = f"{BASE}/contexts/{ctx.id}/member-ids"
+        no_chapter = admin_client.get(url, params={"no_chapter": True}).json()
+        assert sorted(no_chapter["position_item_ids"]) == sorted([pos_conflict.id, pos_plain.id])
+        assert no_chapter["total"] == 2
+        stale = admin_client.get(url, params={"state": "stale"}).json()
+        assert stale["position_item_ids"] == [pos_stale.id]
+        assert stale["total"] == 1
+        conflict = admin_client.get(url, params={"state": "conflict"}).json()
+        assert conflict["position_item_ids"] == [pos_conflict.id]
+        assert conflict["total"] == 1
+
+    @pytest.mark.parametrize(
+        "params",
+        [{"limit": 0}, {"limit": 101}, {"offset": -1}],
+        ids=["limit_zero", "limit_over_max_page_size", "negative_offset"],
+    )
+    def test_members_page_bounds_give_422(self, admin_client, db_session, factories, params):
+        """Спека §2.8 п. 3: «`limit` до `MAX_PAGE_SIZE`» (100); `limit < 1` и
+        `offset < 0` — тоже `422`. Контекст существует, иначе вход без
+        проверки границ дал бы `404`, а не `200`, и граница читалась бы
+        невнятно. Верхняя граница включительно (`limit=100`) — `200` в
+        `test_members_paginated_last_page_of_group_of_520`."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx, count=2)
+
+        response = admin_client.get(f"{BASE}/contexts/{ctx.id}/members", params=params)
+        assert response.status_code == 422
+
+    def test_members_page_ordered_by_position_not_by_physical_order(
+        self, admin_client, db_session, factories
+    ):
+        """Порядок страницы — `ORDER BY position_item_id`, а не физический
+        порядок строк: членства заводятся в ОБРАТНОМ порядке id, а позиции с
+        наименьшими id переписываются `UPDATE` (новая версия строки уходит в
+        конец кучи) — без `ORDER BY` последовательный просмотр отдал бы их
+        последними. Страница `limit=3, offset=0` обязана нести три НАИМЕНЬШИХ
+        id по возрастанию."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        proposal = _proposal(factories)
+        positions = [
+            _position(factories, proposal, catalog_position=cp, title=f"Порядок {i}") for i in range(6)
+        ]
+        db_session.flush()
+        ids = sorted(p.id for p in positions)
+        for pid in reversed(ids):
+            db_session.execute(
+                sa.insert(ContextMember).values(
+                    position_item_id=pid, context_id=ctx.id, bucket_id=ctx.bucket_id,
+                    membership_state=MembershipState.CURRENT.value, routed_by=RoutedBy.default.value,
+                )
+            )
+        db_session.execute(
+            sa.update(PositionItem)
+            .where(PositionItem.id.in_(ids[:3]))
+            .values(job_title_in_proposal=PositionItem.job_title_in_proposal + " (правка)")
+        )
+        db_session.flush()
+
+        body = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members", params={"limit": 3, "offset": 0}
+        ).json()
+        assert [m["position_item_id"] for m in body["items"]] == ids[:3]
+
+    @pytest.mark.parametrize("path_suffix", ["members", "member-ids"])
+    def test_unknown_state_gives_422(self, admin_client, db_session, factories, path_suffix):
+        """`state` — закрытое множество `all|stale|conflict` (спека §2.8 п. 3):
+        иное значение — `422`, а не молчаливое «все»."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+        _bulk_members(db_session, factories, context=ctx, count=2)
+
+        response = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/{path_suffix}", params={"state": "stail"}
+        )
+        assert response.status_code == 422
+
+    def test_members_row_equals_card_member_row(self, admin_client, db_session, factories):
+        """Спека §2.8 п. 3: «форма строки — та же, что была у `members[]`
+        карточки» — строка `members` ПОЛНОСТЬЮ равна строке карточки той же
+        позиции (все семь полей, включая конфликт и `routed_by`), а не
+        только `position_item_id`."""
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+        pos = _position(factories, proposal, catalog_position=cp, title="Строка как в карточке")
+        _member(
+            db_session, pos, ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        db_session.flush()
+
+        card_row = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()["members"][0]
+        page = admin_client.get(f"{BASE}/contexts/{ctx.id}/members").json()
+        assert page["items"] == [card_row]
+        assert set(card_row) == {
+            "position_item_id", "job_title", "estimate_id", "membership_state",
+            "conflict_at", "conflict_from_context_id", "routed_by",
+        }
+        assert card_row["routed_by"] == RoutedBy.manual.value
+        assert card_row["estimate_id"] == estimate.id
 
 
 # ---------------------------------------------------------------------------
