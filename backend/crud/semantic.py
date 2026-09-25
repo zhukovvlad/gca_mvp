@@ -15,10 +15,22 @@ ORM-связь не читается в цикле по строкам — ин�
 `has_no_members`) — ТРИ РАЗНЫХ `EXISTS`-подзапроса, а не один общий
 (план, задача 12, «Утверждения»): оси независимы, и вход с одновременно
 `STALE`-членством и `conflict_at` обязан пройти оба первых фильтра сразу.
+
+Строка страницы `list_contexts` (спека `2026-09-25-families-screen-design.md`
+§2.8 п. 1) добавочно несёт `member_count`, `has_stale_members`,
+`has_conflicting_members` и `work_category_path` — все четыре ВНУТРИ того же
+запроса страницы, а не отдельным чтением: число и оба признака —
+коррелированные подзапросы (переиспользуют `_stale_exists`/`_conflict_exists`
+и новый `_member_count_subquery`), путь классификатора — ДВА внешних
+соединения `work_categories` на родителя и прародителя статьи корзины.
+Отдельного чтения справочника и кэша процесса нет: третий запрос сломал бы
+инвариант «ровно два» (счётчик его не считает вовсе — эти колонки навешаны
+только на страницу).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
@@ -44,6 +56,15 @@ from models import (
 #: запросе: тест переопределяет её монки-патчем, чтобы проверить
 #: `members_truncated` не заводя 500+ строк в БД.
 CONTEXT_MEMBERS_PAGE_CAP = 500
+
+
+class WorkCategoryRef(TypedDict):
+    """Одна статья пути классификатора строки списка контекстов (спека
+    `2026-09-25-families-screen-design.md` §2.8 п. 1) — код и название,
+    без уровня: уровень читается из позиции в списке `work_category_path`."""
+
+    code: str
+    title: str
 
 
 @dataclass(frozen=True)
@@ -180,6 +201,38 @@ def _members_exist():
     )
 
 
+def _member_count_subquery():
+    """Коррелированный скаляр числа членств контекста — та же форма
+    корреляции (`ContextMember.context_id == CatalogContext.id`), что у
+    `_stale_exists`/`_conflict_exists`/`_members_exist` выше, только `COUNT`,
+    а не `EXISTS` (спека §2.8 п. 1: `member_count` строки списка)."""
+    return (
+        sa.select(sa.func.count(ContextMember.position_item_id))
+        .select_from(ContextMember)
+        .where(ContextMember.context_id == CatalogContext.id)
+        .scalar_subquery()
+    )
+
+
+def _work_category_path_from_row(row) -> list[WorkCategoryRef]:
+    """Путь классификатора строки страницы — родители статьи корзины, от
+    корня, БЕЗ самой статьи (спека §2.8 п. 1). Строка несёт код/название
+    родителя и прародителя (два внешних соединения `list_contexts`); `None`
+    означает «на этом уровне предка нет» и пропускается — статья первого
+    уровня или отсутствующая статья дают пустой список, а не список с
+    дырами."""
+    path: list[WorkCategoryRef] = []
+    if row.grandparent_category_code is not None:
+        path.append(
+            WorkCategoryRef(code=row.grandparent_category_code, title=row.grandparent_category_title)
+        )
+    if row.parent_category_code is not None:
+        path.append(
+            WorkCategoryRef(code=row.parent_category_code, title=row.parent_category_title)
+        )
+    return path
+
+
 def _escape_ilike(text: str) -> str:
     """Экранирует `%`, `_` и сам экранирующий символ `\\` перед подстановкой
     в `ILIKE`: без этого `catalog_query`, содержащий
@@ -255,12 +308,34 @@ def _context_query(filters: ContextFilters):
 
 def list_contexts(db: Session, *, filters: ContextFilters, limit: int, offset: int) -> dict:
     """Очередь контекстов — РОВНО ДВА запроса, независимо от `limit`/числа
-    найденных строк (план, задача 12, «Утверждения»): счётчик и страница."""
+    найденных строк (план, задача 12, «Утверждения»): счётчик и страница.
+
+    Счётчик считает по «чистому» `stmt` (без добавок ниже) — колонки
+    `member_count`/признаки/путь навешаны ТОЛЬКО на страницу
+    (`page_stmt = stmt.add_columns(...)`), поэтому подсчёт итога не платит за
+    коррелированные подзапросы и лишние соединения, а запросов по-прежнему
+    два (спека §2.8 п. 1)."""
     stmt = _context_query(filters)
     total = db.execute(
         sa.select(sa.func.count()).select_from(stmt.order_by(None).subquery())
     ).scalar_one()
-    rows = db.execute(stmt.order_by(CatalogContext.id).offset(offset).limit(limit)).all()
+
+    parent_category = aliased(WorkCategory)
+    grandparent_category = aliased(WorkCategory)
+    page_stmt = (
+        stmt.add_columns(
+            _member_count_subquery().label("member_count"),
+            _stale_exists().label("has_stale_members"),
+            _conflict_exists().label("has_conflicting_members"),
+            parent_category.code.label("parent_category_code"),
+            parent_category.title.label("parent_category_title"),
+            grandparent_category.code.label("grandparent_category_code"),
+            grandparent_category.title.label("grandparent_category_title"),
+        )
+        .outerjoin(parent_category, parent_category.id == WorkCategory.parent_id)
+        .outerjoin(grandparent_category, grandparent_category.id == parent_category.parent_id)
+    )
+    rows = db.execute(page_stmt.order_by(CatalogContext.id).offset(offset).limit(limit)).all()
     items = [
         {
             "id": row.id,
@@ -281,6 +356,10 @@ def list_contexts(db: Session, *, filters: ContextFilters, limit: int, offset: i
             "standard_job_title": row.standard_job_title,
             "unit_code": row.unit_code,
             "archived_at": row.archived_at,
+            "member_count": row.member_count,
+            "has_stale_members": row.has_stale_members,
+            "has_conflicting_members": row.has_conflicting_members,
+            "work_category_path": _work_category_path_from_row(row),
         }
         for row in rows
     ]

@@ -126,6 +126,18 @@ def _leaf_category_ids(session, n=1) -> list[int]:
     )
 
 
+def _category_with_dot_count(session, dots: int) -> WorkCategory:
+    """Первая статья классификатора с РОВНО `dots` точками в коде (глубина
+    `dots + 1`) — найдена по СТРУКТУРЕ кода, а не хардкодом id/литерала
+    (план, Task 1, «Имена»: числа плана — что утверждается, а не обвязка).
+    Падает явно, если в засеянном справочнике такой глубины нет."""
+    rows = session.execute(sa.select(WorkCategory)).scalars().all()
+    for row in rows:
+        if row.code.count(".") == dots:
+            return row
+    raise AssertionError(f"no work_category with {dots} dots in code found in seeded reference data")
+
+
 def _unit_id(db, code: str) -> int:
     return UnitResolver(db).resolve(code).unit_id
 
@@ -855,6 +867,180 @@ class TestContextsQueue:
         assert ctx_system.id in cat_y_ids
         assert ctx_work.id not in cat_y_ids
 
+    def test_list_contexts_reports_member_count_and_stale_flag(self, admin_client, db_session, factories):
+        """План, Task 1, «Утверждения»: контекст с тремя членствами, одно из
+        них STALE — `member_count = 3`, `has_stale_members = true`,
+        `has_conflicting_members = false` (конфликта в сцене нет вовсе)."""
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Три членства с устаревшим")
+        proposal = _proposal(factories)
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        for i in range(2):
+            pos = _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}")
+            _member(db_session, pos, ctx)
+        pos_stale = _position(factories, proposal, catalog_position=cp, title="Позиция устаревшая")
+        _member(db_session, pos_stale, ctx, membership_state=MembershipState.STALE.value)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": "Три членства с устаревшим"})
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        item = items[0]
+        assert item["member_count"] == 3
+        assert item["has_stale_members"] is True
+        assert item["has_conflicting_members"] is False
+
+    def test_list_contexts_reports_conflicting_members_flag(self, admin_client, db_session, factories):
+        """План, Task 1, «Утверждения»: членство с непустым `conflict_at` —
+        `has_conflicting_members = true`."""
+        cp_other = factories.CatalogPositionFactory.create(standard_job_title="Источник конфликта очереди")
+        bucket_other = _bucket(db_session, catalog_position=cp_other)
+        ctx_other = _context(db_session, bucket_other)
+
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Конфликтное членство очереди")
+        proposal = _proposal(factories)
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        pos = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, pos, ctx, conflict_at=_now(), conflict_from_context_id=ctx_other.id)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": "Конфликтное членство очереди"})
+        item = response.json()["items"][0]
+        assert item["has_conflicting_members"] is True
+
+    def test_list_contexts_reports_zero_member_count_and_false_flags_for_empty_context(
+        self, admin_client, db_session, factories
+    ):
+        """План, Task 1, «Утверждения»: пустой контекст — `member_count = 0`,
+        оба признака `false`.
+
+        Рядом — СОСЕДНИЙ контекст (вне выдачи по `catalog_query`) с
+        членством, одновременно `STALE` и конфликтным: без него в базе теста
+        нет ни одного членства, и число с признаками, посчитанные БЕЗ
+        корреляции с контекстом строки (по всей таблице членств), дали бы те
+        же `0`/`false` — тест не отличил бы «у этого контекста нет членств»
+        от «членств нет нигде»."""
+        cp_neighbour = factories.CatalogPositionFactory.create(standard_job_title="Соседний непустой контекст")
+        proposal = _proposal(factories)
+        bucket_neighbour = _bucket(db_session, catalog_position=cp_neighbour)
+        ctx_neighbour = _context(db_session, bucket_neighbour)
+        cp_source = factories.CatalogPositionFactory.create(standard_job_title="Источник конфликта соседа")
+        ctx_source = _context(db_session, _bucket(db_session, catalog_position=cp_source))
+        pos_neighbour = _position(factories, proposal, catalog_position=cp_neighbour)
+        _member(
+            db_session, pos_neighbour, ctx_neighbour,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=ctx_source.id,
+        )
+
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Пустой контекст очереди")
+        bucket = _bucket(db_session, catalog_position=cp)
+        _context(db_session, bucket)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": "Пустой контекст очереди"})
+        item = response.json()["items"][0]
+        assert item["member_count"] == 0
+        assert item["has_stale_members"] is False
+        assert item["has_conflicting_members"] is False
+
+    def test_list_contexts_reports_work_category_path_third_level(self, admin_client, db_session, factories):
+        """План, Task 1, «Утверждения»: статья третьего уровня (как `8.2.3`) —
+        `work_category_path` из ДВУХ элементов, прародитель затем родитель
+        (код и название каждого), а не сама статья."""
+        category = _category_with_dot_count(db_session, 2)
+        parent = db_session.get(WorkCategory, category.parent_id)
+        assert parent is not None
+        grandparent = db_session.get(WorkCategory, parent.parent_id)
+        assert grandparent is not None
+
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Путь классификатора третий уровень")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        _context(db_session, bucket)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Путь классификатора третий уровень"}
+        )
+        item = response.json()["items"][0]
+        assert item["work_category_path"] == [
+            {"code": grandparent.code, "title": grandparent.title},
+            {"code": parent.code, "title": parent.title},
+        ]
+
+    def test_list_contexts_reports_work_category_path_second_level(self, admin_client, db_session, factories):
+        """План, Task 1, «Утверждения» (родители статьи, от корня, без неё
+        самой): статья ВТОРОГО уровня — `work_category_path` из ОДНОГО
+        элемента, её родителя. Это состояние, которое вытесняют оба случая
+        плана: прародителя нет, родитель есть, — и путь, собираемый только при
+        обоих предках (или ставящий родителя лишь вслед за прародителем),
+        проходит третий и первый уровни, а здесь теряет родителя."""
+        category = _category_with_dot_count(db_session, 1)
+        parent = db_session.get(WorkCategory, category.parent_id)
+        assert parent is not None
+        assert parent.parent_id is None
+
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Путь классификатора второй уровень")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        _context(db_session, bucket)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Путь классификатора второй уровень"}
+        )
+        item = response.json()["items"][0]
+        assert item["work_category_path"] == [{"code": parent.code, "title": parent.title}]
+
+    def test_list_contexts_reports_empty_work_category_path_for_first_level_category(
+        self, admin_client, db_session, factories
+    ):
+        """План, Task 1, «Утверждения»: статья первого уровня —
+        `work_category_path` пуст."""
+        category = _category_with_dot_count(db_session, 0)
+        assert category.parent_id is None
+
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Путь классификатора первый уровень")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        _context(db_session, bucket)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Путь классификатора первый уровень"}
+        )
+        item = response.json()["items"][0]
+        assert item["work_category_path"] == []
+
+    def test_list_contexts_reports_empty_work_category_path_without_category(
+        self, admin_client, db_session, factories
+    ):
+        """План, Task 1, «Утверждения»: корзина без статьи
+        (`work_category_id IS NULL`) — `work_category_path` пуст."""
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Корзина без статьи очереди")
+        bucket = _bucket(db_session, catalog_position=cp)
+        _context(db_session, bucket)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": "Корзина без статьи очереди"})
+        item = response.json()["items"][0]
+        assert item["work_category_path"] == []
+
+    def test_work_categories_seed_depth_is_at_most_three(self, db_session):
+        """План, Task 1, «Утверждения»: максимальная глубина `work_categories`
+        в засеянном справочнике `<= 3` — путь строится ДВУМЯ соединениями
+        (родитель + прародитель), и это ровно тот предел, который они
+        покрывают. Поднимется глубина классификатора — этот тест краснеет
+        первым и называет найденную глубину, а не список молча обрежет путь."""
+        max_depth = db_session.execute(
+            sa.text(
+                """
+                WITH RECURSIVE depth_cte(id, depth) AS (
+                    SELECT id, 1 FROM work_categories WHERE parent_id IS NULL
+                    UNION ALL
+                    SELECT wc.id, d.depth + 1
+                    FROM work_categories wc
+                    JOIN depth_cte d ON wc.parent_id = d.id
+                )
+                SELECT MAX(depth) FROM depth_cte
+                """
+            )
+        ).scalar_one()
+        assert max_depth <= 3, f"work_categories depth is {max_depth}, path building covers only 3 levels"
+
     def test_list_contexts_query_count_independent_of_row_count(self, admin_client, db_session, factories):
         """Число запросов `list_contexts` не зависит от числа строк выдачи
         (план, задача 12, «Утверждения») — считает СЧЁТЧИКОМ `before_cursor_
@@ -882,6 +1068,25 @@ class TestContextsQueue:
         count_large = len(statements_large)
 
         assert count_small == count_large, (count_small, count_large)
+
+    def test_list_contexts_issues_exactly_two_statements(self, admin_client, db_session, factories):
+        """План, Task 1, «Утверждения»: `list_contexts` — РОВНО два запроса,
+        счётчик и страница (спека §2.8 п. 1). Соседний тест выше доказывает
+        только независимость от числа строк: постоянный ТРЕТИЙ запрос (например,
+        разовое чтение справочника `work_categories` ради пути
+        классификатора — именно то, что спека запрещает) он пропускает, потому
+        что третий запрос одинаков на 2 и на 10 строках."""
+        category = _category_with_dot_count(db_session, 2)
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Ровно два запроса очереди")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        _context(db_session, bucket)
+        db_session.flush()
+
+        with _capturing_sql(db_session) as statements:
+            response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": "Ровно два запроса очереди"})
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == 1
+        assert len(statements) == 2, statements
 
 
 # ---------------------------------------------------------------------------
