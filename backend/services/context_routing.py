@@ -39,6 +39,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TypedDict
@@ -229,6 +230,89 @@ def effective_category_id(db: Session, position_item_id: int) -> int | None:
     §2.2), не что-либо, читаемое у самой позиции: у позиции своей статьи нет
     по построению (`ck_position_items_article_only_on_chapters`)."""
     return chapter_context(db, position_item_id).category_id
+
+
+def chapter_paths(db: Session, chapter_item_ids: Collection[int]) -> dict[int, tuple[str, ...]]:
+    """Пути классификатора карточки контекста для МНОЖЕСТВА разделов ОДНИМ
+    запросом (спека `2026-09-25-families-screen-design.md` §2.8 п. 2).
+
+    `chapter_context()` поднимается к корню через `db.get()` НА КАЖДОГО
+    предка — на карточке с десятками различных ближайших разделов и глубиной
+    в несколько уровней это давало бы сотни запросов (докстрока спеки: 81
+    путь глубины 6 у одной строки каталога). Здесь вместо этого — ОДИН
+    рекурсивный CTE от множества `chapter_item_ids` вверх по
+    `position_items.chapter_item_id`, отдающий `(start_id, depth, title)`;
+    путь собирается в памяти.
+
+    Путь раздела ВКЛЮЧАЕТ сам раздел (он — ближайший раздел членства) и идёт
+    ДО КОРНЯ, порядок — СВЕРХУ ВНИЗ (root первый). Это ТОТ ЖЕ порядок, что
+    `tuple(reversed(chapter_context(db, позиция).chain))` для позиции, чей
+    `chapter_item_id` — этот раздел (`chain` там — от ближайшего к корню,
+    то есть снизу вверх; сверяется тестом на одной позиции).
+
+    Пустой `chapter_item_ids` — пустой словарь БЕЗ обращения к БД: карточке
+    без разделов третий запрос не нужен.
+
+    Защита от цикла — ВНУТРИ CTE (`CYCLE ... SET ... USING ...`,
+    PostgreSQL ≥ 14; стенд — 16): найденный цикл размечается `is_cycle`
+    ПОСТРОЧНО, а не обрывает рекурсию молча — Python-код проверяет флаг и
+    поднимает `RoutingError`, тот же отказ, что `chapter_context()` для
+    маршрутизации, а не бесконечную рекурсию и не молчаливо обрезанный путь.
+
+    Raises:
+        RoutingError: среди путей найден цикл `chapter_item_id` (раздел
+            встретился в собственной цепочке предков дважды).
+    """
+    ids = list(dict.fromkeys(chapter_item_ids))
+    if not ids:
+        return {}
+
+    rows = db.execute(
+        sa.text(
+            """
+            WITH RECURSIVE chain(start_id, current_id, next_id, title, depth) AS (
+                SELECT
+                    pi.id,
+                    pi.id,
+                    pi.chapter_item_id,
+                    pi.job_title_in_proposal,
+                    0
+                FROM position_items pi
+                WHERE pi.id = ANY(:ids)
+
+                UNION ALL
+
+                SELECT
+                    chain.start_id,
+                    p.id,
+                    p.chapter_item_id,
+                    p.job_title_in_proposal,
+                    chain.depth + 1
+                FROM chain
+                JOIN position_items p ON p.id = chain.next_id
+                WHERE chain.next_id IS NOT NULL
+            )
+            CYCLE current_id SET is_cycle USING visited_path
+            SELECT start_id, current_id, depth, title, is_cycle
+            FROM chain
+            ORDER BY start_id, depth
+            """
+        ).bindparams(sa.bindparam("ids", value=ids, type_=sa.ARRAY(sa.BigInteger)))
+    ).all()
+
+    paths_bottom_up: dict[int, list[str]] = {}
+    for row in rows:
+        if row.is_cycle:
+            raise RoutingError(
+                f"раздел {row.start_id}: цикл в chapter_item_id — раздел "
+                f"{row.current_id} уже встречался в цепочке"
+            )
+        paths_bottom_up.setdefault(row.start_id, []).append(row.title)
+
+    # `paths_bottom_up[id]` собран в порядке ВОЗРАСТАНИЯ `depth` (сам раздел,
+    # затем предки к корню) — тот же порядок, что `ChapterContext.chain`.
+    # Путь функции — СВЕРХУ ВНИЗ, поэтому список разворачивается.
+    return {start_id: tuple(reversed(titles)) for start_id, titles in paths_bottom_up.items()}
 
 
 # ---------------------------------------------------------------------------

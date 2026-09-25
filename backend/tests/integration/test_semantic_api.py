@@ -41,7 +41,12 @@ from models import (
     WorkFamily,
 )
 from services import context_operations
-from services.context_routing import PREDICATE_NEAREST_CHAPTER_EQUALS
+from services.context_routing import (
+    PREDICATE_NEAREST_CHAPTER_EQUALS,
+    RoutingError,
+    chapter_context,
+    chapter_paths,
+)
 from services.unit_resolution import UnitResolver
 
 pytestmark = pytest.mark.integration
@@ -90,7 +95,13 @@ def _proposal(factories):
     return factories.ProposalFactory.create(lot=lot)
 
 
-def _chapter(factories, proposal, *, title="Раздел", category_id=None, category_source="file"):
+def _chapter(
+    factories, proposal, *, title="Раздел", category_id=None, category_source="file", parent=None
+):
+    """Строка-раздел. `parent` — родительский раздел (`chapter_item_id`) для
+    построения цепочки глубже одного уровня (тесты `chapter_paths` и групп
+    членств, §2.8 п. 2) — те же три составных ограничения, что у обычной
+    позиции с разделом: `proposal_id`/`chapter_item_id` внутри одной сметы."""
     kwargs = dict(
         proposal=proposal, is_chapter=True, job_title_in_proposal=title,
         chapter_number_in_proposal="1",
@@ -98,6 +109,8 @@ def _chapter(factories, proposal, *, title="Раздел", category_id=None, cat
     if category_id is not None:
         kwargs["work_category_id"] = category_id
         kwargs["category_source"] = category_source
+    if parent is not None:
+        kwargs["chapter_item_id"] = parent.id
     return factories.PositionItemFactory.create(**kwargs)
 
 
@@ -1090,6 +1103,109 @@ class TestContextsQueue:
 
 
 # ---------------------------------------------------------------------------
+#  Пути членств (`chapter_paths`, спека §2.8 п. 2)
+# ---------------------------------------------------------------------------
+
+class TestChapterPaths:
+    def test_depth_four_path_matches_reversed_chapter_context_chain(
+        self, db_session, factories
+    ):
+        """Путь СВЕРХУ ВНИЗ для раздела глубины 4 — четыре названия, и
+        совпадает с `tuple(reversed(chapter_context(db, позиция).chain))`
+        для позиции этого раздела (план, Task 2, «Утверждения»)."""
+        proposal = _proposal(factories)
+        level1 = _chapter(factories, proposal, title="Раздел уровня 1")
+        level2 = _chapter(factories, proposal, title="Раздел уровня 2", parent=level1)
+        level3 = _chapter(factories, proposal, title="Раздел уровня 3", parent=level2)
+        level4 = _chapter(factories, proposal, title="Раздел уровня 4", parent=level3)
+        position = _position(factories, proposal, chapter=level4)
+        db_session.flush()
+
+        paths = chapter_paths(db_session, [level4.id])
+        assert len(paths) == 1
+        assert paths[level4.id] == (
+            "Раздел уровня 1", "Раздел уровня 2", "Раздел уровня 3", "Раздел уровня 4",
+        )
+        assert paths[level4.id] == tuple(
+            reversed(chapter_context(db_session, position.id).chain)
+        )
+
+    def test_repeated_calls_beyond_prepare_threshold(self, db_session, factories):
+        """`docs/insights/batch-larger-than-five.md`: порог psycopg3
+        `prepare_threshold = 5` считает ИСПОЛНЕНИЯ одного и того же запроса на
+        соединении, а не число id в одном вызове — один вызов с 12 id порог
+        не переходит. Поэтому здесь ВОСЕМЬ вызовов подряд на одном
+        соединении с РАЗНЫМИ наборами разделов (от 1 до 12 id): начиная с
+        шестого запрос исполняется подготовленным планом, и путь каждого
+        раздела в каждом вызове обязан совпасть с независимым эталоном
+        `chapter_context()`. Что порог реально пройден, тест проверяет сам —
+        по `pg_prepared_statements` этого соединения, а не по допущению."""
+        proposal = _proposal(factories)
+        leaves = []
+        for i in range(12):
+            root = _chapter(factories, proposal, title=f"Ветка {i}")
+            leaf = _chapter(factories, proposal, title=f"Лист {i}", parent=root)
+            position = _position(factories, proposal, chapter=leaf, title=f"Поз {i}")
+            leaves.append((leaf, position))
+        db_session.flush()
+        expected = {
+            leaf.id: tuple(reversed(chapter_context(db_session, position.id).chain))
+            for leaf, position in leaves
+        }
+
+        for size in (1, 2, 3, 5, 7, 9, 11, 12):
+            ids = [leaf.id for leaf, _ in leaves[:size]]
+            paths = chapter_paths(db_session, ids)
+            assert paths == {chapter_id: expected[chapter_id] for chapter_id in ids}, size
+
+        prepared = db_session.execute(
+            sa.text(
+                "SELECT count(*) FROM pg_prepared_statements "
+                "WHERE statement LIKE '%WITH RECURSIVE chain%'"
+            )
+        ).scalar_one()
+        assert prepared >= 1, "запрос chapter_paths так и не был подготовлен — порог не пройден"
+
+    def test_cycle_not_through_start_chapter_raises_routing_error(self, db_session, factories):
+        """Цикл, НЕ проходящий через стартовый раздел: S -> A -> B -> A.
+        Стартовый раздел в цикле не участвует, поэтому проверка «цепочка
+        вернулась к старту» его не видит; отказ обязан быть тем же
+        `RoutingError`, а не обрезанный путь."""
+        proposal = _proposal(factories)
+        a = _chapter(factories, proposal, title="Раздел A")
+        b = _chapter(factories, proposal, title="Раздел B", parent=a)
+        s = _chapter(factories, proposal, title="Раздел S", parent=a)
+        db_session.flush()
+        a.chapter_item_id = b.id
+        db_session.flush()
+
+        with pytest.raises(RoutingError):
+            chapter_paths(db_session, [s.id])
+
+    def test_cycle_raises_routing_error_without_hanging(self, db_session, factories):
+        """Цикл `A -> B -> A` — `RoutingError`, не зависание (план, Task 2,
+        «Утверждения»). Прогон обязан идти под шелл-`timeout` (см. отчёт
+        задачи) — плагина `pytest-timeout` в проекте нет."""
+        proposal = _proposal(factories)
+        a = _chapter(factories, proposal, title="Раздел A")
+        b = _chapter(factories, proposal, title="Раздел B", parent=a)
+        db_session.flush()
+        a.chapter_item_id = b.id
+        db_session.flush()
+
+        with pytest.raises(RoutingError):
+            chapter_paths(db_session, [a.id])
+
+    def test_empty_input_gives_empty_dict_without_querying(self, db_session):
+        """Пустой вход — пустой словарь БЕЗ обращения к БД (докстрока
+        `chapter_paths`): карточке без разделов третий запрос не нужен."""
+        with _capturing_sql(db_session) as statements:
+            result = chapter_paths(db_session, [])
+        assert result == {}
+        assert statements == []
+
+
+# ---------------------------------------------------------------------------
 #  Контексты — карточка
 # ---------------------------------------------------------------------------
 
@@ -1362,38 +1478,476 @@ class TestContextCard:
     def test_card_members_query_count_independent_of_member_count(
         self, admin_client, db_session, factories
     ):
-        """Тот же приём, что `test_list_contexts_query_count_independent_
-        of_row_count`: число запросов карточки не растёт вместе с числом
-        членств — один ограниченный запрос членств, а не N+1 по каждому."""
-        estimate = factories.EstimateFactory.create()
-        lot = factories.LotFactory.create(estimate=estimate)
-        proposal = factories.ProposalFactory.create(lot=lot)
-
-        def _context_with_n_members(n: int) -> CatalogContext:
+        """Спека §2.8 п. 2 УСИЛИВАЕТ старый инвариант: число запросов
+        карточки не растёт ни с числом членств, ни с числом РАЗЛИЧНЫХ путей,
+        ни с их ГЛУБИНОЙ (план, Task 2, «Утверждения»). Старое сравнение (все
+        позиции без разделов) N+1 по путям не заметило бы — здесь контекст с
+        ОДНИМ путём глубины 2 и 2 членствами против контекста с ДВЕНАДЦАТЬЮ
+        РАЗНЫМИ путями глубины 4 и 30 членствами; верхние уровни путей тоже
+        РАЗНЫЕ (не общий корень для всех 12) — иначе N+1 по предкам остался
+        бы незамеченным."""
+        def _context_with_one_path(*, depth: int, member_count: int) -> CatalogContext:
+            estimate = factories.EstimateFactory.create()
+            lot = factories.LotFactory.create(estimate=estimate)
+            proposal = factories.ProposalFactory.create(lot=lot)
             cp = factories.CatalogPositionFactory.create()
             bucket = _bucket(db_session, catalog_position=cp)
             ctx = _context(db_session, bucket)
-            for i in range(n):
-                position = _position(factories, proposal, catalog_position=cp, title=f"Поз {i}")
+            chapter = None
+            for level in range(depth):
+                chapter = _chapter(factories, proposal, title=f"Раздел {level}", parent=chapter)
+            for i in range(member_count):
+                position = _position(
+                    factories, proposal, chapter=chapter, catalog_position=cp, title=f"Поз {i}"
+                )
                 _member(db_session, position, ctx)
             db_session.flush()
             return ctx
 
-        ctx_small = _context_with_n_members(2)
+        def _context_with_many_paths(
+            *, path_count: int, depth: int, member_count: int
+        ) -> CatalogContext:
+            estimate = factories.EstimateFactory.create()
+            lot = factories.LotFactory.create(estimate=estimate)
+            proposal = factories.ProposalFactory.create(lot=lot)
+            cp = factories.CatalogPositionFactory.create()
+            bucket = _bucket(db_session, catalog_position=cp)
+            ctx = _context(db_session, bucket)
+            leaves = []
+            for path_index in range(path_count):
+                chapter = None
+                for level in range(depth):
+                    # Заголовок несёт и индекс ветки, и уровень — верхние
+                    # уровни РАЗНЫХ веток не совпадают, N+1 по предкам был бы
+                    # виден числом запросов, а не только результатом.
+                    chapter = _chapter(
+                        factories, proposal,
+                        title=f"Ветка {path_index}, уровень {level}",
+                        parent=chapter,
+                    )
+                leaves.append(chapter)
+            for path_index, leaf in enumerate(leaves):
+                n = member_count // path_count + (1 if path_index < member_count % path_count else 0)
+                for i in range(n):
+                    position = _position(
+                        factories, proposal, chapter=leaf, catalog_position=cp,
+                        title=f"Поз {path_index}-{i}",
+                    )
+                    _member(db_session, position, ctx)
+            db_session.flush()
+            return ctx
+
+        ctx_small = _context_with_one_path(depth=2, member_count=2)
         with _capturing_sql(db_session) as statements_small:
             response_small = admin_client.get(f"{BASE}/contexts/{ctx_small.id}")
         assert response_small.status_code == 200
-        assert len(response_small.json()["members"]) == 2
+        body_small = response_small.json()
+        assert body_small["member_count"] == 2
+        assert len(body_small["members"]) == 2
+        assert len(body_small["member_paths"]) == 1
+        assert len(body_small["member_paths"][0]["path"]) == 2
         count_small = len(statements_small)
 
-        ctx_large = _context_with_n_members(10)
+        ctx_large = _context_with_many_paths(path_count=12, depth=4, member_count=30)
         with _capturing_sql(db_session) as statements_large:
             response_large = admin_client.get(f"{BASE}/contexts/{ctx_large.id}")
         assert response_large.status_code == 200
-        assert len(response_large.json()["members"]) == 10
+        body_large = response_large.json()
+        assert body_large["member_count"] == 30
+        assert len(body_large["members"]) == 30
+        assert len(body_large["member_paths"]) == 12
+        assert all(len(mp["path"]) == 4 for mp in body_large["member_paths"])
         count_large = len(statements_large)
 
         assert count_small == count_large, (count_small, count_large)
+
+    def test_card_member_paths_four_groups_null_last_at_any_size(
+        self, admin_client, db_session, factories
+    ):
+        """Контекст с позициями в трёх разделах и одной позицией без раздела
+        — `member_paths` из ЧЕТЫРЁХ групп, сумма `member_count` групп равна
+        `member_count` карточки, порядок — по убыванию `member_count`, группа
+        `chapter_item_id=None` (`path=[]`) — ПОСЛЕДНЕЙ ПРИ ЛЮБОМ её размере
+        (план, Task 2, «Утверждения»): здесь безраздельная группа — САМАЯ
+        БОЛЬШАЯ (5 позиций), и всё равно идёт последней."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+
+        chapter_a = _chapter(factories, proposal, title="Раздел А")
+        chapter_b = _chapter(factories, proposal, title="Раздел Б")
+        chapter_c = _chapter(factories, proposal, title="Раздел В")
+
+        counts_by_chapter = {chapter_a: 1, chapter_b: 3, chapter_c: 2}
+        for chapter, n in counts_by_chapter.items():
+            for i in range(n):
+                position = _position(
+                    factories, proposal, chapter=chapter, catalog_position=cp,
+                    title=f"{chapter.job_title_in_proposal} поз {i}",
+                )
+                _member(db_session, position, ctx)
+        # Безраздельная группа — САМАЯ БОЛЬШАЯ (5 позиций): без раздела
+        # обязана идти последней несмотря на размер.
+        for i in range(5):
+            position = _position(factories, proposal, catalog_position=cp, title=f"Без раздела {i}")
+            _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        assert body["member_count"] == 1 + 3 + 2 + 5
+        member_paths = body["member_paths"]
+        assert len(member_paths) == 4
+        assert sum(mp["member_count"] for mp in member_paths) == body["member_count"]
+        # Последняя группа — безраздельная, несмотря на то, что она самая
+        # большая по числу членств.
+        assert member_paths[-1]["chapter_item_id"] is None
+        assert member_paths[-1]["path"] == []
+        assert member_paths[-1]["member_count"] == 5
+        # Остальные три — по убыванию member_count: Б(3), В(2), А(1).
+        rest = member_paths[:-1]
+        assert [mp["member_count"] for mp in rest] == [3, 2, 1]
+        assert [mp["path"] for mp in rest] == [["Раздел Б"], ["Раздел В"], ["Раздел А"]]
+
+    def test_card_member_paths_stale_and_conflict_counts_match_actual_memberships(
+        self, admin_client, db_session, factories
+    ):
+        """`stale_count` и `conflict_count` группы равны числу ТАКИХ членств
+        В НЕЙ (план, Task 2, «Утверждения») — обе оси независимы (спека
+        §2.5), одна и та же группа несёт оба счётчика раздельно."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+
+        # Счётчики РАЗНЫЕ (устаревших 3, конфликтных 2, всего 5): при равных
+        # подмена одного счётчика другим прошла бы незамеченной. Одно
+        # членство несёт ОБЕ оси сразу — оно входит в оба счётчика.
+        chapter = _chapter(factories, proposal, title="Раздел с устареванием")
+        current_position = _position(factories, proposal, chapter=chapter, catalog_position=cp, title="Текущее")
+        _member(db_session, current_position, ctx)
+        for i in range(2):
+            stale_position = _position(
+                factories, proposal, chapter=chapter, catalog_position=cp, title=f"Устаревшее {i}"
+            )
+            _member(db_session, stale_position, ctx, membership_state=MembershipState.STALE.value)
+        conflicted_position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Конфликтное"
+        )
+        _member(
+            db_session, conflicted_position, ctx,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        stale_and_conflicted = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Устаревшее и конфликтное"
+        )
+        _member(
+            db_session, stale_and_conflicted, ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        # Вторая группа — свои счётчики, не общие на карточку.
+        other_chapter = _chapter(factories, proposal, title="Раздел без отметок")
+        plain_position = _position(
+            factories, proposal, chapter=other_chapter, catalog_position=cp, title="Текущее другое"
+        )
+        _member(db_session, plain_position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        member_paths = card.json()["member_paths"]
+        assert len(member_paths) == 2
+        by_chapter = {mp["chapter_item_id"]: mp for mp in member_paths}
+        group = by_chapter[chapter.id]
+        assert group["member_count"] == 5
+        assert group["stale_count"] == 3
+        assert group["conflict_count"] == 2
+        plain_group = by_chapter[other_chapter.id]
+        assert plain_group["member_count"] == 1
+        assert plain_group["stale_count"] == 0
+        assert plain_group["conflict_count"] == 0
+
+    def test_card_stale_groups_target_category_from_manual_reallocation(
+        self, admin_client, db_session, factories
+    ):
+        """После ручного разноса раздела в статью C у его устаревших членств
+        — ОДНА запись `stale_groups` с `target_category_id = C` и её кодом и
+        названием; членства ДРУГОГО раздела той же карточки в эту запись не
+        попадают (план, Task 2, «Утверждения»)."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        (category_c,) = _leaf_category_ids(db_session, 1)
+        category = db_session.get(WorkCategory, category_c)
+
+        reallocated_chapter = _chapter(
+            factories, proposal, title="Раздел, разнесённый вручную",
+            category_id=category_c, category_source="manual",
+        )
+        other_chapter = _chapter(factories, proposal, title="Другой раздел")
+
+        # Две устаревшие позиции разнесённого раздела с РАЗНЫМ `routed_by`
+        # (запись обязана быть одна на раздел, а не на иной признак членства)
+        # и одна ТЕКУЩАЯ — она в счёт устаревшей группы не входит.
+        for i, routed_by in enumerate((RoutedBy.default.value, RoutedBy.manual.value)):
+            stale_in_reallocated = _position(
+                factories, proposal, chapter=reallocated_chapter, catalog_position=cp,
+                title=f"Устаревшее в разнесённом {i}",
+            )
+            _member(
+                db_session, stale_in_reallocated, ctx,
+                membership_state=MembershipState.STALE.value, routed_by=routed_by,
+            )
+        current_in_reallocated = _position(
+            factories, proposal, chapter=reallocated_chapter, catalog_position=cp,
+            title="Текущее в разнесённом",
+        )
+        _member(db_session, current_in_reallocated, ctx)
+
+        stale_in_other = _position(
+            factories, proposal, chapter=other_chapter, catalog_position=cp,
+            title="Устаревшее в другом",
+        )
+        _member(db_session, stale_in_other, ctx, membership_state=MembershipState.STALE.value)
+
+        # Устаревшее членство позиции БЕЗ раздела — своя группа
+        # `chapter_item_id=None` (спека §2.8 п. 2: «`int | None` тем же
+        # правилом»), цель переноса у неё не определена.
+        stale_without_chapter = _position(
+            factories, proposal, catalog_position=cp, title="Устаревшее без раздела",
+        )
+        _member(db_session, stale_without_chapter, ctx, membership_state=MembershipState.STALE.value)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        stale_groups = card.json()["stale_groups"]
+        chapter_ids = [sg["chapter_item_id"] for sg in stale_groups]
+        assert chapter_ids.count(reallocated_chapter.id) == 1, stale_groups
+        assert len(stale_groups) == 3, stale_groups
+        by_chapter = {sg["chapter_item_id"]: sg for sg in stale_groups}
+        entry = by_chapter[reallocated_chapter.id]
+        assert entry["count"] == 2
+        assert entry["path"] == ["Раздел, разнесённый вручную"]
+        assert entry["target_category_id"] == category_c
+        assert entry["target_category_code"] == category.code
+        assert entry["target_category_title"] == category.title
+
+        # Членства другого раздела — своя ОТДЕЛЬНАЯ запись, не смешаны с
+        # первой.
+        other_entry = by_chapter[other_chapter.id]
+        assert other_entry["count"] == 1
+        assert other_entry["target_category_id"] is None
+
+        assert None in by_chapter, stale_groups
+        null_entry = by_chapter[None]
+        assert null_entry["count"] == 1
+        assert null_entry["path"] == []
+        assert null_entry["target_category_id"] is None
+        assert null_entry["target_category_code"] is None
+        assert null_entry["target_category_title"] is None
+        # Безраздельная группа — последней, как у `member_paths`.
+        assert stale_groups[-1]["chapter_item_id"] is None
+
+    def test_card_of_context_with_chapter_cycle_gives_422_not_500(
+        self, admin_client, db_session, factories
+    ):
+        """Карточка контекста, чей ближайший раздел зациклен, отвечает
+        доменной ошибкой (422), а не `500` (план, Task 2, «Утверждения»):
+        роутер обязан переводить `RoutingError` `context_card`
+        (`_read_domain_errors`, `routers/semantic.py`)."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+
+        chapter_a = _chapter(factories, proposal, title="Циклический А")
+        chapter_b = _chapter(factories, proposal, title="Циклический Б", parent=chapter_a)
+        db_session.flush()
+        chapter_a.chapter_item_id = chapter_b.id
+        db_session.flush()
+
+        position = _position(factories, proposal, chapter=chapter_a, catalog_position=cp)
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 422
+
+    def test_card_of_context_with_cycle_above_its_chapter_gives_422(
+        self, admin_client, db_session, factories
+    ):
+        """Цикл ВЫШЕ ближайшего раздела членства (S -> A -> B -> A): сам
+        раздел S в цикле не участвует, но цикл достижим из него — карточка
+        обязана ответить `422`, а не отдать обрезанный путь и не `500`."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+
+        chapter_a = _chapter(factories, proposal, title="Циклический А")
+        chapter_b = _chapter(factories, proposal, title="Циклический Б", parent=chapter_a)
+        chapter_s = _chapter(factories, proposal, title="Раздел под циклом", parent=chapter_a)
+        db_session.flush()
+        chapter_a.chapter_item_id = chapter_b.id
+        db_session.flush()
+
+        position = _position(factories, proposal, chapter=chapter_s, catalog_position=cp)
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 422
+
+    @pytest.mark.parametrize("route", ["kind", "name-role", "family"])
+    def test_mutation_route_commits_even_when_card_read_gives_422(
+        self, admin_client, db_session, factories, route
+    ):
+        """Каждая мутация, отдающая карточку в ответе (`POST .../kind`,
+        `.../name-role`, `.../family`), обязана ЗАКОММИТИТЬСЯ, даже если
+        чтение карточки для ОТВЕТА отказывает доменной ошибкой — цикл
+        разделов ВЫШЕ ближайшего раздела членства, тот же приём, что
+        `test_card_of_context_with_cycle_above_its_chapter_gives_422`. Ответ
+        маршрута — `422`, а не `500` (`routers/semantic.py`: чтение карточки
+        после `_mutating(db)` идёт через `_read_domain_errors`), и изменение
+        при этом уже в БД — читается ЗАНОВО (`db_session.expire_all()` +
+        отдельный `SELECT`), а не с ORM-объекта. Чтение карточки ВНУТРИ
+        `_mutating` откатило бы мутацию — это и ловит вторая половина."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        m2 = _unit_id(db_session, "M2")
+        cp = factories.CatalogPositionFactory.create(unit_id=m2)
+        bucket = _bucket(db_session, catalog_position=cp)
+        # Исходное состояние отличается от того, что пишет каждая мутация:
+        # вид SYSTEM (мутация — WORK), роль WORK от правила (мутация —
+        # LOCATION_ONLY вручную), семьи нет (мутация — назначает).
+        ctx = _context(
+            db_session, bucket,
+            semantic_kind=SemanticKind.SYSTEM.value if route == "kind" else SemanticKind.WORK.value,
+        )
+        family = _family(db_session, admin_client.user, title="Семья под циклом", unit_name="M2")
+        body = {
+            "kind": {"kind": "WORK"},
+            "name-role": {"role": NameRole.LOCATION_ONLY.value},
+            "family": {"family_id": family.id},
+        }[route]
+
+        chapter_a = _chapter(factories, proposal, title="Циклический А")
+        chapter_b = _chapter(factories, proposal, title="Циклический Б", parent=chapter_a)
+        chapter_s = _chapter(factories, proposal, title="Раздел под циклом", parent=chapter_a)
+        db_session.flush()
+        chapter_a.chapter_item_id = chapter_b.id
+        db_session.flush()
+
+        position = _position(factories, proposal, chapter=chapter_s, catalog_position=cp)
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        response = admin_client.post(f"{BASE}/contexts/{ctx.id}/{route}", json=body)
+        assert response.status_code == 422, response.text
+
+        db_session.expire_all()
+        row = db_session.execute(
+            sa.select(
+                CatalogContext.semantic_kind,
+                CatalogContext.semantic_kind_source,
+                CatalogContext.name_role,
+                CatalogContext.name_role_source,
+                CatalogContext.work_family_id,
+            ).where(CatalogContext.id == ctx.id)
+        ).one()
+        if route == "kind":
+            assert row.semantic_kind == SemanticKind.WORK.value
+            assert row.semantic_kind_source == DecisionSource.manual.value
+        elif route == "name-role":
+            assert row.name_role == NameRole.LOCATION_ONLY.value
+            assert row.name_role_source == DecisionSource.manual.value
+        else:
+            assert row.work_family_id == family.id
+
+    def test_card_member_paths_equal_counts_ordered_by_path(
+        self, admin_client, db_session, factories
+    ):
+        """Спека §2.8 п. 2: `member_count DESC`, ЗАТЕМ путь
+        лексикографически. Три группы с РАВНЫМ числом членств, разделы
+        заведены в порядке, ОБРАТНОМ алфавитному (id растут от «В» к «А»), —
+        порядок по id или порядок выдачи `GROUP BY` здесь не совпадает с
+        порядком по пути. Четвёртая группа крупнее и идёт первой."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+
+        counts = [("Раздел В", 2), ("Раздел Б", 2), ("Раздел А", 2), ("Раздел Г", 3)]
+        for title, n in counts:
+            chapter = _chapter(factories, proposal, title=title)
+            for i in range(n):
+                position = _position(
+                    factories, proposal, chapter=chapter, catalog_position=cp, title=f"{title} {i}"
+                )
+                _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        member_paths = card.json()["member_paths"]
+        assert [(mp["path"], mp["member_count"]) for mp in member_paths] == [
+            (["Раздел Г"], 3),
+            (["Раздел А"], 2),
+            (["Раздел Б"], 2),
+            (["Раздел В"], 2),
+        ]
+
+    @pytest.mark.parametrize("dot_count", [2, 1, 0, None])
+    def test_card_work_category_path(self, admin_client, db_session, factories, dot_count):
+        """`work_category_path` карточки — то же значение, что у строки
+        списка (спека §2.8 п. 2): родители статьи корзины от корня, без неё
+        самой. Третий уровень — прародитель, затем родитель; второй — один
+        родитель; первый уровень и корзина без статьи — пустой список.
+        Эталон — предки, прочитанные по `parent_id` здесь же, а не через
+        запрос карточки."""
+        expected: list[dict] = []
+        category_id = None
+        if dot_count is not None:
+            category = _category_with_dot_count(db_session, dot_count)
+            category_id = category.id
+            ancestor_id = category.parent_id
+            while ancestor_id is not None:
+                ancestor = db_session.get(WorkCategory, ancestor_id)
+                expected.insert(0, {"code": ancestor.code, "title": ancestor.title})
+                ancestor_id = ancestor.parent_id
+            assert len(expected) == dot_count
+
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category_id)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["work_category_path"] == expected
 
     def test_card_lists_bucket_contexts_including_archived(
         self, admin_client, db_session, factories

@@ -49,6 +49,7 @@ from models import (
     WorkCategory,
     WorkFamily,
 )
+from services.context_routing import chapter_paths
 
 #: Потолок числа членств, отдаваемых карточкой контекста поштучно — экран не
 #: может проверять/предлагать действия по членству, не видя его id, а
@@ -65,6 +66,39 @@ class WorkCategoryRef(TypedDict):
 
     code: str
     title: str
+
+
+class MemberPath(TypedDict):
+    """Группа членств карточки по ближайшему разделу (спека §2.8 п. 2).
+
+    `chapter_item_id=None` — группа «без раздела» (`path=[]`), допустима
+    схемой (`position_items.chapter_item_id` — `NULL`-able). `path` — СВЕРХУ
+    ВНИЗ, тот же порядок, что `chapter_paths()`. `stale_count`/
+    `conflict_count` — подмножества `member_count`, не отдельные факты
+    (`membership_state=STALE` и `conflict_at IS NOT NULL` — независимые оси
+    членства, одно и то же членство может нести обе)."""
+
+    chapter_item_id: int | None
+    path: list[str]
+    member_count: int
+    stale_count: int
+    conflict_count: int
+
+
+class StaleGroup(TypedDict):
+    """Устаревшие членства одного раздела, сгруппированные под ЦЕЛЬ переноса
+    — текущую эффективную статью этого раздела (спека §2.8 п. 2, п. 4: тот
+    же `target_category_id`, что видит `transfer_proposal`/`accept_transfer`,
+    `services/context_operations.py`, через `chapter_context(...).category_id`
+    БЛИЖАЙШЕГО раздела). `target_category_*` — `None`, если у раздела нет
+    статьи или раздела нет вовсе (`chapter_item_id=None`)."""
+
+    chapter_item_id: int | None
+    path: list[str]
+    count: int
+    target_category_id: int | None
+    target_category_code: str | None
+    target_category_title: str | None
 
 
 @dataclass(frozen=True)
@@ -233,6 +267,138 @@ def _work_category_path_from_row(row) -> list[WorkCategoryRef]:
     return path
 
 
+def _work_category_path(db: Session, category_id: int | None) -> list[WorkCategoryRef]:
+    """Путь классификатора статьи КАРТОЧКИ — то же значение и та же форма,
+    что `work_category_path` строки списка (спека §2.8 п. 2), но отдельным
+    константным запросом: у карточки нет готовой строки страницы
+    `list_contexts`, куда навешаны эти два соединения. Один запрос, не
+    растущий вместе с числом членств/путей карточки — инвариант карточки
+    защищает число запросов ровно от этого роста, а не от лишней константы."""
+    if category_id is None:
+        return []
+    parent_category = aliased(WorkCategory)
+    grandparent_category = aliased(WorkCategory)
+    row = db.execute(
+        sa.select(
+            parent_category.code.label("parent_category_code"),
+            parent_category.title.label("parent_category_title"),
+            grandparent_category.code.label("grandparent_category_code"),
+            grandparent_category.title.label("grandparent_category_title"),
+        )
+        .select_from(WorkCategory)
+        .outerjoin(parent_category, parent_category.id == WorkCategory.parent_id)
+        .outerjoin(grandparent_category, grandparent_category.id == parent_category.parent_id)
+        .where(WorkCategory.id == category_id)
+    ).first()
+    if row is None:
+        return []
+    return _work_category_path_from_row(row)
+
+
+def _member_group_sort_key(*, chapter_item_id: int | None, count: int, path: list[str]):
+    """Порядок групп членств/устаревших групп (спека §2.8 п. 2): по убыванию
+    числа, затем путь лексикографически, группа `chapter_item_id=None` —
+    ПОСЛЕДНЕЙ при любом её размере (первый элемент ключа — булев «это группа
+    без раздела», он сильнее счёта). Один и тот же ключ используется и для
+    `member_paths` (число — `member_count`), и для `stale_groups` (число —
+    `count`, он же `stale_count` той же строки) — спека не называет для
+    второго списка иного порядка."""
+    return (chapter_item_id is None, -count, path)
+
+
+def _member_paths_and_stale_groups(
+    db: Session, *, context_id: int
+) -> tuple[list[MemberPath], list[StaleGroup]]:
+    """Членства карточки, сгруппированные по ближайшему разделу позиции, и
+    устаревшие группы из ТЕХ ЖЕ строк (спека §2.8 п. 2).
+
+    ОДИН агрегирующий запрос `GROUP BY position_items.chapter_item_id`,
+    несущий заодно `work_category_id` строки-раздела (плюс её код/название)
+    — ЭТУ ЖЕ статью `stale_groups` называет целью переноса, отдельного
+    запроса под неё нет. Пути строятся ПОСЛЕ, одним вызовом `chapter_paths()`
+    для всех уникальных `chapter_item_id` разом (`services/context_routing.py`)
+    — не через `chapter_context()` на каждую группу (докстрока `chapter_paths`).
+
+    `chapter_item_id IS NULL` — группа «без раздела» (`path=[]`), допустима
+    схемой и участвует в сортировке как группа, которая идёт ПОСЛЕДНЕЙ.
+    Сумма `member_count` групп равна `member_count` карточки ПО ПОСТРОЕНИЮ:
+    группировка по допускающему `NULL` ключу теряет строк не больше, чем
+    `COUNT(*)` без `GROUP BY` — каждое членство попадает РОВНО в одну группу.
+    """
+    chapter = aliased(PositionItem)
+    category = aliased(WorkCategory)
+    rows = db.execute(
+        sa.select(
+            PositionItem.chapter_item_id,
+            sa.func.count().label("member_count"),
+            sa.func.count(
+                sa.case((ContextMember.membership_state == MembershipState.STALE.value, 1))
+            ).label("stale_count"),
+            sa.func.count(
+                sa.case((ContextMember.conflict_at.isnot(None), 1))
+            ).label("conflict_count"),
+            chapter.work_category_id.label("target_category_id"),
+            category.code.label("target_category_code"),
+            category.title.label("target_category_title"),
+        )
+        .select_from(ContextMember)
+        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+        .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
+        .outerjoin(category, category.id == chapter.work_category_id)
+        .where(ContextMember.context_id == context_id)
+        .group_by(
+            PositionItem.chapter_item_id,
+            chapter.work_category_id,
+            category.code,
+            category.title,
+        )
+    ).all()
+
+    chapter_ids = [row.chapter_item_id for row in rows if row.chapter_item_id is not None]
+    paths_by_chapter = chapter_paths(db, chapter_ids)
+
+    def _path_for(chapter_item_id: int | None) -> list[str]:
+        if chapter_item_id is None:
+            return []
+        return list(paths_by_chapter[chapter_item_id])
+
+    member_paths: list[MemberPath] = [
+        MemberPath(
+            chapter_item_id=row.chapter_item_id,
+            path=_path_for(row.chapter_item_id),
+            member_count=row.member_count,
+            stale_count=row.stale_count,
+            conflict_count=row.conflict_count,
+        )
+        for row in rows
+    ]
+    member_paths.sort(
+        key=lambda mp: _member_group_sort_key(
+            chapter_item_id=mp["chapter_item_id"], count=mp["member_count"], path=mp["path"]
+        )
+    )
+
+    stale_groups: list[StaleGroup] = [
+        StaleGroup(
+            chapter_item_id=row.chapter_item_id,
+            path=_path_for(row.chapter_item_id),
+            count=row.stale_count,
+            target_category_id=row.target_category_id,
+            target_category_code=row.target_category_code,
+            target_category_title=row.target_category_title,
+        )
+        for row in rows
+        if row.stale_count > 0
+    ]
+    stale_groups.sort(
+        key=lambda sg: _member_group_sort_key(
+            chapter_item_id=sg["chapter_item_id"], count=sg["count"], path=sg["path"]
+        )
+    )
+
+    return member_paths, stale_groups
+
+
 def _escape_ilike(text: str) -> str:
     """Экранирует `%`, `_` и сам экранирующий символ `\\` перед подстановкой
     в `ILIKE`: без этого `catalog_query`, содержащий
@@ -378,15 +544,26 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     `services/context_routing.py`), вид с источником, роль имени с
     источником и версией словаря, `comparability_reason`, семья с
     источником назначения, число членств (`member_count`, всегда полное),
-    соседей по корзине (`bucket_contexts` — id, `is_default`, `archived_at`,
-    `member_count` КАЖДОГО контекста той же `bucket_id`, включая архивные;
-    цель слияния/переноса выбирается из живых соседей), членства поштучно
-    (`members` — id позиции, название работы по смете, id сметы, состояние
-    членства, конфликт и его источник, `routed_by`; ограничено
+    путь классификатора статьи корзины (`work_category_path` — родители,
+    от корня, без самой статьи, спека §2.8 п. 2, то же значение, что у
+    строки списка), группы членств по ближайшему разделу (`member_paths`) и
+    устаревшие группы под цель переноса (`stale_groups` — спека §2.8 п. 2,
+    `crud/semantic.py::_member_paths_and_stale_groups`), соседей по корзине
+    (`bucket_contexts` — id, `is_default`, `archived_at`, `member_count`
+    КАЖДОГО контекста той же `bucket_id`, включая архивные; цель слияния/
+    переноса выбирается из живых соседей), членства поштучно (`members` —
+    id позиции, название работы по смете, id сметы, состояние членства,
+    конфликт и его источник, `routed_by`; ограничено
     `CONTEXT_MEMBERS_PAGE_CAP`, обрезка отмечена `members_truncated`) и
     журнал событий (по времени).
 
     `None`, если контекст не найден — роутер переводит это в 404.
+
+    Raises:
+        RoutingError: цикл `chapter_item_id` среди разделов членств этой
+            карточки (`chapter_paths()`, `services/context_routing.py`) —
+            роутер переводит в доменную ошибку `422`
+            (`routers/semantic.py::_read_domain_errors`), не `500`.
     """
     context = db.get(CatalogContext, context_id)
     if context is None:
@@ -426,6 +603,9 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         .select_from(ContextMember)
         .where(ContextMember.context_id == context_id)
     ).scalar_one()
+
+    work_category_path = _work_category_path(db, bucket.work_category_id)
+    member_paths, stale_groups = _member_paths_and_stale_groups(db, context_id=context_id)
 
     # Соседи по корзине (та же `bucket_id`) — цель для слияния/переноса
     # (спека §2.4: разделение оставляет несколько контекстов на одной
@@ -518,6 +698,9 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "family_by": context.family_by,
         "family_at": context.family_at,
         "member_count": member_count,
+        "work_category_path": work_category_path,
+        "member_paths": member_paths,
+        "stale_groups": stale_groups,
         "bucket_contexts": [
             {
                 "id": row.id,

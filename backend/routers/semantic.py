@@ -189,7 +189,11 @@ def _mutating(db: Session):
 def _read_domain_errors(fn, /, *args, **kwargs):
     """Обёртка ЧТЕНИЯ (не пишет, коммит/rollback не нужны): переводит те же
     три исключения в `HTTPException` — используется маршрутом
-    `transfer-proposal`, единственным GET, которому есть что переводить."""
+    `transfer-proposal` и КАЖДЫМ маршрутом, читающим `context_card` (сам
+    `GET /contexts/{id}` и мутации вида/роли/семьи, отдающие карточку ПОСЛЕ
+    своего `_mutating(db)`): цикл разделов, обнаруженный при построении
+    `member_paths` (`chapter_paths`, `services/context_routing.py`), тем
+    самым переводится в доменную `422` там же, где угодно читается карточка."""
     try:
         return fn(*args, **kwargs)
     except (WorkFamilyError, ContextOperationError) as exc:
@@ -438,7 +442,7 @@ def context_card_route(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    card = crud_semantic.context_card(db, context_id=context_id)
+    card = _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
     return card
@@ -463,7 +467,11 @@ def confirm_kind_route(
                 db, context_id=context_id, kind=body.kind.value if body.kind is not None else None,
                 actor_id=admin.id,
             )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Мутация уже закоммичена строкой выше (`_mutating(db)` вышел без
+    # исключения) — отказ ниже описывает ТОЛЬКО чтение карточки для ответа
+    # (цикл разделов в `member_paths`), не саму мутацию: она остаётся в силе,
+    # даже когда клиент получает 422 вместо тела карточки.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/name-role")
@@ -477,7 +485,9 @@ def set_name_role_route(
         work_families.set_name_role(
             db, context_id=context_id, role=body.role.value, actor_id=admin.id
         )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Та же дисциплина, что у `confirm_kind_route`: мутация уже закоммичена,
+    # отказ ниже — только о чтении карточки, не о смене роли.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/family")
@@ -491,7 +501,9 @@ def assign_family_route(
         work_families.assign_family(
             db, context_id=context_id, family_id=body.family_id, actor_id=admin.id
         )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Та же дисциплина, что у `confirm_kind_route`: мутация уже закоммичена,
+    # отказ ниже — только о чтении карточки, не о назначении семьи.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/split")
