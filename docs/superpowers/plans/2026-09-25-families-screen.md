@@ -278,7 +278,7 @@ def list_group_member_ids(db: Session, *, context_id: int, selector: GroupSelect
 - Test: `backend/tests/integration/test_semantic_api.py`
 
 **Interfaces**
-- Потребляет: `accept_transfer`, `ContextOperationError`, `lock_buckets` (существуют), `GroupSelector` (Task 4).
+- Потребляет: `accept_transfer`, `ContextOperationError`, `lock_buckets` (существуют). `GroupSelector` не потребляет: группа пакета — `chapter_item_id`, где `null` значит именно «без раздела» (спека §2.8 п. 4), а селектор «весь контекст» пакету не нужен.
 - Производит:
 
 ```python
@@ -406,17 +406,28 @@ interface PagerProps {           // новые — необязательные
 
 **Утверждения**
 - на странице две вкладки, «Семьи» и «Контексты»; вкладки «Операции» нет;
+- под заголовком экрана — легенда: плашка «статья СМР» с пояснением «классификатор,
+  общий для всех смет» и плашка «в смете» с пояснением «разделы конкретной сметы»;
+- «Семьи»: список слева, щелчок по семье открывает панель правки справа (имя,
+  единица, определение, «Активировать», «В архив», «Слить…» — те же операции и
+  отказы фичи 1); активная вкладка остаётся «Семьи»;
 - щелчок по строке контекста показывает карточку справа от списка, активная
   вкладка остаётся «Контексты»; смена страницы списка не снимает выбор, если
   выбранный контекст есть на новой странице, и снимает, если нет;
 - строка контекста — наименование, «статья СМР» + код и название, подсказка с
-  путём классификатора, единица, семья, число позиций; точка — при
+  путём классификатора, единица, семья, число позиций; у `semantic_kind = SYSTEM` —
+  плашка «система» рядом с наименованием, у прочих её нет; точка — при
   `has_stale_members`, `has_conflicting_members` или `member_count = 0`, и её нет
-  у контекста без этих признаков;
+  у контекста без этих признаков; подсказка точки перечисляет именно те причины,
+  что есть у строки (у контекста с устаревшими и конфликтными — обе, у пустого —
+  «пустой»);
 - «Контексты»: выбор 10/20/50/100 передаёт `limit` в запрос и ставит `offset = 0`;
   смена фильтра — `offset = 0`;
 - «Семьи»: пагинация на фронтенде — 43 семьи при размере 10 дают 5 страниц,
-  третья — строки 21–30; смена фильтра — первая страница;
+  третья — строки 21–30, и под списком видно «21–30 из 43»; смена фильтра — первая
+  страница;
+- «Контексты»: под списком видно диапазон и итог из `total` ответа («1–20 из 128»
+  на выдаче из 128);
 - каждый сценарий операции, который проверяли тесты фичи 1 в этих трёх файлах,
   сохраняется (меняется путь к кнопке, не сценарий);
 - на экране нет кодов `LOCATION_ONLY`, `GENERIC_WORK`, `SUGGESTED`, `CONFIRMED`,
@@ -427,7 +438,7 @@ interface PagerProps {           // новые — необязательные
 - Существуют, проверено `grep`-ом: `FamiliesPage`, `ContextsTab`, `FamiliesTab`, `ContextRow`, `useSemanticContexts`, `useWorkFamilies`.
 
 **Проверка**
-- `cd frontend && npx vitest run src/pages/families src/components/domain` — зелёная; ДО ≥ 55, ПОСЛЕ ≥ 62.
+- `cd frontend && npx vitest run src/pages/families src/components/domain` — зелёная; ДО ≥ 55, ПОСЛЕ ≥ 66.
 
 ### Task 8: фронтенд — карточка контекста; удаление `members[]`; справочник экранов
 
@@ -472,7 +483,12 @@ export function useTransferStaleGroup();
 - галочка группы из 520 позиций при загруженных 20 выбирает 520 id (вызов
   `groupMemberIds`), счётчик — «выбрано 520»; «Разделить…» и «Перенести…»
   отправляют эти 520 id;
-- «Журнал» печатает события словами из `EVENT_LABEL`, код — в подсказке;
+- «Журнал» печатает события словами из `EVENT_LABEL` с временем и автором
+  события (`created_at`, `actor_id`; событие без автора — «система»), код — в
+  подсказке;
+- плашка «в смете» стоит у каждого пути группы во вкладке «Членства» и у
+  `representative_work_title` во вкладке «Решения»; плашка «статья СМР» — у статьи
+  в шапке и у целевой статьи в строке внимания устаревших;
 - ответ `GET /contexts/{id}` не содержит `members` и `members_truncated`;
   `CONTEXT_MEMBERS_PAGE_CAP` в `backend/` не встречается; три теста обрезки
   (`monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", ...)`)
@@ -487,8 +503,8 @@ export function useTransferStaleGroup();
 - Существуют, проверено `grep`-ом: `ContextCard`, `ContextCardData`, `ContextMemberRow`, `useAcceptStaleTransfer`, `useAcceptTargetDecision`, `useSplitContext`, `useMoveMembers`, `CONTEXT_MEMBERS_PAGE_CAP`, `EXPECTED_SCREEN_ANCHORS`.
 
 **Проверка**
-- `cd frontend && npx vitest run src/pages/families src/components/domain` — зелёная; ДО ≥ 62, ПОСЛЕ ≥ 72.
-- `just test-int-local-k semantic_api` — зелёная; ДО ≥ 121, ПОСЛЕ = ДО − 3 (удалены три теста обрезки) + ≥ 1.
+- `cd frontend && npx vitest run src/pages/families src/components/domain` — зелёная; ДО ≥ 66, ПОСЛЕ ≥ 78.
+- `just test-int-local-k semantic_api` — зелёная; ДО ≥ 121, ПОСЛЕ ≥ 119 (удалены три теста обрезки, добавлен ≥ 1 — ответ без `members`).
 - `cd backend && uv run python scripts/check_agents_index.py` — зелёная (страж 18/18).
 
 ## Команды проверки
