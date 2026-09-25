@@ -8,7 +8,8 @@
 Фича **переделывает экран**, построенный фичей 1
 ([спека](2026-09-22-catalog-families-design.md) §2.10, PR #53). На бэкенде —
 поля в двух существующих ответах, два эндпоинта чтения членств группы и **один
-пакетный эндпоинт переноса**, составленный из существующей операции (§2.8).
+пакетный эндпоинт переноса**, составленный из существующей операции; из
+ответа карточки удаляется плоский список членств `members[]` (§2.8).
 Схема, миграции, существующие операции и их отказы, права, ИИ, парсер, каскад
 матчинга — не трогаются.
 
@@ -193,7 +194,8 @@ expected_category_id`), в своей точке сохранения. **Пач�
 `list_contexts` — ровно два запроса, счётчик и страница
 (`test_list_contexts_query_count_independent_of_row_count`); карточка — число
 запросов не растёт с числом членств
-(`test_card_members_query_count_independent_of_member_count`).
+(`test_card_members_query_count_independent_of_member_count` — после удаления
+`members[]` он проверяет то же свойство на `member_paths`, §2.8 п. 5).
 
 **1. Строка списка (`GET /contexts`, `items[]`)** получает:
 ```
@@ -236,7 +238,7 @@ stale_groups: list[{chapter_item_id: int | None, path: list[str], count: int,
   роли (докстрока `_classify_new_context_semantics`,
   `services/context_operations.py`). Контекст без членств — `None`. Подпись
   экрана: «работа по разделу представительной позиции».
-- **`member_paths`** — все членства (не обрезанные `CONTEXT_MEMBERS_PAGE_CAP`)
+- **`member_paths`** — все членства
   по ближайшему разделу позиции: один агрегирующий запрос `GROUP BY
   chapter_item_id`, цепочка — один раз на уникальный раздел, путь сверху вниз
   (`ChapterContext.chain` хранит снизу вверх, `services/context_routing.py`).
@@ -260,7 +262,7 @@ GET /contexts/{id}/members?chapter_item_id=<int>|no_chapter=true&state=<all|stal
 GET /contexts/{id}/member-ids?chapter_item_id=<int>|no_chapter=true&state=<all|stale|conflict>
   -> {position_item_ids: list[int], total: int}
 ```
-- форма строки — та же, что `members[]` карточки фичи 1; `limit` до
+- форма строки — та же, что была у `members[]` карточки фичи 1; `limit` до
   `MAX_PAGE_SIZE`; порядок — `position_item_id`;
 - без `chapter_item_id` и без `no_chapter` — по всему контексту (так экран берёт id
   всех конфликтных для «Принять решение цели»);
@@ -270,8 +272,15 @@ GET /contexts/{id}/member-ids?chapter_item_id=<int>|no_chapter=true&state=<all|s
   передаёт в «Разделить» / «Перенести»;
 - оба — ровно два запроса (счётчик и страница либо счётчик и список).
 
-`members[]` карточки остаётся как есть (обратная совместимость ответа); экран
-его больше не читает.
+**5. Из карточки удаляются `members[]` и `members_truncated`** (решение
+пользователя 25.09.2026). Единственный потребитель — экран фичи 1
+(`ContextCard.tsx`), и после переделки их не читает никто; фронтенд и бэкенд
+выкатываются вместе, держать совместимость не с кем. Уходит и
+`CONTEXT_MEMBERS_PAGE_CAP` вместе с тестами обрезки, которые его подменяют
+(`test_semantic_api.py`, три теста с `monkeypatch.setattr(... "CONTEXT_MEMBERS_PAGE_CAP" ...)`):
+обрезать больше нечего — позиции идут постранично запросом группы (п. 3).
+Свойство «число запросов карточки не растёт с числом членств» остаётся и
+проверяется на `member_paths` и `stale_groups`.
 
 **4. Пакетный перенос устаревшей группы:**
 ```
@@ -385,7 +394,9 @@ HTTP-вызова, а размер группы не ограничен. Пак�
 8а. Пакетный перенос: частичный успех — отказ одной позиции не откатывает
    остальные; пустая группа — `200` с пустым `results`; события `members_moved`
    по одному на перенос.
-8б. `representative_work_title` следует сохранённой роли: после ручной смены роли
+8б. В ответе карточки нет `members[]` и `members_truncated`; `CONTEXT_MEMBERS_PAGE_CAP`
+   в коде нет.
+8в. `representative_work_title` следует сохранённой роли: после ручной смены роли
    на `LOCATION_ONLY` — имя рабочего раздела, после ручной смены с
    `LOCATION_ONLY` на другую роль — `None`.
 9. `screens.md` `## 9.` описывает новую раскладку; страж зелёный.
