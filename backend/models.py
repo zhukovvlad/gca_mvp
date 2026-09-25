@@ -820,7 +820,7 @@ class EstimateAdditionalWork(Base):
     """Расшивка агрегатной строки «Дополнительные работы» по строкам «Сведений
     по дополнительным работам» (фаза 7, спека Ф4, миграция 0007).
 
-    Висит на `proposal_id`, а не на `estimate_id` (отступление от брифа, спека
+    Висит на `proposal_id`, а не на `estimate_id` (спека
     §2.3): деньги агрегатной строки принадлежат конкретному предложению, и
     резолв ссылки в статью определён В ЕГО ПРЕДЕЛАХ, а не в пределах сметы
     (спека §2.5) — номера разделов между лотами могут повторяться.
@@ -1234,6 +1234,424 @@ class WorkCategory(Base):
             f"btrim(title, {TITLE_BLANK_CHARS_SQL}) <> ''",
             name="ck_work_categories_title_not_blank",
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Семантический контур (спека 2026-09-22-catalog-families-design.md §2.3)
+#
+#  Шесть таблиц: work_families (типовые семьи работ), context_buckets
+#  (идемпотентная точка входа «строка × эффективная статья»), catalog_contexts
+#  (устойчивая группа с принятым семантическим решением), context_routing_rules
+#  (упорядоченные правила корзины), context_members (явное членство «позиция →
+#  контекст», ровно одно) и semantic_events (журнал с ровно одним предметом).
+#  Форма таблиц, каждый CHECK, составные FK и частичные индексы — из спеки
+#  §2.3, здесь не изобретаются и не «улучшаются».
+# ---------------------------------------------------------------------------
+
+class FamilyStatus(str, enum.Enum):
+    """Жизненный цикл семьи работ (спека §2.3)."""
+    draft = "draft"
+    active = "active"
+    archived = "archived"
+
+
+class SemanticKind(str, enum.Enum):
+    """Семантический тип контекста: работа, система(вспомогательная) или пока
+    не решено (спека §2.3)."""
+    WORK = "WORK"
+    SYSTEM = "SYSTEM"
+    UNKNOWN = "UNKNOWN"
+
+
+class NameRole(str, enum.Enum):
+    """Роль названия внутри контекста по словарю мест (спека §2.3)."""
+    WORK = "WORK"
+    LOCATION_ONLY = "LOCATION_ONLY"
+    GENERIC_WORK = "GENERIC_WORK"
+
+
+class SemanticState(str, enum.Enum):
+    """Состояние семантического решения контекста — ровно три значения
+    (Global Constraints плана фичи «Семьи и контексты»)."""
+    SUGGESTED = "SUGGESTED"
+    CONFIRMED = "CONFIRMED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class MembershipState(str, enum.Enum):
+    """Членство позиции в контексте: действующее или устаревшее после разноса
+    статьи (спека §2.3)."""
+    CURRENT = "CURRENT"
+    STALE = "STALE"
+
+
+class DecisionSource(str, enum.Enum):
+    """Происхождение решения по правилу или вручную — общий тип для
+    `semantic_kind_source` и `name_role_source` (спека §2.3)."""
+    rule = "rule"
+    manual = "manual"
+
+
+class FamilySource(str, enum.Enum):
+    """Происхождение назначения семьи контексту (спека §2.3)."""
+    manual = "manual"
+    suggestion = "suggestion"
+
+
+class RoutedBy(str, enum.Enum):
+    """Как позиция попала в свой текущий контекст (спека §2.3)."""
+    default = "default"
+    rule = "rule"
+    manual = "manual"
+
+
+class ComparabilityReason(str, enum.Enum):
+    """Причина, по которой контекст пока не сравним — единственное значение
+    спеки §2.3."""
+    insufficient_description = "insufficient_description"
+
+
+#: Закрытый список событий журнала (спека §2.14). НЕ Python str-Enum
+#: намеренно: план задачи заводит для журнала только константу для CHECK,
+#: не отдельный класс (Task 1 «Имена»).
+SEMANTIC_EVENT_TYPES = (
+    "context_created",
+    "context_split",
+    "context_merged",
+    "members_moved",
+    "members_marked_stale",
+    "kind_set",
+    "name_role_set",
+    "context_family_assigned",
+    "context_archived",
+    "routing_rules_dropped",
+    "family_created",
+    "family_updated",
+    "family_activated",
+    "family_archived",
+    "family_merged",
+)
+
+#: Десять списков значений `IN (...)` — тоже продублированы в миграции 0017
+#: литералом (та же дисциплина, что у CK_*: миграция не импортирует models.py,
+#: см. докстринг модуля миграции), и та же parity-проверка их сравнивает
+#: (список `IN (...)` — тоже CHECK, и расхождение в
+#: нём миграция/models.py прежде ничем не ловилось).
+FAMILY_STATUSES = _sql_str_list(FamilyStatus)
+SEMANTIC_KINDS = _sql_str_list(SemanticKind)
+NAME_ROLES = _sql_str_list(NameRole)
+SEMANTIC_STATES = _sql_str_list(SemanticState)
+MEMBERSHIP_STATES = _sql_str_list(MembershipState)
+DECISION_SOURCES = _sql_str_list(DecisionSource)
+FAMILY_SOURCES = _sql_str_list(FamilySource)
+ROUTED_BY_VALUES = _sql_str_list(RoutedBy)
+COMPARABILITY_REASONS = _sql_str_list(ComparabilityReason)
+SEMANTIC_EVENT_TYPES_SQL = _sql_str_list(SEMANTIC_EVENT_TYPES)
+
+#: Выражения CHECK продублированы в миграции 0017 намеренно (та же дисциплина,
+#: что у 0002, 0003, 0015); расхождение ловит
+#: test_semantic_schema.py::TestParityWithMigration.
+CK_FAMILY_ACTIVE_NEEDS_DEFINITION = (
+    "status <> 'active' OR (definition IS NOT NULL AND btrim(definition) <> '')"
+)
+CK_FAMILY_ACTIVATION_PAIR = "(activated_at IS NULL) = (activated_by IS NULL)"
+CK_FAMILY_AUTHOR_IFF_NOT_SEED = "(created_by IS NULL) = (seed_key IS NOT NULL)"
+#: ОДИН тотальный предикат из двух полных ветвей — НЕ пара равносильностей.
+#: Пара `num_nonnulls(work_family_id, family_source, family_at) IN (0, 3)` плюс
+#: `(family_source = 'manual') = (family_by IS NOT NULL)` пропускала одинокий
+#: `family_by` при трёх пустых полях: `NULL = 'manual'` даёт `NULL`, а `CHECK`
+#: отвергает только `FALSE` (`docs/pitfalls/db.md`).
+CK_CONTEXT_FAMILY_PROVENANCE = (
+    "(work_family_id IS NULL AND family_source IS NULL AND family_at IS NULL AND family_by IS NULL) "
+    "OR (work_family_id IS NOT NULL AND family_source IS NOT NULL AND family_at IS NOT NULL "
+    "AND (family_by IS NOT NULL) = (family_source = 'manual'))"
+)
+CK_CONTEXT_KIND_SOURCE_PAIR = "(semantic_kind_source = 'manual') = (semantic_kind_by IS NOT NULL)"
+CK_CONTEXT_NAME_ROLE_SOURCE_PAIR = "(name_role_source = 'manual') = (name_role_by IS NOT NULL)"
+CK_MEMBER_RULE_PAIR = "(routed_by = 'rule') = (routing_rule_id IS NOT NULL)"
+CK_MEMBER_CONFLICT_PAIR = "(conflict_at IS NULL) = (conflict_from_context_id IS NULL)"
+CK_EVENT_ONE_SUBJECT = "num_nonnulls(context_id, family_id) = 1"
+#: Предмет журнала — ЯВНОЕ множество типов, а не префикс `family_%` (спека
+#: §2.14). На вставках в таблицу это неразличимо: переименованное событие
+#: `context_family_assigned` не начинается с `family_`, и оба предиката
+#: согласны на нём. Свидетель против префикса — историческое имя
+#: `family_assigned`, вычисленное СТАНДАЛОНОМ (вне таблицы и вне закрытого
+#: списка `event_type`) в `test_semantic_schema.py::TestEventSubjectByTypeExpression`.
+CK_EVENT_SUBJECT_BY_TYPE = (
+    "(event_type IN ('family_created', 'family_updated', 'family_activated', "
+    "'family_archived', 'family_merged')) = (family_id IS NOT NULL)"
+)
+CK_EVENT_PAYLOAD_NOT_EMPTY = "jsonb_typeof(payload) = 'object' AND payload <> '{}'::jsonb"
+
+
+class WorkFamily(Base):
+    """Семья работ: тип, объединяющий сравнимые варианты написания (спека §2.3).
+
+    `seed_key` — стабильный ключ строки seed; у ручных семей всегда `NULL`, и
+    автор (`created_by`) обязан быть НЕ `NULL` ровно тогда, когда семья не
+    заведена seed-командой (`CK_FAMILY_AUTHOR_IFF_NOT_SEED`). Активация
+    (`status='active'`) требует непустого `definition`
+    (`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`); имя семьи ключом не является —
+    уникальность (`lower(btrim(title)), COALESCE(unit_id,-1)`) держится только
+    среди `active` строк, raw SQL индексом миграции 0017.
+    """
+    __tablename__ = "work_families"
+
+    id = Column(BigInteger, primary_key=True)
+    seed_key = Column(Text, nullable=True)
+    title = Column(Text, nullable=False)
+    unit_id = Column(
+        Integer, ForeignKey("units_of_measure.id", ondelete="RESTRICT"), nullable=True
+    )
+    definition = Column(Text, nullable=True)
+    status = Column(Text, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+    activated_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+
+    unit = relationship("UnitOfMeasure")
+
+    __table_args__ = (
+        UniqueConstraint("seed_key", name="uq_work_families_seed_key"),
+        CheckConstraint("btrim(title) <> ''", name="ck_work_families_title_not_blank"),
+        CheckConstraint(f"status IN ({FAMILY_STATUSES})", name="ck_work_families_status"),
+        CheckConstraint(
+            CK_FAMILY_ACTIVE_NEEDS_DEFINITION, name="ck_work_families_active_needs_definition"
+        ),
+        CheckConstraint(CK_FAMILY_ACTIVATION_PAIR, name="ck_work_families_activation_pair"),
+        CheckConstraint(CK_FAMILY_AUTHOR_IFF_NOT_SEED, name="ck_work_families_author_iff_not_seed"),
+        # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status = 'active' —
+        # частичный уникальный индекс по выражению, raw SQL в миграции 0017
+        # (alembic/env.py RAW_SQL_INDEXES: uq_work_families_active_name_unit).
+    )
+
+
+class ContextBucket(Base):
+    """Идемпотентная точка входа «каталожная строка × эффективная статья»
+    (спека §2.2, §2.3). Решений не несёт — это только ключ группировки."""
+    __tablename__ = "context_buckets"
+
+    id = Column(BigInteger, primary_key=True)
+    catalog_position_id = Column(
+        BigInteger, ForeignKey("catalog_positions.id", ondelete="RESTRICT"), nullable=False
+    )
+    work_category_id = Column(
+        BigInteger, ForeignKey("work_categories.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    catalog_position = relationship("CatalogPosition")
+
+    __table_args__ = (
+        # UNIQUE (catalog_position_id, COALESCE(work_category_id,-1)) — выражение
+        # с COALESCE, raw SQL в миграции 0017 (alembic/env.py RAW_SQL_INDEXES:
+        # uq_context_buckets_position_category). «Отсутствие статьи — своя
+        # корзина, одна на строку» (спека §2.2): COALESCE делает NULL обычным
+        # сравнимым значением, поэтому вторая безстатейная корзина той же
+        # строки отвергается как дубль, а не молча считается отдельной (без
+        # COALESCE PostgreSQL не увидел бы совпадения NULL с NULL).
+    )
+
+
+class CatalogContext(Base):
+    """Устойчивая группа с принятым семантическим решением (спека §2.3).
+
+    Происхождение семьи (`work_family_id` + `family_source`/`family_at`/
+    `family_by`) держит ОДИН тотальный предикат из двух полных ветвей
+    (`CK_CONTEXT_FAMILY_PROVENANCE`), а не пара равносильностей — см.
+    `docs/pitfalls/db.md` (трёхзначная логика `CHECK`).
+    """
+    __tablename__ = "catalog_contexts"
+
+    id = Column(BigInteger, primary_key=True)
+    bucket_id = Column(
+        BigInteger, ForeignKey("context_buckets.id", ondelete="RESTRICT"), nullable=False
+    )
+    is_default = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    work_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    family_source = Column(Text, nullable=True)
+    family_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    family_at = Column(DateTime(timezone=True), nullable=True)
+    semantic_kind = Column(Text, nullable=False)
+    semantic_kind_source = Column(Text, nullable=False)
+    semantic_kind_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    semantic_kind_at = Column(DateTime(timezone=True), nullable=False)
+    name_role = Column(Text, nullable=False)
+    name_role_source = Column(Text, nullable=False)
+    name_role_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    name_role_at = Column(DateTime(timezone=True), nullable=False)
+    place_dictionary_version = Column(SmallInteger, nullable=False)
+    semantic_state = Column(Text, nullable=False)
+    comparability_reason = Column(Text, nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    bucket = relationship("ContextBucket")
+    work_family = relationship("WorkFamily")
+
+    __table_args__ = (
+        # Цель составных FK context_routing_rules и context_members ниже —
+        # проверяют разом существование контекста и его принадлежность корзине.
+        UniqueConstraint("bucket_id", "id", name="uq_catalog_contexts_bucket_id"),
+        CheckConstraint(
+            f"semantic_kind IN ({SEMANTIC_KINDS})", name="ck_catalog_contexts_semantic_kind"
+        ),
+        CheckConstraint(
+            f"semantic_kind_source IN ({DECISION_SOURCES})",
+            name="ck_catalog_contexts_semantic_kind_source",
+        ),
+        CheckConstraint(f"name_role IN ({NAME_ROLES})", name="ck_catalog_contexts_name_role"),
+        CheckConstraint(
+            f"name_role_source IN ({DECISION_SOURCES})",
+            name="ck_catalog_contexts_name_role_source",
+        ),
+        CheckConstraint(
+            f"semantic_state IN ({SEMANTIC_STATES})", name="ck_catalog_contexts_semantic_state"
+        ),
+        CheckConstraint(
+            f"family_source IS NULL OR family_source IN ({FAMILY_SOURCES})",
+            name="ck_catalog_contexts_family_source",
+        ),
+        CheckConstraint(
+            f"comparability_reason IS NULL OR comparability_reason IN "
+            f"({COMPARABILITY_REASONS})",
+            name="ck_catalog_contexts_comparability_reason",
+        ),
+        CheckConstraint(CK_CONTEXT_KIND_SOURCE_PAIR, name="ck_catalog_contexts_kind_source_pair"),
+        CheckConstraint(
+            CK_CONTEXT_NAME_ROLE_SOURCE_PAIR, name="ck_catalog_contexts_name_role_source_pair"
+        ),
+        CheckConstraint(CK_CONTEXT_FAMILY_PROVENANCE, name="ck_catalog_contexts_family_provenance"),
+        # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — частичный
+        # уникальный индекс, raw SQL в миграции 0017 (alembic/env.py
+        # RAW_SQL_INDEXES: uq_catalog_contexts_default_per_bucket). Половина
+        # `archived_at IS NULL` — намеренно: архивный контекст по умолчанию
+        # обязан сосуществовать с действующим (§2.3 плана).
+    )
+
+
+class ContextRoutingRule(Base):
+    """Упорядоченное правило маршрутизации корзины (спека §2.3, §2.4)."""
+    __tablename__ = "context_routing_rules"
+
+    id = Column(BigInteger, primary_key=True)
+    bucket_id = Column(
+        BigInteger, ForeignKey("context_buckets.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal = Column(Integer, nullable=False)
+    predicate = Column(JSONB, nullable=False)
+    # Составной FK ниже проверяет и существование, и принадлежность корзине —
+    # одиночного ForeignKey на context_id намеренно нет.
+    context_id = Column(BigInteger, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at = _created_at()
+
+    bucket = relationship("ContextBucket")
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["bucket_id", "context_id"],
+            ["catalog_contexts.bucket_id", "catalog_contexts.id"],
+            name="fk_context_routing_rules_bucket_context",
+        ),
+        UniqueConstraint("bucket_id", "ordinal", name="uq_context_routing_rules_bucket_ordinal"),
+    )
+
+
+class ContextMember(Base):
+    """Явное членство позиции в контексте — ровно одно на позицию (спека §2.3).
+
+    `position_item_id` — первичный ключ: структурная гарантия «ровно один
+    контекст на позицию», а не инвариант, который пришлось бы стеречь тестом.
+    """
+    __tablename__ = "context_members"
+
+    position_item_id = Column(
+        BigInteger, ForeignKey("position_items.id", ondelete="CASCADE"), primary_key=True
+    )
+    # Составной FK ниже проверяет и существование контекста, и принадлежность
+    # ИМЕННО этой корзине (bucket_id — дубль под составной FK).
+    context_id = Column(BigInteger, nullable=False)
+    bucket_id = Column(BigInteger, nullable=False)
+    membership_state = Column(Text, nullable=False)
+    routed_by = Column(Text, nullable=False)
+    routing_rule_id = Column(
+        BigInteger, ForeignKey("context_routing_rules.id", ondelete="SET NULL"), nullable=True
+    )
+    # Конфликт решений при слиянии в Review — СВОЯ ось, не значение membership_state:
+    conflict_at = Column(DateTime(timezone=True), nullable=True)
+    conflict_from_context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["bucket_id", "context_id"],
+            ["catalog_contexts.bucket_id", "catalog_contexts.id"],
+            ondelete="RESTRICT",
+            name="fk_context_members_bucket_context",
+        ),
+        CheckConstraint(
+            f"membership_state IN ({MEMBERSHIP_STATES})",
+            name="ck_context_members_membership_state",
+        ),
+        CheckConstraint(f"routed_by IN ({ROUTED_BY_VALUES})", name="ck_context_members_routed_by"),
+        CheckConstraint(CK_MEMBER_RULE_PAIR, name="ck_context_members_rule_pair"),
+        CheckConstraint(CK_MEMBER_CONFLICT_PAIR, name="ck_context_members_conflict_pair"),
+        Index("idx_context_members_context_id", "context_id"),
+        Index(
+            "idx_context_members_context_id_stale",
+            "context_id",
+            postgresql_where=sa_text("membership_state = 'STALE'"),
+        ),
+        Index(
+            "idx_context_members_context_id_conflict",
+            "context_id",
+            postgresql_where=sa_text("conflict_at IS NOT NULL"),
+        ),
+    )
+
+
+class SemanticEvent(Base):
+    """Журнал семантического контура: у события ровно один предмет (спека
+    §2.3, §2.14).
+
+    Предмет определяется ЗАКРЫТЫМ множеством типов (`CK_EVENT_SUBJECT_BY_TYPE`),
+    а не префиксом имени `family_%`: пример — `family_assigned` (переименовано
+    в `context_family_assigned`, предмет — контекст).
+    """
+    __tablename__ = "semantic_events"
+
+    id = Column(BigInteger, primary_key=True)
+    context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=True
+    )
+    family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    event_type = Column(Text, nullable=False)
+    payload = Column(JSONB, nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({SEMANTIC_EVENT_TYPES_SQL})",
+            name="ck_semantic_events_event_type",
+        ),
+        CheckConstraint(CK_EVENT_ONE_SUBJECT, name="ck_semantic_events_one_subject"),
+        CheckConstraint(CK_EVENT_SUBJECT_BY_TYPE, name="ck_semantic_events_subject_by_type"),
+        CheckConstraint(CK_EVENT_PAYLOAD_NOT_EMPTY, name="ck_semantic_events_payload_not_empty"),
     )
 
 

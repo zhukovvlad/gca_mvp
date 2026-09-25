@@ -50,7 +50,7 @@ os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 #: реальных оферт: samples/ не коммитится, AGENTS.md §9). Любой пропуск вне
 #: реестра — прежде всего skip барьеров db_engine — роняет прогон: зелёный
 #: код возврата при молча пропущенном integration-слое и есть главный дефект,
-#: который эта защита исключает (P1 ревью PR #15; снятие 7 реестра фичи).
+#: который эта защита исключает.
 _ALLOWED_SKIPS = (
     ("tests/test_auth_coverage.py", "Публичный endpoint — auth не требуется"),
     ("tests/unit/parser/test_estimate.py", "Каталог samples/ пуст или отсутствует"),
@@ -334,7 +334,7 @@ def client(db_session) -> Iterator:
 
     `client.auth_state["role"] = UserRole.member` переключает роль текущего
     пользователя — так проверяются 403 у CRUD фазы 5 (право `admin` на заведение
-    карточек, §6.2 отчёта фазы 5). Тот же приём, что у `committing_client`.
+    карточек). Тот же приём, что у `committing_client`.
     """
     from unittest.mock import MagicMock
 
@@ -387,6 +387,22 @@ _DOMAIN_TABLES = (
     # бы их в базе, и соседние тесты видели бы чужой справочник.
     "inflation_index_values",
     "inflation_series",
+    # Семантический контур (миграция 0017), все шесть таблиц — ЯВНО, а не в
+    # расчёте на каскад от catalog_positions ниже:
+    #   - work_families каскадом НЕ очистится вовсе — на неё ссылается
+    #     catalog_contexts, а не наоборот, и TRUNCATE catalog_positions CASCADE
+    #     до неё не доходит (семьи пережили бы тест, и частичная уникальность
+    #     имени среди active сделала бы порядок тестов значимым);
+    #   - остальные пять очистились бы каскадом СЛУЧАЙНО (через
+    #     catalog_positions -> context_buckets -> catalog_contexts -> ...) —
+    #     защитой, которой никто не объявлял, и которую снимет правка любого
+    #     внешнего ключа молча. Перечисление говорит то же самое явно.
+    "semantic_events",
+    "context_members",
+    "context_routing_rules",
+    "catalog_contexts",
+    "context_buckets",
+    "work_families",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

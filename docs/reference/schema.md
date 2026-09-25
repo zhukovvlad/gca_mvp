@@ -1,4 +1,4 @@
-**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, каталожная идентичность работы, нормативы, служебные поля импорта.
+**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта.
 
 ## 1. Доменный контур
 
@@ -67,14 +67,23 @@ catalog_positions
   unit_id NULL → units_of_measurement
   kind ('POSITION|HEADER|LOT_HEADER|TRASH|TO_REVIEW'), status,
   embedding vector(768) NULL, FTS по standard_job_title (из миграции 000002)
-  # УНИКАЛЬНОСТЬ — по нормализованной паре (это и есть идентичность работы),
-  # но в индексе от названия лежит sha256 (миграция 0003, уточнение v6.3):
+  # Нормализованная пара (normalized_job_title, unit_id) — с этой ревизии
+  # идентичность ВХОДНОГО НАПИСАНИЯ и ключ каскада матчинга, а не идентичность
+  # работы: она остаётся техническим носителем существующих матрицы и
+  # нормативов (kind='POSITION') до фичи вариантов работ — идентичностью
+  # СРАВНИМОЙ РАБОТЫ станет `work_variant.id`, но это принятое НАПРАВЛЕНИЕ, а
+  # не факт этой ревизии, и таблица `work_variant` этой фичей не заводится.
+  # Группировка вариантов одной работы идёт через контексты и семьи (раздел
+  # «Семантический контур» ниже), а не через эту пару напрямую.
+  # УНИКАЛЬНОСТЬ — по нормализованной паре, но в индексе от названия лежит
+  # sha256 (миграция 0003, уточнение v6.3):
   #   UNIQUE (sha256(replace(normalized_job_title,'\','\\')::bytea),
   #           COALESCE(unit_id, -1))                                -- raw SQL
   # Причина: btree не индексирует значения длиннее 2704 байт, а в наименование
   # сметы попадают спецификации на килобайты (реальный файл — 5077 символов).
-  # Идентичность НЕ изменилась: сравнение работ идёт по полному тексту, каждая
-  # выборка по хэшу дополнена проверкой самой пары, коллизия — явный отказ.
+  # Идентичность написания по хэшу не изменилась: сравнение идёт по полному
+  # тексту пары, каждая выборка по хэшу дополнена проверкой самой пары,
+  # коллизия — явный отказ.
   # Обрезать название нельзя: две спецификации с общим началом — разные работы.
   # Обычного индекса по standard_job_title НЕТ: поиск в UI — ILIKE '%…%', его
   # btree не обслуживает (нужен был бы GIN pg_trgm, вне MVP).
@@ -101,7 +110,81 @@ units_of_measurement          # слить с UnitOfMeasure + UnitAlias из udp
                               # алиасы «м2»/«кв.м»/«м²» обязательны
 ```
 
-## 3. Нормативы
+## 3. Семантический контур
+
+Шесть таблиц (`docs/superpowers/specs/2026-09-22-catalog-families-design.md`
+§2.3): семьи работ, идемпотентная точка входа «строка × эффективная статья»,
+устойчивый контекст с принятым семантическим решением, правила маршрутизации
+корзины, явное членство позиции и журнал с ровно одним предметом.
+
+```
+work_families                 # семья: тип работы, объединяющий сравнимые варианты
+  id, seed_key text NULL      # ключ строки seed; у ручных семей NULL
+  title text NOT NULL, unit_id NULL → units_of_measurement
+  definition text NULL        # обязательно для активации (CHECK)
+  status ('draft|active|archived')
+  created_by NULL → users     # NULL = заведено seed-командой (CHECK: автор ⟺ не seed)
+  activated_by, activated_at, archived_at
+  # UNIQUE (seed_key) — NULL-ы различны, ручные семьи не сталкиваются
+  # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status='active' — raw SQL;
+  #   имя семьи не ключ, но две АКТИВНЫЕ семьи с одним именем и единицей — ошибка оператора
+
+context_buckets                # решений не несёт, только ключ группировки
+  id, catalog_position_id NOT NULL → catalog_positions
+  work_category_id NULL → work_categories
+  # UNIQUE (catalog_position_id, COALESCE(work_category_id,-1)) — raw SQL;
+  #   отсутствие статьи — своя корзина, одна на строку
+
+catalog_contexts               # устойчивая группа с семантическим решением
+  id, bucket_id NOT NULL → context_buckets, is_default boolean NOT NULL DEFAULT false
+  work_family_id NULL → work_families, family_source ('manual|suggestion') NULL,
+    family_by NULL → users, family_at NULL
+    # происхождение семьи — ОДИН тотальный предикат из двух полных ветвей
+    # (не пара равносильностей, `docs/pitfalls/db.md`)
+  semantic_kind ('WORK|SYSTEM|UNKNOWN'), semantic_kind_source ('rule|manual'),
+    semantic_kind_by NULL → users, semantic_kind_at NOT NULL
+  name_role ('WORK|LOCATION_ONLY|GENERIC_WORK'), name_role_source ('rule|manual'),
+    name_role_by NULL → users, name_role_at NOT NULL, place_dictionary_version smallint NOT NULL
+  semantic_state ('SUGGESTED|CONFIRMED|NOT_APPLICABLE')   # РОВНО три значения
+  comparability_reason ('insufficient_description') NULL, archived_at NULL
+  # UNIQUE (bucket_id, id) — цель составных FK ниже
+  # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — raw SQL;
+  #   архивный контекст по умолчанию сосуществует с действующим
+
+context_routing_rules          # упорядоченные правила корзины
+  id, bucket_id NOT NULL → context_buckets ON DELETE CASCADE, ordinal int NOT NULL
+  predicate jsonb NOT NULL, context_id bigint NOT NULL, created_by NOT NULL → users
+  # составной FK (bucket_id, context_id) → catalog_contexts (bucket_id, id):
+  #   правило не может указать на контекст чужой корзины
+  # UNIQUE (bucket_id, ordinal)
+
+context_members                # явное членство: позиция → контекст, ровно одно
+  position_item_id PK → position_items ON DELETE CASCADE
+  context_id, bucket_id (дубль под составной FK)
+  membership_state ('CURRENT|STALE'), routed_by ('default|rule|manual')
+  routing_rule_id NULL → context_routing_rules ON DELETE SET NULL
+  conflict_at NULL, conflict_from_context_id NULL → catalog_contexts    # своя ось, не membership_state
+  # составной FK (bucket_id, context_id) → catalog_contexts (bucket_id, id) ON DELETE RESTRICT
+  # Index(context_id); частичные Index(context_id) WHERE membership_state='STALE'
+  #   и WHERE conflict_at IS NOT NULL
+
+semantic_events                 # журнал; предмет РОВНО ОДИН, состав закрыт
+  id, context_id NULL → catalog_contexts, family_id NULL → work_families
+  event_type text NOT NULL       # закрытый список из пятнадцати типов
+  payload jsonb NOT NULL, actor_id NULL → users
+  # CHECK num_nonnulls(context_id, family_id) = 1
+  # CHECK предмет по ТИПУ — явное множество типов, а не префикс `family_%`
+  # CHECK payload непуст
+```
+
+`ON DELETE RESTRICT` трижды подряд одной цепочкой
+(`context_members.context_id` → `catalog_contexts.bucket_id` →
+`context_buckets.catalog_position_id`) — снести принятое семантическое решение
+мимоходом нельзя, слияние в Review обязано разобрать каждое звено явно.
+`context_members.position_item_id` уходит `CASCADE` вместе со сметой; контекст
+при этом не удаляется и не архивируется.
+
+## 4. Нормативы
 
 ```
 rate_standards
@@ -117,7 +200,7 @@ rate_standards
   # Переутверждение = UPDATE valid_to старой строки + INSERT новой. Историю не мутировать.
 ```
 
-## 4. Служебное
+## 5. Служебное
 
 ```
 import_jobs

@@ -36,6 +36,7 @@ from models import (
 from parser.constants import JSON_KEY_LOTS
 from services.additional_works import categories_by_chapter_number, resolve_ref
 from services.category_resolution import CategoryResolver, ProposalResolution
+from services.context_operations import refresh_membership_states
 from services.estimate_import import extract_positions, extract_single_proposal
 
 ErrorCode = Literal["not_found", "not_a_chapter", "structure_disabled", "mapping_broken"]
@@ -218,6 +219,7 @@ def apply_overrides(db: Session, estimate_id: int, *, already_locked: bool = Fal
 
     resolver = CategoryResolver.from_db(db)
     chapters_updated = extras_updated = chapters_manual = 0
+    all_position_ids: list[int] = []
 
     for lot_key, proposal_id, positions in _proposals_with_positions(db, estimate_id, raw):
         rows_by_key, ids_by_key = _rows_of(db, proposal_id)
@@ -236,8 +238,16 @@ def apply_overrides(db: Session, estimate_id: int, *, already_locked: bool = Fal
         chapters_manual += resolution.counters.chapters_manual
         chapters_updated += _materialize_chapters(rows_by_key, resolution)
         extras_updated += _materialize_extras(db, proposal_id, positions, resolution)
+        all_position_ids.extend(ids_by_key.values())
 
     db.flush()
+    # Каскад задачи 10 (спека §2.5, §2.8): затронутые
+    # членства, чья эффективная статья разошлась со статьёй их корзины,
+    # помечаются `STALE`; незатронутые остаются `CURRENT`. Приведение —
+    # ПОСЛЕ материализации статей разделов, в ТОЙ ЖЕ транзакции. Строки-
+    # разделы и несопоставленные позиции членства не имеют и молча
+    # пропускаются самим `refresh_membership_states` (фильтр по `context_members`).
+    refresh_membership_states(db, position_item_ids=all_position_ids)
     return ApplyResult(chapters_updated, extras_updated, chapters_manual)
 
 

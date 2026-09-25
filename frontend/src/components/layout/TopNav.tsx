@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home, Users, LogOut, Search, Bell, FileText, Gavel, ListChecks, Ruler,
+  Home, Users, LogOut, Search, Bell, FileText, Gavel, ListChecks, Ruler, Layers,
   type LucideIcon,
 } from "lucide-react";
 import { Logo } from "./Logo";
@@ -25,6 +25,9 @@ const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOn
   // отсюда порядок пункта: сразу после «Договоры», перед «Ручной матчинг».
   { to: "/tenders",     icon: Gavel,      label: "Тендеры" },
   { to: "/review",      icon: ListChecks, label: "Ручной матчинг" },
+  // Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10) —
+  // право `admin`, тем же решением, что у «Нормативы» ниже.
+  { to: "/families",    icon: Layers,     label: "Семьи",   adminOnly: true },
   { to: "/standards",   icon: Ruler,      label: "Нормативы", adminOnly: true },
   { to: "/admin/users", icon: Users,      label: "Пользователи", adminOnly: true },
 ];

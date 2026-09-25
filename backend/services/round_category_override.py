@@ -38,7 +38,7 @@ def _lock_scope(db: Session, tender_id: int, round_id: int) -> list[int]:
     """tender FOR KEY SHARE → round FOR KEY SHARE → offer-сметы FOR UPDATE по
     `estimate_id ASC`. KEY SHARE на тендере совместим с параллельным раундовым
     писателем — этого мы и добиваемся; сериализация с соседями происходит НИЖЕ,
-    и точное место у каждого своё (уточнено финальным ревью ветки, первая
+    и точное место у каждого своё (первая
     редакция валила всех троих в одну кучу «конфликтует по тендеру»):
 
     - `import_round` (загрузка и замена файла раунда) берёт тендер
@@ -54,7 +54,7 @@ def _lock_scope(db: Session, tender_id: int, round_id: int) -> list[int]:
     rnd = require_round(db, tender_id, round_id)
     # ИМЕННО `read=True, key_share=True`: это компилируется в `FOR KEY SHARE`.
     # Одно `key_share=True` даёт `FOR NO KEY UPDATE` (проверено компиляцией под
-    # диалект PostgreSQL — находка внешнего ревью плана), а он НЕсовместим сам
+    # диалект PostgreSQL), а он НЕсовместим сам
     # с собой — второй раундовый писатель встал бы уже на тендере, и блокировки
     # смет ниже перестали бы быть тем, что его держит.
     #
@@ -127,6 +127,11 @@ def _recompute(db: Session, estimate_ids: list[int]) -> ApplyResult:
         chapters += r.chapters_updated
         extras += r.additional_works_updated
         manual += r.chapters_manual
+
+    # `membership_state` (спека §2.5) приводит `apply_overrides` в цикле выше —
+    # по всем позициям каждой сметы раунда; эффективная статья позиции
+    # зависит только от разделов её же предложения, поэтому отдельного
+    # приведения по раунду здесь нет.
     return ApplyResult(chapters, extras, manual)
 
 
@@ -136,7 +141,7 @@ def set_round_override(db: Session, *, tender_id: int, round_id: int, lot_key: s
     ids = _lock_scope(db, tender_id, round_id)
     # Порядок между разрешением ключа и проверкой статьи спекой НЕ зафиксирован
     # (§2.4 перечисляет оба исхода, не фиксируя очерёдность) — оставлен как
-    # есть НАМЕРЕННО (решение по ревью): ключ раньше статьи держит PUT и
+    # есть НАМЕРЕННО: ключ раньше статьи держит PUT и
     # DELETE одинаковыми через шаги 1-2, а «DELETE симметричен через шаги 1-2»
     # у спеки как раз об этом. Тем же порядком `not_a_chapter` (внутри
     # `_resolve_key`) тоже предшествует `category_not_found`.
@@ -178,7 +183,7 @@ def clear_round_override(db: Session, *, tender_id: int, round_id: int, lot_key:
     пересчёта незачем.
     """
     ids = _lock_scope(db, tender_id, round_id)
-    chapters = _resolve_key(db, ids, lot_key, position_key_in_proposal)   # ДО no-op (§2.4, коллизия ревью гейта 2)
+    chapters = _resolve_key(db, ids, lot_key, position_key_in_proposal)   # ДО no-op (§2.4)
     for eid in ids:
         existing = db.get(EstimateCategoryOverride, chapters[eid].id)
         if existing is not None:

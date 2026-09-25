@@ -28,7 +28,20 @@ from crud import review as crud_review
 from crud.common import DomainError
 from database import get_db
 from models import CatalogPosition
-from services.review import ReviewError, merge_into_position, set_kind
+
+#: Импортирован ПОД СТАРЫМ ИМЕНЕМ намеренно, а не переименован:
+#: `test_review_api_concurrency.py::rival` монки-патчит глобальное имя
+#: `routers.review.merge_into_position` (`getattr(router_module,
+#: "merge_into_position")`), и этот существующий тест трогать нельзя.
+#: Вызов внутри роутера идёт через ЭТО ЖЕ глобальное имя модуля — оно
+#: читается заново при каждом вызове, и именно его подменяет `monkeypatch`;
+#: назови роутер функцию иначе (или обратись к ней напрямую через
+#: `services.review.merge_into_position_outcome`), патч гонки целился бы
+#: мимо, и «слияние проиграло гонку» перестало бы воспроизводиться. Сама
+#: функция — `merge_into_position_outcome` (с полем `warnings`); имя на
+#: вызывающей стороне не переименовано, только импорт.
+from services.review import ReviewError, set_kind
+from services.review import merge_into_position_outcome as merge_into_position
 from services.unit_resolution import UnitResolver
 
 log = logging.getLogger(__name__)
@@ -151,7 +164,12 @@ def merge(
     _require_exists(db, body.target_id)
 
     try:
-        moved = merge_into_position(db, to_review_id=to_review_id, target_id=body.target_id)
+        # `merge_into_position` здесь — `merge_into_position_outcome` под
+        # старым именем (см. комментарий у импорта); вызов обязан идти через
+        # это же глобальное имя модуля, которое подменяет monkeypatch.
+        outcome = merge_into_position(
+            db, to_review_id=to_review_id, target_id=body.target_id
+        )
         db.commit()
     except ReviewError as exc:
         db.rollback()
@@ -160,11 +178,18 @@ def merge(
         db.rollback()
         raise
 
-    log.info("Review API: строка %d слита с %d, позиций %d", to_review_id, body.target_id, moved)
+    log.info(
+        "Review API: строка %d слита с %d, позиций %d, предупреждений %d",
+        to_review_id,
+        body.target_id,
+        outcome.moved_positions,
+        len(outcome.warnings),
+    )
     return {
         "to_review_id": to_review_id,
         "target": crud_review.catalog_position_dict(db, body.target_id),
-        "moved_positions": moved,
+        "moved_positions": outcome.moved_positions,
+        "warnings": outcome.warnings,
     }
 
 

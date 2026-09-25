@@ -29,6 +29,7 @@ from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import reports as reports_router
 from routers import review as review_router
+from routers import semantic as semantic_router
 from routers import settings as settings_router
 from routers import tenders as tenders_router
 from routers import units
@@ -177,6 +178,11 @@ app.include_router(settings_router.router, dependencies=_auth_dep)
 app.include_router(analytics_router.router, dependencies=_auth_dep)
 # Excel-выгрузки §7.6 — тоже чтение; макет «для банка» согласован (§6.1 фазы 6).
 app.include_router(reports_router.router, dependencies=_auth_dep)
+
+# Семьи и контексты (спека 2026-09-22-catalog-families) — весь контур под
+# admin (§2.7, §2.10); каждый маршрут несёт СВОЙ `Depends(require_admin)`
+# (см. докстринг routers/semantic.py), здесь — только аутентификация.
+app.include_router(semantic_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

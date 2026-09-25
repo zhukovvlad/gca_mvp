@@ -12,6 +12,7 @@ import {
   rateStandardsApi,
   referencesApi,
   reviewApi,
+  semanticApi,
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
@@ -21,6 +22,11 @@ import { qk } from "./queryKeys";
 import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
+  AcceptTargetDecisionInput,
+  ArchiveContextInput,
+  AssignFamilyInput,
+  ConfirmKindInput,
+  ContextsParams,
   InflationSeriesInput,
   InflationSeriesPatch,
   BankComparisonParams,
@@ -30,6 +36,7 @@ import type {
   ContractorInput,
   Decimal,
   ManualKind,
+  MoveMembersInput,
   ObjectInput,
   RateClassInput,
   RateStandardInput,
@@ -39,7 +46,12 @@ import type {
   ReviewQueueParams,
   RoundInput,
   SetCategoryOverrideInput,
+  SetNameRoleInput,
+  SplitContextInput,
   TenderInput,
+  WorkFamilyInput,
+  WorkFamilyPatch,
+  WorkFamilyStatus,
 } from "@/types/domain";
 
 /** Элемент `detail` при ошибке валидации Pydantic. */
@@ -536,6 +548,12 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
         }
       }
       if (job.status === "done") {
+        // Успешный импорт создаёт/обновляет корзины, контексты и членства
+        // (спека контура §2.9) — счётчики на карточках и сама очередь
+        // экрана `/families`, открытого до загрузки, иначе оставались бы
+        // прежними до истечения `staleTime`. Общая для ОБОИХ владельцев,
+        // не привязана к `contractId`/`tenderId` отдельно.
+        qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
         if (ownerRef?.contractId !== undefined) {
           qc.invalidateQueries({ queryKey: qk.review.all });
           // Успешный импорт МЕНЯЕТ содержимое паспорта целиком: смета появляется
@@ -593,10 +611,17 @@ export function useCatalogSearch(q: string, unitId?: number) {
   });
 }
 
-/** Слияние меняет и очередь, и каталог, и нормативы могли переехать на цель. */
+/**
+ * Слияние меняет и очередь, и каталог, и нормативы могли переехать на цель.
+ * Решения Review (слияние, `set_kind`) архивируют и переселяют контексты
+ * каталога, меняют `semantic_state` строк-разделов/мусора — без этой
+ * инвалидации экран `/families`, открытый заранее, показывал бы прежнюю
+ * очередь/карточку контекста до истечения `staleTime`.
+ */
 function invalidateAfterReviewDecision(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.review.all });
   qc.invalidateQueries({ queryKey: qk.catalog.all });
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
 }
 
 export function useMergeReview() {
@@ -606,9 +631,18 @@ export function useMergeReview() {
       reviewApi.merge(toReviewId, targetId),
     onSuccess: (result) => {
       invalidateAfterReviewDecision(qc);
+      // Существующий тост успеха остаётся РОВНО ОДИН независимо от warnings
+      // (спека §2.8): предупреждение о конфликте дополняет подтверждение
+      // слияния, а не заменяет и не дублирует его.
       toast.success(
         `Слито с «${result.target.standard_job_title}»: перенесено позиций — ${result.moved_positions}`
       );
+      // `member`, выполняющий слияние, экрана семей не видит вовсе (он под
+      // `RequireAdmin`) — тост здесь единственное место, где он узнаёт о
+      // конфликте разошедшихся решений.
+      for (const warning of result.warnings) {
+        toast.warning(warning);
+      }
     },
     onError: toastApiError,
   });
@@ -802,6 +836,10 @@ export function useSetCategoryOverride() {
       // без этой инвалидации она оставалась бы устаревшей для ЛЮБОГО потребителя
       // `qk.contracts.card`, не только для формы замены (находка ревью PR #16).
       qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
+      // Разнос меняет `membership_state` членств контекста (CURRENT/STALE) —
+      // очередь/карточка экрана `/families`, открытые заранее, иначе
+      // держали бы прежнее состояние до истечения `staleTime`.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
     },
     onError: toastApiError,
   });
@@ -815,6 +853,7 @@ export function useClearCategoryOverride() {
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: qk.passport.project(input.contractId) });
       qc.invalidateQueries({ queryKey: qk.contracts.card(input.contractId) });
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
     },
     onError: toastApiError,
   });
@@ -1172,6 +1211,9 @@ function invalidateAfterRoundOverride(qc: ReturnType<typeof useQueryClient>, ten
   qc.invalidateQueries({ queryKey: qk.tenders.stageSummaryForTender(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.stagePositionsForTender(tenderId) });
   qc.invalidateQueries({ queryKey: qk.tenders.roundUnallocated(tenderId, roundId) });
+  // Тот же факт, что у сметного разноса (`useSetCategoryOverride`):
+  // `membership_state` контекста зависит от статьи строки раунда.
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
 }
 
 export function useSetRoundCategoryOverride() {
@@ -1298,5 +1340,236 @@ export function useDeleteParticipant() {
       if (apiErrorCode(error) === "confirmation_required") return;
       toastApiError(error);
     },
+  });
+}
+
+// ========== Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10) ==========
+
+export function useWorkFamilies(status?: WorkFamilyStatus, unitId?: number) {
+  return useQuery({
+    queryKey: qk.workFamilies.list(status, unitId),
+    queryFn: () => semanticApi.listFamilies({ status, unit_id: unitId }),
+  });
+}
+
+export function useCreateWorkFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: WorkFamilyInput) => semanticApi.createFamily(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      toast.success("Семья создана");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useUpdateWorkFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: WorkFamilyPatch }) =>
+      semanticApi.updateFamily(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Имя семьи денормализовано в карточку контекста (`family_title`).
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Семья обновлена");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useActivateWorkFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => semanticApi.activateFamily(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Статус семьи виден в карточке и очереди контекстов.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Семья активирована");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useArchiveWorkFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => semanticApi.archiveFamily(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Статус семьи виден в карточке и очереди контекстов.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Семья архивирована");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useMergeWorkFamilies() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, targetFamilyId }: { id: number; targetFamilyId: number }) =>
+      semanticApi.mergeFamilies(id, targetFamilyId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Семьи слиты");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useSemanticContexts(params?: ContextsParams) {
+  return useQuery({
+    queryKey: qk.semanticContexts.list(params),
+    queryFn: () => semanticApi.listContexts(params),
+  });
+}
+
+export function useContextCard(contextId: number | null) {
+  return useQuery({
+    queryKey: qk.semanticContexts.card(contextId ?? -1),
+    queryFn: () => semanticApi.contextCard(contextId as number),
+    enabled: contextId !== null,
+  });
+}
+
+/** Инвалидация после мутации контекста: очередь целиком и карточка. */
+function invalidateContext(qc: ReturnType<typeof useQueryClient>, contextId: number) {
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.card(contextId) });
+}
+
+export function useConfirmKind() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: ConfirmKindInput }) =>
+      semanticApi.confirmKind(contextId, input),
+    onSuccess: (_, { contextId, input }) => {
+      invalidateContext(qc, contextId);
+      toast.success(input.unconfirm ? "Подтверждение вида снято" : "Вид подтверждён");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useSetNameRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: SetNameRoleInput }) =>
+      semanticApi.setNameRole(contextId, input),
+    onSuccess: (_, { contextId }) => {
+      invalidateContext(qc, contextId);
+      toast.success("Роль имени переопределена");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useAssignFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: AssignFamilyInput }) =>
+      semanticApi.assignFamily(contextId, input),
+    onSuccess: (_, { contextId }) => {
+      invalidateContext(qc, contextId);
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      toast.success("Семья контекста обновлена");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useSplitContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: SplitContextInput }) =>
+      semanticApi.splitContext(contextId, input),
+    onSuccess: (_, { contextId }) => {
+      invalidateContext(qc, contextId);
+      toast.success("Контекст разделён");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useMergeContexts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, targetContextId }: { contextId: number; targetContextId: number }) =>
+      semanticApi.mergeContexts(contextId, targetContextId),
+    onSuccess: (_, { contextId, targetContextId }) => {
+      invalidateContext(qc, contextId);
+      invalidateContext(qc, targetContextId);
+      toast.success("Контексты слиты");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useArchiveContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: ArchiveContextInput }) =>
+      semanticApi.archiveContext(contextId, input),
+    onSuccess: (_, { contextId }) => {
+      invalidateContext(qc, contextId);
+      toast.success("Контекст архивирован");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useMoveMembers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: MoveMembersInput) => semanticApi.moveMembers(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Членства перенесены");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Устаревшее членство целиком — ОДНА мутация на оба шага контракта («сначала
+ * `GET transfer-proposal`, затем `POST transfer` с `expected_category_id`»,
+ * план задачи 13, «Решения оркестратора»): по-строчная кнопка карточки
+ * контекста знает только `position_item_id` — читает предложение
+ * сама и передаёт его же `effective_category_id` дальше, а не заставляет
+ * оператора нажимать дважды.
+ */
+export function useAcceptStaleTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (positionItemId: number) => {
+      const { proposal } = await semanticApi.transferProposal(positionItemId);
+      if (!proposal) {
+        throw new Error("Предложения переноса нет — членство уже действующее.");
+      }
+      return semanticApi.acceptTransfer(positionItemId, {
+        expected_category_id: proposal.effective_category_id,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Перенос принят");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useAcceptTargetDecision() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: AcceptTargetDecisionInput) => semanticApi.acceptTargetDecision(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      toast.success("Решение цели принято");
+    },
+    onError: toastApiError,
   });
 }

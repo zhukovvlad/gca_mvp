@@ -1,20 +1,43 @@
 """Оркестратор задания импорта: две сессии, атомарность, recovery (AGENTS.md §5)."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
 from freezegun import freeze_time
 
-from models import CatalogKind, CatalogPosition, Estimate, ImportJob, ImportJobStatus, PositionItem
+from models import (
+    CatalogContext,
+    CatalogKind,
+    CatalogPosition,
+    ContextBucket,
+    ContextMember,
+    DecisionSource,
+    Estimate,
+    ImportJob,
+    ImportJobStatus,
+    Lot,
+    NameRole,
+    PositionItem,
+    Proposal,
+    SemanticEvent,
+    SemanticKind,
+    SemanticState,
+)
 from parser import EstimateParseError, ParseResult
 from parser.sanitize_text import NormalizationUnavailableError, normalize_job_title_with_lemmatization
 from services import import_pipeline
+from services.context_routing import get_or_create_bucket
+from services.context_routing import route_positions as _real_route_positions
 from services.maintenance import recover_interrupted_jobs
 from tests.payloads import payload_for, position
 
 pytestmark = pytest.mark.integration
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def fake_parse(payload, *, warnings=(), version="1.0.0"):
@@ -263,8 +286,8 @@ class TestAtomicity:
 
         Прямое наблюдение, которого не хватало `test_estimate_import.py`
         (тот файл вызывает `import_estimate` напрямую и никогда не видит
-        `import_jobs.warnings` — только возвращаемый `ImportOutcome`; ревью
-        задачи 7, правки 1 и 2). Здесь — полный пайплайн: строка с
+        `import_jobs.warnings` — только возвращаемый `ImportOutcome`).
+        Здесь — полный пайплайн: строка с
         отрицательной ценой доходит до конца `import_estimate` НОРМАЛЬНО (тот
         же приём, что `test_crash_between_matching_and_final_leaves_no_estimate`
         выше — падение после матчинга, patch `finalize_done`), предупреждение
@@ -522,3 +545,495 @@ class TestRoundJob:
         assert done.positions_total == 3
         assert (done.matched_cache + done.matched_exact + done.matched_nonposition + done.to_review) == done.positions_total
         assert done.parsed_data == payload
+
+
+# ---------------------------------------------------------------------------
+#  Задача 5 плана: членства на импорте (сессия B, между матчингом и финалом).
+#  `docs/superpowers/plans/2026-09-22-catalog-families.md`, Task 5.
+# ---------------------------------------------------------------------------
+
+class TestMembershipsBuiltOnImport:
+    """У каждой не-раздельной позиции ровно одно членство, у строк-разделов —
+    ни одного. Сверка МНОЖЕСТВОМ `position_item_id`, а не только числом:
+    равное количество не доказывает совпадающий состав."""
+
+    def test_every_non_chapter_position_gets_one_membership_and_chapters_get_none(
+        self, job_env
+    ):
+        payload = payload_for(
+            job_env.contract,
+            [
+                position(job_title="Раздел 1", is_chapter=True, chapter_number="1"),
+                position(job_title="Устройство стяжки", unit="м2", unit_cost_total="100", number="2"),
+                position(job_title="Монтаж кабеля", unit="м", unit_cost_total="50", number="3"),
+            ],
+        )
+
+        job = job_env.run(payload)
+        assert job.status == ImportJobStatus.done.value
+
+        job_env.db.expire_all()
+        rows = job_env.db.execute(sa.select(PositionItem.id, PositionItem.is_chapter)).all()
+        non_chapter_ids = {r.id for r in rows if not r.is_chapter}
+        chapter_ids = {r.id for r in rows if r.is_chapter}
+        assert non_chapter_ids and chapter_ids  # входные данные действительно смешаны
+
+        member_ids = set(
+            job_env.db.execute(sa.select(ContextMember.position_item_id)).scalars().all()
+        )
+
+        assert member_ids == non_chapter_ids
+        assert member_ids.isdisjoint(chapter_ids)
+
+
+class TestMembershipsCoverEveryRoundEstimate:
+    """Раунд покрыт целиком: членства есть у позиций КАЖДОЙ сметы раунда
+    (обеих offer-смет и baseline). Сверка по каждому `estimate_id`
+    отдельно, а не суммой по всему раунду — иначе смета, оставшаяся без
+    маршрутизации, спряталась бы за членствами других смет того же раунда."""
+
+    def test_each_round_estimate_has_memberships_for_all_its_positions(self, job_env):
+        from tests.payloads import baseline_proposal_block, proposal, round_payload
+
+        rnd = job_env.factories.TenderRoundFactory.create()
+        job_env.db.flush()
+        job = job_env.factories.ImportJobFactory.create(
+            contract=None, round_id=rnd.id, file_key=job_env.storage.save(b"PK\x03\x04y"),
+            status=ImportJobStatus.pending.value,
+        )
+        job_env.db.commit()
+
+        payload = round_payload(
+            [
+                proposal(
+                    [position(job_title="Работа", unit="м2", unit_cost_total="10", total_cost_total="10")],
+                    title="ООО А", inn="7700000001",
+                ),
+                proposal(
+                    [position(job_title="Работа", unit="м2", unit_cost_total="11", total_cost_total="11")],
+                    title="ООО Б", inn="7700000002",
+                ),
+            ],
+            baseline=baseline_proposal_block(
+                [position(job_title="Работа", unit="м2", unit_cost_total="9", total_cost_total="9")]
+            ),
+        )
+        done = job_env.run(payload, job=job, parse=fake_parse(payload, version="4.0.0"))
+
+        assert done.status == ImportJobStatus.done.value
+        assert done.estimates_created == 3
+
+        job_env.db.expire_all()
+        estimate_ids = (
+            job_env.db.execute(sa.select(Estimate.id).where(Estimate.import_job_id == done.id))
+            .scalars()
+            .all()
+        )
+        assert len(estimate_ids) == 3
+
+        for estimate_id in estimate_ids:
+            rows = job_env.db.execute(
+                sa.select(PositionItem.id, PositionItem.is_chapter)
+                .join(Proposal, Proposal.id == PositionItem.proposal_id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimate_id)
+            ).all()
+            non_chapter_ids = {r.id for r in rows if not r.is_chapter}
+            assert non_chapter_ids, f"смета {estimate_id}: нет позиций в фикстуре"
+
+            member_ids = set(
+                job_env.db.execute(
+                    sa.select(ContextMember.position_item_id).where(
+                        ContextMember.position_item_id.in_(non_chapter_ids)
+                    )
+                ).scalars().all()
+            )
+            assert member_ids == non_chapter_ids, f"смета {estimate_id}: членства не совпали"
+
+
+class TestRoutingBelongsToTransactionB:
+    """Членства пишутся В ТОЙ ЖЕ транзакции сессии B, что и домен (план, Task 5;
+    спека §2.9). Инъекция отказа ПОСЛЕ маршрутизации проверяет ВНУТРИ той же
+    сессии, что членства уже записаны и позиции уже сопоставлены, ПРЕЖДЕ чем
+    бросить исключение — иначе тест не отличил бы «записали и откатили» от
+    «ничего не записали»."""
+
+    def test_failure_after_routing_rolls_back_everything_including_memberships(
+        self, job_env, monkeypatch
+    ):
+        from services import import_pipeline as pipeline_module
+
+        def boom(db, *, estimate_ids, **kwargs):
+            _real_route_positions(db, estimate_ids=estimate_ids, **kwargs)
+            # (б) членства уже записаны — счёт > 0 — И позиции уже сопоставлены
+            # с каталогом (маршрутизация идёт после матчинга).
+            member_count = db.execute(
+                sa.select(sa.func.count()).select_from(ContextMember)
+            ).scalar_one()
+            assert member_count > 0, "обёртка вызвана раньше, чем членства появились"
+            unmatched = db.execute(
+                sa.select(sa.func.count())
+                .select_from(PositionItem)
+                .where(
+                    PositionItem.is_chapter.is_(False),
+                    PositionItem.catalog_position_id.is_(None),
+                )
+            ).scalar_one()
+            assert unmatched == 0, "позиции ещё не сопоставлены — маршрутизация раньше матчинга?"
+            raise RuntimeError("инъекция отказа ПОСЛЕ маршрутизации")
+
+        monkeypatch.setattr(pipeline_module, "route_positions", boom)
+
+        job = job_env.run(
+            payload_for(
+                job_env.contract,
+                [
+                    position(job_title="Раздел 1", is_chapter=True, chapter_number="1"),
+                    position(job_title="Устройство стяжки", unit="м2", unit_cost_total="100", number="2"),
+                ],
+            )
+        )
+
+        assert job.status == ImportJobStatus.error.value
+        assert job_env.estimates() == []
+
+        job_env.db.expire_all()
+        for model in (ContextMember, ContextBucket, CatalogContext, SemanticEvent):
+            count = job_env.db.execute(
+                sa.select(sa.func.count()).select_from(model)
+            ).scalar_one()
+            assert count == 0, f"{model.__name__}: откат не убрал строки"
+
+    def test_failure_in_finalize_leaves_no_memberships(self, job_env, monkeypatch):
+        """Второй вход той же природы: отказ в `finalize_done` доказывает,
+        что членства не коммитятся раньше финала — они тоже откатываются
+        вместе с доменом."""
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("падение между маршрутизацией и финалом")
+
+        monkeypatch.setattr("services.import_pipeline.finalize_done", boom)
+
+        job = job_env.run(
+            payload_for(job_env.contract, [position(job_title="Работа", unit="шт", unit_cost_total="10")])
+        )
+
+        assert job.status == ImportJobStatus.error.value
+        job_env.db.expire_all()
+        member_count = job_env.db.execute(
+            sa.select(sa.func.count()).select_from(ContextMember)
+        ).scalar_one()
+        assert member_count == 0
+
+
+class TestRoutingHappensAfterCatalogAndBeforeFinal:
+    """Порядок «матчинг → маршрутизация → финал» — утверждение о ПОТОКЕ
+    ДАННЫХ, а не о тексте кода. Две половины теста стерегут РАЗНОЕ:
+
+    - половина про статус (`seen_status`) стережёт маршрутизацию ПОСЛЕ ТОГО,
+      как сессия B уже закоммичена (например, маршрутизация в отдельной
+      сессии, начатой уже после выхода из `with session_factory() as db,
+      db.begin():`): независимая сессия читает статус job ВНУТРИ обёртки
+      `route_positions` и обязана увидеть `matching`, а не `done`;
+    - половина про число членств (`seen_member_counts`) стережёт порядок
+      ВНУТРИ самой транзакции B — что `route_positions` вызывается РАНЬШЕ
+      `finalize_done`, а не после него: обёртка `finalize_done` считает
+      членства В ТОЙ ЖЕ сессии B и обязана увидеть их уже существующими.
+
+    Обе половины нужны вместе: перестановка `route_positions` ПОСЛЕ
+    `finalize_done`, но всё ещё ВНУТРИ ещё не закоммиченной транзакции B, не
+    трогает статус (`done` до коммита B в любом случае не виден независимой
+    сессии, порядок внутри B на это не влияет) — такую перестановку ловит
+    только половина про число членств."""
+
+    def test_status_has_not_reached_done_yet_during_routing_and_memberships_exist_before_finalize(
+        self, job_env, monkeypatch
+    ):
+        from services import import_pipeline as pipeline_module
+
+        seen_status: list[str] = []
+
+        def spying_route_positions(db, *, estimate_ids, **kwargs):
+            with job_env.session_factory() as independent:
+                seen_status.append(
+                    independent.execute(
+                        sa.select(ImportJob.status).where(ImportJob.id == job_env.job.id)
+                    ).scalar_one()
+                )
+            return _real_route_positions(db, estimate_ids=estimate_ids, **kwargs)
+
+        real_finalize_done = pipeline_module.finalize_done
+        seen_member_counts: list[int] = []
+
+        def spying_finalize_done(db, job_id, **kwargs):
+            seen_member_counts.append(
+                db.execute(sa.select(sa.func.count()).select_from(ContextMember)).scalar_one()
+            )
+            return real_finalize_done(db, job_id, **kwargs)
+
+        monkeypatch.setattr(pipeline_module, "route_positions", spying_route_positions)
+        monkeypatch.setattr(pipeline_module, "finalize_done", spying_finalize_done)
+
+        payload = payload_for(
+            job_env.contract, [position(job_title="Работа", unit="шт", unit_cost_total="10")]
+        )
+        job = job_env.run(payload)
+
+        assert job.status == ImportJobStatus.done.value
+        # НЕ done: статус читается ВНУТРИ обёртки, пока job ещё в процессе.
+        assert seen_status == [ImportJobStatus.matching.value]
+        # Ровно одно членство — единственная не-раздельная позиция фикстуры —
+        # уже существует к моменту вызова finalize_done.
+        assert seen_member_counts == [1]
+
+
+class TestFiveCountersStayTheSame:
+    """Пять счётчиков `import_jobs` — те же, что до фичи, побайтно:
+    маршрутизация их не расширяет и не сдвигает (спека §2.9)."""
+
+    def test_matchcounters_keys_equal_the_five_known_names(self):
+        """(а) Независимый литерал-оракул, а не перебор словаря модуля."""
+        from services.matching import MatchCounters
+
+        assert set(MatchCounters().as_dict().keys()) == {
+            "positions_total",
+            "matched_cache",
+            "matched_exact",
+            "matched_nonposition",
+            "to_review",
+        }
+
+    def test_import_jobs_table_gained_no_new_columns(self):
+        """Литерал снят ДО задачи 5 из `models.py` (`ImportJob`) —
+        маршрутизация не заводит новых колонок `import_jobs`."""
+        assert {c.name for c in ImportJob.__table__.columns} == {
+            "id",
+            "contract_id",
+            "round_id",
+            "amendment_no",
+            "filename",
+            "file_key",
+            "file_sha256",
+            "status",
+            "error_text",
+            "warnings",
+            "positions_total",
+            "matched_cache",
+            "matched_exact",
+            "matched_nonposition",
+            "to_review",
+            "parsed_data",
+            "parser_version",
+            "estimates_created",
+            "created_at",
+            "started_at",
+            "finished_at",
+        }
+
+    def test_routing_does_not_shift_the_five_counters_delivered_to_final_status(
+        self, job_env, monkeypatch
+    ):
+        """(б) Шпион на `match_positions` снимает КОПИЮ счётчиков сразу после
+        матчинга; шпион на `finalize_done` — значения, дошедшие до финала.
+        Плюс литеральные ожидаемые числа, выведенные из payload (2
+        не-раздельные ИМЕНОВАННЫЕ позиции, обе новые — обе уходят в
+        `to_review`), чтобы тест не был тавтологией шпиона.
+
+        Во входе есть ЧЕТВЁРТАЯ позиция — БЕЗ названия работы. Она не входит
+        в каскад матчинга вовсе (`estimate_import.py`: строка без
+        `job_title` не допускается к матчингу за отсутствием идентичности),
+        поэтому в `MatchCounters` не видна, но доходит до `route_positions` и
+        считается там отдельным счётчиком `RoutingOutcome.members_skipped_unmatched`
+        — счётчиком, которого среди пяти колонок `import_jobs` нет. Именно
+        такой вход и нужен утверждению «маршрутизация не сдвигает ни одного
+        из пяти счётчиков»: без строки, у которой нет `catalog_position_id`,
+        утечка `members_skipped_unmatched` в `to_review` была бы неотличима
+        от отсутствия утечки — оба случая дали бы `to_review == 2`."""
+        from services import import_pipeline as pipeline_module
+
+        real_match_positions = pipeline_module.match_positions
+        real_finalize_done = pipeline_module.finalize_done
+        snapshots: dict[str, object] = {}
+
+        def spying_match(db, items):
+            result = real_match_positions(db, items)
+            snapshots["after_match"] = dict(result.counters.as_dict())
+            return result
+
+        def spying_finalize(db, job_id, *, counters, warnings, now, estimates_created):
+            snapshots["at_finalize"] = dict(counters.as_dict())
+            snapshots["at_finalize_keys"] = set(counters.as_dict().keys())
+            return real_finalize_done(
+                db,
+                job_id,
+                counters=counters,
+                warnings=warnings,
+                now=now,
+                estimates_created=estimates_created,
+            )
+
+        monkeypatch.setattr(pipeline_module, "match_positions", spying_match)
+        monkeypatch.setattr(pipeline_module, "finalize_done", spying_finalize)
+
+        payload = payload_for(
+            job_env.contract,
+            [
+                position(job_title="Раздел 1", is_chapter=True, chapter_number="1"),
+                position(job_title="Устройство стяжки", unit="м2", unit_cost_total="100", number="2"),
+                position(job_title="Монтаж кабеля", unit="м", unit_cost_total="50", number="3"),
+                position(job_title=None, unit="шт", unit_cost_total="5", number="4"),
+            ],
+        )
+        job = job_env.run(payload)
+
+        assert job.status == ImportJobStatus.done.value
+        expected = {
+            "positions_total": 2,
+            "matched_cache": 0,
+            "matched_exact": 0,
+            "matched_nonposition": 0,
+            "to_review": 2,
+        }
+        assert snapshots["after_match"] == expected
+        assert snapshots["at_finalize"] == snapshots["after_match"]
+        assert snapshots["at_finalize_keys"] == set(expected.keys())
+        assert (
+            job.positions_total,
+            job.matched_cache,
+            job.matched_exact,
+            job.matched_nonposition,
+            job.to_review,
+        ) == (
+            expected["positions_total"],
+            expected["matched_cache"],
+            expected["matched_exact"],
+            expected["matched_nonposition"],
+            expected["to_review"],
+        )
+
+        # Строка без названия сохранена (job_title_in_proposal == "" — NOT
+        # NULL, §5 estimate_import), но у неё нет catalog_position_id и,
+        # следовательно, нет членства: она — members_skipped_unmatched, а не
+        # часть каскада.
+        job_env.db.expire_all()
+        untitled_id = job_env.db.execute(
+            sa.select(PositionItem.id).where(PositionItem.job_title_in_proposal == "")
+        ).scalar_one()
+        untitled_has_membership = job_env.db.execute(
+            sa.select(sa.func.count())
+            .select_from(ContextMember)
+            .where(ContextMember.position_item_id == untitled_id)
+        ).scalar_one()
+        assert untitled_has_membership == 0
+
+
+class TestRoutingFailureIsADomainRefusal:
+    """Отказ маршрутизации — доменный, а не диагностический: корзина без
+    действующего контекста по умолчанию роняет job в `error` с текстом,
+    называющим корзину (спека §2.4). Каталожная строка строится так, чтобы
+    совпасть с той, которую найдёт матчинг (та же нормализация, что и у
+    `TestRealNormalization` выше)."""
+
+    def test_bucket_without_a_live_default_context_fails_the_job_naming_the_bucket(
+        self, job_env
+    ):
+        title = "Устройство фундамента под опору"
+        normalized = normalize_job_title_with_lemmatization(title)
+
+        catalog_position = job_env.factories.CatalogPositionFactory.create(
+            standard_job_title=title,
+            normalized_job_title=normalized,
+            kind=CatalogKind.POSITION.value,
+            unit_id=None,
+        )
+        job_env.db.flush()
+
+        # Корзина той пары, в которую попадёт позиция импорта: без раздела
+        # эффективная статья пуста (`work_category_id=None`) — тот же путь,
+        # что у позиции без раздела в матчинге.
+        bucket, created = get_or_create_bucket(
+            job_env.db, catalog_position_id=catalog_position.id, work_category_id=None
+        )
+        assert created is True
+
+        # ЗААРХИВИРОВАННЫЙ прямой правкой строки default-контекст — единственный,
+        # и он не действующий: у корзины нет живого default (спека §2.4).
+        default_context = CatalogContext(
+            bucket_id=bucket.id,
+            is_default=True,
+            semantic_kind=SemanticKind.WORK.value,
+            semantic_kind_source=DecisionSource.rule.value,
+            semantic_kind_at=_now(),
+            name_role=NameRole.WORK.value,
+            name_role_source=DecisionSource.rule.value,
+            name_role_at=_now(),
+            place_dictionary_version=1,
+            semantic_state=SemanticState.SUGGESTED.value,
+            archived_at=_now(),
+        )
+        job_env.db.add(default_context)
+        job_env.db.commit()
+
+        bucket_id = bucket.id
+
+        payload = payload_for(
+            job_env.contract, [position(job_title=title, unit=None, unit_cost_total="10")]
+        )
+        job = job_env.run(payload)
+
+        assert job.status == ImportJobStatus.error.value
+        # Текст РОВНО тот, что строит `_live_default_context` (RoutingError) —
+        # не просто «где-то содержит цифру id корзины»: `f"...{id} "` с
+        # пробелом после числа якорит id как целое слово, а не подстроку.
+        assert job.error_text == (
+            f"у корзины {bucket_id} нет действующего контекста по умолчанию — "
+            "маршрутизация отказывает, а не подставляет случайный контекст"
+        )
+        assert not job.error_text.startswith("Непредвиденная ошибка импорта")
+        assert job_env.estimates() == []
+
+        job_env.db.expire_all()
+        member_count = job_env.db.execute(
+            sa.select(sa.func.count()).select_from(ContextMember)
+        ).scalar_one()
+        assert member_count == 0
+
+
+class TestReplaceReusesBucketsForNewEstimate:
+    """Замена сметы (`replace=True`) через пайплайн: членства есть у позиций
+    НОВОЙ сметы и ни одного, указывающего на удалённые позиции; корзина той
+    же пары переиспользуется, а не дублируется."""
+
+    def test_replace_gives_memberships_to_new_positions_only_and_reuses_the_bucket(
+        self, job_env
+    ):
+        rows = [position(job_title="Кладка стен", unit="м2", unit_cost_total="10")]
+        first = job_env.run(payload_for(job_env.contract, rows))
+        assert first.status == ImportJobStatus.done.value
+
+        job_env.db.expire_all()
+        old_position_ids = set(job_env.db.execute(sa.select(PositionItem.id)).scalars().all())
+        bucket_count_before = job_env.db.execute(
+            sa.select(sa.func.count()).select_from(ContextBucket)
+        ).scalar_one()
+
+        second_job = job_env.new_job()
+        job_env.db.commit()
+        job = job_env.run(payload_for(job_env.contract, rows), job=second_job, replace=True)
+
+        assert job.status == ImportJobStatus.done.value
+
+        job_env.db.expire_all()
+        new_position_ids = set(job_env.db.execute(sa.select(PositionItem.id)).scalars().all())
+        assert new_position_ids.isdisjoint(old_position_ids)
+
+        member_position_ids = set(
+            job_env.db.execute(sa.select(ContextMember.position_item_id)).scalars().all()
+        )
+        assert member_position_ids == new_position_ids
+        assert member_position_ids.isdisjoint(old_position_ids)
+
+        bucket_count_after = job_env.db.execute(
+            sa.select(sa.func.count()).select_from(ContextBucket)
+        ).scalar_one()
+        assert bucket_count_after == bucket_count_before
