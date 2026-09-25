@@ -244,6 +244,14 @@ def _capturing_sql(session):
         event.remove(connection, "before_cursor_execute", _listener)
 
 
+#: Число SQL-запросов `GET /contexts/{id}` (всё, что `_capturing_sql` видит за
+#: время запроса) на контексте с членствами под одним разделом — замер на коде
+#: Task 2 плана families-screen (коммит 9d8cf51): 9. Держит утверждение задачи 3
+#: «число запросов карточки не меняется» в абсолютной форме — см.
+#: `test_card_members_query_count_independent_of_member_count`.
+_CARD_QUERY_COUNT = 9
+
+
 # ---------------------------------------------------------------------------
 #  Инвентарь маршрутов
 # ---------------------------------------------------------------------------
@@ -1492,7 +1500,11 @@ class TestContextCard:
             proposal = factories.ProposalFactory.create(lot=lot)
             cp = factories.CatalogPositionFactory.create()
             bucket = _bucket(db_session, catalog_position=cp)
-            ctx = _context(db_session, bucket)
+            # `LOCATION_ONLY` — эта сторона сравнения проносит вычисление
+            # `representative_work_title` (задача 3) через путь раздела
+            # представителя, уже посчитанный тем же вызовом `chapter_paths()`;
+            # число запросов ниже обязано остаться равным независимо от роли.
+            ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
             chapter = None
             for level in range(depth):
                 chapter = _chapter(factories, proposal, title=f"Раздел {level}", parent=chapter)
@@ -1547,6 +1559,17 @@ class TestContextCard:
         assert len(body_small["member_paths"]) == 1
         assert len(body_small["member_paths"][0]["path"]) == 2
         count_small = len(statements_small)
+        # Задача 3: ветка `representative_work_title` на этой стороне реально
+        # дошла до названия раздела (а не вышла по `None` раньше) — иначе
+        # равенство ниже не говорило бы ничего о её запросах.
+        assert body_small["representative_work_title"] == "Раздел 1"
+        # Задача 3, «число запросов карточки из Task 2 не меняется»: сравнение
+        # small/large ниже не видит запроса, добавленного НА КАЖДУЮ карточку
+        # (например, путь представителя, читаемый отдельно ДО проверки роли, —
+        # обе стороны получили бы +1). Абсолютное число — замер на коде Task 2
+        # (HEAD 9d8cf51); правка, законно меняющая набор запросов карточки,
+        # обновляет его осознанно.
+        assert count_small == _CARD_QUERY_COUNT, count_small
 
         ctx_large = _context_with_many_paths(path_count=12, depth=4, member_count=30)
         with _capturing_sql(db_session) as statements_large:
@@ -1678,6 +1701,249 @@ class TestContextCard:
         assert plain_group["member_count"] == 1
         assert plain_group["stale_count"] == 0
         assert plain_group["conflict_count"] == 0
+
+    # -----------------------------------------------------------------
+    #  representative_work_title — от СОХРАНЁННОЙ роли, не повторной
+    #  классификацией (спека `2026-09-25-families-screen-design.md` §2.8
+    #  п. 2; план, задача 3, «Утверждения»).
+    # -----------------------------------------------------------------
+
+    def test_card_representative_work_title_uses_working_chapter_of_smallest_position_item_id(
+        self, admin_client, db_session, factories
+    ):
+        """`LOCATION_ONLY` под рабочим разделом — `representative_work_title`
+        равен разделу членства с НАИМЕНЬШИМ `position_item_id` (тот же
+        критерий, что `_classify_new_context_semantics`,
+        `services/context_operations.py`, применяет к представителю при
+        разделении). Второе членство несёт ДРУГОЙ рабочий раздел и БОЛЬШИЙ
+        `position_item_id` — выбор не того представителя был бы виден по
+        несовпадению названия раздела."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+
+        chapter_first = _chapter(factories, proposal, title="Общестроительные работы")
+        chapter_second = _chapter(factories, proposal, title="Электромонтажные работы")
+        position_first = _position(
+            factories, proposal, chapter=chapter_first, catalog_position=cp, title="Секция 1"
+        )
+        position_second = _position(
+            factories, proposal, chapter=chapter_second, catalog_position=cp, title="Секция 2"
+        )
+        position_third = _position(
+            factories, proposal, chapter=chapter_second, catalog_position=cp, title="Секция 3"
+        )
+        assert position_first.id < position_second.id < position_third.id
+        # Членства добавляются в ОБРАТНОМ порядке id: порядок ВСТАВКИ не
+        # маскирует выбор по наименьшему `position_item_id`.
+        _member(db_session, position_third, ctx)
+        _member(db_session, position_second, ctx)
+        _member(db_session, position_first, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        # Группа представителя — НЕ первая в `member_paths` (у второго раздела
+        # два членства против одного): путь первой группы вместо пути
+        # представителя дал бы другое название.
+        assert body["member_paths"][0]["chapter_item_id"] == chapter_second.id
+        assert body["representative_work_title"] == "Общестроительные работы"
+
+    def test_card_representative_work_title_from_manual_location_only_on_work_row(
+        self, admin_client, db_session, factories
+    ):
+        """Оператор вручную поставил `LOCATION_ONLY` строке, которую
+        классификатор посчитал бы `WORK` («Шпатлевка стен» — обычное имя
+        работы, не место): `representative_work_title` — рабочий раздел
+        представителя, а НЕ наименование строки. КЛЮЧЕВОЙ вход задачи 3:
+        реализация повторной классификацией (`classify_name_role` от
+        исходного `title`) вернула бы наименование строки, а не раздел."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.WORK.value)
+        chapter = _chapter(factories, proposal, title="Общестроительные работы")
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Шпатлевка стен"
+        )
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        role_response = admin_client.post(
+            f"{BASE}/contexts/{ctx.id}/name-role", json={"role": "LOCATION_ONLY"}
+        )
+        assert role_response.status_code == 200
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] == "Общестроительные работы"
+
+    def test_card_representative_work_title_none_after_manual_work_override(
+        self, admin_client, db_session, factories
+    ):
+        """Оператор вручную сменил `LOCATION_ONLY` на `WORK` строке-месту
+        («Секция 1» — классификатор дал бы `LOCATION_ONLY`):
+        `representative_work_title = None` при сохранённой роли `WORK`, хотя
+        цепочка несёт рабочий раздел — реализация повторной классификацией
+        ошибочно вернула бы название раздела."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+        chapter = _chapter(factories, proposal, title="Общестроительные работы")
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Секция 1"
+        )
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        role_response = admin_client.post(
+            f"{BASE}/contexts/{ctx.id}/name-role", json={"role": "WORK"}
+        )
+        assert role_response.status_code == 200
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] is None
+
+    def test_card_representative_work_title_none_for_generic_work_role(
+        self, admin_client, db_session, factories
+    ):
+        """Сохранённая роль `GENERIC_WORK` (третье значение `NameRole`) под
+        рабочим разделом — `None`: подпись есть только у `LOCATION_ONLY`, а не
+        у всякой роли, отличной от `WORK`. Строка — место («Секция 1»), так что
+        и цепочка, и классификатор дали бы название раздела."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.GENERIC_WORK.value)
+        chapter = _chapter(factories, proposal, title="Общестроительные работы")
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Секция 1"
+        )
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] is None
+
+    def test_card_representative_work_title_none_for_empty_context(
+        self, admin_client, db_session, factories
+    ):
+        """Контекст без членств — представителя нет по построению, `None`,
+        хотя сохранённая роль `LOCATION_ONLY`."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] is None
+
+    def test_card_representative_work_title_none_when_chain_is_all_places(
+        self, admin_client, db_session, factories
+    ):
+        """`LOCATION_ONLY` сохранено, но цепочка над разделом представителя
+        целиком из словарных мест — рабочего раздела нет ни на одном
+        уровне, `None`."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+        root_chapter = _chapter(factories, proposal, title="Паркинг")
+        chapter = _chapter(factories, proposal, title="Секция 1", parent=root_chapter)
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Секция 2"
+        )
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] is None
+
+    def test_card_representative_work_title_none_when_representative_has_no_chapter(
+        self, admin_client, db_session, factories
+    ):
+        """Представитель (наименьший `position_item_id`) — позиция БЕЗ раздела,
+        а у второго членства рабочий раздел есть: `None`. Работа берётся из
+        цепочки ПРЕДСТАВИТЕЛЯ, а не из первого членства, у которого раздел
+        нашёлся, и не из самой населённой группы `member_paths`."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+        chapter = _chapter(factories, proposal, title="Общестроительные работы")
+        position_without_chapter = _position(
+            factories, proposal, catalog_position=cp, title="Секция 1"
+        )
+        position_with_chapter = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Секция 2"
+        )
+        assert position_without_chapter.id < position_with_chapter.id
+        _member(db_session, position_with_chapter, ctx)
+        _member(db_session, position_without_chapter, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        # Обе группы на месте — раздел второго членства карточке известен.
+        assert [mp["chapter_item_id"] for mp in body["member_paths"]] == [chapter.id, None]
+        assert body["representative_work_title"] is None
+
+    def test_card_representative_work_title_none_when_representative_path_missing(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Раздел представителя читается одним запросом, а пути — другим
+        (`_member_paths_and_stale_groups`); между ними конкурентная операция
+        может увести представителя из контекста, и его раздела среди путей не
+        окажется. Карточка тогда отдаёт `None`, а не падает. Гонка
+        воспроизведена подменой: настоящий `_member_paths_and_stale_groups`
+        отдаёт пути без раздела представителя."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket, name_role=NameRole.LOCATION_ONLY.value)
+        chapter = _chapter(factories, proposal, title="Общестроительные работы")
+        position = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp, title="Секция 1"
+        )
+        _member(db_session, position, ctx)
+        db_session.flush()
+
+        real = crud_semantic._member_paths_and_stale_groups
+
+        def _without_representative_path(db, *, context_id):
+            member_paths, stale_groups, paths_by_chapter = real(db, context_id=context_id)
+            assert chapter.id in paths_by_chapter
+            return member_paths, stale_groups, {}
+
+        monkeypatch.setattr(
+            crud_semantic, "_member_paths_and_stale_groups", _without_representative_path
+        )
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        assert card.json()["representative_work_title"] is None
 
     def test_card_stale_groups_target_category_from_manual_reallocation(
         self, admin_client, db_session, factories

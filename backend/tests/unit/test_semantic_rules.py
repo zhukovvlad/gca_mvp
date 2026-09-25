@@ -44,6 +44,7 @@ from services.semantic_rules import (
     NameRoleOutcome,
     classify_kind,
     classify_name_role,
+    nearest_working_chapter,
 )
 from services.unit_resolution import NO_UNIT_NORM
 
@@ -228,22 +229,26 @@ def test_location_only_without_working_chapter_is_insufficient_description():
 # называет «Прочее» в числе начал разделов, которые не называют работу, наряду
 # со «Стены», «Пол», «Секция» — те уже покрыты словарями). Все три синтетических
 # входа ниже: не из корпуса, названы явно.
+#
+# Цепочки — модульные константы (а не литералы внутри тела теста): задача 3
+# (`nearest_working_chapter`) сверяет свой результат с `work_title` ИМЕННО
+# этих тестов, а сверке нужен доступ к тем же цепочкам, что и здесь, без
+# копирования литералов вторым местом.
 # ---------------------------------------------------------------------------
+
+_PROCHEE_SKIP_CHAIN = ("Прочее", _WORKING_CHAPTER, _ROOT_CHAPTER)
+_GENERIC_WORK_SKIP_CHAIN = ("Стены:", _WORKING_CHAPTER, _ROOT_CHAPTER)
 
 
 def test_location_only_skips_prochee_chapter_and_takes_next_working():
-    outcome = classify_name_role(
-        "Секция 1", chapter_chain=("Прочее", _WORKING_CHAPTER, _ROOT_CHAPTER)
-    )
+    outcome = classify_name_role("Секция 1", chapter_chain=_PROCHEE_SKIP_CHAIN)
     assert outcome.role == NameRole.LOCATION_ONLY.value
     assert outcome.work_title == _WORKING_CHAPTER
     assert outcome.comparability_reason is None
 
 
 def test_location_only_skips_generic_work_chapter_and_takes_next_working():
-    outcome = classify_name_role(
-        "Секция 1", chapter_chain=("Стены:", _WORKING_CHAPTER, _ROOT_CHAPTER)
-    )
+    outcome = classify_name_role("Секция 1", chapter_chain=_GENERIC_WORK_SKIP_CHAIN)
     assert outcome.role == NameRole.LOCATION_ONLY.value
     assert outcome.work_title == _WORKING_CHAPTER
     assert outcome.comparability_reason is None
@@ -259,6 +264,65 @@ def test_location_only_all_place_generic_prochee_chain_is_insufficient_descripti
     assert outcome.role == NameRole.LOCATION_ONLY.value
     assert outcome.work_title is None
     assert outcome.comparability_reason == ComparabilityReason.insufficient_description.value
+
+
+# ---------------------------------------------------------------------------
+# `nearest_working_chapter` — первый снизу раздел цепочки, для которого
+# `_is_working_chapter` истинен (спека `2026-09-25-families-screen-design.md`
+# §2.8 п. 2; план, задача 3). Публичная функция вынесена из проверки 2
+# `classify_name_role`, и та вызывает её, а не держит свою копию. Эталон
+# правила — ЛИТЕРАЛЬНЫЕ ожидания (`_WORKING_CHAPTER`, `None`) в тестах
+# `classify_name_role` выше и в прямых тестах ниже: поломка
+# `nearest_working_chapter` роняет и те и другие. Сверка
+# `nearest == classify_name_role(...).work_title` ниже при нынешнем коде
+# сравнивает функцию с самой собой; её содержание — в будущем расхождении: если
+# `classify_name_role` снова заведёт СВОЮ копию правила и копии разойдутся,
+# покраснеет она (цепочки — `_CLEAN_LOCATION_ONLY_ROWS` и два синтетических
+# входа «пропуска» выше, список переиспользуется, а не копируется литералом).
+# ---------------------------------------------------------------------------
+
+_WORKING_CHAPTER_2 = "Электромонтажные работы по этажам"
+
+_LOCATION_ONLY_WORK_TITLE_ROWS = _CLEAN_LOCATION_ONLY_ROWS + [
+    ("Секция 1", _PROCHEE_SKIP_CHAIN),
+    ("Секция 1", _GENERIC_WORK_SKIP_CHAIN),
+]
+assert len(_LOCATION_ONLY_WORK_TITLE_ROWS) == 9
+
+
+def test_nearest_working_chapter_returns_first_working_when_nearest_is_place():
+    chain = ("Секция 1", _WORKING_CHAPTER, _ROOT_CHAPTER)
+    assert nearest_working_chapter(chain) == _WORKING_CHAPTER
+
+
+def test_nearest_working_chapter_lower_working_wins_over_higher_working():
+    """Два рабочих раздела в цепочке — побеждает НИЖНИЙ (ближайший), а не
+    первый по алфавиту/длине и не верхний."""
+    chain = (_WORKING_CHAPTER, _WORKING_CHAPTER_2)
+    assert nearest_working_chapter(chain) == _WORKING_CHAPTER
+
+
+def test_nearest_working_chapter_all_places_gives_none():
+    chain = ("Секция 1", "Паркинг", "Урбан блок 2")
+    assert nearest_working_chapter(chain) is None
+
+
+def test_nearest_working_chapter_empty_chain_gives_none():
+    assert nearest_working_chapter(()) is None
+
+
+@pytest.mark.parametrize("title,chapter_chain", _LOCATION_ONLY_WORK_TITLE_ROWS)
+def test_nearest_working_chapter_matches_classify_name_role_work_title(title, chapter_chain):
+    """Одна истина о рабочем разделе (докстрока `nearest_working_chapter`):
+    на КАЖДОЙ цепочке, где `classify_name_role` даёт чистое `LOCATION_ONLY` с
+    рабочим разделом, прямой вызов `nearest_working_chapter` даёт тот же
+    `work_title`. Стережёт от второй копии правила внутри `classify_name_role`,
+    способной разойтись с этой; правильность самого правила — забота тестов с
+    литеральными ожиданиями выше."""
+    outcome = classify_name_role(title, chapter_chain=chapter_chain)
+    assert outcome.role == NameRole.LOCATION_ONLY.value
+    assert outcome.work_title is not None
+    assert nearest_working_chapter(chapter_chain) == outcome.work_title
 
 
 # ---------------------------------------------------------------------------

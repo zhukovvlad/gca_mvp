@@ -42,6 +42,7 @@ from models import (
     ContextMember,
     Lot,
     MembershipState,
+    NameRole,
     PositionItem,
     Proposal,
     SemanticEvent,
@@ -50,6 +51,7 @@ from models import (
     WorkFamily,
 )
 from services.context_routing import chapter_paths
+from services.semantic_rules import nearest_working_chapter
 
 #: Потолок числа членств, отдаваемых карточкой контекста поштучно — экран не
 #: может проверять/предлагать действия по членству, не видя его id, а
@@ -308,7 +310,7 @@ def _member_group_sort_key(*, chapter_item_id: int | None, count: int, path: lis
 
 def _member_paths_and_stale_groups(
     db: Session, *, context_id: int
-) -> tuple[list[MemberPath], list[StaleGroup]]:
+) -> tuple[list[MemberPath], list[StaleGroup], dict[int, tuple[str, ...]]]:
     """Членства карточки, сгруппированные по ближайшему разделу позиции, и
     устаревшие группы из ТЕХ ЖЕ строк (спека §2.8 п. 2).
 
@@ -324,6 +326,14 @@ def _member_paths_and_stale_groups(
     Сумма `member_count` групп равна `member_count` карточки ПО ПОСТРОЕНИЮ:
     группировка по допускающему `NULL` ключу теряет строк не больше, чем
     `COUNT(*)` без `GROUP BY` — каждое членство попадает РОВНО в одну группу.
+
+    Третий элемент кортежа — `paths_by_chapter` (путь СВЕРХУ ВНИЗ по
+    `chapter_item_id`), тот же словарь, что строит `chapter_paths()`, отданный
+    вызывающему коду НАПРЯМУЮ: карточке (`representative_work_title`, спека
+    §2.8 п. 2) нужен путь раздела представительного членства, а он уже
+    входит в этот же вызов `chapter_paths()` по построению — представитель
+    сам является одним из членств, сгруппированных здесь, второго запроса
+    под его путь заводить не нужно.
     """
     chapter = aliased(PositionItem)
     category = aliased(WorkCategory)
@@ -396,7 +406,7 @@ def _member_paths_and_stale_groups(
         )
     )
 
-    return member_paths, stale_groups
+    return member_paths, stale_groups, paths_by_chapter
 
 
 def _escape_ilike(text: str) -> str:
@@ -546,8 +556,12 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     источником назначения, число членств (`member_count`, всегда полное),
     путь классификатора статьи корзины (`work_category_path` — родители,
     от корня, без самой статьи, спека §2.8 п. 2, то же значение, что у
-    строки списка), группы членств по ближайшему разделу (`member_paths`) и
-    устаревшие группы под цель переноса (`stale_groups` — спека §2.8 п. 2,
+    строки списка), работу по разделу представительной позиции
+    (`representative_work_title` — только при сохранённой роли
+    `LOCATION_ONLY`, от СОХРАНЁННОЙ роли, а не повторной классификацией; см.
+    комментарий у вычисления ниже, спека §2.8 п. 2), группы членств по
+    ближайшему разделу (`member_paths`) и устаревшие группы под цель переноса
+    (`stale_groups` — спека §2.8 п. 2,
     `crud/semantic.py::_member_paths_and_stale_groups`), соседей по корзине
     (`bucket_contexts` — id, `is_default`, `archived_at`, `member_count`
     КАЖДОГО контекста той же `bucket_id`, включая архивные; цель слияния/
@@ -586,17 +600,34 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     # строку, и при разных источниках статьи (file/manual) у членств одной
     # корзины ответ был бы недетерминирован. Младший `position_item_id` —
     # самый простой воспроизводимый порядок; спека не
-    # называет иного критерия «какое членство представляет корзину».
+    # называет иного критерия «какое членство представляет корзину» — тот же
+    # критерий, что `_classify_new_context_semantics`
+    # (`services/context_operations.py`) использует для цепочки представителя
+    # при разделении. `representative_chapter_item_id` — раздел ЭТОГО ЖЕ
+    # представительного членства (спека §2.8 п. 2,
+    # `representative_work_title` ниже) — снят ОДНИМ и тем же запросом, а не
+    # отдельным чтением.
     chapter = aliased(PositionItem)
-    work_category_source = db.execute(
-        sa.select(chapter.category_source)
+    representative_row = db.execute(
+        sa.select(
+            chapter.category_source,
+            PositionItem.chapter_item_id.label("representative_chapter_item_id"),
+        )
         .select_from(ContextMember)
         .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
         .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
         .where(ContextMember.context_id == context_id)
         .order_by(ContextMember.position_item_id)
         .limit(1)
-    ).scalar_one_or_none()
+    ).first()
+    work_category_source = (
+        representative_row.category_source if representative_row is not None else None
+    )
+    representative_chapter_item_id = (
+        representative_row.representative_chapter_item_id
+        if representative_row is not None
+        else None
+    )
 
     member_count = db.execute(
         sa.select(sa.func.count())
@@ -605,7 +636,32 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     ).scalar_one()
 
     work_category_path = _work_category_path(db, bucket.work_category_id)
-    member_paths, stale_groups = _member_paths_and_stale_groups(db, context_id=context_id)
+    member_paths, stale_groups, paths_by_chapter = _member_paths_and_stale_groups(
+        db, context_id=context_id
+    )
+
+    # `representative_work_title` — ОТ СОХРАНЁННОЙ роли, не повторной
+    # классификацией (спека §2.8 п. 2): `set_name_role`
+    # (`services/work_families.py`) пишет роль и ничего не пересчитывает,
+    # поэтому `classify_name_role` после ручной смены роли вправе вернуть
+    # другое значение — вызов дал бы подпись, противоречащую решению
+    # оператора. При любой роли, кроме `LOCATION_ONLY`, — `None`; путь раздела
+    # представителя уже посчитан вызовом `chapter_paths()` выше
+    # (`paths_by_chapter`) — представитель сам входит в число членств,
+    # сгруппированных `_member_paths_and_stale_groups`, второго запроса нет.
+    # Представитель без раздела (`representative_chapter_item_id is None`) не
+    # находит ключа в `paths_by_chapter` (ключи там — только настоящие
+    # `chapter_item_id`, `None` среди них никогда нет) — `.get` тем же путём
+    # отдаёт `None`, отдельной проверки не требуется. Цепочка над разделом
+    # представителя, состоящая целиком из мест, даёт тот же `None` уже внутри
+    # `nearest_working_chapter`.
+    representative_work_title: str | None = None
+    if context.name_role == NameRole.LOCATION_ONLY.value:
+        representative_path = paths_by_chapter.get(representative_chapter_item_id)
+        if representative_path:
+            representative_work_title = nearest_working_chapter(
+                tuple(reversed(representative_path))
+            )
 
     # Соседи по корзине (та же `bucket_id`) — цель для слияния/переноса
     # (спека §2.4: разделение оставляет несколько контекстов на одной
@@ -699,6 +755,7 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "family_at": context.family_at,
         "member_count": member_count,
         "work_category_path": work_category_path,
+        "representative_work_title": representative_work_title,
         "member_paths": member_paths,
         "stale_groups": stale_groups,
         "bucket_contexts": [
