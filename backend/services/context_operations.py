@@ -132,6 +132,15 @@ REFUSE_CATEGORY_CHANGED = "category_changed"
 #: код, а не `REFUSE_INVALID_MEMBERSHIP`: членство существует и валидно,
 #: просто не устарело.
 REFUSE_NOT_STALE = "not_stale"
+#: Задача 10, сверх плана: принятие предложения переноса на КОНФЛИКТНОМ
+#: членстве (`conflict_at` задан слиянием в Review, спека §2.8) — перенос по
+#: свежей статье меняет `context_id`/`bucket_id` этой же строки, а поля
+#: конфликта не трогает, и уже промаршрутизированная строка осталась бы
+#: висеть со старым (`conflict_from_context_id`) конфликтом. Конфликт решается
+#: своими двумя действиями (`accept_target_decision`/`move_members`,
+#: `REFUSE_NOT_CONFLICTED` — их зеркальный отказ), перенос устаревшего на
+#: конфликтном членстве отказывает, ничего не меняя.
+REFUSE_CONFLICTED = "conflicted"
 
 
 @dataclass(frozen=True)
@@ -1197,6 +1206,12 @@ def accept_transfer(
             f"членство {position_item_id} не устарело (CURRENT) — переносить нечего",
             position_item_id=position_item_id,
         )
+    if member.conflict_at is not None:
+        raise ContextOperationError(
+            REFUSE_CONFLICTED,
+            f"членство {position_item_id} конфликтно — сначала разрешите конфликт",
+            position_item_id=position_item_id,
+        )
 
     current_bucket = db.get(ContextBucket, member.bucket_id)
     catalog_position_id = current_bucket.catalog_position_id
@@ -1241,6 +1256,13 @@ def accept_transfer(
         raise ContextOperationError(
             REFUSE_NOT_STALE,
             f"членство {position_item_id} не устарело (CURRENT) — переносить нечего (после блокировки)",
+            position_item_id=position_item_id,
+        )
+    if member.conflict_at is not None:
+        raise ContextOperationError(
+            REFUSE_CONFLICTED,
+            f"членство {position_item_id} конфликтно — сначала разрешите конфликт "
+            "(после блокировки)",
             position_item_id=position_item_id,
         )
 

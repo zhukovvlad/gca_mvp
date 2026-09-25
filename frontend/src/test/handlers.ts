@@ -260,6 +260,9 @@ interface HandlerState {
 export const STALE_POSITION_ITEM_ID = 9101;
 export const CURRENT_POSITION_ITEM_ID = 9102;
 export const CONFLICT_POSITION_ITEM_IDS = [9201, 9202];
+/** Членство разом устаревшее И конфликтное — сочетание, достижимое через
+ * override категории, задевший членство, уже отмеченное слиянием в Review. */
+export const STALE_AND_CONFLICT_POSITION_ITEM_ID = 9203;
 
 function isoNow(): string {
   return "2026-09-24T10:00:00Z";
@@ -482,9 +485,9 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_source: "manual",
     family_by: 1,
     family_at: isoNow(),
-    member_count: 2,
+    member_count: 3,
     bucket_contexts: [
-      { id: 603, is_default: true, archived_at: null, member_count: 2 },
+      { id: 603, is_default: true, archived_at: null, member_count: 3 },
       { id: 760, is_default: false, archived_at: null, member_count: 0 },
     ],
     members: [
@@ -494,6 +497,15 @@ function initialSemanticContexts(): SemanticContextFixture[] {
         routed_by: "manual",
       }),
       member(CONFLICT_POSITION_ITEM_IDS[1], "Отделка потолков, ось 2", {
+        conflict_at: isoNow(),
+        conflict_from_context_id: 601,
+        routed_by: "manual",
+      }),
+      // Устаревшее И конфликтное разом (override категории задел членство,
+      // уже отмеченное слиянием в Review) — экран обязан показать ДВА
+      // конфликтных действия и НИ ОДНОГО действия переноса устаревшего.
+      member(STALE_AND_CONFLICT_POSITION_ITEM_ID, "Отделка потолков, ось 3", {
+        membership_state: "STALE",
         conflict_at: isoNow(),
         conflict_from_context_id: 601,
         routed_by: "manual",

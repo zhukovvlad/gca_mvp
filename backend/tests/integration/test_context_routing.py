@@ -22,6 +22,7 @@ from sqlalchemy import event
 from sqlalchemy.dialects import postgresql
 
 import services.context_routing as context_routing_module
+import services.review as review_module
 from models import (
     CatalogContext,
     CatalogKind,
@@ -844,6 +845,177 @@ class TestBatchLargerThanThePrepareThreshold:
             .where(ContextMember.position_item_id.in_([p.id for p in positions]))
         ).scalar_one()
         assert member_count == 12
+
+
+# ---------------------------------------------------------------------------
+#  `route_positions`: замок каталожных строк партии — по возрастанию id, не
+#  по порядку прихода позиций (спека §2.8, единый порядок «каталожная строка
+#  → корзина → контекст» с `_lock_rows` слияния в Review, `services/review.py`).
+# ---------------------------------------------------------------------------
+
+class TestRoutePositionsLocksCatalogPositionsInAscendingOrder:
+    def test_batch_locks_new_catalog_positions_ascending_regardless_of_arrival_order(
+        self, db_session, factories, monkeypatch
+    ):
+        """Партия несёт ДВЕ НОВЫЕ каталожные строки, и позиция БОЛЬШЕГО id
+        приходит на обработку ПЕРВОЙ (вставлена первой — без `ORDER BY`
+        `route_positions` читает партию в порядке вставки): `FOR SHARE`
+        каждой строки берётся ВНУТРИ `_create_default_context`, ОДНОЙ строкой
+        за раз, поэтому порядок обработки партии — это и есть порядок захвата
+        локов. Тот же порядок обязан быть по ВОЗРАСТАНИЮ id, иначе набор
+        локов партии идёт в направлении, встречном `_lock_rows` (`FOR UPDATE`
+        по возрастанию id одним запросом) — параллельный запуск способен
+        составить встречную блокировку (проверено ниже, двумя сессиями)."""
+        proposal, estimate = _proposal(factories)
+        cp_low = factories.CatalogPositionFactory.create()
+        cp_high = factories.CatalogPositionFactory.create()
+        assert cp_low.id < cp_high.id
+
+        position_high = _position(
+            factories, proposal, catalog_position=cp_high, title="Вставлена первой"
+        )
+        position_low = _position(
+            factories, proposal, catalog_position=cp_low, title="Вставлена второй"
+        )
+
+        recorded: list[int] = []
+        original = context_routing_module._lock_catalog_position_share
+
+        def _spy(db, catalog_position_id):
+            recorded.append(catalog_position_id)
+            return original(db, catalog_position_id)
+
+        monkeypatch.setattr(context_routing_module, "_lock_catalog_position_share", _spy)
+
+        outcome = route_positions(db_session, estimate_ids=[estimate.id])
+
+        assert outcome.contexts_created == 2
+        assert recorded == [cp_low.id, cp_high.id], (
+            "замок каталожных строк партии обязан идти по возрастанию id, "
+            f"а не по порядку прихода позиций — записано {recorded}"
+        )
+        assert position_high.id != position_low.id  # предпосылка: две разные позиции
+
+
+def _terminate_import_vs_merge_backend(session_factory, pid: int | None) -> None:
+    """Обрубает зависший backend отдельной пробной сессией — та же дисциплина,
+    что у остальных двухсессионных тестов (`docs/pitfalls/db.md`): упавший
+    ассерт не должен оставлять держателя лока жить до `TRUNCATE` следующего
+    теста."""
+    if pid is None:
+        return
+    try:
+        with session_factory() as probe:
+            probe.execute(sa.text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+            probe.commit()
+    except Exception:  # pragma: no cover — best-effort уборка
+        pass
+
+
+class TestRoutePositionsVsReviewMergeNoDeadlock:
+    def test_import_batch_and_review_merge_finish_without_deadlock(
+        self, committing_db, committing_factories, committing_session_factory, monkeypatch
+    ):
+        """Без сортировки партии по возрастанию id это ровно тот сценарий,
+        который докстрока сортировки называет: импорт держит `FOR SHARE`
+        `cp_high` (единственная взятая пауза — ПОСЛЕ первого реального лока
+        партии) и, будучи отпущенным, тянется за `cp_low`; слияние тем
+        временем уже держит `FOR UPDATE` `cp_low` (первая строка своего
+        упорядоченного запроса) и ждёт `cp_high`. Встречная блокировка —
+        PostgreSQL обязан аварийно прервать одну из сторон. С сортировкой
+        партии обе стороны запрашивают `cp_low` первой, конкурируют за ОДНУ
+        и ту же строку в одном направлении, и дедлока нет."""
+        proposal, estimate = _proposal(committing_factories)
+        cp_low = committing_factories.CatalogPositionFactory.create(
+            kind=CatalogKind.TO_REVIEW.value
+        )
+        cp_high = committing_factories.CatalogPositionFactory.create(
+            kind=CatalogKind.POSITION.value
+        )
+        assert cp_low.id < cp_high.id
+
+        _position(
+            committing_factories, proposal, catalog_position=cp_high, title="Вставлена первой"
+        )
+        _position(
+            committing_factories, proposal, catalog_position=cp_low, title="Вставлена второй"
+        )
+        committing_db.commit()
+
+        original_share_lock = context_routing_module._lock_catalog_position_share
+        paused_once = threading.Event()
+        release_import = threading.Event()
+
+        def _paused_share_lock(db, catalog_position_id):
+            original_share_lock(db, catalog_position_id)
+            if not paused_once.is_set():
+                paused_once.set()
+                assert release_import.wait(timeout=30.0), "release не пришёл вовремя"
+
+        monkeypatch.setattr(context_routing_module, "_lock_catalog_position_share", _paused_share_lock)
+
+        errors: list[str] = []
+        results: dict[str, object] = {}
+        pid_holder: dict[str, int] = {}
+
+        def thread_import():
+            try:
+                with committing_session_factory() as db:
+                    pid_holder["import"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    route_positions(db, estimate_ids=[estimate.id])
+                    db.commit()
+                    results["import"] = "routed"
+            except Exception as exc:  # noqa: BLE001 — ловим DeadlockDetected и прочее
+                errors.append(f"import: {type(exc).__name__}: {exc}")
+
+        def thread_merge():
+            try:
+                with committing_session_factory() as db:
+                    pid_holder["merge"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    review_module.merge_into_position_outcome(
+                        db, to_review_id=cp_low.id, target_id=cp_high.id,
+                    )
+                    db.commit()
+                    results["merge"] = "merged"
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"merge: {type(exc).__name__}: {exc}")
+
+        t_import = threading.Thread(target=thread_import, name="import", daemon=True)
+        t_merge = threading.Thread(target=thread_merge, name="merge", daemon=True)
+        merge_blocked = False
+        try:
+            t_import.start()
+            assert paused_once.wait(timeout=15.0), "import не встал на паузу после первого лока"
+
+            t_merge.start()
+            deadline = time.monotonic() + 15.0
+            while "merge" not in pid_holder and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert "merge" in pid_holder, "merge не сообщил свой backend pid"
+
+            merge_blocked = _wait_until_backend_blocks(
+                committing_session_factory, pid=pid_holder["merge"], contains="catalog_positions",
+                timeout=15.0,
+            )
+
+            release_import.set()
+            t_import.join(timeout=30.0)
+            t_merge.join(timeout=30.0)
+        finally:
+            release_import.set()
+            t_import.join(timeout=30.0)
+            t_merge.join(timeout=30.0)
+            if t_import.is_alive():
+                _terminate_import_vs_merge_backend(committing_session_factory, pid_holder.get("import"))
+            if t_merge.is_alive():
+                _terminate_import_vs_merge_backend(committing_session_factory, pid_holder.get("merge"))
+
+        assert not errors, errors
+        assert not t_import.is_alive()
+        assert not t_merge.is_alive()
+        assert results.get("import") == "routed"
+        assert results.get("merge") == "merged"
+        assert merge_blocked, "merge не встала в очередь на лок, который держит import"
 
 
 # ---------------------------------------------------------------------------

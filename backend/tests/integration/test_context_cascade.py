@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import json
 import uuid
 from pathlib import Path
@@ -41,6 +42,7 @@ from services.category_override import apply_overrides, clear_override, set_over
 from services.category_resolution import CategoryResolver
 from services.context_operations import (
     REFUSE_CATEGORY_CHANGED,
+    REFUSE_CONFLICTED,
     ContextOperationError,
     RefreshReport,
     accept_transfer,
@@ -1196,6 +1198,41 @@ class TestAcceptTransferRefusesOnCurrentMembership:
         assert after.context_id == before_context_id
         assert after.bucket_id == before_bucket_id
         assert after.membership_state == MembershipState.CURRENT.value
+
+
+class TestAcceptTransferRefusesWhenConflicted:
+    """Сверх плана: устаревшее И конфликтное членство разом (override
+    статьи задел строку, уже отмеченную конфликтом слияния в Review, спека
+    §2.8) — принятие переноса меняет `context_id`/`bucket_id`, но не трогает
+    поля конфликта, и уже промаршрутизированная строка осталась бы висеть со
+    старым конфликтом. Конфликт обязан решаться первым, своими действиями."""
+
+    def test_accept_transfer_refuses_with_its_own_code_and_changes_nothing(
+        self, db_session, factories, admin_user
+    ):
+        scene = _two_chapter_scene(db_session, factories)
+        member = scene.member1
+        member.membership_state = MembershipState.STALE.value
+        member.conflict_at = dt.datetime.now(dt.UTC)
+        member.conflict_from_context_id = scene.member2.context_id
+        db_session.flush()
+        before_context_id, before_bucket_id = member.context_id, member.bucket_id
+        before_conflict_at = member.conflict_at
+        before_conflict_from = member.conflict_from_context_id
+
+        with pytest.raises(ContextOperationError) as exc:
+            accept_transfer(
+                db_session, position_item_id=scene.work1.id, expected_category_id=None,
+                actor_id=admin_user.id,
+            )
+        assert exc.value.code == REFUSE_CONFLICTED
+
+        after = _member(db_session, scene.work1.id)
+        assert after.context_id == before_context_id
+        assert after.bucket_id == before_bucket_id
+        assert after.membership_state == MembershipState.STALE.value
+        assert after.conflict_at == before_conflict_at
+        assert after.conflict_from_context_id == before_conflict_from
 
 
 class TestAcceptTransferCompilesToForUpdateBeforeReread:

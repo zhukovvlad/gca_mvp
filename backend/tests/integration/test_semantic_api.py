@@ -448,6 +448,48 @@ class TestFamilies:
         assert detail["code"] == work_families.REFUSE_DUPLICATE_ACTIVE_FAMILY
         assert detail["duplicate_family_id"] == first.id
 
+    def test_patch_rename_to_duplicate_active_name_and_unit_gives_409_not_500(
+        self, admin_client, db_session
+    ):
+        """Переименование активной семьи в нормализованное имя другой
+        активной семьи с той же единицей — обычный, достижимый вход через
+        ОДИН и тот же PATCH-маршрут: доменный отказ, а не необработанная
+        ошибка базы."""
+        first = _family(db_session, admin_client.user, title="Штукатурка стен-АПИ", unit_name="M2")
+        second = _family(db_session, admin_client.user, title="Шпаклёвка стен-АПИ", unit_name="M2")
+        db_session.commit()
+
+        response = admin_client.patch(f"{BASE}/families/{second.id}", json={"title": first.title})
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == work_families.REFUSE_DUPLICATE_ACTIVE_FAMILY
+        assert detail["duplicate_family_id"] == first.id
+
+        db_session.expire_all()
+        untouched = db_session.get(WorkFamily, second.id)
+        assert untouched.title == "Шпаклёвка стен-АПИ"
+
+    def test_patch_unit_change_to_duplicate_active_name_and_unit_gives_409_not_500(
+        self, admin_client, db_session
+    ):
+        """Тот же класс отказа, другой запускающий путь ОДНОГО и того же
+        PATCH-маршрута — `unit_name` доходит до `set_unit`, не до
+        `update_family`."""
+        same_title = "Гидроизоляция кровли-АПИ"
+        first = _family(db_session, admin_client.user, title=same_title, unit_name="M2")
+        second = _family(db_session, admin_client.user, title=same_title, unit_name="PCS")
+        db_session.commit()
+
+        response = admin_client.patch(f"{BASE}/families/{second.id}", json={"unit_name": "M2"})
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == work_families.REFUSE_DUPLICATE_ACTIVE_FAMILY
+        assert detail["duplicate_family_id"] == first.id
+
+        db_session.expire_all()
+        untouched = db_session.get(WorkFamily, second.id)
+        assert untouched.unit_id == _unit_id(db_session, "PCS")
+
     def test_patch_explicit_null_definition_clears_draft_family(self, admin_client, db_session):
         fam = _family(
             db_session, admin_client.user, title="Черновик с определением",

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { ContextCard } from "@/pages/families/ContextCard";
 import {
   CONFLICT_POSITION_ITEM_IDS,
+  STALE_AND_CONFLICT_POSITION_ITEM_ID,
   STALE_POSITION_ITEM_ID,
   handlerState,
 } from "@/test/handlers";
@@ -109,6 +110,27 @@ describe("ContextCard", () => {
     ).not.toBeInTheDocument();
     // Конфликт называет, ЧЕЙ контекст разошёлся, а не только факт расхождения.
     expect(within(conflictRow).getByText(/с контекстом 601/)).toBeInTheDocument();
+  });
+
+  it("строка разом устаревшая И конфликтная несёт ДВА действия конфликта, без действия переноса", async () => {
+    renderWithProviders(<ContextCard contextId={CONFLICT_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Отделка потолков, ось 3")).toBeInTheDocument()
+    );
+    const row = screen.getByText("Отделка потолков, ось 3").closest("tr")!;
+    expect(
+      within(row).getByRole("button", {
+        name: `Принять решение цели для позиции ${STALE_AND_CONFLICT_POSITION_ITEM_ID}`,
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", {
+        name: `Перенести в другой контекст позицию ${STALE_AND_CONFLICT_POSITION_ITEM_ID}`,
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: /Принять предложение переноса/ })
+    ).not.toBeInTheDocument();
   });
 
   it("устаревшее членство: перенос доходит до сервера с expected_category_id из предложения", async () => {

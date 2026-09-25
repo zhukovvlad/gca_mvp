@@ -504,6 +504,30 @@ def reconcile_contexts(
     lock_buckets(db, lock_ids, exclusive=True)
     db.expire_all()  # см. docs/pitfalls/db.md — иначе следующий db.get вернёт кэш
 
+    # Контексты источника И цели — `FOR UPDATE`, по возрастанию `id`, ОДНИМ
+    # запросом, СРАЗУ ПОСЛЕ замка корзин (порядок «каталожная строка →
+    # корзина → контекст», спека §2.8) и ДО чтения/архивирования ниже.
+    # `populate_existing=True` — тот же приём, что `_lock_rows` этого модуля:
+    # без него уже загруженный объект (например, тот же контекст, чью строку
+    # тем временем держит `assign_family`/`confirm_kind` СВОИМ `FOR UPDATE`)
+    # остаётся с данными на момент ПЕРВОГО чтения, даже если конкурентная
+    # сессия успевает закоммититься, пока `_archive_contexts` ниже ждёт
+    # ИМЕННО эту блокировку своим `UPDATE archived_at` — сам факт ожидания
+    # не подтягивает изменившиеся поля в Python-объект автоматически.
+    # Перечитываются контексты ОБЕИХ сторон (не только источника): решение
+    # цели читается `_conflict_warning` через `db.get()` в `_transfer_members`
+    # ниже, и старый (не заблокированный явно) объект был бы такой же ловушкой,
+    # проиграй цель свою гонку первой.
+    context_bucket_ids = lock_ids
+    if context_bucket_ids:
+        db.execute(
+            sa.select(CatalogContext)
+            .where(CatalogContext.bucket_id.in_(context_bucket_ids))
+            .order_by(CatalogContext.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+
     warnings: list[str] = []
     for source_bucket, target_bucket, _target_created in resolved:
         contexts = (

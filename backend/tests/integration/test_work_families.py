@@ -564,6 +564,29 @@ def test_update_family_not_found_refuses(db_session, factories):
     assert exc.value.code == REFUSE_FAMILY_NOT_FOUND
 
 
+def test_update_family_rename_to_duplicate_active_name_and_unit_refuses(db_session, factories):
+    """Переименование АКТИВНОЙ семьи в нормализованное имя ДРУГОЙ активной
+    семьи с той же единицей — обычный, достижимый вход (в отличие от
+    активации второго черновика с тем же именем, здесь сталкиваются уже ДВЕ
+    активные семьи): доменный отказ, а не `IntegrityError`
+    `uq_work_families_active_name_unit`, дошедший до вызывающего сырым."""
+    user = factories.UserFactory.create()
+    existing = _active_family(
+        db_session, title=f"Существующая {_uid()}", unit_name="M2", actor_id=user.id
+    )
+    other = _active_family(
+        db_session, title=f"Другая {_uid()}", unit_name="M2", actor_id=user.id
+    )
+    with pytest.raises(WorkFamilyError) as exc:
+        update_family(db_session, family_id=other.id, title=existing.title, actor_id=user.id)
+    assert exc.value.code == REFUSE_DUPLICATE_ACTIVE_FAMILY
+    assert exc.value.duplicate_family_id == existing.id
+
+    db_session.expire_all()
+    untouched = db_session.get(WorkFamily, other.id)
+    assert untouched.title != existing.title
+
+
 # ---------------------------------------------------------------------------
 #  activate_family: без определения — отказ (до базы), с определением — успех.
 # ---------------------------------------------------------------------------
@@ -1019,6 +1042,45 @@ class TestAssignFamily:
             )
         assert exc.value.code == REFUSE_CONTEXT_ARCHIVED
 
+    def test_releasing_family_on_archived_context_is_allowed(self, db_session, factories):
+        """Снятие (`family_id=None`) — не то же самое, что назначение: контекст,
+        уже несущий семью, вполне может быть архивирован ПОЗЖЕ (архивирование
+        контекста как отдельной операции не смотрит на семью, только на
+        членства и правила) — если после этого снять семью с него нельзя, у
+        семьи навсегда остаётся привязка, которую ничем не разорвать, и сама
+        она никогда не архивируется. Тройка происхождения обязана очиститься
+        целиком, событие несёт `to_family_id=null`."""
+        user = factories.UserFactory.create()
+        unit = _unit_id(db_session, "M2")
+        context, _cp = _routed_context(db_session, factories, unit_id=unit)
+        family = _active_family(
+            db_session, title=f"Освобождение с архива {_uid()}", unit_name="M2", actor_id=user.id
+        )
+        assign_family(db_session, context_id=context.id, family_id=family.id, actor_id=user.id)
+
+        context.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+        db_session.expire(context)
+
+        released = assign_family(
+            db_session, context_id=context.id, family_id=None, actor_id=user.id
+        )
+        assert released.work_family_id is None
+        assert released.family_source is None
+        assert released.family_by is None
+        assert released.family_at is None
+
+        events = _context_events(db_session, context.id, "context_family_assigned")
+        assert events[-1].payload == {
+            "from_family_id": family.id,
+            "to_family_id": None,
+            "source": FamilySource.manual.value,
+        }
+
+        # Ничто больше не привязано к семье — архивирование теперь доступно.
+        archived_family = archive_family(db_session, family_id=family.id, actor_id=user.id)
+        assert archived_family.status == FamilyStatus.archived.value
+
     def test_requires_active_draft_refuses(self, db_session, factories):
         context, _cp = _routed_context(db_session, factories, unit_id=None)
         user = factories.UserFactory.create()
@@ -1176,6 +1238,28 @@ class TestSetUnit:
         with pytest.raises(WorkFamilyError) as exc:
             set_unit(db_session, family_id=999_999_999, unit_name="M2", actor_id=user.id)
         assert exc.value.code == REFUSE_FAMILY_NOT_FOUND
+
+    def test_change_to_duplicate_active_name_and_unit_refuses(self, db_session, factories):
+        """Смена единицы АКТИВНОЙ семьи (без привязок — единственный случай,
+        когда единицу вообще можно менять) в единицу, уже занятую ДРУГОЙ
+        активной семьёй с ТЕМ ЖЕ именем, — тот же класс отказа, что переезд
+        имени в `update_family`, но другой запускающий путь."""
+        user = factories.UserFactory.create()
+        same_title = f"Общее имя {_uid()}"
+        existing = _active_family(
+            db_session, title=same_title, unit_name="PCS", actor_id=user.id
+        )
+        other = _active_family(
+            db_session, title=same_title, unit_name="M2", actor_id=user.id
+        )
+        with pytest.raises(WorkFamilyError) as exc:
+            set_unit(db_session, family_id=other.id, unit_name="PCS", actor_id=user.id)
+        assert exc.value.code == REFUSE_DUPLICATE_ACTIVE_FAMILY
+        assert exc.value.duplicate_family_id == existing.id
+
+        db_session.expire_all()
+        untouched = db_session.get(WorkFamily, other.id)
+        assert untouched.unit_id == _unit_id(db_session, "M2")
 
 
 # ---------------------------------------------------------------------------
@@ -1801,6 +1885,39 @@ class TestFamilyRereadAfterLock:
             activate_family(committing_db, family_id=family.id, actor_id=user.id)
         assert exc.value.code == REFUSE_ACTIVATE_NOT_DRAFT
         assert exc.value.status == FamilyStatus.archived.value
+
+    def test_update_family_rereads_status_after_concurrent_archive(
+        self, committing_db, committing_factories, committing_session_factory
+    ):
+        """Тот же приём: другая, полностью закоммиченная сессия архивирует
+        семью МЕЖДУ первым чтением этой сессии и локом правки. Без `FOR
+        UPDATE` + перечитывания правка не заметила бы архивирование и
+        переписала бы имя уже архивной семьи вопреки `REFUSE_UPDATE_ARCHIVED`."""
+        user = committing_factories.UserFactory.create()
+        family = create_family(
+            committing_db, title=f"Перечит. правки {_uid()}", unit_name=None,
+            definition="Определение", actor_id=user.id,
+        )
+        activate_family(committing_db, family_id=family.id, actor_id=user.id)
+        committing_db.commit()
+
+        primed = committing_db.get(WorkFamily, family.id)
+        assert primed.status == FamilyStatus.active.value
+
+        with committing_session_factory() as other:
+            archive_family(other, family_id=family.id, actor_id=user.id)
+            other.commit()
+
+        with pytest.raises(WorkFamilyError) as exc:
+            update_family(
+                committing_db, family_id=family.id, title="Новое имя после архива",
+                actor_id=user.id,
+            )
+        assert exc.value.code == REFUSE_UPDATE_ARCHIVED
+
+        with committing_session_factory() as probe:
+            untouched = probe.get(WorkFamily, family.id)
+            assert untouched.title != "Новое имя после архива"
 
 
 # ---------------------------------------------------------------------------

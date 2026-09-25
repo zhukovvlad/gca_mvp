@@ -309,14 +309,34 @@ def update_family(
 
     Допустима в любом статусе, КРОМЕ `archived`.
 
+    Порядок проверок — та же дисциплина, что `activate_family`: семья
+    найдена → `FOR UPDATE` на неё → перечитывание (`db.expire_all()`) →
+    статус/определение проверяются по ПЕРЕЧИТАННОМУ, не по значению,
+    прочитанному до лока. Без лока и перечитывания конкурентное
+    архивирование, успевшее закоммититься МЕЖДУ первым чтением и этой
+    правкой, осталось бы незамеченным: правка изменила бы имя/определение
+    уже архивной семьи вопреки `REFUSE_UPDATE_ARCHIVED`.
+
+    Переезд активной семьи в нормализованные имя+единицу, уже занятые ДРУГОЙ
+    активной семьёй, — тот же класс отказа, что и у второго активируемого
+    черновика (`REFUSE_DUPLICATE_ACTIVE_FAMILY`): первой линией — проверка
+    под тем же локом, что и перечитывание статуса; второй линией — перехват
+    `IntegrityError` именно `uq_work_families_active_name_unit` (гонка ДВУХ
+    ПРАВОК разных активных семей навстречу друг другу мимо первой линии,
+    каждая из которых держит `FOR UPDATE` только на СВОЮ семью).
+
     Raises:
         WorkFamilyError: `title` задан, но пуст/пробелен
             (`REFUSE_BLANK_TITLE`, проверяется ПЕРВЫМ, до чтения базы — `None`
             остаётся законным «не трогать это поле», а вот РЕАЛЬНО переданная
             пустая строка — попытка стереть обязательное имя); семья не
-            найдена (`REFUSE_FAMILY_NOT_FOUND`); семья архивирована
-            (`REFUSE_UPDATE_ARCHIVED`); явный `definition=None` на `active`
-            семье (`REFUSE_CLEAR_DEFINITION_ACTIVE`).
+            найдена (`REFUSE_FAMILY_NOT_FOUND`); семья архивирована,
+            ПЕРЕЧИТАННОЕ после лока (`REFUSE_UPDATE_ARCHIVED`); явный
+            `definition=None` на `active` семье, перечитанное
+            (`REFUSE_CLEAR_DEFINITION_ACTIVE`); переезд активной семьи в
+            имя+единицу другой активной, перечитанное первой линией либо
+            гонка второй (`REFUSE_DUPLICATE_ACTIVE_FAMILY`, называет
+            `duplicate_family_id`).
     """
     if title is not None and not _has_title(title):
         raise WorkFamilyError(
@@ -328,6 +348,11 @@ def update_family(
         raise WorkFamilyError(
             REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
         )
+
+    _lock_families(db, [family_id], exclusive=True)  # FOR UPDATE
+    db.expire_all()
+
+    family = db.get(WorkFamily, family_id)  # ПЕРЕЧИТАННОЕ после лока
     if family.status == FamilyStatus.archived.value:
         raise WorkFamilyError(
             REFUSE_UPDATE_ARCHIVED,
@@ -340,6 +365,19 @@ def update_family(
             f"семья {family_id} активна — снять определение нельзя",
             family_id=family_id,
         )
+    if family.status == FamilyStatus.active.value:
+        effective_title = title if title is not None else family.title
+        duplicate_id = _duplicate_active_family_id(
+            db, family_id=family_id, title=effective_title, unit_id=family.unit_id
+        )
+        if duplicate_id is not None:
+            raise WorkFamilyError(
+                REFUSE_DUPLICATE_ACTIVE_FAMILY,
+                f"семья {family_id}: переезд в имя и единицу уже занятые активной "
+                f"семьёй {duplicate_id}",
+                family_id=family_id,
+                duplicate_family_id=duplicate_id,
+            )
 
     changed: list[dict[str, object]] = []
     if title is not None and title != family.title:
@@ -357,7 +395,24 @@ def update_family(
         # `record_event`: `changed` обязан быть непустым списком).
         return family
 
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        # Вторая линия — та же гонка, что у `activate_family` (докстрока
+        # `REFUSE_DUPLICATE_ACTIVE_FAMILY`): проверка выше держит `FOR
+        # UPDATE` только на СВОЮ семью, поэтому конкурентная правка ДРУГОЙ
+        # активной семьи в то же имя+единицу может проскочить её и
+        # столкнуться здесь.
+        db.rollback()
+        if "uq_work_families_active_name_unit" not in str(exc.orig):
+            raise
+        raise WorkFamilyError(
+            REFUSE_DUPLICATE_ACTIVE_FAMILY,
+            f"семья {family_id}: конфликт активного имени и единицы "
+            "(параллельная правка)",
+            family_id=family_id,
+        ) from exc
+
     record_event(
         db,
         event_type="family_updated",
@@ -630,7 +685,12 @@ def assign_family(
     db.expire_all()  # см. докстроку модуля — иначе следующий db.get вернёт кэш
 
     context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
-    if context.archived_at is not None:
+    if context.archived_at is not None and family_id is not None:
+        # Архивный контекст «выведен из обращения» для НАЗНАЧЕНИЯ семьи — но
+        # СНЯТИЕ (`family_id=None`) обязано остаться доступным: контекст мог
+        # архивироваться уже НЕСЯ семью (архивирование контекста смотрит
+        # только на членства и правила, не на семью), и без этого выхода
+        # привязка не разрывается никогда, а сама семья не архивируется.
         raise WorkFamilyError(
             REFUSE_CONTEXT_ARCHIVED,
             f"контекст {context_id} архивирован",
@@ -697,11 +757,21 @@ def set_unit(db: Session, *, family_id: int, unit_name: str | None, actor_id: in
 
     `FOR UPDATE` на семью, перечитывание числа привязок ПОСЛЕ лока.
 
+    Смена единицы АКТИВНОЙ семьи в пару (имя, новая единица), уже занятую
+    ДРУГОЙ активной семьёй, — та же дисциплина, что переезд имени в
+    `update_family`: без живых привязок единицу менять можно, но результат
+    обязан остаться уникальным среди активных семей (`uq_work_families_
+    active_name_unit`) — первой линией проверка под тем же локом, второй —
+    перехват `IntegrityError`.
+
     Raises:
         WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); есть
             хотя бы один привязанный контекст, перечитанное
             (`REFUSE_UNIT_CHANGE_WITH_LINKS`, называет число); `unit_name`
-            задан, но `UnitResolver` не резолвит его (`REFUSE_UNKNOWN_UNIT`).
+            задан, но `UnitResolver` не резолвит его (`REFUSE_UNKNOWN_UNIT`);
+            новая пара (имя, единица) активной семьи уже занята ДРУГОЙ
+            активной, перечитанное первой линией либо гонка второй
+            (`REFUSE_DUPLICATE_ACTIVE_FAMILY`, называет `duplicate_family_id`).
     """
     family = db.get(WorkFamily, family_id)
     if family is None:
@@ -734,10 +804,35 @@ def set_unit(db: Session, *, family_id: int, unit_name: str | None, actor_id: in
             f"единица {unit_name!r} не резолвится справочником единиц",
             unit_name=unit_name,
         )
+    if family.status == FamilyStatus.active.value:
+        duplicate_id = _duplicate_active_family_id(
+            db, family_id=family_id, title=family.title, unit_id=resolved.unit_id
+        )
+        if duplicate_id is not None:
+            raise WorkFamilyError(
+                REFUSE_DUPLICATE_ACTIVE_FAMILY,
+                f"семья {family_id}: новая единица занята активной семьёй "
+                f"{duplicate_id} с тем же именем",
+                family_id=family_id,
+                duplicate_family_id=duplicate_id,
+            )
 
     old_unit_id = family.unit_id
     family.unit_id = resolved.unit_id
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        # Вторая линия — та же гонка, что у `activate_family`/`update_family`:
+        # проверка выше держит `FOR UPDATE` только на СВОЮ семью.
+        db.rollback()
+        if "uq_work_families_active_name_unit" not in str(exc.orig):
+            raise
+        raise WorkFamilyError(
+            REFUSE_DUPLICATE_ACTIVE_FAMILY,
+            f"семья {family_id}: конфликт активного имени и единицы "
+            "(параллельная правка)",
+            family_id=family_id,
+        ) from exc
     if old_unit_id != resolved.unit_id:
         # Пустой аудит запрещён спекой §2.14 — событие пишется, только если
         # значение реально изменилось (тот же приём, что `update_family`).

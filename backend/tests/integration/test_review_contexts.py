@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 import uuid
 from unittest import mock
 
@@ -1157,6 +1159,161 @@ class TestAcceptTargetDecisionRereadsAfterLock:
                 committing_db, position_item_ids=[scene.source_item_id], actor_id=user.id
             )
         assert exc_info.value.code == REFUSE_NOT_CONFLICTED
+
+
+def _blocked_on(session_factory, *, pid: int, contains: str) -> bool:
+    """Один снимок: КОНКРЕТНЫЙ backend `pid` ждёт лока, и текст его запроса
+    содержит `contains` — не общий счётчик по базе (иначе зелено и когда
+    ждёт посторонний backend)."""
+    with session_factory() as probe:
+        row = probe.execute(
+            sa.text(
+                "SELECT cardinality(pg_blocking_pids(:pid)) > 0 AS blocked, "
+                "(SELECT query FROM pg_stat_activity WHERE pid = :pid) AS query"
+            ),
+            {"pid": pid},
+        ).one()
+        probe.rollback()
+        return bool(row.blocked and contains in (row.query or ""))
+
+
+def _wait_until_blocked(session_factory, *, pid: int, contains: str, timeout: float = 15.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _blocked_on(session_factory, pid=pid, contains=contains):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _terminate_merge_race_backend(session_factory, pid: int | None) -> None:
+    if pid is None:
+        return
+    try:
+        with session_factory() as probe:
+            probe.execute(sa.text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+            probe.commit()
+    except Exception:  # pragma: no cover — best-effort уборка
+        pass
+
+
+class TestMergeRereadsSourceContextAfterLock:
+    def test_family_assigned_while_merge_waits_on_archive_produces_conflict(
+        self, committing_db, committing_factories, committing_session_factory
+    ):
+        """Пока `assign_family` держит `FOR UPDATE` на исходный контекст (лок
+        взят ДО её собственного `flush`), слияние читает тот же контекст
+        ОБЫЧНЫМ `SELECT` (семьи на нём ещё правда нет) и застревает на
+        `UPDATE catalog_contexts SET archived_at=...` того же контекста
+        (`_archive_contexts`), ожидая коммита `assign_family`. Освобождённый
+        `assign_family` коммитит семью; блокировка слияния снимается — но без
+        перечитывания ПОСЛЕ неё Python-объект остаётся с устаревшим
+        `work_family_id=None`, и сравнение решений (`_conflict_warning`)
+        молча пропускает реально разошедшиеся семьи."""
+        user = committing_factories.UserFactory.create()
+        scene = _simple_scene(committing_db, committing_factories)
+        target_family = _active_family(
+            committing_db, title=f"Цель-семья гонки {_uid()}", unit_name="M2", actor_id=user.id,
+        )
+        assign_family(
+            committing_db, context_id=scene.target_context_id, family_id=target_family.id,
+            actor_id=user.id,
+        )
+        committing_db.commit()
+
+        b_paused = threading.Event()
+        b_release = threading.Event()
+        errors: list[str] = []
+        pid_holder: dict[str, int] = {}
+        a_result: dict[str, object] = {}
+        b_result: dict[str, object] = {}
+
+        def thread_b():
+            try:
+                with committing_session_factory() as dbB:
+                    pid_holder["b"] = dbB.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    source_family = _active_family(
+                        dbB, title=f"Источник-семья гонки {_uid()}", unit_name="M2",
+                        actor_id=user.id,
+                    )
+                    b_result["source_family_id"] = source_family.id
+                    b_result["source_family_title"] = source_family.title
+
+                    def _pause_before_flush(session, flush_context, instances):
+                        b_paused.set()
+                        assert b_release.wait(timeout=30.0), "release B не пришёл вовремя"
+
+                    event.listen(dbB, "before_flush", _pause_before_flush)
+                    try:
+                        assign_family(
+                            dbB, context_id=scene.source_context_id, family_id=source_family.id,
+                            actor_id=user.id,
+                        )
+                    finally:
+                        event.remove(dbB, "before_flush", _pause_before_flush)
+                    dbB.commit()
+                    b_result["assigned"] = True
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"B: {type(exc).__name__}: {exc}")
+
+        def thread_a():
+            try:
+                with committing_session_factory() as dbA:
+                    pid_holder["a"] = dbA.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    outcome = merge_into_position_outcome(
+                        dbA, to_review_id=scene.source_cp_id, target_id=scene.target_cp_id,
+                    )
+                    dbA.commit()
+                    a_result["warnings"] = outcome.warnings
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"A: {type(exc).__name__}: {exc}")
+
+        tb = threading.Thread(target=thread_b, name="B", daemon=True)
+        ta = threading.Thread(target=thread_a, name="A", daemon=True)
+        a_blocked_on_b = False
+        try:
+            tb.start()
+            assert b_paused.wait(timeout=15.0), "B не встала на паузу"
+
+            ta.start()
+            deadline = time.monotonic() + 15.0
+            while "a" not in pid_holder and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert "a" in pid_holder, "A не сообщила свой backend pid"
+
+            a_blocked_on_b = _wait_until_blocked(
+                committing_session_factory, pid=pid_holder["a"], contains="catalog_contexts",
+                timeout=15.0,
+            )
+
+            b_release.set()
+            tb.join(timeout=30.0)
+            ta.join(timeout=30.0)
+        finally:
+            b_release.set()
+            tb.join(timeout=30.0)
+            ta.join(timeout=30.0)
+            if tb.is_alive():
+                _terminate_merge_race_backend(committing_session_factory, pid_holder.get("b"))
+            if ta.is_alive():
+                _terminate_merge_race_backend(committing_session_factory, pid_holder.get("a"))
+
+        assert not errors, errors
+        assert not tb.is_alive()
+        assert not ta.is_alive()
+
+        assert b_result.get("assigned") is True
+        warnings = a_result.get("warnings")
+        assert warnings is not None and len(warnings) == 1, warnings
+        assert b_result["source_family_title"] in warnings[0]
+        assert target_family.title in warnings[0]
+
+        moved_member = committing_db.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == scene.source_item_id)
+        ).scalar_one()
+        assert moved_member.conflict_at is not None
+
+        assert a_blocked_on_b, "A (слияние) не встала в очередь на лок, который держит B"
 
 
 # ---------------------------------------------------------------------------
