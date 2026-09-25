@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
@@ -1325,3 +1326,159 @@ def accept_transfer(
     )
 
     return 1
+
+
+# ---------------------------------------------------------------------------
+#  Пакетный перенос устаревшей группы (спека
+#  `2026-09-25-families-screen-design.md` §2.6, §2.8 п. 4)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StaleTransferItem:
+    """Итог переноса ОДНОЙ позиции пакета. `outcome="refused"` несёт код и
+    текст ДОМЕННОГО отказа `accept_transfer` именно на этой позиции
+    (`error_code`/`message`); `target_context_id` в этом случае — `None`,
+    позиция осталась на месте. `outcome="moved"` — обратное: код/текст
+    `None`, `target_context_id` — контекст ПОСЛЕ переноса (перечитанный, не
+    предсказанный заранее — целевая корзина/контекст могли ещё не
+    существовать до первого переноса группы, см. `transfer_stale_group`)."""
+
+    position_item_id: int
+    outcome: Literal["moved", "refused"]
+    target_context_id: int | None
+    error_code: str | None
+    message: str | None
+
+
+@dataclass(frozen=True)
+class StaleGroupTransferResult:
+    """Итог пакета целиком: `moved + refused == len(results)` по построению
+    (каждая отобранная позиция даёт РОВНО один элемент `results`).
+    `results` — в порядке возрастания `position_item_id` (спека §2.8 п. 4:
+    порядок обхода — ради воспроизводимости результата, а не блокировок)."""
+
+    results: tuple[StaleTransferItem, ...]
+    moved: int
+    refused: int
+
+
+def transfer_stale_group(
+    db: Session,
+    *,
+    context_id: int,
+    chapter_item_id: int | None,
+    expected_category_id: int | None,
+    actor_id: int,
+) -> StaleGroupTransferResult:
+    """Переносит устаревшие членства ОДНОЙ группы контекста — строки
+    внимания «устаревшие членства» (спека §2.6, §2.8 п. 4).
+
+    Группа — членства, чья позиция лежит НЕПОСРЕДСТВЕННО под разделом
+    `chapter_item_id` (`None` — позиции БЕЗ раздела вовсе, то же значение,
+    что несёт строка внимания; `GroupSelector` чтения членств группы
+    (спека §2.8 п. 3) здесь не используется — у него `chapter_item_id=None`
+    без `no_chapter` значит «весь контекст», а пакету нужно ИМЕННО «без
+    раздела», третьего смысла тут нет).
+
+    Отбираются ТОЛЬКО `STALE` членства этой группы БЕЗ конфликта
+    (`conflict_at IS NULL`) — `CURRENT` и конфликтные членства той же
+    группы не входят в `results` вовсе, это «не трогает», а не «отказ»
+    (спека §2.6: конфликтные решаются отдельным действием «Принять решение
+    цели»). Обход — по возрастанию `position_item_id`.
+
+    Список позиций фиксируется ОДНИМ чтением до цикла: раздел позиции
+    (`PositionItem.chapter_item_id`) не меняется переносом членства, поэтому
+    состав группы стабилен на всё время пакета — переносить каждую позицию
+    под отдельной блокировкой корзин (см. ниже) незачем.
+
+    Каждая позиция переносится СВОЕЙ точкой сохранения (`db.begin_nested()`)
+    вокруг существующего `accept_transfer`, БЕЗ изменений его тела и БЕЗ
+    нового порядка захвата — он сам берёт свои блокировки корзин
+    (`lock_buckets`) в уже установленном порядке (спека §2.8 п. 4: «пачка не
+    вводит нового порядка захвата»). Отказ ОДНОЙ позиции
+    (`ContextOperationError`, доменный отказ `accept_transfer`) откатывает
+    ТОЛЬКО её точку сохранения — итог `"refused"` с кодом и текстом отказа;
+    остальные позиции переносятся независимо, и их изменения переживают
+    отказ соседней позиции ВПЛОТЬ до финального commit'а маршрута
+    (`_mutating`, `routers/semantic.py`): пачка НЕ атомарна, частичный успех
+    — законное состояние. Любое ДРУГОЕ исключение (не `ContextOperationError`)
+    не перехватывается — оно обязано откатить всю транзакцию маршрута
+    целиком, а не только точку сохранения текущей позиции.
+
+    Пустая группа (устаревших позиций нет — уже перенесены либо перестали
+    быть устаревшими) — законный исход: `results=()`, `moved=refused=0`, не
+    ошибка.
+
+    Raises:
+        ContextOperationError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`)
+            — единственный отказ, относящийся к пакету В ЦЕЛОМ, а не к
+            отдельной позиции (отказы отдельных позиций уходят в `results`,
+            не в исключение).
+    """
+    context = db.get(CatalogContext, context_id)
+    if context is None:
+        raise ContextOperationError(
+            REFUSE_CONTEXT_NOT_FOUND, f"контекст {context_id} не найден", context_id=context_id
+        )
+
+    stmt = (
+        sa.select(ContextMember.position_item_id)
+        .select_from(ContextMember)
+        .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+        .where(
+            ContextMember.context_id == context_id,
+            ContextMember.membership_state == MembershipState.STALE.value,
+            ContextMember.conflict_at.is_(None),
+        )
+    )
+    if chapter_item_id is not None:
+        stmt = stmt.where(PositionItem.chapter_item_id == chapter_item_id)
+    else:
+        stmt = stmt.where(PositionItem.chapter_item_id.is_(None))
+    position_ids = db.execute(stmt.order_by(ContextMember.position_item_id)).scalars().all()
+
+    items: list[StaleTransferItem] = []
+    moved = 0
+    refused = 0
+    for position_item_id in position_ids:
+        try:
+            with db.begin_nested():
+                accept_transfer(
+                    db,
+                    position_item_id=position_item_id,
+                    expected_category_id=expected_category_id,
+                    actor_id=actor_id,
+                )
+        except ContextOperationError as exc:
+            refused += 1
+            items.append(
+                StaleTransferItem(
+                    position_item_id=position_item_id,
+                    outcome="refused",
+                    target_context_id=None,
+                    error_code=exc.code,
+                    message=str(exc),
+                )
+            )
+            continue
+        moved += 1
+        # Перечитывание, не значение из объекта в памяти: `accept_transfer`
+        # сам перечитывает свой `member` под локом, но здесь нам нужен ответ
+        # НА ЭТУ позицию, а не полагание на то, что идентичность ORM осталась
+        # той же после `expire_all` предыдущей/этой итерации.
+        target_context_id = db.execute(
+            sa.select(ContextMember.context_id).where(
+                ContextMember.position_item_id == position_item_id
+            )
+        ).scalar_one()
+        items.append(
+            StaleTransferItem(
+                position_item_id=position_item_id,
+                outcome="moved",
+                target_context_id=target_context_id,
+                error_code=None,
+                message=None,
+            )
+        )
+
+    return StaleGroupTransferResult(results=tuple(items), moved=moved, refused=refused)

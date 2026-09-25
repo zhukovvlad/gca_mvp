@@ -1,7 +1,8 @@
-"""API семантического контура — двадцать маршрутов `/api/v1/semantic`
+"""API семантического контура — двадцать один маршрут `/api/v1/semantic`
 (спека `2026-09-22-catalog-families-design.md` §2.10; план, задача 12; чтение
 членств группы — план `2026-09-25-families-screen.md`, задача 4, спека
-`2026-09-25-families-screen-design.md` §2.8 п. 3).
+`2026-09-25-families-screen-design.md` §2.8 п. 3; пакетный перенос устаревшей
+группы — та же спека §2.6, §2.8 п. 4, задача 5).
 
 Сервисы задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) сами не
@@ -38,6 +39,7 @@ from models import (
     NameRole,
     PositionItem,
     RoutedBy,
+    SemanticEvent,
     SemanticKind,
     SemanticState,
     WorkCategory,
@@ -57,13 +59,14 @@ pytestmark = pytest.mark.integration
 BASE = "/api/v1/semantic"
 
 # ---------------------------------------------------------------------------
-#  Литерал двадцати маршрутов плана (Task 12, Interfaces; + два маршрута
-#  чтения членств группы, план `2026-09-25-families-screen.md`, задача 4) —
-#  НЕЗАВИСИМЫЙ от `app.routes`: перебор прав обязан ловить забытый
-#  `require_admin` на ОДНОМ маршруте, а не читать список из того же дерева,
-#  которое проверяет.
+#  Литерал двадцати одного маршрута плана (Task 12, Interfaces; + два
+#  маршрута чтения членств группы, план `2026-09-25-families-screen.md`,
+#  задача 4; + пакетный перенос устаревшей группы, та же спека §2.8 п. 4,
+#  задача 5) — НЕЗАВИСИМЫЙ от `app.routes`: перебор прав обязан ловить
+#  забытый `require_admin` на ОДНОМ маршруте, а не читать список из того же
+#  дерева, которое проверяет.
 # ---------------------------------------------------------------------------
-TWENTY_ROUTES: tuple[tuple[str, str], ...] = (
+TWENTY_ONE_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/semantic/families"),
     ("POST", "/api/v1/semantic/families"),
     ("PATCH", "/api/v1/semantic/families/1"),
@@ -80,12 +83,13 @@ TWENTY_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/v1/semantic/contexts/1/archive"),
     ("GET", "/api/v1/semantic/contexts/1/members"),
     ("GET", "/api/v1/semantic/contexts/1/member-ids"),
+    ("POST", "/api/v1/semantic/contexts/1/stale-groups/transfer"),
     ("POST", "/api/v1/semantic/members/move"),
     ("GET", "/api/v1/semantic/members/1/transfer-proposal"),
     ("POST", "/api/v1/semantic/members/1/transfer"),
     ("POST", "/api/v1/semantic/members/accept-target-decision"),
 )
-assert len(TWENTY_ROUTES) == 20
+assert len(TWENTY_ONE_ROUTES) == 21
 
 
 # ---------------------------------------------------------------------------
@@ -339,10 +343,10 @@ def _collect_semantic_routes() -> set[tuple[str, str]]:
     return {(method, path) for method, path in all_routes if path.startswith(BASE)}
 
 
-#: Те же двадцать маршрутов, но ШАБЛОНАМИ пути — так их несёт
-#: `app.routes` (`{family_id}`, а не подставленный `1` из TWENTY_ROUTES,
+#: Те же двадцать один маршрут, но ШАБЛОНАМИ пути — так их несёт
+#: `app.routes` (`{family_id}`, а не подставленный `1` из TWENTY_ONE_ROUTES,
 #: который существует ради HTTP-вызовов теста прав).
-TWENTY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+TWENTY_ONE_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", f"{BASE}/families"),
         ("POST", f"{BASE}/families"),
@@ -360,38 +364,39 @@ TWENTY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{BASE}/contexts/{{context_id}}/archive"),
         ("GET", f"{BASE}/contexts/{{context_id}}/members"),
         ("GET", f"{BASE}/contexts/{{context_id}}/member-ids"),
+        ("POST", f"{BASE}/contexts/{{context_id}}/stale-groups/transfer"),
         ("POST", f"{BASE}/members/move"),
         ("GET", f"{BASE}/members/{{position_item_id}}/transfer-proposal"),
         ("POST", f"{BASE}/members/{{position_item_id}}/transfer"),
         ("POST", f"{BASE}/members/accept-target-decision"),
     }
 )
-assert len(TWENTY_ROUTE_TEMPLATES) == 20
+assert len(TWENTY_ONE_ROUTE_TEMPLATES) == 21
 
 
-def test_route_set_under_prefix_equals_twenty_literal():
+def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
-    равно литералу двадцати (план, задача 12, «Утверждения»; два маршрута
-    членств группы — план `2026-09-25-families-screen.md`, задача 4) —
-    единственное место, где такое утверждение осмысленно (задача 6 роутера
-    ещё не заводила); маршрута восстановления архивного контекста
-    (`…/restore`) в нём нет."""
+    равно литералу двадцати одного (план, задача 12, «Утверждения»; два
+    маршрута членств группы и пакетный перенос устаревшей группы — план
+    `2026-09-25-families-screen.md`, задачи 4 и 5) — единственное место, где
+    такое утверждение осмысленно (задача 6 роутера ещё не заводила);
+    маршрута восстановления архивного контекста (`…/restore`) в нём нет."""
     collected = _collect_semantic_routes()
-    assert collected == TWENTY_ROUTE_TEMPLATES
+    assert collected == TWENTY_ONE_ROUTE_TEMPLATES
     assert not any(path.endswith("/restore") for _method, path in collected)
 
 
 # ---------------------------------------------------------------------------
-#  Права: КАЖДЫЙ из двадцати маршрутов
+#  Права: КАЖДЫЙ из двадцати одного маршрута
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("method,path", TWENTY_ROUTES)
+@pytest.mark.parametrize("method,path", TWENTY_ONE_ROUTES)
 def test_member_rejected_on_every_route(method, path, member_client):
     response = member_client.request(method, path)
     assert response.status_code == 403, f"{method} {path} -> {response.status_code}"
 
 
-@pytest.mark.parametrize("method,path", TWENTY_ROUTES)
+@pytest.mark.parametrize("method,path", TWENTY_ONE_ROUTES)
 def test_unauthenticated_rejected_on_every_route(method, path, anon_client):
     response = anon_client.request(method, path)
     assert response.status_code in (401, 403), f"{method} {path} -> {response.status_code}"
@@ -3195,3 +3200,640 @@ class TestMembers:
         finally:
             probe_session.close()
         assert found is None, "запись пережила отказ 4xx — commit вместо rollback"
+
+
+# ---------------------------------------------------------------------------
+#  Пакетный перенос устаревшей группы (спека §2.6, §2.8 п. 4, задача 5
+#  плана `2026-09-25-families-screen.md`)
+# ---------------------------------------------------------------------------
+
+class TestStaleGroupTransfer:
+    def _stale_group_scene(self, db_session, factories, *, cat_target, cat_source, count=3):
+        """`count` STALE-членств ОДНОЙ группы (общий раздел `chapter`, общий
+        `catalog_position` — их целевая корзина «написание × статья» и,
+        следовательно, целевой контекст СОВПАДУТ, как и требует утверждение
+        плана «все три в одном целевом контексте»). Источник — контекст
+        `bucket_b` (статья `cat_source`, устаревшая), эффективная статья
+        раздела — `cat_target`."""
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        chapter = _chapter(
+            factories, proposal, title="ГруппаПереноса",
+            category_id=cat_target, category_source="file",
+        )
+        source_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        source_ctx = _context(db_session, source_bucket)
+        positions = [
+            _position(factories, proposal, chapter=chapter, catalog_position=cp)
+            for _ in range(count)
+        ]
+        for pos in positions:
+            _member(db_session, pos, source_ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+        return chapter, source_ctx, positions
+
+    def test_moves_all_into_one_context_ordered_and_writes_three_events(
+        self, admin_client, db_session, factories
+    ):
+        """Утверждение плана: группа из трёх устаревших позиций с общей
+        статьёй раздела — `moved=3`, `refused=0`, все три в ОДНОМ целевом
+        контексте, обход и `results` — по возрастанию `position_item_id`, и
+        РОВНО три события `members_moved` (считано по целевому контексту —
+        не глобальным счётчиком, спека `verifying-guards.md`: посторонние
+        события того же типа в базе не должны попасть в счёт)."""
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        chapter, source_ctx, positions = self._stale_group_scene(
+            db_session, factories, cat_target=cat_target, cat_source=cat_source,
+        )
+        ordered_ids = sorted(pos.id for pos in positions)
+        # Корзина цели и её контекст по умолчанию рождаются ОДНОЙ операцией,
+        # и при выровненных последовательностях их id совпадают — тогда
+        # `target_context_id`, по ошибке прочитанный из `bucket_id`, был бы
+        # неотличим от верного. Разводим последовательности (они вне
+        # транзакций, откат теста их не вернёт — и не должен).
+        db_session.execute(sa.text(
+            "SELECT setval(pg_get_serial_sequence('catalog_contexts', 'id'), "
+            "GREATEST(nextval(pg_get_serial_sequence('catalog_contexts', 'id')), "
+            "nextval(pg_get_serial_sequence('context_buckets', 'id'))) + 1000)"
+        ))
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 3
+        assert body["refused"] == 0
+        results = body["results"]
+        assert [r["position_item_id"] for r in results] == ordered_ids
+        assert all(r["outcome"] == "moved" for r in results)
+        assert all(r["error_code"] is None and r["message"] is None for r in results)
+        target_context_ids = {r["target_context_id"] for r in results}
+        assert len(target_context_ids) == 1
+        (target_context_id,) = target_context_ids
+        assert target_context_id != source_ctx.id
+
+        db_session.expire_all()
+        members = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id.in_(ordered_ids))
+        ).scalars().all()
+        assert {m.context_id for m in members} == {target_context_id}
+        assert {m.membership_state for m in members} == {MembershipState.CURRENT.value}
+
+        events_count = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(SemanticEvent)
+            .where(
+                SemanticEvent.context_id == target_context_id,
+                SemanticEvent.event_type == "members_moved",
+            )
+        ).scalar_one()
+        assert events_count == 3
+
+    def test_one_forced_refusal_does_not_roll_back_the_other_two(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Ключевое утверждение плана: отказ ОДНОЙ позиции пакета не
+        откатывает две другие — и откатывает ВСЁ, что успела записать сама
+        отказавшая позиция (её точка сохранения).
+
+        Буквальный сценарий плана — «у одной из трёх статья раздела сменилась
+        после показа строки внимания» — однопоточно НЕДОСТИЖИМ: группа
+        определена ОБЩИМ ближайшим разделом (`chapter_item_id`), а эффективная
+        статья позиции — это статья ИМЕННО её ближайшего раздела
+        (`chapter_context`, `services/context_routing.py`); у всех членств
+        одной группы раздел общий, значит и эффективная статья общая — им
+        неоткуда разойтись. Реальный отказ ровно одной позиции достижим только
+        конкурентной сессией — см.
+        `test_concurrent_target_bucket_birth_refuses_exactly_one_via_real_path`.
+
+        Здесь подмена `accept_transfer` для СРЕДНЕЙ позиции сначала выполняет
+        НАСТОЯЩИЙ перенос (членство, событие `members_moved` записаны и
+        сброшены в базу), а затем отказывает доменной ошибкой. Ни одна
+        сегодняшняя ветка отказа `accept_transfer` не пишет до `raise`, поэтому
+        без записи перед отказом точка сохранения была бы неотличима от её
+        отсутствия (`try/except` без `begin_nested` дал бы тот же итог); с
+        записью — без точки сохранения отказавшая позиция осталась бы
+        перенесённой, и событий в цели было бы три."""
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        chapter, source_ctx, positions = self._stale_group_scene(
+            db_session, factories, cat_target=cat_target, cat_source=cat_source,
+        )
+        ordered_ids = sorted(pos.id for pos in positions)
+        refused_id = ordered_ids[1]
+
+        real_accept_transfer = context_operations.accept_transfer
+
+        def _fake_accept_transfer(db, *, position_item_id, expected_category_id, actor_id):
+            if position_item_id == refused_id:
+                real_accept_transfer(
+                    db, position_item_id=position_item_id,
+                    expected_category_id=expected_category_id, actor_id=actor_id,
+                )
+                raise context_operations.ContextOperationError(
+                    "test_forced_refusal", "принудительный отказ для проверки пакета",
+                    position_item_id=position_item_id,
+                )
+            return real_accept_transfer(
+                db, position_item_id=position_item_id,
+                expected_category_id=expected_category_id, actor_id=actor_id,
+            )
+
+        monkeypatch.setattr(context_operations, "accept_transfer", _fake_accept_transfer)
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 2
+        assert body["refused"] == 1
+        results_by_id = {r["position_item_id"]: r for r in body["results"]}
+        assert results_by_id[refused_id]["outcome"] == "refused"
+        assert results_by_id[refused_id]["error_code"] == "test_forced_refusal"
+        assert results_by_id[refused_id]["message"] == "принудительный отказ для проверки пакета"
+        assert results_by_id[refused_id]["target_context_id"] is None
+        moved_ids = [pid for pid in ordered_ids if pid != refused_id]
+        for pid in moved_ids:
+            assert results_by_id[pid]["outcome"] == "moved"
+            assert results_by_id[pid]["error_code"] is None
+            assert results_by_id[pid]["message"] is None
+        moved_target_ids = {results_by_id[pid]["target_context_id"] for pid in moved_ids}
+        assert len(moved_target_ids) == 1
+        (target_context_id,) = moved_target_ids
+        assert target_context_id is not None and target_context_id != source_ctx.id
+
+        # Состояние — СВЕЖИМ чтением той же сессии (admin_client и db_session —
+        # одна транзакционная сессия теста, `commit` маршрута здесь лишь
+        # отпускает точку сохранения внешней транзакции теста). Это доказывает
+        # «не откатано отказом соседа», но НЕ «закоммичено»: переживание
+        # настоящего commit'а проверяет отдельной сессией
+        # `test_concurrent_target_bucket_birth_refuses_exactly_one_via_real_path`.
+        db_session.expire_all()
+        refused_member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == refused_id)
+        ).scalar_one()
+        assert refused_member.context_id == source_ctx.id
+        assert refused_member.membership_state == MembershipState.STALE.value
+
+        moved_members = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id.in_(moved_ids))
+        ).scalars().all()
+        assert len(moved_members) == 2
+        assert all(m.membership_state == MembershipState.CURRENT.value for m in moved_members)
+        assert {m.context_id for m in moved_members} == {target_context_id}
+
+        # Событие отказавшей позиции (записанное подменой ДО отказа) откатано
+        # вместе с её точкой сохранения: в цели ровно два `members_moved`.
+        events_count = db_session.execute(
+            sa.select(sa.func.count())
+            .select_from(SemanticEvent)
+            .where(
+                SemanticEvent.context_id == target_context_id,
+                SemanticEvent.event_type == "members_moved",
+            )
+        ).scalar_one()
+        assert events_count == 2
+
+    def test_concurrent_target_bucket_birth_refuses_exactly_one_via_real_path(
+        self, committing_client, committing_db, committing_factories,
+        committing_session_factory, monkeypatch,
+    ):
+        """Утверждение плана «отказ ОДНОЙ из трёх — `moved=2`, `refused=1`,
+        отказ несёт код и текст доменной ошибки `accept_transfer`, две другие
+        перенесены и закоммичены» на НАСТОЯЩЕМ `accept_transfer`, без подмены
+        самого отказа.
+
+        Однопоточно отказ ровно одной позиции группы недостижим (общий
+        ближайший раздел — общая эффективная статья, докстрока
+        `test_one_forced_refusal_does_not_roll_back_the_other_two`). Достижим
+        он конкурентной сессией: целевой корзины ещё нет, первая позиция
+        читает кандидата цели (`None`), и МЕЖДУ этим чтением и её блокировкой
+        другая сессия рождает корзину цели и коммитит — ветка «целевая
+        корзина не входит в запертый набор» `accept_transfer` отказывает
+        `REFUSE_CATEGORY_CHANGED` именно первой позиции; вторая и третья
+        находят уже закоммиченную корзину, запирают её и переносятся в её
+        контекст по умолчанию. Конкурентная сессия вставлена подменой
+        `lock_buckets` ПЕРЕД настоящей блокировкой — тот же приём, что
+        `TestAcceptTransferRelocksWhenTargetBucketAppearsBetweenReadAndLock`
+        (`test_context_cascade.py`).
+
+        `committing_client` — настоящий `commit` маршрута; итог читается
+        ОТДЕЛЬНОЙ сессией, то есть доказывает «закоммичено», а не «видно в
+        той же транзакции»."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from auth import get_current_user
+        from main import app
+        from models import UserRole
+        from services.context_routing import route_position
+
+        admin = committing_factories.UserFactory.create(role=UserRole.admin)
+        committing_db.commit()
+        admin_id = admin.id
+
+        def _real_admin():
+            # Не ORM-объект чужой сессии: маршрут исполняется в другом потоке.
+            user = MagicMock()
+            user.id = admin_id
+            user.role = UserRole.admin
+            user.is_active = True
+            return user
+
+        app.dependency_overrides[get_current_user] = _real_admin
+
+        cat_target, cat_source = _leaf_category_ids(committing_db, 2)
+        chapter, source_ctx, positions = self._stale_group_scene(
+            committing_db, committing_factories, cat_target=cat_target, cat_source=cat_source,
+        )
+        ordered_ids = sorted(pos.id for pos in positions)
+        catalog_position = SimpleNamespace(id=positions[0].catalog_position_id)
+        source_ctx_id = source_ctx.id
+        chapter_id = chapter.id
+
+        # Донор той же строки каталога под разделом со статьёй `cat_target`:
+        # его маршрутизация другой сессией и рождает корзину цели.
+        donor_proposal = _proposal(committing_factories)
+        donor_chapter = _chapter(
+            committing_factories, donor_proposal, title="Раздел-донор",
+            category_id=cat_target, category_source="file",
+        )
+        donor_position = _position(
+            committing_factories, donor_proposal, chapter=donor_chapter,
+            catalog_position=catalog_position,
+        )
+        donor_position_id = donor_position.id
+        committing_db.commit()
+
+        real_lock_buckets = context_operations.lock_buckets
+        lock_calls = {"n": 0}
+
+        def _lock_after_concurrent_bucket_birth(db, bucket_ids, *, exclusive):
+            lock_calls["n"] += 1
+            if lock_calls["n"] == 1:
+                with committing_session_factory() as other:
+                    route_position(other, position_item_id=donor_position_id)
+                    other.commit()
+            return real_lock_buckets(db, bucket_ids, exclusive=exclusive)
+
+        monkeypatch.setattr(context_operations, "lock_buckets", _lock_after_concurrent_bucket_birth)
+
+        response = committing_client.post(
+            f"{BASE}/contexts/{source_ctx_id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter_id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 2
+        assert body["refused"] == 1
+        results = body["results"]
+        assert [r["position_item_id"] for r in results] == ordered_ids
+
+        refused = results[0]
+        assert refused["outcome"] == "refused"
+        assert refused["error_code"] == context_operations.REFUSE_CATEGORY_CHANGED
+        assert refused["message"] == (
+            f"целевая корзина позиции {ordered_ids[0]} изменилась между чтением и "
+            "блокировкой (гонка на создании корзины)"
+        )
+        assert refused["target_context_id"] is None
+
+        probe = committing_session_factory()
+        try:
+            donor_context_id = probe.execute(
+                sa.select(ContextMember.context_id).where(
+                    ContextMember.position_item_id == donor_position_id
+                )
+            ).scalar_one()
+            for moved in results[1:]:
+                assert moved["outcome"] == "moved"
+                assert moved["error_code"] is None and moved["message"] is None
+                assert moved["target_context_id"] == donor_context_id
+
+            members = {
+                m.position_item_id: m
+                for m in probe.execute(
+                    sa.select(ContextMember).where(ContextMember.position_item_id.in_(ordered_ids))
+                ).scalars()
+            }
+            assert members[ordered_ids[0]].context_id == source_ctx_id
+            assert members[ordered_ids[0]].membership_state == MembershipState.STALE.value
+            for pid in ordered_ids[1:]:
+                assert members[pid].context_id == donor_context_id
+                assert members[pid].membership_state == MembershipState.CURRENT.value
+
+            events_count = probe.execute(
+                sa.select(sa.func.count())
+                .select_from(SemanticEvent)
+                .where(
+                    SemanticEvent.context_id == donor_context_id,
+                    SemanticEvent.event_type == "members_moved",
+                )
+            ).scalar_one()
+            assert events_count == 2
+        finally:
+            probe.close()
+
+    def test_wrong_expected_category_refuses_whole_group_via_real_path(
+        self, admin_client, db_session, factories
+    ):
+        """Реальный (не подменённый) путь `REFUSE_CATEGORY_CHANGED`
+        `accept_transfer`: `expected_category_id`, не совпадающий со свежей
+        эффективной статьёй ВСЕЙ группы (она у группы одна — см. докстроку
+        предыдущего теста), отказывает КАЖДОЙ позиции группы —
+        `moved=0`, `refused=3`, ответ всё равно `200` (частичный/полный
+        отказ пакета — не HTTP-ошибка)."""
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        chapter, source_ctx, positions = self._stale_group_scene(
+            db_session, factories, cat_target=cat_target, cat_source=cat_source,
+        )
+        ordered_ids = sorted(pos.id for pos in positions)
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_source},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 0
+        assert body["refused"] == 3
+        results = body["results"]
+        assert [r["position_item_id"] for r in results] == ordered_ids
+        assert all(r["outcome"] == "refused" for r in results)
+        assert all(
+            r["error_code"] == context_operations.REFUSE_CATEGORY_CHANGED for r in results
+        )
+
+        db_session.expire_all()
+        members = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id.in_(ordered_ids))
+        ).scalars().all()
+        assert {m.context_id for m in members} == {source_ctx.id}
+        assert {m.membership_state for m in members} == {MembershipState.STALE.value}
+
+    def test_group_with_no_stale_members_returns_empty(self, admin_client, db_session, factories):
+        (cat_target,) = _leaf_category_ids(db_session, 1)
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        chapter = _chapter(
+            factories, proposal, title="БезУстаревших",
+            category_id=cat_target, category_source="file",
+        )
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_target)
+        ctx = _context(db_session, bucket)
+        pos = _position(factories, proposal, chapter=chapter, catalog_position=cp)
+        _member(db_session, pos, ctx, membership_state=MembershipState.CURRENT.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"results": [], "moved": 0, "refused": 0}
+
+    def test_null_chapter_moves_only_positions_without_chapter(
+        self, admin_client, db_session, factories
+    ):
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        source_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        source_ctx = _context(db_session, source_bucket)
+
+        # Устаревшая позиция БЕЗ раздела вовсе — эффективная статья `None`
+        # (пустая цепочка, `chapter_context`).
+        no_chapter_pos = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, no_chapter_pos, source_ctx, membership_state=MembershipState.STALE.value)
+
+        # Устаревшая позиция С разделом — та же корзина-источник, другая
+        # группа; трогать её нельзя.
+        chapter = _chapter(
+            factories, proposal, title="СРазделом",
+            category_id=cat_target, category_source="file",
+        )
+        with_chapter_pos = _position(factories, proposal, chapter=chapter, catalog_position=cp)
+        _member(db_session, with_chapter_pos, source_ctx, membership_state=MembershipState.STALE.value)
+
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": None, "expected_category_id": None},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 1
+        assert body["refused"] == 0
+        assert [r["position_item_id"] for r in body["results"]] == [no_chapter_pos.id]
+
+        db_session.expire_all()
+        with_chapter_member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == with_chapter_pos.id)
+        ).scalar_one()
+        assert with_chapter_member.context_id == source_ctx.id
+        assert with_chapter_member.membership_state == MembershipState.STALE.value
+
+    def test_current_and_conflicted_members_of_same_group_are_untouched(
+        self, admin_client, db_session, factories
+    ):
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        chapter = _chapter(
+            factories, proposal, title="СмешаннаяГруппа",
+            category_id=cat_target, category_source="file",
+        )
+        source_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        source_ctx = _context(db_session, source_bucket)
+        other_ctx = _context(db_session, source_bucket, is_default=False)
+
+        stale_pos = _position(factories, proposal, chapter=chapter, catalog_position=cp)
+        _member(db_session, stale_pos, source_ctx, membership_state=MembershipState.STALE.value)
+
+        current_pos = _position(factories, proposal, chapter=chapter, catalog_position=cp)
+        _member(db_session, current_pos, source_ctx, membership_state=MembershipState.CURRENT.value)
+
+        conflicted_pos = _position(factories, proposal, chapter=chapter, catalog_position=cp)
+        _member(
+            db_session, conflicted_pos, source_ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+        )
+
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 1
+        assert body["refused"] == 0
+        assert [r["position_item_id"] for r in body["results"]] == [stale_pos.id]
+
+        db_session.expire_all()
+        current_member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == current_pos.id)
+        ).scalar_one()
+        assert current_member.context_id == source_ctx.id
+        assert current_member.membership_state == MembershipState.CURRENT.value
+
+        conflicted_member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == conflicted_pos.id)
+        ).scalar_one()
+        assert conflicted_member.context_id == source_ctx.id
+        assert conflicted_member.conflict_at is not None
+
+    def test_chapter_group_leaves_other_groups_and_other_contexts_untouched(
+        self, admin_client, db_session, factories
+    ):
+        """Группа — пара «ЭТОТ контекст × ЭТОТ ближайший раздел»: устаревшие
+        членства того же контекста под ДРУГИМ разделом и без раздела, и
+        устаревшее членство ДРУГОГО контекста под тем же разделом (другая
+        строка каталога той же сметы — обычный случай: раздел «Отделка» несёт
+        разные работы, каждая в своём контексте), в пакет не входят. У
+        раздела H та же статья, что у G, — попади он в пакет, его позиция
+        переехала бы, а не отказала бы, и счёт разошёлся бы."""
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        cp = factories.CatalogPositionFactory.create()
+        cp_other = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        chapter_g = _chapter(
+            factories, proposal, title="ГруппаG", category_id=cat_target, category_source="file",
+        )
+        chapter_h = _chapter(
+            factories, proposal, title="ГруппаH", category_id=cat_target, category_source="file",
+        )
+        source_ctx = _context(
+            db_session, _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        )
+        other_ctx = _context(
+            db_session, _bucket(db_session, catalog_position=cp_other, work_category_id=cat_source)
+        )
+
+        in_group = _position(factories, proposal, chapter=chapter_g, catalog_position=cp)
+        other_chapter = _position(factories, proposal, chapter=chapter_h, catalog_position=cp)
+        no_chapter = _position(factories, proposal, catalog_position=cp)
+        other_context = _position(factories, proposal, chapter=chapter_g, catalog_position=cp_other)
+        for pos, ctx in (
+            (in_group, source_ctx), (other_chapter, source_ctx),
+            (no_chapter, source_ctx), (other_context, other_ctx),
+        ):
+            _member(db_session, pos, ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter_g.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert [r["position_item_id"] for r in body["results"]] == [in_group.id]
+        assert body["moved"] == 1
+        assert body["refused"] == 0
+
+        db_session.expire_all()
+        untouched = {
+            m.position_item_id: m
+            for m in db_session.execute(
+                sa.select(ContextMember).where(
+                    ContextMember.position_item_id.in_(
+                        [other_chapter.id, no_chapter.id, other_context.id]
+                    )
+                )
+            ).scalars()
+        }
+        assert untouched[other_chapter.id].context_id == source_ctx.id
+        assert untouched[no_chapter.id].context_id == source_ctx.id
+        assert untouched[other_context.id].context_id == other_ctx.id
+        assert {m.membership_state for m in untouched.values()} == {MembershipState.STALE.value}
+
+    def test_chapter_cycle_is_not_swallowed_as_a_per_position_refusal(
+        self, admin_client, db_session, factories
+    ):
+        """Перехватывается ТОЛЬКО доменный отказ `ContextOperationError`
+        (докстрока `transfer_stale_group`): цикл разделов группы —
+        `RoutingError` `chapter_context` — не становится «отказом позиции» в
+        `results` с `200`, а проходит к `_mutating` и даёт доменную `422` с
+        откатом всей транзакции маршрута."""
+        cat_source = _leaf_category_ids(db_session, 1)[0]
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        source_ctx = _context(
+            db_session, _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        )
+        chapter_a = _chapter(factories, proposal, title="Циклический А")
+        chapter_b = _chapter(factories, proposal, title="Циклический Б", parent=chapter_a)
+        db_session.flush()
+        chapter_a.chapter_item_id = chapter_b.id
+        db_session.flush()
+        pos = _position(factories, proposal, chapter=chapter_a, catalog_position=cp)
+        _member(db_session, pos, source_ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter_a.id, "expected_category_id": None},
+        )
+        assert response.status_code == 422
+
+        db_session.expire_all()
+        member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == pos.id)
+        ).scalar_one()
+        assert member.context_id == source_ctx.id
+        assert member.membership_state == MembershipState.STALE.value
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"expected_category_id": None}, {"chapter_item_id": None}],
+        ids=["no_chapter_item_id", "no_expected_category_id"],
+    )
+    def test_both_body_fields_are_required(self, admin_client, db_session, factories, body):
+        """Оба поля тела обязательны (план, Interfaces: без умолчаний).
+        Умолчание `None` у `chapter_item_id` молча превратило бы забытое поле в
+        «группу без раздела» и перенесло бы ЧУЖУЮ группу; у
+        `expected_category_id` — в ожидание «нет статьи»."""
+        cat_source = _leaf_category_ids(db_session, 1)[0]
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        source_ctx = _context(
+            db_session, _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        )
+        pos = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, pos, source_ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer", json=body,
+        )
+        assert response.status_code == 422
+
+        db_session.expire_all()
+        member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == pos.id)
+        ).scalar_one()
+        assert member.context_id == source_ctx.id
+        assert member.membership_state == MembershipState.STALE.value
+
+    def test_member_forbidden(self, member_client):
+        response = member_client.post(
+            f"{BASE}/contexts/1/stale-groups/transfer",
+            json={"chapter_item_id": None, "expected_category_id": None},
+        )
+        assert response.status_code == 403
+
+    def test_missing_context_gives_404(self, admin_client):
+        response = admin_client.post(
+            f"{BASE}/contexts/999999999/stale-groups/transfer",
+            json={"chapter_item_id": None, "expected_category_id": None},
+        )
+        assert response.status_code == 404
+        # Доменный отказ сервиса, а не «маршрут не найден» FastAPI (тот тоже
+        # `404`, и до появления маршрута этот тест был бы зелёным).
+        assert response.json()["detail"]["code"] == context_operations.REFUSE_CONTEXT_NOT_FOUND

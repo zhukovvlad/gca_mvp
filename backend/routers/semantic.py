@@ -1,8 +1,9 @@
-"""API семантического контура — двадцать маршрутов под `/api/v1/semantic`,
+"""API семантического контура — двадцать один маршрут под `/api/v1/semantic`,
 все под правом `admin` (спека `2026-09-22-catalog-families-design.md` §2.7,
 §2.10; план, задача 12; чтение членств группы — план
 `2026-09-25-families-screen.md`, задача 4, спека
-`2026-09-25-families-screen-design.md` §2.8 п. 3).
+`2026-09-25-families-screen-design.md` §2.8 п. 3; пакетный перенос устаревшей
+группы — та же спека §2.6, §2.8 п. 4, задача 5).
 
 HTTP-слой поверх готовых сервисов задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) — они не
@@ -314,6 +315,16 @@ class AcceptTargetDecisionRequest(BaseModel):
     position_item_ids: list[int] = Field(min_length=1)
 
 
+class StaleGroupTransferRequest(BaseModel):
+    """Тело пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4):
+    `chapter_item_id=null` — группа «без раздела» (то же значение, что несёт
+    строка внимания экрана), а не «весь контекст» — второго смысла у `null`
+    здесь нет, в отличие от `GroupSelector` чтения членств группы."""
+
+    chapter_item_id: int | None
+    expected_category_id: int | None
+
+
 # ---------------------------------------------------------------------------
 #  Семьи
 # ---------------------------------------------------------------------------
@@ -615,6 +626,40 @@ def archive_context_route(
             actor_id=admin.id,
         )
     return {"context_id": context_id, "archived": True}
+
+
+@router.post("/contexts/{context_id}/stale-groups/transfer")
+def transfer_stale_group_route(
+    context_id: int,
+    body: StaleGroupTransferRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Пакетный перенос устаревшей группы одной строки внимания (спека §2.6,
+    §2.8 п. 4): группа — `chapter_item_id` (`null` — без раздела),
+    `expected_category_id` — статья, которую оператор видел в строке
+    внимания. Ответ несёт результат по КАЖДОЙ позиции пакета; частичный
+    отказ — законный `200`, не ошибка (пачка не атомарна,
+    `context_operations.transfer_stale_group`)."""
+    with _mutating(db):
+        result = context_operations.transfer_stale_group(
+            db, context_id=context_id, chapter_item_id=body.chapter_item_id,
+            expected_category_id=body.expected_category_id, actor_id=admin.id,
+        )
+    return {
+        "results": [
+            {
+                "position_item_id": item.position_item_id,
+                "outcome": item.outcome,
+                "target_context_id": item.target_context_id,
+                "error_code": item.error_code,
+                "message": item.message,
+            }
+            for item in result.results
+        ],
+        "moved": result.moved,
+        "refused": result.refused,
+    }
 
 
 # ---------------------------------------------------------------------------
