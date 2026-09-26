@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 
+import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
@@ -43,6 +44,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import {
   useActivateWorkFamily,
   useArchiveWorkFamily,
@@ -54,158 +56,214 @@ import {
 } from "@/services/queries";
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
+import { usePersistedPageSize } from "./usePersistedPageSize";
+
 const ANY = "any";
+const DEFAULT_PAGE_SIZE = 20;
 const STATUS_OPTIONS: WorkFamilyStatus[] = ["draft", "active", "archived"];
 
 /**
- * Семьи работ — вкладка «Семьи» (спека §2.7, §2.10).
+ * Семьи работ — вкладка «Семьи» (спека `2026-09-25-families-screen-design.md`
+ * §2.1, §2.7). Список слева, панель правки выбранной семьи справа — щелчок по
+ * строке (не отдельная кнопка), состав действий панели тот же, что нёс
+ * прежний диалог правки фичи 1: имя, единица, определение, «Активировать»,
+ * «Архивировать», «Слить…».
  *
- * Фильтр по статусу открывается на `draft`: после seed это штатное первое
- * состояние экрана — 42 черновика, путь «дописать определение →
- * активировать» проходит здесь (план задачи 13, «Утверждения»).
+ * Пагинация — на фронтенде (спека §2.7): `GET /families` отдаёт весь список,
+ * страницы режет клиент. Фильтр по статусу открывается на `draft`: после
+ * seed это штатное первое состояние экрана — 42 черновика, путь «дописать
+ * определение → активировать» проходит здесь (план фичи 1, задача 13,
+ * «Утверждения»).
  */
 export function FamiliesTab() {
   const [statusFilter, setStatusFilter] = useState<string>("draft");
   const [unitFilter, setUnitFilter] = useState<string>(ANY);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<WorkFamily | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [merging, setMerging] = useState<WorkFamily | null>(null);
   const [archiving, setArchiving] = useState<WorkFamily | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePersistedPageSize(
+    "gca.families.families.pageSize",
+    DEFAULT_PAGE_SIZE
+  );
 
   const unitsQ = useUnits();
   const familiesQ = useWorkFamilies(
     statusFilter === ANY ? undefined : (statusFilter as WorkFamilyStatus),
     unitFilter === ANY ? undefined : Number(unitFilter)
   );
-  const activate = useActivateWorkFamily();
   const archive = useArchiveWorkFamily();
 
-  const items = familiesQ.data ?? [];
+  const allItems = familiesQ.data ?? [];
+  const total = allItems.length;
+
+  // Зажим страницы (ревью Task 7, P5): фильтр или действие панели
+  // (активация/архивирование) сузили выдачу, и текущая страница уже не
+  // покрывается ею — правка состояния во время рендера, тем же приёмом, что
+  // уже несёт `ContextsTab` для своей выдачи; следующий рендер пересчитывает
+  // срез от исправленной страницы. Без стража на успех/ненулевой итог: при
+  // `total === 0` (загрузка ещё не пришла или выдача пуста) `Math.ceil(0 /
+  // pageSize)` и так даёт 0, а `Math.max(1, …)` поднимает его до 1 — та же
+  // страница 1, что и в любом другом случае (ревью Task 7, P7).
+  const lastValidPage = Math.max(1, Math.ceil(total / pageSize));
+  if (page > lastValidPage) {
+    setPage(lastValidPage);
+  }
+
+  const startIndex = (page - 1) * pageSize;
+  const items = allItems.slice(startIndex, startIndex + pageSize);
+  const selected = allItems.find((f) => f.id === selectedId) ?? null;
+
+  function resetToFirstPage() {
+    setPage(1);
+  }
 
   return (
-    <div className="grid gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="grid gap-1">
-            <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v ?? ANY)}>
-              <SelectTrigger id="family-status-filter" className="w-48">
-                <SelectValue>{(raw) => (!raw || raw === ANY ? "Любой статус" : raw)}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Любой статус</SelectItem>
-                {STATUS_OPTIONS.map((s) => (
-                  <SelectItem key={s} value={s}>{s}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+      <div className="grid gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="grid gap-1">
+              <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
+              <Select
+                value={statusFilter}
+                onValueChange={(v) => { setStatusFilter(v ?? ANY); resetToFirstPage(); }}
+              >
+                <SelectTrigger id="family-status-filter" className="w-48">
+                  <SelectValue>{(raw) => (!raw || raw === ANY ? "Любой статус" : raw)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Любой статус</SelectItem>
+                  {STATUS_OPTIONS.map((s) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor="family-unit-filter" className="text-xs text-fg-tertiary">Единица (фильтр)</Label>
+              <Select
+                value={unitFilter}
+                onValueChange={(v) => { setUnitFilter(v ?? ANY); resetToFirstPage(); }}
+              >
+                <SelectTrigger id="family-unit-filter" className="w-48">
+                  <SelectValue>
+                    {(raw) =>
+                      !raw || raw === ANY
+                        ? "Любая единица"
+                        : (unitsQ.data?.find((u) => String(u.id) === raw)?.name ?? "Любая единица")
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Любая единица</SelectItem>
+                  {(unitsQ.data ?? []).map((u) => (
+                    <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="grid gap-1">
-            <Label htmlFor="family-unit-filter" className="text-xs text-fg-tertiary">Единица (фильтр)</Label>
-            <Select value={unitFilter} onValueChange={(v) => setUnitFilter(v ?? ANY)}>
-              <SelectTrigger id="family-unit-filter" className="w-48">
-                <SelectValue>
-                  {(raw) =>
-                    !raw || raw === ANY
-                      ? "Любая единица"
-                      : (unitsQ.data?.find((u) => String(u.id) === raw)?.name ?? "Любая единица")
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Любая единица</SelectItem>
-                {(unitsQ.data ?? []).map((u) => (
-                  <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" /> Новая семья
+          </Button>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4" /> Новая семья
-        </Button>
+
+        {familiesQ.isPending && <Skeleton className="h-40 w-full" />}
+
+        {familiesQ.isError && (
+          <EmptyState title="Ошибка загрузки" description="Не удалось получить семьи." />
+        )}
+
+        {familiesQ.isSuccess && total === 0 && (
+          <EmptyState title="Семей нет" description="Семьи заводятся здесь либо загружаются seed-файлом." />
+        )}
+
+        {familiesQ.isSuccess && total > 0 && (
+          <>
+            <Surface padding="none" className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Название</TableHead>
+                    <TableHead>Единица</TableHead>
+                    <TableHead>Статус</TableHead>
+                    <TableHead>Определение</TableHead>
+                    <TableHead className="text-right">Контекстов</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((family) => (
+                    <TableRow
+                      key={family.id}
+                      role="row"
+                      tabIndex={0}
+                      aria-selected={family.id === selectedId}
+                      onClick={() => setSelectedId(family.id)}
+                      onKeyDown={(e) => {
+                        // Прежняя кнопка «Правка» (фича 1) открывала панель с
+                        // клавиатуры; без неё строка обязана уметь то же сама
+                        // (ревью Task 7, P2).
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedId(family.id);
+                        }
+                      }}
+                      className={cn(
+                        "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                        family.id === selectedId && "bg-surface-hover"
+                      )}
+                    >
+                      <TableCell className="font-medium text-fg">{family.title}</TableCell>
+                      <TableCell>{family.unit_code ?? "—"}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary">{family.status}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {family.definition && family.definition.trim() ? "есть" : "нет"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{family.context_count}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Surface>
+
+            <p className="text-sm text-fg-tertiary tabular-nums">
+              {startIndex + 1}–{Math.min(startIndex + items.length, total)} из {total}
+            </p>
+
+            <Pager
+              page={page}
+              total={total}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                resetToFirstPage();
+              }}
+              showPageNumbers
+            />
+          </>
+        )}
       </div>
 
-      {familiesQ.isPending && <Skeleton className="h-40 w-full" />}
-
-      {familiesQ.isError && (
-        <EmptyState title="Ошибка загрузки" description="Не удалось получить семьи." />
-      )}
-
-      {familiesQ.isSuccess && items.length === 0 && (
-        <EmptyState title="Семей нет" description="Семьи заводятся здесь либо загружаются seed-файлом." />
-      )}
-
-      {familiesQ.isSuccess && items.length > 0 && (
-        <Surface padding="none" className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Название</TableHead>
-                <TableHead>Единица</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead>Определение</TableHead>
-                <TableHead className="text-right">Контекстов</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {items.map((family) => {
-                const hasDefinition = Boolean(family.definition && family.definition.trim());
-                return (
-                  <TableRow key={family.id}>
-                    <TableCell className="font-medium text-fg">{family.title}</TableCell>
-                    <TableCell>{family.unit_code ?? "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{family.status}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      {hasDefinition ? "есть" : "нет"}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">{family.context_count}</TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-1">
-                        <Button size="xs" variant="outline" onClick={() => setEditing(family)}>
-                          Правка
-                        </Button>
-                        {family.status === "draft" && (
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            aria-label={`Активировать семью ${family.title}`}
-                            disabled={!hasDefinition || activate.isPending}
-                            onClick={() => activate.mutate(family.id)}
-                          >
-                            Активировать
-                          </Button>
-                        )}
-                        {family.status === "active" && (
-                          <Button size="xs" variant="outline" onClick={() => setMerging(family)}>
-                            Слить
-                          </Button>
-                        )}
-                        {family.status !== "archived" && (
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            aria-label={`Архивировать семью ${family.title}`}
-                            onClick={() => setArchiving(family)}
-                          >
-                            Архивировать
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </Surface>
+      {selected ? (
+        <FamilyPanel
+          key={selected.id}
+          family={selected}
+          onMerge={() => setMerging(selected)}
+          onArchive={() => setArchiving(selected)}
+        />
+      ) : (
+        <EmptyState
+          title="Семья не выбрана"
+          description="Выберите строку в списке слева, чтобы открыть панель правки."
+        />
       )}
 
       <CreateFamilyDialog open={createOpen} onOpenChange={setCreateOpen} />
-      <EditFamilyDialog family={editing} onOpenChange={(open) => !open && setEditing(null)} />
       <MergeFamilyDialog family={merging} onOpenChange={(open) => !open && setMerging(null)} />
 
       <AlertDialog open={archiving !== null} onOpenChange={(open) => !open && setArchiving(null)}>
@@ -237,6 +295,112 @@ export function FamiliesTab() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/**
+ * Панель правки выбранной семьи (спека §2.1) — заменяет диалог правки фичи 1
+ * («как сейчас по составу действий»): имя/единица/определение те же поля,
+ * что нёс `EditFamilyForm`, плюс «Активировать»/«Архивировать»/«Слить…» —
+ * прежде кнопки строки списка, теперь кнопки панели. `key={family.id}` у
+ * вызывающего (см. `FamiliesTab`) пересоздаёт компонент при смене выбранной
+ * семьи — иначе несохранённый черновик полей пережил бы переключение.
+ */
+function FamilyPanel({
+  family,
+  onMerge,
+  onArchive,
+}: {
+  family: WorkFamily;
+  onMerge: () => void;
+  onArchive: () => void;
+}) {
+  const [title, setTitle] = useState(family.title);
+  const [unitName, setUnitName] = useState(family.unit_code ?? "");
+  const [definition, setDefinition] = useState(family.definition ?? "");
+  const update = useUpdateWorkFamily();
+  const activate = useActivateWorkFamily();
+
+  const unitLocked = family.context_count > 0;
+  const hasDefinition = Boolean(family.definition && family.definition.trim());
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      await update.mutateAsync({
+        id: family.id,
+        input: {
+          title: title.trim(),
+          definition: definition.trim() || null,
+          // `unit_name` отсутствует в теле, пока привязки есть — «не трогать»,
+          // а не «снять единицу» (решение оркестратора, план фичи 1, задача 13).
+          ...(unitLocked ? {} : { unit_name: unitName.trim() || null }),
+        },
+      });
+    } catch {
+      // Причина в тосте.
+    }
+  }
+
+  return (
+    <Surface className="grid gap-4">
+      <h3 className="text-lg font-medium text-fg">Семья «{family.title}»</h3>
+
+      <form onSubmit={handleSubmit} className="grid gap-3">
+        <div className="grid gap-2">
+          <Label htmlFor="edit-family-title">Название</Label>
+          <Input id="edit-family-title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="edit-family-unit">Единица</Label>
+          <Input
+            id="edit-family-unit"
+            value={unitLocked ? (family.unit_code ?? "") : unitName}
+            onChange={(e) => setUnitName(e.target.value)}
+            disabled={unitLocked}
+          />
+          {unitLocked && (
+            <p className="text-xs text-fg-tertiary">
+              Единица недоступна: привязано контекстов — {family.context_count}
+            </p>
+          )}
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="edit-family-definition">Определение</Label>
+          <Textarea id="edit-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
+        </div>
+        <Button type="submit" disabled={!title.trim() || update.isPending}>
+          Сохранить
+        </Button>
+      </form>
+
+      <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
+        {family.status === "draft" && (
+          <Button
+            variant="outline"
+            aria-label={`Активировать семью ${family.title}`}
+            disabled={!hasDefinition || activate.isPending}
+            onClick={() => activate.mutate(family.id)}
+          >
+            Активировать
+          </Button>
+        )}
+        {family.status === "active" && (
+          <Button variant="outline" onClick={onMerge}>
+            Слить
+          </Button>
+        )}
+        {family.status !== "archived" && (
+          <Button
+            variant="ghost"
+            aria-label={`Архивировать семью ${family.title}`}
+            onClick={onArchive}
+          >
+            Архивировать
+          </Button>
+        )}
+      </div>
+    </Surface>
   );
 }
 
@@ -296,87 +460,6 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function EditFamilyDialog({
-  family,
-  onOpenChange,
-}: {
-  family: WorkFamily | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  return (
-    <Dialog open={family !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        {family && <EditFamilyForm family={family} onDone={() => onOpenChange(false)} />}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function EditFamilyForm({ family, onDone }: { family: WorkFamily; onDone: () => void }) {
-  const [title, setTitle] = useState(family.title);
-  const [unitName, setUnitName] = useState(family.unit_code ?? "");
-  const [definition, setDefinition] = useState(family.definition ?? "");
-  const update = useUpdateWorkFamily();
-
-  const unitLocked = family.context_count > 0;
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      await update.mutateAsync({
-        id: family.id,
-        input: {
-          title: title.trim(),
-          definition: definition.trim() || null,
-          // `unit_name` отсутствует в теле, пока привязки есть — «не трогать»,
-          // а не «снять единицу» (решение оркестратора, план задачи 13).
-          ...(unitLocked ? {} : { unit_name: unitName.trim() || null }),
-        },
-      });
-      onDone();
-    } catch {
-      // Причина в тосте.
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit}>
-      <DialogHeader>
-        <DialogTitle>Правка семьи «{family.title}»</DialogTitle>
-      </DialogHeader>
-      <div className="grid gap-3 py-4">
-        <div className="grid gap-2">
-          <Label htmlFor="edit-family-title">Название</Label>
-          <Input id="edit-family-title" value={title} onChange={(e) => setTitle(e.target.value)} required />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="edit-family-unit">Единица</Label>
-          <Input
-            id="edit-family-unit"
-            value={unitLocked ? (family.unit_code ?? "") : unitName}
-            onChange={(e) => setUnitName(e.target.value)}
-            disabled={unitLocked}
-          />
-          {unitLocked && (
-            <p className="text-xs text-fg-tertiary">
-              Единица недоступна: привязано контекстов — {family.context_count}
-            </p>
-          )}
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="edit-family-definition">Определение</Label>
-          <Textarea id="edit-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
-        </div>
-      </div>
-      <DialogFooter>
-        <Button type="submit" disabled={!title.trim() || update.isPending}>
-          Сохранить
-        </Button>
-      </DialogFooter>
-    </form>
   );
 }
 

@@ -2144,6 +2144,17 @@ export type ComparabilityReason = (typeof COMPARABILITY_REASON_VALUES)[number];
 export const FAMILY_SOURCE_VALUES = ["manual", "suggestion"] as const;
 export type FamilySource = (typeof FAMILY_SOURCE_VALUES)[number];
 
+/**
+ * Одна статья пути классификатора строки списка контекстов (спека
+ * `2026-09-25-families-screen-design.md` §2.4, §2.8 п. 1) — код и название,
+ * без уровня: уровень читается из позиции в списке `work_category_path`
+ * (тот же контракт, что `WorkCategoryRef` бэкенда, `backend/crud/semantic.py`).
+ */
+export interface WorkCategoryPathEntry {
+  code: string;
+  title: string;
+}
+
 /** Строка `GET /v1/semantic/contexts` (`crud/semantic.py::list_contexts`). */
 export interface ContextRow {
   id: number;
@@ -2164,6 +2175,19 @@ export interface ContextRow {
   standard_job_title: string;
   unit_code: string | null;
   archived_at: string | null;
+  /** Число членств контекста — спека §2.4 «число позиций». */
+  member_count: number;
+  /** Есть ли у контекста устаревшие членства — предикат фильтра и точки внимания строки. */
+  has_stale_members: boolean;
+  /** Есть ли у контекста конфликтные членства — предикат фильтра и точки внимания строки. */
+  has_conflicting_members: boolean;
+  /**
+   * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, от корня,
+   * БЕЗ самой статьи (спека §2.4: «полный путь классификатора — во
+   * всплывающей подсказке»); сама статья — отдельные поля
+   * `work_category_code`/`work_category_title` выше.
+   */
+  work_category_path: WorkCategoryPathEntry[];
 }
 
 export interface ContextsPage {

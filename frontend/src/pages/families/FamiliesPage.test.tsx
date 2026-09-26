@@ -90,22 +90,29 @@ describe("FamiliesPage", () => {
     expect(screen.queryByRole("link", { name: /Семьи/ })).not.toBeInTheDocument();
   });
 
-  it("три области экрана переключаются вкладками", async () => {
+  it("две вкладки — «Семьи» и «Контексты»; вкладки «Операции» нет (спека §2.1)", async () => {
     const user = userEvent.setup();
     renderWithProviders(<FamiliesPage />);
 
     expect(await screen.findByRole("tab", { name: "Семьи" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Контексты" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Операции" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Операции" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Контексты" }));
     expect(await screen.findByLabelText("Поиск по написанию каталога")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Операции" }));
-    expect(await screen.findByText("Контекст не выбран")).toBeInTheDocument();
   });
 
-  it("выбор контекста в очереди открывает его карточку во вкладке «Операции»", async () => {
+  it("легенда источника подписи видна под заголовком экрана текстом, не только в подсказке (спека §2.3)", async () => {
+    renderWithProviders(<FamiliesPage />);
+    await screen.findByText("Семьи и контексты");
+
+    expect(screen.getByText("статья СМР")).toBeInTheDocument();
+    expect(screen.getByText("классификатор, общий для всех смет")).toBeInTheDocument();
+    expect(screen.getByText("в смете")).toBeInTheDocument();
+    expect(screen.getByText("разделы конкретной сметы")).toBeInTheDocument();
+  });
+
+  it("выбор контекста в очереди показывает карточку рядом со списком; активная вкладка остаётся «Контексты»", async () => {
     const user = userEvent.setup();
     renderWithProviders(<FamiliesPage />);
 
@@ -114,12 +121,21 @@ describe("FamiliesPage", () => {
       await screen.findByText("Штукатурка стен цементно-песчаным раствором")
     );
 
-    // Клик по строке переключает на «Операции» и открывает карточку ЭТОГО контекста.
-    await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Операции" })).toHaveAttribute("aria-selected", "true");
-    });
-    expect(
-      await screen.findByText("Членств: 3")
-    ).toBeInTheDocument();
+    // Карточка встала рядом со списком, вкладка НЕ переключилась (вкладки
+    // «Операции» больше нет вовсе — переключаться некуда).
+    expect(await screen.findByText("Членств: 3")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Контексты" })).toHaveAttribute("aria-selected", "true");
+    // Список остался виден рядом с карточкой — не подменён ею.
+    expect(screen.getByLabelText("Поиск по написанию каталога")).toBeInTheDocument();
+  });
+
+  it("выбор семьи открывает панель правки рядом со списком; активная вкладка остаётся «Семьи» (спека §2.1)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<FamiliesPage />);
+
+    await user.click(await screen.findByText("Семья работ №3"));
+
+    expect(await screen.findByLabelText("Определение")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Семьи" })).toHaveAttribute("aria-selected", "true");
   });
 });

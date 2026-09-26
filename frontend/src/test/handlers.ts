@@ -48,6 +48,7 @@ import type {
   RoundImportJob,
   SemanticEventEntry,
   TenderCard,
+  WorkCategoryPathEntry,
   WorkFamily,
 } from "@/types/domain";
 
@@ -68,6 +69,14 @@ interface SemanticContextFixture extends ContextCardData {
   hasStaleMembers: boolean;
   hasConflictingMembers: boolean;
   hasNoMembers: boolean;
+  /**
+   * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, без самой
+   * статьи (спека `2026-09-25-families-screen-design.md` §2.4, §2.8 п. 1);
+   * `ContextCardData` этого поля не несёт (оно — только строки списка), но
+   * фикстура контекста ОДНА на обе формы ответа (`toContextRow`/
+   * `toContextCard`), поэтому поле здесь, а не в отдельной надстройке.
+   */
+  work_category_path: WorkCategoryPathEntry[];
 }
 
 /**
@@ -352,9 +361,15 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     unit_id: 11,
     unit_code: "м2",
     work_category_id: 77,
-    work_category_code: "05.02",
-    work_category_title: "Отделочные работы",
+    work_category_code: "05.02.03",
+    work_category_title: "Оштукатуривание цементно-песчаным раствором",
     work_category_source: "file",
+    // Путь — родители СВЕРХУ ВНИЗ, без самой статьи (спека §2.4): корень
+    // "05" и раздел "05.02", статья третьего уровня — поля выше.
+    work_category_path: [
+      { code: "05", title: "Отделочные работы" },
+      { code: "05.02", title: "Штукатурные работы" },
+    ] as WorkCategoryPathEntry[],
     place_dictionary_version: 1,
     events: [] as SemanticEventEntry[],
   };
@@ -530,6 +545,9 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     work_category_id: 88,
     work_category_code: "07.01",
     work_category_title: "Электромонтажные работы",
+    // Один уровень предков (не два, как у `base`) — путь классификатора
+    // разной глубины у разных строк одной выдачи (спека §2.8, DoD 8).
+    work_category_path: [{ code: "07", title: "Инженерные сети" }],
     semantic_kind: "WORK",
     semantic_kind_source: "rule",
     semantic_kind_by: null,
@@ -648,6 +666,10 @@ function toContextRow(fixture: SemanticContextFixture): ContextRow {
     standard_job_title: fixture.standard_job_title,
     unit_code: fixture.unit_code,
     archived_at: fixture.archived_at,
+    member_count: fixture.member_count,
+    has_stale_members: fixture.hasStaleMembers,
+    has_conflicting_members: fixture.hasConflictingMembers,
+    work_category_path: fixture.work_category_path,
   };
 }
 
@@ -2204,7 +2226,7 @@ export const handlers = [
 
   // ---------------------------------------------------------------------
   //  Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10,
-  //  `backend/routers/semantic.py`) — восемнадцать маршрутов под `admin`.
+  //  `backend/routers/semantic.py`) — двадцать один маршрут под `admin`.
   // ---------------------------------------------------------------------
 
   http.get("/api/v1/semantic/families", ({ request }) => {
