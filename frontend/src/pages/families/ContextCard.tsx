@@ -104,22 +104,65 @@ function bucketTargetLabel(option: BucketContextOption): string {
   return option.is_default ? `контекст #${option.id} (по умолчанию)` : `контекст #${option.id}`;
 }
 
-/** Ключ группы членств — `chapter_item_id`, `"null"` для группы «без раздела». */
-function groupKeyOf(chapterItemId: number | null): string {
-  return chapterItemId === null ? "null" : String(chapterItemId);
+/** Ключ группы членств — разделы группы через запятую, `"no-chapter"` для группы «без раздела». */
+function groupKeyOf(chapterItemIds: number[]): string {
+  return chapterItemIds.length === 0 ? "no-chapter" : chapterItemIds.join(",");
 }
 
-/** Селектор группы (спека §2.8 п. 3) из её ключа карточки — обратное `groupKeyOf`. */
-function groupSelectorOf(chapterItemId: number | null): GroupSelector {
-  return chapterItemId === null
-    ? { chapter_item_id: null, no_chapter: true }
-    : { chapter_item_id: chapterItemId, no_chapter: false };
+/** Селектор группы (спека §2.8 п. 3, редакция 3) из её разделов карточки — обратное `groupKeyOf`. */
+function groupSelectorOf(chapterItemIds: number[]): GroupSelector {
+  return chapterItemIds.length === 0
+    ? { chapter_item_ids: [], no_chapter: true }
+    : { chapter_item_ids: chapterItemIds, no_chapter: false };
 }
 
-/** Путь группы текстом — «без раздела» у группы без `chapter_item_id`. */
-function groupPathLabel(group: Pick<MemberPath, "chapter_item_id" | "path">): string {
-  return group.chapter_item_id === null ? "без раздела" : group.path.join(" › ");
+/** Путь группы текстом — «без раздела» у группы без разделов. */
+function groupPathLabel(group: Pick<MemberPath, "chapter_item_ids" | "path">): string {
+  return group.chapter_item_ids.length === 0 ? "без раздела" : group.path.join(" › ");
 }
+
+/**
+ * Подпись пути группы, РАЗБИТАЯ на строки (замер на стенде 27.09.2026,
+ * четвёртый круг): в колонке 420px одна строка не держит и уникальный
+ * суффикс целиком — обрезка (RTL-приём ниже) резала уже РАЗЛИЧАЮЩЕЕ звено
+ * при более чем двух звеньях суффикса. `line1` — последние ДВА звена
+ * суффикса (либо весь суффикс, если он короче — тогда `line2` нет вовсе):
+ * общий, повторяющийся у нескольких групп «хвост» пути. `line2` —
+ * ОСТАВШИЕСЯ (более старшие) звенья суффикса поверх этих двух — именно они
+ * РАЗЛИЧАЮТ группы, и им нужна СВОЯ строка, а не место в первой.
+ */
+interface GroupPathLabel {
+  line1: string;
+  line2: string | null;
+}
+
+function groupPathLabels(groups: MemberPath[]): GroupPathLabel[] {
+  return groups.map((group, index) => {
+    if (group.chapter_item_ids.length === 0) return { line1: "без раздела", line2: null };
+    const maxLen = group.path.length;
+    const minLen = Math.min(2, maxLen);
+    let suffix = group.path.slice(-minLen);
+    for (let len = minLen; len <= maxLen; len++) {
+      const candidate = group.path.slice(-len);
+      const suffixKey = candidate.join("\u0000");
+      const collides = groups.some((other, otherIndex) => {
+        if (otherIndex === index) return false;
+        return other.path.slice(-len).join("\u0000") === suffixKey;
+      });
+      suffix = candidate;
+      // Полные пути групп различны по построению (слияние §2.8 п. 2) —
+      // цикл обязан остановиться не позже `len === maxLen`.
+      if (!collides) break;
+    }
+    const tailCount = Math.min(2, suffix.length);
+    const leading = suffix.slice(0, suffix.length - tailCount);
+    return {
+      line1: suffix.slice(-tailCount).join(" / "),
+      line2: leading.length > 0 ? leading.join(" / ") : null,
+    };
+  });
+}
+
 
 interface ContextCardProps {
   contextId: number | null;
@@ -130,8 +173,8 @@ interface ContextCardProps {
  * `2026-09-25-families-screen-design.md` §2.5, §2.6, §2.8). Панель СПРАВА ОТ
  * СПИСКА (§2.1), не отдельная вкладка «Операции» — та упразднена. Членства
  * карточка не несёт поштучно (`members`/`members_truncated` удалены §2.8
- * п. 5): вкладка «Членства» группирует их по ближайшему разделу
- * (`member_paths`) и раскрывает КАЖДУЮ группу постраничным запросом
+ * п. 5): вкладка «Членства» группирует их по тексту пути ближайшего раздела
+ * (`member_paths`, редакция 3) и раскрывает КАЖДУЮ группу постраничным запросом
  * (`useContextGroupMembers`, §2.8 п. 3), а не читает обрезанный список
  * карточки, которого больше нет.
  */
@@ -152,6 +195,12 @@ export function ContextCard({ contextId }: ContextCardProps) {
 
   const [kindChoice, setKindChoice] = useState<SemanticKind>("WORK");
   const [roleChoice, setRoleChoice] = useState<NameRole>("WORK");
+  // Диалоги «Решений» (сверка с макетом 27.09.2026, `mock-card-decisions.png`):
+  // формы вида/роли/семьи переехали из инлайна в диалог, открытый своей
+  // кнопкой — тело запроса и поведение те же.
+  const [kindDialogOpen, setKindDialogOpen] = useState(false);
+  const [roleDialogOpen, setRoleDialogOpen] = useState(false);
+  const [familyDialogOpen, setFamilyDialogOpen] = useState(false);
   // Ключ «текущей» карточки, для которой синхронизированы `kindChoice`/
   // `roleChoice` ниже — см. докстринг у их синхронизации (П1).
   const [syncedCardKey, setSyncedCardKey] = useState<string | null>(null);
@@ -188,7 +237,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
   // сохраняются В МОМЕНТ переноса — своих полей у перечитанной карточки для
   // уже перенесённой группы больше нет.
   const [transferResults, setTransferResults] = useState<Record<string, {
-    chapterItemId: number | null;
+    chapterItemIds: number[];
     pathLabel: string;
     moved: number;
     refused: number;
@@ -252,7 +301,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
   }
 
   async function toggleGroupSelected(group: MemberPath, checked: boolean) {
-    const key = groupKeyOf(group.chapter_item_id);
+    const key = groupKeyOf(group.chapter_item_ids);
     if (checked) {
       // Не мутация react-query — прямой вызов из обработчика клика, без
       // собственного `onError`; неуспех обязан быть пойман явно, иначе
@@ -261,7 +310,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
       try {
         const { position_item_ids } = await semanticApi.groupMemberIds(
           contextId as number,
-          groupSelectorOf(group.chapter_item_id),
+          groupSelectorOf(group.chapter_item_ids),
           "all"
         );
         setGroupIdCache((prev) => ({ ...prev, [key]: position_item_ids }));
@@ -280,7 +329,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
   }
 
   function isGroupChecked(group: MemberPath): boolean {
-    const ids = groupIdCache[groupKeyOf(group.chapter_item_id)];
+    const ids = groupIdCache[groupKeyOf(group.chapter_item_ids)];
     return Boolean(ids && ids.length > 0 && ids.every((id) => selectedIds.has(id)));
   }
 
@@ -325,7 +374,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
     try {
       const { position_item_ids } = await semanticApi.groupMemberIds(
         contextId as number,
-        { chapter_item_id: null, no_chapter: false },
+        { chapter_item_ids: [], no_chapter: false },
         "conflict"
       );
       acceptTargetDecision.mutate(
@@ -340,17 +389,31 @@ export function ContextCard({ contextId }: ContextCardProps) {
   }
 
   return (
-    <div className="grid gap-4">
-      <Surface className="grid gap-2">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+    // `min-w-0` НА КАЖДОМ уровне грид/флекс-вложенности (замер на стенде
+    // 27.09.2026) — без него автоматический минимум элемента считается по
+    // контенту (grid/flex «blowout»), и длинная подпись пути группы
+    // раздвигала карточку шире выделенной колонки, выталкивая её за край
+    // окна: локального `truncate`/`min-w-0` на строке группы недостаточно,
+    // если хоть один предок в цепочке (этот корень, `Surface`, `Tabs`,
+    // `TabsContent`) не передал сужение дальше.
+    <div className="grid min-w-0 gap-4">
+      {/* Карточка — ОДНА поверхность (сверка с макетом 27.09.2026): шапка,
+          строки внимания и вкладки с содержимым живут в одном бордюре, не в
+          трёх отдельных карточках. */}
+      <Surface className="grid min-w-0 gap-4">
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+          {/* `min-w-0` — заголовок обязан ПЕРЕНОСИТЬСЯ на длинном названии
+              статьи, а не растягивать карточку (замер на стенде 27.09.2026);
+              `flex-wrap` строки статьи сам по себе текст внутри `<span>` не
+              рвёт, пока флекс-родитель растянут «blowout»-ом выше по дереву. */}
+          <div className="min-w-0 flex-1">
             <h3 className="text-lg font-medium text-fg">
               {card.standard_job_title}
-              {card.unit_code && <span className="ml-2 text-sm text-fg-tertiary">{card.unit_code}</span>}
+              {card.unit_symbol && <span className="ml-2 text-sm text-fg-tertiary">{card.unit_symbol}</span>}
             </h3>
             <div className="mt-1 flex flex-wrap items-center gap-1 text-sm text-fg-secondary">
               <SourceChip kind="classifier" />
-              <span>
+              <span className="break-words">
                 {card.work_category_code && card.work_category_title
                   ? `${card.work_category_code} ${card.work_category_title}`
                   : "—"}
@@ -369,19 +432,18 @@ export function ContextCard({ contextId }: ContextCardProps) {
             {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
           </Badge>
         </div>
-      </Surface>
 
       {/* Строки внимания (спека §2.6) — МЕЖДУ шапкой и вкладками, видны
           независимо от активной вкладки карточки. */}
-      <div className="grid gap-2">
+      <div className="grid min-w-0 gap-2">
         {card.stale_groups.map((sg) => {
-          const key = groupKeyOf(sg.chapter_item_id);
+          const key = groupKeyOf(sg.chapter_item_ids);
           const pathLabel = groupPathLabel(sg);
           return (
-            <Surface key={key} className="grid gap-2 border-warning/40 bg-warning/5">
+            <Surface key={key} className="grid min-w-0 gap-2 border-warning/40 bg-warning/5">
               <p className="text-sm text-fg">
                 {sg.count} {pluralRu(sg.count, "позиция", "позиции", "позиций")} из раздела{" "}
-                {sg.chapter_item_id === null ? (
+                {sg.chapter_item_ids.length === 0 ? (
                   <span>без раздела</span>
                 ) : (
                   <>
@@ -400,9 +462,12 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 .
               </p>
               <div>
+                {/* Ссылка-действие (сверка с макетом 27.09.2026, `.linkb`),
+                    не кнопка с рамкой — семантика и aria те же. */}
                 <Button
                   size="xs"
-                  variant="outline"
+                  variant="link"
+                  className="h-auto p-0"
                   aria-label={`Перенести их в контекст «${card.standard_job_title} × ${
                     sg.target_category_code ?? "—"
                   }» — раздел ${pathLabel}`}
@@ -412,7 +477,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                       {
                         contextId,
                         input: {
-                          chapter_item_id: sg.chapter_item_id,
+                          chapter_item_ids: sg.chapter_item_ids.length ? sg.chapter_item_ids : null,
                           expected_category_id: sg.target_category_id,
                         },
                       },
@@ -421,7 +486,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                           setTransferResults((prev) => ({
                             ...prev,
                             [key]: {
-                              chapterItemId: sg.chapter_item_id,
+                              chapterItemIds: sg.chapter_item_ids,
                               pathLabel,
                               moved: data.moved,
                               refused: data.refused,
@@ -456,11 +521,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
             оператором и после, пока тот не нажмёт «Скрыть» или не сменит
             контекст (карточка размонтируется по `key` в `ContextsTab.tsx`). */}
         {Object.entries(transferResults).map(([key, result]) => (
-          <Surface key={key} className="grid gap-1">
+          <Surface key={key} className="grid min-w-0 gap-1">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="text-sm">
                 <p className="flex flex-wrap items-center gap-1 text-fg-secondary">
-                  {result.chapterItemId === null ? (
+                  {result.chapterItemIds.length === 0 ? (
                     <span>без раздела</span>
                   ) : (
                     <>
@@ -495,7 +560,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
         ))}
 
         {totalConflictCount > 0 && (
-          <Surface className="grid gap-2 border-warning/40 bg-warning/5">
+          <Surface className="grid min-w-0 gap-2 border-warning/40 bg-warning/5">
             <p className="text-sm text-fg">
               {totalConflictCount} {pluralRu(totalConflictCount, "позиция", "позиции", "позиций")}{" "}
               {pluralRu(totalConflictCount, "пришла", "пришли", "пришли")} слиянием в Review с другим
@@ -504,7 +569,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
             <div>
               <Button
                 size="xs"
-                variant="outline"
+                variant="link"
+                className="h-auto p-0"
                 aria-label="Принять решение цели (все конфликтные)"
                 disabled={acceptingAllConflicts || acceptTargetDecision.isPending}
                 onClick={() => acceptAllConflictingTargetDecisions()}
@@ -516,31 +582,40 @@ export function ContextCard({ contextId }: ContextCardProps) {
         )}
 
         {card.member_count === 0 && (
-          <Surface className="border-warning/40 bg-warning/5">
+          <Surface className="min-w-0 border-warning/40 bg-warning/5">
             <p className="text-sm text-fg">Позиций нет: смета заменена. Архивирует оператор.</p>
           </Surface>
         )}
       </div>
 
-      <Tabs defaultValue="decisions">
-        <TabsList>
+      <Tabs defaultValue="decisions" className="min-w-0">
+        {/* Вкладки карточки — подчёркиванием (сверка с макетом 27.09.2026,
+            `.ptabs`), не сегментным переключателем: тот занят вкладками
+            ВЕРХНЕГО уровня «Семьи»/«Контексты» (`FamiliesPage.tsx`). */}
+        <TabsList variant="line">
           <TabsTrigger value="decisions">Решения</TabsTrigger>
           <TabsTrigger value="memberships">Членства {card.member_count}</TabsTrigger>
           <TabsTrigger value="log">Журнал</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="decisions" className="mt-4">
-          <Surface className="grid gap-4">
-            <div className="grid gap-2 text-sm">
+        <TabsContent value="decisions" className="mt-4 min-w-0">
+          <div className="grid gap-4">
+            {/* Двухколоночный список «ключ — значение» (сверка с макетом
+                27.09.2026, `mock-card-decisions.png`): подпись поля слева
+                приглушённым цветом, значение справа, источник решения —
+                мелким приглушённым ПОСЛЕ значения (та же строка). */}
+            <div className="grid grid-cols-[170px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+              <div className="text-fg-tertiary">Вид</div>
               <div>
-                Вид: <span className="font-medium">{SEMANTIC_KIND_LABEL[card.semantic_kind]}</span>{" "}
+                <span className="font-medium">{SEMANTIC_KIND_LABEL[card.semantic_kind]}</span>{" "}
                 <span className="text-fg-tertiary">
                   {DECISION_SOURCE_LABEL[card.semantic_kind_source]}
                   {card.semantic_state === "CONFIRMED" ? ", подтверждён" : ""}
                 </span>
               </div>
+
+              <div className="text-fg-tertiary">Наименование называет</div>
               <div>
-                Наименование называет:{" "}
                 <span className="font-medium">{NAME_ROLE_LABEL[card.name_role]}</span>{" "}
                 <span className="text-fg-tertiary">{DECISION_SOURCE_LABEL[card.name_role_source]}</span>
                 {card.name_role === "LOCATION_ONLY" && (
@@ -560,140 +635,81 @@ export function ContextCard({ contextId }: ContextCardProps) {
                   </div>
                 )}
               </div>
-              <div>Состав описан: {comparabilityLabel(card.comparability_reason)}</div>
+
+              <div className="text-fg-tertiary">Состав описан</div>
+              <div>{comparabilityLabel(card.comparability_reason)}</div>
+
+              <div className="text-fg-tertiary">Семья</div>
               <div>
-                Семья: <span>{familyCaption}</span>
+                <span>{familyCaption}</span>
                 {familySourceCaption && (
                   <span className="text-fg-tertiary"> · {familySourceCaption}</span>
                 )}
               </div>
             </div>
 
-            {/* Вид работы */}
-            <div className="grid gap-2 border-t border-border-subtle pt-3">
-              <Label htmlFor="context-kind-select">Вид работы</Label>
-              <div className="flex flex-wrap gap-2">
-                <Select value={kindChoice} onValueChange={(v) => v && setKindChoice(v as SemanticKind)}>
-                  <SelectTrigger id="context-kind-select" className="w-48">
-                    <SelectValue>{() => SEMANTIC_KIND_LABEL[kindChoice]}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {KIND_OPTIONS.map((kind) => (
-                      <SelectItem key={kind} value={kind}>
-                        {SEMANTIC_KIND_LABEL[kind]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  disabled={confirmKind.isPending}
-                  onClick={() => confirmKind.mutate({ contextId, input: { kind: kindChoice } })}
-                >
-                  Подтвердить вид
-                </Button>
-                {/* Обратный переход CONFIRMED -> SUGGESTED (спека §2.5) — кнопка
-                    видна ТОЛЬКО у подтверждённого вида, тем же маршрутом, что и
-                    подтверждение. */}
-                {card.semantic_state === "CONFIRMED" && (
-                  <Button
-                    variant="outline"
-                    disabled={confirmKind.isPending}
-                    onClick={() => confirmKind.mutate({ contextId, input: { unconfirm: true } })}
-                  >
-                    Снять подтверждение
-                  </Button>
-                )}
-              </div>
+            {/* Три кнопки, каждая открывает диалог с прежней формой (сверка с
+                макетом 27.09.2026, `mock-card-decisions.png`) — тела запросов
+                и поведение не меняются, меняется только путь до формы. */}
+            <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
+              <Button variant="outline" onClick={() => setKindDialogOpen(true)}>
+                Подтвердить вид
+              </Button>
+              <Button variant="outline" onClick={() => setFamilyDialogOpen(true)}>
+                Назначить семью…
+              </Button>
+              <Button variant="outline" onClick={() => setRoleDialogOpen(true)}>
+                Изменить «что называет»…
+              </Button>
             </div>
-
-            {/* Наименование называет (спека §2.2: подпись поля `name_role`) */}
-            <div className="grid gap-2">
-              <Label htmlFor="context-role-select">Наименование называет</Label>
-              <div className="flex flex-wrap gap-2">
-                <Select value={roleChoice} onValueChange={(v) => v && setRoleChoice(v as NameRole)}>
-                  <SelectTrigger id="context-role-select" className="w-56">
-                    <SelectValue>{() => NAME_ROLE_LABEL[roleChoice]}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLE_OPTIONS.map((role) => (
-                      <SelectItem key={role} value={role}>
-                        {NAME_ROLE_LABEL[role]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  disabled={setNameRole.isPending}
-                  onClick={() => setNameRole.mutate({ contextId, input: { role: roleChoice } })}
-                >
-                  Переопределить роль
-                </Button>
-              </div>
-            </div>
-
-            {/* Семья */}
-            <div className="grid gap-2">
-              <Label htmlFor="context-family-select">Семья</Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <EntitySelect
-                  id="context-family-select"
-                  className="w-64"
-                  items={activeFamilies.data}
-                  value={familyChoice}
-                  onChange={(v) => setFamilyChoice(v as number | null)}
-                  getLabel={(f) => f.title}
-                  placeholder="Выбрать семью"
-                />
-                <Button
-                  disabled={assignFamily.isPending || familyChoice === null}
-                  onClick={() => assignFamily.mutate({ contextId, input: { family_id: familyChoice } })}
-                >
-                  Назначить семью
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={assignFamily.isPending || card.work_family_id === null}
-                  onClick={() => assignFamily.mutate({ contextId, input: { family_id: null } })}
-                >
-                  Снять семью
-                </Button>
-              </div>
-            </div>
-          </Surface>
+          </div>
         </TabsContent>
 
-        <TabsContent value="memberships" className="mt-4">
-          <Surface className="grid gap-4">
+        <TabsContent value="memberships" className="mt-4 min-w-0">
+          <div className="grid min-w-0 gap-4">
             {card.member_paths.length === 0 ? (
               <p className="text-sm text-fg-tertiary">Членств нет.</p>
             ) : (
-              <div className="grid gap-1">
-                {card.member_paths.map((group) => (
-                  <MembershipGroupSection
-                    key={groupKeyOf(group.chapter_item_id)}
-                    contextId={contextId as number}
-                    group={group}
-                    selectedIds={selectedIds}
-                    isChecked={isGroupChecked(group)}
-                    onToggleGroup={(checked) => toggleGroupSelected(group, checked)}
-                    onTogglePosition={toggleSelected}
-                    onAcceptStaleTransfer={(id) =>
-                      acceptStaleTransfer.mutate(id, { onSuccess: () => pruneSelection([id]) })
-                    }
-                    acceptStaleTransferPending={acceptStaleTransfer.isPending}
-                    onAcceptTargetDecision={(id) =>
-                      acceptTargetDecision.mutate(
-                        { position_item_ids: [id] },
-                        { onSuccess: () => pruneSelection([id]) }
-                      )
-                    }
-                    acceptTargetDecisionPending={acceptTargetDecision.isPending}
-                    onOpenConflictMove={(row) => {
-                      setConflictMove(row);
-                      setConflictMoveTarget(null);
-                    }}
-                  />
-                ))}
+              <div className="grid min-w-0 gap-1">
+                {/* Заголовок вкладки (сверка с макетом 27.09.2026,
+                    `mock-card-members.png`): «Позиции лежат в N разных
+                    разделах смет» — единственное число раздела ТОЛЬКО при
+                    ОДНОЙ группе, число разных путей = `member_paths.length`
+                    (докстрока `context_card`, спека §2.8 п. 2). */}
+                <p className="text-sm text-fg-tertiary">
+                  Позиции лежат в {card.member_paths.length}{" "}
+                  {card.member_paths.length === 1 ? "разделе" : "разных разделах"} смет
+                </p>
+                {(() => {
+                  const labels = groupPathLabels(card.member_paths);
+                  return card.member_paths.map((group, index) => (
+                    <MembershipGroupSection
+                      key={groupKeyOf(group.chapter_item_ids)}
+                      contextId={contextId as number}
+                      group={group}
+                      label={labels[index]}
+                      selectedIds={selectedIds}
+                      isChecked={isGroupChecked(group)}
+                      onToggleGroup={(checked) => toggleGroupSelected(group, checked)}
+                      onTogglePosition={toggleSelected}
+                      onAcceptStaleTransfer={(id) =>
+                        acceptStaleTransfer.mutate(id, { onSuccess: () => pruneSelection([id]) })
+                      }
+                      acceptStaleTransferPending={acceptStaleTransfer.isPending}
+                      onAcceptTargetDecision={(id) =>
+                        acceptTargetDecision.mutate(
+                          { position_item_ids: [id] },
+                          { onSuccess: () => pruneSelection([id]) }
+                        )
+                      }
+                      acceptTargetDecisionPending={acceptTargetDecision.isPending}
+                      onOpenConflictMove={(row) => {
+                        setConflictMove(row);
+                        setConflictMoveTarget(null);
+                      }}
+                    />
+                  ));
+                })()}
               </div>
             )}
 
@@ -862,11 +878,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 </Button>
               </div>
             </div>
-          </Surface>
+          </div>
         </TabsContent>
 
-        <TabsContent value="log" className="mt-4">
-          <Surface>
+        <TabsContent value="log" className="mt-4 min-w-0">
+          <div className="min-w-0">
             {card.events.length === 0 ? (
               <p className="text-sm text-fg-tertiary">Событий нет.</p>
             ) : (
@@ -888,9 +904,150 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 ))}
               </ul>
             )}
-          </Surface>
+          </div>
         </TabsContent>
       </Tabs>
+      </Surface>
+
+      {/* Диалог «Подтвердить вид» (сверка с макетом 27.09.2026) — прежняя
+          инлайн-форма (спека §2.5): вид работы и подтверждение/снятие
+          подтверждения. */}
+      <Dialog open={kindDialogOpen} onOpenChange={setKindDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Подтвердить вид</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2 py-2">
+            <Label htmlFor="context-kind-select">Вид работы</Label>
+            <Select value={kindChoice} onValueChange={(v) => v && setKindChoice(v as SemanticKind)}>
+              <SelectTrigger id="context-kind-select" className="w-48">
+                <SelectValue>{() => SEMANTIC_KIND_LABEL[kindChoice]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {KIND_OPTIONS.map((kind) => (
+                  <SelectItem key={kind} value={kind}>
+                    {SEMANTIC_KIND_LABEL[kind]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            {/* Обратный переход CONFIRMED -> SUGGESTED (спека §2.5) — кнопка
+                видна ТОЛЬКО у подтверждённого вида, тем же маршрутом, что и
+                подтверждение. */}
+            {card.semantic_state === "CONFIRMED" && (
+              <Button
+                variant="outline"
+                disabled={confirmKind.isPending}
+                onClick={() =>
+                  confirmKind.mutate(
+                    { contextId, input: { unconfirm: true } },
+                    { onSuccess: () => setKindDialogOpen(false) }
+                  )
+                }
+              >
+                Снять подтверждение
+              </Button>
+            )}
+            <Button
+              disabled={confirmKind.isPending}
+              onClick={() =>
+                confirmKind.mutate(
+                  { contextId, input: { kind: kindChoice } },
+                  { onSuccess: () => setKindDialogOpen(false) }
+                )
+              }
+            >
+              Подтвердить вид
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Диалог «Изменить «что называет»…» (сверка с макетом 27.09.2026) —
+          прежняя инлайн-форма роли имени (спека §2.5). */}
+      <Dialog open={roleDialogOpen} onOpenChange={setRoleDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Изменить «что называет»</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2 py-2">
+            <Label htmlFor="context-role-select">Наименование называет</Label>
+            <Select value={roleChoice} onValueChange={(v) => v && setRoleChoice(v as NameRole)}>
+              <SelectTrigger id="context-role-select" className="w-56">
+                <SelectValue>{() => NAME_ROLE_LABEL[roleChoice]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {ROLE_OPTIONS.map((role) => (
+                  <SelectItem key={role} value={role}>
+                    {NAME_ROLE_LABEL[role]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={setNameRole.isPending}
+              onClick={() =>
+                setNameRole.mutate(
+                  { contextId, input: { role: roleChoice } },
+                  { onSuccess: () => setRoleDialogOpen(false) }
+                )
+              }
+            >
+              Переопределить роль
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Диалог «Назначить семью…» (сверка с макетом 27.09.2026) — прежняя
+          инлайн-форма семьи (спека §2.5): назначение и снятие рядом. */}
+      <Dialog open={familyDialogOpen} onOpenChange={setFamilyDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Назначить семью</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2 py-2">
+            <Label htmlFor="context-family-select">Семья</Label>
+            <EntitySelect
+              id="context-family-select"
+              items={activeFamilies.data}
+              value={familyChoice}
+              onChange={(v) => setFamilyChoice(v as number | null)}
+              getLabel={(f) => f.title}
+              placeholder="Выбрать семью"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={assignFamily.isPending || card.work_family_id === null}
+              onClick={() =>
+                assignFamily.mutate(
+                  { contextId, input: { family_id: null } },
+                  { onSuccess: () => setFamilyDialogOpen(false) }
+                )
+              }
+            >
+              Снять семью
+            </Button>
+            <Button
+              disabled={assignFamily.isPending || familyChoice === null}
+              onClick={() =>
+                assignFamily.mutate(
+                  { contextId, input: { family_id: familyChoice } },
+                  { onSuccess: () => setFamilyDialogOpen(false) }
+                )
+              }
+            >
+              Назначить семью
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={archiveOpen} onOpenChange={setArchiveOpen}>
         <AlertDialogContent>
@@ -972,6 +1129,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
 interface MembershipGroupSectionProps {
   contextId: number;
   group: MemberPath;
+  /** Подпись пути, РАЗБИТАЯ на строки среди групп КАРТОЧКИ ({@link groupPathLabels}), не одной группы поодиночке. */
+  label: GroupPathLabel;
   selectedIds: Set<number>;
   isChecked: boolean;
   onToggleGroup: (checked: boolean) => void;
@@ -993,6 +1152,7 @@ interface MembershipGroupSectionProps {
 function MembershipGroupSection({
   contextId,
   group,
+  label,
   selectedIds,
   isChecked,
   onToggleGroup,
@@ -1005,7 +1165,7 @@ function MembershipGroupSection({
 }: MembershipGroupSectionProps) {
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(1);
-  const selector = groupSelectorOf(group.chapter_item_id);
+  const selector = groupSelectorOf(group.chapter_item_ids);
   // Запрос страницы группы — только пока группа РАСКРЫТА (спека §2.5:
   // «раскрывается постраничным запросом группы»): `open ? contextId : null`
   // отключает `useQuery` (`enabled`) у свёрнутой группы, а не только прячет
@@ -1028,9 +1188,32 @@ function MembershipGroupSection({
   // прямого дополнения («выбрать ЧТО» — группу, а не «группа»).
   const groupLabel = `группу «${pathLabel}»`;
 
+  // Строка группы — КОМПАКТНАЯ (сверка со стендом 27.09.2026, четвёртый
+  // круг): плашка «в смете» + путь В ДВЕ СТРОКИ, когда различающее звено
+  // суффикса не помещается рядом с общим хвостом — `line1` (последние два
+  // звена, общие у нескольких групп) и, только если суффикс длиннее двух
+  // звеньев, `line2` (более старшие звенья суффикса — РАЗЛИЧАЮЩИЕ группы).
+  // Обе строки — однострочная обрезка СЛЕВА браузером, не подбором лимита
+  // символов: фиксированный лимит не сходится ни с какой пиксельной
+  // шириной колонки. `dir="rtl"` разворачивает направление усечения
+  // `truncate` (эллипсис ставится в НАЧАЛЕ, хвост всегда виден),
+  // `<bdi dir="ltr">` восстанавливает порядок символов строки (кириллица и
+  // `/` остаются слева направо) внутри развёрнутого контекста; полный путь
+  // — в `title` каждой строки. Счётчик членств — ПРАВЫМ КРАЕМ строки 1 в
+  // своей ячейке (`flex-none`, фиксированная ширина), устаревшие/
+  // конфликтные — приглушённым мелким текстом РЯДОМ со счётчиком, тоже
+  // справа. Ряд (чекбокс + вся подпись) выровнен ВЕРХОМ (`items-start`) —
+  // чекбокс держится у ПЕРВОЙ строки, а не съезжает в середину, когда есть
+  // вторая.
+  const rtlLabel = (text: string, className: string) => (
+    <span dir="rtl" className={className} title={pathLabel}>
+      <bdi dir="ltr">{text}</bdi>
+    </span>
+  );
+
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b border-border-subtle py-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 border-b border-border-subtle py-1.5">
+      <div className="flex items-start gap-2">
         <Checkbox
           aria-label={`Выбрать ${groupLabel}`}
           checked={isChecked}
@@ -1038,21 +1221,30 @@ function MembershipGroupSection({
         />
         <CollapsibleTrigger
           aria-label={`Раскрыть ${groupLabel}`}
-          className="flex flex-1 flex-wrap items-center gap-2 text-left text-sm"
+          className="flex min-w-0 flex-1 flex-col items-stretch text-left text-sm"
         >
-          {group.chapter_item_id === null ? (
-            <span>без раздела</span>
-          ) : (
-            <>
-              <SourceChip kind="estimate" />
-              <span>{pathLabel}</span>
-            </>
-          )}
-          <span className="tabular-nums text-fg-tertiary">{group.member_count}</span>
-          {group.stale_count > 0 && <Badge variant="outline">устаревших: {group.stale_count}</Badge>}
-          {group.conflict_count > 0 && (
-            <Badge variant="destructive">конфликтных: {group.conflict_count}</Badge>
-          )}
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              {group.chapter_item_ids.length === 0 ? (
+                <span className="truncate">{label.line1}</span>
+              ) : (
+                <>
+                  <SourceChip kind="estimate" />
+                  {rtlLabel(label.line1, "block min-w-0 flex-1 truncate text-left")}
+                </>
+              )}
+            </span>
+            <span className="flex-none whitespace-nowrap text-xs text-fg-tertiary">
+              {group.stale_count > 0 && <>устаревшее: {group.stale_count}</>}
+              {group.stale_count > 0 && group.conflict_count > 0 && " · "}
+              {group.conflict_count > 0 && <>конфликт: {group.conflict_count}</>}
+            </span>
+            <span className="w-8 flex-none text-right tabular-nums text-fg-tertiary">
+              {group.member_count}
+            </span>
+          </span>
+          {label.line2 !== null &&
+            rtlLabel(label.line2, "mt-0.5 block min-w-0 truncate pl-5 text-left text-xs text-fg-tertiary")}
         </CollapsibleTrigger>
       </div>
       <CollapsibleContent className="mt-2">

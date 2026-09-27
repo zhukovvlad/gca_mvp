@@ -11,9 +11,15 @@ import {
   LOCATION_ONLY_CONTEXT_ID,
   MIXED_GROUPS_CHAPTER_ITEM_ID,
   MIXED_GROUPS_CONTEXT_ID,
+  LONG_LABEL_CONTEXT_ID,
+  SAME_PATH_CHAPTER_A,
+  SAME_PATH_CHAPTER_B,
+  SAME_PATH_CONTEXT_ID,
+  SAME_PATH_TARGET_CATEGORY_ID,
   STALE_AND_CONFLICT_POSITION_ITEM_ID,
   STALE_CHAPTER_ITEM_ID,
   STALE_POSITION_ITEM_ID,
+  SUFFIX_LABELS_CONTEXT_ID,
   handlerState,
 } from "@/test/handlers";
 import { server } from "@/test/server";
@@ -85,7 +91,8 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(screen.getByText("Отделка потолков водоэмульсионным составом")).toBeInTheDocument()
     );
-    expect(screen.getByText("м2")).toBeInTheDocument();
+    // Символ единицы (спека §2.8, уточнение 27.09.2026), не код "м2".
+    expect(screen.getByText("м²")).toBeInTheDocument();
     expect(screen.getAllByText("статья СМР").length).toBeGreaterThan(0);
     expect(screen.getByText("05.02.03 Оштукатуривание цементно-песчаным раствором")).toBeInTheDocument();
     expect(
@@ -102,6 +109,10 @@ describe("ContextCard", () => {
     for (const code of ["SUGGESTED", "CONFIRMED", "NOT_APPLICABLE", "LOCATION_ONLY", "GENERIC_WORK"]) {
       expect(screen.queryByText(code)).not.toBeInTheDocument();
     }
+    // Код единицы (спека §2.8, уточнение 27.09.2026) — тот же принцип: на
+    // экране только символ `unit_symbol`.
+    expect(screen.queryByText("м2", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("M2")).not.toBeInTheDocument();
   });
 
   it("источник статьи `file` не печатает «ручной разнос»", async () => {
@@ -215,7 +226,7 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(handlerState.lastTransferStaleGroupRequest).toEqual({
         contextId: STALE_CONTEXT_ID,
-        body: { chapter_item_id: STALE_CHAPTER_ITEM_ID, expected_category_id: 88 },
+        body: { chapter_item_ids: [STALE_CHAPTER_ITEM_ID], expected_category_id: 88 },
       })
     );
     expect(await screen.findByText("перенесено 2 из 3")).toBeInTheDocument();
@@ -284,13 +295,40 @@ describe("ContextCard", () => {
     await waitFor(() => expect(screen.getByText("Светильники")).toBeInTheDocument());
 
     expect(
-      screen.getByText("Состав описан: нет — сравнение ставок не производится")
+      screen.getByText("нет — сравнение ставок не производится")
     ).toBeInTheDocument();
     expect(
       screen.getByText("семья не назначена, потому что состав не описан")
     ).toBeInTheDocument();
     // Другая подпись семьи здесь появиться не должна — это ДРУГОЙ факт.
     expect(screen.queryByText("нет семьи")).not.toBeInTheDocument();
+  });
+
+  it("строка группы печатает «устаревшее: N · конфликт: M» рядом с числом позиций (ревью задачи 9)", async () => {
+    const user = userEvent.setup();
+    const mixed = contextFixture(MIXED_GROUPS_CONTEXT_ID);
+    mixed.member_paths = [
+      { chapter_item_ids: [MIXED_GROUPS_CHAPTER_ITEM_ID], path: ["8 Отделочные работы"], member_count: 7, stale_count: 2, conflict_count: 1 },
+      { chapter_item_ids: [], path: [], member_count: 3, stale_count: 0, conflict_count: 3 },
+    ];
+    renderWithProviders(<ContextCard contextId={MIXED_GROUPS_CONTEXT_ID} />);
+    await waitFor(() => expect(screen.getByText("Устройство стяжки пола")).toBeInTheDocument());
+    await openMembershipTab(user);
+    const chapterRow = screen.getByRole("button", { name: /Раскрыть группу «8 Отделочные работы/ });
+    expect(chapterRow).toHaveTextContent("устаревшее: 2 · конфликт: 1");
+    const noChapterRow = screen.getByRole("button", { name: "Раскрыть группу «без раздела»" });
+    expect(noChapterRow).toHaveTextContent("конфликт: 3");
+    expect(noChapterRow).not.toHaveTextContent("устаревшее");
+  });
+
+  it("вкладка «Членства» открывается строкой «Позиции лежат в N разных разделах смет» (сверка с макетом 27.09.2026)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={MIXED_GROUPS_CONTEXT_ID} />);
+    await waitFor(() => expect(screen.getByText("Устройство стяжки пола")).toBeInTheDocument());
+    await openMembershipTab(user);
+
+    // Фикстура `MIXED_GROUPS_CONTEXT_ID` несёт ДВЕ группы — множественное число.
+    expect(screen.getByText("Позиции лежат в 2 разных разделах смет")).toBeInTheDocument();
   });
 
   it("группы «Членства» — в порядке ответа, группа без раздела — последней даже будучи меньше", async () => {
@@ -545,12 +583,14 @@ describe("ContextCard", () => {
     );
     expect(screen.queryByText(/восстанов/i)).not.toBeInTheDocument();
 
-    // Вкладка «Решения» активна по умолчанию.
+    // Вкладка «Решения» активна по умолчанию — три кнопки, каждая открывает
+    // диалог с прежней формой (сверка с макетом 27.09.2026); формы самих
+    // диалогов не в DOM, пока диалог не открыт.
     const decisionButtons = screen
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim() ?? "");
     expect(decisionButtons.sort()).toEqual(
-      ["Подтвердить вид", "Переопределить роль", "Назначить семью", "Снять семью"].sort()
+      ["Подтвердить вид", "Назначить семью…", "Изменить «что называет»…"].sort()
     );
 
     const user = userEvent.setup();
@@ -575,10 +615,15 @@ describe("ContextCard", () => {
       ).toBeInTheDocument()
     );
 
-    await user.click(screen.getByRole("combobox", { name: "Вид работы" }));
+    // Формы вида/роли/семьи живут в диалоге (сверка с макетом 27.09.2026,
+    // `mock-card-decisions.png`) — открываем его СВОЕЙ кнопкой, взаимодействие
+    // дальше — внутри диалога (вне него тот же текст носит кнопка-триггер).
+    await user.click(screen.getByRole("button", { name: "Подтвердить вид" }));
+    const kindDialog = await screen.findByRole("dialog");
+    await user.click(within(kindDialog).getByRole("combobox", { name: "Вид работы" }));
     // Подпись — человеческое слово (спека §2.2), не код `SYSTEM`.
     await user.click(await screen.findByRole("option", { name: "система" }));
-    await user.click(screen.getByRole("button", { name: "Подтвердить вид" }));
+    await user.click(within(kindDialog).getByRole("button", { name: "Подтвердить вид" }));
 
     await waitFor(() =>
       expect(handlerState.lastConfirmKindRequest).toEqual({
@@ -599,6 +644,8 @@ describe("ContextCard", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Подтвердить вид" }));
+    const kindDialog = await screen.findByRole("dialog");
+    await user.click(within(kindDialog).getByRole("button", { name: "Подтвердить вид" }));
 
     await waitFor(() =>
       expect(handlerState.lastConfirmKindRequest).toEqual({
@@ -615,7 +662,9 @@ describe("ContextCard", () => {
       expect(screen.getByText("Разборка временных перегородок")).toBeInTheDocument()
     );
 
-    await user.click(screen.getByRole("button", { name: "Снять подтверждение" }));
+    await user.click(screen.getByRole("button", { name: "Подтвердить вид" }));
+    const kindDialog = await screen.findByRole("dialog");
+    await user.click(within(kindDialog).getByRole("button", { name: "Снять подтверждение" }));
 
     await waitFor(() =>
       expect(handlerState.lastConfirmKindRequest).toEqual({
@@ -625,7 +674,52 @@ describe("ContextCard", () => {
     );
   });
 
+  // Ревью задачи 9: диалог «Назначить семью…» обязан слать ТО ЖЕ тело, что
+  // прежняя инлайн-форма, — ни одного теста на запрос семьи до сих пор не было.
+  it("«Назначить семью…» — диалог шлёт family_id выбранной активной семьи", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: "Назначить семью…" }));
+    const familyDialog = await screen.findByRole("dialog");
+    await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
+    // id 43 — единственная активная семья фикстуры.
+    await user.click(await screen.findByRole("option", { name: "Кровельные работы" }));
+    await user.click(within(familyDialog).getByRole("button", { name: "Назначить семью" }));
+    await waitFor(() =>
+      expect(handlerState.lastAssignFamilyRequest).toEqual({
+        contextId: ORDINARY_CONTEXT_ID,
+        body: { family_id: 43 },
+      })
+    );
+  });
+
+  it("«Снять семью» в диалоге семьи шлёт family_id: null явно", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: "Назначить семью…" }));
+    const familyDialog = await screen.findByRole("dialog");
+    // Семья выбрана в селекте — «Снять» обязан слать null, а не выбранную
+    // (на пустом селекте подмена тела неотличима).
+    await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
+    await user.click(await screen.findByRole("option", { name: "Кровельные работы" }));
+    await user.click(within(familyDialog).getByRole("button", { name: "Снять семью" }));
+    await waitFor(() =>
+      expect(handlerState.lastAssignFamilyRequest).toEqual({
+        contextId: ORDINARY_CONTEXT_ID,
+        body: { family_id: null },
+      })
+    );
+    expect(handlerState.lastAssignFamilyRequest!.body).toHaveProperty("family_id", null);
+  });
+
   it("неподтверждённый вид не несёт кнопки снятия подтверждения", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
     await waitFor(() =>
       expect(
@@ -633,8 +727,10 @@ describe("ContextCard", () => {
       ).toBeInTheDocument()
     );
 
+    await user.click(screen.getByRole("button", { name: "Подтвердить вид" }));
+    const kindDialog = await screen.findByRole("dialog");
     expect(
-      screen.queryByRole("button", { name: "Снять подтверждение" })
+      within(kindDialog).queryByRole("button", { name: "Снять подтверждение" })
     ).not.toBeInTheDocument();
   });
 
@@ -644,7 +740,9 @@ describe("ContextCard", () => {
     renderWithProviders(<ContextCard contextId={INSUFFICIENT_DESCRIPTION_CONTEXT_ID} />);
     await waitFor(() => expect(screen.getByText("Светильники")).toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: "Переопределить роль" }));
+    await user.click(screen.getByRole("button", { name: "Изменить «что называет»…" }));
+    const roleDialog = await screen.findByRole("dialog");
+    await user.click(within(roleDialog).getByRole("button", { name: "Переопределить роль" }));
 
     await waitFor(() =>
       expect(handlerState.lastSetNameRoleRequest).toEqual({
@@ -880,13 +978,13 @@ describe("ContextCard", () => {
   //  совпадающих данных.
   // -------------------------------------------------------------------------
 
-  it("строки внимания: две записи stale_groups — две строки; «Перенести их» группы без раздела шлёт chapter_item_id: null", async () => {
+  it("строки внимания: две записи stale_groups — две строки; «Перенести их» группы без раздела шлёт chapter_item_ids: null", async () => {
     const user = userEvent.setup();
     const stale = contextFixture(STALE_CONTEXT_ID);
     stale.stale_groups = [
       ...stale.stale_groups,
       {
-        chapter_item_id: null,
+        chapter_item_ids: [],
         path: [],
         count: 2,
         target_category_id: 89,
@@ -925,20 +1023,25 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(handlerState.lastTransferStaleGroupRequest).toEqual({
         contextId: STALE_CONTEXT_ID,
-        body: { chapter_item_id: null, expected_category_id: 89 },
+        body: { chapter_item_ids: null, expected_category_id: 89 },
       })
     );
     // `toEqual` не отличает отсутствующий ключ от `undefined` — `null`
     // обязан прийти ЯВНО (спека §2.8 п. 4: `null` значит «без раздела»).
-    expect(handlerState.lastTransferStaleGroupRequest!.body).toHaveProperty("chapter_item_id", null);
+    expect(handlerState.lastTransferStaleGroupRequest!.body).toHaveProperty("chapter_item_ids", null);
     expect(handlerState.transferStaleGroupCalls).toBe(1);
+    // Итог переноса группы «без раздела» (ревью задачи 9): подпись «без
+    // раздела» БЕЗ плашки «в смете» — у группы нет раздела сметы.
+    const resultBlock = (await screen.findByText(/^перенесено \d+ из \d+$/)).parentElement!;
+    expect(within(resultBlock).getByText("без раздела")).toBeInTheDocument();
+    expect(within(resultBlock).queryByText("в смете")).not.toBeInTheDocument();
   });
 
   it("строка внимания конфликтных — сумма conflict_count по ВСЕМ группам, не по первой", async () => {
     const conflicted = contextFixture(CONFLICT_CONTEXT_ID);
     conflicted.member_paths = [
-      { chapter_item_id: 8803, path: ["8 Отделочные работы"], member_count: 2, stale_count: 0, conflict_count: 2 },
-      { chapter_item_id: null, path: [], member_count: 1, stale_count: 0, conflict_count: 1 },
+      { chapter_item_ids: [8803], path: ["8 Отделочные работы"], member_count: 2, stale_count: 0, conflict_count: 2 },
+      { chapter_item_ids: [], path: [], member_count: 1, stale_count: 0, conflict_count: 1 },
     ];
     renderWithProviders(<ContextCard contextId={CONFLICT_CONTEXT_ID} />);
     expect(await screen.findByText(/^3 позиции пришли слиянием в Review/)).toBeInTheDocument();
@@ -949,7 +1052,7 @@ describe("ContextCard", () => {
   it("строка внимания конфликтных согласует глагол с единственным числом: «1 позиция … пришла»", async () => {
     const conflicted = contextFixture(CONFLICT_CONTEXT_ID);
     conflicted.member_paths = [
-      { chapter_item_id: 8803, path: ["8 Отделочные работы"], member_count: 1, stale_count: 0, conflict_count: 1 },
+      { chapter_item_ids: [8803], path: ["8 Отделочные работы"], member_count: 1, stale_count: 0, conflict_count: 1 },
     ];
     renderWithProviders(<ContextCard contextId={CONFLICT_CONTEXT_ID} />);
     expect(await screen.findByText(/^1 позиция пришла слиянием в Review/)).toBeInTheDocument();
@@ -992,8 +1095,8 @@ describe("ContextCard", () => {
     const user = userEvent.setup();
     const mixed = contextFixture(MIXED_GROUPS_CONTEXT_ID);
     mixed.member_paths = [
-      { chapter_item_id: MIXED_GROUPS_CHAPTER_ITEM_ID, path: ["8 Отделочные работы"], member_count: 2, stale_count: 0, conflict_count: 0 },
-      { chapter_item_id: null, path: [], member_count: 5, stale_count: 0, conflict_count: 0 },
+      { chapter_item_ids: [MIXED_GROUPS_CHAPTER_ITEM_ID], path: ["8 Отделочные работы"], member_count: 2, stale_count: 0, conflict_count: 0 },
+      { chapter_item_ids: [], path: [], member_count: 5, stale_count: 0, conflict_count: 0 },
     ];
     renderWithProviders(<ContextCard contextId={MIXED_GROUPS_CONTEXT_ID} />);
     await waitFor(() => expect(screen.getByText("Устройство стяжки пола")).toBeInTheDocument());
@@ -1043,6 +1146,9 @@ describe("ContextCard", () => {
     // Галочка ДРУГОЙ группы добавляет, а не заменяет выбор.
     await user.click(screen.getByLabelText("Выбрать группу «без раздела»"));
     await waitFor(() => expect(screen.getByText("Выбрано членств: 2")).toBeInTheDocument());
+    // Ключ группы различает группы (ревью задачи 9): кэш id одной группы не
+    // ставит галочку другой.
+    expect(screen.getByLabelText(/Выбрать группу «8 Отделочные работы/)).not.toBeChecked();
 
     // Снятие галочки группы убирает ровно её id — строка 78001 остаётся.
     await user.click(screen.getByLabelText("Выбрать группу «без раздела»"));
@@ -1180,8 +1286,8 @@ describe("ContextCard", () => {
     const user = userEvent.setup();
     const ordinary = contextFixture(ORDINARY_CONTEXT_ID);
     ordinary.member_paths = [
-      { chapter_item_id: 8801, path: ["8 Отделочные работы", "8.2 Стены"], member_count: 2, stale_count: 0, conflict_count: 0 },
-      { chapter_item_id: 8811, path: ["8 Отделочные работы", "8.4 Колонны"], member_count: 1, stale_count: 0, conflict_count: 0 },
+      { chapter_item_ids: [8801], path: ["8 Отделочные работы", "8.2 Стены"], member_count: 2, stale_count: 0, conflict_count: 0 },
+      { chapter_item_ids: [8811], path: ["8 Отделочные работы", "8.4 Колонны"], member_count: 1, stale_count: 0, conflict_count: 0 },
     ];
     renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
     await waitFor(() =>
@@ -1193,6 +1299,158 @@ describe("ContextCard", () => {
     for (const trigger of triggers) {
       expect(within(trigger).getByText("в смете")).toBeInTheDocument();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  //  Редакция 3 (сверка с макетом 27.09.2026): группа членств — ТЕКСТ пути,
+  //  а не один раздел — одинаковый путь у разделов РАЗНЫХ смет сливается в
+  //  ОДНУ группу экрана.
+  // -------------------------------------------------------------------------
+
+  it("два раздела разных смет с одинаковым путём-текстом дают ОДНУ группу членств с суммой count и id обоих (редакция 3)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={SAME_PATH_CONTEXT_ID} />);
+    await waitFor(() => expect(screen.getByText("Облицовка плиткой")).toBeInTheDocument());
+    await openMembershipTab(user);
+
+    // ОДНА группа (не две с одинаковым текстом) — единственное число «разделе».
+    expect(screen.getByText("Позиции лежат в 1 разделе смет")).toBeInTheDocument();
+    const trigger = screen.getByRole("button", { name: /Раскрыть группу/ });
+    expect(within(trigger).getByText("5")).toBeInTheDocument();
+
+    // Раскрытие запрашивает ОБА раздела разом — URL несёт два параметра chapter_item_id.
+    await user.click(trigger);
+    await screen.findByText("Плитка, корпус 1");
+    const params = new URLSearchParams(handlerState.groupMembersRequests.at(-1));
+    expect(
+      params.getAll("chapter_item_id").map(Number).sort((a, b) => a - b)
+    ).toEqual([SAME_PATH_CHAPTER_A, SAME_PATH_CHAPTER_B].sort((a, b) => a - b));
+
+    // Галочка группы выбирает id ОБОИХ разделов целиком.
+    await user.click(screen.getByLabelText(/Выбрать группу/));
+    await waitFor(() => expect(screen.getByText("Выбрано членств: 5")).toBeInTheDocument());
+    // Ревью задачи 9: «5» совпало бы и с запросом ВСЕГО контекста (у фикстуры
+    // нет членств вне группы) — поэтому проверяется сам запрос `member-ids`:
+    // оба раздела, повторённым ключом без скобок (`chapter_item_id[]` сервер
+    // не читает — FastAPI ждёт ровно `chapter_item_id`).
+    const idsParams = new URLSearchParams(handlerState.groupMemberIdsRequests.at(-1));
+    expect(
+      idsParams.getAll("chapter_item_id").map(Number).sort((a, b) => a - b)
+    ).toEqual([SAME_PATH_CHAPTER_A, SAME_PATH_CHAPTER_B].sort((a, b) => a - b));
+    expect(idsParams.has("no_chapter")).toBe(false);
+  });
+
+  it("«Перенести их» слитой группы (два раздела, общий путь) шлёт chapter_item_ids ОБОИХ разом (редакция 3)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={SAME_PATH_CONTEXT_ID} />);
+
+    await user.click(await screen.findByRole("button", { name: /Перенести их/ }));
+
+    await waitFor(() =>
+      expect(handlerState.lastTransferStaleGroupRequest).toEqual({
+        contextId: SAME_PATH_CONTEXT_ID,
+        body: {
+          chapter_item_ids: [SAME_PATH_CHAPTER_A, SAME_PATH_CHAPTER_B].sort((a, b) => a - b),
+          expected_category_id: SAME_PATH_TARGET_CATEGORY_ID,
+        },
+      })
+    );
+    expect(await screen.findByText("перенесено 2 из 2")).toBeInTheDocument();
+  });
+
+  // Замер на стенде 27.09.2026, четвёртый круг: подписи путей в ОДНУ
+  // строку не держат и общий хвост, и различающее звено разом при узкой
+  // колонке (215px) — различающее звено обязано жить на СВОЕЙ, второй
+  // строке, а не делить одну строку с хвостом (та отдельно резалась то
+  // фиксированным числом звеньев, то `line-clamp-2`, то одной строкой
+  // целиком — три предыдущих круга).
+  it("группы с общим суффиксом путей показывают общий хвост в строке 1 и различающее звено в строке 2; группа с уникальным суффиксом строки 2 не несёт", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={SUFFIX_LABELS_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Облицовка плиткой (проверка подписи пути)")).toBeInTheDocument()
+    );
+    await openMembershipTab(user);
+
+    expect(screen.getAllByRole("button", { name: /Раскрыть группу/ })).toHaveLength(4);
+
+    // Три группы делят последние два звена («Лифтовой холл МОП жилья /
+    // Потолок») — это СТРОКА 1, общая у всех трёх (не различает их сама по
+    // себе). Различающее звено («Корпус N») — СТРОКА 2, своя у каждой.
+    const triggerA = screen.getByRole("button", { name: /Корпус 1 ›/ });
+    const triggerB = screen.getByRole("button", { name: /Корпус 2 ›/ });
+    const triggerC = screen.getByRole("button", { name: /Корпус 3 ›/ });
+    for (const trigger of [triggerA, triggerB, triggerC]) {
+      expect(within(trigger).getByText("Лифтовой холл МОП жилья / Потолок")).toBeInTheDocument();
+    }
+    expect(within(triggerA).getByText("Корпус 1")).toBeInTheDocument();
+    expect(within(triggerB).getByText("Корпус 2")).toBeInTheDocument();
+    expect(within(triggerC).getByText("Корпус 3")).toBeInTheDocument();
+    // Строка 2 — РОВНО различающее звено, не хвост вперемешку с ним.
+    expect(within(triggerA).queryByText(/Корпус 1 \//)).not.toBeInTheDocument();
+
+    // Четвёртая группа не коллизирует ни с кем — подпись остаётся ДВУМЯ
+    // звеньями строки 1, без строки 2 вовсе.
+    const triggerD = screen.getByRole("button", { name: /Кухня ›/ });
+    expect(within(triggerD).getByText("Кухня / Пол")).toBeInTheDocument();
+    expect(within(triggerD).queryByText(/^Пол$/)).not.toBeInTheDocument();
+  });
+
+  // Замер на стенде 27.09.2026, четыре круга: CSS `truncate` (обрезка
+  // СПРАВА) резал различающее звено; JS-обрезка по числу символов и
+  // `line-clamp-2` не сходились ни с какой пиксельной шириной колонки;
+  // одна строка не держала хвост И различающее звено разом. Решение —
+  // ДВЕ строки (хвост / различающее звено), КАЖДАЯ — браузерное усечение
+  // СЛЕВА через `dir="rtl"` (эллипсис в НАЧАЛЕ, хвост строки всегда виден),
+  // `<bdi dir="ltr">` восстанавливает порядок символов (кириллица/`/`)
+  // внутри развёрнутого контекста. Полный путь — в `title` каждой строки.
+  it("строка 2 (различающее звено) — тоже dir=rtl с усечением слева, полный текст внутри bdi dir=ltr, title — полный путь", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={LONG_LABEL_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Облицовка плиткой (проверка обрезки длинной подписи)")
+      ).toBeInTheDocument()
+    );
+    await openMembershipTab(user);
+
+    const triggerA = screen.getByRole("button", { name: /корпус 1 ›/ });
+    const fullPath =
+      "Секция общественных пространств входной группы жилого дома, корпус 1 › Лифтовой холл МОП жилья › Потолок";
+
+    // Строка 1 — общий хвост («Лифтовой холл МОП жилья / Потолок»), короткий,
+    // умещается без вопросов.
+    expect(within(triggerA).getByText("Лифтовой холл МОП жилья / Потолок")).toBeInTheDocument();
+
+    // Строка 2 — само различающее звено (длинное само по себе). Разметка
+    // несёт ПОЛНЫЙ текст без обрезки — усечение здесь визуальное свойство
+    // CSS (`truncate`+`dir`), а не JS-функция, которая обрезала бы строку
+    // заранее и потеряла бы то, что не влезло.
+    const bdi = within(triggerA).getByText(
+      "Секция общественных пространств входной группы жилого дома, корпус 1"
+    );
+    expect(bdi.tagName).toBe("BDI");
+    expect(bdi).toHaveAttribute("dir", "ltr");
+
+    const labelSpan = bdi.parentElement!;
+    expect(labelSpan.tagName).toBe("SPAN");
+    expect(labelSpan).toHaveAttribute("dir", "rtl");
+    expect(labelSpan).toHaveClass("truncate");
+    expect(labelSpan).toHaveAttribute("title", fullPath);
+
+    // Строка 1 несёт ТОТ ЖЕ приём разметки и ТОТ ЖЕ полный путь в title.
+    const line1Bdi = within(triggerA).getByText("Лифтовой холл МОП жилья / Потолок");
+    expect(line1Bdi.tagName).toBe("BDI");
+    expect(line1Bdi.parentElement).toHaveAttribute("dir", "rtl");
+    expect(line1Bdi.parentElement).toHaveAttribute("title", fullPath);
+
+    // Короткая уникальная подпись («без коллизии») — строки 2 нет вовсе:
+    // ровно ОДИН элемент `dir="rtl"` внутри строки, не два.
+    const triggerShort = screen.getByRole("button", { name: /Кухня ›/ });
+    const bdiShort = within(triggerShort).getByText("Кухня / Пол");
+    expect(bdiShort.tagName).toBe("BDI");
+    expect(bdiShort.parentElement).toHaveAttribute("dir", "rtl");
+    expect(triggerShort.querySelectorAll('[dir="rtl"]')).toHaveLength(1);
   });
 
   it("плашка «в смете» стоит у работы по разделу представительной позиции", async () => {
@@ -1217,7 +1475,7 @@ describe("ContextCard", () => {
     expect(within(line).queryByText("—")).not.toBeInTheDocument();
     expect(within(line).queryByText("в смете")).not.toBeInTheDocument();
     expect(
-      screen.getByText("Состав описан: нет — сравнение ставок не производится")
+      screen.getByText("нет — сравнение ставок не производится")
     ).toBeInTheDocument();
   });
 
@@ -1270,7 +1528,7 @@ describe("ContextCard", () => {
       http.post("/api/v1/semantic/contexts/:id/stale-groups/transfer", async ({ params, request }) => {
         const contextId = Number(params.id);
         const body = (await request.json()) as {
-          chapter_item_id: number | null;
+          chapter_item_ids: number[] | null;
           expected_category_id: number | null;
         };
         handlerState.lastTransferStaleGroupRequest = { contextId, body };
@@ -1393,7 +1651,7 @@ describe("ContextCard", () => {
     }
   });
 
-  it.each([601, 602, 603, 604, 605, 606, 607, 608, 609])(
+  it.each([601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612])(
     "контекст %i: ни на одной вкладке карточки и в выборе правила разделения нет кодов полей и событий",
     async (contextId) => {
       const user = userEvent.setup();
@@ -1433,9 +1691,11 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
     );
-    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
+    await user.click(screen.getByRole("button", { name: "Изменить «что называет»…" }));
+    const roleDialog = await screen.findByRole("dialog");
+    await user.click(within(roleDialog).getByRole("combobox", { name: "Наименование называет" }));
     await user.click(await screen.findByRole("option", { name: "место" }));
-    await user.click(screen.getByRole("button", { name: "Переопределить роль" }));
+    await user.click(within(roleDialog).getByRole("button", { name: "Переопределить роль" }));
     await waitFor(() =>
       expect(handlerState.lastSetNameRoleRequest).toEqual({
         contextId: ORDINARY_CONTEXT_ID,
@@ -1449,7 +1709,7 @@ describe("ContextCard", () => {
     stale.stale_groups = [
       ...stale.stale_groups,
       {
-        chapter_item_id: null,
+        chapter_item_ids: [],
         path: [],
         count: 2,
         target_category_id: 89,

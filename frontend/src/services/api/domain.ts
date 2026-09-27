@@ -429,11 +429,15 @@ export const semanticApi = {
       .then((r) => r.data),
 
   /**
-   * Постраничный список членств ОДНОЙ группы (спека §2.8 п. 3) — вкладка
-   * «Членства» карточки раскрывает группу этим запросом, а не обрезанным
-   * списком карточки (его больше нет, §2.8 п. 5). `selector.chapter_item_id`
-   * и `no_chapter` уходят в query РОВНО тем набором, каким пришли —
-   * `undefined` у axios не сериализуется, поэтому «весь контекст»
+   * Постраничный список членств ОДНОЙ группы (спека §2.8 п. 3, редакция 3)
+   * — вкладка «Членства» карточки раскрывает группу этим запросом, а не
+   * обрезанным списком карточки (его больше нет, §2.8 п. 5).
+   * `selector.chapter_item_ids` уходит РЕПЕТИЦИЕЙ ключа `chapter_item_id`
+   * (`?chapter_item_id=1&chapter_item_id=2`, БЕЗ индексов/скобок — тот же
+   * приём, что `stageSummary`/`stagePositions` несут для `offers`,
+   * `paramsSerializer: { indexes: null }`) — сервер принимает ровно этот
+   * вид (`Query(default=None)` списком, `routers/semantic.py`). Пустой
+   * массив/`undefined` у axios не сериализуется, поэтому «весь контекст»
    * (оба поля пустые/ложные) не шлёт лишних параметров.
    */
   groupMembers: (
@@ -446,12 +450,13 @@ export const semanticApi = {
     api
       .get<GroupMembersPage>(`/v1/semantic/contexts/${contextId}/members`, {
         params: {
-          chapter_item_id: selector.chapter_item_id ?? undefined,
+          chapter_item_id: selector.chapter_item_ids.length ? selector.chapter_item_ids : undefined,
           no_chapter: selector.no_chapter ? true : undefined,
           state,
           limit,
           offset,
         },
+        paramsSerializer: { indexes: null },
       })
       .then((r) => r.data),
 
@@ -467,10 +472,11 @@ export const semanticApi = {
     api
       .get<GroupMemberIdsResult>(`/v1/semantic/contexts/${contextId}/member-ids`, {
         params: {
-          chapter_item_id: selector.chapter_item_id ?? undefined,
+          chapter_item_id: selector.chapter_item_ids.length ? selector.chapter_item_ids : undefined,
           no_chapter: selector.no_chapter ? true : undefined,
           state,
         },
+        paramsSerializer: { indexes: null },
       })
       .then((r) => r.data),
 

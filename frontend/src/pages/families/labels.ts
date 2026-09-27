@@ -5,6 +5,7 @@ import type {
   NameRole,
   SemanticKind,
   SemanticState,
+  WorkFamilyStatus,
 } from "@/types/domain";
 
 /**
@@ -48,6 +49,18 @@ export const DECISION_SOURCE_LABEL: Record<DecisionSource, string> = {
 export const FAMILY_SOURCE_LABEL: Record<FamilySource, string> = {
   manual: "оператор",
   suggestion: "из предложения",
+};
+
+/**
+ * Статус семьи (`WorkFamily.status`, сверка с макетом 27.09.2026, спека §2.8):
+ * печатается словом, код `draft`/`active`/`archived` на экран не выходит —
+ * тот же список подписей, что несёт цветной `Badge` строки/панели
+ * (`FamiliesTab.tsx`) и фильтр статуса.
+ */
+export const FAMILY_STATUS_LABEL: Record<WorkFamilyStatus, string> = {
+  draft: "черновик",
+  active: "активна",
+  archived: "в архиве",
 };
 
 /**

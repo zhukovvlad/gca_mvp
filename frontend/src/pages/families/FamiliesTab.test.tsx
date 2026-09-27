@@ -50,6 +50,90 @@ describe("FamiliesTab", () => {
     expect(screen.getByText("1–20 из 42")).toBeInTheDocument();
   });
 
+  // -------------------------------------------------------------------
+  //  Сверка с макетом 27.09.2026 (mockup.html, mock-families.png):
+  //  статус словом+цветом, сводка над списком, единица символом, ellipsis
+  //  определения.
+  // -------------------------------------------------------------------
+
+  it("статус печатается словом — ни в строке списка, ни в фильтре нет кода draft/active/archived", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    // Список — статус draft: строки несут «черновик», не код.
+    expect(screen.queryByText("draft", { selector: "span" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("черновик").length).toBeGreaterThan(0);
+
+    // Фильтр — раскрыть и проверить слова у ВСЕХ вариантов.
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    expect(await screen.findByText("все")).toBeInTheDocument();
+    expect(screen.getByText("активна")).toBeInTheDocument();
+    expect(screen.getByText("в архиве")).toBeInTheDocument();
+    expect(screen.queryByText("active", { selector: "[role=option]" })).not.toBeInTheDocument();
+    expect(screen.queryByText("archived", { selector: "[role=option]" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    // Панель правки (ревью задачи 9) — её плашка статуса тоже словом.
+    await user.click(screen.getByText("Семья работ №3"));
+    const heading = await screen.findByRole("heading", { name: "Семья «Семья работ №3»" });
+    const panelHead = heading.parentElement!;
+    expect(within(panelHead).getByText("черновик")).toBeInTheDocument();
+    expect(within(panelHead).queryByText("draft")).not.toBeInTheDocument();
+  });
+
+  it("статусы «черновик»/«активна»/«в архиве» несут РАЗНЫЕ классы заливки (спека, сверка с макетом)", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+    // Открыть фильтр «все», страница 100 — все три статуса видны в списке разом.
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    await user.click(await screen.findByText("все"));
+    await user.click(screen.getByRole("combobox", { name: "На странице:" }));
+    await user.click(await screen.findByText("100"));
+
+    // Строки конкретных семей (не селект) — исключает совпадение с текстом
+    // всплывающего списка выбора.
+    const draftRow = (await screen.findByText("Семья работ №3")).closest("tr")!;
+    const activeRow = screen.getByText("Кровельные работы").closest("tr")!;
+    const archivedRow = screen.getByText("Демонтажные работы (снята)").closest("tr")!;
+    const draftBadge = within(draftRow).getByText("черновик");
+    const activeBadge = within(activeRow).getByText("активна");
+    const archivedBadge = within(archivedRow).getByText("в архиве");
+    const classes = new Set([draftBadge.className, activeBadge.className, archivedBadge.className]);
+    expect(classes.size).toBe(3);
+  });
+
+  it("сводка над списком считает по ВСЕМ семьям (1 активная, 42 черновика, 1 в архиве) — не по текущему фильтру", async () => {
+    await renderTab();
+    // Фильтр по умолчанию — draft, но сводка обязана считать по ПОЛНОМУ
+    // списку (решение этой задачи, спека §2.8, сверка с макетом 27.09.2026):
+    // иначе на дефолтном экране сводка солгала бы «активных 0».
+    expect(screen.getByText("активных 1 · черновиков 42 · в архиве 1")).toBeInTheDocument();
+  });
+
+  it("единица списка — символ (м²), не код (M2)", async () => {
+    await renderTab();
+    expect(screen.queryByText("M2")).not.toBeInTheDocument();
+    expect(screen.getAllByText("м²").length).toBeGreaterThan(0);
+  });
+
+  it("определение без текста печатает красное «нет определения», непустое — обрезается многоточием с полным текстом в title", async () => {
+    await renderTab();
+    // id=2 ("Устройство покрытий полов") и 39 других черновиков без
+    // определения на этой странице — берём строку id=2 ИМЕННО, не первую
+    // попавшуюся.
+    const row = screen.getByText("Устройство покрытий полов").closest("tr")!;
+    const empty = within(row).getByText("нет определения");
+    expect(empty).toHaveClass("text-destructive");
+
+    // id=1 ("Семья работ №1") несёт определение — печатается ЦЕЛИКОМ в
+    // атрибуте `title` (полный текст доступен без раскрытия), само отображение
+    // обрезается CSS (`truncate`), а не JS-обрезкой строки.
+    const definitionText =
+      "Оштукатуривание стен и потолков цементно-песчаным раствором.";
+    const full = screen.getByTitle(definitionText);
+    expect(full).toHaveClass("truncate");
+  });
+
   it("кнопка активации в панели недоступна без определения, а с определением доступна", async () => {
     const user = userEvent.setup();
     await renderTab();
@@ -62,11 +146,14 @@ describe("FamiliesTab", () => {
     ).toBeDisabled();
 
     // id=1 ("Семья работ №1") несёт определение — переключаемся на её панель,
-    // кнопка активна.
+    // кнопка активна, и подсказки о недостающем определении больше нет.
     await user.click(screen.getByText("Семья работ №1"));
     expect(
       await screen.findByRole("button", { name: "Активировать семью Семья работ №1" })
     ).not.toBeDisabled();
+    expect(
+      screen.queryByText("Активировать можно только с определением.")
+    ).not.toBeInTheDocument();
   });
 
   it("правка единицы в панели недоступна при привязках, и подпись называет их число", async () => {
@@ -76,6 +163,8 @@ describe("FamiliesTab", () => {
     // id=1 ("Семья работ №1") несёт две привязки (`context_count: 2` в фикстуре).
     await user.click(screen.getByText("Семья работ №1"));
     expect(await screen.findByLabelText("Единица")).toBeDisabled();
+    // Символ, не код (ревью задачи 9): поле панели — тоже экран.
+    expect(screen.getByLabelText("Единица")).toHaveValue("м²");
     expect(
       screen.getByText("Единица недоступна: привязано контекстов — 2")
     ).toBeInTheDocument();
@@ -88,6 +177,8 @@ describe("FamiliesTab", () => {
     // id=3 ("Семья работ №3") — без привязок (`context_count: 0`).
     await user.click(screen.getByText("Семья работ №3"));
     expect(await screen.findByLabelText("Единица")).not.toBeDisabled();
+    // Предзаполнение правки — символом, не кодом (ревью задачи 9).
+    expect(screen.getByLabelText("Единица")).toHaveValue("м²");
     expect(screen.queryByText(/Единица недоступна/)).not.toBeInTheDocument();
   });
 
@@ -180,7 +271,7 @@ describe("FamiliesTab", () => {
     // страницы — 100: id 43/44 стоят в конце списка (44 семьи), а страница
     // размером 20 их не покажет вовсе.
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("Любой статус"));
+    await user.click(await screen.findByText("все"));
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
     await user.click(await screen.findByText("100"));
     await waitFor(() => expect(screen.getByText("Кровельные работы")).toBeInTheDocument());
@@ -284,7 +375,7 @@ describe("FamiliesTab", () => {
     // unit_id=5) плюс архивная (id 44, тоже unit_id=5); активная (id 43) несёт
     // ДРУГУЮ единицу (unit_id=3, «Куб. метр») и в выдачу не входит: 42+1=43.
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("Любой статус"));
+    await user.click(await screen.findByText("все"));
     await user.click(screen.getByRole("combobox", { name: "Единица (фильтр)" }));
     await user.click(await screen.findByText("Кв. метр"));
 
@@ -332,7 +423,7 @@ describe("FamiliesTab", () => {
     await waitFor(() => expect(screen.getByText("11–20 из 42")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("Любой статус"));
+    await user.click(await screen.findByText("все"));
 
     await waitFor(() => expect(screen.getByText("1–10 из 44")).toBeInTheDocument());
   });
@@ -376,8 +467,11 @@ describe("FamiliesTab", () => {
     await user.click(screen.getByText("Семья работ №3"));
     await screen.findByLabelText("Определение");
     expect(screen.getByRole("button", { name: "Активировать семью Семья работ №3" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Архивировать семью Семья работ №3" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "В архив: семья Семья работ №3" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Слить" })).not.toBeInTheDocument();
+    // Без определения (id=3 его не несёт) — подсказка под кнопками (сверка
+    // с макетом 27.09.2026).
+    expect(screen.getByText("Активировать можно только с определением.")).toBeInTheDocument();
   });
 
   it("панель активной семьи: «Слить» открывает диалог слияния ЭТОЙ семьи; «Активировать» нет", async () => {
@@ -385,12 +479,12 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("active"));
+    await user.click(await screen.findByText("активна"));
     await user.click(await screen.findByText("Кровельные работы"));
     await screen.findByLabelText("Определение");
 
     expect(screen.queryByRole("button", { name: /Активировать семью/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Архивировать семью Кровельные работы" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "В архив: семья Кровельные работы" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Слить" }));
     expect(await screen.findByText("Слить семью «Кровельные работы»")).toBeInTheDocument();
@@ -401,12 +495,12 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("archived"));
+    await user.click(await screen.findByText("в архиве"));
     await user.click(await screen.findByText("Демонтажные работы (снята)"));
     await screen.findByLabelText("Определение");
 
     expect(screen.queryByRole("button", { name: /Активировать семью/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Архивировать семью/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /В архив: семья/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Слить" })).not.toBeInTheDocument();
   });
 
@@ -415,7 +509,7 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByText("Семья работ №1"));
-    await user.click(await screen.findByRole("button", { name: "Архивировать семью Семья работ №1" }));
+    await user.click(await screen.findByRole("button", { name: "В архив: семья Семья работ №1" }));
 
     expect(await screen.findByText("Архивировать семью «Семья работ №1»?")).toBeInTheDocument();
     expect(
@@ -428,7 +522,7 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByText("Семья работ №3"));
-    await user.click(await screen.findByRole("button", { name: "Архивировать семью Семья работ №3" }));
+    await user.click(await screen.findByRole("button", { name: "В архив: семья Семья работ №3" }));
     expect(await screen.findByText("Архивная семья перестаёт предлагаться для назначения контексту.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Архивировать" }));
 
@@ -470,12 +564,12 @@ describe("FamiliesTab", () => {
     // страница 5 остаётся валидной (41 семья, 5 страниц), после второй — нет
     // (40 семей, 4 страницы), и «41–50» из среза не существует вовсе.
     await user.click(screen.getByText("Семья работ №41"));
-    await user.click(await screen.findByRole("button", { name: "Архивировать семью Семья работ №41" }));
+    await user.click(await screen.findByRole("button", { name: "В архив: семья Семья работ №41" }));
     await user.click(await screen.findByRole("button", { name: "Архивировать" }));
     await waitFor(() => expect(screen.getByText("41–41 из 41")).toBeInTheDocument());
 
     await user.click(screen.getByText("Семья работ №42"));
-    await user.click(await screen.findByRole("button", { name: "Архивировать семью Семья работ №42" }));
+    await user.click(await screen.findByRole("button", { name: "В архив: семья Семья работ №42" }));
     await user.click(await screen.findByRole("button", { name: "Архивировать" }));
 
     // Была бы страница 5 (индексы 41–50) на 40 семьях — диапазон пуст

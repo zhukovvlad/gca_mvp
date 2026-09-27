@@ -56,7 +56,22 @@ import {
 } from "@/services/queries";
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
+import { FAMILY_STATUS_LABEL } from "./labels";
 import { usePersistedPageSize } from "./usePersistedPageSize";
+
+/**
+ * Заливка статуса семьи (сверка с макетом 27.09.2026, `mock-families.png`,
+ * мокап `.pill.ok`/`.mid`/`.gray`) — активна зелёным (`accent`, тот же тон,
+ * что несёт primary-действие приложения), черновик амбером (`warning`,
+ * общий тон с чипом «в смете»), в архиве серым (`neutral`). Три статуса
+ * обязаны различаться КЛАССОМ — тест `FamiliesTab.test.tsx` сравнивает их,
+ * не цвет (jsdom вычисленный цвет не видит).
+ */
+const FAMILY_STATUS_TINT: Record<WorkFamilyStatus, string> = {
+  active: "border-accent-border bg-accent-soft text-accent-text",
+  draft: "border-warning-border bg-warning-soft text-warning-text",
+  archived: "border-neutral-border bg-neutral-soft text-neutral-text",
+};
 
 const ANY = "any";
 const DEFAULT_PAGE_SIZE = 20;
@@ -93,6 +108,15 @@ export function FamiliesTab() {
     statusFilter === ANY ? undefined : (statusFilter as WorkFamilyStatus),
     unitFilter === ANY ? undefined : Number(unitFilter)
   );
+  // Сводка над списком (сверка с макетом 27.09.2026, `mock-families.png`:
+  // «активных N · черновиков M · в архиве K») — считается по ВСЕМУ списку
+  // семей, независимо от текущего фильтра статуса/единицы (решение этой
+  // задачи: иначе сводка на фильтре «черновики» показала бы «активных 0» и
+  // из неё нельзя было бы понять состав каталога целиком). Отдельный запрос
+  // БЕЗ фильтров — тот же `GET /families`, что несут `useWorkFamilies("active")`
+  // у карточки контекста, кэш `react-query` не дублирует запрос повторно,
+  // если он уже выполнялся с теми же (пустыми) параметрами.
+  const allFamiliesQ = useWorkFamilies();
   const archive = useArchiveWorkFamily();
 
   const allItems = familiesQ.data ?? [];
@@ -119,11 +143,25 @@ export function FamiliesTab() {
     setPage(1);
   }
 
+  // Счётчик по статусам — «сводка над списком» мокапа, а НЕ производная от
+  // `allItems`: та уже отфильтрована текущим статусом/единицей.
+  const statusCounts = (allFamiliesQ.data ?? []).reduce(
+    (acc, f) => {
+      acc[f.status] += 1;
+      return acc;
+    },
+    { draft: 0, active: 0, archived: 0 } as Record<WorkFamilyStatus, number>
+  );
+
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
       <div className="grid gap-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-3">
+            <p className="self-end text-sm text-fg-tertiary tabular-nums">
+              активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
+              {statusCounts.archived}
+            </p>
             <div className="grid gap-1">
               <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
               <Select
@@ -131,12 +169,16 @@ export function FamiliesTab() {
                 onValueChange={(v) => { setStatusFilter(v ?? ANY); resetToFirstPage(); }}
               >
                 <SelectTrigger id="family-status-filter" className="w-48">
-                  <SelectValue>{(raw) => (!raw || raw === ANY ? "Любой статус" : raw)}</SelectValue>
+                  <SelectValue>
+                    {(raw) =>
+                      !raw || raw === ANY ? "все" : FAMILY_STATUS_LABEL[raw as WorkFamilyStatus]
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={ANY}>Любой статус</SelectItem>
+                  <SelectItem value={ANY}>все</SelectItem>
                   {STATUS_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                    <SelectItem key={s} value={s}>{FAMILY_STATUS_LABEL[s]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -186,11 +228,11 @@ export function FamiliesTab() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Название</TableHead>
-                    <TableHead>Единица</TableHead>
-                    <TableHead>Статус</TableHead>
-                    <TableHead>Определение</TableHead>
-                    <TableHead className="text-right">Контекстов</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Название</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Единица</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Статус</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Определение</TableHead>
+                    <TableHead className="text-right text-xs font-normal text-fg-tertiary">Контекстов</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -216,12 +258,20 @@ export function FamiliesTab() {
                       )}
                     >
                       <TableCell className="font-medium text-fg">{family.title}</TableCell>
-                      <TableCell>{family.unit_code ?? "—"}</TableCell>
+                      <TableCell>{family.unit_symbol ?? "—"}</TableCell>
                       <TableCell>
-                        <Badge variant="secondary">{family.status}</Badge>
+                        <Badge variant="outline" className={FAMILY_STATUS_TINT[family.status]}>
+                          {FAMILY_STATUS_LABEL[family.status]}
+                        </Badge>
                       </TableCell>
-                      <TableCell>
-                        {family.definition && family.definition.trim() ? "есть" : "нет"}
+                      <TableCell className="max-w-xs">
+                        {family.definition && family.definition.trim() ? (
+                          <span className="block truncate text-fg-secondary" title={family.definition}>
+                            {family.definition}
+                          </span>
+                        ) : (
+                          <span className="text-destructive">нет определения</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{family.context_count}</TableCell>
                     </TableRow>
@@ -316,7 +366,7 @@ function FamilyPanel({
   onArchive: () => void;
 }) {
   const [title, setTitle] = useState(family.title);
-  const [unitName, setUnitName] = useState(family.unit_code ?? "");
+  const [unitName, setUnitName] = useState(family.unit_symbol ?? "");
   const [definition, setDefinition] = useState(family.definition ?? "");
   const update = useUpdateWorkFamily();
   const activate = useActivateWorkFamily();
@@ -344,7 +394,12 @@ function FamilyPanel({
 
   return (
     <Surface className="grid gap-4">
-      <h3 className="text-lg font-medium text-fg">Семья «{family.title}»</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-lg font-medium text-fg">Семья «{family.title}»</h3>
+        <Badge variant="outline" className={FAMILY_STATUS_TINT[family.status]}>
+          {FAMILY_STATUS_LABEL[family.status]}
+        </Badge>
+      </div>
 
       <form onSubmit={handleSubmit} className="grid gap-3">
         <div className="grid gap-2">
@@ -355,7 +410,7 @@ function FamilyPanel({
           <Label htmlFor="edit-family-unit">Единица</Label>
           <Input
             id="edit-family-unit"
-            value={unitLocked ? (family.unit_code ?? "") : unitName}
+            value={unitLocked ? (family.unit_symbol ?? "") : unitName}
             onChange={(e) => setUnitName(e.target.value)}
             disabled={unitLocked}
           />
@@ -369,37 +424,46 @@ function FamilyPanel({
           <Label htmlFor="edit-family-definition">Определение</Label>
           <Textarea id="edit-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
         </div>
-        <Button type="submit" disabled={!title.trim() || update.isPending}>
-          Сохранить
-        </Button>
+        {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
+        <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
+          <Button type="submit" disabled={!title.trim() || update.isPending}>
+            Сохранить
+          </Button>
+          {family.status === "draft" && (
+            <Button
+              variant="outline"
+              aria-label={`Активировать семью ${family.title}`}
+              disabled={!hasDefinition || activate.isPending}
+              onClick={() => activate.mutate(family.id)}
+            >
+              Активировать
+            </Button>
+          )}
+          {family.status === "active" && (
+            <Button variant="outline" onClick={onMerge}>
+              Слить
+            </Button>
+          )}
+          {family.status !== "archived" && (
+            <Button
+              variant="ghost"
+              // Видимый текст «В архив» — начало доступного имени (WCAG
+              // 2.5.3 «метка в имени»), а не независимая от него подпись.
+              aria-label={`В архив: семья ${family.title}`}
+              onClick={onArchive}
+            >
+              В архив
+            </Button>
+          )}
+        </div>
       </form>
-
-      <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
-        {family.status === "draft" && (
-          <Button
-            variant="outline"
-            aria-label={`Активировать семью ${family.title}`}
-            disabled={!hasDefinition || activate.isPending}
-            onClick={() => activate.mutate(family.id)}
-          >
-            Активировать
-          </Button>
-        )}
-        {family.status === "active" && (
-          <Button variant="outline" onClick={onMerge}>
-            Слить
-          </Button>
-        )}
-        {family.status !== "archived" && (
-          <Button
-            variant="ghost"
-            aria-label={`Архивировать семью ${family.title}`}
-            onClick={onArchive}
-          >
-            Архивировать
-          </Button>
-        )}
-      </div>
+      {/* Подсказка под кнопками (сверка с макетом 27.09.2026,
+          `mock-families.png`) — ТОЛЬКО у черновика без определения, где
+          «Активировать» и без того недоступна: подсказка называет причину,
+          а не оставляет недоступную кнопку без объяснения. */}
+      {family.status === "draft" && !hasDefinition && (
+        <p className="text-xs text-fg-tertiary">Активировать можно только с определением.</p>
+      )}
     </Surface>
   );
 }

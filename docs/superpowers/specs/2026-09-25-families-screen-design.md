@@ -21,6 +21,15 @@
 запроса страницы, без третьего запроса; клиентский цикл переноса заменён пакетным
 эндпоинтом с результатом по каждой позиции (§2.6, §2.8 п. 4).
 
+**Редакция 3 — сверка с макетом (27.09.2026, решение пользователя).** Группа
+членств — **текст пути**, а не раздел одной сметы: одинаковые разделы разных
+смет («Лифтовой холл МОП жилья / Стены») — одна группа. У «Шпатлевки в 2 слоя» ×
+8.2.3 на стенде 27.09.2026 — 14 групп на 124 позиции вместо 124 строк (по числу
+уникальных разделов, `chapter_item_id`) с повторяющимся текстом. Группа несёт
+список разделов `chapter_item_ids`; эндпоинты группы и
+пакетный перенос принимают этот список (§2.8 п. 2–4). Единица на экране —
+символом, статус семьи — словами (§2.8, абзац после п. 2).
+
 ---
 
 ## 1. Проблема
@@ -121,7 +130,8 @@
 Действия: подтвердить вид, назначить или снять семью, изменить «что называет» —
 существующие операции фичи 1.
 
-**«Членства N»:** позиции, **сгруппированные по ближайшему разделу сметы** —
+**«Членства N»:** позиции, **сгруппированные по тексту пути ближайшего раздела
+сметы** (одинаковый путь в разных сметах — одна группа, редакция 3) —
 строка группы «в смете» + путь сверху вниз + число позиций, по убыванию числа;
 позиции без раздела (`chapter_item_id IS NULL` — схемой допустимо, на стенде 0) —
 отдельная группа «без раздела», всегда последней. Группа раскрывается до своих
@@ -157,7 +167,8 @@
 /contexts/{id}/stale-groups/transfer` (§2.8 п. 4). Клиентский цикл по позициям
 отвергнут на гейте 2: у группы нет полного набора id на экране, список карточки
 обрезан на 500, один перенос — два HTTP-вызова, размер группы не ограничен.
-Эндпоинт принимает **группу**, а не список id: `chapter_item_id` (или `null` —
+Эндпоинт принимает **группу**, а не список id: `chapter_item_ids` — разделы
+группы (или `null` —
 группа «без раздела») и `expected_category_id` — статью, которую оператор видел в
 строке внимания. Сервер сам находит устаревшие членства этой группы и
 переносит **каждое своей доменной операцией** `accept_transfer` (спека фичи 1
@@ -209,6 +220,7 @@ member_count: int
 has_stale_members: bool
 has_conflicting_members: bool
 work_category_path: list[{code: str, title: str}]   # родители статьи, от корня, без неё самой
+unit_symbol: str | None                             # символ единицы (units_of_measure.symbol): «м²», «шт»
 ```
 Все четыре — **внутри запроса страницы**: число и два признака —
 коррелированными подзапросами (`_stale_exists`, `_conflict_exists` уже есть в
@@ -224,12 +236,20 @@ work_category_path: list[{code: str, title: str}]   # родители стат�
 ```
 work_category_path: list[{code, title}]            # то же, что в списке
 representative_work_title: str | None               # только при name_role = LOCATION_ONLY
-member_paths: list[{chapter_item_id: int | None, path: list[str], member_count: int,
+member_paths: list[{chapter_item_ids: list[int], path: list[str], member_count: int,
                     stale_count: int, conflict_count: int}]
-stale_groups: list[{chapter_item_id: int | None, path: list[str], count: int,
+stale_groups: list[{chapter_item_ids: list[int], path: list[str], count: int,
                     target_category_id: int | None, target_category_code: str | None,
                     target_category_title: str | None}]
 ```
+
+**Единица на экране — символом, а не кодом** (уточнено сверкой с макетом
+27.09.2026): строка списка, карточка и строка `GET /families` получают
+`unit_symbol` рядом с существующим `unit_code` тем же внешним соединением
+`units_of_measure`, без нового запроса; экран печатает `unit_symbol`, код
+`unit_code` на экран не выходит, как и коды таблицы §2.2. Статус семьи
+(`draft` / `active` / `archived`) печатается словами «черновик» / «активна» /
+«в архиве».
 - **`representative_work_title`** считается **от сохранённой роли**, а не
   повторной классификацией. Ручная смена роли (`set_name_role`,
   `services/work_families.py`) записывает роль и ничего не пересчитывает, и
@@ -245,7 +265,9 @@ stale_groups: list[{chapter_item_id: int | None, path: list[str], count: int,
   `services/context_operations.py`). Контекст без членств — `None`. Подпись
   экрана: «работа по разделу представительной позиции».
 - **`member_paths`** — все членства по ближайшему разделу позиции: один
-  агрегирующий запрос `GROUP BY chapter_item_id`, путь сверху вниз.
+  агрегирующий запрос `GROUP BY chapter_item_id`, путь сверху вниз; затем
+  строки с ОДИНАКОВЫМ путём сливаются в одну группу в памяти (редакция 3):
+  `chapter_item_ids` — её разделы по возрастанию, счётчики — суммы.
   **Пути строятся пакетно, ограниченным числом запросов, а не через
   `chapter_context()`:** та поднимается к корню через `db.get` на каждого
   предка (`services/context_routing.py`), и на карточке «Шпатлевки в 2 слоя» ×
@@ -262,14 +284,17 @@ stale_groups: list[{chapter_item_id: int | None, path: list[str], count: int,
   тестом на одной позиции: путь CTE = `reversed(chapter_context(...).chain)`.
   Текущая статья раздела для `stale_groups` (`work_category_id` строки-раздела)
   и её код и название берутся тем же агрегирующим запросом членств, не отдельно.
-  **`chapter_item_id = null`** — группа «без раздела», `path = []`. Порядок —
-  `member_count DESC`, затем путь лексикографически; группа `null` — последней.
+  Позиции без раздела — группа «без раздела»: `chapter_item_ids = []`,
+  `path = []`. Порядок —
+  `member_count DESC`, затем путь лексикографически; группа «без раздела»
+  (`chapter_item_ids = []`) — последней.
   Сумма `member_count` групп равна `member_count` карточки **по построению**:
   группировка по допускающему `NULL` ключу теряет строк не больше, чем
   `COUNT(*)`.
 - **`stale_groups`** — устаревшие членства по паре «ближайший раздел → текущая
   эффективная статья раздела» (та, по которой `transfer_proposal` ищет цель);
-  `chapter_item_id` — `int | None` тем же правилом. Источник текста строки
+  ключ группы — пара «текст пути → целевая статья», `chapter_item_ids` — разделы
+  этой пары, `[]` — без раздела. Источник текста строки
   внимания и `expected_category_id` для п. 4. `count` считает только
   ПЕРЕНОСИМЫЕ устаревшие членства (`membership_state=STALE AND conflict_at IS
   NULL`), не конфликтные — те сначала разрешаются действием «Принять решение
@@ -280,14 +305,16 @@ stale_groups: list[{chapter_item_id: int | None, path: list[str], count: int,
 
 **3. Членства группы — два эндпоинта чтения:**
 ```
-GET /contexts/{id}/members?chapter_item_id=<int>|no_chapter=true&state=<all|stale|conflict>&limit&offset
+GET /contexts/{id}/members?chapter_item_id=<int>[&chapter_item_id=<int>…]|no_chapter=true&state=<all|stale|conflict>&limit&offset
   -> {items: [{position_item_id, job_title, estimate_id, membership_state,
                conflict_at, conflict_from_context_id, routed_by}], total, limit, offset}
-GET /contexts/{id}/member-ids?chapter_item_id=<int>|no_chapter=true&state=<all|stale|conflict>
+GET /contexts/{id}/member-ids?chapter_item_id=<int>[&chapter_item_id=<int>…]|no_chapter=true&state=<all|stale|conflict>
   -> {position_item_ids: list[int], total: int}
 ```
 - форма строки — та же, что была у `members[]` карточки фичи 1; `limit` до
   `MAX_PAGE_SIZE`; порядок — `position_item_id`;
+- `chapter_item_id` повторяется — группа из нескольких разделов (редакция 3),
+  отбираются позиции ЛЮБОГО из них;
 - без `chapter_item_id` и без `no_chapter` — по всему контексту (так экран берёт id
   всех конфликтных для «Принять решение цели»);
 - `chapter_item_id` и `no_chapter=true` вместе — `422`;
@@ -309,13 +336,13 @@ GET /contexts/{id}/member-ids?chapter_item_id=<int>|no_chapter=true&state=<all|s
 **4. Пакетный перенос устаревшей группы:**
 ```
 POST /contexts/{id}/stale-groups/transfer
-  body: {chapter_item_id: int | null, expected_category_id: int | null}
+  body: {chapter_item_ids: list[int] | null, expected_category_id: int | null}
   -> {results: [{position_item_id, outcome: "moved" | "refused",
                  target_context_id: int | null, error_code: str | null, message: str | null}],
       moved: int, refused: int}
 ```
-- сервер находит устаревшие членства контекста в группе `chapter_item_id`
-  (`null` — без раздела) и для **каждого** вызывает существующий
+- сервер находит устаревшие членства контекста в разделах `chapter_item_ids`
+  (`null` — без раздела; пустой список — `422`) и для **каждого** вызывает существующий
   `accept_transfer(position_item_id, expected_category_id, actor_id)`
   (`services/context_operations.py`) в **своей точке сохранения**
   (`begin_nested`): доменный отказ одной позиции откатывает только её точку, не
@@ -410,11 +437,11 @@ HTTP-вызова, а размер группы не ограничен. Пак�
    заголовком.
 4. Строка списка — две строки текста, число позиций, точка при устаревших,
    конфликтных членствах и при нуле членств; при их отсутствии точки нет.
-5. Вкладка «Членства» группирует по ближайшему разделу, позиции без раздела —
+5. Вкладка «Членства» группирует по тексту пути ближайшего раздела (редакция 3), позиции без раздела —
    группой «без раздела» последней; суммы по группам равны `member_count`;
    галочка группы выбирает её позиции целиком, включая не загруженные на экран
    и сверх 500; «Разделить» и «Перенести» получают выбранный набор id.
-6. Строки внимания §2.6 — по одной на пару «раздел → целевая статья» устаревших,
+6. Строки внимания §2.6 — по одной на пару «текст пути → целевая статья» устаревших,
    одна на конфликтные, одна на пустой; «Перенести их» — один вызов пакетного
    эндпоинта; экран сообщает «перенесено N из M» и перечисляет отказы.
 7. Пагинация с выбором 10/20/50/100 в обоих списках; смена фильтра или размера —
@@ -439,7 +466,8 @@ HTTP-вызова, а размер группы не ограничен. Пак�
 
 - **Бэкенд, интеграционные:** поля §2.8 на контексте с членствами в нескольких
   разделах и одной позицией без раздела (суммы `member_paths` = `member_count`;
-  порядок; группа `null` последней); `representative_work_title` — у правила
+  порядок; группа «без раздела» (`chapter_item_ids = []`) последней);
+  `representative_work_title` — у правила
   `LOCATION_ONLY` под рабочим разделом, у ручной роли `LOCATION_ONLY` (где
   классификатор вернул бы `WORK`), у ручной смены с `LOCATION_ONLY`, у пустого
   контекста; `stale_groups` после ручного разноса раздела называет целевую

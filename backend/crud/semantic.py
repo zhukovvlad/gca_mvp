@@ -64,16 +64,20 @@ class WorkCategoryRef(TypedDict):
 
 
 class MemberPath(TypedDict):
-    """Группа членств карточки по ближайшему разделу (спека §2.8 п. 2).
+    """Группа членств карточки по ТЕКСТУ ближайшего пути (спека §2.8 п. 2,
+    редакция 3): одинаковый путь top-down у разделов РАЗНЫХ смет — одна
+    группа экрана, а не строка на каждый раздел. `chapter_item_ids` — все
+    разделы, чей путь-текст совпал с этой группой, по возрастанию id;
+    `chapter_item_ids=[]` — группа «без раздела» (`path=[]`), допустима
+    схемой (`position_items.chapter_item_id` — `NULL`-able), в SQL все такие
+    членства уже лежат в одной строке (`GROUP BY` группирует `NULL` вместе),
+    второй группы `[]` быть не может. `path` — СВЕРХУ ВНИЗ, тот же порядок,
+    что `chapter_paths()`. `stale_count`/`conflict_count` — подмножества
+    `member_count`, не отдельные факты (`membership_state=STALE` и
+    `conflict_at IS NOT NULL` — независимые оси членства, одно и то же
+    членство может нести обе), суммы по всем разделам группы."""
 
-    `chapter_item_id=None` — группа «без раздела» (`path=[]`), допустима
-    схемой (`position_items.chapter_item_id` — `NULL`-able). `path` — СВЕРХУ
-    ВНИЗ, тот же порядок, что `chapter_paths()`. `stale_count`/
-    `conflict_count` — подмножества `member_count`, не отдельные факты
-    (`membership_state=STALE` и `conflict_at IS NOT NULL` — независимые оси
-    членства, одно и то же членство может нести обе)."""
-
-    chapter_item_id: int | None
+    chapter_item_ids: list[int]
     path: list[str]
     member_count: int
     stale_count: int
@@ -81,25 +85,29 @@ class MemberPath(TypedDict):
 
 
 class StaleGroup(TypedDict):
-    """Устаревшие ПЕРЕНОСИМЫЕ членства одного раздела, сгруппированные под
-    ЦЕЛЬ переноса — текущую эффективную статью этого раздела (спека §2.8
-    п. 2, п. 4: тот же `target_category_id`, что видит
-    `transfer_proposal`/`accept_transfer`, `services/context_operations.py`,
-    через `chapter_context(...).category_id` БЛИЖАЙШЕГО раздела).
-    `target_category_*` — `None`, если у раздела нет статьи или раздела нет
-    вовсе (`chapter_item_id=None`).
+    """Устаревшие ПЕРЕНОСИМЫЕ членства, сгруппированные по паре «текст пути →
+    целевая статья» (спека §2.8 п. 2, редакция 3): та же ЦЕЛЬ переноса —
+    текущая эффективная статья раздела (тот же `target_category_id`, что
+    видит `transfer_proposal`/`accept_transfer`,
+    `services/context_operations.py`, через `chapter_context(...).category_id`
+    БЛИЖАЙШЕГО раздела) — у разделов РАЗНЫХ смет с ОДИНАКОВЫМ путём-текстом
+    даёт ОДНУ запись; тот же путь, но иная цель — разные записи.
+    `chapter_item_ids` — разделы этой пары по возрастанию, `[]` — «без
+    раздела» (цели у неё нет вовсе). `target_category_*` — `None`, если у
+    раздела нет статьи или раздела нет вовсе (`chapter_item_ids=[]`).
 
     `count` — ТОЛЬКО переносимые устаревшие членства (`membership_state=STALE
     AND conflict_at IS NULL`) — ровно то множество, что берёт пакетный
-    перенос `transfer_stale_group` (`services/context_operations.py`).
-    Устаревшее членство, у которого ЕСТЬ конфликт, не входит в `count` и не
-    порождает запись `stale_groups`, если оно единственное устаревшее в
-    группе — оно решается отдельным действием «Принять решение цели», не
-    пакетным переносом (спека §2.6). Это НЕ то же самое, что
-    `MemberPath.stale_count` (та ось считает ВСЕ `STALE`-членства группы,
-    включая конфликтные, — независимая от `conflict_count` величина)."""
+    перенос `transfer_stale_group` (`services/context_operations.py`),
+    суммой по всем разделам группы. Устаревшее членство, у которого ЕСТЬ
+    конфликт, не входит в `count` и не порождает запись `stale_groups`, если
+    оно единственное устаревшее в группе — оно решается отдельным действием
+    «Принять решение цели», не пакетным переносом (спека §2.6). Это НЕ то же
+    самое, что `MemberPath.stale_count` (та ось считает ВСЕ `STALE`-членства
+    группы, включая конфликтные, — независимая от `conflict_count`
+    величина)."""
 
-    chapter_item_id: int | None
+    chapter_item_ids: list[int]
     path: list[str]
     count: int
     target_category_id: int | None
@@ -140,6 +148,11 @@ def _family_row_select():
             WorkFamily.title,
             WorkFamily.unit_id,
             UnitOfMeasure.code.label("unit_code"),
+            # Символ единицы (спека `2026-09-25-families-screen-design.md`
+            # §2.8, уточнение сверкой с макетом 27.09.2026) — экран печатает
+            # ЕГО, не `unit_code`; то же внешнее соединение, третьего запроса
+            # нет.
+            UnitOfMeasure.symbol.label("unit_symbol"),
             WorkFamily.definition,
             WorkFamily.status,
             WorkFamily.seed_key,
@@ -153,7 +166,7 @@ def _family_row_select():
         )
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == WorkFamily.unit_id)
         .outerjoin(CatalogContext, CatalogContext.work_family_id == WorkFamily.id)
-        .group_by(WorkFamily.id, UnitOfMeasure.code)
+        .group_by(WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol)
     )
 
 
@@ -163,6 +176,7 @@ def _family_row_to_dict(row) -> dict:
         "title": row.title,
         "unit_id": row.unit_id,
         "unit_code": row.unit_code,
+        "unit_symbol": row.unit_symbol,
         "definition": row.definition,
         "status": row.status,
         "seed_key": row.seed_key,
@@ -301,42 +315,58 @@ def _work_category_path(db: Session, category_id: int | None) -> list[WorkCatego
     return _work_category_path_from_row(row)
 
 
-def _member_group_sort_key(*, chapter_item_id: int | None, count: int, path: list[str]):
+def _member_group_sort_key(*, chapter_item_ids: list[int], count: int, path: list[str]):
     """Порядок групп членств/устаревших групп (спека §2.8 п. 2): по убыванию
-    числа, затем путь лексикографически, группа `chapter_item_id=None` —
-    ПОСЛЕДНЕЙ при любом её размере (первый элемент ключа — булев «это группа
-    без раздела», он сильнее счёта). Один и тот же ключ используется и для
-    `member_paths` (число — `member_count`), и для `stale_groups` (число —
-    `count`, он же `stale_count` той же строки) — спека не называет для
-    второго списка иного порядка."""
-    return (chapter_item_id is None, -count, path)
+    числа, затем путь лексикографически, группа «без раздела»
+    (`chapter_item_ids=[]`) — ПОСЛЕДНЕЙ при любом её размере (первый элемент
+    ключа — булев «это группа без раздела», он сильнее счёта). Пустой список
+    однозначно отличает её от группы с разделами (редакция 3): группа с
+    разделами всегда несёт хотя бы один id — путь чужого раздела не может
+    совпасть с путём «без раздела» (`path=[]`), см. `MemberPath` докстроку.
+    Один и тот же ключ используется и для `member_paths` (число —
+    `member_count`), и для `stale_groups` (число — `count`, он же
+    `stale_count` той же строки) — спека не называет для второго списка
+    иного порядка."""
+    return (not chapter_item_ids, -count, path)
 
 
 def _member_paths_and_stale_groups(
     db: Session, *, context_id: int
 ) -> tuple[list[MemberPath], list[StaleGroup], dict[int, tuple[str, ...]]]:
-    """Членства карточки, сгруппированные по ближайшему разделу позиции, и
-    устаревшие ПЕРЕНОСИМЫЕ группы из ТЕХ ЖЕ строк (спека §2.8 п. 2):
-    `stale_groups.count` — только `STALE AND conflict_at IS NULL`, то же
-    множество, что берёт пакетный перенос `transfer_stale_group`
-    (`services/context_operations.py`); устаревшее конфликтное членство не
-    входит ни в `count`, ни в саму запись `stale_groups`, если группа без
-    него не набрала ни одного переносимого членства — карточка не должна
-    предлагать перенос того, что перенести нельзя (см. `StaleGroup`
-    докстрока выше).
+    """Членства карточки, сгруппированные по ТЕКСТУ ближайшего пути (спека
+    §2.8 п. 2, редакция 3 — «сверка с макетом», абзац у начала спеки), и
+    устаревшие ПЕРЕНОСИМЫЕ группы из ТЕХ ЖЕ строк: `stale_groups.count` —
+    только `STALE AND conflict_at IS NULL`, то же множество, что берёт
+    пакетный перенос `transfer_stale_group` (`services/context_operations.py`);
+    устаревшее конфликтное членство не входит ни в `count`, ни в саму запись
+    `stale_groups`, если группа без него не набрала ни одного переносимого
+    членства — карточка не должна предлагать перенос того, что перенести
+    нельзя (см. `StaleGroup` докстрока выше).
 
-    ОДИН агрегирующий запрос `GROUP BY position_items.chapter_item_id`,
-    несущий заодно `work_category_id` строки-раздела (плюс её код/название)
-    — ЭТУ ЖЕ статью `stale_groups` называет целью переноса, отдельного
-    запроса под неё нет. Пути строятся ПОСЛЕ, одним вызовом `chapter_paths()`
-    для всех уникальных `chapter_item_id` разом (`services/context_routing.py`)
-    — не через `chapter_context()` на каждую группу (докстрока `chapter_paths`).
+    ОДИН агрегирующий запрос `GROUP BY position_items.chapter_item_id`
+    (НЕ по тексту пути — путь строится позже, в памяти) — тот же запрос, что
+    и до редакции 3, несущий заодно `work_category_id` строки-раздела (плюс
+    её код/название) — ЭТУ ЖЕ статью `stale_groups` называет целью переноса,
+    отдельного запроса под неё нет. Пути строятся ПОСЛЕ, одним вызовом
+    `chapter_paths()` для всех уникальных `chapter_item_id` разом
+    (`services/context_routing.py`) — не через `chapter_context()` на каждую
+    группу (докстрока `chapter_paths`).
 
-    `chapter_item_id IS NULL` — группа «без раздела» (`path=[]`), допустима
-    схемой и участвует в сортировке как группа, которая идёт ПОСЛЕДНЕЙ.
-    Сумма `member_count` групп равна `member_count` карточки ПО ПОСТРОЕНИЮ:
-    группировка по допускающему `NULL` ключу теряет строк не больше, чем
-    `COUNT(*)` без `GROUP BY` — каждое членство попадает РОВНО в одну группу.
+    **Слияние по тексту пути (редакция 3)** — строки ОДНОГО агрегирующего
+    запроса, чей путь (сверху вниз) совпал буквально, сливаются в ОДНУ
+    группу экрана В ПАМЯТИ, без нового запроса: `chapter_item_ids` группы —
+    разделы всех слившихся строк по возрастанию, счётчики — суммы. Для
+    `member_paths` ключ слияния — только путь; для `stale_groups` — пара
+    «путь → `target_category_id`» (тот же раздел с иной целью — другая
+    запись). `chapter_item_id IS NULL` — группа «без раздела» (`path=[]`):
+    `GROUP BY` уже сливает ВСЕ такие членства в ОДНУ строку агрегирующего
+    запроса (SQL группирует `NULL` вместе) — второй группы `[]` в слиянии
+    появиться не может, `chapter_item_ids` этой группы — `[]` всегда.
+    Сортировка (`_member_group_sort_key`) кладёт её ПОСЛЕДНЕЙ. Сумма
+    `member_count` групп равна `member_count` карточки ПО ПОСТРОЕНИЮ:
+    слияние в памяти не теряет строк агрегирующего запроса (каждая входит
+    ровно в одну группу результата), а сам он теряет не больше, чем
+    `COUNT(*)` без `GROUP BY`.
 
     Третий элемент кортежа — `paths_by_chapter` (путь СВЕРХУ ВНИЗ по
     `chapter_item_id`), тот же словарь, что строит `chapter_paths()`, отданный
@@ -394,37 +424,79 @@ def _member_paths_and_stale_groups(
             return []
         return list(paths_by_chapter[chapter_item_id])
 
+    # Слияние по ТЕКСТУ пути (редакция 3, см. докстроку функции) — строится
+    # В ПАМЯТИ над строками уже выполненного агрегирующего запроса, без
+    # нового обращения к БД. `member_paths_by_key`: ключ — кортеж пути;
+    # `stale_groups_by_key`: ключ — пара «кортеж пути → target_category_id».
+    member_paths_by_key: dict[tuple[str, ...], dict] = {}
+    stale_groups_by_key: dict[tuple[tuple[str, ...], int | None], dict] = {}
+    for row in rows:
+        path = _path_for(row.chapter_item_id)
+        path_key = tuple(path)
+
+        mp_group = member_paths_by_key.setdefault(
+            path_key,
+            {
+                "chapter_item_ids": [],
+                "path": path,
+                "member_count": 0,
+                "stale_count": 0,
+                "conflict_count": 0,
+            },
+        )
+        if row.chapter_item_id is not None:
+            mp_group["chapter_item_ids"].append(row.chapter_item_id)
+        mp_group["member_count"] += row.member_count
+        mp_group["stale_count"] += row.stale_count
+        mp_group["conflict_count"] += row.conflict_count
+
+        if row.transferable_stale_count > 0:
+            sg_key = (path_key, row.target_category_id)
+            sg_group = stale_groups_by_key.setdefault(
+                sg_key,
+                {
+                    "chapter_item_ids": [],
+                    "path": path,
+                    "count": 0,
+                    "target_category_id": row.target_category_id,
+                    "target_category_code": row.target_category_code,
+                    "target_category_title": row.target_category_title,
+                },
+            )
+            if row.chapter_item_id is not None:
+                sg_group["chapter_item_ids"].append(row.chapter_item_id)
+            sg_group["count"] += row.transferable_stale_count
+
     member_paths: list[MemberPath] = [
         MemberPath(
-            chapter_item_id=row.chapter_item_id,
-            path=_path_for(row.chapter_item_id),
-            member_count=row.member_count,
-            stale_count=row.stale_count,
-            conflict_count=row.conflict_count,
+            chapter_item_ids=sorted(group["chapter_item_ids"]),
+            path=group["path"],
+            member_count=group["member_count"],
+            stale_count=group["stale_count"],
+            conflict_count=group["conflict_count"],
         )
-        for row in rows
+        for group in member_paths_by_key.values()
     ]
     member_paths.sort(
         key=lambda mp: _member_group_sort_key(
-            chapter_item_id=mp["chapter_item_id"], count=mp["member_count"], path=mp["path"]
+            chapter_item_ids=mp["chapter_item_ids"], count=mp["member_count"], path=mp["path"]
         )
     )
 
     stale_groups: list[StaleGroup] = [
         StaleGroup(
-            chapter_item_id=row.chapter_item_id,
-            path=_path_for(row.chapter_item_id),
-            count=row.transferable_stale_count,
-            target_category_id=row.target_category_id,
-            target_category_code=row.target_category_code,
-            target_category_title=row.target_category_title,
+            chapter_item_ids=sorted(group["chapter_item_ids"]),
+            path=group["path"],
+            count=group["count"],
+            target_category_id=group["target_category_id"],
+            target_category_code=group["target_category_code"],
+            target_category_title=group["target_category_title"],
         )
-        for row in rows
-        if row.transferable_stale_count > 0
+        for group in stale_groups_by_key.values()
     ]
     stale_groups.sort(
         key=lambda sg: _member_group_sort_key(
-            chapter_item_id=sg["chapter_item_id"], count=sg["count"], path=sg["path"]
+            chapter_item_ids=sg["chapter_item_ids"], count=sg["count"], path=sg["path"]
         )
     )
 
@@ -463,6 +535,10 @@ def _context_query(filters: ContextFilters):
             CatalogPosition.id.label("catalog_position_id"),
             CatalogPosition.standard_job_title,
             UnitOfMeasure.code.label("unit_code"),
+            # Символ единицы (спека §2.8, уточнение 27.09.2026) — тем же
+            # внешним соединением, что уже несёт `unit_code`; третьего
+            # запроса не добавляет (инварианты «ровно два» ниже не трогаются).
+            UnitOfMeasure.symbol.label("unit_symbol"),
             CatalogContext.archived_at,
         )
         .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
@@ -553,6 +629,7 @@ def list_contexts(db: Session, *, filters: ContextFilters, limit: int, offset: i
             "catalog_position_id": row.catalog_position_id,
             "standard_job_title": row.standard_job_title,
             "unit_code": row.unit_code,
+            "unit_symbol": row.unit_symbol,
             "archived_at": row.archived_at,
             "member_count": row.member_count,
             "has_stale_members": row.has_stale_members,
@@ -581,8 +658,8 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     строки списка), работу по разделу представительной позиции
     (`representative_work_title` — только при сохранённой роли
     `LOCATION_ONLY`, от СОХРАНЁННОЙ роли, а не повторной классификацией; см.
-    комментарий у вычисления ниже, спека §2.8 п. 2), группы членств по
-    ближайшему разделу (`member_paths`) и устаревшие группы под цель переноса
+    комментарий у вычисления ниже, спека §2.8 п. 2), группы членств по тексту
+    пути ближайшего раздела (`member_paths`, редакция 3) и устаревшие группы под цель переноса
     (`stale_groups` — спека §2.8 п. 2,
     `crud/semantic.py::_member_paths_and_stale_groups`), соседей по корзине
     (`bucket_contexts` — id, `is_default`, `archived_at`, `member_count`
@@ -610,6 +687,10 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     bucket = db.get(ContextBucket, context.bucket_id)
     catalog_position = db.get(CatalogPosition, bucket.catalog_position_id)
     unit_code = catalog_position.unit.code if catalog_position.unit_id is not None else None
+    # Символ единицы (спека §2.8, уточнение 27.09.2026) — тот же ленивый
+    # доступ `catalog_position.unit`, что уже несёт `unit_code`: объект уже
+    # загружен строкой выше, второго запроса нет.
+    unit_symbol = catalog_position.unit.symbol if catalog_position.unit_id is not None else None
 
     work_category = (
         db.get(WorkCategory, bucket.work_category_id)
@@ -732,6 +813,7 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "standard_job_title": catalog_position.standard_job_title,
         "unit_id": catalog_position.unit_id,
         "unit_code": unit_code,
+        "unit_symbol": unit_symbol,
         "work_category_id": bucket.work_category_id,
         "work_category_code": work_category.code if work_category is not None else None,
         "work_category_title": work_category.title if work_category is not None else None,
@@ -795,17 +877,21 @@ GroupState = Literal["all", "stale", "conflict"]
 @dataclass(frozen=True)
 class GroupSelector:
     """Группа членств контекста — по ближайшему разделу ЕЁ ПОЗИЦИИ (тот же
-    ключ, что группирует `member_paths`, спека §2.8 п. 2, 3):
-    `chapter_item_id=X` — только позиции раздела X; `no_chapter=True` —
-    только позиции БЕЗ раздела (`chapter_item_id IS NULL`, схемой
-    допустимо); ни то ни другое (`chapter_item_id=None`, `no_chapter=False`)
-    — ВЕСЬ контекст, тем же путём экран берёт id всех конфликтных членств
-    для «Принять решение цели» (спека §2.8 п. 3). Оба разом — противоречие
-    («раздел X» и «без раздела» одновременно невозможны); роутер отвергает
-    такой вход `422` ДО вызова этого модуля, здесь предполагается уже
-    провалидированный вход."""
+    ключ, что группирует `member_paths`, спека §2.8 п. 2, 3, редакция 3):
+    группа экрана — ТЕКСТ пути, а не один раздел, поэтому `chapter_item_ids`
+    несёт ВСЕ разделы группы (кортеж, может быть длиннее одного — одинаковый
+    путь у разных смет сливается в одну группу `member_paths`, и галочка
+    группы обязана раскрыть позиции ЛЮБОГО из её разделов); пустой кортеж —
+    «раздел не выбран». `no_chapter=True` — только позиции БЕЗ раздела
+    (`chapter_item_id IS NULL`, схемой допустимо); ни то ни другое
+    (`chapter_item_ids=()`, `no_chapter=False`) — ВЕСЬ контекст, тем же
+    путём экран берёт id всех конфликтных членств для «Принять решение
+    цели» (спека §2.8 п. 3). Непустой `chapter_item_ids` вместе с
+    `no_chapter=True` — противоречие («разделы X, Y» и «без раздела»
+    одновременно невозможны); роутер отвергает такой вход `422` ДО вызова
+    этого модуля, здесь предполагается уже провалидированный вход."""
 
-    chapter_item_id: int | None
+    chapter_item_ids: tuple[int, ...]
     no_chapter: bool
 
 
@@ -823,8 +909,8 @@ def _group_base_query(*, context_id: int, selector: GroupSelector, state: GroupS
         .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
         .where(ContextMember.context_id == context_id)
     )
-    if selector.chapter_item_id is not None:
-        stmt = stmt.where(PositionItem.chapter_item_id == selector.chapter_item_id)
+    if selector.chapter_item_ids:
+        stmt = stmt.where(PositionItem.chapter_item_id.in_(selector.chapter_item_ids))
     elif selector.no_chapter:
         stmt = stmt.where(PositionItem.chapter_item_id.is_(None))
     if state == "stale":

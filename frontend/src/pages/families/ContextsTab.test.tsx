@@ -73,6 +73,7 @@ function manyContextRows(n: number): ContextRow[] {
       catalog_position_id: 90000 + i,
       standard_job_title: `Синтетическая работа №${i + 1}`,
       unit_code: "м2",
+      unit_symbol: "м²",
       archived_at: null,
       member_count: 1,
       has_stale_members: false,
@@ -161,7 +162,7 @@ describe("ContextsTab", () => {
     const user = userEvent.setup();
     await renderTab();
 
-    await user.click(screen.getByRole("checkbox", { name: "Есть устаревшие членства" }));
+    await user.click(screen.getByRole("checkbox", { name: "устаревшие" }));
     await waitFor(() => {
       expect(
         screen.getByText("Устройство покрытий полов из линолеума")
@@ -175,8 +176,8 @@ describe("ContextsTab", () => {
     });
 
     // Снять «устаревшие», включить «конфликтные» — другая проекция, другой контекст.
-    await user.click(screen.getByRole("checkbox", { name: "Есть устаревшие членства" }));
-    await user.click(screen.getByRole("checkbox", { name: "Есть конфликтные членства" }));
+    await user.click(screen.getByRole("checkbox", { name: "устаревшие" }));
+    await user.click(screen.getByRole("checkbox", { name: "конфликт" }));
     await waitFor(() => {
       expect(
         screen.getByText("Отделка потолков водоэмульсионным составом")
@@ -186,8 +187,8 @@ describe("ContextsTab", () => {
       ).not.toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("checkbox", { name: "Есть конфликтные членства" }));
-    await user.click(screen.getByRole("checkbox", { name: "Нет членств" }));
+    await user.click(screen.getByRole("checkbox", { name: "конфликт" }));
+    await user.click(screen.getByRole("checkbox", { name: "пустые" }));
     await waitFor(() => {
       expect(screen.getByText("Разборка временных перегородок")).toBeInTheDocument();
       expect(
@@ -230,9 +231,19 @@ describe("ContextsTab", () => {
     expect(within(row).getByText("статья СМР")).toBeInTheDocument();
     expect(within(row).getByText(/05\.02\.03/)).toBeInTheDocument();
     expect(within(row).getByText(/Оштукатуривание цементно-песчаным раствором/)).toBeInTheDocument();
-    expect(within(row).getByText("м2")).toBeInTheDocument();
+    // Символ единицы (спека §2.8, уточнение 27.09.2026), не код: код фикстуры
+    // — "м2" (умышленно нереалистичный, докстрока `initialSemanticContexts`),
+    // экран печатает `unit_symbol`.
+    expect(within(row).getByText("м²")).toBeInTheDocument();
     expect(within(row).getByText("Семья работ №1")).toBeInTheDocument();
     expect(within(row).getByText("3")).toBeInTheDocument();
+  });
+
+  it("код единицы не печатается на экране нигде — только символ (сверка с макетом 27.09.2026)", async () => {
+    await renderTab();
+    expect(screen.queryByText("м2", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("M2")).not.toBeInTheDocument();
+    expect(screen.getAllByText("м²").length).toBeGreaterThan(0);
   });
 
   it("длинное наименование зажато двумя строками с переносом и полным текстом в title; прочие ячейки не переносятся", async () => {
@@ -788,7 +799,7 @@ describe("ContextsTab", () => {
     contextFixture(MIXED_GROUPS_CONTEXT_ID).member_paths = contextFixture(
       MIXED_GROUPS_CONTEXT_ID
     ).member_paths.map((group, i) =>
-      i === 0 ? { ...group, chapter_item_id: BIG_GROUP_CHAPTER_ITEM_ID } : group
+      i === 0 ? { ...group, chapter_item_ids: [BIG_GROUP_CHAPTER_ITEM_ID] } : group
     );
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: 60_000, gcTime: 300_000 } },
@@ -915,19 +926,19 @@ describe("ContextsTab", () => {
       name: "есть устаревшие",
       param: "has_stale_members",
       value: "true",
-      apply: (user) => user.click(screen.getByRole("checkbox", { name: "Есть устаревшие членства" })),
+      apply: (user) => user.click(screen.getByRole("checkbox", { name: "устаревшие" })),
     },
     {
       name: "есть конфликтные",
       param: "has_conflicting_members",
       value: "true",
-      apply: (user) => user.click(screen.getByRole("checkbox", { name: "Есть конфликтные членства" })),
+      apply: (user) => user.click(screen.getByRole("checkbox", { name: "конфликт" })),
     },
     {
       name: "нет членств",
       param: "has_no_members",
       value: "true",
-      apply: (user) => user.click(screen.getByRole("checkbox", { name: "Нет членств" })),
+      apply: (user) => user.click(screen.getByRole("checkbox", { name: "пустые" })),
     },
   ];
 

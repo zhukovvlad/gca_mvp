@@ -187,13 +187,26 @@ export function ContextsTab() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-start">
+    // Правая колонка — `minmax(0, 420px)`, не голое `420px` (замер на стенде
+    // 27.09.2026): у фиксированного трека без `minmax` браузер всё равно
+    // считает АВТОМАТИЧЕСКИЙ минимум элемента по контенту (правило grid
+    // «blowout»), и длинный путь группы карточки раздвигал трек шире 420px,
+    // выталкивая карточку за край окна. `minmax(0, …)` обнуляет этот
+    // автоматический минимум трека.
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-start">
       <div className="grid gap-4">
+        {/* Один ряд (сверка с макетом 27.09.2026, `mock-contexts.png`): поиск,
+            компактная статья (id) без своей строки подписи, три селекта,
+            короткие чекбоксы. */}
         <div className="flex flex-wrap items-end gap-3">
-          <InputGroup className="max-w-sm flex-1">
+          {/* Ширина явная (замер на стенде 27.09.2026): в `flex flex-wrap`
+              ряду `flex-1` без `min-width` схлопывает поле до содержимого
+              плейсхолдера рядом с нерастяжимыми селектами — `min-w-64`
+              держит его САМЫМ широким контролом ряда, как в макете. */}
+          <InputGroup className="min-w-64 flex-1">
             <InputGroupInput
               aria-label="Поиск по написанию каталога"
-              placeholder="Написание в каталоге"
+              placeholder="Поиск по строке или статье"
               value={searchInput}
               onChange={(e) => {
                 setSearchInput(e.target.value);
@@ -205,100 +218,90 @@ export function ContextsTab() {
             </InputGroupAddon>
           </InputGroup>
 
-          <div className="grid gap-1">
-            <Label htmlFor="filter-category" className="text-xs text-fg-tertiary">Статья (id)</Label>
-            <Input
-              id="filter-category"
-              className="w-28"
-              inputMode="numeric"
-              value={categoryInput}
-              onChange={(e) => {
-                setCategoryInput(e.target.value);
-                resetToFirstPage();
-              }}
-            />
-          </div>
+          <Input
+            id="filter-category"
+            aria-label="Статья (id)"
+            placeholder="статья (id)"
+            className="w-28"
+            inputMode="numeric"
+            value={categoryInput}
+            onChange={(e) => {
+              setCategoryInput(e.target.value);
+              resetToFirstPage();
+            }}
+          />
 
-          <div className="grid gap-1">
-            <Label htmlFor="filter-kind" className="text-xs text-fg-tertiary">Вид</Label>
-            <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
-              <SelectTrigger id="filter-kind" className="w-40">
-                <SelectValue>
-                  {(raw) =>
-                    !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Любой вид</SelectItem>
-                {KIND_OPTIONS.map((k) => (
-                  <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
+            <SelectTrigger id="filter-kind" aria-label="Вид" className="w-36">
+              <SelectValue>
+                {(raw) =>
+                  !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>Любой вид</SelectItem>
+              {KIND_OPTIONS.map((k) => (
+                <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-          <div className="grid gap-1">
-            <Label htmlFor="filter-role" className="text-xs text-fg-tertiary">Наименование называет</Label>
-            <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
-              <SelectTrigger id="filter-role" className="w-44">
-                <SelectValue>
-                  {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Любая роль</SelectItem>
-                {ROLE_OPTIONS.map((r) => (
-                  <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
+            <SelectTrigger id="filter-role" aria-label="Наименование называет" className="w-40">
+              <SelectValue>
+                {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>Любая роль</SelectItem>
+              {ROLE_OPTIONS.map((r) => (
+                <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-          <div className="grid gap-1">
-            <Label htmlFor="filter-state" className="text-xs text-fg-tertiary">Состояние</Label>
-            <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
-              <SelectTrigger id="filter-state" className="w-48">
-                <SelectValue>
-                  {(raw) =>
-                    !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>Любое состояние</SelectItem>
-                {STATE_OPTIONS.map((s) => (
-                  <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
+            <SelectTrigger id="filter-state" aria-label="Состояние" className="w-40">
+              <SelectValue>
+                {(raw) =>
+                  !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>Любое состояние</SelectItem>
+              {STATE_OPTIONS.map((s) => (
+                <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-stale"
               checked={hasStale}
               onCheckedChange={(checked) => { setHasStale(checked === true); resetToFirstPage(); }}
             />
-            <Label htmlFor="filter-stale" className="text-sm font-normal">Есть устаревшие членства</Label>
+            <Label htmlFor="filter-stale" className="text-sm font-normal">устаревшие</Label>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-conflicting"
               checked={hasConflicting}
               onCheckedChange={(checked) => { setHasConflicting(checked === true); resetToFirstPage(); }}
             />
-            <Label htmlFor="filter-conflicting" className="text-sm font-normal">Есть конфликтные членства</Label>
+            <Label htmlFor="filter-conflicting" className="text-sm font-normal">конфликт</Label>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-no-members"
               checked={hasNoMembers}
               onCheckedChange={(checked) => { setHasNoMembers(checked === true); resetToFirstPage(); }}
             />
-            <Label htmlFor="filter-no-members" className="text-sm font-normal">Нет членств</Label>
+            <Label htmlFor="filter-no-members" className="text-sm font-normal">пустые</Label>
           </div>
         </div>
 
@@ -319,12 +322,15 @@ export function ContextsTab() {
           <>
             <Surface padding="none" className="overflow-x-auto">
               <Table>
+                {/* Шапка таблицы мельче и приглушённее строк (сверка с
+                    макетом 27.09.2026, `.crow.h`): `text-xs`, обычная (не
+                    полужирная) насыщенность, приглушённый цвет. */}
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Контекст</TableHead>
-                    <TableHead>Единица</TableHead>
-                    <TableHead>Семья</TableHead>
-                    <TableHead>Позиций</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Контекст</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Единица</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Семья</TableHead>
+                    <TableHead className="text-right text-xs font-normal text-fg-tertiary">Позиций</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -367,7 +373,12 @@ export function ContextsTab() {
                               {row.standard_job_title}
                             </span>
                             {row.semantic_kind === "SYSTEM" && (
-                              <Badge variant="outline">система</Badge>
+                              <Badge
+                                variant="outline"
+                                className="border-info-border bg-info-soft text-info-text"
+                              >
+                                система
+                              </Badge>
                             )}
                             {row.archived_at && <Badge variant="outline">архивный</Badge>}
                           </div>
@@ -390,10 +401,10 @@ export function ContextsTab() {
                             <div className="mt-1 text-xs text-fg-tertiary">—</div>
                           )}
                         </TableCell>
-                        <TableCell>{row.unit_code ?? "—"}</TableCell>
+                        <TableCell>{row.unit_symbol ?? "—"}</TableCell>
                         <TableCell>{familyCaption}</TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2 tabular-nums">
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2 tabular-nums">
                             <span>{row.member_count}</span>
                             <AttentionDot row={row} />
                           </div>

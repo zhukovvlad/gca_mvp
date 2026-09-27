@@ -24,37 +24,45 @@ export default function FamiliesPage() {
 
   return (
     <div className="container-page py-8">
-      <PageHeader
-        serif
-        title="Семьи и контексты"
-        subtitle="Семьи работ, семантика контекстов каталога и операции над ними"
-      />
+      {/* Вкладки верхнего уровня — сегментный переключатель СПРАВА от
+          заголовка (сверка с макетом 27.09.2026, `.head`/`.seg`), легенда
+          источника подписи — ПОД заголовком слева (спека §2.1, §2.3).
+          `PageHeader` — компонент всего приложения (засечки заголовка, шапка
+          навигации) и здесь не правится: сегментный переключатель занимает
+          его штатный слот `actions` (та же позиция, что действия любой
+          другой страницы), а не собственная вёрстка заголовка. */}
+      <Tabs value={tab} onValueChange={(v) => v && setTab(v)}>
+        <PageHeader
+          serif
+          title="Семьи и контексты"
+          subtitle="Семьи работ, семантика контекстов каталога и операции над ними"
+          actions={
+            <TabsList>
+              <TabsTrigger value="families">Семьи</TabsTrigger>
+              <TabsTrigger value="contexts">Контексты</TabsTrigger>
+            </TabsList>
+          }
+        />
 
-      {/* Легенда источника подписи (спека §2.3) — текстом, не только в
-          подсказке чипа: та же пара `SourceChip`/`SOURCE_EXPLANATION`, что
-          несут строки списков и карточка, здесь только пересказана словами. */}
-      <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-fg-secondary">
-        <div className="flex items-center gap-2">
-          <SourceChip kind="classifier" />
-          <span>{SOURCE_EXPLANATION.classifier}</span>
+        {/* Легенда источника подписи (спека §2.3) — текстом, не только в
+            подсказке чипа: та же пара `SourceChip`/`SOURCE_EXPLANATION`, что
+            несут строки списков и карточка, здесь только пересказана словами. */}
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-fg-secondary">
+          <div className="flex items-center gap-2">
+            <SourceChip kind="classifier" />
+            <span>{SOURCE_EXPLANATION.classifier}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <SourceChip kind="estimate" />
+            <span>{SOURCE_EXPLANATION.estimate}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <SourceChip kind="estimate" />
-          <span>{SOURCE_EXPLANATION.estimate}</span>
-        </div>
-      </div>
 
-      <Tabs value={tab} onValueChange={(v) => v && setTab(v)} className="mt-6">
-        <TabsList>
-          <TabsTrigger value="families">Семьи</TabsTrigger>
-          <TabsTrigger value="contexts">Контексты</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="families" className="mt-4">
+        <TabsContent value="families" className="mt-6">
           <FamiliesTab />
         </TabsContent>
 
-        <TabsContent value="contexts" className="mt-4">
+        <TabsContent value="contexts" className="mt-6">
           <ContextsTab />
         </TabsContent>
       </Tabs>

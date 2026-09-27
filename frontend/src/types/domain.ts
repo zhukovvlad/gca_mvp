@@ -2075,7 +2075,13 @@ export interface ComparisonParams {
 //  API — `backend/routers/semantic.py`, `backend/crud/semantic.py`)
 // ---------------------------------------------------------------------------
 
-export type WorkFamilyStatus = "draft" | "active" | "archived";
+/**
+ * Рантайм-массив значений {@link WorkFamilyStatus} — тем же приёмом, что
+ * `SEMANTIC_KIND_VALUES` и соседи ниже (§2.2): `labels.ts::FAMILY_STATUS_LABEL`
+ * перебирается тестом по НЕМУ, а не угадывается литералом.
+ */
+export const WORK_FAMILY_STATUS_VALUES = ["draft", "active", "archived"] as const;
+export type WorkFamilyStatus = (typeof WORK_FAMILY_STATUS_VALUES)[number];
 
 /** Строка `GET /v1/semantic/families` (`crud/semantic.py::list_families`). */
 export interface WorkFamily {
@@ -2083,6 +2089,8 @@ export interface WorkFamily {
   title: string;
   unit_id: number | null;
   unit_code: string | null;
+  /** Символ единицы (`units_of_measure.symbol`, спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   definition: string | null;
   status: WorkFamilyStatus;
   seed_key: string | null;
@@ -2174,6 +2182,8 @@ export interface ContextRow {
   catalog_position_id: number;
   standard_job_title: string;
   unit_code: string | null;
+  /** Символ единицы (спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   archived_at: string | null;
   /** Число членств контекста — спека §2.4 «число позиций». */
   member_count: number;
@@ -2225,16 +2235,19 @@ export interface SemanticEventEntry {
 }
 
 /**
- * Одна группа членств карточки, по ближайшему разделу позиции (спека
- * `2026-09-25-families-screen-design.md` §2.5, §2.8 п. 2) —
- * `ContextCardData.member_paths`. `chapter_item_id: null` — группа «без
- * раздела» (`path: []`), всегда последняя; путь — СВЕРХУ ВНИЗ, без листа
- * (сам раздел не входит отдельным полем — он последний элемент `path`, тем
- * же контрактом, что `WorkCategoryPathEntry` строит для статьи, но здесь
- * названия разделов, не коды классификатора).
+ * Одна группа членств карточки, по ТЕКСТУ ближайшего пути (спека
+ * `2026-09-25-families-screen-design.md` §2.5, §2.8 п. 2, редакция 3 —
+ * «сверка с макетом» 27.09.2026): одинаковый путь-текст у разделов РАЗНЫХ
+ * смет — ОДНА группа экрана, а не строка на каждый раздел.
+ * `chapter_item_ids` — все разделы, чей путь совпал с этой группой, по
+ * возрастанию id; `chapter_item_ids: []` — группа «без раздела» (`path:
+ * []`), всегда последняя. Путь — СВЕРХУ ВНИЗ, без листа (сам раздел не
+ * входит отдельным полем — он последний элемент `path`, тем же контрактом,
+ * что `WorkCategoryPathEntry` строит для статьи, но здесь названия
+ * разделов, не коды классификатора).
  */
 export interface MemberPath {
-  chapter_item_id: number | null;
+  chapter_item_ids: number[];
   path: string[];
   member_count: number;
   stale_count: number;
@@ -2242,13 +2255,14 @@ export interface MemberPath {
 }
 
 /**
- * Устаревшая группа под цель переноса (спека §2.6, §2.8 п. 2) —
- * `ContextCardData.stale_groups`. Один элемент на пару «раздел → целевая
- * статья» — источник текста строки внимания и входа пакетного переноса
- * (`transferStaleGroup`, `chapter_item_id`/`expected_category_id`).
+ * Устаревшая группа под цель переноса (спека §2.6, §2.8 п. 2, редакция 3) —
+ * `ContextCardData.stale_groups`. Один элемент на пару «текст пути →
+ * целевая статья» — источник текста строки внимания и входа пакетного
+ * переноса (`transferStaleGroup`, `chapter_item_ids`/`expected_category_id`).
+ * `chapter_item_ids: []` — «без раздела» (цели у неё нет вовсе).
  */
 export interface StaleGroup {
-  chapter_item_id: number | null;
+  chapter_item_ids: number[];
   path: string[];
   count: number;
   target_category_id: number | null;
@@ -2266,6 +2280,8 @@ export interface ContextCardData {
   standard_job_title: string;
   unit_id: number | null;
   unit_code: string | null;
+  /** Символ единицы (спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   work_category_id: number | null;
   work_category_code: string | null;
   work_category_title: string | null;
@@ -2305,14 +2321,14 @@ export interface ContextCardData {
    */
   representative_work_title: string | null;
   /**
-   * Группы членств по ближайшему разделу позиции (спека §2.5, §2.8 п. 2) —
-   * порядок ответа: по убыванию `member_count`, группа `chapter_item_id:
-   * null` («без раздела») — последней при любом её размере. Сумма
-   * `member_count` групп равна {@link ContextCardData.member_count} по
-   * построению.
+   * Группы членств по ТЕКСТУ ближайшего пути позиции (спека §2.5, §2.8
+   * п. 2, редакция 3) — порядок ответа: по убыванию `member_count`, группа
+   * `chapter_item_ids: []` («без раздела») — последней при любом её
+   * размере. Сумма `member_count` групп равна {@link
+   * ContextCardData.member_count} по построению.
    */
   member_paths: MemberPath[];
-  /** Устаревшие членства по парам «раздел → целевая статья» (спека §2.6, §2.8 п. 2) — источник строк внимания и пакетного переноса. */
+  /** Устаревшие членства по парам «текст пути → целевая статья» (спека §2.6, §2.8 п. 2, редакция 3) — источник строк внимания и пакетного переноса. */
   stale_groups: StaleGroup[];
   /**
    * Соседи по корзине (той же `bucket_id`) — живые И архивные, упорядочены
@@ -2357,15 +2373,18 @@ export interface ContextMemberRow {
 export type GroupState = "all" | "stale" | "conflict";
 
 /**
- * Группа членств контекста, по ближайшему разделу позиции (спека §2.8 п. 3)
- * — вход `groupMembers`/`groupMemberIds`. `chapter_item_id: null` вместе с
- * `no_chapter: true` — группа «без раздела»; оба ложны/отсутствуют — ВЕСЬ
- * контекст (тем же путём экран берёт id всех конфликтных членств для
- * «Принять решение цели», спека §2.6); оба разом — противоречие, сервер
- * отвечает `422`.
+ * Группа членств контекста, по ТЕКСТУ ближайшего пути позиции (спека §2.8
+ * п. 3, редакция 3) — вход `groupMembers`/`groupMemberIds`. Группа экрана —
+ * текст пути, поэтому `chapter_item_ids` несёт ВСЕ разделы группы
+ * (`member_paths.chapter_item_ids`), не один — отбираются позиции ЛЮБОГО из
+ * них. `chapter_item_ids: []` вместе с `no_chapter: true` — группа «без
+ * раздела»; оба ложны/пусты — ВЕСЬ контекст (тем же путём экран берёт id
+ * всех конфликтных членств для «Принять решение цели», спека §2.6);
+ * непустой `chapter_item_ids` вместе с `no_chapter: true` — противоречие,
+ * сервер отвечает `422`.
  */
 export interface GroupSelector {
-  chapter_item_id: number | null;
+  chapter_item_ids: number[];
   no_chapter: boolean;
 }
 
@@ -2383,9 +2402,14 @@ export interface GroupMemberIdsResult {
   total: number;
 }
 
-/** Вход `POST /contexts/:id/stale-groups/transfer` (спека §2.6, §2.8 п. 4). */
+/**
+ * Вход `POST /contexts/:id/stale-groups/transfer` (спека §2.6, §2.8 п. 4,
+ * редакция 3). `chapter_item_ids` — разделы группы (`StaleGroup.
+ * chapter_item_ids`), `null` — группа «без раздела»; пустой список
+ * структурно бессмысленен и отвергается сервером `422`.
+ */
 export interface StaleGroupTransferInput {
-  chapter_item_id: number | null;
+  chapter_item_ids: number[] | null;
   expected_category_id: number | null;
 }
 

@@ -38,7 +38,7 @@ import dataclasses
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 import crud.semantic as crud_semantic
@@ -315,13 +315,26 @@ class AcceptTargetDecisionRequest(BaseModel):
 
 
 class StaleGroupTransferRequest(BaseModel):
-    """Тело пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4):
-    `chapter_item_id=null` — группа «без раздела» (то же значение, что несёт
-    строка внимания экрана), а не «весь контекст» — второго смысла у `null`
-    здесь нет, в отличие от `GroupSelector` чтения членств группы."""
+    """Тело пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4,
+    редакция 3): `chapter_item_ids` — РАЗДЕЛЫ группы (текст пути сливает
+    разделы разных смет в одну группу экрана, `member_paths`/`stale_groups`,
+    `crud/semantic.py`) — `null` — группа «без раздела» (то же значение, что
+    несёт строка внимания экрана), а не «весь контекст» — второго смысла у
+    `null` здесь нет, в отличие от `GroupSelector` чтения членств группы;
+    пустой список — структурно бессмысленный вход (группа без разделов, не
+    «без раздела вовсе») — `422`."""
 
-    chapter_item_id: int | None
+    chapter_item_ids: list[int] | None
     expected_category_id: int | None
+
+    @field_validator("chapter_item_ids")
+    @classmethod
+    def _chapter_item_ids_not_empty_list(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and len(value) == 0:
+            raise ValueError(
+                "chapter_item_ids: пустой список запрещён; null — группа «без раздела»."
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -460,23 +473,30 @@ def context_card_route(
     return card
 
 
-def _group_selector(chapter_item_id: int | None, no_chapter: bool) -> crud_semantic.GroupSelector:
-    """`chapter_item_id` и `no_chapter=True` вместе — противоречие («раздел
-    X» и «без раздела» разом невозможны, спека §2.8 п. 3) — `422`
-    НЕКОДИРОВАННЫМ текстом, тем же путём, что и другие структурно неверные
-    входы этого роутера (например, `split` с битым правилом)."""
-    if chapter_item_id is not None and no_chapter:
+def _group_selector(
+    chapter_item_id: list[int] | None, no_chapter: bool
+) -> crud_semantic.GroupSelector:
+    """`chapter_item_id` — параметр запроса ПОВТОРЯЕТСЯ (редакция 3, спека
+    §2.8 п. 2, 3): группа экрана — текст пути, и её галочка обязана раскрыть
+    позиции ВСЕХ разделов, чей путь совпал (`member_paths.chapter_item_ids`),
+    а не одного. Непустой `chapter_item_id` и `no_chapter=True` вместе —
+    противоречие («разделы X, Y…» и «без раздела» разом невозможны, спека
+    §2.8 п. 3) — `422` НЕКОДИРОВАННЫМ текстом, тем же путём, что и другие
+    структурно неверные входы этого роутера (например, `split` с битым
+    правилом)."""
+    chapter_item_ids = tuple(chapter_item_id) if chapter_item_id else ()
+    if chapter_item_ids and no_chapter:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "chapter_item_id и no_chapter=true нельзя передавать одновременно.",
         )
-    return crud_semantic.GroupSelector(chapter_item_id=chapter_item_id, no_chapter=no_chapter)
+    return crud_semantic.GroupSelector(chapter_item_ids=chapter_item_ids, no_chapter=no_chapter)
 
 
 @router.get("/contexts/{context_id}/members")
 def list_group_members_route(
     context_id: int,
-    chapter_item_id: int | None = Query(default=None),
+    chapter_item_id: list[int] | None = Query(default=None),
     no_chapter: bool = Query(default=False),
     state: crud_semantic.GroupState = Query(default="all"),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
@@ -484,10 +504,11 @@ def list_group_members_route(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Постраничный список членств ОДНОЙ группы контекста (спека §2.8 п. 3):
-    галочка группы карточки раскрывает её позиции ИМЕННО этим запросом, а
-    не обрезанным списком карточки. Без `chapter_item_id`/`no_chapter` —
-    группа «весь контекст»."""
+    """Постраничный список членств ОДНОЙ группы контекста (спека §2.8 п. 3,
+    редакция 3): галочка группы карточки раскрывает её позиции ИМЕННО этим
+    запросом, а не обрезанным списком карточки. `chapter_item_id` повторяется
+    — группа из нескольких разделов, отбираются позиции ЛЮБОГО из них. Без
+    `chapter_item_id`/`no_chapter` — группа «весь контекст»."""
     selector = _group_selector(chapter_item_id, no_chapter)
     result = crud_semantic.list_group_members(
         db, context_id=context_id, selector=selector, state=state, limit=limit, offset=offset,
@@ -500,15 +521,15 @@ def list_group_members_route(
 @router.get("/contexts/{context_id}/member-ids")
 def list_group_member_ids_route(
     context_id: int,
-    chapter_item_id: int | None = Query(default=None),
+    chapter_item_id: list[int] | None = Query(default=None),
     no_chapter: bool = Query(default=False),
     state: crud_semantic.GroupState = Query(default="all"),
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Полный список id членств группы, БЕЗ обрезки и без `limit`/`offset`
-    (спека §2.8 п. 3): тот же набор, что галочка группы передаёт целиком в
-    «Разделить…»/«Перенести…»."""
+    (спека §2.8 п. 3, редакция 3 — `chapter_item_id` повторяется): тот же
+    набор, что галочка группы передаёт целиком в «Разделить…»/«Перенести…»."""
     selector = _group_selector(chapter_item_id, no_chapter)
     result = crud_semantic.list_group_member_ids(
         db, context_id=context_id, selector=selector, state=state,
@@ -635,14 +656,18 @@ def transfer_stale_group_route(
     db: Session = Depends(get_db),
 ):
     """Пакетный перенос устаревшей группы одной строки внимания (спека §2.6,
-    §2.8 п. 4): группа — `chapter_item_id` (`null` — без раздела),
-    `expected_category_id` — статья, которую оператор видел в строке
-    внимания. Ответ несёт результат по КАЖДОЙ позиции пакета; частичный
-    отказ — законный `200`, не ошибка (пачка не атомарна,
+    §2.8 п. 4, редакция 3): группа — `chapter_item_ids` (разделы группы,
+    `null` — без раздела, пустой список отвергнут `StaleGroupTransferRequest`
+    валидатором), `expected_category_id` — статья, которую оператор видел в
+    строке внимания. Ответ несёт результат по КАЖДОЙ позиции пакета;
+    частичный отказ — законный `200`, не ошибка (пачка не атомарна,
     `context_operations.transfer_stale_group`)."""
     with _mutating(db):
         result = context_operations.transfer_stale_group(
-            db, context_id=context_id, chapter_item_id=body.chapter_item_id,
+            db, context_id=context_id,
+            chapter_item_ids=(
+                tuple(body.chapter_item_ids) if body.chapter_item_ids is not None else None
+            ),
             expected_category_id=body.expected_category_id, actor_id=admin.id,
         )
     return {

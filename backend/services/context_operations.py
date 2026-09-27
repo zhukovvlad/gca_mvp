@@ -1366,19 +1366,23 @@ def transfer_stale_group(
     db: Session,
     *,
     context_id: int,
-    chapter_item_id: int | None,
+    chapter_item_ids: tuple[int, ...] | None,
     expected_category_id: int | None,
     actor_id: int,
 ) -> StaleGroupTransferResult:
     """Переносит устаревшие членства ОДНОЙ группы контекста — строки
-    внимания «устаревшие членства» (спека §2.6, §2.8 п. 4).
+    внимания «устаревшие членства» (спека §2.6, §2.8 п. 4, редакция 3).
 
-    Группа — членства, чья позиция лежит НЕПОСРЕДСТВЕННО под разделом
-    `chapter_item_id` (`None` — позиции БЕЗ раздела вовсе, то же значение,
-    что несёт строка внимания; `GroupSelector` чтения членств группы
-    (спека §2.8 п. 3) здесь не используется — у него `chapter_item_id=None`
-    без `no_chapter` значит «весь контекст», а пакету нужно ИМЕННО «без
-    раздела», третьего смысла тут нет).
+    Группа — членства, чья позиция лежит НЕПОСРЕДСТВЕННО под ЛЮБЫМ из
+    разделов `chapter_item_ids` (`None` — позиции БЕЗ раздела вовсе, то же
+    значение, что несёт строка внимания; пустой кортеж сюда не долетает —
+    роутер отвергает пустой список `422` ДО вызова этой функции,
+    `StaleGroupTransferRequest`, `routers/semantic.py`). Несколько разделов
+    — группа экрана «текст пути» сливает разделы разных смет с одинаковым
+    путём (`member_paths`/`stale_groups`, `crud/semantic.py`); `GroupSelector`
+    чтения членств группы (спека §2.8 п. 3) здесь не используется — у него
+    пустой `chapter_item_ids` без `no_chapter` значит «весь контекст», а
+    пакету нужно ИМЕННО «без раздела» при `None`, третьего смысла тут нет.
 
     Отбираются ТОЛЬКО `STALE` членства этой группы БЕЗ конфликта
     (`conflict_at IS NULL`) — `CURRENT` и конфликтные членства той же
@@ -1431,8 +1435,8 @@ def transfer_stale_group(
             ContextMember.conflict_at.is_(None),
         )
     )
-    if chapter_item_id is not None:
-        stmt = stmt.where(PositionItem.chapter_item_id == chapter_item_id)
+    if chapter_item_ids is not None:
+        stmt = stmt.where(PositionItem.chapter_item_id.in_(chapter_item_ids))
     else:
         stmt = stmt.where(PositionItem.chapter_item_id.is_(None))
     position_ids = db.execute(stmt.order_by(ContextMember.position_item_id)).scalars().all()

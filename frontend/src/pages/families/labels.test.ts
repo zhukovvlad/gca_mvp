@@ -7,6 +7,7 @@ import {
   NAME_ROLE_VALUES,
   SEMANTIC_KIND_VALUES,
   SEMANTIC_STATE_VALUES,
+  WORK_FAMILY_STATUS_VALUES,
 } from "@/types/domain";
 
 import {
@@ -18,6 +19,7 @@ import {
   EVENT_LABEL,
   EVENT_TYPE_VALUES,
   FAMILY_SOURCE_LABEL,
+  FAMILY_STATUS_LABEL,
   NAME_ROLE_LABEL,
   pluralRu,
   SEMANTIC_KIND_LABEL,
@@ -105,6 +107,21 @@ describe("labels: словарь подписей §2.2", () => {
   it("work_category_source — точные подписи таблицы спеки", () => {
     expect(CATEGORY_SOURCE_LABEL.file).toBe('из „Статьи СМР“ в файле');
     expect(CATEGORY_SOURCE_LABEL.manual).toBe("ручной разнос");
+  });
+
+  it.each(WORK_FAMILY_STATUS_VALUES)(
+    "статус семьи %s имеет непустую подпись, не равную коду",
+    (value) => {
+      const label = FAMILY_STATUS_LABEL[value];
+      expect(label).toBeTruthy();
+      expect(label).not.toBe(value);
+    }
+  );
+
+  it("статус семьи — точные подписи сверки с макетом (27.09.2026)", () => {
+    expect(FAMILY_STATUS_LABEL.draft).toBe("черновик");
+    expect(FAMILY_STATUS_LABEL.active).toBe("активна");
+    expect(FAMILY_STATUS_LABEL.archived).toBe("в архиве");
   });
 
   it.each(COMPARABILITY_REASON_VALUES)(

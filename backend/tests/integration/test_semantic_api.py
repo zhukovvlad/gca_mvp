@@ -243,7 +243,7 @@ def _bulk_members(db, factories, *, context, count: int) -> list[int]:
     группа из 520 нужна нескольким тестам эндпоинтов группы (спека §2.8 п. 3),
     и `factories.PositionItemFactory.create` в цикле флашит на КАЖДУЮ строку,
     заметно медленнее core-вставки. Раздела у позиций нет — эти тесты берут
-    группу «весь контекст» (`GroupSelector(None, False)`), а не конкретный
+    группу «весь контекст» (`GroupSelector((), False)`), а не конкретный
     раздел. Возвращает id новых позиций (порядок вставки — по возрастанию,
     БД сама назначает id по возрастающей последовательности)."""
     proposal = _proposal(factories)
@@ -495,6 +495,23 @@ class TestFamilies:
         listed_pcs = admin_client.get(f"{BASE}/families", params={"unit_id": pcs})
         assert fam_m2.id not in {row["id"] for row in listed_pcs.json()["items"]}
 
+    def test_list_families_reports_unit_symbol_and_null_without_unit(
+        self, admin_client, db_session
+    ):
+        """Спека `2026-09-25-families-screen-design.md` §2.8 (уточнение
+        27.09.2026): строка семьи несёт `unit_symbol` (`units_of_measure.symbol`)
+        РЯДОМ с `unit_code`, тем же внешним соединением — экран печатает
+        символ, не код."""
+        with_unit = _family(db_session, admin_client.user, title="ССимволом", unit_name="M2")
+        without_unit = _family(db_session, admin_client.user, title="БезЕдиницы", unit_name=None)
+
+        listed = admin_client.get(f"{BASE}/families")
+        rows = {row["id"]: row for row in listed.json()["items"]}
+        assert rows[with_unit.id]["unit_code"] == "M2"
+        assert rows[with_unit.id]["unit_symbol"] == "м²"
+        assert rows[without_unit.id]["unit_code"] is None
+        assert rows[without_unit.id]["unit_symbol"] is None
+
     def test_merge_families_moves_contexts_and_reports_count(self, admin_client, db_session, factories):
         m2 = "M2"
         source = _family(db_session, admin_client.user, title="Источник", unit_name=m2)
@@ -721,7 +738,7 @@ class TestFamilies:
         `unit_code` и `context_count` при этом верны на семье с двумя
         привязанными контекстами (`update`, затем цель `merge`)."""
         family_row_keys = frozenset({
-            "id", "title", "unit_id", "unit_code", "definition", "status",
+            "id", "title", "unit_id", "unit_code", "unit_symbol", "definition", "status",
             "seed_key", "created_by", "created_at", "updated_at",
             "activated_by", "activated_at", "archived_at", "context_count",
         })
@@ -754,6 +771,7 @@ class TestFamilies:
         assert updated.status_code == 200
         assert set(updated.json().keys()) == family_row_keys
         assert updated.json()["unit_code"] == m2
+        assert updated.json()["unit_symbol"] == "м²"
         assert updated.json()["context_count"] == 2
 
         target = _family(db_session, admin_client.user, title="Цель слияния формы", unit_name=m2)
@@ -1111,6 +1129,38 @@ class TestContextsQueue:
         item = response.json()["items"][0]
         assert item["work_category_path"] == []
 
+    def test_list_contexts_reports_unit_symbol_and_null_without_unit(
+        self, admin_client, db_session, factories
+    ):
+        """Спека §2.8 (уточнение 27.09.2026): строка списка несёт
+        `unit_symbol` рядом с `unit_code`, тем же внешним соединением
+        `units_of_measure` — без нового запроса (см. тесты числа запросов
+        ниже, они не меняют порог на эту правку)."""
+        m2 = _unit_id(db_session, "M2")
+        cp_with_unit = factories.CatalogPositionFactory.create(
+            standard_job_title="Строка с единицей символом", unit_id=m2
+        )
+        _context(db_session, _bucket(db_session, catalog_position=cp_with_unit))
+
+        cp_without_unit = factories.CatalogPositionFactory.create(
+            standard_job_title="Строка без единицы символом"
+        )
+        _context(db_session, _bucket(db_session, catalog_position=cp_without_unit))
+
+        with_unit = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Строка с единицей символом"}
+        )
+        item = with_unit.json()["items"][0]
+        assert item["unit_code"] == "M2"
+        assert item["unit_symbol"] == "м²"
+
+        without_unit = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Строка без единицы символом"}
+        )
+        item_no_unit = without_unit.json()["items"][0]
+        assert item_no_unit["unit_code"] is None
+        assert item_no_unit["unit_symbol"] is None
+
     def test_work_categories_seed_depth_is_at_most_three(self, db_session):
         """Спека §2.8 п. 1: максимальная глубина `work_categories`
         в засеянном справочнике `<= 3` — путь строится ДВУМЯ соединениями
@@ -1329,6 +1379,7 @@ class TestContextCard:
         body = card.json()
         assert body["standard_job_title"] == "Кладка кирпича"
         assert body["unit_code"] == "M2"
+        assert body["unit_symbol"] == "м²"
         assert body["work_category_id"] == category_id
         assert body["work_category_code"] == category.code
         assert body["work_category_source"] == "manual"
@@ -1436,6 +1487,10 @@ class TestContextCard:
         assert body["member_count"] == 0
         assert "members" not in body
         assert "members_truncated" not in body
+        # Позиция каталога без единицы (спека §2.8, уточнение 27.09.2026) —
+        # `unit_symbol` тоже `None`, тем же полем, что и `unit_code`.
+        assert body["unit_code"] is None
+        assert body["unit_symbol"] is None
 
     def test_card_member_reports_stale_and_conflict_fields(self, admin_client, db_session, factories):
         """Устаревшее и конфликтное членства несут РАЗНЫЕ факты (спека §2.5):
@@ -1626,7 +1681,7 @@ class TestContextCard:
         assert sum(mp["member_count"] for mp in member_paths) == body["member_count"]
         # Последняя группа — безраздельная, несмотря на то, что она самая
         # большая по числу членств.
-        assert member_paths[-1]["chapter_item_id"] is None
+        assert member_paths[-1]["chapter_item_ids"] == []
         assert member_paths[-1]["path"] == []
         assert member_paths[-1]["member_count"] == 5
         # Остальные три — по убыванию member_count: Б(3), В(2), А(1).
@@ -1690,7 +1745,9 @@ class TestContextCard:
         assert card.status_code == 200
         member_paths = card.json()["member_paths"]
         assert len(member_paths) == 2
-        by_chapter = {mp["chapter_item_id"]: mp for mp in member_paths}
+        # Каждая группа здесь несёт РОВНО один раздел (пути разные, слияния
+        # редакции 3 нет) — ключуем по единственному элементу.
+        by_chapter = {mp["chapter_item_ids"][0]: mp for mp in member_paths}
         group = by_chapter[chapter.id]
         assert group["member_count"] == 5
         assert group["stale_count"] == 3
@@ -1699,6 +1756,82 @@ class TestContextCard:
         assert plain_group["member_count"] == 1
         assert plain_group["stale_count"] == 0
         assert plain_group["conflict_count"] == 0
+
+    def test_card_member_paths_merges_same_path_text_across_different_estimates(
+        self, admin_client, db_session, factories
+    ):
+        """Редакция 3 (абзац «сверка с макетом» у начала спеки; §2.8 п. 2):
+        группа членств — ТЕКСТ пути, не раздел ОДНОЙ сметы. Два раздела
+        РАЗНЫХ смет с ОДИНАКОВЫМ путём top-down (тот же пример спеки —
+        «Лифтовой холл МОП жилья / Стены») сливаются в ОДНУ группу
+        `member_paths`: `chapter_item_ids` несёт ОБА id по возрастанию,
+        счётчики — сумма. Раздел с ДРУГИМ путём (другая смета, другой текст)
+        — своя, отдельная группа."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+
+        proposal_one = _proposal(factories)
+        root_one = _chapter(factories, proposal_one, title="Лифтовой холл МОП жилья")
+        chapter_one = _chapter(factories, proposal_one, title="Стены", parent=root_one)
+        # Другая смета, РАЗНЫЕ id разделов, ТОТ ЖЕ текст пути.
+        proposal_two = _proposal(factories)
+        root_two = _chapter(factories, proposal_two, title="Лифтовой холл МОП жилья")
+        chapter_two = _chapter(factories, proposal_two, title="Стены", parent=root_two)
+        assert chapter_one.id != chapter_two.id
+
+        proposal_three = _proposal(factories)
+        other_chapter = _chapter(factories, proposal_three, title="Совсем другой раздел")
+
+        # Счётчики слитой группы РАЗНЫЕ и каждый набран ИЗ ОБОИХ разделов
+        # (ревью задачи 9): всего 5, устаревших 3 (1 + 2), конфликтных 2
+        # (1 + 1) — присваивание вместо суммы дало бы число одного раздела,
+        # подмена одного счётчика другим — чужое число.
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        other_ctx = _context(
+            db_session,
+            _bucket(db_session, catalog_position=cp, work_category_id=other_category_id),
+            is_default=False,
+        )
+        # chapter_one: [устаревшее, конфликтное]; chapter_two: [устаревшее,
+        # конфликтное, устаревшее].
+        plan = [(proposal_one, chapter_one, "Один", ["stale", "conflict"]),
+                (proposal_two, chapter_two, "Два", ["stale", "conflict", "stale"])]
+        for proposal, chapter, prefix, kinds in plan:
+            for i, kind in enumerate(kinds):
+                pos = _position(
+                    factories, proposal, chapter=chapter, catalog_position=cp, title=f"{prefix} {i}",
+                )
+                if kind == "stale":
+                    _member(db_session, pos, ctx, membership_state=MembershipState.STALE.value)
+                else:
+                    _member(
+                        db_session, pos, ctx,
+                        conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+                        routed_by=RoutedBy.manual.value,
+                    )
+        other_pos = _position(
+            factories, proposal_three, chapter=other_chapter, catalog_position=cp, title="Иной",
+        )
+        _member(db_session, other_pos, ctx)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        member_paths = body["member_paths"]
+        assert len(member_paths) == 2
+        merged = next(
+            mp for mp in member_paths if mp["path"] == ["Лифтовой холл МОП жилья", "Стены"]
+        )
+        assert merged["chapter_item_ids"] == sorted([chapter_one.id, chapter_two.id])
+        assert merged["member_count"] == 5
+        assert merged["stale_count"] == 3
+        assert merged["conflict_count"] == 2
+        distinct = next(mp for mp in member_paths if mp["path"] == ["Совсем другой раздел"])
+        assert distinct["chapter_item_ids"] == [other_chapter.id]
+        assert distinct["member_count"] == 1
+        assert sum(mp["member_count"] for mp in member_paths) == body["member_count"]
 
     # -----------------------------------------------------------------
     #  representative_work_title — от СОХРАНЁННОЙ роли, не повторной
@@ -1748,7 +1881,7 @@ class TestContextCard:
         # Группа представителя — НЕ первая в `member_paths` (у второго раздела
         # два членства против одного): путь первой группы вместо пути
         # представителя дал бы другое название.
-        assert body["member_paths"][0]["chapter_item_id"] == chapter_second.id
+        assert body["member_paths"][0]["chapter_item_ids"] == [chapter_second.id]
         assert body["representative_work_title"] == "Общестроительные работы"
 
     def test_card_representative_work_title_from_manual_location_only_on_work_row(
@@ -1903,7 +2036,7 @@ class TestContextCard:
         assert card.status_code == 200
         body = card.json()
         # Обе группы на месте — раздел второго членства карточке известен.
-        assert [mp["chapter_item_id"] for mp in body["member_paths"]] == [chapter.id, None]
+        assert [mp["chapter_item_ids"] for mp in body["member_paths"]] == [[chapter.id], []]
         assert body["representative_work_title"] is None
 
     def test_card_representative_work_title_none_when_representative_path_missing(
@@ -2001,12 +2134,21 @@ class TestContextCard:
         card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
         assert card.status_code == 200
         stale_groups = card.json()["stale_groups"]
-        chapter_ids = [sg["chapter_item_id"] for sg in stale_groups]
+        # Пути здесь все РАЗНЫЕ (три разных раздела + «без раздела») —
+        # слияния редакции 3 не происходит, у каждой записи РОВНО один
+        # раздел (или ни одного у «без раздела»); ключуем по нему.
+        chapter_ids = [
+            sg["chapter_item_ids"][0] if sg["chapter_item_ids"] else None for sg in stale_groups
+        ]
         assert chapter_ids.count(reallocated_chapter.id) == 1, stale_groups
         assert len(stale_groups) == 3, stale_groups
-        by_chapter = {sg["chapter_item_id"]: sg for sg in stale_groups}
+        by_chapter = {
+            (sg["chapter_item_ids"][0] if sg["chapter_item_ids"] else None): sg
+            for sg in stale_groups
+        }
         entry = by_chapter[reallocated_chapter.id]
         assert entry["count"] == 2
+        assert entry["chapter_item_ids"] == [reallocated_chapter.id]
         assert entry["path"] == ["Раздел, разнесённый вручную"]
         assert entry["target_category_id"] == category_c
         assert entry["target_category_code"] == category.code
@@ -2021,12 +2163,90 @@ class TestContextCard:
         assert None in by_chapter, stale_groups
         null_entry = by_chapter[None]
         assert null_entry["count"] == 1
+        assert null_entry["chapter_item_ids"] == []
         assert null_entry["path"] == []
         assert null_entry["target_category_id"] is None
         assert null_entry["target_category_code"] is None
         assert null_entry["target_category_title"] is None
         # Безраздельная группа — последней, как у `member_paths`.
-        assert stale_groups[-1]["chapter_item_id"] is None
+        assert stale_groups[-1]["chapter_item_ids"] == []
+
+    def test_card_stale_groups_merges_same_path_reallocated_to_same_category(
+        self, admin_client, db_session, factories
+    ):
+        """Редакция 3: `stale_groups` группируются по паре «текст пути →
+        целевая статья». Два раздела РАЗНЫХ смет с ОДИНАКОВЫМ путём, оба
+        вручную разнесённые в ОДНУ статью C, — ОДНА запись с обоими
+        `chapter_item_ids` и суммой `count`."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        (category_c,) = _leaf_category_ids(db_session, 1)
+
+        proposal_one = _proposal(factories)
+        chapter_one = _chapter(
+            factories, proposal_one, title="Общий путь слияния",
+            category_id=category_c, category_source="manual",
+        )
+        proposal_two = _proposal(factories)
+        chapter_two = _chapter(
+            factories, proposal_two, title="Общий путь слияния",
+            category_id=category_c, category_source="manual",
+        )
+        pos_one = _position(factories, proposal_one, chapter=chapter_one, catalog_position=cp)
+        pos_two = _position(factories, proposal_two, chapter=chapter_two, catalog_position=cp)
+        _member(db_session, pos_one, ctx, membership_state=MembershipState.STALE.value)
+        _member(db_session, pos_two, ctx, membership_state=MembershipState.STALE.value)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        stale_groups = card.json()["stale_groups"]
+        assert len(stale_groups) == 1
+        entry = stale_groups[0]
+        assert entry["path"] == ["Общий путь слияния"]
+        assert entry["chapter_item_ids"] == sorted([chapter_one.id, chapter_two.id])
+        assert entry["count"] == 2
+        assert entry["target_category_id"] == category_c
+
+    def test_card_stale_groups_same_path_different_target_categories_gives_two_entries(
+        self, admin_client, db_session, factories
+    ):
+        """Тот же путь-текст, но РАЗНЫЕ целевые статьи (§2.8 п. 2, редакция
+        3) — две ОТДЕЛЬНЫЕ записи `stale_groups`, слияния нет: ключ группы —
+        пара «путь → цель», не один путь."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        category_c, category_d = _leaf_category_ids(db_session, 2)
+
+        proposal_one = _proposal(factories)
+        chapter_one = _chapter(
+            factories, proposal_one, title="Общий путь, разные цели",
+            category_id=category_c, category_source="manual",
+        )
+        proposal_two = _proposal(factories)
+        chapter_two = _chapter(
+            factories, proposal_two, title="Общий путь, разные цели",
+            category_id=category_d, category_source="manual",
+        )
+        pos_one = _position(factories, proposal_one, chapter=chapter_one, catalog_position=cp)
+        pos_two = _position(factories, proposal_two, chapter=chapter_two, catalog_position=cp)
+        _member(db_session, pos_one, ctx, membership_state=MembershipState.STALE.value)
+        _member(db_session, pos_two, ctx, membership_state=MembershipState.STALE.value)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        stale_groups = card.json()["stale_groups"]
+        assert len(stale_groups) == 2
+        by_category = {sg["target_category_id"]: sg for sg in stale_groups}
+        assert by_category[category_c]["chapter_item_ids"] == [chapter_one.id]
+        assert by_category[category_c]["count"] == 1
+        assert by_category[category_d]["chapter_item_ids"] == [chapter_two.id]
+        assert by_category[category_d]["count"] == 1
+        for sg in stale_groups:
+            assert sg["path"] == ["Общий путь, разные цели"]
 
     def test_card_stale_groups_excludes_group_whose_only_stale_member_is_conflicted(
         self, admin_client, db_session, factories
@@ -2127,12 +2347,12 @@ class TestContextCard:
         card_before = admin_client.get(f"{BASE}/contexts/{source_ctx.id}")
         assert card_before.status_code == 200
         stale_groups_before = card_before.json()["stale_groups"]
-        by_chapter_before = {sg["chapter_item_id"]: sg for sg in stale_groups_before}
+        by_chapter_before = {sg["chapter_item_ids"][0]: sg for sg in stale_groups_before}
         assert by_chapter_before[chapter.id]["count"] == 2, stale_groups_before
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -2145,7 +2365,10 @@ class TestContextCard:
         card_after = admin_client.get(f"{BASE}/contexts/{source_ctx.id}")
         assert card_after.status_code == 200
         stale_groups_after = card_after.json()["stale_groups"]
-        by_chapter_after = {sg["chapter_item_id"]: sg for sg in stale_groups_after}
+        by_chapter_after = {
+            (sg["chapter_item_ids"][0] if sg["chapter_item_ids"] else None): sg
+            for sg in stale_groups_after
+        }
         assert chapter.id not in by_chapter_after, stale_groups_after
 
     def test_card_of_context_with_chapter_cycle_gives_422_not_500(
@@ -2455,6 +2678,65 @@ class TestGroupMembers:
             pos_a1.id, pos_a2.id, pos_b.id, pos_none.id,
         }
 
+        # `chapter_item_id` повторяется (спека §2.8 п. 3, редакция 3) — оба
+        # раздела разом отдают позиции ЛЮБОГО из них, но не безраздельную.
+        by_both_chapters = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/members",
+            params=[("chapter_item_id", chapter_a.id), ("chapter_item_id", chapter_b.id)],
+        )
+        assert by_both_chapters.status_code == 200
+        body_both = by_both_chapters.json()
+        assert body_both["total"] == 3
+        assert {m["position_item_id"] for m in body_both["items"]} == {
+            pos_a1.id, pos_a2.id, pos_b.id,
+        }
+
+        ids_both = admin_client.get(
+            f"{BASE}/contexts/{ctx.id}/member-ids",
+            params=[("chapter_item_id", chapter_a.id), ("chapter_item_id", chapter_b.id)],
+        )
+        assert ids_both.status_code == 200
+        body_ids_both = ids_both.json()
+        assert body_ids_both["total"] == 3
+        assert sorted(body_ids_both["position_item_ids"]) == sorted(
+            [pos_a1.id, pos_a2.id, pos_b.id]
+        )
+
+    def test_multiple_chapter_item_id_stays_exactly_two_statements(
+        self, admin_client, db_session, factories
+    ):
+        """Многораздельный селектор (§2.8 п. 3, редакция 3) не заводит
+        третьего запроса — тот же инвариант «ровно два», что у одного
+        раздела или у всего контекста (`test_members_exactly_two_statements_
+        on_small_and_large_group`)."""
+        proposal = _proposal(factories)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        chapter_a = _chapter(factories, proposal, title="Раздел А для счёта запросов")
+        chapter_b = _chapter(factories, proposal, title="Раздел Б для счёта запросов")
+        for chapter in (chapter_a, chapter_b):
+            for i in range(2):
+                pos = _position(
+                    factories, proposal, chapter=chapter, catalog_position=cp,
+                    title=f"{chapter.job_title_in_proposal} {i}",
+                )
+                _member(db_session, pos, ctx)
+        db_session.flush()
+
+        params = [("chapter_item_id", chapter_a.id), ("chapter_item_id", chapter_b.id)]
+        with _capturing_sql(db_session) as statements_members:
+            response_members = admin_client.get(f"{BASE}/contexts/{ctx.id}/members", params=params)
+        assert response_members.status_code == 200
+        assert response_members.json()["total"] == 4
+        assert len(statements_members) == 2, statements_members
+
+        with _capturing_sql(db_session) as statements_ids:
+            response_ids = admin_client.get(f"{BASE}/contexts/{ctx.id}/member-ids", params=params)
+        assert response_ids.status_code == 200
+        assert response_ids.json()["total"] == 4
+        assert len(statements_ids) == 2, statements_ids
+
     def test_member_ids_chapter_filter_matches_members_filter(
         self, admin_client, db_session, factories
     ):
@@ -2492,6 +2774,19 @@ class TestGroupMembers:
         response = admin_client.get(
             f"{BASE}/contexts/999999999/{path_suffix}",
             params={"chapter_item_id": 1, "no_chapter": True},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize("path_suffix", ["members", "member-ids"])
+    def test_repeated_chapter_item_id_with_no_chapter_gives_422(
+        self, admin_client, path_suffix
+    ):
+        """Редакция 3: `chapter_item_id` повторяется — и НЕСКОЛЬКО разделов
+        вместе с `no_chapter=true` остаются противоречием, `422` на обоих
+        маршрутах, до обращения к crud (контекст несуществующий)."""
+        response = admin_client.get(
+            f"{BASE}/contexts/999999999/{path_suffix}",
+            params=[("chapter_item_id", 1), ("chapter_item_id", 2), ("no_chapter", "true")],
         )
         assert response.status_code == 422
 
@@ -3313,7 +3608,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3398,7 +3693,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3537,7 +3832,7 @@ class TestStaleGroupTransfer:
 
         response = committing_client.post(
             f"{BASE}/contexts/{source_ctx_id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter_id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter_id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3608,7 +3903,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_source},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_source},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3644,7 +3939,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         assert response.json() == {"results": [], "moved": 0, "refused": 0}
@@ -3676,7 +3971,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": None, "expected_category_id": None},
+            json={"chapter_item_ids": None, "expected_category_id": None},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3722,7 +4017,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3742,6 +4037,59 @@ class TestStaleGroupTransfer:
         ).scalar_one()
         assert conflicted_member.context_id == source_ctx.id
         assert conflicted_member.conflict_at is not None
+
+    def test_transfer_with_two_chapter_ids_moves_stale_members_of_both(
+        self, admin_client, db_session, factories
+    ):
+        """`chapter_item_ids` — СПИСОК разделов (спека §2.6, §2.8 п. 4,
+        редакция 3): группа экрана «текст пути» может нести несколько
+        разделов разных смет с одинаковым путём, и пакетный перенос обязан
+        снять устаревшие членства КАЖДОГО из них одним вызовом, а не только
+        первого. Оба раздела несут ОДНУ и ту же статью (`cat_target`) —
+        только тогда `expected_category_id` совпадает со свежей эффективной
+        статьёй обоих сразу, как и подразумевает «одна строка внимания на
+        группу»."""
+        cat_target, cat_source = _leaf_category_ids(db_session, 2)
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        source_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        source_ctx = _context(db_session, source_bucket)
+
+        chapter_one = _chapter(
+            factories, proposal, title="Первый раздел группы",
+            category_id=cat_target, category_source="file",
+        )
+        chapter_two = _chapter(
+            factories, proposal, title="Второй раздел группы",
+            category_id=cat_target, category_source="file",
+        )
+        pos_one = _position(factories, proposal, chapter=chapter_one, catalog_position=cp)
+        pos_two = _position(factories, proposal, chapter=chapter_two, catalog_position=cp)
+        _member(db_session, pos_one, source_ctx, membership_state=MembershipState.STALE.value)
+        _member(db_session, pos_two, source_ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={
+                "chapter_item_ids": [chapter_one.id, chapter_two.id],
+                "expected_category_id": cat_target,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 2
+        assert body["refused"] == 0
+        assert {r["position_item_id"] for r in body["results"]} == {pos_one.id, pos_two.id}
+
+        db_session.expire_all()
+        members = db_session.execute(
+            sa.select(ContextMember).where(
+                ContextMember.position_item_id.in_([pos_one.id, pos_two.id])
+            )
+        ).scalars().all()
+        assert {m.membership_state for m in members} == {MembershipState.CURRENT.value}
+        assert {m.context_id for m in members} != {source_ctx.id}
 
     def test_chapter_group_leaves_other_groups_and_other_contexts_untouched(
         self, admin_client, db_session, factories
@@ -3783,7 +4131,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter_g.id, "expected_category_id": cat_target},
+            json={"chapter_item_ids": [chapter_g.id], "expected_category_id": cat_target},
         )
         assert response.status_code == 200
         body = response.json()
@@ -3832,7 +4180,7 @@ class TestStaleGroupTransfer:
 
         response = admin_client.post(
             f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
-            json={"chapter_item_id": chapter_a.id, "expected_category_id": None},
+            json={"chapter_item_ids": [chapter_a.id], "expected_category_id": None},
         )
         assert response.status_code == 422
 
@@ -3845,12 +4193,12 @@ class TestStaleGroupTransfer:
 
     @pytest.mark.parametrize(
         "body",
-        [{"expected_category_id": None}, {"chapter_item_id": None}],
-        ids=["no_chapter_item_id", "no_expected_category_id"],
+        [{"expected_category_id": None}, {"chapter_item_ids": None}],
+        ids=["no_chapter_item_ids", "no_expected_category_id"],
     )
     def test_both_body_fields_are_required(self, admin_client, db_session, factories, body):
         """Оба поля тела обязательны (план, Interfaces: без умолчаний).
-        Умолчание `None` у `chapter_item_id` молча превратило бы забытое поле в
+        Умолчание `None` у `chapter_item_ids` молча превратило бы забытое поле в
         «группу без раздела» и перенесло бы ЧУЖУЮ группу; у
         `expected_category_id` — в ожидание «нет статьи»."""
         cat_source = _leaf_category_ids(db_session, 1)[0]
@@ -3875,19 +4223,94 @@ class TestStaleGroupTransfer:
         assert member.context_id == source_ctx.id
         assert member.membership_state == MembershipState.STALE.value
 
+    def test_empty_chapter_item_ids_list_gives_422_and_moves_nothing(
+        self, admin_client, db_session, factories
+    ):
+        """Пустой список `chapter_item_ids` — `422` (спека §2.8 п. 4, редакция
+        3: `null` — группа «без раздела», пустой список структурно
+        бессмыслен). Устаревшее членство БЕЗ раздела в контексте нарочно:
+        прочтение `[]` как `null` перенесло бы именно его и ответило `200`;
+        пропуск `[]` до сервиса (`IN ()`) ответил бы `200` с пустым итогом."""
+        cat_source = _leaf_category_ids(db_session, 1)[0]
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        source_ctx = _context(
+            db_session, _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        )
+        pos = _position(factories, proposal, catalog_position=cp)
+        _member(db_session, pos, source_ctx, membership_state=MembershipState.STALE.value)
+        db_session.commit()
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_ids": [], "expected_category_id": None},
+        )
+        assert response.status_code == 422
+
+        db_session.expire_all()
+        member = db_session.execute(
+            sa.select(ContextMember).where(ContextMember.position_item_id == pos.id)
+        ).scalar_one()
+        assert member.context_id == source_ctx.id
+        assert member.membership_state == MembershipState.STALE.value
+
     def test_member_forbidden(self, member_client):
         response = member_client.post(
             f"{BASE}/contexts/1/stale-groups/transfer",
-            json={"chapter_item_id": None, "expected_category_id": None},
+            json={"chapter_item_ids": None, "expected_category_id": None},
         )
         assert response.status_code == 403
 
     def test_missing_context_gives_404(self, admin_client):
         response = admin_client.post(
             f"{BASE}/contexts/999999999/stale-groups/transfer",
-            json={"chapter_item_id": None, "expected_category_id": None},
+            json={"chapter_item_ids": None, "expected_category_id": None},
         )
         assert response.status_code == 404
         # Доменный отказ сервиса, а не «маршрут не найден» FastAPI (тот тоже
         # `404`, и до появления маршрута этот тест был бы зелёным).
         assert response.json()["detail"]["code"] == context_operations.REFUSE_CONTEXT_NOT_FOUND
+
+
+class TestMemberGroupMergeOrder:
+    """Слияние групп по тексту пути (редакция 3) — `chapter_item_ids` группы
+    по ВОЗРАСТАНИЮ независимо от порядка строк агрегирующего запроса (ревью
+    задачи 9). У `GROUP BY` без `ORDER BY` порядок строк не гарантирован, а на
+    малых данных Postgres отдаёт их отсортированными — интеграционный тест
+    видит возрастание «даром» и снятие `sorted()` не ловит. Здесь строки
+    подаются В ОБРАТНОМ порядке подменённой сессией: это единственный вход,
+    на котором `sorted()` меняет результат."""
+
+    def test_merged_chapter_ids_ascending_even_when_rows_arrive_descending(self, monkeypatch):
+        import collections
+
+        Row = collections.namedtuple(
+            "Row",
+            "chapter_item_id member_count stale_count conflict_count transferable_stale_count "
+            "target_category_id target_category_code target_category_title",
+        )
+        rows = [
+            Row(20, 2, 1, 0, 1, 7, "09.01", "Статья"),
+            Row(10, 1, 1, 0, 1, 7, "09.01", "Статья"),
+        ]
+
+        class _Result:
+            def all(self):
+                return rows
+
+        class _FakeSession:
+            def execute(self, _stmt):
+                return _Result()
+
+        same_path = ("Лифтовой холл МОП жилья", "Стены")
+        monkeypatch.setattr(
+            crud_semantic, "chapter_paths", lambda _db, ids: {cid: same_path for cid in ids}
+        )
+
+        member_paths, stale_groups, _paths = crud_semantic._member_paths_and_stale_groups(
+            _FakeSession(), context_id=1
+        )
+        assert [mp["chapter_item_ids"] for mp in member_paths] == [[10, 20]]
+        assert member_paths[0]["member_count"] == 3
+        assert [sg["chapter_item_ids"] for sg in stale_groups] == [[10, 20]]
+        assert stale_groups[0]["count"] == 2

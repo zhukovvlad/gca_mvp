@@ -30,6 +30,20 @@ describe("SourceChip", () => {
     expect(SOURCE_EXPLANATION.estimate).toBe("разделы конкретной сметы");
   });
 
+  // Сверка с макетом 27.09.2026 (`mockup.html`, `.src-c`/`.src-e`): чипы
+  // «статья СМР» (фиолетовый/индиго) и «в смете» (жёлтый/янтарный) обязаны
+  // нести РАЗНЫЕ классы заливки — иначе они схлопнутся в один и тот же вид,
+  // а jsdom вычисленных цветов не видит (`docs/pitfalls/frontend.md`), только
+  // класс.
+  it("«статья СМР» и «в смете» несут РАЗНЫЕ классы заливки — не могут визуально совпасть", () => {
+    render(<SourceChip kind="classifier" />, { wrapper: AllProviders });
+    render(<SourceChip kind="estimate" />, { wrapper: AllProviders });
+
+    const classifierBadge = screen.getByText("статья СМР");
+    const estimateBadge = screen.getByText("в смете");
+    expect(classifierBadge.className).not.toBe(estimateBadge.className);
+  });
+
   // `title` выше — только атрибут; визуальную подсказку несёт `TooltipContent`,
   // и её текст появляется в DOM лишь по наведению (портал base-ui). Проверяем
   // жестом, а не наличием строки: без наведения текста подсказки в DOM нет.
