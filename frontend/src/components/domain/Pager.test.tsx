@@ -240,3 +240,17 @@ describe("Pager с onPageSizeChange — выбор размера страниц
     expect(screen.queryByText("50")).not.toBeInTheDocument();
   });
 });
+
+describe("Pager — подписи кнопок «назад / вперёд» по-русски", () => {
+  it("видимый текст кнопок — «Назад» и «Вперёд», а не английские подписи примитива", () => {
+    render(<Pager page={2} total={100} pageSize={20} onPageChange={() => {}} />, {
+      wrapper: AllProviders,
+    });
+    const prev = screen.getByRole("button", { name: "Предыдущая страница" });
+    const next = screen.getByRole("button", { name: "Следующая страница" });
+    expect(prev).toHaveTextContent("Назад");
+    expect(next).toHaveTextContent("Вперёд");
+    expect(prev).not.toHaveTextContent("Previous");
+    expect(next).not.toHaveTextContent("Next");
+  });
+});

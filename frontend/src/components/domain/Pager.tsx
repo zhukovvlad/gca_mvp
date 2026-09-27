@@ -126,6 +126,7 @@ export function Pager({
           <PaginationContent>
             <PaginationItem>
               <PaginationPrevious
+                text="Назад"
                 aria-label="Предыдущая страница"
                 aria-disabled={page <= 1}
                 className={page <= 1 ? "pointer-events-none opacity-40" : undefined}
@@ -133,9 +134,7 @@ export function Pager({
                   e.preventDefault();
                   if (page > 1) onPageChange(page - 1);
                 }}
-              >
-                Назад
-              </PaginationPrevious>
+              />
             </PaginationItem>
 
             {showPageNumbers ? (
@@ -168,6 +167,7 @@ export function Pager({
 
             <PaginationItem>
               <PaginationNext
+                text="Вперёд"
                 aria-label="Следующая страница"
                 aria-disabled={page >= totalPages}
                 className={page >= totalPages ? "pointer-events-none opacity-40" : undefined}
@@ -175,9 +175,7 @@ export function Pager({
                   e.preventDefault();
                   if (page < totalPages) onPageChange(page + 1);
                 }}
-              >
-                Вперёд
-              </PaginationNext>
+              />
             </PaginationItem>
           </PaginationContent>
         </Pagination>
