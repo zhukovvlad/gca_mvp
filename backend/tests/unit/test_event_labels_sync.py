@@ -1,6 +1,5 @@
 """Синхронность закрытого списка событий журнала между фронтом и бэком.
 
-План: `docs/superpowers/plans/2026-09-25-families-screen.md`, Task 6.
 Спека: `docs/superpowers/specs/2026-09-25-families-screen-design.md` §2.5
 («Журнал»: события словами по закрытому списку событий фичи 1).
 
@@ -105,8 +104,8 @@ class TestEventLabelsSyncWithBackend:
         )
 
     def test_backend_list_has_exactly_15_events(self):
-        # Число из спеки/плана (Task 6, Interfaces) — если это число сдвинулось,
-        # обе стороны обязаны сдвинуться СОГЛАСОВАННО, а не по одной.
+        # Число из спеки §2.5 — если это число сдвинулось, обе стороны
+        # обязаны сдвинуться СОГЛАСОВАННО, а не по одной.
         assert len(SEMANTIC_EVENT_TYPES) == 15
 
     def test_no_duplicate_keys_on_either_side(self):

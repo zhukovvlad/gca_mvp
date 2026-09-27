@@ -7,11 +7,10 @@ import { AllProviders } from "@/test/utils";
 import { Pager } from "./Pager";
 
 /**
- * `Pager` (план Task 6, «Решения плана» п. 4): props расширены
- * НЕОБЯЗАТЕЛЬНО, чтобы без них вид не менялся для пяти существующих
- * экранов (`ContractsPage`, `MatrixPage`, `ReviewPage`, `StandardsPage`,
- * `TendersPage`) — это первая группа тестов ниже. Номера страниц и выбор
- * размера — только по явным новым props.
+ * `Pager` (спека §2.7): props расширены НЕОБЯЗАТЕЛЬНО, чтобы без них вид
+ * не менялся для пяти существующих экранов (`ContractsPage`, `MatrixPage`,
+ * `ReviewPage`, `StandardsPage`, `TendersPage`) — это первая группа тестов
+ * ниже. Номера страниц и выбор размера — только по явным новым props.
  */
 function nav() {
   return screen.getByRole("navigation", { name: "pagination" });

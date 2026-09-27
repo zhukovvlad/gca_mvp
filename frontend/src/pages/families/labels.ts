@@ -9,9 +9,9 @@ import type {
 
 /**
  * Словарь подписей экрана «Семьи и контексты» (спека
- * `2026-09-25-families-screen-design.md` §2.2, план Task 6). Коды полей не
- * печатаются нигде на экране, кроме подсказки журнала (Global Constraints
- * плана) — эта таблица единственное место, где код превращается в текст, и
+ * `2026-09-25-families-screen-design.md` §2.2). Коды полей не печатаются
+ * нигде на экране, кроме подсказки журнала (спека §2.2, Global Constraints
+ * ветки) — эта таблица единственное место, где код превращается в текст, и
  * тесты читают именно её, а не компонент.
  *
  * Каждый `Record<T, string>` объявлен по типу из `types/domain.ts`: забытое
@@ -53,8 +53,8 @@ export const FAMILY_SOURCE_LABEL: Record<FamilySource, string> = {
 /**
  * `work_category_source` не заведён отдельным типом в `types/domain.ts`
  * (поле там — `string | null`, см. `ContextCard`), поэтому значения — свой
- * `as const`-массив здесь же, а не импорт из домена (план Task 6,
- * Interfaces: `Record<"file" | "manual", string>`).
+ * `as const`-массив здесь же, а не импорт из домена (спека §2.2:
+ * `Record<"file" | "manual", string>`).
  */
 export const CATEGORY_SOURCE_VALUES = ["file", "manual"] as const;
 export type CategorySource = (typeof CATEGORY_SOURCE_VALUES)[number];
@@ -70,8 +70,8 @@ export const CATEGORY_SOURCE_LABEL: Record<CategorySource, string> = {
  * (раздел конкретной сметы). Живут здесь, а не в `SourceChip.tsx`:
  * компонент экспортирует ТОЛЬКО компонент (`react-refresh/only-export-components`
  * не выключен для `src/pages/**`, `eslint.config.js` выключает его лишь для
- * `src/components/ui/**` и `src/test/**`), а легенда Task 7 обязана
- * показывать ТОТ ЖЕ текст, не свою копию.
+ * `src/components/ui/**` и `src/test/**`), а легенда экрана (спека §2.3)
+ * обязана показывать ТОТ ЖЕ текст, не свою копию.
  */
 export type SourceKind = "classifier" | "estimate";
 
@@ -87,6 +87,23 @@ export const SOURCE_EXPLANATION: Record<SourceKind, string> = {
  */
 export function comparabilityLabel(reason: ComparabilityReason | null): string {
   return reason === null ? "да" : "нет — сравнение ставок не производится";
+}
+
+/**
+ * Число → одна из трёх русских форм слова в родительном падеже (1 / 2-4 /
+ * 5+, с исключением 11-14) — не суффикс к общему стволу
+ * (`lib/format.ts::pluralRu` для этого не годится: «позиция»/«позиции»/
+ * «позиций» меняют не только окончание). Тот же приём, что
+ * `pluralDecision` в `pages/tenders/summary/StageSummaryTable.tsx` —
+ * отдельная копия здесь, а не импорт оттуда: страничная функция не
+ * экспортируется модулем чужого экрана.
+ */
+export function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
 }
 
 /**
@@ -159,3 +176,24 @@ export const EVENT_LABEL: Record<SemanticEventType, string> = {
 export function eventLabel(eventType: string): string {
   return (EVENT_LABEL as Record<string, string>)[eventType] ?? eventType;
 }
+
+/**
+ * Виды предиката правила разноса (`services/context_routing.py`,
+ * `PREDICATE_NEAREST_CHAPTER_EQUALS`/`PREDICATE_CHAPTER_CHAIN_CONTAINS`/
+ * `PREDICATE_CHAPTER_LEVEL_EQUALS`; спека `2026-09-22-catalog-families-
+ * design.md` §2.2) — коды печатались диалогом «Разделить…» карточки
+ * контекста напрямую (`ContextCard.tsx`), Global Constraints этой ветки
+ * запрещают коды на экране вне подсказки журнала.
+ */
+export const ROUTING_RULE_KIND_VALUES = [
+  "nearest_chapter_equals",
+  "chapter_chain_contains",
+  "chapter_level_equals",
+] as const;
+export type RoutingRuleKind = (typeof ROUTING_RULE_KIND_VALUES)[number];
+
+export const ROUTING_RULE_KIND_LABEL: Record<RoutingRuleKind, string> = {
+  nearest_chapter_equals: "ближайший раздел равен",
+  chapter_chain_contains: "раздел встречается в цепочке",
+  chapter_level_equals: "раздел на уровне равен",
+};

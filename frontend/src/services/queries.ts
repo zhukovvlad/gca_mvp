@@ -27,6 +27,8 @@ import type {
   AssignFamilyInput,
   ConfirmKindInput,
   ContextsParams,
+  GroupSelector,
+  GroupState,
   InflationSeriesInput,
   InflationSeriesPatch,
   BankComparisonParams,
@@ -37,6 +39,7 @@ import type {
   Decimal,
   ManualKind,
   MoveMembersInput,
+  StaleGroupTransferInput,
   ObjectInput,
   RateClassInput,
   RateStandardInput,
@@ -1569,6 +1572,44 @@ export function useAcceptTargetDecision() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Решение цели принято");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Страница членств ОДНОЙ группы карточки (спека §2.8 п. 3) — вкладка
+ * «Членства» раскрывает группу этим запросом постранично, не читая
+ * обрезанный список карточки (его больше нет).
+ */
+export function useContextGroupMembers(
+  contextId: number | null,
+  selector: GroupSelector,
+  state: GroupState,
+  page: number,
+  pageSize: number
+) {
+  return useQuery({
+    queryKey: qk.semanticContexts.groupMembers(contextId ?? -1, selector, state, page, pageSize),
+    queryFn: () =>
+      semanticApi.groupMembers(contextId as number, selector, state, pageSize, (page - 1) * pageSize),
+    enabled: contextId !== null,
+  });
+}
+
+/**
+ * Пакетный перенос устаревшей группы одной строки внимания (спека §2.6,
+ * §2.8 п. 4). Без своего `toast` — успех несёт частичный отказ («перенесено
+ * N из M» плюс тексты отказов), и текст печатает сама строка внимания, а не
+ * общий тост.
+ */
+export function useTransferStaleGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contextId, input }: { contextId: number; input: StaleGroupTransferInput }) =>
+      semanticApi.transferStaleGroup(contextId, input),
+    onSuccess: (_, { contextId }) => {
+      invalidateContext(qc, contextId);
     },
     onError: toastApiError,
   });

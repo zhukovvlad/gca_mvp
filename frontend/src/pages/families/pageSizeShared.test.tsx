@@ -9,7 +9,7 @@ import { usePersistedPageSize } from "./usePersistedPageSize";
 
 /**
  * Один источник допустимых размеров страницы (`components/domain/pageSize.ts`,
- * находка ревью Task 6 PF2): и умолчание `pageSizeOptions` у `Pager`, и
+ * спека §2.7): и умолчание `pageSizeOptions` у `Pager`, и
  * множество допустимых сохранённых значений у `usePersistedPageSize` обязаны
  * читать ОДНУ константу. Константа здесь подменена нарочно непохожим списком
  * `[7, 20]`: если хоть один потребитель держит свою копию `[10, 20, 50, 100]`,

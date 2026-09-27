@@ -1,12 +1,29 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ContextsTab } from "@/pages/families/ContextsTab";
 import { server } from "@/test/server";
+import {
+  BIG_GROUP_CHAPTER_ITEM_ID,
+  BIG_GROUP_CONTEXT_ID,
+  BIG_GROUP_SIZE,
+  handlerState,
+  MIXED_GROUPS_CONTEXT_ID,
+} from "@/test/handlers";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 import type { ContextRow } from "@/types/domain";
+
+// Контекст фикстуры, задействованный тестами карточки ниже (см. `STALE` в
+// `ContextCard.test.tsx` — тот же id, своя константа здесь: карточка теперь
+// открывается щелчком по строке списка, а не пропом напрямую).
+const STALE_CONTEXT_ID = 602;
+
+function contextFixture(id: number) {
+  return handlerState.semanticContexts.find((c) => c.id === id)!;
+}
 
 /**
  * Очередь контекстов — вкладка «Контексты» (спека
@@ -70,7 +87,7 @@ function manyContextRows(n: number): ContextRow[] {
  * параметров КАЖДОГО запроса. Утверждения о `limit`/`offset` читаются из
  * этого журнала, а не из строк на экране: умолчание `limit` обработчика
  * совпадает с умолчанием экрана (20), и проверка по строкам осталась бы
- * зелёной у экрана, не передающего `limit` вовсе (ревью Task 7).
+ * зелёной у экрана, не передающего `limit` вовсе.
  */
 function useManyContextRows(rows: ContextRow[]): URLSearchParams[] {
   const requests: URLSearchParams[] = [];
@@ -129,7 +146,7 @@ describe("ContextsTab", () => {
   });
 
   // Спека §2.4: «единица; семья (или «—»)» — простой прочерк, не текст «нет
-  // семьи» (ревью Task 7, живой прогон: расхождение с §2.4 замечено на стенде).
+  // семьи» (живой прогон на стенде показал расхождение с §2.4).
   it("строка контекста без семьи печатает «—», не «нет семьи» (спека §2.4)", async () => {
     await renderTab();
 
@@ -200,7 +217,7 @@ describe("ContextsTab", () => {
   // ---------------------------------------------------------------------
   //  Строка списка (спека §2.4) — наименование, плашка источника, единица,
   //  семья, число позиций, точка внимания; «Вид»/«Роль имени»/«Состояние»
-  //  ушли в карточку (Task 8), их ФИЛЬТРЫ остались.
+  //  ушли в карточку (спека §2.5), их ФИЛЬТРЫ остались.
   // ---------------------------------------------------------------------
 
   it("строка несёт плашку «статья СМР», код и название статьи, единицу, семью и число позиций", async () => {
@@ -383,7 +400,7 @@ describe("ContextsTab", () => {
 
     await user.click(screen.getByText("Штукатурка стен цементно-песчаным раствором"));
 
-    expect(await screen.findByText("Членств: 3")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Членства 3" })).toBeInTheDocument();
     // Список рядом — не подменён карточкой.
     expect(screen.getByLabelText("Поиск по написанию каталога")).toBeInTheDocument();
     expect(
@@ -391,8 +408,9 @@ describe("ContextsTab", () => {
     ).toBeInTheDocument();
   });
 
-  // Строки контекстов несут тот же пробел доступности, что и строки семей
-  // (ревью Task 7, P2: щелчок мышью — единственный путь без фокуса и клавиш).
+  // Строки контекстов несут тот же пробел доступности, что и строки семей —
+  // без этого теста щелчок мышью остался бы единственным путём открытия
+  // строки, без фокуса и клавиш.
   it("строка контекста открывается Пробелом, и Пробел не прокручивает страницу (preventDefault)", async () => {
     await renderTab();
 
@@ -402,7 +420,7 @@ describe("ContextsTab", () => {
     // единственный наблюдатель «страница не уехала» в jsdom (саму прокрутку
     // jsdom не делает).
     expect(fireEvent.keyDown(row, { key: " " })).toBe(false);
-    expect(await screen.findByText("Членств: 3")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Членства 3" })).toBeInTheDocument();
   });
 
   it("прочие клавиши на строке контекста (Tab, буква) не выбирают её и не гасят действие по умолчанию", async () => {
@@ -424,7 +442,7 @@ describe("ContextsTab", () => {
     row.focus();
     await user.keyboard("{Enter}");
 
-    expect(await screen.findByText("Членств: 3")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Членства 3" })).toBeInTheDocument();
   });
 
   it("смена фильтра снимает выбор, если выбранный контекст выпал из выдачи", async () => {
@@ -456,8 +474,8 @@ describe("ContextsTab", () => {
     // ПРИМЕНЁННУЮ новую выдачу (диапазон «1–1 из 1»), а не исчезновение
     // соседней строки: без `placeholderData` список на время загрузки
     // заменён скелетоном, соседняя строка пропадает ДО прихода данных, и
-    // проверка выбора прошла бы в состоянии загрузки, где сверки ещё не было
-    // (ревью Task 7: так тест не видел снятия выбора на любой новой выдаче).
+    // проверка выбора прошла бы в состоянии загрузки, где сверки ещё не
+    // было — тест не увидел бы снятия выбора на любой новой выдаче.
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "штукатурка");
     await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument());
     expect(
@@ -522,6 +540,293 @@ describe("ContextsTab", () => {
     expect(screen.queryByText("Контекст не выбран")).not.toBeInTheDocument();
   });
 
+  // Спека §2.1: карточка — один и тот же экземпляр `<ContextCard>`
+  // панелью справа (спека §2.1), меняется только `contextId` пропом, без
+  // `key`. Без сброса выбор членств ОДНОГО контекста пережил бы щелчок по
+  // строке ДРУГОГО — «Разделить выбранные» ушло бы для нового контекста с
+  // id старого. Воспроизведение — фикстуры 608 (520 членств одной группой) и
+  // 609 (стяжка пола, «Устройство стяжки пола») из `handlers.ts`.
+  it("переключение на другой контекст в списке сбрасывает выбор членств карточки, не только видимую страницу (спека §2.1, §2.5)", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByText("Устройство вентиляционных каналов"));
+    expect(
+      await screen.findByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` })
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` }));
+    await user.click(screen.getByLabelText(/Выбрать группу/));
+    await waitFor(() =>
+      expect(screen.getByText(`Выбрано членств: ${BIG_GROUP_SIZE}`)).toBeInTheDocument()
+    );
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    // Счётчик прежнего контекста (520) нигде не виден — ни на новой вкладке
+    // по умолчанию («Решения»), ни если открыть «Членства» заново.
+    expect(screen.queryByText(`Выбрано членств: ${BIG_GROUP_SIZE}`)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    expect(screen.getByText("Выбрано членств: 0")).toBeInTheDocument();
+
+    // «Разделить выбранные» после переключения обязано уйти с ТЕКУЩИМ
+    // contextId (609) и id ТЕКУЩЕГО выбора — не с 520 id контекста 608.
+    await user.click(screen.getByRole("button", { name: /Раскрыть группу «8 Отделочные работы/ }));
+    await user.click(await screen.findByLabelText("Выбрать позицию 78001"));
+    await user.click(screen.getByRole("button", { name: "Разделить выбранные" }));
+
+    await waitFor(() =>
+      expect(handlerState.lastSplitContextRequest).toEqual({
+        contextId: MIXED_GROUPS_CONTEXT_ID,
+        body: { position_item_ids: [78001], rule: null },
+      })
+    );
+  });
+
+  // Остальные поля того же сброса (карточка — `key` на `<ContextCard>` в
+  // `ContextsTab.tsx`, спека §2.5, §2.8): каждое поле — свой вход. Цель
+  // переноса и цель слияния прежнего контекста не должны оставлять кнопки
+  // нового включёнными (иначе «Перенести выбранные»/«Слить контексты» ушли
+  // бы в соседа ЧУЖОЙ корзины). Перенесено из `ContextCard.test.tsx`
+  // (проверялось там искусственным `rerender` ТОГО ЖЕ элемента с новым
+  // `contextId` — продакшен-код так карточку больше не меняет).
+  it("переключение контекста сбрасывает выбранные цели переноса и слияния — кнопки нового контекста без цели выключены", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByText("Штукатурка стен цементно-песчаным раствором"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    await user.click(screen.getByRole("combobox", { name: "Целевой контекст для переноса выбранных" }));
+    await user.click(await screen.findByRole("option", { name: "контекст #750" }));
+    await user.click(screen.getByRole("combobox", { name: "Слить контекст в целевой" }));
+    await user.click(await screen.findByRole("option", { name: "контекст #750" }));
+    expect(screen.getByRole("button", { name: "Слить контексты" })).toBeEnabled();
+
+    // У 609 живых соседей нет вовсе — выбрать цель там нечего. Ждём Skeleton
+    // прежней карточки (601) полностью снятым — новая карточка (609)
+    // монтируется свежей, поэтому «Членства 3» ниже — уже ЕЁ вкладка, не
+    // переживший переключение узел прежней.
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    await user.click(screen.getByRole("button", { name: /Раскрыть группу «8 Отделочные работы/ }));
+    await user.click(await screen.findByLabelText("Выбрать позицию 78001"));
+    expect(screen.getByText("Выбрано членств: 1")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "Перенести выбранные" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Слить контексты" })).toBeDisabled();
+  });
+
+  // Перенесено из `ContextCard.test.tsx` — та же причина, что у теста выше.
+  it("переключение контекста сбрасывает результат пакетного переноса — «перенесено N из M» прежнего контекста не встаёт под строку внимания нового с тем же разделом", async () => {
+    const user = userEvent.setup();
+    // 609 получает строку внимания ТОГО ЖЕ раздела, что у 602 (ключ группы
+    // совпадает) — иначе сброс неотличим от «результат лежит под другим ключом».
+    contextFixture(MIXED_GROUPS_CONTEXT_ID).stale_groups = contextFixture(STALE_CONTEXT_ID).stale_groups.map(
+      (sg) => ({ ...sg })
+    );
+    handlerState.staleGroupTransferOverride = {
+      results: [
+        { position_item_id: 1, outcome: "moved", target_context_id: 9999, error_code: null, message: null },
+        { position_item_id: 2, outcome: "moved", target_context_id: 9999, error_code: null, message: null },
+        { position_item_id: 3, outcome: "moved", target_context_id: 9999, error_code: null, message: null },
+      ],
+      moved: 3,
+      refused: 0,
+    };
+    await renderTab();
+
+    await user.click(screen.getByText("Устройство покрытий полов из линолеума"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Перенести их/ })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: /^Перенести их/ }));
+    expect(await screen.findByText("перенесено 3 из 3")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Перенести их/ })).toBeInTheDocument()
+    );
+    // Строка внимания нового контекста на месте — результата прежнего под ней нет.
+    expect(screen.queryByText("перенесено 3 из 3")).not.toBeInTheDocument();
+  });
+
+  // Перенесено из `ContextCard.test.tsx` — та же причина, что у теста выше.
+  it("переключение контекста очищает поле нового контекста по умолчанию для архивирования", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByText("Штукатурка стен цементно-песчаным раствором"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    await user.type(screen.getByLabelText(/Архивировать контекст — новый контекст по умолчанию/), "750");
+    expect(screen.getByLabelText(/Архивировать контекст — новый контекст по умолчанию/)).toHaveValue("750");
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    expect(screen.getByLabelText(/Архивировать контекст — новый контекст по умолчанию/)).toHaveValue("");
+  });
+
+  // Возврат к контексту — то же, что первое его открытие: набор id группы,
+  // снятый `groupMemberIds` в ПРЕЖНИЙ визит, не отмечает галочку группы.
+  // Перенесено из `ContextCard.test.tsx` — та же причина, что у тестов выше.
+  it("возврат к контексту не отмечает галочку группы по набору id прежнего визита — как при первом открытии", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    await user.click(
+      screen.getByLabelText(
+        "Выбрать группу «8 Отделочные работы (паркинг, надземная часть МОП) › 8.3 Полы по грунту»"
+      )
+    );
+    await waitFor(() => expect(screen.getByText("Выбрано членств: 2")).toBeInTheDocument());
+
+    await user.click(screen.getByText("Устройство вентиляционных каналов"));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` })).toBeInTheDocument()
+    );
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    expect(screen.getByText("Выбрано членств: 0")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Раскрыть группу «8 Отделочные работы/ }));
+    await screen.findByText("Стяжка пола, ось А-Б");
+    await user.click(screen.getByLabelText("Выбрать позицию 78001"));
+    await user.click(screen.getByLabelText("Выбрать позицию 78002"));
+    expect(screen.getByText("Выбрано членств: 2")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "Выбрать группу «8 Отделочные работы (паркинг, надземная часть МОП) › 8.3 Полы по грунту»"
+      )
+    ).not.toBeChecked();
+  });
+
+  // ---------------------------------------------------------------------
+  //  Поздний ответ сети и состояние секции группы прежнего контекста не
+  //  должны долетать до нового (спека §2.5, §2.8) — оба закрыты ОДНИМ
+  //  механизмом (`key` на `<ContextCard>`, комментарий у него в
+  //  `ContextsTab.tsx`), не перечислением сбрасываемых полей.
+  // ---------------------------------------------------------------------
+
+  it("поздний ответ member-ids прежнего контекста не добавляет его id в выбор нового", async () => {
+    server.use(
+      http.get("/api/v1/semantic/contexts/:id/member-ids", async ({ params }) => {
+        if (Number(params.id) !== BIG_GROUP_CONTEXT_ID) {
+          return HttpResponse.json({ position_item_ids: [], total: 0 });
+        }
+        // Задержка нарочно больше времени, за которое тест успевает
+        // переключиться на другой контекст, — воспроизводит сеть, ответившую
+        // ПОСЛЕ смены выбора в списке.
+        await delay(400);
+        const ids = Array.from({ length: BIG_GROUP_SIZE }, (_, i) => 80001 + i);
+        return HttpResponse.json({ position_item_ids: ids, total: ids.length });
+      })
+    );
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByText("Устройство вентиляционных каналов"));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` }));
+    await user.click(screen.getByRole("button", { name: /9 Инженерные системы/ }));
+    await screen.findByText("Вентканал, узел 1");
+    // Галочка группы шлёт member-ids с задержкой 400ms — переключаемся на
+    // другой контекст ДО того, как он успевает ответить.
+    await user.click(screen.getByLabelText(/Выбрать группу/));
+
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+    expect(screen.getByText("Выбрано членств: 0")).toBeInTheDocument();
+
+    // Ждём дольше задержки ответа — он приходит уже ПОСЛЕ переключения.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(screen.getByText("Выбрано членств: 0")).toBeInTheDocument();
+    expect(screen.queryByText(`Выбрано членств: ${BIG_GROUP_SIZE}`)).not.toBeInTheDocument();
+    // Ничем не выбранным — «Разделить»/«Перенести» недостижимы, значит и
+    // 520 id контекста 608 не могли уйти ни в один запрос нового контекста.
+    expect(screen.getByRole("button", { name: "Разделить выбранные" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Перенести выбранные" })).toBeDisabled();
+    expect(handlerState.lastSplitContextRequest).toBeNull();
+    expect(handlerState.lastMoveMembersRequest).toBeNull();
+  });
+
+  // Секция группы вкладки «Членства» держит своё «раскрыта/страница» в
+  // собственном `useState`, ключованном ТОЛЬКО номером раздела
+  // (`chapter_item_id`) — если раздел контекста А совпадает по этому номеру
+  // с разделом ДРУГОГО контекста Б (совпадение возможно: раздел сметы —
+  // числовой id, не привязан к контексту), без `key` на карточке React
+  // сохранил бы состояние секции между ними. Фикстура 609 (`handlers.ts`)
+  // получает раздел с ТЕМ ЖЕ номером, что раздел контекста 608, — иначе
+  // совпадение неотличимо от «просто другой раздел».
+  //
+  // Контекст 609 ОТКРЫВАЕТСЯ ДВАЖДЫ — первый раз до 608, второй раз после:
+  // при первом ЛЮБОМ открытии контекста карточка на миг показывает `Skeleton`
+  // (`cardQ.isPending` — запрос ещё не закэширован), и это САМО снимает
+  // дерево вкладок независимо от `key` карточки — упавший без `key` тест на
+  // паре «А → Б» с Б, открываемым впервые, остался бы зелёным ПО ЭТОЙ
+  // причине, а не потому что утечки нет. Клиент — как в приложении
+  // (`App.tsx`: `staleTime` минута), не тестовый с `staleTime: 0`: только
+  // так повторное открытие 609 берёт карточку из кэша БЕЗ `Skeleton`
+  // (`gcTime` тоже поднят — иначе тестовый клиент выбросил бы неиспользуемый
+  // кэш 609 сам, пока карточка открыта на 608), и утечка состояния секции
+  // группы (если `key` карточки убрать) становится видна.
+  it("состояние секции группы (раскрыта, страница) не переживает возврат к контексту через другой — даже если номер раздела совпал с чужим", async () => {
+    contextFixture(MIXED_GROUPS_CONTEXT_ID).member_paths = contextFixture(
+      MIXED_GROUPS_CONTEXT_ID
+    ).member_paths.map((group, i) =>
+      i === 0 ? { ...group, chapter_item_id: BIG_GROUP_CHAPTER_ITEM_ID } : group
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000, gcTime: 300_000 } },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ContextsTab />, { queryClient });
+    await waitFor(() =>
+      expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
+    );
+
+    // Первое открытие 609 — только чтобы закэшировать карточку, без действий.
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+
+    await user.click(screen.getByText("Устройство вентиляционных каналов"));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` })).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("tab", { name: `Членства ${BIG_GROUP_SIZE}` }));
+    await user.click(screen.getByRole("button", { name: /9 Инженерные системы/ }));
+    await screen.findByText("Вентканал, узел 1");
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    await screen.findByText("Вентканал, узел 21");
+
+    // Возврат к 609 — карточка берётся из кэша (`staleTime` минута), без
+    // `Skeleton`.
+    await user.click(screen.getByText("Устройство стяжки пола"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Членства 3" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Членства 3" }));
+
+    // Секция того же номера раздела свёрнута (страница 1 по умолчанию), а
+    // не унаследовала «раскрыта, страница 2» контекста 608: унаследуй она
+    // их, запрос ушёл бы за пределы реального числа позиций 609 по этому
+    // разделу — таблица без строк и без Pager, без всякой видимой причины
+    // для оператора.
+    const trigger = screen.getByRole("button", { name: /Раскрыть группу «8 Отделочные работы/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    // Таблиц на экране несколько (список контекстов слева — тоже `<table>`,
+    // 9 строк фикстур) — область поиска сужена до вкладки «Членства».
+    const membershipPanel = screen.getByRole("tabpanel", { name: "Членства 3" });
+    expect(within(membershipPanel).queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByText("Вентканал, узел 21")).not.toBeInTheDocument();
+  });
+
   // ---------------------------------------------------------------------
   //  Пагинация (спека §2.7): размер 10/20/50/100 передаёт `limit`, смена
   //  размера и фильтра ставят `offset=0`; диапазон и итог — из `total` ответа.
@@ -552,7 +857,7 @@ describe("ContextsTab", () => {
   });
 
   // Каждый фильтр сбрасывает страницу СВОИМ обработчиком — восемь независимых
-  // мест, и забытый сброс у одного не виден по семи прочим (ревью Task 7).
+  // мест, и забытый сброс у одного не виден по семи прочим.
   // Синтетический обработчик фильтры не применяет: выдача остаётся из 45
   // строк, и утверждение читает только параметры запроса.
   const FILTER_CASES: Array<{
@@ -686,8 +991,8 @@ describe("ContextsTab", () => {
 
   it("выдача сузилась под прежним offset — следующий запрос уходит с последней валидной страницы, а не повторяет старый offset", async () => {
     // `total` меняется НЕЗАВИСИМО от параметров запроса — так же, как
-    // сокращение выдачи действием в карточке (Task 8) или соседа-фильтра
-    // меняет ответ БЕЗ смены `page`/`offset` на этом экране (ревью Task 7, P5).
+    // сокращение выдачи действием в карточке (спека §2.5, §2.8) или
+    // соседа-фильтра меняет ответ БЕЗ смены `page`/`offset` на этом экране.
     let total = 45;
     const rows = manyContextRows(45);
     const requests: URLSearchParams[] = [];
@@ -722,10 +1027,11 @@ describe("ContextsTab", () => {
   });
 
   // ---------------------------------------------------------------------
-  //  Коды полей на экран не выводятся (план Task 7, последнее утверждение;
-  //  спека §2.2). Фикстуры `handlers.ts` не несут LOCATION_ONLY,
+  //  Коды полей на экран не выводятся (спека §2.2, Global Constraints
+  //  ветки). Фикстуры `handlers.ts` не несут LOCATION_ONLY,
   //  NOT_APPLICABLE и UNKNOWN — выдача синтетическая и содержит ВСЕ коды.
-  //  Карточка (`ContextCard`) здесь не открыта: её коды — Task 8.
+  //  Карточка (`ContextCard`) здесь не открыта: её коды проверяются
+  //  отдельно, в `ContextCard.test.tsx`.
   // ---------------------------------------------------------------------
 
   it("ни один код полей не виден в списке и в фильтрах — с выдачей, которая несёт их все", async () => {

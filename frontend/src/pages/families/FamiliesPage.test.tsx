@@ -123,7 +123,7 @@ describe("FamiliesPage", () => {
 
     // Карточка встала рядом со списком, вкладка НЕ переключилась (вкладки
     // «Операции» больше нет вовсе — переключаться некуда).
-    expect(await screen.findByText("Членств: 3")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Членства 3" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Контексты" })).toHaveAttribute("aria-selected", "true");
     // Список остался виден рядом с карточкой — не подменён ею.
     expect(screen.getByLabelText("Поиск по написанию каталога")).toBeInTheDocument();

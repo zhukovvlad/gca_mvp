@@ -53,13 +53,6 @@ from models import (
 from services.context_routing import chapter_paths
 from services.semantic_rules import nearest_working_chapter
 
-#: Потолок числа членств, отдаваемых карточкой контекста поштучно — экран не
-#: может проверять/предлагать действия по членству, не видя его id, а
-#: `member_count` был только агрегатом. Отдельная константа, а не литерал в
-#: запросе: тест переопределяет её монки-патчем, чтобы проверить
-#: `members_truncated` не заводя 500+ строк в БД.
-CONTEXT_MEMBERS_PAGE_CAP = 500
-
 
 class WorkCategoryRef(TypedDict):
     """Одна статья пути классификатора строки списка контекстов (спека
@@ -565,11 +558,13 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
     `crud/semantic.py::_member_paths_and_stale_groups`), соседей по корзине
     (`bucket_contexts` — id, `is_default`, `archived_at`, `member_count`
     КАЖДОГО контекста той же `bucket_id`, включая архивные; цель слияния/
-    переноса выбирается из живых соседей), членства поштучно (`members` —
-    id позиции, название работы по смете, id сметы, состояние членства,
-    конфликт и его источник, `routed_by`; ограничено
-    `CONTEXT_MEMBERS_PAGE_CAP`, обрезка отмечена `members_truncated`) и
-    журнал событий (по времени).
+    переноса выбирается из живых соседей) и журнал событий (по времени).
+    Членства поштучно карточка БОЛЬШЕ НЕ несёт (`members`/`members_truncated`
+    удалены спекой `2026-09-25-families-screen-design.md` §2.8 п. 5):
+    единственным потребителем был `ContextCard.tsx` фичи 1, а после
+    переделки экран читает членства ПОСТРАНИЧНО запросом группы
+    (`list_group_members`/`list_group_member_ids` ниже), а не обрезанным
+    списком карточки.
 
     `None`, если контекст не найден — роутер переводит это в 404.
 
@@ -684,33 +679,11 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         .order_by(CatalogContext.id)
     ).all()
 
-    # Членства поштучно: экран решает, какое действие предложить
-    # КОНКРЕТНОМУ членству (перенос устаревшего,
-    # решение цели конфликтного), и без id и состояния по каждому это
-    # неисполнимо — `member_count` выше это только агрегат. ОДИН ограниченный
-    # запрос (`LIMIT CAP + 1`, не завязанный на число строк выдачи) —
-    # не N+1: число запросов не растёт вместе с числом членств, а `+1`
-    # к лимиту отличает «ровно потолок» от «больше потолка» без отдельного
-    # count-запроса. `member_count` остаётся ПОЛНЫМ (запрос выше), а не
-    # длиной этого списка — список может быть обрезан, счётчик всегда точен.
-    # Строка членства — ТА ЖЕ, что строит `list_group_members` (спека §2.8
-    # п. 3): один общий строитель запроса (`_group_members_query`) и одна
-    # функция строки (`_member_row_to_dict`) на оба потребителя, а не два
-    # независимых набора колонок, которые молча разойдутся. Селектор «весь
-    # контекст, любое состояние» — та же форма, что берёт экран без
-    # `chapter_item_id`/`no_chapter` (весь контекст целиком).
-    member_rows = db.execute(
-        _group_members_query(
-            context_id=context_id,
-            selector=GroupSelector(chapter_item_id=None, no_chapter=False),
-            state="all",
-        )
-        .order_by(ContextMember.position_item_id)
-        .limit(CONTEXT_MEMBERS_PAGE_CAP + 1)
-    ).all()
-    members_truncated = len(member_rows) > CONTEXT_MEMBERS_PAGE_CAP
-    member_rows = member_rows[:CONTEXT_MEMBERS_PAGE_CAP]
-
+    # Членства поштучно карточка БОЛЬШЕ НЕ читает (спека §2.8 п. 5): экран
+    # получает их постранично запросом группы (`list_group_members`/
+    # `list_group_member_ids` ниже) — это и убирает один запрос из карточки
+    # (константа `_CARD_QUERY_COUNT`, `tests/integration/test_semantic_api.py`,
+    # уменьшена ровно на него).
     events = (
         db.execute(
             sa.select(SemanticEvent)
@@ -764,8 +737,6 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
             }
             for row in bucket_context_rows
         ],
-        "members": [_member_row_to_dict(row) for row in member_rows],
-        "members_truncated": members_truncated,
         "events": [
             {
                 "id": event.id,
@@ -816,7 +787,7 @@ def _group_base_query(*, context_id: int, selector: GroupSelector, state: GroupS
     `position_item_id`: `list_group_member_ids` использует запрос НАПРЯМУЮ
     (список id не нуждается в join'ах на `Proposal`/`Lot` — спека §2.8 п. 3,
     «id — восемь байт»), `_group_members_query` достраивает поверх него
-    строку членства карточки/`list_group_members` (см. её докстроку)."""
+    строку членства `list_group_members` (см. её докстроку)."""
     stmt = (
         sa.select(ContextMember.position_item_id)
         .select_from(ContextMember)
@@ -835,15 +806,14 @@ def _group_base_query(*, context_id: int, selector: GroupSelector, state: GroupS
 
 
 def _group_members_query(*, context_id: int, selector: GroupSelector, state: GroupState):
-    """Строка членства ОДНОЙ группы — ТА ЖЕ форма колонок, что карточка
-    строит для `members[]` (`context_card` выше) и что отдаёт
-    `list_group_members` (спека §2.8 п. 3): один набор колонок на оба
-    потребителя, а не два независимых, которые молча разойдутся. Достраивает
-    `_group_base_query` join'ами на `Proposal`/`Lot` (название работы по
-    смете, id сметы) и колонками состояния членства — `join`, не `outerjoin`:
-    у членства всегда есть позиция, у позиции всегда предложение и лот
-    (та же гарантия, что у исходного запроса `context_card`, из которого
-    этот код вынесен без изменения формы)."""
+    """Строка членства ОДНОЙ группы — форма колонок, что отдаёт
+    `list_group_members` (спека §2.8 п. 3). До удаления членств поштучно из
+    карточки (§2.8 п. 5) тот же набор колонок несла и `context_card`
+    (`members[]`); единственный потребитель этого запроса теперь —
+    `list_group_members`. Достраивает `_group_base_query` join'ами на
+    `Proposal`/`Lot` (название работы по смете, id сметы) и колонками
+    состояния членства — `join`, не `outerjoin`: у членства всегда есть
+    позиция, у позиции всегда предложение и лот."""
     return (
         _group_base_query(context_id=context_id, selector=selector, state=state)
         .add_columns(
@@ -860,9 +830,10 @@ def _group_members_query(*, context_id: int, selector: GroupSelector, state: Gro
 
 
 def _member_row_to_dict(row) -> dict:
-    """Форма строки членства — та же, что была у `members[]` карточки ДО
-    этой задачи, и что несёт `list_group_members` (спека §2.8 п. 3): одна
-    функция на оба потребителя запроса `_group_members_query`."""
+    """Форма строки членства, что несёт `list_group_members` (спека §2.8
+    п. 3) — единственный потребитель `_group_members_query` теперь; до
+    удаления членств поштучно из карточки (§2.8 п. 5) ту же форму несла и
+    `members[]` карточки."""
     return {
         "position_item_id": row.position_item_id,
         "job_title": row.job_title,
@@ -902,11 +873,12 @@ def list_group_members(
     limit: int, offset: int,
 ) -> dict | None:
     """Постраничный список членств ОДНОЙ группы — спека §2.8 п. 3: галочка
-    группы на экране раскрывает её позиции постранично ИМЕННО этим запросом,
-    а не обрезанным списком карточки (`CONTEXT_MEMBERS_PAGE_CAP` выше).
+    группы на экране раскрывает её позиции постранично ИМЕННО этим запросом —
+    карточка (`context_card` выше) членств поштучно больше не несёт вовсе
+    (§2.8 п. 5).
 
-    РОВНО два запроса, включая решение о 404 (план, Task 4, «Утверждения»):
-    первый — `_context_exists_and_total` (существование контекста и `total`
+    РОВНО два запроса, включая решение о 404 (спека §2.8 п. 3: «оба — ровно
+    два запроса»): первый — `_context_exists_and_total` (существование контекста и `total`
     ОДНИМ SELECT, см. её докстроку); контекста нет — `None` без второго
     запроса, роутер переводит в `404`. Второй — сама страница,
     `ORDER BY position_item_id` (тот же порядок, что у представителя

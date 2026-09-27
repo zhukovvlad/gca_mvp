@@ -2224,6 +2224,38 @@ export interface SemanticEventEntry {
   created_at: string;
 }
 
+/**
+ * Одна группа членств карточки, по ближайшему разделу позиции (спека
+ * `2026-09-25-families-screen-design.md` §2.5, §2.8 п. 2) —
+ * `ContextCardData.member_paths`. `chapter_item_id: null` — группа «без
+ * раздела» (`path: []`), всегда последняя; путь — СВЕРХУ ВНИЗ, без листа
+ * (сам раздел не входит отдельным полем — он последний элемент `path`, тем
+ * же контрактом, что `WorkCategoryPathEntry` строит для статьи, но здесь
+ * названия разделов, не коды классификатора).
+ */
+export interface MemberPath {
+  chapter_item_id: number | null;
+  path: string[];
+  member_count: number;
+  stale_count: number;
+  conflict_count: number;
+}
+
+/**
+ * Устаревшая группа под цель переноса (спека §2.6, §2.8 п. 2) —
+ * `ContextCardData.stale_groups`. Один элемент на пару «раздел → целевая
+ * статья» — источник текста строки внимания и входа пакетного переноса
+ * (`transferStaleGroup`, `chapter_item_id`/`expected_category_id`).
+ */
+export interface StaleGroup {
+  chapter_item_id: number | null;
+  path: string[];
+  count: number;
+  target_category_id: number | null;
+  target_category_code: string | null;
+  target_category_title: string | null;
+}
+
 /** `GET /v1/semantic/contexts/:id` (`crud/semantic.py::context_card`). */
 export interface ContextCardData {
   id: number;
@@ -2257,20 +2289,38 @@ export interface ContextCardData {
   family_at: string | null;
   member_count: number;
   /**
+   * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, без самой
+   * статьи (то же значение, что несёт строка списка,
+   * {@link ContextRow.work_category_path}, спека
+   * `2026-09-25-families-screen-design.md` §2.8 п. 2).
+   */
+  work_category_path: WorkCategoryPathEntry[];
+  /**
+   * Работа по разделу представительной позиции — только при СОХРАНЁННОЙ роли
+   * `LOCATION_ONLY` (спека §2.5, §2.8 п. 2): ручная смена роли не
+   * пересчитывает классификатор, поэтому подпись следует роли, записанной
+   * на контексте, а не повторной классификацией. `null` при любой другой
+   * роли и у контекста без представителя (пустой контекст, представитель
+   * без раздела, цепочка сплошь из мест).
+   */
+  representative_work_title: string | null;
+  /**
+   * Группы членств по ближайшему разделу позиции (спека §2.5, §2.8 п. 2) —
+   * порядок ответа: по убыванию `member_count`, группа `chapter_item_id:
+   * null` («без раздела») — последней при любом её размере. Сумма
+   * `member_count` групп равна {@link ContextCardData.member_count} по
+   * построению.
+   */
+  member_paths: MemberPath[];
+  /** Устаревшие членства по парам «раздел → целевая статья» (спека §2.6, §2.8 п. 2) — источник строк внимания и пакетного переноса. */
+  stale_groups: StaleGroup[];
+  /**
    * Соседи по корзине (той же `bucket_id`) — живые И архивные, упорядочены
    * по id (`backend/crud/semantic.py::context_card`). Цель слияния/переноса
    * выбирается из них (живых, кроме текущего контекста), а не вводится id
    * вручную — решение оркестратора, план задачи 13.
    */
   bucket_contexts: BucketContextOption[];
-  /**
-   * Членства поштучно (`backend/crud/semantic.py::context_card`) —
-   * ограничено бэкендом (`CONTEXT_MEMBERS_PAGE_CAP`), `members_truncated`
-   * отмечает обрезку. `member_count` выше остаётся ПОЛНЫМ счётчиком
-   * независимо от обрезки этого списка.
-   */
-  members: ContextMemberRow[];
-  members_truncated: boolean;
   events: SemanticEventEntry[];
 }
 
@@ -2285,7 +2335,12 @@ export interface BucketContextOption {
 export type MembershipState = "CURRENT" | "STALE";
 export type RoutedBy = "default" | "rule" | "manual";
 
-/** Одна строка `ContextCardData.members` — членство позиции в контексте. */
+/**
+ * Одна строка `GroupMembersPage.items` — членство позиции в контексте
+ * (спека §2.8 п. 3). До удаления `ContextCardData.members` (§2.8 п. 5) это
+ * была строка карточки поштучно; форма не изменилась, изменился только
+ * носитель — запрос группы (`GET .../members`), не карточка.
+ */
 export interface ContextMemberRow {
   position_item_id: number;
   /** Название работы ПО СМЕТЕ (`job_title_in_proposal`) — может расходиться с каталожным. */
@@ -2296,6 +2351,62 @@ export interface ContextMemberRow {
   conflict_at: string | null;
   conflict_from_context_id: number | null;
   routed_by: RoutedBy;
+}
+
+/** Состояние-фильтр запроса группы членств (спека §2.8 п. 3). */
+export type GroupState = "all" | "stale" | "conflict";
+
+/**
+ * Группа членств контекста, по ближайшему разделу позиции (спека §2.8 п. 3)
+ * — вход `groupMembers`/`groupMemberIds`. `chapter_item_id: null` вместе с
+ * `no_chapter: true` — группа «без раздела»; оба ложны/отсутствуют — ВЕСЬ
+ * контекст (тем же путём экран берёт id всех конфликтных членств для
+ * «Принять решение цели», спека §2.6); оба разом — противоречие, сервер
+ * отвечает `422`.
+ */
+export interface GroupSelector {
+  chapter_item_id: number | null;
+  no_chapter: boolean;
+}
+
+/** `GET /contexts/:id/members` (спека §2.8 п. 3) — та же строка, что раньше несла карточка. */
+export interface GroupMembersPage {
+  items: ContextMemberRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** `GET /contexts/:id/member-ids` (спека §2.8 п. 3) — полный список, без обрезки. */
+export interface GroupMemberIdsResult {
+  position_item_ids: number[];
+  total: number;
+}
+
+/** Вход `POST /contexts/:id/stale-groups/transfer` (спека §2.6, §2.8 п. 4). */
+export interface StaleGroupTransferInput {
+  chapter_item_id: number | null;
+  expected_category_id: number | null;
+}
+
+/** Результат ОДНОЙ позиции пакетного переноса — спека §2.8 п. 4. */
+export interface StaleGroupTransferItem {
+  position_item_id: number;
+  outcome: "moved" | "refused";
+  target_context_id: number | null;
+  error_code: string | null;
+  message: string | null;
+}
+
+/**
+ * Ответ пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4) —
+ * пачка НЕ атомарна: частичный успех («перенесено N из M») — законный
+ * ответ, не ошибка.
+ */
+export interface StaleGroupTransferResult {
+  results: StaleGroupTransferItem[];
+  moved: number;
+  refused: number;
 }
 
 export interface ConfirmKindInput {

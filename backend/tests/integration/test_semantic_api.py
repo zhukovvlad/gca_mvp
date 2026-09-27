@@ -152,9 +152,10 @@ def _leaf_category_ids(session, n=1) -> list[int]:
 
 def _category_with_dot_count(session, dots: int) -> WorkCategory:
     """Первая статья классификатора с РОВНО `dots` точками в коде (глубина
-    `dots + 1`) — найдена по СТРУКТУРЕ кода, а не хардкодом id/литерала
-    (план, Task 1, «Имена»: числа плана — что утверждается, а не обвязка).
-    Падает явно, если в засеянном справочнике такой глубины нет."""
+    `dots + 1`) — найдена по СТРУКТУРЕ кода, а не хардкодом id/литерала:
+    утверждается СВОЙСТВО глубины (спека §2.8 п. 1), а не конкретный код,
+    который совпал бы случайно. Падает явно, если в засеянном справочнике
+    такой глубины нет."""
     rows = session.execute(sa.select(WorkCategory)).scalars().all()
     for row in rows:
         if row.code.count(".") == dots:
@@ -240,8 +241,8 @@ def _family(db, admin, *, title="Семья", unit_name=None, definition="Опр
 def _bulk_members(db, factories, *, context, count: int) -> list[int]:
     """`count` строк-позиций (без раздела) и членств контекста ОДНИМ
     `executemany` на таблицу (`sa.insert`, core, не ORM-фабрика на штуку) —
-    план, Task 4, «Проверка»: группа из 520 нужна нескольким тестам, и
-    `factories.PositionItemFactory.create` в цикле флашит на КАЖДУЮ строку,
+    группа из 520 нужна нескольким тестам эндпоинтов группы (спека §2.8 п. 3),
+    и `factories.PositionItemFactory.create` в цикле флашит на КАЖДУЮ строку,
     заметно медленнее core-вставки. Раздела у позиций нет — эти тесты берут
     группу «весь контекст» (`GroupSelector(None, False)`), а не конкретный
     раздел. Возвращает id новых позиций (порядок вставки — по возрастанию,
@@ -305,11 +306,18 @@ def _capturing_sql(session):
 
 
 #: Число SQL-запросов `GET /contexts/{id}` (всё, что `_capturing_sql` видит за
-#: время запроса) на контексте с членствами под одним разделом — замер на коде
-#: Task 2 плана families-screen (коммит 9d8cf51): 9. Держит утверждение задачи 3
-#: «число запросов карточки не меняется» в абсолютной форме — см.
-#: `test_card_members_query_count_independent_of_member_count`.
-_CARD_QUERY_COUNT = 9
+#: время запроса) на контексте с членствами под одним разделом, после удаления
+#: членств поштучно из карточки (спека `2026-09-25-families-screen-design.md`
+#: §2.8 п. 5). Замер по `statements_small` — восемь: загрузка корзины и строки
+#: каталога (сам контекст уже лежит в identity map сессии), представительное
+#: членство, счётчик членств, сводки групп членств (`GROUP BY` раздела), пути
+#: групп одним рекурсивным CTE, соседи по корзине, журнал. Статьи у корзины
+#: этого теста нет (`_bucket` без `work_category_id`), поэтому ни загрузки
+#: статьи, ни запроса её пути классификатора (`_work_category_path`) в числе
+#: нет — у корзины со статьёй их до двух сверх восьми, и тоже константой. Держит утверждение «число запросов карточки не растёт ни с числом членств,
+#: ни с числом уникальных путей, ни с их глубиной» (спека §2.8) в абсолютной
+#: форме — см. `test_card_members_query_count_independent_of_member_count`.
+_CARD_QUERY_COUNT = 8
 
 
 # ---------------------------------------------------------------------------
@@ -953,7 +961,7 @@ class TestContextsQueue:
         assert ctx_work.id not in cat_y_ids
 
     def test_list_contexts_reports_member_count_and_stale_flag(self, admin_client, db_session, factories):
-        """План, Task 1, «Утверждения»: контекст с тремя членствами, одно из
+        """Спека §2.8 п. 1: контекст с тремя членствами, одно из
         них STALE — `member_count = 3`, `has_stale_members = true`,
         `has_conflicting_members = false` (конфликта в сцене нет вовсе)."""
         cp = factories.CatalogPositionFactory.create(standard_job_title="Три членства с устаревшим")
@@ -976,7 +984,7 @@ class TestContextsQueue:
         assert item["has_conflicting_members"] is False
 
     def test_list_contexts_reports_conflicting_members_flag(self, admin_client, db_session, factories):
-        """План, Task 1, «Утверждения»: членство с непустым `conflict_at` —
+        """Спека §2.8 п. 1: членство с непустым `conflict_at` —
         `has_conflicting_members = true`."""
         cp_other = factories.CatalogPositionFactory.create(standard_job_title="Источник конфликта очереди")
         bucket_other = _bucket(db_session, catalog_position=cp_other)
@@ -996,7 +1004,7 @@ class TestContextsQueue:
     def test_list_contexts_reports_zero_member_count_and_false_flags_for_empty_context(
         self, admin_client, db_session, factories
     ):
-        """План, Task 1, «Утверждения»: пустой контекст — `member_count = 0`,
+        """Спека §2.8 п. 1: пустой контекст — `member_count = 0`,
         оба признака `false`.
 
         Рядом — СОСЕДНИЙ контекст (вне выдачи по `catalog_query`) с
@@ -1029,7 +1037,7 @@ class TestContextsQueue:
         assert item["has_conflicting_members"] is False
 
     def test_list_contexts_reports_work_category_path_third_level(self, admin_client, db_session, factories):
-        """План, Task 1, «Утверждения»: статья третьего уровня (как `8.2.3`) —
+        """Спека §2.8 п. 1: статья третьего уровня (как `8.2.3`) —
         `work_category_path` из ДВУХ элементов, прародитель затем родитель
         (код и название каждого), а не сама статья."""
         category = _category_with_dot_count(db_session, 2)
@@ -1052,7 +1060,7 @@ class TestContextsQueue:
         ]
 
     def test_list_contexts_reports_work_category_path_second_level(self, admin_client, db_session, factories):
-        """План, Task 1, «Утверждения» (родители статьи, от корня, без неё
+        """Спека §2.8 п. 1 (родители статьи, от корня, без неё
         самой): статья ВТОРОГО уровня — `work_category_path` из ОДНОГО
         элемента, её родителя. Это состояние, которое вытесняют оба случая
         плана: прародителя нет, родитель есть, — и путь, собираемый только при
@@ -1076,7 +1084,7 @@ class TestContextsQueue:
     def test_list_contexts_reports_empty_work_category_path_for_first_level_category(
         self, admin_client, db_session, factories
     ):
-        """План, Task 1, «Утверждения»: статья первого уровня —
+        """Спека §2.8 п. 1: статья первого уровня —
         `work_category_path` пуст."""
         category = _category_with_dot_count(db_session, 0)
         assert category.parent_id is None
@@ -1094,7 +1102,7 @@ class TestContextsQueue:
     def test_list_contexts_reports_empty_work_category_path_without_category(
         self, admin_client, db_session, factories
     ):
-        """План, Task 1, «Утверждения»: корзина без статьи
+        """Спека §2.8 п. 1: корзина без статьи
         (`work_category_id IS NULL`) — `work_category_path` пуст."""
         cp = factories.CatalogPositionFactory.create(standard_job_title="Корзина без статьи очереди")
         bucket = _bucket(db_session, catalog_position=cp)
@@ -1105,7 +1113,7 @@ class TestContextsQueue:
         assert item["work_category_path"] == []
 
     def test_work_categories_seed_depth_is_at_most_three(self, db_session):
-        """План, Task 1, «Утверждения»: максимальная глубина `work_categories`
+        """Спека §2.8 п. 1: максимальная глубина `work_categories`
         в засеянном справочнике `<= 3` — путь строится ДВУМЯ соединениями
         (родитель + прародитель), и это ровно тот предел, который они
         покрывают. Поднимется глубина классификатора — этот тест краснеет
@@ -1155,7 +1163,7 @@ class TestContextsQueue:
         assert count_small == count_large, (count_small, count_large)
 
     def test_list_contexts_issues_exactly_two_statements(self, admin_client, db_session, factories):
-        """План, Task 1, «Утверждения»: `list_contexts` — РОВНО два запроса,
+        """Спека §2.8 п. 1: `list_contexts` — РОВНО два запроса,
         счётчик и страница (спека §2.8 п. 1). Соседний тест выше доказывает
         только независимость от числа строк: постоянный ТРЕТИЙ запрос (например,
         разовое чтение справочника `work_categories` ради пути
@@ -1184,7 +1192,7 @@ class TestChapterPaths:
     ):
         """Путь СВЕРХУ ВНИЗ для раздела глубины 4 — четыре названия, и
         совпадает с `tuple(reversed(chapter_context(db, позиция).chain))`
-        для позиции этого раздела (план, Task 2, «Утверждения»)."""
+        для позиции этого раздела (спека §2.8 п. 2)."""
         proposal = _proposal(factories)
         level1 = _chapter(factories, proposal, title="Раздел уровня 1")
         level2 = _chapter(factories, proposal, title="Раздел уровня 2", parent=level1)
@@ -1255,8 +1263,7 @@ class TestChapterPaths:
             chapter_paths(db_session, [s.id])
 
     def test_cycle_raises_routing_error_without_hanging(self, db_session, factories):
-        """Цикл `A -> B -> A` — `RoutingError`, не зависание (план, Task 2,
-        «Утверждения»). Прогон обязан идти под шелл-`timeout` (см. отчёт
+        """Цикл `A -> B -> A` — `RoutingError`, не зависание (план, спека §2.8 п. 2). Прогон обязан идти под шелл-`timeout` (см. отчёт
         задачи) — плагина `pytest-timeout` в проекте нет."""
         proposal = _proposal(factories)
         a = _chapter(factories, proposal, title="Раздел A")
@@ -1388,20 +1395,14 @@ class TestContextCard:
         response = admin_client.get(f"{BASE}/contexts/999999999")
         assert response.status_code == 404
 
-    def test_card_lists_members_with_job_title_and_estimate(self, admin_client, db_session, factories):
-        """Экран не может предложить действие по членству, не видя его id
-        и состояния — `member_count` был только агрегатом. `members` несёт
-        id позиции, её название ПО
-        СМЕТЕ (`job_title_in_proposal`, не каталожное имя — они могут
-        расходиться) и id сметы, куда эта позиция ведёт."""
-        # id лота обязан отличаться от id сметы: при совпадении (на свежей базе
-        # последовательности идут вровень) `Proposal.lot_id` вместо
-        # `Lot.estimate_id` прошёл бы сверку `estimate_id` ниже.
+    def test_card_reports_member_count_without_members_list(self, admin_client, db_session, factories):
+        """Карточка не несёт членств поштучно (спека §2.8 п. 5, удалены
+        `members`/`members_truncated`) — только агрегат `member_count`;
+        строка ПО СМЕТЕ (`job_title_in_proposal`, не каталожное имя — они
+        могут расходиться) и id сметы читаются постранично запросом группы
+        (`TestGroupMembers`), не карточкой."""
         estimate = factories.EstimateFactory.create()
         lot = factories.LotFactory.create(estimate=estimate)
-        if lot.id == estimate.id:
-            lot = factories.LotFactory.create(estimate=estimate)
-        assert lot.id != estimate.id
         proposal = factories.ProposalFactory.create(lot=lot)
         cp = factories.CatalogPositionFactory.create(standard_job_title="Кладка кирпича")
         bucket = _bucket(db_session, catalog_position=cp)
@@ -1416,26 +1417,35 @@ class TestContextCard:
         assert card.status_code == 200
         body = card.json()
         assert body["member_count"] == 2
-        assert body["members_truncated"] is False
-        members = body["members"]
-        assert len(members) == 2
-        # Порядок — по `position_item_id`, тот же детерминизм, что у
-        # представительного членства карточки выше.
-        ids = [m["position_item_id"] for m in members]
-        assert ids == sorted(ids)
-        by_id = {m["position_item_id"]: m for m in members}
-        assert by_id[position_a.id]["job_title"] == "Кладка кирпича, поз. А"
-        assert by_id[position_b.id]["job_title"] == "Кладка кирпича, поз. Б"
-        assert by_id[position_a.id]["estimate_id"] == estimate.id
-        assert by_id[position_b.id]["estimate_id"] == estimate.id
-        assert by_id[position_a.id]["membership_state"] == MembershipState.CURRENT.value
+        assert "members" not in body
+        assert "members_truncated" not in body
+
+    def test_card_of_empty_context_has_no_members_keys_either(
+        self, admin_client, db_session, factories
+    ):
+        """Тот же отказ от `members`/`members_truncated` — на контексте БЕЗ
+        членств вовсе: пустая карточка не сохранила бы поле пустым списком
+        случайно, если бы сериализатор строил его условно."""
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        assert body["member_count"] == 0
+        assert "members" not in body
+        assert "members_truncated" not in body
 
     def test_card_member_reports_stale_and_conflict_fields(self, admin_client, db_session, factories):
         """Устаревшее и конфликтное членства несут РАЗНЫЕ факты (спека §2.5):
         `membership_state=STALE` у одного, `conflict_at`/
         `conflict_from_context_id` у другого — экран различает их действия
         («принять предложение переноса» / «принять решение цели») ИМЕННО по
-        этим полям, а не по догадке."""
+        этим полям, а не по догадке. Строка читается запросом группы
+        (`GET .../members`, спека §2.8 п. 3) — карточка членства поштучно
+        больше не несёт (§2.8 п. 5)."""
         estimate = factories.EstimateFactory.create()
         lot = factories.LotFactory.create(estimate=estimate)
         proposal = factories.ProposalFactory.create(lot=lot)
@@ -1460,9 +1470,9 @@ class TestContextCard:
         )
         db_session.flush()
 
-        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
-        assert card.status_code == 200
-        by_id = {m["position_item_id"]: m for m in card.json()["members"]}
+        page = admin_client.get(f"{BASE}/contexts/{ctx.id}/members")
+        assert page.status_code == 200
+        by_id = {m["position_item_id"]: m for m in page.json()["items"]}
 
         stale = by_id[stale_position.id]
         assert stale["membership_state"] == MembershipState.STALE.value
@@ -1475,94 +1485,12 @@ class TestContextCard:
         assert conflicted["conflict_from_context_id"] == other_ctx.id
         assert conflicted["routed_by"] == RoutedBy.manual.value
 
-    def test_card_members_truncated_at_cap_member_count_stays_full(
-        self, admin_client, db_session, factories, monkeypatch
-    ):
-        """Потолок — монки-патч константы, не 501 реальная строка:
-        `member_count` обязан остаться ПОЛНЫМ (3), а `members` — обрезанным
-        до потолка (2), с `members_truncated=True`."""
-        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
-        estimate = factories.EstimateFactory.create()
-        lot = factories.LotFactory.create(estimate=estimate)
-        proposal = factories.ProposalFactory.create(lot=lot)
-        cp = factories.CatalogPositionFactory.create()
-        bucket = _bucket(db_session, catalog_position=cp)
-        ctx = _context(db_session, bucket)
-        for i in range(3):
-            position = _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}")
-            _member(db_session, position, ctx)
-        db_session.flush()
-
-        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
-        assert card.status_code == 200
-        body = card.json()
-        assert body["member_count"] == 3
-        assert len(body["members"]) == 2
-        assert body["members_truncated"] is True
-
-    def test_card_members_exactly_at_cap_are_not_truncated(
-        self, admin_client, db_session, factories, monkeypatch
-    ):
-        """Вторая граница потолка: РОВНО потолок членств — не обрезка.
-        `members_truncated` обязан быть `False`, иначе `>=` вместо `>`
-        (или `LIMIT CAP` без `+1`) прошёл бы тест «больше потолка» выше."""
-        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
-        estimate = factories.EstimateFactory.create()
-        lot = factories.LotFactory.create(estimate=estimate)
-        proposal = factories.ProposalFactory.create(lot=lot)
-        cp = factories.CatalogPositionFactory.create()
-        bucket = _bucket(db_session, catalog_position=cp)
-        ctx = _context(db_session, bucket)
-        for i in range(2):
-            position = _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}")
-            _member(db_session, position, ctx)
-        db_session.flush()
-
-        body = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
-        assert body["member_count"] == 2
-        assert len(body["members"]) == 2
-        assert body["members_truncated"] is False
-
-    def test_card_members_ordered_by_position_even_when_inserted_in_reverse(
-        self, admin_client, db_session, factories, monkeypatch
-    ):
-        """Порядок по `position_item_id` — свойство запроса, а не порядка
-        вставки: членства заводятся в ОБРАТНОМ порядке id, и при потолке 2 из 3
-        карточка обязана отдать два НАИМЕНЬШИХ id, по возрастанию."""
-        monkeypatch.setattr(crud_semantic, "CONTEXT_MEMBERS_PAGE_CAP", 2)
-        estimate = factories.EstimateFactory.create()
-        lot = factories.LotFactory.create(estimate=estimate)
-        proposal = factories.ProposalFactory.create(lot=lot)
-        cp = factories.CatalogPositionFactory.create()
-        bucket = _bucket(db_session, catalog_position=cp)
-        ctx = _context(db_session, bucket)
-        positions = [
-            _position(factories, proposal, catalog_position=cp, title=f"Позиция {i}") for i in range(3)
-        ]
-        for position in reversed(positions):
-            _member(db_session, position, ctx)
-            db_session.flush()
-        # Обратный порядок членств сам по себе не ловит снятый `ORDER BY`:
-        # план может вести соединение от `position_items`, чья куча лежит по
-        # возрастанию id. `UPDATE` двух наименьших позиций уносит их новые
-        # версии в конец кучи — без `ORDER BY` они вышли бы последними.
-        db_session.execute(
-            sa.update(PositionItem)
-            .where(PositionItem.id.in_(sorted(p.id for p in positions)[:2]))
-            .values(job_title_in_proposal=PositionItem.job_title_in_proposal + " (правка)")
-        )
-        db_session.flush()
-
-        body = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
-        expected = sorted(p.id for p in positions)[:2]
-        assert [m["position_item_id"] for m in body["members"]] == expected
-
     def test_card_members_query_count_independent_of_member_count(
         self, admin_client, db_session, factories
     ):
         """Спека §2.8 п. 2 УСИЛИВАЕТ старый инвариант: число запросов
         карточки не растёт ни с числом членств, ни с числом РАЗЛИЧНЫХ путей,
-        ни с их ГЛУБИНОЙ (план, Task 2, «Утверждения»). Старое сравнение (все
+        ни с их ГЛУБИНОЙ (спека §2.8 п. 2). Старое сравнение (все
         позиции без разделов) N+1 по путям не заметило бы — здесь контекст с
         ОДНИМ путём глубины 2 и 2 членствами против контекста с ДВЕНАДЦАТЬЮ
         РАЗНЫМИ путями глубины 4 и 30 членствами; верхние уровни путей тоже
@@ -1629,20 +1557,18 @@ class TestContextCard:
         assert response_small.status_code == 200
         body_small = response_small.json()
         assert body_small["member_count"] == 2
-        assert len(body_small["members"]) == 2
         assert len(body_small["member_paths"]) == 1
         assert len(body_small["member_paths"][0]["path"]) == 2
         count_small = len(statements_small)
-        # Задача 3: ветка `representative_work_title` на этой стороне реально
-        # дошла до названия раздела (а не вышла по `None` раньше) — иначе
-        # равенство ниже не говорило бы ничего о её запросах.
+        # Ветка `representative_work_title` на этой стороне реально дошла до
+        # названия раздела (а не вышла по `None` раньше) — иначе равенство
+        # ниже не говорило бы ничего о её запросах.
         assert body_small["representative_work_title"] == "Раздел 1"
-        # Задача 3, «число запросов карточки из Task 2 не меняется»: сравнение
-        # small/large ниже не видит запроса, добавленного НА КАЖДУЮ карточку
-        # (например, путь представителя, читаемый отдельно ДО проверки роли, —
-        # обе стороны получили бы +1). Абсолютное число — замер на коде Task 2
-        # (HEAD 9d8cf51); правка, законно меняющая набор запросов карточки,
-        # обновляет его осознанно.
+        # Сравнение small/large ниже не видит запроса, добавленного НА КАЖДУЮ
+        # карточку (например, путь представителя, читаемый отдельно ДО
+        # проверки роли, — обе стороны получили бы +1). Абсолютное число —
+        # см. докстроку `_CARD_QUERY_COUNT`; правка, законно меняющая набор
+        # запросов карточки, обновляет константу осознанно.
         assert count_small == _CARD_QUERY_COUNT, count_small
 
         ctx_large = _context_with_many_paths(path_count=12, depth=4, member_count=30)
@@ -1651,7 +1577,6 @@ class TestContextCard:
         assert response_large.status_code == 200
         body_large = response_large.json()
         assert body_large["member_count"] == 30
-        assert len(body_large["members"]) == 30
         assert len(body_large["member_paths"]) == 12
         assert all(len(mp["path"]) == 4 for mp in body_large["member_paths"])
         count_large = len(statements_large)
@@ -1665,7 +1590,7 @@ class TestContextCard:
         — `member_paths` из ЧЕТЫРЁХ групп, сумма `member_count` групп равна
         `member_count` карточки, порядок — по убыванию `member_count`, группа
         `chapter_item_id=None` (`path=[]`) — ПОСЛЕДНЕЙ ПРИ ЛЮБОМ её размере
-        (план, Task 2, «Утверждения»): здесь безраздельная группа — САМАЯ
+        (спека §2.8 п. 2): здесь безраздельная группа — САМАЯ
         БОЛЬШАЯ (5 позиций), и всё равно идёт последней."""
         estimate = factories.EstimateFactory.create()
         lot = factories.LotFactory.create(estimate=estimate)
@@ -1714,7 +1639,7 @@ class TestContextCard:
         self, admin_client, db_session, factories
     ):
         """`stale_count` и `conflict_count` группы равны числу ТАКИХ членств
-        В НЕЙ (план, Task 2, «Утверждения») — обе оси независимы (спека
+        В НЕЙ (спека §2.8 п. 2) — обе оси независимы (спека
         §2.5), одна и та же группа несёт оба счётчика раздельно."""
         estimate = factories.EstimateFactory.create()
         lot = factories.LotFactory.create(estimate=estimate)
@@ -2025,7 +1950,7 @@ class TestContextCard:
         """После ручного разноса раздела в статью C у его устаревших членств
         — ОДНА запись `stale_groups` с `target_category_id = C` и её кодом и
         названием; членства ДРУГОГО раздела той же карточки в эту запись не
-        попадают (план, Task 2, «Утверждения»)."""
+        попадают (спека §2.8 п. 2)."""
         estimate = factories.EstimateFactory.create()
         lot = factories.LotFactory.create(estimate=estimate)
         proposal = factories.ProposalFactory.create(lot=lot)
@@ -2108,7 +2033,7 @@ class TestContextCard:
         self, admin_client, db_session, factories
     ):
         """Карточка контекста, чей ближайший раздел зациклен, отвечает
-        доменной ошибкой (422), а не `500` (план, Task 2, «Утверждения»):
+        доменной ошибкой (422), а не `500` (спека §2.8 п. 2):
         роутер обязан переводить `RoutingError` `context_card`
         (`_read_domain_errors`, `routers/semantic.py`)."""
         estimate = factories.EstimateFactory.create()
@@ -2373,8 +2298,7 @@ class TestGroupMembers:
     ):
         """Один контекст с позициями под ДВУМЯ разделами и одной БЕЗ
         раздела: `chapter_item_id=A` отдаёт только позиции A, `no_chapter=
-        true` — только без раздела, ни то ни другое — ВЕСЬ контекст (план,
-        Task 4, «Утверждения»)."""
+        true` — только без раздела, ни то ни другое — ВЕСЬ контекст (спека §2.8 п. 3)."""
         proposal = _proposal(factories)
         cp = factories.CatalogPositionFactory.create()
         bucket = _bucket(db_session, catalog_position=cp)
@@ -2504,9 +2428,8 @@ class TestGroupMembers:
         self, admin_client, db_session, factories
     ):
         """Группа в тысячи позиций — `member-ids` отдаёт ПОЛНЫЙ список без
-        обрезки (спека §2.8 п. 3: тот же приём, что снял
-        `CONTEXT_MEMBERS_PAGE_CAP=500` карточки). 520 — специально БОЛЬШЕ
-        старого потолка карточки, план, Task 4, «Проверка»."""
+        обрезки (спека §2.8 п. 3). 520 — специально больше прежнего потолка
+        членств карточки, снятого спекой §2.8 п. 5."""
         cp = factories.CatalogPositionFactory.create()
         bucket = _bucket(db_session, catalog_position=cp)
         ctx = _context(db_session, bucket)
@@ -2524,7 +2447,7 @@ class TestGroupMembers:
         self, admin_client, db_session, factories
     ):
         """`limit=100, offset=500` на группе из 520 — 20 строк, `total=520`,
-        порядок по `position_item_id` (план, Task 4, «Утверждения»): точные
+        порядок по `position_item_id` (спека §2.8 п. 3): точные
         id страницы, не только её длина."""
         cp = factories.CatalogPositionFactory.create()
         bucket = _bucket(db_session, catalog_position=cp)
@@ -2562,8 +2485,7 @@ class TestGroupMembers:
     def test_members_exactly_two_statements_on_small_and_large_group(
         self, admin_client, db_session, factories
     ):
-        """Ровно 2 запроса на группах из 5 и из 520 позиций (план, Task 4,
-        «Утверждения»): счётчик+существование одним SELECT и страница —
+        """Ровно 2 запроса на группах из 5 и из 520 позиций (спека §2.8 п. 3): счётчик+существование одним SELECT и страница —
         число не растёт вместе с размером группы."""
         cp_small = factories.CatalogPositionFactory.create()
         bucket_small = _bucket(db_session, catalog_position=cp_small)
@@ -2590,7 +2512,7 @@ class TestGroupMembers:
     def test_member_ids_exactly_two_statements_on_small_and_large_group(
         self, admin_client, db_session, factories
     ):
-        """То же для `member-ids` (план, Task 4, «Утверждения»)."""
+        """То же для `member-ids` (спека §2.8 п. 3)."""
         cp_small = factories.CatalogPositionFactory.create()
         bucket_small = _bucket(db_session, catalog_position=cp_small)
         ctx_small = _context(db_session, bucket_small)
@@ -2769,21 +2691,30 @@ class TestGroupMembers:
         )
         assert response.status_code == 422
 
-    def test_members_row_equals_card_member_row(self, admin_client, db_session, factories):
+    def test_members_row_shape_has_all_seven_fields(self, admin_client, db_session, factories):
         """Спека §2.8 п. 3: «форма строки — та же, что была у `members[]`
-        карточки» — строка `members` ПОЛНОСТЬЮ равна строке карточки той же
-        позиции (все семь полей, включая конфликт и `routed_by`), а не
-        только `position_item_id`."""
+        карточки ДО удаления списка поштучно» — строка `members` группового
+        эндпоинта несёт все семь полей, включая конфликт и `routed_by`, а не
+        только `position_item_id` (карточка сама этот список больше не
+        строит, спека §2.8 п. 5)."""
         (other_category_id,) = _leaf_category_ids(db_session, 1)
         estimate = factories.EstimateFactory.create()
+        # id лота обязан отличаться от id сметы: при совпадении (на свежей базе
+        # последовательности идут вровень) `Proposal.lot_id` вместо
+        # `Lot.estimate_id` прошёл бы сверку `estimate_id` ниже. Эта защита
+        # стояла в удалённом тесте `members[]` карточки и переехала сюда
+        # вместе с самой строкой членства.
         lot = factories.LotFactory.create(estimate=estimate)
+        if lot.id == estimate.id:
+            lot = factories.LotFactory.create(estimate=estimate)
+        assert lot.id != estimate.id
         proposal = factories.ProposalFactory.create(lot=lot)
-        cp = factories.CatalogPositionFactory.create()
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Каталожное имя строки")
         bucket = _bucket(db_session, catalog_position=cp)
         ctx = _context(db_session, bucket)
         other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
         other_ctx = _context(db_session, other_bucket, is_default=False)
-        pos = _position(factories, proposal, catalog_position=cp, title="Строка как в карточке")
+        pos = _position(factories, proposal, catalog_position=cp, title="Строка группы по смете")
         _member(
             db_session, pos, ctx,
             membership_state=MembershipState.STALE.value,
@@ -2792,15 +2723,21 @@ class TestGroupMembers:
         )
         db_session.flush()
 
-        card_row = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()["members"][0]
         page = admin_client.get(f"{BASE}/contexts/{ctx.id}/members").json()
-        assert page["items"] == [card_row]
-        assert set(card_row) == {
+        row = page["items"][0]
+        assert set(row) == {
             "position_item_id", "job_title", "estimate_id", "membership_state",
             "conflict_at", "conflict_from_context_id", "routed_by",
         }
-        assert card_row["routed_by"] == RoutedBy.manual.value
-        assert card_row["estimate_id"] == estimate.id
+        assert row["routed_by"] == RoutedBy.manual.value
+        assert row["estimate_id"] == estimate.id
+        # Название ПО СМЕТЕ (`job_title_in_proposal`), не каталожное имя —
+        # они могут расходиться (утверждение удалённого теста `members[]`
+        # карточки, переехавшее со строкой членства).
+        assert row["job_title"] == "Строка группы по смете"
+        assert row["position_item_id"] == pos.id
+        assert row["membership_state"] == MembershipState.STALE.value
+        assert row["conflict_from_context_id"] == other_ctx.id
 
 
 # ---------------------------------------------------------------------------

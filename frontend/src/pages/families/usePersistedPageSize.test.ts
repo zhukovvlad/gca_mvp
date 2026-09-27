@@ -4,16 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
 /**
- * `usePersistedPageSize` (план Task 6, «Решения плана» п. 5): размер
- * страницы хранится в `localStorage` ключом `gca.families.<список>.pageSize`;
- * недопустимое значение или ошибка доступа к `localStorage` — умолчание.
+ * `usePersistedPageSize` (спека §2.7): размер страницы хранится в
+ * `localStorage` ключом `gca.families.<список>.pageSize`; недопустимое
+ * значение или ошибка доступа к `localStorage` — умолчание.
  *
- * Плана-файл (Task 6 «Files») не заводит отдельного `*.test.ts` под этот
- * хук, но раздел «Утверждения» прямо требует три отдельных проверки
+ * Отдельный файл, а не проверки внутри `Pager.test.tsx`: три сценария
  * (сохранённое допустимое / отсутствующее-недопустимое / бросающий
- * `localStorage`) — без своего файла они утонули бы в `Pager.test.tsx`,
- * который проверяет компонент, а не хранение. Отклонение от буквального
- * списка файлов задачи.
+ * `localStorage`) проверяют хранение, а не компонент — в файле компонента
+ * они утонули бы среди его собственных проверок.
  */
 const KEY = "gca.families.contexts.pageSize";
 
