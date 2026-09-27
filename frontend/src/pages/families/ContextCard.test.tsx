@@ -1162,6 +1162,77 @@ describe("ContextCard", () => {
     );
   });
 
+  // Дефект живого прогона на стенде (спека §2.6, DoD §5 п. 6: «экран
+  // сообщает «перенесено N из M» и перечисляет отказы»): при ПОЛНОМ успехе
+  // перечитанная карточка (тест выше) больше не несёт свою устаревшую
+  // группу — строка внимания пропадает. Если результат печатался ВНУТРИ
+  // этой строки, «перенесено 1 из 1» пропадало вместе с ней, и оператор его
+  // не видел ни разу.
+  it("«перенесено N из M» остаётся видимым после исчезновения строки внимания (полный успех, перечитанная карточка)", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/semantic/contexts/:id/stale-groups/transfer", async ({ params, request }) => {
+        const contextId = Number(params.id);
+        const body = (await request.json()) as {
+          chapter_item_id: number | null;
+          expected_category_id: number | null;
+        };
+        handlerState.lastTransferStaleGroupRequest = { contextId, body };
+        handlerState.transferStaleGroupCalls += 1;
+        // Сервер перенёс группу целиком — перечитанная карточка отвечает уже
+        // без `stale_groups` (мутируем ТУ ЖЕ фикстуру, что читает GET).
+        contextFixture(STALE_CONTEXT_ID).stale_groups = [];
+        return HttpResponse.json({
+          results: [
+            {
+              position_item_id: STALE_POSITION_ITEM_ID,
+              outcome: "moved" as const,
+              target_context_id: 9999,
+              error_code: null,
+              message: null,
+            },
+          ],
+          moved: 1,
+          refused: 0,
+        });
+      })
+    );
+    renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
+    await user.click(await screen.findByRole("button", { name: /Перенести их/ }));
+
+    // Строка внимания устаревшей группы пропадает у перечитанной карточки...
+    await waitFor(() =>
+      expect(screen.queryByText(/позици[яий] из раздела/)).not.toBeInTheDocument()
+    );
+    // ...а результат переноса остаётся виден оператору — он не был привязан
+    // к строке, которой больше нет.
+    expect(screen.getByText("перенесено 1 из 1")).toBeInTheDocument();
+  });
+
+  it("«Скрыть» убирает результат переноса с экрана", async () => {
+    const user = userEvent.setup();
+    handlerState.staleGroupTransferOverride = {
+      results: [
+        {
+          position_item_id: STALE_POSITION_ITEM_ID,
+          outcome: "moved",
+          target_context_id: 9999,
+          error_code: null,
+          message: null,
+        },
+      ],
+      moved: 1,
+      refused: 0,
+    };
+    renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
+    await user.click(await screen.findByRole("button", { name: /Перенести их/ }));
+    expect(await screen.findByText("перенесено 1 из 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Скрыть" }));
+
+    expect(screen.queryByText("перенесено 1 из 1")).not.toBeInTheDocument();
+  });
+
   it("свёрнутая группа своих позиций не запрашивает; раскрытие запрашивает ровно свою группу", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContextCard contextId={MIXED_GROUPS_CONTEXT_ID} />);

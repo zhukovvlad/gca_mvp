@@ -178,10 +178,18 @@ export function ContextCard({ contextId }: ContextCardProps) {
   const [newDefaultInput, setNewDefaultInput] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
 
-  // Результаты пакетного переноса устаревшей группы (спека §2.6) — по ключу
-  // группы, чтобы «перенесено N из M» и отказы печатались РЯДОМ со СВОЕЙ
-  // строкой внимания, а не общим тостом.
+  // Результаты пакетного переноса устаревшей группы (спека §2.6, DoD §5
+  // п. 6: «экран сообщает «перенесено N из M» и перечисляет отказы») — по
+  // ключу группы, в ОТДЕЛЬНОМ блоке рядом со строками внимания, а не внутри
+  // строки своей устаревшей группы: при полном успехе перечитанная карточка
+  // (см. `onSuccess` ниже) больше не несёт эту группу в `stale_groups`, и
+  // результат внутри строки пропал бы вместе с ней, не будучи увиденным
+  // оператором (дефект живого прогона на стенде). Путь и раздел группы
+  // сохраняются В МОМЕНТ переноса — своих полей у перечитанной карточки для
+  // уже перенесённой группы больше нет.
   const [transferResults, setTransferResults] = useState<Record<string, {
+    chapterItemId: number | null;
+    pathLabel: string;
     moved: number;
     refused: number;
     refusals: { position_item_id: number; message: string | null }[];
@@ -341,7 +349,6 @@ export function ContextCard({ contextId }: ContextCardProps) {
       <div className="grid gap-2">
         {card.stale_groups.map((sg) => {
           const key = groupKeyOf(sg.chapter_item_id);
-          const result = transferResults[key];
           const pathLabel = groupPathLabel(sg);
           return (
             <Surface key={key} className="grid gap-2 border-warning/40 bg-warning/5">
@@ -387,6 +394,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
                           setTransferResults((prev) => ({
                             ...prev,
                             [key]: {
+                              chapterItemId: sg.chapter_item_id,
+                              pathLabel,
                               moved: data.moved,
                               refused: data.refused,
                               refusals: data.results
@@ -402,21 +411,53 @@ export function ContextCard({ contextId }: ContextCardProps) {
                   Перенести их
                 </Button>
               </div>
-              {result && (
-                <div className="text-sm">
-                  <p>
-                    перенесено {result.moved} из {result.moved + result.refused}
-                  </p>
-                  {result.refusals.map((r) => (
-                    <p key={r.position_item_id} className="text-destructive">
-                      позиция {r.position_item_id}: {r.message}
-                    </p>
-                  ))}
-                </div>
-              )}
             </Surface>
           );
         })}
+
+        {/* Результаты пакетного переноса (спека §2.6, DoD §5 п. 6) — ОТДЕЛЬНЫЙ
+            блок рядом со строками внимания, не внутри строки своей группы (см.
+            докстринг у `transferResults`): виден до перечитывания карточки
+            оператором и после, пока тот не нажмёт «Скрыть» или не сменит
+            контекст (карточка размонтируется по `key` в `ContextsTab.tsx`). */}
+        {Object.entries(transferResults).map(([key, result]) => (
+          <Surface key={key} className="grid gap-1">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="text-sm">
+                <p className="flex flex-wrap items-center gap-1 text-fg-secondary">
+                  {result.chapterItemId === null ? (
+                    <span>без раздела</span>
+                  ) : (
+                    <>
+                      <SourceChip kind="estimate" /> <span>{result.pathLabel}</span>
+                    </>
+                  )}
+                </p>
+                <p>
+                  перенесено {result.moved} из {result.moved + result.refused}
+                </p>
+                {result.refusals.map((r) => (
+                  <p key={r.position_item_id} className="text-destructive">
+                    позиция {r.position_item_id}: {r.message}
+                  </p>
+                ))}
+              </div>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() =>
+                  setTransferResults((prev) => {
+                    const next = { ...prev };
+                    delete next[key];
+                    return next;
+                  })
+                }
+              >
+                Скрыть
+              </Button>
+            </div>
+          </Surface>
+        ))}
 
         {totalConflictCount > 0 && (
           <Surface className="grid gap-2 border-warning/40 bg-warning/5">
