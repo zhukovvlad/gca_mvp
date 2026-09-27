@@ -2,6 +2,8 @@ import type { ContractListParams } from "./api/domain";
 import type {
   ComparisonParams,
   ContextsParams,
+  GroupSelector,
+  GroupState,
   MatrixParams,
   RateStandardParams,
   ReviewQueueParams,
@@ -189,5 +191,13 @@ export const qk = {
     all: ["semantic-contexts"] as const,
     list: (params?: ContextsParams) => ["semantic-contexts", "list", params ?? {}] as const,
     card: (id: number) => ["semantic-contexts", "card", id] as const,
+    /** Страница членств группы (спека §2.8 п. 3) — ключует контекст, селектор группы, фильтр состояния и страницу. */
+    groupMembers: (
+      contextId: number,
+      selector: GroupSelector,
+      state: GroupState,
+      page: number,
+      pageSize: number
+    ) => ["semantic-contexts", "group-members", contextId, selector, state, page, pageSize] as const,
   },
 };

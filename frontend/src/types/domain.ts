@@ -2075,7 +2075,13 @@ export interface ComparisonParams {
 //  API — `backend/routers/semantic.py`, `backend/crud/semantic.py`)
 // ---------------------------------------------------------------------------
 
-export type WorkFamilyStatus = "draft" | "active" | "archived";
+/**
+ * Рантайм-массив значений {@link WorkFamilyStatus} — тем же приёмом, что
+ * `SEMANTIC_KIND_VALUES` и соседи ниже (§2.2): `labels.ts::FAMILY_STATUS_LABEL`
+ * перебирается тестом по НЕМУ, а не угадывается литералом.
+ */
+export const WORK_FAMILY_STATUS_VALUES = ["draft", "active", "archived"] as const;
+export type WorkFamilyStatus = (typeof WORK_FAMILY_STATUS_VALUES)[number];
 
 /** Строка `GET /v1/semantic/families` (`crud/semantic.py::list_families`). */
 export interface WorkFamily {
@@ -2083,6 +2089,8 @@ export interface WorkFamily {
   title: string;
   unit_id: number | null;
   unit_code: string | null;
+  /** Символ единицы (`units_of_measure.symbol`, спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   definition: string | null;
   status: WorkFamilyStatus;
   seed_key: string | null;
@@ -2114,12 +2122,46 @@ export interface WorkFamilyPatch {
   unit_name?: string | null;
 }
 
-export type SemanticKind = "WORK" | "SYSTEM" | "UNKNOWN";
-export type DecisionSource = "rule" | "manual";
-export type NameRole = "WORK" | "LOCATION_ONLY" | "GENERIC_WORK";
-export type SemanticState = "SUGGESTED" | "CONFIRMED" | "NOT_APPLICABLE";
-export type ComparabilityReason = "insufficient_description";
-export type FamilySource = "manual" | "suggestion";
+/**
+ * Значения закрытых множеств домена — рядом с типами, которые из них
+ * выведены (`(typeof X_VALUES)[number]`), а не отдельным литералом типа.
+ * Причина: спека §2.2 экрана «Семьи и контексты» требует подписи на КАЖДОЕ
+ * значение каждого типа (`frontend/src/pages/families/labels.ts` и его
+ * тест), а до этой правки у типов не было рантайм-массива значений — тест
+ * не мог перебрать значения типа, только угадать их литералом и разойтись с
+ * типом молча. Забытое здесь значение теперь не компилируется в
+ * `labels.ts` (`Record<T, string>` требует всех ключей `(typeof
+ * X_VALUES)[number]`) — тип и массив исключают рассинхронизацию по
+ * построению, а не соглашением.
+ */
+export const SEMANTIC_KIND_VALUES = ["WORK", "SYSTEM", "UNKNOWN"] as const;
+export type SemanticKind = (typeof SEMANTIC_KIND_VALUES)[number];
+
+export const DECISION_SOURCE_VALUES = ["rule", "manual"] as const;
+export type DecisionSource = (typeof DECISION_SOURCE_VALUES)[number];
+
+export const NAME_ROLE_VALUES = ["WORK", "LOCATION_ONLY", "GENERIC_WORK"] as const;
+export type NameRole = (typeof NAME_ROLE_VALUES)[number];
+
+export const SEMANTIC_STATE_VALUES = ["SUGGESTED", "CONFIRMED", "NOT_APPLICABLE"] as const;
+export type SemanticState = (typeof SEMANTIC_STATE_VALUES)[number];
+
+export const COMPARABILITY_REASON_VALUES = ["insufficient_description"] as const;
+export type ComparabilityReason = (typeof COMPARABILITY_REASON_VALUES)[number];
+
+export const FAMILY_SOURCE_VALUES = ["manual", "suggestion"] as const;
+export type FamilySource = (typeof FAMILY_SOURCE_VALUES)[number];
+
+/**
+ * Одна статья пути классификатора строки списка контекстов (спека
+ * `2026-09-25-families-screen-design.md` §2.4, §2.8 п. 1) — код и название,
+ * без уровня: уровень читается из позиции в списке `work_category_path`
+ * (тот же контракт, что `WorkCategoryRef` бэкенда, `backend/crud/semantic.py`).
+ */
+export interface WorkCategoryPathEntry {
+  code: string;
+  title: string;
+}
 
 /** Строка `GET /v1/semantic/contexts` (`crud/semantic.py::list_contexts`). */
 export interface ContextRow {
@@ -2140,7 +2182,22 @@ export interface ContextRow {
   catalog_position_id: number;
   standard_job_title: string;
   unit_code: string | null;
+  /** Символ единицы (спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   archived_at: string | null;
+  /** Число членств контекста — спека §2.4 «число позиций». */
+  member_count: number;
+  /** Есть ли у контекста устаревшие членства — предикат фильтра и точки внимания строки. */
+  has_stale_members: boolean;
+  /** Есть ли у контекста конфликтные членства — предикат фильтра и точки внимания строки. */
+  has_conflicting_members: boolean;
+  /**
+   * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, от корня,
+   * БЕЗ самой статьи (спека §2.4: «полный путь классификатора — во
+   * всплывающей подсказке»); сама статья — отдельные поля
+   * `work_category_code`/`work_category_title` выше.
+   */
+  work_category_path: WorkCategoryPathEntry[];
 }
 
 export interface ContextsPage {
@@ -2177,6 +2234,42 @@ export interface SemanticEventEntry {
   created_at: string;
 }
 
+/**
+ * Одна группа членств карточки, по ТЕКСТУ ближайшего пути (спека
+ * `2026-09-25-families-screen-design.md` §2.5, §2.8 п. 2, редакция 3 —
+ * «сверка с макетом» 27.09.2026): одинаковый путь-текст у разделов РАЗНЫХ
+ * смет — ОДНА группа экрана, а не строка на каждый раздел.
+ * `chapter_item_ids` — все разделы, чей путь совпал с этой группой, по
+ * возрастанию id; `chapter_item_ids: []` — группа «без раздела» (`path:
+ * []`), всегда последняя. Путь — СВЕРХУ ВНИЗ, без листа (сам раздел не
+ * входит отдельным полем — он последний элемент `path`, тем же контрактом,
+ * что `WorkCategoryPathEntry` строит для статьи, но здесь названия
+ * разделов, не коды классификатора).
+ */
+export interface MemberPath {
+  chapter_item_ids: number[];
+  path: string[];
+  member_count: number;
+  stale_count: number;
+  conflict_count: number;
+}
+
+/**
+ * Устаревшая группа под цель переноса (спека §2.6, §2.8 п. 2, редакция 3) —
+ * `ContextCardData.stale_groups`. Один элемент на пару «текст пути →
+ * целевая статья» — источник текста строки внимания и входа пакетного
+ * переноса (`transferStaleGroup`, `chapter_item_ids`/`expected_category_id`).
+ * `chapter_item_ids: []` — «без раздела» (цели у неё нет вовсе).
+ */
+export interface StaleGroup {
+  chapter_item_ids: number[];
+  path: string[];
+  count: number;
+  target_category_id: number | null;
+  target_category_code: string | null;
+  target_category_title: string | null;
+}
+
 /** `GET /v1/semantic/contexts/:id` (`crud/semantic.py::context_card`). */
 export interface ContextCardData {
   id: number;
@@ -2187,6 +2280,8 @@ export interface ContextCardData {
   standard_job_title: string;
   unit_id: number | null;
   unit_code: string | null;
+  /** Символ единицы (спека §2.8, уточнение 27.09.2026) — экран печатает ЕГО, не `unit_code`. */
+  unit_symbol: string | null;
   work_category_id: number | null;
   work_category_code: string | null;
   work_category_title: string | null;
@@ -2210,20 +2305,38 @@ export interface ContextCardData {
   family_at: string | null;
   member_count: number;
   /**
+   * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, без самой
+   * статьи (то же значение, что несёт строка списка,
+   * {@link ContextRow.work_category_path}, спека
+   * `2026-09-25-families-screen-design.md` §2.8 п. 2).
+   */
+  work_category_path: WorkCategoryPathEntry[];
+  /**
+   * Работа по разделу представительной позиции — только при СОХРАНЁННОЙ роли
+   * `LOCATION_ONLY` (спека §2.5, §2.8 п. 2): ручная смена роли не
+   * пересчитывает классификатор, поэтому подпись следует роли, записанной
+   * на контексте, а не повторной классификацией. `null` при любой другой
+   * роли и у контекста без представителя (пустой контекст, представитель
+   * без раздела, цепочка сплошь из мест).
+   */
+  representative_work_title: string | null;
+  /**
+   * Группы членств по ТЕКСТУ ближайшего пути позиции (спека §2.5, §2.8
+   * п. 2, редакция 3) — порядок ответа: по убыванию `member_count`, группа
+   * `chapter_item_ids: []` («без раздела») — последней при любом её
+   * размере. Сумма `member_count` групп равна {@link
+   * ContextCardData.member_count} по построению.
+   */
+  member_paths: MemberPath[];
+  /** Устаревшие членства по парам «текст пути → целевая статья» (спека §2.6, §2.8 п. 2, редакция 3) — источник строк внимания и пакетного переноса. */
+  stale_groups: StaleGroup[];
+  /**
    * Соседи по корзине (той же `bucket_id`) — живые И архивные, упорядочены
    * по id (`backend/crud/semantic.py::context_card`). Цель слияния/переноса
    * выбирается из них (живых, кроме текущего контекста), а не вводится id
    * вручную — решение оркестратора, план задачи 13.
    */
   bucket_contexts: BucketContextOption[];
-  /**
-   * Членства поштучно (`backend/crud/semantic.py::context_card`) —
-   * ограничено бэкендом (`CONTEXT_MEMBERS_PAGE_CAP`), `members_truncated`
-   * отмечает обрезку. `member_count` выше остаётся ПОЛНЫМ счётчиком
-   * независимо от обрезки этого списка.
-   */
-  members: ContextMemberRow[];
-  members_truncated: boolean;
   events: SemanticEventEntry[];
 }
 
@@ -2238,7 +2351,12 @@ export interface BucketContextOption {
 export type MembershipState = "CURRENT" | "STALE";
 export type RoutedBy = "default" | "rule" | "manual";
 
-/** Одна строка `ContextCardData.members` — членство позиции в контексте. */
+/**
+ * Одна строка `GroupMembersPage.items` — членство позиции в контексте
+ * (спека §2.8 п. 3). До удаления `ContextCardData.members` (§2.8 п. 5) это
+ * была строка карточки поштучно; форма не изменилась, изменился только
+ * носитель — запрос группы (`GET .../members`), не карточка.
+ */
 export interface ContextMemberRow {
   position_item_id: number;
   /** Название работы ПО СМЕТЕ (`job_title_in_proposal`) — может расходиться с каталожным. */
@@ -2249,6 +2367,70 @@ export interface ContextMemberRow {
   conflict_at: string | null;
   conflict_from_context_id: number | null;
   routed_by: RoutedBy;
+}
+
+/** Состояние-фильтр запроса группы членств (спека §2.8 п. 3). */
+export type GroupState = "all" | "stale" | "conflict";
+
+/**
+ * Группа членств контекста, по ТЕКСТУ ближайшего пути позиции (спека §2.8
+ * п. 3, редакция 3) — вход `groupMembers`/`groupMemberIds`. Группа экрана —
+ * текст пути, поэтому `chapter_item_ids` несёт ВСЕ разделы группы
+ * (`member_paths.chapter_item_ids`), не один — отбираются позиции ЛЮБОГО из
+ * них. `chapter_item_ids: []` вместе с `no_chapter: true` — группа «без
+ * раздела»; оба ложны/пусты — ВЕСЬ контекст (тем же путём экран берёт id
+ * всех конфликтных членств для «Принять решение цели», спека §2.6);
+ * непустой `chapter_item_ids` вместе с `no_chapter: true` — противоречие,
+ * сервер отвечает `422`.
+ */
+export interface GroupSelector {
+  chapter_item_ids: number[];
+  no_chapter: boolean;
+}
+
+/** `GET /contexts/:id/members` (спека §2.8 п. 3) — та же строка, что раньше несла карточка. */
+export interface GroupMembersPage {
+  items: ContextMemberRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** `GET /contexts/:id/member-ids` (спека §2.8 п. 3) — полный список, без обрезки. */
+export interface GroupMemberIdsResult {
+  position_item_ids: number[];
+  total: number;
+}
+
+/**
+ * Вход `POST /contexts/:id/stale-groups/transfer` (спека §2.6, §2.8 п. 4,
+ * редакция 3). `chapter_item_ids` — разделы группы (`StaleGroup.
+ * chapter_item_ids`), `null` — группа «без раздела»; пустой список
+ * структурно бессмысленен и отвергается сервером `422`.
+ */
+export interface StaleGroupTransferInput {
+  chapter_item_ids: number[] | null;
+  expected_category_id: number | null;
+}
+
+/** Результат ОДНОЙ позиции пакетного переноса — спека §2.8 п. 4. */
+export interface StaleGroupTransferItem {
+  position_item_id: number;
+  outcome: "moved" | "refused";
+  target_context_id: number | null;
+  error_code: string | null;
+  message: string | null;
+}
+
+/**
+ * Ответ пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4) —
+ * пачка НЕ атомарна: частичный успех («перенесено N из M») — законный
+ * ответ, не ошибка.
+ */
+export interface StaleGroupTransferResult {
+  results: StaleGroupTransferItem[];
+  moved: number;
+  refused: number;
 }
 
 export interface ConfirmKindInput {

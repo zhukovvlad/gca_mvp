@@ -40,34 +40,221 @@ import type {
   ContextCardData,
   ContextMemberRow,
   ContextRow,
+  GroupState,
   InflationSeries,
   ComparisonVatMode,
   EstimateRow,
   ImportJobStatus,
+  MemberPath,
   ProjectPassport,
   RoundImportJob,
   SemanticEventEntry,
+  StaleGroup,
+  StaleGroupTransferResult,
   TenderCard,
+  WorkCategoryPathEntry,
   WorkFamily,
 } from "@/types/domain";
 
 /**
  * Фикстура контекста — полная форма карточки (`ContextCardData`) плюс три
  * булевых признака ПРО ЧЛЕНСТВА, которых сама карточка не несёт
- * (`crud/semantic.py::context_card` отдаёт членства поштучно, но агрегатных
- * флагов устаревшего/конфликтного членства у контекста нет — они существуют
- * только как предикаты фильтра очереди, `crud/semantic.py::ContextFilters`,
- * и из `members` фикстуры не выводятся). Флаги здесь нужны,
- * чтобы очередь `/v1/semantic/contexts` могла отвечать на
- * `has_stale_members`/`has_conflicting_members`/`has_no_members` тем же
- * способом, что и бэкенд — тремя независимыми предикатами, а не одним
- * общим, — и вырезаются перед сериализацией в JSON (`toContextRow`/
- * `toContextCard`): наружу уходит ровно форма ответа бэкенда, не более.
+ * (`crud/semantic.py::context_card` отдаёт членства поштучно только через
+ * группы, а агрегатных флагов устаревшего/конфликтного членства у контекста
+ * нет — они существуют только как предикаты фильтра очереди,
+ * `crud/semantic.py::ContextFilters`), и СЫРОЙ список членств
+ * (`members`) — он НЕ часть ответа карточки (`members`/`members_truncated`
+ * удалены спекой §2.8 п. 5), а внутренний источник данных для мокнутых
+ * эндпоинтов группы (`GET .../members`, `GET .../member-ids`) и для
+ * производных `member_paths`/`stale_groups`, которые строит
+ * {@link buildMemberPaths}/{@link buildStaleGroups} — считать их вручную по
+ * каждой фикстуре означало бы дублировать подсчёт и рано или поздно
+ * разойтись с самим списком членств. Три флага и список членств вырезаются
+ * перед сериализацией (`toContextRow`/`toContextCard`): наружу уходит ровно
+ * форма ответа бэкенда, не более.
  */
 interface SemanticContextFixture extends ContextCardData {
   hasStaleMembers: boolean;
   hasConflictingMembers: boolean;
   hasNoMembers: boolean;
+  members: SemanticMemberFixture[];
+}
+
+/**
+ * Членство фикстуры — {@link ContextMemberRow} (форма, что уходит наружу
+ * через `GET .../members`) плюс `chapterItemId`, нужный только мокнутым
+ * эндпоинтам группы, чтобы фильтровать членства по разделу
+ * (`GroupSelector`, спека §2.8 п. 3), и `staleTarget` — целевая статья
+ * устаревшего членства, источник `stale_groups` (§2.8 п. 2): у не-STALE
+ * членств её нет вовсе, у STALE без назначенной цели (не участвует в строке
+ * внимания §2.6) её тоже нет.
+ */
+interface SemanticMemberFixture extends ContextMemberRow {
+  chapterItemId: number | null;
+  staleTarget?: { category_id: number; code: string; title: string };
+}
+
+/**
+ * Фильтр членств группы (спека §2.8 п. 3, редакция 3) — тот же селектор/
+ * состояние, что `GroupSelector`/`GroupState` бэкенда: `chapterItemIds` не
+ * пуст — раздел ЛЮБОГО из них (группа экрана — текст пути, слитый из
+ * нескольких разделов); `noChapter` — только без раздела; ни то ни другое —
+ * ВЕСЬ контекст. Порядок — по `position_item_id`, тот же детерминизм, что
+ * несёт бэкенд.
+ */
+function filterGroupMembers(
+  members: SemanticMemberFixture[],
+  chapterItemIds: number[],
+  noChapter: boolean,
+  state: GroupState
+): SemanticMemberFixture[] {
+  return members
+    .filter((m) => {
+      if (chapterItemIds.length > 0) return m.chapterItemId !== null && chapterItemIds.includes(m.chapterItemId);
+      if (noChapter) return m.chapterItemId === null;
+      return true;
+    })
+    .filter((m) => {
+      if (state === "stale") return m.membership_state === "STALE";
+      if (state === "conflict") return m.conflict_at !== null;
+      return true;
+    })
+    .sort((a, b) => a.position_item_id - b.position_item_id);
+}
+
+/** Строка `GET .../members`/членство `toContextCard` — без внутренних полей фикстуры. */
+function toMemberRow(m: SemanticMemberFixture): ContextMemberRow {
+  return {
+    position_item_id: m.position_item_id,
+    job_title: m.job_title,
+    estimate_id: m.estimate_id,
+    membership_state: m.membership_state,
+    conflict_at: m.conflict_at,
+    conflict_from_context_id: m.conflict_from_context_id,
+    routed_by: m.routed_by,
+  };
+}
+
+/** Путь члена — `[]` у позиции без раздела, иначе путь ЕЁ раздела из карты. */
+function pathOf(chapterItemId: number | null, chapterPaths: Record<number, string[]>): string[] {
+  return chapterItemId === null ? [] : (chapterPaths[chapterItemId] ?? []);
+}
+
+/**
+ * Порядок групп членств/устаревших групп — зеркало `_member_group_sort_key`
+ * бэкенда (`crud/semantic.py`, редакция 3): по убыванию числа, затем путь
+ * лексикографически, группа «без раздела» (`chapterItemIds.length === 0`) —
+ * ПОСЛЕДНЕЙ при любом её размере.
+ */
+function memberGroupSortKey(chapterItemIds: number[], count: number, path: string[]) {
+  return { noChapter: chapterItemIds.length === 0, count, path: path.join("\u0000") };
+}
+
+function compareGroups(
+  a: ReturnType<typeof memberGroupSortKey>,
+  b: ReturnType<typeof memberGroupSortKey>
+): number {
+  if (a.noChapter !== b.noChapter) return a.noChapter ? 1 : -1;
+  if (a.count !== b.count) return b.count - a.count;
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+}
+
+/**
+ * `ContextCardData.member_paths` (спека §2.8 п. 2, редакция 3 — «сверка с
+ * макетом» 27.09.2026) из сырого списка членств — группировка по ТЕКСТУ
+ * ближайшего пути (не по `chapterItemId`): разделы РАЗНЫХ смет с одинаковым
+ * путём-текстом сливаются в ОДНУ группу экрана, `chapter_item_ids` несёт все
+ * их id по возрастанию (тот же приём, что реализация бэкенда,
+ * `_member_paths_and_stale_groups`, `crud/semantic.py`). `path: []`
+ * (позиции без раздела) — ОДНА группа по построению (все они делят один и
+ * тот же пустой путь), всегда последняя.
+ */
+function buildMemberPaths(
+  members: SemanticMemberFixture[],
+  chapterPaths: Record<number, string[]>
+): MemberPath[] {
+  const groups = new Map<string, MemberPath & { chapterIdSet: Set<number> }>();
+  for (const m of members) {
+    const path = pathOf(m.chapterItemId, chapterPaths);
+    const key = JSON.stringify(path);
+    let g = groups.get(key);
+    if (!g) {
+      g = { chapter_item_ids: [], chapterIdSet: new Set(), path, member_count: 0, stale_count: 0, conflict_count: 0 };
+      groups.set(key, g);
+    }
+    if (m.chapterItemId !== null) g.chapterIdSet.add(m.chapterItemId);
+    g.member_count += 1;
+    if (m.membership_state === "STALE") g.stale_count += 1;
+    if (m.conflict_at !== null) g.conflict_count += 1;
+  }
+  return Array.from(groups.values())
+    .map((g) => ({
+      chapter_item_ids: Array.from(g.chapterIdSet).sort((a, b) => a - b),
+      path: g.path,
+      member_count: g.member_count,
+      stale_count: g.stale_count,
+      conflict_count: g.conflict_count,
+    }))
+    .sort((a, b) =>
+      compareGroups(
+        memberGroupSortKey(a.chapter_item_ids, a.member_count, a.path),
+        memberGroupSortKey(b.chapter_item_ids, b.member_count, b.path)
+      )
+    );
+}
+
+/**
+ * `ContextCardData.stale_groups` (спека §2.8 п. 2, редакция 3) — только
+ * ПЕРЕНОСИМЫЕ устаревшие членства: `membership_state=STALE`, есть
+ * `staleTarget` И НЕТ конфликта (`conflict_at === null`) — то же множество,
+ * что берёт `POST .../stale-groups/transfer` (MAJOR-1, ревью Fable
+ * 27.09.2026). Устаревшее И конфликтное членство
+ * (`STALE_AND_CONFLICT_POSITION_ITEM_ID`) не входит в `count`, даже если у
+ * него задан `staleTarget`: оно решается действием «Принять решение цели»,
+ * не пакетным переносом группы. Ключ слияния — пара «текст пути → целевая
+ * статья» (редакция 3): разделы разных смет с одинаковым путём И одной
+ * целью — одна запись; тот же путь, но иная цель — разные записи.
+ */
+function buildStaleGroups(
+  members: SemanticMemberFixture[],
+  chapterPaths: Record<number, string[]>
+): StaleGroup[] {
+  const groups = new Map<string, StaleGroup & { chapterIdSet: Set<number> }>();
+  for (const m of members) {
+    if (m.membership_state !== "STALE" || !m.staleTarget || m.conflict_at !== null) continue;
+    const path = pathOf(m.chapterItemId, chapterPaths);
+    const key = JSON.stringify([path, m.staleTarget.category_id]);
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        chapter_item_ids: [],
+        chapterIdSet: new Set(),
+        path,
+        count: 0,
+        target_category_id: m.staleTarget.category_id,
+        target_category_code: m.staleTarget.code,
+        target_category_title: m.staleTarget.title,
+      };
+      groups.set(key, g);
+    }
+    if (m.chapterItemId !== null) g.chapterIdSet.add(m.chapterItemId);
+    g.count += 1;
+  }
+  return Array.from(groups.values())
+    .map((g) => ({
+      chapter_item_ids: Array.from(g.chapterIdSet).sort((a, b) => a - b),
+      path: g.path,
+      count: g.count,
+      target_category_id: g.target_category_id,
+      target_category_code: g.target_category_code,
+      target_category_title: g.target_category_title,
+    }))
+    .sort((a, b) =>
+      compareGroups(
+        memberGroupSortKey(a.chapter_item_ids, a.count, a.path),
+        memberGroupSortKey(b.chapter_item_ids, b.count, b.path)
+      )
+    );
 }
 
 /**
@@ -244,6 +431,25 @@ interface HandlerState {
   lastMoveMembersRequest: Record<string, unknown> | null;
   lastAcceptTransferRequest: { positionItemId: number; body: Record<string, unknown> } | null;
   lastAcceptTargetDecisionRequest: number[] | null;
+  /** Последний вызов `POST .../stale-groups/transfer` (спека §2.6, §2.8 п. 4, редакция 3) — для проверки входа. */
+  lastTransferStaleGroupRequest: {
+    contextId: number;
+    body: { chapter_item_ids: number[] | null; expected_category_id: number | null };
+  } | null;
+  /**
+   * Переопределение ответа `POST .../stale-groups/transfer` — `null`
+   * (умолчание) переносит ВСЕ устаревшие членства группы; тест частичного
+   * успеха (`moved=2, refused=1`) задаёт это поле явно.
+   */
+  staleGroupTransferOverride: StaleGroupTransferResult | null;
+  /** Число вызовов `POST .../stale-groups/transfer` — «Перенести их» обязан звать его РОВНО один раз (спека §2.6). */
+  transferStaleGroupCalls: number;
+  /** Число `GET /contexts/:id` — перечитывание карточки после мутации наблюдаемо только так. */
+  contextCardRequests: number;
+  /** Query-строки `GET .../members` по порядку — какие группы и когда реально запрошены. */
+  groupMembersRequests: string[];
+  /** Query-строки `GET .../member-ids` по порядку — какие разделы галочка группы реально запросила (ревью задачи 9). */
+  groupMemberIdsRequests: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +469,63 @@ export const CONFLICT_POSITION_ITEM_IDS = [9201, 9202];
 /** Членство разом устаревшее И конфликтное — сочетание, достижимое через
  * override категории, задевший членство, уже отмеченное слиянием в Review. */
 export const STALE_AND_CONFLICT_POSITION_ITEM_ID = 9203;
+/** Контекст сохранённой роли `LOCATION_ONLY` — единственный с `representative_work_title` непустым. */
+export const LOCATION_ONLY_CONTEXT_ID = 607;
+/** Контекст с ОДНОЙ группой членств больше страницы (520 > `MEMBER_PAGE_SIZE` 20) — галочка группы. */
+export const BIG_GROUP_CONTEXT_ID = 608;
+export const BIG_GROUP_CHAPTER_ITEM_ID = 8890;
+export const BIG_GROUP_SIZE = 520;
+/** Раздел устаревшей группы контекста 602 — вход теста «Перенести их» (спека §2.6). */
+export const STALE_CHAPTER_ITEM_ID = 8802;
+/** Контекст с ДВУМЯ группами — своей рабочей и «без раздела» (спека §2.5, §2.8 п. 2). */
+export const MIXED_GROUPS_CONTEXT_ID = 609;
+export const MIXED_GROUPS_CHAPTER_ITEM_ID = 8809;
+/**
+ * Контекст с ДВУМЯ разделами РАЗНЫХ смет, чей путь-текст СОВПАДАЕТ (редакция
+ * 3, «сверка с макетом» 27.09.2026) — обязаны слиться в ОДНУ группу
+ * `member_paths`/`stale_groups` с суммой счётчиков и `chapter_item_ids` из
+ * ОБОИХ разделов, не в две строки с одинаковым текстом.
+ */
+export const SAME_PATH_CONTEXT_ID = 610;
+export const SAME_PATH_CHAPTER_A = 8901;
+export const SAME_PATH_CHAPTER_B = 8902;
+/** Целевая статья устаревшей группы слитого пути (обе секции метят в неё же). */
+export const SAME_PATH_TARGET_CATEGORY_ID = 91;
+/**
+ * Контекст с ЧЕТЫРЬМЯ группами: три делят последние ДВА звена пути
+ * («Лифтовой холл МОП жилья / Потолок»), различаясь ТРЕТЬИМ звеном сверху
+ * («Корпус 1/2/3»), и одна с уникальным двузвенным суффиксом («Кухня /
+ * Пол») — замер на стенде 27.09.2026: фиксированные «последние два звена»
+ * показывали ОДИНАКОВЫЙ текст у первых трёх.
+ */
+export const SUFFIX_LABELS_CONTEXT_ID = 611;
+export const SUFFIX_CHAPTER_A = 8911;
+export const SUFFIX_CHAPTER_B = 8912;
+export const SUFFIX_CHAPTER_C = 8913;
+export const SUFFIX_CHAPTER_D = 8914;
+/**
+ * Контекст с ДВУМЯ группами, чей уникальный суффикс несёт длинное
+ * различающее звено (название секции) — подпись обязана усекаться СЛЕВА
+ * браузером (`dir="rtl"` + `<bdi dir="ltr">`, `ContextCard.tsx`), сохраняя
+ * хвост (последний сегмент пути) видимым, плюс третья группа с коротким
+ * уникальным суффиксом — контроль «разметка та же для короткой подписи».
+ */
+export const LONG_LABEL_CONTEXT_ID = 612;
+export const LONG_LABEL_CHAPTER_A = 8931;
+export const LONG_LABEL_CHAPTER_B = 8932;
+export const LONG_LABEL_CHAPTER_SHORT = 8933;
 
 function isoNow(): string {
   return "2026-09-24T10:00:00Z";
 }
+
+// Символ по коду единицы (спека §2.8, уточнение 27.09.2026) — те же
+// значения, что несёт `backend/crud/units.py::_SEED`, для мутаций семей,
+// набирающих `unit_name` вручную (форма создания принимает код напрямую, без
+// похода в `/api/units`).
+const UNIT_SYMBOL_BY_CODE: Record<string, string> = {
+  M2: "м²", M3: "м³", M: "м", PCS: "шт", SET: "компл", TON: "т", MON: "мес",
+};
 
 /**
  * 42 черновика — штатное первое состояние после seed (план задачи 7 и
@@ -289,6 +548,7 @@ function initialWorkFamilies(): WorkFamily[] {
       // единиц, а не на произвольное число, которого там нет.
       unit_id: 5,
       unit_code: "M2",
+      unit_symbol: "м²",
       definition: hasDefinition
         ? "Оштукатуривание стен и потолков цементно-песчаным раствором."
         : null,
@@ -310,6 +570,7 @@ function initialWorkFamilies(): WorkFamily[] {
     // РАЗЛИЧАТЬ семьи, а не только принимать значение.
     unit_id: 3,
     unit_code: "M3",
+    unit_symbol: "м³",
     definition: "Устройство кровельного покрытия.",
     status: "active",
     seed_key: null,
@@ -326,6 +587,7 @@ function initialWorkFamilies(): WorkFamily[] {
     title: "Демонтажные работы (снята)",
     unit_id: 5,
     unit_code: "M2",
+    unit_symbol: "м²",
     definition: "Демонтаж конструкций.",
     status: "archived",
     seed_key: null,
@@ -341,20 +603,29 @@ function initialWorkFamilies(): WorkFamily[] {
 }
 
 /**
- * Шесть контекстов, по одному на состояние, которое проверяют тесты экрана:
- * обычный, устаревшее членство, конфликт решений, `insufficient_description`
- * без семьи, пустой (без членств), архивный (доказывает отсутствие действия
- * восстановления).
+ * Девять контекстов, по одному на состояние, которое проверяют тесты экрана:
+ * обычный, устаревшее членство (со `stale_groups`, §2.6), конфликт решений,
+ * `insufficient_description` без семьи, пустой (без членств), архивный
+ * (доказывает отсутствие действия восстановления), сохранённая роль
+ * `LOCATION_ONLY` (§2.5, §2.8 п. 2), группа членств больше страницы (галочка
+ * группы, §2.8 п. 3), контекст с ДВУМЯ группами — рабочей и «без раздела».
  */
 function initialSemanticContexts(): SemanticContextFixture[] {
   const base = {
     is_default: false,
     unit_id: 11,
     unit_code: "м2",
+    unit_symbol: "м²",
     work_category_id: 77,
-    work_category_code: "05.02",
-    work_category_title: "Отделочные работы",
+    work_category_code: "05.02.03",
+    work_category_title: "Оштукатуривание цементно-песчаным раствором",
     work_category_source: "file",
+    // Путь — родители СВЕРХУ ВНИЗ, без самой статьи (спека §2.4): корень
+    // "05" и раздел "05.02", статья третьего уровня — поля выше.
+    work_category_path: [
+      { code: "05", title: "Отделочные работы" },
+      { code: "05.02", title: "Штукатурные работы" },
+    ] as WorkCategoryPathEntry[],
     place_dictionary_version: 1,
     events: [] as SemanticEventEntry[],
   };
@@ -366,17 +637,20 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     created_at: isoNow(),
   });
   /**
-   * Членство поштучно — по умолчанию `CURRENT`, без
-   * конфликта; переопределения задают `STALE`/`conflict_at` там, где тест
-   * этого требует. Каждая фикстура-контекст сама решает, какие членства ей
-   * нести, — список НЕ вычисляется из `hasStaleMembers`/`hasConflictingMembers`
-   * (те остаются флагами ТОЛЬКО для фильтра очереди, как и на бэкенде).
+   * Членство поштучно — по умолчанию `CURRENT`, без конфликта и без
+   * раздела; переопределения задают `STALE`/`conflict_at`/`chapterItemId`/
+   * `staleTarget` там, где тест этого требует. Каждая фикстура-контекст сама
+   * решает, какие членства ей нести, — список НЕ вычисляется из
+   * `hasStaleMembers`/`hasConflictingMembers` (те остаются флагами ТОЛЬКО
+   * для фильтра очереди, как и на бэкенде), а `member_paths`/`stale_groups`
+   * строятся ИЗ него {@link buildMemberPaths}/{@link buildStaleGroups} — не
+   * дублируются вручную.
    */
   const member = (
     positionItemId: number,
     jobTitle: string,
-    overrides: Partial<Omit<ContextMemberRow, "position_item_id" | "job_title">> = {}
-  ): ContextMemberRow => ({
+    overrides: Partial<Omit<SemanticMemberFixture, "position_item_id" | "job_title">> = {}
+  ): SemanticMemberFixture => ({
     position_item_id: positionItemId,
     job_title: jobTitle,
     estimate_id: 5001,
@@ -384,9 +658,24 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     conflict_at: null,
     conflict_from_context_id: null,
     routed_by: "default",
+    chapterItemId: null,
     ...overrides,
   });
 
+  // Раздел контекста 601 — один общий рабочий раздел на все членства
+  // фикстуры (спека §2.5: «сгруппированные по тексту пути ближайшего раздела сметы»).
+  // Три членства (не четыре) — эту же фикстуру несут ещё
+  // `ContextsTab.test.tsx`/`FamiliesPage.test.tsx`, где число закреплено;
+  // сценарий «без раздела» проверяется отдельной фикстурой (`mixedGroups`).
+  const ORDINARY_CHAPTER = 8801;
+  const ordinaryChapterPaths = {
+    [ORDINARY_CHAPTER]: ["8 Отделочные работы (паркинг, надземная часть МОП)", "8.2 Отделка надземной части"],
+  };
+  const ordinaryMembers = [
+    member(71001, "Штукатурка стен, ось А-Б", { chapterItemId: ORDINARY_CHAPTER }),
+    member(71002, "Штукатурка стен, ось Б-В", { chapterItemId: ORDINARY_CHAPTER }),
+    member(71003, "Штукатурка стен, ось В-Г", { chapterItemId: ORDINARY_CHAPTER }),
+  ];
   const ordinary: SemanticContextFixture = {
     ...base,
     id: 601,
@@ -410,22 +699,38 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: 1,
     family_at: isoNow(),
     member_count: 3,
+    representative_work_title: null,
     bucket_contexts: [
       { id: 601, is_default: true, archived_at: null, member_count: 3 },
       { id: 750, is_default: false, archived_at: null, member_count: 1 },
     ],
-    members: [
-      member(71001, "Штукатурка стен, ось А-Б"),
-      member(71002, "Штукатурка стен, ось Б-В"),
-      member(71003, "Штукатурка стен, ось В-Г"),
-    ],
-    members_truncated: false,
+    members: ordinaryMembers,
+    member_paths: buildMemberPaths(ordinaryMembers, ordinaryChapterPaths),
+    stale_groups: buildStaleGroups(ordinaryMembers, ordinaryChapterPaths),
     events: [event(1, "context_created")],
     hasStaleMembers: false,
     hasConflictingMembers: false,
     hasNoMembers: false,
   };
 
+  // Целевая статья устаревшей группы — 88/«07.01 Электромонтажные работы»,
+  // ТА ЖЕ, что несёт `transfer-proposal` STALE_POSITION_ITEM_ID
+  // (`effective_category_id: 88` ниже, в обработчике маршрута) — перенос
+  // ПО ГРУППЕ (§2.6) и перенос ПО СТРОКЕ (фича 1) целятся в одну статью,
+  // как и на бэкенде (обе операции читают одну и ту же эффективную статью).
+  const staleChapterPaths = {
+    [STALE_CHAPTER_ITEM_ID]: ["8 Отделочные работы (паркинг, надземная часть МОП)", "8.2 Отделка полов"],
+  };
+  const staleMembers = [
+    member(STALE_POSITION_ITEM_ID, "Устройство покрытий полов, ось 1", {
+      membership_state: "STALE",
+      chapterItemId: STALE_CHAPTER_ITEM_ID,
+      staleTarget: { category_id: 88, code: "07.01", title: "Электромонтажные работы" },
+    }),
+    member(CURRENT_POSITION_ITEM_ID, "Устройство покрытий полов, ось 2", {
+      chapterItemId: STALE_CHAPTER_ITEM_ID,
+    }),
+  ];
   const stale: SemanticContextFixture = {
     ...base,
     id: 602,
@@ -449,26 +754,58 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: null,
     family_at: null,
     member_count: 2,
+    representative_work_title: null,
     bucket_contexts: [{ id: 602, is_default: true, archived_at: null, member_count: 2 }],
-    members: [
-      member(STALE_POSITION_ITEM_ID, "Устройство покрытий полов, ось 1", {
-        membership_state: "STALE",
-      }),
-      member(CURRENT_POSITION_ITEM_ID, "Устройство покрытий полов, ось 2"),
-    ],
-    members_truncated: false,
+    members: staleMembers,
+    member_paths: buildMemberPaths(staleMembers, staleChapterPaths),
+    stale_groups: buildStaleGroups(staleMembers, staleChapterPaths),
     events: [event(2, "context_created"), event(3, "members_marked_stale")],
     hasStaleMembers: true,
     hasConflictingMembers: false,
     hasNoMembers: false,
   };
 
+  const CONFLICT_CHAPTER = 8803;
+  const conflictChapterPaths = {
+    [CONFLICT_CHAPTER]: ["8 Отделочные работы (паркинг, надземная часть МОП)", "8.2 Отделка потолков"],
+  };
+  const conflictedMembers = [
+    member(CONFLICT_POSITION_ITEM_IDS[0], "Отделка потолков, ось 1", {
+      chapterItemId: CONFLICT_CHAPTER,
+      conflict_at: isoNow(),
+      conflict_from_context_id: 601,
+      routed_by: "manual",
+    }),
+    member(CONFLICT_POSITION_ITEM_IDS[1], "Отделка потолков, ось 2", {
+      chapterItemId: CONFLICT_CHAPTER,
+      conflict_at: isoNow(),
+      conflict_from_context_id: 601,
+      routed_by: "manual",
+    }),
+    // Устаревшее И конфликтное разом (override категории задел членство,
+    // уже отмеченное слиянием в Review) — экран обязан показать ДВА
+    // конфликтных действия и НИ ОДНОГО действия переноса устаревшего. Без
+    // `staleTarget` — эта фикстура строку внимания устаревших не проверяет
+    // (проверяет её контекст 602), только конфликтную.
+    member(STALE_AND_CONFLICT_POSITION_ITEM_ID, "Отделка потолков, ось 3", {
+      chapterItemId: CONFLICT_CHAPTER,
+      membership_state: "STALE",
+      conflict_at: isoNow(),
+      conflict_from_context_id: 601,
+      routed_by: "manual",
+    }),
+  ];
   const conflicted: SemanticContextFixture = {
     ...base,
     id: 603,
     bucket_id: 703,
     archived_at: null,
     catalog_position_id: 8003,
+    // Единственная фикстура с ручным разносом статьи (спека §2.3, §2.5:
+    // «„ручной разнос“, если источник статьи `manual`») — остальные несут
+    // `work_category_source: "file"` из `base`, доказывая, что подпись не
+    // печатается там, где источник не ручной.
+    work_category_source: "manual",
     standard_job_title: "Отделка потолков водоэмульсионным составом",
     semantic_kind: "WORK",
     semantic_kind_source: "manual",
@@ -486,38 +823,35 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: 1,
     family_at: isoNow(),
     member_count: 3,
+    representative_work_title: null,
     bucket_contexts: [
       { id: 603, is_default: true, archived_at: null, member_count: 3 },
       { id: 760, is_default: false, archived_at: null, member_count: 0 },
     ],
-    members: [
-      member(CONFLICT_POSITION_ITEM_IDS[0], "Отделка потолков, ось 1", {
-        conflict_at: isoNow(),
-        conflict_from_context_id: 601,
-        routed_by: "manual",
-      }),
-      member(CONFLICT_POSITION_ITEM_IDS[1], "Отделка потолков, ось 2", {
-        conflict_at: isoNow(),
-        conflict_from_context_id: 601,
-        routed_by: "manual",
-      }),
-      // Устаревшее И конфликтное разом (override категории задел членство,
-      // уже отмеченное слиянием в Review) — экран обязан показать ДВА
-      // конфликтных действия и НИ ОДНОГО действия переноса устаревшего.
-      member(STALE_AND_CONFLICT_POSITION_ITEM_ID, "Отделка потолков, ось 3", {
-        membership_state: "STALE",
-        conflict_at: isoNow(),
-        conflict_from_context_id: 601,
-        routed_by: "manual",
-      }),
-    ],
-    members_truncated: false,
+    members: conflictedMembers,
+    member_paths: buildMemberPaths(conflictedMembers, conflictChapterPaths),
+    stale_groups: buildStaleGroups(conflictedMembers, conflictChapterPaths),
     events: [event(4, "context_created"), event(5, "context_merged")],
-    hasStaleMembers: false,
+    // Членство `STALE_AND_CONFLICT_POSITION_ITEM_ID` выше — настоящее
+    // `membership_state: "STALE"` этого контекста; бэкенд (`_stale_exists`,
+    // `crud/semantic.py`) считает ЛЮБОЕ `STALE`-членство, независимо от
+    // конфликта, и отдал бы `true` (MINOR-2, ревью Fable 27.09.2026:
+    // `hasStaleMembers: false` здесь противоречило бы бэкенду).
+    hasStaleMembers: true,
     hasConflictingMembers: true,
     hasNoMembers: false,
   };
 
+  const INSUFFICIENT_CHAPTER = 8804;
+  const insufficientChapterPaths = {
+    [INSUFFICIENT_CHAPTER]: ["7 Инженерные сети", "7.1 Электроснабжение"],
+  };
+  const insufficientMembers = [
+    member(74001, "Светильники, секция 1", { chapterItemId: INSUFFICIENT_CHAPTER }),
+    member(74002, "Светильники, секция 2", { chapterItemId: INSUFFICIENT_CHAPTER }),
+    member(74003, "Светильники, секция 3", { chapterItemId: INSUFFICIENT_CHAPTER }),
+    member(74004, "Светильники, секция 4", { chapterItemId: INSUFFICIENT_CHAPTER }),
+  ];
   const insufficientDescription: SemanticContextFixture = {
     ...base,
     id: 604,
@@ -530,6 +864,9 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     work_category_id: 88,
     work_category_code: "07.01",
     work_category_title: "Электромонтажные работы",
+    // Один уровень предков (не два, как у `base`) — путь классификатора
+    // разной глубины у разных строк одной выдачи (спека §2.8, DoD 8).
+    work_category_path: [{ code: "07", title: "Инженерные сети" }],
     semantic_kind: "WORK",
     semantic_kind_source: "rule",
     semantic_kind_by: null,
@@ -546,14 +883,11 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: null,
     family_at: null,
     member_count: 4,
+    representative_work_title: null,
     bucket_contexts: [{ id: 604, is_default: true, archived_at: null, member_count: 4 }],
-    members: [
-      member(74001, "Светильники, секция 1"),
-      member(74002, "Светильники, секция 2"),
-      member(74003, "Светильники, секция 3"),
-      member(74004, "Светильники, секция 4"),
-    ],
-    members_truncated: false,
+    members: insufficientMembers,
+    member_paths: buildMemberPaths(insufficientMembers, insufficientChapterPaths),
+    stale_groups: buildStaleGroups(insufficientMembers, insufficientChapterPaths),
     events: [event(6, "context_created")],
     hasStaleMembers: false,
     hasConflictingMembers: false,
@@ -583,9 +917,11 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: null,
     family_at: null,
     member_count: 0,
+    representative_work_title: null,
     bucket_contexts: [{ id: 605, is_default: false, archived_at: null, member_count: 0 }],
     members: [],
-    members_truncated: false,
+    member_paths: [],
+    stale_groups: [],
     events: [event(7, "context_created"), event(8, "members_moved")],
     hasStaleMembers: false,
     hasConflictingMembers: false,
@@ -615,16 +951,350 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     family_by: null,
     family_at: null,
     member_count: 0,
+    representative_work_title: null,
     bucket_contexts: [{ id: 606, is_default: false, archived_at: isoNow(), member_count: 0 }],
     members: [],
-    members_truncated: false,
+    member_paths: [],
+    stale_groups: [],
     events: [event(9, "context_created"), event(10, "context_archived")],
     hasStaleMembers: false,
     hasConflictingMembers: false,
     hasNoMembers: true,
   };
 
-  return [ordinary, stale, conflicted, insufficientDescription, empty, archivedContext];
+  // Контекст сохранённой роли `LOCATION_ONLY` (спека §2.5, §2.8 п. 2) —
+  // единственная фикстура с непустым `representative_work_title`; путь
+  // раздела представителя не участвует в `member_paths`/`stale_groups`
+  // отдельно (один член — одна группа), но название рабочего раздела то же,
+  // что несла бы `nearest_working_chapter` бэкенда.
+  const LOCATION_ONLY_CHAPTER = 8807;
+  const locationOnlyChapterPaths = {
+    [LOCATION_ONLY_CHAPTER]: ["6 Перегородки", "6.3 Перегородки из ГКЛ"],
+  };
+  const locationOnlyMembers = [
+    member(76001, "Перегородки, ось 5-6", { chapterItemId: LOCATION_ONLY_CHAPTER }),
+  ];
+  const locationOnly: SemanticContextFixture = {
+    ...base,
+    id: LOCATION_ONLY_CONTEXT_ID,
+    bucket_id: 707,
+    archived_at: null,
+    catalog_position_id: 8007,
+    standard_job_title: "Устройство перегородок (по месту)",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "LOCATION_ONLY",
+    name_role_source: "manual",
+    name_role_by: 1,
+    name_role_at: isoNow(),
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 1,
+    representative_work_title: "Устройство перегородок из ГКЛ",
+    bucket_contexts: [{ id: LOCATION_ONLY_CONTEXT_ID, is_default: true, archived_at: null, member_count: 1 }],
+    members: locationOnlyMembers,
+    member_paths: buildMemberPaths(locationOnlyMembers, locationOnlyChapterPaths),
+    stale_groups: buildStaleGroups(locationOnlyMembers, locationOnlyChapterPaths),
+    events: [event(11, "context_created"), event(12, "name_role_set")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  // Контекст с ОДНОЙ группой членств больше страницы (галочка группы
+  // обязана взять ВСЕ 520 id `groupMemberIds`, а не только загруженные 20,
+  // спека §2.5, §2.8 п. 3).
+  const bigGroupChapterPaths = {
+    [BIG_GROUP_CHAPTER_ITEM_ID]: ["9 Инженерные системы", "9.4 Вентиляция"],
+  };
+  const bigGroupMembers = Array.from({ length: BIG_GROUP_SIZE }, (_, i) =>
+    member(80001 + i, `Вентканал, узел ${i + 1}`, { chapterItemId: BIG_GROUP_CHAPTER_ITEM_ID })
+  );
+  const bigGroup: SemanticContextFixture = {
+    ...base,
+    id: BIG_GROUP_CONTEXT_ID,
+    bucket_id: 708,
+    archived_at: null,
+    catalog_position_id: 8008,
+    standard_job_title: "Устройство вентиляционных каналов",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: BIG_GROUP_SIZE,
+    representative_work_title: null,
+    bucket_contexts: [
+      { id: BIG_GROUP_CONTEXT_ID, is_default: true, archived_at: null, member_count: BIG_GROUP_SIZE },
+    ],
+    members: bigGroupMembers,
+    member_paths: buildMemberPaths(bigGroupMembers, bigGroupChapterPaths),
+    stale_groups: buildStaleGroups(bigGroupMembers, bigGroupChapterPaths),
+    events: [event(13, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  // Контекст с ДВУМЯ группами членств — своей рабочей (2 позиции) и «без
+  // раздела» (1 позиция, `chapterItemId: null`, схемой допустимо) — группа
+  // «без раздела» НАРОЧНО МЕНЬШЕ и всё равно обязана идти последней (спека
+  // §2.5, §2.8 п. 2: «группа `null` — всегда последней», а не «когда она
+  // самая маленькая»).
+  const mixedGroupsChapterPaths = {
+    [MIXED_GROUPS_CHAPTER_ITEM_ID]: ["8 Отделочные работы (паркинг, надземная часть МОП)", "8.3 Полы по грунту"],
+  };
+  const mixedGroupsMembers = [
+    member(78001, "Стяжка пола, ось А-Б", { chapterItemId: MIXED_GROUPS_CHAPTER_ITEM_ID }),
+    member(78002, "Стяжка пола, ось Б-В", { chapterItemId: MIXED_GROUPS_CHAPTER_ITEM_ID }),
+    member(78003, "Стяжка пола, вне структуры", { chapterItemId: null }),
+  ];
+  const mixedGroups: SemanticContextFixture = {
+    ...base,
+    id: MIXED_GROUPS_CONTEXT_ID,
+    bucket_id: 709,
+    archived_at: null,
+    catalog_position_id: 8009,
+    standard_job_title: "Устройство стяжки пола",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: 3,
+    representative_work_title: null,
+    bucket_contexts: [{ id: MIXED_GROUPS_CONTEXT_ID, is_default: true, archived_at: null, member_count: 3 }],
+    members: mixedGroupsMembers,
+    member_paths: buildMemberPaths(mixedGroupsMembers, mixedGroupsChapterPaths),
+    stale_groups: buildStaleGroups(mixedGroupsMembers, mixedGroupsChapterPaths),
+    events: [event(14, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  // Контекст с ДВУМЯ разделами РАЗНЫХ смет, чей путь-текст СОВПАДАЕТ
+  // (редакция 3): 2 членства под разделом A, 3 под разделом B — обязаны
+  // слиться в ОДНУ группу `member_paths` с `member_count: 5` и
+  // `chapter_item_ids: [SAME_PATH_CHAPTER_A, SAME_PATH_CHAPTER_B]`. По
+  // одному устаревшему переносимому членству под КАЖДЫМ разделом, с ОДНОЙ и
+  // той же целевой статьёй — тот же слитый ключ обязан дать ОДНУ запись
+  // `stale_groups` с `count: 2` и разделами обоих.
+  const samePathText = [
+    "8 Отделочные работы (паркинг, надземная часть МОП)",
+    "8.2 Отделка надземной части",
+    "8.2.3 Лифтовые холлы и коридоры",
+  ];
+  const samePathChapterPaths = {
+    [SAME_PATH_CHAPTER_A]: samePathText,
+    [SAME_PATH_CHAPTER_B]: samePathText,
+  };
+  const samePathStaleTarget = {
+    category_id: SAME_PATH_TARGET_CATEGORY_ID,
+    code: "09.01",
+    title: "Тестовая статья слияния путей",
+  };
+  const samePathMembers = [
+    member(79001, "Плитка, корпус 1", { chapterItemId: SAME_PATH_CHAPTER_A }),
+    member(79002, "Плитка, корпус 1, ось 2", {
+      chapterItemId: SAME_PATH_CHAPTER_A,
+      membership_state: "STALE",
+      staleTarget: samePathStaleTarget,
+    }),
+    member(79003, "Плитка, корпус 2", { chapterItemId: SAME_PATH_CHAPTER_B }),
+    member(79004, "Плитка, корпус 2, ось 2", {
+      chapterItemId: SAME_PATH_CHAPTER_B,
+      membership_state: "STALE",
+      staleTarget: samePathStaleTarget,
+    }),
+    member(79005, "Плитка, корпус 2, ось 3", { chapterItemId: SAME_PATH_CHAPTER_B }),
+  ];
+  const samePath: SemanticContextFixture = {
+    ...base,
+    id: SAME_PATH_CONTEXT_ID,
+    bucket_id: 710,
+    archived_at: null,
+    catalog_position_id: 8010,
+    standard_job_title: "Облицовка плиткой",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: samePathMembers.length,
+    representative_work_title: null,
+    bucket_contexts: [{ id: SAME_PATH_CONTEXT_ID, is_default: true, archived_at: null, member_count: samePathMembers.length }],
+    members: samePathMembers,
+    member_paths: buildMemberPaths(samePathMembers, samePathChapterPaths),
+    stale_groups: buildStaleGroups(samePathMembers, samePathChapterPaths),
+    events: [event(15, "context_created")],
+    hasStaleMembers: true,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  // Контекст с четырьмя группами для проверки уникального суффикса подписи
+  // (см. докстроку `SUFFIX_LABELS_CONTEXT_ID`): по одному членству под
+  // каждым из четырёх разделов, пути различной глубины.
+  const suffixChapterPaths = {
+    [SUFFIX_CHAPTER_A]: ["Корпус 1", "Лифтовой холл МОП жилья", "Потолок"],
+    [SUFFIX_CHAPTER_B]: ["Корпус 2", "Лифтовой холл МОП жилья", "Потолок"],
+    [SUFFIX_CHAPTER_C]: ["Корпус 3", "Лифтовой холл МОП жилья", "Потолок"],
+    [SUFFIX_CHAPTER_D]: ["Кухня", "Пол"],
+  };
+  const suffixMembers = [
+    member(79101, "Плитка, корпус 1", { chapterItemId: SUFFIX_CHAPTER_A }),
+    member(79102, "Плитка, корпус 2", { chapterItemId: SUFFIX_CHAPTER_B }),
+    member(79103, "Плитка, корпус 3", { chapterItemId: SUFFIX_CHAPTER_C }),
+    member(79104, "Плитка, кухня", { chapterItemId: SUFFIX_CHAPTER_D }),
+  ];
+  const suffixLabels: SemanticContextFixture = {
+    ...base,
+    id: SUFFIX_LABELS_CONTEXT_ID,
+    bucket_id: 711,
+    archived_at: null,
+    catalog_position_id: 8011,
+    standard_job_title: "Облицовка плиткой (проверка подписи пути)",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: suffixMembers.length,
+    representative_work_title: null,
+    bucket_contexts: [{ id: SUFFIX_LABELS_CONTEXT_ID, is_default: true, archived_at: null, member_count: suffixMembers.length }],
+    members: suffixMembers,
+    member_paths: buildMemberPaths(suffixMembers, suffixChapterPaths),
+    stale_groups: buildStaleGroups(suffixMembers, suffixChapterPaths),
+    events: [event(16, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  // Контекст с длинным уникальным суффиксом (см. докстроку
+  // `LONG_LABEL_CONTEXT_ID`) — различающее звено само по себе длиннее
+  // лимита подписи, поэтому итоговая подпись («звено / Лифтовой холл МОП
+  // жилья / Потолок») обязана обрезаться СЛЕВА, а не справа.
+  const longLabelChapterPaths = {
+    [LONG_LABEL_CHAPTER_A]: [
+      "Секция общественных пространств входной группы жилого дома, корпус 1",
+      "Лифтовой холл МОП жилья",
+      "Потолок",
+    ],
+    [LONG_LABEL_CHAPTER_B]: [
+      "Секция общественных пространств входной группы жилого дома, корпус 2",
+      "Лифтовой холл МОП жилья",
+      "Потолок",
+    ],
+    [LONG_LABEL_CHAPTER_SHORT]: ["Кухня", "Пол"],
+  };
+  const longLabelMembers = [
+    member(79201, "Плитка, корпус 1", { chapterItemId: LONG_LABEL_CHAPTER_A }),
+    member(79202, "Плитка, корпус 2", { chapterItemId: LONG_LABEL_CHAPTER_B }),
+    member(79203, "Плитка, кухня", { chapterItemId: LONG_LABEL_CHAPTER_SHORT }),
+  ];
+  const longLabel: SemanticContextFixture = {
+    ...base,
+    id: LONG_LABEL_CONTEXT_ID,
+    bucket_id: 712,
+    archived_at: null,
+    catalog_position_id: 8012,
+    standard_job_title: "Облицовка плиткой (проверка обрезки длинной подписи)",
+    work_category_id: 77,
+    semantic_kind: "WORK",
+    semantic_kind_source: "rule",
+    semantic_kind_by: null,
+    semantic_kind_at: null,
+    name_role: "WORK",
+    name_role_source: "rule",
+    name_role_by: null,
+    name_role_at: null,
+    comparability_reason: null,
+    semantic_state: "SUGGESTED",
+    work_family_id: null,
+    family_title: null,
+    family_source: null,
+    family_by: null,
+    family_at: null,
+    member_count: longLabelMembers.length,
+    representative_work_title: null,
+    bucket_contexts: [{ id: LONG_LABEL_CONTEXT_ID, is_default: true, archived_at: null, member_count: longLabelMembers.length }],
+    members: longLabelMembers,
+    member_paths: buildMemberPaths(longLabelMembers, longLabelChapterPaths),
+    stale_groups: buildStaleGroups(longLabelMembers, longLabelChapterPaths),
+    events: [event(17, "context_created")],
+    hasStaleMembers: false,
+    hasConflictingMembers: false,
+    hasNoMembers: false,
+  };
+
+  return [
+    ordinary,
+    stale,
+    conflicted,
+    insufficientDescription,
+    empty,
+    archivedContext,
+    locationOnly,
+    bigGroup,
+    mixedGroups,
+    samePath,
+    suffixLabels,
+    longLabel,
+  ];
 }
 
 /** Проекция фикстуры в форму ответа `GET /v1/semantic/contexts` — ровно поля `ContextRow`, три служебных флага не уходят наружу. */
@@ -647,7 +1317,12 @@ function toContextRow(fixture: SemanticContextFixture): ContextRow {
     catalog_position_id: fixture.catalog_position_id,
     standard_job_title: fixture.standard_job_title,
     unit_code: fixture.unit_code,
+    unit_symbol: fixture.unit_symbol,
     archived_at: fixture.archived_at,
+    member_count: fixture.member_count,
+    has_stale_members: fixture.hasStaleMembers,
+    has_conflicting_members: fixture.hasConflictingMembers,
+    work_category_path: fixture.work_category_path,
   };
 }
 
@@ -662,6 +1337,7 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
     standard_job_title: fixture.standard_job_title,
     unit_id: fixture.unit_id,
     unit_code: fixture.unit_code,
+    unit_symbol: fixture.unit_symbol,
     work_category_id: fixture.work_category_id,
     work_category_code: fixture.work_category_code,
     work_category_title: fixture.work_category_title,
@@ -683,9 +1359,11 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
     family_by: fixture.family_by,
     family_at: fixture.family_at,
     member_count: fixture.member_count,
+    work_category_path: fixture.work_category_path,
+    representative_work_title: fixture.representative_work_title,
+    member_paths: fixture.member_paths,
+    stale_groups: fixture.stale_groups,
     bucket_contexts: fixture.bucket_contexts,
-    members: fixture.members,
-    members_truncated: fixture.members_truncated,
     events: fixture.events,
   };
 }
@@ -736,6 +1414,12 @@ export const handlerState: HandlerState = {
   lastMoveMembersRequest: null,
   lastAcceptTransferRequest: null,
   lastAcceptTargetDecisionRequest: null,
+  lastTransferStaleGroupRequest: null,
+  staleGroupTransferOverride: null,
+  transferStaleGroupCalls: 0,
+  contextCardRequests: 0,
+  groupMembersRequests: [],
+  groupMemberIdsRequests: [],
 };
 
 export function resetHandlerState() {
@@ -779,6 +1463,12 @@ export function resetHandlerState() {
   handlerState.lastMoveMembersRequest = null;
   handlerState.lastAcceptTransferRequest = null;
   handlerState.lastAcceptTargetDecisionRequest = null;
+  handlerState.lastTransferStaleGroupRequest = null;
+  handlerState.staleGroupTransferOverride = null;
+  handlerState.transferStaleGroupCalls = 0;
+  handlerState.contextCardRequests = 0;
+  handlerState.groupMembersRequests = [];
+  handlerState.groupMemberIdsRequests = [];
 }
 
 function page<T>(items: T[]) {
@@ -2204,7 +2894,7 @@ export const handlers = [
 
   // ---------------------------------------------------------------------
   //  Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10,
-  //  `backend/routers/semantic.py`) — восемнадцать маршрутов под `admin`.
+  //  `backend/routers/semantic.py`) — двадцать один маршрут под `admin`.
   // ---------------------------------------------------------------------
 
   http.get("/api/v1/semantic/families", ({ request }) => {
@@ -2228,6 +2918,7 @@ export const handlers = [
       title: body.title,
       unit_id: body.unit_name ? 11 : null,
       unit_code: body.unit_name ?? null,
+      unit_symbol: body.unit_name ? (UNIT_SYMBOL_BY_CODE[body.unit_name] ?? body.unit_name) : null,
       definition: body.definition ?? null,
       status: "draft",
       seed_key: null,
@@ -2270,6 +2961,7 @@ export const handlers = [
       const unitName = body.unit_name as string | null;
       family.unit_code = unitName;
       family.unit_id = unitName ? 11 : null;
+      family.unit_symbol = unitName ? (UNIT_SYMBOL_BY_CODE[unitName] ?? unitName) : null;
     }
     family.updated_at = isoNow();
     return HttpResponse.json(family);
@@ -2369,6 +3061,7 @@ export const handlers = [
   }),
 
   http.get("/api/v1/semantic/contexts/:id", ({ params }) => {
+    handlerState.contextCardRequests += 1;
     const id = Number(params.id);
     const context = handlerState.semanticContexts.find((c) => c.id === id);
     if (!context) {
@@ -2536,7 +3229,17 @@ export const handlers = [
   http.post("/api/v1/semantic/members/accept-target-decision", async ({ request }) => {
     const body = (await request.json()) as { position_item_ids: number[] };
     handlerState.lastAcceptTargetDecisionRequest = body.position_item_ids;
-    const allConflicted = body.position_item_ids.every((id) => CONFLICT_POSITION_ITEM_IDS.includes(id));
+    // Множество конфликтных id читается из фикстур, а не из одного захардкоженного
+    // списка (`CONFLICT_POSITION_ITEM_IDS`) — «Принять решение цели» строки внимания
+    // (§2.6) берёт id ВСЕХ конфликтных членств контекста, включая устаревшее И
+    // конфликтное разом (`STALE_AND_CONFLICT_POSITION_ITEM_ID`), которого в том
+    // списке нет.
+    const conflictedIds = new Set(
+      handlerState.semanticContexts.flatMap((c) =>
+        c.members.filter((m) => m.conflict_at !== null).map((m) => m.position_item_id)
+      )
+    );
+    const allConflicted = body.position_item_ids.every((id) => conflictedIds.has(id));
     if (!allConflicted) {
       return HttpResponse.json(
         { detail: { code: "not_conflicted", message: "членство не в конфликте", position_item_ids: body.position_item_ids } },
@@ -2544,5 +3247,97 @@ export const handlers = [
       );
     }
     return HttpResponse.json({ updated_members: body.position_item_ids.length });
+  }),
+
+  // -------------------------------------------------------------------------
+  //  Членства группы и пакетный перенос устаревшей группы (спека §2.8 п. 3-4)
+  // -------------------------------------------------------------------------
+
+  http.get("/api/v1/semantic/contexts/:id/members", ({ params, request }) => {
+    // Пишется ДО ответа 404: запрос свёрнутой группы с любым id — тоже запрос.
+    handlerState.groupMembersRequests.push(new URL(request.url).search);
+    const contextId = Number(params.id);
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    const url = new URL(request.url);
+    // `chapter_item_id` ПОВТОРЯЕТСЯ (редакция 3, спека §2.8 п. 2, 3) — группа
+    // экрана слита из нескольких разделов, `getAll` берёт их все.
+    const chapterItemIds = url.searchParams.getAll("chapter_item_id").map(Number);
+    const noChapter = url.searchParams.get("no_chapter") === "true";
+    if (chapterItemIds.length > 0 && noChapter) {
+      return HttpResponse.json(
+        { detail: "chapter_item_id и no_chapter=true нельзя передавать одновременно." },
+        { status: 422 }
+      );
+    }
+    const state = (url.searchParams.get("state") ?? "all") as GroupState;
+    const limit = Number(url.searchParams.get("limit") ?? 50);
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const filtered = filterGroupMembers(context.members, chapterItemIds, noChapter, state);
+    const items = filtered.slice(offset, offset + limit).map(toMemberRow);
+    return HttpResponse.json({ items, total: filtered.length, limit, offset });
+  }),
+
+  http.get("/api/v1/semantic/contexts/:id/member-ids", ({ params, request }) => {
+    handlerState.groupMemberIdsRequests.push(new URL(request.url).search);
+    const contextId = Number(params.id);
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    const url = new URL(request.url);
+    const chapterItemIds = url.searchParams.getAll("chapter_item_id").map(Number);
+    const noChapter = url.searchParams.get("no_chapter") === "true";
+    if (chapterItemIds.length > 0 && noChapter) {
+      return HttpResponse.json(
+        { detail: "chapter_item_id и no_chapter=true нельзя передавать одновременно." },
+        { status: 422 }
+      );
+    }
+    const state = (url.searchParams.get("state") ?? "all") as GroupState;
+    const filtered = filterGroupMembers(context.members, chapterItemIds, noChapter, state);
+    return HttpResponse.json({
+      position_item_ids: filtered.map((m) => m.position_item_id),
+      total: filtered.length,
+    });
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/stale-groups/transfer", async ({ params, request }) => {
+    const contextId = Number(params.id);
+    const body = (await request.json()) as { chapter_item_ids: number[] | null; expected_category_id: number | null };
+    handlerState.lastTransferStaleGroupRequest = { contextId, body };
+    handlerState.transferStaleGroupCalls += 1;
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+
+    if (handlerState.staleGroupTransferOverride) {
+      return HttpResponse.json(handlerState.staleGroupTransferOverride);
+    }
+    // Умолчание — ВСЕ ПЕРЕНОСИМЫЕ устаревшие членства группы перенесены
+    // (пачка не атомарна, но по умолчанию отказов нет, спека §2.8 п. 4);
+    // частичный успех задаётся тестом через
+    // `handlerState.staleGroupTransferOverride`. Конфликтные STALE-членства
+    // исключены — тот же фильтр, что берёт бэкенд
+    // (`transfer_stale_group`, `services/context_operations.py`:
+    // `membership_state=STALE AND conflict_at IS NULL`, MAJOR-1/MINOR-2,
+    // ревью Fable 27.09.2026). `chapter_item_ids: null` — группа «без
+    // раздела»; иначе — раздел ЛЮБОГО из перечисленных id (редакция 3).
+    const staleInGroup = context.members.filter(
+      (m) =>
+        m.membership_state === "STALE" &&
+        m.conflict_at === null &&
+        (body.chapter_item_ids === null
+          ? m.chapterItemId === null
+          : m.chapterItemId !== null && body.chapter_item_ids.includes(m.chapterItemId))
+    );
+    return HttpResponse.json({
+      results: staleInGroup.map((m) => ({
+        position_item_id: m.position_item_id,
+        outcome: "moved" as const,
+        target_context_id: 9999,
+        error_code: null,
+        message: null,
+      })),
+      moved: staleInGroup.length,
+      refused: 0,
+    });
   }),
 ];

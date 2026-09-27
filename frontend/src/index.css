@@ -60,6 +60,16 @@
   --info-border:           #C5D7E2;
   --info-text:             #2C4A60;
 
+  /* Источник подписи «статья СМР» (спека `2026-09-25-families-screen-
+     design.md` §2.3; сверка с макетом 27.09.2026, `.src-c`) — фиолетовый/
+     индиго, отдельный от `--info` (он несёт «система», §2.3 «система blue
+     tint»): три плашки экрана обязаны различаться визуально, не только
+     текстом. */
+  --source-classifier:        #5B21B6;
+  --source-classifier-soft:   #EDE9FE;
+  --source-classifier-border: #DDD6FE;
+  --source-classifier-text:   #4C1D95;
+
   /* Кольцо структуры паспорта проекта (Ф6 фазы 7, спека §2.10; план, задача 9).
      Категориальный набор, ПРОШЕДШИЙ ВАЛИДАТОР — полоса светлоты, порог
      цветности, разделимость соседних секторов при дальтонизме, контраст к
@@ -128,6 +138,13 @@
   --info-soft:             #2A323D;
   --info-border:           #3A4854;
   --info-text:             #A5C0D6;
+
+  /* «Статья СМР» — тёмная половина фиолетового/индиго набора (см. светлые
+     значения выше). */
+  --source-classifier:        #A78BFA;
+  --source-classifier-soft:   #2E2A45;
+  --source-classifier-border: #453D63;
+  --source-classifier-text:   #C4B5FD;
 
   /* Кольцо структуры — тёмная половина того же прошедшего валидатор набора,
      см. комментарий у светлых значений выше (`:root, [data-theme="light"]`).
@@ -205,6 +222,11 @@
   --color-info-soft:       var(--info-soft);
   --color-info-border:     var(--info-border);
   --color-info-text:       var(--info-text);
+
+  --color-source-classifier:        var(--source-classifier);
+  --color-source-classifier-soft:   var(--source-classifier-soft);
+  --color-source-classifier-border: var(--source-classifier-border);
+  --color-source-classifier-text:   var(--source-classifier-text);
 
   /* shadcn-совместимые алиасы — поддержать готовые примитивы из ui/ */
   --color-background:           var(--bg-page);

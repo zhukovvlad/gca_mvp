@@ -1,6 +1,8 @@
-"""API семантического контура — восемнадцать маршрутов под `/api/v1/semantic`,
+"""API семантического контура — двадцать один маршрут под `/api/v1/semantic`,
 все под правом `admin` (спека `2026-09-22-catalog-families-design.md` §2.7,
-§2.10; план, задача 12).
+§2.10; план, задача 12; чтение членств группы — спека
+`2026-09-25-families-screen-design.md` §2.8 п. 3; пакетный перенос устаревшей
+группы — та же спека §2.6, §2.8 п. 4).
 
 HTTP-слой поверх готовых сервисов задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) — они не
@@ -36,7 +38,7 @@ import dataclasses
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 import crud.semantic as crud_semantic
@@ -96,6 +98,7 @@ _STATUS_CONFLICT = frozenset(
         context_operations.REFUSE_CATEGORY_CHANGED,
         context_operations.REFUSE_NOT_STALE,
         context_operations.REFUSE_CONFLICTED,
+        context_operations.REFUSE_MEMBER_CONTEXT_CHANGED,
     }
 )
 
@@ -189,7 +192,11 @@ def _mutating(db: Session):
 def _read_domain_errors(fn, /, *args, **kwargs):
     """Обёртка ЧТЕНИЯ (не пишет, коммит/rollback не нужны): переводит те же
     три исключения в `HTTPException` — используется маршрутом
-    `transfer-proposal`, единственным GET, которому есть что переводить."""
+    `transfer-proposal` и КАЖДЫМ маршрутом, читающим `context_card` (сам
+    `GET /contexts/{id}` и мутации вида/роли/семьи, отдающие карточку ПОСЛЕ
+    своего `_mutating(db)`): цикл разделов, обнаруженный при построении
+    `member_paths` (`chapter_paths`, `services/context_routing.py`), тем
+    самым переводится в доменную `422` там же, где угодно читается карточка."""
     try:
         return fn(*args, **kwargs)
     except (WorkFamilyError, ContextOperationError) as exc:
@@ -306,6 +313,29 @@ class AcceptTransferRequest(BaseModel):
 
 class AcceptTargetDecisionRequest(BaseModel):
     position_item_ids: list[int] = Field(min_length=1)
+
+
+class StaleGroupTransferRequest(BaseModel):
+    """Тело пакетного переноса устаревшей группы (спека §2.6, §2.8 п. 4,
+    редакция 3): `chapter_item_ids` — РАЗДЕЛЫ группы (текст пути сливает
+    разделы разных смет в одну группу экрана, `member_paths`/`stale_groups`,
+    `crud/semantic.py`) — `null` — группа «без раздела» (то же значение, что
+    несёт строка внимания экрана), а не «весь контекст» — второго смысла у
+    `null` здесь нет, в отличие от `GroupSelector` чтения членств группы;
+    пустой список — структурно бессмысленный вход (группа без разделов, не
+    «без раздела вовсе») — `422`."""
+
+    chapter_item_ids: list[int] | None
+    expected_category_id: int | None
+
+    @field_validator("chapter_item_ids")
+    @classmethod
+    def _chapter_item_ids_not_empty_list(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and len(value) == 0:
+            raise ValueError(
+                "chapter_item_ids: пустой список запрещён; null — группа «без раздела»."
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +468,76 @@ def context_card_route(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    card = crud_semantic.context_card(db, context_id=context_id)
+    card = _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
     if card is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
     return card
+
+
+def _group_selector(
+    chapter_item_id: list[int] | None, no_chapter: bool
+) -> crud_semantic.GroupSelector:
+    """`chapter_item_id` — параметр запроса ПОВТОРЯЕТСЯ (редакция 3, спека
+    §2.8 п. 2, 3): группа экрана — текст пути, и её галочка обязана раскрыть
+    позиции ВСЕХ разделов, чей путь совпал (`member_paths.chapter_item_ids`),
+    а не одного. Непустой `chapter_item_id` и `no_chapter=True` вместе —
+    противоречие («разделы X, Y…» и «без раздела» разом невозможны, спека
+    §2.8 п. 3) — `422` НЕКОДИРОВАННЫМ текстом, тем же путём, что и другие
+    структурно неверные входы этого роутера (например, `split` с битым
+    правилом)."""
+    chapter_item_ids = tuple(chapter_item_id) if chapter_item_id else ()
+    if chapter_item_ids and no_chapter:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "chapter_item_id и no_chapter=true нельзя передавать одновременно.",
+        )
+    return crud_semantic.GroupSelector(chapter_item_ids=chapter_item_ids, no_chapter=no_chapter)
+
+
+@router.get("/contexts/{context_id}/members")
+def list_group_members_route(
+    context_id: int,
+    chapter_item_id: list[int] | None = Query(default=None),
+    no_chapter: bool = Query(default=False),
+    state: crud_semantic.GroupState = Query(default="all"),
+    limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Постраничный список членств ОДНОЙ группы контекста (спека §2.8 п. 3,
+    редакция 3): галочка группы карточки раскрывает её позиции ИМЕННО этим
+    запросом, а не обрезанным списком карточки. `chapter_item_id` повторяется
+    — группа из нескольких разделов, отбираются позиции ЛЮБОГО из них. Без
+    `chapter_item_id`/`no_chapter` — группа «весь контекст»."""
+    selector = _group_selector(chapter_item_id, no_chapter)
+    result = crud_semantic.list_group_members(
+        db, context_id=context_id, selector=selector, state=state, limit=limit, offset=offset,
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
+    return result
+
+
+@router.get("/contexts/{context_id}/member-ids")
+def list_group_member_ids_route(
+    context_id: int,
+    chapter_item_id: list[int] | None = Query(default=None),
+    no_chapter: bool = Query(default=False),
+    state: crud_semantic.GroupState = Query(default="all"),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Полный список id членств группы, БЕЗ обрезки и без `limit`/`offset`
+    (спека §2.8 п. 3, редакция 3 — `chapter_item_id` повторяется): тот же
+    набор, что галочка группы передаёт целиком в «Разделить…»/«Перенести…»."""
+    selector = _group_selector(chapter_item_id, no_chapter)
+    result = crud_semantic.list_group_member_ids(
+        db, context_id=context_id, selector=selector, state=state,
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Контекст {context_id} не найден.")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +559,11 @@ def confirm_kind_route(
                 db, context_id=context_id, kind=body.kind.value if body.kind is not None else None,
                 actor_id=admin.id,
             )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Мутация уже закоммичена строкой выше (`_mutating(db)` вышел без
+    # исключения) — отказ ниже описывает ТОЛЬКО чтение карточки для ответа
+    # (цикл разделов в `member_paths`), не саму мутацию: она остаётся в силе,
+    # даже когда клиент получает 422 вместо тела карточки.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/name-role")
@@ -477,7 +577,9 @@ def set_name_role_route(
         work_families.set_name_role(
             db, context_id=context_id, role=body.role.value, actor_id=admin.id
         )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Та же дисциплина, что у `confirm_kind_route`: мутация уже закоммичена,
+    # отказ ниже — только о чтении карточки, не о смене роли.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/family")
@@ -491,7 +593,9 @@ def assign_family_route(
         work_families.assign_family(
             db, context_id=context_id, family_id=body.family_id, actor_id=admin.id
         )
-    return crud_semantic.context_card(db, context_id=context_id)
+    # Та же дисциплина, что у `confirm_kind_route`: мутация уже закоммичена,
+    # отказ ниже — только о чтении карточки, не о назначении семьи.
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
 @router.post("/contexts/{context_id}/split")
@@ -543,6 +647,44 @@ def archive_context_route(
             actor_id=admin.id,
         )
     return {"context_id": context_id, "archived": True}
+
+
+@router.post("/contexts/{context_id}/stale-groups/transfer")
+def transfer_stale_group_route(
+    context_id: int,
+    body: StaleGroupTransferRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Пакетный перенос устаревшей группы одной строки внимания (спека §2.6,
+    §2.8 п. 4, редакция 3): группа — `chapter_item_ids` (разделы группы,
+    `null` — без раздела, пустой список отвергнут `StaleGroupTransferRequest`
+    валидатором), `expected_category_id` — статья, которую оператор видел в
+    строке внимания. Ответ несёт результат по КАЖДОЙ позиции пакета;
+    частичный отказ — законный `200`, не ошибка (пачка не атомарна,
+    `context_operations.transfer_stale_group`)."""
+    with _mutating(db):
+        result = context_operations.transfer_stale_group(
+            db, context_id=context_id,
+            chapter_item_ids=(
+                tuple(body.chapter_item_ids) if body.chapter_item_ids is not None else None
+            ),
+            expected_category_id=body.expected_category_id, actor_id=admin.id,
+        )
+    return {
+        "results": [
+            {
+                "position_item_id": item.position_item_id,
+                "outcome": item.outcome,
+                "target_context_id": item.target_context_id,
+                "error_code": item.error_code,
+                "message": item.message,
+            }
+            for item in result.results
+        ],
+        "moved": result.moved,
+        "refused": result.refused,
+    }
 
 
 # ---------------------------------------------------------------------------

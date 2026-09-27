@@ -34,6 +34,10 @@ import type {
   ContractorInput,
   Decimal,
   EstimateVatState,
+  GroupMemberIdsResult,
+  GroupMembersPage,
+  GroupSelector,
+  GroupState,
   ImportJob,
   ManualKind,
   MergeContextsResult,
@@ -59,6 +63,8 @@ import type {
   SetRoundCategoryOverrideInput,
   SplitContextInput,
   SplitContextResult,
+  StaleGroupTransferInput,
+  StaleGroupTransferResult,
   StagePositions,
   StageSummary,
   TenderCard,
@@ -420,5 +426,69 @@ export const semanticApi = {
   acceptTargetDecision: (input: AcceptTargetDecisionInput): Promise<AcceptTargetDecisionResult> =>
     api
       .post<AcceptTargetDecisionResult>("/v1/semantic/members/accept-target-decision", input)
+      .then((r) => r.data),
+
+  /**
+   * Постраничный список членств ОДНОЙ группы (спека §2.8 п. 3, редакция 3)
+   * — вкладка «Членства» карточки раскрывает группу этим запросом, а не
+   * обрезанным списком карточки (его больше нет, §2.8 п. 5).
+   * `selector.chapter_item_ids` уходит РЕПЕТИЦИЕЙ ключа `chapter_item_id`
+   * (`?chapter_item_id=1&chapter_item_id=2`, БЕЗ индексов/скобок — тот же
+   * приём, что `stageSummary`/`stagePositions` несут для `offers`,
+   * `paramsSerializer: { indexes: null }`) — сервер принимает ровно этот
+   * вид (`Query(default=None)` списком, `routers/semantic.py`). Пустой
+   * массив/`undefined` у axios не сериализуется, поэтому «весь контекст»
+   * (оба поля пустые/ложные) не шлёт лишних параметров.
+   */
+  groupMembers: (
+    contextId: number,
+    selector: GroupSelector,
+    state: GroupState,
+    limit: number,
+    offset: number
+  ): Promise<GroupMembersPage> =>
+    api
+      .get<GroupMembersPage>(`/v1/semantic/contexts/${contextId}/members`, {
+        params: {
+          chapter_item_id: selector.chapter_item_ids.length ? selector.chapter_item_ids : undefined,
+          no_chapter: selector.no_chapter ? true : undefined,
+          state,
+          limit,
+          offset,
+        },
+        paramsSerializer: { indexes: null },
+      })
+      .then((r) => r.data),
+
+  /**
+   * Полный список id членств группы, без обрезки (спека §2.8 п. 3) — тот же
+   * набор, что галочка группы передаёт целиком в «Разделить…»/«Перенести…».
+   */
+  groupMemberIds: (
+    contextId: number,
+    selector: GroupSelector,
+    state: GroupState
+  ): Promise<GroupMemberIdsResult> =>
+    api
+      .get<GroupMemberIdsResult>(`/v1/semantic/contexts/${contextId}/member-ids`, {
+        params: {
+          chapter_item_id: selector.chapter_item_ids.length ? selector.chapter_item_ids : undefined,
+          no_chapter: selector.no_chapter ? true : undefined,
+          state,
+        },
+        paramsSerializer: { indexes: null },
+      })
+      .then((r) => r.data),
+
+  /** Пакетный перенос устаревшей группы одной строки внимания (спека §2.6, §2.8 п. 4). */
+  transferStaleGroup: (
+    contextId: number,
+    input: StaleGroupTransferInput
+  ): Promise<StaleGroupTransferResult> =>
+    api
+      .post<StaleGroupTransferResult>(
+        `/v1/semantic/contexts/${contextId}/stale-groups/transfer`,
+        input
+      )
       .then((r) => r.data),
 };

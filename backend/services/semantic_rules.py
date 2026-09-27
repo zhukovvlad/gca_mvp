@@ -195,6 +195,27 @@ def _is_working_chapter(chapter: str) -> bool:
     return _normalize(chapter) not in NON_WORK_CHAPTER_TOKENS
 
 
+def nearest_working_chapter(chain: tuple[str, ...]) -> str | None:
+    """Ближайший «рабочий» раздел цепочки (спека
+    `2026-09-25-families-screen-design.md` §2.8 п. 2) — первый СНИЗУ (от
+    `chain[0]`, ближайшего раздела, к корню), для которого `_is_working_chapter`
+    истинен; раздела нет — `None` (цепочка целиком из мест/родов
+    изделия/«Прочее», либо пустая цепочка).
+
+    Единственное место, которое решает «какой раздел цепочки — рабочий»:
+    `classify_name_role` (проверка 2, чистое место) вызывает ЭТУ функцию, а не
+    держит свою копию `next(...)` — иначе правило роли и карточка
+    (`representative_work_title`, `crud/semantic.py`) могли бы разойтись при
+    следующей правке одного из двух мест.
+
+    Args:
+        chain: цепочка разделов от БЛИЖАЙШЕГО к корню — тот же порядок, что
+            `ChapterContext.chain` (`services/context_routing.py`) и параметр
+            `chapter_chain` этого модуля.
+    """
+    return next((chapter for chapter in chain if _is_working_chapter(chapter)), None)
+
+
 def classify_kind(unit_norm: str) -> str:
     """Вид строки (`SemanticKind`) по нормализованной единице (спека §1.9, §2.6).
 
@@ -240,13 +261,19 @@ def classify_name_role(title: str, *, chapter_chain: tuple[str, ...]) -> NameRol
        оба числа, которые `_place_phrase` отбрасывает как индекс с хвоста)
        сводится к словарной фразе места.
     2. **Чистое место**: если весь `title` целиком сводится к словарной фразе
-       места — `location = title`. Работа берётся из БЛИЖАЙШЕГО (первого по
+       места — `location = title`. Работа берётся вызовом
+       `nearest_working_chapter(chapter_chain)` — БЛИЖАЙШЕГО (первого по
        `chapter_chain`, упорядоченной от ближайшего раздела к корню — тот же
        порядок, что задаёт `ChapterContext.chain` в задаче 4,
        `services/context_routing.py`) раздела, который «рабочий»
        (`_is_working_chapter`: не место, не род изделия без состава и не
        «Прочее» — спека §1.10, §2.6). Если такого раздела в цепочке нет —
        `work_title = None`, `comparability_reason = insufficient_description`.
+       Карточка контекста (`representative_work_title`, `crud/semantic.py`,
+       спека `2026-09-25-families-screen-design.md` §2.8 п. 2) вызывает ту же
+       `nearest_working_chapter` НАПРЯМУЮ, минуя `classify_name_role` —
+       ручная смена роли (`set_name_role`) ничего не пересчитывает, и вызов
+       этой функции дал бы подпись, противоречащую решению оператора.
     3. **Род изделия без состава** («Светильники», «Полы:», «Стены:»,
        «Потолок:», «согласно ДП»): если весь `title` — ровно одна словарная
        форма из `GENERIC_WORK_TOKENS`, — `role = GENERIC_WORK`, `location =
@@ -281,10 +308,7 @@ def classify_name_role(title: str, *, chapter_chain: tuple[str, ...]) -> NameRol
             )
 
     if _place_phrase(title) is not None:
-        nearest_work_chapter = next(
-            (chapter for chapter in chapter_chain if _is_working_chapter(chapter)),
-            None,
-        )
+        nearest_work_chapter = nearest_working_chapter(chapter_chain)
         if nearest_work_chapter is not None:
             return NameRoleOutcome(
                 role=NameRole.LOCATION_ONLY.value,
