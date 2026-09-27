@@ -37,9 +37,13 @@ export default function FamiliesPage() {
           title="Семьи и контексты"
           subtitle="Семьи работ, семантика контекстов каталога и операции над ними"
           actions={
-            <TabsList>
-              <TabsTrigger value="families">Семьи</TabsTrigger>
-              <TabsTrigger value="contexts">Контексты</TabsTrigger>
+            <TabsList className="h-auto gap-1 rounded-lg bg-border-subtle p-1">
+              <TabsTrigger value="families" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
+                Семьи
+              </TabsTrigger>
+              <TabsTrigger value="contexts" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
+                Контексты
+              </TabsTrigger>
             </TabsList>
           }
         />

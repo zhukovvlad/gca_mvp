@@ -299,6 +299,7 @@ export function FamiliesTab() {
         )}
       </div>
 
+      <div className="min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100vh-5.5rem)] lg:overflow-y-auto">
       {selected ? (
         <FamilyPanel
           key={selected.id}
@@ -312,6 +313,7 @@ export function FamiliesTab() {
           description="Выберите строку в списке слева, чтобы открыть панель правки."
         />
       )}
+      </div>
 
       <CreateFamilyDialog open={createOpen} onOpenChange={setCreateOpen} />
       <MergeFamilyDialog family={merging} onOpenChange={(open) => !open && setMerging(null)} />

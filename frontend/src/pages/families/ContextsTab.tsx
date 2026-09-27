@@ -444,7 +444,11 @@ export function ContextsTab() {
           `groupMemberIds`, пришедшая после переключения, и состояние секции
           группы, совпавшее ключом раздела с чужим контекстом, применяются
           уже к снятому дереву и не видны новой карточке. */}
-      <ContextCard key={selectedContextId} contextId={selectedContextId} />
+      {/* Панель держится в зоне видимости при прокрутке списка, как в макете
+          (спека §2.1: карточка панелью рядом со списком). */}
+      <div className="min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100vh-5.5rem)] lg:overflow-y-auto">
+        <ContextCard key={selectedContextId} contextId={selectedContextId} />
+      </div>
     </div>
   );
 }
