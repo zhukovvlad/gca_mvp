@@ -144,24 +144,34 @@ export function FamiliesTab() {
   }
 
   // Счётчик по статусам — «сводка над списком» мокапа, а НЕ производная от
-  // `allItems`: та уже отфильтрована текущим статусом/единицей.
-  const statusCounts = (allFamiliesQ.data ?? []).reduce(
-    (acc, f) => {
-      acc[f.status] += 1;
-      return acc;
-    },
-    { draft: 0, active: 0, archived: 0 } as Record<WorkFamilyStatus, number>
-  );
+  // `allItems`: та уже отфильтрована текущим статусом/единицей. Считается
+  // ТОЛЬКО когда `allFamiliesQ` уже несёт данные (внешнее ревью PR #54): пока
+  // безфильтровый запрос в пути или упал, `[]` даёт счётчики «0/0/0», и экран
+  // солгал бы «активных 0» вместо честного «загрузка»/«сводка недоступна».
+  const statusCounts = allFamiliesQ.data
+    ? allFamiliesQ.data.reduce(
+        (acc, f) => {
+          acc[f.status] += 1;
+          return acc;
+        },
+        { draft: 0, active: 0, archived: 0 } as Record<WorkFamilyStatus, number>
+      )
+    : null;
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
       <div className="grid gap-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-3">
-            <p className="self-end text-sm text-fg-tertiary tabular-nums">
-              активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
-              {statusCounts.archived}
-            </p>
+            {statusCounts && (
+              <p className="self-end text-sm text-fg-tertiary tabular-nums">
+                активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
+                {statusCounts.archived}
+              </p>
+            )}
+            {allFamiliesQ.isError && (
+              <p className="self-end text-sm text-fg-tertiary">сводка недоступна</p>
+            )}
             <div className="grid gap-1">
               <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
               <Select

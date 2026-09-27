@@ -548,9 +548,21 @@ def _context_query(filters: ContextFilters):
         .outerjoin(WorkFamily, WorkFamily.id == CatalogContext.work_family_id)
     )
     if filters.catalog_query:
+        # Поиск по строке ИЛИ статье (находка внешнего ревью PR #54, п. 1;
+        # спека §2.4: подпись поля — «Поиск по строке или статье», а
+        # предикат до этой правки бил только по написанию каталога — по
+        # коду/названию статьи не находил НИКОГДА). `WorkCategory` уже
+        # внешне присоединён этим же запросом (несёт `work_category_code`/
+        # `work_category_title` строки списка) — третьего соединения OR не
+        # добавляет, инвариант «ровно два запроса» ниже не трогается. То же
+        # экранирование (`_escape_ilike`), тот же паттерн — для ВСЕХ трёх
+        # полей разом.
+        escaped_query = f"%{_escape_ilike(filters.catalog_query)}%"
         stmt = stmt.where(
-            CatalogPosition.standard_job_title.ilike(
-                f"%{_escape_ilike(filters.catalog_query)}%", escape="\\"
+            sa.or_(
+                CatalogPosition.standard_job_title.ilike(escaped_query, escape="\\"),
+                WorkCategory.code.ilike(escaped_query, escape="\\"),
+                WorkCategory.title.ilike(escaped_query, escape="\\"),
             )
         )
     if filters.work_category_id is not None:

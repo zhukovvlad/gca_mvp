@@ -456,6 +456,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                   {sg.target_category_code ?? "—"} «{sg.target_category_title ?? "—"}»
                 </span>
                 , а {pluralRu(sg.count, "лежит", "лежат", "лежат")} здесь, в статье{" "}
+                <SourceChip kind="classifier" />{" "}
                 <span>
                   {card.work_category_code ?? "—"} «{card.work_category_title ?? "—"}»
                 </span>
@@ -1249,6 +1250,21 @@ function MembershipGroupSection({
       </div>
       <CollapsibleContent className="mt-2">
         {pageQ.isPending && <Skeleton className="h-16 w-full" />}
+        {/*
+          Внешнее ревью PR #54: неуспех `GET .../members` оставлял раскрытую
+          группу пустой — `pageQ.data` не приходит никогда, а скелет гаснет
+          сразу после ответа отказом. Текст отказа и «Повторить»
+          (`pageQ.refetch()`) — тот же приём, что несёт `PositionDrilldown`/
+          `UnallocatedSheet` для своих запросов.
+        */}
+        {pageQ.isError && (
+          <div className="flex items-center gap-2 text-sm text-fg-secondary">
+            <span>Не удалось загрузить позиции группы</span>
+            <Button variant="outline" size="sm" onClick={() => pageQ.refetch()}>
+              Повторить
+            </Button>
+          </div>
+        )}
         {pageQ.data && (
           <>
             <Surface padding="none" className="overflow-x-auto">

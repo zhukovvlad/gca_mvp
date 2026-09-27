@@ -151,9 +151,12 @@ describe("ContextCard", () => {
       ).toBeInTheDocument()
     );
     // Своя статья контекста 602 — «05.02.03 Оштукатуривание…» (фикстура `base`).
+    // Плашка «статья СМР» (`SourceChip kind="classifier"`) стоит перед кодом
+    // ОБЕИХ статей строки — и целевой, и текущей (внешнее ревью PR #54, п. 2:
+    // до правки текущая печаталась голым текстом без плашки).
     const staleLine = screen.getByText(/1 позиция из раздела/).closest("p")!;
     expect(staleLine).toHaveTextContent(
-      /, а лежит здесь, в статье 05\.02\.03 «Оштукатуривание цементно-песчаным раствором»\.?/
+      /, а лежит здесь, в статье статья СМР 05\.02\.03 «Оштукатуривание цементно-песчаным раствором»\.?/
     );
 
     const transferButton = screen.getByRole("button", {
@@ -163,6 +166,19 @@ describe("ContextCard", () => {
     // aria-label перекрывает имя, и без этой проверки видимая подпись могла бы
     // разойтись с ним молча.
     expect(transferButton).toHaveTextContent(/^Перенести их$/);
+  });
+
+  it("строка внимания устаревших несёт ДВЕ плашки «статья СМР» — у целевой статьи и у ТЕКУЩЕЙ (находка ревью PR #54, п. 2)", async () => {
+    renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Устройство покрытий полов из линолеума")).toBeInTheDocument()
+    );
+    const staleLine = screen.getByText(/1 позиция из раздела/).closest("p")!;
+    // ДО правки текущая статья («а лежит здесь, в статье …») печаталась
+    // голым текстом без плашки источника — только ОДНА «статья СМР» (у
+    // цели переноса). Обе статьи — из классификатора, обе обязаны нести
+    // одну и ту же плашку.
+    expect(within(staleLine).getAllByText("статья СМР")).toHaveLength(2);
   });
 
   it("строка внимания конфликтных — по сумме conflict_count всех групп", async () => {
@@ -1279,7 +1295,11 @@ describe("ContextCard", () => {
     expect(
       within(staleLine).getByText("8 Отделочные работы (паркинг, надземная часть МОП) › 8.2 Отделка полов")
     ).toBeInTheDocument();
-    expect(within(staleLine).getByText("статья СМР")).toBeInTheDocument();
+    // ДВЕ плашки «статья СМР» в строке внимания — у целевой статьи переноса
+    // И у ТЕКУЩЕЙ статьи контекста (находка ревью PR #54, п. 2; тест
+    // "строка внимания устаревших несёт ДВЕ плашки..." выше — решающая
+    // проверка именно этого факта).
+    expect(within(staleLine).getAllByText("статья СМР")).toHaveLength(2);
   });
 
   it("плашка «в смете» стоит у КАЖДОГО пути группы во вкладке «Членства»", async () => {
@@ -1794,6 +1814,59 @@ describe("ContextCard", () => {
     expect(screen.getByText("Выбрано членств: 1")).toBeInTheDocument();
     expect(screen.getByLabelText("Выбрать позицию 80001")).toBeChecked();
     expect(screen.getByLabelText(/Выбрать группу/)).not.toBeChecked();
+  });
+
+  /**
+   * Внешнее ревью PR #54: неуспех `GET .../members` (запрос СТРАНИЦЫ группы,
+   * не `member-ids` выше) оставлял раскрытую группу пустой — `pageQ.data`
+   * никогда не приходит, а скелет (`pageQ.isPending`) гаснет сразу после
+   * ответа с отказом. Раскрытая группа обязана показать текст отказа и
+   * кнопку «Повторить», зовущую `pageQ.refetch()`.
+   */
+  it("отказ GET .../members у раскрытой группы — текст отказа и «Повторить» перезапрашивает", async () => {
+    let hits = 0;
+    server.use(
+      http.get("/api/v1/semantic/contexts/:id/members", () => {
+        hits += 1;
+        if (hits === 1) {
+          return HttpResponse.json({ detail: "Не удалось получить членства группы." }, { status: 500 });
+        }
+        return HttpResponse.json({
+          items: [
+            {
+              position_item_id: 71001,
+              job_title: "Штукатурка стен, ось А-Б",
+              estimate_id: 5001,
+              membership_state: "CURRENT",
+              conflict_at: null,
+              conflict_from_context_id: null,
+              routed_by: "rule",
+            },
+          ],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        });
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
+    );
+    await openMembershipTab(user);
+    await expandGroup(user, /Раскрыть группу «8 Отделочные работы/);
+
+    expect(
+      await screen.findByText("Не удалось загрузить позиции группы")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Штукатурка стен, ось А-Б")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Повторить" }));
+
+    expect(await screen.findByText("Штукатурка стен, ось А-Б")).toBeInTheDocument();
+    expect(screen.queryByText("Не удалось загрузить позиции группы")).not.toBeInTheDocument();
+    expect(hits).toBe(2);
   });
 
   it("«Принять решение цели» (все конфликтные): неуспех groupMemberIds показывает тост, мутация не отправляется", async () => {

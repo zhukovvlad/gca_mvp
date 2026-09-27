@@ -1,9 +1,11 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { delay, http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FamiliesTab } from "@/pages/families/FamiliesTab";
 import { handlerState } from "@/test/handlers";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 
 /**
@@ -108,6 +110,67 @@ describe("FamiliesTab", () => {
     // списку (решение этой задачи, спека §2.8, сверка с макетом 27.09.2026):
     // иначе на дефолтном экране сводка солгала бы «активных 0».
     expect(screen.getByText("активных 1 · черновиков 42 · в архиве 1")).toBeInTheDocument();
+  });
+
+  /**
+   * Внешнее ревью PR #54: сводка раньше считалась по `allFamiliesQ.data ?? []`
+   * — пока безфильтровый запрос ещё в пути (или упал), пустой массив даёт
+   * счётчики «0/0/0», и экран лжёт «активных 0», хотя причина ложь загрузки,
+   * а не состав каталога. Отфильтрованный запрос (`familiesQ`, несёт
+   * `status=draft`) и безфильтровый (`allFamiliesQ`, без параметров) — два
+   * РАЗНЫХ запроса одного маршрута, различаются по строке запроса.
+   */
+  it("сводка не печатается, пока безфильтровый запрос ещё в пути — список при этом уже виден", async () => {
+    server.use(
+      http.get("/api/v1/semantic/families", async ({ request }) => {
+        const url = new URL(request.url);
+        const isUnfiltered = !url.searchParams.get("status") && !url.searchParams.get("unit_id");
+        if (isUnfiltered) {
+          await delay("infinite");
+        }
+        const status = url.searchParams.get("status");
+        const unitId = url.searchParams.get("unit_id");
+        const items = handlerState.workFamilies.filter((family) => {
+          if (status && family.status !== status) return false;
+          if (unitId && String(family.unit_id) !== unitId) return false;
+          return true;
+        });
+        return HttpResponse.json({ items });
+      })
+    );
+
+    renderWithProviders(<FamiliesTab />);
+
+    // Отфильтрованный запрос (status=draft) отвечает штатно — список виден.
+    await waitFor(() => expect(screen.getByText("Семья работ №3")).toBeInTheDocument());
+    expect(screen.queryByText(/активных/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/сводка недоступна/)).not.toBeInTheDocument();
+  });
+
+  it("сводка печатает «сводка недоступна», когда безфильтровый запрос упал — не «активных 0»", async () => {
+    server.use(
+      http.get("/api/v1/semantic/families", ({ request }) => {
+        const url = new URL(request.url);
+        const status = url.searchParams.get("status");
+        const unitId = url.searchParams.get("unit_id");
+        const isUnfiltered = !status && !unitId;
+        if (isUnfiltered) {
+          return HttpResponse.json({ detail: "Не удалось получить семьи." }, { status: 500 });
+        }
+        const items = handlerState.workFamilies.filter((family) => {
+          if (status && family.status !== status) return false;
+          if (unitId && String(family.unit_id) !== unitId) return false;
+          return true;
+        });
+        return HttpResponse.json({ items });
+      })
+    );
+
+    renderWithProviders(<FamiliesTab />);
+
+    await waitFor(() => expect(screen.getByText("Семья работ №3")).toBeInTheDocument());
+    expect(await screen.findByText("сводка недоступна")).toBeInTheDocument();
+    expect(screen.queryByText(/активных 0/)).not.toBeInTheDocument();
   });
 
   it("единица списка — символ (м²), не код (M2)", async () => {

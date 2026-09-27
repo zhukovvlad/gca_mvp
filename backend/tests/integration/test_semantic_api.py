@@ -925,6 +925,73 @@ class TestContextsQueue:
         titles = {row["standard_job_title"] for row in response.json()["items"]}
         assert titles == {"Раствор 40%состав А"}
 
+    # -------------------------------------------------------------------
+    #  Находка внешнего ревью PR #54, п. 1: подпись поля мокапа — «Поиск по
+    #  строке или статье» (`ContextsTab.tsx`), а предикат `catalog_query` до
+    #  этой правки бил только по `CatalogPosition.standard_job_title` — по
+    #  статье корзины (код/название) НИКОГДА не находил ничего.
+    # -------------------------------------------------------------------
+
+    def test_catalog_query_matches_category_code_substring(self, admin_client, db_session, factories):
+        """Запрос, равный КОДУ статьи корзины (или его подстроке), находит
+        контекст, чьё написание каталога код НЕ содержит вовсе — находка
+        возможна только через новый предикат OR по `WorkCategory.code`."""
+        category = _category_with_dot_count(db_session, 2)
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Название без кода статьи")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        ctx = _context(db_session, bucket)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": category.code})
+        ids = {row["id"] for row in response.json()["items"]}
+        assert ctx.id in ids
+
+    def test_catalog_query_matches_category_title_word(self, admin_client, db_session, factories):
+        """Запрос словом из НАЗВАНИЯ статьи корзины находит контекст, чьё
+        написание каталога это слово не содержит — предикат OR по
+        `WorkCategory.title`."""
+        category = _category_with_dot_count(db_session, 2)
+        word = category.title.split()[0]
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Иное написание позиции")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        ctx = _context(db_session, bucket)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": word})
+        ids = {row["id"] for row in response.json()["items"]}
+        assert ctx.id in ids
+
+    def test_catalog_query_matching_neither_excludes_context(self, admin_client, db_session, factories):
+        """Запрос, не встречающийся ни в написании, ни в коде/названии
+        статьи, — контекст ИСКЛЮЧЁН (OR не превратился в «всегда истина»)."""
+        category = _category_with_dot_count(db_session, 2)
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Название без кода статьи")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        ctx = _context(db_session, bucket)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "СОВСЕМ_НЕСУЩЕСТВУЮЩИЙ_ТЕКСТ_XYZ"}
+        )
+        ids = {row["id"] for row in response.json()["items"]}
+        assert ctx.id not in ids
+
+    def test_catalog_query_percent_escaped_for_category_fields(self, admin_client, db_session, factories):
+        """Экранирование `%` (`_escape_ilike`) обязано действовать и у НОВЫХ
+        предикатов по коду/названию статьи, не только у написания: без него
+        буквальный `%`, вставленный внутрь кода статьи, стал бы метасимволом
+        шаблона «что угодно между половинками» — а сам код всегда состоит из
+        своих же двух половинок, поэтому испорченный (неэкранированный)
+        запрос совпал бы с категорией ВСЕГДА. Экранированный — не совпадает,
+        потому что засеянные коды `%` не несут."""
+        category = _category_with_dot_count(db_session, 2)
+        assert len(category.code) >= 2
+        cp = factories.CatalogPositionFactory.create(standard_job_title="Название без совпадения вовсе")
+        bucket = _bucket(db_session, catalog_position=cp, work_category_id=category.id)
+        ctx = _context(db_session, bucket)
+
+        broken_query = category.code[:1] + "%" + category.code[1:]
+        response = admin_client.get(f"{BASE}/contexts", params={"catalog_query": broken_query})
+        ids = {row["id"] for row in response.json()["items"]}
+        assert ctx.id not in ids
+
     def test_semantic_kind_name_role_and_category_filters_both_sides(
         self, admin_client, db_session, factories
     ):
