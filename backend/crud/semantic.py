@@ -81,12 +81,23 @@ class MemberPath(TypedDict):
 
 
 class StaleGroup(TypedDict):
-    """Устаревшие членства одного раздела, сгруппированные под ЦЕЛЬ переноса
-    — текущую эффективную статью этого раздела (спека §2.8 п. 2, п. 4: тот
-    же `target_category_id`, что видит `transfer_proposal`/`accept_transfer`,
-    `services/context_operations.py`, через `chapter_context(...).category_id`
-    БЛИЖАЙШЕГО раздела). `target_category_*` — `None`, если у раздела нет
-    статьи или раздела нет вовсе (`chapter_item_id=None`)."""
+    """Устаревшие ПЕРЕНОСИМЫЕ членства одного раздела, сгруппированные под
+    ЦЕЛЬ переноса — текущую эффективную статью этого раздела (спека §2.8
+    п. 2, п. 4: тот же `target_category_id`, что видит
+    `transfer_proposal`/`accept_transfer`, `services/context_operations.py`,
+    через `chapter_context(...).category_id` БЛИЖАЙШЕГО раздела).
+    `target_category_*` — `None`, если у раздела нет статьи или раздела нет
+    вовсе (`chapter_item_id=None`).
+
+    `count` — ТОЛЬКО переносимые устаревшие членства (`membership_state=STALE
+    AND conflict_at IS NULL`) — ровно то множество, что берёт пакетный
+    перенос `transfer_stale_group` (`services/context_operations.py`).
+    Устаревшее членство, у которого ЕСТЬ конфликт, не входит в `count` и не
+    порождает запись `stale_groups`, если оно единственное устаревшее в
+    группе — оно решается отдельным действием «Принять решение цели», не
+    пакетным переносом (спека §2.6). Это НЕ то же самое, что
+    `MemberPath.stale_count` (та ось считает ВСЕ `STALE`-членства группы,
+    включая конфликтные, — независимая от `conflict_count` величина)."""
 
     chapter_item_id: int | None
     path: list[str]
@@ -305,7 +316,14 @@ def _member_paths_and_stale_groups(
     db: Session, *, context_id: int
 ) -> tuple[list[MemberPath], list[StaleGroup], dict[int, tuple[str, ...]]]:
     """Членства карточки, сгруппированные по ближайшему разделу позиции, и
-    устаревшие группы из ТЕХ ЖЕ строк (спека §2.8 п. 2).
+    устаревшие ПЕРЕНОСИМЫЕ группы из ТЕХ ЖЕ строк (спека §2.8 п. 2):
+    `stale_groups.count` — только `STALE AND conflict_at IS NULL`, то же
+    множество, что берёт пакетный перенос `transfer_stale_group`
+    (`services/context_operations.py`); устаревшее конфликтное членство не
+    входит ни в `count`, ни в саму запись `stale_groups`, если группа без
+    него не набрала ни одного переносимого членства — карточка не должна
+    предлагать перенос того, что перенести нельзя (см. `StaleGroup`
+    докстрока выше).
 
     ОДИН агрегирующий запрос `GROUP BY position_items.chapter_item_id`,
     несущий заодно `work_category_id` строки-раздела (плюс её код/название)
@@ -340,6 +358,17 @@ def _member_paths_and_stale_groups(
             sa.func.count(
                 sa.case((ContextMember.conflict_at.isnot(None), 1))
             ).label("conflict_count"),
+            sa.func.count(
+                sa.case(
+                    (
+                        sa.and_(
+                            ContextMember.membership_state == MembershipState.STALE.value,
+                            ContextMember.conflict_at.is_(None),
+                        ),
+                        1,
+                    )
+                )
+            ).label("transferable_stale_count"),
             chapter.work_category_id.label("target_category_id"),
             category.code.label("target_category_code"),
             category.title.label("target_category_title"),
@@ -385,13 +414,13 @@ def _member_paths_and_stale_groups(
         StaleGroup(
             chapter_item_id=row.chapter_item_id,
             path=_path_for(row.chapter_item_id),
-            count=row.stale_count,
+            count=row.transferable_stale_count,
             target_category_id=row.target_category_id,
             target_category_code=row.target_category_code,
             target_category_title=row.target_category_title,
         )
         for row in rows
-        if row.stale_count > 0
+        if row.transferable_stale_count > 0
     ]
     stale_groups.sort(
         key=lambda sg: _member_group_sort_key(

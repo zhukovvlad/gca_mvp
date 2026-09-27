@@ -1,8 +1,7 @@
 """API семантического контура — двадцать один маршрут `/api/v1/semantic`
 (спека `2026-09-22-catalog-families-design.md` §2.10; план, задача 12; чтение
-членств группы — план `2026-09-25-families-screen.md`, задача 4, спека
-`2026-09-25-families-screen-design.md` §2.8 п. 3; пакетный перенос устаревшей
-группы — та же спека §2.6, §2.8 п. 4, задача 5).
+членств группы — спека `2026-09-25-families-screen-design.md` §2.8 п. 3;
+пакетный перенос устаревшей группы — та же спека §2.6, §2.8 п. 4).
 
 Сервисы задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) сами не
@@ -60,11 +59,11 @@ BASE = "/api/v1/semantic"
 
 # ---------------------------------------------------------------------------
 #  Литерал двадцати одного маршрута плана (Task 12, Interfaces; + два
-#  маршрута чтения членств группы, план `2026-09-25-families-screen.md`,
-#  задача 4; + пакетный перенос устаревшей группы, та же спека §2.8 п. 4,
-#  задача 5) — НЕЗАВИСИМЫЙ от `app.routes`: перебор прав обязан ловить
-#  забытый `require_admin` на ОДНОМ маршруте, а не читать список из того же
-#  дерева, которое проверяет.
+#  маршрута чтения членств группы, спека `2026-09-25-families-screen-design.md`
+#  §2.8 п. 3; + пакетный перенос устаревшей группы, та же спека §2.8 п. 4) —
+#  НЕЗАВИСИМЫЙ от `app.routes`: перебор прав обязан ловить забытый
+#  `require_admin` на ОДНОМ маршруте, а не читать список из того же дерева,
+#  которое проверяет.
 # ---------------------------------------------------------------------------
 TWENTY_ONE_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/semantic/families"),
@@ -385,9 +384,9 @@ assert len(TWENTY_ONE_ROUTE_TEMPLATES) == 21
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
     равно литералу двадцати одного (план, задача 12, «Утверждения»; два
-    маршрута членств группы и пакетный перенос устаревшей группы — план
-    `2026-09-25-families-screen.md`, задачи 4 и 5) — единственное место, где
-    такое утверждение осмысленно (задача 6 роутера ещё не заводила);
+    маршрута членств группы и пакетный перенос устаревшей группы — спека
+    `2026-09-25-families-screen-design.md` §2.8 п. 3-4) — единственное место,
+    где такое утверждение осмысленно (задача 6 роутера ещё не заводила);
     маршрута восстановления архивного контекста (`…/restore`) в нём нет."""
     collected = _collect_semantic_routes()
     assert collected == TWENTY_ONE_ROUTE_TEMPLATES
@@ -2029,6 +2028,126 @@ class TestContextCard:
         # Безраздельная группа — последней, как у `member_paths`.
         assert stale_groups[-1]["chapter_item_id"] is None
 
+    def test_card_stale_groups_excludes_group_whose_only_stale_member_is_conflicted(
+        self, admin_client, db_session, factories
+    ):
+        """Группа, где ЕДИНСТВЕННОЕ устаревшее членство ещё и конфликтное, не
+        должна давать запись `stale_groups` вовсе (MAJOR-1, ревью Fable
+        27.09.2026): `stale_groups.count` — множество, которое реально берёт
+        пакетный перенос (`transfer_stale_group`,
+        `services/context_operations.py`) — `STALE AND conflict_at IS NULL`.
+        Конфликтное устаревшее членство решается отдельным действием
+        «Принять решение цели» (спека §2.6), не пакетным переносом; если бы
+        карточка предложила перенос группы без единого переносимого членства,
+        ответ пакета всегда был бы `moved=0, refused=0` — кнопка,
+        неспособная сама себя выполнить."""
+        estimate = factories.EstimateFactory.create()
+        lot = factories.LotFactory.create(estimate=estimate)
+        proposal = factories.ProposalFactory.create(lot=lot)
+        cp = factories.CatalogPositionFactory.create()
+        bucket = _bucket(db_session, catalog_position=cp)
+        ctx = _context(db_session, bucket)
+        (other_category_id,) = _leaf_category_ids(db_session, 1)
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=other_category_id)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+
+        chapter = _chapter(factories, proposal, title="Раздел с конфликтным устареванием")
+        stale_and_conflicted = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp,
+            title="Устаревшее и конфликтное",
+        )
+        _member(
+            db_session, stale_and_conflicted, ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        db_session.flush()
+
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
+        assert card.status_code == 200
+        body = card.json()
+        # Ось `member_paths.stale_count` не тронута — она считает ВСЕ
+        # `STALE`-членства, включая конфликтные (независимая величина).
+        member_paths = body["member_paths"]
+        assert len(member_paths) == 1
+        assert member_paths[0]["stale_count"] == 1
+        assert member_paths[0]["conflict_count"] == 1
+        # А вот `stale_groups` — пуст: единственное устаревшее членство
+        # группы конфликтно, переносить пакетом нечего.
+        assert body["stale_groups"] == [], body["stale_groups"]
+
+    def test_card_stale_groups_count_excludes_conflicted_and_batch_transfer_moves_only_them(
+        self, admin_client, db_session, factories
+    ):
+        """Группа «2 обычных STALE + 1 STALE-и-конфликтное» — `stale_groups`
+        несёт `count = 2` (только переносимые), пакетный перенос переносит
+        РОВНО эти 2, а перечитанная карточка после переноса не содержит
+        записи `stale_groups` для этого раздела вовсе (конфликтное членство
+        осталось, но оно уже не переносимо, значит группы без
+        переносимых членств быть не должно — MAJOR-1)."""
+        cp = factories.CatalogPositionFactory.create()
+        proposal = _proposal(factories)
+        cat_target, cat_source, cat_conflict_from = _leaf_category_ids(db_session, 3)
+        chapter = _chapter(
+            factories, proposal, title="ГруппаСКонфликтным",
+            category_id=cat_target, category_source="file",
+        )
+        source_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_source)
+        source_ctx = _context(db_session, source_bucket)
+        # Категория «источника конфликта» — ТРЕТЬЯ, отличная от цели переноса:
+        # бакет с `work_category_id=cat_target` уже существовал бы как
+        # НЕ-дефолтный, и `accept_transfer` не смог бы (пере)использовать его
+        # дефолтным целевым бакетом группы — эта коллизия не то, что здесь
+        # проверяется.
+        other_bucket = _bucket(db_session, catalog_position=cp, work_category_id=cat_conflict_from)
+        other_ctx = _context(db_session, other_bucket, is_default=False)
+
+        plain_stale = [
+            _position(
+                factories, proposal, chapter=chapter, catalog_position=cp,
+                title=f"Обычное устаревшее {i}",
+            )
+            for i in range(2)
+        ]
+        for pos in plain_stale:
+            _member(db_session, pos, source_ctx, membership_state=MembershipState.STALE.value)
+        conflicted_stale = _position(
+            factories, proposal, chapter=chapter, catalog_position=cp,
+            title="Устаревшее и конфликтное",
+        )
+        _member(
+            db_session, conflicted_stale, source_ctx,
+            membership_state=MembershipState.STALE.value,
+            conflict_at=_now(), conflict_from_context_id=other_ctx.id,
+            routed_by=RoutedBy.manual.value,
+        )
+        db_session.commit()
+
+        card_before = admin_client.get(f"{BASE}/contexts/{source_ctx.id}")
+        assert card_before.status_code == 200
+        stale_groups_before = card_before.json()["stale_groups"]
+        by_chapter_before = {sg["chapter_item_id"]: sg for sg in stale_groups_before}
+        assert by_chapter_before[chapter.id]["count"] == 2, stale_groups_before
+
+        response = admin_client.post(
+            f"{BASE}/contexts/{source_ctx.id}/stale-groups/transfer",
+            json={"chapter_item_id": chapter.id, "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 2
+        assert body["refused"] == 0
+        moved_ids = {r["position_item_id"] for r in body["results"]}
+        assert moved_ids == {pos.id for pos in plain_stale}
+
+        db_session.expire_all()
+        card_after = admin_client.get(f"{BASE}/contexts/{source_ctx.id}")
+        assert card_after.status_code == 200
+        stale_groups_after = card_after.json()["stale_groups"]
+        by_chapter_after = {sg["chapter_item_id"]: sg for sg in stale_groups_after}
+        assert chapter.id not in by_chapter_after, stale_groups_after
+
     def test_card_of_context_with_chapter_cycle_gives_422_not_500(
         self, admin_client, db_session, factories
     ):
@@ -2288,8 +2407,7 @@ class TestContextCard:
 
 # ---------------------------------------------------------------------------
 #  Членства группы — `GET /members`, `GET /member-ids` (спека
-#  `2026-09-25-families-screen-design.md` §2.8 п. 3; план
-#  `2026-09-25-families-screen.md`, задача 4)
+#  `2026-09-25-families-screen-design.md` §2.8 п. 3)
 # ---------------------------------------------------------------------------
 
 class TestGroupMembers:
@@ -3140,8 +3258,7 @@ class TestMembers:
 
 
 # ---------------------------------------------------------------------------
-#  Пакетный перенос устаревшей группы (спека §2.6, §2.8 п. 4, задача 5
-#  плана `2026-09-25-families-screen.md`)
+#  Пакетный перенос устаревшей группы (спека §2.6, §2.8 п. 4)
 # ---------------------------------------------------------------------------
 
 class TestStaleGroupTransfer:

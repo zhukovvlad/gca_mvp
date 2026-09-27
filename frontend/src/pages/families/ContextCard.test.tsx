@@ -424,6 +424,34 @@ describe("ContextCard", () => {
     );
   });
 
+  // MINOR-3 (ревью Fable 27.09.2026): «Принять предложение переноса»
+  // (действие ПО ОДНОЙ строке) не снимало выбор с той же позиции — счётчик
+  // «Выбрано членств» продолжал считать позицию, которая уже покинула
+  // контекст.
+  it("выбранная позиция снимается с выбора после «Принять предложение переноса» (MINOR-3)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Устройство покрытий полов из линолеума")
+      ).toBeInTheDocument()
+    );
+    await openMembershipTab(user);
+    await expandGroup(user, /Раскрыть группу «8 Отделочные работы/);
+    await screen.findByText("Устройство покрытий полов, ось 1");
+
+    await user.click(screen.getByLabelText(`Выбрать позицию ${STALE_POSITION_ITEM_ID}`));
+    expect(screen.getByText("Выбрано членств: 1")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Принять предложение переноса для позиции ${STALE_POSITION_ITEM_ID}`,
+      })
+    );
+
+    await waitFor(() => expect(screen.getByText("Выбрано членств: 0")).toBeInTheDocument());
+  });
+
   it("конфликт: «принять решение цели» доходит до сервера с id ровно ЭТОЙ строки", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContextCard contextId={CONFLICT_CONTEXT_ID} />);
@@ -1062,6 +1090,74 @@ describe("ContextCard", () => {
     expect(body.target_context_id).toBe(761);
   });
 
+  // MAJOR-2 (ревью Fable 27.09.2026): секция группы «Членства» не зажимает
+  // `page` — после того как группа сужается ниже текущего offset (действие
+  // в карточке разделило/перенесло часть группы), таблица остаётся на
+  // старой странице, запрос уходит с offset вне выдачи, строки пустые и
+  // пейджера больше нет (он рисуется только при `total > MEMBER_PAGE_SIZE`).
+  // Обработчик мутации МЕНЯЕТ фикстуру, как это сделал бы сервер (грабля
+  // `docs/pitfalls/frontend.md`, последний пункт) — иначе тест зелёный без
+  // всякого зажима.
+  it("группа зажимает страницу после сужения ниже текущего offset (MAJOR-2)", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/semantic/contexts/:id/split", async ({ params, request }) => {
+        const contextId = Number(params.id);
+        const body = (await request.json()) as { position_item_ids: number[] };
+        handlerState.lastSplitContextRequest = { contextId, body };
+        // Группа сужается до РОВНО MEMBER_PAGE_SIZE (20) — меньше того, что
+        // требует текущий offset=20 (страница 2). Мутируем ТУ ЖЕ фикстуру,
+        // что читают GET /contexts/:id и GET .../members, а не только ответ
+        // мутации.
+        const context = contextFixture(BIG_GROUP_CONTEXT_ID);
+        const kept = context.members.slice(0, 20);
+        const movedCount = context.members.length - kept.length;
+        context.members = kept;
+        context.member_count = kept.length;
+        // Фикстура 608 несёт РОВНО одну группу членств — правим её счётчик
+        // напрямую, без выбора по `chapter_item_id`.
+        context.member_paths = context.member_paths.map((mp) => ({ ...mp, member_count: kept.length }));
+        context.bucket_contexts = context.bucket_contexts.map((bc) =>
+          bc.id === BIG_GROUP_CONTEXT_ID ? { ...bc, member_count: kept.length } : bc
+        );
+        return HttpResponse.json({
+          new_context_id: 9999,
+          moved_members: movedCount,
+          rule_id: null,
+          default_replaced: true,
+        });
+      })
+    );
+
+    renderWithProviders(<ContextCard contextId={BIG_GROUP_CONTEXT_ID} />);
+    await waitFor(() =>
+      expect(screen.getByText("Устройство вентиляционных каналов")).toBeInTheDocument()
+    );
+    await openMembershipTab(user);
+    await expandGroup(user, /9 Инженерные системы/);
+    await screen.findByText("Вентканал, узел 1");
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    await screen.findByText("Вентканал, узел 21");
+
+    await user.click(screen.getByLabelText(/Выбрать группу/));
+    await waitFor(() =>
+      expect(screen.getByText(`Выбрано членств: ${BIG_GROUP_SIZE}`)).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: "Разделить выбранные" }));
+    await waitFor(() => expect(handlerState.lastSplitContextRequest).not.toBeNull());
+
+    // Перечитанная группа: страница зажата на 1, показаны её строки, а не
+    // пустая таблица без пейджера. Само присутствие «узел 1» после мутации,
+    // которая переносит с offset=20, доказывает, что запрос ушёл заново с
+    // offset=0 — не то же самое кэшированное значение со старой страницы.
+    await waitFor(() => expect(screen.queryByText("Вентканал, узел 21")).not.toBeInTheDocument());
+    expect(await screen.findByText("Вентканал, узел 1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Следующая страница" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Предыдущая страница" })).not.toBeInTheDocument();
+    const lastGroupRequest = handlerState.groupMembersRequests.at(-1)!;
+    expect(new URLSearchParams(lastGroupRequest).get("offset")).toBe("0");
+  });
+
   it("плашки: «статья СМР» у статьи шапки и у целевой статьи строки внимания, «в смете» у пути раздела строки внимания", async () => {
     renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
     await waitFor(() =>
@@ -1233,6 +1329,34 @@ describe("ContextCard", () => {
     expect(screen.queryByText("перенесено 1 из 1")).not.toBeInTheDocument();
   });
 
+  // MINOR-2 (ревью Fable 27.09.2026): обработчик MSW по умолчанию (БЕЗ
+  // `staleGroupTransferOverride`) обязан исключать конфликтные STALE-членства
+  // из пакета — тот же фильтр, что берёт бэкенд
+  // (`transfer_stale_group`: `membership_state=STALE AND conflict_at IS
+  // NULL`, MAJOR-1). Добавляем В ТУ ЖЕ группу ещё одно членство, устаревшее
+  // И конфликтное разом — если бы обработчик его тоже перенёс, итог был бы
+  // «перенесено 2 из 2», а не «1 из 1».
+  it("«Перенести их» не берёт устаревшее И конфликтное членство той же группы", async () => {
+    const user = userEvent.setup();
+    const stale = contextFixture(STALE_CONTEXT_ID);
+    stale.members = [
+      ...stale.members,
+      {
+        position_item_id: 9301,
+        job_title: "Устройство покрытий полов, ось 3",
+        estimate_id: 5001,
+        membership_state: "STALE",
+        conflict_at: "2026-09-24T10:00:00Z",
+        conflict_from_context_id: 601,
+        routed_by: "manual",
+        chapterItemId: STALE_CHAPTER_ITEM_ID,
+      },
+    ];
+    renderWithProviders(<ContextCard contextId={STALE_CONTEXT_ID} />);
+    await user.click(await screen.findByRole("button", { name: /Перенести их/ }));
+    expect(await screen.findByText("перенесено 1 из 1")).toBeInTheDocument();
+  });
+
   it("свёрнутая группа своих позиций не запрашивает; раскрытие запрашивает ровно свою группу", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContextCard contextId={MIXED_GROUPS_CONTEXT_ID} />);
@@ -1309,7 +1433,7 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
     );
-    await user.click(screen.getByRole("combobox", { name: "Роль имени" }));
+    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
     await user.click(await screen.findByRole("option", { name: "место" }));
     await user.click(screen.getByRole("button", { name: "Переопределить роль" }));
     await waitFor(() =>

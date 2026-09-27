@@ -170,14 +170,22 @@ function buildMemberPaths(
   });
 }
 
-/** `ContextCardData.stale_groups` (спека §2.8 п. 2) — только STALE-членства, у которых задан `staleTarget`. */
+/**
+ * `ContextCardData.stale_groups` (спека §2.8 п. 2) — только ПЕРЕНОСИМЫЕ
+ * устаревшие членства: `membership_state=STALE`, есть `staleTarget` И НЕТ
+ * конфликта (`conflict_at === null`) — то же множество, что берёт
+ * `POST .../stale-groups/transfer` (MAJOR-1, ревью Fable 27.09.2026).
+ * Устаревшее И конфликтное членство (`STALE_AND_CONFLICT_POSITION_ITEM_ID`)
+ * не входит в `count`, даже если у него задан `staleTarget`: оно решается
+ * действием «Принять решение цели», не пакетным переносом группы.
+ */
 function buildStaleGroups(
   members: SemanticMemberFixture[],
   chapterPaths: Record<number, string[]>
 ): StaleGroup[] {
   const groups = new Map<string, StaleGroup>();
   for (const m of members) {
-    if (m.membership_state !== "STALE" || !m.staleTarget) continue;
+    if (m.membership_state !== "STALE" || !m.staleTarget || m.conflict_at !== null) continue;
     const key = m.chapterItemId === null ? "null" : String(m.chapterItemId);
     let g = groups.get(key);
     if (!g) {
@@ -723,7 +731,12 @@ function initialSemanticContexts(): SemanticContextFixture[] {
     member_paths: buildMemberPaths(conflictedMembers, conflictChapterPaths),
     stale_groups: buildStaleGroups(conflictedMembers, conflictChapterPaths),
     events: [event(4, "context_created"), event(5, "context_merged")],
-    hasStaleMembers: false,
+    // Членство `STALE_AND_CONFLICT_POSITION_ITEM_ID` выше — настоящее
+    // `membership_state: "STALE"` этого контекста; бэкенд (`_stale_exists`,
+    // `crud/semantic.py`) считает ЛЮБОЕ `STALE`-членство, независимо от
+    // конфликта, и отдал бы `true` (MINOR-2, ревью Fable 27.09.2026:
+    // `hasStaleMembers: false` здесь противоречило бы бэкенду).
+    hasStaleMembers: true,
     hasConflictingMembers: true,
     hasNoMembers: false,
   };
@@ -3007,11 +3020,19 @@ export const handlers = [
     if (handlerState.staleGroupTransferOverride) {
       return HttpResponse.json(handlerState.staleGroupTransferOverride);
     }
-    // Умолчание — ВСЕ устаревшие членства группы перенесены (пачка не
-    // атомарна, но по умолчанию отказов нет, спека §2.8 п. 4); частичный
-    // успех задаётся тестом через `handlerState.staleGroupTransferOverride`.
+    // Умолчание — ВСЕ ПЕРЕНОСИМЫЕ устаревшие членства группы перенесены
+    // (пачка не атомарна, но по умолчанию отказов нет, спека §2.8 п. 4);
+    // частичный успех задаётся тестом через
+    // `handlerState.staleGroupTransferOverride`. Конфликтные STALE-членства
+    // исключены — тот же фильтр, что берёт бэкенд
+    // (`transfer_stale_group`, `services/context_operations.py`:
+    // `membership_state=STALE AND conflict_at IS NULL`, MAJOR-1/MINOR-2,
+    // ревью Fable 27.09.2026).
     const staleInGroup = context.members.filter(
-      (m) => m.membership_state === "STALE" && m.chapterItemId === body.chapter_item_id
+      (m) =>
+        m.membership_state === "STALE" &&
+        m.conflict_at === null &&
+        m.chapterItemId === body.chapter_item_id
     );
     return HttpResponse.json({
       results: staleInGroup.map((m) => ({

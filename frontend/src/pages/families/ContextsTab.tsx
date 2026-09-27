@@ -239,7 +239,7 @@ export function ContextsTab() {
           </div>
 
           <div className="grid gap-1">
-            <Label htmlFor="filter-role" className="text-xs text-fg-tertiary">Роль имени</Label>
+            <Label htmlFor="filter-role" className="text-xs text-fg-tertiary">Наименование называет</Label>
             <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
               <SelectTrigger id="filter-role" className="w-44">
                 <SelectValue>

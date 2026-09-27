@@ -166,8 +166,11 @@ describe("ContextsTab", () => {
       expect(
         screen.getByText("Устройство покрытий полов из линолеума")
       ).toBeInTheDocument();
+      // Не 603: у него И устаревшие, И конфликтные членства разом (MINOR-2,
+      // ревью Fable 27.09.2026) — фильтр «устаревшие» его не исключает.
+      // Отсутствие проверяет контекст без обеих осей.
       expect(
-        screen.queryByText("Отделка потолков водоэмульсионным составом")
+        screen.queryByText("Штукатурка стен цементно-песчаным раствором")
       ).not.toBeInTheDocument();
     });
 
@@ -216,8 +219,8 @@ describe("ContextsTab", () => {
 
   // ---------------------------------------------------------------------
   //  Строка списка (спека §2.4) — наименование, плашка источника, единица,
-  //  семья, число позиций, точка внимания; «Вид»/«Роль имени»/«Состояние»
-  //  ушли в карточку (спека §2.5), их ФИЛЬТРЫ остались.
+  //  семья, число позиций, точка внимания; «Вид»/«Наименование называет»/
+  //  «Состояние» ушли в карточку (спека §2.5), их ФИЛЬТРЫ остались.
   // ---------------------------------------------------------------------
 
   it("строка несёт плашку «статья СМР», код и название статьи, единицу, семью и число позиций", async () => {
@@ -299,18 +302,21 @@ describe("ContextsTab", () => {
     expect(within(emptyRow).getByTestId("attention-dot")).toBeInTheDocument();
   });
 
-  it("подсказка точки называет ИМЕННО те причины, что есть у строки — устаревшие, конфликтные раздельно и «пустой»", async () => {
+  it("подсказка точки называет ИМЕННО те причины, что есть у строки — устаревшие отдельно, обе разом у 603, и «пустой»", async () => {
     await renderTab();
 
     const staleRow = screen.getByText("Устройство покрытий полов из линолеума").closest("tr")!;
     expect(within(staleRow).getByTitle("есть устаревшие позиции")).toBeInTheDocument();
 
-    // Конфликтная фикстура (603) несёт `has_stale_members=false` (агрегатный
-    // признак фильтра — независим от `membership_state` поштучных членств
-    // карточки, докстринг `SemanticContextFixture` в `handlers.ts`) — здесь
-    // ровно ОДНА причина, не обе.
+    // Конфликтная фикстура (603) несёт настоящее `STALE`-членство разом с
+    // конфликтным (`STALE_AND_CONFLICT_POSITION_ITEM_ID`) — `has_stale_members`
+    // (агрегатный признак фильтра, докстринг `SemanticContextFixture` в
+    // `handlers.ts`) обязан быть `true` тоже (MINOR-2, ревью Fable
+    // 27.09.2026), и строка называет ОБЕ причины разом, не одну конфликтную.
     const conflictedRow = screen.getByText("Отделка потолков водоэмульсионным составом").closest("tr")!;
-    expect(within(conflictedRow).getByTitle("есть конфликтные позиции")).toBeInTheDocument();
+    expect(
+      within(conflictedRow).getByTitle("есть устаревшие позиции; есть конфликтные позиции")
+    ).toBeInTheDocument();
 
     const emptyRow = screen.getByText("Разборка временных перегородок").closest("tr")!;
     expect(within(emptyRow).getByTitle("пустой — позиций нет")).toBeInTheDocument();
@@ -329,7 +335,7 @@ describe("ContextsTab", () => {
     ).toBeInTheDocument();
   });
 
-  it('колонки «Вид», «Роль имени», «Состояние» из строки списка ушли; фильтры по ним остались с человеческими подписями', async () => {
+  it('колонки «Вид», «Наименование называет», «Состояние» из строки списка ушли; фильтры по ним остались с человеческими подписями', async () => {
     const user = userEvent.setup();
     await renderTab();
 
@@ -353,7 +359,7 @@ describe("ContextsTab", () => {
     expect(within(kindListbox).queryByText("UNKNOWN")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
 
-    await user.click(screen.getByRole("combobox", { name: "Роль имени" }));
+    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
     const roleListbox = await screen.findByRole("listbox");
     expect(within(roleListbox).getByText("работу")).toBeInTheDocument();
     expect(within(roleListbox).getByText("место")).toBeInTheDocument();
@@ -892,7 +898,7 @@ describe("ContextsTab", () => {
       param: "name_role",
       value: "LOCATION_ONLY",
       apply: async (user) => {
-        await user.click(screen.getByRole("combobox", { name: "Роль имени" }));
+        await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
         await user.click(within(await screen.findByRole("listbox")).getByText("место"));
       },
     },
@@ -1060,9 +1066,9 @@ describe("ContextsTab", () => {
     await user.click(within(await screen.findByRole("listbox")).getByText("не определён"));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Вид" })).toHaveTextContent("не определён"));
 
-    await user.click(screen.getByRole("combobox", { name: "Роль имени" }));
+    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
     await user.click(within(await screen.findByRole("listbox")).getByText("место"));
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "Роль имени" })).toHaveTextContent("место"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Наименование называет" })).toHaveTextContent("место"));
 
     await user.click(screen.getByRole("combobox", { name: "Состояние" }));
     await user.click(within(await screen.findByRole("listbox")).getByText("не применяется"));

@@ -284,6 +284,30 @@ export function ContextCard({ contextId }: ContextCardProps) {
     return Boolean(ids && ids.length > 0 && ids.every((id) => selectedIds.has(id)));
   }
 
+  /**
+   * Снимает выбор с id, которых коснулась только что успешная мутация
+   * членств, и полностью сбрасывает `groupIdCache` (MINOR-3, ревью Fable
+   * 27.09.2026): без этого «Выбрано членств: N» продолжает считать позиции,
+   * которые уже покинули контекст (принятое предложение переноса, пакетный
+   * перенос устаревшей группы, принятое решение цели, перенос конфликтного
+   * через диалог), `isGroupChecked` держит галочку по устаревшему кэшу, а
+   * следующая массовая операция отправила бы id, которых в контексте больше
+   * нет. Кэш групп — ЦЕЛИКОМ, а не по одному ключу: состав ЛЮБОЙ группы мог
+   * измениться этим действием (не только той, что его вызвала — «Принять
+   * решение цели» берёт конфликтные member'ы СРАЗУ по всему контексту), а
+   * следующая галочка группы перечитывает id заново запросом.
+   */
+  function pruneSelection(ids: number[]) {
+    if (ids.length > 0) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
+    setGroupIdCache({});
+  }
+
   const selectedIdList = Array.from(selectedIds);
 
   // Живые соседи по корзине, кроме текущего контекста — цель слияния/переноса
@@ -304,7 +328,10 @@ export function ContextCard({ contextId }: ContextCardProps) {
         { chapter_item_id: null, no_chapter: false },
         "conflict"
       );
-      acceptTargetDecision.mutate({ position_item_ids });
+      acceptTargetDecision.mutate(
+        { position_item_ids },
+        { onSuccess: () => pruneSelection(position_item_ids) }
+      );
     } catch (err) {
       toastApiError(err);
     } finally {
@@ -403,6 +430,14 @@ export function ContextCard({ contextId }: ContextCardProps) {
                                 .map((r) => ({ position_item_id: r.position_item_id, message: r.message })),
                             },
                           }));
+                          // MINOR-3: только ПЕРЕНЕСЁННЫЕ id покинули контекст —
+                          // отказавшие (`refused`) остались на месте, снимать с
+                          // них выбор не нужно.
+                          pruneSelection(
+                            data.results
+                              .filter((r) => r.outcome === "moved")
+                              .map((r) => r.position_item_id)
+                          );
                         },
                       }
                     )
@@ -571,9 +606,9 @@ export function ContextCard({ contextId }: ContextCardProps) {
               </div>
             </div>
 
-            {/* Роль имени */}
+            {/* Наименование называет (спека §2.2: подпись поля `name_role`) */}
             <div className="grid gap-2">
-              <Label htmlFor="context-role-select">Роль имени</Label>
+              <Label htmlFor="context-role-select">Наименование называет</Label>
               <div className="flex flex-wrap gap-2">
                 <Select value={roleChoice} onValueChange={(v) => v && setRoleChoice(v as NameRole)}>
                   <SelectTrigger id="context-role-select" className="w-56">
@@ -642,10 +677,15 @@ export function ContextCard({ contextId }: ContextCardProps) {
                     isChecked={isGroupChecked(group)}
                     onToggleGroup={(checked) => toggleGroupSelected(group, checked)}
                     onTogglePosition={toggleSelected}
-                    onAcceptStaleTransfer={(id) => acceptStaleTransfer.mutate(id)}
+                    onAcceptStaleTransfer={(id) =>
+                      acceptStaleTransfer.mutate(id, { onSuccess: () => pruneSelection([id]) })
+                    }
                     acceptStaleTransferPending={acceptStaleTransfer.isPending}
                     onAcceptTargetDecision={(id) =>
-                      acceptTargetDecision.mutate({ position_item_ids: [id] })
+                      acceptTargetDecision.mutate(
+                        { position_item_ids: [id] },
+                        { onSuccess: () => pruneSelection([id]) }
+                      )
                     }
                     acceptTargetDecisionPending={acceptTargetDecision.isPending}
                     onOpenConflictMove={(row) => {
@@ -733,7 +773,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                               : null,
                         },
                       },
-                      { onSuccess: () => setSelectedIds(new Set()) }
+                      { onSuccess: () => pruneSelection(selectedIdList) }
                     )
                   }
                 >
@@ -769,7 +809,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                         // §2.14 — журнал переноса вручную).
                         reason: "manual",
                       },
-                      { onSuccess: () => setSelectedIds(new Set()) }
+                      { onSuccess: () => pruneSelection(selectedIdList) }
                     )
                   }
                 >
@@ -907,13 +947,16 @@ export function ContextCard({ contextId }: ContextCardProps) {
               disabled={moveMembers.isPending || conflictMoveTarget === null}
               onClick={() => {
                 if (!conflictMove || conflictMoveTarget === null) return;
-                moveMembers.mutate({
-                  position_item_ids: [conflictMove.position_item_id],
-                  target_context_id: conflictMoveTarget,
-                  // См. комментарий у «Перенести выбранные» — причина не
-                  // вводится оператором, сервис принимает только "manual".
-                  reason: "manual",
-                });
+                moveMembers.mutate(
+                  {
+                    position_item_ids: [conflictMove.position_item_id],
+                    target_context_id: conflictMoveTarget,
+                    // См. комментарий у «Перенести выбранные» — причина не
+                    // вводится оператором, сервис принимает только "manual".
+                    reason: "manual",
+                  },
+                  { onSuccess: () => pruneSelection([conflictMove.position_item_id]) }
+                );
                 setConflictMove(null);
               }}
             >
@@ -968,6 +1011,18 @@ function MembershipGroupSection({
   // отключает `useQuery` (`enabled`) у свёрнутой группы, а не только прячет
   // уже загруженный результат.
   const pageQ = useContextGroupMembers(open ? contextId : null, selector, "all", page, MEMBER_PAGE_SIZE);
+  // Зажим страницы (тот же приём, что `ContextsTab`/`FamiliesTab`, спека
+  // §2.7): группа сузилась (разделение/перенос части её членств, принятие
+  // предложения переноса по одной) при том же `page`, и текущий `offset`
+  // больше не попадает в перечитанную выдачу — правка состояния ВО ВРЕМЯ
+  // РЕНДЕРА, не в эффекте, следующий рендер запрашивает уже исправленный
+  // `offset` (MAJOR-2, ревью Fable 27.09.2026).
+  if (pageQ.data) {
+    const lastValidPage = Math.max(1, Math.ceil(pageQ.data.total / MEMBER_PAGE_SIZE));
+    if (page > lastValidPage) {
+      setPage(lastValidPage);
+    }
+  }
   const pathLabel = groupPathLabel(group);
   // Винительный падеж — оба глагола («выбрать», «раскрыть») требуют его от
   // прямого дополнения («выбрать ЧТО» — группу, а не «группа»).
