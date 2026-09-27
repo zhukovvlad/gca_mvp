@@ -3741,11 +3741,14 @@ class TestStaleGroupTransfer:
 
         real_accept_transfer = context_operations.accept_transfer
 
-        def _fake_accept_transfer(db, *, position_item_id, expected_category_id, actor_id):
+        def _fake_accept_transfer(
+            db, *, position_item_id, expected_category_id, actor_id, expected_context_id=None
+        ):
             if position_item_id == refused_id:
                 real_accept_transfer(
                     db, position_item_id=position_item_id,
                     expected_category_id=expected_category_id, actor_id=actor_id,
+                    expected_context_id=expected_context_id,
                 )
                 raise context_operations.ContextOperationError(
                     "test_forced_refusal", "принудительный отказ для проверки пакета",
@@ -3754,6 +3757,7 @@ class TestStaleGroupTransfer:
             return real_accept_transfer(
                 db, position_item_id=position_item_id,
                 expected_category_id=expected_category_id, actor_id=actor_id,
+                expected_context_id=expected_context_id,
             )
 
         monkeypatch.setattr(context_operations, "accept_transfer", _fake_accept_transfer)
@@ -4337,6 +4341,134 @@ class TestStaleGroupTransfer:
         # Доменный отказ сервиса, а не «маршрут не найден» FastAPI (тот тоже
         # `404`, и до появления маршрута этот тест был бы зелёным).
         assert response.json()["detail"]["code"] == context_operations.REFUSE_CONTEXT_NOT_FOUND
+
+    def test_concurrent_manual_move_to_sibling_context_refuses_only_that_member(
+        self, committing_client, committing_db, committing_factories,
+        committing_session_factory, monkeypatch,
+    ):
+        """Внешнее ревью PR #54: `transfer_stale_group` отбирает `STALE`-id
+        ОДНИМ чтением до цикла, а переносит их `accept_transfer` по одному —
+        если МЕЖДУ этим отбором и обработкой ОДНОЙ ИЗ позиций другой оператор
+        (другая сессия) вручную переносит (`move_members`) именно её в
+        СОСЕДНИЙ контекст ТОЙ ЖЕ корзины, членство остаётся `STALE` в НОВОМ
+        контексте: корзина не меняется, состояние не меняется, конфликта нет
+        — ни одно перечитывание `accept_transfer`, существовавшее ДО этой
+        задачи, такую гонку не ловит, и пакет, стартовавший на старом
+        контексте, молча переписал бы более новый ручной выбор оператора.
+
+        Подмена `lock_buckets` — тот же приём, что
+        `test_concurrent_target_bucket_birth_refuses_exactly_one_via_real_path`
+        выше, но с иной точкой вставки. Гонку нельзя вставлять перед локом
+        ВТОРОЙ позиции: `accept_transfer` ПЕРВОЙ позиции сам берёт
+        `FOR UPDATE` на корзину-источник (она общая у всей группы) и держит
+        его до конца транзакции ВСЕЙ пачки (savepoint не отпускает захваченный
+        замок, только вложенную транзакцию) — попытка второй сессии
+        заблокировать ТУ ЖЕ корзину внутри `move_members` встала бы намертво
+        (замер: первый вариант этого теста подвесил прогон, снят
+        `taskkill`-ом). Поэтому гонка вставлена на ПЕРВОМ вызове
+        `lock_buckets` (до того, как хоть одна позиция группы взяла замок
+        корзины-источника) и переносит ВТОРУЮ по обходу позицию
+        (`ordered_ids[1]`) в заранее заведённый контекст-сиблинг
+        (`is_default=False`, та же корзина), отдельной сессией с настоящим
+        `commit`. Итог тот же, что если бы гонка случилась «прямо перед» этой
+        позицией: к моменту, когда до неё доходит очередь пачки, её контекст
+        уже другой. `moved=2`, `refused=1` — именно вторая позиция, кодом
+        `REFUSE_MEMBER_CONTEXT_CHANGED`; после запроса (закоммиченного
+        `committing_client`) она читается ОТДЕЛЬНОЙ сессией всё ещё в
+        контексте-сиблинге и всё ещё `STALE` — перенос ручного выбора не
+        переписан пачкой."""
+        from unittest.mock import MagicMock
+
+        from auth import get_current_user
+        from main import app
+        from models import UserRole
+
+        admin = committing_factories.UserFactory.create(role=UserRole.admin)
+        committing_db.commit()
+        admin_id = admin.id
+
+        def _real_admin():
+            user = MagicMock()
+            user.id = admin_id
+            user.role = UserRole.admin
+            user.is_active = True
+            return user
+
+        app.dependency_overrides[get_current_user] = _real_admin
+
+        cat_target, cat_source = _leaf_category_ids(committing_db, 2)
+        chapter, source_ctx, positions = self._stale_group_scene(
+            committing_db, committing_factories, cat_target=cat_target, cat_source=cat_source,
+        )
+        ordered_ids = sorted(pos.id for pos in positions)
+        second_id = ordered_ids[1]
+        source_ctx_id = source_ctx.id
+        chapter_id = chapter.id
+
+        # Сиблинг-контекст ТОЙ ЖЕ корзины — назначение вручную (`move_members`
+        # требует ровно этого: цель и переносимые членства в одной корзине).
+        sibling_ctx = _context(committing_db, source_ctx.bucket, is_default=False)
+        sibling_ctx_id = sibling_ctx.id
+        committing_db.commit()
+
+        real_lock_buckets = context_operations.lock_buckets
+        lock_calls = {"n": 0}
+
+        def _move_second_member_before_first_lock(db, bucket_ids, *, exclusive):
+            lock_calls["n"] += 1
+            if lock_calls["n"] == 1:
+                # ДО того, как хоть один вызов пачки взял замок корзины-
+                # источника (см. докстроку — иначе эта же блокировка внутри
+                # `move_members` другой сессии встала бы намертво).
+                with committing_session_factory() as other:
+                    context_operations.move_members(
+                        other, position_item_ids=[second_id], target_context_id=sibling_ctx_id,
+                        actor_id=admin_id, reason="manual",
+                    )
+                    other.commit()
+            return real_lock_buckets(db, bucket_ids, exclusive=exclusive)
+
+        monkeypatch.setattr(context_operations, "lock_buckets", _move_second_member_before_first_lock)
+
+        response = committing_client.post(
+            f"{BASE}/contexts/{source_ctx_id}/stale-groups/transfer",
+            json={"chapter_item_ids": [chapter_id], "expected_category_id": cat_target},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 2
+        assert body["refused"] == 1
+        results = body["results"]
+        assert [r["position_item_id"] for r in results] == ordered_ids
+
+        refused = results[1]
+        assert refused["position_item_id"] == second_id
+        assert refused["outcome"] == "refused"
+        assert refused["error_code"] == context_operations.REFUSE_MEMBER_CONTEXT_CHANGED
+        assert refused["target_context_id"] is None
+
+        for moved in (results[0], results[2]):
+            assert moved["outcome"] == "moved"
+            assert moved["error_code"] is None and moved["message"] is None
+            assert moved["target_context_id"] not in (source_ctx_id, sibling_ctx_id)
+
+        probe = committing_session_factory()
+        try:
+            members = {
+                m.position_item_id: m
+                for m in probe.execute(
+                    sa.select(ContextMember).where(ContextMember.position_item_id.in_(ordered_ids))
+                ).scalars()
+            }
+            # Вторая позиция осталась ИМЕННО там, куда её перенёс оператор
+            # конкурентно, — пачка не переписала более новый ручной выбор.
+            assert members[second_id].context_id == sibling_ctx_id
+            assert members[second_id].membership_state == MembershipState.STALE.value
+            for pid in (ordered_ids[0], ordered_ids[2]):
+                assert members[pid].context_id not in (source_ctx_id, sibling_ctx_id)
+                assert members[pid].membership_state == MembershipState.CURRENT.value
+        finally:
+            probe.close()
 
 
 class TestMemberGroupMergeOrder:

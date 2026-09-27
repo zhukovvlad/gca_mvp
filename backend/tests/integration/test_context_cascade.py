@@ -43,6 +43,7 @@ from services.category_resolution import CategoryResolver
 from services.context_operations import (
     REFUSE_CATEGORY_CHANGED,
     REFUSE_CONFLICTED,
+    REFUSE_MEMBER_CONTEXT_CHANGED,
     ContextOperationError,
     RefreshReport,
     accept_transfer,
@@ -1233,6 +1234,67 @@ class TestAcceptTransferRefusesWhenConflicted:
         assert after.membership_state == MembershipState.STALE.value
         assert after.conflict_at == before_conflict_at
         assert after.conflict_from_context_id == before_conflict_from
+
+
+class TestAcceptTransferRefusesWhenMemberContextChanged:
+    """Сверх плана, внешнее ревью PR #54: `transfer_stale_group` отбирает
+    членства ОДНИМ чтением, затем переносит каждое `accept_transfer`-ом по
+    очереди — между отбором и обработкой КОНКРЕТНОЙ позиции оператор мог
+    вручную перенести (`move_members`) её в СОСЕДНИЙ контекст ТОЙ ЖЕ
+    корзины, оставив `STALE`: корзина не меняется, состояние не меняется,
+    конфликта нет, и ни одно из существующих перечитываний это не ловит.
+    Новый необязательный `expected_context_id` — единственный способ отказать
+    именно на этом: несовпадение с перечитанным `member.context_id` отказывает,
+    ничего не перенося; без параметра (обратная совместимость с одиночным
+    маршрутом переноса и Review) то же состояние переносится штатно."""
+
+    def test_refuses_and_changes_nothing_then_succeeds_without_the_kwarg(
+        self, db_session, factories, admin_user
+    ):
+        estimate, chapter_b, target_work_id, cat_a, _cat_b = TestAcceptTransfer()._stale_scene(
+            db_session, factories, admin_user
+        )
+        before = _member(db_session, target_work_id)
+        assert before.membership_state == MembershipState.STALE.value
+        real_context_id = before.context_id
+
+        proposal = transfer_proposal(db_session, position_item_id=target_work_id)
+        assert proposal is not None
+
+        # Другой СУЩЕСТВУЮЩИЙ контекст — тот, в который `_stale_scene` уже
+        # перенесла работу первого раздела (родился внутри `_stale_scene`,
+        # заведомо отличен от `real_context_id`).
+        other_context_id = db_session.execute(
+            sa.select(ContextMember.context_id)
+            .where(ContextMember.context_id != real_context_id)
+            .distinct()
+            .limit(1)
+        ).scalar_one()
+
+        with pytest.raises(ContextOperationError) as exc:
+            accept_transfer(
+                db_session, position_item_id=target_work_id,
+                expected_category_id=proposal.effective_category_id,
+                actor_id=admin_user.id,
+                expected_context_id=other_context_id,
+            )
+        assert exc.value.code == REFUSE_MEMBER_CONTEXT_CHANGED
+
+        after = _member(db_session, target_work_id)
+        assert after.context_id == real_context_id
+        assert after.membership_state == MembershipState.STALE.value, "ничего не перенесено"
+
+        # Без нового параметра — то же состояние переносится штатно, как до
+        # этой задачи (обратная совместимость).
+        moved = accept_transfer(
+            db_session, position_item_id=target_work_id,
+            expected_category_id=proposal.effective_category_id,
+            actor_id=admin_user.id,
+        )
+        assert moved == 1
+        after = _member(db_session, target_work_id)
+        assert after.membership_state == MembershipState.CURRENT.value
+        assert after.context_id == proposal.proposed_context_id
 
 
 class TestAcceptTransferCompilesToForUpdateBeforeReread:

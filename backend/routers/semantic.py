@@ -98,6 +98,7 @@ _STATUS_CONFLICT = frozenset(
         context_operations.REFUSE_CATEGORY_CHANGED,
         context_operations.REFUSE_NOT_STALE,
         context_operations.REFUSE_CONFLICTED,
+        context_operations.REFUSE_MEMBER_CONTEXT_CHANGED,
     }
 )
 
