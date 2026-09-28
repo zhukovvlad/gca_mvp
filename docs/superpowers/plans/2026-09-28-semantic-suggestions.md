@@ -332,7 +332,7 @@ class PrivacyDictionary:
 class PrivacyMatch:
     text: str
     kind: str
-    where: str         # "context" | "family:<id>"
+    where: str         # "context" | "family:<id>" | "prompt"
 
 def build_privacy_dictionary(db: Session) -> PrivacyDictionary
 def normalize_org_name(title: str) -> str

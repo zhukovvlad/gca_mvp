@@ -74,6 +74,12 @@ REASONING_ENABLED = False
 #: включительно — одной меткой на конце охвачен и промпт перед ней.
 CACHE_CONTROL_BLOCK_INDEX = 1
 
+#: Заголовок блока списка семей (спека §2.3, решение задачи 4): используется и
+#: здесь в рендере, и в `services/semantic_privacy.py` при проверке перед
+#: отправкой — блок семей опознаётся по тексту, начинающемуся с этой строки, а
+#: не по индексу блока в `system`.
+FAMILY_BLOCK_HEADER = "СПИСОК СЕМЕЙ:\n"
+
 #: Текст промпта — ПОБАЙТНАЯ копия `SYSTEM` из `tasks/catalog-pilot-2026-09-18/
 #: exp_family_assign.py` (замер, по которому получена вся раскладка запроса).
 SEMANTIC_PROMPT = """Ты сметчик-каталогизатор строительной компании-заказчика. У компании есть каталог СЕМЕЙ работ: семья — это тип работы без параметров, бренда и места (например «Устройство пола», «Посадка растений», «Двери»). Внутри семьи строки различаются параметрами (класс бетона, размер, вид растения) — это не мешает им быть одной семьёй.
@@ -366,7 +372,7 @@ def render_context_request(material: ContextRequestMaterial, *, settings: Settin
 
     system_blocks: list[dict] = [
         {"type": "text", "text": SEMANTIC_PROMPT},
-        {"type": "text", "text": f"СПИСОК СЕМЕЙ:\n{family_block}"},
+        {"type": "text", "text": f"{FAMILY_BLOCK_HEADER}{family_block}"},
     ]
     system_blocks[CACHE_CONTROL_BLOCK_INDEX]["cache_control"] = {"type": "ephemeral"}
 
