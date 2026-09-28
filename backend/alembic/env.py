@@ -52,7 +52,10 @@ target_metadata = Base.metadata
 #
 # Плата за фильтр — их отсутствие в БД тоже не будет замечено `alembic check`,
 # поэтому и наличие, и поведение каждого из них закреплены интеграционными
-# тестами (tests/integration/test_schema_constraints.py).
+# тестами: индексы 0002/0003/0015 —
+# tests/integration/test_schema_constraints.py, 0017 —
+# tests/integration/test_semantic_schema.py, 0018 —
+# tests/integration/test_semantic_queue_schema.py.
 RAW_SQL_INDEXES = {
     # UNIQUE (sha256(replace(normalized_job_title,'\','\\')::bytea), COALESCE(unit_id,-1)),
     # миграция 0003: btree не индексирует названия длиннее 2704 байт.
@@ -66,6 +69,9 @@ RAW_SQL_INDEXES = {
     "uq_work_families_active_name_unit",
     "uq_context_buckets_position_category",  # UNIQUE (catalog_position_id, COALESCE(work_category_id,-1)) — 0017
     "uq_catalog_contexts_default_per_bucket",  # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — 0017
+    "uq_family_suggestions_context_id_published",  # UNIQUE (context_id) WHERE is_published — 0018
+    # UNIQUE (fingerprints_hash) WHERE status='held' — 0018; арбитр ON CONFLICT задачи 6.
+    "uq_semantic_reconcile_batches_fingerprints_held",
 }
 
 

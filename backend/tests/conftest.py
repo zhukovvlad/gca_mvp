@@ -403,6 +403,21 @@ _DOMAIN_TABLES = (
     "catalog_contexts",
     "context_buckets",
     "work_families",
+    # Очередь семантических предложений (миграция 0018), все пять таблиц —
+    # ЯВНО, а не в расчёте на каскад. Сегодня TRUNCATE ... CASCADE дошёл бы до
+    # всех пяти и сам (semantic_jobs и family_suggestions ссылаются на
+    # catalog_contexts, semantic_job_attempts — на semantic_jobs,
+    # semantic_worker_state — на semantic_job_attempts,
+    # semantic_reconcile_batches — на import_jobs), но это та же случайная
+    # защита, которой никто не объявлял, что и у семантического контура выше:
+    # правка любого внешнего ключа сняла бы её молча. Порядок внутри списка значения не имеет —
+    # TRUNCATE нескольких таблиц ОДНОЙ командой снимает FK между ними
+    # одновременно (в том числе цикл `semantic_jobs` <-> `family_suggestions`).
+    "semantic_worker_state",
+    "family_suggestions",
+    "semantic_job_attempts",
+    "semantic_jobs",
+    "semantic_reconcile_batches",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",
@@ -424,6 +439,14 @@ def _truncate_domain_tables(engine) -> None:
     with engine.begin() as conn:
         conn.exec_driver_sql(
             f"TRUNCATE {', '.join(_DOMAIN_TABLES)} RESTART IDENTITY CASCADE"
+        )
+        # semantic_worker_state — ровно одна обязательная строка (id=1),
+        # которую TRUNCATE выше снёс вместе с остальными; без неё захват
+        # (задача 10 фичи «Семантические предложения») не работает. Строку
+        # вставляет сама миграция 0018 — здесь она пересоздаётся, в ТОЙ ЖЕ
+        # транзакции, что и очистка (решение оркестратора задачи 1).
+        conn.exec_driver_sql(
+            "INSERT INTO semantic_worker_state (id, claim_paused) VALUES (1, false)"
         )
 
 
