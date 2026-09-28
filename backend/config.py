@@ -4,6 +4,7 @@
 settings, а не через os.getenv() напрямую. Для инфраструктурных модулей
 (alembic/env.py, tooling-скрипты) допустимы исключения.
 """
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +58,25 @@ class Settings(BaseSettings):
 
     # Логирование
     LOG_LEVEL: str = "INFO"
+
+    # Семантические предложения (спека 2026-09-28-semantic-suggestions-design.md
+    # §2.2, §2.11): ключ провайдера — секрет, не пишется в репозиторий; тарифы —
+    # Decimal (§3 AGENTS.md, "деньги"), а не константы кода, потому что
+    # маршрутизация провайдера может сменить цену без правки кода.
+    OPENROUTER_API_KEY: str = ""
+    RUN_SEMANTIC_WORKER: bool = False
+    SEMANTIC_MODEL: str = "anthropic/claude-sonnet-5"
+    SEMANTIC_MAX_TOKENS: int = 600
+    SEMANTIC_CONCURRENCY: int = 4
+    SEMANTIC_CALL_TIMEOUT_S: int = 120
+    SEMANTIC_MAX_ATTEMPTS: int = 3
+    SEMANTIC_PRICE_INPUT_PER_M: Decimal = Decimal("2")
+    SEMANTIC_PRICE_CACHE_WRITE_PER_M: Decimal = Decimal("2.5")
+    SEMANTIC_PRICE_CACHE_READ_PER_M: Decimal = Decimal("0.2")
+    SEMANTIC_PRICE_OUTPUT_PER_M: Decimal = Decimal("10")
+    SEMANTIC_DAILY_BUDGET_USD: Decimal = Decimal("30")
+    SEMANTIC_EVENT_MAX_CONTEXTS: int = 3000
+    SEMANTIC_EVENT_MAX_RESERVE_USD: Decimal = Decimal("15")
 
 
 settings = Settings()
