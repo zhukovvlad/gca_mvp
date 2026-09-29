@@ -671,11 +671,17 @@ class ModelResponse:
     cached_tokens: int
     cost_usd: Decimal | None
 
-class TransientModelError(Exception): ...
-class PermanentModelError(Exception): ...
+class TransientModelError(Exception):   # (message, *, error_class: str | None = None)
+    ...
+class PermanentModelError(Exception):   # (message, *, error_class: str | None = None)
+    ...
 
 class OpenRouterClient:                 # ModelClient поверх httpx.Client
-    def __init__(self, *, api_key: str, base_url: str = ...) -> None: ...
+    def __init__(
+        self, *, api_key: str, base_url: str = ..., http_client: httpx.Client | None = None
+    ) -> None: ...
+    def complete(self, body: dict, *, timeout_s: float) -> ModelResponse: ...
+    def close(self) -> None: ...
 
 @dataclass(frozen=True)
 class Claim:
@@ -686,12 +692,14 @@ class Claim:
     candidates: tuple[CandidateFamily, ...]
 
 def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | None
-def record_result(db: Session, claim: Claim, response: ModelResponse, *, now: datetime) -> None
+def record_result(
+    db: Session, claim: Claim, response: ModelResponse, *, now: datetime, settings: Settings
+) -> None
     # разбирает ответ сам (parse_model_answer); AnswerSchemaError пишет попытку schema_error
     # с raw_response, validation_error, моделью, провайдером, токенами и стоимостью
 def record_failure(
     db: Session, claim: Claim, error: TransientModelError | PermanentModelError,
-    *, now: datetime, settings: Settings,
+    *, now: datetime, settings: Settings, rng: Callable[[], float] = random.random,
 ) -> None
     # только транспортные ошибки: ответа нет, стоимость — резерв
 def process_one(session_factory, client: ModelClient, *, settings: Settings, clock) -> bool
