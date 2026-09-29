@@ -1,6 +1,7 @@
 """Обслуживание при старте приложения (AGENTS.md §5, §8).
 
-Две задачи, обе выполняются один раз при подъёме процесса:
+Две задачи, обе выполняются один раз при подъёме процесса (к первой той же
+транзакцией добавлено возвращение прерванных заданий семантической очереди):
 
 1. **startup-recovery** зависших `import_jobs`: всё, что осталось в
    `pending|parsing|importing|matching`, переводится в `error`. Корректно ровно
@@ -25,6 +26,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from models import ACTIVE_IMPORT_JOB_STATUSES, ImportJob, ImportJobStatus
+from services.semantic_runner import recover_semantic_jobs
 from storage import Storage, StorageKeyError
 from utils import utcnow_aware
 
@@ -129,20 +131,30 @@ def run_startup_maintenance(session_factory, storage: Storage, *, retention_days
       прямое нарушение инварианта §5, поэтому исключение уходит наружу и роняет
       старт приложения: громкий отказ честнее полурабочего сервиса, который
       вечно отвечает «импорт уже идёт»;
+    * **очередь семантических предложений — часть recovery.** Задания `running`
+      возвращаются в `pending` (их открытые попытки закрываются
+      `transient_error`/`interrupted`) ТЕМ ЖЕ сеансом и той же транзакцией, что
+      `import_jobs`: сбой любого из двух откатывает оба и роняет старт;
     * **ретенция — best-effort.** Недоступное хранилище не мешает работать, и
       файл, не удалённый сегодня, удалится при следующем запуске (§8 обещает
       «проверку при старте», а не срок). Её ошибка только логируется — и,
       благодаря отдельной транзакции, НЕ откатывает recovery.
 
     Returns:
-        Кортеж (переведено в error, удалено файлов).
+        Кортеж (переведено в error, удалено файлов); число возвращённых заданий
+        семантической очереди в него не входит и пишется в лог.
 
     Raises:
         Exception: любая ошибка recovery — она обязана остановить старт.
     """
     with session_factory() as db:
         recovered = recover_interrupted_jobs(db)
+        # Задания семантической очереди — той же транзакцией: сбой любого из двух
+        # восстановлений откатывает оба и роняет старт.
+        semantic_recovered = recover_semantic_jobs(db, now=utcnow_aware())
         db.commit()
+    if semantic_recovered:
+        log.info("Восстановление при старте: семантических заданий возвращено %d", semantic_recovered)
 
     purged = 0
     try:
