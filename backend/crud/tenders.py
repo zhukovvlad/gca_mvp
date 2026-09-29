@@ -15,6 +15,7 @@ import logging
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload
 
+from config import settings
 from crud import round_unallocated as crud_round_unallocated
 from crud.common import DomainError, clamp_page, iso, paginated, require_text, translating_integrity
 from crud.estimate_totals import estimate_total_including_vat
@@ -35,6 +36,8 @@ from models import (
     Tender,
     TenderRound,
 )
+from services.semantic_cost import event_cap_from
+from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
 
 log = logging.getLogger(__name__)
 
@@ -319,6 +322,24 @@ def _refuse_if_active(db: Session, round_ids: list[int]) -> None:
         )
 
 
+def _estimate_ids_of_rounds(db: Session, round_ids: list[int]) -> list[int]:
+    """Сметы раундов (round-owned и offer-owned) — их каскад уносит членства."""
+    if not round_ids:
+        return []
+    offer_ids = sa.select(Offer.id).where(Offer.round_id.in_(round_ids))
+    return list(db.execute(
+        sa.select(Estimate.id).where(
+            sa.or_(Estimate.round_id.in_(round_ids), Estimate.offer_id.in_(offer_ids))
+        )
+    ).scalars())
+
+
+def _reconcile_after_delete(db: Session, affected_contexts: set[int]) -> None:
+    """Сверка очереди семантических предложений в транзакции удаления, ДО
+    коммита (спека §2.7): контекст, опустевший от каскада, теряет задания."""
+    reconcile_semantic_jobs(db, affected_contexts, cap=event_cap_from(settings), source="operation")
+
+
 def delete_round(db: Session, tender_id: int, round_id: int) -> list[str]:
     """tender FOR KEY SHARE → round FOR UPDATE; каскад уносит сметы и jobs раунда."""
     _lock_tender(db, tender_id, exclusive=False)
@@ -329,7 +350,9 @@ def delete_round(db: Session, tender_id: int, round_id: int) -> list[str]:
         raise DomainError(404, f"Раунд {round_id} тендера {tender_id} не найден.")
     _refuse_if_active(db, [round_id])
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id == round_id).order_by(ImportJob.id)).scalars())
+    affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, [round_id]))
     db.execute(sa.delete(TenderRound).where(TenderRound.id == round_id))
+    _reconcile_after_delete(db, affected_contexts)
     db.commit()
     log.info("tender_round_deleted tender=%s round=%s jobs=%d", tender_id, round_id, len(file_keys))
     return file_keys
@@ -346,8 +369,10 @@ def delete_tender(db: Session, tender_id: int) -> list[str]:
     # offer_packages вообще может дойти до RESTRICT — без этой строки ни один
     # тест не краснеет. Она здесь, чтобы удаление тендера не зависело от того,
     # в каком порядке Postgres пойдёт по двум веткам каскада одного DELETE.
+    affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, round_ids))
     db.execute(sa.delete(Offer).where(Offer.tender_id == tender_id))
     db.execute(sa.delete(Tender).where(Tender.id == tender_id))
+    _reconcile_after_delete(db, affected_contexts)
     db.commit()
     log.info("tender_deleted id=%s jobs=%d", tender_id, len(file_keys))
     return file_keys
@@ -414,8 +439,13 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
             "Исходные файлы и результаты разбора сохраняются.",
             code="confirmation_required", context=composition,
         )
+    package_estimate_ids = list(db.execute(
+        sa.select(Estimate.id).where(Estimate.offer_id.in_(sa.select(Offer.id).where(Offer.package_id == package_id)))
+    ).scalars())
+    affected_contexts = contexts_of_estimates(db, package_estimate_ids)
     db.execute(sa.delete(Offer).where(Offer.package_id == package_id))
     db.execute(sa.delete(OfferPackage).where(OfferPackage.id == package_id))
+    _reconcile_after_delete(db, affected_contexts)
     db.commit()
     log.info("tender_participant_deleted tender=%s package=%s estimates=%d",
              tender_id, package_id, composition["estimates_count"])

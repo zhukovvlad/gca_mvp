@@ -97,8 +97,8 @@ docs/devlog/2026-09-28-semantic-suggestions.md   создаётся
 7. **Все новые тесты — в файлах `test_semantic_queue_*.py`**, поэтому команда
    `-k semantic_queue` выбирает их все и ни одного старого (ДО — 0).
 8. **Точка сверки импорта — `run_import_job`**, после `route_positions` и до
-   `finalize_done`; контексты вытесненных смет собираются в `_replace_existing` /
-   `replace_round_estimates` до удаления и едут полем `replaced_context_ids`
+   `finalize_done`; контексты вытесненных смет собираются в `import_estimate` /
+   `import_round` до удаления и едут полем `replaced_context_ids`
    исходов импорта (Task 8).
 9. **Дедупликация удержанных пачек** — атомарная, частичным уникальным индексом
    по `fingerprints_hash` среди `held` и `INSERT … ON CONFLICT DO NOTHING RETURNING`
@@ -553,7 +553,7 @@ def event_cap_from(settings: Settings) -> EventCap                              
 `import_estimate`/`import_round`: членства новых позиций строит `route_positions`
 после матчинга, и сверка раньше неё видела бы контексты без новых членств. Порядок
 в сессии B: импорт (с заменой — `replaced_context_ids` собираются в
-`_replace_existing` / `replace_round_estimates` до удаления) → матчинг →
+`import_estimate` / `import_round` до удаления) → матчинг →
 `route_positions` → `reconcile_semantic_jobs(contexts_of_estimates(estimate_ids) ∪
 replaced_context_ids, cap=event_cap_from(settings), source="import",
 import_job_id=job_id)` → `finalize_done`.

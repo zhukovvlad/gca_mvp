@@ -50,6 +50,7 @@ from services.estimate_import import (
     import_estimate,
 )
 from services.import_owners import baseline_estimate_owner, offer_estimate_owner
+from services.semantic_reconcile import contexts_of_estimates
 from services.unit_resolution import UnitResolver
 from utils import canonicalize_inn
 
@@ -80,6 +81,8 @@ class RoundImportOutcome:
     positions_to_match: list[PositionToMatch] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     estimates_created: int = 0
+    replaced_context_ids: frozenset[int] = frozenset()
+    """Контексты позиций вытесненных смет раунда, собранные ДО удаления."""
 
 
 def _baseline_is_valid(lot: dict[str, Any]) -> bool:
@@ -277,6 +280,10 @@ def import_round(
         sa.select(TenderRound.id).where(TenderRound.id == tender_round.id).with_for_update()
     ).scalar_one()
 
+    if replace:
+        outcome.replaced_context_ids = frozenset(
+            contexts_of_estimates(db, _round_estimate_ids(db, tender_round.id))
+        )
     replace_round_estimates(db, tender_round.id, replace, outcome.warnings)
 
     projections, baseline = split_round_payload(data)

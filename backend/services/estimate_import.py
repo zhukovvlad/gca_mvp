@@ -97,6 +97,7 @@ from services.category_resolution import (
     RowKind,
 )
 from services.import_owners import EstimateOwner, HeaderTruth
+from services.semantic_reconcile import contexts_of_estimates
 from services.unit_resolution import ResolvedUnit, UnitResolver
 from utils import canonicalize_inn
 
@@ -172,6 +173,9 @@ class ImportOutcome:
     replaced_estimate_id: int | None = None
     positions_total: int = 0
     """Всего строк position_items (включая разделы)."""
+    replaced_context_ids: frozenset[int] = frozenset()
+    """Контексты позиций вытесненной сметы, собранные ДО её удаления: после
+    каскада членств уже не найти, а сверка очереди обязана их увидеть."""
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +539,11 @@ def import_estimate(
         raise ValueError(
             "replace допустим только для договорного владельца; замена раунда делается до цикла"
         )
+    replaced_context_ids = (
+        _contexts_of_replaced_estimate(db, owner.replace_scope[0], owner.replace_scope[1])
+        if replace and owner.replace_scope is not None
+        else frozenset()
+    )
     replaced_id = (
         _replace_existing(db, owner.replace_scope[0], owner.replace_scope[1], replace, warnings)
         if owner.replace_scope is not None
@@ -681,7 +690,30 @@ def import_estimate(
         warnings=warnings,
         replaced_estimate_id=replaced_id,
         positions_total=positions_total,
+        replaced_context_ids=replaced_context_ids,
     )
+
+
+def _contexts_of_replaced_estimate(
+    db: Session, contract_id: int, amendment_no: int | None
+) -> frozenset[int]:
+    """Контексты позиций сметы пары, которую вытеснит замена, — ДО её удаления
+    (после каскада членств уже нет). Строка сметы берётся под тем же
+    `FOR UPDATE`, что и в `_replace_existing`: состав членств читается уже
+    под локом сметы."""
+    old_id = db.execute(
+        select(Estimate.id)
+        .where(
+            Estimate.contract_id == contract_id,
+            Estimate.amendment_no.is_(None)
+            if amendment_no is None
+            else Estimate.amendment_no == amendment_no,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if old_id is None:
+        return frozenset()
+    return frozenset(contexts_of_estimates(db, [old_id]))
 
 
 def _replace_existing(

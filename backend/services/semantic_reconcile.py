@@ -31,7 +31,11 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from models import (
+    ContextMember,
     FamilySuggestion,
+    Lot,
+    PositionItem,
+    Proposal,
     ReconcileBatchSource,
     ReconcileBatchStatus,
     SemanticCancelReason,
@@ -89,6 +93,46 @@ class ReconcileReport:
     republished: int
     unpublished: int
     held_batch_id: int | None
+
+
+# ---------------------------------------------------------------------------
+#  Контексты, затронутые операцией — собираются ДО каскада (спека §2.7)
+# ---------------------------------------------------------------------------
+
+def contexts_of_positions(db: Session, position_item_ids: Collection[int]) -> set[int]:
+    """Контексты членств этих позиций одним запросом; пустой вход — пустое
+    множество без обращения к базе."""
+    if not position_item_ids:
+        return set()
+    return set(
+        db.execute(
+            sa.select(ContextMember.context_id)
+            .where(ContextMember.position_item_id.in_(list(position_item_ids)))
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+
+
+def contexts_of_estimates(db: Session, estimate_ids: Collection[int]) -> set[int]:
+    """Контексты членств ВСЕХ позиций этих смет одним запросом (позиция →
+    предложение → лот → смета); пустой вход — пустое множество без запроса.
+    Зовётся до удаления смет: после каскада членств уже не найти."""
+    if not estimate_ids:
+        return set()
+    return set(
+        db.execute(
+            sa.select(ContextMember.context_id)
+            .join(PositionItem, PositionItem.id == ContextMember.position_item_id)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id.in_(list(estimate_ids)))
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
 
 
 # ---------------------------------------------------------------------------

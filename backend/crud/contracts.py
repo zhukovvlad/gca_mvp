@@ -27,6 +27,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from config import settings
 from crud.common import (
     DomainError,
     clamp_page,
@@ -49,6 +50,8 @@ from models import (
     Proposal,
     RateClass,
 )
+from services.semantic_cost import event_cap_from
+from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
 
 log = logging.getLogger(__name__)
 
@@ -598,9 +601,17 @@ def delete_contract(db: Session, contract_id: int) -> list[str]:
             .order_by(ImportJob.id)
         ).scalars()
     )
+    # Контексты позиций договора собираются ДО каскада: после него членств нет.
+    estimate_ids = list(
+        db.execute(sa.select(Estimate.id).where(Estimate.contract_id == contract_id)).scalars()
+    )
+    affected_contexts = contexts_of_estimates(db, estimate_ids)
     db.execute(sa.delete(ImportJob).where(ImportJob.contract_id == contract_id))
     db.execute(sa.delete(Estimate).where(Estimate.contract_id == contract_id))
     db.execute(sa.delete(Contract).where(Contract.id == contract_id))
+    reconcile_semantic_jobs(
+        db, affected_contexts, cap=event_cap_from(settings), source="operation"
+    )
     db.commit()
     log.info(
         "contract_deleted id=%s jobs=%d", contract_id, len(file_keys)

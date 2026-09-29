@@ -575,7 +575,7 @@ semantic_worker_state                  -- ровно одна строка (id =
 
 | Операция | Где |
 |---|---|
-| импорт сметы договора и раунда, их замена | `services/import_pipeline.run_import_job` — **после** `route_positions` и **до** `finalize_done`, по контекстам новых смет и вытесненных; контексты вытесненных смет собираются заранее, до удаления, в `services/estimate_import._replace_existing` и `services/round_import.replace_round_estimates` (эти две функции сами сверку не зовут: новых членств к их моменту ещё нет) |
+| импорт сметы договора и раунда, их замена | `services/import_pipeline.run_import_job` — **после** `route_positions` и **до** `finalize_done`, по контекстам новых смет и вытесненных; контексты вытесненных смет собираются заранее, до удаления, в `services/estimate_import.import_estimate` и `services/round_import.import_round` под той же блокировкой, что и замена (сами эти функции сверку не зовут: новых членств к их моменту ещё нет) |
 | удаление договора | `crud/contracts.delete_contract` |
 | удаление тендера, раунда, участника | `crud/tenders.delete_tender`, `delete_round`, `delete_participant` |
 | разделение, слияние контекстов, перенос членств, архивирование контекста | `services/context_operations` |
