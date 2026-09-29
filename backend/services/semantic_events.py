@@ -176,6 +176,31 @@ def _validate_family_updated_changed(payload: Mapping[str, object]) -> None:
                 )
 
 
+def _validate_family_assigned_suggestion_id(payload: Mapping[str, object]) -> None:
+    """`context_family_assigned.suggestion_id` обязателен условно: источник
+    `suggestion` требует ключ с целым значением (`bool` — не целое), источник
+    `manual` ключ запрещает. `EVENT_REQUIRED_KEYS` для типа остаётся прежним —
+    множество ключей не выражает условной обязательности."""
+    source = payload["source"]
+    if source == "suggestion":
+        if "suggestion_id" not in payload:
+            raise SemanticEventError(
+                "событие 'context_family_assigned': источник 'suggestion' требует ключ "
+                "'suggestion_id'"
+            )
+        value = payload["suggestion_id"]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SemanticEventError(
+                "событие 'context_family_assigned': ключ 'suggestion_id' при источнике "
+                f"'suggestion' обязан быть целым числом, получено {value!r}"
+            )
+    elif "suggestion_id" in payload:
+        raise SemanticEventError(
+            "событие 'context_family_assigned': источник 'manual' не допускает ключ "
+            "'suggestion_id'"
+        )
+
+
 def _validate_payload(event_type: str, payload: object) -> None:
     """Проверяет обязательные ключи и допустимые значения `payload`.
 
@@ -222,6 +247,8 @@ def _validate_payload(event_type: str, payload: object) -> None:
             )
     if event_type == "family_updated":
         _validate_family_updated_changed(payload)
+    if event_type == "context_family_assigned":
+        _validate_family_assigned_suggestion_id(payload)
 
 
 def record_event(

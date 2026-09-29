@@ -67,6 +67,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import services.context_routing as context_routing_module
+from config import settings
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -79,7 +80,9 @@ from models import (
     SemanticState,
     WorkFamily,
 )
+from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
+from services.semantic_reconcile import reconcile_semantic_jobs
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind
 from services.unit_resolution import NO_UNIT_NORM, UnitResolver
 
@@ -645,10 +648,24 @@ def _lock_contexts(db: Session, context_ids: list[int]) -> None:
 
 
 def assign_family(
-    db: Session, *, context_id: int, family_id: int | None, actor_id: int
+    db: Session,
+    *,
+    context_id: int,
+    family_id: int | None,
+    actor_id: int,
+    source: FamilySource = FamilySource.manual,
+    suggestion_id: int | None = None,
 ) -> CatalogContext:
     """Назначает семью контексту либо снимает её (`family_id=None`) — спека
     §2.7 «Назначение семьи контексту».
+
+    `source=suggestion` — подтверждённое предложение (спека §2.9): в контексте
+    `family_source='suggestion'`, `family_by` пусто (`CK_CONTEXT_FAMILY_
+    PROVENANCE`), в событии — `suggestion_id`, `actor_id` — подтвердивший.
+    Все проверки ниже общие для обоих источников.
+
+    После записи и события в той же транзакции вызывается сверка очереди
+    предложений для контекста (спека §2.7, инвариант); `commit` — за вызывающим.
 
     Порядок блокировок «семья раньше контекста»:
     `family_id` задан — `FOR SHARE` на НАЗНАЧАЕМУЮ семью (прежняя семья
@@ -658,6 +675,10 @@ def assign_family(
     «назначение против архивирования» (спека §2.7, «Архивирование семьи»).
 
     Raises:
+        ValueError: ошибка вызова, до любой блокировки и записи —
+            `source=suggestion` без `suggestion_id`; `source=manual` с
+            `suggestion_id`; `source=suggestion` при `family_id=None` (снятие
+            семьи предложением не бывает).
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
             контекст архивирован, ПЕРЕЧИТАННОЕ после лока
             (`REFUSE_CONTEXT_ARCHIVED` — архивный контекст выведен из
@@ -668,6 +689,14 @@ def assign_family(
             контекста, прямым сравнением `unit_id` (`REFUSE_UNIT_MISMATCH`,
             называет ОБА значения).
     """
+    if source == FamilySource.suggestion:
+        if suggestion_id is None:
+            raise ValueError("source=suggestion требует suggestion_id")
+        if family_id is None:
+            raise ValueError("source=suggestion не снимает семью: family_id обязателен")
+    elif suggestion_id is not None:
+        raise ValueError("suggestion_id допустим только при source=suggestion")
+
     context = db.get(CatalogContext, context_id)
     if context is None:
         raise WorkFamilyError(
@@ -730,22 +759,30 @@ def assign_family(
                 context_unit_id=context_unit_id,
             )
         context.work_family_id = family_id
-        context.family_source = FamilySource.manual.value
-        context.family_by = actor_id
+        context.family_source = source.value
+        # Подтверждённое предложение не имеет назначившего в контексте:
+        # `family_by NOT NULL` только при `manual` (`CK_CONTEXT_FAMILY_PROVENANCE`).
+        context.family_by = actor_id if source == FamilySource.manual else None
         context.family_at = now
 
     db.flush()
+    payload: dict[str, object] = {
+        "from_family_id": old_family_id,
+        "to_family_id": family_id,
+        "source": source.value,
+    }
+    if suggestion_id is not None:
+        payload["suggestion_id"] = suggestion_id
     record_event(
         db,
         event_type="context_family_assigned",
         context_id=context_id,
         actor_id=actor_id,
-        payload={
-            "from_family_id": old_family_id,
-            "to_family_id": family_id,
-            "source": FamilySource.manual.value,
-        },
+        payload=payload,
     )
+    # Назначение и снятие меняют применимость контекста — очередь сверяется в
+    # этой же транзакции (настройки читаются в момент вызова).
+    reconcile_semantic_jobs(db, [context_id], cap=event_cap_from(settings), source="operation")
     return context
 
 

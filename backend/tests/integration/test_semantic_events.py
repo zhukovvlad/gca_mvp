@@ -294,6 +294,9 @@ class TestEnumValuesAcceptedAndRejected:
         fam = _family(db_session, factories)
         payload = _sample_payload(event_type, ctx.id, fam.id)
         payload[key] = value
+        if (event_type, key, value) == ("context_family_assigned", "source", "suggestion"):
+            # Для этого источника ключ `suggestion_id` обязателен условно (спека §2.14).
+            payload["suggestion_id"] = 1
         kwargs = _call_kwargs(event_type, ctx.id, fam.id)
         event = record_event(db_session, event_type=event_type, payload=payload, **kwargs)
         assert event.id is not None
