@@ -228,6 +228,9 @@ class TestImportPoint:
 # ---------------------------------------------------------------------------
 
 class TestReplaceEstimatePoint:
+    """Замена сметы договора: `estimate_import.import_estimate` собирает контексты
+    вытесненной сметы до её удаления, `run_import_job` сверяет их после маршрутизации."""
+
     def test_context_whose_positions_were_only_in_the_replaced_estimate_is_cancelled(self, env):
         first = env.run(payload_for(env.contract, _rows("Устройство стяжки")), job=env.new_job())
         assert first.status == ImportJobStatus.done.value
@@ -306,6 +309,9 @@ def _round_payload(rows):
 
 
 class TestReplaceRoundPoint:
+    """Замена раунда: `round_import.import_round` собирает контексты вытесненных смет
+    до удаления, `run_import_job` сверяет их после маршрутизации."""
+
     def _round(self, env):
         rnd = env.factories.TenderRoundFactory.create()
         env.db.commit()

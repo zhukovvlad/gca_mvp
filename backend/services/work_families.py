@@ -82,7 +82,7 @@ from models import (
 )
 from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
-from services.semantic_reconcile import reconcile_semantic_jobs
+from services.semantic_reconcile import reconcile_or_defer, reconcile_semantic_jobs
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind
 from services.unit_resolution import NO_UNIT_NORM, UnitResolver
 
@@ -660,8 +660,8 @@ def assign_family(
     §2.7 «Назначение семьи контексту».
 
     `source=suggestion` — подтверждённое предложение (спека §2.9): в контексте
-    `family_source='suggestion'`, `family_by` пусто (`CK_CONTEXT_FAMILY_
-    PROVENANCE`), в событии — `suggestion_id`, `actor_id` — подтвердивший.
+    `family_source='suggestion'`, `family_by` пусто (`CK_CONTEXT_FAMILY_PROVENANCE`),
+    в событии — `suggestion_id`, `actor_id` — подтвердивший.
     Все проверки ниже общие для обоих источников.
 
     После записи и события в той же транзакции вызывается сверка очереди
@@ -1168,6 +1168,7 @@ def confirm_kind(
         actor_id=actor_id,
         payload={"from": old_kind, "to": new_kind, "source": DecisionSource.manual.value},
     )
+    reconcile_or_defer(db, [context_id])
     return context
 
 
@@ -1238,6 +1239,7 @@ def unconfirm_kind(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
         actor_id=actor_id,
         payload={"from": old_kind, "to": recomputed_kind, "source": DecisionSource.rule.value},
     )
+    reconcile_or_defer(db, [context_id])
     return context
 
 

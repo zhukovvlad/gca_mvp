@@ -70,6 +70,11 @@ from services.context_routing import (
     lock_buckets,
 )
 from services.semantic_events import record_event
+from services.semantic_reconcile import (
+    contexts_of_positions,
+    deferred_reconcile,
+    reconcile_or_defer,
+)
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind, classify_name_role
 
 
@@ -165,6 +170,12 @@ class SplitResult:
     moved_members: int
     rule_id: int | None
     default_replaced: bool
+
+
+def _reconcile_queue(db: Session, context_ids: set[int]) -> None:
+    """Сверка очереди семантических предложений по контекстам, которые операция
+    затронула (спека §2.7): до коммита вызывающего, в той же транзакции."""
+    reconcile_or_defer(db, context_ids)
 
 
 def _now() -> datetime:
@@ -456,6 +467,8 @@ def split_context(
         },
     )
 
+    _reconcile_queue(db, {context_id, target.id})
+
     return SplitResult(
         new_context_id=target.id,
         moved_members=len(unique_ids),
@@ -584,6 +597,8 @@ def merge_contexts(
         actor_id=actor_id,
         payload={"reason": "context_merge"},
     )
+
+    _reconcile_queue(db, {source_context_id, target_context_id})
 
     return moved_count
 
@@ -732,6 +747,8 @@ def move_members(
             payload={"from_context_id": from_context_id, "moved_members": count, "reason": reason},
         )
 
+    _reconcile_queue(db, {target_context_id, *from_counts})
+
     return len(unique_ids)
 
 
@@ -848,6 +865,8 @@ def archive_context(
         payload={"reason": "operator"},
     )
 
+    _reconcile_queue(db, {context_id})
+
 
 # ---------------------------------------------------------------------------
 #  Принять решение цели (задача 9, спека §2.8 «Слияние в Review»)
@@ -934,6 +953,8 @@ def accept_target_decision(db: Session, *, position_item_ids: list[int], actor_i
         member.conflict_at = None
         member.conflict_from_context_id = None
     db.flush()
+
+    _reconcile_queue(db, contexts_of_positions(db, unique_ids))
 
     return len(unique_ids)
 
@@ -1224,6 +1245,10 @@ def accept_transfer(
             членства разошёлся с `expected_context_id` (не `None`), перечитанное
             (`REFUSE_MEMBER_CONTEXT_CHANGED`).
 
+    Сверка очереди семантических предложений (спека §2.7) — по контекстам
+    источника и цели, до коммита вызывающего; внутри пакета `transfer_stale_group`
+    контексты копятся в `deferred_reconcile` и сверяются один раз после цикла.
+
     Возвращает число перенесённых членств (1).
     """
     member = db.execute(
@@ -1374,6 +1399,8 @@ def accept_transfer(
         payload={"from_context_id": from_context_id, "moved_members": 1, "reason": "stale_accepted"},
     )
 
+    _reconcile_queue(db, {from_context_id, target_context.id})
+
     return 1
 
 
@@ -1469,6 +1496,10 @@ def transfer_stale_group(
     не перехватывается — оно обязано откатить всю транзакцию маршрута
     целиком, а не только точку сохранения текущей позиции.
 
+    Сверка очереди семантических предложений — один раз на пакет, после цикла,
+    по контекстам, затронутым переносами (`accept_transfer`
+    внутри пакета копит их в `deferred_reconcile`, а не сверяет каждый раз).
+
     Пустая группа (устаревших позиций нет — уже перенесены либо перестали
     быть устаревшими) — законный исход: `results=()`, `moved=refused=0`, не
     ошибка.
@@ -1504,46 +1535,47 @@ def transfer_stale_group(
     items: list[StaleTransferItem] = []
     moved = 0
     refused = 0
-    for position_item_id in position_ids:
-        try:
-            with db.begin_nested():
-                accept_transfer(
-                    db,
-                    position_item_id=position_item_id,
-                    expected_category_id=expected_category_id,
-                    actor_id=actor_id,
-                    expected_context_id=context_id,
+    with deferred_reconcile(db):
+        for position_item_id in position_ids:
+            try:
+                with db.begin_nested():
+                    accept_transfer(
+                        db,
+                        position_item_id=position_item_id,
+                        expected_category_id=expected_category_id,
+                        actor_id=actor_id,
+                        expected_context_id=context_id,
+                    )
+            except ContextOperationError as exc:
+                refused += 1
+                items.append(
+                    StaleTransferItem(
+                        position_item_id=position_item_id,
+                        outcome="refused",
+                        target_context_id=None,
+                        error_code=exc.code,
+                        message=str(exc),
+                    )
                 )
-        except ContextOperationError as exc:
-            refused += 1
+                continue
+            moved += 1
+            # Перечитывание, не значение из объекта в памяти: `accept_transfer`
+            # сам перечитывает свой `member` под локом, но здесь нам нужен ответ
+            # НА ЭТУ позицию, а не полагание на то, что идентичность ORM осталась
+            # той же после `expire_all` предыдущей/этой итерации.
+            target_context_id = db.execute(
+                sa.select(ContextMember.context_id).where(
+                    ContextMember.position_item_id == position_item_id
+                )
+            ).scalar_one()
             items.append(
                 StaleTransferItem(
                     position_item_id=position_item_id,
-                    outcome="refused",
-                    target_context_id=None,
-                    error_code=exc.code,
-                    message=str(exc),
+                    outcome="moved",
+                    target_context_id=target_context_id,
+                    error_code=None,
+                    message=None,
                 )
             )
-            continue
-        moved += 1
-        # Перечитывание, не значение из объекта в памяти: `accept_transfer`
-        # сам перечитывает свой `member` под локом, но здесь нам нужен ответ
-        # НА ЭТУ позицию, а не полагание на то, что идентичность ORM осталась
-        # той же после `expire_all` предыдущей/этой итерации.
-        target_context_id = db.execute(
-            sa.select(ContextMember.context_id).where(
-                ContextMember.position_item_id == position_item_id
-            )
-        ).scalar_one()
-        items.append(
-            StaleTransferItem(
-                position_item_id=position_item_id,
-                outcome="moved",
-                target_context_id=target_context_id,
-                error_code=None,
-                message=None,
-            )
-        )
 
     return StaleGroupTransferResult(results=tuple(items), moved=moved, refused=refused)

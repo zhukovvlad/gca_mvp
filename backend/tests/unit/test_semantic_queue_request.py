@@ -106,6 +106,9 @@ class TestIsApplicable:
     def test_false_when_archived(self):
         assert is_applicable(_material(archived=True)) is False
 
+    def test_false_when_chapter_path_is_broken(self):
+        assert is_applicable(_material(path_broken=True, path_counts=())) is False
+
     def test_false_when_no_members(self):
         assert is_applicable(_material(member_count=0)) is False
 

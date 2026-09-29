@@ -46,7 +46,7 @@ from models import (
     WorkCategory,
     WorkFamily,
 )
-from services.context_routing import chapter_paths
+from services.context_routing import RoutingError, chapter_paths
 from services.semantic_rules import PLACE_DICTIONARY_VERSION
 
 #: Версия текста промпта, переносимого константой (спека §2.2): промпт ниже —
@@ -60,7 +60,7 @@ PROMPT_VERSION = 1
 #: `PROMPT_VERSION`.
 SERIALIZATION_VERSION = 1
 
-#: Ось «флаг рассуждения», которой нет в `Settings` (решение оркестратора):
+#: Ось «флаг рассуждения», которой нет в `Settings`:
 #: модульная константа, тесты меняют её `monkeypatch`-ем, а не аргументом
 #: функции — рассуждение отключено безусловно на весь MVP.
 REASONING_ENABLED = False
@@ -138,6 +138,9 @@ class ContextRequestMaterial:
     semantic_kind: str
     work_family_id: int | None
     candidates: tuple[CandidateFamily, ...]
+    path_broken: bool = False
+    """Путь разделов какого-то члена контекста не строится (цикл в цепочке
+    разделов): контекст неприменим, `path_counts` пуст."""
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,8 @@ def is_applicable(material: ContextRequestMaterial) -> bool:
         return False
     if material.work_family_id is not None:
         return False
+    if material.path_broken:
+        return False
     return bool(material.candidates)
 
 
@@ -229,8 +234,9 @@ def load_request_material(
     запросов (не растущим с числом контекстов): контексты с корзиной,
     строкой каталога, единицей и статьёй — одним запросом; число членств —
     отдельным агрегатом, пары «раздел членства → число» — ещё одним; пути
-    разделов — одним вызовом `chapter_paths`; кандидаты — одним запросом по
-    всем единицам набора сразу.
+    разделов — одним вызовом `chapter_paths` (на цикле в цепочке разделов —
+    затем по одному разделу, чтобы найти испорченные: такие контексты получают
+    `path_broken`); кандидаты — одним запросом по всем единицам набора сразу.
 
     Путь считается по ВСЕМ членствам контекста, включая `STALE` (спека §2.2,
     решение спеки 5): `STALE` — членство устарело после разноса статьи, а не
@@ -287,10 +293,28 @@ def load_request_material(
     ).all()
 
     chapter_ids = {row.chapter_item_id for row in path_rows if row.chapter_item_id is not None}
-    paths_top_down = chapter_paths(db, chapter_ids)
+    broken_chapter_ids: set[int] = set()
+    try:
+        paths_top_down = chapter_paths(db, chapter_ids)
+    except RoutingError:
+        # Цикл в цепочке разделов: данные, которые допускает фича 1. Виноватые
+        # разделы ищутся по одному — только на этом пути, обычный остаётся
+        # одним обращением.
+        paths_top_down = {}
+        for chapter_id in chapter_ids:
+            try:
+                paths_top_down.update(chapter_paths(db, [chapter_id]))
+            except RoutingError:
+                broken_chapter_ids.add(chapter_id)
+
+    broken_context_ids = {
+        row.context_id for row in path_rows if row.chapter_item_id in broken_chapter_ids
+    }
 
     path_by_context: dict[int, dict[str, int]] = {}
     for row in path_rows:
+        if row.context_id in broken_context_ids:
+            continue
         path_str = (
             ""
             if row.chapter_item_id is None
@@ -354,6 +378,7 @@ def load_request_material(
             semantic_kind=row.semantic_kind,
             work_family_id=row.work_family_id,
             candidates=candidates,
+            path_broken=cid in broken_context_ids,
         )
     return result
 

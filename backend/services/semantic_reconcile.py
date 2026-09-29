@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -48,6 +50,7 @@ from services.semantic_answer import RESPONSE_SCHEMA_VERSION
 from services.semantic_cost import (
     EventCap,
     Tariffs,
+    event_cap_from,
     exceeds_cap,
     expected_cached_cost_known_prefix,
     known_prefix_tokens,
@@ -81,6 +84,38 @@ _REVIVABLE_CANCEL_REASONS = frozenset(
 )
 
 _VALID_SOURCES = {source.value for source in ReconcileBatchSource}
+
+#: Модули, которым разрешена запись в защищённые данные контекстов —
+#: членства `context_members`, поля `catalog_contexts.semantic_kind|
+#: semantic_state|work_family_id|archived_at`, удаление `position_items` (в том
+#: числе каскадом от смет, договоров, тендеров и раундов): в каждом такая запись
+#: покрыта сверкой (спека §2.7, «Проверка инварианта»). Архитектурный тест
+#: сверяет список с деревом `services`, `crud`, `routers` в обе стороны, структурный
+#: — требует у каждого модуля тест точки в `test_semantic_queue_hooks_*.py`.
+RECONCILE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Операции над контекстами: разделение, слияние, перенос, архивирование,
+        # решение цели, перенос устаревших — каждая сверяет очередь сама.
+        "services.context_operations",
+        # Создаёт членства и контексты при маршрутизации; сам сверку не зовёт:
+        # его вызывают импорт (`run_import_job`), разовый проход (`run_backfill`)
+        # и перенос устаревшего (`accept_transfer`), а сверка идёт в их транзакции.
+        "services.context_routing",
+        # Смена и снятие вида, назначение и снятие семьи сверяют очередь сами;
+        # слияние семей переназначает `work_family_id` без сверки — правки списка
+        # семей под инвариант не попадают (спека §2.7, решение спеки 2).
+        "services.work_families",
+        # Слияние в Review и смена `kind` строки.
+        "services.review",
+        # Замена сметы удаляет позиции; контексты вытесненной сметы собираются
+        # здесь до удаления, сверку зовёт `run_import_job`.
+        "services.estimate_import",
+        "services.round_import",
+        # Удаление договора, тендера, раунда и участника каскадом удаляет позиции.
+        "crud.contracts",
+        "crud.tenders",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -607,3 +642,47 @@ def reconcile_semantic_jobs(
         unpublished=unpublished_count,
         held_batch_id=held_batch_id,
     )
+
+
+# ---------------------------------------------------------------------------
+#  Одна сверка на операцию над несколькими элементами
+# ---------------------------------------------------------------------------
+
+#: Контексты, которые копит активный `deferred_reconcile`; `None` — сверка
+#: идёт сразу.
+_DEFERRED_CONTEXTS: ContextVar[set[int] | None] = ContextVar("deferred_contexts", default=None)
+
+
+def reconcile_or_defer(
+    db: Session, context_ids: Collection[int], *, source: str = "operation"
+) -> ReconcileReport | None:
+    """Точка инварианта операции: сверяет контексты сразу с потолком события из
+    настроек либо, внутри `deferred_reconcile`, только копит их и возвращает
+    `None` (сверку сделает выход из блока)."""
+    accumulated = _DEFERRED_CONTEXTS.get()
+    if accumulated is not None:
+        accumulated.update(context_ids)
+        return None
+    return reconcile_semantic_jobs(db, context_ids, cap=event_cap_from(settings), source=source)
+
+
+@contextmanager
+def deferred_reconcile(db: Session, *, source: str = "operation") -> Iterator[None]:
+    """Операция над несколькими элементами сверяет очередь ОДИН раз: потолок
+    события (спека §2.11) действует на сверку транзакции, а не на каждый элемент.
+
+    Внутри блока точки, звавшие бы сверку через `reconcile_or_defer`, только
+    копят контексты; при нормальном выходе — одна `reconcile_semantic_jobs` по
+    объединению; при исключении накопленное отбрасывается и исключение
+    летит дальше. Вложенный блок присоединяется к внешнему."""
+    if _DEFERRED_CONTEXTS.get() is not None:
+        yield
+        return
+    accumulated: set[int] = set()
+    token = _DEFERRED_CONTEXTS.set(accumulated)
+    try:
+        yield
+    finally:
+        _DEFERRED_CONTEXTS.reset(token)
+    if accumulated:
+        reconcile_semantic_jobs(db, accumulated, cap=event_cap_from(settings), source=source)

@@ -108,6 +108,7 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+import config
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -119,7 +120,9 @@ from models import (
 )
 from services import semantic_rules
 from services.context_routing import chapter_context, route_position
+from services.semantic_cost import EventCap, event_cap_from
 from services.semantic_events import record_event
+from services.semantic_reconcile import contexts_of_positions, reconcile_semantic_jobs
 from services.semantic_rules import classify_name_role
 
 
@@ -271,14 +274,26 @@ def _distribution(db: Session, column) -> dict[str, int]:
 
 
 def run_backfill(
-    db: Session, *, batch_size: int = 500, progress: Callable[[int], None] | None = None
+    db: Session,
+    *,
+    batch_size: int = 500,
+    progress: Callable[[int], None] | None = None,
+    event_cap: EventCap | None = None,
 ) -> BackfillReport:
     """Маршрутизирует все ещё не обработанные строки сметы партиями,
     коммитя КАЖДУЮ завершённую партию (см. докстроку модуля), затем
     пересчитывает контексты прежней версии словаря мест. Идемпотентна:
     второй запуск на неизменных данных не создаёт ни одной строки и не
     меняет ни одного поля.
+
+    После маршрутизации каждой партии и до её `commit` сверяется очередь
+    семантических предложений по контекстам, которые партия создала или
+    пополнила (спека §2.7); `event_cap` — потолок события для каждой такой
+    сверки, `None` — потолок настроек, читаемый в момент вызова.
+    Пересчёт роли имени сверки не зовёт: роль не входит ни в запрос, ни в
+    применимость.
     """
+    cap = event_cap if event_cap is not None else event_cap_from(config.settings)
     buckets_before = _count(db, ContextBucket)
     contexts_before = _count(db, CatalogContext)
     members_before = _count(db, ContextMember)
@@ -287,6 +302,9 @@ def run_backfill(
     processed = 0
     for batch_ids in _chunks(eligible_ids, batch_size):
         _route_batch(db, batch_ids)
+        reconcile_semantic_jobs(
+            db, contexts_of_positions(db, batch_ids), cap=cap, source="operation"
+        )
         db.commit()
         processed += len(batch_ids)
         if progress is not None:
