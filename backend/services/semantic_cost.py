@@ -100,6 +100,21 @@ def known_prefix_tokens(db: Session, prefix_hash: str) -> int | None:
     ).scalar_one()
 
 
+def reserve_for_known_prefix(
+    prefix_tokens: int, rendered: RenderedRequest, tariffs: Tariffs, max_tokens: int
+) -> Decimal:
+    """Тот же расчёт, что `reserve_for`, но без обращения к базе: токены
+    префикса переданы явно (задача 6 — сверка на партии контекстов одной
+    единицы делит один и тот же префикс, и узнаёт его токены ОДИН раз на
+    `prefix_hash`, а не на контекст). `reserve_for` вызывает именно эту
+    функцию — формула резерва живёт в одном месте."""
+    return (
+        Decimal(prefix_tokens) * tariffs.cache_write_per_m
+        + Decimal(rendered.user_bytes) * tariffs.input_per_m
+        + Decimal(max_tokens) * tariffs.output_per_m
+    ) / _PER_MILLION
+
+
 def reserve_for(
     db: Session, rendered: RenderedRequest, tariffs: Tariffs, max_tokens: int
 ) -> Decimal:
@@ -111,8 +126,18 @@ def reserve_for(
     — вызывающий волен запросить меньше лимита настроек."""
     known = known_prefix_tokens(db, rendered.prefix_hash)
     prefix_tokens = known if known is not None else rendered.prefix_bytes
+    return reserve_for_known_prefix(prefix_tokens, rendered, tariffs, max_tokens)
+
+
+def expected_cached_cost_known_prefix(
+    prefix_tokens: int, rendered: RenderedRequest, tariffs: Tariffs
+) -> Decimal:
+    """Тот же расчёт, что `expected_cached_cost`, но без обращения к базе —
+    см. `reserve_for_known_prefix`; `expected_cached_cost` вызывает именно
+    эту функцию."""
+    max_tokens = rendered.body["max_tokens"]
     return (
-        Decimal(prefix_tokens) * tariffs.cache_write_per_m
+        Decimal(prefix_tokens) * tariffs.cache_read_per_m
         + Decimal(rendered.user_bytes) * tariffs.input_per_m
         + Decimal(max_tokens) * tariffs.output_per_m
     ) / _PER_MILLION
@@ -129,12 +154,7 @@ def expected_cached_cost(db: Session, rendered: RenderedRequest, tariffs: Tariff
     снизу."""
     known = known_prefix_tokens(db, rendered.prefix_hash)
     prefix_tokens = known if known is not None else rendered.prefix_bytes
-    max_tokens = rendered.body["max_tokens"]
-    return (
-        Decimal(prefix_tokens) * tariffs.cache_read_per_m
-        + Decimal(rendered.user_bytes) * tariffs.input_per_m
-        + Decimal(max_tokens) * tariffs.output_per_m
-    ) / _PER_MILLION
+    return expected_cached_cost_known_prefix(prefix_tokens, rendered, tariffs)
 
 
 def spent_last_24h(db: Session, *, now: dt.datetime) -> Decimal:
