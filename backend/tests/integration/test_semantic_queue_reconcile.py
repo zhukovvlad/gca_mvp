@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+import time
 import uuid
 from decimal import Decimal
 
@@ -1518,3 +1519,190 @@ class TestNoCommit:
             sa.select(sa.func.count()).select_from(SemanticJob).where(SemanticJob.context_id == context_id)
         ).scalar_one()
         assert count == 0
+
+
+# ---------------------------------------------------------------------------
+#  Замки на задания: все сразу и в порядке id
+# ---------------------------------------------------------------------------
+
+def _mixed_jobs_scene(db, factories):
+    """Три контекста одной единицы и по заданию, которое сверка изменит тремя
+    разными видами перехода: возврат в очередь (текущий отпечаток, отменено),
+    отмена прежнего отпечатка, отмена у контекста, ставшего неприменимым.
+    Возврат — у задания с наименьшим id, а среди видов перехода выполняется последним."""
+    user = factories.UserFactory.create()
+    family, (revive_ctx, old_ctx, inapplicable_ctx) = _unit_contexts(
+        db, factories, user, family_title="Семья замков", titles=["Возврат", "Прежний", "Неприменимый"]
+    )
+    _material, rendered = _rendered_for(db, revive_ctx)
+    revive = _make_job(
+        db, context_id=revive_ctx, request_hash=rendered.request_hash,
+        status=SemanticJobStatus.cancelled.value, cancel_reason="input_changed",
+    )
+    old = _make_job(
+        db, context_id=old_ctx, request_hash="old-hash", status=SemanticJobStatus.pending.value
+    )
+    inapplicable = _make_job(
+        db, context_id=inapplicable_ctx, request_hash="other-old-hash",
+        status=SemanticJobStatus.pending.value,
+    )
+    # Контекст стал неприменимым, а его открытое задание ещё не отменено:
+    # отмену сделает сама сверка.
+    db.execute(
+        sa.text("UPDATE catalog_contexts SET semantic_state = 'NOT_APPLICABLE' WHERE id = :id"),
+        {"id": inapplicable_ctx},
+    )
+    db.expire_all()
+    return (revive_ctx, old_ctx, inapplicable_ctx), (revive, old, inapplicable)
+
+
+class TestJobLocks:
+    def test_all_jobs_it_will_change_are_locked_in_id_order_before_the_first_write(
+        self, db_session, factories
+    ):
+        contexts, jobs = _mixed_jobs_scene(db_session, factories)
+        statements: list[tuple[str, object]] = []
+
+        def _listener(conn, cursor, statement, parameters, context, executemany):
+            statements.append((statement, parameters))
+
+        connection = db_session.connection()
+        sa.event.listen(connection, "before_cursor_execute", _listener)
+        try:
+            reconcile_semantic_jobs(db_session, contexts, cap=NO_CAP, source="operation")
+        finally:
+            sa.event.remove(connection, "before_cursor_execute", _listener)
+
+        normalized = [(" ".join(sql.split()).upper(), params) for sql, params in statements]
+        locks = [
+            (i, params) for i, (sql, params) in enumerate(normalized)
+            if sql.startswith("SELECT SEMANTIC_JOBS.ID") and "FOR UPDATE" in sql
+        ]
+        assert len(locks) == 1
+        index, params = locks[0]
+        assert "ORDER BY SEMANTIC_JOBS.ID" in normalized[index][0]
+        assert sorted(params.values() if isinstance(params, dict) else params) == sorted(
+            j.id for j in jobs
+        )
+        first_write = next(
+            i for i, (sql, _p) in enumerate(normalized) if sql.startswith("UPDATE SEMANTIC_JOBS")
+        )
+        assert index < first_write
+
+    def test_a_blocked_reconcile_holds_no_lock_on_the_jobs_it_has_not_reached(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        """Параллельная транзакция держит задание с меньшим id (то, что сверка
+        меняет последним видом перехода). Сверка ждёт его, ничего другого не
+        удерживая: задание с большим id свободно. Без общего порядка она успела бы
+        отменить «прежнее» и ждала бы, держа его, — из пар таких сверок и
+        получается цикл ожидания."""
+        contexts, (first, second, third) = _mixed_jobs_scene(committing_db, committing_factories)
+        committing_db.commit()
+        lowest_id, other_ids = first.id, [second.id, third.id]
+        assert lowest_id < min(other_ids)
+
+        holder = committing_session_factory()
+        outcome: dict[str, object] = {}
+
+        def _reconcile() -> None:
+            db = committing_session_factory()
+            try:
+                db.execute(sa.text("SET LOCAL lock_timeout = '20s'"))
+                outcome["report"] = reconcile_semantic_jobs(
+                    db, contexts, cap=NO_CAP, source="operation"
+                )
+                db.commit()
+            except BaseException as exc:  # noqa: BLE001 — поток обязан не потерять исключение
+                db.rollback()
+                outcome["error"] = exc
+            finally:
+                db.close()
+
+        def _waiting() -> int:
+            with committing_session_factory() as probe:
+                return probe.execute(
+                    sa.text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' AND datname = current_database()"
+                    )
+                ).scalar_one()
+
+        thread = threading.Thread(target=_reconcile, name="blocked-reconcile")
+        try:
+            holder.execute(
+                sa.text("SELECT id FROM semantic_jobs WHERE id = :id FOR UPDATE"), {"id": lowest_id}
+            )
+            thread.start()
+            deadline = time.monotonic() + 15
+            while thread.is_alive() and _waiting() == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert thread.is_alive() and _waiting() > 0, "сверка не встала на замок"
+            with committing_session_factory() as probe:
+                free = probe.execute(
+                    sa.text("SELECT id FROM semantic_jobs WHERE id = ANY(:ids) FOR UPDATE NOWAIT"),
+                    {"ids": other_ids},
+                ).scalars().all()
+            holder.commit()
+        finally:
+            holder.rollback()
+            holder.close()
+            thread.join(timeout=_JOIN_TIMEOUT)
+
+        assert not thread.is_alive(), "сверка зависла за отведённый таймаут"
+        assert sorted(free) == sorted(other_ids)
+        assert "error" not in outcome, outcome.get("error")
+
+
+class TestInsertOrder:
+    def test_new_jobs_are_inserted_in_context_id_order_whatever_the_input_order(
+        self, db_session, factories
+    ):
+        """Новые задания вставляются по возрастанию `context_id` при любом порядке
+        входа: две сверки общих контекстов ждут друг друга на уникальном индексе
+        в одном и том же порядке."""
+        from services.semantic_reconcile import _insert_new_jobs
+
+        user = factories.UserFactory.create()
+        _family, (first, second, third) = _unit_contexts(
+            db_session, factories, user, family_title="Семья порядка", titles=["А", "Б", "В"]
+        )
+        materials = load_request_material(db_session, [first, second, third])
+        rendered = {cid: render_context_request(m, settings=settings) for cid, m in materials.items()}
+
+        _insert_new_jobs(db_session, [third, first, second], rendered, materials)
+
+        inserted = db_session.execute(
+            sa.select(SemanticJob.context_id)
+            .where(SemanticJob.context_id.in_([first, second, third]))
+            .order_by(SemanticJob.id)
+        ).scalars().all()
+        assert inserted == sorted([first, second, third])
+
+
+class TestJobLocksSkipUnchangedJobs:
+    def test_running_job_of_an_inapplicable_context_is_not_locked(self, db_session, factories):
+        """Выполняющееся задание неприменимого контекста сверка не меняет, а замок на
+        него держал бы запись результата исполнителя."""
+        contexts, (revive, old, inapplicable) = _mixed_jobs_scene(db_session, factories)
+        running = _make_job(
+            db_session, context_id=contexts[2], request_hash="running-hash",
+            status=SemanticJobStatus.running.value, claim_token=uuid.uuid4(),
+        )
+        statements: list[object] = []
+
+        def _listener(conn, cursor, statement, parameters, context, executemany):
+            if "FOR UPDATE" in statement.upper() and "SEMANTIC_JOBS" in statement.upper():
+                statements.append(parameters)
+
+        connection = db_session.connection()
+        sa.event.listen(connection, "before_cursor_execute", _listener)
+        try:
+            reconcile_semantic_jobs(db_session, contexts, cap=NO_CAP, source="operation")
+        finally:
+            sa.event.remove(connection, "before_cursor_execute", _listener)
+
+        [params] = statements
+        locked = sorted(params.values() if isinstance(params, dict) else params)
+        assert locked == sorted([revive.id, old.id, inapplicable.id])
+        assert running.id not in locked

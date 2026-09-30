@@ -182,7 +182,9 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
         >
           <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
         </Button>
-        <span className="text-[15px] font-semibold text-fg">{group.family_title}</span>
+        <span className="min-w-0 truncate text-[15px] font-semibold text-fg" title={group.family_title}>
+          {group.family_title}
+        </span>
         <span className="text-[13px] text-fg-tertiary">
           {unitLabel} · {group.total}
         </span>

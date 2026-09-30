@@ -121,7 +121,9 @@ describe("SuggestionsTab — решения в очередях «Новая» �
     expect(await screen.findByTestId("banner-stale-unit")).toHaveTextContent("список семей изменён");
     expect(invalidatedKeys(invalidate)).toEqual(
       expect.arrayContaining([
-        JSON.stringify(["semantic-queue"]),
+        JSON.stringify(["semantic-queue","suggestions"]),
+        JSON.stringify(["semantic-queue","jobs"]),
+        JSON.stringify(["semantic-queue","status"]),
         JSON.stringify(["work-families"]),
         JSON.stringify(["semantic-contexts"]),
       ])
@@ -216,7 +218,7 @@ describe("SuggestionsTab — решения в очередях «Новая» �
     await user.click(within(row).getByRole("button", { name: "Отправить" }));
 
     expect(await screen.findByText("Задание изменилось, обновите экран.")).toBeInTheDocument();
-    expect(invalidatedKeys(invalidate)).toContain(JSON.stringify(["semantic-queue"]));
+    expect(invalidatedKeys(invalidate)).toEqual(expect.arrayContaining([JSON.stringify(["semantic-queue","suggestions"]), JSON.stringify(["semantic-queue","jobs"]), JSON.stringify(["semantic-queue","status"])]));
     expect(handlerState.jobsConflictCalls).toBe(1);
   });
 

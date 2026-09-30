@@ -83,6 +83,12 @@ _REVIVABLE_CANCEL_REASONS = frozenset(
     }
 )
 
+#: Статусы заданий неприменимого контекста, которые сверка отменяет.
+_CANCELLED_WHEN_INAPPLICABLE = (
+    SemanticJobStatus.pending.value,
+    SemanticJobStatus.privacy_hold.value,
+)
+
 _VALID_SOURCES = {source.value for source in ReconcileBatchSource}
 
 #: Модули, которым разрешена запись в защищённые данные контекстов —
@@ -128,6 +134,22 @@ class ReconcileReport:
     republished: int
     unpublished: int
     held_batch_id: int | None
+
+
+@dataclass(frozen=True)
+class PreparedContexts:
+    """Материал набора контекстов и рендер применимых из него. Дорогая часть
+    сверки и оценки постановки; вызывающий, которому нужны обе подряд над одним
+    набором (подтверждение пачки: оценка для сверки `preview_hash`, затем сама
+    сверка), готовит вход один раз и передаёт в обе."""
+
+    material_by_context: dict[int, ContextRequestMaterial]
+    applicable_render: dict[int, RenderedRequest]
+
+
+def prepare_contexts(db: Session, context_ids: Collection[int]) -> PreparedContexts:
+    material_by_context = load_request_material(db, context_ids)
+    return PreparedContexts(material_by_context, _render_applicable(material_by_context))
 
 
 # ---------------------------------------------------------------------------
@@ -390,23 +412,39 @@ def _estimate_totals(
 
 
 def estimate_enqueue(
-    db: Session, context_ids: Collection[int]
+    db: Session, context_ids: Collection[int], *, prepared: PreparedContexts | None = None
 ) -> tuple[list[tuple[int, str]], Decimal, Decimal]:
     """Набор постановки `E` контекстов (те же пары, что у `held_fingerprints`)
     и его оценка `(пары, резерв, ожидаемая цена при попадании в кэш)` — те же
-    суммы, что сверка кладёт в удержанную пачку. Ничего не пишет."""
-    material_by_context = load_request_material(db, context_ids)
-    applicable_render = _render_applicable(material_by_context)
-    all_jobs = _load_jobs_for_contexts(db, list(material_by_context))
-    postanovka, _current = _postanovka_set(applicable_render, all_jobs)
+    суммы, что сверка кладёт в удержанную пачку. Ничего не пишет. `prepared` —
+    уже загруженный и отрендеренный вход набора (`prepare_contexts`)."""
+    if prepared is None:
+        prepared = prepare_contexts(db, context_ids)
+    all_jobs = _load_jobs_for_contexts(db, list(prepared.material_by_context))
+    postanovka, _current = _postanovka_set(prepared.applicable_render, all_jobs)
     pairs = sorted(postanovka)
-    reserve_total, cached_total = _estimate_totals(db, pairs, applicable_render)
+    reserve_total, cached_total = _estimate_totals(db, pairs, prepared.applicable_render)
     return pairs, reserve_total, cached_total
 
 
 # ---------------------------------------------------------------------------
 #  Мутации — по одному UPDATE/INSERT на вид перехода, не по строке
 # ---------------------------------------------------------------------------
+
+def _lock_jobs(db: Session, job_ids: Collection[int]) -> None:
+    """Замки на задания, которые сверка собирается менять, — все сразу и в
+    порядке `id`. Две параллельные сверки пересекающихся наборов (общие строки
+    каталога у разных импортов) иначе берут замки в порядке скана своих
+    `UPDATE`, и пара сверок замыкается в цикл; общий порядок цикла не допускает."""
+    if not job_ids:
+        return
+    db.execute(
+        sa.select(SemanticJob.id)
+        .where(SemanticJob.id.in_(sorted(set(job_ids))))
+        .order_by(SemanticJob.id)
+        .with_for_update()
+    ).all()
+
 
 def _cancel_where_status(
     db: Session, job_ids: list[int], *, from_statuses: tuple[str, ...], cancel_reason: str
@@ -477,7 +515,7 @@ def _insert_new_jobs(
             "response_schema_version": str(RESPONSE_SCHEMA_VERSION),
             "serialization_version": str(SERIALIZATION_VERSION),
         }
-        for context_id in create_context_ids
+        for context_id in sorted(create_context_ids)
     ]
     stmt = (
         pg_insert(SemanticJob)
@@ -523,10 +561,12 @@ def reconcile_semantic_jobs(
     cap: EventCap | object,
     source: str,
     import_job_id: int | None = None,
+    prepared: PreparedContexts | None = None,
 ) -> ReconcileReport:
     """Сверка очереди семантических предложений с текущим состоянием набора
     контекстов (спека §2.7, инвариант). Одна транзакция ВЫЗЫВАЮЩЕГО — `commit` эта функция
-    не делает.
+    не делает. `prepared` — вход, уже загруженный для этих же контекстов
+    (`prepare_contexts`): сверка не загружает и не рендерит его повторно.
 
     Порядок: (1) материал, применимость, рендер применимых; (2) все задания
     набора одним запросом; (3) неприменимые контексты — их незавершённые
@@ -544,8 +584,10 @@ def reconcile_semantic_jobs(
         raise TypeError("cap обязан быть EventCap или NO_CAP")
 
     # 1. Материал, применимость, рендер применимых.
-    material_by_context = load_request_material(db, context_ids)
-    applicable_render = _render_applicable(material_by_context)
+    if prepared is None:
+        prepared = prepare_contexts(db, context_ids)
+    material_by_context = prepared.material_by_context
+    applicable_render = prepared.applicable_render
     applicable_ids = set(applicable_render)
     inapplicable_ids = [cid for cid in material_by_context if cid not in applicable_ids]
 
@@ -556,23 +598,17 @@ def reconcile_semantic_jobs(
     unpublished_count = 0
     republished_count = 0
 
-    # 3. Неприменимые: незавершённые задания — cancelled/not_applicable;
-    #    опубликованное предложение теряет публикацию.
+    # Что будет менять сверка, известно из материала и заданий целиком — до первой
+    # записи. Замки на эти задания берутся разом и в порядке `id`.
+    postanovka, current_by_context = _postanovka_set(applicable_render, all_jobs)
     inapplicable_set = set(inapplicable_ids)
-    if inapplicable_set:
-        ids_inapplicable_open = [job.id for job in all_jobs if job.context_id in inapplicable_set]
-        cancelled_count += _cancel_where_status(
-            db,
-            ids_inapplicable_open,
-            from_statuses=(SemanticJobStatus.pending.value, SemanticJobStatus.privacy_hold.value),
-            cancel_reason=SemanticCancelReason.not_applicable.value,
-        )
-        unpublished_count += _unpublish_where_published(
-            db, inapplicable_ids, reason=SuggestionUnpublishedReason.context_not_applicable.value
-        )
-
-    # 4. Применимые, задания СТАРОГО отпечатка: pending → input_changed,
-    #    privacy_hold → stale_hold.
+    # Только те, что отмена действительно меняет: выполняющееся задание неприменимого
+    # контекста сверка не трогает, и замок на него держал бы его запись результата.
+    ids_inapplicable_open = [
+        job.id
+        for job in all_jobs
+        if job.context_id in inapplicable_set and job.status in _CANCELLED_WHEN_INAPPLICABLE
+    ]
     ids_old_pending: list[int] = []
     ids_old_privacy_hold: list[int] = []
     for job in all_jobs:
@@ -583,6 +619,31 @@ def reconcile_semantic_jobs(
             ids_old_pending.append(job.id)
         elif job.status == SemanticJobStatus.privacy_hold.value:
             ids_old_privacy_hold.append(job.id)
+    create_ids = [context_id for context_id, _h in postanovka if context_id not in current_by_context]
+    revive_job_ids = [
+        current_by_context[context_id].id
+        for context_id, _h in postanovka
+        if context_id in current_by_context
+    ]
+    _lock_jobs(
+        db, [*ids_inapplicable_open, *ids_old_pending, *ids_old_privacy_hold, *revive_job_ids]
+    )
+
+    # 3. Неприменимые: незавершённые задания — cancelled/not_applicable;
+    #    опубликованное предложение теряет публикацию.
+    if inapplicable_set:
+        cancelled_count += _cancel_where_status(
+            db,
+            ids_inapplicable_open,
+            from_statuses=_CANCELLED_WHEN_INAPPLICABLE,
+            cancel_reason=SemanticCancelReason.not_applicable.value,
+        )
+        unpublished_count += _unpublish_where_published(
+            db, inapplicable_ids, reason=SuggestionUnpublishedReason.context_not_applicable.value
+        )
+
+    # 4. Применимые, задания СТАРОГО отпечатка: pending → input_changed,
+    #    privacy_hold → stale_hold.
     cancelled_count += _cancel_where_status(
         db,
         ids_old_pending,
@@ -598,8 +659,6 @@ def reconcile_semantic_jobs(
 
     # 5. Задание ТЕКУЩЕГО отпечатка — множество постановки E (общая функция
     #    с held_fingerprints) плюс повторная публикация `done`.
-    postanovka, current_by_context = _postanovka_set(applicable_render, all_jobs)
-
     done_with_suggestion_ids = [
         job.result_suggestion_id
         for job in current_by_context.values()
@@ -630,13 +689,6 @@ def reconcile_semantic_jobs(
 
     # 6. Потолок события (§2.11): E выполняется целиком либо заменяется
     #    удержанной пачкой ровно с этими парами.
-    create_ids = [context_id for context_id, _h in postanovka if context_id not in current_by_context]
-    revive_job_ids = [
-        current_by_context[context_id].id
-        for context_id, _h in postanovka
-        if context_id in current_by_context
-    ]
-
     held_batch_id: int | None = None
     created_count = 0
     revived_count = 0

@@ -584,13 +584,21 @@ class TestSemanticRunner:
 # ---------------------------------------------------------------------------
 
 class TestLifespan:
-    def _patch(self, monkeypatch, factory, *, enabled, api_key="k", made=None, client=None):
+    def _patch(
+        self, monkeypatch, factory, *, enabled, api_key="k", made=None, client=None,
+        maintenance=True,
+    ):
         import main
 
         monkeypatch.setattr(main.settings, "RUN_SEMANTIC_WORKER", enabled)
+        # Обслуживание при старте включено (опросчик без него не поднимается), но
+        # само оно заглушено: оно ходило бы в хранилище приложения.
+        monkeypatch.setattr(main.settings, "RUN_STARTUP_MAINTENANCE", maintenance)
+        monkeypatch.setattr(main, "run_startup_maintenance", lambda *a, **k: (0, 0))
         monkeypatch.setattr(main.settings, "OPENROUTER_API_KEY", api_key)
         monkeypatch.setattr(main.settings, "SEMANTIC_CONCURRENCY", 2)
         monkeypatch.setattr(main.settings, "SEMANTIC_CALL_TIMEOUT_S", 5)
+        monkeypatch.setattr(main.settings, "SEMANTIC_SHUTDOWN_WAIT_S", 7)
         monkeypatch.setattr(main.settings, "SEMANTIC_DAILY_BUDGET_USD", Decimal("1000"))
         monkeypatch.setattr(main, "SessionLocal", factory)
 
@@ -644,7 +652,8 @@ class TestLifespan:
                 lambda: set(_statuses(committing_session_factory, job_ids).values()) == {"done"}
             )
         assert len(made) == 1
-        assert budgets == [5]  # ожидание на выходе — таймаут вызова модели
+        # Ожидание на выходе — своя настройка, а не таймаут вызова модели (5 с).
+        assert budgets == [7]
         assert _wait_until(lambda: not _threads())
 
     def test_default_client_factory_builds_openrouter_with_the_configured_key(self):
@@ -679,3 +688,94 @@ class TestLifespan:
             pass  # pragma: no cover — до тела дело не доходит
         assert made == []
         assert _threads() == []
+
+    def test_enabled_worker_closes_the_client_after_the_runner_has_stopped(
+        self, committing_session_factory, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+
+        import main
+
+        events = []
+
+        class _ClosableClient(_Client):
+            def close(self):
+                events.append(("close", len(_threads())))
+
+        real_stop = main.SemanticRunner.stop
+
+        def _spy_stop(runner, *, timeout_s):
+            real_stop(runner, timeout_s=timeout_s)
+            events.append(("stopped", len(_threads())))
+
+        monkeypatch.setattr(main.SemanticRunner, "stop", _spy_stop)
+        self._patch(
+            monkeypatch, committing_session_factory, enabled=True, client=_ClosableClient(0)
+        )
+
+        with TestClient(main.app):
+            assert events == []
+
+        # Клиент закрыт ПОСЛЕ остановки потоков: закрывать его под работающим
+        # вызовом нельзя.
+        assert events == [("stopped", 0), ("close", 0)]
+
+    def test_client_is_closed_even_when_stopping_the_runner_fails(
+        self, committing_session_factory, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+
+        import main
+
+        closed = []
+
+        class _ClosableClient(_Client):
+            def close(self):
+                closed.append(True)
+
+        real_stop = main.SemanticRunner.stop
+
+        def _failing_stop(runner, *, timeout_s):
+            real_stop(runner, timeout_s=timeout_s)  # потоки не оставляем живыми
+            raise RuntimeError("остановка упала")
+
+        monkeypatch.setattr(main.SemanticRunner, "stop", _failing_stop)
+        self._patch(
+            monkeypatch, committing_session_factory, enabled=True, client=_ClosableClient(0)
+        )
+
+        with pytest.raises(RuntimeError, match="остановка упала"), TestClient(main.app):
+            pass
+
+        assert closed == [True]
+
+    def test_enabled_worker_without_startup_maintenance_fails_startup(
+        self, committing_session_factory, monkeypatch
+    ):
+        """Без восстановления при старте прерванные `running` остались бы
+        навсегда: ключ задан, отличие от запускающегося случая — только флаг."""
+        from fastapi.testclient import TestClient
+
+        from main import app
+
+        made = []
+        self._patch(
+            monkeypatch, committing_session_factory, enabled=True, made=made, maintenance=False
+        )
+
+        with pytest.raises(RuntimeError, match="RUN_STARTUP_MAINTENANCE"), TestClient(app):
+            pass  # pragma: no cover — до тела дело не доходит
+        assert made == []
+        assert _threads() == []
+
+    def test_disabled_worker_does_not_require_startup_maintenance(
+        self, committing_session_factory, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+
+        from main import app
+
+        self._patch(monkeypatch, committing_session_factory, enabled=False, maintenance=False)
+
+        with TestClient(app):
+            assert _threads() == []

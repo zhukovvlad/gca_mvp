@@ -245,7 +245,7 @@ describe("PreviewDialog — 409 preview_changed", () => {
 
     await screen.findByText("Задание изменилось.");
     const keys = invalidate.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey));
-    expect(keys).toContain(JSON.stringify(["semantic-queue"]));
+    expect(keys).toEqual(expect.arrayContaining([JSON.stringify(["semantic-queue","suggestions"]), JSON.stringify(["semantic-queue","jobs"]), JSON.stringify(["semantic-queue","status"])]));
   });
 
   it("повторное подтверждение после нового preview шлёт НОВЫЙ hash", async () => {

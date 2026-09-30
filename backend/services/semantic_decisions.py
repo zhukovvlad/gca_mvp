@@ -47,9 +47,11 @@ from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_privacy import PrivacyDictionary, build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
+    PreparedContexts,
     ReconcileReport,
     estimate_enqueue,
     get_or_create_held_batch,
+    prepare_contexts,
     reconcile_semantic_jobs,
 )
 from services.semantic_request import is_applicable, load_request_material, render_context_request
@@ -457,9 +459,9 @@ def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _preview_and_pairs(
-    db: Session, context_ids: Sequence[int]
+    db: Session, context_ids: Sequence[int], *, prepared: PreparedContexts | None = None
 ) -> tuple[Preview, list[tuple[int, str]]]:
-    pairs, reserve, cached = estimate_enqueue(db, context_ids)
+    pairs, reserve, cached = estimate_enqueue(db, context_ids, prepared=prepared)
     tariffs = tariffs_from(settings)
     canonical = json.dumps(
         {
@@ -519,9 +521,11 @@ def _all_live_context_ids(db: Session) -> list[int]:
 def _confirm(
     db: Session, context_ids: Sequence[int], preview_hash: str, *, source: str
 ) -> ReconcileReport:
-    if _preview_of(db, context_ids).preview_hash != preview_hash:
+    # Оценка для сверки хэша и сама сверка читают один и тот же вход.
+    prepared = prepare_contexts(db, context_ids)
+    if _preview_and_pairs(db, context_ids, prepared=prepared)[0].preview_hash != preview_hash:
         raise DecisionConflict(CODE_PREVIEW_CHANGED)
-    return reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=source)
+    return reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=source, prepared=prepared)
 
 
 def preview_unit_reask(db: Session, *, unit_id: int | None) -> Preview:
@@ -580,14 +584,19 @@ def approve_batch(
     if batch.status != ReconcileBatchStatus.held.value:
         raise DecisionConflict(CODE_BATCH_DECIDED)
     context_ids = _batch_context_ids(batch)
-    preview, pairs = _preview_and_pairs(db, context_ids)
+    # Материал и рендер пачки готовятся один раз: оценка для сверки хэша и сама
+    # сверка читают один и тот же вход.
+    prepared = prepare_contexts(db, context_ids)
+    preview, pairs = _preview_and_pairs(db, context_ids, prepared=prepared)
     if preview.preview_hash != preview_hash:
         raise DecisionConflict(CODE_PREVIEW_CHANGED)
     batch.status = ReconcileBatchStatus.approved.value
     batch.decided_by = actor_id
     batch.decided_at = _now()
     db.flush()
-    report = reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=batch.source)
+    report = reconcile_semantic_jobs(
+        db, context_ids, cap=NO_CAP, source=batch.source, prepared=prepared
+    )
     if pairs:
         db.execute(
             sa.update(SemanticJob)

@@ -1630,16 +1630,34 @@ export function useSuggestions(params: SuggestionsParams) {
   });
 }
 
+/**
+ * Сводка шапки. Серверу она стоит дорого (обход всех контекстов каталога), поэтому
+ * свежей считается минуту, а перечитывается только действиями, которые её меняют.
+ */
+const QUEUE_STATUS_STALE_MS = 60_000;
+
 export function useQueueStatus() {
   return useQuery({
     queryKey: qk.semanticQueue.status,
     queryFn: () => semanticApi.queueStatus(),
+    staleTime: QUEUE_STATUS_STALE_MS,
   });
 }
 
-/** Очередь и шапка: любое решение над предложениями или заданиями меняет обе. */
+/** Очереди предложений и списки заданий: любое решение над ними их перечитывает. */
 function invalidateQueue(qc: ReturnType<typeof useQueryClient>) {
-  qc.invalidateQueries({ queryKey: qk.semanticQueue.all });
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.suggestionsAll });
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.jobsAll });
+}
+
+/**
+ * То же и шапка — для действий, меняющих её числа: перезапрос единицы или
+ * конфигурации, постановка или отброс пачки, снятие остановки, новая семья
+ * (единица становится «список семей изменён»), решения по задержанным.
+ */
+function invalidateQueueAndStatus(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueue(qc);
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
 }
 
 /**
@@ -1653,9 +1671,13 @@ function invalidateAfterAssignment(qc: ReturnType<typeof useQueryClient>) {
 }
 
 /** Отказ решения над очередью: экран устарел — перечитать, потом показать причину. */
-function onQueueDecisionError(qc: ReturnType<typeof useQueryClient>) {
+function onQueueDecisionError(
+  qc: ReturnType<typeof useQueryClient>,
+  { status = false }: { status?: boolean } = {}
+) {
   return (error: unknown) => {
-    invalidateQueue(qc);
+    if (status) invalidateQueueAndStatus(qc);
+    else invalidateQueue(qc);
     toastApiError(error);
   };
 }
@@ -1681,7 +1703,7 @@ export function useConfirmSuggestions() {
       }
       if (result.skipped.length > 0) {
         toast.warning(
-          `Пропущено предложений: ${result.skipped.length} — они изменились, остались в очереди`
+          `Пропущено предложений: ${result.skipped.length} — они изменились и ушли из очереди до нового ответа модели`
         );
       }
     },
@@ -1754,14 +1776,14 @@ export function useReaskConfirm() {
       }
     },
     onSuccess: (_, { target }) => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toast.success(
         target.kind === "batch" ? "Пачка поставлена в очередь." : "Задания поставлены в очередь."
       );
     },
     onError: (error) => {
       if (apiErrorCode(error) === "preview_changed") return;
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toastApiError(error);
     },
   });
@@ -1772,10 +1794,10 @@ export function useDiscardBatch() {
   return useMutation({
     mutationFn: (batchId: number) => semanticApi.discardBatch(batchId),
     onSuccess: () => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toast.success("Пачка отброшена. Контексты можно поставить позже кнопкой единицы.");
     },
-    onError: onQueueDecisionError(qc),
+    onError: onQueueDecisionError(qc, { status: true }),
   });
 }
 
@@ -1784,10 +1806,10 @@ export function useResumeWorker() {
   return useMutation({
     mutationFn: () => semanticApi.resumeWorker(),
     onSuccess: () => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toast.success("Захват заданий возобновлён");
     },
-    onError: onQueueDecisionError(qc),
+    onError: onQueueDecisionError(qc, { status: true }),
   });
 }
 
@@ -1817,6 +1839,7 @@ export function useCreateFamilyFromSuggestion() {
     }) => semanticApi.createFamilyFromSuggestion(suggestionId, input),
     onSuccess: (_, { input }) => {
       invalidateAfterAssignment(qc);
+      qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
       toast.success(`Семья «${input.title}» активна и видна на вкладке «Семьи».`, {
         description:
           "Единица помечена сверху: перезапросите её, и остальные строки этой работы выберут новую семью.",
@@ -1824,7 +1847,7 @@ export function useCreateFamilyFromSuggestion() {
     },
     onError: (error) => {
       if (apiErrorCode(error) === "family_exists") return;
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toastApiError(error);
     },
   });
@@ -1847,7 +1870,7 @@ export function useRetryJob() {
 /** Отказ решения над заданием: `job_changed` — задание изменилось, экран перечитывается без повтора запроса. */
 function onJobDecisionError(qc: ReturnType<typeof useQueryClient>) {
   return (error: unknown) => {
-    invalidateQueue(qc);
+    invalidateQueueAndStatus(qc);
     if (apiErrorCode(error) === "job_changed") {
       toast.error("Задание изменилось, обновите экран.");
       return;
@@ -1862,7 +1885,7 @@ export function usePrivacyRelease() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyRelease(jobId, shown),
     onSuccess: () => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toast.success("Запрос отправлен: задание поставлено в очередь.");
     },
     onError: onJobDecisionError(qc),
@@ -1875,7 +1898,7 @@ export function usePrivacyDecline() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyDecline(jobId, shown),
     onSuccess: () => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       toast.success("Задание отменено: запрос не отправлен.");
     },
     onError: onJobDecisionError(qc),
@@ -1888,7 +1911,7 @@ export function useUnitPrivacyRelease() {
     mutationFn: ({ unitId, shown }: { unitId: number | null; shown: PrivacyMatch[] }) =>
       semanticApi.unitPrivacyRelease(unitId, shown),
     onSuccess: (result) => {
-      invalidateQueue(qc);
+      invalidateQueueAndStatus(qc);
       const n = result.confirmed.length;
       toast.success(
         `${n} ${pluralRu(n, "запрос отправлен", "запроса отправлено", "запросов отправлено")}.`,

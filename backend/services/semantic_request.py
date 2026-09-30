@@ -387,29 +387,28 @@ def load_request_material(
 #  render_context_request — каноническое тело и отпечатки (спека §2.2)
 # ---------------------------------------------------------------------------
 
-def render_context_request(material: ContextRequestMaterial, *, settings: Settings) -> RenderedRequest:
-    """Строит каноническое тело запроса — ровно то, что уйдёт провайдеру — и
-    его отпечатки (спека §2.2). Детерминирован; не ходит в базу; снимок
-    кандидатов сортируется по `id` внутри, поэтому порядок кандидатов на
-    входе на результат не влияет."""
-    ordered_candidates = tuple(sorted(material.candidates, key=lambda c: c.id))
-    family_block = _candidates_block(ordered_candidates)
+def _user_text(material: ContextRequestMaterial) -> str:
+    """Пользовательское сообщение запроса — строка варианта A (спека §2.2)."""
+    path = top_path(material.path_counts) if material.path_counts else ""
+    path_display = path or "(разделы не указаны)"
+    article_display = material.article or "(не определена)"
+    unit_display = material.unit_code if material.unit_code is not None else _NO_UNIT_DISPLAY
+    return (
+        f"СТРОКА\nРазделы: {path_display}\nСтатья: {article_display}\n"
+        f"Наименование: {material.title}\nЕдиница: {unit_display}"
+    )
 
+
+def _build_body(
+    ordered_candidates: Sequence[CandidateFamily], user_text: str, *, settings: Settings
+) -> tuple[dict, list[dict]]:
+    """Тело запроса и блоки `system`; кандидаты уже упорядочены по `id`."""
+    family_block = _candidates_block(ordered_candidates)
     system_blocks: list[dict] = [
         {"type": "text", "text": SEMANTIC_PROMPT},
         {"type": "text", "text": f"{FAMILY_BLOCK_HEADER}{family_block}"},
     ]
     system_blocks[CACHE_CONTROL_BLOCK_INDEX]["cache_control"] = {"type": "ephemeral"}
-
-    path = top_path(material.path_counts) if material.path_counts else ""
-    path_display = path or "(разделы не указаны)"
-    article_display = material.article or "(не определена)"
-    unit_display = material.unit_code if material.unit_code is not None else _NO_UNIT_DISPLAY
-    user_text = (
-        f"СТРОКА\nРазделы: {path_display}\nСтатья: {article_display}\n"
-        f"Наименование: {material.title}\nЕдиница: {unit_display}"
-    )
-
     body = {
         "model": settings.SEMANTIC_MODEL,
         "temperature": 0,
@@ -421,6 +420,17 @@ def render_context_request(material: ContextRequestMaterial, *, settings: Settin
             {"role": "user", "content": user_text},
         ],
     }
+    return body, system_blocks
+
+
+def render_context_request(material: ContextRequestMaterial, *, settings: Settings) -> RenderedRequest:
+    """Строит каноническое тело запроса — ровно то, что уйдёт провайдеру — и
+    его отпечатки (спека §2.2). Детерминирован; не ходит в базу; снимок
+    кандидатов сортируется по `id` внутри, поэтому порядок кандидатов на
+    входе на результат не влияет."""
+    ordered_candidates = tuple(sorted(material.candidates, key=lambda c: c.id))
+    user_text = _user_text(material)
+    body, system_blocks = _build_body(ordered_candidates, user_text, settings=settings)
 
     request_hash = _sha256_hex({"serialization_version": SERIALIZATION_VERSION, "body": body})
     prefix_hash = _sha256_hex(
@@ -450,3 +460,43 @@ def render_context_request(material: ContextRequestMaterial, *, settings: Settin
         user_bytes=user_bytes,
         place_dictionary_version=PLACE_DICTIONARY_VERSION,
     )
+
+
+# ---------------------------------------------------------------------------
+#  Быстрый расчёт `request_hash` для контекстов одной единицы
+# ---------------------------------------------------------------------------
+
+#: Метка на месте пользовательского сообщения при разборе канонического тела на
+#: «до» и «после»; в промпте и в именах семей не встречается.
+_USER_TEXT_SENTINEL = "\x01user-text-sentinel\x01"
+
+
+class RequestHasher:
+    """`request_hash` контекстов одной единицы без полного рендера на каждый.
+
+    Тело запроса у всех контекстов единицы отличается только пользовательским
+    сообщением, а хэш — SHA-256 канонического JSON, где сообщение лежит значением
+    строки. Поэтому каноническое тело с меткой вместо сообщения режется по метке
+    на две половины один раз на единицу, а хэш контекста — SHA-256 от «первая
+    половина + JSON-строка сообщения + вторая половина». Результат побайтно равен
+    `render_context_request(...).request_hash`; список семей при этом не
+    рендерится и не сериализуется заново для каждого контекста.
+
+    Экземпляр строится по материалу любого контекста единицы: кандидаты у всех
+    контекстов единицы одни и те же.
+    """
+
+    def __init__(self, template: ContextRequestMaterial, *, settings: Settings) -> None:
+        ordered = tuple(sorted(template.candidates, key=lambda c: c.id))
+        body, _ = _build_body(ordered, _USER_TEXT_SENTINEL, settings=settings)
+        canonical = _canonical_bytes({"serialization_version": SERIALIZATION_VERSION, "body": body})
+        marker = json.dumps(_USER_TEXT_SENTINEL, ensure_ascii=False).encode("utf-8")
+        # Метка — целое JSON-значение в кавычках: она есть в теле ровно один раз, на
+        # месте сообщения (промпт и блок семей целиком ей равняться не могут).
+        head, _marker, tail = canonical.partition(marker)
+        self._split = (head, tail)
+
+    def request_hash(self, material: ContextRequestMaterial) -> str:
+        head, tail = self._split
+        user_json = json.dumps(_user_text(material), ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(head + user_json + tail).hexdigest()

@@ -193,7 +193,10 @@ describe("SuggestionsTab — решения обновляют очередь", 
     expect(screen.getByRole("tab", { name: /Семья из списка/ })).toHaveTextContent("3");
 
     const keys = invalidate.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey));
-    expect(keys).toContain(JSON.stringify(["semantic-queue"]));
+    expect(keys).toContain(JSON.stringify(["semantic-queue","suggestions"]));
+    expect(keys).toContain(JSON.stringify(["semantic-queue","jobs"]));
+    expect(keys).not.toContain(JSON.stringify(["semantic-queue","status"]));
+    expect(keys).not.toContain(JSON.stringify(["semantic-queue"]));
     expect(keys).toContain(JSON.stringify(["semantic-contexts"]));
     expect(keys).toContain(JSON.stringify(["work-families"]));
   });
@@ -220,7 +223,8 @@ describe("SuggestionsTab — решения обновляют очередь", 
     await waitFor(() => expect(handlerState.otherFamilyRequests).toEqual([{ suggestionId: 1, familyId: 900 }]));
     await waitFor(() => {
       const keys = invalidatedKeys(invalidate);
-      expect(keys).toContain(JSON.stringify(["semantic-queue"]));
+      expect(keys).toContain(JSON.stringify(["semantic-queue","suggestions"]));
+      expect(keys).not.toContain(JSON.stringify(["semantic-queue","status"]));
       expect(keys).toContain(JSON.stringify(["semantic-contexts"]));
       expect(keys).toContain(JSON.stringify(["work-families"]));
     });
@@ -287,7 +291,9 @@ describe("SuggestionsTab — решения обновляют очередь", 
       expect(within(screen.getAllByTestId("suggestion-group")[0]).getByRole("button", { name: "Подтвердить отмеченные 2" })).toBeInTheDocument()
     );
     const keys = invalidate.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey));
-    expect(keys).toContain(JSON.stringify(["semantic-queue"]));
+    expect(keys).toContain(JSON.stringify(["semantic-queue","suggestions"]));
+    expect(keys).toContain(JSON.stringify(["semantic-queue","jobs"]));
+    expect(keys).not.toContain(JSON.stringify(["semantic-queue","status"]));
     expect(keys).not.toContain(JSON.stringify(["semantic-contexts"]));
   });
 
@@ -321,10 +327,11 @@ describe("SuggestionsTab — решения обновляют очередь", 
     await user.click(await screen.findByRole("button", { name: "Перезапросить всё…" }));
     const dialog = await screen.findByRole("dialog");
     await within(dialog).findByText("214");
-    expect(invalidatedKeys(invalidate)).not.toContain(JSON.stringify(["semantic-queue"]));
+    expect(invalidatedKeys(invalidate)).not.toContain(JSON.stringify(["semantic-queue","status"]));
     await user.click(within(dialog).getByRole("button", { name: "Поставить в очередь" }));
     // Постановка заданий меняет сводку шапки (расход, плашки): очередь и сводка перечитываются.
-    await waitFor(() => expect(invalidatedKeys(invalidate)).toContain(JSON.stringify(["semantic-queue"])));
+    await waitFor(() => expect(invalidatedKeys(invalidate)).toContain(JSON.stringify(["semantic-queue","status"])));
+    expect(invalidatedKeys(invalidate)).toEqual(expect.arrayContaining([JSON.stringify(["semantic-queue","suggestions"]), JSON.stringify(["semantic-queue","jobs"])]));
 
     await waitFor(() => expect(handlerState.reaskConfirmRequests).toHaveLength(1));
     expect(handlerState.reaskConfirmRequests[0]).toEqual({

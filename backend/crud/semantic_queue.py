@@ -52,6 +52,7 @@ from services.semantic_cost import spent_last_24h
 from services.semantic_request import (
     PROMPT_VERSION,
     ContextRequestMaterial,
+    RequestHasher,
     is_applicable,
     load_request_material,
     render_context_request,
@@ -219,6 +220,35 @@ def _unit_clause(unit: int | str):
     return CatalogPosition.unit_id == unit
 
 
+class _UnitFingerprints:
+    """Текущие отпечатки запроса контекстов по единицам. Список семей у всех
+    контекстов единицы один, поэтому `candidates_hash` считается одним рендером на
+    единицу, а `request_hash` контекста — `RequestHasher` единицы без повторного
+    рендера списка семей."""
+
+    def __init__(self) -> None:
+        self._by_unit: dict[int | None, tuple[str, RequestHasher]] = {}
+
+    def _entry(self, material: ContextRequestMaterial) -> tuple[str, RequestHasher]:
+        entry = self._by_unit.get(material.unit_id)
+        if entry is None:
+            rendered = render_context_request(material, settings=settings)
+            entry = (rendered.candidates_hash, RequestHasher(material, settings=settings))
+            self._by_unit[material.unit_id] = entry
+        return entry
+
+    def candidates_hash(self, material: ContextRequestMaterial) -> str:
+        return self._entry(material)[0]
+
+    def request_hash(self, material: ContextRequestMaterial) -> str:
+        return self._entry(material)[1].request_hash(material)
+
+    def is_current(self, material: ContextRequestMaterial, request_hash: str) -> bool:
+        """Опубликованное предложение на `request_hash` ещё актуально: контекст
+        применим, и отпечаток его запроса сегодня тот же (спека §2.8)."""
+        return is_applicable(material) and self.request_hash(material) == request_hash
+
+
 def _path_list(material: ContextRequestMaterial) -> list[str]:
     if not material.path_counts:
         return []
@@ -294,6 +324,7 @@ def _list_queue(
             FamilySuggestion.family_id,
             FamilySuggestion.confidence,
             FamilySuggestion.reason,
+            FamilySuggestion.request_hash,
             family.title.label("family_title"),
             family_unit.code.label("family_unit_code"),
             (owners >= 2).label("multi_owner"),
@@ -326,7 +357,16 @@ def _list_queue(
     if not found:
         return []
 
+    # Опубликованное предложение на прежний отпечаток (вход контекста или список
+    # семей изменились) решить нельзя: его не показываем до нового ответа модели.
     materials = load_request_material(db, {row.context_id for row in found})
+    fingerprints = _UnitFingerprints()
+    found = [
+        row for row in found
+        if fingerprints.is_current(materials[row.context_id], row.request_hash)
+    ]
+    if not found:
+        return []
     rejected = _rejected_marks(db, {(row.context_id, row.family_id) for row in found})
 
     # Группа — пара (семья, полоса): у каждой группы ровно одна полоса.
@@ -393,6 +433,7 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
             FamilySuggestion.new_family_name,
             FamilySuggestion.confidence,
             FamilySuggestion.reason,
+            FamilySuggestion.request_hash,
             (owners_of_suggestion >= 2).label("multi_owner"),
         )
         .where(
@@ -456,6 +497,12 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
     materials = load_request_material(
         db, {r.context_id for r in suggestion_rows} | {r.id for r in bare_rows}
     )
+    # Предложение на прежний отпечаток в очереди не показывается (см. `_list_queue`).
+    fingerprints = _UnitFingerprints()
+    suggestion_rows = [
+        r for r in suggestion_rows
+        if fingerprints.is_current(materials[r.context_id], r.request_hash)
+    ]
     items: list[NewRow] = []
     for r in suggestion_rows:
         material = materials[r.context_id]
@@ -660,38 +707,38 @@ def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | Non
     Единица устарела: у применимого контекста нет задания с текущим
     `candidates_hash` (список семей изменился). Конфигурация изменена: задание с
     текущим `candidates_hash` есть, а с текущим `request_hash` — нет (промпт,
-    модель или параметры поменяли тело запроса при том же списке семей)."""
+    модель или параметры поменяли тело запроса при том же списке семей).
+
+    Список семей рендерится один раз на единицу, а не на каждый контекст
+    (`_UnitFingerprints`): число запросов к базе от числа контекстов не зависит,
+    а работа на контекст — разбор его материала и один SHA-256."""
     context_ids = list(
         db.execute(
             sa.select(CatalogContext.id).where(CatalogContext.archived_at.is_(None))
         ).scalars()
     )
     materials = load_request_material(db, context_ids)
-    rendered = {
-        cid: render_context_request(material, settings=settings)
-        for cid, material in materials.items()
-        if is_applicable(material)
-    }
-    if not rendered:
+    applicable = {cid: m for cid, m in materials.items() if is_applicable(m)}
+    if not applicable:
         return [], None
 
     request_hashes: dict[int, set[str]] = {}
     candidates_hashes: dict[int, set[str]] = {}
     for context_id, request_hash, candidates_hash in db.execute(
         sa.select(SemanticJob.context_id, SemanticJob.request_hash, SemanticJob.candidates_hash)
-        .where(SemanticJob.context_id.in_(list(rendered)))
+        .where(SemanticJob.context_id.in_(list(applicable)))
     ):
         request_hashes.setdefault(context_id, set()).add(request_hash)
         candidates_hashes.setdefault(context_id, set()).add(candidates_hash)
 
+    fingerprints = _UnitFingerprints()
     stale_by_unit: dict[int | None, list] = {}
     config_stale = 0
-    for context_id, r in rendered.items():
-        if r.candidates_hash not in candidates_hashes.get(context_id, ()):
-            material = materials[context_id]
+    for context_id, material in applicable.items():
+        if fingerprints.candidates_hash(material) not in candidates_hashes.get(context_id, ()):
             entry = stale_by_unit.setdefault(material.unit_id, [material.unit_code, 0])
             entry[1] += 1
-        elif r.request_hash not in request_hashes.get(context_id, ()):
+        elif fingerprints.request_hash(material) not in request_hashes.get(context_id, ()):
             config_stale += 1
 
     stale_units = [

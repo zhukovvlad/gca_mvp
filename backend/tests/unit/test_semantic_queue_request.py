@@ -17,6 +17,8 @@ import itertools
 import json
 from decimal import Decimal
 
+import pytest
+
 from config import Settings
 from services import semantic_request
 from services.semantic_request import (
@@ -24,6 +26,7 @@ from services.semantic_request import (
     REASONING_ENABLED,
     CandidateFamily,
     ContextRequestMaterial,
+    RequestHasher,
     family_line,
     is_applicable,
     render_context_request,
@@ -467,6 +470,95 @@ class TestCandidatesHash:
         assert other_definition.candidates_hash != base.candidates_hash
 
 
+class TestRequestHasher:
+    """Быстрый `request_hash` контекстов единицы обязан совпадать с полным рендером
+    побайтно — на входах, где экранирование JSON и состав строки разные."""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"title": 'Кровля "ТехноНИКОЛЬ" \\ слэш\nперенос строки'},
+            {"title": "Emoji \U0001F600 и \u2028 разделитель строки"},
+            {"article": None, "path_counts": ()},
+            {"unit_code": None, "unit_id": None},
+            {"path_counts": (("Раздел \"кавычки\" / Подраздел", 2),)},
+        ],
+    )
+    def test_equals_full_render(self, overrides):
+        template = _material(candidates=(_candidate(1), _candidate(2, title="Другая")))
+        hasher = RequestHasher(template, settings=_settings())
+        material = _material(candidates=template.candidates, **overrides)
+
+        assert hasher.request_hash(material) == (
+            render_context_request(material, settings=_settings()).request_hash
+        )
+
+    def test_depends_on_the_context_row_not_only_on_the_unit(self):
+        template = _material()
+        hasher = RequestHasher(template, settings=_settings())
+
+        first = hasher.request_hash(_material(title="Первая"))
+        second = hasher.request_hash(_material(title="Вторая"))
+
+        assert first != second
+
+    def test_follows_the_settings_the_hasher_was_built_with(self):
+        template = _material()
+        material = _material()
+
+        default = RequestHasher(template, settings=_settings()).request_hash(material)
+        other = RequestHasher(template, settings=_settings(SEMANTIC_MAX_TOKENS=601)).request_hash(
+            material
+        )
+
+        assert default != other
+        assert other == render_context_request(
+            material, settings=_settings(SEMANTIC_MAX_TOKENS=601)
+        ).request_hash
+
+    def test_sentinel_text_inside_a_family_does_not_shift_the_split(self):
+        """Метка в тексте семьи не совпадает с меткой в теле: там она — целое
+        JSON-значение в кавычках, а в блоке семей — часть строки. Разрез идёт по
+        месту сообщения, хэш равен полному рендеру."""
+        clashing = _candidate(3, definition=f"Текст {semantic_request._USER_TEXT_SENTINEL} внутри")
+        template = _material(candidates=(clashing,))
+        hasher = RequestHasher(template, settings=_settings())
+        material = _material(candidates=(clashing,), title="Любая")
+
+        assert hasher.request_hash(material) == (
+            render_context_request(material, settings=_settings()).request_hash
+        )
+
+
+    def test_ordinary_input_is_hashed_without_a_full_render_per_context(self, monkeypatch):
+        """Смысл хэшера — не рендерить список семей заново на каждый контекст:
+        на обычном входе полный рендер не зовётся ни разу."""
+        template = _material(candidates=(_candidate(1), _candidate(2, title="Другая")))
+        hasher = RequestHasher(template, settings=_settings())
+        renders = []
+        real_render = semantic_request.render_context_request
+
+        def _counting_render(material, *, settings):
+            renders.append(material.title)
+            return real_render(material, settings=settings)
+
+        monkeypatch.setattr(semantic_request, "render_context_request", _counting_render)
+        hasher.request_hash(_material(candidates=template.candidates, title="Первая"))
+        hasher.request_hash(_material(candidates=template.candidates, title="Вторая"))
+
+        assert renders == []
+
+    def test_template_candidates_in_any_order_give_the_full_render_hash(self):
+        """Кандидаты шаблона упорядочиваются по `id`, как в полном рендере."""
+        reversed_candidates = (_candidate(2, title="Другая"), _candidate(1))
+        hasher = RequestHasher(_material(candidates=reversed_candidates), settings=_settings())
+        material = _material(candidates=reversed_candidates, title="Любая")
+
+        assert hasher.request_hash(material) == (
+            render_context_request(material, settings=_settings()).request_hash
+        )
+
 # ---------------------------------------------------------------------------
 #  Settings: тарифы — Decimal из строки .env, без прохода через float
 # ---------------------------------------------------------------------------
@@ -492,8 +584,8 @@ class TestSemanticSettingsDecimalTariffs:
         проверяемое значение."""
         names = (
             "OPENROUTER_API_KEY", "RUN_SEMANTIC_WORKER", "SEMANTIC_MODEL", "SEMANTIC_MAX_TOKENS",
-            "SEMANTIC_CONCURRENCY", "SEMANTIC_CALL_TIMEOUT_S", "SEMANTIC_MAX_ATTEMPTS",
-            "SEMANTIC_PRICE_INPUT_PER_M", "SEMANTIC_PRICE_CACHE_WRITE_PER_M",
+            "SEMANTIC_CONCURRENCY", "SEMANTIC_CALL_TIMEOUT_S", "SEMANTIC_SHUTDOWN_WAIT_S",
+            "SEMANTIC_MAX_ATTEMPTS", "SEMANTIC_PRICE_INPUT_PER_M", "SEMANTIC_PRICE_CACHE_WRITE_PER_M",
             "SEMANTIC_PRICE_CACHE_READ_PER_M", "SEMANTIC_PRICE_OUTPUT_PER_M",
             "SEMANTIC_DAILY_BUDGET_USD", "SEMANTIC_EVENT_MAX_CONTEXTS",
             "SEMANTIC_EVENT_MAX_RESERVE_USD",
@@ -503,9 +595,9 @@ class TestSemanticSettingsDecimalTariffs:
         s = Settings(_env_file=None, SECRET_KEY="x" * 32)
         assert (
             s.OPENROUTER_API_KEY, s.RUN_SEMANTIC_WORKER, s.SEMANTIC_MODEL, s.SEMANTIC_MAX_TOKENS,
-            s.SEMANTIC_CONCURRENCY, s.SEMANTIC_CALL_TIMEOUT_S, s.SEMANTIC_MAX_ATTEMPTS,
-            s.SEMANTIC_EVENT_MAX_CONTEXTS,
-        ) == ("", False, "anthropic/claude-sonnet-5", 600, 4, 120, 3, 3000)
+            s.SEMANTIC_CONCURRENCY, s.SEMANTIC_CALL_TIMEOUT_S, s.SEMANTIC_SHUTDOWN_WAIT_S,
+            s.SEMANTIC_MAX_ATTEMPTS, s.SEMANTIC_EVENT_MAX_CONTEXTS,
+        ) == ("", False, "anthropic/claude-sonnet-5", 600, 4, 120, 15, 3, 3000)
         tariffs = (
             s.SEMANTIC_PRICE_INPUT_PER_M, s.SEMANTIC_PRICE_CACHE_WRITE_PER_M,
             s.SEMANTIC_PRICE_CACHE_READ_PER_M, s.SEMANTIC_PRICE_OUTPUT_PER_M,

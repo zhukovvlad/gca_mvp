@@ -234,7 +234,8 @@ def find_privacy_matches(
                 if not line:
                     continue
                 id_match = _FAMILY_LINE_ID_RE.match(line)
-                assert id_match is not None, "строка семьи обязана начинаться с id (family_line)"
+                if id_match is None:
+                    raise ValueError("строка семьи обязана начинаться с id (family_line)")
                 family_lines[int(id_match.group(1))] = line
         else:
             prompt_texts.append(text)

@@ -127,7 +127,7 @@ describe("CreateFamilyDialog", () => {
     const keys = invalidate.mock.calls.map((call) =>
       JSON.stringify((call[0] as { queryKey: unknown }).queryKey)
     );
-    expect(keys).toContain(JSON.stringify(["semantic-queue"]));
+    expect(keys).toEqual(expect.arrayContaining([JSON.stringify(["semantic-queue","suggestions"]), JSON.stringify(["semantic-queue","jobs"]), JSON.stringify(["semantic-queue","status"])]));
     expect(keys).toContain(JSON.stringify(["work-families"]));
     expect(keys).toContain(JSON.stringify(["semantic-contexts"]));
   });

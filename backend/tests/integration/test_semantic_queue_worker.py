@@ -56,7 +56,7 @@ from services.semantic_worker import (
     record_result,
     serialize_privacy_matches,
 )
-from services.work_families import activate_family, create_family
+from services.work_families import activate_family, assign_family, create_family
 
 pytestmark = pytest.mark.integration
 
@@ -1682,3 +1682,73 @@ class TestConcurrentWrites:
         state = _state(committing_db)
         assert state.claim_paused is True
         assert state.paused_attempt_id in {first.attempt_id, second.attempt_id}
+
+
+class TestRecordResultAgainstDecision:
+    def test_assigning_a_family_does_not_wait_for_a_running_job_being_recorded(
+        self, committing_session_factory, committing_db, committing_factories, monkeypatch
+    ):
+        """`record_result` держит своё `running`-задание и затем берёт ключевой замок
+        на контекст; назначение семьи держит контекст. Если бы сверка внутри
+        назначения ждала то же задание, пара замкнулась бы в цикл. Задание
+        выполняющегося вызова сверка не меняет, поэтому назначение заканчивается,
+        пока запись результата стоит с захваченным заданием."""
+        scene = _scene(committing_db, committing_factories)
+        committing_db.commit()
+        context_id, family_id, user_id = scene.context_ids[0], scene.family.id, scene.user.id
+        with committing_session_factory() as claim_db:
+            claim = _claim_one(claim_db)
+            claim_db.commit()
+
+        locked, resume = threading.Event(), threading.Event()
+        real_load_attempt = worker._load_attempt
+
+        def _paused_load_attempt(db, attempt_id):
+            locked.set()  # задание уже заблокировано `_lock_job`
+            resume.wait(timeout=20)
+            return real_load_attempt(db, attempt_id)
+
+        monkeypatch.setattr(worker, "_load_attempt", _paused_load_attempt)
+        outcome: dict[str, str] = {}
+
+        def _record() -> None:
+            db = committing_session_factory()
+            try:
+                db.execute(sa.text("SET LOCAL lock_timeout = '20s'"))
+                record_result(db, claim, _response(_answer(family_id)), now=NOW, settings=S)
+                outcome["record"] = "ok"
+            except BaseException as exc:  # noqa: BLE001 — поток обязан не потерять исключение
+                db.rollback()
+                outcome["record"] = repr(exc)
+            finally:
+                db.close()
+
+        def _decide() -> None:
+            db = committing_session_factory()
+            try:
+                db.execute(sa.text("SET LOCAL lock_timeout = '20s'"))
+                assign_family(db, context_id=context_id, family_id=family_id, actor_id=user_id)
+                db.commit()
+                outcome["decision"] = "ok"
+            except BaseException as exc:  # noqa: BLE001
+                db.rollback()
+                outcome["decision"] = repr(exc)
+            finally:
+                db.close()
+
+        recorder = threading.Thread(target=_record, name="record-result")
+        decider = threading.Thread(target=_decide, name="assign-family")
+        try:
+            recorder.start()
+            assert locked.wait(timeout=15), "запись результата не дошла до замка задания"
+            decider.start()
+            decider.join(timeout=10)
+            finished_while_recording_is_paused = not decider.is_alive()
+        finally:
+            resume.set()
+            recorder.join(timeout=_JOIN_TIMEOUT)
+            decider.join(timeout=_JOIN_TIMEOUT)
+
+        assert not recorder.is_alive() and not decider.is_alive(), "поток завис за таймаут"
+        assert finished_while_recording_is_paused, "назначение ждало задание записи результата"
+        assert outcome == {"decision": "ok", "record": "ok"}

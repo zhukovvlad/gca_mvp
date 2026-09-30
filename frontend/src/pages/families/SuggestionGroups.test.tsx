@@ -186,7 +186,7 @@ describe("SuggestionGroups — отметки и «Подтвердить отм
 
     await user.click(within(firstGroup()).getByRole("button", { name: "Подтвердить отмеченные 3" }));
 
-    expect(await screen.findByText(/Пропущено предложений: 2/)).toBeInTheDocument();
+    expect(await screen.findByText(/Пропущено предложений: 2 — они изменились и ушли из очереди до нового ответа модели/)).toBeInTheDocument();
     expect(screen.getByText(/1 контекст получил семью «Геотекстиль»\./)).toBeInTheDocument();
   });
 

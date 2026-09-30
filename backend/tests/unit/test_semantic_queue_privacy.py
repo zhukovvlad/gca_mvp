@@ -13,6 +13,9 @@
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
+
 import pytest
 
 from config import Settings
@@ -307,6 +310,18 @@ class TestFindPrivacyMatchesPlaces:
             PrivacyMatch(text="гамма", kind="contractor", where="family:2"),
             PrivacyMatch(text="дельта", kind="object", where="family:9"),
         )
+
+    def test_family_line_without_leading_id_is_a_value_error_not_an_assertion(self):
+        """Строка семьи без `id.` в начале — нарушение контракта рендера; это
+        обычное исключение, а не `assert`, который исчез бы под `python -O`."""
+        rendered = render_context_request(_material(), settings=_settings())
+        broken_body = copy.deepcopy(rendered.body)
+        family_block = broken_body["messages"][0]["content"][1]
+        family_block["text"] += "\nстрока без номера семьи [M2] — определение"
+        broken = dataclasses.replace(rendered, body=broken_body)
+
+        with pytest.raises(ValueError, match="id"):
+            find_privacy_matches(_dictionary(("object", "ромашка")), broken)
 
 
 # ---------------------------------------------------------------------------

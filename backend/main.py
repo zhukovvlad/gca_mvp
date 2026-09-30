@@ -60,8 +60,11 @@ async def lifespan(_: FastAPI):
 
     Опросчик семантической очереди (`SemanticRunner`) поднимается здесь же, после
     обслуживания, при `RUN_SEMANTIC_WORKER=true` и останавливается на выходе
-    (`SEMANTIC_CALL_TIMEOUT_S` — бюджет ожидания текущих вызовов). Пустой
-    `OPENROUTER_API_KEY` при включённом флаге — ошибка старта. Правило одного
+    (`SEMANTIC_SHUTDOWN_WAIT_S` — бюджет ожидания текущих вызовов; HTTP-клиент
+    провайдера закрывается после остановки). Пустой `OPENROUTER_API_KEY` при
+    включённом флаге — ошибка старта; так же `RUN_STARTUP_MAINTENANCE=false`:
+    без восстановления при старте задания, прерванные прошлым процессом, остались
+    бы `running` навсегда. Правило одного
     worker-процесса относится и к опросчику: второй процесс вернул бы в очередь
     задания, которые первый в этот момент выполняет.
 
@@ -81,20 +84,31 @@ async def lifespan(_: FastAPI):
             purged,
         )
     runner = None
+    client = None
     if settings.RUN_SEMANTIC_WORKER:
         if not settings.OPENROUTER_API_KEY:
             raise RuntimeError(
                 "RUN_SEMANTIC_WORKER=true требует непустого OPENROUTER_API_KEY"
             )
-        runner = SemanticRunner(
-            SessionLocal, _make_semantic_client(settings), settings=settings
-        )
+        if not settings.RUN_STARTUP_MAINTENANCE:
+            raise RuntimeError(
+                "RUN_SEMANTIC_WORKER=true требует RUN_STARTUP_MAINTENANCE=true: без "
+                "восстановления при старте задания, прерванные прошлым процессом, "
+                "остались бы в статусе running навсегда"
+            )
+        client = _make_semantic_client(settings)
+        runner = SemanticRunner(SessionLocal, client, settings=settings)
         runner.start()
     try:
         yield
     finally:
-        if runner is not None:
-            runner.stop(timeout_s=settings.SEMANTIC_CALL_TIMEOUT_S)
+        try:
+            if runner is not None:
+                runner.stop(timeout_s=settings.SEMANTIC_SHUTDOWN_WAIT_S)
+        finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
 
 
 app = FastAPI(

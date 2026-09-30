@@ -992,6 +992,48 @@ class TestConfirmReask:
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 1)
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_RESERVE_USD", Decimal("0"))
 
+    @pytest.mark.parametrize("kind", ["unit", "config"])
+    def test_confirm_loads_and_renders_the_contexts_once(
+        self, db_session, factories, monkeypatch, kind
+    ):
+        """Оценка для сверки `preview_hash` и сама сверка читают один и тот же вход."""
+        import services.semantic_reconcile as reconcile_module
+
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
+        loads: list[int] = []
+        renders: list[int] = []
+        real_load = reconcile_module.load_request_material
+        real_render = reconcile_module.render_context_request
+
+        def _counting_load(db, context_ids):
+            loads.append(len(list(context_ids)))
+            return real_load(db, context_ids)
+
+        def _counting_render(material, *, settings):
+            renders.append(material.context_id)
+            return real_render(material, settings=settings)
+
+        if kind == "unit":
+            preview = preview_unit_reask(db_session, unit_id=scene.unit_id)
+        else:
+            preview = preview_config_reask(db_session)
+        monkeypatch.setattr(reconcile_module, "load_request_material", _counting_load)
+        monkeypatch.setattr(reconcile_module, "render_context_request", _counting_render)
+
+        if kind == "unit":
+            report = confirm_unit_reask(
+                db_session, unit_id=scene.unit_id, preview_hash=preview.preview_hash,
+                actor_id=scene.user.id,
+            )
+        else:
+            report = confirm_config_reask(
+                db_session, preview_hash=preview.preview_hash, actor_id=scene.user.id
+            )
+
+        assert report.created == 3
+        assert len(loads) == 1
+        assert sorted(renders) == sorted(scene.context_ids)
+
     def test_unit_reask_creates_jobs_above_the_event_cap_without_a_batch(
         self, db_session, factories, monkeypatch
     ):
@@ -1133,6 +1175,40 @@ class TestBatches:
         assert [list(p) for p in batch.held_fingerprints] == audit_before
         jobs = db_session.execute(sa.select(SemanticJob)).scalars().all()
         assert len(jobs) == 3 and {j.batch_id for j in jobs} == {batch_id}
+
+    def test_approve_loads_and_renders_the_batch_contexts_once(
+        self, db_session, factories, monkeypatch
+    ):
+        """Оценка для сверки `preview_hash` и сама сверка читают один и тот же вход:
+        материал пачки загружается один раз, рендер — по разу на контекст."""
+        import services.semantic_reconcile as reconcile_module
+
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
+        batch_id = _held_batch(db_session, scene)
+        preview = preview_batch(db_session, batch_id=batch_id)
+        loads: list[int] = []
+        renders: list[int] = []
+        real_load = reconcile_module.load_request_material
+        real_render = reconcile_module.render_context_request
+
+        def _counting_load(db, context_ids):
+            loads.append(len(list(context_ids)))
+            return real_load(db, context_ids)
+
+        def _counting_render(material, *, settings):
+            renders.append(material.context_id)
+            return real_render(material, settings=settings)
+
+        monkeypatch.setattr(reconcile_module, "load_request_material", _counting_load)
+        monkeypatch.setattr(reconcile_module, "render_context_request", _counting_render)
+
+        report = approve_batch(
+            db_session, batch_id=batch_id, preview_hash=preview.preview_hash, actor_id=scene.user.id
+        )
+
+        assert report.created == 3
+        assert loads == [3]
+        assert sorted(renders) == sorted(scene.context_ids)
 
     def test_batch_id_marks_only_jobs_of_the_current_pairs(self, db_session, factories):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))

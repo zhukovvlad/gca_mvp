@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     SEMANTIC_MAX_TOKENS: int = 600
     SEMANTIC_CONCURRENCY: int = 4
     SEMANTIC_CALL_TIMEOUT_S: int = 120
+    # Сколько ждать текущие вызовы при остановке приложения: короче таймаута вызова,
+    # чтобы перезапуск (и каждый `--reload`) не висел до 120 с на зависшем запросе.
+    SEMANTIC_SHUTDOWN_WAIT_S: int = 15
     SEMANTIC_MAX_ATTEMPTS: int = 3
     SEMANTIC_PRICE_INPUT_PER_M: Decimal = Decimal("2")
     SEMANTIC_PRICE_CACHE_WRITE_PER_M: Decimal = Decimal("2.5")

@@ -353,6 +353,78 @@ class TestListQueue:
 
         assert [row["suggestion_id"] for row in _rows(payload)] == [visible.id]
 
+    def test_unresolved_suggestion_on_a_superseded_fingerprint_is_not_listed(
+        self, admin_client, db_session, factories
+    ):
+        """Опубликованное нерешённое предложение, отпечаток запроса которого с тех
+        пор изменился, решить нельзя: в очереди его нет, а соседнее на текущем
+        отпечатке — на месте."""
+        scene = _scene(db_session, factories, admin_client.user, titles=("Текущее", "Прежнее"))
+        current_ctx, old_ctx = scene.context_ids
+        current = _published(db_session, current_ctx, family_id=scene.family.id)
+        _published(db_session, old_ctx, family_id=scene.family.id, superseded=True)
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "list"}).json()
+
+        assert [row["suggestion_id"] for row in _rows(payload)] == [current.id]
+        assert [g["total"] for g in payload["groups"]] == [1]
+
+    def test_unresolved_suggestion_is_dropped_when_the_family_list_changed_after_it(
+        self, admin_client, db_session, factories
+    ):
+        """Тот же случай от причины: после ответа модели в единице появилась ещё
+        одна активная семья — список кандидатов, а с ним и запрос, стал другим."""
+        scene = _scene(db_session, factories, admin_client.user)
+        _published(db_session, scene.context_ids[0], family_id=scene.family.id)
+        assert len(_rows(admin_client.get(f"{BASE}/suggestions").json())) == 1
+        _active_family(
+            db_session, title="Новая активная", unit_name="M2", actor_id=admin_client.user.id
+        )
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "list"}).json()
+
+        assert payload["groups"] == []
+
+    def test_unresolved_suggestion_of_a_context_that_is_no_longer_applicable_is_not_listed(
+        self, admin_client, db_session, factories
+    ):
+        """Отпечаток запроса у такого контекста остался прежним, отличается только
+        применимость (контекст признан неприменимым): в очереди предложения нет."""
+        scene = _scene(db_session, factories, admin_client.user, titles=("Свободный", "Занятый"))
+        free_ctx, taken_ctx = scene.context_ids
+        free = _published(db_session, free_ctx, family_id=scene.family.id)
+        _published(db_session, taken_ctx, family_id=scene.family.id)
+        db_session.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id == taken_ctx)
+            .values(semantic_state="NOT_APPLICABLE")
+        )
+        db_session.expire_all()
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "list"}).json()
+
+        assert [row["suggestion_id"] for row in _rows(payload)] == [free.id]
+
+    def test_current_suggestions_of_two_units_are_both_listed(
+        self, admin_client, db_session, factories
+    ):
+        """Отпечаток сверяется по списку семей СВОЕЙ единицы: текущие предложения
+        двух единиц с разными списками семей оба на месте."""
+        scene = _scene(db_session, factories, admin_client.user, titles=("Пол А",))
+        pcs_unit = _unit_id(db_session, "PCS")
+        pcs_family = _active_family(
+            db_session, title="Семья штук", unit_name="PCS", actor_id=admin_client.user.id
+        )
+        pcs_ctx = _simple_context(
+            db_session, factories, scene.proposal, unit_id=pcs_unit, title="Штука А"
+        )
+        m2 = _published(db_session, scene.context_ids[0], family_id=scene.family.id)
+        pcs = _published(db_session, pcs_ctx, family_id=pcs_family.id)
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "list"}).json()
+
+        assert sorted(row["suggestion_id"] for row in _rows(payload)) == sorted([m2.id, pcs.id])
+
     def test_unit_filter_keeps_only_contexts_of_that_unit(
         self, admin_client, db_session, factories
     ):
@@ -802,6 +874,50 @@ class TestNewQueue:
 
         assert [i["suggestion_id"] for i in payload["items"]] == [visible.id]
 
+    def test_unresolved_new_answer_on_a_superseded_fingerprint_is_not_shown(
+        self, admin_client, db_session, factories
+    ):
+        scene = _scene(db_session, factories, admin_client.user, titles=("Текущая", "Прежняя"))
+        current_ctx, old_ctx = scene.context_ids
+        current = _published(db_session, current_ctx, family_id=None)
+        _published(db_session, old_ctx, family_id=None, superseded=True)
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert [i["suggestion_id"] for i in payload["items"]] == [current.id]
+
+    def test_unresolved_new_answer_is_dropped_when_the_family_list_changed_after_it(
+        self, admin_client, db_session, factories
+    ):
+        scene = _scene(db_session, factories, admin_client.user)
+        _published(db_session, scene.context_ids[0], family_id=None)
+        assert len(admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()["items"]) == 1
+        _active_family(
+            db_session, title="Новая активная", unit_name="M2", actor_id=admin_client.user.id
+        )
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert payload["items"] == []
+
+    def test_unresolved_new_answer_of_a_context_that_is_no_longer_applicable_is_not_shown(
+        self, admin_client, db_session, factories
+    ):
+        scene = _scene(db_session, factories, admin_client.user, titles=("Свободная", "Занятая"))
+        free_ctx, taken_ctx = scene.context_ids
+        free = _published(db_session, free_ctx, family_id=None)
+        _published(db_session, taken_ctx, family_id=None)
+        db_session.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id == taken_ctx)
+            .values(semantic_state="NOT_APPLICABLE")
+        )
+        db_session.expire_all()
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert [i["suggestion_id"] for i in payload["items"]] == [free.id]
+
     def test_multi_owner_flag_and_filter_cover_answers_and_rows_without_families(
         self, admin_client, db_session, factories
     ):
@@ -1208,6 +1324,128 @@ class TestStatus:
 
         assert payload["stale_units"] == []
         assert payload["config_stale"] == {"stale_count": 1, "prompt_version_current": 1}
+
+    def test_only_the_unit_whose_family_list_changed_is_stale(
+        self, admin_client, db_session, factories
+    ):
+        """Единиц несколько, устарела одна: остальные не попадают в ответ, а
+        конфигурация другой единицы считается отдельно."""
+        actor = admin_client.user.id
+        scene = _scene(db_session, factories, admin_client.user, titles=("Пол А", "Пол Б"))
+        pcs_unit = _unit_id(db_session, "PCS")
+        _active_family(db_session, title="Семья штук", unit_name="PCS", actor_id=actor)
+        pcs_contexts = [
+            _simple_context(db_session, factories, scene.proposal, unit_id=pcs_unit, title=t)
+            for t in ("Штука А", "Штука Б", "Штука В")
+        ]
+        for ctx in [*scene.context_ids, *pcs_contexts]:
+            _make_job(db_session, ctx, status="done")
+        _active_family(db_session, title="Ещё семья штук", unit_name="PCS", actor_id=actor)
+        # Единица м²: список семей прежний, а у одного контекста запрос другой.
+        db_session.execute(
+            sa.update(SemanticJob)
+            .where(SemanticJob.context_id == scene.context_ids[0])
+            .values(request_hash="прежний-запрос")
+        )
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["stale_units"] == [
+            {"unit_id": pcs_unit, "unit_code": "PCS", "stale_count": 3}
+        ]
+        assert payload["config_stale"] == {"stale_count": 1, "prompt_version_current": 1}
+
+    def test_two_units_with_current_jobs_are_both_current(
+        self, admin_client, db_session, factories
+    ):
+        """Отпечатки считаются по списку семей своей единицы: у двух единиц с
+        разными списками и текущими заданиями устаревшего нет."""
+        actor = admin_client.user.id
+        scene = _scene(db_session, factories, admin_client.user, titles=("Пол А", "Пол Б"))
+        pcs_unit = _unit_id(db_session, "PCS")
+        _active_family(db_session, title="Семья штук", unit_name="PCS", actor_id=actor)
+        pcs_contexts = [
+            _simple_context(db_session, factories, scene.proposal, unit_id=pcs_unit, title=t)
+            for t in ("Штука А", "Штука Б")
+        ]
+        for ctx in [*scene.context_ids, *pcs_contexts]:
+            _make_job(db_session, ctx, status="done")
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert (payload["stale_units"], payload["config_stale"]) == ([], None)
+
+    @pytest.mark.parametrize("contexts", [3, 12])
+    def test_status_answer_does_not_depend_on_how_many_contexts_share_the_unit(
+        self, admin_client, db_session, factories, contexts
+    ):
+        """Число устаревших единиц и контекстов — ровно по входу, сколько бы
+        контекстов ни делили единицу."""
+        scene = _scene(db_session, factories, admin_client.user, titles=("Первая",))
+        ids = list(scene.context_ids) + [
+            _simple_context(
+                db_session, factories, scene.proposal, unit_id=scene.unit_id, title=f"Строка {i}"
+            )
+            for i in range(contexts - 1)
+        ]
+        for ctx in ids:
+            _make_job(db_session, ctx, status="done")
+        _active_family(
+            db_session, title="Новая активная", unit_name="M2", actor_id=admin_client.user.id
+        )
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["stale_units"] == [
+            {"unit_id": scene.unit_id, "unit_code": "M2", "stale_count": contexts}
+        ]
+
+    def test_status_query_count_and_renders_do_not_grow_with_context_count(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Число запросов и полных рендеров списка семей не растёт с числом
+        контекстов: рендер один на единицу (их здесь две)."""
+        import crud.semantic_queue as queue_crud
+
+        renders = []
+        real_render = queue_crud.render_context_request
+
+        def _counting_render(material, *, settings):
+            renders.append(material.context_id)
+            return real_render(material, settings=settings)
+
+        monkeypatch.setattr(queue_crud, "render_context_request", _counting_render)
+        scene = _scene(db_session, factories, admin_client.user, titles=("Первая",))
+        pcs_unit = _unit_id(db_session, "PCS")
+        _active_family(db_session, title="Семья штук", unit_name="PCS", actor_id=admin_client.user.id)
+
+        def _add(count, tag):
+            for i in range(count):
+                for unit_id in (scene.unit_id, pcs_unit):
+                    ctx = _simple_context(
+                        db_session, factories, scene.proposal, unit_id=unit_id,
+                        title=f"{tag} {unit_id} {i}",
+                    )
+                    _make_job(db_session, ctx, status="done")
+
+        _add(10, "Малая")
+        admin_client.get(f"{BASE}/status")  # прогрев: загрузка пользователя сессией
+        renders.clear()
+        with _capturing_sql(db_session) as small:
+            r_small = admin_client.get(f"{BASE}/status")
+        renders_small = len(renders)
+        _add(50, "Большая")
+        renders.clear()
+        with _capturing_sql(db_session) as large:
+            r_large = admin_client.get(f"{BASE}/status")
+        renders_large = len(renders)
+
+        assert (r_small.json()["stale_units"], r_large.json()["stale_units"]) == (
+            [{"unit_id": scene.unit_id, "unit_code": "M2", "stale_count": 1}],
+            [{"unit_id": scene.unit_id, "unit_code": "M2", "stale_count": 1}],
+        )
+        assert len(small) == len(large), (len(small), len(large))
+        assert (renders_small, renders_large) == (2, 2)
 
 
 # ---------------------------------------------------------------------------
