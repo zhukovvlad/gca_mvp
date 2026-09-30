@@ -7,15 +7,18 @@ import { ContextsTab } from "./ContextsTab";
 import { FamiliesTab } from "./FamiliesTab";
 import { SOURCE_EXPLANATION } from "./labels";
 import { SourceChip } from "./SourceChip";
+import { SuggestionsTab } from "./SuggestionsTab";
 
 /**
  * Экран «Семьи и контексты» (спека `2026-09-25-families-screen-design.md`
  * §2.1), маршрут `/families`, право `admin` — обёрнут `RequireAdmin` в
  * `App.tsx`, тем же входом, что и `/standards`.
  *
- * Две вкладки: «Семьи» (жизненный цикл семей работ, панель правки справа от
- * списка) и «Контексты» (очередь, поиск и карточка выбранного контекста
- * панелью справа от списка, той же вкладкой — переключаться некуда).
+ * Три вкладки: «Семьи» (жизненный цикл семей работ, панель правки справа от
+ * списка), «Контексты» (очередь, поиск и карточка выбранного контекста
+ * панелью справа от списка, той же вкладкой — переключаться некуда) и
+ * «Предложения» (ответы модели о семье контекстов и очередь заданий, спека
+ * `2026-09-28-semantic-suggestions-design.md` §2.12).
  * Вкладка «Операции» фичи 1 упразднена (спека §2.1): карточка встала рядом со
  * списком внутри {@link ContextsTab}, а не отдельной областью экрана.
  */
@@ -44,6 +47,9 @@ export default function FamiliesPage() {
               <TabsTrigger value="contexts" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
                 Контексты
               </TabsTrigger>
+              <TabsTrigger value="suggestions" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
+                Предложения
+              </TabsTrigger>
             </TabsList>
           }
         />
@@ -68,6 +74,10 @@ export default function FamiliesPage() {
 
         <TabsContent value="contexts" className="mt-6">
           <ContextsTab />
+        </TabsContent>
+
+        <TabsContent value="suggestions" className="mt-6">
+          <SuggestionsTab />
         </TabsContent>
       </Tabs>
     </div>

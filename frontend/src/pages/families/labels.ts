@@ -1,10 +1,12 @@
 import type {
+  BatchSource,
   ComparabilityReason,
   DecisionSource,
   FamilySource,
   NameRole,
   SemanticKind,
   SemanticState,
+  SuggestionBand,
   WorkFamilyStatus,
 } from "@/types/domain";
 
@@ -209,4 +211,24 @@ export const ROUTING_RULE_KIND_LABEL: Record<RoutingRuleKind, string> = {
   nearest_chapter_equals: "ближайший раздел равен",
   chapter_chain_contains: "раздел встречается в цепочке",
   chapter_level_equals: "раздел на уровне равен",
+};
+
+/**
+ * Полоса уверенности группы очереди «Семья из списка» (спека
+ * semantic-suggestions §2.12): границы те же, что у `band_of` бэкенда
+ * (`crud/semantic_queue.py`) — 0,9 входит в верхнюю полосу, 0,7 в среднюю.
+ */
+export const BAND_LABEL: Record<SuggestionBand, string> = {
+  high: "≥ 0,9",
+  mid: "0,7–0,9",
+  low: "< 0,7",
+};
+
+/** Источник удержанной пачки для плашки шапки «Удержано: …». */
+export const BATCH_SOURCE_LABEL: Record<BatchSource, string> = {
+  import: "Импорт сметы",
+  operation: "Операция над контекстами",
+  mass: "Массовая постановка",
+  unit_reask: "Перезапрос единицы",
+  config_reask: "Перезапрос по конфигурации",
 };

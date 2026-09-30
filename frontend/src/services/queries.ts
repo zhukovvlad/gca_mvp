@@ -16,6 +16,7 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
+import { pluralRu } from "@/pages/families/labels";
 import { jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -39,7 +40,9 @@ import type {
   Decimal,
   ManualKind,
   MoveMembersInput,
+  PreviewTarget,
   StaleGroupTransferInput,
+  SuggestionsParams,
   ObjectInput,
   RateClassInput,
   RateStandardInput,
@@ -1612,5 +1615,175 @@ export function useTransferStaleGroup() {
       invalidateContext(qc, contextId);
     },
     onError: toastApiError,
+  });
+}
+
+// ========== Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12) ==========
+
+export function useSuggestions(params: SuggestionsParams) {
+  return useQuery({
+    queryKey: qk.semanticQueue.suggestions(params),
+    queryFn: () => semanticApi.listSuggestions(params),
+  });
+}
+
+export function useQueueStatus() {
+  return useQuery({
+    queryKey: qk.semanticQueue.status,
+    queryFn: () => semanticApi.queueStatus(),
+  });
+}
+
+/** Очередь и шапка: любое решение над предложениями или заданиями меняет обе. */
+function invalidateQueue(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.all });
+}
+
+/**
+ * Назначение семьи из предложения меняет и карточку контекста (`family_title`,
+ * состояние), поэтому вместе с очередью инвалидируется очередь контекстов.
+ */
+function invalidateAfterAssignment(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueue(qc);
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+  qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+}
+
+/** Отказ решения над очередью: экран устарел — перечитать, потом показать причину. */
+function onQueueDecisionError(qc: ReturnType<typeof useQueryClient>) {
+  return (error: unknown) => {
+    invalidateQueue(qc);
+    toastApiError(error);
+  };
+}
+
+export function useConfirmSuggestions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids }: { ids: number[]; familyTitle: string; leftCount: number }) =>
+      semanticApi.confirmSuggestions(ids),
+    onSuccess: (result, { familyTitle, leftCount }) => {
+      invalidateAfterAssignment(qc);
+      if (result.confirmed.length > 0) {
+        const n = result.confirmed.length;
+        toast.success(
+          `${n} ${pluralRu(n, "контекст", "контекста", "контекстов")} ${pluralRu(n, "получил", "получили", "получили")} семью «${familyTitle}».`,
+          {
+            description:
+              leftCount > 0
+                ? `Снятые (${leftCount}) остались в очереди: назначьте им другую семью или отклоните.`
+                : undefined,
+          }
+        );
+      }
+      if (result.skipped.length > 0) {
+        toast.warning(
+          `Пропущено предложений: ${result.skipped.length} — они изменились, остались в очереди`
+        );
+      }
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+export function useRejectSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: number) => semanticApi.rejectSuggestion(suggestionId),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Предложение отклонено. Контекст остаётся без семьи.");
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+export function useOtherFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      suggestionId,
+      familyId,
+    }: {
+      suggestionId: number;
+      familyId: number;
+      familyTitle: string;
+    }) => semanticApi.otherFamily(suggestionId, familyId),
+    onSuccess: (_, { familyTitle }) => {
+      invalidateAfterAssignment(qc);
+      toast.success(`Назначена семья «${familyTitle}».`);
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+/** Preview трёх действий, ставящих задания: перезапрос единицы, по конфигурации, удержанная пачка. */
+export function useReaskPreview() {
+  return useMutation({
+    mutationFn: (target: PreviewTarget) => {
+      switch (target.kind) {
+        case "unit":
+          return semanticApi.unitReaskPreview(target.unitId);
+        case "config":
+          return semanticApi.reaskAllPreview();
+        case "batch":
+          return semanticApi.batchPreview(target.batchId);
+      }
+    },
+  });
+}
+
+/**
+ * Подтверждение по `preview_hash` из показанного preview. `409 preview_changed`
+ * не показывается тостом — его обрабатывает диалог (новая оценка на экране).
+ */
+export function useReaskConfirm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ target, previewHash }: { target: PreviewTarget; previewHash: string }) => {
+      switch (target.kind) {
+        case "unit":
+          return semanticApi.unitReask(target.unitId, previewHash);
+        case "config":
+          return semanticApi.reaskAll(previewHash);
+        case "batch":
+          return semanticApi.approveBatch(target.batchId, previewHash);
+      }
+    },
+    onSuccess: (_, { target }) => {
+      invalidateQueue(qc);
+      toast.success(
+        target.kind === "batch" ? "Пачка поставлена в очередь." : "Задания поставлены в очередь."
+      );
+    },
+    onError: (error) => {
+      if (apiErrorCode(error) === "preview_changed") return;
+      invalidateQueue(qc);
+      toastApiError(error);
+    },
+  });
+}
+
+export function useDiscardBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: number) => semanticApi.discardBatch(batchId),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Пачка отброшена. Контексты можно поставить позже кнопкой единицы.");
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+export function useResumeWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.resumeWorker(),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Захват заданий возобновлён");
+    },
+    onError: onQueueDecisionError(qc),
   });
 }

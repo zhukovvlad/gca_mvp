@@ -47,10 +47,13 @@ import type {
   ImportJobStatus,
   MemberPath,
   ProjectPassport,
+  QueueStatus,
+  ReaskPreview,
   RoundImportJob,
   SemanticEventEntry,
   StaleGroup,
   StaleGroupTransferResult,
+  SuggestionGroup,
   TenderCard,
   WorkCategoryPathEntry,
   WorkFamily,
@@ -450,6 +453,34 @@ interface HandlerState {
   groupMembersRequests: string[];
   /** Query-строки `GET .../member-ids` по порядку — какие разделы галочка группы реально запросила (ревью задачи 9). */
   groupMemberIdsRequests: string[];
+
+  /**
+   * Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md
+   * §2.12, `backend/routers/semantic.py`). `suggestionGroups` — мутируемая
+   * очередь «Семья из списка»: хендлеры решений убирают из неё строки, как
+   * сервер (подтверждённая, отклонённая, назначенная другой семье строка
+   * уходит из очереди, опустевшая группа исчезает).
+   */
+  suggestionGroups: SuggestionGroup[];
+  queueStatus: QueueStatus;
+  /** Строки запроса (`?queue=list&unit=…`) каждого `GET /suggestions`. */
+  suggestionsRequests: string[];
+  confirmSuggestionsRequests: number[][];
+  /** Идентификаторы, которые сервер «пропускает» при подтверждении (перепроверка не прошла). */
+  confirmSkippedIds: number[];
+  rejectSuggestionRequests: number[];
+  otherFamilyRequests: Array<{ suggestionId: number; familyId: number }>;
+  /** Каждый preview: `unit:<id|null>` / `config` / `batch:<id>`. */
+  previewRequests: string[];
+  /** Число выданных preview — из него строятся `preview_hash` и резерв (второй preview отличается от первого). */
+  previewCounter: number;
+  previewContextCount: number;
+  /** Подтверждения перезапросов и пачек: путь и тело. */
+  reaskConfirmRequests: Array<{ path: string; body: Record<string, unknown> }>;
+  /** Сколько ближайших подтверждений сервер отвергает `409 preview_changed`. */
+  reaskConflictsLeft: number;
+  discardBatchRequests: number[];
+  resumeWorkerCalls: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -535,6 +566,83 @@ const UNIT_SYMBOL_BY_CODE: Record<string, string> = {
  * входят в 42: они не `draft`, и их присутствие в фикстуре доказывает, что
  * счёт «42» на экране — результат ФИЛЬТРА по статусу, а не длины массива.
  */
+/**
+ * Очередь «Семья из списка» (`backend/crud/semantic_queue.py::SuggestionGroup`):
+ * три группы — две пары «семья + полоса» ОДНОЙ семьи («Геотекстиль»: `high` и
+ * `mid`) и группа полосы `low`. Уверенность и пояснение — строки, как их отдаёт
+ * сервер. Единицы групп — КОДЫ (`M2`), экран переводит их в символы.
+ */
+function suggestionRowFixture(
+  id: number,
+  title: string,
+  confidence: string,
+  reason: string,
+  extra: Partial<SuggestionGroup["rows"][number]> = {}
+): SuggestionGroup["rows"][number] {
+  return {
+    suggestion_id: id,
+    context_id: 3000 + id,
+    title,
+    unit_code: "M2",
+    article: "12.1 Благоустройство",
+    path: ["Благоустройство", "Земляные работы", "Мульчирование"],
+    confidence,
+    reason,
+    multi_owner: false,
+    previously_rejected: null,
+    ...extra,
+  };
+}
+
+function initialSuggestionGroups(): SuggestionGroup[] {
+  return [
+    {
+      family_id: 501,
+      family_title: "Геотекстиль",
+      unit_code: "M2",
+      band: "high",
+      total: 3,
+      rows: [
+        suggestionRowFixture(1, "Геотекстиль «Дорнит-200»", "0.98", "Геотекстиль с плотностью в м² — ровно семья «Геотекстиль».", { multi_owner: true }),
+        suggestionRowFixture(2, "Геотекстиль иглопробивной ТЕХНОНИКОЛЬ 400 г/м²", "0.97", "Геотекстиль в составе пирога; строка описывает только его.", {
+          previously_rejected: { family_id: 501, family_title: "Геотекстиль", decided_at: "2026-09-20T10:00:00+00:00" },
+        }),
+        suggestionRowFixture(3, "Геомембрана ПВД 1,5 мм", "0.91", "Рулонный материал в м², ближе всего к геотекстилю."),
+      ],
+    },
+    {
+      family_id: 501,
+      family_title: "Геотекстиль",
+      unit_code: "M2",
+      band: "mid",
+      total: 1,
+      rows: [suggestionRowFixture(4, "Полотно нетканое дорожное", "0.80", "Нетканое полотно, но назначение не названо.")],
+    },
+    {
+      family_id: 43,
+      family_title: "Кровельные работы",
+      unit_code: "M3",
+      band: "low",
+      total: 2,
+      rows: [
+        suggestionRowFixture(5, "Шпатлёвка в 2 слоя", "0.55", "Шпатлёвка — подготовительный слой.", { unit_code: "M3", multi_owner: true }),
+        suggestionRowFixture(6, "Обои с рисунком", "0.60", "Отделка по площади.", { unit_code: "M3" }),
+      ],
+    },
+  ];
+}
+
+function initialQueueStatus(): QueueStatus {
+  return {
+    spent_24h_usd: "4.2",
+    daily_budget_usd: "30",
+    claim_paused: null,
+    held_batches: [],
+    stale_units: [],
+    config_stale: null,
+  };
+}
+
 function initialWorkFamilies(): WorkFamily[] {
   const drafts: WorkFamily[] = Array.from({ length: 42 }, (_, i) => {
     const id = i + 1;
@@ -1420,7 +1528,54 @@ export const handlerState: HandlerState = {
   contextCardRequests: 0,
   groupMembersRequests: [],
   groupMemberIdsRequests: [],
+  suggestionGroups: initialSuggestionGroups(),
+  queueStatus: initialQueueStatus(),
+  suggestionsRequests: [],
+  confirmSuggestionsRequests: [],
+  confirmSkippedIds: [],
+  rejectSuggestionRequests: [],
+  otherFamilyRequests: [],
+  previewRequests: [],
+  previewCounter: 0,
+  previewContextCount: 214,
+  reaskConfirmRequests: [],
+  reaskConflictsLeft: 0,
+  discardBatchRequests: [],
+  resumeWorkerCalls: 0,
 };
+
+/** Следующий preview: `preview_hash` и резерв меняются с каждым запросом — как при движении токенных наблюдений. */
+function nextPreview(): ReaskPreview {
+  handlerState.previewCounter += 1;
+  const n = handlerState.previewCounter;
+  return {
+    context_count: handlerState.previewContextCount,
+    reserve_usd: `${n}.90`,
+    expected_cached_usd: "0.34",
+    preview_hash: `preview-hash-${n}`,
+  };
+}
+
+function reaskConfirmResponse(path: string, body: Record<string, unknown>) {
+  handlerState.reaskConfirmRequests.push({ path, body });
+  if (handlerState.reaskConflictsLeft > 0) {
+    handlerState.reaskConflictsLeft -= 1;
+    return HttpResponse.json(
+      { detail: { code: "preview_changed", message: "Оценка изменилась, откройте preview заново." } },
+      { status: 409 }
+    );
+  }
+  return HttpResponse.json({ enqueued: 1 });
+}
+
+/** Убирает строки очереди по предикату; опустевшая группа исчезает — как на сервере. */
+function removeSuggestionRows(shouldRemove: (suggestionId: number) => boolean) {
+  for (const g of handlerState.suggestionGroups) {
+    g.rows = g.rows.filter((r) => !shouldRemove(r.suggestion_id));
+    g.total = g.rows.length;
+  }
+  handlerState.suggestionGroups = handlerState.suggestionGroups.filter((g) => g.rows.length > 0);
+}
 
 export function resetHandlerState() {
   handlerState.jobStatuses = ["done"];
@@ -1469,6 +1624,20 @@ export function resetHandlerState() {
   handlerState.contextCardRequests = 0;
   handlerState.groupMembersRequests = [];
   handlerState.groupMemberIdsRequests = [];
+  handlerState.suggestionGroups = initialSuggestionGroups();
+  handlerState.queueStatus = initialQueueStatus();
+  handlerState.suggestionsRequests = [];
+  handlerState.confirmSuggestionsRequests = [];
+  handlerState.confirmSkippedIds = [];
+  handlerState.rejectSuggestionRequests = [];
+  handlerState.otherFamilyRequests = [];
+  handlerState.previewRequests = [];
+  handlerState.previewCounter = 0;
+  handlerState.previewContextCount = 214;
+  handlerState.reaskConfirmRequests = [];
+  handlerState.reaskConflictsLeft = 0;
+  handlerState.discardBatchRequests = [];
+  handlerState.resumeWorkerCalls = 0;
 }
 
 function page<T>(items: T[]) {
@@ -3339,5 +3508,98 @@ export const handlers = [
       moved: staleInGroup.length,
       refused: 0,
     });
+  }),
+
+  // ---------------------------------------------------------------------
+  //  Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md
+  //  §2.12): очередь, шапка, решения, preview и подтверждения.
+  // ---------------------------------------------------------------------
+
+  http.get("/api/v1/semantic/suggestions", ({ request }) => {
+    const url = new URL(request.url);
+    handlerState.suggestionsRequests.push(url.search);
+    const unit = url.searchParams.get("unit");
+    const band = url.searchParams.get("band");
+    const multiOwner = url.searchParams.get("multi_owner") === "true";
+    const codeById: Record<string, string> = { "1": "TON", "3": "M3", "5": "M2" };
+    const groups = handlerState.suggestionGroups
+      .filter((g) => {
+        if (unit === "none") return g.unit_code === null;
+        if (unit) return g.unit_code === codeById[unit];
+        return true;
+      })
+      .filter((g) => !band || g.band === band)
+      .map((g) => {
+        const rows = multiOwner ? g.rows.filter((r) => r.multi_owner) : g.rows;
+        return { ...g, rows, total: rows.length };
+      })
+      .filter((g) => g.rows.length > 0);
+    return HttpResponse.json({ queue: url.searchParams.get("queue") ?? "list", groups, items: [] });
+  }),
+
+  http.get("/api/v1/semantic/status", () => HttpResponse.json(handlerState.queueStatus)),
+
+  http.post("/api/v1/semantic/suggestions/confirm", async ({ request }) => {
+    const body = (await request.json()) as { suggestion_ids: number[] };
+    handlerState.confirmSuggestionsRequests.push(body.suggestion_ids);
+    const skipped = body.suggestion_ids.filter((id) => handlerState.confirmSkippedIds.includes(id));
+    const confirmed = body.suggestion_ids.filter((id) => !skipped.includes(id));
+    removeSuggestionRows((id) => confirmed.includes(id));
+    return HttpResponse.json({ confirmed, skipped });
+  }),
+
+  http.post("/api/v1/semantic/suggestions/:id/reject", ({ params }) => {
+    const id = Number(params.id);
+    handlerState.rejectSuggestionRequests.push(id);
+    removeSuggestionRows((rowId) => rowId === id);
+    return HttpResponse.json({ suggestion_id: id, decision: "rejected" });
+  }),
+
+  http.post("/api/v1/semantic/suggestions/:id/other-family", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { family_id: number };
+    handlerState.otherFamilyRequests.push({ suggestionId: id, familyId: body.family_id });
+    removeSuggestionRows((rowId) => rowId === id);
+    return HttpResponse.json({ suggestion_id: id, decision: "other_family", family_id: body.family_id });
+  }),
+
+  http.post("/api/v1/semantic/unit-reask/preview", async ({ request }) => {
+    const body = (await request.json()) as { unit_id: number | null };
+    handlerState.previewRequests.push(`unit:${body.unit_id}`);
+    return HttpResponse.json(nextPreview());
+  }),
+  http.post("/api/v1/semantic/reask-all/preview", () => {
+    handlerState.previewRequests.push("config");
+    return HttpResponse.json(nextPreview());
+  }),
+  http.post("/api/v1/semantic/batches/:id/preview", ({ params }) => {
+    handlerState.previewRequests.push(`batch:${params.id}`);
+    return HttpResponse.json(nextPreview());
+  }),
+
+  http.post("/api/v1/semantic/unit-reask", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return reaskConfirmResponse("/unit-reask", body);
+  }),
+  http.post("/api/v1/semantic/reask-all", async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return reaskConfirmResponse("/reask-all", body);
+  }),
+  http.post("/api/v1/semantic/batches/:id/approve", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    return reaskConfirmResponse(`/batches/${params.id}/approve`, body);
+  }),
+  http.post("/api/v1/semantic/batches/:id/discard", ({ params }) => {
+    const id = Number(params.id);
+    handlerState.discardBatchRequests.push(id);
+    handlerState.queueStatus.held_batches = handlerState.queueStatus.held_batches.filter(
+      (b) => b.batch_id !== id
+    );
+    return HttpResponse.json({ batch_id: id, status: "discarded" });
+  }),
+  http.post("/api/v1/semantic/worker/resume", () => {
+    handlerState.resumeWorkerCalls += 1;
+    handlerState.queueStatus.claim_paused = null;
+    return HttpResponse.json({ claim_paused: false });
   }),
 ];

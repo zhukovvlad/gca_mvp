@@ -2518,3 +2518,119 @@ export interface AcceptTargetDecisionInput {
 export interface AcceptTargetDecisionResult {
   updated_members: number;
 }
+
+// ---------------------------------------------------------------------------
+//  Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12,
+//  `backend/routers/semantic.py`, `backend/crud/semantic_queue.py`). Деньги и
+//  уверенность приходят СТРОКАМИ — на экране они форматируются строковыми
+//  функциями, без `Number`/`parseFloat` (AGENTS.md §3).
+// ---------------------------------------------------------------------------
+
+export type SuggestionBand = "high" | "mid" | "low";
+
+export interface RejectedMark {
+  family_id: number;
+  family_title: string;
+  decided_at: string;
+}
+
+export interface SuggestionRow {
+  suggestion_id: number;
+  context_id: number;
+  title: string;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  confidence: string;
+  reason: string;
+  multi_owner: boolean;
+  previously_rejected: RejectedMark | null;
+}
+
+/** Группа очереди «Семья из списка»: пара «семья + полоса», у группы ровно одна полоса. */
+export interface SuggestionGroup {
+  family_id: number;
+  family_title: string;
+  unit_code: string | null;
+  band: SuggestionBand;
+  rows: SuggestionRow[];
+  total: number;
+}
+
+export interface SuggestionQueue {
+  queue: "list" | "new";
+  groups: SuggestionGroup[];
+  items: unknown[];
+}
+
+/** Фильтр единицы очереди: `undefined` — все, `"none"` — контексты без единицы, иначе id единицы. */
+export type SuggestionUnitFilter = number | "none";
+
+export interface SuggestionsParams {
+  queue: "list" | "new";
+  unit?: SuggestionUnitFilter;
+  band?: SuggestionBand;
+  multi_owner?: boolean;
+}
+
+export interface PausedInfo {
+  reason: string;
+  attempt_id: number;
+  paused_at: string;
+}
+
+/** Откуда взялась удержанная пачка (`ReconcileBatchSource`, спека semantic-suggestions §2.4). */
+export type BatchSource = "import" | "operation" | "mass" | "unit_reask" | "config_reask";
+
+export interface HeldBatchInfo {
+  batch_id: number;
+  source: BatchSource;
+  import_job_id: number | null;
+  unit_id: number | null;
+  contexts_count: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  created_at: string;
+}
+
+export interface StaleUnitInfo {
+  unit_id: number | null;
+  unit_code: string | null;
+  stale_count: number;
+}
+
+export interface ConfigStaleInfo {
+  stale_count: number;
+  prompt_version_current: number;
+}
+
+export interface QueueStatus {
+  spent_24h_usd: string;
+  daily_budget_usd: string;
+  claim_paused: PausedInfo | null;
+  held_batches: HeldBatchInfo[];
+  stale_units: StaleUnitInfo[];
+  config_stale: ConfigStaleInfo | null;
+}
+
+export interface ConfirmSuggestionsResult {
+  confirmed: number[];
+  skipped: number[];
+}
+
+/** `POST …/preview` (перезапрос единицы, по конфигурации, удержанная пачка). */
+export interface ReaskPreview {
+  context_count: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  preview_hash: string;
+}
+
+/** Отчёт сверки заданий (`dataclasses.asdict(ReconcileReport)`) — экран показывает только успех. */
+export type ReconcileResult = Record<string, unknown>;
+
+/** Что подтверждает {@link ReaskPreview}: три разных действия над одним диалогом. */
+export type PreviewTarget =
+  | { kind: "unit"; unitId: number | null; unitCode: string | null }
+  | { kind: "config" }
+  | { kind: "batch"; batchId: number; source: BatchSource };
