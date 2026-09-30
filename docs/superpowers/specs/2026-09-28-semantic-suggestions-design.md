@@ -809,7 +809,7 @@ claim_paused = true` с причиной и попыткой; захват ст�
 
 | Метод | Путь | Что |
 |---|---|---|
-| GET | `/suggestions?queue=list|new&unit=&band=&multi_owner=` | очередь, для `list` — группами |
+| GET | `/suggestions?queue=list|new&unit=&band=&multi_owner=` | очередь, для `list` — группами «семья + полоса»; `unit` — id единицы или `none` (контексты без единицы), без параметра — все |
 | POST | `/suggestions/confirm` | подтвердить набор (`suggestion_ids`) |
 | POST | `/suggestions/{id}/reject` | отклонить |
 | POST | `/suggestions/{id}/other-family` | назначить выбранную семью |
@@ -821,7 +821,7 @@ claim_paused = true` с причиной и попыткой; захват ст�
 | GET | `/status` | расход, остановка, пачки, устаревшие единицы, конфигурация |
 | POST | `/unit-reask/preview`, `/unit-reask` | перезапрос единицы |
 | POST | `/reask-all/preview`, `/reask-all` | перезапрос по конфигурации |
-| POST | `/batches/{id}/approve`, `/batches/{id}/discard` | удержанная пачка |
+| POST | `/batches/{id}/preview`, `/batches/{id}/approve`, `/batches/{id}/discard` | удержанная пачка: preview по текущим отпечаткам даёт `preview_hash` для «Поставить…» |
 | POST | `/worker/resume` | снять остановку захвата |
 
 **Единица адресуется телом запроса, а не путём:** поле `unit_id` — `int` либо

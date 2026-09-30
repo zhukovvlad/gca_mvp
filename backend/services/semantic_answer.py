@@ -41,6 +41,13 @@ _FENCE_RE = re.compile(r"^```([^\n`]*)\n(.*)\n```$", re.DOTALL)
 
 _SYSTEM_NAME = "система"
 
+
+def is_system_name(name: str | None) -> bool:
+    """Имя «новой семьи» — маркер «СИСТЕМА» (без учёта регистра).
+    Колонки-признака у `family_suggestions` нет: признак читается по сохранённому
+    имени тем же сравнением, каким его выставляет разбор ответа."""
+    return name is not None and name.casefold() == _SYSTEM_NAME.casefold()
+
 ErrorCode = Literal[
     "not_json",
     "extra_text",
@@ -199,7 +206,7 @@ def _parse_name(value: object, raw_family_id: int) -> tuple[str | None, bool]:
     stripped = value.strip()
     if not stripped:
         raise AnswerSchemaError("empty_name", "new_family_name пуст при family_id = 0")
-    is_system = stripped.casefold() == _SYSTEM_NAME.casefold()
+    is_system = is_system_name(stripped)
     return stripped, is_system
 
 

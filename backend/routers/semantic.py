@@ -1,15 +1,20 @@
-"""API семантического контура — двадцать один маршрут под `/api/v1/semantic`,
-все под правом `admin` (спека `2026-09-22-catalog-families-design.md` §2.7,
-§2.10; план, задача 12; чтение членств группы — спека
-`2026-09-25-families-screen-design.md` §2.8 п. 3; пакетный перенос устаревшей
-группы — та же спека §2.6, §2.8 п. 4).
+"""API семантического контура — двадцать один маршрут семей и контекстов и
+девятнадцать маршрутов экрана «Предложения» под `/api/v1/semantic`, все под
+правом `admin` (спека `2026-09-22-catalog-families-design.md` §2.7, §2.10; план,
+задача 12; чтение членств группы — спека `2026-09-25-families-screen-design.md`
+§2.8 п. 3; пакетный перенос устаревшей группы — та же спека §2.6, §2.8 п. 4;
+очередь предложений, задания, шапка и решения `admin` — спека
+`2026-09-28-semantic-suggestions-design.md` §2.9, §2.10, §2.13).
 
 HTTP-слой поверх готовых сервисов задач 4, 6-10 (`services/context_routing.py`,
 `services/context_operations.py`, `services/work_families.py`) — они не
 переписываются. Здесь: тела запросов/ответов, права, **управление
 транзакцией** (образец — `routers/review.py`) и трансляция трёх доменных
 исключений сервисов в HTTP через `raise_domain_error`
-(`routers/domain_errors.py`).
+(`routers/domain_errors.py`). Решения `admin` над очередью предложений
+(`services/semantic_decisions.py`) идут через `_deciding`: к тем же исключениям
+добавляются `DecisionConflict` (`409` с кодом; у `family_exists` в теле есть
+`family_id` существующей семьи, возможно `null`) и `LookupError` (`404`).
 
 **Права.** Каждый маршрут несёт СВОЙ `Depends(require_admin)` (не общий
 роутерный `dependencies=`) — так проверка «`member` отвергнут на КАЖДОМ»
@@ -42,14 +47,16 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 import crud.semantic as crud_semantic
+import crud.semantic_queue as crud_semantic_queue
 from auth import require_admin
 from crud.common import DomainError
 from database import get_db
 from models import NameRole, SemanticKind, SemanticState, User
 from routers.domain_errors import raise_domain_error
-from services import context_operations, work_families
+from services import context_operations, semantic_decisions, work_families
 from services.context_operations import ContextOperationError
 from services.context_routing import RoutingError
+from services.semantic_decisions import DecisionConflict
 from services.work_families import WorkFamilyError
 
 router = APIRouter(prefix="/api/v1/semantic", tags=["semantic"])
@@ -187,6 +194,33 @@ def _mutating(db: Session):
         raise
     else:
         db.commit()
+
+
+#: Код `404` для `LookupError` сервисов решений («не найдено»).
+CODE_NOT_FOUND = "not_found"
+
+
+@contextlib.contextmanager
+def _deciding(db: Session):
+    """`_mutating` для решений над очередью предложений: дополнительно переводит
+    `DecisionConflict` в `409` с кодом (у `family_exists` — с `family_id`, он
+    может быть `null`) и `LookupError` (предложение, задание или пачка не
+    найдены) в `404`. Откат уже сделал внутренний `_mutating`."""
+    try:
+        with _mutating(db):
+            yield
+    except DecisionConflict as exc:
+        context = (
+            {"family_id": exc.family_id} if exc.code == semantic_decisions.CODE_FAMILY_EXISTS else {}
+        )
+        raise_domain_error(
+            DomainError(status.HTTP_409_CONFLICT, str(exc), code=exc.code, context=context)
+        )
+    except LookupError as exc:
+        if isinstance(exc, KeyError | IndexError):
+            # Это дефект кода, а не «предложение не найдено»: не маскировать под 404.
+            raise
+        raise_domain_error(DomainError(status.HTTP_404_NOT_FOUND, str(exc), code=CODE_NOT_FOUND))
 
 
 def _read_domain_errors(fn, /, *args, **kwargs):
@@ -748,3 +782,333 @@ def accept_target_decision_route(
             db, position_item_ids=body.position_item_ids, actor_id=admin.id
         )
     return {"updated_members": updated}
+
+
+# ---------------------------------------------------------------------------
+#  Экран «Предложения»: тела запросов
+# ---------------------------------------------------------------------------
+
+class ConfirmSuggestionsRequest(BaseModel):
+    suggestion_ids: list[int] = Field(min_length=1)
+
+
+class OtherFamilyRequest(BaseModel):
+    family_id: int
+
+
+class CreateFamilyFromSuggestionRequest(BaseModel):
+    title: str
+    definition: str
+
+
+class PrivacyMatchIn(BaseModel):
+    text: str
+    kind: str
+    where: str
+
+
+class PrivacyDecisionRequest(BaseModel):
+    """`shown_matches` — набор совпадений, который экран показал: сервис
+    сверяет его с текущей проверкой и при расхождении отвечает `409`."""
+
+    shown_matches: list[PrivacyMatchIn]
+
+
+class UnitPrivacyReleaseRequest(BaseModel):
+    """`unit_id` обязателен и допускает `null` («задания без единицы»): нет ключа —
+    `422`, чтобы «забыли передать» не читалось как «без единицы»."""
+
+    unit_id: int | None
+    shown_matches: list[PrivacyMatchIn]
+
+
+class UnitReaskPreviewRequest(BaseModel):
+    """`unit_id`: как в `UnitPrivacyReleaseRequest` — обязателен, `null` допустим."""
+
+    unit_id: int | None
+
+
+class UnitReaskRequest(BaseModel):
+    unit_id: int | None
+    preview_hash: str
+
+
+class PreviewHashRequest(BaseModel):
+    preview_hash: str
+
+
+def _shown(matches: list[PrivacyMatchIn]) -> list[dict]:
+    return [match.model_dump() for match in matches]
+
+
+def _serialize_preview(preview: semantic_decisions.Preview) -> dict:
+    return {
+        "context_count": preview.context_count,
+        "reserve_usd": str(preview.reserve_usd),
+        "expected_cached_usd": str(preview.expected_cached_usd),
+        "preview_hash": preview.preview_hash,
+    }
+
+
+def _serialize_reconcile(report) -> dict:
+    return dataclasses.asdict(report)
+
+
+# ---------------------------------------------------------------------------
+#  Экран «Предложения»: чтение
+# ---------------------------------------------------------------------------
+
+@router.get("/suggestions")
+def list_suggestions_route(
+    queue: Literal["list", "new"] = Query(default="list"),
+    unit: str | None = Query(default=None),
+    band: Literal["high", "mid", "low"] | None = Query(default=None),
+    multi_owner: bool = Query(default=False),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """`unit`: id единицы либо `none` (контексты без единицы); нет параметра — все
+    единицы; иное значение — `422`."""
+    unit_filter: crud_semantic_queue.UnitFilter
+    if unit is None:
+        unit_filter = None
+    elif unit == crud_semantic_queue.UNIT_NONE:
+        unit_filter = crud_semantic_queue.UNIT_NONE
+    elif unit.isascii() and unit.isdigit():
+        unit_filter = int(unit)
+    else:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "unit: ожидается id единицы или `none` (контексты без единицы).",
+        )
+    return crud_semantic_queue.list_suggestions(
+        db, queue=queue, unit_id=unit_filter, band=band, multi_owner_only=multi_owner
+    )
+
+
+@router.get("/jobs")
+def list_jobs_route(
+    status_: Literal["error", "privacy_hold"] = Query(alias="status"),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return crud_semantic_queue.list_jobs(db, status=status_)
+
+
+@router.get("/status")
+def queue_status_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return crud_semantic_queue.queue_status(db)
+
+
+# ---------------------------------------------------------------------------
+#  Экран «Предложения»: решения по предложению
+# ---------------------------------------------------------------------------
+
+@router.post("/suggestions/confirm")
+def confirm_suggestions_route(
+    body: ConfirmSuggestionsRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        report = semantic_decisions.confirm_suggestions(
+            db, suggestion_ids=body.suggestion_ids, actor_id=admin.id
+        )
+    return {"confirmed": report.confirmed, "skipped": report.skipped}
+
+
+@router.post("/suggestions/{suggestion_id}/reject")
+def reject_suggestion_route(
+    suggestion_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.reject_suggestion(db, suggestion_id=suggestion_id, actor_id=admin.id)
+    return {"suggestion_id": suggestion_id, "decision": "rejected"}
+
+
+@router.post("/suggestions/{suggestion_id}/other-family")
+def other_family_route(
+    suggestion_id: int,
+    body: OtherFamilyRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.assign_other_family(
+            db, suggestion_id=suggestion_id, family_id=body.family_id, actor_id=admin.id
+        )
+    return {"suggestion_id": suggestion_id, "decision": "other_family", "family_id": body.family_id}
+
+
+@router.post("/suggestions/{suggestion_id}/create-family")
+def create_family_from_suggestion_route(
+    suggestion_id: int,
+    body: CreateFamilyFromSuggestionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        try:
+            family_id = semantic_decisions.create_family_from_suggestion(
+                db, suggestion_id=suggestion_id, title=body.title,
+                definition=body.definition, actor_id=admin.id,
+            )
+        except ValueError as exc:
+            raise_domain_error(DomainError(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)))
+    return {"suggestion_id": suggestion_id, "decision": "family_created", "family_id": family_id}
+
+
+# ---------------------------------------------------------------------------
+#  Экран «Предложения»: задания
+# ---------------------------------------------------------------------------
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job_route(
+    job_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.retry_job(db, job_id=job_id, actor_id=admin.id)
+    return {"job_id": job_id, "status": "pending"}
+
+
+@router.post("/jobs/{job_id}/privacy-release")
+def privacy_release_route(
+    job_id: int,
+    body: PrivacyDecisionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.release_privacy_hold(
+            db, job_id=job_id, shown_matches=_shown(body.shown_matches), actor_id=admin.id
+        )
+    return {"job_id": job_id, "status": "pending"}
+
+
+@router.post("/jobs/{job_id}/privacy-decline")
+def privacy_decline_route(
+    job_id: int,
+    body: PrivacyDecisionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.decline_privacy_hold(
+            db, job_id=job_id, shown_matches=_shown(body.shown_matches), actor_id=admin.id
+        )
+    return {"job_id": job_id, "status": "cancelled"}
+
+
+@router.post("/unit-privacy-release")
+def unit_privacy_release_route(
+    body: UnitPrivacyReleaseRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        report = semantic_decisions.release_unit_privacy_holds(
+            db, unit_id=body.unit_id, shown_matches=_shown(body.shown_matches), actor_id=admin.id
+        )
+    return {"confirmed": report.confirmed, "skipped": report.skipped}
+
+
+# ---------------------------------------------------------------------------
+#  Экран «Предложения»: перезапросы, пачки, остановка захвата
+# ---------------------------------------------------------------------------
+
+@router.post("/unit-reask/preview")
+def unit_reask_preview_route(
+    body: UnitReaskPreviewRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _serialize_preview(semantic_decisions.preview_unit_reask(db, unit_id=body.unit_id))
+
+
+@router.post("/unit-reask")
+def unit_reask_route(
+    body: UnitReaskRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        report = semantic_decisions.confirm_unit_reask(
+            db, unit_id=body.unit_id, preview_hash=body.preview_hash, actor_id=admin.id
+        )
+    return _serialize_reconcile(report)
+
+
+@router.post("/reask-all/preview")
+def reask_all_preview_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _serialize_preview(semantic_decisions.preview_config_reask(db))
+
+
+@router.post("/reask-all")
+def reask_all_route(
+    body: PreviewHashRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        report = semantic_decisions.confirm_config_reask(
+            db, preview_hash=body.preview_hash, actor_id=admin.id
+        )
+    return _serialize_reconcile(report)
+
+
+@router.post("/batches/{batch_id}/preview")
+def batch_preview_route(
+    batch_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Preview удержанной пачки по текущим отпечаткам её контекстов: без него
+    «Поставить…» не получит `preview_hash`."""
+    with _deciding(db):
+        preview = semantic_decisions.preview_batch(db, batch_id=batch_id)
+    return _serialize_preview(preview)
+
+
+@router.post("/batches/{batch_id}/approve")
+def batch_approve_route(
+    batch_id: int,
+    body: PreviewHashRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        report = semantic_decisions.approve_batch(
+            db, batch_id=batch_id, preview_hash=body.preview_hash, actor_id=admin.id
+        )
+    return _serialize_reconcile(report)
+
+
+@router.post("/batches/{batch_id}/discard")
+def batch_discard_route(
+    batch_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.discard_batch(db, batch_id=batch_id, actor_id=admin.id)
+    return {"batch_id": batch_id, "status": "discarded"}
+
+
+@router.post("/worker/resume")
+def worker_resume_route(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        semantic_decisions.resume_worker(db, actor_id=admin.id)
+    return {"claim_paused": False}
