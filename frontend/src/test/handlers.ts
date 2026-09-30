@@ -53,7 +53,11 @@ import type {
   SemanticEventEntry,
   StaleGroup,
   StaleGroupTransferResult,
+  JobRow,
+  NewRow,
+  PrivacyMatch,
   SuggestionGroup,
+  UnitHoldGroup,
   TenderCard,
   WorkCategoryPathEntry,
   WorkFamily,
@@ -465,6 +469,23 @@ interface HandlerState {
   queueStatus: QueueStatus;
   /** Строки запроса (`?queue=list&unit=…`) каждого `GET /suggestions`. */
   suggestionsRequests: string[];
+  /** Очередь «Новая» (`queue=new`) — мутируемая: «Завести семью…» убирает строку. */
+  newRows: NewRow[];
+  /** Задания в `error` и `privacy_hold` (`GET /jobs`), группы единицы — как отдаёт сервер. */
+  errorJobs: JobRow[];
+  holdJobs: JobRow[];
+  unitHoldGroups: UnitHoldGroup[];
+  createFamilyRequests: Array<{ suggestionId: number; body: { title: string; definition: string } }>;
+  /** Отказ «Завести семью…»: `exists` — `409 family_exists` со ссылкой, `exists_null` — без `family_id`. */
+  createFamilyOutcome: "ok" | "exists" | "exists_null";
+  retryJobRequests: number[];
+  privacyReleaseRequests: Array<{ jobId: number; matches: PrivacyMatch[] }>;
+  privacyDeclineRequests: Array<{ jobId: number; matches: PrivacyMatch[] }>;
+  unitPrivacyReleaseRequests: Array<{ unitId: number | null; matches: PrivacyMatch[] }>;
+  /** Ответить `409 job_changed` на все решения по заданиям (повтор, отправить, не отправлять, все K). */
+  jobsConflict: boolean;
+  /** Сколько раз сервер ответил `409 job_changed` (запросы при `jobsConflict`). */
+  jobsConflictCalls: number;
   confirmSuggestionsRequests: number[][];
   /** Идентификаторы, которые сервер «пропускает» при подтверждении (перепроверка не прошла). */
   confirmSkippedIds: number[];
@@ -628,6 +649,141 @@ function initialSuggestionGroups(): SuggestionGroup[] {
         suggestionRowFixture(5, "Шпатлёвка в 2 слоя", "0.55", "Шпатлёвка — подготовительный слой.", { unit_code: "M3", multi_owner: true }),
         suggestionRowFixture(6, "Обои с рисунком", "0.60", "Отделка по площади.", { unit_code: "M3" }),
       ],
+    },
+  ];
+}
+
+function newRowFixture(id: number, title: string, extra: Partial<NewRow> = {}): NewRow {
+  return {
+    suggestion_id: id,
+    context_id: 4000 + id,
+    title,
+    unit_code: "M2",
+    article: "3.5 Гидроизоляция",
+    path: ["Подземная часть", "Деформационные швы"],
+    new_family_name: "Гидрошпонки",
+    is_system: false,
+    confidence: "0.87",
+    reason: "Такой работы в списке нет.",
+    multi_owner: false,
+    ...extra,
+  };
+}
+
+/**
+ * Очередь «Новая» (`crud/semantic_queue.py::NewRow`): ответ с именем, ответ
+ * «СИСТЕМА» и строка единицы без активных семей (`suggestion_id: null`).
+ */
+function initialNewRows(): NewRow[] {
+  return [
+    newRowFixture(11, "Гидрошпонка ТЕХНОНИКОЛЬ Фундамент ТПС-В-140-1"),
+    newRowFixture(12, "Шпатлёвка стен в 2 слоя", {
+      new_family_name: "Шпатлёвка стен",
+      confidence: "0.78",
+      article: null,
+      path: ["Отделка квартир", "Стены"],
+    }),
+    newRowFixture(13, "Система дымоудаления ДУ-1", {
+      unit_code: "COMPL",
+      // Сервер выставляет is_system по сохранённому имени (`is_system_name`):
+      // у ответа «СИСТЕМА» имя не пустое, а именно «СИСТЕМА».
+      new_family_name: "СИСТЕМА",
+      is_system: true,
+      confidence: "0.93",
+    }),
+    newRowFixture(0, "Аренда бытового городка", {
+      suggestion_id: null,
+      unit_code: "MON",
+      new_family_name: null,
+      confidence: null,
+      reason: null,
+      article: null,
+      path: ["Временные здания и сооружения"],
+    }),
+  ];
+}
+
+function jobFixture(id: number, title: string, extra: Partial<JobRow> = {}): JobRow {
+  return {
+    job_id: id,
+    context_id: 6000 + id,
+    title,
+    unit_id: 5,
+    unit_code: "M2",
+    article: null,
+    path: [],
+    status: "error",
+    last_error_class: "http_429",
+    error_text: "HTTP 429: Too Many Requests",
+    retry_generation: 0,
+    attempts_in_generation: 5,
+    matches: null,
+    updated_at: "2026-09-28T10:00:00+00:00",
+    ...extra,
+  };
+}
+
+function initialErrorJobs(): JobRow[] {
+  return [
+    jobFixture(21, "Облицовка керамогранитом цоколя"),
+    jobFixture(22, "Столбик оградительный индивидуальное изготовление", {
+      unit_id: 7,
+      unit_code: "PCS",
+      last_error_class: "schema_error",
+      error_text: "Ответ не разобран по схеме",
+      retry_generation: 1,
+      attempts_in_generation: 1,
+    }),
+  ];
+}
+
+/**
+ * Задержанные проверкой: два задания со словом словаря в строке контекста
+ * (у второго совпадение ещё и в строке семьи — оно остаётся отдельной строкой)
+ * и три задания единицы м² с одним совпадением в строке семьи 501 — их несёт
+ * группа единицы.
+ */
+function initialHoldJobs(): JobRow[] {
+  const inContext: PrivacyMatch[] = [{ text: "ромашка", kind: "contractor", where: "context" }];
+  const mixed: PrivacyMatch[] = [
+    { text: "жк северный", kind: "object", where: "context" },
+    { text: "жк северный", kind: "object", where: "family:501" },
+  ];
+  const inFamily: PrivacyMatch[] = [{ text: "жк северный", kind: "object", where: "family:501" }];
+  return [
+    jobFixture(31, "Монтаж вентиляции ООО «Ромашка» корпус 2", {
+      status: "privacy_hold",
+      matches: inContext,
+      last_error_class: null,
+      error_text: null,
+    }),
+    jobFixture(32, "Облицовка стен ЖК Северный, секция 3", {
+      status: "privacy_hold",
+      matches: mixed,
+      last_error_class: null,
+      error_text: null,
+    }),
+    ...[33, 34, 35].map((id) =>
+      jobFixture(id, `Устройство покрытия, вариант ${id}`, {
+        status: "privacy_hold",
+        matches: inFamily,
+        last_error_class: null,
+        error_text: null,
+      })
+    ),
+  ];
+}
+
+function initialUnitHoldGroups(): UnitHoldGroup[] {
+  return [
+    {
+      unit_id: 5,
+      unit_code: "M2",
+      place: "family",
+      family_id: 501,
+      family_title: "Геотекстиль",
+      matches: [{ text: "жк северный", kind: "object", where: "family:501" }],
+      jobs_count: 3,
     },
   ];
 }
@@ -1531,6 +1687,18 @@ export const handlerState: HandlerState = {
   suggestionGroups: initialSuggestionGroups(),
   queueStatus: initialQueueStatus(),
   suggestionsRequests: [],
+  newRows: initialNewRows(),
+  errorJobs: initialErrorJobs(),
+  holdJobs: initialHoldJobs(),
+  unitHoldGroups: initialUnitHoldGroups(),
+  createFamilyRequests: [],
+  createFamilyOutcome: "ok",
+  retryJobRequests: [],
+  privacyReleaseRequests: [],
+  privacyDeclineRequests: [],
+  unitPrivacyReleaseRequests: [],
+  jobsConflict: false,
+  jobsConflictCalls: 0,
   confirmSuggestionsRequests: [],
   confirmSkippedIds: [],
   rejectSuggestionRequests: [],
@@ -1566,6 +1734,15 @@ function reaskConfirmResponse(path: string, body: Record<string, unknown>) {
     );
   }
   return HttpResponse.json({ enqueued: 1 });
+}
+
+/** Отказ `409 job_changed`; каждый такой ответ считается — повтор запроса виден тесту. */
+function jobChangedResponse() {
+  handlerState.jobsConflictCalls += 1;
+  return HttpResponse.json(
+    { detail: { code: "job_changed", message: "job_changed" } },
+    { status: 409 }
+  );
 }
 
 /** Убирает строки очереди по предикату; опустевшая группа исчезает — как на сервере. */
@@ -1627,6 +1804,18 @@ export function resetHandlerState() {
   handlerState.suggestionGroups = initialSuggestionGroups();
   handlerState.queueStatus = initialQueueStatus();
   handlerState.suggestionsRequests = [];
+  handlerState.newRows = initialNewRows();
+  handlerState.errorJobs = initialErrorJobs();
+  handlerState.holdJobs = initialHoldJobs();
+  handlerState.unitHoldGroups = initialUnitHoldGroups();
+  handlerState.createFamilyRequests = [];
+  handlerState.createFamilyOutcome = "ok";
+  handlerState.retryJobRequests = [];
+  handlerState.privacyReleaseRequests = [];
+  handlerState.privacyDeclineRequests = [];
+  handlerState.unitPrivacyReleaseRequests = [];
+  handlerState.jobsConflict = false;
+  handlerState.jobsConflictCalls = 0;
   handlerState.confirmSuggestionsRequests = [];
   handlerState.confirmSkippedIds = [];
   handlerState.rejectSuggestionRequests = [];
@@ -3534,7 +3723,91 @@ export const handlers = [
         return { ...g, rows, total: rows.length };
       })
       .filter((g) => g.rows.length > 0);
+    if (url.searchParams.get("queue") === "new") {
+      const items = handlerState.newRows.filter((r) => {
+        if (unit === "none") return r.unit_code === null;
+        if (unit) return r.unit_code === codeById[unit];
+        return true;
+      });
+      return HttpResponse.json({ queue: "new", groups: [], items });
+    }
     return HttpResponse.json({ queue: url.searchParams.get("queue") ?? "list", groups, items: [] });
+  }),
+
+  http.get("/api/v1/semantic/jobs", ({ request }) => {
+    const status = new URL(request.url).searchParams.get("status");
+    if (status === "privacy_hold") {
+      return HttpResponse.json({
+        status,
+        items: handlerState.holdJobs,
+        unit_groups: handlerState.unitHoldGroups,
+      });
+    }
+    return HttpResponse.json({ status: "error", items: handlerState.errorJobs, unit_groups: [] });
+  }),
+
+  http.post("/api/v1/semantic/suggestions/:id/create-family", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { title: string; definition: string };
+    handlerState.createFamilyRequests.push({ suggestionId: id, body });
+    if (handlerState.createFamilyOutcome !== "ok") {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "family_exists",
+            message: "такая семья уже есть",
+            family_id: handlerState.createFamilyOutcome === "exists" ? 43 : null,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    const row = handlerState.newRows.find((r) => r.suggestion_id === id);
+    handlerState.newRows = handlerState.newRows.filter((r) => r.suggestion_id !== id);
+    // Сервер помечает единицу «список семей изменён» — приходит со статусом шапки.
+    if (row && !handlerState.queueStatus.stale_units.some((u) => u.unit_code === row.unit_code)) {
+      handlerState.queueStatus.stale_units.push({
+        unit_id: row.unit_code === "M2" ? 5 : null,
+        unit_code: row.unit_code,
+        stale_count: 82,
+      });
+    }
+    return HttpResponse.json({ suggestion_id: id, decision: "family_created", family_id: 900 });
+  }),
+
+  http.post("/api/v1/semantic/jobs/:id/retry", ({ params }) => {
+    if (handlerState.jobsConflict) return jobChangedResponse();
+    const id = Number(params.id);
+    handlerState.retryJobRequests.push(id);
+    handlerState.errorJobs = handlerState.errorJobs.filter((j) => j.job_id !== id);
+    return HttpResponse.json({ job_id: id, status: "pending" });
+  }),
+  http.post("/api/v1/semantic/jobs/:id/privacy-release", async ({ params, request }) => {
+    if (handlerState.jobsConflict) return jobChangedResponse();
+    const id = Number(params.id);
+    const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
+    handlerState.privacyReleaseRequests.push({ jobId: id, matches: body.shown_matches });
+    handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    return HttpResponse.json({ job_id: id, status: "pending" });
+  }),
+  http.post("/api/v1/semantic/jobs/:id/privacy-decline", async ({ params, request }) => {
+    if (handlerState.jobsConflict) return jobChangedResponse();
+    const id = Number(params.id);
+    const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
+    handlerState.privacyDeclineRequests.push({ jobId: id, matches: body.shown_matches });
+    handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    return HttpResponse.json({ job_id: id, status: "cancelled" });
+  }),
+  http.post("/api/v1/semantic/unit-privacy-release", async ({ request }) => {
+    if (handlerState.jobsConflict) return jobChangedResponse();
+    const body = (await request.json()) as { unit_id: number | null; shown_matches: PrivacyMatch[] };
+    handlerState.unitPrivacyReleaseRequests.push({ unitId: body.unit_id, matches: body.shown_matches });
+    const released = handlerState.holdJobs.filter(
+      (j) => j.unit_id === body.unit_id && (j.matches ?? []).every((m) => m.where !== "context")
+    );
+    handlerState.holdJobs = handlerState.holdJobs.filter((j) => !released.includes(j));
+    handlerState.unitHoldGroups = handlerState.unitHoldGroups.filter((g) => g.unit_id !== body.unit_id);
+    return HttpResponse.json({ confirmed: released.map((j) => j.job_id), skipped: [] });
   }),
 
   http.get("/api/v1/semantic/status", () => HttpResponse.json(handlerState.queueStatus)),

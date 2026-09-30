@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 
 import { Pager } from "@/components/domain/Pager";
@@ -90,7 +90,13 @@ const STATUS_OPTIONS: WorkFamilyStatus[] = ["draft", "active", "archived"];
  * определение → активировать» проходит здесь (план фичи 1, задача 13,
  * «Утверждения»).
  */
-export function FamiliesTab() {
+interface FamiliesTabProps {
+  /** Семья, открытая ссылкой «Открыть семью» с другой вкладки; после показа вкладка сообщает `onFocusShown`. */
+  focusFamilyId?: number | null;
+  onFocusShown?: () => void;
+}
+
+export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabProps = {}) {
   const [statusFilter, setStatusFilter] = useState<string>("draft");
   const [unitFilter, setUnitFilter] = useState<string>(ANY);
   const [createOpen, setCreateOpen] = useState(false);
@@ -102,6 +108,19 @@ export function FamiliesTab() {
     "gca.families.families.pageSize",
     DEFAULT_PAGE_SIZE
   );
+
+  // Открытая по ссылке семья может быть активной или в архиве: фильтры её скрыли бы.
+  const [shownFocusId, setShownFocusId] = useState<number | null>(null);
+  if (focusFamilyId !== null && focusFamilyId !== shownFocusId) {
+    setShownFocusId(focusFamilyId);
+    setStatusFilter(ANY);
+    setUnitFilter(ANY);
+    setPage(1);
+    setSelectedId(focusFamilyId);
+  }
+  useEffect(() => {
+    if (focusFamilyId !== null) onFocusShown?.();
+  }, [focusFamilyId, onFocusShown]);
 
   const unitsQ = useUnits();
   const familiesQ = useWorkFamilies(

@@ -19,6 +19,10 @@ import type {
   ContextsPage,
   ContextsParams,
   ConfirmSuggestionsResult,
+  CreateFamilyFromSuggestionInput,
+  JobsResponse,
+  JobsStatus,
+  PrivacyMatch,
   QueueStatus,
   ReaskPreview,
   ReconcileResult,
@@ -538,6 +542,56 @@ export const semanticApi = {
         `/v1/semantic/suggestions/${suggestionId}/other-family`,
         { family_id: familyId }
       )
+      .then((r) => r.data),
+
+  createFamilyFromSuggestion: (
+    suggestionId: number,
+    input: CreateFamilyFromSuggestionInput
+  ): Promise<{ suggestion_id: number; decision: string; family_id: number }> =>
+    api
+      .post<{ suggestion_id: number; decision: string; family_id: number }>(
+        `/v1/semantic/suggestions/${suggestionId}/create-family`,
+        input
+      )
+      .then((r) => r.data),
+
+  listJobs: (status: JobsStatus): Promise<JobsResponse> =>
+    api.get<JobsResponse>("/v1/semantic/jobs", { params: { status } }).then((r) => r.data),
+
+  retryJob: (jobId: number): Promise<{ job_id: number; status: string }> =>
+    api.post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/retry`).then((r) => r.data),
+
+  /** «Отправить»: `shown_matches` — ровно тот набор, что пришёл в `GET /jobs`. */
+  privacyRelease: (
+    jobId: number,
+    shownMatches: PrivacyMatch[]
+  ): Promise<{ job_id: number; status: string }> =>
+    api
+      .post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/privacy-release`, {
+        shown_matches: shownMatches,
+      })
+      .then((r) => r.data),
+
+  privacyDecline: (
+    jobId: number,
+    shownMatches: PrivacyMatch[]
+  ): Promise<{ job_id: number; status: string }> =>
+    api
+      .post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/privacy-decline`, {
+        shown_matches: shownMatches,
+      })
+      .then((r) => r.data),
+
+  /** «Отправить все K»: `unit_id: null` — задания без единицы, ключ обязателен. */
+  unitPrivacyRelease: (
+    unitId: number | null,
+    shownMatches: PrivacyMatch[]
+  ): Promise<ConfirmSuggestionsResult> =>
+    api
+      .post<ConfirmSuggestionsResult>("/v1/semantic/unit-privacy-release", {
+        unit_id: unitId,
+        shown_matches: shownMatches,
+      })
       .then((r) => r.data),
 
   /** Preview перезапроса единицы; `unit_id: null` — задания без единицы. */

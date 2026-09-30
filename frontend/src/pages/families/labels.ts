@@ -232,3 +232,43 @@ export const BATCH_SOURCE_LABEL: Record<BatchSource, string> = {
   unit_reask: "Перезапрос единицы",
   config_reask: "Перезапрос по конфигурации",
 };
+
+/**
+ * Место совпадения проверки приватности (`where` задания в `privacy_hold`,
+ * спека semantic-suggestions §2.3): `context` — строка контекста,
+ * `family:<id>` — строка семьи в списке кандидатов, `prompt` — текст промпта.
+ * Неизвестное место (будущее) печатается нейтрально, код на экран не выходит.
+ */
+export function matchPlaceLabel(where: string): string {
+  if (where === "context") return "в строке";
+  if (where === "prompt") return "в тексте промпта";
+  const familyId = /^family:(\d+)$/.exec(where);
+  if (familyId) return `в списке семей (семья ${familyId[1]})`;
+  return "в теле запроса";
+}
+
+/**
+ * Классы ошибок задания, которые выставляют клиент модели и восстановление при
+ * старте (`services/semantic_client.py`, `semantic_worker.py`, `semantic_runner.py`).
+ */
+export const JOB_ERROR_CLASS_LABEL: Record<string, string> = {
+  timeout: "таймаут вызова",
+  transport: "сетевая ошибка",
+  bad_response: "ответ провайдера не разобран",
+  empty_response: "пустой ответ провайдера",
+  schema_error: "ответ не по схеме",
+  interrupted: "прервано остановкой сервера",
+};
+
+/**
+ * Класс ошибки задания: известный — словом (`http_429` — «HTTP 429»), любой
+ * другой (исполнитель подставляет имя класса исключения) печатается как пришёл.
+ */
+export function jobErrorClassLabel(errorClass: string | null): string {
+  if (errorClass === null) return "не указан";
+  const known = JOB_ERROR_CLASS_LABEL[errorClass];
+  if (known !== undefined) return known;
+  const http = /^http_(\d{3})$/.exec(errorClass);
+  if (http) return `HTTP ${http[1]}`;
+  return errorClass;
+}

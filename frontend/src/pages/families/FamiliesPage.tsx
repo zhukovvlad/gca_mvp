@@ -24,6 +24,13 @@ import { SuggestionsTab } from "./SuggestionsTab";
  */
 export default function FamiliesPage() {
   const [tab, setTab] = useState("families");
+  // Семья, к которой перешли по ссылке «Открыть семью» из вкладки «Предложения».
+  const [focusFamilyId, setFocusFamilyId] = useState<number | null>(null);
+
+  function openFamily(familyId: number) {
+    setFocusFamilyId(familyId);
+    setTab("families");
+  }
 
   return (
     <div className="container-page py-8">
@@ -69,7 +76,7 @@ export default function FamiliesPage() {
         </div>
 
         <TabsContent value="families" className="mt-6">
-          <FamiliesTab />
+          <FamiliesTab focusFamilyId={focusFamilyId} onFocusShown={() => setFocusFamilyId(null)} />
         </TabsContent>
 
         <TabsContent value="contexts" className="mt-6">
@@ -77,7 +84,7 @@ export default function FamiliesPage() {
         </TabsContent>
 
         <TabsContent value="suggestions" className="mt-6">
-          <SuggestionsTab />
+          <SuggestionsTab onOpenFamily={openFamily} />
         </TabsContent>
       </Tabs>
     </div>

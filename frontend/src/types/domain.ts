@@ -2557,10 +2557,28 @@ export interface SuggestionGroup {
   total: number;
 }
 
+/**
+ * Строка очереди «Новая» (`crud/semantic_queue.py::NewRow`): `suggestion_id: null` —
+ * контекст единицы без активных семей, модель не спрашивали.
+ */
+export interface NewRow {
+  suggestion_id: number | null;
+  context_id: number;
+  title: string;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  new_family_name: string | null;
+  is_system: boolean;
+  confidence: string | null;
+  reason: string | null;
+  multi_owner: boolean;
+}
+
 export interface SuggestionQueue {
   queue: "list" | "new";
   groups: SuggestionGroup[];
-  items: unknown[];
+  items: NewRow[];
 }
 
 /** Фильтр единицы очереди: `undefined` — все, `"none"` — контексты без единицы, иначе id единицы. */
@@ -2634,3 +2652,61 @@ export type PreviewTarget =
   | { kind: "unit"; unitId: number | null; unitCode: string | null }
   | { kind: "config" }
   | { kind: "batch"; batchId: number; source: BatchSource };
+
+/** Тело `POST /suggestions/:id/create-family`; единицу сервер берёт у контекста предложения. */
+export interface CreateFamilyFromSuggestionInput {
+  title: string;
+  definition: string;
+}
+
+/** Тело `409 family_exists`: `family_id` существующей семьи, может быть `null`. */
+export interface FamilyExistsContext {
+  family_id: number | null;
+}
+
+export type JobsStatus = "error" | "privacy_hold";
+
+/**
+ * Совпадение проверки приватности. `where` — место: `context` (строка контекста),
+ * `family:<id>` (строка семьи в списке кандидатов), `prompt` (текст промпта).
+ */
+export interface PrivacyMatch {
+  text: string;
+  kind: string;
+  where: string;
+}
+
+/** Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`). */
+export interface JobRow {
+  job_id: number;
+  context_id: number;
+  title: string;
+  unit_id: number | null;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  status: string;
+  last_error_class: string | null;
+  error_text: string | null;
+  retry_generation: number;
+  attempts_in_generation: number;
+  matches: PrivacyMatch[] | null;
+  updated_at: string;
+}
+
+/** Задержанные одним набором совпадений в списке семей или в промпте единицы. */
+export interface UnitHoldGroup {
+  unit_id: number | null;
+  unit_code: string | null;
+  place: "family" | "prompt" | "mixed";
+  family_id: number | null;
+  family_title: string | null;
+  matches: PrivacyMatch[];
+  jobs_count: number;
+}
+
+export interface JobsResponse {
+  status: JobsStatus;
+  items: JobRow[];
+  unit_groups: UnitHoldGroup[];
+}

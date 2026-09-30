@@ -7,6 +7,7 @@ import type {
   MatrixParams,
   RateStandardParams,
   ReviewQueueParams,
+  JobsStatus,
   SuggestionsParams,
   WorkFamilyStatus,
 } from "@/types/domain";
@@ -207,5 +208,6 @@ export const qk = {
     all: ["semantic-queue"] as const,
     suggestions: (params: SuggestionsParams) => ["semantic-queue", "suggestions", params] as const,
     status: ["semantic-queue", "status"] as const,
+    jobs: (status: JobsStatus) => ["semantic-queue", "jobs", status] as const,
   },
 };

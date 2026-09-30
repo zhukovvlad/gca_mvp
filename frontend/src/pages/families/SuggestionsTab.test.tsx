@@ -28,7 +28,8 @@ function invalidatedKeys(invalidate: { mock: { calls: unknown[][] } }): string[]
 }
 
 function lastQuery(): URLSearchParams {
-  return new URLSearchParams(handlerState.suggestionsRequests.at(-1));
+  const listRequests = handlerState.suggestionsRequests.filter((q) => q.includes("queue=list"));
+  return new URLSearchParams(listRequests.at(-1));
 }
 
 function groupTitles(): string[] {

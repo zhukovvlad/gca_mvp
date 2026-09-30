@@ -40,7 +40,10 @@ import type {
   Decimal,
   ManualKind,
   MoveMembersInput,
+  CreateFamilyFromSuggestionInput,
+  JobsStatus,
   PreviewTarget,
+  PrivacyMatch,
   StaleGroupTransferInput,
   SuggestionsParams,
   ObjectInput,
@@ -1785,5 +1788,118 @@ export function useResumeWorker() {
       toast.success("Захват заданий возобновлён");
     },
     onError: onQueueDecisionError(qc),
+  });
+}
+
+// ---- Очереди «Новая» и «Ошибки» (спека semantic-suggestions §2.9, §2.10, §2.12) ----
+
+export function useJobs(status: JobsStatus) {
+  return useQuery({
+    queryKey: qk.semanticQueue.jobs(status),
+    queryFn: () => semanticApi.listJobs(status),
+  });
+}
+
+/**
+ * «Завести семью…»: новая активная семья и назначение контексту. `409 family_exists`
+ * не показывается тостом — его разбирает диалог (ссылка на существующую семью).
+ * После успеха единица помечается «список семей изменён» — приходит со статусом.
+ */
+export function useCreateFamilyFromSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      suggestionId,
+      input,
+    }: {
+      suggestionId: number;
+      input: CreateFamilyFromSuggestionInput;
+    }) => semanticApi.createFamilyFromSuggestion(suggestionId, input),
+    onSuccess: (_, { input }) => {
+      invalidateAfterAssignment(qc);
+      toast.success(`Семья «${input.title}» активна и видна на вкладке «Семьи».`, {
+        description:
+          "Единица помечена сверху: перезапросите её, и остальные строки этой работы выберут новую семью.",
+      });
+    },
+    onError: (error) => {
+      if (apiErrorCode(error) === "family_exists") return;
+      invalidateQueue(qc);
+      toastApiError(error);
+    },
+  });
+}
+
+export function useRetryJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: number) => semanticApi.retryJob(jobId),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Задание возвращено в очередь, бюджет попыток сброшен.", {
+        description: "История прежних попыток сохранена.",
+      });
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+/** Отказ решения над заданием: `job_changed` — задание изменилось, экран перечитывается без повтора запроса. */
+function onJobDecisionError(qc: ReturnType<typeof useQueryClient>) {
+  return (error: unknown) => {
+    invalidateQueue(qc);
+    if (apiErrorCode(error) === "job_changed") {
+      toast.error("Задание изменилось, обновите экран.");
+      return;
+    }
+    toastApiError(error);
+  };
+}
+
+export function usePrivacyRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
+      semanticApi.privacyRelease(jobId, shown),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Запрос отправлен: задание поставлено в очередь.");
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+export function usePrivacyDecline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
+      semanticApi.privacyDecline(jobId, shown),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Задание отменено: запрос не отправлен.");
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+export function useUnitPrivacyRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ unitId, shown }: { unitId: number | null; shown: PrivacyMatch[] }) =>
+      semanticApi.unitPrivacyRelease(unitId, shown),
+    onSuccess: (result) => {
+      invalidateQueue(qc);
+      const n = result.confirmed.length;
+      toast.success(
+        `${n} ${pluralRu(n, "запрос отправлен", "запроса отправлено", "запросов отправлено")}.`,
+        {
+          description:
+            result.skipped.length > 0
+              ? `Пропущено заданий: ${result.skipped.length} — набор совпадений у них изменился, они остались в блоке.`
+              : undefined,
+        }
+      );
+    },
+    onError: onJobDecisionError(qc),
   });
 }
