@@ -8,9 +8,10 @@ import click
 from config import settings
 from database import SessionLocal
 from db_guard import ensure_mutation_allowed
-from models import User, UserRole
+from models import SemanticReconcileBatch, User, UserRole
 from security import hash_password
 from services.catalog_backfill import etc_category_share, run_backfill
+from services.semantic_decisions import enqueue_all
 from services.work_families import load_seed
 
 
@@ -108,6 +109,29 @@ def backfill_contexts() -> None:
         click.echo(
             f"Членств в корзинах статьи «Прочее»: {etc_count} из {etc_total} "
             f"({etc_pct:.1f}%)"
+        )
+    finally:
+        db.close()
+
+
+@cli.command("semantic-enqueue-all")
+def semantic_enqueue_all() -> None:
+    """Массовая постановка семантических предложений: набор по всем неархивным
+    контекстам записывается удержанной пачкой (`services/semantic_decisions.
+    enqueue_all`), даже под потолком события. Задания не ставятся — поставить
+    пачку можно только с экрана `admin` после preview (спека §2.10)."""
+    _guard("semantic-enqueue-all")
+    db = SessionLocal()
+    try:
+        batch_id = enqueue_all(db)
+        if batch_id is None:
+            click.echo("Ставить нечего: у всех контекстов уже есть задания текущего отпечатка")
+            return
+        batch = db.get(SemanticReconcileBatch, batch_id)
+        db.commit()
+        click.echo(
+            f"Удержана пачка №{batch_id}: контекстов={batch.contexts_count}, "
+            f"резерв=${batch.reserve_estimate_usd:.4f}"
         )
     finally:
         db.close()

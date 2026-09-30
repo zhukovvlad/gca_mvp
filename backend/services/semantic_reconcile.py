@@ -372,6 +372,38 @@ def _cached_total(
     return total
 
 
+def _estimate_totals(
+    db: Session,
+    postanovka: list[tuple[int, str]],
+    applicable_render: dict[int, RenderedRequest],
+) -> tuple[Decimal, Decimal]:
+    """Резерв и ожидаемая цена при попадании в кэш по `E` при тарифах и
+    лимите токенов из настроек — одна формула для потолка события и для
+    preview `admin`."""
+    tariffs = tariffs_from(settings)
+    known_by_prefix = _prefix_tokens_by_hash(db, postanovka, applicable_render)
+    reserve_total = _reserve_total(
+        known_by_prefix, postanovka, applicable_render, tariffs, settings.SEMANTIC_MAX_TOKENS
+    )
+    cached_total = _cached_total(known_by_prefix, postanovka, applicable_render, tariffs)
+    return reserve_total, cached_total
+
+
+def estimate_enqueue(
+    db: Session, context_ids: Collection[int]
+) -> tuple[list[tuple[int, str]], Decimal, Decimal]:
+    """Набор постановки `E` контекстов (те же пары, что у `held_fingerprints`)
+    и его оценка `(пары, резерв, ожидаемая цена при попадании в кэш)` — те же
+    суммы, что сверка кладёт в удержанную пачку. Ничего не пишет."""
+    material_by_context = load_request_material(db, context_ids)
+    applicable_render = _render_applicable(material_by_context)
+    all_jobs = _load_jobs_for_contexts(db, list(material_by_context))
+    postanovka, _current = _postanovka_set(applicable_render, all_jobs)
+    pairs = sorted(postanovka)
+    reserve_total, cached_total = _estimate_totals(db, pairs, applicable_render)
+    return pairs, reserve_total, cached_total
+
+
 # ---------------------------------------------------------------------------
 #  Мутации — по одному UPDATE/INSERT на вид перехода, не по строке
 # ---------------------------------------------------------------------------
@@ -609,21 +641,17 @@ def reconcile_semantic_jobs(
     created_count = 0
     revived_count = 0
 
+    reserve_total = cached_total = Decimal("0")
     if cap is NO_CAP:
         proceed = True
     else:
-        tariffs = tariffs_from(settings)
-        known_by_prefix = _prefix_tokens_by_hash(db, postanovka, applicable_render)
-        reserve_total = _reserve_total(
-            known_by_prefix, postanovka, applicable_render, tariffs, settings.SEMANTIC_MAX_TOKENS
-        )
+        reserve_total, cached_total = _estimate_totals(db, postanovka, applicable_render)
         proceed = not exceeds_cap(len(postanovka), reserve_total, cap)
 
     if proceed:
         created_count = _insert_new_jobs(db, create_ids, applicable_render, material_by_context)
         revived_count = _revive_jobs(db, revive_job_ids)
     else:
-        cached_total = _cached_total(known_by_prefix, postanovka, applicable_render, tariffs)
         held_batch_id = get_or_create_held_batch(
             db,
             fingerprints=postanovka,

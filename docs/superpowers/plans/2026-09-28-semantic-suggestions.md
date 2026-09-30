@@ -827,7 +827,7 @@ def preview_batch(db: Session, *, batch_id: int) -> Preview
 def approve_batch(db: Session, *, batch_id: int, preview_hash: str, actor_id: int) -> ReconcileReport
 def discard_batch(db: Session, *, batch_id: int, actor_id: int) -> None
 def resume_worker(db: Session, *, actor_id: int) -> None
-def enqueue_all(db: Session) -> int          # id удержанной пачки
+def enqueue_all(db: Session) -> int | None   # id удержанной пачки; None — ставить нечего
 ```
 
 **Утверждения**
