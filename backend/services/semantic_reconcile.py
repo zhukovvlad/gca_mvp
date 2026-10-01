@@ -138,10 +138,9 @@ class ReconcileReport:
 
 @dataclass(frozen=True)
 class PreparedContexts:
-    """Материал набора контекстов и рендер применимых из него. Дорогая часть
-    сверки и оценки постановки; вызывающий, которому нужны обе подряд над одним
-    набором (подтверждение пачки: оценка для сверки `preview_hash`, затем сама
-    сверка), готовит вход один раз и передаёт в обе."""
+    """Материал набора контекстов и рендер применимых из него — дорогая часть
+    сверки и оценки постановки. Каждый вызов читает вход заново: общий снимок
+    между оценкой и сверкой пропустил бы коммит параллельного импорта."""
 
     material_by_context: dict[int, ContextRequestMaterial]
     applicable_render: dict[int, RenderedRequest]
@@ -412,14 +411,12 @@ def _estimate_totals(
 
 
 def estimate_enqueue(
-    db: Session, context_ids: Collection[int], *, prepared: PreparedContexts | None = None
+    db: Session, context_ids: Collection[int]
 ) -> tuple[list[tuple[int, str]], Decimal, Decimal]:
     """Набор постановки `E` контекстов (те же пары, что у `held_fingerprints`)
     и его оценка `(пары, резерв, ожидаемая цена при попадании в кэш)` — те же
-    суммы, что сверка кладёт в удержанную пачку. Ничего не пишет. `prepared` —
-    уже загруженный и отрендеренный вход набора (`prepare_contexts`)."""
-    if prepared is None:
-        prepared = prepare_contexts(db, context_ids)
+    суммы, что сверка кладёт в удержанную пачку. Ничего не пишет."""
+    prepared = prepare_contexts(db, context_ids)
     all_jobs = _load_jobs_for_contexts(db, list(prepared.material_by_context))
     postanovka, _current = _postanovka_set(prepared.applicable_render, all_jobs)
     pairs = sorted(postanovka)
@@ -561,12 +558,10 @@ def reconcile_semantic_jobs(
     cap: EventCap | object,
     source: str,
     import_job_id: int | None = None,
-    prepared: PreparedContexts | None = None,
 ) -> ReconcileReport:
     """Сверка очереди семантических предложений с текущим состоянием набора
     контекстов (спека §2.7, инвариант). Одна транзакция ВЫЗЫВАЮЩЕГО — `commit` эта функция
-    не делает. `prepared` — вход, уже загруженный для этих же контекстов
-    (`prepare_contexts`): сверка не загружает и не рендерит его повторно.
+    не делает.
 
     Порядок: (1) материал, применимость, рендер применимых; (2) все задания
     набора одним запросом; (3) неприменимые контексты — их незавершённые
@@ -584,8 +579,7 @@ def reconcile_semantic_jobs(
         raise TypeError("cap обязан быть EventCap или NO_CAP")
 
     # 1. Материал, применимость, рендер применимых.
-    if prepared is None:
-        prepared = prepare_contexts(db, context_ids)
+    prepared = prepare_contexts(db, context_ids)
     material_by_context = prepared.material_by_context
     applicable_render = prepared.applicable_render
     applicable_ids = set(applicable_render)

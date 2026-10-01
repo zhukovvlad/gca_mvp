@@ -36,6 +36,7 @@ from models import (
     PositionItem,
     Proposal,
     ReconcileBatchStatus,
+    SemanticCancelReason,
     SemanticJob,
     SemanticJobAttempt,
     SemanticJobStatus,
@@ -523,6 +524,10 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
         )
     for r in bare_rows:
         material = materials[r.id]
+        if material.path_broken:
+            # Цикл разделов делает контекст неприменимым по другой причине: строка
+            # «в единице нет активных семей» была бы неправдой.
+            continue
         items.append(
             NewRow(
                 suggestion_id=None,
@@ -702,13 +707,48 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
 #  Шапка
 # ---------------------------------------------------------------------------
 
+def _covers_context():
+    """Условие над `SemanticJob` с внешним соединением `FamilySuggestion` по
+    `result_suggestion_id`: задание покрывает контекст своего отпечатка (см.
+    `_stale_scan`). Зеркало того, что сверка оживляет или переопубликовывает."""
+    working = SemanticJob.status.in_(
+        [
+            SemanticJobStatus.pending.value,
+            SemanticJobStatus.running.value,
+            SemanticJobStatus.privacy_hold.value,
+            SemanticJobStatus.error.value,
+        ]
+    )
+    answered = sa.and_(
+        SemanticJob.status == SemanticJobStatus.done.value,
+        sa.or_(
+            SemanticJob.result_suggestion_id.is_(None),
+            FamilySuggestion.is_published.is_(True),
+            FamilySuggestion.decision.isnot(None),
+        ),
+    )
+    declined = sa.and_(
+        SemanticJob.status == SemanticJobStatus.cancelled.value,
+        SemanticJob.cancel_reason == SemanticCancelReason.privacy_declined.value,
+    )
+    return sa.or_(working, answered, declined)
+
+
 def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | None]:
     """Устаревшие единицы и конфигурация по применимым контекстам (спека §2.10).
 
-    Единица устарела: у применимого контекста нет задания с текущим
-    `candidates_hash` (список семей изменился). Конфигурация изменена: задание с
-    текущим `candidates_hash` есть, а с текущим `request_hash` — нет (промпт,
-    модель или параметры поменяли тело запроса при том же списке семей).
+    Единица устарела: у применимого контекста нет ПОКРЫВАЮЩЕГО задания с текущим
+    `candidates_hash` (список семей изменился). Конфигурация изменена: такое
+    задание есть, а с текущим `request_hash` — нет (промпт, модель или параметры
+    поменяли тело запроса при том же списке семей).
+
+    Покрывает задание, которое ещё работает или чей ответ жив: `pending`,
+    `running`, `privacy_hold`, `error`, `done` без предложения, с опубликованным
+    или с решённым предложением, `cancelled` по `privacy_declined`. Не покрывают
+    те, что сверка при перезапросе оживит или переопубликует: `cancelled` по
+    остальным причинам и `done` с предложением, снятым без решения. Иначе возврат
+    к прежнему отпечатку (A -> B -> A) молчал бы при том, что видимого и
+    исполняемого ответа нет.
 
     Список семей рендерится один раз на единицу, а не на каждый контекст
     (`_UnitFingerprints`): число запросов к базе от числа контекстов не зависит,
@@ -727,7 +767,8 @@ def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | Non
     candidates_hashes: dict[int, set[str]] = {}
     for context_id, request_hash, candidates_hash in db.execute(
         sa.select(SemanticJob.context_id, SemanticJob.request_hash, SemanticJob.candidates_hash)
-        .where(SemanticJob.context_id.in_(list(applicable)))
+        .outerjoin(FamilySuggestion, FamilySuggestion.id == SemanticJob.result_suggestion_id)
+        .where(SemanticJob.context_id.in_(list(applicable)), _covers_context())
     ):
         request_hashes.setdefault(context_id, set()).add(request_hash)
         candidates_hashes.setdefault(context_id, set()).add(candidates_hash)

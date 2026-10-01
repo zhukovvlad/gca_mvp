@@ -1623,13 +1623,6 @@ export function useTransferStaleGroup() {
 
 // ========== Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12) ==========
 
-export function useSuggestions(params: SuggestionsParams) {
-  return useQuery({
-    queryKey: qk.semanticQueue.suggestions(params),
-    queryFn: () => semanticApi.listSuggestions(params),
-  });
-}
-
 /**
  * Сводка шапки. Серверу она стоит дорого (обход всех контекстов каталога), поэтому
  * свежей считается минуту, а перечитывается действиями, которые её меняют, и раз в
@@ -1638,6 +1631,20 @@ export function useSuggestions(params: SuggestionsParams) {
  */
 const QUEUE_STATUS_STALE_MS = 60_000;
 const QUEUE_STATUS_POLL_MS = QUEUE_STATUS_STALE_MS;
+
+/**
+ * Очереди и задания читаются тем же опросом, но только видимая очередь (`poll`):
+ * ответы исполнителя приходят без действий пользователя. Скрытые очереди держат
+ * только счётчики вкладок, их перечитывает переключение на них.
+ */
+export function useSuggestions(params: SuggestionsParams, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.suggestions(params),
+    queryFn: () => semanticApi.listSuggestions(params),
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
 
 export function useQueueStatus() {
   return useQuery({
@@ -1820,10 +1827,12 @@ export function useResumeWorker() {
 
 // ---- Очереди «Новая» и «Ошибки» (спека semantic-suggestions §2.9, §2.10, §2.12) ----
 
-export function useJobs(status: JobsStatus) {
+export function useJobs(status: JobsStatus, { poll = true }: { poll?: boolean } = {}) {
   return useQuery({
     queryKey: qk.semanticQueue.jobs(status),
     queryFn: () => semanticApi.listJobs(status),
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
 }
 

@@ -74,12 +74,12 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
     band: bandFilter === ANY ? undefined : (bandFilter as SuggestionBand),
     multi_owner: multiOwner,
   };
-  const queueQ = useSuggestions(params);
+  const queueQ = useSuggestions(params, { poll: queue === "list" });
   // Счётчики вкладок берутся из тех же запросов, что и их содержимое, поэтому
   // обе очереди читаются, пока открыта другая.
-  const newQ = useSuggestions({ queue: "new", unit: unitParam });
-  const errorsQ = useJobs("error");
-  const holdQ = useJobs("privacy_hold");
+  const newQ = useSuggestions({ queue: "new", unit: unitParam }, { poll: queue === "new" });
+  const errorsQ = useJobs("error", { poll: queue === "err" });
+  const holdQ = useJobs("privacy_hold", { poll: queue === "err" });
 
   const groups = queueQ.data?.groups ?? [];
   const rowsTotal = groups.reduce((sum, g) => sum + g.total, 0);
@@ -100,6 +100,18 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
     return unitsQ.data?.find((u) => u.code === code)?.symbol ?? code;
   }
 
+  // Опрашивается только открытая очередь; скрытая могла устареть, пока на неё не
+  // смотрели, поэтому переключение перечитывает её сразу.
+  function switchQueue(next: QueueTab) {
+    setQueue(next);
+    if (next === "list") void queueQ.refetch();
+    else if (next === "new") void newQ.refetch();
+    else {
+      void errorsQ.refetch();
+      void holdQ.refetch();
+    }
+  }
+
   function resetToFirstPage() {
     setPage(1);
   }
@@ -117,7 +129,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
       )}
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-        <Tabs value={queue} onValueChange={(v) => v && setQueue(v as QueueTab)}>
+        <Tabs value={queue} onValueChange={(v) => v && switchQueue(v as QueueTab)}>
           <TabsList className="h-auto rounded-lg border border-border bg-surface p-0">
             <TabsTrigger value="list" className={TAB_CLASS}>
               Семья из списка

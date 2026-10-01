@@ -34,7 +34,8 @@ HTTP-слой поверх готовых сервисов задач 4, 6-10 (`
 маршрут: успешный выход коммитит, любое из трёх исключений сервисов
 откатывает и транслирует в `HTTPException`, любое другое исключение
 откатывает и пробрасывается дальше (та же дисциплина, что `except Exception:
-db.rollback(); raise` в `routers/review.py`).
+db.rollback(); raise` в `routers/review.py`). Исключение — `DecisionConflict`
+с `keep`: запись сервиса до отказа коммитится, отказ всё равно уходит `409`.
 """
 from __future__ import annotations
 
@@ -175,7 +176,8 @@ def _domain_error(exc: WorkFamilyError | ContextOperationError) -> DomainError:
 @contextlib.contextmanager
 def _mutating(db: Session):
     """Одна транзакция на маршрут:
-    успех коммитит, отказ сервиса откатывает и транслирует в `HTTPException`
+    успех коммитит, отказ сервиса откатывает (отказ с `keep` — коммитит) и
+    транслирует в `HTTPException`
     через `raise_domain_error`, любое другое исключение откатывает и летит
     дальше — тот же протокол, что `routers/review.py`."""
     try:
@@ -189,6 +191,14 @@ def _mutating(db: Session):
         # отказы без кода: `detail` НЕКОДИРОВАННЫМ текстом (см. докстринг
         # модуля).
         raise_domain_error(DomainError(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)))
+    except DecisionConflict as exc:
+        # Отказ с `keep` оставляет запись сервиса (обновлённый набор задержанного
+        # задания): коммит вместо отката, 409 отдаёт `_deciding`.
+        if exc.keep:
+            db.commit()
+        else:
+            db.rollback()
+        raise
     except Exception:
         db.rollback()
         raise
@@ -205,7 +215,8 @@ def _deciding(db: Session):
     """`_mutating` для решений над очередью предложений: дополнительно переводит
     `DecisionConflict` в `409` с кодом (у `family_exists` — с `family_id`, он
     может быть `null`) и `LookupError` (предложение, задание или пачка не
-    найдены) в `404`. Откат уже сделал внутренний `_mutating`."""
+    найдены) в `404`. Откат (или, для отказа с `keep`, коммит) уже сделал
+    внутренний `_mutating`."""
     try:
         with _mutating(db):
             yield

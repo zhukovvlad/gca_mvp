@@ -6,7 +6,8 @@
 Задача 12 фичи «Семантические предложения»
 (`docs/superpowers/plans/2026-09-28-semantic-suggestions.md`). Каждая функция —
 часть транзакции вызывающего: `commit` делает он, `DecisionConflict` (409)
-он же превращает в откат и ответ.
+он же превращает в откат и ответ — кроме отказа с `keep=True` (обновлённый набор
+совпадений задержанного задания): его вызывающий фиксирует, а не откатывает.
 
 Порядок блокировок решений по предложению единый с фичей 1 и со сверкой:
 предложение читается без блокировки (узнать контекст и семью), затем `FOR SHARE`
@@ -47,11 +48,9 @@ from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_privacy import PrivacyDictionary, build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
-    PreparedContexts,
     ReconcileReport,
     estimate_enqueue,
     get_or_create_held_batch,
-    prepare_contexts,
     reconcile_semantic_jobs,
 )
 from services.semantic_request import is_applicable, load_request_material, render_context_request
@@ -100,12 +99,17 @@ class DecisionConflict(Exception):
     """Экран устарел: состояние изменилось между показом и решением (`409`).
     `code` — одно из `suggestion_changed | job_changed | preview_changed |
     batch_decided | family_exists`; у `family_exists` есть `family_id` уже
-    существующей семьи."""
+    существующей семьи. `keep` — отказ оставляет запись, сделанную сервисом до
+    него (обновлённый набор задержанного задания): роутер коммитит, а не откатывает.
+    Сам сервис не коммитит — коммитит вызывающий."""
 
-    def __init__(self, code: str, message: str = "", *, family_id: int | None = None) -> None:
+    def __init__(
+        self, code: str, message: str = "", *, family_id: int | None = None, keep: bool = False
+    ) -> None:
         super().__init__(message or code)
         self.code = code
         self.family_id = family_id
+        self.keep = keep
 
 
 @dataclass(frozen=True)
@@ -360,21 +364,37 @@ def _lock_job(db: Session, job_id: int) -> SemanticJob:
     return job
 
 
-def _hold_still_shown(
+def _hold_verdict(
     db: Session, job: SemanticJob, shown_matches: list[dict], dictionary: PrivacyDictionary
-) -> bool:
+) -> tuple[bool, list[dict] | None]:
     """Перепроверка задержанного: `privacy_hold`; контекст применим; текущий
     отпечаток равен `request_hash`; проверка по текущему словарю даёт показанный
-    набор совпадений."""
+    набор совпадений. Возвращает `(прошло, текущий_набор)`: набор отдан, только
+    если единственное нарушение — расхождение набора (словарь изменился после
+    задержания), иначе `None`."""
     if job.status != SemanticJobStatus.privacy_hold.value:
-        return False
+        return False, None
     material = load_request_material(db, [job.context_id]).get(job.context_id)
     if material is None or not is_applicable(material):
-        return False
+        return False, None
     rendered = render_context_request(material, settings=settings)
     if rendered.request_hash != job.request_hash:
-        return False
-    return serialize_privacy_matches(find_privacy_matches(dictionary, rendered)) == shown_matches
+        return False, None
+    current = serialize_privacy_matches(find_privacy_matches(dictionary, rendered))
+    if current == shown_matches:
+        return True, None
+    return False, current
+
+
+def _refresh_hold(job: SemanticJob, current: list[dict]) -> None:
+    """Словарь изменился после задержания: в задание пишется текущий набор, чтобы
+    следующее решение шло по нему, а не по несуществующему сохранённому. Набор
+    пуст — совпадений больше нет, задание уходит в очередь, как «Отправить» без
+    совпадений."""
+    job.privacy_matches = current
+    if not current:
+        job.status = SemanticJobStatus.pending.value
+        job.next_attempt_at = _now()
 
 
 def _release_locked(job: SemanticJob, shown_matches: list[dict], actor_id: int) -> None:
@@ -386,13 +406,27 @@ def _release_locked(job: SemanticJob, shown_matches: list[dict], actor_id: int) 
     job.next_attempt_at = now
 
 
+def _conflict_keeping_refresh(
+    db: Session, job: SemanticJob, current: list[dict] | None
+) -> None:
+    """Отказ `job_changed`. Расхождение набора из-за словаря — запись текущего
+    набора остаётся: отказ несёт `keep`, и роутер её коммитит, а не откатывает;
+    иначе задание осталось бы с набором, по которому ни одно решение не пройдёт."""
+    if current is not None:
+        _refresh_hold(job, current)
+        db.flush()
+        raise DecisionConflict(CODE_JOB_CHANGED, keep=True)
+    raise DecisionConflict(CODE_JOB_CHANGED)
+
+
 def release_privacy_hold(
     db: Session, *, job_id: int, shown_matches: list[dict], actor_id: int
 ) -> None:
     """«Отправить»: задание -> `pending`, разрешённый набор = показанный."""
     job = _lock_job(db, job_id)
-    if not _hold_still_shown(db, job, shown_matches, build_privacy_dictionary(db)):
-        raise DecisionConflict(CODE_JOB_CHANGED)
+    ok, current = _hold_verdict(db, job, shown_matches, build_privacy_dictionary(db))
+    if not ok:
+        _conflict_keeping_refresh(db, job, current)
     _release_locked(job, shown_matches, actor_id)
     db.flush()
 
@@ -402,8 +436,9 @@ def decline_privacy_hold(
 ) -> None:
     """«Не отправлять»: задание -> `cancelled` / `privacy_declined`."""
     job = _lock_job(db, job_id)
-    if not _hold_still_shown(db, job, shown_matches, build_privacy_dictionary(db)):
-        raise DecisionConflict(CODE_JOB_CHANGED)
+    ok, current = _hold_verdict(db, job, shown_matches, build_privacy_dictionary(db))
+    if not ok:
+        _conflict_keeping_refresh(db, job, current)
     job.status = SemanticJobStatus.cancelled.value
     job.cancel_reason = SemanticCancelReason.privacy_declined.value
     job.privacy_decided_by = actor_id
@@ -416,7 +451,8 @@ def release_unit_privacy_holds(
 ) -> ConfirmReport:
     """«Отправить все K»: все `privacy_hold` задания единицы (`None` — задания
     без единицы и только они), у каждого своя перепроверка; прошедшие
-    отправлены, прочие — в `skipped` (по `job_id`)."""
+    отправлены, прочие — в `skipped` (по `job_id`). Задание, у которого разошёлся
+    только набор совпадений, пропускается с обновлённым набором."""
     unit_clause = SemanticJob.unit_id.is_(None) if unit_id is None else SemanticJob.unit_id == unit_id
     job_ids = list(
         db.execute(
@@ -430,10 +466,13 @@ def release_unit_privacy_holds(
     skipped: list[int] = []
     for job_id in job_ids:
         job = _lock_job(db, job_id)
-        if _hold_still_shown(db, job, shown_matches, dictionary):
+        ok, current = _hold_verdict(db, job, shown_matches, dictionary)
+        if ok:
             _release_locked(job, shown_matches, actor_id)
             confirmed.append(job_id)
         else:
+            if current is not None:
+                _refresh_hold(job, current)
             skipped.append(job_id)
     db.flush()
     return ConfirmReport(confirmed=confirmed, skipped=skipped)
@@ -459,9 +498,9 @@ def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _preview_and_pairs(
-    db: Session, context_ids: Sequence[int], *, prepared: PreparedContexts | None = None
+    db: Session, context_ids: Sequence[int]
 ) -> tuple[Preview, list[tuple[int, str]]]:
-    pairs, reserve, cached = estimate_enqueue(db, context_ids, prepared=prepared)
+    pairs, reserve, cached = estimate_enqueue(db, context_ids)
     tariffs = tariffs_from(settings)
     canonical = json.dumps(
         {
@@ -521,11 +560,12 @@ def _all_live_context_ids(db: Session) -> list[int]:
 def _confirm(
     db: Session, context_ids: Sequence[int], preview_hash: str, *, source: str
 ) -> ReconcileReport:
-    # Оценка для сверки хэша и сама сверка читают один и тот же вход.
-    prepared = prepare_contexts(db, context_ids)
-    if _preview_and_pairs(db, context_ids, prepared=prepared)[0].preview_hash != preview_hash:
+    # Хэш перепроверяется заново, а сверка сама загружает вход: общий снимок
+    # между ними пропустил бы вход и задание, закоммиченные параллельным
+    # импортом, и сверка отменила бы свежее задание как устаревшее.
+    if _preview_and_pairs(db, context_ids)[0].preview_hash != preview_hash:
         raise DecisionConflict(CODE_PREVIEW_CHANGED)
-    return reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=source, prepared=prepared)
+    return reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=source)
 
 
 def preview_unit_reask(db: Session, *, unit_id: int | None) -> Preview:
@@ -584,19 +624,14 @@ def approve_batch(
     if batch.status != ReconcileBatchStatus.held.value:
         raise DecisionConflict(CODE_BATCH_DECIDED)
     context_ids = _batch_context_ids(batch)
-    # Материал и рендер пачки готовятся один раз: оценка для сверки хэша и сама
-    # сверка читают один и тот же вход.
-    prepared = prepare_contexts(db, context_ids)
-    preview, pairs = _preview_and_pairs(db, context_ids, prepared=prepared)
+    preview, pairs = _preview_and_pairs(db, context_ids)
     if preview.preview_hash != preview_hash:
         raise DecisionConflict(CODE_PREVIEW_CHANGED)
     batch.status = ReconcileBatchStatus.approved.value
     batch.decided_by = actor_id
     batch.decided_at = _now()
     db.flush()
-    report = reconcile_semantic_jobs(
-        db, context_ids, cap=NO_CAP, source=batch.source, prepared=prepared
-    )
+    report = reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=batch.source)
     if pairs:
         db.execute(
             sa.update(SemanticJob)

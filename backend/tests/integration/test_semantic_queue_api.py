@@ -796,6 +796,37 @@ class TestNewQueue:
         )
         assert (row["title"], row["unit_code"], row["is_system"]) == ("Без семей", "PCS", False)
 
+    def test_context_with_a_chapter_cycle_is_not_a_row_without_families(
+        self, admin_client, db_session, factories
+    ):
+        """Цикл разделов — другая причина, чем «в единице нет активных семей»:
+        строка с таким пояснением обманула бы."""
+        scene = _scene(db_session, factories, admin_client.user)
+        pcs = _unit_id(db_session, "PCS")
+        bare = _simple_context(db_session, factories, scene.proposal, unit_id=pcs, title="Без семей")
+        cp = factories.CatalogPositionFactory.create(unit_id=pcs, standard_job_title="Цикл")
+        outer = factories.PositionItemFactory.create(
+            proposal=scene.proposal, is_chapter=True, job_title_in_proposal="Внешний",
+            chapter_number_in_proposal="1",
+        )
+        inner = factories.PositionItemFactory.create(
+            proposal=scene.proposal, is_chapter=True, job_title_in_proposal="Внутренний",
+            chapter_item_id=outer.id,
+        )
+        item = factories.PositionItemFactory.create(
+            proposal=scene.proposal, is_chapter=False, job_title_in_proposal="Цикл",
+            catalog_position_id=cp.id, chapter_item_id=inner.id,
+        )
+        cyclic = route_position(db_session, position_item_id=item.id).context_id
+        outer.chapter_item_id = inner.id
+        db_session.flush()
+        db_session.expire_all()
+        assert load_request_material(db_session, [cyclic])[cyclic].path_broken, "вход теста: цикл"
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert {i["context_id"] for i in payload["items"]} == {bare}
+
     def test_unit_none_filter_applies_to_new_queue(self, admin_client, db_session, factories):
         with_unit = _scene(db_session, factories, admin_client.user, titles=("С единицей",))
         no_unit = _scene(db_session, factories, admin_client.user, titles=("Без единицы",), unit=None)
@@ -1235,6 +1266,20 @@ class TestJobs:
 #  Шапка
 # ---------------------------------------------------------------------------
 
+#: Состояние задания текущего отпечатка после A -> B -> A и покрывает ли оно контекст.
+_BACK_TO_A_STATES = [
+    ("cancelled_input_changed", False),
+    ("done_unpublished", False),
+    ("done_published", True),
+    ("done_decided", True),
+    ("pending", True),
+    ("running", True),
+    ("privacy_hold", True),
+    ("error", True),
+    ("cancelled_privacy_declined", True),
+]
+
+
 class TestStatus:
     def test_empty_system_shape(self, admin_client):
         payload = admin_client.get(f"{BASE}/status").json()
@@ -1355,6 +1400,118 @@ class TestStatus:
 
         assert payload["stale_units"] == []
         assert payload["config_stale"] == {"stale_count": 1, "prompt_version_current": 1}
+
+    def _history_job(self, db, context_id, *, status, request_hash=None, candidates_hash=None,
+                     cancel_reason=None):
+        """Задание в нужном состоянии: парные ограничения таблицы выполняются
+        одним UPDATE."""
+        job = _make_job(db, context_id, status="pending", request_hash=request_hash)
+        values: dict = {}
+        if candidates_hash is not None:
+            values["candidates_hash"] = candidates_hash
+        if status != "pending":
+            values["status"] = status
+        if status == "cancelled":
+            values["cancel_reason"] = cancel_reason
+        if status == "running":
+            values["claim_token"] = uuid.uuid4()
+        if status == "privacy_hold":
+            values["privacy_matches"] = [{"text": "х", "kind": "contractor", "where": "context"}]
+        if values:
+            db.execute(sa.update(SemanticJob).where(SemanticJob.id == job.id).values(**values))
+            db.expire(job)
+        return job
+
+    def _back_to_a(self, db, factories, admin, current_state):
+        """A -> B -> A: задание прежнего списка B и задание текущего отпечатка A
+        в состоянии `current_state`."""
+        scene = _scene(db, factories, admin)
+        context_id = scene.context_ids[0]
+        self._history_job(
+            db, context_id, status="done", request_hash="запрос-B", candidates_hash="список-B",
+        )
+        if current_state.startswith("done_"):
+            # «Отклонить» снимает публикацию: решённое предложение не опубликовано,
+            # и покрывает контекст именно решение, а не публикация.
+            decided = current_state == "done_decided"
+            suggestion = _published(
+                db, context_id, family_id=scene.family.id,
+                is_published=current_state == "done_published",
+                decision="rejected" if decided else None,
+                decided_by=admin.id if decided else None,
+            )
+            if decided:
+                suggestion.unpublished_reason = "rejected"
+                db.flush()
+            assert suggestion.is_published is (current_state == "done_published")
+        elif current_state.startswith("cancelled_"):
+            reason = current_state.removeprefix("cancelled_")
+            self._history_job(db, context_id, status="cancelled", cancel_reason=reason)
+        else:
+            self._history_job(db, context_id, status=current_state)
+        return scene
+
+    @pytest.mark.parametrize(("current_state", "covers"), _BACK_TO_A_STATES)
+    def test_family_list_returning_to_an_earlier_state_is_stale_unless_the_old_answer_is_alive(
+        self, admin_client, db_session, factories, current_state, covers
+    ):
+        """A -> B -> A: задание отпечатка A есть, но покрывает контекст, только
+        если его ответ жив; прежний список B задания не заменяет."""
+        scene = self._back_to_a(db_session, factories, admin_client.user, current_state)
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        expected = [] if covers else [{"unit_id": scene.unit_id, "unit_code": "M2", "stale_count": 1}]
+        assert payload["stale_units"] == expected
+        assert payload["config_stale"] is None
+
+    @pytest.mark.parametrize("current_state", [state for state, _covers in _BACK_TO_A_STATES])
+    def test_unit_is_stale_exactly_when_its_reask_would_change_something(
+        self, admin_client, db_session, factories, current_state
+    ):
+        """Шапка и сверка судят об одном и том же с двух сторон: единица помечена
+        устаревшей ровно тогда, когда её перезапрос что-то создаёт, оживляет или
+        переопубликовывает, а после перезапроса пометки нет."""
+        scene = self._back_to_a(db_session, factories, admin_client.user, current_state)
+        stale = admin_client.get(f"{BASE}/status").json()["stale_units"] != []
+
+        preview = decisions.preview_unit_reask(db_session, unit_id=scene.unit_id)
+        report = decisions.confirm_unit_reask(
+            db_session, unit_id=scene.unit_id, preview_hash=preview.preview_hash,
+            actor_id=admin_client.user.id,
+        )
+        db_session.flush()
+        db_session.expire_all()
+
+        assert (report.created + report.revived + report.republished > 0) is stale
+        assert admin_client.get(f"{BASE}/status").json()["stale_units"] == []
+
+    def test_configuration_returning_to_an_earlier_state_is_stale_when_the_old_answer_is_gone(
+        self, admin_client, db_session, factories
+    ):
+        """A -> B -> A по запросу при прежнем списке семей: ответ отпечатка A снят,
+        а B покрывает тот же список — устарела конфигурация, не единица."""
+        scene = _scene(db_session, factories, admin_client.user)
+        context_id = scene.context_ids[0]
+        self._history_job(db_session, context_id, status="done", request_hash="запрос-B")
+        _published(db_session, context_id, family_id=scene.family.id, is_published=False)
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["stale_units"] == []
+        assert payload["config_stale"] == {"stale_count": 1, "prompt_version_current": 1}
+
+    def test_configuration_with_the_old_answer_alive_is_not_stale(
+        self, admin_client, db_session, factories
+    ):
+        scene = _scene(db_session, factories, admin_client.user)
+        context_id = scene.context_ids[0]
+        self._history_job(db_session, context_id, status="done", request_hash="запрос-B")
+        _published(db_session, context_id, family_id=scene.family.id)
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert (payload["stale_units"], payload["config_stale"]) == ([], None)
 
     def test_only_the_unit_whose_family_list_changed_is_stale(
         self, admin_client, db_session, factories
@@ -1752,6 +1909,29 @@ class TestJobActions:
         db_session.expire_all()
         assert db_session.get(SemanticJob, job.id).status == "privacy_hold"
 
+    def test_changed_dictionary_refusal_keeps_the_refreshed_set_for_the_next_listing(
+        self, admin_client, db_session, factories
+    ):
+        scene, job = self._held(db_session, factories, admin_client.user)
+        old = list(job.privacy_matches)
+        factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        db_session.commit()
+
+        refused = admin_client.post(
+            f"{BASE}/jobs/{job.id}/privacy-release", json={"shown_matches": old}
+        )
+
+        assert refused.status_code == 409 and _detail(refused)["code"] == "job_changed"
+        listed = admin_client.get(f"{BASE}/jobs", params={"status": "privacy_hold"}).json()
+        [item] = listed["items"]
+        assert item["matches"] != old
+        again = admin_client.post(
+            f"{BASE}/jobs/{job.id}/privacy-release", json={"shown_matches": item["matches"]}
+        )
+        assert again.status_code == 200
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, job.id).status == "pending"
+
     def test_privacy_decline_cancels_the_job(self, admin_client, db_session, factories):
         _, job = self._held(db_session, factories, admin_client.user)
 
@@ -1983,3 +2163,28 @@ class TestReaskAndBatches:
 
     def test_resume_when_not_paused_is_not_an_error(self, admin_client):
         assert admin_client.post(f"{BASE}/worker/resume").status_code == 200
+
+
+class TestRefusalTransaction:
+    """Транзакция маршрута при отказе решения: запись до отказа остаётся только
+    у отказа, который сам об этом просит (`keep`), любой другой её откатывает."""
+
+    @pytest.mark.parametrize("keep", [False, True])
+    def test_write_before_a_refusal_survives_only_when_the_refusal_keeps_it(
+        self, db_session, factories, keep
+    ):
+        from fastapi import HTTPException
+
+        from models import Contractor
+        from routers.semantic import _deciding
+
+        with pytest.raises(HTTPException) as caught, _deciding(db_session):
+            factories.ContractorFactory.create(title="Запись до отказа")
+            raise decisions.DecisionConflict(decisions.CODE_JOB_CHANGED, keep=keep)
+
+        assert caught.value.status_code == 409
+        db_session.expire_all()
+        written = db_session.execute(
+            sa.select(sa.func.count()).select_from(Contractor).where(Contractor.title == "Запись до отказа")
+        ).scalar_one()
+        assert written == (1 if keep else 0)

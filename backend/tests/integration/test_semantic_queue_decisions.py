@@ -724,6 +724,174 @@ class TestPrivacyHoldDecisions:
         assert _fresh(db_session, SemanticJob, scene.jobs[0].id).cancel_reason is None
 
 
+def _current_matches(db, context_id):
+    found = find_privacy_matches(build_privacy_dictionary(db), _rendered(db, context_id))
+    return [{"text": m.text, "kind": m.kind, "where": m.where} for m in found]
+
+
+def _rename_contractor_to_nothing(db, title="ООО «Одуванчик»"):
+    db.execute(sa.text("UPDATE contractors SET title = :t"), {"t": title})
+    db.expire_all()
+
+
+class TestPrivacyHoldDictionaryChange:
+    """Словарь изменился после задержания: задание не должно застревать на
+    сохранённом наборе, который уже не воспроизвести."""
+
+    def test_release_refreshes_the_stored_set_to_the_current_one_and_conflicts(
+        self, db_session, factories
+    ):
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        db_session.expire_all()
+        current = _current_matches(db_session, job.context_id)
+        assert current and current != job.privacy_matches, "вход теста: набор изменился, но не пуст"
+
+        with pytest.raises(DecisionConflict) as caught:
+            release_privacy_hold(
+                db_session, job_id=job.id, shown_matches=job.privacy_matches, actor_id=scene.user.id
+            )
+
+        assert caught.value.code == "job_changed"
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        assert (fresh.status, fresh.privacy_matches) == ("privacy_hold", current)
+        assert fresh.privacy_released_matches is None
+
+    def test_decision_over_the_refreshed_set_passes(self, db_session, factories):
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        old = list(job.privacy_matches)
+        factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        db_session.expire_all()
+        with pytest.raises(DecisionConflict):
+            release_privacy_hold(db_session, job_id=job.id, shown_matches=old, actor_id=scene.user.id)
+        refreshed = list(_fresh(db_session, SemanticJob, job.id).privacy_matches)
+
+        release_privacy_hold(db_session, job_id=job.id, shown_matches=refreshed, actor_id=scene.user.id)
+
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        assert (fresh.status, fresh.privacy_released_matches) == ("pending", refreshed)
+
+    def test_decline_refreshes_the_stored_set_too(self, db_session, factories):
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        db_session.expire_all()
+        current = _current_matches(db_session, job.context_id)
+        assert current != job.privacy_matches
+
+        with pytest.raises(DecisionConflict):
+            decline_privacy_hold(
+                db_session, job_id=job.id, shown_matches=job.privacy_matches, actor_id=scene.user.id
+            )
+
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        assert (fresh.status, fresh.privacy_matches, fresh.cancel_reason) == (
+            "privacy_hold", current, None,
+        )
+
+    def test_clean_dictionary_sends_the_job_back_to_pending(self, db_session, factories):
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        job.next_attempt_at = dt.datetime.now(dt.UTC) + dt.timedelta(days=1)
+        db_session.flush()
+        _rename_contractor_to_nothing(db_session)
+        assert _current_matches(db_session, job.context_id) == [], "вход теста: словарь чист"
+
+        with pytest.raises(DecisionConflict) as caught:
+            release_privacy_hold(
+                db_session, job_id=job.id, shown_matches=job.privacy_matches, actor_id=scene.user.id
+            )
+
+        assert caught.value.code == "job_changed"
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        assert fresh.status == "pending"
+        assert fresh.privacy_matches == []
+        assert fresh.next_attempt_at <= dt.datetime.now(dt.UTC)
+        assert fresh.privacy_released_matches is None and fresh.privacy_decided_by is None
+
+    @pytest.mark.parametrize("violation", ["stale_fingerprint", "inapplicable", "declined_meanwhile"])
+    def test_other_violations_do_not_rewrite_the_job(self, db_session, factories, violation):
+        """Словарь тоже изменился (стал чистым), но нарушено и другое условие
+        перепроверки: набор не переписывается, и задание не уходит в очередь —
+        в том числе уже отклонённое другим `admin`."""
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        before = list(job.privacy_matches)
+        if violation == "stale_fingerprint":
+            _make_stale(db_session, scene)
+        elif violation == "inapplicable":
+            _make_inapplicable(db_session, job.context_id)
+        else:
+            decline_privacy_hold(
+                db_session, job_id=job.id, shown_matches=before, actor_id=scene.user.id
+            )
+        _rename_contractor_to_nothing(db_session)
+        assert _current_matches(db_session, job.context_id) == [], "вход теста: словарь чист"
+
+        with pytest.raises(DecisionConflict):
+            release_privacy_hold(
+                db_session, job_id=job.id, shown_matches=before, actor_id=scene.user.id
+            )
+
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        status = "cancelled" if violation == "declined_meanwhile" else "privacy_hold"
+        assert (fresh.status, fresh.privacy_matches) == (status, before)
+
+    def test_unit_release_skips_and_refreshes_the_job_with_a_changed_set(
+        self, db_session, factories
+    ):
+        scene = _hold_scene(db_session, factories)
+        job = scene.jobs[0]
+        old = list(job.privacy_matches)
+        factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        db_session.expire_all()
+        current = _current_matches(db_session, job.context_id)
+        assert current != old
+
+        report = release_unit_privacy_holds(
+            db_session, unit_id=scene.unit_id, shown_matches=old, actor_id=scene.user.id
+        )
+
+        assert report == ConfirmReport(confirmed=[], skipped=[job.id])
+        fresh = _fresh(db_session, SemanticJob, job.id)
+        assert (fresh.status, fresh.privacy_matches) == ("privacy_hold", current)
+
+
+class TestPrivacyHoldRefreshIsLeftToTheCaller:
+    def test_service_marks_the_refusal_and_does_not_commit_the_refresh(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        scene = _hold_scene(committing_db, committing_factories)
+        job_id, old = scene.jobs[0].id, list(scene.jobs[0].privacy_matches)
+        committing_factories.ContractorFactory.create(title="ООО «Кладка Ромашка»")
+        committing_db.commit()
+
+        with pytest.raises(DecisionConflict) as caught:
+            release_privacy_hold(
+                committing_db, job_id=job_id, shown_matches=old, actor_id=scene.user.id
+            )
+
+        assert caught.value.keep is True
+        with committing_session_factory() as other:
+            assert other.get(SemanticJob, job_id).privacy_matches == old, "до коммита вызывающего"
+        committing_db.rollback()
+        with committing_session_factory() as other:
+            assert other.get(SemanticJob, job_id).privacy_matches == old, "откат стирает запись"
+
+    def test_other_refusals_do_not_ask_to_keep(self, db_session, factories):
+        scene = _hold_scene(db_session, factories)
+        _make_stale(db_session, scene)
+
+        with pytest.raises(DecisionConflict) as caught:
+            release_privacy_hold(
+                db_session, job_id=scene.jobs[0].id, shown_matches=_SHOWN, actor_id=scene.user.id
+            )
+
+        assert caught.value.keep is False
+
+
 class TestReleaseUnitPrivacyHolds:
     def test_only_holds_of_the_unit_are_sent(self, db_session, factories):
         factories.ContractorFactory.create(title="ООО «Ромашка Строй»")
@@ -992,48 +1160,6 @@ class TestConfirmReask:
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 1)
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_RESERVE_USD", Decimal("0"))
 
-    @pytest.mark.parametrize("kind", ["unit", "config"])
-    def test_confirm_loads_and_renders_the_contexts_once(
-        self, db_session, factories, monkeypatch, kind
-    ):
-        """Оценка для сверки `preview_hash` и сама сверка читают один и тот же вход."""
-        import services.semantic_reconcile as reconcile_module
-
-        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
-        loads: list[int] = []
-        renders: list[int] = []
-        real_load = reconcile_module.load_request_material
-        real_render = reconcile_module.render_context_request
-
-        def _counting_load(db, context_ids):
-            loads.append(len(list(context_ids)))
-            return real_load(db, context_ids)
-
-        def _counting_render(material, *, settings):
-            renders.append(material.context_id)
-            return real_render(material, settings=settings)
-
-        if kind == "unit":
-            preview = preview_unit_reask(db_session, unit_id=scene.unit_id)
-        else:
-            preview = preview_config_reask(db_session)
-        monkeypatch.setattr(reconcile_module, "load_request_material", _counting_load)
-        monkeypatch.setattr(reconcile_module, "render_context_request", _counting_render)
-
-        if kind == "unit":
-            report = confirm_unit_reask(
-                db_session, unit_id=scene.unit_id, preview_hash=preview.preview_hash,
-                actor_id=scene.user.id,
-            )
-        else:
-            report = confirm_config_reask(
-                db_session, preview_hash=preview.preview_hash, actor_id=scene.user.id
-            )
-
-        assert report.created == 3
-        assert len(loads) == 1
-        assert sorted(renders) == sorted(scene.context_ids)
-
     def test_unit_reask_creates_jobs_above_the_event_cap_without_a_batch(
         self, db_session, factories, monkeypatch
     ):
@@ -1175,40 +1301,6 @@ class TestBatches:
         assert [list(p) for p in batch.held_fingerprints] == audit_before
         jobs = db_session.execute(sa.select(SemanticJob)).scalars().all()
         assert len(jobs) == 3 and {j.batch_id for j in jobs} == {batch_id}
-
-    def test_approve_loads_and_renders_the_batch_contexts_once(
-        self, db_session, factories, monkeypatch
-    ):
-        """Оценка для сверки `preview_hash` и сама сверка читают один и тот же вход:
-        материал пачки загружается один раз, рендер — по разу на контекст."""
-        import services.semantic_reconcile as reconcile_module
-
-        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
-        batch_id = _held_batch(db_session, scene)
-        preview = preview_batch(db_session, batch_id=batch_id)
-        loads: list[int] = []
-        renders: list[int] = []
-        real_load = reconcile_module.load_request_material
-        real_render = reconcile_module.render_context_request
-
-        def _counting_load(db, context_ids):
-            loads.append(len(list(context_ids)))
-            return real_load(db, context_ids)
-
-        def _counting_render(material, *, settings):
-            renders.append(material.context_id)
-            return real_render(material, settings=settings)
-
-        monkeypatch.setattr(reconcile_module, "load_request_material", _counting_load)
-        monkeypatch.setattr(reconcile_module, "render_context_request", _counting_render)
-
-        report = approve_batch(
-            db_session, batch_id=batch_id, preview_hash=preview.preview_hash, actor_id=scene.user.id
-        )
-
-        assert report.created == 3
-        assert loads == [3]
-        assert sorted(renders) == sorted(scene.context_ids)
 
     def test_batch_id_marks_only_jobs_of_the_current_pairs(self, db_session, factories):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
@@ -1786,3 +1878,98 @@ class TestDecisionRace:
         with committing_session_factory() as check:
             state = check.get(SemanticWorkerState, 1)
             assert (state.claim_paused, state.last_resumed_by) == (False, scene.user.id)
+
+
+# ---------------------------------------------------------------------------
+#  Гонка снимка preview с параллельным импортом
+# ---------------------------------------------------------------------------
+
+def _concurrent_input_change(session_factory, scene, context_ids):
+    """Другой сеанс между проверкой `preview_hash` и сверкой: новая активная
+    семья единицы (отпечатки контекстов меняются) и сверка, ставящая задания на
+    НОВЫЕ отпечатки, — как параллельный импорт; всё закоммичено."""
+    other = session_factory()
+    try:
+        other.execute(sa.text("SET LOCAL lock_timeout = '10s'"))
+        _active_family(other, title="Семья из параллельного импорта", unit_name=scene.unit, actor_id=scene.user_id)
+        reconcile_semantic_jobs(other, context_ids, cap=NO_CAP, source="import")
+        other.commit()
+    finally:
+        other.close()
+
+
+def _after_hash_check(monkeypatch, action):
+    """Вклинивание ровно после расчёта оценки, которой проверяется хэш."""
+    real = decisions._preview_and_pairs
+    fired: list[bool] = []
+
+    def _wrapped(db, context_ids, **kwargs):
+        result = real(db, context_ids, **kwargs)
+        if not fired:
+            fired.append(True)
+            action()
+        return result
+
+    monkeypatch.setattr(decisions, "_preview_and_pairs", _wrapped)
+    return fired
+
+
+def _live_jobs(session_factory, context_id):
+    with session_factory() as check:
+        rows = check.execute(
+            sa.select(SemanticJob.request_hash, SemanticJob.status, SemanticJob.cancel_reason)
+            .where(SemanticJob.context_id == context_id)
+            .order_by(SemanticJob.id)
+        ).all()
+    return rows
+
+
+class TestPreviewSnapshotRace:
+    def _scene(self, committing_db, committing_factories):
+        scene = _scene(committing_db, committing_factories, titles=("Пол А", "Пол Б"))
+        scene.user_id = scene.user.id
+        committing_db.commit()
+        return scene
+
+    @pytest.mark.parametrize("kind", ["unit", "config", "batch"])
+    def test_job_created_after_the_hash_check_survives_the_reconcile(
+        self, committing_session_factory, committing_db, committing_factories, monkeypatch, kind
+    ):
+        scene = self._scene(committing_db, committing_factories)
+        if kind == "batch":
+            batch_id = _held_batch(committing_db, scene)
+            committing_db.commit()
+            preview = preview_batch(committing_db, batch_id=batch_id)
+        elif kind == "unit":
+            preview = preview_unit_reask(committing_db, unit_id=scene.unit_id)
+        else:
+            preview = preview_config_reask(committing_db)
+        committing_db.rollback()
+        fired = _after_hash_check(
+            monkeypatch,
+            lambda: _concurrent_input_change(committing_session_factory, scene, scene.context_ids),
+        )
+
+        if kind == "batch":
+            approve_batch(
+                committing_db, batch_id=batch_id, preview_hash=preview.preview_hash,
+                actor_id=scene.user_id,
+            )
+        elif kind == "unit":
+            confirm_unit_reask(
+                committing_db, unit_id=scene.unit_id, preview_hash=preview.preview_hash,
+                actor_id=scene.user_id,
+            )
+        else:
+            confirm_config_reask(
+                committing_db, preview_hash=preview.preview_hash, actor_id=scene.user_id
+            )
+        committing_db.commit()
+
+        assert fired, "вход теста: вклинивание сработало"
+        for context_id in scene.context_ids:
+            with committing_session_factory() as check:
+                current = _rendered(check, context_id).request_hash
+            jobs = _live_jobs(committing_session_factory, context_id)
+            assert [(h, st) for h, st, _ in jobs if st == "pending"] == [(current, "pending")]
+            assert all(r[0] == current or r[1] == "cancelled" for r in jobs)

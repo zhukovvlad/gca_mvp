@@ -261,3 +261,55 @@ describe("SuggestionsTab — решения в очередях «Новая» �
     expect(onOpenFamily).toHaveBeenCalledWith(501);
   });
 });
+
+describe("SuggestionsTab — опрос", () => {
+  function countRequests() {
+    const counts: Record<string, number> = {};
+    const listener = ({ request }: { request: Request }) => {
+      const url = new URL(request.url);
+      if (!url.pathname.startsWith("/api/v1/semantic/")) return;
+      const key = `${url.pathname.split("/").pop()}${url.searchParams.get("queue") ?? url.searchParams.get("status") ?? ""}`;
+      counts[key] = (counts[key] ?? 0) + 1;
+    };
+    server.events.on("request:start", listener);
+    return { counts, stop: () => server.events.removeListener("request:start", listener) };
+  }
+
+  it("через минуту перечитываются только сводка и видимая очередь; переключение перечитывает скрытую", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const probe = countRequests();
+    try {
+      renderWithProviders(<SuggestionsTab />, { queryClient: createTestQueryClient() });
+      await vi.waitFor(() => expect(screen.getAllByTestId("suggestion-group").length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(probe.counts.status).toBe(1));
+      await vi.waitFor(() => expect(probe.counts.jobserror).toBe(1));
+      const before = { ...probe.counts };
+
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      await vi.waitFor(() => expect(probe.counts.status).toBe(before.status + 1));
+      await vi.waitFor(() => expect(probe.counts.suggestionslist).toBe(before.suggestionslist + 1));
+      expect(probe.counts.suggestionsnew).toBe(before.suggestionsnew);
+      expect(probe.counts.jobserror).toBe(before.jobserror);
+      expect(probe.counts.jobsprivacy_hold).toBe(before.jobsprivacy_hold);
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await openQueue(user, /Ошибки/);
+
+      await vi.waitFor(() => expect(probe.counts.jobserror).toBe(before.jobserror + 1));
+      await vi.waitFor(() =>
+        expect(probe.counts.jobsprivacy_hold).toBe(before.jobsprivacy_hold + 1)
+      );
+
+      // Каждая скрытая очередь перечитывается своим переключением.
+      await openQueue(user, /Новая/);
+      await vi.waitFor(() => expect(probe.counts.suggestionsnew).toBe(before.suggestionsnew + 1));
+      const listBefore = probe.counts.suggestionslist;
+      await openQueue(user, /Семья из списка/);
+      await vi.waitFor(() => expect(probe.counts.suggestionslist).toBe(listBefore + 1));
+    } finally {
+      probe.stop();
+      vi.useRealTimers();
+    }
+  });
+});

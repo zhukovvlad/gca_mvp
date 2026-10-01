@@ -12,8 +12,10 @@ import {
   usePrivacyRelease,
   useQueueStatus,
   useReaskConfirm,
+  useJobs,
   useRejectSuggestion,
   useResumeWorker,
+  useSuggestions,
   useRetryJob,
   useUnitPrivacyRelease,
 } from "./queries";
@@ -236,6 +238,80 @@ describe("useQueueStatus", () => {
       await vi.advanceTimersByTimeAsync(61_000);
       await vi.advanceTimersByTimeAsync(61_000);
       expect(calls).toBe(1);
+    } finally {
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("очереди и задания: опрос раз в минуту", () => {
+  function countingServer() {
+    const calls = { suggestions: 0, jobs: 0 };
+    server.use(
+      http.get("/api/v1/semantic/suggestions", () => {
+        calls.suggestions += 1;
+        return HttpResponse.json({ groups: [], items: [], total: 0 });
+      }),
+      http.get("/api/v1/semantic/jobs", () => {
+        calls.jobs += 1;
+        return HttpResponse.json({ items: [] });
+      })
+    );
+    return calls;
+  }
+
+  function wrapperFor() {
+    const queryClient = createTestQueryClient();
+    return ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+  }
+
+  it("смонтированные очередь и задания перечитываются через минуту, не раньше", async () => {
+    const calls = countingServer();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const wrapper = wrapperFor();
+      const q = renderHook(() => useSuggestions({ queue: "new" }), { wrapper });
+      const j = renderHook(() => useJobs("error"), { wrapper });
+      await vi.waitFor(() => {
+        expect(q.result.current.isSuccess).toBe(true);
+        expect(j.result.current.isSuccess).toBe(true);
+      });
+      expect(calls).toEqual({ suggestions: 1, jobs: 1 });
+
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(calls).toEqual({ suggestions: 1, jobs: 1 });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => expect(calls).toEqual({ suggestions: 2, jobs: 2 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("фоновая вкладка и размонтированная очередь не опрашиваются", async () => {
+    const calls = countingServer();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const wrapper = wrapperFor();
+      const q = renderHook(() => useSuggestions({ queue: "new" }), { wrapper });
+      const j = renderHook(() => useJobs("error"), { wrapper });
+      await vi.waitFor(() => {
+        expect(q.result.current.isSuccess).toBe(true);
+        expect(j.result.current.isSuccess).toBe(true);
+      });
+
+      focusManager.setFocused(false);
+      await vi.advanceTimersByTimeAsync(61_000);
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(calls).toEqual({ suggestions: 1, jobs: 1 });
+
+      focusManager.setFocused(undefined);
+      q.unmount();
+      j.unmount();
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(calls).toEqual({ suggestions: 1, jobs: 1 });
     } finally {
       focusManager.setFocused(undefined);
       vi.useRealTimers();
