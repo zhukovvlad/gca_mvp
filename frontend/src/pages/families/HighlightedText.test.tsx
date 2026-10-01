@@ -34,8 +34,8 @@ describe("findMatchRanges", () => {
     expect(findMatchRanges("Ромашкам и ультраромашка", ["ромашка"])).toEqual([]);
   });
 
-  it("слово рядом с цифрой и знаком: цифра — часть слова, запятая — граница", () => {
-    expect(findMatchRanges("ромашка2", ["ромашка"])).toEqual([]);
+  it("слово рядом с цифрой и знаком: цифра — отдельное слово, запятая — граница", () => {
+    expect(findMatchRanges("ромашка2", ["ромашка"])).toHaveLength(1);
     expect(findMatchRanges("ромашка, корпус", ["ромашка"])).toHaveLength(1);
   });
 
@@ -86,6 +86,73 @@ describe("findMatchRanges", () => {
 
   it("слитное написание без разделителя — не совпадение", () => {
     expect(findMatchRanges("Ромашкасервис", ["ромашка сервис"])).toEqual([]);
+  });
+
+  it("подчёркивание в тексте — разделитель слов записи", () => {
+    const text = "Кладка Ромашка_Сервис стен";
+    const [range] = findMatchRanges(text, ["ромашка сервис"]);
+    expect(text.slice(range.from, range.to)).toBe("Ромашка_Сервис");
+  });
+
+  it.each(["ЖК 1", "ЖК-1", "ЖК1", "ЖК_1"])("запись «жк 1» подсвечивает %s", (name) => {
+    const text = `Работы ${name} сданы`;
+    const [range] = findMatchRanges(text, [{ text: "жк 1", kind: "object" }]);
+    expect(text.slice(range.from, range.to)).toBe(name);
+  });
+
+  it("запись «жк 1» не совпадает с «ЖК12» и «АЖК1»", () => {
+    expect(findMatchRanges("Работы ЖК12 сданы", [{ text: "жк 1", kind: "object" }])).toEqual([]);
+    expect(findMatchRanges("Работы АЖК1 сданы", [{ text: "жк 1", kind: "object" }])).toEqual([]);
+  });
+
+  it("форма, приклеенная к цифре в видимой строке, не мешает записи", () => {
+    const text = "Поставщик АО1 Строй давно";
+    const [range] = findMatchRanges(text, [{ text: "ао 1 строй", kind: "contractor" }]);
+    expect(text.slice(range.from, range.to)).toBe("АО1 Строй");
+  });
+
+  it("запись, начинающаяся с символа вне BMP, находится без зависания", { timeout: 2000 }, () => {
+    const text = "\u{1D400}\u{1D400} x \u{1D400}";
+    const ranges = findMatchRanges(text, [{ text: "\u{1D400}", kind: "contractor" }]);
+    expect(ranges).toEqual([{ from: 7, to: 9 }]);
+  });
+
+  it("буква вне BMP перед цифрой делится как на сервере", { timeout: 2000 }, () => {
+    const text = "Работы \u{1D400}1 сданы";
+    const [range] = findMatchRanges(text, [{ text: "\u{1D400} 1", kind: "object" }]);
+    expect(text.slice(range.from, range.to)).toBe("\u{1D400}1");
+  });
+
+  it("цифра перед буквой вне BMP и граница после неё", { timeout: 2000 }, () => {
+    expect(findMatchRanges("1\u{1D400}", [{ text: "1 \u{1D400}", kind: "object" }])).toHaveLength(1);
+    expect(findMatchRanges("\u{1D400}\u{1D401}", [{ text: "\u{1D400}", kind: "object" }])).toEqual([]);
+  });
+
+  it("номер договора не делится на границе буква–цифра", () => {
+    expect(findMatchRanges("Договор А1", [{ text: "а 1", kind: "contract" }])).toEqual([]);
+  });
+
+  it("граница цифра–буква в видимой строке тоже делит слова записи", () => {
+    const text = "Работы Корпус5Б сданы";
+    expect(findMatchRanges(text, [{ text: "корпус 5 б", kind: "object" }])).toEqual([
+      { from: 7, to: 15 },
+    ]);
+  });
+
+  it("совпадение, сохранённое прежним словарём слитно («жк1»), подсвечивается", () => {
+    expect(findMatchRanges("Работы ЖК1 сданы", [{ text: "жк1", kind: "object" }])).toEqual([
+      { from: 7, to: 10 },
+    ]);
+  });
+
+  it("подчёркивание на краю фразы — граница слова", () => {
+    expect(findMatchRanges("Кладка_Ромашка_стен", ["ромашка"])).toEqual([{ from: 7, to: 14 }]);
+  });
+
+  it("подчёркивание рядом с номером — граница слова", () => {
+    expect(
+      findMatchRanges("Лист_Д-12_согласован", [{ text: "д-12", kind: "contract" }])
+    ).toEqual([{ from: 5, to: 9 }]);
   });
 
   it("запись «ромашка» подсвечивается в «Ромашка, ТОО» без формы", () => {

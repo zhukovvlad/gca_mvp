@@ -855,8 +855,8 @@ def _shown(matches: list[PrivacyMatchIn]) -> list[dict]:
 def _serialize_preview(preview: semantic_decisions.Preview) -> dict:
     return {
         "context_count": preview.context_count,
-        "reserve_usd": str(preview.reserve_usd),
-        "expected_cached_usd": str(preview.expected_cached_usd),
+        "reserve_usd": crud_semantic_queue.money_str(preview.reserve_usd),
+        "expected_cached_usd": crud_semantic_queue.money_str(preview.expected_cached_usd),
         "preview_hash": preview.preview_hash,
     }
 

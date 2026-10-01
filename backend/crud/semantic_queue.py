@@ -210,6 +210,12 @@ def band_of(confidence: Decimal) -> Band:
     return "low"
 
 
+def money_str(value: Decimal) -> str:
+    """Деньги строкой в фиксированной записи: `str(Decimal("1E+2"))` — `"1E+2"`,
+    а экран разбирает деньги строкой без экспоненты."""
+    return format(value, "f")
+
+
 def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -737,8 +743,9 @@ def _covers_context():
 def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | None]:
     """Устаревшие единицы и конфигурация по применимым контекстам (спека §2.10).
 
-    Единица устарела: у применимого контекста нет ПОКРЫВАЮЩЕГО задания с текущим
-    `candidates_hash` (список семей изменился). Конфигурация изменена: такое
+    Единица устарела: у применимого контекста нет ПОКРЫВАЮЩЕГО задания ни с
+    текущим `candidates_hash`, ни с текущим `request_hash` (список семей
+    изменился по смыслу, а не только пробелами). Конфигурация изменена: такое
     задание есть, а с текущим `request_hash` — нет (промпт, модель или параметры
     поменяли тело запроса при том же списке семей).
 
@@ -777,10 +784,17 @@ def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | Non
     stale_by_unit: dict[int | None, list] = {}
     config_stale = 0
     for context_id, material in applicable.items():
-        if fingerprints.candidates_hash(material) not in candidates_hashes.get(context_id, ()):
+        current_request_hash = fingerprints.request_hash(material)
+        if (
+            fingerprints.candidates_hash(material) not in candidates_hashes.get(context_id, ())
+            # Снимок семей хранит сырой текст, а в запросе пробелы схлопнуты:
+            # правка одними пробелами меняет снимок, но не тело запроса — такое
+            # задание по-прежнему покрывает контекст.
+            and current_request_hash not in request_hashes.get(context_id, ())
+        ):
             entry = stale_by_unit.setdefault(material.unit_id, [material.unit_code, 0])
             entry[1] += 1
-        elif fingerprints.request_hash(material) not in request_hashes.get(context_id, ()):
+        elif current_request_hash not in request_hashes.get(context_id, ()):
             config_stale += 1
 
     stale_units = [
@@ -819,16 +833,16 @@ def queue_status(db: Session) -> QueueStatus:
             import_job_id=b.import_job_id,
             unit_id=b.unit_id,
             contexts_count=b.contexts_count,
-            reserve_usd=str(b.reserve_estimate_usd),
-            expected_cached_usd=str(b.cached_estimate_usd),
+            reserve_usd=money_str(b.reserve_estimate_usd),
+            expected_cached_usd=money_str(b.cached_estimate_usd),
             created_at=b.created_at.isoformat(),
         )
         for b in batches
     ]
     stale_units, config_stale = _stale_scan(db)
     return QueueStatus(
-        spent_24h_usd=str(spent_last_24h(db, now=now)),
-        daily_budget_usd=str(settings.SEMANTIC_DAILY_BUDGET_USD),
+        spent_24h_usd=money_str(spent_last_24h(db, now=now)),
+        daily_budget_usd=money_str(settings.SEMANTIC_DAILY_BUDGET_USD),
         claim_paused=paused,
         held_batches=held,
         stale_units=stale_units,

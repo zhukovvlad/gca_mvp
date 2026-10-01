@@ -53,9 +53,14 @@ _QUOTE_TO_SPACE = {ord(ch): " " for ch in _QUOTE_CHARS}
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
-#: Слово имени — прогон букв/цифр/подчёркиваний; всё прочее (пробел, кавычка,
-#: запятая, скобка, дефис) разделяет слова.
-_WORD_RUN_RE = re.compile(r"\w+")
+#: Слово имени — прогон букв ИЛИ прогон цифр; всё прочее (пробел, кавычка,
+#: запятая, скобка, дефис, подчёркивание) разделяет слова, и граница между
+#: буквой и цифрой (`ЖК1`) — тоже граница слов.
+_WORD_RUN_RE = re.compile(r"[^\W\d_]+|\d+")
+
+#: Граница буква–цифра в тексте (`ЖК1`): в поиске по имени там вставляется
+#: пробел, и дальше слова записи стоят через обычный разделитель.
+_LETTER_DIGIT_EDGE_RE = re.compile(r"(?<=[^\W\d_])(?=\d)|(?<=\d)(?=[^\W\d_])")
 
 
 def _replace_quotes_with_space(text: str) -> str:
@@ -72,16 +77,30 @@ def _replace_quotes_with_space(text: str) -> str:
 
 def normalize_org_name(title: str) -> str:
     """Полное имя объекта или подрядчика → каноническая форма словаря (спека
-    §2.3): имя режется на слова по ЛЮБОМУ не-словесному символу (пробел,
-    кавычка, запятая, скобка, дефис), форма ООО/АО/ПАО/ЗАО/ОАО/ИП/ТОО/LLP или
-    приставка ГК/СЗ отбрасывается, только если она — слово целиком (без учёта
-    регистра), остальные слова склеиваются одним пробелом. `ООО «Каркас
-    Монолит»` → `каркас монолит`, `Ромашка, ТОО` → `ромашка`; форма, вложенная
-    в слово (`АОРТА`, `АО1`), не снимается."""
-    kept_tokens = [
-        token for token in _WORD_RUN_RE.findall(title) if token.casefold() not in _ORG_FORMS_CASEFOLD
-    ]
-    return " ".join(kept_tokens).casefold()
+    §2.3): имя режется на прогоны букв и прогоны цифр, любой другой символ
+    (пробел, кавычка, запятая, скобка, дефис, `_`) — разделитель. Форма
+    ООО/АО/ПАО/ЗАО/ОАО/ИП/ТОО/LLP или приставка ГК/СЗ отбрасывается, только если
+    она — слово целиком (без учёта регистра) и с обеих сторон от неё настоящий
+    разделитель; остальные слова склеиваются одним пробелом, регистр снят.
+    `ООО «Каркас Монолит»` → `каркас монолит`, `Ромашка, ТОО` → `ромашка`, `ЖК1` →
+    `жк 1`; форма, вложенная в слово (`АОРТА`) или приклеенная к цифре (`АО1` →
+    `ао 1`), остаётся. Если после снятия форм не осталось ни одного слова-букв
+    (`ТОО 123`, `ТОО`), формы сохраняются. Пустой результат даёт только имя без
+    единой буквы и цифры (`«»`) — такую запись словарь отбрасывает; имя из одних
+    цифр (`123`) остаётся как есть."""
+    runs = list(_WORD_RUN_RE.finditer(title))
+    kept: list[str] = []
+    for match in runs:
+        token = match.group().casefold()
+        before = title[match.start() - 1] if match.start() > 0 else ""
+        after = title[match.end()] if match.end() < len(title) else ""
+        glued = (before != "" and before.isalnum()) or (after != "" and after.isalnum())
+        if token in _ORG_FORMS_CASEFOLD and not glued:
+            continue
+        kept.append(token)
+    if not any(not token.isdigit() for token in kept):
+        kept = [match.group().casefold() for match in runs]
+    return " ".join(kept)
 
 
 def _normalize_plain(text: str) -> str:
@@ -173,13 +192,15 @@ def build_privacy_dictionary(db: Session) -> PrivacyDictionary:
 _FAMILY_LINE_ID_RE = re.compile(r"^(\d+)\. ")
 
 
-#: Между соседними словами имени допустим любой не-словесный промежуток и
-#: организационные формы целыми токенами: `normalize_org_name` снимает формы
-#: в любом месте имени и считает разделителем любой не-словесный символ, а в
-#: тексте остаются и формы, и знаки (`Ромашка (ООО), Сервис`). `ООО1` формой не
-#: считается: после формы обязан идти не-словесный символ.
+#: Между соседними словами имени допустим любой промежуток из не-букв и
+#: не-цифр и организационные формы целыми токенами: `normalize_org_name` снимает
+#: формы в любом месте имени и считает разделителем любой символ, кроме букв и
+#: цифр (в том числе `_`), а в тексте остаются и формы, и знаки (`Ромашка (ООО),
+#: Сервис`). `ООО1` формой не считается: после формы обязан идти разделитель.
+#: Текст перед поиском по имени делится на границе буква–цифра (см.
+#: `_split_letter_digit_edges`), поэтому `ЖК1`, `ЖК 1` и `ЖК-1` — одно имя.
 _ORG_FORMS_ALTERNATION = "|".join(re.escape(form) for form in sorted(_ORG_FORMS_CASEFOLD))
-_WORD_GAP = rf"\W+(?:(?:{_ORG_FORMS_ALTERNATION})\W+)*"
+_WORD_GAP = rf"[\W_]+(?:(?:{_ORG_FORMS_ALTERNATION})[\W_]+)*"
 
 #: Записи имён (объекты, подрядчики) ищутся с пропуском форм и знаков;
 #: номера договоров и тендеров — буквально, слова через `\s+`.
@@ -188,23 +209,34 @@ _ORG_KINDS = frozenset({"object", "contractor"})
 
 def _entry_pattern(entry_text: str, kind: str) -> re.Pattern[str]:
     """Регулярное выражение одной записи словаря, по границе слова без учёта
-    регистра (спека §2.3) — `(?<!\\w)`/`(?!\\w)` по обе стороны всей фразы.
-    Имя (`object`, `contractor`): слова записи через `_WORD_GAP`. Номер
+    регистра (спека §2.3) — не буква и не цифра по обе стороны всей фразы.
+    Имя (`object`, `contractor`): слова записи через `_WORD_GAP`; искать нужно в
+    тексте, разделённом на границе буква–цифра (`_split_letter_digit_edges`). Номер
     (`contract`, `tender`): слова через `\\s+`, формы и знаки в номере — часть
-    значения. Кавычки вокруг фразы совпадению не мешают: это не символы `\\w`."""
+    значения. Кавычки вокруг фразы совпадению не мешают: это не буквы и не
+    цифры."""
     if kind in _ORG_KINDS:
         words = _WORD_RUN_RE.findall(entry_text)
-        gap = _WORD_GAP
+        body = _WORD_GAP.join(re.escape(word) for word in words)
     else:
-        words = entry_text.split(" ")
-        gap = r"\s+"
-    body = gap.join(re.escape(word) for word in words)
-    return re.compile(rf"(?<!\w){body}(?!\w)")
+        body = r"\s+".join(re.escape(word) for word in entry_text.split(" "))
+    return re.compile(rf"(?<![^\W_]){body}(?![^\W_])")
+
+
+def _split_letter_digit_edges(text: str) -> str:
+    """`ЖК1` → `ЖК 1`: так текст видит запись имени, разбитую на прогоны букв и
+    цифр. Номера договоров и тендеров ищутся в тексте без этого шага."""
+    return _LETTER_DIGIT_EDGE_RE.sub(" ", text)
 
 
 def _matches_any(entry: PrivacyEntry, prepared_texts: tuple[str, ...]) -> bool:
     pattern = _entry_pattern(entry.text, entry.kind)
-    return any(pattern.search(text) is not None for text in prepared_texts)
+    texts = (
+        tuple(_split_letter_digit_edges(text) for text in prepared_texts)
+        if entry.kind in _ORG_KINDS
+        else prepared_texts
+    )
+    return any(pattern.search(text) is not None for text in texts)
 
 
 def _scan(

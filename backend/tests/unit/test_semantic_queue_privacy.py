@@ -70,11 +70,17 @@ class TestNormalizeOrgName:
     def test_casefold_applied(self):
         assert normalize_org_name("РОМАШКА") == "ромашка"
 
-    def test_empty_after_stripping_form_and_quotes(self):
-        """Запись, ставшая пустой после нормализации, — уже свойство самой
-        функции, не только словаря: интеграционный тест проверяет, что такая
-        запись не попадает в словарь."""
-        assert normalize_org_name("«ООО»") == ""
+    def test_name_made_only_of_a_form_keeps_the_form(self):
+        """Без единого слова-буквы после снятия форм запись не остаётся пустой и
+        не становится только цифрами: формы сохраняются."""
+        assert normalize_org_name("«ООО»") == "ооо"
+        assert normalize_org_name("ТОО") == "тоо"
+
+    def test_name_of_a_form_and_digits_keeps_the_form(self):
+        assert normalize_org_name("ТОО 123") == "тоо 123"
+
+    def test_separated_form_is_stripped_before_digits(self):
+        assert normalize_org_name("ООО «Ромашка» 1") == "ромашка 1"
 
     # -----------------------------------------------------------------------
     #  Форма снимается только ЦЕЛЫМ пробельным токеном —
@@ -85,8 +91,20 @@ class TestNormalizeOrgName:
     def test_form_glued_by_hyphen_is_a_separate_word_and_stripped(self):
         assert normalize_org_name("ГК-Строй") == "строй"
 
-    def test_form_glued_by_digit_is_kept_whole(self):
-        assert normalize_org_name("АО1") == "ао1"
+    def test_form_glued_by_digit_stays_part_of_the_name(self):
+        """Форма снимается, только если с обеих сторон настоящий разделитель:
+        приклеенная к цифре остаётся словом имени."""
+        assert normalize_org_name("АО1") == "ао 1"
+        assert normalize_org_name("1АО") == "1 ао"
+
+    def test_underscore_is_a_separator(self):
+        assert normalize_org_name("Ромашка_Сервис") == "ромашка сервис"
+
+    def test_letter_digit_boundary_splits_the_word(self):
+        assert normalize_org_name("ЖК1") == "жк 1"
+
+    def test_digit_letter_boundary_splits_the_word(self):
+        assert normalize_org_name("Корпус5Б") == "корпус 5 б"
 
     def test_hyphenated_word_is_split_into_two_words(self):
         """Дефис, как и любой не-словесный символ, разделяет слова."""
@@ -352,14 +370,14 @@ class TestFindPrivacyMatchesAfterNormalizationFix:
         assert matches == (PrivacyMatch(text="строй", kind="contractor", where="context"),)
 
     def test_name_with_a_digit_glued_form_is_found_written_as_in_the_db(self):
-        entry_text = normalize_org_name("АО1")
-        material = _material(title="Поставщик АО1 давно работает")
+        entry_text = normalize_org_name("АО1 Строй")
+        material = _material(title="Поставщик АО1 Строй давно работает")
         rendered = render_context_request(material, settings=_settings())
         dictionary = _dictionary(("contractor", entry_text))
 
         matches = find_privacy_matches(dictionary, rendered)
 
-        assert matches == (PrivacyMatch(text="ао1", kind="contractor", where="context"),)
+        assert matches == (PrivacyMatch(text="ао 1 строй", kind="contractor", where="context"),)
 
     def test_name_with_apostrophe_glued_in_text_still_matches(self):
         """Запись из `O'Brien Build` — два слова (`o brien build`); текст,
@@ -578,4 +596,88 @@ class TestFindPrivacyMatchesBlockLayout:
         assert find_privacy_matches(_dictionary(("contractor", "ромашка")), rendered) == (
             PrivacyMatch(text="ромашка", kind="contractor", where="family:2"),
             PrivacyMatch(text="ромашка", kind="contractor", where="family:5"),
+        )
+
+
+class TestNameTokensAreLetterAndDigitRuns:
+    """Имя делится на прогоны букв и прогоны цифр, остальное (в том числе `_`) —
+    разделитель; в тексте то же имя совпадает при любой записи границы между
+    токенами (спека §2.3)."""
+
+    def _find(self, entry: str, title: str, kind: str = "contractor"):
+        rendered = render_context_request(_material(title=title), settings=_settings())
+        return find_privacy_matches(_dictionary((kind, entry)), rendered)
+
+    def test_underscore_name_from_db_is_found_written_with_spaces(self):
+        entry = normalize_org_name("Ромашка_Сервис")
+
+        assert self._find(entry, "Поставка Ромашка Сервис на объект") == (
+            PrivacyMatch(text="ромашка сервис", kind="contractor", where="context"),
+        )
+
+    def test_spaced_name_from_db_is_found_written_with_underscore(self):
+        entry = normalize_org_name("Ромашка Сервис")
+
+        assert self._find(entry, "Поставка Ромашка_Сервис на объект") == (
+            PrivacyMatch(text="ромашка сервис", kind="contractor", where="context"),
+        )
+
+    @pytest.mark.parametrize("title", ["Работы ЖК 1 сданы", "Работы ЖК-1 сданы", "Работы ЖК1 сданы", "Работы ЖК_1 сданы"])
+    def test_letters_digits_name_is_found_with_or_without_a_gap(self, title):
+        entry = normalize_org_name("ЖК1")
+
+        assert self._find(entry, title, kind="object") == (
+            PrivacyMatch(text="жк 1", kind="object", where="context"),
+        )
+
+    def test_spaced_letters_digits_name_is_found_written_glued(self):
+        entry = normalize_org_name("ЖК 1")
+
+        assert self._find(entry, "Работы ЖК1 сданы", kind="object") == (
+            PrivacyMatch(text="жк 1", kind="object", where="context"),
+        )
+
+    def test_letters_glued_across_a_letter_letter_boundary_is_not_a_match(self):
+        assert self._find("ромашка сервис", "Поставка Ромашкасервис на объект") == ()
+
+    def test_digit_run_followed_by_more_digits_is_not_a_match(self):
+        assert self._find("жк 1", "Работы ЖК12 сданы", kind="object") == ()
+
+    def test_letters_before_the_name_are_not_a_match(self):
+        assert self._find("жк 1", "Работы АЖК1 сданы", kind="object") == ()
+
+    def test_number_entries_stay_literal(self):
+        rendered = render_context_request(_material(title="Договор А1 по плану"), settings=_settings())
+
+        assert find_privacy_matches(_dictionary(("contract", "а 1")), rendered) == ()
+
+    @pytest.mark.parametrize("title", ["Поставщик АО1 работает", "Поставщик АО 1 работает"])
+    def test_glued_form_and_digit_name_is_found_written_either_way(self, title):
+        assert self._find(normalize_org_name("АО1"), title) == (
+            PrivacyMatch(text="ао 1", kind="contractor", where="context"),
+        )
+
+    def test_standalone_digit_is_not_held_by_a_glued_form_name(self):
+        assert self._find(normalize_org_name("АО1"), "Секция 1 этаж 2") == ()
+
+    def test_digit_letter_name_is_found_written_glued(self):
+        entry = normalize_org_name("Корпус 5 Б")
+
+        assert self._find(entry, "Работы Корпус5Б сданы", kind="object") == (
+            PrivacyMatch(text="корпус 5 б", kind="object", where="context"),
+        )
+
+    def test_form_glued_to_a_digit_on_its_left_stays_part_of_the_name(self):
+        """Цифра слева от формы — тоже не разделитель; слово-буквы в имени есть,
+        поэтому восстановление форм этот случай не заслоняет."""
+        assert normalize_org_name("Строй 1АО") == "строй 1 ао"
+
+    def test_underscore_at_the_phrase_edge_is_a_word_boundary(self):
+        assert self._find("ромашка", "Поставка_Ромашка_стен") == (
+            PrivacyMatch(text="ромашка", kind="contractor", where="context"),
+        )
+
+    def test_underscore_next_to_a_number_is_a_word_boundary(self):
+        assert self._find("д-12", "Лист_Д-12_согласован", kind="contract") == (
+            PrivacyMatch(text="д-12", kind="contract", where="context"),
         )

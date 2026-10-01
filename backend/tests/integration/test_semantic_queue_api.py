@@ -1293,6 +1293,20 @@ class TestStatus:
             "config_stale": None,
         }
 
+    def test_exponent_budget_is_served_in_fixed_notation(self, admin_client, monkeypatch):
+        monkeypatch.setattr(app_settings, "SEMANTIC_DAILY_BUDGET_USD", Decimal("1E+2"))
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["daily_budget_usd"] == "100"
+
+    def test_ordinary_budget_is_served_unchanged(self, admin_client, monkeypatch):
+        monkeypatch.setattr(app_settings, "SEMANTIC_DAILY_BUDGET_USD", Decimal("12.50"))
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["daily_budget_usd"] == "12.50"
+
     def test_spent_is_a_decimal_string_of_the_last_24_hours(
         self, admin_client, db_session, factories
     ):
@@ -1303,6 +1317,35 @@ class TestStatus:
         payload = admin_client.get(f"{BASE}/status").json()
 
         assert payload["spent_24h_usd"] == "1.2345"
+
+    def test_tiny_spent_is_served_in_fixed_notation(self, admin_client, db_session, factories):
+        scene = _scene(db_session, factories, admin_client.user)
+        job = _make_job(db_session, scene.context_ids[0], status="done")
+        _make_attempt(db_session, job.id, cost_usd=Decimal("0.0000001"))
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["spent_24h_usd"] == "0.0000001"
+
+    def test_tiny_held_batch_money_is_served_in_fixed_notation(
+        self, admin_client, db_session, factories
+    ):
+        _scene(db_session, factories, admin_client.user, titles=("А", "Б"))
+        batch_id = decisions.enqueue_all(db_session)
+        db_session.execute(
+            sa.update(SemanticReconcileBatch)
+            .where(SemanticReconcileBatch.id == batch_id)
+            .values(
+                reserve_estimate_usd=Decimal("0.0000001"),
+                cached_estimate_usd=Decimal("0.00000002"),
+            )
+        )
+        db_session.expire_all()
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        [info] = payload["held_batches"]
+        assert (info["reserve_usd"], info["expected_cached_usd"]) == ("0.0000001", "0.00000002")
 
     def test_paused_claim_is_reported_with_reason_attempt_and_time(
         self, admin_client, db_session, factories
@@ -1400,6 +1443,36 @@ class TestStatus:
 
         assert payload["stale_units"] == []
         assert payload["config_stale"] == {"stale_count": 1, "prompt_version_current": 1}
+
+    def test_whitespace_only_family_edit_keeps_the_unit_current(
+        self, admin_client, db_session, factories
+    ):
+        """Строка семьи в запросе схлопывает пробелы: правка определения одними
+        пробелами и переносами не меняет тело запроса, и задание с тем же
+        `request_hash` по-прежнему покрывает контекст, хотя сырой снимок семей
+        (`candidates_hash`) уже другой."""
+        scene = _scene(db_session, factories, admin_client.user)
+        job = _make_job(db_session, scene.context_ids[0], status="done")
+        scene.family.definition = "  Определение\n\n  семьи   "
+        db_session.flush()
+        assert _rendered(db_session, scene.context_ids[0]).request_hash == job.request_hash
+        assert _rendered(db_session, scene.context_ids[0]).candidates_hash != job.candidates_hash
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert (payload["stale_units"], payload["config_stale"]) == ([], None)
+
+    def test_meaning_family_edit_marks_the_unit_stale(self, admin_client, db_session, factories):
+        scene = _scene(db_session, factories, admin_client.user)
+        _make_job(db_session, scene.context_ids[0], status="done")
+        scene.family.definition = "Определение семьи, дополненное"
+        db_session.flush()
+
+        payload = admin_client.get(f"{BASE}/status").json()
+
+        assert payload["stale_units"] == [
+            {"unit_id": scene.unit_id, "unit_code": "M2", "stale_count": 1}
+        ]
 
     def _history_job(self, db, context_id, *, status, request_hash=None, candidates_hash=None,
                      cancel_reason=None):
