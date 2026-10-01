@@ -105,7 +105,7 @@ function HeldJobRow({
   const release = usePrivacyRelease();
   const decline = usePrivacyDecline();
   const shown = job.matches ?? [];
-  const contextNeedles = shown.filter((m) => m.where === "context").map((m) => m.text);
+  const contextNeedles = shown.filter((m) => m.where === "context");
   const pending = release.isPending || decline.isPending;
 
   return (

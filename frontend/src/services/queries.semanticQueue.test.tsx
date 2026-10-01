@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
@@ -167,5 +167,78 @@ describe("useQueueStatus", () => {
     await waitFor(() => expect(second.result.current.isSuccess).toBe(true));
 
     expect(calls).toBe(1);
+  });
+
+  it("открытая вкладка перечитывает сводку раз в минуту, а не раньше", async () => {
+    const queryClient = createTestQueryClient();
+    let calls = 0;
+    server.use(
+      http.get("/api/v1/semantic/status", () => {
+        calls += 1;
+        return HttpResponse.json({
+          spent_24h_usd: "0",
+          daily_budget_usd: "10",
+          claim_paused: null,
+          held_batches: [],
+          stale_units: [],
+          config_stale: null,
+        });
+      })
+    );
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+
+    // Таймеры подменяются ДО монтирования: интервал опроса заводится при подписке.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const view = renderHook(() => useQueueStatus(), { wrapper });
+      await vi.waitFor(() => expect(view.result.current.isSuccess).toBe(true));
+      expect(calls).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => expect(calls).toBe(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("фоновая вкладка сводку не опрашивает", async () => {
+    const queryClient = createTestQueryClient();
+    let calls = 0;
+    server.use(
+      http.get("/api/v1/semantic/status", () => {
+        calls += 1;
+        return HttpResponse.json({
+          spent_24h_usd: "0",
+          daily_budget_usd: "10",
+          claim_paused: null,
+          held_batches: [],
+          stale_units: [],
+          config_stale: null,
+        });
+      })
+    );
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const view = renderHook(() => useQueueStatus(), { wrapper });
+      await vi.waitFor(() => expect(view.result.current.isSuccess).toBe(true));
+      expect(calls).toBe(1);
+
+      // Вкладка ушла в фон: интервал тикает, но запроса нет.
+      focusManager.setFocused(false);
+      await vi.advanceTimersByTimeAsync(61_000);
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(calls).toBe(1);
+    } finally {
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    }
   });
 });

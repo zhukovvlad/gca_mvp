@@ -400,6 +400,34 @@ class TestClaimBranches:
         assert job.claim_token is None
         assert _attempts(db_session, job.id) == []
 
+    def test_org_form_inside_the_name_in_the_text_still_puts_the_job_on_hold(
+        self, db_session, factories
+    ):
+        factories.ContractorFactory.create(title="Ромашка ООО Сервис")
+        scene = _scene(db_session, factories, titles=("Кладка Ромашка ООО Сервис стен",))
+
+        assert claim_next(db_session, settings=S, now=NOW) is None
+
+        job = _reload(db_session, scene.jobs[0].id)
+        assert job.status == "privacy_hold"
+        assert job.privacy_matches == [
+            {"text": "ромашка сервис", "kind": "contractor", "where": "context"}
+        ]
+
+    def test_punctuation_glued_to_a_form_in_the_title_still_puts_the_job_on_hold(
+        self, db_session, factories
+    ):
+        factories.ContractorFactory.create(title="Ромашка, ТОО")
+        scene = _scene(db_session, factories, titles=("Кладка Ромашка стен",))
+
+        assert claim_next(db_session, settings=S, now=NOW) is None
+
+        job = _reload(db_session, scene.jobs[0].id)
+        assert job.status == "privacy_hold"
+        assert job.privacy_matches == [
+            {"text": "ромашка", "kind": "contractor", "where": "context"}
+        ]
+
     def test_match_set_equal_to_the_released_set_is_claimed(self, db_session, factories):
         factories.ContractorFactory.create(title="ООО «Ромашка Строй»")
         scene = _scene(db_session, factories, titles=("Кладка Ромашка Строй стен",))

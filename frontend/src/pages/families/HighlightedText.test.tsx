@@ -55,6 +55,67 @@ describe("findMatchRanges", () => {
     expect(ranges).toEqual([{ from: 10, to: 19 }]);
   });
 
+  it("организационная форма посередине имени не мешает: запись словаря хранится без неё", () => {
+    const text = "Кладка Ромашка ООО Сервис стен";
+    const [range] = findMatchRanges(text, ["ромашка сервис"]);
+    expect(text.slice(range.from, range.to)).toBe("Ромашка ООО Сервис");
+  });
+
+  it("две формы подряд и форма в кавычках посередине имени подсвечиваются целиком", () => {
+    const two = "Ромашка ООО ТОО Сервис";
+    const [a] = findMatchRanges(two, ["ромашка сервис"]);
+    expect(two.slice(a.from, a.to)).toBe(two);
+    const quoted = "Ромашка «ООО» Сервис";
+    const [b] = findMatchRanges(quoted, ["ромашка сервис"]);
+    expect(quoted.slice(b.from, b.to)).toBe("Ромашка «ООО» Сервис");
+  });
+
+  it("между словами не форма или слово, лишь начинающееся с формы, — не совпадение", () => {
+    expect(findMatchRanges("Ромашка Плюс Сервис", ["ромашка сервис"])).toEqual([]);
+    expect(findMatchRanges("Ромашка ООО1 Сервис", ["ромашка сервис"])).toEqual([]);
+  });
+
+  it.each([
+    "Ромашка (ООО) Сервис",
+    "Ромашка ООО, Сервис",
+    "Ромашка-Сервис",
+  ])("знак и форма посередине имени не мешают: %s", (text) => {
+    const [range] = findMatchRanges(text, ["ромашка сервис"]);
+    expect(text.slice(range.from, range.to)).toBe(text);
+  });
+
+  it("слитное написание без разделителя — не совпадение", () => {
+    expect(findMatchRanges("Ромашкасервис", ["ромашка сервис"])).toEqual([]);
+  });
+
+  it("запись «ромашка» подсвечивается в «Ромашка, ТОО» без формы", () => {
+    const text = "Ромашка, ТОО";
+    const [range] = findMatchRanges(text, ["ромашка"]);
+    expect(text.slice(range.from, range.to)).toBe("Ромашка");
+  });
+
+  it("номер договора ищется буквально: знак вместо пробела не совпадение", () => {
+    expect(findMatchRanges("Договор 12-б", [{ text: "12 б", kind: "contract" }])).toEqual([]);
+    expect(findMatchRanges("Договор 12 б", [{ text: "12 б", kind: "contract" }])).toHaveLength(1);
+    expect(findMatchRanges("Договор 12-б", [{ text: "12 б", kind: "contractor" }])).toHaveLength(1);
+  });
+
+  it("номер тендера ищется буквально, как номер договора", () => {
+    expect(findMatchRanges("Тендер 12-б", [{ text: "12 б", kind: "tender" }])).toEqual([]);
+  });
+
+  it("сохранённая запись имени со знаком ищется по словам, как на сервере", () => {
+    // Совпадения задержанного задания хранятся текстом записи на момент захвата;
+    // запись, собранная прежней нормализацией, может нести знак («ромашка,»).
+    const text = "Кладка Ромашка ТОО стен";
+    const [range] = findMatchRanges(text, [{ text: "ромашка,", kind: "contractor" }]);
+    expect(text.slice(range.from, range.to)).toBe("Ромашка");
+  });
+
+  it("запись имени без единой буквы или цифры не даёт диапазонов", () => {
+    expect(findMatchRanges("Кладка — стен", [{ text: "—", kind: "contractor" }])).toEqual([]);
+  });
+
   it("два вхождения одного слова — два диапазона", () => {
     expect(findMatchRanges("ромашка и Ромашка", ["ромашка"])).toHaveLength(2);
   });

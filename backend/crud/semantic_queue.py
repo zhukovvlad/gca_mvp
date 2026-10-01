@@ -640,10 +640,11 @@ def _unit_hold_groups(
 
 def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsResponse:
     """Задания в `error` или `privacy_hold`. Для `error` — последнее сообщение
-    попытки; для `privacy_hold` — набор совпадений и группировка по единице для
+    попытки (текст ошибки, а у схемной ошибки, где его нет, — причина из
+    `validation_error`); для `privacy_hold` — набор совпадений и группировка по единице для
     совпадений в списке семей и в тексте промпта."""
     last_error_text = (
-        sa.select(SemanticJobAttempt.error_text)
+        sa.select(sa.func.coalesce(SemanticJobAttempt.error_text, SemanticJobAttempt.validation_error))
         .where(SemanticJobAttempt.job_id == SemanticJob.id)
         .order_by(SemanticJobAttempt.id.desc())
         .limit(1)

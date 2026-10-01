@@ -155,6 +155,16 @@ describe("ErrorsQueue — «Задержано проверкой»", () => {
     expect(marks.map((m) => m.textContent)).toEqual(["Ромашка"]);
   });
 
+  it("номер договора в строке подсвечен буквально, как его нашёл сервер", () => {
+    const job = structuredClone(handlerState.holdJobs[0]);
+    job.title = "Монтаж по договору 12 б, доп. 12-б";
+    job.matches = [{ text: "12 б", kind: "contract", where: "context" }];
+    renderQueue({ hold: fixtureHold({ items: [job], unit_groups: [] }) });
+
+    const marks = Array.from(heldJob(/Монтаж по договору/).querySelectorAll("mark"));
+    expect(marks.map((m) => m.textContent)).toEqual(["12 б"]);
+  });
+
   it("место совпадения подписано у каждого слова: в строке и в списке семей", () => {
     renderQueue();
 

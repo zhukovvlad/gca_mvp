@@ -189,7 +189,7 @@ def _make_job(
     return job
 
 
-def _make_attempt(db, job_id, *, error_text=None, cost_usd=None):
+def _make_attempt(db, job_id, *, error_text=None, validation_error=None, cost_usd=None):
     attempt = SemanticJobAttempt(
         job_id=job_id,
         claim_token=uuid.uuid4(),
@@ -199,6 +199,7 @@ def _make_attempt(db, job_id, *, error_text=None, cost_usd=None):
         prefix_hash="prefix-hash",
         privacy_dictionary_hash="dict-hash",
         error_text=error_text,
+        validation_error=validation_error,
         cost_usd=cost_usd,
     )
     db.add(attempt)
@@ -1149,6 +1150,36 @@ class TestJobs:
         payload = admin_client.get(f"{BASE}/jobs", params={"status": "error"}).json()
 
         assert [i["error_text"] for i in payload["items"]] == ["последняя ошибка"]
+
+    def test_schema_error_shows_the_validation_reason(self, admin_client, db_session, factories):
+        """Ответ, не прошедший схему, не пишет `error_text`: причина лежит в
+        `validation_error` последней попытки и должна дойти до экрана ошибок."""
+        scene = _scene(db_session, factories, admin_client.user)
+        job = _make_job(
+            db_session, scene.context_ids[0], status="error", last_error_class="AnswerSchemaError"
+        )
+        _make_attempt(db_session, job.id, validation_error="suggestions[0].family_id: нет в списке")
+
+        payload = admin_client.get(f"{BASE}/jobs", params={"status": "error"}).json()
+
+        assert [i["error_text"] for i in payload["items"]] == [
+            "suggestions[0].family_id: нет в списке"
+        ]
+
+    def test_error_text_is_preferred_over_the_validation_reason(
+        self, admin_client, db_session, factories
+    ):
+        scene = _scene(db_session, factories, admin_client.user)
+        job = _make_job(
+            db_session, scene.context_ids[0], status="error", last_error_class="TimeoutError"
+        )
+        _make_attempt(
+            db_session, job.id, error_text="таймаут провайдера", validation_error="прежняя схема"
+        )
+
+        payload = admin_client.get(f"{BASE}/jobs", params={"status": "error"}).json()
+
+        assert [i["error_text"] for i in payload["items"]] == ["таймаут провайдера"]
 
     def test_error_job_released_from_hold_shows_no_matches(
         self, admin_client, db_session, factories

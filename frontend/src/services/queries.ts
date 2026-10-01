@@ -1632,15 +1632,20 @@ export function useSuggestions(params: SuggestionsParams) {
 
 /**
  * Сводка шапки. Серверу она стоит дорого (обход всех контекстов каталога), поэтому
- * свежей считается минуту, а перечитывается только действиями, которые её меняют.
+ * свежей считается минуту, а перечитывается действиями, которые её меняют, и раз в
+ * минуту на открытой вкладке: остановку захвата предохранителем, расход и пачки,
+ * изменённые сервером, иначе не увидеть. В фоновой вкладке опроса нет.
  */
 const QUEUE_STATUS_STALE_MS = 60_000;
+const QUEUE_STATUS_POLL_MS = QUEUE_STATUS_STALE_MS;
 
 export function useQueueStatus() {
   return useQuery({
     queryKey: qk.semanticQueue.status,
     queryFn: () => semanticApi.queueStatus(),
     staleTime: QUEUE_STATUS_STALE_MS,
+    refetchInterval: QUEUE_STATUS_POLL_MS,
+    refetchIntervalInBackground: false,
   });
 }
 

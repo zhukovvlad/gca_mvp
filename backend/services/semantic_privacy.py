@@ -53,11 +53,17 @@ _QUOTE_TO_SPACE = {ord(ch): " " for ch in _QUOTE_CHARS}
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
+#: Слово имени — прогон букв/цифр/подчёркиваний; всё прочее (пробел, кавычка,
+#: запятая, скобка, дефис) разделяет слова.
+_WORD_RUN_RE = re.compile(r"\w+")
+
 
 def _replace_quotes_with_space(text: str) -> str:
-    """Общий первый шаг словаря и поиска: та же замена
-    кавычек пробелом применяется и к записи словаря (`normalize_org_name`), и
-    к тексту тела, который эту запись ищет (`_scan`) — иначе имя с апострофом
+    """Общий первый шаг номеров и поиска: та же замена
+    кавычек пробелом применяется и к номеру договора или тендера в словаре
+    (`_normalize_plain`; имена объектов и подрядчиков `normalize_org_name` делит
+    по любому небуквенному символу, кавычки там — разделитель), и к тексту тела,
+    который запись ищет (`_scan`) — иначе имя с апострофом
     или слитной кавычкой держится словарём как несколько слов, а текст под
     поиском видит их слипшимися, и `\\s+` между словами записи не совпадает
     ни с чем."""
@@ -66,18 +72,14 @@ def _replace_quotes_with_space(text: str) -> str:
 
 def normalize_org_name(title: str) -> str:
     """Полное имя объекта или подрядчика → каноническая форма словаря (спека
-    §2.3): кавычки всех видов заменены пробелом, текст
-    разбит на пробельные токены, и форма ООО/АО/ПАО/ЗАО/ОАО/ИП/ТОО/LLP или
-    приставка ГК/СЗ снимается, только если она — ЦЕЛЫЙ токен целиком (без
-    учёта регистра), а не всякий прогон букв внутри токена: `ГК-Строй` и
-    `АО1` — по одному токену каждый, ни один не равен форме буквально, форма
-    не снимается, токен остаётся как есть (имя, записанное в тексте той же
-    строкой, находится). `ООО «Каркас Монолит»` → `каркас монолит`; форма,
-    вложенная в слово (`АОРТА`), не снимается — сам токен `АОРТА` не входит в
-    множество форм."""
-    despaced = _replace_quotes_with_space(title)
+    §2.3): имя режется на слова по ЛЮБОМУ не-словесному символу (пробел,
+    кавычка, запятая, скобка, дефис), форма ООО/АО/ПАО/ЗАО/ОАО/ИП/ТОО/LLP или
+    приставка ГК/СЗ отбрасывается, только если она — слово целиком (без учёта
+    регистра), остальные слова склеиваются одним пробелом. `ООО «Каркас
+    Монолит»` → `каркас монолит`, `Ромашка, ТОО` → `ромашка`; форма, вложенная
+    в слово (`АОРТА`, `АО1`), не снимается."""
     kept_tokens = [
-        token for token in despaced.split() if token.casefold() not in _ORG_FORMS_CASEFOLD
+        token for token in _WORD_RUN_RE.findall(title) if token.casefold() not in _ORG_FORMS_CASEFOLD
     ]
     return " ".join(kept_tokens).casefold()
 
@@ -171,18 +173,37 @@ def build_privacy_dictionary(db: Session) -> PrivacyDictionary:
 _FAMILY_LINE_ID_RE = re.compile(r"^(\d+)\. ")
 
 
-def _entry_pattern(entry_text: str) -> re.Pattern[str]:
-    """Регулярное выражение одной записи словаря: слова записи через `\\s+`,
-    по границе слова без учёта регистра (спека §2.3) — `(?<!\\w)`/`(?!\\w)` по
-    обе стороны всей фразы. Кавычки вокруг фразы совпадению не мешают: это не
-    символы `\\w`, граница слова держится и через них."""
-    words = entry_text.split(" ")
-    body = r"\s+".join(re.escape(word) for word in words)
+#: Между соседними словами имени допустим любой не-словесный промежуток и
+#: организационные формы целыми токенами: `normalize_org_name` снимает формы
+#: в любом месте имени и считает разделителем любой не-словесный символ, а в
+#: тексте остаются и формы, и знаки (`Ромашка (ООО), Сервис`). `ООО1` формой не
+#: считается: после формы обязан идти не-словесный символ.
+_ORG_FORMS_ALTERNATION = "|".join(re.escape(form) for form in sorted(_ORG_FORMS_CASEFOLD))
+_WORD_GAP = rf"\W+(?:(?:{_ORG_FORMS_ALTERNATION})\W+)*"
+
+#: Записи имён (объекты, подрядчики) ищутся с пропуском форм и знаков;
+#: номера договоров и тендеров — буквально, слова через `\s+`.
+_ORG_KINDS = frozenset({"object", "contractor"})
+
+
+def _entry_pattern(entry_text: str, kind: str) -> re.Pattern[str]:
+    """Регулярное выражение одной записи словаря, по границе слова без учёта
+    регистра (спека §2.3) — `(?<!\\w)`/`(?!\\w)` по обе стороны всей фразы.
+    Имя (`object`, `contractor`): слова записи через `_WORD_GAP`. Номер
+    (`contract`, `tender`): слова через `\\s+`, формы и знаки в номере — часть
+    значения. Кавычки вокруг фразы совпадению не мешают: это не символы `\\w`."""
+    if kind in _ORG_KINDS:
+        words = _WORD_RUN_RE.findall(entry_text)
+        gap = _WORD_GAP
+    else:
+        words = entry_text.split(" ")
+        gap = r"\s+"
+    body = gap.join(re.escape(word) for word in words)
     return re.compile(rf"(?<!\w){body}(?!\w)")
 
 
-def _matches_any(entry_text: str, prepared_texts: tuple[str, ...]) -> bool:
-    pattern = _entry_pattern(entry_text)
+def _matches_any(entry: PrivacyEntry, prepared_texts: tuple[str, ...]) -> bool:
+    pattern = _entry_pattern(entry.text, entry.kind)
     return any(pattern.search(text) is not None for text in prepared_texts)
 
 
@@ -200,7 +221,7 @@ def _scan(
     return [
         PrivacyMatch(text=entry.text, kind=entry.kind, where=where)
         for entry in dictionary.entries
-        if _matches_any(entry.text, prepared)
+        if _matches_any(entry, prepared)
     ]
 
 

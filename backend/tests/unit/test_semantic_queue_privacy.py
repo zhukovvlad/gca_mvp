@@ -82,16 +82,22 @@ class TestNormalizeOrgName:
     #  часть имени и никогда не совпадает с тем, что реально написано).
     # -----------------------------------------------------------------------
 
-    def test_form_glued_by_hyphen_is_kept_whole(self):
-        assert normalize_org_name("ГК-Строй") == "гк-строй"
+    def test_form_glued_by_hyphen_is_a_separate_word_and_stripped(self):
+        assert normalize_org_name("ГК-Строй") == "строй"
 
     def test_form_glued_by_digit_is_kept_whole(self):
         assert normalize_org_name("АО1") == "ао1"
 
-    def test_form_as_a_separate_token_around_a_hyphenated_word_is_still_stripped(self):
-        """Форма остаётся снимаемой, когда она — свой ОТДЕЛЬНЫЙ токен, а не
-        часть склейки: только приклеенная форма (тесты выше) не снимается."""
-        assert normalize_org_name("АО Строй-Инвест") == "строй-инвест"
+    def test_hyphenated_word_is_split_into_two_words(self):
+        """Дефис, как и любой не-словесный символ, разделяет слова."""
+        assert normalize_org_name("АО Строй-Инвест") == "строй инвест"
+
+    @pytest.mark.parametrize(
+        "title",
+        ["Ромашка, ТОО", "(ТОО) Ромашка", "ТОО «Ромашка».", "Ромашка (ООО)"],
+    )
+    def test_punctuation_glued_to_a_form_does_not_survive(self, title):
+        assert normalize_org_name(title) == "ромашка"
 
     # -----------------------------------------------------------------------
     #  Кавычка/апостроф заменяются ПРОБЕЛОМ, а не удаляются —
@@ -333,7 +339,7 @@ class TestFindPrivacyMatchesPlaces:
 
 class TestFindPrivacyMatchesAfterNormalizationFix:
     def test_name_with_a_hyphen_glued_form_is_found_written_as_in_the_db(self):
-        """`normalize_org_name("ГК-Строй") == "гк-строй"` — эта же запись
+        """`normalize_org_name("ГК-Строй") == "строй"` — эта же запись
         обязана совпасть, когда текст содержит подрядчика буквально как в
         базе, а не терять его молча."""
         entry_text = normalize_org_name("ГК-Строй")
@@ -343,7 +349,7 @@ class TestFindPrivacyMatchesAfterNormalizationFix:
 
         matches = find_privacy_matches(dictionary, rendered)
 
-        assert matches == (PrivacyMatch(text="гк-строй", kind="contractor", where="context"),)
+        assert matches == (PrivacyMatch(text="строй", kind="contractor", where="context"),)
 
     def test_name_with_a_digit_glued_form_is_found_written_as_in_the_db(self):
         entry_text = normalize_org_name("АО1")
@@ -437,6 +443,64 @@ class TestFindPrivacyMatchesWordBoundary:
         assert find_privacy_matches(dictionary, rendered) == (
             PrivacyMatch(text="альфа (казахстан)", kind="contractor", where="context"),
             PrivacyMatch(text="иванов и.и.", kind="contractor", where="context"),
+        )
+
+
+class TestFindPrivacyMatchesOrgFormInsideName:
+    """Запись словаря не хранит организационную форму и знаки, а текст хранит их
+    где угодно: форма или знак посередине имени не должны прятать имя от поиска."""
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Поставка Ромашка ООО Сервис на объект",
+            "Поставка Ромашка ООО ТОО Сервис на объект",
+            "Поставка Ромашка «ООО» Сервис на объект",
+            "Поставка Ромашка (ООО) Сервис на объект",
+            "Поставка Ромашка ООО, Сервис на объект",
+            "Поставка Ромашка-Сервис на объект",
+        ],
+    )
+    def test_form_or_punctuation_between_words_does_not_hide_the_name(self, title):
+        rendered = render_context_request(_material(title=title), settings=_settings())
+
+        assert find_privacy_matches(_dictionary(("contractor", "ромашка сервис")), rendered) == (
+            PrivacyMatch(text="ромашка сервис", kind="contractor", where="context"),
+        )
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Поставка Ромашка Плюс Сервис на объект",
+            "Поставка Ромашка ООО1 Сервис на объект",
+            "Поставка Ромашкасервис на объект",
+        ],
+    )
+    def test_other_words_or_glued_letters_between_words_are_not_a_match(self, title):
+        rendered = render_context_request(_material(title=title), settings=_settings())
+
+        assert find_privacy_matches(_dictionary(("contractor", "ромашка сервис")), rendered) == ()
+
+    def test_number_entries_keep_their_literal_pattern(self):
+        """Промежуток с формами и знаками — только для имён: номер, записанный
+        через дефис, не совпадает с текстом, где вместо дефиса другой знак."""
+        rendered = render_context_request(_material(title="Договор 12/Б по плану"), settings=_settings())
+
+        assert find_privacy_matches(_dictionary(("contract", "12-б")), rendered) == ()
+
+    def test_tender_number_keeps_its_literal_pattern_too(self):
+        rendered = render_context_request(_material(title="Тендер 12/Б по плану"), settings=_settings())
+
+        assert find_privacy_matches(_dictionary(("tender", "12-б")), rendered) == ()
+
+    def test_object_name_is_searched_by_the_name_rule(self):
+        """Правило имён — для объектов так же, как для подрядчиков."""
+        rendered = render_context_request(
+            _material(title="Поставка Ромашка (ООО) Сервис на объект"), settings=_settings()
+        )
+
+        assert find_privacy_matches(_dictionary(("object", "ромашка сервис")), rendered) == (
+            PrivacyMatch(text="ромашка сервис", kind="object", where="context"),
         )
 
 

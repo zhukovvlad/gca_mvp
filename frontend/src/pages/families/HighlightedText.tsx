@@ -1,9 +1,9 @@
 import { Fragment } from "react";
 
-import { findMatchRanges } from "./matchRanges";
+import { findMatchRanges, type Needle } from "./matchRanges";
 
 /** Строка с подсвеченными совпавшими словами: куски и `<mark>`, без разметки из данных. */
-export function HighlightedText({ text, needles }: { text: string; needles: readonly string[] }) {
+export function HighlightedText({ text, needles }: { text: string; needles: readonly Needle[] }) {
   const ranges = findMatchRanges(text, needles);
   const parts: Array<{ value: string; hit: boolean }> = [];
   let cursor = 0;
