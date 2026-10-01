@@ -26,6 +26,7 @@ from sqlalchemy import (
     text as sa_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -1652,6 +1653,402 @@ class SemanticEvent(Base):
         CheckConstraint(CK_EVENT_ONE_SUBJECT, name="ck_semantic_events_one_subject"),
         CheckConstraint(CK_EVENT_SUBJECT_BY_TYPE, name="ck_semantic_events_subject_by_type"),
         CheckConstraint(CK_EVENT_PAYLOAD_NOT_EMPTY, name="ck_semantic_events_payload_not_empty"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Очередь семантических предложений (миграция 0018)
+# ---------------------------------------------------------------------------
+#
+# Пять таблиц (спека `2026-09-28-semantic-suggestions-design.md` §2.4): задание
+# на семантическое предложение, попытка вызова провайдера, само предложение,
+# удержанная пачка сверх потолка события и состояние исполнителя захвата
+# (ровно одна строка).
+#
+# **Цикл FK.** `semantic_jobs.result_suggestion_id` → `family_suggestions` и
+# `family_suggestions.job_id` → `semantic_jobs` ссылаются друг на друга;
+# `use_alter=True` разрывает цикл для сортировки метаданных (`Base.metadata`),
+# миграция создаёт обе таблицы, а затем добавляет эту FK отдельным
+# `op.create_foreign_key`.
+#
+# **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): каждая равносильность
+# ниже безопасна, потому что участвующая NOT NULL колонка (`status`,
+# `claim_paused`, `is_published`) сравнивается голым равенством лишь с одной
+# стороны, а вторая сторона — всегда `IS [NOT] NULL` (булево, никогда не
+# `NULL`); ни одна равносильность не сравнивает две NULLABLE колонки напрямую.
+
+class SemanticJobStatus(str, enum.Enum):
+    """Статус задания на семантическое предложение (спека §2.4)."""
+    pending = "pending"
+    running = "running"
+    done = "done"
+    error = "error"
+    cancelled = "cancelled"
+    privacy_hold = "privacy_hold"
+
+
+class SemanticCancelReason(str, enum.Enum):
+    """Причина отмены задания — заполнена ровно при `status='cancelled'`."""
+    input_changed = "input_changed"
+    not_applicable = "not_applicable"
+    privacy_declined = "privacy_declined"
+    stale_hold = "stale_hold"
+
+
+class SemanticAttemptOutcome(str, enum.Enum):
+    """Исход попытки вызова провайдера (спека §2.4)."""
+    ok = "ok"
+    transient_error = "transient_error"
+    permanent_error = "permanent_error"
+    schema_error = "schema_error"
+    lost_claim = "lost_claim"
+
+
+class SuggestionUnpublishedReason(str, enum.Enum):
+    """Причина, по которой предложение не (более) опубликовано."""
+    stale_fingerprint = "stale_fingerprint"
+    lost_claim = "lost_claim"
+    context_not_applicable = "context_not_applicable"
+    rejected = "rejected"
+
+
+class SuggestionDecision(str, enum.Enum):
+    """Решение оператора по опубликованному предложению."""
+    accepted = "accepted"
+    rejected = "rejected"
+    other_family = "other_family"
+    family_created = "family_created"
+
+
+class ReconcileBatchSource(str, enum.Enum):
+    """Откуда взялась удержанная пачка (спека §2.4). `import_` — зарезервированное
+    имя Python (`import`), значение в БД — `'import'`."""
+    import_ = "import"
+    operation = "operation"
+    mass = "mass"
+    unit_reask = "unit_reask"
+    config_reask = "config_reask"
+
+
+class ReconcileBatchStatus(str, enum.Enum):
+    """Статус удержанной пачки: решения нет либо принято (спека §2.4)."""
+    held = "held"
+    approved = "approved"
+    discarded = "discarded"
+
+
+#: Семь списков `IN (...)` — литералы дублируют миграцию 0018 (та же
+#: дисциплина, что у миграций 0002/0003/0015/0017); расхождение ловит
+#: test_semantic_queue_schema.py::TestParityWithMigration.
+SEMANTIC_JOB_STATUSES = _sql_str_list(SemanticJobStatus)
+SEMANTIC_CANCEL_REASONS = _sql_str_list(SemanticCancelReason)
+SEMANTIC_ATTEMPT_OUTCOMES = _sql_str_list(SemanticAttemptOutcome)
+SUGGESTION_UNPUBLISHED_REASONS = _sql_str_list(SuggestionUnpublishedReason)
+SUGGESTION_DECISIONS = _sql_str_list(SuggestionDecision)
+RECONCILE_BATCH_SOURCES = _sql_str_list(ReconcileBatchSource)
+RECONCILE_BATCH_STATUSES = _sql_str_list(ReconcileBatchStatus)
+
+#: Равносильности CHECK — продублированы в миграции 0018; parity —
+#: test_semantic_queue_schema.py::TestParityWithMigration.
+CK_SEMANTIC_JOBS_STATUS_CANCEL_REASON_PAIR = (
+    "(status = 'cancelled') = (cancel_reason IS NOT NULL)"
+)
+CK_SEMANTIC_JOBS_STATUS_CLAIM_TOKEN_PAIR = "(status = 'running') = (claim_token IS NOT NULL)"
+CK_SEMANTIC_JOBS_PRIVACY_HOLD_REQUIRES_MATCHES = (
+    "status <> 'privacy_hold' OR privacy_matches IS NOT NULL"
+)
+
+CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR = "(decision IS NULL) = (decided_by IS NULL)"
+CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR = "(decision IS NULL) = (decided_at IS NULL)"
+CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON = (
+    "NOT is_published OR unpublished_reason IS NULL"
+)
+
+CK_RECONCILE_BATCHES_HELD_NO_DECIDED_BY = "(status = 'held') = (decided_by IS NULL)"
+CK_RECONCILE_BATCHES_HELD_NO_DECIDED_AT = "(status = 'held') = (decided_at IS NULL)"
+
+CK_WORKER_STATE_PAUSED_REASON_PAIR = "claim_paused = (paused_reason IS NOT NULL)"
+CK_WORKER_STATE_PAUSED_ATTEMPT_PAIR = "claim_paused = (paused_attempt_id IS NOT NULL)"
+CK_WORKER_STATE_PAUSED_AT_PAIR = "claim_paused = (paused_at IS NOT NULL)"
+CK_WORKER_STATE_RESUMED_PAIR = "(last_resumed_by IS NULL) = (last_resumed_at IS NULL)"
+CK_WORKER_STATE_SINGLETON_ID = "id = 1"
+
+
+class SemanticReconcileBatch(Base):
+    """Удержанная пачка сверх потолка события (спека §2.4).
+
+    `held_fingerprints` — АУДИТ того, что было удержано на момент создания
+    пачки; исполнение сверки (§2.10) идёт по ТЕКУЩИМ отпечаткам, сохранённые
+    не перезаписываются. Частичный `UNIQUE (fingerprints_hash) WHERE
+    status='held'` — raw SQL в миграции 0018 (`alembic/env.py
+    RAW_SQL_INDEXES`): одна удержанная пачка на набор отпечатков, и этот же
+    индекс служит арбитром `INSERT ... ON CONFLICT (fingerprints_hash) WHERE
+    status='held' DO NOTHING`.
+    """
+    __tablename__ = "semantic_reconcile_batches"
+
+    id = Column(BigInteger, primary_key=True)
+    source = Column(Text, nullable=False)
+    import_job_id = Column(
+        BigInteger, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    unit_id = Column(BigInteger, nullable=True)
+    # none_as_null=True: без него ORM `None` ложится JSON-литералом `null`, и
+    # NOT NULL спеки §2.4 не срабатывает — тот же класс дефекта, что у
+    # `SemanticJob.privacy_matches` ниже.
+    held_fingerprints = Column(JSONB(none_as_null=True), nullable=False)
+    fingerprints_hash = Column(Text, nullable=False)
+    contexts_count = Column(Integer, nullable=False)
+    reserve_estimate_usd = Column(Numeric, nullable=False)
+    cached_estimate_usd = Column(Numeric, nullable=False)
+    status = Column(Text, nullable=False)
+    decided_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(f"source IN ({RECONCILE_BATCH_SOURCES})", name="ck_semantic_reconcile_batches_source"),
+        CheckConstraint(f"status IN ({RECONCILE_BATCH_STATUSES})", name="ck_semantic_reconcile_batches_status"),
+        CheckConstraint(
+            CK_RECONCILE_BATCHES_HELD_NO_DECIDED_BY,
+            name="ck_semantic_reconcile_batches_held_no_decided_by",
+        ),
+        CheckConstraint(
+            CK_RECONCILE_BATCHES_HELD_NO_DECIDED_AT,
+            name="ck_semantic_reconcile_batches_held_no_decided_at",
+        ),
+        # UNIQUE (fingerprints_hash) WHERE status='held' — частичный, raw SQL
+        # в миграции 0018 (RAW_SQL_INDEXES: uq_semantic_reconcile_batches_fingerprints_held).
+    )
+
+
+class SemanticJob(Base):
+    """Одно задание на (контекст, тело запроса) семантического предложения
+    (спека §2.4).
+
+    `result_suggestion_id` → `family_suggestions` — FK, добавленный отдельным
+    `op.create_foreign_key` в миграции 0018 (цикл с `family_suggestions.job_id`,
+    `use_alter=True` здесь). `unit_id` — не FK (единица контекста, порядок
+    захвата, §2.5 спеки), это ось приоритезации, не ссылка.
+    """
+    __tablename__ = "semantic_jobs"
+
+    id = Column(BigInteger, primary_key=True)
+    context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=False
+    )
+    request_hash = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    cancel_reason = Column(Text, nullable=True)
+    retry_generation = Column(Integer, nullable=False, server_default=sa_text("0"))
+    attempts_in_generation = Column(Integer, nullable=False, server_default=sa_text("0"))
+    next_attempt_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()")
+    )
+    claim_token = Column(PgUUID(as_uuid=True), nullable=True)
+    last_error_class = Column(Text, nullable=True)
+    result_suggestion_id = Column(
+        BigInteger,
+        ForeignKey(
+            "family_suggestions.id", ondelete="SET NULL",
+            use_alter=True, name="fk_semantic_jobs_result_suggestion_id",
+        ),
+        nullable=True,
+    )
+    # none_as_null=True: Python `None` обязан лечь SQL NULL, а не JSON-литералом
+    # `null` — иначе `privacy_matches IS NOT NULL` в CHECK видит JSON `null`
+    # как «значение есть» и privacy_hold без реальных данных проходит молча.
+    privacy_matches = Column(JSONB(none_as_null=True), nullable=True)
+    privacy_released_matches = Column(JSONB(none_as_null=True), nullable=True)
+    privacy_decided_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    privacy_decided_at = Column(DateTime(timezone=True), nullable=True)
+    unit_id = Column(BigInteger, nullable=True)
+    batch_id = Column(
+        BigInteger, ForeignKey("semantic_reconcile_batches.id", ondelete="SET NULL"), nullable=True
+    )
+    # Оси запроса для журнала, вне ключа — NOT NULL (решение оркестратора
+    # задачи 1: задание всегда создаётся из отрендеренного запроса).
+    prompt_version = Column(Text, nullable=False)
+    model_requested = Column(Text, nullable=False)
+    place_dictionary_version = Column(SmallInteger, nullable=False)
+    candidates_hash = Column(Text, nullable=False)
+    prefix_hash = Column(Text, nullable=False)
+    input_hash = Column(Text, nullable=False)
+    response_schema_version = Column(Text, nullable=False)
+    serialization_version = Column(Text, nullable=False)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("context_id", "request_hash", name="uq_semantic_jobs_context_request_hash"),
+        CheckConstraint(f"status IN ({SEMANTIC_JOB_STATUSES})", name="ck_semantic_jobs_status"),
+        CheckConstraint(
+            f"cancel_reason IS NULL OR cancel_reason IN ({SEMANTIC_CANCEL_REASONS})",
+            name="ck_semantic_jobs_cancel_reason",
+        ),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_STATUS_CANCEL_REASON_PAIR, name="ck_semantic_jobs_status_cancel_reason_pair"
+        ),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_STATUS_CLAIM_TOKEN_PAIR, name="ck_semantic_jobs_status_claim_token_pair"
+        ),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_PRIVACY_HOLD_REQUIRES_MATCHES,
+            name="ck_semantic_jobs_privacy_hold_requires_matches",
+        ),
+        Index(
+            "idx_semantic_jobs_status_unit_next_attempt", "status", "unit_id", "next_attempt_at"
+        ),
+    )
+
+
+class SemanticJobAttempt(Base):
+    """Одна строка на вызов провайдера (спека §2.4).
+
+    Колонки, известные ДО вызова (`claim_token`, `retry_generation`,
+    `started_at`, `reserve_usd`, `reserve_exceeded`, `prefix_hash`,
+    `privacy_dictionary_hash`), — NOT NULL; всё, что известно только ПОСЛЕ
+    завершения попытки (исход, ошибка, ответ, токены, фактическая
+    модель/провайдер, стоимость), — NULL до завершения.
+    """
+    __tablename__ = "semantic_job_attempts"
+
+    id = Column(BigInteger, primary_key=True)
+    job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="CASCADE"), nullable=False)
+    claim_token = Column(PgUUID(as_uuid=True), nullable=False)
+    retry_generation = Column(Integer, nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    outcome = Column(Text, nullable=True)
+    error_class = Column(Text, nullable=True)
+    error_text = Column(Text, nullable=True)
+    raw_response = Column(Text, nullable=True)
+    validation_error = Column(Text, nullable=True)
+    actual_model = Column(Text, nullable=True)
+    provider = Column(Text, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    cache_write_tokens = Column(Integer, nullable=True)
+    cached_tokens = Column(Integer, nullable=True)
+    reserve_usd = Column(Numeric, nullable=False)
+    cost_usd = Column(Numeric, nullable=True)
+    reserve_exceeded = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    prefix_hash = Column(Text, nullable=False)
+    privacy_dictionary_hash = Column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            f"outcome IS NULL OR outcome IN ({SEMANTIC_ATTEMPT_OUTCOMES})",
+            name="ck_semantic_job_attempts_outcome",
+        ),
+        Index("idx_semantic_job_attempts_prefix_hash", "prefix_hash"),
+        Index("idx_semantic_job_attempts_started_at", "started_at"),
+    )
+
+
+class FamilySuggestion(Base):
+    """Одна строка на каждый схемно-валидный ответ модели (спека §2.4).
+
+    `family_id IS NULL` — «новая семья» (`new_family_name` тогда заполнено).
+    Частичный `UNIQUE (context_id) WHERE is_published` — raw SQL в миграции
+    0018 (`RAW_SQL_INDEXES`): не больше одного опубликованного предложения на
+    контекст.
+    """
+    __tablename__ = "family_suggestions"
+
+    id = Column(BigInteger, primary_key=True)
+    context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=False
+    )
+    job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="CASCADE"), nullable=False)
+    attempt_id = Column(
+        BigInteger, ForeignKey("semantic_job_attempts.id", ondelete="RESTRICT"), nullable=False
+    )
+    request_hash = Column(Text, nullable=False)
+    candidates_hash = Column(Text, nullable=False)
+    # none_as_null=True: без него ORM `None` ложится JSON-литералом `null`, и
+    # NOT NULL спеки §2.4 не срабатывает.
+    candidates_snapshot = Column(JSONB(none_as_null=True), nullable=False)
+    family_id = Column(BigInteger, ForeignKey("work_families.id", ondelete="SET NULL"), nullable=True)
+    new_family_name = Column(Text, nullable=True)
+    confidence = Column(Numeric, nullable=False)
+    reason = Column(Text, nullable=False)
+    is_published = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    unpublished_reason = Column(Text, nullable=True)
+    decision = Column(Text, nullable=True)
+    decided_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            f"unpublished_reason IS NULL OR unpublished_reason IN ({SUGGESTION_UNPUBLISHED_REASONS})",
+            name="ck_family_suggestions_unpublished_reason",
+        ),
+        CheckConstraint(
+            f"decision IS NULL OR decision IN ({SUGGESTION_DECISIONS})",
+            name="ck_family_suggestions_decision",
+        ),
+        CheckConstraint(
+            CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR, name="ck_family_suggestions_decision_author_pair"
+        ),
+        CheckConstraint(
+            CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR, name="ck_family_suggestions_decision_at_pair"
+        ),
+        CheckConstraint(
+            CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON,
+            name="ck_family_suggestions_published_no_unpublished_reason",
+        ),
+        # UNIQUE (context_id) WHERE is_published — частичный, raw SQL в
+        # миграции 0018 (RAW_SQL_INDEXES: uq_family_suggestions_context_id_published).
+    )
+
+
+class SemanticWorkerState(Base):
+    """Состояние исполнителя захвата — РОВНО одна строка, `id=1` (спека §2.4,
+    решение спеки 6: флаг остановки захвата — таблица из одной строки, а не
+    настройка, обязан пережить перезапуск).
+
+    Остановлен ⟺ `paused_reason`/`paused_attempt_id`/`paused_at` заполнены ВСЕ
+    три; идёт ⟺ все три пусты. `paused_attempt_id` → `semantic_job_attempts` —
+    обычный inline FK (никакого цикла с этой таблицей нет); `ON DELETE
+    RESTRICT`, а не `SET NULL` — `SET NULL` сработать не может НИКОГДА:
+    единственный путь к NULL здесь — `claim_paused=false`, а CHECK
+    `ck_semantic_worker_state_paused_attempt_pair` уже требует его NULL в этом
+    состоянии, и запрещает NULL при `claim_paused=true`. Строку вставляет сама
+    миграция 0018; при очистке доменных таблиц
+    (`tests/conftest.py::_truncate_domain_tables`) она пересоздаётся в той же
+    транзакции, иначе захват (задача 10) не работает.
+    """
+    __tablename__ = "semantic_worker_state"
+
+    # autoincrement=False: PK — не суррогатный счётчик, а фиксированный
+    # singleton `id=1` (CHECK ниже); без этого SQLAlchemy завёл бы
+    # `smallserial`/последовательность, которая здесь не нужна и не по спеке.
+    id = Column(SmallInteger, primary_key=True, autoincrement=False)
+    claim_paused = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    paused_reason = Column(Text, nullable=True)
+    paused_attempt_id = Column(
+        BigInteger,
+        ForeignKey("semantic_job_attempts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    last_resumed_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    last_resumed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(CK_WORKER_STATE_SINGLETON_ID, name="ck_semantic_worker_state_singleton_id"),
+        CheckConstraint(
+            CK_WORKER_STATE_PAUSED_REASON_PAIR, name="ck_semantic_worker_state_paused_reason_pair"
+        ),
+        CheckConstraint(
+            CK_WORKER_STATE_PAUSED_ATTEMPT_PAIR, name="ck_semantic_worker_state_paused_attempt_pair"
+        ),
+        CheckConstraint(
+            CK_WORKER_STATE_PAUSED_AT_PAIR, name="ck_semantic_worker_state_paused_at_pair"
+        ),
+        CheckConstraint(CK_WORKER_STATE_RESUMED_PAIR, name="ck_semantic_worker_state_resumed_pair"),
     )
 
 

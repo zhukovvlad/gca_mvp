@@ -1,4 +1,4 @@
-**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта.
+**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта, очередь семантических предложений.
 
 ## 1. Доменный контур
 
@@ -223,3 +223,96 @@ import_jobs
   # Блокируется одна ПАРА (contract_id, amendment_no) либо один round_id;
   # параллельный импорт РАЗНЫХ допсоглашений одного договора — разрешён.
 ```
+
+## 6. Очередь семантических предложений
+
+Пять таблиц (`docs/superpowers/specs/2026-09-28-semantic-suggestions-design.md`
+§2.4), миграция `0018`: задание на семантическое предложение, попытка вызова
+провайдера, само предложение, удержанная сверх потолка события пачка и
+состояние исполнителя захвата (ровно одна строка).
+
+```
+semantic_reconcile_batches     -- удержанная пачка сверх потолка события
+  id, source ('import|operation|mass|unit_reask|config_reask')
+  import_job_id NULL → import_jobs, unit_id NULL   # не FK — ось приоритезации
+  held_fingerprints jsonb NOT NULL    # [[context_id, request_hash], …], АУДИТ на момент удержания —
+                                       #   исполнение сверки идёт по ТЕКУЩИМ отпечаткам, это поле не перезаписывается
+  fingerprints_hash text NOT NULL, contexts_count int NOT NULL
+  reserve_estimate_usd numeric NOT NULL, cached_estimate_usd numeric NOT NULL
+  status ('held|approved|discarded'), decided_by NULL → users, decided_at NULL
+  # CHECK (status='held') = (decided_by IS NULL); CHECK (status='held') = (decided_at IS NULL)
+  # UNIQUE (fingerprints_hash) WHERE status='held' — raw SQL (RAW_SQL_INDEXES);
+  #   тот же индекс — арбитр INSERT ... ON CONFLICT (fingerprints_hash) WHERE status='held'
+
+semantic_jobs                   -- одно задание на (контекст, тело запроса)
+  id, context_id NOT NULL → catalog_contexts ON DELETE RESTRICT, request_hash text NOT NULL
+  status ('pending|running|done|error|cancelled|privacy_hold')
+  cancel_reason ('input_changed|not_applicable|privacy_declined|stale_hold') NULL
+  retry_generation int NOT NULL DEFAULT 0, attempts_in_generation int NOT NULL DEFAULT 0
+  next_attempt_at timestamptz NOT NULL DEFAULT now(), claim_token uuid NULL
+  last_error_class text NULL
+  result_suggestion_id NULL → family_suggestions ON DELETE SET NULL   # цикл FK, см. ниже
+  privacy_matches jsonb NULL, privacy_released_matches jsonb NULL
+  privacy_decided_by NULL → users, privacy_decided_at NULL
+  unit_id NULL   # единица контекста, порядок захвата — не FK
+  batch_id NULL → semantic_reconcile_batches ON DELETE SET NULL
+  # Оси запроса для журнала, вне ключа, NOT NULL (задание всегда из отрендеренного запроса):
+  prompt_version, model_requested, place_dictionary_version smallint,
+  candidates_hash, prefix_hash, input_hash, response_schema_version, serialization_version
+  created_at, updated_at
+  # UNIQUE (context_id, request_hash); CHECK (status='cancelled') = (cancel_reason IS NOT NULL)
+  # CHECK (status='running') = (claim_token IS NOT NULL)
+  # CHECK status<>'privacy_hold' OR privacy_matches IS NOT NULL
+  # INDEX (status, unit_id, next_attempt_at)
+
+semantic_job_attempts            -- одна строка на вызов провайдера
+  id, job_id NOT NULL → semantic_jobs ON DELETE CASCADE
+  claim_token uuid NOT NULL, retry_generation int NOT NULL, started_at timestamptz NOT NULL
+  # Известно ТОЛЬКО ПОСЛЕ завершения попытки — все NULL до этого момента:
+  finished_at, outcome ('ok|transient_error|permanent_error|schema_error|lost_claim') NULL,
+  error_class, error_text, raw_response, validation_error,
+  actual_model, provider, prompt_tokens, completion_tokens, cache_write_tokens, cached_tokens
+  reserve_usd numeric NOT NULL, cost_usd numeric NULL, reserve_exceeded bool NOT NULL DEFAULT false
+  prefix_hash text NOT NULL, privacy_dictionary_hash text NOT NULL
+  # INDEX (prefix_hash), INDEX (started_at)
+
+family_suggestions               -- одна строка на каждый схемно-валидный ответ модели
+  id, context_id NOT NULL → catalog_contexts ON DELETE RESTRICT
+  job_id NOT NULL → semantic_jobs ON DELETE CASCADE, attempt_id NOT NULL → semantic_job_attempts
+  request_hash, candidates_hash text NOT NULL, candidates_snapshot jsonb NOT NULL
+  family_id NULL → work_families ON DELETE SET NULL     # NULL = «новая семья» (new_family_name заполнено)
+  new_family_name NULL, confidence numeric NOT NULL, reason text NOT NULL
+  is_published bool NOT NULL DEFAULT false
+  unpublished_reason ('stale_fingerprint|lost_claim|context_not_applicable|rejected') NULL
+  decision ('accepted|rejected|other_family|family_created') NULL
+  decided_by NULL → users, decided_at NULL, created_at
+  # UNIQUE (context_id) WHERE is_published — raw SQL (RAW_SQL_INDEXES); не больше одного опубликованного на контекст
+  # CHECK (decision IS NULL) = (decided_by IS NULL); CHECK (decision IS NULL) = (decided_at IS NULL)
+  # CHECK NOT is_published OR unpublished_reason IS NULL
+
+semantic_worker_state             -- РОВНО одна строка (id=1); флаг остановки захвата, не настройка
+  id smallint PK CHECK (id=1), claim_paused bool NOT NULL DEFAULT false
+  paused_reason NULL, paused_attempt_id NULL → semantic_job_attempts ON DELETE RESTRICT, paused_at NULL
+  last_resumed_by NULL → users, last_resumed_at NULL
+  # Остановлен ⟺ paused_reason/paused_attempt_id/paused_at заполнены ВСЕ три; идёт ⟺ все три пусты.
+  # CHECK claim_paused = (paused_reason IS NOT NULL) — и так же для paused_attempt_id, paused_at
+  # CHECK (last_resumed_by IS NULL) = (last_resumed_at IS NULL)
+  # Миграция 0018 вставляет строку (id=1, claim_paused=false); tests/conftest.py
+  #   пересоздаёт её после TRUNCATE доменных таблиц (_truncate_domain_tables) — без неё захват не работает.
+```
+
+**Цикл FK.** `semantic_jobs.result_suggestion_id` → `family_suggestions` и
+`family_suggestions.job_id` → `semantic_jobs` ссылаются друг на друга; в
+миграции обе таблицы создаются без первой FK, она добавляется отдельным
+`op.create_foreign_key` после того, как обе таблицы существуют
+(`use_alter=True` в `models.py`, чтобы не ловить `CircularDependencyError`
+сортировки `Base.metadata`). `semantic_worker_state.paused_attempt_id` →
+`semantic_job_attempts` цикла НЕ образует (`semantic_job_attempts` создана
+раньше) и объявлена обычным inline FK, `ON DELETE RESTRICT` — `SET NULL`
+здесь недостижим: единственный путь к NULL — `claim_paused=false`, где CHECK
+уже требует его NULL, а при `claim_paused=true` CHECK запрещает NULL вовсе.
+
+**Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): каждая равносильность
+выше безопасна, потому что колонки, стоящие голым равенством (`status`,
+`claim_paused`, `is_published`), — `NOT NULL`; вторая сторона равносильности
+всегда `IS [NOT] NULL` (булево, никогда `NULL`).

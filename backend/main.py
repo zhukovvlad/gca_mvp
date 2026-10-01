@@ -34,7 +34,14 @@ from routers import settings as settings_router
 from routers import tenders as tenders_router
 from routers import units
 from services.maintenance import run_startup_maintenance
+from services.semantic_client import ModelClient, OpenRouterClient
+from services.semantic_runner import SemanticRunner
 from storage import get_storage
+
+
+def _make_semantic_client(cfg) -> ModelClient:
+    """Клиент модели для очереди семантических предложений; тесты подменяют."""
+    return OpenRouterClient(api_key=cfg.OPENROUTER_API_KEY)
 
 
 @asynccontextmanager
@@ -51,6 +58,16 @@ async def lifespan(_: FastAPI):
     recovery не выполнился, приложение не должно подняться. Ошибку ретенции
     гасит сам `run_startup_maintenance` — она на работоспособность не влияет.
 
+    Опросчик семантической очереди (`SemanticRunner`) поднимается здесь же, после
+    обслуживания, при `RUN_SEMANTIC_WORKER=true` и останавливается на выходе
+    (`SEMANTIC_SHUTDOWN_WAIT_S` — бюджет ожидания текущих вызовов; HTTP-клиент
+    провайдера закрывается после остановки). Пустой `OPENROUTER_API_KEY` при
+    включённом флаге — ошибка старта; так же `RUN_STARTUP_MAINTENANCE=false`:
+    без восстановления при старте задания, прерванные прошлым процессом, остались
+    бы `running` навсегда. Правило одного
+    worker-процесса относится и к опросчику: второй процесс вернул бы в очередь
+    задания, которые первый в этот момент выполняет.
+
     Отключается настройкой `RUN_STARTUP_MAINTENANCE=false` — так тесты не дают
     `TestClient` мутировать БД приложения: lifespan работает на реальном engine,
     мимо транзакционной фикстуры. В проде не выключать.
@@ -66,7 +83,32 @@ async def lifespan(_: FastAPI):
             recovered,
             purged,
         )
-    yield
+    runner = None
+    client = None
+    if settings.RUN_SEMANTIC_WORKER:
+        if not settings.OPENROUTER_API_KEY:
+            raise RuntimeError(
+                "RUN_SEMANTIC_WORKER=true требует непустого OPENROUTER_API_KEY"
+            )
+        if not settings.RUN_STARTUP_MAINTENANCE:
+            raise RuntimeError(
+                "RUN_SEMANTIC_WORKER=true требует RUN_STARTUP_MAINTENANCE=true: без "
+                "восстановления при старте задания, прерванные прошлым процессом, "
+                "остались бы в статусе running навсегда"
+            )
+        client = _make_semantic_client(settings)
+        runner = SemanticRunner(SessionLocal, client, settings=settings)
+        runner.start()
+    try:
+        yield
+    finally:
+        try:
+            if runner is not None:
+                runner.stop(timeout_s=settings.SEMANTIC_SHUTDOWN_WAIT_S)
+        finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
 
 
 app = FastAPI(

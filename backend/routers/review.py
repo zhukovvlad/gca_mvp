@@ -42,6 +42,7 @@ from models import CatalogPosition
 #: вызывающей стороне не переименовано, только импорт.
 from services.review import ReviewError, set_kind
 from services.review import merge_into_position_outcome as merge_into_position
+from services.semantic_reconcile import deferred_reconcile
 from services.unit_resolution import UnitResolver
 
 log = logging.getLogger(__name__)
@@ -244,20 +245,23 @@ def batch_set_kind(
     skipped: list[dict] = []
 
     try:
-        for catalog_id in sorted(set(body.ids)):
-            # `_exists`, а не `db.get`: загруженная сущность обошла бы FOR UPDATE
-            # внутри сервиса (см. комментарий у `_exists`).
-            if not _exists(db, catalog_id):
-                skipped.append(
-                    {"id": catalog_id, "reason": f"Каталожная строка {catalog_id} не найдена."}
-                )
-                continue
-            try:
-                set_kind(db, to_review_id=catalog_id, kind=body.kind, resolver=resolver)
-            except ReviewError as exc:
-                skipped.append({"id": catalog_id, "reason": str(exc)})
-                continue
-            applied.append(catalog_id)
+        # Одна сверка очереди на пакет: потолок события действует на транзакцию,
+        # а не на каждую строку (спека §2.11).
+        with deferred_reconcile(db):
+            for catalog_id in sorted(set(body.ids)):
+                # `_exists`, а не `db.get`: загруженная сущность обошла бы FOR UPDATE
+                # внутри сервиса (см. комментарий у `_exists`).
+                if not _exists(db, catalog_id):
+                    skipped.append(
+                        {"id": catalog_id, "reason": f"Каталожная строка {catalog_id} не найдена."}
+                    )
+                    continue
+                try:
+                    set_kind(db, to_review_id=catalog_id, kind=body.kind, resolver=resolver)
+                except ReviewError as exc:
+                    skipped.append({"id": catalog_id, "reason": str(exc)})
+                    continue
+                applied.append(catalog_id)
         db.commit()
     except Exception:
         db.rollback()

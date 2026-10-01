@@ -1,10 +1,12 @@
 import type {
+  BatchSource,
   ComparabilityReason,
   DecisionSource,
   FamilySource,
   NameRole,
   SemanticKind,
   SemanticState,
+  SuggestionBand,
   WorkFamilyStatus,
 } from "@/types/domain";
 
@@ -210,3 +212,63 @@ export const ROUTING_RULE_KIND_LABEL: Record<RoutingRuleKind, string> = {
   chapter_chain_contains: "раздел встречается в цепочке",
   chapter_level_equals: "раздел на уровне равен",
 };
+
+/**
+ * Полоса уверенности группы очереди «Семья из списка» (спека
+ * semantic-suggestions §2.12): границы те же, что у `band_of` бэкенда
+ * (`crud/semantic_queue.py`) — 0,9 входит в верхнюю полосу, 0,7 в среднюю.
+ */
+export const BAND_LABEL: Record<SuggestionBand, string> = {
+  high: "≥ 0,9",
+  mid: "0,7–0,9",
+  low: "< 0,7",
+};
+
+/** Источник удержанной пачки для плашки шапки «Удержано: …». */
+export const BATCH_SOURCE_LABEL: Record<BatchSource, string> = {
+  import: "Импорт сметы",
+  operation: "Операция над контекстами",
+  mass: "Массовая постановка",
+  unit_reask: "Перезапрос единицы",
+  config_reask: "Перезапрос по конфигурации",
+};
+
+/**
+ * Место совпадения проверки приватности (`where` задания в `privacy_hold`,
+ * спека semantic-suggestions §2.3): `context` — строка контекста,
+ * `family:<id>` — строка семьи в списке кандидатов, `prompt` — текст промпта.
+ * Неизвестное место (будущее) печатается нейтрально, код на экран не выходит.
+ */
+export function matchPlaceLabel(where: string): string {
+  if (where === "context") return "в строке";
+  if (where === "prompt") return "в тексте промпта";
+  const familyId = /^family:(\d+)$/.exec(where);
+  if (familyId) return `в списке семей (семья ${familyId[1]})`;
+  return "в теле запроса";
+}
+
+/**
+ * Классы ошибок задания, которые выставляют клиент модели и восстановление при
+ * старте (`services/semantic_client.py`, `semantic_worker.py`, `semantic_runner.py`).
+ */
+export const JOB_ERROR_CLASS_LABEL: Record<string, string> = {
+  timeout: "таймаут вызова",
+  transport: "сетевая ошибка",
+  bad_response: "ответ провайдера не разобран",
+  empty_response: "пустой ответ провайдера",
+  schema_error: "ответ не по схеме",
+  interrupted: "прервано остановкой сервера",
+};
+
+/**
+ * Класс ошибки задания: известный — словом (`http_429` — «HTTP 429»), любой
+ * другой (исполнитель подставляет имя класса исключения) печатается как пришёл.
+ */
+export function jobErrorClassLabel(errorClass: string | null): string {
+  if (errorClass === null) return "не указан";
+  const known = JOB_ERROR_CLASS_LABEL[errorClass];
+  if (known !== undefined) return known;
+  const http = /^http_(\d{3})$/.exec(errorClass);
+  if (http) return `HTTP ${http[1]}`;
+  return errorClass;
+}

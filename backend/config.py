@@ -4,6 +4,7 @@
 settings, а не через os.getenv() напрямую. Для инфраструктурных модулей
 (alembic/env.py, tooling-скрипты) допустимы исключения.
 """
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +58,30 @@ class Settings(BaseSettings):
 
     # Логирование
     LOG_LEVEL: str = "INFO"
+
+    # Семантические предложения (спека 2026-09-28-semantic-suggestions-design.md
+    # §2.2, §2.11): ключ провайдера — секрет, не пишется в репозиторий; тарифы —
+    # Decimal (§3 AGENTS.md, "деньги"), а не константы кода, потому что
+    # маршрутизация провайдера может сменить цену без правки кода.
+    # Числа проверяются при загрузке: ноль потоков или отрицательная цена иначе
+    # молча ломают очередь уже после старта.
+    OPENROUTER_API_KEY: str = ""
+    RUN_SEMANTIC_WORKER: bool = False
+    SEMANTIC_MODEL: str = "anthropic/claude-sonnet-5"
+    SEMANTIC_MAX_TOKENS: int = Field(600, ge=1)
+    SEMANTIC_CONCURRENCY: int = Field(4, ge=1)
+    SEMANTIC_CALL_TIMEOUT_S: int = Field(120, ge=1)
+    # Сколько ждать текущие вызовы при остановке приложения: короче таймаута вызова,
+    # чтобы перезапуск (и каждый `--reload`) не висел до 120 с на зависшем запросе.
+    SEMANTIC_SHUTDOWN_WAIT_S: int = Field(15, ge=0)
+    SEMANTIC_MAX_ATTEMPTS: int = Field(3, ge=1)
+    SEMANTIC_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)
+    SEMANTIC_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)
+    SEMANTIC_PRICE_CACHE_READ_PER_M: Decimal = Field(Decimal("0.2"), ge=0)
+    SEMANTIC_PRICE_OUTPUT_PER_M: Decimal = Field(Decimal("10"), ge=0)
+    SEMANTIC_DAILY_BUDGET_USD: Decimal = Field(Decimal("30"), ge=0)
+    SEMANTIC_EVENT_MAX_CONTEXTS: int = Field(3000, ge=0)
+    SEMANTIC_EVENT_MAX_RESERVE_USD: Decimal = Field(Decimal("15"), ge=0)
 
 
 settings = Settings()

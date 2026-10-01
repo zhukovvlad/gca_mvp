@@ -44,6 +44,8 @@ from services.estimate_import import EstimateImportError, import_estimate
 from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
 from services.round_import import import_round
+from services.semantic_cost import event_cap_from
+from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
 from utils import utcnow_aware
@@ -284,6 +286,7 @@ def run_import_job(
                 domain_warnings = outcome.warnings
                 estimates_created = 1
                 estimate_ids = [outcome.estimate_id]
+                replaced_context_ids = set(outcome.replaced_context_ids)
             else:
                 tender_round = db.get(TenderRound, context.round_id)
                 if tender_round is None:
@@ -301,6 +304,7 @@ def run_import_job(
                 domain_warnings = round_outcome.warnings
                 estimates_created = round_outcome.estimates_created
                 estimate_ids = round_outcome.estimate_ids
+                replaced_context_ids = set(round_outcome.replaced_context_ids)
             deadline.check("импорт")
 
             # Статус пишет сессия A, пока транзакция B открыта. Блокировки нет:
@@ -320,6 +324,19 @@ def run_import_job(
             # домена целиком, включая уже вставленные членства.
             routing_outcome = route_positions(db, estimate_ids=estimate_ids)
 
+            # Сверка очереди семантических предложений — после маршрутизации
+            # (членства новых позиций уже есть) и до финала, в той же транзакции
+            # (спека §2.7). Контексты вытесненных смет собраны до их удаления.
+            # Удержанная пачка — не ошибка импорта: счётчики и предупреждения
+            # `import_jobs` не расширяются.
+            reconcile_report = reconcile_semantic_jobs(
+                db,
+                contexts_of_estimates(db, estimate_ids) | replaced_context_ids,
+                cap=event_cap_from(settings),
+                source="import",
+                import_job_id=job_id,
+            )
+
             finalize_done(
                 db,
                 job_id,
@@ -330,11 +347,13 @@ def run_import_job(
             )
 
         log.info(
-            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s, маршрутизация=%s",
+            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s, маршрутизация=%s, "
+            "сверка очереди=%s",
             job_id,
             estimate_ids,
             match.counters.as_dict(),
             routing_outcome,
+            reconcile_report,
         )
 
     except StorageFileNotFound:

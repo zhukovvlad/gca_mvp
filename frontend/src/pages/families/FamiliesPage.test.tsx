@@ -102,6 +102,34 @@ describe("FamiliesPage", () => {
     expect(await screen.findByLabelText("Поиск по написанию каталога")).toBeInTheDocument();
   });
 
+  it("третья вкладка «Предложения» открывает очередь; две прежние вкладки на месте", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<FamiliesPage />);
+
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual(["Семьи", "Контексты", "Предложения"]);
+    // Прежние вкладки не менялись: «Семьи» по-прежнему выбрана, очередь предложений не монтируется.
+    expect(screen.getByRole("tab", { name: "Семьи" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByTestId("suggestion-group")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Предложения" }));
+
+    expect((await screen.findAllByTestId("suggestion-group")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: "Предложения" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("возврат с «Предложений» на «Контексты» показывает очередь контекстов", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<FamiliesPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "Предложения" }));
+    await screen.findAllByTestId("suggestion-group");
+    await user.click(screen.getByRole("tab", { name: "Контексты" }));
+
+    expect(await screen.findByLabelText("Поиск по написанию каталога")).toBeInTheDocument();
+    expect(screen.queryByTestId("suggestion-group")).not.toBeInTheDocument();
+  });
+
   it("легенда источника подписи видна под заголовком экрана текстом, не только в подсказке (спека §2.3)", async () => {
     renderWithProviders(<FamiliesPage />);
     await screen.findByText("Семьи и контексты");

@@ -380,16 +380,48 @@ TWENTY_ONE_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(TWENTY_ONE_ROUTE_TEMPLATES) == 21
 
+#: Маршруты экрана «Предложения» (спека `2026-09-28-semantic-suggestions-design.md`
+#: §2.13; + `POST /batches/{id}/preview` — preview удержанной пачки, без него
+#: «Поставить…» не получает `preview_hash`) — ШАБЛОНАМИ пути, независимо от
+#: `app.routes`. Права на них перебирает `test_semantic_queue_api.py`.
+SEMANTIC_QUEUE_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/suggestions"),
+        ("POST", f"{BASE}/suggestions/confirm"),
+        ("POST", f"{BASE}/suggestions/{{suggestion_id}}/reject"),
+        ("POST", f"{BASE}/suggestions/{{suggestion_id}}/other-family"),
+        ("POST", f"{BASE}/suggestions/{{suggestion_id}}/create-family"),
+        ("GET", f"{BASE}/jobs"),
+        ("POST", f"{BASE}/jobs/{{job_id}}/retry"),
+        ("POST", f"{BASE}/jobs/{{job_id}}/privacy-release"),
+        ("POST", f"{BASE}/jobs/{{job_id}}/privacy-decline"),
+        ("POST", f"{BASE}/unit-privacy-release"),
+        ("GET", f"{BASE}/status"),
+        ("POST", f"{BASE}/unit-reask/preview"),
+        ("POST", f"{BASE}/unit-reask"),
+        ("POST", f"{BASE}/reask-all/preview"),
+        ("POST", f"{BASE}/reask-all"),
+        ("POST", f"{BASE}/batches/{{batch_id}}/preview"),
+        ("POST", f"{BASE}/batches/{{batch_id}}/approve"),
+        ("POST", f"{BASE}/batches/{{batch_id}}/discard"),
+        ("POST", f"{BASE}/worker/resume"),
+    }
+)
+assert len(SEMANTIC_QUEUE_ROUTE_TEMPLATES) == 19
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
-    равно литералу двадцати одного (план, задача 12, «Утверждения»; два
-    маршрута членств группы и пакетный перенос устаревшей группы — спека
-    `2026-09-25-families-screen-design.md` §2.8 п. 3-4) — единственное место,
-    где такое утверждение осмысленно (задача 6 роутера ещё не заводила);
-    маршрута восстановления архивного контекста (`…/restore`) в нём нет."""
+    равно объединению литерала двадцати одного маршрута семей и контекстов
+    (план, задача 12, «Утверждения»; два маршрута членств группы и пакетный
+    перенос устаревшей группы — спека `2026-09-25-families-screen-design.md`
+    §2.8 п. 3-4) и литерала маршрутов экрана «Предложения» — роутер общий, и
+    добавленные им маршруты не должны красить проверку прежнего набора. Литералы
+    не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
+    в наборе нет."""
+    assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
     collected = _collect_semantic_routes()
-    assert collected == TWENTY_ONE_ROUTE_TEMPLATES
+    assert collected == TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
     assert not any(path.endswith("/restore") for _method, path in collected)
 
 

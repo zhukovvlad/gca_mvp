@@ -16,6 +16,7 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
+import { pluralRu } from "@/pages/families/labels";
 import { jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -39,7 +40,12 @@ import type {
   Decimal,
   ManualKind,
   MoveMembersInput,
+  CreateFamilyFromSuggestionInput,
+  JobsStatus,
+  PreviewTarget,
+  PrivacyMatch,
   StaleGroupTransferInput,
+  SuggestionsParams,
   ObjectInput,
   RateClassInput,
   RateStandardInput,
@@ -1612,5 +1618,325 @@ export function useTransferStaleGroup() {
       invalidateContext(qc, contextId);
     },
     onError: toastApiError,
+  });
+}
+
+// ========== Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12) ==========
+
+/**
+ * Сводка шапки. Серверу она стоит дорого (обход всех контекстов каталога), поэтому
+ * свежей считается минуту, а перечитывается действиями, которые её меняют, и раз в
+ * минуту на открытой вкладке: остановку захвата предохранителем, расход и пачки,
+ * изменённые сервером, иначе не увидеть. В фоновой вкладке опроса нет.
+ */
+const QUEUE_STATUS_STALE_MS = 60_000;
+const QUEUE_STATUS_POLL_MS = QUEUE_STATUS_STALE_MS;
+
+/**
+ * Очереди и задания читаются тем же опросом, но только видимая очередь (`poll`):
+ * ответы исполнителя приходят без действий пользователя. Скрытые очереди держат
+ * только счётчики вкладок, их перечитывает переключение на них.
+ */
+export function useSuggestions(params: SuggestionsParams, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.suggestions(params),
+    queryFn: () => semanticApi.listSuggestions(params),
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useQueueStatus() {
+  return useQuery({
+    queryKey: qk.semanticQueue.status,
+    queryFn: () => semanticApi.queueStatus(),
+    staleTime: QUEUE_STATUS_STALE_MS,
+    refetchInterval: QUEUE_STATUS_POLL_MS,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** Очереди предложений и списки заданий: любое решение над ними их перечитывает. */
+function invalidateQueue(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.suggestionsAll });
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.jobsAll });
+}
+
+/**
+ * То же и шапка — для действий, меняющих её числа: перезапрос единицы или
+ * конфигурации, постановка или отброс пачки, снятие остановки, новая семья
+ * (единица становится «список семей изменён»), решения по задержанным.
+ */
+function invalidateQueueAndStatus(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueue(qc);
+  qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
+}
+
+/**
+ * Назначение семьи из предложения меняет и карточку контекста (`family_title`,
+ * состояние), поэтому вместе с очередью инвалидируется очередь контекстов.
+ */
+function invalidateAfterAssignment(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueue(qc);
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+  qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+}
+
+/** Отказ решения над очередью: экран устарел — перечитать, потом показать причину. */
+function onQueueDecisionError(
+  qc: ReturnType<typeof useQueryClient>,
+  { status = false }: { status?: boolean } = {}
+) {
+  return (error: unknown) => {
+    if (status) invalidateQueueAndStatus(qc);
+    else invalidateQueue(qc);
+    toastApiError(error);
+  };
+}
+
+export function useConfirmSuggestions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids }: { ids: number[]; familyTitle: string; leftCount: number }) =>
+      semanticApi.confirmSuggestions(ids),
+    onSuccess: (result, { familyTitle, leftCount }) => {
+      invalidateAfterAssignment(qc);
+      if (result.confirmed.length > 0) {
+        const n = result.confirmed.length;
+        toast.success(
+          `${n} ${pluralRu(n, "контекст", "контекста", "контекстов")} ${pluralRu(n, "получил", "получили", "получили")} семью «${familyTitle}».`,
+          {
+            description:
+              leftCount > 0
+                ? `Снятые (${leftCount}) остались в очереди: назначьте им другую семью или отклоните.`
+                : undefined,
+          }
+        );
+      }
+      if (result.skipped.length > 0) {
+        toast.warning(
+          `Пропущено предложений: ${result.skipped.length} — они изменились и ушли из очереди до нового ответа модели`
+        );
+      }
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+export function useRejectSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: number) => semanticApi.rejectSuggestion(suggestionId),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Предложение отклонено. Контекст остаётся без семьи.");
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+export function useOtherFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      suggestionId,
+      familyId,
+    }: {
+      suggestionId: number;
+      familyId: number;
+      familyTitle: string;
+    }) => semanticApi.otherFamily(suggestionId, familyId),
+    onSuccess: (_, { familyTitle }) => {
+      invalidateAfterAssignment(qc);
+      toast.success(`Назначена семья «${familyTitle}».`);
+    },
+    onError: onQueueDecisionError(qc),
+  });
+}
+
+/** Preview трёх действий, ставящих задания: перезапрос единицы, по конфигурации, удержанная пачка. */
+export function useReaskPreview() {
+  return useMutation({
+    mutationFn: (target: PreviewTarget) => {
+      switch (target.kind) {
+        case "unit":
+          return semanticApi.unitReaskPreview(target.unitId);
+        case "config":
+          return semanticApi.reaskAllPreview();
+        case "batch":
+          return semanticApi.batchPreview(target.batchId);
+      }
+    },
+  });
+}
+
+/**
+ * Подтверждение по `preview_hash` из показанного preview. `409 preview_changed`
+ * не показывается тостом — его обрабатывает диалог (новая оценка на экране).
+ */
+export function useReaskConfirm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ target, previewHash }: { target: PreviewTarget; previewHash: string }) => {
+      switch (target.kind) {
+        case "unit":
+          return semanticApi.unitReask(target.unitId, previewHash);
+        case "config":
+          return semanticApi.reaskAll(previewHash);
+        case "batch":
+          return semanticApi.approveBatch(target.batchId, previewHash);
+      }
+    },
+    onSuccess: (_, { target }) => {
+      invalidateQueueAndStatus(qc);
+      toast.success(
+        target.kind === "batch" ? "Пачка поставлена в очередь." : "Задания поставлены в очередь."
+      );
+    },
+    onError: (error) => {
+      if (apiErrorCode(error) === "preview_changed") return;
+      invalidateQueueAndStatus(qc);
+      toastApiError(error);
+    },
+  });
+}
+
+export function useDiscardBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: number) => semanticApi.discardBatch(batchId),
+    onSuccess: () => {
+      invalidateQueueAndStatus(qc);
+      toast.success("Пачка отброшена. Контексты можно поставить позже кнопкой единицы.");
+    },
+    onError: onQueueDecisionError(qc, { status: true }),
+  });
+}
+
+export function useResumeWorker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.resumeWorker(),
+    onSuccess: () => {
+      invalidateQueueAndStatus(qc);
+      toast.success("Захват заданий возобновлён");
+    },
+    onError: onQueueDecisionError(qc, { status: true }),
+  });
+}
+
+// ---- Очереди «Новая» и «Ошибки» (спека semantic-suggestions §2.9, §2.10, §2.12) ----
+
+export function useJobs(status: JobsStatus, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.jobs(status),
+    queryFn: () => semanticApi.listJobs(status),
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * «Завести семью…»: новая активная семья и назначение контексту. `409 family_exists`
+ * не показывается тостом — его разбирает диалог (ссылка на существующую семью).
+ * После успеха единица помечается «список семей изменён» — приходит со статусом.
+ */
+export function useCreateFamilyFromSuggestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      suggestionId,
+      input,
+    }: {
+      suggestionId: number;
+      input: CreateFamilyFromSuggestionInput;
+    }) => semanticApi.createFamilyFromSuggestion(suggestionId, input),
+    onSuccess: (_, { input }) => {
+      invalidateAfterAssignment(qc);
+      qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
+      toast.success(`Семья «${input.title}» активна и видна на вкладке «Семьи».`, {
+        description:
+          "Единица помечена сверху: перезапросите её, и остальные строки этой работы выберут новую семью.",
+      });
+    },
+    onError: (error) => {
+      if (apiErrorCode(error) === "family_exists") return;
+      invalidateQueueAndStatus(qc);
+      toastApiError(error);
+    },
+  });
+}
+
+export function useRetryJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: number) => semanticApi.retryJob(jobId),
+    onSuccess: () => {
+      invalidateQueue(qc);
+      toast.success("Задание возвращено в очередь, бюджет попыток сброшен.", {
+        description: "История прежних попыток сохранена.",
+      });
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+/** Отказ решения над заданием: `job_changed` — задание изменилось, экран перечитывается без повтора запроса. */
+function onJobDecisionError(qc: ReturnType<typeof useQueryClient>) {
+  return (error: unknown) => {
+    invalidateQueueAndStatus(qc);
+    if (apiErrorCode(error) === "job_changed") {
+      toast.error("Задание изменилось, обновите экран.");
+      return;
+    }
+    toastApiError(error);
+  };
+}
+
+export function usePrivacyRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
+      semanticApi.privacyRelease(jobId, shown),
+    onSuccess: () => {
+      invalidateQueueAndStatus(qc);
+      toast.success("Запрос отправлен: задание поставлено в очередь.");
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+export function usePrivacyDecline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
+      semanticApi.privacyDecline(jobId, shown),
+    onSuccess: () => {
+      invalidateQueueAndStatus(qc);
+      toast.success("Задание отменено: запрос не отправлен.");
+    },
+    onError: onJobDecisionError(qc),
+  });
+}
+
+export function useUnitPrivacyRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ unitId, shown }: { unitId: number | null; shown: PrivacyMatch[] }) =>
+      semanticApi.unitPrivacyRelease(unitId, shown),
+    onSuccess: (result) => {
+      invalidateQueueAndStatus(qc);
+      const n = result.confirmed.length;
+      toast.success(
+        `${n} ${pluralRu(n, "запрос отправлен", "запроса отправлено", "запросов отправлено")}.`,
+        {
+          description:
+            result.skipped.length > 0
+              ? `Пропущено заданий: ${result.skipped.length} — набор совпадений у них изменился, они остались в блоке.`
+              : undefined,
+        }
+      );
+    },
+    onError: onJobDecisionError(qc),
   });
 }

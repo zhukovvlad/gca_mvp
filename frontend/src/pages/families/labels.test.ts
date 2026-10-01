@@ -20,6 +20,8 @@ import {
   EVENT_TYPE_VALUES,
   FAMILY_SOURCE_LABEL,
   FAMILY_STATUS_LABEL,
+  jobErrorClassLabel,
+  matchPlaceLabel,
   NAME_ROLE_LABEL,
   pluralRu,
   SEMANTIC_KIND_LABEL,
@@ -197,5 +199,44 @@ describe("labels: журнал событий (закрытый список ф�
 
   it("eventLabel на неизвестном коде возвращает сам код, не падает", () => {
     expect(eventLabel("some_future_event_type")).toBe("some_future_event_type");
+  });
+});
+
+describe("labels: место совпадения и класс ошибки задания", () => {
+  it("context подписан «в строке»", () => {
+    expect(matchPlaceLabel("context")).toBe("в строке");
+  });
+
+  it("family:<id> подписан «в списке семей (семья N)» с номером из кода", () => {
+    expect(matchPlaceLabel("family:501")).toBe("в списке семей (семья 501)");
+    expect(matchPlaceLabel("family:7")).toBe("в списке семей (семья 7)");
+  });
+
+  it("prompt подписан «в тексте промпта»", () => {
+    expect(matchPlaceLabel("prompt")).toBe("в тексте промпта");
+  });
+
+  it("неизвестное место не выводит код на экран", () => {
+    expect(matchPlaceLabel("future_place")).toBe("в теле запроса");
+    expect(matchPlaceLabel("family:abc")).toBe("в теле запроса");
+  });
+
+  it.each([
+    ["timeout", "таймаут вызова"],
+    ["transport", "сетевая ошибка"],
+    ["bad_response", "ответ провайдера не разобран"],
+    ["empty_response", "пустой ответ провайдера"],
+    ["schema_error", "ответ не по схеме"],
+    ["interrupted", "прервано остановкой сервера"],
+    ["http_429", "HTTP 429"],
+    ["http_503", "HTTP 503"],
+  ])("класс ошибки %s печатается словом «%s»", (code, label) => {
+    expect(jobErrorClassLabel(code)).toBe(label);
+  });
+
+  it("неизвестный класс (имя исключения исполнителя) печатается как пришёл, отсутствие — «не указан»", () => {
+    expect(jobErrorClassLabel("ConnectionResetError")).toBe("ConnectionResetError");
+    expect(jobErrorClassLabel("http_4290")).toBe("http_4290");
+    expect(jobErrorClassLabel(null)).toBe("не указан");
   });
 });

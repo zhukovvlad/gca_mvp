@@ -18,6 +18,16 @@ import type {
   ContextCardData,
   ContextsPage,
   ContextsParams,
+  ConfirmSuggestionsResult,
+  CreateFamilyFromSuggestionInput,
+  JobsResponse,
+  JobsStatus,
+  PrivacyMatch,
+  QueueStatus,
+  ReaskPreview,
+  ReconcileResult,
+  SuggestionQueue,
+  SuggestionsParams,
   InflationSeries,
   InflationSeriesInput,
   InflationSeriesPatch,
@@ -491,4 +501,136 @@ export const semanticApi = {
         input
       )
       .then((r) => r.data),
+
+  // ---- Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12) ----
+
+  listSuggestions: (params: SuggestionsParams): Promise<SuggestionQueue> =>
+    api
+      .get<SuggestionQueue>("/v1/semantic/suggestions", {
+        params: {
+          queue: params.queue,
+          unit: params.unit,
+          band: params.band,
+          multi_owner: params.multi_owner ? true : undefined,
+        },
+      })
+      .then((r) => r.data),
+
+  queueStatus: (): Promise<QueueStatus> =>
+    api.get<QueueStatus>("/v1/semantic/status").then((r) => r.data),
+
+  confirmSuggestions: (suggestionIds: number[]): Promise<ConfirmSuggestionsResult> =>
+    api
+      .post<ConfirmSuggestionsResult>("/v1/semantic/suggestions/confirm", {
+        suggestion_ids: suggestionIds,
+      })
+      .then((r) => r.data),
+
+  rejectSuggestion: (suggestionId: number): Promise<{ suggestion_id: number; decision: string }> =>
+    api
+      .post<{ suggestion_id: number; decision: string }>(
+        `/v1/semantic/suggestions/${suggestionId}/reject`
+      )
+      .then((r) => r.data),
+
+  otherFamily: (
+    suggestionId: number,
+    familyId: number
+  ): Promise<{ suggestion_id: number; decision: string; family_id: number }> =>
+    api
+      .post<{ suggestion_id: number; decision: string; family_id: number }>(
+        `/v1/semantic/suggestions/${suggestionId}/other-family`,
+        { family_id: familyId }
+      )
+      .then((r) => r.data),
+
+  createFamilyFromSuggestion: (
+    suggestionId: number,
+    input: CreateFamilyFromSuggestionInput
+  ): Promise<{ suggestion_id: number; decision: string; family_id: number }> =>
+    api
+      .post<{ suggestion_id: number; decision: string; family_id: number }>(
+        `/v1/semantic/suggestions/${suggestionId}/create-family`,
+        input
+      )
+      .then((r) => r.data),
+
+  listJobs: (status: JobsStatus): Promise<JobsResponse> =>
+    api.get<JobsResponse>("/v1/semantic/jobs", { params: { status } }).then((r) => r.data),
+
+  retryJob: (jobId: number): Promise<{ job_id: number; status: string }> =>
+    api.post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/retry`).then((r) => r.data),
+
+  /** «Отправить»: `shown_matches` — ровно тот набор, что пришёл в `GET /jobs`. */
+  privacyRelease: (
+    jobId: number,
+    shownMatches: PrivacyMatch[]
+  ): Promise<{ job_id: number; status: string }> =>
+    api
+      .post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/privacy-release`, {
+        shown_matches: shownMatches,
+      })
+      .then((r) => r.data),
+
+  privacyDecline: (
+    jobId: number,
+    shownMatches: PrivacyMatch[]
+  ): Promise<{ job_id: number; status: string }> =>
+    api
+      .post<{ job_id: number; status: string }>(`/v1/semantic/jobs/${jobId}/privacy-decline`, {
+        shown_matches: shownMatches,
+      })
+      .then((r) => r.data),
+
+  /** «Отправить все K»: `unit_id: null` — задания без единицы, ключ обязателен. */
+  unitPrivacyRelease: (
+    unitId: number | null,
+    shownMatches: PrivacyMatch[]
+  ): Promise<ConfirmSuggestionsResult> =>
+    api
+      .post<ConfirmSuggestionsResult>("/v1/semantic/unit-privacy-release", {
+        unit_id: unitId,
+        shown_matches: shownMatches,
+      })
+      .then((r) => r.data),
+
+  /** Preview перезапроса единицы; `unit_id: null` — задания без единицы. */
+  unitReaskPreview: (unitId: number | null): Promise<ReaskPreview> =>
+    api
+      .post<ReaskPreview>("/v1/semantic/unit-reask/preview", { unit_id: unitId })
+      .then((r) => r.data),
+
+  unitReask: (unitId: number | null, previewHash: string): Promise<ReconcileResult> =>
+    api
+      .post<ReconcileResult>("/v1/semantic/unit-reask", {
+        unit_id: unitId,
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  reaskAllPreview: (): Promise<ReaskPreview> =>
+    api.post<ReaskPreview>("/v1/semantic/reask-all/preview").then((r) => r.data),
+
+  reaskAll: (previewHash: string): Promise<ReconcileResult> =>
+    api
+      .post<ReconcileResult>("/v1/semantic/reask-all", { preview_hash: previewHash })
+      .then((r) => r.data),
+
+  batchPreview: (batchId: number): Promise<ReaskPreview> =>
+    api.post<ReaskPreview>(`/v1/semantic/batches/${batchId}/preview`).then((r) => r.data),
+
+  approveBatch: (batchId: number, previewHash: string): Promise<ReconcileResult> =>
+    api
+      .post<ReconcileResult>(`/v1/semantic/batches/${batchId}/approve`, {
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  discardBatch: (batchId: number): Promise<{ batch_id: number; status: string }> =>
+    api
+      .post<{ batch_id: number; status: string }>(`/v1/semantic/batches/${batchId}/discard`)
+      .then((r) => r.data),
+
+  resumeWorker: (): Promise<{ claim_paused: boolean }> =>
+    api.post<{ claim_paused: boolean }>("/v1/semantic/worker/resume").then((r) => r.data),
 };

@@ -7,6 +7,8 @@ import type {
   MatrixParams,
   RateStandardParams,
   ReviewQueueParams,
+  JobsStatus,
+  SuggestionsParams,
   WorkFamilyStatus,
 } from "@/types/domain";
 
@@ -199,5 +201,17 @@ export const qk = {
       page: number,
       pageSize: number
     ) => ["semantic-contexts", "group-members", contextId, selector, state, page, pageSize] as const,
+  },
+
+  /** Экран «Предложения»: очередь предложений и сводка шапки (спека semantic-suggestions §2.12). */
+  semanticQueue: {
+    all: ["semantic-queue"] as const,
+    /** Префикс всех очередей предложений (любые фильтры) — инвалидация решений. */
+    suggestionsAll: ["semantic-queue", "suggestions"] as const,
+    /** Префикс обоих списков заданий («Ошибки» и «Задержанные»). */
+    jobsAll: ["semantic-queue", "jobs"] as const,
+    suggestions: (params: SuggestionsParams) => ["semantic-queue", "suggestions", params] as const,
+    status: ["semantic-queue", "status"] as const,
+    jobs: (status: JobsStatus) => ["semantic-queue", "jobs", status] as const,
   },
 };

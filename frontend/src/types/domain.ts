@@ -2518,3 +2518,195 @@ export interface AcceptTargetDecisionInput {
 export interface AcceptTargetDecisionResult {
   updated_members: number;
 }
+
+// ---------------------------------------------------------------------------
+//  Экран «Предложения» (спека 2026-09-28-semantic-suggestions-design.md §2.12,
+//  `backend/routers/semantic.py`, `backend/crud/semantic_queue.py`). Деньги и
+//  уверенность приходят СТРОКАМИ — на экране они форматируются строковыми
+//  функциями, без `Number`/`parseFloat` (AGENTS.md §3).
+// ---------------------------------------------------------------------------
+
+export type SuggestionBand = "high" | "mid" | "low";
+
+export interface RejectedMark {
+  family_id: number;
+  family_title: string;
+  decided_at: string;
+}
+
+export interface SuggestionRow {
+  suggestion_id: number;
+  context_id: number;
+  title: string;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  confidence: string;
+  reason: string;
+  multi_owner: boolean;
+  previously_rejected: RejectedMark | null;
+}
+
+/** Группа очереди «Семья из списка»: пара «семья + полоса», у группы ровно одна полоса. */
+export interface SuggestionGroup {
+  family_id: number;
+  family_title: string;
+  unit_code: string | null;
+  band: SuggestionBand;
+  rows: SuggestionRow[];
+  total: number;
+}
+
+/**
+ * Строка очереди «Новая» (`crud/semantic_queue.py::NewRow`): `suggestion_id: null` —
+ * контекст единицы без активных семей, модель не спрашивали.
+ */
+export interface NewRow {
+  suggestion_id: number | null;
+  context_id: number;
+  title: string;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  new_family_name: string | null;
+  is_system: boolean;
+  confidence: string | null;
+  reason: string | null;
+  multi_owner: boolean;
+}
+
+export interface SuggestionQueue {
+  queue: "list" | "new";
+  groups: SuggestionGroup[];
+  items: NewRow[];
+}
+
+/** Фильтр единицы очереди: `undefined` — все, `"none"` — контексты без единицы, иначе id единицы. */
+export type SuggestionUnitFilter = number | "none";
+
+export interface SuggestionsParams {
+  queue: "list" | "new";
+  unit?: SuggestionUnitFilter;
+  band?: SuggestionBand;
+  multi_owner?: boolean;
+}
+
+export interface PausedInfo {
+  reason: string;
+  attempt_id: number;
+  paused_at: string;
+}
+
+/** Откуда взялась удержанная пачка (`ReconcileBatchSource`, спека semantic-suggestions §2.4). */
+export type BatchSource = "import" | "operation" | "mass" | "unit_reask" | "config_reask";
+
+export interface HeldBatchInfo {
+  batch_id: number;
+  source: BatchSource;
+  import_job_id: number | null;
+  unit_id: number | null;
+  contexts_count: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  created_at: string;
+}
+
+export interface StaleUnitInfo {
+  unit_id: number | null;
+  unit_code: string | null;
+  stale_count: number;
+}
+
+export interface ConfigStaleInfo {
+  stale_count: number;
+  prompt_version_current: number;
+}
+
+export interface QueueStatus {
+  spent_24h_usd: string;
+  daily_budget_usd: string;
+  claim_paused: PausedInfo | null;
+  held_batches: HeldBatchInfo[];
+  stale_units: StaleUnitInfo[];
+  config_stale: ConfigStaleInfo | null;
+}
+
+export interface ConfirmSuggestionsResult {
+  confirmed: number[];
+  skipped: number[];
+}
+
+/** `POST …/preview` (перезапрос единицы, по конфигурации, удержанная пачка). */
+export interface ReaskPreview {
+  context_count: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  preview_hash: string;
+}
+
+/** Отчёт сверки заданий (`dataclasses.asdict(ReconcileReport)`) — экран показывает только успех. */
+export type ReconcileResult = Record<string, unknown>;
+
+/** Что подтверждает {@link ReaskPreview}: три разных действия над одним диалогом. */
+export type PreviewTarget =
+  | { kind: "unit"; unitId: number | null; unitCode: string | null }
+  | { kind: "config" }
+  | { kind: "batch"; batchId: number; source: BatchSource };
+
+/** Тело `POST /suggestions/:id/create-family`; единицу сервер берёт у контекста предложения. */
+export interface CreateFamilyFromSuggestionInput {
+  title: string;
+  definition: string;
+}
+
+/** Тело `409 family_exists`: `family_id` существующей семьи, может быть `null`. */
+export interface FamilyExistsContext {
+  family_id: number | null;
+}
+
+export type JobsStatus = "error" | "privacy_hold";
+
+/**
+ * Совпадение проверки приватности. `where` — место: `context` (строка контекста),
+ * `family:<id>` (строка семьи в списке кандидатов), `prompt` (текст промпта).
+ */
+export interface PrivacyMatch {
+  text: string;
+  kind: string;
+  where: string;
+}
+
+/** Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`). */
+export interface JobRow {
+  job_id: number;
+  context_id: number;
+  title: string;
+  unit_id: number | null;
+  unit_code: string | null;
+  article: string | null;
+  path: string[];
+  status: string;
+  last_error_class: string | null;
+  error_text: string | null;
+  retry_generation: number;
+  attempts_in_generation: number;
+  matches: PrivacyMatch[] | null;
+  updated_at: string;
+}
+
+/** Задержанные одним набором совпадений в списке семей или в промпте единицы. */
+export interface UnitHoldGroup {
+  unit_id: number | null;
+  unit_code: string | null;
+  place: "family" | "prompt" | "mixed";
+  family_id: number | null;
+  family_title: string | null;
+  matches: PrivacyMatch[];
+  jobs_count: number;
+}
+
+export interface JobsResponse {
+  status: JobsStatus;
+  items: JobRow[];
+  unit_groups: UnitHoldGroup[];
+}

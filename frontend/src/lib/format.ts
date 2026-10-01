@@ -63,6 +63,51 @@ export function formatDecimalMoney(
 }
 
 /**
+ * Доллары США из десятичной строки: «$4,20». Знак валюты стоит ПЕРЕД суммой
+ * (так на экране «Предложения»: расход, резерв, ожидаемая цена), а не после,
+ * как у рублёвого {@link formatDecimalMoney}. Число не строится: округление до
+ * центов — целочисленное (`roundDecimal`), разряды — строковая замена.
+ */
+export function formatUsd(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const amount = formatDecimalMoney(value, "", 2);
+  return amount === "—" ? amount : `$${amount}`;
+}
+
+/**
+ * Доля `numerator / denominator` в процентах, целое от 0 до 100, — для ширины
+ * полосы расхода. Целочисленная арифметика на BigInt: деньги в `Number` не
+ * переводятся даже ради полосы. Нулевой или неразбираемый знаменатель — 0,
+ * перерасход зажимается до 100.
+ */
+export function ratioPercent(numerator: string, denominator: string): number {
+  const n = DECIMAL_RE.exec(numerator.trim());
+  const d = DECIMAL_RE.exec(denominator.trim());
+  if (!n || !d || n[1] === "-" || d[1] === "-") return 0;
+  const scale = Math.max((n[3] ?? "").length, (d[3] ?? "").length);
+  const toScaled = (m: RegExpExecArray) => BigInt(m[2] + (m[3] ?? "").padEnd(scale, "0"));
+  const den = toScaled(d);
+  if (den === 0n) return 0;
+  const percent = (toScaled(n) * 100n) / den;
+  return percent > 100n ? 100 : Number(percent);
+}
+
+/**
+ * Уверенность модели из десятичной строки: «0.98» → «0,98», ровно два знака.
+ * Лишние знаки ОТБРАСЫВАЮТСЯ, а не округляются: полоса группы решается по точному
+ * значению (0,9 входит в верхнюю, 0,7 в среднюю), и напечатанное «0,90» у
+ * значения 0.895 противоречило бы полосе «0,7–0,9». Строковая замена, `Number`
+ * не участвует.
+ */
+export function formatConfidence(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const parsed = DECIMAL_RE.exec(value.trim());
+  if (!parsed) return value.trim();
+  const [, sign, whole, fraction = ""] = parsed;
+  return `${sign}${whole},${fraction.slice(0, 2).padEnd(2, "0")}`;
+}
+
+/**
  * Округляет десятичную строку до `digits` знаков **целочисленной арифметикой**.
  *
  * Тот же приём и та же причина, что у `roundDecimalPercent`: `Number()` для денег

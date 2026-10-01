@@ -39,6 +39,12 @@ os.environ.setdefault("SECRET_KEY", "test-only-secret-key-not-for-production-32c
 # setdefault, а не присваивание: локальный прогон может включить его осознанно.
 os.environ.setdefault("RUN_STARTUP_MAINTENANCE", "false")
 
+# Опросчик семантической очереди (спека фичи «Семантические предложения», §2.5)
+# из `lifespan` звал бы настоящую модель по ключу из `.env` на реальном engine.
+# Присваивание, а не setdefault: сеть в тестах не открывается ни при какой
+# локальной настройке; сам опросчик тестируется с внедрённым клиентом.
+os.environ["RUN_SEMANTIC_WORKER"] = "false"
+
 
 # ---------------------------------------------------------------------------
 #  Страж пропусков: в полном прогоне skip допустим только из явного реестра
@@ -403,6 +409,21 @@ _DOMAIN_TABLES = (
     "catalog_contexts",
     "context_buckets",
     "work_families",
+    # Очередь семантических предложений (миграция 0018), все пять таблиц —
+    # ЯВНО, а не в расчёте на каскад. Сегодня TRUNCATE ... CASCADE дошёл бы до
+    # всех пяти и сам (semantic_jobs и family_suggestions ссылаются на
+    # catalog_contexts, semantic_job_attempts — на semantic_jobs,
+    # semantic_worker_state — на semantic_job_attempts,
+    # semantic_reconcile_batches — на import_jobs), но это та же случайная
+    # защита, которой никто не объявлял, что и у семантического контура выше:
+    # правка любого внешнего ключа сняла бы её молча. Порядок внутри списка значения не имеет —
+    # TRUNCATE нескольких таблиц ОДНОЙ командой снимает FK между ними
+    # одновременно (в том числе цикл `semantic_jobs` <-> `family_suggestions`).
+    "semantic_worker_state",
+    "family_suggestions",
+    "semantic_job_attempts",
+    "semantic_jobs",
+    "semantic_reconcile_batches",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",
@@ -424,6 +445,14 @@ def _truncate_domain_tables(engine) -> None:
     with engine.begin() as conn:
         conn.exec_driver_sql(
             f"TRUNCATE {', '.join(_DOMAIN_TABLES)} RESTART IDENTITY CASCADE"
+        )
+        # semantic_worker_state — ровно одна обязательная строка (id=1),
+        # которую TRUNCATE выше снёс вместе с остальными; без неё захват
+        # (спека фичи «Семантические предложения», §2.5) не работает. Строку
+        # вставляет сама миграция 0018 — здесь она пересоздаётся, в ТОЙ ЖЕ
+        # транзакции, что и очистка: тест не должен увидеть таблицу без неё.
+        conn.exec_driver_sql(
+            "INSERT INTO semantic_worker_state (id, claim_paused) VALUES (1, false)"
         )
 
 

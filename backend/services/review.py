@@ -65,6 +65,7 @@ from models import (
 from services.context_routing import chapter_context, evaluate_predicate, lock_buckets
 from services.matching import NORM_VERSION, cache_key
 from services.semantic_events import record_event
+from services.semantic_reconcile import contexts_of_positions, reconcile_or_defer
 from services.unit_resolution import UnitResolver
 
 log = logging.getLogger(__name__)
@@ -213,8 +214,9 @@ def _conflict_warning(
     предупреждения либо `None`, если хотя бы одна из осей не расходится.
 
     Правило — через ИЛИ (спека §2.5, §2.8): семейная ветка не требует
-    `manual`-подтверждения (в фиче 1 семья назначается только оператором,
-    `family_source` всегда `'manual'`), а видовая ветка требует его явно —
+    `manual`-подтверждения (семья, назначенная по подтверждённому предложению,
+    `family_source='suggestion'`, расходится так же, как назначенная вручную),
+    а видовая ветка требует его явно —
     неподтверждённый (`source='rule'`) вид не расходится, он просто ещё не
     решён."""
     if (
@@ -623,6 +625,18 @@ def merge_into_position_outcome(
     _require_kind(locked, target_id, CatalogKind.POSITION.value)
     resolver = resolver or UnitResolver(db)
 
+    # Контексты строки-источника (их корзины исчезнут при слиянии, сами контексты
+    # переедут в корзины цели) и контексты, куда лягут членства её позиций,
+    # собираются до и после сведения соответственно.
+    source_context_ids = _contexts_of_catalog_position(db, to_review_id)
+    moved_position_ids = list(
+        db.execute(
+            sa.select(PositionItem.id).where(PositionItem.catalog_position_id == to_review_id)
+        )
+        .scalars()
+        .all()
+    )
+
     moved = db.execute(
         sa.update(PositionItem)
         .where(PositionItem.catalog_position_id == to_review_id)
@@ -647,6 +661,8 @@ def merge_into_position_outcome(
             f"Каталожная строка {to_review_id} исчезла во время слияния; решение отменено."
         )
     db.expire_all()
+
+    reconcile_or_defer(db, source_context_ids | contexts_of_positions(db, moved_position_ids))
 
     log.info(
         "Review: строка %d слита с POSITION %d, перенесено позиций: %d",
@@ -691,6 +707,20 @@ def _lock_contexts_for_update(db: Session, context_ids: list[int]) -> None:
         .order_by(CatalogContext.id)
         .with_for_update()
     ).all()
+
+
+def _contexts_of_catalog_position(db: Session, catalog_position_id: int) -> set[int]:
+    """Все контексты корзин каталожной строки (архивные тоже — сверка сама
+    отсеет неприменимые)."""
+    return set(
+        db.execute(
+            sa.select(CatalogContext.id)
+            .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+            .where(ContextBucket.catalog_position_id == catalog_position_id)
+        )
+        .scalars()
+        .all()
+    )
 
 
 def _mark_contexts_not_applicable(db: Session, *, catalog_position_id: int) -> None:
@@ -758,6 +788,8 @@ def set_kind(
         _mark_contexts_not_applicable(db, catalog_position_id=row.id)
 
     _write_manual_cache(db, row, row.id, resolver)
+
+    reconcile_or_defer(db, _contexts_of_catalog_position(db, row.id))
 
     log.info("Review: строке %d поставлен kind=%s", to_review_id, kind)
     return row
