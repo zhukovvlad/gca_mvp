@@ -44,7 +44,7 @@
    привязанный контекст тоже получает предложения, и это даёт перезапросу
    единицы «пересмотр привязок» без второго предиката; что делать с ответом,
    решает публикация по происхождению текущей семьи (§2.5);
-7. **ожидающее назначение семьи хранится на контексте** (четыре колонки), а не
+7. **ожидающее назначение семьи хранится на контексте** (шесть колонок), а не
    отдельной таблицей: у контекста одно ожидание, второе его заменяет (§2.5);
 8. **«не уточнено» — отсутствие строки значения**, а не особое значение в
    списке: список значений замороженной схемы содержит только то, что модель или
@@ -64,6 +64,19 @@
 12. **промоушен строки не пишет отдельного события** — он часть события
     `context_variant_assigned` (`payload.promoted = true`): у журнала два предмета,
     контекст и семья, а строка каталога не предмет (§2.10, §2.13).
+
+**Круг 1 гейта 2 (02.10), в этой же редакции** — 18 замечаний Codex, все
+подтверждены: составной FK контекста закрыт от `MATCH SIMPLE` отдельным CHECK, CHECK
+ожидания переписан тотальным предикатом, значения и параметры привязаны к схеме
+варианта составными FK, `frozen_at` сохраняется у `superseded`, ключ задания
+включает `schema_id` (§2.4); таблица публикации разделена по наличию варианта,
+порог ожидания хранится, вытесненное ожидание получает `auto_superseded` (§2.5);
+ответ значений несёт `source`, тарифы — по профилю, волна после расширений и
+архивирование варианта — под блокировкой семьи и варианта, порядок блокировок
+«строка → семья → вариант → контекст» (§2.6); удержанные пачки обобщены на три
+вида, готовность семьи учитывает удержанный перезапрос (§2.7); слияние синонимов
+не переписывает архивируемый вариант, переименование — только косметическое
+(§2.8); слияние семей переезжает и версией схемы (§2.9).
 
 Номер ревизии `AGENTS.md` здесь **намеренно не назван**: страж
 (`check_agents_index.py`) не разрешает версию, которой ещё нет ни в преамбуле, ни
@@ -211,7 +224,14 @@ JSON (дизайн §3). Строгий разбор фичи 2 (§2.2 спек�
   (20 000), `SEMANTIC_VALUES_MAX_TOKENS` (600); промпты — константы
   `SCHEMA_PROMPT_VERSION`, `VALUES_PROMPT_VERSION`. Профиль входит в `body`, а
   значит в `request_hash` и `prefix_hash`; настройка `SEMANTIC_MODEL` и тело
-  предложений фичи 2 **не меняются ни байтом**.
+  предложений фичи 2 **не меняются ни байтом**. **Тарифы — часть профиля**:
+  `SEMANTIC_VARIANTS_PRICE_INPUT_PER_M`, `_CACHE_WRITE_PER_M`, `_CACHE_READ_PER_M`,
+  `_OUTPUT_PER_M` для двух новых видов (одна модель — один набор; по умолчанию
+  тарифы Sonnet 5.5 на 02.10.2026: 2 / 2,5 / 0,2 / 10 $ за 1M); `tariffs_from`
+  (`services/semantic_cost.py:59`) принимает вид задания, и резерв, preview,
+  предохранитель «факт выше резерва» и сумма за 24 часа считаются тарифами того
+  вида, чья попытка; `known_prefix_tokens` и так ключуется по `prefix_hash`, а
+  префиксы видов различны.
 - **`response_format`** (решение 4): `{"type": "json_schema", "json_schema":
   {"name", "strict": true, "schema"}}` — часть `body`, входит в хэш; версия схемы
   ответа — колонка `response_schema_version`, как в фиче 2.
@@ -231,13 +251,14 @@ family_parameter_schemas          -- версия схемы семьи
   # UNIQUE(family_id, version)
   # UNIQUE(family_id) WHERE status = 'frozen'           -- raw SQL: одна текущая
   # UNIQUE(id, family_id)                                -- цель составных FK
-  # CHECK (status = 'frozen') = (frozen_at IS NOT NULL)
+  # CHECK (status IN ('frozen','superseded')) = (frozen_at IS NOT NULL)   -- supersede не стирает заморозку
   # CHECK (status = 'superseded') = (superseded_at IS NOT NULL)
   # CHECK (origin = 'manual') = (frozen_by IS NOT NULL)
 
 family_parameters                 -- параметр версии схемы
-  id, schema_id → family_parameter_schemas [CASCADE], ordinal smallint, name text
+  id, schema_id → family_parameter_schemas [CASCADE], ordinal smallint, name text, name_norm text
   # UNIQUE(schema_id, ordinal); CHECK ordinal BETWEEN 1 AND 3
+  # UNIQUE(id, schema_id)                                -- цель составных FK
   # CHECK btrim(name) <> ''
 
 family_parameter_values           -- значение закрытого списка (пусто = нет строки)
@@ -245,6 +266,7 @@ family_parameter_values           -- значение закрытого спи�
   origin ('schema'|'extension'|'manual'), merged_into_id → family_parameter_values [RESTRICT] NULL,
   created_at
   # UNIQUE(parameter_id, value_norm)                     -- атомарное расширение
+  # UNIQUE(id, parameter_id)                             -- цель составных FK
   # CHECK (merged_into_id IS NULL OR merged_into_id <> id)
 
 work_variants                     -- вариант: семья + версия схемы + набор значений
@@ -252,33 +274,43 @@ work_variants                     -- вариант: семья + версия �
   values_key text, status ('active'|'archived'), merged_into_id → work_variants [RESTRICT] NULL,
   created_at, archived_at NULL
   # FK (schema_id, family_id) → family_parameter_schemas (id, family_id)
-  # UNIQUE(schema_id, values_key)                        -- одинаковый набор — один вариант
-  # UNIQUE(id, family_id)                                -- цель составного FK контекста
+  # UNIQUE(schema_id, values_key)                        -- одинаковый набор — один вариант (и архивный тоже)
+  # UNIQUE(id, family_id), UNIQUE(id, schema_id)         -- цели составных FK контекста и значений
   # CHECK (status = 'archived') = (archived_at IS NOT NULL)
   # CHECK (merged_into_id IS NULL) OR (status = 'archived')
 
 work_variant_values               -- набор значений варианта построчно
-  variant_id → work_variants [CASCADE], parameter_id → family_parameters [RESTRICT],
-  value_id → family_parameter_values [RESTRICT] NULL   -- NULL = не уточнено
+  variant_id → work_variants [CASCADE], schema_id, parameter_id, value_id NULL   -- NULL = не уточнено
   # PK (variant_id, parameter_id)
+  # FK (variant_id, schema_id) → work_variants (id, schema_id)             -- параметр из схемы варианта
+  # FK (parameter_id, schema_id) → family_parameters (id, schema_id)
+  # FK (value_id, parameter_id) → family_parameter_values (id, parameter_id) -- значение этого параметра
 
 context_parameter_values          -- значения контекста по текущей версии схемы
-  context_id → catalog_contexts [RESTRICT], parameter_id → family_parameters [RESTRICT],
-  value_id → family_parameter_values [RESTRICT] NULL,
+  context_id → catalog_contexts [RESTRICT], schema_id, parameter_id, value_id NULL,
   source ('name'|'path'|'manual'|'path_conflict'|'none'), job_id → semantic_jobs [SET NULL],
   paths_hash text NULL, created_at
   # PK (context_id, parameter_id)
+  # FK (parameter_id, schema_id) → family_parameters (id, schema_id)
+  # FK (value_id, parameter_id) → family_parameter_values (id, parameter_id)
   # CHECK (value_id IS NULL) = (source IN ('path_conflict','none'))
 
 catalog_contexts                  -- новые колонки
   work_variant_id → work_variants [RESTRICT] NULL, variant_at NULL,
   variant_split_hint ('path_conflict') NULL,
   pending_family_id → work_families [RESTRICT] NULL, pending_family_source ('manual'|'suggestion'|'auto_suggestion') NULL,
-  pending_suggestion_id → family_suggestions [SET NULL] NULL, pending_by → users [RESTRICT] NULL, pending_at NULL
+  pending_suggestion_id → family_suggestions [RESTRICT] NULL, pending_by → users [RESTRICT] NULL,
+  pending_threshold numeric NULL, pending_at NULL
   # FK (work_variant_id, work_family_id) → work_variants (id, family_id)   -- семья варианта = семья контекста
+  # CHECK (work_variant_id IS NULL OR work_family_id IS NOT NULL)          -- закрывает MATCH SIMPLE: пара проверяется целиком
   # CHECK (work_variant_id IS NULL) = (variant_at IS NULL)
-  # CHECK (pending_family_id IS NULL) = (pending_family_source IS NULL) = (pending_at IS NULL)
-  # CHECK (pending_family_source = 'manual') = (pending_by IS NOT NULL)      -- при pending
+  # CK_CONTEXT_PENDING — один тотальный предикат из двух полных ветвей:
+  #   (pending_family_id IS NULL AND pending_family_source IS NULL AND pending_suggestion_id IS NULL
+  #      AND pending_by IS NULL AND pending_threshold IS NULL AND pending_at IS NULL)
+  #   OR (pending_family_id IS NOT NULL AND pending_family_source IS NOT NULL AND pending_at IS NOT NULL
+  #      AND (pending_family_source = 'manual') = (pending_by IS NOT NULL)
+  #      AND (pending_family_source <> 'manual') = (pending_suggestion_id IS NOT NULL)
+  #      AND (pending_family_source = 'auto_suggestion') = (pending_threshold IS NOT NULL))
   # CHECK family_source IN ('manual'|'suggestion'|'auto_suggestion')        -- расширен
   # CK_CONTEXT_FAMILY_PROVENANCE расширен: auto_suggestion ⟹ family_by IS NULL
 
@@ -288,14 +320,21 @@ semantic_jobs                     -- новые колонки и ключ
   context_id — становится NULL-able
   # CHECK (kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)
   # CHECK (kind <> 'family_schema') = (context_id IS NOT NULL)
-  # CHECK (kind = 'context_values') = (schema_id IS NOT NULL)
-  # UNIQUE(kind, COALESCE(context_id,-1), COALESCE(family_id,-1), request_hash)   -- raw SQL, заменяет uq_semantic_jobs_context_request_hash
+  # CHECK (kind <> 'family_suggestion') = (schema_id IS NOT NULL)          -- схема: версия building; значения: текущая версия
+  # UNIQUE(kind, COALESCE(context_id,-1), COALESCE(family_id,-1), COALESCE(schema_id,-1), request_hash)
+  #   -- raw SQL, заменяет uq_semantic_jobs_context_request_hash; версия схемы — часть предмета:
+  #   -- пересборка без смены имён даёт тот же request_hash, и без schema_id старое done блокировало бы новое
   # CHECK (result_suggestion_id IS NULL OR kind = 'family_suggestion')
 
 family_suggestions                -- расширение
-  decision ('accepted'|'rejected'|'other_family'|'family_created'|'auto_accepted'|'auto_pending')
-  # ck_family_suggestions_decision_author_pair → (decided_by IS NULL) = (decision IS NULL OR decision IN ('auto_accepted','auto_pending'))
+  decision ('accepted'|'rejected'|'other_family'|'family_created'|'auto_accepted'|'auto_pending'|'auto_superseded')
+  # ck_family_suggestions_decision_author_pair → (decided_by IS NULL) = (decision IS NULL OR decision IN ('auto_accepted','auto_pending','auto_superseded'))
   # ck_family_suggestions_decision_at_pair без изменений: decided_at ⟺ decision
+
+semantic_reconcile_batches        -- обобщение удержанных пачек на три вида (§2.7)
+  held_fingerprints: список {kind, context_id|null, family_id|null, schema_id|null, request_hash}
+  # fingerprints_hash — sha256 этого списка, отсортированного по (kind, ключ предмета, request_hash)
+  # миграция переписывает существующие пары (context_id, request_hash) в новый формат с kind='family_suggestion'
 
 semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TYPE и списка типов (§2.13)
 ```
@@ -303,9 +342,21 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 Что держат ограничения:
 
 - **Семья варианта равна семье контекста** — составным FK
-  `(work_variant_id, work_family_id)`; смена семьи без смены варианта невозможна
-  на уровне БД, отсюда двухшаговый протокол §2.5 и переезд вариантов при слиянии
-  §2.9.
+  `(work_variant_id, work_family_id)` **вместе с** CHECK «вариант ⟹ семья»:
+  составной FK PostgreSQL по умолчанию `MATCH SIMPLE` и при пустой семье пару не
+  проверяет вовсе; CHECK закрывает эту лазейку. Смена семьи без смены варианта
+  невозможна на уровне БД, отсюда двухшаговый протокол §2.5 и переезд вариантов
+  вместе с версией схемы при слиянии §2.9.
+- **Параметр — из схемы варианта, значение — этого параметра** — двумя составными
+  FK у `work_variant_values` и `context_parameter_values` через колонку
+  `schema_id` (решение по кругу 1 гейта 2): без них вариант схемы A мог бы нести
+  параметр схемы B и значение третьего параметра, и `work_variant_id` перестал бы
+  задавать одну сравнимую работу. При `value_id IS NULL` FK значения не
+  проверяется — это и есть «не уточнено».
+- **Ожидание — целиком или никак** — `CK_CONTEXT_PENDING` одним тотальным
+  предикатом из двух полных ветвей (`docs/insights/state-the-rule-as-an-equivalence.md`,
+  спека 1 §2.3 о тотальном CHECK происхождения): цепочка равенств `a = b = c`
+  пропускала бы строку с пустой семьёй и заполненными источником и временем.
 - **Одна текущая версия схемы на семью** — частичный UNIQUE; версия `building`
   существует параллельно текущей, пока задание не выполнено.
 - **Расширение списка атомарно** — `UNIQUE(parameter_id, value_norm)`; вставка
@@ -332,23 +383,27 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 фичи 2 (§2.8 спеки 2) делает **ещё один шаг в той же транзакции**, если
 опубликован ответ со «своей» семьёй (`family_id IS NOT NULL`) и порог задан:
 
-| Контекст | Предложенная семья | Уверенность | Исход |
-|---|---|---|---|
-| без семьи | любая | ≥ порога | `assign_family(source=auto_suggestion)`, `decision=auto_accepted`, задание значений (§2.6) |
-| без семьи | любая | < порога | опубликовано, человеку — как сейчас |
-| семья та же | — | любая | `decision=auto_accepted` без изменений контекста |
-| семья другая, `family_source=auto_suggestion` | ≠ текущей | ≥ порога | **ожидающее назначение** `pending_family_source=auto_suggestion`, `decision=auto_pending`, задание значений по схеме новой семьи |
-| семья другая, `family_source=auto_suggestion` | ≠ текущей | < порога | опубликовано, очередь «смена семьи» |
-| семья другая, `family_source ∈ {manual, suggestion}` | ≠ текущей | любая | опубликовано, очередь «смена семьи»; правило не трогает |
+| Контекст: семья | вариант | Предложенная семья | Уверенность | Исход |
+|---|---|---|---|---|
+| нет | нет | любая | ≥ порога | `assign_family(source=auto_suggestion)`, `decision=auto_accepted`, задание значений (§2.6) |
+| нет | нет | любая | < порога | опубликовано, человеку — как сейчас |
+| та же | любой | — | любая | `decision=auto_accepted` без изменений контекста |
+| другая, `auto_suggestion` | **нет** | ≠ текущей | ≥ порога | семья меняется **сразу** (`assign_family`, ожидания нет — варианта, который надо беречь, тоже нет), прежнее задание значений отменяется сверкой, ставится новое; `decision=auto_accepted` |
+| другая, `auto_suggestion` | **есть** | ≠ текущей | ≥ порога | **ожидающее назначение** `pending_family_source=auto_suggestion`, `pending_threshold` = порог на момент решения, `decision=auto_pending`, задание значений по схеме новой семьи |
+| другая, `auto_suggestion` | любой | ≠ текущей | < порога | опубликовано, очередь «смена семьи» |
+| другая, `manual` или `suggestion` | любой | ≠ текущей | любая | опубликовано, очередь «смена семьи»; правило не трогает |
 
 Порог — `SEMANTIC_AUTO_ACCEPT_THRESHOLD: Decimal | None`, по умолчанию `None`
-(автопринятия нет, таблица вырождается в две строки «опубликовано»). Порог и
-уверенность пишутся в `payload` события `context_family_assigned`.
+(автопринятия нет, таблица вырождается в строки «опубликовано»). Порог и
+уверенность пишутся в `payload` события `context_family_assigned`; для ожидания
+порог берётся из `pending_threshold`, а не из настройки на момент переключения:
+настройка к тому времени могла измениться.
 
-**Ожидающее назначение** — четыре колонки контекста (§2.4). Правила:
+**Ожидающее назначение** — колонки контекста (§2.4). Правила:
 
-1. контекст **без варианта** получает семью сразу (`assign_family`), вариант — по
-   готовности значений;
+1. контекст **без варианта** получает семью сразу (`assign_family`) — есть у
+   него семья или нет, — а вариант по готовности значений; прежнее задание
+   значений, если было, отменяет сверка;
 2. контекст **с вариантом** любую смену семьи — автопринятием, человеком
    («Другая семья…», переназначение на карточке), подтверждением предложения из
    очереди «смена семьи» — получает как ожидание: `pending_*` заполняются,
@@ -362,10 +417,11 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
    контекстов (решение 10);
 4. новое ожидание заменяет прежнее (одно на контекст); «Отменить ожидание» на
    карточке очищает колонки и отменяет задание (`cancelled/not_applicable`);
-   предложение, породившее ожидание (`decision=auto_pending`), при переключении
-   получает `auto_accepted`, при отмене — `rejected` с автором-отменившим, при
-   замене другим ожиданием — `rejected` с автором нового решения (или
-   `auto_accepted`-заменой без автора, если заменило правило) — так отклонённое
+   предложение, породившее ожидание (`decision=auto_pending`), получает
+   `auto_accepted` **только при фактическом переключении**; при отмене человеком
+   — `rejected` с автором-отменившим; при вытеснении другим ожиданием —
+   `auto_superseded` без автора, если вытеснило правило, и `rejected` с автором,
+   если человек. Все три исхода терминальны для своего отпечатка — отклонённое
    не воскресает по правилу фичи 2 (§2.9 спеки 2);
 5. ошибка задания значений, задержка приватности, отсутствие схемы — ожидание
    висит и видно на карточке и в счётчиках `/status`; контекст живёт прежним
@@ -396,15 +452,18 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 | применим, если | предикат §2.5 | семья `active`, версия в `building`, у семьи нет другой версии `building` | контекст применим по §2.5 без условия кандидатов, у него есть семья (или ожидание), версия — текущая у этой семьи |
 | отпечаток меняется от | входа, кандидатов, конфигурации | состава имён семьи, определения, конфигурации | имени, статьи, десяти путей, схемы, конфигурации |
 | результат | `family_suggestions` | параметры и значения версии, версия `frozen`; прежняя текущая → `superseded`; событие `family_schema_frozen` | строки `context_parameter_values`, вариант по правилу, промоушен строки, событие `context_variant_assigned` |
-| ответ | как в фиче 2 | `{"parameters":[{"ordinal","name","values":[…]}]}`, 0–3 параметра, до 8 значений | `{"values":[{"ordinal","value"}]}`: значение из списка, `"new:<значение>"`, `"path_conflict"` или `null` |
+| ответ | как в фиче 2 | `{"parameters":[{"ordinal","name","values":[…]}]}`, 0–3 параметра, до 8 значений | `{"values":[{"ordinal","value","source"}]}`: `value` — значение из списка, `"new:<значение>"`, `"path_conflict"` или `null`; `source` ∈ `name`/`path` обязателен при непустом значении и запрещён при `null`/`path_conflict` (строгая схема ответа) |
 | модель | `SEMANTIC_MODEL` (Sonnet 5, рассуждение выключено) | `SEMANTIC_SCHEMA_MODEL` | `SEMANTIC_VALUES_MODEL` |
 | `response_format` | нет | да | да |
 
 **Когда ставятся** (точки сверки, §2.7):
 
 - `family_schema`: активация семьи **после окончания перезапроса её единицы** —
-  в единице нет заданий `family_suggestion` в `pending`/`running`, задержанные и
-  ошибочные не считаются (дизайн §2.6); явная пересборка `admin`; разовый проход
+  в единице нет заданий `family_suggestion` в `pending`/`running` **и нет
+  удержанной пачки** (`semantic_reconcile_batches.status='held'`) с этой единицей
+  или без единицы (пачка `mass` держит все единицы): сверх потолка задания ещё не
+  созданы, и по одним строкам заданий перезапрос выглядел бы законченным;
+  задержанные и ошибочные не считаются (дизайн §2.6); явная пересборка `admin`; разовый проход
   развёртывания по активным семьям без текущей версии (§2.12). Пока условие не
   выполнено, на `/families` у семьи пометка «схема ждёт перезапроса единицы».
 - `context_values`: контекст получил семью или ожидание и у этой семьи есть
@@ -413,17 +472,34 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
   (импорт добавил или убрал членства — те же точки инварианта фичи 2); расширение
   списка — контекстам семьи с пустым значением этого параметра (§2.8).
 
-**Обработка результата `context_values`** — одна транзакция под `FOR UPDATE`
-контекста и `FOR SHARE` версии схемы: (1) вердикт публикации фичи 2 — контекст
-применим и отпечаток текущий, иначе результат не применяется (`lost_claim`,
-`stale_fingerprint`); (2) `new:` → вставка значения `ON CONFLICT … RETURNING`,
-событие `family_schema_value_added`; (3) строки `context_parameter_values`
-перезаписываются; (4) `values_key`, `INSERT … ON CONFLICT DO NOTHING` в
-`work_variants`, чтение варианта; (5) если было ожидание — переключение семьи
-(§2.5 п. 3); `work_variant_id` := вариант; `variant_split_hint` := `path_conflict`,
-если хотя бы одно значение так помечено; (6) строка каталога `TO_REVIEW` →
-`POSITION` под `FOR UPDATE` строки (§2.10); (7) события. Прежний вариант
-архивируется, если контекстов на нём не осталось.
+**Обработка результата `context_values`** — одна транзакция. **Порядок
+блокировок во всей фиче один: строка каталога → семья → вариант → контекст**
+(он продолжает порядок фичи 1 «семья раньше контекста», спека 1 §2.7, и
+совпадает с порядком глобальной пометки §2.11 — иначе промоушен, идущий
+«контекст → строка», и пометка, идущая «строка → контексты», ждали бы друг друга
+до deadlock). Шаги: (0) `FOR UPDATE` строки каталога контекста, `FOR SHARE`
+семьи и версии схемы, `FOR UPDATE` прежнего варианта (если есть), `FOR UPDATE`
+контекста; (1) вердикт публикации фичи 2 — контекст применим и отпечаток
+текущий, иначе результат не применяется (`lost_claim`, `stale_fingerprint`);
+(2) `new:` → вставка значения `ON CONFLICT … RETURNING`, событие
+`family_schema_value_added`; (3) строки `context_parameter_values`
+перезаписываются с `source` из ответа; (4) `values_key`, `INSERT … ON CONFLICT DO
+NOTHING` в `work_variants`, затем `SELECT … FOR UPDATE` варианта: архивный и не
+слитый вариант с таким набором **возвращается в `active`** (иначе новое
+назначение спорило бы с архивированием, см. ниже), слитый — заменяется целью
+слияния; (5) если было ожидание — переключение семьи (§2.5 п. 3);
+`work_variant_id` := вариант; `variant_split_hint` := `path_conflict`, если хотя
+бы одно значение так помечено; (6) строка каталога `TO_REVIEW` → `POSITION`
+(§2.10); (7) события; (8) прежний вариант под уже взятым `FOR UPDATE`:
+`SELECT count(*)` контекстов на нём — ноль → `archived`. Блокировка строки
+варианта сериализует «последний ушёл» и «новый пришёл»: без неё два потока,
+уводящие последние два контекста, каждый видели бы чужую незафиксированную
+ссылку и оставили бы активный вариант без контекстов.
+
+**Волна после расширений** (§2.8) ставится из того же обработчика на шаге (8)
+под `FOR UPDATE` строки **семьи**: «у семьи не осталось `context_values` в
+`pending`/`running`» проверяется под этой блокировкой, и два последних
+обработчика одной семьи видят друг друга по очереди, а не одновременно.
 
 **Расхождение путей сверх десяти** — риск принят и назван в дизайне §2.1 п. 6:
 проверяются только ушедшие в запрос пути.
@@ -454,7 +530,12 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 - потолок события (§2.11 спеки 2) действует на все виды вместе; заморозка новой
   версии схемы у семьи на 2 000 контекстов ставит 2 000 заданий значений — сверх
   потолка это удержанная пачка, как у перезапроса; пересборка `admin` идёт через
-  preview и обходит потолок, как перезапрос единицы.
+  preview и обходит потолок, как перезапрос единицы;
+- **удержанная пачка хранит предметы трёх видов**: `held_fingerprints` — список
+  `{kind, context_id, family_id, schema_id, request_hash}` (§2.4), подтверждение
+  пачки зовёт сверку по предметам каждого вида, а не по списку контекстов;
+  `preview_hash` считается по тому же списку. Существующие пачки стенда миграция
+  переписывает в новый формат.
 
 ### 2.8. Жизнь схемы: расширение, слияние синонимов, пересборка, правка
 
@@ -465,12 +546,16 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
   дизайн §2.1 п. 4). Существующие варианты не меняются (решение 10 — смысл
   варианта неизменен).
 - **Слияние синонимов** `merge_parameter_values(db, *, parameter_id, source_value_id, target_value_id, actor_id)`:
-  под `FOR UPDATE` обоих значений и затронутых вариантов: `context_parameter_values`
-  и `work_variant_values` с источником переводятся на цель; варианты, набор
-  которых совпал с существующим, сливаются — контексты переводятся на
-  существующий вариант, слитый архивируется с `merged_into_id`; иначе вариант
-  остаётся, у него меняется `values_key`; значение-источник архивируется ссылкой
-  `merged_into_id` (строка остаётся: на неё могут ссылаться архивные варианты);
+  под `FOR UPDATE` семьи, обоих значений и затронутых вариантов, в порядке §2.6:
+  для каждого варианта с источником вычисляется набор с целью; **если такой набор
+  уже есть** — контексты переводятся на существующий вариант, а вариант-источник
+  архивируется с `merged_into_id`, **сохраняя свои `values_key` и построчные
+  значения как историю** (переписать их нельзя: `UNIQUE(schema_id, values_key)`
+  распространяется и на архивные строки, и построчный набор разошёлся бы с
+  ключом); **если набора нет** — у варианта переписываются `work_variant_values`
+  и `values_key`, он остаётся тем же вариантом; `context_parameter_values` с
+  источником переводятся на цель; значение-источник архивируется ссылкой
+  `merged_into_id` (строка остаётся: на неё ссылаются архивные варианты);
   событие `family_variants_merged`.
 - **Пересборка** `rebuild_schema(db, *, family_id, actor_id)`: новая версия
   `building`, задание `family_schema`; при заморозке прежняя текущая →
@@ -478,19 +563,28 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
   вариант до готовности, затем переключается; старые варианты архивируются по
   мере опустения (решение 10). Пересборка — через preview стоимости.
 - **Ручная правка** `update_schema(db, *, family_id, parameters, actor_id)`:
-  переименование параметра или значения — без новой версии (отпечатки заданий
-  значений меняются, сверка не ставит ничего: имя не входит в `values_key`);
-  добавление/удаление параметра, добавление значения — **новая версия**
-  `origin='manual'`, замороженная сразу (`frozen_by`), с теми же следствиями,
-  что пересборка. Удаление значения запрещено — только слияние.
+  переименование параметра или значения допустимо **только косметическое** —
+  новая запись обязана давать ту же нормализованную форму (`name_norm`,
+  `value_norm`: регистр, `ё`, пробелы, кавычки), иначе `422`; такая правка не
+  меняет смысла ни одного варианта и не ставит заданий (имя не входит в
+  `values_key`, а отпечатки заданий значений от неё не меняются — в тело уходит
+  нормализованная форма). Смысловое переименование — это новое значение плюс
+  слияние (выше) либо новая версия. Добавление/удаление параметра, добавление
+  значения — **новая версия** `origin='manual'`, замороженная сразу
+  (`frozen_by`), с теми же следствиями, что пересборка. Удаление значения
+  запрещено — только слияние.
 
 ### 2.9. Слияние семей переезжает вариантами
 
 `merge_families` (`services/work_families.py:948`) после переноса
-`work_family_id` контекстов **в той же транзакции**: (1) варианты источника
-получают `family_id := target` (составной FK контекстов остаётся истинным,
-решение 1), их `schema_id` указывает на версию источника, которая становится
-`superseded`; (2) всем переехавшим контекстам с вариантом ставятся задания
+`work_family_id` контекстов **в той же транзакции**: (1) **версии схемы
+источника переезжают в цель** — `family_id := target`, `version := max(version
+цели) + k`, статус `superseded` (текущая цели не меняется); варианты источника
+получают `family_id := target` — так истинны оба составных FK: контекста
+`(work_variant_id, work_family_id)` и варианта `(schema_id, family_id)` (без
+переезда версии вторая пара отсутствовала бы в `family_parameter_schemas`);
+история схемы источника остаётся читаемой у цели как её прошлые версии;
+(2) всем переехавшим контекстам с вариантом ставятся задания
 `context_values` по текущей версии цели; если у цели текущей версии нет —
 задания ждут её заморозки; (3) по готовности — переключение варианта как в §2.6,
 старые варианты архивируются по опустении. На карточке контекста до
@@ -530,7 +624,9 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 право `admin`, маршрут в `/api/v1/semantic` (§2.12), для **любой** строки
 `kind='POSITION'` независимо от происхождения:
 
-1. `FOR UPDATE` строки каталога;
+1. `FOR UPDATE` строки каталога, затем `FOR UPDATE` её контекстов по
+   возрастанию `id` — тот же порядок «строка → контекст», что у обработчика
+   значений (§2.6), поэтому цикла ожидания между промоушеном и пометкой нет;
 2. если у строки есть хотя бы один `rate_standards` — отказ `409` с их перечнем
    (`id`, класс, период); переносить некуда, архивировать молча — терять решение
    `admin`;
@@ -605,8 +701,8 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
 
 | Тип | Предмет | `payload` |
 |---|---|---|
-| `context_variant_assigned` | контекст | `from_variant_id`, `to_variant_id`, `schema_version`, `values` (ordinal → value_id / null / source), `promoted` |
-| `context_family_pending` | контекст | `pending_family_id`, `source`, `suggestion_id`, `cleared` (true при отмене) |
+| `context_variant_assigned` | контекст | `from_variant_id`, `to_variant_id`, `schema_version`, `values` (ordinal → value_id / null, source), `promoted`, `reactivated_variant` |
+| `context_family_pending` | контекст | `pending_family_id`, `source`, `suggestion_id`, `threshold` (при `auto_suggestion`), `outcome` (`set` / `superseded` / `cancelled` / `applied`) |
 | `context_not_work` | контекст | `reason` (`manual` / `position_kind`), `cleared_family_id`, `cleared_variant_id` |
 | `family_schema_frozen` | семья | `schema_id`, `version`, `origin`, `parameters` (имена и число значений), `job_id` |
 | `family_schema_value_added` | семья | `parameter_id`, `value_id`, `value`, `origin`, `context_id` |
@@ -683,28 +779,48 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
    паритет перечислений и CHECK-выражений миграции и `models.py` закреплён
    тестом; `uq_semantic_jobs_context_request_hash` заменён составным ключом;
    каждое ограничение §2.4 доказано пробоем — одно нарушение на вход
-   (`IntegrityError`), включая составной FK «семья варианта = семья контекста» и
-   «одна текущая версия».
+   (`IntegrityError`), включая: составной FK «семья варианта = семья контекста»
+   **и** вход «вариант есть, семья пуста» (лазейка `MATCH SIMPLE`); все частично
+   заполненные комбинации колонок ожидания (по входу на каждую колонку, пустую
+   при заполненных остальных, и на каждое несоответствие источника автору,
+   предложению и порогу); параметр чужой схемы в варианте; значение чужого
+   параметра; `superseded` без `frozen_at`; два задания одной версии с одним
+   хэшем — отказ, двух версий — проходят; «одна текущая версия».
 2. Тела запросов `family_schema` и `context_values` детерминированы: одно тело —
    один `request_hash`; смена каждой оси (имена семьи / схема / десять путей /
    профиль модели / `response_format`) меняет хэш, смена одиннадцатого пути — нет;
    тело `family_suggestion` **не изменилось ни байтом** против фичи 2 (снимок
    хэша на фикстуре).
 3. Захват для каждого вида: применимость, отпечаток, приватность, бюджет —
-   каждая ветвь отдельным входом; задание `family_schema` не ставится, пока в
-   единице есть `pending`/`running` предложения; ставится, когда остались только
-   `privacy_hold` и `error`.
-4. Таблица публикации §2.5 — каждая строка отдельным входом; при пустом пороге —
-   ни одной автопривязки; граница порога — «ровно на пороге» (принято) и «на
-   единицу ниже» (не принято).
+   каждая ветвь отдельным входом; резерв, preview и предохранитель у новых видов
+   считаются тарифами профиля (вход: тарифы видов различны — резервы различны);
+   задание `family_schema` не ставится, пока в единице есть `pending`/`running`
+   предложения **или удержанная пачка** единицы или без единицы; ставится, когда
+   остались только `privacy_hold` и `error`; подтверждение удержанной пачки из
+   трёх видов ставит задания всех трёх, `preview_hash` считается по новому
+   формату, пачка старого формата после миграции читается и подтверждается.
+4. Таблица публикации §2.5 — каждая из семи строк отдельным входом, в том числе
+   обе строки «семья другая, `auto_suggestion`» — с вариантом и без; при пустом
+   пороге — ни одной автопривязки; граница порога — «ровно на пороге» (принято) и
+   «на единицу ниже» (не принято); при переключении ожидания в событии — порог из
+   `pending_threshold`, а не из изменённой к тому времени настройки.
 5. Ожидающее назначение: каждый из пяти пунктов §2.5 отдельным входом; смена
    семьи и варианта — одной транзакцией (снятие транзакционности делает тест
    красным, `docs/insights/verifying-guards.md`); ошибка и `privacy_hold` задания
-   значений оставляют контекст с прежними семьёй и вариантом.
-6. Обработка `context_values`: семь шагов §2.6 отдельными входами; `new:` при
-   параллельных заданиях одной семьи — ровно одна строка значения (гонка
-   проверена снятием `ON CONFLICT`); `path_conflict` → пустое значение и
-   `variant_split_hint`; старый вариант архивируется только при нуле контекстов.
+   значений оставляют контекст с прежними семьёй и вариантом; вытесненное
+   правилом ожидание — `auto_superseded`, человеком — `rejected`, исполненное —
+   `auto_accepted`, и ни одно не воскресает тем же отпечатком.
+6. Обработка `context_values`: шаги §2.6 отдельными входами; `source` из ответа
+   записан, ответ без `source` при непустом значении отвергнут схемой; `new:` при
+   параллельных заданиях одной семьи — ровно одна строка значения (гонка проверена
+   снятием `ON CONFLICT`); `path_conflict` → пустое значение и
+   `variant_split_hint`; **две гонки под блокировкой варианта** — «последние два
+   контекста уходят параллельно» даёт архив, «последний уходит, новый приходит»
+   даёт активный вариант с одним контекстом (обе проверены снятием `FOR UPDATE`
+   варианта); волна после расширений ставится ровно один раз при параллельном
+   завершении двух последних заданий семьи (проверено снятием `FOR UPDATE`
+   семьи); порядок блокировок «строка → семья → вариант → контекст» — параллельные
+   промоушен и глобальная пометка одной строки завершаются без deadlock.
 7. Правило варианта: одинаковый набор у двух контекстов — один `work_variant_id`;
    набор из всех пустых — вариант «не уточнено»; схема из нуля параметров — один
    вариант на семью.
@@ -717,13 +833,17 @@ semantic_events                   -- расширение CK_EVENT_SUBJECT_BY_TY
    интеграционным тестом, снятие вызова сверки делает тест красным; архитектурный
    и структурный тесты расширены новыми полями и модулем.
 10. Жизнь схемы §2.8: расширение → одна волна перезапроса пустых после
-    опустошения очереди семьи; слияние синонимов → варианты слиты, архивные с
-    `merged_into_id`, `values_key` пересчитан; пересборка → старая версия
-    `superseded`, контексты держат старый вариант до готовности; ручная правка:
-    переименование не ставит заданий, добавление параметра — новая версия.
-11. Слияние семей §2.9: варианты источника с `family_id` цели, составной FK
-    истинен на каждом шаге (проверка после каждого `flush`), задания значений
-    переехавшим, переключение по готовности.
+    опустошения очереди семьи; слияние синонимов: при коллизии наборов контексты
+    переведены, источник архивирован с нетронутыми `values_key` и построчными
+    значениями, без коллизии — ключ и строки переписаны, вариант тот же;
+    пересборка → старая версия `superseded` с сохранённым `frozen_at`, контексты
+    держат старый вариант до готовности; ручная правка: косметическое
+    переименование принято и заданий не ставит, смысловое — `422`, добавление
+    параметра — новая версия.
+11. Слияние семей §2.9: версии схемы источника у цели как `superseded` с новыми
+    номерами, варианты источника с `family_id` цели, оба составных FK истинны на
+    каждом шаге (проверка после каждого `flush`), задания значений переехавшим,
+    переключение по готовности; тесты слияния семей фичи 1 зелёные без правок.
 12. Review: «слить» выдаёт предупреждение о расхождении вариантов и не выдаёт при
     равных; «утвердить» и `HEADER`/`TRASH` в Review — тесты фичи 1 зелёные без
     правок.
