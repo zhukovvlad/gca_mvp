@@ -3,6 +3,13 @@
 **Спека:** `docs/superpowers/specs/2026-10-02-catalog-variants-design.md` (гейт 2 закрыт 03.10.2026, восемь кругов ревью, редакция `6f50a0e`)
 **Ветка:** `feat/catalog-variants`
 
+> **Круг 1 гейта 3 (03.10)**: 15 замечаний Codex, все подтверждены (три — по
+> коду: в корне нет `package.json`; `_estimate_totals` и preview зовут
+> `tariffs_from(settings)` без вида, `semantic_reconcile.py:404`,
+> `semantic_decisions.py:504`; `Claim.attempt_id` обязателен,
+> `semantic_worker.py:82`). Числа проверок — накопительные нижние границы, как в
+> плане фичи 2: точное ПОСЛЕ неизвестно до написания тестов.
+>
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`) и ревью задачи
 > (`docs/process/implementation.md`) до следующей. Адреса `§N` без уточнения —
@@ -20,8 +27,12 @@
 - **Тело `family_suggestion` не меняется ни байтом** (§2.3); настройка
   `SEMANTIC_MODEL` и её тарифы — тоже.
 - **Порядок блокировок во всей фиче: строка каталога → семья (по `id`) →
-  вариант (по `id`) → контекст (по `id`)** (§2.6); семья берётся `FOR UPDATE`
-  сразу, повышение `FOR SHARE → FOR UPDATE` запрещено.
+  вариант (по `id`) → контекст (по `id`)** (§2.6). Режим семьи: `FOR UPDATE`
+  сразу — в операциях, меняющих семью, её схему или варианты (обработчик
+  значений — включая переключение ожидающей семьи, жизнь схемы, слияние семей,
+  глобальная пометка); `FOR SHARE` — в `assign_family` (назначение и снятие
+  семьи у контекста без варианта, как сегодня) и в массовом автопринятии (§2.12).
+  Повышение `FOR SHARE → FOR UPDATE` внутри одной транзакции запрещено везде.
 - Сверка вызывается **до** существующего `commit` каждой точки, в той же
   транзакции (спека 2 §2.7); вызов модели — никогда внутри открытой транзакции.
 - Промоушен односторонний: ни одна операция не пишет `kind='TO_REVIEW'` строке,
@@ -201,7 +212,7 @@ CK_CONTEXT_VARIANT_NEEDS_FAMILY: str
 
 **Проверка**
 - `just test-int-local-k work_variants` — ДО 0, ПОСЛЕ ≥ 60.
-- `just test-int-local-k "semantic_schema or semantic_queue_schema"` — не меньше, чем ДО (паритет фич 1–2 не сломан).
+- `just test-int-local-k "semantic_schema or semantic_queue_schema"` — ДО 191, ПОСЛЕ ≥ 191 (паритет фич 1–2 не сломан).
 - `just check-agents-index` — 18 из 18.
 
 ### Task 2: профили моделей, тарифы, порог
@@ -230,7 +241,9 @@ def tariffs_from(settings: Settings, kind: SemanticJobKind = SemanticJobKind.fam
 
 **Утверждения**
 - `tariffs_from(settings)` без вида возвращает ровно прежние тарифы
-  `SEMANTIC_PRICE_*` — существующие вызовы фичи 2 не меняются;
+  `SEMANTIC_PRICE_*` — существующие вызовы фичи 2 не меняются; вызовы,
+  считающие задания новых видов, передают вид — оценка сверки (Task 6), preview
+  (Task 7) и резерв захвата (Task 7);
 - три вида дают три независимых набора: вход, где тарифы схемы и значений
   различны, даёт различные `Tariffs`;
 - порог `None` по умолчанию; `0`, отрицательный и `> 1` отвергаются при старте;
@@ -242,7 +255,7 @@ def tariffs_from(settings: Settings, kind: SemanticJobKind = SemanticJobKind.fam
 
 **Проверка**
 - `just test-unit-k work_variants` — ДО 0, ПОСЛЕ ≥ 8.
-- `just test-unit-k semantic_queue` — не меньше ДО.
+- `just test-unit-k semantic_queue` — ДО 364, ПОСЛЕ ≥ 364.
 
 ### Task 3: запрос — материал и тела `family_schema`, `context_values`
 
@@ -309,8 +322,9 @@ def render_request_for(db: Session, job: SemanticJob, *, settings: Settings) -> 
 - Существуют: `chapter_paths`, `top_path` (`semantic_request.py:193`), `RenderedRequest` (`:147`), `render_context_request` (`:426`), `find_privacy_matches` (`semantic_privacy.py:260`).
 
 **Проверка**
-- `just test-unit-k work_variants` и `just test-int-local-k work_variants` — каждая больше своего ДО.
-- `just test-unit-k semantic_queue_request` — не меньше ДО.
+- `just test-unit-k work_variants` — ДО ≥ 8, ПОСЛЕ ≥ 22.
+- `just test-int-local-k work_variants` — ДО ≥ 60, ПОСЛЕ ≥ 68.
+- `just test-unit-k semantic_queue_request` — ДО 59, ПОСЛЕ ≥ 59.
 
 ### Task 4: ответ — строгий разбор двух видов
 
@@ -362,7 +376,7 @@ def parse_values_answer(raw: str, parameters: Sequence[SchemaParameterIn]) -> Va
 - Существуют: `AnswerSchemaError`.
 
 **Проверка**
-- `just test-unit-k work_variants` — больше ДО.
+- `just test-unit-k work_variants` — ДО ≥ 22, ПОСЛЕ ≥ 47.
 
 ### Task 5: ядро варианта — значения, варианты, заморозка, обработка значений, промоушен
 
@@ -372,7 +386,7 @@ def parse_values_answer(raw: str, parameters: Sequence[SchemaParameterIn]) -> Va
 - Test: `backend/tests/integration/test_work_variants_core.py`, `backend/tests/integration/test_work_variants_concurrency.py`
 
 **Interfaces**
-- Потребляет: модели Task 1, `SchemaAnswer`, `ValuesAnswer` (Task 4), `record_event` (`services/semantic_events.py:254`), `_lock_families`, `_lock_contexts` (`services/work_families.py:623`, `:644`).
+- Потребляет: модели Task 1, `SchemaAnswer`, `ValuesAnswer` (Task 4), `record_event` (`services/semantic_events.py:254`), `_lock_families`, `_lock_contexts` (`services/work_families.py:623`, `:644`), `run_import_job` (`services/import_pipeline.py`) и `_count` (`services/matching.py:372`) — для входа инварианта кэша.
 - Производит:
 
 ```python
@@ -386,6 +400,9 @@ def archive_variant_if_empty(db: Session, variant_id: int) -> bool
 def freeze_schema(db: Session, *, schema_id: int, answer: SchemaAnswer, job_id: int | None) -> FamilyParameterSchema
 def apply_values(db: Session, *, context_id: int, schema_id: int, answer: ValuesAnswer,
                  paths_hash: str, job_id: int | None) -> ApplyValuesOutcome
+# ПОСТ-ВЕРДИКТНЫЙ доменный обработчик: зовётся только после того, как вердикт
+# публикации (§2.6 шаг 1 — lost_claim, stale_fingerprint) вынесен в record_result (Task 7);
+# сам вердикта не выносит и токена захвата не знает.
 
 @dataclass(frozen=True)
 class ApplyValuesOutcome:
@@ -394,9 +411,11 @@ class ApplyValuesOutcome:
 ```
 
 **Утверждения**
-- `apply_values` держит шаги §2.6 (0)–(8) в указанном порядке блокировок; без
-  шага (1а) — см. Task 4 — ничего не записывается; каждый шаг предъявлен отдельным
-  входом;
+- `apply_values` держит шаги §2.6 (0) и (2)–(8) в указанном порядке
+  блокировок, каждый — отдельным входом; шаги (1) и (1а) — вне него: вердикт —
+  Task 7, полнота `ordinal` — Task 4;
+- `source` ответа (`name`/`path`) записан в `context_parameter_values` для
+  `value` и `new`, `none` и `path_conflict` — для пустых (по входу на каждый);
 - `new` при параллельных обработчиках одной семьи с одним значением — ровно одна
   строка (гонка проверена снятием `ON CONFLICT`); `new` со слитым синонимом
   (другой регистр и `ё`) даёт канонический `value_id`;
@@ -405,10 +424,13 @@ class ApplyValuesOutcome:
   `variant_split_hint`;
 - одинаковый набор у двух контекстов — один `work_variant_id`; все пустые —
   вариант «не уточнено»; нулевая схема — `values_key = ''`, один вариант на
-  семью; архивный неслитый вариант с тем же набором реактивируется, слитый
-  заменяется целью;
+  семью, `variant_paths_hash` = sha256 пустого списка; архивный неслитый вариант
+  с тем же набором реактивируется, слитый заменяется целью;
 - промоушен: строка `TO_REVIEW` → `POSITION` в той же транзакции,
   `payload.promoted = true`; строка `POSITION`, `HEADER`, `TRASH` вид не меняет;
+- инвариант кэша (DoD §5.8): после промоушена повторный импорт той же сметы
+  через `run_import_job` пишет `matching_cache` на строку `POSITION`, и `_count`
+  не пишет `log.error` (перехват журнала в тесте);
 - две гонки под блокировкой варианта — «последние два контекста уходят
   параллельно» → архив; «последний уходит, новый приходит» → активный вариант с
   одним контекстом (обе проверены снятием `FOR UPDATE` варианта);
@@ -423,8 +445,8 @@ class ApplyValuesOutcome:
 - Существуют: `record_event`, `_lock_families`, `_lock_contexts`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k work_families` — 135 не меньше.
+- `just test-int-local-k work_variants` — ДО ≥ 68, ПОСЛЕ ≥ 110.
+- `just test-int-local-k work_families` — ДО 135, ПОСЛЕ ≥ 135.
 
 ### Task 6: сверка — три вида, пути, готовность схемы, пачки нового формата
 
@@ -465,17 +487,20 @@ def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int, e
 - волна после расширений ставится ровно один раз — последним обработчиком
   семьи, без исключения собственного задания волны нет (вход);
 - сверх потолка — удержанная пачка нового формата; её `fingerprints_hash`
-  совпадает при перестановке входа; подтверждение пачки из трёх видов ставит
-  задания всех трёх;
+  совпадает при перестановке входа (подтверждение пачки — Task 7: оно живёт в
+  `semantic_decisions.py`);
+- оценка потолка (`_estimate_totals`) считает резерв каждого задания тарифами
+  его вида: вход с различными тарифами схемы, значений и предложений даёт сумму,
+  равную сумме по видам, а не по тарифу `family_suggestion`;
 - `RECONCILE_ALLOWLIST` содержит `services.work_variants` и `services.family_change`.
 
 **Имена**
 - Заводятся: всё перечисленное.
-- Существуют: `RECONCILE_ALLOWLIST` (`:101`), `ReconcileReport` (`:128`), `NO_CAP` (`:73`).
+- Существуют: `RECONCILE_ALLOWLIST` (`:101`), `ReconcileReport` (`:128`), `NO_CAP` (`:73`), `_estimate_totals` (`:396`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k semantic_queue_reconcile` — не меньше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 110, ПОСЛЕ ≥ 135.
+- `just test-int-local-k semantic_queue_reconcile` — ДО 65, ПОСЛЕ ≥ 65.
 
 ### Task 7: исполнитель — захват и запись по виду, нулевая схема, задержанные
 
@@ -489,18 +514,31 @@ def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int, e
 
 ```python
 @dataclass(frozen=True)
-class Claim:      # расширение: kind, synthesized: bool
-    ...
-def complete_without_model(db: Session, claim: Claim, *, now: datetime) -> None
+class Claim:
+    job_id: int
+    attempt_id: int | None          # None ⟺ synthesized: у нулевой схемы попытки нет
+    claim_token: UUID
+    rendered: RenderedRequest | None   # None ⟺ synthesized
+    candidates: tuple[CandidateFamily, ...]
+    kind: SemanticJobKind
+    synthesized: bool
+def complete_without_model(db: Session, claim: Claim, *, now: datetime) -> None   # предусловие: claim.synthesized
 ```
 
 **Утверждения**
 - захват каждого вида: применимость, отпечаток, приватность, бюджет — каждая
-  ветвь отдельным входом; резерв считается тарифами вида (вход: различные
-  тарифы — различные резервы);
+  ветвь отдельным входом; резерв захвата и preview пачки/перезапроса
+  (`_preview_and_pairs`) считаются тарифами вида (вход: различные тарифы —
+  различные резервы и различные суммы preview);
+- синтетический захват нулевой схемы — `attempt_id is None`, `rendered is None`,
+  ни строки попытки, ни резерва;
 - `context_values` нулевой схемы завершается без вызова модели, без попытки и
   резерва, полным протоколом `apply_values`;
 - задание переходит в `done` до шага (8) `apply_values`;
+- **вердикт публикации для новых видов** (§2.6 шаг 1) — в `record_result` до
+  вызова `freeze_schema`/`apply_values`: ответ при потерянном захвате —
+  `lost_claim`, при устаревшем отпечатке или неприменимом предмете —
+  `stale_fingerprint`, ничего не записано (по входу на исход и вид);
 - `record_result` разводит виды: `family_schema` → `freeze_schema`,
   `context_values` → `apply_values`; ответ на устаревший отпечаток не
   применяется и ничего не вытесняет; дубль результата после `lost_claim` не
@@ -510,16 +548,17 @@ def complete_without_model(db: Session, claim: Claim, *, now: datetime) -> None
   входу на статус; «Не отправлять» и «Отбросить» пачки отменяют версию
   `building`, если её отпечаток не представлен в другой пачке `held`/`approved`
   или живом задании (два входа); `error` версию не трогает;
-- `Fingerprint` нового формата в `approve_batch`/`discard_batch`; пачка, перенесённая
-  миграцией из старого формата, подтверждается.
+- `Fingerprint` нового формата в `approve_batch`/`discard_batch`: подтверждение
+  пачки из трёх видов ставит задания всех трёх; пачка, перенесённая миграцией из
+  старого формата, подтверждается.
 
 **Имена**
 - Заводятся: `complete_without_model`; расширение `Claim`.
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k "semantic_queue_worker or semantic_queue_decisions"` — не меньше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 135, ПОСЛЕ ≥ 160.
+- `just test-int-local-k "semantic_queue_worker or semantic_queue_decisions"` — ДО 182, ПОСЛЕ ≥ 182.
 
 ### Task 8: автопринятие, предикат, ожидающее назначение
 
@@ -545,6 +584,13 @@ def request_family_change(db: Session, *, context_id: int, family_id: int | None
                           threshold: Decimal | None = None) -> FamilyChangeOutcome
 def cancel_pending_family(db: Session, *, context_id: int, actor_id: int) -> None
 def apply_publication_rules(db: Session, suggestion: FamilySuggestion, *, threshold: Decimal | None) -> FamilyChangeOutcome | None
+
+# services/work_families.py — изменённый контракт:
+def assign_family(db: Session, *, context_id: int, family_id: int | None, actor_id: int | None,
+                  source: FamilySource = FamilySource.manual, suggestion_id: int | None = None,
+                  threshold: Decimal | None = None, confidence: Decimal | None = None) -> CatalogContext
+# actor_id is None ⟺ source == auto_suggestion; threshold и confidence обязательны при auto_suggestion
+# и запрещены при прочих источниках; оба уходят в payload context_family_assigned
 ```
 
 **Утверждения**
@@ -570,12 +616,12 @@ def apply_publication_rules(db: Session, suggestion: FamilySuggestion, *, thresh
   блокировки второй семьи).
 
 **Имена**
-- Заводятся: всё перечисленное, модуль `services/family_change.py`.
+- Заводятся: всё перечисленное, модуль `services/family_change.py`; контракт `assign_family` расширен (`actor_id: int | None`, `threshold`, `confidence`).
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k "work_families or semantic_queue_assign"` — не меньше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 160, ПОСЛЕ ≥ 190.
+- `just test-int-local-k "work_families or semantic_queue_assign"` — ДО 160, ПОСЛЕ ≥ 160.
 
 ### Task 9: массовое автопринятие — preview, apply, CLI
 
@@ -612,7 +658,7 @@ def apply_auto_accept(db: Session, *, preview_hash: str, actor_id: int) -> Mappi
 - Существуют: `semantic_enqueue_all` (`cli.py:118`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 190, ПОСЛЕ ≥ 200.
 
 ### Task 10: снятие и смена семьи, «не работа», слияние в Review
 
@@ -633,8 +679,9 @@ def clear_variant(db: Session, *, context_id: int, reason: str) -> int | None   
 - «не работа»: `NOT_APPLICABLE`, сняты семья, вариант, ожидание, значения,
   `variant_split_hint`; задания отменены сверкой; событие `context_not_work`;
   вид строки не меняется;
-- снятие семьи снимает вариант, ожидание и значения; строка остаётся
-  `POSITION`;
+- снятие семьи снимает вариант, ожидание, значения **и `variant_split_hint`**
+  (вход: контекст с конфликтом путей — снятие семьи проходит, а не падает на
+  CHECK «подсказка только при варианте»); строка остаётся `POSITION`;
 - на каждом пути снятия (не работа, снятие семьи, слияние в Review) опустевший
   вариант архивируется — по входу на путь;
 - слияние в Review добавляет в `warnings` строку о расхождении вариантов и не
@@ -645,8 +692,8 @@ def clear_variant(db: Session, *, context_id: int, reason: str) -> int | None   
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k review` — 161 не меньше.
+- `just test-int-local-k work_variants` — ДО ≥ 200, ПОСЛЕ ≥ 212.
+- `just test-int-local-k review` — ДО 161, ПОСЛЕ ≥ 161.
 
 ### Task 11: жизнь схемы — пересборка, отмена, правка, слияние синонимов
 
@@ -677,8 +724,10 @@ def merge_parameter_values(db: Session, *, parameter_id: int, source_value_id: i
 - отмена: версия `cancelled`, задание `cancelled`; не мешает новой пересборке и
   слиянию семей;
 - правка: косметическое переименование (та же нормализованная форма) принято и
-  заданий не ставит; смысловое — отказ; добавление параметра или значения —
-  новая версия `origin='manual'`; при `building` — отказ;
+  заданий не ставит; смысловое — отказ; добавление параметра, **удаление
+  параметра** и добавление значения — каждое новая версия `origin='manual'`,
+  замороженная сразу, с заданиями значений всем контекстам семьи (по входу на
+  каждое); удаление значения — отказ (только слияние); при `building` — отказ;
 - слияние синонимов: при коллизии наборов контексты переведены, источник
   архивирован с нетронутыми `values_key` и построчными значениями; без коллизии
   — ключ и строки переписаны, вариант тот же; цель-предок — отказ; цель-синоним
@@ -689,7 +738,7 @@ def merge_parameter_values(db: Session, *, parameter_id: int, source_value_id: i
 - Заводятся: всё перечисленное.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 212, ПОСЛЕ ≥ 232.
 
 ### Task 12: слияние семей с вариантами
 
@@ -707,11 +756,15 @@ REFUSE_MERGE_SCHEMA_BUILDING: Final = "merge_schema_building"
 
 **Утверждения**
 - отказ при `building` у источника и у цели (два входа);
-- замороженные версии источника у цели — `superseded` с новыми номерами,
-  отменённые — `cancelled`; цель без текущей получает замороженную версию
-  источника текущей; обе без схемы — у цели версия `building` и задание;
-- варианты источника с `family_id` цели; оба составных FK истинны при `commit`
-  (`SET CONSTRAINTS ALL IMMEDIATE` перед ним); задания значений переехавшим;
+- **у цели есть текущая версия**: замороженные версии источника у цели —
+  `superseded` с новыми номерами, отменённые — `cancelled`; варианты источника с
+  `family_id` цели; задания значений переехавшим контекстам с вариантом;
+- **у цели нет текущей версии**: замороженная версия источника становится
+  текущей у цели; контексты и варианты источника не меняются и **заданий не
+  получают**, задания значений ставятся прежним контекстам цели;
+- **обе без схемы**: у цели версия `building` и задание `family_schema`;
+- оба составных FK истинны при `commit` (`SET CONSTRAINTS ALL IMMEDIATE` перед
+  ним) — в каждой из трёх ветвей;
 - чужие ожидания на источник перенаправлены на цель с новым заданием и событием
   `redirected`; у предложений с семьёй-источником `family_id` стал целью;
 - тесты слияния семей фичи 1 зелёные без правок.
@@ -721,8 +774,8 @@ REFUSE_MERGE_SCHEMA_BUILDING: Final = "merge_schema_building"
 - Существуют: `merge_families`, `WorkFamilyError` (`:102`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k work_families` — 135 не меньше.
+- `just test-int-local-k work_variants` — ДО ≥ 232, ПОСЛЕ ≥ 245.
+- `just test-int-local-k work_families` — ДО 135, ПОСЛЕ ≥ 135.
 
 ### Task 13: глобальная пометка строки и нормативы
 
@@ -754,8 +807,8 @@ def set_position_kind_global(db: Session, *, position_id: int, kind: str, actor_
 - Заводятся: `set_position_kind_global`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k rate_standards` — 33 не меньше; `just test-int-local-k test_matching` — 44 не меньше.
+- `just test-int-local-k work_variants` — ДО ≥ 245, ПОСЛЕ ≥ 255.
+- `just test-int-local-k rate_standards` — ДО 33, ПОСЛЕ ≥ 33; `just test-int-local-k test_matching` — ДО 44, ПОСЛЕ ≥ 44.
 
 ### Task 14: точки инварианта — матрица, архитектурный и структурный тесты
 
@@ -782,18 +835,19 @@ def set_position_kind_global(db: Session, *, position_id: int, kind: str, actor_
   модуль в матрице.
 
 **Проверка**
-- `just test-int-local-k semantic_queue_hooks` — больше ДО.
-- `just test-unit-k semantic_queue_architecture` — больше ДО.
+- `just test-int-local-k semantic_queue_hooks` — ДО 74, ПОСЛЕ ≥ 87 (по классу на каждую из 12 новых точек и вход путей).
+- `just test-unit-k semantic_queue_architecture` — ДО 54, ПОСЛЕ ≥ 58.
+- `just test-int-local-k work_variants` — ДО ≥ 255, ПОСЛЕ ≥ 268 (файл матрицы попадает и в эту выборку).
 
 ### Task 15: API и чтение для экрана
 
 **Files**
 - Create: `backend/crud/work_variants.py`
-- Edit: `backend/routers/semantic.py`, `backend/crud/semantic_queue.py`
+- Edit: `backend/routers/semantic.py`, `backend/crud/semantic_queue.py`, `backend/crud/semantic.py`
 - Test: `backend/tests/integration/test_work_variants_api.py`
 
 **Interfaces**
-- Потребляет: `_mutating` (`routers/semantic.py:177`), `_deciding` (`:214`), `_domain_error` (`:163`), Task 5–13.
+- Потребляет: `_mutating` (`routers/semantic.py:177`), `_deciding` (`:214`), `_domain_error` (`:163`), `ContextFilters` (`crud/semantic.py:119`), `list_contexts` (`:595`), Task 5–13.
 - Производит: маршруты таблицы §2.12; форма ответов:
 
 ```python
@@ -811,6 +865,13 @@ class ContextVariantOut(TypedDict):
     pending: "PendingOut | None"
 class FamilyChangeOut(TypedDict):
     outcome: Literal["assigned", "pending", "unchanged"]
+
+# crud/semantic.py — ContextFilters расширяется:
+variant_state: Literal["with", "without"] | None
+pending: bool | None
+split_hint: bool | None
+# GET /contexts принимает variant_state, pending, split_hint; предикаты — в SQL list_contexts,
+# до пагинации, и total считается по ним же
 ```
 
 **Утверждения**
@@ -824,14 +885,17 @@ class FamilyChangeOut(TypedDict):
   семей без схемы;
 - `409` с перечнем нормативов при глобальной пометке; `409` при слиянии семей с
   `building`;
-- `list_jobs` отдаёт строку `family_schema` по семье.
+- `list_jobs` отдаёт строку `family_schema` по семье;
+- фильтры контекстов `variant_state`, `pending`, `split_hint` сужают выборку в
+  SQL до пагинации: `total` равен числу подходящих контекстов на всех страницах,
+  а не на текущей (вход: подходящих больше одной страницы).
 
 **Имена**
 - Заводятся: модуль `crud/work_variants.py`, типы выше.
 
 **Проверка**
-- `just test-int-local-k work_variants` — больше ДО.
-- `just test-int-local-k semantic_queue_api` — не меньше ДО.
+- `just test-int-local-k work_variants` — ДО ≥ 268, ПОСЛЕ ≥ 298.
+- `just test-int-local-k semantic_queue_api` — ДО 197, ПОСЛЕ ≥ 197.
 
 ### Task 16: фронтенд — схема и варианты семьи
 
@@ -853,7 +917,7 @@ class FamilyChangeOut(TypedDict):
 - коды на экран не выходят — только подписи `labels.ts`.
 
 **Проверка**
-- `npx vitest run src/pages/families` — ДО 459, ПОСЛЕ больше.
+- `cd frontend && npx vitest run src/pages/families` — ДО 459, ПОСЛЕ ≥ 475.
 - `just typecheck-frontend`, `just lint-frontend` — зелёные.
 
 ### Task 17: фронтенд — карточка контекста, «Смена семьи», шапка
@@ -863,8 +927,8 @@ class FamilyChangeOut(TypedDict):
 - Edit: `ContextCard.tsx`, `ContextsTab.tsx`, `SuggestionsTab.tsx`, `SuggestionsHeader.tsx`, `labels.ts`, API-слой как в Task 16
 
 **Interfaces**
-- Потребляет: маршруты Task 15.
-- Производит: `useMarkNotWork`, `useCancelPendingFamily`, `useMarkPositionKind`, `useChangeQueue`.
+- Потребляет: маршруты Task 15, включая параметры `variant_state`, `pending`, `split_hint` у `GET /contexts`.
+- Производит: `useMarkNotWork`, `useCancelPendingFamily`, `useMarkPositionKind`, `useChangeQueue`; `ContextsParams` расширен тремя фильтрами.
 
 **Утверждения**
 - карточка: вариант со значениями и источником каждого; «к делению: разделы
@@ -873,13 +937,15 @@ class FamilyChangeOut(TypedDict):
 - «Не работа»; «Другая семья…» показывает исход `assigned` / `pending`;
 - «Пометить написание целиком…» с предупреждением о будущих вхождениях и
   выводом перечня нормативов при `409`;
-- фильтры контекстов «с вариантом / без варианта / ожидает / к делению»;
+- фильтры контекстов «с вариантом / без варианта / ожидает / к делению» уходят
+  в запрос параметрами, а не фильтруют загруженную страницу (вход: обработчик
+  MSW получает параметры);
 - четвёртая очередь «Смена семьи» с группами «семья → семья + полоса»;
 - счётчики шапки и пометка «принято автоматически»;
 - вид сверен снимками стенда против перечня элементов §2.12 (макета нет).
 
 **Проверка**
-- `npx vitest run src/pages/families` — больше ДО.
+- `cd frontend && npx vitest run src/pages/families` — ДО ≥ 475, ПОСЛЕ ≥ 495.
 - `just typecheck-frontend`, `just lint-frontend` — зелёные.
 
 ### Task 18: ревизия `AGENTS.md`, справочник, дорожная карта, правка спеки
