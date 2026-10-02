@@ -88,9 +88,9 @@ describe("FamiliesTab", () => {
     await renderTab();
     // Открыть фильтр «все», страница 100 — все три статуса видны в списке разом.
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("все"));
+    await user.click(await screen.findByRole("option", { name: "все" }));
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("100"));
+    await user.click(await screen.findByRole("option", { name: "100" }));
 
     // Строки конкретных семей (не селект) — исключает совпадение с текстом
     // всплывающего списка выбора.
@@ -334,13 +334,13 @@ describe("FamiliesTab", () => {
     // страницы — 100: id 43/44 стоят в конце списка (44 семьи), а страница
     // размером 20 их не покажет вовсе.
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("все"));
+    await user.click(await screen.findByRole("option", { name: "все" }));
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("100"));
+    await user.click(await screen.findByRole("option", { name: "100" }));
     await waitFor(() => expect(screen.getByText("Кровельные работы")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Единица (фильтр)" }));
-    await user.click(await screen.findByText("Куб. метр"));
+    await user.click(await screen.findByRole("option", { name: "Куб. метр" }));
 
     await waitFor(() => {
       expect(screen.getByText("Кровельные работы")).toBeInTheDocument();
@@ -438,14 +438,14 @@ describe("FamiliesTab", () => {
     // unit_id=5) плюс архивная (id 44, тоже unit_id=5); активная (id 43) несёт
     // ДРУГУЮ единицу (unit_id=3, «Куб. метр») и в выдачу не входит: 42+1=43.
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("все"));
+    await user.click(await screen.findByRole("option", { name: "все" }));
     await user.click(screen.getByRole("combobox", { name: "Единица (фильтр)" }));
-    await user.click(await screen.findByText("Кв. метр"));
+    await user.click(await screen.findByRole("option", { name: "Кв. метр" }));
 
     await waitFor(() => expect(screen.getByText("1–20 из 43")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
     await waitFor(() => {
       expect(dataRows()).toHaveLength(10);
       expect(screen.getByText("1–10 из 43")).toBeInTheDocument();
@@ -481,12 +481,12 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));
     await waitFor(() => expect(screen.getByText("11–20 из 42")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("все"));
+    await user.click(await screen.findByRole("option", { name: "все" }));
 
     await waitFor(() => expect(screen.getByText("1–10 из 44")).toBeInTheDocument());
   });
@@ -499,7 +499,7 @@ describe("FamiliesTab", () => {
     await waitFor(() => expect(screen.getByText("21–40 из 42")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
 
     await waitFor(() => expect(screen.getByText("1–10 из 42")).toBeInTheDocument());
   });
@@ -512,7 +512,7 @@ describe("FamiliesTab", () => {
     expect(screen.getByText("1–10 из 42")).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("50"));
+    await user.click(await screen.findByRole("option", { name: "50" }));
     await waitFor(() => expect(screen.getByText("1–42 из 42")).toBeInTheDocument());
     expect(localStorage.getItem("gca.families.families.pageSize")).toBe("50");
   });
@@ -542,7 +542,7 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("активна"));
+    await user.click(await screen.findByRole("option", { name: "активна" }));
     await user.click(await screen.findByText("Кровельные работы"));
     await screen.findByLabelText("Определение");
 
@@ -558,7 +558,7 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "Статус" }));
-    await user.click(await screen.findByText("в архиве"));
+    await user.click(await screen.findByRole("option", { name: "в архиве" }));
     await user.click(await screen.findByText("Демонтажные работы (снята)"));
     await screen.findByLabelText("Определение");
 
@@ -598,12 +598,12 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));
     await waitFor(() => expect(screen.getByText("11–20 из 42")).toBeInTheDocument());
 
     await user.click(screen.getByRole("combobox", { name: "Единица (фильтр)" }));
-    await user.click(await screen.findByText("Кв. метр"));
+    await user.click(await screen.findByRole("option", { name: "Кв. метр" }));
 
     // Единица «Кв. метр» не сужает 42 черновика (все несут unit_id=5) — важен
     // здесь только СБРОС страницы, а не число.
@@ -615,7 +615,7 @@ describe("FamiliesTab", () => {
     await renderTab();
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
     // Страница 5 — последняя при 42 черновиках и размере 10 (строки 41–42).
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));

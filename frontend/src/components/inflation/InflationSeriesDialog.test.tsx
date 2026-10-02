@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { InflationSeriesDialog } from "@/components/inflation/InflationSeriesDialog";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import type { InflationSeries } from "@/types/domain";
 
 /*
@@ -73,6 +73,7 @@ async function openWithSeries(series: InflationSeries | null, missingYears?: num
       expect(screen.getByLabelText(`Коэффициент за ${SAVED_VALUES[0].year}`)).toBeInTheDocument()
     );
   }
+  await waitForDialogFocus();
   return { onOpenChange };
 }
 
@@ -261,6 +262,7 @@ describe("InflationSeriesDialog", () => {
         onOpenChange={onOpenChange}
       />
     );
+    await waitForDialogFocus();
 
     expect(await screen.findByText(/Не удалось загрузить ряд и его годы/)).toBeInTheDocument();
     expect(screen.queryByText(/Загружаем ряд и его годы/)).not.toBeInTheDocument();
@@ -346,6 +348,7 @@ describe("InflationSeriesDialog", () => {
         onOpenChange={vi.fn()}
       />
     );
+    await waitForDialogFocus();
 
     await screen.findByText(/Не удалось загрузить ряд и его годы/);
     await userEvent.click(screen.getByRole("button", { name: "Повторить" }));

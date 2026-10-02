@@ -49,7 +49,7 @@ describe("EntitySelect", () => {
       />
     );
     await user.click(screen.getByRole("combobox"));
-    await user.click(screen.getByText("ЖК Звезда"));
+    await user.click(await screen.findByRole("option", { name: "ЖК Звезда" }));
     expect(onChange).toHaveBeenCalledWith(2);
   });
 

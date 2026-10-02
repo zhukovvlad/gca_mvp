@@ -791,7 +791,7 @@ describe("ContextCard", () => {
     await user.click(screen.getByLabelText("Выбрать позицию 71001"));
 
     await user.click(screen.getByRole("combobox", { name: "Разделить с правилом или без" }));
-    await user.click(await screen.findByText("С правилом"));
+    await user.click(await screen.findByRole("option", { name: "С правилом" }));
     await user.type(screen.getByLabelText("Значение правила"), "Стены");
     await user.click(screen.getByRole("button", { name: "Разделить выбранные" }));
 
@@ -816,7 +816,7 @@ describe("ContextCard", () => {
     );
     await openMembershipTab(user);
     await user.click(screen.getByRole("combobox", { name: "Разделить с правилом или без" }));
-    await user.click(await screen.findByText("С правилом"));
+    await user.click(await screen.findByRole("option", { name: "С правилом" }));
 
     expect(screen.getByText("ближайший раздел равен")).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Вид правила" }));
@@ -1690,7 +1690,7 @@ describe("ContextCard", () => {
         await waitFor(() => expect(screen.getAllByRole("table")).toHaveLength(groupCount));
       }
       await user.click(screen.getByRole("combobox", { name: "Разделить с правилом или без" }));
-      await user.click(await screen.findByText("С правилом"));
+      await user.click(await screen.findByRole("option", { name: "С правилом" }));
       await user.click(screen.getByRole("combobox", { name: "Вид правила" }));
       await screen.findByRole("option", { name: "раздел на уровне равен" });
       expect(screenText()).not.toMatch(SCREEN_CODE_RE);
