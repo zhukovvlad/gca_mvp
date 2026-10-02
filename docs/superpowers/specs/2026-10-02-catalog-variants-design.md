@@ -229,7 +229,7 @@ JSON (дизайн §3). Строгий разбор фичи 2 (§2.2 спек�
   по всем членствам — как `top_path`, `services/semantic_request.py:193`), и
   **схема** (параметры и списки значений текущей версии); `paths_hash` — sha256
   отсортированного списка выбранных путей, хранится на задании и на контексте
-  контекста (§2.4); `candidates_hash` — sha256 схемы.
+  (`variant_paths_hash`, §2.4); `candidates_hash` — sha256 схемы.
 - **Профиль модели по виду задания** (дизайн §2.6): `SEMANTIC_SCHEMA_MODEL`,
   `SEMANTIC_VALUES_MODEL` (по умолчанию `anthropic/claude-sonnet-5.5`),
   `SEMANTIC_VARIANTS_REASONING_EFFORT` (`low`), `SEMANTIC_SCHEMA_MAX_TOKENS`
