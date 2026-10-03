@@ -121,3 +121,74 @@ class TestPendingThreshold:
         with pytest.raises(SemanticEventError, match="threshold"):
             self._record(db_session, factories, self._payload(source, threshold="0.95"))
 
+
+class TestFamilyAssignedAutoSuggestionContract:
+    """`context_family_assigned` при `auto_suggestion`: предложение, порог и
+    уверенность обязательны; при `manual` и `suggestion` порог и уверенность
+    запрещены. Порог и уверенность — строки десятичного числа в `(0, 1]`."""
+
+    def _payload(self, source, **extra):
+        payload = {"from_family_id": None, "to_family_id": 1, "source": source}
+        payload.update(extra)
+        return payload
+
+    def _auto(self, **overrides):
+        payload = self._payload(
+            "auto_suggestion", suggestion_id=5, threshold="0.95", confidence="0.97"
+        )
+        payload.update(overrides)
+        return payload
+
+    def _record(self, db_session, factories, payload):
+        context = _context(db_session, factories)
+        return record_event(
+            db_session, event_type="context_family_assigned", payload=payload,
+            context_id=context.id,
+        )
+
+    def test_full_auto_suggestion_payload_accepted(self, db_session, factories):
+        assert self._record(db_session, factories, self._auto()).id is not None
+
+    @pytest.mark.parametrize("missing", ["suggestion_id", "threshold", "confidence"])
+    def test_auto_suggestion_without_each_required_key_rejected(
+        self, db_session, factories, missing
+    ):
+        payload = self._auto()
+        del payload[missing]
+        with pytest.raises(SemanticEventError, match=missing):
+            self._record(db_session, factories, payload)
+
+    @pytest.mark.parametrize("key", ["threshold", "confidence"])
+    @pytest.mark.parametrize("bad", ["abc", "0", "-0.1", "1.5", "NaN", 0.95, None, True])
+    def test_auto_suggestion_decimal_outside_unit_interval_rejected(
+        self, db_session, factories, key, bad
+    ):
+        with pytest.raises(SemanticEventError, match=key):
+            self._record(db_session, factories, self._auto(**{key: bad}))
+
+    @pytest.mark.parametrize("key", ["threshold", "confidence"])
+    def test_auto_suggestion_upper_bound_one_accepted(self, db_session, factories, key):
+        assert self._record(db_session, factories, self._auto(**{key: "1"})).id is not None
+
+    @pytest.mark.parametrize("bad", [True, "5", None])
+    def test_auto_suggestion_suggestion_id_must_be_an_integer(
+        self, db_session, factories, bad
+    ):
+        with pytest.raises(SemanticEventError, match="suggestion_id"):
+            self._record(db_session, factories, self._auto(suggestion_id=bad))
+
+    @pytest.mark.parametrize("source", ["manual", "suggestion"])
+    @pytest.mark.parametrize("key", ["threshold", "confidence"])
+    def test_other_sources_forbid_threshold_and_confidence(
+        self, db_session, factories, source, key
+    ):
+        extra = {"suggestion_id": 5} if source == "suggestion" else {}
+        extra[key] = "0.95"
+        with pytest.raises(SemanticEventError, match=key):
+            self._record(db_session, factories, self._payload(source, **extra))
+
+    def test_suggestion_and_manual_without_them_still_accepted(self, db_session, factories):
+        assert self._record(
+            db_session, factories, self._payload("suggestion", suggestion_id=5)
+        ).id is not None
+        assert self._record(db_session, factories, self._payload("manual")).id is not None

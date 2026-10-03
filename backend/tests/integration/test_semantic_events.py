@@ -345,6 +345,9 @@ class TestEnumValuesAcceptedAndRejected:
         if (event_type, key, value) == ("context_family_assigned", "source", "suggestion"):
             # Для этого источника ключ `suggestion_id` обязателен условно (спека §2.14).
             payload["suggestion_id"] = 1
+        if (event_type, key, value) == ("context_family_assigned", "source", "auto_suggestion"):
+            # Автопринятие несёт предложение, порог и уверенность (спека вариантов §2.13).
+            payload.update(suggestion_id=1, threshold="0.95", confidence="0.97")
         if (event_type, key, value) == ("context_family_pending", "source", "auto_suggestion"):
             # Порог обязателен условно (спека вариантов §2.13).
             payload["threshold"] = "0.95"

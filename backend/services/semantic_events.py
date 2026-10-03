@@ -39,6 +39,7 @@ payload схемой не выражается — его держит вали�
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -214,29 +215,65 @@ def _validate_family_updated_changed(payload: Mapping[str, object]) -> None:
                 )
 
 
+def _require_suggestion_id(payload: Mapping[str, object], source: str) -> None:
+    if "suggestion_id" not in payload:
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': источник {source!r} требует ключ "
+            "'suggestion_id'"
+        )
+    value = payload["suggestion_id"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SemanticEventError(
+            "событие 'context_family_assigned': ключ 'suggestion_id' при источнике "
+            f"{source!r} обязан быть целым числом, получено {value!r}"
+        )
+
+
+def _require_unit_interval_decimal(payload: Mapping[str, object], key: str) -> None:
+    """Ключ — строка десятичного числа в `(0, 1]` (`AGENTS.md` §3: `Decimal`
+    в JSON — строка, не число)."""
+    if key not in payload:
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': источник 'auto_suggestion' требует ключ {key!r}"
+        )
+    value = payload[key]
+    try:
+        number = Decimal(value) if isinstance(value, str) else None
+    except InvalidOperation:
+        number = None
+    if number is None or not number.is_finite() or not Decimal(0) < number <= Decimal(1):
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': ключ {key!r} обязан быть строкой "
+            f"десятичного числа в (0, 1], получено {value!r}"
+        )
+
+
 def _validate_family_assigned_suggestion_id(payload: Mapping[str, object]) -> None:
-    """`context_family_assigned.suggestion_id` обязателен условно: источник
-    `suggestion` требует ключ с целым значением (`bool` — не целое), источник
-    `manual` ключ запрещает. `EVENT_REQUIRED_KEYS` для типа остаётся прежним —
-    множество ключей не выражает условной обязательности."""
+    """Условная обязательность ключей `context_family_assigned`: источник
+    `suggestion` требует `suggestion_id` (целое, `bool` — не целое); источник
+    `auto_suggestion` требует ещё `threshold` и `confidence` — строки
+    десятичного числа в `(0, 1]`; источник `manual` не допускает ни одного из
+    трёх, `suggestion` — `threshold` и `confidence`. `EVENT_REQUIRED_KEYS` для
+    типа остаётся прежним — множество ключей не выражает условной
+    обязательности."""
     source = payload["source"]
-    if source == "suggestion":
-        if "suggestion_id" not in payload:
-            raise SemanticEventError(
-                "событие 'context_family_assigned': источник 'suggestion' требует ключ "
-                "'suggestion_id'"
-            )
-        value = payload["suggestion_id"]
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise SemanticEventError(
-                "событие 'context_family_assigned': ключ 'suggestion_id' при источнике "
-                f"'suggestion' обязан быть целым числом, получено {value!r}"
-            )
+    if source in ("suggestion", "auto_suggestion"):
+        _require_suggestion_id(payload, source)
     elif "suggestion_id" in payload:
         raise SemanticEventError(
             "событие 'context_family_assigned': источник 'manual' не допускает ключ "
             "'suggestion_id'"
         )
+    if source == "auto_suggestion":
+        _require_unit_interval_decimal(payload, "threshold")
+        _require_unit_interval_decimal(payload, "confidence")
+    else:
+        for key in ("threshold", "confidence"):
+            if key in payload:
+                raise SemanticEventError(
+                    f"событие 'context_family_assigned': ключ {key!r} допустим только при "
+                    f"источнике 'auto_suggestion', получен источник {source!r}"
+                )
 
 
 def _validate_pending_threshold(payload: Mapping[str, object]) -> None:
