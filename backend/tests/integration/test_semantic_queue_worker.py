@@ -829,7 +829,10 @@ class TestClaimSkipsLockedJobs:
 #  Гонка бюджета
 # ---------------------------------------------------------------------------
 
-def _race(committing_session_factory, committing_db, committing_factories, monkeypatch, *, lock):
+def _race(
+    committing_session_factory, committing_db, committing_factories, monkeypatch, *,
+    lock, barrier_timeout,
+):
     user = committing_factories.UserFactory.create()
     unit_id = _unit_id(committing_db, "M2")
     _active_family(committing_db, title="Семья гонки", unit_name="M2", actor_id=user.id)
@@ -858,12 +861,18 @@ def _race(committing_session_factory, committing_db, committing_factories, monke
         monkeypatch.setattr(worker, "_lock_worker_state", _unlocked)
 
     barrier = threading.Barrier(4)
+    # «Дошёл» и «прошёл вместе» — разные вещи: барьер, сломавшийся по таймауту,
+    # отпускает потоки поодиночке, и проверка бюджета перестаёт быть одновременной.
     reached: list[str] = []
+    passed_together: list[str] = []
     claims: dict[str, object] = {}
     errors: dict[str, BaseException] = {}
     names = {f"race-{i}" for i in range(4)}
 
-    def _hold_before_spent_read(conn, cursor, statement, parameters, context, executemany):
+    # Барьер стоит ПОСЛЕ чтения расхода, а не перед ним: иначе поток, отпущенный
+    # барьером, но запоздавший с запросом, прочитал бы уже закоммиченную чужую
+    # попытку, и проверки бюджета снова перестали бы быть одновременными.
+    def _hold_after_spent_read(conn, cursor, statement, parameters, context, executemany):
         text = statement.lower()
         if (
             threading.current_thread().name in names
@@ -872,10 +881,11 @@ def _race(committing_session_factory, committing_db, committing_factories, monke
         ):
             reached.append(threading.current_thread().name)
             with contextlib.suppress(threading.BrokenBarrierError):
-                barrier.wait(timeout=3)
+                barrier.wait(timeout=barrier_timeout)
+                passed_together.append(threading.current_thread().name)
 
     engine = committing_db.get_bind()
-    sa.event.listen(engine, "before_cursor_execute", _hold_before_spent_read)
+    sa.event.listen(engine, "after_cursor_execute", _hold_after_spent_read)
 
     def run() -> None:
         db = committing_session_factory()
@@ -896,7 +906,7 @@ def _race(committing_session_factory, committing_db, committing_factories, monke
         for t in threads:
             t.join(timeout=_JOIN_TIMEOUT)
     finally:
-        sa.event.remove(engine, "before_cursor_execute", _hold_before_spent_read)
+        sa.event.remove(engine, "after_cursor_execute", _hold_after_spent_read)
 
     assert not any(t.is_alive() for t in threads), "поток гонки завис за отведённый таймаут"
     assert not errors, errors
@@ -904,29 +914,41 @@ def _race(committing_session_factory, committing_db, committing_factories, monke
     attempts = committing_db.execute(
         sa.select(sa.func.count()).select_from(SemanticJobAttempt)
     ).scalar_one()
-    return len(won), attempts, len(reached)
+    return len(won), attempts, len(reached), len(passed_together)
 
 
 class TestBudgetRace:
     def test_four_parallel_claims_with_room_for_one_attempt_make_exactly_one(
         self, committing_session_factory, committing_db, committing_factories, monkeypatch
     ):
-        won, attempts, _reached = _race(
+        # Первый поток держит замок состояния у барьера, остальные ждут замок, так что
+        # барьер из четырёх сломается по короткому таймауту — это цена теста.
+        won, attempts, reached, passed = _race(
             committing_session_factory, committing_db, committing_factories, monkeypatch,
-            lock=True,
+            lock=True, barrier_timeout=3,
         )
 
+        # Без `reached` равенство `passed == 0` держалось бы и при хуке, который
+        # ни разу не сработал.
+        assert reached == 4
+        assert passed == 0, "барьер не должен был пропустить потоки вместе: замок их разводит"
         assert (won, attempts) == (1, 1)
 
     def test_without_the_state_row_lock_all_four_pass_the_budget_check(
         self, committing_session_factory, committing_db, committing_factories, monkeypatch
     ):
-        won, attempts, reached = _race(
+        # Без замка все четыре обязаны встретиться у барьера; таймаут с запасом на
+        # просевший раннер, но меньше `_JOIN_TIMEOUT`.
+        won, attempts, reached, passed = _race(
             committing_session_factory, committing_db, committing_factories, monkeypatch,
-            lock=False,
+            lock=False, barrier_timeout=20,
         )
 
         assert reached == 4
+        assert passed == 4, (
+            "барьер сломался до прихода всех четырёх потоков: проверки бюджета "
+            f"не были одновременными (прошли вместе {passed} из 4)"
+        )
         assert (won, attempts) == (4, 4)
 
 
