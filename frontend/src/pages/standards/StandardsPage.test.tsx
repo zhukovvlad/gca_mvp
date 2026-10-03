@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import StandardsPage from "./StandardsPage";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 describe("Экран «Нормативы» (§7.3)", () => {
   it("показывает ставки строками и различает открытый период", async () => {
@@ -51,7 +51,9 @@ describe("Диалог переутверждения (§4)", () => {
     await screen.findByText("Кладка кирпичная");
     const row = screen.getByText("Кладка кирпичная").closest("tr") as HTMLElement;
     await user.click(within(row).getByRole("button", { name: /Переутвердить/ }));
-    return screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+    return dialog;
   }
 
   it("объясняет, что история не переписывается", async () => {
@@ -256,6 +258,7 @@ describe("Найдено собственным ревью: подтвержде
 
     // Всё внутри диалога: «Класс объектов» есть и в фильтре списка за ним.
     const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
     await user.type(within(dialog).getByLabelText("Работа из каталога"), "Кладка");
     await user.click(await within(dialog).findByText("Кладка кирпичная"));
     await user.click(within(dialog).getByLabelText("Класс объектов"));

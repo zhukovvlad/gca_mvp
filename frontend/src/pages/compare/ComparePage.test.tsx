@@ -10,7 +10,7 @@ import { deviationTone } from "./deviationTone";
 import { sampleComparison, sampleInflationSeries } from "@/test/fixtures";
 import { handlerState, totalsMediansWithMode } from "@/test/handlers";
 import { server } from "@/test/server";
-import { DEFAULT_TEST_USER, renderWithProviders } from "@/test/utils";
+import { DEFAULT_TEST_USER, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * Страница сравнения договоров (спека 2026-08-17, план — задача 8).
@@ -1551,6 +1551,7 @@ describe("ComparePage: поправка на инфляцию", () => {
 
     await userEvent.click(within(bar).getByRole("button", { name: "Изменить ряд" }));
     await waitFor(() => expect(screen.getByLabelText("Коэффициент за 2024")).toBeInTheDocument());
+    await waitForDialogFocus();
 
     const field = screen.getByLabelText("Коэффициент за 2024");
     await userEvent.clear(field);

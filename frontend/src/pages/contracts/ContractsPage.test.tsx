@@ -4,7 +4,7 @@ import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import ContractsPage from "./ContractsPage";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { server } from "@/test/server";
 
 describe("Экран «Договоры» (§7.1)", () => {
@@ -142,6 +142,7 @@ describe("Экран «Договоры» (§7.1)", () => {
 
     await user.click(screen.getAllByRole("button", { name: /Действия с договором/ })[0]);
     await user.click(await screen.findByRole("menuitem", { name: /Удалить/ }));
+    await waitForDialogFocus("alertdialog");
     await user.type(screen.getByLabelText(/Введите номер договора/), "ГП-2026-001");
 
     // Номер введён верно, но состав удаляемого ещё не назван — подтверждать

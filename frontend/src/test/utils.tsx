@@ -1,10 +1,10 @@
 import { type ReactElement, type ReactNode } from "react";
-import { render, type RenderOptions } from "@testing-library/react";
+import { render, screen, waitFor, type RenderOptions } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CURRENT_USER_QUERY_KEY } from "@/hooks/useAuth";
 import type { User } from "@/types/auth";
@@ -127,3 +127,20 @@ export function renderWithProviders(
   });
 }
 
+/**
+ * Дождаться начального фокуса только что открытого диалога/листа/AlertDialog
+ * (и поповера — у него та же роль `dialog`).
+ * Base UI (`FloatingFocusManager`) переносит фокус на первый tabbable-элемент
+ * не сразу, а через queueMicrotask -> requestAnimationFrame после открытия, и
+ * решает, переносить ли, по тому, что было в фокусе В МОМЕНТ ОТКРЫТИЯ, а не
+ * перед самим кадром. Тест, который успел кликнуть или печатать в не первое
+ * поле раньше кадра, получает кражу фокуса: текст (весь или его хвост) уходит
+ * в первое поле. Вызывать сразу после
+ * открытия и ДО первого действия внутри диалога — иначе условие тривиально
+ * истинно (фокус уже внутри из-за самого теста).
+ */
+export async function waitForDialogFocus(role: "dialog" | "alertdialog" = "dialog") {
+  await waitFor(() => {
+    expect(screen.getByRole(role).contains(document.activeElement)).toBe(true);
+  });
+}

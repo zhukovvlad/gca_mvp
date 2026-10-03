@@ -551,7 +551,7 @@ describe("ContextsTab", () => {
     expect(screen.queryByText("Контекст не выбран")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("50"));
+    await user.click(await screen.findByRole("option", { name: "50" }));
 
     await waitFor(() => expect(screen.getByText("Синтетическая работа №21")).toBeInTheDocument());
     expect(screen.queryByText("Контекст не выбран")).not.toBeInTheDocument();
@@ -863,7 +863,7 @@ describe("ContextsTab", () => {
 
     // Меняем размер на 10 — offset обязан вернуться на 0 (страница 1 нового размера).
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
 
     await waitFor(() => {
       expect(screen.getByText("Синтетическая работа №1")).toBeInTheDocument();
@@ -1001,7 +1001,7 @@ describe("ContextsTab", () => {
     expect(lastRequest(requests).get("limit")).toBe("50");
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("10"));
+    await user.click(await screen.findByRole("option", { name: "10" }));
     await waitFor(() => expect(dataRows()).toHaveLength(10));
     expect(localStorage.getItem("gca.families.contexts.pageSize")).toBe("10");
   });

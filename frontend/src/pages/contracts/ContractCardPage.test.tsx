@@ -9,7 +9,7 @@ import { JOB_POLL_INTERVAL_MS } from "@/services/jobPolling";
 import { sampleContractCard, sampleObjects } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import type { ContractCard } from "@/types/domain";
 
 /**
@@ -269,6 +269,7 @@ describe("Удаление договора с карточки (спека §2.
     await screen.findByRole("button", { name: /Удалить/ });
 
     await user.click(screen.getByRole("button", { name: /Удалить/ }));
+    await waitForDialogFocus("alertdialog");
     await user.type(screen.getByLabelText(/Введите номер договора/), "ГП-2026-001");
     await user.click(screen.getByRole("button", { name: "Удалить договор" }));
 

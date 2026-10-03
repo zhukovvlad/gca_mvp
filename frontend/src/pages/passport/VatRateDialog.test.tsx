@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { VatRateDialog } from "./VatRateDialog";
 import { sampleProjectPassport } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import type { ProjectPassportEstimate } from "@/types/domain";
 
 /**
@@ -82,6 +82,7 @@ function stubSuccess() {
 
 async function openDialog(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: /изменить ставку/i }));
+  await waitForDialogFocus();
 }
 
 describe("VatRateDialog: правка ставок НДС", () => {

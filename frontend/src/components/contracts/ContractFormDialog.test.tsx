@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { ContractFormDialog } from "./ContractFormDialog";
 import { sampleContractCard } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * Поиск в комбобоксе объекта/подрядчика (разбор внешнего ревью).
@@ -77,6 +77,7 @@ describe("Форма договора: поиск объекта и подряд
   it("подрядчик ищется по БИН/ИНН", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
     await user.click(await screen.findByRole("combobox", { name: /Подрядчик/ }));
     const search = await screen.findByPlaceholderText("Название или БИН/ИНН");
 
@@ -105,6 +106,7 @@ describe("Форма договора: поиск объекта и подряд
   it("новый подрядчик требует БИН/ИНН, а не заводится заглушкой", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
     await user.click(await screen.findByRole("combobox", { name: /Подрядчик/ }));
     await user.type(await screen.findByPlaceholderText("Название или БИН/ИНН"), "ООО Новый");
     await user.click(await screen.findByText(/Создать подрядчика/));
@@ -177,6 +179,7 @@ describe("Форма договора: объект заводится черн�
   it("пункт «Создать объект» с пустым поиском открывает черновик, а не молчит", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
     // Точное совпадение подписи и есть утверждение «запрос пуст».
@@ -189,6 +192,7 @@ describe("Форма договора: объект заводится черн�
   it("название из поиска предзаполняет черновик объекта", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
     await user.type(
@@ -221,6 +225,7 @@ describe("Форма договора: объект заводится черн�
     captureObjectPosts();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const field = await openObjectDraft(user);
     await user.clear(field);
@@ -257,6 +262,7 @@ describe("Форма договора: объект заводится черн�
     );
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const field = await openObjectDraft(user);
     await user.clear(field);
@@ -309,6 +315,7 @@ describe("Форма договора: объект заводится черн�
     );
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const field = await openObjectDraft(user);
     await user.clear(field);
@@ -374,6 +381,7 @@ describe("Форма договора: класс как снимок (§4)", ()
   it("создать договор нельзя без объекта, подрядчика, номера и даты", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const submit = await screen.findByRole("button", { name: "Создать договор" });
     expect(submit).toBeDisabled();
@@ -478,6 +486,7 @@ describe("Форма договора: класса ещё нет в систе�
     noClassesAtAll();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await selectObjectWithoutClass(user);
     await user.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
@@ -513,6 +522,7 @@ describe("Форма договора: класса ещё нет в систе�
     );
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await selectObjectWithoutClass(user);
     await user.click(screen.getByRole("combobox", { name: /Подрядчик/ }));
@@ -533,6 +543,7 @@ describe("Форма договора: класса ещё нет в систе�
   it("класс объекта подставляется сам — предупреждения нет", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
     await user.click(await screen.findByText("ЖК Северный"));
@@ -547,6 +558,7 @@ describe("Форма договора: класса ещё нет в систе�
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />, {
       initialUser: { id: 2, email: "member@example.com", role: "member" },
     });
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
     await screen.findByPlaceholderText("Название класса");
@@ -563,6 +575,7 @@ describe("Форма договора: класса ещё нет в систе�
     noClassesAtAll();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
     // Точное совпадение подписи — это и есть утверждение «запрос пуст»: с
@@ -577,6 +590,7 @@ describe("Форма договора: класса ещё нет в систе�
     noClassesAtAll();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
     await user.type(await screen.findByPlaceholderText("Название класса"), "  Административные  ");
@@ -591,6 +605,7 @@ describe("Форма договора: класса ещё нет в систе�
     noClassesAtAll();
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const field = await openClassDraft(user);
     await user.clear(field);
@@ -636,6 +651,7 @@ describe("Форма договора: класса ещё нет в систе�
     );
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const field = await openClassDraft(user);
     await user.clear(field);
@@ -738,6 +754,7 @@ describe("Форма договора: класса ещё нет в систе�
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />, {
       initialUser: { id: 2, email: "member@example.com", role: "member" },
     });
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Класс объектов/ }));
     await screen.findByPlaceholderText("Название класса");
@@ -790,6 +807,7 @@ describe("Форма договора: коммерческие условия (
       })
     );
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
     await fillRequiredContractFields();
     await userEvent.click(screen.getByRole("button", { name: /коммерческие условия/i }));
     await userEvent.type(screen.getByLabelText(/аванс, %/i), "30");
@@ -808,6 +826,7 @@ describe("Форма договора: коммерческие условия (
         contract={{ ...sampleContractCard, advance_pct: "30", advance_note: "траншами" }}
       />
     );
+    await waitForDialogFocus();
     await userEvent.click(await screen.findByRole("button", { name: /коммерческие условия/i }));
     expect(screen.getByLabelText(/аванс, %/i)).toHaveValue("30");
     expect(screen.getByLabelText(/оговорка к авансу/i)).toHaveValue("траншами");
@@ -818,6 +837,7 @@ describe("Комбобокс: подсказки", () => {
   it("показывает класс объекта и БИН подрядчика как подсказку", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(await screen.findByRole("combobox", { name: /Объект/ }));
     const northern = (await screen.findByText("ЖК Северный")).closest("[data-slot]") ??

@@ -9,7 +9,7 @@ import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
 import { sampleRoundUnallocated, sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { createTestQueryClient, renderWithProviders, spyOnDownload } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, spyOnDownload, waitForDialogFocus } from "@/test/utils";
 
 /**
  * Карточка тендера (спека §2.13, §2.14, задача 12): решётка участник×раунд —
@@ -136,6 +136,7 @@ describe("Admin-диалоги карточки тендера — открыт�
 
     await user.click(screen.getByRole("button", { name: "Новый этап" }));
     const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
     expect(dialog).toHaveTextContent("Этап 3");
 
     await user.type(within(dialog).getByLabelText("Название этапа"), "Третий этап");
@@ -229,6 +230,7 @@ describe("Admin-диалоги карточки тендера — открыт�
 
     await user.click(screen.getByRole("button", { name: "Удалить" }));
     const dialog = await screen.findByRole("alertdialog");
+    await waitForDialogFocus("alertdialog");
     const confirmBtn = within(dialog).getByRole("button", { name: "Удалить тендер" });
     expect(confirmBtn).toBeDisabled();
 
