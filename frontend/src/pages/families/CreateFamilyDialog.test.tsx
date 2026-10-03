@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { handlerState } from "@/test/handlers";
-import { createTestQueryClient, renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import type { NewRow } from "@/types/domain";
 
 import { CreateFamilyDialog } from "./CreateFamilyDialog";
@@ -48,6 +48,7 @@ describe("CreateFamilyDialog", () => {
       is_system: true,
     };
     renderWithProviders(<CreateFamilyDialog row={row} unitLabel="компл" onClose={vi.fn()} />);
+    await waitForDialogFocus();
 
     expect(nameInput().value).toBe("");
     await user.type(definitionInput(), "Входит: дымоудаление. Не входит: вентиляция.");
@@ -65,6 +66,7 @@ describe("CreateFamilyDialog", () => {
   it("имя редактируется и в запрос уходит правленое", async () => {
     const user = userEvent.setup();
     renderDialog();
+    await waitForDialogFocus();
 
     await user.clear(nameInput());
     await user.type(nameInput(), "Гидрошпонка деформационных швов");
@@ -90,6 +92,7 @@ describe("CreateFamilyDialog", () => {
   it("определение из одних пробелов не считается определением", async () => {
     const user = userEvent.setup();
     renderDialog();
+    await waitForDialogFocus();
     await user.type(definitionInput(), "   ");
     expect(saveButton()).toBeDisabled();
   });
@@ -97,6 +100,7 @@ describe("CreateFamilyDialog", () => {
   it("имя из одних пробелов при заполненном определении — кнопка неактивна", async () => {
     const user = userEvent.setup();
     renderDialog();
+    await waitForDialogFocus();
     await user.clear(nameInput());
     await user.type(nameInput(), "   ");
     await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
@@ -106,6 +110,7 @@ describe("CreateFamilyDialog", () => {
   it("имя и определение заполнены — кнопка активна", async () => {
     const user = userEvent.setup();
     renderDialog();
+    await waitForDialogFocus();
     await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
     expect(saveButton()).toBeEnabled();
   });
@@ -113,6 +118,7 @@ describe("CreateFamilyDialog", () => {
   it("успех: запрос на предложение строки с обрезанными пробелами, окно закрывается, кэши очереди, семей и контекстов сброшены", async () => {
     const user = userEvent.setup();
     const { onClose, invalidate } = renderDialog();
+    await waitForDialogFocus();
 
     await user.type(definitionInput(), "  Входит: шпонки. Не входит: мастики.  ");
     await user.click(saveButton());
@@ -137,6 +143,7 @@ describe("CreateFamilyDialog", () => {
     handlerState.createFamilyOutcome = "exists";
     const onOpenFamily = vi.fn();
     const { onClose } = renderDialog(vi.fn(), onOpenFamily);
+    await waitForDialogFocus();
 
     await user.type(definitionInput(), "Входит: шпонки.");
     await user.click(saveButton());
@@ -153,6 +160,7 @@ describe("CreateFamilyDialog", () => {
     const user = userEvent.setup();
     handlerState.createFamilyOutcome = "exists_null";
     renderDialog(vi.fn(), vi.fn());
+    await waitForDialogFocus();
 
     await user.type(definitionInput(), "Входит: шпонки.");
     await user.click(saveButton());
@@ -164,6 +172,7 @@ describe("CreateFamilyDialog", () => {
   it("«Отмена» закрывает окно и ничего не отправляет", async () => {
     const user = userEvent.setup();
     const { onClose } = renderDialog();
+    await waitForDialogFocus();
     await user.click(screen.getByRole("button", { name: "Отмена" }));
     expect(onClose).toHaveBeenCalled();
     expect(handlerState.createFamilyRequests).toEqual([]);

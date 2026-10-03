@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CategoryPicker, type CategoryPickerProps } from "./CategoryPicker";
 import { sampleProjectPassport } from "@/test/fixtures";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * Выбор статьи с необязательным полем «Заметка» (спека этапного разноса
@@ -44,6 +44,7 @@ function pick(props: Partial<CategoryPickerProps> = {}) {
 
 async function openPopover(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByTestId("pick-category-k"));
+  await waitForDialogFocus();
 }
 
 /** Закрывает поповер `Escape` (базовое поведение `useDismiss` в base-ui) и

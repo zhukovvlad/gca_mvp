@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { InflationSeriesTab } from "@/components/standards/InflationSeriesTab";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { sampleInflationSeries } from "@/test/fixtures";
 
 /*
@@ -59,6 +59,7 @@ describe("InflationSeriesTab", () => {
         name: "Создать ряд",
       })
     );
+    await waitForDialogFocus();
 
     await userEvent.type(screen.getByLabelText("Название"), "Росстат, ИПЦ, декабрь к декабрю");
     await userEvent.type(screen.getByLabelText("Примечание"), "официальная публикация");

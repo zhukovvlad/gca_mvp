@@ -142,7 +142,7 @@ describe("Pager с onPageSizeChange — выбор размера страниц
     );
 
     await user.click(screen.getByRole("combobox", { name: "На странице:" }));
-    await user.click(await screen.findByText("50"));
+    await user.click(await screen.findByRole("option", { name: "50" }));
 
     expect(onPageSizeChange).toHaveBeenCalledWith(50);
   });

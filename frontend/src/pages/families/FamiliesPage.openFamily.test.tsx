@@ -35,7 +35,7 @@ describe("FamiliesPage — переход к семье из «Предложе�
     const { rerender } = renderWithProviders(<FamiliesTab focusFamilyId={null} />);
     // Черновики м² — 42 семьи, больше одной страницы; семья 43 — м³, фильтр её скрыл бы.
     await user.click(await screen.findByRole("combobox", { name: "Единица (фильтр)" }));
-    await user.click(await screen.findByText("Кв. метр"));
+    await user.click(await screen.findByRole("option", { name: "Кв. метр" }));
     await screen.findByText("Семья работ №1");
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));
     await waitFor(() => expect(screen.queryByText("Семья работ №1")).not.toBeInTheDocument());

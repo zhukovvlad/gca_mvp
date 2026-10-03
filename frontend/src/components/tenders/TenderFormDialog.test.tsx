@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { TenderFormDialog } from "./TenderFormDialog";
 import { sampleTenderCard } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * `TenderFormDialog` (спека §2.13, задача 12) — по образцу
@@ -21,6 +21,7 @@ describe("Форма тендера: создание", () => {
   it("создать тендер нельзя без объекта и предмета", async () => {
     const user = userEvent.setup();
     renderWithProviders(<TenderFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     const submit = await screen.findByRole("button", { name: "Создать тендер" });
     expect(submit).toBeDisabled();
@@ -46,6 +47,7 @@ describe("Форма тендера: создание", () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<TenderFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     await user.click(screen.getByRole("combobox", { name: /Объект/ }));
     await user.click(await screen.findByText("ЖК Северный")); // id 10
@@ -69,6 +71,7 @@ describe("Форма тендера: создание", () => {
   it("класс не выбран — подсказка «класс объекта», а не блокировка отправки", async () => {
     const user = userEvent.setup();
     renderWithProviders(<TenderFormDialog open onOpenChange={() => {}} />);
+    await waitForDialogFocus();
 
     expect(
       await screen.findByText(/возьмётся класс объекта/)
@@ -109,6 +112,7 @@ describe("Форма тендера: правка", () => {
     renderWithProviders(
       <TenderFormDialog open onOpenChange={() => {}} tender={sampleTenderCard} />
     );
+    await waitForDialogFocus();
 
     const titleInput = await screen.findByLabelText("Предмет тендера");
     await user.clear(titleInput);

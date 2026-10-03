@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { ObjectFormDialog } from "./ObjectFormDialog";
 import { sampleObjects } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * `sampleObjects[0]` (id={@link OBJECT_WITH_AREAS}) несёт заполненную пару
@@ -22,6 +22,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/наземная/i));
     await userEvent.type(screen.getByLabelText(/наземная/i), "62399.70");
     await userEvent.clear(screen.getByLabelText(/подземная/i));
@@ -33,6 +34,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITHOUT_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.type(await screen.findByLabelText(/наземная/i), "100");
     expect(screen.queryByTestId("area-total-preview")).not.toBeInTheDocument();
   });
@@ -48,6 +50,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/наземная/i));
     await userEvent.type(screen.getByLabelText(/наземная/i), "62399,70");
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
@@ -67,6 +70,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/подземная/i));
     await userEvent.type(screen.getByLabelText(/подземная/i), "500");
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
@@ -85,6 +89,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/наземная/i));
     await userEvent.clear(screen.getByLabelText(/подземная/i));
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
@@ -102,6 +107,7 @@ describe("Диалог правки объекта: площади и живая
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/подземная/i));
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
     expect(await screen.findByText(/площади задаются парой/i)).toBeInTheDocument();
@@ -131,6 +137,7 @@ describe("Диалог правки объекта: полезная площа�
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/полезная/i));
     await userEvent.type(screen.getByLabelText(/полезная/i), "45000,25");
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
@@ -150,6 +157,7 @@ describe("Диалог правки объекта: полезная площа�
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/полезная/i));
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
     await waitFor(() => expect(body).toBeDefined());
@@ -162,6 +170,7 @@ describe("Диалог правки объекта: полезная площа�
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/полезная/i));
     await userEvent.type(screen.getByLabelText(/полезная/i), "1000");
     expect(await screen.findByTestId("area-total-preview")).toHaveTextContent("75741");
@@ -191,6 +200,7 @@ describe("Диалог правки объекта: остальные поля 
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/название/i));
     await userEvent.type(screen.getByLabelText(/название/i), "Новое имя");
     await userEvent.click(screen.getByRole("button", { name: /сохранить/i }));
@@ -202,6 +212,7 @@ describe("Диалог правки объекта: остальные поля 
     renderWithProviders(
       <ObjectFormDialog open objectId={OBJECT_WITH_AREAS} onOpenChange={() => {}} />
     );
+    await waitForDialogFocus();
     await userEvent.clear(await screen.findByLabelText(/название/i));
     expect(screen.getByRole("button", { name: /сохранить/i })).toBeDisabled();
   });

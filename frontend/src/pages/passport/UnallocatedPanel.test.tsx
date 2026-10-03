@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { UnallocatedPanel } from "./UnallocatedPanel";
 import { longJobTitle, sampleProjectPassport } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import type { ProjectPassport } from "@/types/domain";
 
 /**
@@ -337,6 +337,7 @@ describe("Панель-верстак разноса: выбор статьи", 
     renderPanel();
 
     await userEvent.click(screen.getByTestId("pick-category-5001"));
+    await waitForDialogFocus();
     const input = screen.getByRole("combobox");
     await userEvent.type(input, "04.02");
 
@@ -351,6 +352,7 @@ describe("Панель-верстак разноса: выбор статьи", 
     renderPanel();
 
     await userEvent.click(screen.getByTestId("pick-category-5001"));
+    await waitForDialogFocus();
     const input = screen.getByRole("combobox");
     await userEvent.type(input, "Слаботочные");
 

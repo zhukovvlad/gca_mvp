@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
-import { createTestQueryClient, renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 import { SuggestionsTab } from "./SuggestionsTab";
 
@@ -112,6 +112,7 @@ describe("SuggestionsTab — решения в очередях «Новая» �
       .getAllByTestId("new-row")
       .find((r) => /Гидрошпонка/.test(r.textContent ?? "")) as HTMLElement;
     await user.click(within(row).getByRole("button", { name: "Завести семью…" }));
+    await waitForDialogFocus();
     await user.type(screen.getByLabelText(/Определение/), "Входит: шпонки. Не входит: мастики.");
     await user.click(screen.getByRole("button", { name: "Сохранить и активировать" }));
 
@@ -142,6 +143,7 @@ describe("SuggestionsTab — решения в очередях «Новая» �
       .getAllByTestId("new-row")
       .find((r) => /Гидрошпонка/.test(r.textContent ?? "")) as HTMLElement;
     await user.click(within(row).getByRole("button", { name: "Завести семью…" }));
+    await waitForDialogFocus();
     await user.type(screen.getByLabelText(/Определение/), "Входит: шпонки.");
     await user.click(screen.getByRole("button", { name: "Сохранить и активировать" }));
 
