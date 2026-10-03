@@ -148,7 +148,13 @@ export type SemanticEventType =
   | "family_updated"
   | "family_activated"
   | "family_archived"
-  | "family_merged";
+  | "family_merged"
+  | "context_variant_assigned"
+  | "context_family_pending"
+  | "context_not_work"
+  | "family_schema_frozen"
+  | "family_schema_value_added"
+  | "family_variants_merged";
 
 /** Рантайм-список значений {@link SemanticEventType} — тот же порядок, для перебора тестами. */
 export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
@@ -167,6 +173,12 @@ export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
   "family_activated",
   "family_archived",
   "family_merged",
+  "context_variant_assigned",
+  "context_family_pending",
+  "context_not_work",
+  "family_schema_frozen",
+  "family_schema_value_added",
+  "family_variants_merged",
 ];
 
 export const EVENT_LABEL: Record<SemanticEventType, string> = {
@@ -185,6 +197,12 @@ export const EVENT_LABEL: Record<SemanticEventType, string> = {
   family_activated: "семья активирована",
   family_archived: "семья в архиве",
   family_merged: "семьи объединены",
+  context_variant_assigned: "вариант назначен",
+  context_family_pending: "семья ожидает назначения",
+  context_not_work: "отмечено: не работа",
+  family_schema_frozen: "схема заморожена",
+  family_schema_value_added: "значение схемы добавлено",
+  family_variants_merged: "значения схемы слиты",
 };
 
 /** Подпись события журнала; неизвестный код (будущее событие) — сам код, не падает. */

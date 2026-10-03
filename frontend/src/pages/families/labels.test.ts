@@ -179,13 +179,13 @@ describe("labels: журнал событий (закрытый список ф�
     expect(label).not.toBe(value);
   });
 
-  it("EVENT_TYPE_VALUES несёт ровно 15 значений закрытого списка", () => {
-    expect(EVENT_TYPE_VALUES).toHaveLength(15);
+  it("EVENT_TYPE_VALUES несёт ровно 21 значение закрытого списка", () => {
+    expect(EVENT_TYPE_VALUES).toHaveLength(21);
   });
 
   // `EVENT_TYPE_VALUES` типизирован `readonly SemanticEventType[]`, а не выведен
   // в тип (`as const`), поэтому `tsc` не держит его полноту: подмена одного
-  // значения повтором другого сохраняет длину 15 и молча выводит событие из
+  // значения повтором другого сохраняет длину 21 и молча выводит событие из
   // перебора выше. Ключи `EVENT_LABEL` держит `Record<SemanticEventType, …>`
   // (и тест бэкенда против `SEMANTIC_EVENT_TYPES`) — с ними и сверяемся.
   it("EVENT_TYPE_VALUES — без повторов и ровно те же коды, что ключи EVENT_LABEL", () => {

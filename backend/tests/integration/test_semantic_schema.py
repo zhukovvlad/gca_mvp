@@ -21,7 +21,6 @@ from models import (
     CK_CONTEXT_NAME_ROLE_SOURCE_PAIR,
     CK_EVENT_ONE_SUBJECT,
     CK_EVENT_PAYLOAD_NOT_EMPTY,
-    CK_EVENT_SUBJECT_BY_TYPE,
     CK_FAMILY_ACTIVATION_PAIR,
     CK_FAMILY_ACTIVE_NEEDS_DEFINITION,
     CK_FAMILY_AUTHOR_IFF_NOT_SEED,
@@ -29,12 +28,10 @@ from models import (
     CK_MEMBER_RULE_PAIR,
     COMPARABILITY_REASONS,
     DECISION_SOURCES,
-    FAMILY_SOURCES,
     FAMILY_STATUSES,
     MEMBERSHIP_STATES,
     NAME_ROLES,
     ROUTED_BY_VALUES,
-    SEMANTIC_EVENT_TYPES_SQL,
     SEMANTIC_KINDS,
     SEMANTIC_STATES,
     CatalogContext,
@@ -716,6 +713,7 @@ class TestEventSubjectByTypeExpression:
         expected_family_types = {
             "family_created", "family_updated", "family_activated",
             "family_archived", "family_merged",
+            "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
         }
         assert parsed == expected_family_types
 
@@ -984,7 +982,13 @@ class TestParityWithMigration:
         (CK_MEMBER_RULE_PAIR, "CK_MEMBER_RULE_PAIR"),
         (CK_MEMBER_CONFLICT_PAIR, "CK_MEMBER_CONFLICT_PAIR"),
         (CK_EVENT_ONE_SUBJECT, "CK_EVENT_ONE_SUBJECT"),
-        (CK_EVENT_SUBJECT_BY_TYPE, "CK_EVENT_SUBJECT_BY_TYPE"),
+        # Расширено миграцией 0019: здесь замороженная редакция 0017 против её
+        # прежнего литерала; `models.py` против 0019 — test_work_variants_schema.py.
+        (
+            "(event_type IN ('family_created', 'family_updated', 'family_activated', "
+            "'family_archived', 'family_merged')) = (family_id IS NOT NULL)",
+            "CK_EVENT_SUBJECT_BY_TYPE",
+        ),
         (CK_EVENT_PAYLOAD_NOT_EMPTY, "CK_EVENT_PAYLOAD_NOT_EMPTY"),
         (FAMILY_STATUSES, "FAMILY_STATUSES"),
         (SEMANTIC_KINDS, "SEMANTIC_KINDS"),
@@ -992,10 +996,16 @@ class TestParityWithMigration:
         (SEMANTIC_STATES, "SEMANTIC_STATES"),
         (MEMBERSHIP_STATES, "MEMBERSHIP_STATES"),
         (DECISION_SOURCES, "DECISION_SOURCES"),
-        (FAMILY_SOURCES, "FAMILY_SOURCES"),
+        ("'manual', 'suggestion'", "FAMILY_SOURCES"),
         (ROUTED_BY_VALUES, "ROUTED_BY_VALUES"),
         (COMPARABILITY_REASONS, "COMPARABILITY_REASONS"),
-        (SEMANTIC_EVENT_TYPES_SQL, "SEMANTIC_EVENT_TYPES"),
+        (
+            "'context_created', 'context_split', 'context_merged', 'members_moved', "
+            "'members_marked_stale', 'kind_set', 'name_role_set', 'context_family_assigned', "
+            "'context_archived', 'routing_rules_dropped', 'family_created', 'family_updated', "
+            "'family_activated', 'family_archived', 'family_merged'",
+            "SEMANTIC_EVENT_TYPES",
+        ),
     ]
 
     @pytest.mark.parametrize(

@@ -424,6 +424,17 @@ _DOMAIN_TABLES = (
     "semantic_job_attempts",
     "semantic_jobs",
     "semantic_reconcile_batches",
+    # Варианты работ и схемы параметров семей (миграция 0019), все шесть таблиц
+    # — ЯВНО, по той же причине: сегодня TRUNCATE ... CASCADE дошёл бы до них
+    # через work_families и catalog_contexts, но это случайная защита, которую
+    # снимет правка любого внешнего ключа. Порядок внутри списка значения не
+    # имеет — одна команда TRUNCATE снимает FK между перечисленными таблицами.
+    "context_parameter_values",
+    "work_variant_values",
+    "work_variants",
+    "family_parameter_values",
+    "family_parameters",
+    "family_parameter_schemas",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",
