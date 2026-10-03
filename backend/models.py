@@ -1295,9 +1295,11 @@ class DecisionSource(str, enum.Enum):
 
 
 class FamilySource(str, enum.Enum):
-    """Происхождение назначения семьи контексту (спека §2.3)."""
+    """Происхождение назначения семьи контексту (спека §2.3; `auto_suggestion` —
+    автопринятие опубликованного предложения, спека вариантов §2.4)."""
     manual = "manual"
     suggestion = "suggestion"
+    auto_suggestion = "auto_suggestion"
 
 
 class RoutedBy(str, enum.Enum):
@@ -1332,6 +1334,14 @@ SEMANTIC_EVENT_TYPES = (
     "family_activated",
     "family_archived",
     "family_merged",
+    # Варианты и схемы семей (миграция 0019, спека вариантов §2.13): три
+    # события с предметом контекст и три с предметом семья.
+    "context_variant_assigned",
+    "context_family_pending",
+    "context_not_work",
+    "family_schema_frozen",
+    "family_schema_value_added",
+    "family_variants_merged",
 )
 
 #: Десять списков значений `IN (...)` — тоже продублированы в миграции 0017
@@ -1381,9 +1391,106 @@ CK_EVENT_ONE_SUBJECT = "num_nonnulls(context_id, family_id) = 1"
 #: списка `event_type`) в `test_semantic_schema.py::TestEventSubjectByTypeExpression`.
 CK_EVENT_SUBJECT_BY_TYPE = (
     "(event_type IN ('family_created', 'family_updated', 'family_activated', "
-    "'family_archived', 'family_merged')) = (family_id IS NOT NULL)"
+    "'family_archived', 'family_merged', 'family_schema_frozen', "
+    "'family_schema_value_added', 'family_variants_merged')) = (family_id IS NOT NULL)"
 )
 CK_EVENT_PAYLOAD_NOT_EMPTY = "jsonb_typeof(payload) = 'object' AND payload <> '{}'::jsonb"
+
+
+# ---------------------------------------------------------------------------
+#  Варианты работ и схемы параметров семей (миграция 0019)
+# ---------------------------------------------------------------------------
+#
+# Перечисления и CHECK-выражения шести новых таблиц и новых колонок контекстов
+# и заданий (спека `2026-10-02-catalog-variants-design.md` §2.4). Продублированы
+# литералами в миграции 0019 (та же дисциплина, что у 0017/0018); parity —
+# `test_work_variants_schema.py`.
+
+class SchemaStatus(str, enum.Enum):
+    """Статус версии схемы семьи: пересборка, текущая, замещённая, отменённая."""
+    building = "building"
+    frozen = "frozen"
+    superseded = "superseded"
+    cancelled = "cancelled"
+
+
+class SchemaOrigin(str, enum.Enum):
+    """Кто завёл версию схемы: задание модели или `admin` вручную."""
+    model = "model"
+    manual = "manual"
+
+
+class ValueOrigin(str, enum.Enum):
+    """Откуда значение закрытого списка параметра."""
+    schema = "schema"
+    extension = "extension"
+    manual = "manual"
+
+
+class VariantStatus(str, enum.Enum):
+    """Статус варианта: действующий или архивный (варианты не удаляются)."""
+    active = "active"
+    archived = "archived"
+
+
+class ValueSource(str, enum.Enum):
+    """По чему поставлено значение контекста по параметру."""
+    name = "name"
+    path = "path"
+    manual = "manual"
+    path_conflict = "path_conflict"
+    none = "none"
+
+
+class SemanticJobKind(str, enum.Enum):
+    """Вид задания очереди."""
+    family_suggestion = "family_suggestion"
+    family_schema = "family_schema"
+    context_values = "context_values"
+
+
+SCHEMA_STATUSES = _sql_str_list(SchemaStatus)
+SCHEMA_ORIGINS = _sql_str_list(SchemaOrigin)
+VALUE_ORIGINS = _sql_str_list(ValueOrigin)
+VARIANT_STATUSES = _sql_str_list(VariantStatus)
+VALUE_SOURCES = _sql_str_list(ValueSource)
+VARIANT_SPLIT_HINTS = _sql_str_list(("path_conflict",))
+SEMANTIC_JOB_KINDS = _sql_str_list(SemanticJobKind)
+
+CK_SCHEMA_CANCELLED_PAIR = "(status = 'cancelled') = (cancelled_at IS NOT NULL)"
+CK_SCHEMA_FROZEN_AT_PAIR = "(status IN ('frozen', 'superseded')) = (frozen_at IS NOT NULL)"
+CK_SCHEMA_SUPERSEDED_AT_PAIR = "(status = 'superseded') = (superseded_at IS NOT NULL)"
+CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR = "(origin = 'manual') = (frozen_by IS NOT NULL)"
+
+CK_PARAMETER_ORDINAL_RANGE = "ordinal BETWEEN 1 AND 3"
+CK_PARAMETER_NAME_NOT_BLANK = "btrim(name) <> ''"
+
+CK_PARAMETER_VALUE_NOT_BLANK = "btrim(value) <> '' AND value_norm <> ''"
+CK_PARAMETER_VALUE_NOT_SELF_MERGED = "merged_into_id IS NULL OR merged_into_id <> id"
+
+CK_VARIANT_ARCHIVED_PAIR = "(status = 'archived') = (archived_at IS NOT NULL)"
+CK_VARIANT_MERGED_NEEDS_ARCHIVED = "merged_into_id IS NULL OR status = 'archived'"
+
+CK_CONTEXT_VALUE_SOURCE_PAIR = "(value_id IS NULL) = (source IN ('path_conflict', 'none'))"
+
+#: Закрывает лазейку `MATCH SIMPLE`: составной FK `(work_variant_id,
+#: work_family_id)` при пустой семье пару не проверяет вовсе.
+CK_CONTEXT_VARIANT_NEEDS_FAMILY = "work_variant_id IS NULL OR work_family_id IS NOT NULL"
+CK_CONTEXT_VARIANT_AT_PAIR = "(work_variant_id IS NULL) = (variant_at IS NULL)"
+CK_CONTEXT_VARIANT_PATHS_HASH_PAIR = "(work_variant_id IS NULL) = (variant_paths_hash IS NULL)"
+CK_CONTEXT_SPLIT_HINT_NEEDS_VARIANT = "variant_split_hint IS NULL OR work_variant_id IS NOT NULL"
+#: Ожидание — целиком или никак: ОДИН тотальный предикат из двух полных ветвей,
+#: как `CK_CONTEXT_FAMILY_PROVENANCE` (цепочка равенств `a = b = c` пропускала бы
+#: строку с пустой семьёй и заполненными источником и временем).
+CK_CONTEXT_PENDING = (
+    "(pending_family_id IS NULL AND pending_family_source IS NULL AND pending_suggestion_id IS NULL "
+    "AND pending_by IS NULL AND pending_threshold IS NULL AND pending_at IS NULL) "
+    "OR (pending_family_id IS NOT NULL AND pending_family_source IS NOT NULL "
+    "AND pending_at IS NOT NULL "
+    "AND (pending_family_source = 'manual') = (pending_by IS NOT NULL) "
+    "AND (pending_family_source <> 'manual') = (pending_suggestion_id IS NOT NULL) "
+    "AND (pending_family_source = 'auto_suggestion') = (pending_threshold IS NOT NULL))"
+)
 
 
 class WorkFamily(Base):
@@ -1494,9 +1601,33 @@ class CatalogContext(Base):
     archived_at = Column(DateTime(timezone=True), nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
+    # Вариант (миграция 0019): составной отложенный FK `(work_variant_id,
+    # work_family_id)` в `__table_args__` проверяет, что семья варианта равна
+    # семье контекста; одиночного ForeignKey на `work_variant_id` нет.
+    work_variant_id = Column(BigInteger, nullable=True)
+    variant_at = Column(DateTime(timezone=True), nullable=True)
+    variant_paths_hash = Column(Text, nullable=True)
+    variant_split_hint = Column(Text, nullable=True)
+    # Ожидающее назначение семьи — целиком или никак (`CK_CONTEXT_PENDING`).
+    pending_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    pending_family_source = Column(Text, nullable=True)
+    # use_alter: `family_suggestions.context_id` ссылается обратно на контекст.
+    pending_suggestion_id = Column(
+        BigInteger,
+        ForeignKey(
+            "family_suggestions.id", ondelete="RESTRICT",
+            use_alter=True, name="fk_catalog_contexts_pending_suggestion_id",
+        ),
+        nullable=True,
+    )
+    pending_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    pending_threshold = Column(Numeric, nullable=True)
+    pending_at = Column(DateTime(timezone=True), nullable=True)
 
     bucket = relationship("ContextBucket")
-    work_family = relationship("WorkFamily")
+    work_family = relationship("WorkFamily", foreign_keys=[work_family_id])
 
     __table_args__ = (
         # Цель составных FK context_routing_rules и context_members ниже —
@@ -1531,6 +1662,33 @@ class CatalogContext(Base):
             CK_CONTEXT_NAME_ROLE_SOURCE_PAIR, name="ck_catalog_contexts_name_role_source_pair"
         ),
         CheckConstraint(CK_CONTEXT_FAMILY_PROVENANCE, name="ck_catalog_contexts_family_provenance"),
+        # ОТЛОЖЕННЫЙ до commit: слияние семей меняет семью у контекста, варианта и
+        # версии схемы, и ни один порядок немедленных проверок её не проходит.
+        ForeignKeyConstraint(
+            ["work_variant_id", "work_family_id"],
+            ["work_variants.id", "work_variants.family_id"],
+            ondelete="RESTRICT", deferrable=True, initially="DEFERRED",
+            name="fk_catalog_contexts_work_variant_family",
+        ),
+        CheckConstraint(
+            f"pending_family_source IS NULL OR pending_family_source IN ({FAMILY_SOURCES})",
+            name="ck_catalog_contexts_pending_family_source",
+        ),
+        CheckConstraint(
+            f"variant_split_hint IS NULL OR variant_split_hint IN ({VARIANT_SPLIT_HINTS})",
+            name="ck_catalog_contexts_variant_split_hint",
+        ),
+        CheckConstraint(
+            CK_CONTEXT_VARIANT_NEEDS_FAMILY, name="ck_catalog_contexts_variant_needs_family"
+        ),
+        CheckConstraint(CK_CONTEXT_VARIANT_AT_PAIR, name="ck_catalog_contexts_variant_at_pair"),
+        CheckConstraint(
+            CK_CONTEXT_VARIANT_PATHS_HASH_PAIR, name="ck_catalog_contexts_variant_paths_hash_pair"
+        ),
+        CheckConstraint(
+            CK_CONTEXT_SPLIT_HINT_NEEDS_VARIANT, name="ck_catalog_contexts_split_hint_needs_variant"
+        ),
+        CheckConstraint(CK_CONTEXT_PENDING, name="ck_catalog_contexts_pending"),
         # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — частичный
         # уникальный индекс, raw SQL в миграции 0017 (alembic/env.py
         # RAW_SQL_INDEXES: uq_catalog_contexts_default_per_bucket). Половина
@@ -1718,6 +1876,11 @@ class SuggestionDecision(str, enum.Enum):
     rejected = "rejected"
     other_family = "other_family"
     family_created = "family_created"
+    # Миграция 0019: человек подтвердил, смена отложена ожиданием; автопринятие.
+    accepted_pending = "accepted_pending"
+    auto_accepted = "auto_accepted"
+    auto_pending = "auto_pending"
+    auto_superseded = "auto_superseded"
 
 
 class ReconcileBatchSource(str, enum.Enum):
@@ -1758,7 +1921,24 @@ CK_SEMANTIC_JOBS_PRIVACY_HOLD_REQUIRES_MATCHES = (
     "status <> 'privacy_hold' OR privacy_matches IS NOT NULL"
 )
 
-CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR = "(decision IS NULL) = (decided_by IS NULL)"
+#: Автор у решения человека есть всегда, у автоматических решений его нет
+#: (миграция 0019; до неё — `(decision IS NULL) = (decided_by IS NULL)`).
+CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR = (
+    "(decided_by IS NULL) = "
+    "(decision IS NULL OR decision IN ('auto_accepted', 'auto_pending', 'auto_superseded'))"
+)
+#: Заданиям очереди три вида (миграция 0019): предмет `family_schema` — семья,
+#: прочих — контекст; версия схемы обязательна у новых видов; результат-предложение
+#: бывает только у `family_suggestion`.
+CK_SEMANTIC_JOBS_SCHEMA_SUBJECT = (
+    "(kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)"
+)
+CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = "(kind <> 'family_schema') = (context_id IS NOT NULL)"
+CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND = "(kind <> 'family_suggestion') = (schema_id IS NOT NULL)"
+CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND = (
+    "result_suggestion_id IS NULL OR kind = 'family_suggestion'"
+)
+
 CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR = "(decision IS NULL) = (decided_at IS NULL)"
 CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON = (
     "NOT is_published OR unpublished_reason IS NULL"
@@ -1834,9 +2014,25 @@ class SemanticJob(Base):
     __tablename__ = "semantic_jobs"
 
     id = Column(BigInteger, primary_key=True)
+    # Вид задания (миграция 0019). Python-умолчание, а не серверное: строки
+    # фичи 2 создаются без вида, а новые виды без явного `kind` отвергаются
+    # CHECK-ами предмета.
+    kind = Column(Text, nullable=False, default=SemanticJobKind.family_suggestion.value)
+    # NULL только у `family_schema` (предмет — семья).
     context_id = Column(
-        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=False
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=True
     )
+    family_id = Column(BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True)
+    # use_alter: `family_parameter_schemas.job_id` ссылается обратно на задание.
+    schema_id = Column(
+        BigInteger,
+        ForeignKey(
+            "family_parameter_schemas.id", ondelete="RESTRICT",
+            use_alter=True, name="fk_semantic_jobs_schema_id",
+        ),
+        nullable=True,
+    )
+    paths_hash = Column(Text, nullable=True)
     request_hash = Column(Text, nullable=False)
     status = Column(Text, nullable=False)
     cancel_reason = Column(Text, nullable=True)
@@ -1880,7 +2076,17 @@ class SemanticJob(Base):
     updated_at = _updated_at()
 
     __table_args__ = (
-        UniqueConstraint("context_id", "request_hash", name="uq_semantic_jobs_context_request_hash"),
+        # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1),
+        # COALESCE(schema_id,-1), request_hash) — выражение с COALESCE, raw SQL в
+        # миграции 0019 (RAW_SQL_INDEXES: uq_semantic_jobs_subject_request_hash);
+        # заменил `uq_semantic_jobs_context_request_hash` миграции 0018.
+        CheckConstraint(f"kind IN ({SEMANTIC_JOB_KINDS})", name="ck_semantic_jobs_kind"),
+        CheckConstraint(CK_SEMANTIC_JOBS_SCHEMA_SUBJECT, name="ck_semantic_jobs_schema_subject"),
+        CheckConstraint(CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, name="ck_semantic_jobs_context_subject"),
+        CheckConstraint(CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, name="ck_semantic_jobs_schema_id_by_kind"),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND, name="ck_semantic_jobs_result_suggestion_kind"
+        ),
         CheckConstraint(f"status IN ({SEMANTIC_JOB_STATUSES})", name="ck_semantic_jobs_status"),
         CheckConstraint(
             f"cancel_reason IS NULL OR cancel_reason IN ({SEMANTIC_CANCEL_REASONS})",
@@ -2049,6 +2255,242 @@ class SemanticWorkerState(Base):
             CK_WORKER_STATE_PAUSED_AT_PAIR, name="ck_semantic_worker_state_paused_at_pair"
         ),
         CheckConstraint(CK_WORKER_STATE_RESUMED_PAIR, name="ck_semantic_worker_state_resumed_pair"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Варианты работ и схемы параметров семей: таблицы (миграция 0019)
+# ---------------------------------------------------------------------------
+#
+# Шесть таблиц спеки `2026-10-02-catalog-variants-design.md` §2.4. Перечисления
+# и CHECK-выражения — в блоке констант выше, перед `WorkFamily`.
+#
+# **Отложенных FK ровно два** (`DEFERRABLE INITIALLY DEFERRED`): контекст →
+# вариант (`CatalogContext`) и вариант → версия схемы (`WorkVariant`). Слияние
+# семей меняет семью у контекста, варианта и версии схемы в одной транзакции;
+# все прочие ссылки проверяются немедленно.
+#
+# **Ничего не удаляется:** ссылки `RESTRICT`, кроме каскада версия → параметры →
+# значения и `job_id → SET NULL`; варианты и значения архивируются.
+
+class FamilyParameterSchema(Base):
+    """Версия схемы семьи: от 0 до 3 параметров с закрытыми списками значений.
+
+    Не больше одной `frozen` (текущая) и не больше одной `building`
+    (пересборка) на семью — частичные уникальные индексы, raw SQL в миграции
+    0019 (`RAW_SQL_INDEXES`: `uq_family_parameter_schemas_frozen`,
+    `uq_family_parameter_schemas_building`).
+    """
+    __tablename__ = "family_parameter_schemas"
+
+    id = Column(BigInteger, primary_key=True)
+    family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=False
+    )
+    version = Column(Integer, nullable=False)
+    status = Column(Text, nullable=False)
+    origin = Column(Text, nullable=False)
+    # use_alter: цикл `semantic_jobs` → `catalog_contexts` → `work_variants` →
+    # `family_parameter_schemas` → `semantic_jobs` без разрыва метаданные
+    # отсортировать не могут.
+    job_id = Column(
+        BigInteger,
+        ForeignKey(
+            "semantic_jobs.id", ondelete="SET NULL",
+            use_alter=True, name="fk_family_parameter_schemas_job_id",
+        ),
+        nullable=True,
+    )
+    frozen_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    created_at = _created_at()
+    frozen_at = Column(DateTime(timezone=True), nullable=True)
+    superseded_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+
+    family = relationship("WorkFamily")
+
+    __table_args__ = (
+        UniqueConstraint("family_id", "version", name="uq_family_parameter_schemas_family_version"),
+        # Цель составных FK `work_variants (schema_id, family_id)`.
+        UniqueConstraint("id", "family_id", name="uq_family_parameter_schemas_id_family"),
+        CheckConstraint(f"status IN ({SCHEMA_STATUSES})", name="ck_family_parameter_schemas_status"),
+        CheckConstraint(f"origin IN ({SCHEMA_ORIGINS})", name="ck_family_parameter_schemas_origin"),
+        CheckConstraint(CK_SCHEMA_CANCELLED_PAIR, name="ck_family_parameter_schemas_cancelled_pair"),
+        CheckConstraint(CK_SCHEMA_FROZEN_AT_PAIR, name="ck_family_parameter_schemas_frozen_at_pair"),
+        CheckConstraint(
+            CK_SCHEMA_SUPERSEDED_AT_PAIR, name="ck_family_parameter_schemas_superseded_at_pair"
+        ),
+        CheckConstraint(
+            CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR, name="ck_family_parameter_schemas_origin_frozen_by_pair"
+        ),
+        # UNIQUE (family_id) WHERE status = 'frozen' и UNIQUE (family_id) WHERE
+        # status = 'building' — частичные, raw SQL в миграции 0019.
+    )
+
+
+class FamilyParameter(Base):
+    """Параметр версии схемы: порядковый номер 1..3 и имя."""
+    __tablename__ = "family_parameters"
+
+    id = Column(BigInteger, primary_key=True)
+    schema_id = Column(
+        BigInteger, ForeignKey("family_parameter_schemas.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal = Column(SmallInteger, nullable=False)
+    name = Column(Text, nullable=False)
+    name_norm = Column(Text, nullable=False)
+
+    schema = relationship("FamilyParameterSchema")
+
+    __table_args__ = (
+        UniqueConstraint("schema_id", "ordinal", name="uq_family_parameters_schema_ordinal"),
+        # Цель составных FK значений варианта и значений контекста.
+        UniqueConstraint("id", "schema_id", name="uq_family_parameters_id_schema"),
+        CheckConstraint(CK_PARAMETER_ORDINAL_RANGE, name="ck_family_parameters_ordinal_range"),
+        CheckConstraint(CK_PARAMETER_NAME_NOT_BLANK, name="ck_family_parameters_name_not_blank"),
+    )
+
+
+class FamilyParameterValue(Base):
+    """Значение закрытого списка параметра. «Не уточнено» — отсутствие строки,
+    а не пустая строка (`CK_PARAMETER_VALUE_NOT_BLANK`)."""
+    __tablename__ = "family_parameter_values"
+
+    id = Column(BigInteger, primary_key=True)
+    parameter_id = Column(
+        BigInteger, ForeignKey("family_parameters.id", ondelete="CASCADE"), nullable=False
+    )
+    value = Column(Text, nullable=False)
+    value_norm = Column(Text, nullable=False)
+    origin = Column(Text, nullable=False)
+    # Слияние только внутри параметра — составной FK ниже.
+    merged_into_id = Column(BigInteger, nullable=True)
+    created_at = _created_at()
+
+    parameter = relationship("FamilyParameter")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "parameter_id", "value_norm", name="uq_family_parameter_values_parameter_value_norm"
+        ),
+        # Цель составных FK значений варианта, значений контекста и слияния.
+        UniqueConstraint("id", "parameter_id", name="uq_family_parameter_values_id_parameter"),
+        ForeignKeyConstraint(
+            ["merged_into_id", "parameter_id"],
+            ["family_parameter_values.id", "family_parameter_values.parameter_id"],
+            ondelete="RESTRICT", name="fk_family_parameter_values_merged_into",
+        ),
+        CheckConstraint(f"origin IN ({VALUE_ORIGINS})", name="ck_family_parameter_values_origin"),
+        CheckConstraint(
+            CK_PARAMETER_VALUE_NOT_BLANK, name="ck_family_parameter_values_value_not_blank"
+        ),
+        CheckConstraint(
+            CK_PARAMETER_VALUE_NOT_SELF_MERGED, name="ck_family_parameter_values_not_self_merged"
+        ),
+    )
+
+
+class WorkVariant(Base):
+    """Вариант: семья, версия схемы и упорядоченный набор значений. Одинаковый
+    набор — один вариант (`UNIQUE (schema_id, values_key)`, и архивный тоже)."""
+    __tablename__ = "work_variants"
+
+    id = Column(BigInteger, primary_key=True)
+    family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=False
+    )
+    # Ссылка на версию схемы — составной отложенный FK в `__table_args__`.
+    schema_id = Column(BigInteger, nullable=False)
+    values_key = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    merged_into_id = Column(
+        BigInteger, ForeignKey("work_variants.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at = _created_at()
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+
+    family = relationship("WorkFamily")
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["schema_id", "family_id"],
+            ["family_parameter_schemas.id", "family_parameter_schemas.family_id"],
+            ondelete="RESTRICT", deferrable=True, initially="DEFERRED",
+            name="fk_work_variants_schema_family",
+        ),
+        UniqueConstraint("schema_id", "values_key", name="uq_work_variants_schema_values_key"),
+        # Цели составных FK контекста и значений варианта.
+        UniqueConstraint("id", "family_id", name="uq_work_variants_id_family"),
+        UniqueConstraint("id", "schema_id", name="uq_work_variants_id_schema"),
+        CheckConstraint(f"status IN ({VARIANT_STATUSES})", name="ck_work_variants_status"),
+        CheckConstraint(CK_VARIANT_ARCHIVED_PAIR, name="ck_work_variants_archived_pair"),
+        CheckConstraint(
+            CK_VARIANT_MERGED_NEEDS_ARCHIVED, name="ck_work_variants_merged_needs_archived"
+        ),
+    )
+
+
+class WorkVariantValue(Base):
+    """Набор значений варианта построчно (для запросов поверхностей).
+    `value_id IS NULL` — «не уточнено»; расхождение с `work_variants.values_key`
+    — дефект сервиса."""
+    __tablename__ = "work_variant_values"
+
+    variant_id = Column(BigInteger, primary_key=True)
+    schema_id = Column(BigInteger, nullable=False)
+    parameter_id = Column(BigInteger, primary_key=True)
+    value_id = Column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        # Параметр — из схемы варианта; значение — этого параметра. При
+        # `value_id IS NULL` FK значения не проверяется (`MATCH SIMPLE`).
+        ForeignKeyConstraint(
+            ["variant_id", "schema_id"], ["work_variants.id", "work_variants.schema_id"],
+            ondelete="CASCADE", name="fk_work_variant_values_variant_schema",
+        ),
+        ForeignKeyConstraint(
+            ["parameter_id", "schema_id"],
+            ["family_parameters.id", "family_parameters.schema_id"],
+            ondelete="RESTRICT", name="fk_work_variant_values_parameter_schema",
+        ),
+        ForeignKeyConstraint(
+            ["value_id", "parameter_id"],
+            ["family_parameter_values.id", "family_parameter_values.parameter_id"],
+            ondelete="RESTRICT", name="fk_work_variant_values_value_parameter",
+        ),
+    )
+
+
+class ContextParameterValue(Base):
+    """Значения контекста по текущей версии схемы его семьи — текущее состояние,
+    а не история (история — в событии `context_variant_assigned`)."""
+    __tablename__ = "context_parameter_values"
+
+    context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), primary_key=True
+    )
+    schema_id = Column(BigInteger, nullable=False)
+    parameter_id = Column(BigInteger, primary_key=True)
+    value_id = Column(BigInteger, nullable=True)
+    source = Column(Text, nullable=False)
+    job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="SET NULL"), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["parameter_id", "schema_id"],
+            ["family_parameters.id", "family_parameters.schema_id"],
+            ondelete="RESTRICT", name="fk_context_parameter_values_parameter_schema",
+        ),
+        ForeignKeyConstraint(
+            ["value_id", "parameter_id"],
+            ["family_parameter_values.id", "family_parameter_values.parameter_id"],
+            ondelete="RESTRICT", name="fk_context_parameter_values_value_parameter",
+        ),
+        CheckConstraint(f"source IN ({VALUE_SOURCES})", name="ck_context_parameter_values_source"),
+        CheckConstraint(
+            CK_CONTEXT_VALUE_SOURCE_PAIR, name="ck_context_parameter_values_source_value_pair"
+        ),
     )
 
 

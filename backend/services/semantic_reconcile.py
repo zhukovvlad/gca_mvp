@@ -42,6 +42,7 @@ from models import (
     ReconcileBatchStatus,
     SemanticCancelReason,
     SemanticJob,
+    SemanticJobKind,
     SemanticJobStatus,
     SemanticReconcileBatch,
     SuggestionUnpublishedReason,
@@ -483,13 +484,30 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
     return result.rowcount
 
 
+def _job_conflict_arbiter() -> list:
+    """Арбитр `ON CONFLICT` — ТЕ ЖЕ выражения, что уникальный индекс миграции
+    0019 (`uq_semantic_jobs_subject_request_hash`): `literal_column`, а не
+    обычный Python-литерал, иначе psycopg3 после `prepare_threshold=5`
+    перестанет находить индекс у подготовленного плана
+    (`docs/insights/batch-larger-than-five.md`). Вставка здесь — только
+    `family_suggestion`: у него предмет — контекст, семья и версия схемы пусты."""
+    no_subject = sa.literal_column("-1")
+    return [
+        SemanticJob.kind,
+        sa.func.coalesce(SemanticJob.context_id, no_subject),
+        sa.func.coalesce(SemanticJob.family_id, no_subject),
+        sa.func.coalesce(SemanticJob.schema_id, no_subject),
+        SemanticJob.request_hash,
+    ]
+
+
 def _insert_new_jobs(
     db: Session,
     create_context_ids: list[int],
     applicable_render: dict[int, RenderedRequest],
     material_by_context: dict[int, ContextRequestMaterial],
 ) -> int:
-    """Один `INSERT ... ON CONFLICT (context_id, request_hash) DO NOTHING`
+    """Один `INSERT ... ON CONFLICT (kind, COALESCE(context_id, -1), ...) DO NOTHING`
     на весь набор (спека §2.7) — все аудиторские
     колонки из `RenderedRequest` и модулей запроса/ответа; колонки, текстовые
     в схеме, но целочисленные по своей природе (`prompt_version`,
@@ -499,6 +517,7 @@ def _insert_new_jobs(
         return 0
     rows = [
         {
+            "kind": SemanticJobKind.family_suggestion.value,
             "context_id": context_id,
             "request_hash": applicable_render[context_id].request_hash,
             "status": SemanticJobStatus.pending.value,
@@ -516,7 +535,7 @@ def _insert_new_jobs(
     ]
     stmt = (
         pg_insert(SemanticJob)
-        .on_conflict_do_nothing(index_elements=[SemanticJob.context_id, SemanticJob.request_hash])
+        .on_conflict_do_nothing(index_elements=_job_conflict_arbiter())
         .returning(SemanticJob.id)
     )
     result = db.execute(stmt, rows)

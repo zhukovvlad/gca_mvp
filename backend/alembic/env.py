@@ -55,7 +55,8 @@ target_metadata = Base.metadata
 # тестами: индексы 0002/0003/0015 —
 # tests/integration/test_schema_constraints.py, 0017 —
 # tests/integration/test_semantic_schema.py, 0018 —
-# tests/integration/test_semantic_queue_schema.py.
+# tests/integration/test_semantic_queue_schema.py, 0019 —
+# tests/integration/test_work_variants_schema.py.
 RAW_SQL_INDEXES = {
     # UNIQUE (sha256(replace(normalized_job_title,'\','\\')::bytea), COALESCE(unit_id,-1)),
     # миграция 0003: btree не индексирует названия длиннее 2704 байт.
@@ -72,6 +73,12 @@ RAW_SQL_INDEXES = {
     "uq_family_suggestions_context_id_published",  # UNIQUE (context_id) WHERE is_published — 0018
     # UNIQUE (fingerprints_hash) WHERE status='held' — 0018; арбитр ON CONFLICT задачи 6.
     "uq_semantic_reconcile_batches_fingerprints_held",
+    # UNIQUE (family_id) WHERE status = 'frozen' / WHERE status = 'building' — 0019.
+    "uq_family_parameter_schemas_frozen",
+    "uq_family_parameter_schemas_building",
+    # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1), COALESCE(schema_id,-1),
+    # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018).
+    "uq_semantic_jobs_subject_request_hash",
 }
 
 

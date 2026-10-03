@@ -1156,9 +1156,10 @@ class TestConditionalTransitions:
         # Другая сверка уже вставила задание контекста `a` и закоммитила.
         shifted = _after_jobs_read(
             monkeypatch, db_session,
-            "INSERT INTO semantic_jobs (context_id, request_hash, status, prompt_version, model_requested, "
-            "place_dictionary_version, candidates_hash, prefix_hash, input_hash, response_schema_version, "
-            "serialization_version) VALUES (:cid, :h, 'pending', '1', 'm', 1, 'c', 'p', 'i', '1', '1')",
+            "INSERT INTO semantic_jobs (kind, context_id, request_hash, status, prompt_version, "
+            "model_requested, place_dictionary_version, candidates_hash, prefix_hash, input_hash, "
+            "response_schema_version, serialization_version) "
+            "VALUES ('family_suggestion', :cid, :h, 'pending', '1', 'm', 1, 'c', 'p', 'i', '1', '1')",
             {"cid": a, "h": rendered_a.request_hash},
         )
 
