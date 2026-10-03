@@ -10,6 +10,15 @@
 > `semantic_worker.py:82`). Числа проверок — накопительные нижние границы, как в
 > плане фичи 2: точное ПОСЛЕ неизвестно до написания тестов.
 >
+> **Круг 2 гейта 3 (03.10)**: 4 замечания, все подтверждены (по коду:
+> `_assign_decided` зовёт `assign_family` напрямую, `semantic_decisions.py:183`;
+> сверка берёт задания под доменными блокировками, `semantic_reconcile.py:431`, а
+> `record_result` — задание первым, `semantic_worker.py:314`). Вердикт новых
+> видов вынесен под доменные блокировки внутрь `apply_values`/`freeze_schema`;
+> автопринятие — отдельной транзакцией после записи предложения (решение
+> плана 7); подтверждения человека идут через `request_family_change`; значения
+> контекста заменяются удалением; событий шесть.
+>
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`) и ревью задачи
 > (`docs/process/implementation.md`) до следующей. Адреса `§N` без уточнения —
@@ -38,8 +47,16 @@
 - Промоушен односторонний: ни одна операция не пишет `kind='TO_REVIEW'` строке,
   бывшей `POSITION` (§2.10); `matching_cache` фича не пишет, кроме ручной записи
   глобальной пометки, как в `set_kind` (§2.11).
-- Ни одна строка `work_variants`, `family_parameter_*`, `context_parameter_values`
-  не удаляется — только архивируется (§2.4), кроме каскада в тестах.
+- Ни одна строка `work_variants`, `family_parameter_*` не удаляется — только
+  архивируется (§2.4), кроме каскада в тестах. **`context_parameter_values` —
+  исключение**: это текущее состояние контекста, а не история; набор
+  заменяется целиком (удалить все строки контекста → вставить полный ответ,
+  §2.6 шаг 3) и удаляется при снятии семьи, «не работа» и глобальной пометке.
+  История значений — в событии `context_variant_assigned`.
+- **Задание очереди блокируется после доменных строк**: строка каталога → семья
+  → версия схемы → вариант → контекст → задание. Так уже ходит сверка
+  (`_lock_jobs` под доменными блокировками, `semantic_reconcile.py:431`); обратный
+  порядок «задание → домен» с ней замыкается в цикл.
 - В тестах `RUN_SEMANTIC_WORKER = false`, клиент модели внедряется (`ModelClient`),
   сеть не открывается.
 - Фронтенд — только shadcn/ui, недостающее — `npx shadcn add`.
@@ -82,10 +99,10 @@ backend/
   services/semantic_request.py      правка: is_applicable без work_family_id IS NULL
   services/semantic_reconcile.py    правка: три вида, paths_hash, готовность схемы, пачки нового формата, allowlist
   services/semantic_worker.py       правка: захват по виду, нулевая схема, запись по виду, done до шага 8
-  services/semantic_decisions.py    правка: пачки по видам, отбрасывание отменяет building, задержанные/повтор по предмету
+  services/semantic_decisions.py    правка: пачки по видам, отбрасывание отменяет building, задержанные/повтор по предмету, решения через request_family_change
   services/work_families.py         правка: assign_family(auto_suggestion, снятие варианта), archive_family/set_unit по ожиданиям, merge_families с вариантами
   services/review.py                правка: предупреждение о вариантах при слиянии, _mark_contexts_not_applicable, set_position_kind_global
-  services/semantic_events.py       правка: пять новых типов, payload context_family_assigned
+  services/semantic_events.py       правка: шесть новых типов, payload context_family_assigned
   crud/rate_standards.py            правка: _require_refs FOR SHARE
   crud/semantic_queue.py            правка: list_jobs по виду, queue=change, счётчики статуса
   crud/work_variants.py             создаётся: чтение схемы, вариантов, варианта контекста
@@ -137,6 +154,21 @@ docs/devlog/2026-10-03-catalog-variants.md   создаётся
    `variant_request.py`; текст — из пилота (`tasks/catalog-variants-work/pilot/run_pilot.py`
    и `paths_pilot.py`) с двумя правками: теги ответа вместо строковых маркеров
    (§2.6) и запрет пустых значений.
+7. **Автопринятие — отдельной транзакцией после записи предложения**, а не «в
+   той же транзакции», как сказала спека §2.5. `record_result` фичи 2 держит
+   задание `FOR UPDATE` с начала; `assign_family` внутри неё взял бы семью и
+   контекст после задания — обратный порядок к сверке, которую зовут операции
+   под доменными блокировками (`semantic_reconcile.py:431`), и возможен
+   deadlock. Поэтому `record_result` публикует предложение и коммитит, затем
+   `apply_publication_rules` новой транзакцией: доменные блокировки → перепроверка
+   (опубликовано, решения нет, отпечаток текущий) → решение. Если между ними
+   что-то изменилось или процесс упал — предложение остаётся опубликованным и
+   видно человеку, а массовое автопринятие (Task 9) подберёт его. Спека
+   поправляется той же веткой (Task 18).
+8. **Вердикт новых видов — внутри `apply_values` и `freeze_schema`, под
+   доменными блокировками**, а не в `record_result` до них: иначе между
+   проверкой и записью другая транзакция могла бы сменить ожидание или схему, и
+   устаревший ответ применился бы (§2.6: блокировки (0) → вердикт (1) → запись).
 
 ## Задачи
 
@@ -172,6 +204,9 @@ class ContextParameterValue(Base): ...   # "context_parameter_values"
 # SemanticJob: kind, family_id, schema_id, paths_hash; context_id nullable
 CK_CONTEXT_PENDING: str
 CK_CONTEXT_VARIANT_NEEDS_FAMILY: str
+# SEMANTIC_EVENT_TYPES += context_variant_assigned, context_family_pending, context_not_work,
+#                         family_schema_frozen, family_schema_value_added, family_variants_merged
+# CK_EVENT_SUBJECT_BY_TYPE: три family_* — предмет семья, три context_* — предмет контекст
 ```
 
 **Утверждения**
@@ -203,6 +238,8 @@ CK_CONTEXT_VARIANT_NEEDS_FAMILY: str
   и пачке предложений — пары и прежний хэш;
 - паритет литералов `IN (...)` и CHECK-выражений миграции с `models.py` для всех
   новых и расширенных перечислений — против независимого литерала в тесте;
+  перечень событий — все шесть типов §2.13, и событие каждого типа с чужим
+  предметом отвергается `CK_EVENT_SUBJECT_BY_TYPE` (по входу на тип);
 - шесть таблиц в `_DOMAIN_TABLES`; блок «§7. Варианты и схемы семей» в
   `docs/reference/schema.md` в форме §6; `just check-agents-index` — 18 из 18.
 
@@ -397,23 +434,43 @@ def get_or_create_value(db: Session, *, parameter_id: int, text: str, origin: Va
 def get_or_create_variant(db: Session, *, family_id: int, schema_id: int,
                           value_ids_by_ordinal: Mapping[int, int | None]) -> tuple[WorkVariant, bool]
 def archive_variant_if_empty(db: Session, variant_id: int) -> bool
-def freeze_schema(db: Session, *, schema_id: int, answer: SchemaAnswer, job_id: int | None) -> FamilyParameterSchema
+@dataclass(frozen=True)
+class JobGuard:
+    job_id: int; claim_token: UUID; expected_request_hash: str
+
+UnappliedReason = Literal["lost_claim", "stale_fingerprint", "not_applicable"]
+
+def freeze_schema(db: Session, *, schema_id: int, answer: SchemaAnswer,
+                  guard: JobGuard | None, settings: Settings) -> FreezeOutcome
 def apply_values(db: Session, *, context_id: int, schema_id: int, answer: ValuesAnswer,
-                 paths_hash: str, job_id: int | None) -> ApplyValuesOutcome
-# ПОСТ-ВЕРДИКТНЫЙ доменный обработчик: зовётся только после того, как вердикт
-# публикации (§2.6 шаг 1 — lost_claim, stale_fingerprint) вынесен в record_result (Task 7);
-# сам вердикта не выносит и токена захвата не знает.
+                 paths_hash: str, guard: JobGuard | None, settings: Settings) -> ApplyValuesOutcome
+# Вердикт ВНУТРИ, под доменными блокировками: шаг (0) — строка → семья(и) → версия →
+# прежний вариант → контекст, затем задание FOR UPDATE (порядок сверки); шаг (1) —
+# захват ещё наш (claim_token, status='running'), предмет применим, отпечаток, пересчитанный
+# render_request_for под этими блокировками, равен expected_request_hash. guard=None —
+# только для вызовов без задания (ручная правка схемы, тестовые фикстуры).
+
+@dataclass(frozen=True)
+class FreezeOutcome:
+    applied: bool; unapplied_reason: UnappliedReason | None; schema_id: int
 
 @dataclass(frozen=True)
 class ApplyValuesOutcome:
-    variant_id: int; previous_variant_id: int | None; promoted: bool
+    applied: bool; unapplied_reason: UnappliedReason | None
+    variant_id: int | None; previous_variant_id: int | None; promoted: bool
     family_switched: bool; values_added: tuple[int, ...]; previous_archived: bool
 ```
 
 **Утверждения**
-- `apply_values` держит шаги §2.6 (0) и (2)–(8) в указанном порядке
-  блокировок, каждый — отдельным входом; шаги (1) и (1а) — вне него: вердикт —
-  Task 7, полнота `ordinal` — Task 4;
+- `apply_values` держит шаги §2.6 (0)–(8) в указанном порядке, каждый —
+  отдельным входом; полнота `ordinal` (1а) — в разборе, Task 4;
+- **вердикт под блокировками** (решение плана 8): `lost_claim`,
+  `stale_fingerprint`, `not_applicable` — по входу на исход и на функцию
+  (`apply_values`, `freeze_schema`); при каждом ничего не записано, задание
+  закрыто с исходом; **вход гонки**: между захватом и записью другая транзакция
+  меняет ожидание контекста (или замораживает новую версию схемы) — результат
+  не применён (тест проверен переносом проверки отпечатка до шага 0: становится
+  красным);
 - `source` ответа (`name`/`path`) записан в `context_parameter_values` для
   `value` и `new`, `none` и `path_conflict` — для пустых (по входу на каждый);
 - `new` при параллельных обработчиках одной семьи с одним значением — ровно одна
@@ -436,16 +493,20 @@ class ApplyValuesOutcome:
   одним контекстом (обе проверены снятием `FOR UPDATE` варианта);
 - `freeze_schema`: версия `building` → `frozen` с `frozen_at`, прежняя текущая →
   `superseded` с сохранённым `frozen_at`; параметры и значения с
-  `origin='schema'`; повторная заморозка той же версии отвергается;
-- пять новых типов событий пишутся с `payload` §2.12 и проходят проверку
-  предмета (`CK_EVENT_SUBJECT_BY_TYPE`).
+  `origin='schema'`; повторная заморозка той же версии — исход `not_applicable`;
+- проверка `payload` в `semantic_events.py` — для всех шести новых типов §2.13
+  (по входу на тип: полный `payload` принят, без обязательного ключа —
+  отвергнут); эта задача пишет `context_variant_assigned`,
+  `family_schema_frozen`, `family_schema_value_added`; остальные три пишут их
+  владельцы — Task 8 (`context_family_pending`), Task 10 (`context_not_work`),
+  Task 11 (`family_variants_merged`).
 
 **Имена**
 - Заводятся: всё перечисленное.
-- Существуют: `record_event`, `_lock_families`, `_lock_contexts`.
+- Существуют: `record_event`, `_lock_families`, `_lock_contexts`, `render_request_for` (Task 3).
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 68, ПОСЛЕ ≥ 110.
+- `just test-int-local-k work_variants` — ДО ≥ 68, ПОСЛЕ ≥ 116.
 - `just test-int-local-k work_families` — ДО 135, ПОСЛЕ ≥ 135.
 
 ### Task 6: сверка — три вида, пути, готовность схемы, пачки нового формата
@@ -499,7 +560,7 @@ def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int, e
 - Существуют: `RECONCILE_ALLOWLIST` (`:101`), `ReconcileReport` (`:128`), `NO_CAP` (`:73`), `_estimate_totals` (`:396`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 110, ПОСЛЕ ≥ 135.
+- `just test-int-local-k work_variants` — ДО ≥ 116, ПОСЛЕ ≥ 141.
 - `just test-int-local-k semantic_queue_reconcile` — ДО 65, ПОСЛЕ ≥ 65.
 
 ### Task 7: исполнитель — захват и запись по виду, нулевая схема, задержанные
@@ -535,14 +596,14 @@ def complete_without_model(db: Session, claim: Claim, *, now: datetime) -> None 
 - `context_values` нулевой схемы завершается без вызова модели, без попытки и
   резерва, полным протоколом `apply_values`;
 - задание переходит в `done` до шага (8) `apply_values`;
-- **вердикт публикации для новых видов** (§2.6 шаг 1) — в `record_result` до
-  вызова `freeze_schema`/`apply_values`: ответ при потерянном захвате —
-  `lost_claim`, при устаревшем отпечатке или неприменимом предмете —
-  `stale_fingerprint`, ничего не записано (по входу на исход и вид);
-- `record_result` разводит виды: `family_schema` → `freeze_schema`,
-  `context_values` → `apply_values`; ответ на устаревший отпечаток не
-  применяется и ничего не вытесняет; дубль результата после `lost_claim` не
-  создаёт второй версии;
+- для новых видов `record_result` **не берёт задание первым** и вердикта сам не
+  выносит: строит `JobGuard` из захвата и передаёт его в `freeze_schema` /
+  `apply_values` (Task 5), которые блокируют задание после доменных строк;
+  исход `applied=False` записывает попытку с исходом `lost_claim` или закрывает
+  задание как устаревшее — по входу на каждую причину и вид; дубль результата
+  после `lost_claim` не создаёт второй версии;
+- путь `family_suggestion` в `record_result` не меняется (снимок порядка
+  блокировок и записи — тесты фичи 2 зелёные без правок);
 - `family_schema` в `error` и `privacy_hold` показывается в `list_jobs` строкой
   по семье; «Отправить», «Не отправлять», «Повторить» работают по предмету — по
   входу на статус; «Не отправлять» и «Отбросить» пачки отменяют версию
@@ -557,18 +618,18 @@ def complete_without_model(db: Session, claim: Claim, *, now: datetime) -> None 
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 135, ПОСЛЕ ≥ 160.
+- `just test-int-local-k work_variants` — ДО ≥ 141, ПОСЛЕ ≥ 166.
 - `just test-int-local-k "semantic_queue_worker or semantic_queue_decisions"` — ДО 182, ПОСЛЕ ≥ 182.
 
 ### Task 8: автопринятие, предикат, ожидающее назначение
 
 **Files**
 - Create: `backend/services/family_change.py`
-- Edit: `backend/services/semantic_request.py`, `backend/services/semantic_worker.py`, `backend/services/work_families.py`, `backend/services/semantic_events.py`
-- Test: `backend/tests/integration/test_work_variants_family_change.py`
+- Edit: `backend/services/semantic_request.py`, `backend/services/semantic_worker.py`, `backend/services/work_families.py`, `backend/services/semantic_events.py`, `backend/services/semantic_decisions.py`
+- Test: `backend/tests/integration/test_work_variants_family_change.py`, `backend/tests/integration/test_work_variants_decisions.py`
 
 **Interfaces**
-- Потребляет: `assign_family` (`work_families.py:650`), `archive_family` (`:886`), `set_unit` (`:789`), `is_applicable` (`semantic_request.py:205`), `record_result`, Task 5–7.
+- Потребляет: `assign_family` (`work_families.py:650`), `archive_family` (`:886`), `set_unit` (`:789`), `is_applicable` (`semantic_request.py:205`), `record_result`, `_assign_decided` (`semantic_decisions.py:183`), `confirm_suggestions` (`:209`), `assign_other_family` (`:271`), `create_family_from_suggestion` (`:292`), Task 5–7.
 - Производит:
 
 ```python
@@ -583,7 +644,9 @@ def request_family_change(db: Session, *, context_id: int, family_id: int | None
                           source: FamilyChangeSource, suggestion_id: int | None = None,
                           threshold: Decimal | None = None) -> FamilyChangeOutcome
 def cancel_pending_family(db: Session, *, context_id: int, actor_id: int) -> None
-def apply_publication_rules(db: Session, suggestion: FamilySuggestion, *, threshold: Decimal | None) -> FamilyChangeOutcome | None
+def apply_publication_rules(db: Session, *, suggestion_id: int, threshold: Decimal | None) -> FamilyChangeOutcome | None
+# своя транзакция после commit record_result (решение плана 7): доменные блокировки →
+# предложение FOR UPDATE с перепроверкой (опубликовано, решения нет, отпечаток текущий) → таблица §2.5
 
 # services/work_families.py — изменённый контракт:
 def assign_family(db: Session, *, context_id: int, family_id: int | None, actor_id: int | None,
@@ -600,6 +663,21 @@ def assign_family(db: Session, *, context_id: int, family_id: int | None, actor_
   же семья» при автоожидании (снято, `auto_superseded`) и при ручном (не тронуто);
   граница порога — «ровно на пороге» принято, «на единицу ниже» нет; при пустом
   пороге — ни одной автопривязки;
+- автопринятие идёт отдельной транзакцией после записи предложения: предложение,
+  ставшее устаревшим или решённым человеком между ними, правило не трогает (вход);
+  `record_result` к доменным строкам не прикасается — порядок «задание → домен»
+  не возникает (тест: параллельные операция над контекстом и запись ответа по
+  нему завершаются без deadlock);
+- **решения человека идут через `request_family_change`**: `_assign_decided`
+  больше не зовёт `assign_family` напрямую. Через существующие маршруты
+  `/suggestions/confirm`, `/suggestions/{id}/other-family`,
+  `/suggestions/{id}/create-family` контекст **с вариантом** получает ожидание, а
+  не смену семьи: подтверждение — `decision=accepted_pending`, «Другая семья» —
+  `other_family` с ожиданием `pending_family_source=manual`, «Завести семью» —
+  `family_created` с ожиданием на новую семью; контекст **без варианта** —
+  назначение сразу и прежние решения (`accepted`, `other_family`,
+  `family_created`); по входу на маршрут и на наличие варианта; составной FK не
+  нарушается ни в одном;
 - `assign_family(source=auto_suggestion)` — `family_by = NULL`, событие с
   `threshold` и `confidence`; их отсутствие при `auto_suggestion` и присутствие при
   прочих источниках отвергается;
@@ -616,11 +694,12 @@ def assign_family(db: Session, *, context_id: int, family_id: int | None, actor_
   блокировки второй семьи).
 
 **Имена**
-- Заводятся: всё перечисленное, модуль `services/family_change.py`; контракт `assign_family` расширен (`actor_id: int | None`, `threshold`, `confidence`).
+- Заводятся: всё перечисленное, модуль `services/family_change.py`; контракт `assign_family` расширен (`actor_id: int | None`, `threshold`, `confidence`); `_assign_decided` переведён на `request_family_change`.
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 160, ПОСЛЕ ≥ 190.
+- `just test-int-local-k work_variants` — ДО ≥ 166, ПОСЛЕ ≥ 206.
+- `just test-int-local-k semantic_queue_decisions` — тесты подтверждения фичи 2 на контекстах без варианта зелёные без правок.
 - `just test-int-local-k "work_families or semantic_queue_assign"` — ДО 160, ПОСЛЕ ≥ 160.
 
 ### Task 9: массовое автопринятие — preview, apply, CLI
@@ -650,6 +729,8 @@ def apply_auto_accept(db: Session, *, preview_hash: str, actor_id: int) -> Mappi
 - apply берёт семьи `FOR SHARE` по `id`, затем контексты `FOR UPDATE` по `id`;
   при работающем обработчике значений той же семьи — без deadlock;
 - без порога preview отказывает понятной ошибкой;
+- apply подбирает и предложения, опубликованные, но не автопринятые из-за сбоя
+  между записью и отдельной транзакцией автопринятия (решение плана 7; вход);
 - `semantic-schemas-backfill` ставит `family_schema` всем активным семьям без
   текущей версии пачкой `mass`, сверх потолка — удержанной.
 
@@ -658,7 +739,7 @@ def apply_auto_accept(db: Session, *, preview_hash: str, actor_id: int) -> Mappi
 - Существуют: `semantic_enqueue_all` (`cli.py:118`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 190, ПОСЛЕ ≥ 200.
+- `just test-int-local-k work_variants` — ДО ≥ 206, ПОСЛЕ ≥ 216.
 
 ### Task 10: снятие и смена семьи, «не работа», слияние в Review
 
@@ -692,7 +773,7 @@ def clear_variant(db: Session, *, context_id: int, reason: str) -> int | None   
 - Существуют: перечисленные в `Потребляет`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 200, ПОСЛЕ ≥ 212.
+- `just test-int-local-k work_variants` — ДО ≥ 216, ПОСЛЕ ≥ 228.
 - `just test-int-local-k review` — ДО 161, ПОСЛЕ ≥ 161.
 
 ### Task 11: жизнь схемы — пересборка, отмена, правка, слияние синонимов
@@ -738,7 +819,7 @@ def merge_parameter_values(db: Session, *, parameter_id: int, source_value_id: i
 - Заводятся: всё перечисленное.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 212, ПОСЛЕ ≥ 232.
+- `just test-int-local-k work_variants` — ДО ≥ 228, ПОСЛЕ ≥ 248.
 
 ### Task 12: слияние семей с вариантами
 
@@ -774,7 +855,7 @@ REFUSE_MERGE_SCHEMA_BUILDING: Final = "merge_schema_building"
 - Существуют: `merge_families`, `WorkFamilyError` (`:102`).
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 232, ПОСЛЕ ≥ 245.
+- `just test-int-local-k work_variants` — ДО ≥ 248, ПОСЛЕ ≥ 261.
 - `just test-int-local-k work_families` — ДО 135, ПОСЛЕ ≥ 135.
 
 ### Task 13: глобальная пометка строки и нормативы
@@ -807,7 +888,7 @@ def set_position_kind_global(db: Session, *, position_id: int, kind: str, actor_
 - Заводятся: `set_position_kind_global`.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 245, ПОСЛЕ ≥ 255.
+- `just test-int-local-k work_variants` — ДО ≥ 261, ПОСЛЕ ≥ 271.
 - `just test-int-local-k rate_standards` — ДО 33, ПОСЛЕ ≥ 33; `just test-int-local-k test_matching` — ДО 44, ПОСЛЕ ≥ 44.
 
 ### Task 14: точки инварианта — матрица, архитектурный и структурный тесты
@@ -837,7 +918,7 @@ def set_position_kind_global(db: Session, *, position_id: int, kind: str, actor_
 **Проверка**
 - `just test-int-local-k semantic_queue_hooks` — ДО 74, ПОСЛЕ ≥ 87 (по классу на каждую из 12 новых точек и вход путей).
 - `just test-unit-k semantic_queue_architecture` — ДО 54, ПОСЛЕ ≥ 58.
-- `just test-int-local-k work_variants` — ДО ≥ 255, ПОСЛЕ ≥ 268 (файл матрицы попадает и в эту выборку).
+- `just test-int-local-k work_variants` — ДО ≥ 271, ПОСЛЕ ≥ 284 (файл матрицы попадает и в эту выборку).
 
 ### Task 15: API и чтение для экрана
 
@@ -894,7 +975,7 @@ split_hint: bool | None
 - Заводятся: модуль `crud/work_variants.py`, типы выше.
 
 **Проверка**
-- `just test-int-local-k work_variants` — ДО ≥ 268, ПОСЛЕ ≥ 298.
+- `just test-int-local-k work_variants` — ДО ≥ 284, ПОСЛЕ ≥ 314.
 - `just test-int-local-k semantic_queue_api` — ДО 197, ПОСЛЕ ≥ 197.
 
 ### Task 16: фронтенд — схема и варианты семьи
@@ -958,7 +1039,10 @@ split_hint: bool | None
 - `screens.md` `## 9.` — три абзаца, якорь не тронут;
 - дорожная карта — А1 сдвинут, «3а сделана, 3б следующая»; вопрос о смысле
   `TO_REVIEW` снят;
-- спека: `request_family_change` назван в `services/family_change.py`.
+- спека: `request_family_change` назван в `services/family_change.py`;
+  §2.5 «ещё один шаг в той же транзакции» заменён отдельной транзакцией
+  автопринятия (решение плана 7); §2.6 — вердикт новых видов внутри
+  обработчика под блокировками (решение плана 8).
 
 **Проверка**
 - `just check-agents-index` — 18 из 18.
