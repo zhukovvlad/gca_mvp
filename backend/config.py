@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,6 +82,36 @@ class Settings(BaseSettings):
     SEMANTIC_DAILY_BUDGET_USD: Decimal = Field(Decimal("30"), ge=0)
     SEMANTIC_EVENT_MAX_CONTEXTS: int = Field(3000, ge=0)
     SEMANTIC_EVENT_MAX_RESERVE_USD: Decimal = Field(Decimal("15"), ge=0)
+
+    # Варианты работ (спека 2026-10-02-catalog-variants-design.md §2.3, §2.5):
+    # профиль модели и тарифы по виду задания. Предложения семей остаются на
+    # SEMANTIC_MODEL / SEMANTIC_MAX_TOKENS / SEMANTIC_PRICE_*. Рассуждение у
+    # моделей этих видов обязательно (выключить нельзя), поэтому задаётся
+    # уровень, а не флаг.
+    SEMANTIC_SCHEMA_MODEL: str = "anthropic/claude-sonnet-5.5"
+    SEMANTIC_VALUES_MODEL: str = "anthropic/claude-sonnet-5.5"
+    SEMANTIC_VARIANTS_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
+    SEMANTIC_SCHEMA_MAX_TOKENS: int = Field(20000, ge=1)
+    SEMANTIC_VALUES_MAX_TOKENS: int = Field(600, ge=1)
+    SEMANTIC_SCHEMA_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)
+    SEMANTIC_SCHEMA_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)
+    SEMANTIC_SCHEMA_PRICE_CACHE_READ_PER_M: Decimal = Field(Decimal("0.2"), ge=0)
+    SEMANTIC_SCHEMA_PRICE_OUTPUT_PER_M: Decimal = Field(Decimal("10"), ge=0)
+    SEMANTIC_VALUES_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)
+    SEMANTIC_VALUES_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)
+    SEMANTIC_VALUES_PRICE_CACHE_READ_PER_M: Decimal = Field(Decimal("0.2"), ge=0)
+    SEMANTIC_VALUES_PRICE_OUTPUT_PER_M: Decimal = Field(Decimal("10"), ge=0)
+    # Порог уверенности модели в предложении семьи (спека §2.5): при значении не
+    # ниже порога предложенная семья принимается автоматически; None - автопринятия нет.
+    # Пустая строка в окружении (`SEMANTIC_AUTO_ACCEPT_THRESHOLD=`) - тоже None.
+    SEMANTIC_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
+
+    @field_validator("SEMANTIC_AUTO_ACCEPT_THRESHOLD", mode="before")
+    @classmethod
+    def _empty_threshold_is_none(cls, value):
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
 
 settings = Settings()

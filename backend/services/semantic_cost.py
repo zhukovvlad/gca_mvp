@@ -9,7 +9,9 @@
 потребители — сверка (reconcile), исполнитель захвата (worker) и preview
 экрана `admin`.
 
-Тарифы — доллары за миллион токенов (`Settings.SEMANTIC_PRICE_*`), `Decimal`,
+Тарифы — доллары за миллион токенов, свои у каждого вида задания
+(`family_suggestion` — `Settings.SEMANTIC_PRICE_*`, `family_schema` —
+`SEMANTIC_SCHEMA_PRICE_*`, `context_values` — `SEMANTIC_VALUES_PRICE_*`), `Decimal`,
 не константы кода: маршрутизация провайдера может сменить цену без правки
 кода (спека §2.11). Деление на миллион — без округления; округление только
 на показе (`AGENTS.md` §3 «деньги»).
@@ -24,7 +26,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from config import Settings
-from models import SemanticJobAttempt
+from models import SemanticJobAttempt, SemanticJobKind
 from services.semantic_request import RenderedRequest
 
 #: Версия формулы резерва (спека §2.11): растёт при смене самой формулы (не
@@ -56,14 +58,36 @@ class EventCap:
     max_reserve_usd: Decimal
 
 
-def tariffs_from(settings: Settings) -> Tariffs:
-    """Собирает четыре тарифа из настроек (`SEMANTIC_PRICE_*`)."""
-    return Tariffs(
-        input_per_m=settings.SEMANTIC_PRICE_INPUT_PER_M,
-        cache_write_per_m=settings.SEMANTIC_PRICE_CACHE_WRITE_PER_M,
-        cache_read_per_m=settings.SEMANTIC_PRICE_CACHE_READ_PER_M,
-        output_per_m=settings.SEMANTIC_PRICE_OUTPUT_PER_M,
-    )
+def tariffs_from(
+    settings: Settings,
+    kind: SemanticJobKind = SemanticJobKind.family_suggestion,
+) -> Tariffs:
+    """Собирает четыре тарифа вида задания из настроек: предложения семей —
+    `SEMANTIC_PRICE_*`, схема семьи — `SEMANTIC_SCHEMA_PRICE_*`, значения
+    контекстов — `SEMANTIC_VALUES_PRICE_*`. Неизвестный вид — `ValueError`:
+    молчаливый тариф предложений занизил бы или завысил бы резерв."""
+    if kind == SemanticJobKind.family_suggestion:
+        return Tariffs(
+            input_per_m=settings.SEMANTIC_PRICE_INPUT_PER_M,
+            cache_write_per_m=settings.SEMANTIC_PRICE_CACHE_WRITE_PER_M,
+            cache_read_per_m=settings.SEMANTIC_PRICE_CACHE_READ_PER_M,
+            output_per_m=settings.SEMANTIC_PRICE_OUTPUT_PER_M,
+        )
+    if kind == SemanticJobKind.family_schema:
+        return Tariffs(
+            input_per_m=settings.SEMANTIC_SCHEMA_PRICE_INPUT_PER_M,
+            cache_write_per_m=settings.SEMANTIC_SCHEMA_PRICE_CACHE_WRITE_PER_M,
+            cache_read_per_m=settings.SEMANTIC_SCHEMA_PRICE_CACHE_READ_PER_M,
+            output_per_m=settings.SEMANTIC_SCHEMA_PRICE_OUTPUT_PER_M,
+        )
+    if kind == SemanticJobKind.context_values:
+        return Tariffs(
+            input_per_m=settings.SEMANTIC_VALUES_PRICE_INPUT_PER_M,
+            cache_write_per_m=settings.SEMANTIC_VALUES_PRICE_CACHE_WRITE_PER_M,
+            cache_read_per_m=settings.SEMANTIC_VALUES_PRICE_CACHE_READ_PER_M,
+            output_per_m=settings.SEMANTIC_VALUES_PRICE_OUTPUT_PER_M,
+        )
+    raise ValueError(f"unknown semantic job kind: {kind!r}")
 
 
 def event_cap_from(settings: Settings) -> EventCap:
