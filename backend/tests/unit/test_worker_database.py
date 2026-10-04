@@ -6,11 +6,15 @@ Unit-слой — чистые функции из tests/conftest.py: `worker_da
 что и test_db_guard_wiring.py (`__wrapped__` + `pytest.raises`), вторая
 конвенция не заводится.
 
-Кластер не нужен: каждый wiring-тест обрывается до DROP SCHEMA и миграций —
-либо отказом барьера, либо шпионом на функции создания базы.
+Кластер не нужен: каждый wiring-тест обрывается до сброса базы и миграций —
+либо отказом барьера, либо шпионом на функции пересоздания базы, — либо
+подменяет engine и Alembic (выбор пути сброса: воркёр против master).
 
 План: docs/superpowers/plans/2026-08-11-pytest-parallel-workers.md, задача 1.
 """
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy.engine import make_url
 
@@ -172,7 +176,7 @@ def test_db_engine_skips_before_create_database_on_refusal(monkeypatch):
         conftest_module, "worker_database_url", lambda url, worker_id: bad_url
     )
     created: list[str] = []
-    monkeypatch.setattr(conftest_module, "_create_worker_database", created.append)
+    monkeypatch.setattr(conftest_module, "_recreate_worker_database", created.append)
 
     gen = conftest_module.db_engine.__wrapped__("gw0")
     with pytest.raises(pytest.skip.Exception):
@@ -190,7 +194,7 @@ def test_barrier_a_failure_precedes_create_database(monkeypatch):
     monkeypatch.setenv("TEST_DATABASE_URL", BASE_URL)
     monkeypatch.setenv("PGHOSTADDR", "10.1.2.3")
     created: list[str] = []
-    monkeypatch.setattr(conftest_module, "_create_worker_database", created.append)
+    monkeypatch.setattr(conftest_module, "_recreate_worker_database", created.append)
 
     gen = conftest_module.db_engine.__wrapped__("gw0")
     with pytest.raises(RuntimeError, match="TEST_DATABASE_URL"):
@@ -208,7 +212,7 @@ def test_mutation_guard_failure_precedes_create_database(monkeypatch):
     monkeypatch.setenv("TEST_DATABASE_URL", REMOTE_TEST_URL)
     monkeypatch.setenv("DATABASE_URL", PROD_URL)
     created: list[str] = []
-    monkeypatch.setattr(conftest_module, "_create_worker_database", created.append)
+    monkeypatch.setattr(conftest_module, "_recreate_worker_database", created.append)
 
     gen = conftest_module.db_engine.__wrapped__("gw0")
     with pytest.raises(RuntimeError, match="APP_ENV=dev"):
@@ -261,7 +265,7 @@ def test_data_flow_all_four_chain_points_see_derived_url(monkeypatch):
         create_calls.append(url)
         raise _StopBeforeSchema
 
-    monkeypatch.setattr(conftest_module, "_create_worker_database", _spy_create)
+    monkeypatch.setattr(conftest_module, "_recreate_worker_database", _spy_create)
 
     gen = conftest_module.db_engine.__wrapped__("gw0")
     with pytest.raises(_StopBeforeSchema):
@@ -282,3 +286,62 @@ def test_data_flow_all_four_chain_points_see_derived_url(monkeypatch):
         "барьер (a) резолвил исходный gca_test — защита проверила имя, "
         "по которому работа не идёт"
     )
+
+
+# ---------------------------------------------------------------------------
+#  Сброс базы: воркёр пересоздаёт базу, master сносит схему (TECH_DEBT, запись 1)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEngine:
+    """Engine-подмена: копит SQL из `begin()`, в кластер не ходит."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    @contextmanager
+    def begin(self):
+        yield SimpleNamespace(exec_driver_sql=self.statements.append)
+
+    def dispose(self):
+        pass
+
+
+def _run_db_engine_setup(monkeypatch, worker_id):
+    """Довести `db_engine` до yield с подменёнными engine, Alembic и guard'ом.
+
+    Возвращает (engine, вызовы пересоздания базы).
+    """
+    import alembic.command
+
+    monkeypatch.setenv("TEST_DATABASE_URL", BASE_URL)
+    monkeypatch.setenv("DATABASE_URL", PROD_URL)
+    monkeypatch.setattr(db_guard, "ensure_mutation_allowed", lambda url, action: None)
+    recreated: list[str] = []
+    monkeypatch.setattr(conftest_module, "_recreate_worker_database", recreated.append)
+    engine = _RecordingEngine()
+    monkeypatch.setattr(conftest_module, "create_engine", lambda url, **kw: engine)
+    monkeypatch.setattr(alembic.command, "upgrade", lambda cfg, rev: None)
+
+    gen = conftest_module.db_engine.__wrapped__(worker_id)
+    assert next(gen) is engine
+    gen.close()
+    return engine, recreated
+
+
+def test_worker_recreates_its_database_and_never_drops_the_schema(monkeypatch):
+    """Воркёр не шлёт DROP SCHEMA: снос мигрированной схемы держит ~2200 слотов
+    таблицы блокировок, и восемь воркёров разом её исчерпывали."""
+    engine, recreated = _run_db_engine_setup(monkeypatch, "gw3")
+
+    assert [make_url(u).database for u in recreated] == ["gca_gw3_test"]
+    assert not any("DROP SCHEMA" in s for s in engine.statements), engine.statements
+
+
+def test_master_drops_the_schema_and_keeps_its_database(monkeypatch):
+    """Серийный путь не пересоздаёт gca_test (её готовят рецепты justfile),
+    а сносит схему, как до правки."""
+    engine, recreated = _run_db_engine_setup(monkeypatch, "master")
+
+    assert recreated == []
+    assert any("DROP SCHEMA public CASCADE" in s for s in engine.statements), engine.statements
