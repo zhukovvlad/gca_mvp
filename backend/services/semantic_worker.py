@@ -7,6 +7,14 @@
 `record_result` и `record_failure` — каждая коммитит свою короткую транзакцию;
 вызов модели стоит между ними, вне транзакции, и его делает только
 `process_one`. Опросчик в потоке и запуск из `lifespan` — не этот модуль.
+
+Задания `family_schema` и `context_values` (спека
+`2026-10-02-catalog-variants-design.md` §2.3, §2.6) идут тем же захватом,
+повторами и предохранителем; отличается предмет (рендер по виду задания) и
+запись результата: она не берёт задание первой, а отдаёт охрану захвата
+обработчикам `work_variants`, которые блокируют задание после доменных строк.
+Задание значений схемы без параметров завершается без вызова модели и без
+попытки (синтетический захват).
 """
 from __future__ import annotations
 
@@ -22,15 +30,23 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from config import Settings
+from config import settings as default_settings
 from models import (
+    FamilyParameter,
+    FamilyParameterSchema,
+    FamilyParameterValue,
+    FamilyStatus,
     FamilySuggestion,
+    SchemaStatus,
     SemanticAttemptOutcome,
     SemanticCancelReason,
     SemanticJob,
     SemanticJobAttempt,
+    SemanticJobKind,
     SemanticJobStatus,
     SemanticWorkerState,
     SuggestionUnpublishedReason,
+    WorkFamily,
 )
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
@@ -46,6 +62,7 @@ from services.semantic_privacy import (
     build_privacy_dictionary,
     find_privacy_matches,
 )
+from services.semantic_reconcile import _load_values_columns, _values_applicable
 from services.semantic_request import (
     CandidateFamily,
     RenderedRequest,
@@ -53,19 +70,31 @@ from services.semantic_request import (
     load_request_material,
     render_context_request,
 )
+from services.variant_answer import ValuesAnswer, parse_schema_answer, parse_values_answer
+from services.variant_request import (
+    SchemaParameterIn,
+    load_values_material,
+    paths_hash_of,
+    render_request_for,
+    render_values_request,
+)
+from services.work_variants import JobGuard, apply_values, freeze_schema
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "Claim",
+    "JobRender",
     "ModelClient",
     "ModelResponse",
     "PermanentModelError",
     "TransientModelError",
     "claim_next",
+    "complete_without_model",
     "process_one",
     "record_failure",
     "record_result",
+    "render_job_request",
     "serialize_privacy_matches",
 ]
 
@@ -80,13 +109,17 @@ _ERROR_TEXT_LIMIT = 2000
 
 @dataclass(frozen=True)
 class Claim:
-    """Захваченное задание: всё, что нужно вызову и записи результата."""
+    """Захваченное задание: всё, что нужно вызову и записи результата. У
+    синтетического захвата (`synthesized`: схема без параметров, вызова модели
+    нет) нет ни попытки, ни тела запроса; `candidates` — только у предложений."""
 
     job_id: int
-    attempt_id: int
+    attempt_id: int | None
     claim_token: UUID
-    rendered: RenderedRequest
+    rendered: RenderedRequest | None
     candidates: tuple[CandidateFamily, ...]
+    kind: SemanticJobKind
+    synthesized: bool
 
 
 def serialize_privacy_matches(matches: Sequence[PrivacyMatch]) -> list[dict]:
@@ -158,6 +191,71 @@ def _cancel(db: Session, job: SemanticJob, reason: SemanticCancelReason) -> None
     db.flush()
 
 
+@dataclass(frozen=True)
+class JobRender:
+    """Текущий запрос предмета задания либо причина, по которой его нет.
+    `parameterless` — у задания значений в схеме нет параметров."""
+
+    rendered: RenderedRequest | None
+    cancel_reason: SemanticCancelReason | None = None
+    candidates: tuple[CandidateFamily, ...] = ()
+    parameterless: bool = False
+
+
+def _not_renderable(reason: SemanticCancelReason) -> JobRender:
+    return JobRender(rendered=None, cancel_reason=reason)
+
+
+def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> JobRender:
+    """Рендерит ТЕКУЩИЙ запрос предмета задания по его виду; захват и
+    перепроверка задержанного идут через одну функцию. Предмет неприменим —
+    `not_applicable`; запрос задан по версии схемы, которая уже не та, —
+    `input_changed`. Сравнение отпечатка с `job.request_hash` — за вызывающим.
+
+    `family_schema`: семья `active` и версия задания в `building`;
+    `context_values`: контекст применим по §2.5 без условия кандидатов, у него
+    есть схема, и она — версия задания."""
+    kind = job.kind
+    if kind == SemanticJobKind.family_suggestion.value:
+        # Контекст задания существует всегда (внешний ключ RESTRICT), а загрузчик
+        # отдаёт каждый существующий контекст.
+        material = load_request_material(db, [job.context_id])[job.context_id]
+        if not is_applicable(material):
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        return JobRender(
+            rendered=render_context_request(material, settings=settings),
+            candidates=material.candidates,
+        )
+    if kind == SemanticJobKind.family_schema.value:
+        family_status = db.execute(
+            sa.select(WorkFamily.status).where(WorkFamily.id == job.family_id)
+        ).scalar_one_or_none()
+        schema_status = db.execute(
+            sa.select(FamilyParameterSchema.status).where(FamilyParameterSchema.id == job.schema_id)
+        ).scalar_one_or_none()
+        if (
+            family_status != FamilyStatus.active.value
+            or schema_status != SchemaStatus.building.value
+        ):
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        # Семья существует (статус прочитан выше), поэтому материал схемы есть
+        # всегда и `SubjectNotRenderable` здесь недостижим.
+        return JobRender(rendered=render_request_for(db, job, settings=settings))
+    if kind == SemanticJobKind.context_values.value:
+        material = load_request_material(db, [job.context_id])[job.context_id]
+        columns = _load_values_columns(db, [job.context_id])[job.context_id]
+        values_material = load_values_material(db, [job.context_id]).get(job.context_id)
+        if values_material is None or not _values_applicable(material, columns):
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        if values_material.schema_id != job.schema_id:
+            return _not_renderable(SemanticCancelReason.input_changed)
+        return JobRender(
+            rendered=render_values_request(values_material, settings=settings),
+            parameterless=not values_material.parameters,
+        )
+    raise ValueError(f"неизвестный вид задания: {kind!r}")
+
+
 def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | None:
     """Захват одного задания — шаги спеки §2.5 строго по порядку; коммитит сама.
     `None` — захвата нет: остановка, нет готовых заданий или не хватает бюджета."""
@@ -173,17 +271,35 @@ def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | Non
             db.commit()
             return None
 
-        # Контекст задания существует всегда (внешний ключ RESTRICT), а загрузчик
-        # отдаёт каждый существующий контекст.
-        material = load_request_material(db, [job.context_id])[job.context_id]
-        if not is_applicable(material):
-            _cancel(db, job, SemanticCancelReason.not_applicable)
+        current = render_job_request(db, job, settings=settings)
+        if current.cancel_reason is not None:
+            _cancel(db, job, current.cancel_reason)
             continue
-
-        rendered = render_context_request(material, settings=settings)
+        rendered = current.rendered
+        assert rendered is not None  # причины отмены нет — запрос отрендерен
         if rendered.request_hash != job.request_hash:
             _cancel(db, job, SemanticCancelReason.input_changed)
             continue
+        kind = SemanticJobKind(job.kind)
+
+        if current.parameterless:
+            # Модели нечего спрашивать: тело никуда не уходит, поэтому ни
+            # приватность, ни бюджет не применяются; попытки и резерва нет.
+            token = uuid.uuid4()
+            job.status = SemanticJobStatus.running.value
+            job.claim_token = token
+            db.flush()
+            synthetic = Claim(
+                job_id=job.id,
+                attempt_id=None,
+                claim_token=token,
+                rendered=None,
+                candidates=(),
+                kind=kind,
+                synthesized=True,
+            )
+            db.commit()
+            return synthetic
 
         if dictionary is None:
             dictionary = build_privacy_dictionary(db)
@@ -194,7 +310,9 @@ def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | Non
             db.flush()
             continue
 
-        reserve = reserve_for(db, rendered, tariffs_from(settings), rendered.body["max_tokens"])
+        reserve = reserve_for(
+            db, rendered, tariffs_from(settings, kind), rendered.body["max_tokens"]
+        )
         if spent_last_24h(db, now=now) + reserve > settings.SEMANTIC_DAILY_BUDGET_USD:
             db.commit()
             return None
@@ -215,13 +333,14 @@ def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | Non
         db.add(attempt)
         db.flush()
         # Загрузчик отдаёт кандидатов по `id`, как и снимок рендера.
-        candidates = material.candidates
         claim = Claim(
             job_id=job.id,
             attempt_id=attempt.id,
             claim_token=token,
             rendered=rendered,
-            candidates=candidates,
+            candidates=current.candidates,
+            kind=kind,
+            synthesized=False,
         )
         db.commit()
         return claim
@@ -294,6 +413,7 @@ def _publication_verdict(
     if not is_applicable(material):
         return SuggestionUnpublishedReason.context_not_applicable
     current = render_context_request(material, settings=settings)
+    assert claim.rendered is not None  # у предложения тело есть всегда
     if current.request_hash != claim.rendered.request_hash:
         return SuggestionUnpublishedReason.stale_fingerprint
     return None
@@ -310,7 +430,14 @@ def record_result(
     """Условная запись ответа модели (спека §2.5 шаг 3, §2.8); коммитит сама.
     Ответ разбирается здесь же строгим `parse_model_answer`. `settings` нужны
     для повторного рендера контекста при проверке отпечатка — те же, что и у
-    захвата."""
+    захвата. Задания схемы и значений пишутся своим путём
+    (`_record_variant_result`)."""
+    if claim.synthesized:
+        raise ValueError("у синтетического захвата нет ответа модели")
+    if claim.kind != SemanticJobKind.family_suggestion:
+        _record_variant_result(db, claim, response, now=now, settings=settings)
+        return
+    assert claim.attempt_id is not None and claim.rendered is not None
     job = _lock_job(db, claim.job_id)
     attempt = _load_attempt(db, claim.attempt_id)
     owned = _owns_job(job, claim)
@@ -383,6 +510,163 @@ def record_result(
     db.commit()
 
 
+def _schema_parameters(db: Session, schema_id: int) -> tuple[SchemaParameterIn, ...]:
+    """Параметры версии схемы и их текущие значения (слитые исключены) — то, с
+    чем сверяется ответ значений. Версия замороженная, поэтому чтение без
+    блокировки; значения могут только прибавляться."""
+    parameters = db.execute(
+        sa.select(FamilyParameter.id, FamilyParameter.ordinal, FamilyParameter.name)
+        .where(FamilyParameter.schema_id == schema_id)
+        .order_by(FamilyParameter.ordinal)
+    ).all()
+    values: dict[int, list[str]] = {row.id: [] for row in parameters}
+    if values:
+        for row in db.execute(
+            sa.select(FamilyParameterValue.parameter_id, FamilyParameterValue.value)
+            .where(
+                FamilyParameterValue.parameter_id.in_(list(values)),
+                FamilyParameterValue.merged_into_id.is_(None),
+            )
+            .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
+        ).all():
+            values[row.parameter_id].append(row.value)
+    return tuple(
+        SchemaParameterIn(ordinal=row.ordinal, name=row.name, values=tuple(values[row.id]))
+        for row in parameters
+    )
+
+
+def _record_variant_result(
+    db: Session,
+    claim: Claim,
+    response: ModelResponse,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> None:
+    """Запись результата `family_schema` / `context_values` (спека §2.6).
+
+    Задание здесь первым НЕ берётся: обработчики `work_variants` блокируют
+    доменные строки, затем задание, и сами выносят вердикт под блокировками
+    (охрана `JobGuard` — из захвата). Обратный порядок «задание, затем домен»
+    замкнулся бы в цикл со сверкой. Схемная ошибка разбора доменных блокировок
+    не берёт — задание блокируется само, как у предложений. Ошибка схемы изнутри
+    обработчика (пустое после нормализации) откатывает его точку сохранения и идёт
+    тем же путём."""
+    assert claim.attempt_id is not None and claim.rendered is not None
+    subject = db.execute(
+        sa.select(
+            SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.paths_hash
+        ).where(SemanticJob.id == claim.job_id)
+    ).one()
+    is_schema = claim.kind == SemanticJobKind.family_schema
+
+    schema_error: AnswerSchemaError | None = None
+    answer = None
+    try:
+        if is_schema:
+            answer = parse_schema_answer(response.content)
+        else:
+            answer = parse_values_answer(
+                response.content, _schema_parameters(db, subject.schema_id)
+            )
+    except AnswerSchemaError as exc:
+        schema_error = exc
+
+    if answer is not None:
+        guard = JobGuard(
+            job_id=claim.job_id,
+            claim_token=claim.claim_token,
+            expected_request_hash=claim.rendered.request_hash,
+        )
+        try:
+            with db.begin_nested():
+                if is_schema:
+                    outcome = freeze_schema(
+                        db, schema_id=subject.schema_id, answer=answer, guard=guard,
+                        settings=settings,
+                    )
+                else:
+                    outcome = apply_values(
+                        db, context_id=subject.context_id, schema_id=subject.schema_id,
+                        answer=answer, paths_hash=subject.paths_hash, guard=guard,
+                        settings=settings,
+                    )
+        except AnswerSchemaError as exc:
+            schema_error = exc
+        else:
+            attempt = _load_attempt(db, claim.attempt_id)
+            _close_with_response(
+                attempt,
+                response,
+                outcome=(
+                    SemanticAttemptOutcome.lost_claim
+                    if outcome.unapplied_reason == "lost_claim"
+                    else SemanticAttemptOutcome.ok
+                ),
+                now=now,
+            )
+            db.flush()
+            _apply_fuse(db, attempt, now=now)
+            db.commit()
+            return
+
+    assert schema_error is not None
+    job = _lock_job(db, claim.job_id)
+    attempt = _load_attempt(db, claim.attempt_id)
+    owned = _owns_job(job, claim)
+    _close_with_response(
+        attempt,
+        response,
+        outcome=(
+            SemanticAttemptOutcome.schema_error if owned else SemanticAttemptOutcome.lost_claim
+        ),
+        now=now,
+    )
+    attempt.validation_error = schema_error.detail
+    if owned:
+        job.status = SemanticJobStatus.error.value
+        job.claim_token = None
+        job.last_error_class = "schema_error"
+    db.flush()
+    _apply_fuse(db, attempt, now=now)
+    db.commit()
+
+
+def complete_without_model(
+    db: Session, claim: Claim, *, now: datetime, settings: Settings | None = None
+) -> None:
+    """Завершает синтетический захват: ответ `{"values": []}` идёт в тот же
+    обработчик результата, что и ответ модели, — те же блокировки, вердикт,
+    переключение ожидающей семьи, промоушен и события; попытки и резерва нет.
+    Коммитит сама. `expected_request_hash` — отпечаток задания, прошедший
+    проверку при захвате. `now` — как у остальных записей исполнителя;
+    `settings` по умолчанию — настройки приложения."""
+    if not claim.synthesized:
+        raise ValueError("завершение без модели — только для синтетического захвата")
+    subject = db.execute(
+        sa.select(
+            SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.request_hash,
+        ).where(SemanticJob.id == claim.job_id)
+    ).one()
+    apply_values(
+        db,
+        context_id=subject.context_id,
+        schema_id=subject.schema_id,
+        answer=ValuesAnswer(items=()),
+        # У схемы без параметров путей нет: обработчик читает константу пустого
+        # списка, а не хэш задания.
+        paths_hash=paths_hash_of(()),
+        guard=JobGuard(
+            job_id=claim.job_id,
+            claim_token=claim.claim_token,
+            expected_request_hash=subject.request_hash,
+        ),
+        settings=settings if settings is not None else default_settings,
+    )
+    db.commit()
+
+
 # ---------------------------------------------------------------------------
 #  Запись неудачи вызова
 # ---------------------------------------------------------------------------
@@ -410,6 +694,8 @@ def record_failure(
     Временная ошибка — повтор с отсрочкой,
     пока попыток поколения меньше `SEMANTIC_MAX_ATTEMPTS`; постоянная и
     исчерпание попыток — `error`."""
+    if claim.attempt_id is None:
+        raise ValueError("у синтетического захвата нет попытки, неудачи вызова быть не может")
     job = _lock_job(db, claim.job_id)
     attempt = _load_attempt(db, claim.attempt_id)
     if attempt.finished_at is not None:
@@ -456,6 +742,37 @@ def _record_failure_in_new_session(
         record_failure(db, claim, error, now=clock(), settings=settings)
 
 
+def _park_in_error(db: Session, claim: Claim, exc: Exception) -> None:
+    """Задание, которое не удалось завершить без модели: у него нет попытки,
+    которую закрыла бы `record_failure`, поэтому оно уходит в `error` с классом
+    исключения (ручное «Повторить» остаётся)."""
+    job = _lock_job(db, claim.job_id)
+    if _owns_job(job, claim):
+        job.status = SemanticJobStatus.error.value
+        job.claim_token = None
+        job.last_error_class = type(exc).__name__
+    db.commit()
+
+
+def _complete_synthesized(
+    session_factory: Callable[[], Session],
+    claim: Claim,
+    *,
+    settings: Settings,
+    clock: Callable[[], datetime],
+) -> None:
+    try:
+        with session_factory() as db:
+            complete_without_model(db, claim, now=clock(), settings=settings)
+    except Exception as exc:  # noqa: BLE001 — исключение задания наружу не уходит
+        logger.exception("Завершение задания %s без модели не удалось", claim.job_id)
+        try:
+            with session_factory() as db:
+                _park_in_error(db, claim, exc)
+        except Exception:  # noqa: BLE001 — задание вернёт восстановление при запуске
+            logger.exception("Задание %s осталось захваченным", claim.job_id)
+
+
 def process_one(
     session_factory: Callable[[], Session],
     client: ModelClient,
@@ -470,6 +787,10 @@ def process_one(
         claim = claim_next(db, settings=settings, now=clock())
     if claim is None:
         return False
+    if claim.synthesized:
+        _complete_synthesized(session_factory, claim, settings=settings, clock=clock)
+        return True
+    assert claim.rendered is not None
 
     try:
         try:

@@ -33,9 +33,11 @@ from models import (
     CatalogContext,
     CatalogPosition,
     ContextBucket,
+    FamilyParameterSchema,
     FamilySource,
     FamilySuggestion,
     ReconcileBatchStatus,
+    SchemaStatus,
     SemanticCancelReason,
     SemanticJob,
     SemanticJobKind,
@@ -53,10 +55,12 @@ from services.semantic_reconcile import (
     ReconcileReport,
     estimate_enqueue,
     get_or_create_held_batch,
+    reconcile_family_schemas,
     reconcile_semantic_jobs,
 )
 from services.semantic_request import is_applicable, load_request_material, render_context_request
-from services.semantic_worker import serialize_privacy_matches
+from services.semantic_worker import render_job_request, serialize_privacy_matches
+from services.variant_request import load_schema_material, render_schema_request
 from services.work_families import (
     REFUSE_DUPLICATE_ACTIVE_FAMILY,
     WorkFamilyError,
@@ -369,18 +373,17 @@ def _lock_job(db: Session, job_id: int) -> SemanticJob:
 def _hold_verdict(
     db: Session, job: SemanticJob, shown_matches: list[dict], dictionary: PrivacyDictionary
 ) -> tuple[bool, list[dict] | None]:
-    """Перепроверка задержанного: `privacy_hold`; контекст применим; текущий
+    """Перепроверка задержанного: `privacy_hold`; предмет задания по его виду
+    применим (контекст или семья с версией `building`); текущий
     отпечаток равен `request_hash`; проверка по текущему словарю даёт показанный
     набор совпадений. Возвращает `(прошло, текущий_набор)`: набор отдан, только
     если единственное нарушение — расхождение набора (словарь изменился после
     задержания), иначе `None`."""
     if job.status != SemanticJobStatus.privacy_hold.value:
         return False, None
-    material = load_request_material(db, [job.context_id]).get(job.context_id)
-    if material is None or not is_applicable(material):
-        return False, None
-    rendered = render_context_request(material, settings=settings)
-    if rendered.request_hash != job.request_hash:
+    # Предмет задания — по его виду (контекст или семья), как при захвате.
+    rendered = render_job_request(db, job, settings=settings).rendered
+    if rendered is None or rendered.request_hash != job.request_hash:
         return False, None
     current = serialize_privacy_matches(find_privacy_matches(dictionary, rendered))
     if current == shown_matches:
@@ -433,11 +436,147 @@ def release_privacy_hold(
     db.flush()
 
 
+def _lock_job_for_decline(db: Session, job_id: int) -> SemanticJob:
+    """Задание, которое может отменить версию схемы: порядок блокировок общий со
+    сверкой — семья, версия, затем задание. Остальные виды — как `_lock_job`."""
+    row = db.execute(
+        sa.select(SemanticJob.kind, SemanticJob.family_id, SemanticJob.schema_id).where(
+            SemanticJob.id == job_id
+        )
+    ).one_or_none()
+    if row is not None and row.kind == SemanticJobKind.family_schema.value:
+        _lock_families(db, [row.family_id], exclusive=True)
+        db.execute(
+            sa.select(FamilyParameterSchema.id)
+            .where(FamilyParameterSchema.id == row.schema_id)
+            .with_for_update()
+        ).all()
+    return _lock_job(db, job_id)
+
+
+def _represented_elsewhere(
+    db: Session, schema: FamilyParameterSchema, *, except_batch_id: int | None
+) -> bool:
+    """Версию `building` кто-то ещё представляет ЕЁ ТЕКУЩИМ отпечатком (версия и
+    `request_hash` её текущего рендера): живое задание схемы
+    (`pending`/`running`/`privacy_hold`) или другая пачка `held`/`approved` с
+    таким отпечатком (спека §2.9, отмена пересборки). Отпечаток прежнего
+    входа версию не держит."""
+    current = render_schema_request(
+        load_schema_material(db, schema.family_id, schema.id), settings=settings
+    ).request_hash
+    live = sa.select(SemanticJob.id).where(
+        SemanticJob.kind == SemanticJobKind.family_schema.value,
+        SemanticJob.schema_id == schema.id,
+        SemanticJob.request_hash == current,
+        SemanticJob.status.in_(
+            (
+                SemanticJobStatus.pending.value,
+                SemanticJobStatus.running.value,
+                SemanticJobStatus.privacy_hold.value,
+            )
+        ),
+    )
+    if db.execute(live.limit(1)).first() is not None:
+        return True
+    batches = sa.select(SemanticReconcileBatch.id).where(
+        SemanticReconcileBatch.status.in_(
+            (ReconcileBatchStatus.held.value, ReconcileBatchStatus.approved.value)
+        ),
+        SemanticReconcileBatch.held_fingerprints.contains(
+            [
+                {
+                    "kind": SemanticJobKind.family_schema.value,
+                    "schema_id": schema.id,
+                    "request_hash": current,
+                }
+            ]
+        ),
+    )
+    if except_batch_id is not None:
+        batches = batches.where(SemanticReconcileBatch.id != except_batch_id)
+    return db.execute(batches.limit(1)).first() is not None
+
+
+def _cancel_unrepresented_versions(
+    db: Session,
+    schema_ids: Sequence[int],
+    *,
+    except_batch_id: int | None = None,
+) -> None:
+    """Версии `building` из `schema_ids`, чей отпечаток больше никто не
+    представляет, -> `cancelled` (задание сверх потолка не создано или
+    отклонено, а частичный UNIQUE запирал бы пересборку). Семьи блокируются по
+    возрастанию `id`, затем версии — порядок сверки; вызывающий задание и пачку
+    уже держит (пачка — не доменная строка). Это тот же переход, что отмена
+    пересборки: незавершённые задания версии (`pending`, `privacy_hold`, `error`)
+    отменяются как `not_applicable` в той же транзакции; `running` не трогается
+    (его результат окажется `not_applicable`)."""
+    ids = sorted(set(schema_ids))
+    if not ids:
+        return
+    family_ids = sorted(
+        set(
+            db.execute(
+                sa.select(FamilyParameterSchema.family_id).where(FamilyParameterSchema.id.in_(ids))
+            ).scalars()
+        )
+    )
+    _lock_families(db, family_ids, exclusive=True)
+    building = db.execute(
+        sa.select(FamilyParameterSchema)
+        .where(
+            FamilyParameterSchema.id.in_(ids),
+            FamilyParameterSchema.status == SchemaStatus.building.value,
+        )
+        .order_by(FamilyParameterSchema.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalars()
+    now = _now()
+    for schema in building:
+        if _represented_elsewhere(db, schema, except_batch_id=except_batch_id):
+            continue
+        schema.status = SchemaStatus.cancelled.value
+        schema.cancelled_at = now
+        open_jobs = [
+            job_id
+            for (job_id,) in db.execute(
+                sa.select(SemanticJob.id)
+                .where(
+                    SemanticJob.kind == SemanticJobKind.family_schema.value,
+                    SemanticJob.schema_id == schema.id,
+                    SemanticJob.status.in_(
+                        (
+                            SemanticJobStatus.pending.value,
+                            SemanticJobStatus.privacy_hold.value,
+                            SemanticJobStatus.error.value,
+                        )
+                    ),
+                )
+                .order_by(SemanticJob.id)
+                .with_for_update()
+            )
+        ]
+        if open_jobs:
+            db.execute(
+                sa.update(SemanticJob)
+                .where(SemanticJob.id.in_(open_jobs))
+                .values(
+                    status=SemanticJobStatus.cancelled.value,
+                    cancel_reason=SemanticCancelReason.not_applicable.value,
+                )
+            )
+    db.flush()
+
+
 def decline_privacy_hold(
     db: Session, *, job_id: int, shown_matches: list[dict], actor_id: int
 ) -> None:
-    """«Не отправлять»: задание -> `cancelled` / `privacy_declined`."""
-    job = _lock_job(db, job_id)
+    """«Не отправлять»: задание -> `cancelled` / `privacy_declined`. Задание
+    схемы семьи отменяет и свою версию `building`, если её отпечаток больше
+    никто не представляет."""
+    job = _lock_job_for_decline(db, job_id)
     ok, current = _hold_verdict(db, job, shown_matches, build_privacy_dictionary(db))
     if not ok:
         _conflict_keeping_refresh(db, job, current)
@@ -446,6 +585,8 @@ def decline_privacy_hold(
     job.privacy_decided_by = actor_id
     job.privacy_decided_at = _now()
     db.flush()
+    if job.kind == SemanticJobKind.family_schema.value:
+        _cancel_unrepresented_versions(db, [job.schema_id], except_batch_id=job.batch_id)
 
 
 def release_unit_privacy_holds(
@@ -499,22 +640,34 @@ def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
 #  Preview и подтверждение перезапросов
 # ---------------------------------------------------------------------------
 
+def _tariffs_of_kinds(kinds: Sequence[SemanticJobKind | str]) -> dict[str, dict[str, str]]:
+    """Тарифы каждого вида из набора — по виду, а не одни тарифы предложений:
+    резерв каждого задания считается тарифами его вида, и preview обязан
+    менять хэш при смене тарифа любого вида набора. Тарифы предложений входят
+    всегда, и у пустого набора."""
+    result: dict[str, dict[str, str]] = {}
+    present = {SemanticJobKind(kind).value for kind in kinds}
+    for kind in sorted(present | {SemanticJobKind.family_suggestion.value}):
+        tariffs = tariffs_from(settings, SemanticJobKind(kind))
+        result[kind] = {
+            "input_per_m": str(tariffs.input_per_m),
+            "cache_write_per_m": str(tariffs.cache_write_per_m),
+            "cache_read_per_m": str(tariffs.cache_read_per_m),
+            "output_per_m": str(tariffs.output_per_m),
+        }
+    return result
+
+
 def _preview_and_pairs(
-    db: Session, context_ids: Sequence[int]
+    db: Session, context_ids: Sequence[int], *, family_ids: Sequence[int] = ()
 ) -> tuple[Preview, list[Fingerprint]]:
-    pairs, reserve, cached = estimate_enqueue(db, context_ids)
-    tariffs = tariffs_from(settings)
+    pairs, reserve, cached = estimate_enqueue(db, context_ids, family_ids)
     canonical = json.dumps(
         {
             "fingerprints": [fingerprint.as_dict() for fingerprint in pairs],
             "reserve_usd": str(reserve),
             "cached_usd": str(cached),
-            "tariffs": {
-                "input_per_m": str(tariffs.input_per_m),
-                "cache_write_per_m": str(tariffs.cache_write_per_m),
-                "cache_read_per_m": str(tariffs.cache_read_per_m),
-                "output_per_m": str(tariffs.output_per_m),
-            },
+            "tariffs": _tariffs_of_kinds([fingerprint.kind for fingerprint in pairs]),
             "reserve_formula_version": RESERVE_FORMULA_VERSION,
         },
         ensure_ascii=False,
@@ -593,13 +746,37 @@ def confirm_config_reask(db: Session, *, preview_hash: str, actor_id: int) -> Re
 # ---------------------------------------------------------------------------
 
 def _batch_context_ids(batch: SemanticReconcileBatch) -> list[int]:
-    """Контексты отпечатков предложений и значений; отпечатки схем семей
-    подтверждение пачки пока не обрабатывает."""
+    """Контексты отпечатков предложений и значений; отпечатки схем семей —
+    предмет `_batch_family_ids`."""
     return sorted(
         {
             int(element["context_id"])
             for element in batch.held_fingerprints
             if element["kind"] != SemanticJobKind.family_schema.value
+        }
+    )
+
+
+def _batch_family_ids(batch: SemanticReconcileBatch) -> list[int]:
+    """Семьи отпечатков схем: подтверждение сверяет схемы по семьям."""
+    return sorted(
+        {
+            int(element["family_id"])
+            for element in batch.held_fingerprints
+            if element["kind"] == SemanticJobKind.family_schema.value
+        }
+    )
+
+
+def _batch_schema_ids(batch: SemanticReconcileBatch) -> list[int]:
+    """Версии схем отпечатков схем; у отпечатка, поставленного до заведения
+    версии, `schema_id` пуст — такой версии отменять нечего."""
+    return sorted(
+        {
+            int(element["schema_id"])
+            for element in batch.held_fingerprints
+            if element["kind"] == SemanticJobKind.family_schema.value
+            and element["schema_id"] is not None
         }
     )
 
@@ -622,38 +799,96 @@ def preview_batch(db: Session, *, batch_id: int) -> Preview:
     batch = db.get(SemanticReconcileBatch, batch_id)
     if batch is None:
         raise LookupError(f"пачка {batch_id} не найдена")
-    return _preview_of(db, _batch_context_ids(batch))
+    return _preview_and_pairs(
+        db, _batch_context_ids(batch), family_ids=_batch_family_ids(batch)
+    )[0]
 
 
 def approve_batch(
     db: Session, *, batch_id: int, preview_hash: str, actor_id: int
 ) -> ReconcileReport:
     """«Поставить…»: `held -> approved` под `FOR UPDATE` на пачку и сверка
-    контекстов пачки без потолка. Суточный бюджет остаётся в силе."""
+    предметов пачки без потолка: предложения и значения — по контекстам, схемы —
+    по семьям. Суточный бюджет остаётся в силе."""
     batch = _lock_batch(db, batch_id)
     if batch.status != ReconcileBatchStatus.held.value:
         raise DecisionConflict(CODE_BATCH_DECIDED)
     context_ids = _batch_context_ids(batch)
-    preview, pairs = _preview_and_pairs(db, context_ids)
+    family_ids = _batch_family_ids(batch)
+    preview, pairs = _preview_and_pairs(db, context_ids, family_ids=family_ids)
     if preview.preview_hash != preview_hash:
         raise DecisionConflict(CODE_PREVIEW_CHANGED)
     batch.status = ReconcileBatchStatus.approved.value
     batch.decided_by = actor_id
     batch.decided_at = _now()
     db.flush()
-    report = reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=batch.source)
-    context_pairs = [(fingerprint.context_id, fingerprint.request_hash) for fingerprint in pairs]
-    if context_pairs:
-        db.execute(
-            sa.update(SemanticJob)
-            .where(sa.tuple_(SemanticJob.context_id, SemanticJob.request_hash).in_(context_pairs))
-            .values(batch_id=batch.id)
-        )
+    report = _merged(
+        reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=batch.source),
+        reconcile_family_schemas(db, family_ids, cap=NO_CAP, source=batch.source),
+    )
+    _mark_batch_jobs(db, batch.id, pairs)
     return report
 
 
+def _merged(first: ReconcileReport, second: ReconcileReport) -> ReconcileReport:
+    return ReconcileReport(
+        created=first.created + second.created,
+        revived=first.revived + second.revived,
+        cancelled=first.cancelled + second.cancelled,
+        republished=first.republished + second.republished,
+        unpublished=first.unpublished + second.unpublished,
+        held_batch_id=first.held_batch_id or second.held_batch_id,
+    )
+
+
+def _mark_batch_jobs(db: Session, batch_id: int, pairs: Sequence[Fingerprint]) -> None:
+    """Задания отпечатков пачки получают `batch_id`: предложения — по контексту и
+    хэшу, значения — по контексту, версии и хэшу, схема — по семье и хэшу (версия,
+    если отпечаток её уже нёс). Каждый вид сопоставляется со своим видом
+    заданий."""
+    suggestion: list[tuple[int, str]] = []
+    values: list[tuple[int, int, str]] = []
+    schema: list[tuple[int, int, str]] = []
+    schema_unbuilt: list[tuple[int, str]] = []
+    for fingerprint in pairs:
+        kind = SemanticJobKind(fingerprint.kind)
+        if kind == SemanticJobKind.family_suggestion:
+            suggestion.append((fingerprint.context_id, fingerprint.request_hash))
+        elif kind == SemanticJobKind.context_values:
+            values.append((fingerprint.context_id, fingerprint.schema_id, fingerprint.request_hash))
+        elif fingerprint.schema_id is not None:
+            schema.append((fingerprint.family_id, fingerprint.schema_id, fingerprint.request_hash))
+        else:
+            schema_unbuilt.append((fingerprint.family_id, fingerprint.request_hash))
+    clauses = []
+    if suggestion:
+        clauses.append(
+            sa.tuple_(SemanticJob.context_id, SemanticJob.request_hash).in_(suggestion)
+        )
+    if values:
+        clauses.append(
+            sa.tuple_(
+                SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.request_hash
+            ).in_(values)
+        )
+    if schema:
+        clauses.append(
+            sa.tuple_(
+                SemanticJob.family_id, SemanticJob.schema_id, SemanticJob.request_hash
+            ).in_(schema)
+        )
+    if schema_unbuilt:
+        clauses.append(
+            sa.tuple_(SemanticJob.family_id, SemanticJob.request_hash).in_(schema_unbuilt)
+        )
+    if clauses:
+        db.execute(sa.update(SemanticJob).where(sa.or_(*clauses)).values(batch_id=batch_id))
+
+
 def discard_batch(db: Session, *, batch_id: int, actor_id: int) -> None:
-    """«Отбросить»: `held -> discarded`; второе решение — `batch_decided`."""
+    """«Отбросить»: `held -> discarded`; второе решение — `batch_decided`.
+    Версии `building`, чьи отпечатки схем были в пачке и больше нигде не
+    представлены, отменяются."""
     batch = _lock_batch(db, batch_id)
     if batch.status != ReconcileBatchStatus.held.value:
         raise DecisionConflict(CODE_BATCH_DECIDED)
@@ -661,6 +896,7 @@ def discard_batch(db: Session, *, batch_id: int, actor_id: int) -> None:
     batch.decided_by = actor_id
     batch.decided_at = _now()
     db.flush()
+    _cancel_unrepresented_versions(db, _batch_schema_ids(batch), except_batch_id=batch.id)
 
 
 # ---------------------------------------------------------------------------

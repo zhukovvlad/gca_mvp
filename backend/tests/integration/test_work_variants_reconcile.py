@@ -1535,9 +1535,9 @@ class TestApproveBatchWithASchemaSubject:
     def test_context_jobs_get_the_batch_and_the_schema_job_is_created(
         self, db_session, factories
     ):
-        """Пачка из трёх видов подтверждается: задания предметов-контекстов
-        получают `batch_id`, задание схемы ставит сверка подтверждения (его
-        `batch_id` — задача 7: подтверждение по предмету каждого вида)."""
+        """Пачка из трёх видов подтверждается по предмету каждого вида: задания
+        предложений и значений ставит сверка контекстов, задание схемы — сверка
+        семьи; `batch_id` получают задания всех трёх видов."""
         from services.semantic_decisions import approve_batch, preview_batch
 
         world = _joint_scene(db_session, factories)
@@ -1554,7 +1554,7 @@ class TestApproveBatchWithASchemaSubject:
         assert jobs == {
             (_SUGGESTION, world.a, None): held,
             (_VALUES, world.b, None): held,
-            (_SCHEMA, None, world.f3.id): None,
+            (_SCHEMA, None, world.f3.id): held,
         }
 
 

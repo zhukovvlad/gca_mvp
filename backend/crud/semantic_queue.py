@@ -29,6 +29,7 @@ from models import (
     ContextBucket,
     ContextMember,
     Estimate,
+    FamilyParameterSchema,
     FamilyStatus,
     FamilySuggestion,
     Lot,
@@ -39,6 +40,7 @@ from models import (
     SemanticCancelReason,
     SemanticJob,
     SemanticJobAttempt,
+    SemanticJobKind,
     SemanticJobStatus,
     SemanticKind,
     SemanticReconcileBatch,
@@ -59,6 +61,7 @@ from services.semantic_request import (
     render_context_request,
     top_path,
 )
+from services.variant_request import load_schema_material
 
 Band = Literal["high", "mid", "low"]
 
@@ -165,8 +168,20 @@ class QueueStatus(TypedDict):
 
 
 class JobRow(TypedDict):
+    """Строка очереди ошибок и задержанных. `kind` — вид задания. Задание
+    предложения и значений — по контексту (`context_id`, наименование, путь);
+    `family_schema` — по семье: `context_id` пуст, `title` — имя семьи,
+    `schema_version` и `names_count` — версия схемы и число наименований строк
+    семьи в запросе. `family_id`/`schema_id` — столбцы самого задания, пусты там,
+    где неприменимы."""
+
     job_id: int
-    context_id: int
+    kind: str
+    context_id: int | None
+    family_id: int | None
+    schema_id: int | None
+    schema_version: int | None
+    names_count: int | None
     title: str
     unit_id: int | None
     unit_code: str | None
@@ -649,6 +664,37 @@ def _unit_hold_groups(
     return groups
 
 
+def _schema_job_rows(db: Session, jobs: list) -> dict[int, dict]:
+    """Строки заданий `family_schema` — по семье: имя, номер версии и число
+    наименований в запросе. Число наименований считается по заданию отдельным
+    запросом (заданий схем в очереди ошибок единицы), имена и версии — одним на
+    всех."""
+    if not jobs:
+        return {}
+    versions = dict(
+        db.execute(
+            sa.select(FamilyParameterSchema.id, FamilyParameterSchema.version).where(
+                FamilyParameterSchema.id.in_({job.schema_id for job in jobs})
+            )
+        ).all()
+    )
+    titles = dict(
+        db.execute(
+            sa.select(WorkFamily.id, WorkFamily.title).where(
+                WorkFamily.id.in_({job.family_id for job in jobs})
+            )
+        ).all()
+    )
+    return {
+        job.id: {
+            "title": titles[job.family_id],
+            "version": versions[job.schema_id],
+            "names_count": len(load_schema_material(db, job.family_id, job.schema_id).names),
+        }
+        for job in jobs
+    }
+
+
 def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsResponse:
     """Задания в `error` или `privacy_hold`. Для `error` — последнее сообщение
     попытки (текст ошибки, а у схемной ошибки, где его нет, — причина из
@@ -670,7 +716,12 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
     if not jobs:
         return JobsResponse(status=status, items=[], unit_groups=[])
 
-    materials = load_request_material(db, {job.context_id for job, _ in jobs})
+    materials = load_request_material(
+        db, {job.context_id for job, _ in jobs if job.context_id is not None}
+    )
+    schema_rows = _schema_job_rows(
+        db, [job for job, _ in jobs if job.kind == SemanticJobKind.family_schema.value]
+    )
     unit_codes: dict[int | None, str | None] = {None: None}
     unit_ids = {job.unit_id for job, _ in jobs if job.unit_id is not None}
     if unit_ids:
@@ -682,16 +733,22 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
 
     items: list[JobRow] = []
     for job, error_text in jobs:
-        material = materials[job.context_id]
+        family = schema_rows.get(job.id)
+        material = None if family is not None else materials[job.context_id]
         items.append(
             JobRow(
                 job_id=job.id,
+                kind=job.kind,
                 context_id=job.context_id,
-                title=material.title,
+                family_id=job.family_id,
+                schema_id=job.schema_id,
+                schema_version=family["version"] if family is not None else None,
+                names_count=family["names_count"] if family is not None else None,
+                title=family["title"] if family is not None else material.title,
                 unit_id=job.unit_id,
                 unit_code=unit_codes.get(job.unit_id),
-                article=material.article,
-                path=_path_list(material),
+                article=material.article if material is not None else None,
+                path=_path_list(material) if material is not None else [],
                 status=job.status,
                 last_error_class=job.last_error_class,
                 error_text=error_text,

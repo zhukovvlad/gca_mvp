@@ -818,8 +818,12 @@ def _split_jobs(
     return suggestions, values
 
 
-def _plan_all(db: Session, context_ids: Collection[int]) -> _FullPlan:
-    """План сверки всех трёх видов по набору контекстов — без записей."""
+def _plan_all(
+    db: Session, context_ids: Collection[int], family_ids: Collection[int] = ()
+) -> _FullPlan:
+    """План сверки всех трёх видов по набору контекстов — без записей.
+    `family_ids` — семьи, чьи схемы сверяются сверх семей единиц контекстов
+    (отпечатки схем удержанной пачки)."""
     prepared = prepare_contexts(db, context_ids)
     material_by_context = prepared.material_by_context
     all_jobs = _load_jobs_for_contexts(db, list(material_by_context))
@@ -832,7 +836,10 @@ def _plan_all(db: Session, context_ids: Collection[int]) -> _FullPlan:
         for fingerprint, _rendered in full.suggestions.entries()
     }
     _plan_family_schemas(
-        db, _schema_scope(db, material_by_context), full.schemas, planned_units=planned_units
+        db,
+        _schema_scope(db, material_by_context) | set(family_ids),
+        full.schemas,
+        planned_units=planned_units,
     )
     return full
 
@@ -957,13 +964,14 @@ def _estimate_entries(
 
 
 def estimate_enqueue(
-    db: Session, context_ids: Collection[int]
+    db: Session, context_ids: Collection[int], family_ids: Collection[int] = ()
 ) -> tuple[list[Fingerprint], Decimal, Decimal]:
     """Набор постановки `E` контекстов (те же отпечатки, что у
     `held_fingerprints`) и его оценка `(отпечатки, резерв, ожидаемая цена при
     попадании в кэш)` — те же суммы, что сверка кладёт в удержанную пачку.
-    Ничего не пишет."""
-    full = _plan_all(db, context_ids)
+    `family_ids` добавляют схемы семей (подтверждение пачки с отпечатками
+    схем). Ничего не пишет."""
+    full = _plan_all(db, context_ids, family_ids)
     entries = sorted(full.entries(), key=lambda entry: _fingerprint_sort_key(entry[0]))
     reserve_total, cached_total = _estimate_entries(db, entries, full.free_fingerprints())
     return [fingerprint for fingerprint, _rendered in entries], reserve_total, cached_total
