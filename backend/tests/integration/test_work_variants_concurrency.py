@@ -35,6 +35,7 @@ from models import (
     WorkVariant,
 )
 from services import work_variants as work_variants_module
+from services.variant_request import load_values_material, paths_hash_of
 from services.work_variants import (
     apply_values,
     archive_variant_if_empty,
@@ -709,7 +710,10 @@ class TestLockingReadsRefreshRowsTheSessionAlreadyHolds:
         with committing_session_factory() as b:
             applied = apply_values(
                 b, context_id=world.context_id, schema_id=world.schema.id,
-                answer=_answer(_named(1, "50 мм"), _named(2, "бетон")), paths_hash="p",
+                answer=_answer(_named(1, "50 мм"), _named(2, "бетон")),
+                paths_hash=paths_hash_of(
+                    load_values_material(b, [world.context_id])[world.context_id].paths
+                ),
                 guard=owner, settings=_settings(),
             )
             b.commit()

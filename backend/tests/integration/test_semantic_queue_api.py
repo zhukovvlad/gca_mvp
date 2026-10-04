@@ -28,6 +28,7 @@ from config import settings as app_settings
 from models import (
     CatalogContext,
     ContextMember,
+    FamilyParameterSchema,
     FamilySuggestion,
     SemanticJob,
     SemanticJobAttempt,
@@ -93,7 +94,17 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
     fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
-    return activate_family(db, family_id=fam.id, actor_id=actor_id)
+    family = activate_family(db, family_id=fam.id, actor_id=actor_id)
+    # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
+    # активная семья без схемы получала бы ещё и задание схемы.
+    db.add(
+        FamilyParameterSchema(
+            family_id=family.id, version=1, status="frozen", origin="model",
+            frozen_at=dt.datetime.now(dt.UTC),
+        )
+    )
+    db.flush()
+    return family
 
 
 def _simple_context(db, factories, proposal, *, unit_id, title) -> int:
@@ -1412,7 +1423,12 @@ class TestStatus:
             db_session, context_id=scene.context_ids[0], family_id=scene.family.id,
             actor_id=admin_client.user.id,
         )
-        assert db_session.scalar(sa.select(sa.func.count()).select_from(SemanticJob)) == 0
+        # Семья со схемой даёт контексту задание значений; заданий предложений нет.
+        # Состав сверяется целиком: ровно одно задание значений этого контекста.
+        assert [
+            (job.kind, job.context_id)
+            for job in db_session.execute(sa.select(SemanticJob)).scalars().all()
+        ] == [("context_values", scene.context_ids[0])]
 
         payload = admin_client.get(f"{BASE}/status").json()
 

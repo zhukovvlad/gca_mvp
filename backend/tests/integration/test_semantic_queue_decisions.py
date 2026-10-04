@@ -31,6 +31,7 @@ import services.semantic_decisions as decisions
 from config import settings as app_settings
 from models import (
     CatalogContext,
+    FamilyParameterSchema,
     FamilySuggestion,
     SemanticJob,
     SemanticJobAttempt,
@@ -64,6 +65,7 @@ from services.semantic_decisions import (
 from services.semantic_privacy import build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
+    Fingerprint,
     estimate_enqueue,
     held_fingerprints,
     reconcile_semantic_jobs,
@@ -97,7 +99,17 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
     fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
-    return activate_family(db, family_id=fam.id, actor_id=actor_id)
+    family = activate_family(db, family_id=fam.id, actor_id=actor_id)
+    # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
+    # активная семья без схемы получала бы ещё и задание схемы.
+    db.add(
+        FamilyParameterSchema(
+            family_id=family.id, version=1, status="frozen", origin="model",
+            frozen_at=dt.datetime.now(dt.UTC),
+        )
+    )
+    db.flush()
+    return family
 
 
 def _simple_context(db, factories, proposal, *, unit_id, title) -> int:
@@ -1066,9 +1078,9 @@ class TestPreview:
 
         after = preview_unit_reask(db_session, unit_id=scene.unit_id)
 
-        assert estimate_enqueue(db_session, scene.context_ids)[0] == [
-            (scene.context_ids[0], rendered.request_hash)
-        ]
+        assert [
+            (fp.context_id, fp.request_hash) for fp in estimate_enqueue(db_session, scene.context_ids)[0]
+        ] == [(scene.context_ids[0], rendered.request_hash)]
         assert after.context_count == before.context_count
         assert getattr(after, moved) != getattr(before, moved)
         assert getattr(after, still) == getattr(before, still)
@@ -1482,7 +1494,7 @@ class TestEnqueueAll:
 
         batch = _fresh(db_session, SemanticReconcileBatch, batch_id)
         assert (batch.source, batch.status, batch.contexts_count) == ("mass", "held", 2)
-        assert sorted(tuple(p) for p in batch.held_fingerprints) == held_fingerprints(
+        assert [Fingerprint.from_dict(e) for e in batch.held_fingerprints] == held_fingerprints(
             db_session, scene.context_ids
         )
         _pairs, reserve, cached = estimate_enqueue(db_session, scene.context_ids)

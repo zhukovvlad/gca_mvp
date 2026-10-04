@@ -547,7 +547,7 @@ def fingerprints_hash(fingerprints: Sequence[Fingerprint]) -> str          # н�
 def schema_ready_to_build(db: Session, family_id: int) -> bool
 def reconcile_family_schemas(db: Session, family_ids: Collection[int], *, cap, source: str) -> ReconcileReport
 def reconcile_context_values(db: Session, context_ids: Collection[int], *, cap, source: str) -> ReconcileReport
-def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int, exclude_job_id: int | None) -> int
+def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int) -> int
 # reconcile_semantic_jobs(...) зовёт обе ветви для тех же context_ids
 ```
 
@@ -564,14 +564,19 @@ def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int, e
   при пачке импорта другой единицы, при пачке из одних `context_values` этой
   единицы, при остатке только `privacy_hold` и `error` (пять входов);
 - волна после расширений ставится ровно один раз — последним обработчиком
-  семьи, без исключения собственного задания волны нет (вход);
+  семьи (собственное задание к шагу 8 уже `done`, отдельного исключения нет —
+  снято ревью реализации как эквивалентное);
 - сверх потолка — удержанная пачка нового формата; её `fingerprints_hash`
   совпадает при перестановке входа (подтверждение пачки — Task 7: оно живёт в
   `semantic_decisions.py`);
 - оценка потолка (`_estimate_totals`) считает резерв каждого задания тарифами
   его вида: вход с различными тарифами схемы, значений и предложений даёт сумму,
   равную сумме по видам, а не по тарифу `family_suggestion`;
-- `RECONCILE_ALLOWLIST` содержит `services.work_variants` и `services.family_change`.
+- `RECONCILE_ALLOWLIST` содержит `services.work_variants`; сверка вызывается из
+  `apply_values` и `freeze_schema`, обе точки — в матрице
+  `test_semantic_queue_hooks_work_variants.py` (перенесено из Task 14: без них
+  ветка красна на архитектурном тесте); `services.family_change` вносит Task 8,
+  когда модуль появится.
 
 **Имена**
 - Заводятся: всё перечисленное.

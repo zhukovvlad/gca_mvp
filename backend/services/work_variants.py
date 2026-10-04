@@ -65,6 +65,7 @@ from models import (
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_events import record_event
 from services.semantic_privacy import _replace_quotes_with_space
+from services.semantic_reconcile import reconcile_or_defer, schedule_extension_wave
 from services.variant_answer import SchemaAnswer, ValuesAnswer
 from services.variant_request import SubjectNotRenderable, paths_hash_of, render_request_for
 from services.work_families import _lock_families
@@ -469,6 +470,21 @@ def _acquire_schema_locks(
     return schema, current, job
 
 
+def _family_context_ids(db: Session, family_id: int) -> list[int]:
+    """Контексты, у которых семья (ожидаемая, а при её отсутствии текущая) —
+    эта."""
+    return list(
+        db.execute(
+            sa.select(CatalogContext.id).where(
+                sa.func.coalesce(CatalogContext.pending_family_id, CatalogContext.work_family_id)
+                == family_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 def freeze_schema(
     db: Session, *, schema_id: int, answer: SchemaAnswer, guard: JobGuard | None,
     settings: Settings,
@@ -535,6 +551,9 @@ def freeze_schema(
         job.status = SemanticJobStatus.done.value
         job.claim_token = None
         db.flush()
+    # Контексты семьи получают задания значений по новой версии (спека §2.6,
+    # §2.7); сверка идёт в этой же транзакции, до коммита вызывающего.
+    reconcile_or_defer(db, _family_context_ids(db, family_id))
     return FreezeOutcome(applied=True, unapplied_reason=None, schema_id=schema_id)
 
 
@@ -766,8 +785,8 @@ def apply_values(
     переключение ожидающей семьи, вариант и подсказка о расхождении путей
     записываются контексту; (6) строка `TO_REVIEW` становится `POSITION`; (7)
     события и задание `done`; (8) прежний вариант архивируется, если на нём
-    не осталось контекстов. Волна перезапроса после расширений списка сюда не
-    входит.
+    не осталось контекстов; затем волна перезапроса после расширений списка
+    и сверка контекста.
 
     Raises:
         AnswerSchemaError: ответ не согласуется со схемой (состав `ordinal`,
@@ -827,11 +846,13 @@ def apply_values(
 
     # (2) значения
     added: list[int] = []
+    extended_parameter_ids: set[int] = set()
     value_ids: dict[int, int | None] = {}
     sources: dict[int, str] = {}
     for ordinal in sorted(items):
         item = items[ordinal]
         if item.kind in ("value", "new"):
+            added_before = len(added)
             value_ids[ordinal] = (
                 listed[ordinal]
                 if item.kind == "value"
@@ -840,6 +861,8 @@ def apply_values(
                     context_id=context_id, text=item.value or "", added=added,
                 )
             )
+            if len(added) > added_before:
+                extended_parameter_ids.add(parameter_ids[ordinal])
             sources[ordinal] = item.source or ""
         else:
             value_ids[ordinal] = None
@@ -915,6 +938,13 @@ def apply_values(
     previous_archived = False
     if previous_variant_id is not None:
         previous_archived = archive_variant_if_empty(db, previous_variant_id)
+
+    # Волна перезапроса после расширений списка (спека §2.6, §2.8): собственное
+    # задание уже `done` (шаг 7) и в счёт не входит; затем сверка самого контекста
+    # в той же транзакции.
+    for parameter_id in sorted(extended_parameter_ids):
+        schedule_extension_wave(db, family_id=family_id, parameter_id=parameter_id)
+    reconcile_or_defer(db, [context_id])
 
     return ApplyValuesOutcome(
         applied=True, unapplied_reason=None, variant_id=variant.id,

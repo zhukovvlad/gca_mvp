@@ -43,6 +43,7 @@ from services.variant_answer import SchemaAnswer, ValueItem, ValuesAnswer
 from services.variant_request import (
     SchemaParameterIn,
     SubjectNotRenderable,
+    load_values_material,
     paths_hash_of,
     render_request_for,
 )
@@ -1396,6 +1397,9 @@ class TestStep3ContextValues:
                 ContextParameterValue.context_id == world.context_id
             )
         ).scalars().all() == [None, None]
+        # Сверка после обработчика поставила задание значений по разошедшимся
+        # путям; тесту нужен свободный ключ для собственного задания.
+        db_session.execute(sa.delete(SemanticJob))
         job, guard = _guarded(db_session, context_id=world.context_id, schema_id=world.schema.id)
         _apply(db_session, world, guard=guard)
         assert db_session.execute(
@@ -1676,7 +1680,12 @@ class TestStep7EventAndJob:
     ):
         world = _world(db_session, factories)
         job, guard = _guarded(db_session, context_id=world.context_id, schema_id=world.schema.id)
-        assert _apply(db_session, world, guard=guard).applied is True
+        # Пути варианта равны текущим: иначе сверка в обработчике вернула бы
+        # выполненное задание в очередь.
+        real_paths = paths_hash_of(
+            load_values_material(db_session, [world.context_id])[world.context_id].paths
+        )
+        assert _apply(db_session, world, guard=guard, paths_hash=real_paths).applied is True
         db_session.refresh(job)
         assert (job.status, job.claim_token, job.result_suggestion_id, job.cancel_reason) == (
             "done", None, None, None,

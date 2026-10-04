@@ -38,6 +38,7 @@ from models import (
     ReconcileBatchStatus,
     SemanticCancelReason,
     SemanticJob,
+    SemanticJobKind,
     SemanticJobStatus,
     SemanticReconcileBatch,
     SemanticWorkerState,
@@ -48,6 +49,7 @@ from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_privacy import PrivacyDictionary, build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
+    Fingerprint,
     ReconcileReport,
     estimate_enqueue,
     get_or_create_held_batch,
@@ -499,12 +501,12 @@ def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
 
 def _preview_and_pairs(
     db: Session, context_ids: Sequence[int]
-) -> tuple[Preview, list[tuple[int, str]]]:
+) -> tuple[Preview, list[Fingerprint]]:
     pairs, reserve, cached = estimate_enqueue(db, context_ids)
     tariffs = tariffs_from(settings)
     canonical = json.dumps(
         {
-            "pairs": [[context_id, request_hash] for context_id, request_hash in sorted(pairs)],
+            "fingerprints": [fingerprint.as_dict() for fingerprint in pairs],
             "reserve_usd": str(reserve),
             "cached_usd": str(cached),
             "tariffs": {
@@ -591,7 +593,15 @@ def confirm_config_reask(db: Session, *, preview_hash: str, actor_id: int) -> Re
 # ---------------------------------------------------------------------------
 
 def _batch_context_ids(batch: SemanticReconcileBatch) -> list[int]:
-    return sorted({int(pair[0]) for pair in batch.held_fingerprints})
+    """Контексты отпечатков предложений и значений; отпечатки схем семей
+    подтверждение пачки пока не обрабатывает."""
+    return sorted(
+        {
+            int(element["context_id"])
+            for element in batch.held_fingerprints
+            if element["kind"] != SemanticJobKind.family_schema.value
+        }
+    )
 
 
 def _lock_batch(db: Session, batch_id: int) -> SemanticReconcileBatch:
@@ -632,10 +642,11 @@ def approve_batch(
     batch.decided_at = _now()
     db.flush()
     report = reconcile_semantic_jobs(db, context_ids, cap=NO_CAP, source=batch.source)
-    if pairs:
+    context_pairs = [(fingerprint.context_id, fingerprint.request_hash) for fingerprint in pairs]
+    if context_pairs:
         db.execute(
             sa.update(SemanticJob)
-            .where(sa.tuple_(SemanticJob.context_id, SemanticJob.request_hash).in_(pairs))
+            .where(sa.tuple_(SemanticJob.context_id, SemanticJob.request_hash).in_(context_pairs))
             .values(batch_id=batch.id)
         )
     return report
