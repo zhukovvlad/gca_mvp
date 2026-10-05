@@ -60,9 +60,11 @@ ru-core-news-sm = { url = "https://github.com/explosion/spacy-models/releases/do
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-ra --strict-markers --tb=short"
+addopts = "-ra --strict-markers --tb=short --dist worksteal"
 markers = [
     "integration: tests that hit a real Postgres (need TEST_DATABASE_URL)",
+    "migration_roundtrip: downgrade/upgrade Alembic-цепочки на отдельной scratch-базе; минуты на тест, в just test-backend-quick не идут",
+    "review_tooling: тесты скрипта ревью scripts/enumerate_review_units.py (настоящий git в подпроцессах), не продукт; в just test-backend-quick не идут",
 ]
 env_files = [".env.test"]
 

@@ -5,6 +5,7 @@
 """
 import datetime as dt
 from decimal import Decimal
+from functools import cache
 
 import factory
 from factory.alchemy import SQLAlchemyModelFactory
@@ -36,6 +37,18 @@ from security import hash_password
 
 # Глобальный slot — устанавливается фикстурой db_session
 _session_holder: dict = {"session": None}
+
+
+@cache
+def _default_password_hash() -> str:
+    """Настоящий Argon2-хэш пароля "secret", один на процесс.
+
+    Argon2 намеренно дорог — ~0,11 с на хэш (замер 05.10.2026), и пересчёт на
+    каждого созданного пользователя давал пятую часть времени API-тестов.
+    Соль в хэше одна на всех тестовых пользователей; ни один тест на
+    различие хэшей не опирается, а логин по "secret" работает как раньше.
+    """
+    return hash_password("secret")
 
 
 def _register_session(session) -> None:
@@ -72,9 +85,9 @@ class UserFactory(_BaseFactory):
         model = User
 
     email = factory.Sequence(lambda n: f"user{n}@example.com")
-    # Пароль по умолчанию — "secret"; хэш считается лениво, чтобы тесты могли
+    # Пароль по умолчанию — "secret"; хэш настоящий, чтобы тесты могли
     # проверять логин. Override password_hash через .create(password_hash=...).
-    password_hash = factory.LazyFunction(lambda: hash_password("secret"))
+    password_hash = factory.LazyFunction(_default_password_hash)
     role = UserRole.member
     is_active = True
 
