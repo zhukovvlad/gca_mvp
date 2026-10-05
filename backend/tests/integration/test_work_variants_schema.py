@@ -2192,6 +2192,7 @@ def _seed_feature2_data(conn) -> dict:
     return {"contexts": context_ids, "jobs": job_ids, "suggestion": suggestion_id}
 
 
+@pytest.mark.migration_roundtrip
 class TestUpgradeAndDowngradeOnFeature2Data:
     def test_upgrade_converts_jobs_and_batches_then_downgrade_restores_pairs(self):
         with _scratch_alembic("feature 2 data") as (command, cfg, scratch_url):
