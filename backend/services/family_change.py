@@ -65,6 +65,7 @@ from services.work_families import (
     WorkFamilyError,
     _lock_contexts,
     _lock_families,
+    _lock_variants,
     assign_family,
     check_family_assignable,
 )
@@ -149,11 +150,23 @@ def _read_family_pairs(
     return {row.id: (row.work_family_id, row.pending_family_id) for row in rows}
 
 
+def _read_variants(db: Session, context_ids: Sequence[int]) -> dict[int, int | None]:
+    """`{контекст: вариант}` без блокировок."""
+    rows = db.execute(
+        sa.select(CatalogContext.id, CatalogContext.work_variant_id).where(
+            CatalogContext.id.in_(list(context_ids))
+        )
+    ).all()
+    return {row.id: row.work_variant_id for row in rows}
+
+
 def acquire_family_locks(
     db: Session,
     items: Sequence[tuple[int, int | None]],
     *,
     release_on_failure: bool,
+    lock_variants: bool = False,
+    extra_context_ids: Collection[int] = (),
 ) -> set[int]:
     """Захват семей и контекстов решения (или группы решений): `items` — пары
     `(контекст, запрашиваемая семья)`.
@@ -161,17 +174,27 @@ def acquire_family_locks(
     (1) без блокировок читаются текущая и ожидаемая семьи контекстов;
     (2) открывается точка сохранения ДО первой блокировки попытки;
     (3) ВСЕ семьи — запрашиваемые, текущие, ожидаемые — берутся `FOR SHARE`
-    одним запросом по возрастанию `id`, затем контексты `FOR UPDATE` по `id`;
+    одним запросом по возрастанию `id`; при `lock_variants` затем читаются
+    варианты контекстов (уже под блокировкой семей: менять вариант контекста
+    можно только под `FOR UPDATE` его семьи, поэтому он устойчив, а параллельное
+    снятие только очищает его) и берутся `FOR UPDATE` по возрастанию `id`;
+    затем контексты — `items` и `extra_context_ids` — `FOR UPDATE` по `id`
+    одним запросом;
     (4) пары семей контекстов перечитываются под блокировкой. Разошлись с
     прочитанным — откат к точке сохранения (блокировки сняты), повторное
-    чтение и ПОЛНЫЙ перезахват. Повтор один. Расхождение и на нём: новых
-    блокировок не берётся; `release_on_failure=True` откатывает точку
-    сохранения (одиночное решение — блокировки сняты), `False` оставляет
-    захваченное (группа — прочие предложения продолжают).
+    чтение и ПОЛНЫЙ перезахват. Повтор один. Варианты не перечитываются:
+    они читаются под замком семей и устойчивы. Расхождение и на повторе: новых блокировок не берётся;
+    `release_on_failure=True` откатывает точку сохранения (одиночное решение —
+    блокировки сняты), `False` оставляет захваченное (группа — прочие
+    предложения продолжают).
+
+    `lock_variants` нужен путям, снимающим вариант с контекста: порядок
+    «семья -> вариант -> контекст» тот же, что у обработчика значений.
 
     Возвращает контексты, чья пара семей так и не устоялась (пусто — захват
     удался)."""
     context_ids = sorted({context_id for context_id, _ in items})
+    lock_context_ids = sorted(set(context_ids) | set(extra_context_ids))
     requested = {family_id for _, family_id in items if family_id is not None}
     unstable: set[int] = set()
     for attempt in (1, 2):
@@ -182,7 +205,11 @@ def acquire_family_locks(
             | {family for pair in seen.values() for family in pair if family is not None}
         )
         _lock_families(db, family_ids, exclusive=False)
-        _lock_contexts(db, context_ids)
+        variants: dict[int, int | None] = {}
+        if lock_variants:
+            variants = _read_variants(db, context_ids)
+            _lock_variants(db, sorted({v for v in variants.values() if v is not None}))
+        _lock_contexts(db, lock_context_ids)
         now = _read_family_pairs(db, context_ids)
         unstable = {cid for cid in context_ids if now.get(cid) != seen.get(cid)}
         if not unstable:
@@ -195,8 +222,12 @@ def acquire_family_locks(
     return unstable
 
 
-def _acquire_single(db: Session, context_id: int, family_id: int | None) -> None:
-    unstable = acquire_family_locks(db, [(context_id, family_id)], release_on_failure=True)
+def _acquire_single(
+    db: Session, context_id: int, family_id: int | None, *, lock_variants: bool = False
+) -> None:
+    unstable = acquire_family_locks(
+        db, [(context_id, family_id)], release_on_failure=True, lock_variants=lock_variants
+    )
     if unstable:
         raise FamilyLockMismatch(sorted(unstable))
 
@@ -420,11 +451,14 @@ def _suggestion_confidence(db: Session, suggestion_id: int) -> Decimal:
 
 
 def _supersede(
-    db: Session, context: CatalogContext, *, actor_id: int | None
+    db: Session, context: CatalogContext, *, actor_id: int | None,
+    outcome: PendingOutcome = "superseded",
 ) -> int | None:
-    """Прежнее ожидание вытеснено новым запросом: `outcome = superseded`.
-    Возвращает предложение вытесненного ожидания."""
-    state = clear_pending(db, context, outcome="superseded", actor_id=actor_id)
+    """Прежнее ожидание вытеснено новым запросом: `outcome = superseded`; снятие
+    семьи (`family_id=None`) не вытесняет ожидание другим, а снимает его —
+    `cancelled`, как у `assign_family(None)` и «не работа». Возвращает
+    предложение снятого ожидания."""
+    state = clear_pending(db, context, outcome=outcome, actor_id=actor_id)
     return None if state is None else state.suggestion_id
 
 
@@ -450,13 +484,13 @@ def request_family_change(
     `commit` вызывающего; решение предложения вызывающий записывает ДО вызова
     (по `family_change_route`).
 
-    `family_id=None` (снятие семьи) поддержано только у контекста без варианта;
-    у контекста с вариантом снятие меняет и вариант, и значения (спека §2.5,
-    последний абзац) — это отдельная операция.
+    `family_id=None` — снятие семьи, путь 1 и у контекста с вариантом: ожидание,
+    вариант, значения и подсказка о расхождении путей уходят вместе с семьёй
+    (спека §2.5, последний абзац; `assign_family(family_id=None)`).
 
     Raises:
         ValueError: несогласованные `actor_id`/`source`/`suggestion_id`/
-            `threshold`, либо снятие семьи у контекста с вариантом.
+            `threshold`.
         FamilyLockMismatch: семья контекста сменилась при захвате дважды.
         WorkFamilyError: контекст не найден или архивирован; семья не найдена,
             не `active` или с другой единицей."""
@@ -464,12 +498,10 @@ def request_family_change(
         family_id=family_id, actor_id=actor_id, source=source,
         suggestion_id=suggestion_id, threshold=threshold,
     )
-    _acquire_single(db, context_id, family_id)
+    # Снятие семьи снимает и вариант: вариант берётся до контекста.
+    _acquire_single(db, context_id, family_id, lock_variants=family_id is None)
     context = _load_context(db, context_id)
     route = family_change_route(context, family_id, source)
-
-    if family_id is None and context.work_variant_id is not None:
-        raise ValueError("снятие семьи у контекста с вариантом — отдельная операция (спека §2.5)")
 
     if route == "unchanged":
         superseded: int | None = None
@@ -490,7 +522,10 @@ def request_family_change(
     if family_id is not None:
         check_family_assignable(db, context, family_id)
 
-    superseded = _supersede(db, context, actor_id=actor_id)
+    superseded = _supersede(
+        db, context, actor_id=actor_id,
+        outcome="cancelled" if family_id is None else "superseded",
+    )
 
     if route == "assigned":
         assign_kwargs: dict[str, object] = {}

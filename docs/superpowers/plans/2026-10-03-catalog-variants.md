@@ -815,7 +815,8 @@ def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]
 
 ```python
 def mark_context_not_work(db: Session, *, context_id: int, actor_id: int) -> None
-def clear_variant(db: Session, *, context_id: int, reason: str) -> int | None   # возвращает прежний вариант
+def clear_variant(db: Session, *, context_id: int) -> int | None   # возвращает прежний вариант
+# без reason: события снятия варианта спека не заводит, потребителя у причины нет
 ```
 
 **Утверждения**

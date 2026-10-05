@@ -39,6 +39,7 @@ TO_REVIEW-строку, — в этом смысл очереди: операт�
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -55,18 +56,23 @@ from models import (
     ContextMember,
     ContextRoutingRule,
     DecisionSource,
+    FamilyParameter,
+    FamilyParameterValue,
     MatchingCache,
     MatchSource,
     PositionItem,
     RoutedBy,
     SemanticState,
     WorkFamily,
+    WorkVariantValue,
 )
 from services.context_routing import chapter_context, evaluate_predicate, lock_buckets
+from services.family_change import FamilyLockMismatch, acquire_family_locks
 from services.matching import NORM_VERSION, cache_key
 from services.semantic_events import record_event
 from services.semantic_reconcile import contexts_of_positions, reconcile_or_defer
 from services.unit_resolution import UnitResolver
+from services.work_variants import clear_variant
 
 log = logging.getLogger(__name__)
 
@@ -241,6 +247,40 @@ def _conflict_warning(
     return None
 
 
+def _variant_title(db: Session, variant_id: int | None) -> str:
+    """Вариант словами для предупреждения: значения по порядку параметров
+    схемы («не уточнено» для пустого); вариант без значений — по номеру."""
+    if variant_id is None:
+        return "без варианта"
+    values = db.execute(
+        sa.select(FamilyParameterValue.value)
+        .select_from(WorkVariantValue)
+        .join(FamilyParameter, FamilyParameter.id == WorkVariantValue.parameter_id)
+        .outerjoin(FamilyParameterValue, FamilyParameterValue.id == WorkVariantValue.value_id)
+        .where(WorkVariantValue.variant_id == variant_id)
+        .order_by(FamilyParameter.ordinal)
+    ).all()
+    if not values:
+        return f"#{variant_id}"
+    return ", ".join(row.value if row.value is not None else "не уточнено" for row in values)
+
+
+def _variant_warning(
+    db: Session, *, source_variant_id: int | None, target_context: CatalogContext
+) -> str | None:
+    """Расхождение вариантов (спека вариантов §2.10): у архивируемого контекста
+    был вариант, не равный варианту соответствующего контекста цели (контекст
+    цели без варианта — тоже не равный). Равные варианты и источник без
+    варианта — без предупреждения."""
+    if source_variant_id is None or source_variant_id == target_context.work_variant_id:
+        return None
+    return (
+        "Слияние свело разные варианты работы: «"
+        f"{_variant_title(db, source_variant_id)}» и «"
+        f"{_variant_title(db, target_context.work_variant_id)}»."
+    )
+
+
 def _resolve_target_bucket(
     db: Session, *, target_catalog_position: CatalogPosition, work_category_id: int | None,
     source_bucket_id: int,
@@ -326,7 +366,11 @@ def _route_member_into_bucket(db: Session, *, member: ContextMember, target_buck
 
 
 def _transfer_members(
-    db: Session, *, contexts: list[CatalogContext], target_bucket: ContextBucket
+    db: Session,
+    *,
+    contexts: list[CatalogContext],
+    target_bucket: ContextBucket,
+    source_variants: Mapping[int, int | None] | None = None,
 ) -> tuple[dict[tuple[int, int], int], list[str]]:
     """Переносит ВСЕ членства контекстов `contexts` (корзины источника) в
     `target_bucket` — «обычной маршрутизацией цели» (спека §2.8): ОБА пути,
@@ -346,6 +390,11 @@ def _transfer_members(
     дедупликации, хотя расходятся ровно два контекста, а не сорок пар.
     `conflict_at`/`conflict_from_context_id` при этом ставятся на КАЖДОЕ
     конфликтное членство — дедупликация только текста предупреждения.
+
+    `source_variants` — варианты контекстов источника, прочитанные до того, как
+    архивирование их сняло: по ним строится предупреждение о расхождении
+    вариантов, отдельное от предупреждения о конфликте решений, тоже по одному
+    на пару контекстов (спека вариантов §2.10).
     """
     context_ids = [context.id for context in contexts]
     members = (
@@ -358,7 +407,7 @@ def _transfer_members(
     original_context_by_member = {member.position_item_id: member.context_id for member in members}
 
     moved_counts: dict[tuple[int, int], int] = {}
-    warnings_by_pair: dict[tuple[int, int], str] = {}
+    warnings_by_pair: dict[tuple[int, int, str], str] = {}
     now = _now()
 
     for member in members:
@@ -377,7 +426,13 @@ def _transfer_members(
             member_row.conflict_at = now
             member_row.conflict_from_context_id = from_context_id
             db.flush()
-            warnings_by_pair.setdefault((from_context_id, new_context_id), warning)
+            warnings_by_pair.setdefault((from_context_id, new_context_id, "decisions"), warning)
+        if source_variants is not None:
+            variant_warning = _variant_warning(
+                db, source_variant_id=source_variants.get(from_context_id), target_context=target_ctx
+            )
+            if variant_warning is not None:
+                warnings_by_pair.setdefault((from_context_id, new_context_id, "variants"), variant_warning)
 
     return moved_counts, list(warnings_by_pair.values())
 
@@ -389,7 +444,11 @@ def _archive_contexts(db: Session, *, contexts: list[CatalogContext]) -> None:
     NULL`) контекст по умолчанию столкнулся бы с действующим умолчанием
     корзины цели по частичному уникальному индексу
     `uq_catalog_contexts_default_per_bucket` — снятие этого порядка обязано
-    упасть именно на нём (`TestArchiveBeforeReweighOrder`)."""
+    упасть именно на нём (`TestArchiveBeforeReweighOrder`).
+
+    С архивируемого контекста снимается вариант (`clear_variant`): архивный
+    контекст не держит активный вариант, опустевший вариант архивируется.
+    Варианты читаются вызывающим до этого — для предупреждения о расхождении."""
     now = _now()
     for context in contexts:
         if context.archived_at is None:
@@ -401,6 +460,7 @@ def _archive_contexts(db: Session, *, contexts: list[CatalogContext]) -> None:
                 context_id=context.id,
                 payload={"reason": "review_merge"},
             )
+            clear_variant(db, context_id=context.id)
 
 
 def _reweigh_contexts(db: Session, *, contexts: list[CatalogContext], target_bucket_id: int) -> None:
@@ -506,29 +566,40 @@ def reconcile_contexts(
     lock_buckets(db, lock_ids, exclusive=True)
     db.expire_all()  # см. docs/pitfalls/db.md — иначе следующий db.get вернёт кэш
 
-    # Контексты источника И цели — `FOR UPDATE`, по возрастанию `id`, ОДНИМ
-    # запросом, СРАЗУ ПОСЛЕ замка корзин (порядок «каталожная строка →
-    # корзина → контекст», спека §2.8) и ДО чтения/архивирования ниже.
-    # `populate_existing=True` — тот же приём, что `_lock_rows` этого модуля:
-    # без него уже загруженный объект (например, тот же контекст, чью строку
-    # тем временем держит `assign_family`/`confirm_kind` СВОИМ `FOR UPDATE`)
-    # остаётся с данными на момент ПЕРВОГО чтения, даже если конкурентная
-    # сессия успевает закоммититься, пока `_archive_contexts` ниже ждёт
-    # ИМЕННО эту блокировку своим `UPDATE archived_at` — сам факт ожидания
-    # не подтягивает изменившиеся поля в Python-объект автоматически.
-    # Перечитываются контексты ОБЕИХ сторон (не только источника): решение
-    # цели читается `_conflict_warning` через `db.get()` в `_transfer_members`
-    # ниже, и старый (не заблокированный явно) объект был бы такой же ловушкой,
-    # проиграй цель свою гонку первой.
-    context_bucket_ids = lock_ids
-    if context_bucket_ids:
+    # Порядок «строка каталога -> корзины -> семья -> вариант -> контекст»:
+    # контексты источника теряют вариант (архивирование), поэтому их семьи
+    # берутся `FOR SHARE`, варианты — `FOR UPDATE` ДО замка контекстов; сами
+    # контексты источника и цели берёт тот же захват одним запросом по `id`.
+    bucket_context_ids = list(
         db.execute(
-            sa.select(CatalogContext)
-            .where(CatalogContext.bucket_id.in_(context_bucket_ids))
-            .order_by(CatalogContext.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ).all()
+            sa.select(CatalogContext.id).where(CatalogContext.bucket_id.in_(lock_ids))
+        ).scalars()
+    )
+    source_context_ids = list(
+        db.execute(
+            sa.select(CatalogContext.id).where(
+                CatalogContext.bucket_id.in_([bucket.id for bucket in source_buckets])
+            )
+        ).scalars()
+    )
+    unstable = acquire_family_locks(
+        db,
+        [(context_id, None) for context_id in source_context_ids],
+        release_on_failure=True,
+        lock_variants=True,
+        extra_context_ids=bucket_context_ids,
+    )
+    if unstable:
+        raise FamilyLockMismatch(sorted(unstable))
+    db.expire_all()
+
+    # Контексты источника И цели уже взяты `FOR UPDATE` одним запросом по `id`
+    # захватом выше (после замка корзин, семей и вариантов: порядок «строка
+    # каталога -> корзина -> семья -> вариант -> контекст»). Объекты сессии
+    # сброшены `expire_all()` после захвата и читаются заново: решение цели
+    # `_conflict_warning` берёт через `db.get()` в `_transfer_members` уже
+    # свежим, даже если конкурентная сессия успела закоммититься за время
+    # ожидания замка.
 
     warnings: list[str] = []
     for source_bucket, target_bucket, _target_created in resolved:
@@ -537,6 +608,9 @@ def reconcile_contexts(
             .scalars()
             .all()
         )
+        # Варианты — до архивирования, которое их снимает: по ним строится
+        # предупреждение о расхождении вариантов.
+        source_variants = {context.id: context.work_variant_id for context in contexts}
         # Предмет `routing_rules_dropped` — действующий контекст по
         # умолчанию исходной корзины ДО слияния (спека §2.14) — читаем
         # ДО архивирования.
@@ -545,7 +619,7 @@ def reconcile_contexts(
         _archive_contexts(db, contexts=contexts)
 
         moved_counts, member_warnings = _transfer_members(
-            db, contexts=contexts, target_bucket=target_bucket
+            db, contexts=contexts, target_bucket=target_bucket, source_variants=source_variants
         )
         warnings.extend(member_warnings)
 
@@ -690,25 +764,6 @@ def merge_into_position(
 _NOT_APPLICABLE_MANUAL_KINDS = frozenset({CatalogKind.HEADER.value, CatalogKind.TRASH.value})
 
 
-def _lock_contexts_for_update(db: Session, context_ids: list[int]) -> None:
-    """`FOR UPDATE` на `catalog_contexts` по возрастанию `id` — тот же
-    примитив, что `services.work_families._lock_contexts` (её берут
-    `confirm_kind`/`unconfirm_kind`). Без общего лока подтверждение вида,
-    идущее параллельно с `set_kind(HEADER|TRASH)`, могло бы записать
-    `semantic_kind`/`semantic_state='CONFIRMED'` уже ПОСЛЕ того, как эта
-    функция прочитала контекст, и терминальность `NOT_APPLICABLE` (спека
-    §2.5) была бы потеряна молча — обе стороны пишут одну и ту же строку без
-    общей сериализации. Пустой список — no-op."""
-    if not context_ids:
-        return
-    db.execute(
-        sa.select(CatalogContext.id)
-        .where(CatalogContext.id.in_(context_ids))
-        .order_by(CatalogContext.id)
-        .with_for_update()
-    ).all()
-
-
 def _contexts_of_catalog_position(db: Session, catalog_position_id: int) -> set[int]:
     """Все контексты корзин каталожной строки (архивные тоже — сверка сама
     отсеет неприменимые)."""
@@ -731,10 +786,18 @@ def _mark_contexts_not_applicable(db: Session, *, catalog_position_id: int) -> N
     называет (`kind_set` — о виде WORK/SYSTEM, не о `semantic_state`) —
     поэтому здесь ничего не пишется в журнал.
 
-    Контексты берутся `FOR UPDATE` (`_lock_contexts_for_update`) ДО записи
-    `NOT_APPLICABLE`, перечитываются `expire_all()` после лока — тот же
-    протокол «лок → перечитывание», что у операций `context_operations.py`,
-    приложенный здесь к сериализации против `confirm_kind`/`unconfirm_kind`.
+    Контексты берутся `FOR UPDATE` ДО записи `NOT_APPLICABLE`, перечитываются
+    `expire_all()` после лока — тот же протокол «лок → перечитывание», что у
+    операций `context_operations.py`, приложенный здесь к сериализации против
+    `confirm_kind`/`unconfirm_kind`: без общего лока подтверждение вида,
+    идущее параллельно, записало бы `CONFIRMED` уже после этой записи, и
+    терминальность `NOT_APPLICABLE` (спека §2.5) была бы потеряна молча.
+    Замок контекстов берёт `acquire_family_locks`: перед ним семьи `FOR SHARE`
+    и варианты `FOR UPDATE` (порядок «строка каталога -> семья -> вариант ->
+    контекст»), потому что у контекста строки, переставшей быть работой,
+    снимается вариант: опустевший вариант архивируется, значения и
+    `variant_split_hint` сняты (спека вариантов §2.10). Семью и ожидание
+    контекста эта пометка не снимает.
     """
     contexts = (
         db.execute(
@@ -748,12 +811,19 @@ def _mark_contexts_not_applicable(db: Session, *, catalog_position_id: int) -> N
     if not contexts:
         return
     context_ids = sorted(context.id for context in contexts)
-    _lock_contexts_for_update(db, context_ids)
+    unstable = acquire_family_locks(
+        db, [(context_id, None) for context_id in context_ids],
+        release_on_failure=True, lock_variants=True,
+    )
+    if unstable:
+        raise FamilyLockMismatch(sorted(unstable))
     db.expire_all()
     for context in contexts:
         if context.semantic_state != SemanticState.NOT_APPLICABLE.value:
             context.semantic_state = SemanticState.NOT_APPLICABLE.value
     db.flush()
+    for context_id in context_ids:
+        clear_variant(db, context_id=context_id)
 
 
 def set_kind(
@@ -767,7 +837,10 @@ def set_kind(
     `HEADER`/`TRASH` переводят контексты строки (во всех её корзинах, если
     они уже существуют) в `semantic_state='NOT_APPLICABLE'` (спека §2.5,
     §2.8) — членства целы, но семантические поверхности эти позиции больше не
-    видят. `POSITION` контексты не трогает ни одним полем (спека §2.5, DoD 10).
+    видят. С контекстов таких строк снимается вариант: значения и
+    `variant_split_hint` сняты, опустевший вариант архивируется; семья и ожидание
+    остаются (спека вариантов §2.10). `POSITION` контексты не трогает ни одним
+    полем (спека §2.5, DoD 10).
 
     Raises:
         ReviewError: недопустимый `kind` или строка не в очереди Review.

@@ -3,11 +3,12 @@
 
 Первые две точки перечня: обработка результата `context_values`
 (`apply_values`) и заморозка схемы (`freeze_schema`); затем смена семьи
-(`services.family_change`: `request_family_change`, `cancel_pending_family`).
+(`services.family_change`: `request_family_change`, `cancel_pending_family`) и
+«не работа» контексту (`mark_context_not_work`).
 Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки строится входом, который
 краснеет, если вызов сверки в этой точке снят: без вызова задание по
 предикату не появляется. Остальные точки перечня (`merge_parameter_values`,
-`rebuild_schema`, `mark_context_not_work` и прочие) добавляют свои тесты в этот
+`rebuild_schema` и прочие) добавляют свои тесты в этот
 файл вместе со своими модулями.
 
 Помощники цепочки «семья -> схема -> контекст» импортируются из набора ядра
@@ -26,7 +27,7 @@ from config import settings
 from models import CatalogContext, SemanticJob, WorkFamily
 from services.family_change import cancel_pending_family, request_family_change
 from services.variant_request import load_values_material, paths_hash_of, render_values_request
-from services.work_variants import apply_values
+from services.work_variants import apply_values, mark_context_not_work
 from tests.integration.test_work_variants_core import (
     _answer,
     _apply,
@@ -339,3 +340,37 @@ class TestPendingClearedByApplyValuesReconciles:
         assert outcome.unapplied_reason == "not_applicable"
         db_session.expire_all()
         assert db_session.get(SemanticJob, queued.id).status == "cancelled"
+
+
+class TestMarkContextNotWorkReconciles:
+    def test_the_values_job_of_the_marked_context_is_cancelled_in_the_same_transaction(
+        self, db_session, factories
+    ):
+        world = _world(db_session, factories)
+        assert _apply(db_session, world, paths_hash="paths-of-the-request").applied
+        [job] = _values_jobs(db_session, context_id=world.context_id)
+        assert job.status == "pending"
+        user = factories.UserFactory.create()
+
+        mark_context_not_work(db_session, context_id=world.context_id, actor_id=user.id)
+
+        assert db_session.in_transaction()
+        [job] = _values_jobs(db_session, context_id=world.context_id)
+        assert job.status == "cancelled"
+
+    def test_the_job_of_another_context_stays_in_the_queue(self, db_session, factories):
+        world = _world(db_session, factories)
+        other, _ = _chain_context(
+            db_session, factories, title=f"Соседняя строка {_uid()}", path_specs=[((), 1)]
+        )
+        _bind(db_session, factories, other, family=world.family)
+        assert _apply(db_session, world, paths_hash="paths-of-the-request").applied
+        assert _apply(
+            db_session, world, paths_hash="paths-of-the-request", context_id=other
+        ).applied
+        user = factories.UserFactory.create()
+
+        mark_context_not_work(db_session, context_id=world.context_id, actor_id=user.id)
+
+        [other_job] = _values_jobs(db_session, context_id=other)
+        assert other_job.status == "pending"

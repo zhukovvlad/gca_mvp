@@ -691,19 +691,6 @@ class TestRequestFamilyChangeRefusals:
 
         assert caught.value.code == REFUSE_UNIT_MISMATCH
 
-    def test_removing_the_family_of_a_context_with_a_variant_is_a_separate_operation(
-        self, db_session, factories
-    ):
-        scene = _two_families(db_session, factories)
-        context_id = scene.context_ids[0]
-        _with_variant(db_session, scene, context_id, scene.family)
-
-        with pytest.raises(ValueError):
-            request_family_change(
-                db_session, context_id=context_id, family_id=None,
-                actor_id=scene.user.id, source="manual",
-            )
-
     @pytest.mark.parametrize(
         "case",
         ["manual_without_actor", "auto_with_actor", "auto_without_threshold",

@@ -62,14 +62,26 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
-from services.family_change import PendingState, clear_pending, record_pending_outcome
+from services.family_change import (
+    FamilyLockMismatch,
+    PendingState,
+    acquire_family_locks,
+    clear_pending,
+    record_pending_outcome,
+)
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_events import record_event
 from services.semantic_privacy import _replace_quotes_with_space
 from services.semantic_reconcile import reconcile_or_defer, schedule_extension_wave
 from services.variant_answer import SchemaAnswer, ValuesAnswer
 from services.variant_request import SubjectNotRenderable, paths_hash_of, render_request_for
-from services.work_families import _lock_families
+from services.work_families import (
+    REFUSE_CONTEXT_ARCHIVED,
+    REFUSE_CONTEXT_NOT_APPLICABLE,
+    REFUSE_CONTEXT_NOT_FOUND,
+    WorkFamilyError,
+    _lock_families,
+)
 
 UnappliedReason = Literal["lost_claim", "stale_fingerprint", "not_applicable"]
 
@@ -301,6 +313,37 @@ def archive_variant_if_empty(db: Session, variant_id: int) -> bool:
     variant.archived_at = _now()
     db.flush()
     return True
+
+
+def clear_variant(db: Session, *, context_id: int) -> int | None:
+    """Снимает вариант с контекста: `work_variant_id`, `variant_at`,
+    `variant_paths_hash`, `variant_split_hint` очищаются, значения контекста
+    удаляются (текущее состояние, а не история — спека §2.4), опустевший прежний
+    вариант архивируется. Возвращает прежний вариант (`None` — варианта не было).
+    Семью, ожидание и состояние контекста не трогает: их снимает вызывающий.
+
+    Вызывающий уже держит блокировки в порядке функции: семья, вариант,
+    контекст (`acquire_family_locks(lock_variants=True)`); сама функция
+    блокирует только прежний вариант, уже взятый им, — чтобы подсчёт контекстов
+    при архивировании шёл под блокировкой."""
+    db.flush()  # перечитывание ниже не должно затирать несброшенные правки
+    context = db.execute(
+        sa.select(CatalogContext)
+        .where(CatalogContext.id == context_id)
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    previous_variant_id = context.work_variant_id
+    context.work_variant_id = None
+    context.variant_at = None
+    context.variant_paths_hash = None
+    context.variant_split_hint = None
+    db.execute(
+        sa.delete(ContextParameterValue).where(ContextParameterValue.context_id == context_id)
+    )
+    db.flush()
+    if previous_variant_id is not None:
+        archive_variant_if_empty(db, previous_variant_id)
+    return previous_variant_id
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +1029,73 @@ def apply_values(
     )
 
 
+def mark_context_not_work(db: Session, *, context_id: int, actor_id: int) -> None:
+    """«Не работа» контексту (спека §2.10): `semantic_state := NOT_APPLICABLE`;
+    семья, ожидание, вариант, значения и `variant_split_hint` сняты; событие
+    `context_not_work` (`reason = manual`). Строка каталога не меняется.
+    Задания контекста снимает сверка очереди, вызванная здесь же, до `commit`
+    вызывающего.
+
+    Блокировки: текущая и ожидаемая семьи `FOR SHARE`, затем вариант и контекст
+    `FOR UPDATE`; строка каталога не нужна — её вид не меняется.
+
+    Состояние терминально, как у `set_kind(HEADER|TRASH)` (спека 1 §2.5):
+    повтор на `NOT_APPLICABLE` контексте — отказ, а не «ничего».
+
+    Raises:
+        WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
+            архивирован (`REFUSE_CONTEXT_ARCHIVED`); уже `NOT_APPLICABLE`
+            (`REFUSE_CONTEXT_NOT_APPLICABLE`).
+        FamilyLockMismatch: семья контекста сменилась при захвате дважды.
+    """
+    unstable = acquire_family_locks(
+        db, [(context_id, None)], release_on_failure=True, lock_variants=True
+    )
+    if unstable:
+        raise FamilyLockMismatch(sorted(unstable))
+    context = db.execute(
+        sa.select(CatalogContext)
+        .where(CatalogContext.id == context_id)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if context is None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_FOUND, f"контекст {context_id} не найден", context_id=context_id
+        )
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED, f"контекст {context_id} архивирован", context_id=context_id
+        )
+    if context.semantic_state == SemanticState.NOT_APPLICABLE.value:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_APPLICABLE,
+            f"контекст {context_id} уже помечен как не работа (NOT_APPLICABLE)",
+            context_id=context_id,
+        )
+
+    cleared_family_id = context.work_family_id
+    clear_pending(db, context, outcome="cancelled", actor_id=actor_id)
+    cleared_variant_id = clear_variant(db, context_id=context_id)
+    context.work_family_id = None
+    context.family_source = None
+    context.family_by = None
+    context.family_at = None
+    context.semantic_state = SemanticState.NOT_APPLICABLE.value
+    db.flush()
+    record_event(
+        db,
+        event_type="context_not_work",
+        context_id=context_id,
+        actor_id=actor_id,
+        payload={
+            "reason": "manual",
+            "cleared_family_id": cleared_family_id,
+            "cleared_variant_id": cleared_variant_id,
+        },
+    )
+    reconcile_or_defer(db, [context_id])
+
+
 __all__: Sequence[str] = (
     "ApplyValuesOutcome",
     "FreezeOutcome",
@@ -994,9 +1104,11 @@ __all__: Sequence[str] = (
     "apply_values",
     "archive_variant_if_empty",
     "canonical_value_id",
+    "clear_variant",
     "freeze_schema",
     "get_or_create_value",
     "get_or_create_variant",
+    "mark_context_not_work",
     "normalize_value",
     "values_key_of",
 )

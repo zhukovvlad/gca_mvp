@@ -79,6 +79,7 @@ from models import (
     SemanticKind,
     SemanticState,
     WorkFamily,
+    WorkVariant,
 )
 from services.semantic_events import record_event
 from services.semantic_reconcile import reconcile_or_defer
@@ -629,6 +630,25 @@ def _lock_families(db: Session, family_ids: list[int], *, exclusive: bool) -> No
     db.execute(_lock_families_statement(family_ids, exclusive=exclusive)).all()
 
 
+def _lock_variants_statement(variant_ids: list[int]):
+    """Варианты блокируются только `FOR UPDATE`, по возрастанию `id`: вариант
+    берёт и тот, кто его меняет, и тот, кто считает на нём контексты, чтобы
+    архивировать опустевший (`archive_variant_if_empty`)."""
+    return (
+        sa.select(WorkVariant.id)
+        .where(WorkVariant.id.in_(variant_ids))
+        .order_by(WorkVariant.id)
+        .with_for_update()
+    )
+
+
+def _lock_variants(db: Session, variant_ids: list[int]) -> None:
+    """Блокирует варианты по возрастанию `id`; пустой список — no-op."""
+    if not variant_ids:
+        return
+    db.execute(_lock_variants_statement(variant_ids)).all()
+
+
 def _lock_contexts_statement(context_ids: list[int]):
     """Контексты в этом модуле блокируются ТОЛЬКО `FOR UPDATE` — ни одна
     операция задачи 8 не читает контекст на общих правах."""
@@ -721,6 +741,12 @@ def assign_family(
     (`FOR UPDATE` на семью) задерживает назначение и наоборот — гонка
     «назначение против архивирования» (спека §2.7, «Архивирование семьи»).
 
+    `family_id=None` (снятие) снимает и вариант контекста: ожидание, значения,
+    `variant_split_hint` и сам вариант уходят вместе с семьёй, опустевший вариант
+    архивируется, строка каталога остаётся как была (спека вариантов §2.5,
+    §2.10). Блокировки там: текущая и ожидаемая семьи `FOR SHARE`, затем вариант
+    и контекст `FOR UPDATE` (`acquire_family_locks`).
+
     Raises:
         ValueError: ошибка вызова, до любой блокировки и записи —
             `source=suggestion` без `suggestion_id`; `source=manual` с
@@ -767,7 +793,18 @@ def assign_family(
                 REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
             )
         _lock_families(db, [family_id], exclusive=False)  # FOR SHARE — раньше контекста
-    _lock_contexts(db, [context_id])  # FOR UPDATE
+        _lock_contexts(db, [context_id])  # FOR UPDATE
+    else:
+        # Снятие семьи снимает и вариант: текущая и ожидаемая семьи `FOR SHARE`,
+        # затем вариант и контекст. Импорт здесь: `family_change` сам импортирует
+        # этот модуль.
+        from services.family_change import FamilyLockMismatch, acquire_family_locks
+
+        unstable = acquire_family_locks(
+            db, [(context_id, None)], release_on_failure=True, lock_variants=True
+        )
+        if unstable:
+            raise FamilyLockMismatch(sorted(unstable))
     db.expire_all()  # см. докстроку модуля — иначе следующий db.get вернёт кэш
 
     context = db.get(CatalogContext, context_id)  # ПЕРЕЧИТАННОЕ после лока
@@ -786,6 +823,14 @@ def assign_family(
     now = _now()
 
     if family_id is None:
+        from services.family_change import clear_pending
+        from services.work_variants import clear_variant
+
+        # Ожидание, значения, подсказка о расхождении путей и вариант уходят
+        # вместе с семьёй; вариант раньше семьи — иначе контекст остался бы с
+        # вариантом без семьи (`CK_CONTEXT_VARIANT_NEEDS_FAMILY`).
+        clear_pending(db, context, outcome="cancelled", actor_id=actor_id)
+        clear_variant(db, context_id=context_id)
         context.work_family_id = None
         context.family_source = None
         context.family_by = None

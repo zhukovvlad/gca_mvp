@@ -150,6 +150,8 @@ RECONCILE_ALLOWLIST: frozenset[str] = frozenset(
         "services.family_change",
         # Обработчик результата значений меняет вариант, ожидающую и текущую
         # семью контекста и строку каталога; волну после расширений ставит сам.
+        # «Не работа» контексту снимает семью и ставит `NOT_APPLICABLE`, сверку
+        # зовёт сама.
         "services.work_variants",
         # Слияние в Review и смена `kind` строки.
         "services.review",
