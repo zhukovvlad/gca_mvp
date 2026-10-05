@@ -210,6 +210,36 @@ def _create_worker_database(url: str) -> None:
             conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
 
 
+def _recreate_worker_database(url: str) -> None:
+    """DROP DATABASE + CREATE DATABASE базы воркёра: чистый старт без DROP SCHEMA.
+
+    `DROP SCHEMA public CASCADE` на мигрированной базе держит до конца
+    транзакции блокировку на КАЖДЫЙ удаляемый объект, включая сотни функций и
+    операторов расширений `vector` и `btree_gist`: замер 05.10.2026 — 2224
+    слота на один снос при общей таблице 64 × 100 = 6400. Три воркёра,
+    стартовавшие разом, её исчерпывают (`out of shared memory`, TECH_DEBT
+    запись 1). Удаление базы целиком берёт одну блокировку вместо тысяч.
+
+    FORCE обрывает чужие подключения к этой базе — они бывают лишь у второго
+    прогона на тех же именах воркёров, а тот всё равно снёс бы схему.
+    """
+    import psycopg
+    from psycopg import sql
+
+    parsed = make_url(url)
+    name = sql.Identifier(parsed.database or "")
+    with psycopg.connect(
+        host=parsed.host,
+        port=parsed.port,
+        user=parsed.username,
+        password=parsed.password,
+        dbname="postgres",
+        autocommit=True,
+    ) as conn:
+        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(name))
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(name))
+
+
 @pytest.fixture(scope="session")
 def db_engine(worker_id) -> Iterator:
     """Engine на TEST_DATABASE_URL. Накатывает Alembic один раз на сессию.
@@ -219,7 +249,8 @@ def db_engine(worker_id) -> Iterator:
     wiring-тестами (test_worker_database.py, пп. 8–11):
 
         worker URL → resolve + барьер (a) → барьер (b) → ensure_mutation_allowed
-                   → CREATE DATABASE → engine / DROP SCHEMA / migrations
+                   → воркёр: DROP + CREATE DATABASE | master: DROP SCHEMA
+                   → migrations
 
     Перестройка URL — первым шагом: иначе барьеры судили бы `gca_test`, а работа
     шла бы по `gca_gw0_test`. CREATE DATABASE — мутация, поэтому строго после
@@ -284,16 +315,19 @@ def db_engine(worker_id) -> Iterator:
     # которая не loopback и не в DB_EXTRA_TARGETS.
     ensure_mutation_allowed(test_url, "conftest DROP SCHEMA")
 
-    # Мутации — только после всех трёх барьеров. Базу создаёт лишь воркёр:
-    # master-путь ведёт себя как раньше (gca_test готовят рецепты justfile).
+    # Мутации — только после всех трёх барьеров. Чистый старт у двух путей
+    # разный: воркёр пересоздаёт свою базу целиком (DROP SCHEMA восьми воркёров
+    # разом исчерпывает таблицу блокировок — см. _recreate_worker_database),
+    # master сносит схему как раньше — gca_test готовят рецепты justfile, а
+    # одиночный снос в таблицу укладывается.
     if worker_id != "master":
-        _create_worker_database(test_url)
+        _recreate_worker_database(test_url)
 
     engine = create_engine(test_url, pool_pre_ping=True)
 
-    # Сбрасываем схему перед накатом — гарантируем чистый старт
-    with engine.begin() as conn:
-        conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    if worker_id == "master":
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
 
     # command.upgrade() исполняет alembic/env.py в этом же процессе, а тот
     # модуль-уровнево делает load_dotenv(ROOT / ".env") — снимаем побочный
