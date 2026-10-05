@@ -134,8 +134,20 @@ test-backend-local: pg-test-start
 # пересоздаёт свою базу (DROP + CREATE DATABASE) вместо DROP SCHEMA; n=8 —
 # три прогона подряд без единого OutOfMemory. Подробности — docs/TECH_DEBT.md,
 # запись 1.
+#
+# Полный набор параллельно, база на воркёра (входит в `ci`)
 test-backend-parallel n="8": pg-test-start
     cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest -n {{n}}
+
+# Тот же набор БЕЗ двух дорогих групп: downgrade/upgrade на scratch-базе
+# (маркер migration_roundtrip: три теста, до 5 минут каждый под нагрузкой) и
+# тестов скрипта ревью (review_tooling: git в подпроцессах). Полный набор
+# остаётся за `ci` / test-backend-parallel и обязателен перед пушем (§9.3);
+# этот рецепт его не заменяет.
+#
+# Повседневный прогон во время задачи — без migration_roundtrip и review_tooling
+test-backend-quick n="8": pg-test-start
+    cd backend && TEST_DATABASE_URL="{{test_db_local}}" uv run pytest -n {{n}} -m "not migration_roundtrip and not review_tooling"
 
 # Точечный прогон unit по -k паттерну
 test-unit-k pattern:

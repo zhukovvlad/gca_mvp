@@ -828,6 +828,7 @@ class TestDowngradeBlockers:
         assert "событий журнала — 2" in m._downgrade_refusal(blockers)
 
 
+@pytest.mark.migration_roundtrip
 class TestDowngradeFifthInputReal:
     """Пятый вход `downgrade` — РЕАЛЬНЫЙ прогон `alembic
     upgrade head` → `downgrade 0016` → `upgrade head` на ОТДЕЛЬНОЙ
