@@ -847,6 +847,7 @@ class TestDowngradeBlockersLive:
         assert "удержанных пачек — 2" in m._downgrade_refusal(blockers)
 
 
+@pytest.mark.migration_roundtrip
 class TestDowngradeFifthInputReal:
     """Пятый вход `downgrade` — РЕАЛЬНЫЙ прогон `alembic upgrade head` →
     `downgrade 0017` → `upgrade head` на ОТДЕЛЬНОЙ scratch-базе. Сессионная

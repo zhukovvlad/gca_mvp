@@ -36,6 +36,11 @@ import pytest
 
 import scripts.enumerate_review_units as enumerate_review_units
 
+# Скрипт ревью, а не продукт: тесты гоняют настоящий git в подпроцессах и
+# стоят ~5 минут машинного времени полного прогона. Полный набор (just ci)
+# их исполняет, повседневный just test-backend-quick — нет.
+pytestmark = pytest.mark.review_tooling
+
 SCRIPT_PATH = Path(enumerate_review_units.__file__).resolve()
 
 # Мини-план с тремя задачами — тот же скелет секций (Files/Interfaces/
