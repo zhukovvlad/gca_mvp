@@ -20,10 +20,17 @@
 Функции не коммитят: транзакцией владеет вызывающий. Исключение —
 `apply_publication_rules`: правила публикации идут отдельной транзакцией после
 записи ответа модели и коммитят сами.
+
+Массовое автопринятие (`preview_auto_accept`, `apply_auto_accept`, спека §2.12)
+применяет ту же таблицу публикации к опубликованным предложениям пачкой: исход
+каждой строки считает одна функция (`rule_outcome`), поэтому предварительный
+показ и правило публикации разойтись не могут.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+import json
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -39,12 +46,19 @@ from models import (
     CatalogPosition,
     ContextBucket,
     FamilySource,
+    FamilyStatus,
     FamilySuggestion,
     SuggestionDecision,
+    WorkFamily,
 )
 from services.semantic_events import record_event
-from services.semantic_reconcile import reconcile_or_defer
-from services.semantic_request import is_applicable, load_request_material, render_context_request
+from services.semantic_reconcile import deferred_reconcile, reconcile_or_defer
+from services.semantic_request import (
+    ContextRequestMaterial,
+    is_applicable,
+    load_request_material,
+    render_context_request,
+)
 from services.work_families import (
     REFUSE_CONTEXT_ARCHIVED,
     REFUSE_CONTEXT_NOT_FOUND,
@@ -56,19 +70,24 @@ from services.work_families import (
 )
 
 __all__ = [
+    "AutoAcceptError",
+    "AutoAcceptPreview",
     "FamilyChangeOutcome",
     "FamilyChangeSource",
     "FamilyLockMismatch",
     "PendingOutcome",
     "PendingState",
     "acquire_family_locks",
+    "apply_auto_accept",
     "apply_publication_rules",
     "cancel_pending_family",
     "clear_pending",
     "family_change_route",
     "lock_and_recheck_suggestion",
+    "preview_auto_accept",
     "record_pending_outcome",
     "request_family_change",
+    "rule_outcome",
 ]
 
 FamilyChangeSource = Literal["manual", "suggestion", "auto_suggestion"]
@@ -196,12 +215,17 @@ def lock_and_recheck_suggestion(db: Session, suggestion_id: int) -> FamilySugges
     if suggestion is None or not suggestion.is_published or suggestion.decision is not None:
         return None
     material = load_request_material(db, [suggestion.context_id]).get(suggestion.context_id)
-    if material is None or not is_applicable(material):
-        return None
-    current = render_context_request(material, settings=settings)
-    if current.request_hash != suggestion.request_hash:
+    if not _is_current(suggestion.request_hash, material):
         return None
     return suggestion
+
+
+def _is_current(request_hash: str, material: ContextRequestMaterial | None) -> bool:
+    """Контекст применим, и отпечаток его запроса (материал -> рендер) равен
+    `request_hash` предложения."""
+    if material is None or not is_applicable(material):
+        return False
+    return render_context_request(material, settings=settings).request_hash == request_hash
 
 
 # ---------------------------------------------------------------------------
@@ -537,26 +561,96 @@ def _record_auto_decision(suggestion: FamilySuggestion, decision: SuggestionDeci
     suggestion.decided_at = _now()
 
 
-def _catalog_kind(db: Session, context_id: int) -> str:
-    return db.execute(
-        sa.select(CatalogPosition.kind)
+def _catalog_row(db: Session, context_id: int) -> tuple[str, int | None]:
+    """`(вид строки каталога, единица)` контекста."""
+    row = db.execute(
+        sa.select(CatalogPosition.kind, CatalogPosition.unit_id)
         .select_from(CatalogContext)
         .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
         .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
         .where(CatalogContext.id == context_id)
-    ).scalar_one()
+    ).one()
+    return row.kind, row.unit_id
 
 
-def _apply_rules_locked(
-    db: Session, suggestion: FamilySuggestion, context: CatalogContext, threshold: Decimal
+def _fitting_families(
+    db: Session, pairs: Collection[tuple[int, int | None]]
+) -> set[tuple[int, int | None]]:
+    """Пары `(семья, единица контекста)`, для которых семья годится контексту:
+    существует, `active` и её единица равна единице строки каталога - тот же
+    предикат, что у `check_family_assignable`, но без отказа. Единицы
+    сравниваются в Python, где `None == None` истинно."""
+    family_ids = {family_id for family_id, _unit in pairs}
+    if not family_ids:
+        return set()
+    active = {
+        (row.id, row.unit_id)
+        for row in db.execute(
+            sa.select(WorkFamily.id, WorkFamily.unit_id).where(
+                WorkFamily.id.in_(sorted(family_ids)),
+                WorkFamily.status == FamilyStatus.active.value,
+            )
+        ).all()
+    }
+    return {pair for pair in pairs if pair in active}
+
+
+#: Исходы таблицы публикации (спека §2.5): привязка подтверждена без смены
+#: семьи; семья назначена сразу; поставлено ожидающее назначение; правило
+#: предложение не трогает.
+RULE_CONFIRM = "confirm"
+RULE_ASSIGN = "assign"
+RULE_PENDING = "pending"
+RULE_NONE = "none"
+
+#: Что должен вернуть `request_family_change` на исход правила.
+_ROUTE_OF_OUTCOME = {RULE_ASSIGN: "assigned", RULE_PENDING: "pending"}
+
+
+def rule_outcome(
+    *,
+    family_id: int,
+    confidence: Decimal,
+    context,
+    threshold: Decimal,
+    family_fits: bool,
+) -> str:
+    """Исход строки таблицы публикации (спека §2.5) для предложения семьи
+    `family_id` и состояния контекста - единственное место, где он считается:
+    правило публикации и массовое автопринятие зовут её же. `context` - всё,
+    у чего есть `work_family_id`, `family_source`, `work_variant_id`,
+    `pending_family_id`, `pending_family_source`. `family_fits` - семья годится
+    контексту (активна, единица та же); негодная семья (например, слитая или
+    заархивированная после ответа) правилом не применяется."""
+    auto_source = FamilySource.auto_suggestion.value
+    if context.work_family_id == family_id:
+        return RULE_CONFIRM
+    if confidence < threshold:
+        return RULE_NONE
+    if context.work_family_id is not None and context.family_source != auto_source:
+        return RULE_NONE  # привязка человека: очередь «смена семьи»
+    route = family_change_route(context, family_id, auto_source)
+    if route == "unchanged" or not family_fits:
+        return RULE_NONE  # ожидание человека правилом не вытесняется
+    return RULE_PENDING if route == "pending" else RULE_ASSIGN
+
+
+def _apply_outcome(
+    db: Session,
+    suggestion: FamilySuggestion,
+    context: CatalogContext,
+    outcome: str,
+    threshold: Decimal,
 ) -> FamilyChangeOutcome | None:
-    """Таблица публикации (спека §2.5) под блокировками. `None` — правило
+    """Применяет исход `rule_outcome` под блокировками. `None` - правило
     предложения не трогает: оно остаётся опубликованным человеку."""
+    if outcome == RULE_NONE:
+        return None
     family_id = suggestion.family_id
     assert family_id is not None
     auto_source = FamilySource.auto_suggestion.value
 
-    if context.work_family_id == family_id:
+    if outcome == RULE_CONFIRM:
         # Та же семья: ответ модели подтверждает привязку. Ожидание другой
         # семьи от автопринятия снимается (иначе более старое автоожидание
         # отменило бы более новое решение), ожидание человека не тронуто.
@@ -571,19 +665,14 @@ def _apply_rules_locked(
         db.flush()
         return FamilyChangeOutcome("unchanged", context.id, family_id, superseded)
 
-    if suggestion.confidence < threshold:
-        return None
-    if context.work_family_id is not None and context.family_source != auto_source:
-        return None  # привязка человека: очередь «смена семьи»
-    route = family_change_route(context, family_id, auto_source)
-    if route == "unchanged":
-        return None  # ожидание человека правилом не вытесняется
     _record_auto_decision(
         suggestion,
-        SuggestionDecision.auto_pending if route == "pending" else SuggestionDecision.auto_accepted,
+        SuggestionDecision.auto_pending
+        if outcome == RULE_PENDING
+        else SuggestionDecision.auto_accepted,
     )
     db.flush()
-    return request_family_change(
+    result = request_family_change(
         db,
         context_id=context.id,
         family_id=family_id,
@@ -592,6 +681,32 @@ def _apply_rules_locked(
         suggestion_id=suggestion.id,
         threshold=threshold,
     )
+    if result.kind != _ROUTE_OF_OUTCOME[outcome]:
+        raise RuntimeError(
+            f"исход правила {outcome!r} разошёлся с путём смены семьи {result.kind!r}"
+        )
+    return result
+
+
+def _apply_rules_locked(
+    db: Session,
+    suggestion: FamilySuggestion,
+    context: CatalogContext,
+    threshold: Decimal,
+    *,
+    unit_id: int | None,
+) -> FamilyChangeOutcome | None:
+    """Таблица публикации (спека §2.5) под блокировками."""
+    family_id = suggestion.family_id
+    assert family_id is not None
+    outcome = rule_outcome(
+        family_id=family_id,
+        confidence=suggestion.confidence,
+        context=context,
+        threshold=threshold,
+        family_fits=(family_id, unit_id) in _fitting_families(db, [(family_id, unit_id)]),
+    )
+    return _apply_outcome(db, suggestion, context, outcome, threshold)
 
 
 def apply_publication_rules(
@@ -638,6 +753,230 @@ def _apply_publication_rules(
     if suggestion is None:
         return None
     context = _load_context(db, suggestion.context_id)
-    if _catalog_kind(db, context.id) not in _APPLICABLE_CATALOG_KINDS:
+    kind, unit_id = _catalog_row(db, context.id)
+    if kind not in _APPLICABLE_CATALOG_KINDS:
         return None
-    return _apply_rules_locked(db, suggestion, context, threshold)
+    return _apply_rules_locked(db, suggestion, context, threshold, unit_id=unit_id)
+
+
+# ---------------------------------------------------------------------------
+#  Массовое автопринятие (спека §2.12)
+# ---------------------------------------------------------------------------
+
+CODE_THRESHOLD_MISSING = "threshold_missing"
+CODE_PREVIEW_CHANGED = "preview_changed"
+
+#: Порядок исходов в показе: сначала те, что что-то меняют.
+_OUTCOMES = (RULE_CONFIRM, RULE_ASSIGN, RULE_PENDING, RULE_NONE)
+
+
+class AutoAcceptError(Exception):
+    """Массовое автопринятие отказано. `code` - `threshold_missing` (порог не
+    задан) либо `preview_changed` (состояние изменилось после показа; `409`).
+    Сервис не коммитит и ничего не применил к этому моменту: вызывающий
+    откатывает транзакцию."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class AutoAcceptPreview:
+    """`by_outcome` - число кандидатов по каждому исходу (в том числе тех,
+    кого правило не трогает: их состояние тоже входит в хэш); `total` - число
+    кандидатов."""
+
+    preview_hash: str
+    threshold: Decimal
+    by_outcome: Mapping[str, int]
+    total: int
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    suggestion_id: int
+    request_hash: str
+    family_id: int
+    context_id: int
+    outcome: str
+    work_family_id: int | None
+    family_source: str | None
+    work_variant_id: int | None
+    pending_family_id: int | None
+    pending_family_source: str | None
+
+
+def _require_threshold() -> Decimal:
+    threshold = settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD
+    if threshold is None:
+        raise AutoAcceptError(
+            CODE_THRESHOLD_MISSING, "порог автопринятия SEMANTIC_AUTO_ACCEPT_THRESHOLD не задан"
+        )
+    return threshold
+
+
+def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
+    """Опубликованные предложения «своей» семьи без решения с текущим
+    отпечатком - те же условия, что у перепроверки правила публикации
+    (`lock_and_recheck_suggestion`): контекст не архивирован и применим, строка
+    каталога - работа. Сюда попадают и предложения, не принятые из-за сбоя между
+    записью ответа и транзакцией правил. Чтение без блокировок, строки по
+    `suggestion_id`."""
+    rows = db.execute(
+        sa.select(
+            FamilySuggestion.id,
+            FamilySuggestion.request_hash,
+            FamilySuggestion.family_id,
+            FamilySuggestion.confidence,
+            FamilySuggestion.context_id,
+            CatalogContext.work_family_id,
+            CatalogContext.family_source,
+            CatalogContext.work_variant_id,
+            CatalogContext.pending_family_id,
+            CatalogContext.pending_family_source,
+            CatalogPosition.unit_id,
+        )
+        .join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
+        .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+        .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
+        .where(
+            FamilySuggestion.is_published.is_(True),
+            FamilySuggestion.decision.is_(None),
+            FamilySuggestion.family_id.is_not(None),
+            CatalogPosition.kind.in_(_APPLICABLE_CATALOG_KINDS),
+        )
+        .order_by(FamilySuggestion.id)
+    ).all()
+    if not rows:
+        return []
+    material = load_request_material(db, sorted({row.context_id for row in rows}))
+    current = [row for row in rows if _is_current(row.request_hash, material.get(row.context_id))]
+    fitting = _fitting_families(db, {(row.family_id, row.unit_id) for row in current})
+    return [
+        _Candidate(
+            suggestion_id=row.id,
+            request_hash=row.request_hash,
+            family_id=row.family_id,
+            context_id=row.context_id,
+            outcome=rule_outcome(
+                family_id=row.family_id,
+                confidence=row.confidence,
+                context=row,
+                threshold=threshold,
+                family_fits=(row.family_id, row.unit_id) in fitting,
+            ),
+            work_family_id=row.work_family_id,
+            family_source=row.family_source,
+            work_variant_id=row.work_variant_id,
+            pending_family_id=row.pending_family_id,
+            pending_family_source=row.pending_family_source,
+        )
+        for row in current
+    ]
+
+
+def _preview_hash(threshold: Decimal, candidates: Sequence[_Candidate]) -> str:
+    """sha256 канонического JSON по порогу и отсортированным кортежам спеки
+    §2.12: `(suggestion_id, request_hash, семья предложения, исход,
+    work_family_id, family_source, work_variant_id, pending_family_id,
+    pending_family_source)`."""
+    canonical = json.dumps(
+        {
+            "threshold": str(threshold),
+            "rows": [
+                [
+                    c.suggestion_id, c.request_hash, c.family_id, c.outcome, c.work_family_id,
+                    c.family_source, c.work_variant_id, c.pending_family_id,
+                    c.pending_family_source,
+                ]
+                for c in candidates
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def preview_auto_accept(db: Session) -> AutoAcceptPreview:
+    """Что сделает `apply_auto_accept` с порогом из настройки: число кандидатов
+    по исходам таблицы публикации и хэш их состояния. Ничего не пишет и не
+    блокирует.
+
+    Raises:
+        AutoAcceptError: порог не задан (`threshold_missing`)."""
+    threshold = _require_threshold()
+    candidates = _load_candidates(db, threshold)
+    by_outcome = {outcome: 0 for outcome in _OUTCOMES}
+    for candidate in candidates:
+        by_outcome[candidate.outcome] += 1
+    return AutoAcceptPreview(
+        preview_hash=_preview_hash(threshold, candidates),
+        threshold=threshold,
+        by_outcome=by_outcome,
+        total=len(candidates),
+    )
+
+
+def _candidate_keys(candidates: Sequence[_Candidate]) -> set[tuple[int, int, int]]:
+    return {(c.suggestion_id, c.family_id, c.context_id) for c in candidates}
+
+
+def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]:
+    """Применяет таблицу публикации (спека §2.5) ко всем кандидатам одной
+    транзакцией вызывающего. Порядок: (1) кандидаты читаются без блокировок;
+    (2) все затронутые семьи - текущие, ожидаемые, предложенные - `FOR SHARE`
+    одним запросом по возрастанию `id`; (3) контексты `FOR UPDATE` по
+    возрастанию `id` (оба шага - `acquire_family_locks`); (4) предложения
+    `FOR UPDATE`; (5) кандидаты и хэш считаются заново под блокировками -
+    не совпал с `preview_hash`: отказ, ничего не применено; (6) строки таблицы
+    применяются теми же путями, что у правила публикации, сверка очереди - одна,
+    в конце, до `commit` вызывающего. Повышения `FOR SHARE` до `FOR UPDATE`
+    нет. Автопринятие пишется без автора, как правило публикации.
+
+    Возвращает число применённых по исходу (`confirm`, `assign`, `pending`).
+
+    Raises:
+        AutoAcceptError: порог не задан; состояние изменилось после показа.
+            Вызывающий откатывает транзакцию."""
+    threshold = _require_threshold()
+    first = _load_candidates(db, threshold)
+    suggestions: dict[int, FamilySuggestion] = {}
+    if first:
+        unstable = acquire_family_locks(
+            db, [(c.context_id, c.family_id) for c in first], release_on_failure=True
+        )
+        if unstable:
+            raise AutoAcceptError(CODE_PREVIEW_CHANGED, "семьи контекстов изменились при захвате")
+        suggestions = {
+            suggestion.id: suggestion
+            for suggestion in db.execute(
+                sa.select(FamilySuggestion)
+                .where(FamilySuggestion.id.in_([c.suggestion_id for c in first]))
+                .order_by(FamilySuggestion.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalars()
+        }
+    candidates = _load_candidates(db, threshold)
+    if _candidate_keys(candidates) != _candidate_keys(first) or (
+        _preview_hash(threshold, candidates) != preview_hash
+    ):
+        raise AutoAcceptError(CODE_PREVIEW_CHANGED, "состояние изменилось после показа")
+
+    applied = {RULE_CONFIRM: 0, RULE_ASSIGN: 0, RULE_PENDING: 0}
+    with deferred_reconcile(db):
+        for candidate in candidates:
+            if candidate.outcome == RULE_NONE:
+                continue
+            _apply_outcome(
+                db,
+                suggestions[candidate.suggestion_id],
+                _load_context(db, candidate.context_id),
+                candidate.outcome,
+                threshold,
+            )
+            applied[candidate.outcome] += 1
+    return applied

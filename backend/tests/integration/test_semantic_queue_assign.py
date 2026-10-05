@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-import services.work_families as work_families_module
+import services.semantic_reconcile as reconcile_module
 from config import settings
 from models import (
     CatalogContext,
@@ -359,7 +359,7 @@ class TestReconcileOnAssignAndUnassign:
 
         assert _jobs(db_session, context_id) == []
         held = db_session.execute(sa.select(SemanticReconcileBatch)).scalars().all()
-        assert [batch.status for batch in held] == ["held"]
+        assert [(batch.status, batch.source) for batch in held] == [("held", "operation")]
 
     def test_reconcile_failure_propagates_and_rolls_back_assignment(
         self, db_session, factories, monkeypatch
@@ -369,7 +369,7 @@ class TestReconcileOnAssignAndUnassign:
         def _failing_reconcile(*args, **kwargs):
             raise RuntimeError("сверка упала")
 
-        monkeypatch.setattr(work_families_module, "reconcile_semantic_jobs", _failing_reconcile)
+        monkeypatch.setattr(reconcile_module, "reconcile_semantic_jobs", _failing_reconcile)
         savepoint = db_session.begin_nested()
 
         with pytest.raises(RuntimeError, match="сверка упала"):

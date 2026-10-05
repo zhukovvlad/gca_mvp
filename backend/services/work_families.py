@@ -68,7 +68,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import services.context_routing as context_routing_module
-from config import settings
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -81,9 +80,8 @@ from models import (
     SemanticState,
     WorkFamily,
 )
-from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
-from services.semantic_reconcile import reconcile_or_defer, reconcile_semantic_jobs
+from services.semantic_reconcile import reconcile_or_defer
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind
 from services.unit_resolution import NO_UNIT_NORM, UnitResolver
 
@@ -822,7 +820,7 @@ def assign_family(
     )
     # Назначение и снятие меняют применимость контекста — очередь сверяется в
     # этой же транзакции (настройки читаются в момент вызова).
-    reconcile_semantic_jobs(db, [context_id], cap=event_cap_from(settings), source="operation")
+    reconcile_or_defer(db, [context_id])
     return context
 
 

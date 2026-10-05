@@ -779,7 +779,8 @@ class AutoAcceptPreview:
     preview_hash: str; threshold: Decimal; by_outcome: Mapping[str, int]; total: int
 
 def preview_auto_accept(db: Session) -> AutoAcceptPreview
-def apply_auto_accept(db: Session, *, preview_hash: str, actor_id: int) -> Mapping[str, int]
+def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]
+# без actor_id: автопринятие пишется без автора, и ни одно событие его не несёт
 # cli: semantic-auto-accept (preview → подтверждение → apply), semantic-schemas-backfill
 ```
 

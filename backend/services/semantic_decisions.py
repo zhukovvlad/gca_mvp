@@ -53,6 +53,7 @@ from models import (
     SemanticWorkerState,
     SuggestionDecision,
     SuggestionUnpublishedReason,
+    WorkFamily,
 )
 from services.family_change import (
     acquire_family_locks,
@@ -60,7 +61,7 @@ from services.family_change import (
     lock_and_recheck_suggestion,
     request_family_change,
 )
-from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
+from services.semantic_cost import RESERVE_FORMULA_VERSION, event_cap_from, tariffs_from
 from services.semantic_privacy import PrivacyDictionary, build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
@@ -94,6 +95,7 @@ __all__ = [
     "create_family_from_suggestion",
     "decline_privacy_hold",
     "discard_batch",
+    "backfill_family_schemas",
     "enqueue_all",
     "preview_batch",
     "preview_config_reask",
@@ -963,4 +965,16 @@ def enqueue_all(db: Session) -> int | None:
         unit_id=None,
         reserve_estimate_usd=reserve,
         cached_estimate_usd=cached,
+    )
+
+
+def backfill_family_schemas(db: Session) -> ReconcileReport:
+    """Массовая постановка схем (CLI `semantic-schemas-backfill`): сверка ветви
+    `family_schema` по всем семьям, источник пачки `mass`. Схему получают
+    активные семьи без текущей версии: ветвь плана пропускает семью с текущей
+    версией и неактивную. Постановка идёт под потолком события
+    из настроек, сверх него - ОДНА удержанная пачка `mass` в `report.held_batch_id`."""
+    family_ids = db.execute(sa.select(WorkFamily.id)).scalars().all()
+    return reconcile_family_schemas(
+        db, family_ids, cap=event_cap_from(settings), source="mass"
     )
