@@ -714,7 +714,9 @@ def _pending_world(db, factories, *, source="manual", params=((1, "Тип", ["а
     `family`, `schema`, `parameters`, `values` описывают ОЖИДАЕМУЮ семью B —
     ту, по чьей схеме ставятся значения."""
     world = _world(db, factories)
-    family_b = _family(db, definition="Другая семья")
+    # Ожидаемая семья — живая привязка: обработчик применяет результат, только
+    # если она `active` (спека вариантов §2.5 п. 6).
+    family_b = _family(db, status="active", definition="Другая семья")
     schema_b = _frozen_schema(db, factories, family_b, [list(p) for p in params])
     suggestion = _set_pending(db, factories, world.context_id, family_b, source)
     parameters, values = _row_ids(db, schema_b)

@@ -42,6 +42,7 @@ import sqlalchemy as sa
 
 from config import settings
 from models import (
+    CatalogContext,
     FamilyParameterSchema,
     FamilySuggestion,
     SemanticCancelReason,
@@ -557,15 +558,25 @@ class TestStaleFingerprintTransitions:
 #  Неприменимый контекст (спека §2.7)
 # ---------------------------------------------------------------------------
 
+def _mark_not_applicable(db, context_id):
+    db.execute(
+        sa.update(CatalogContext)
+        .where(CatalogContext.id == context_id)
+        .values(semantic_state="NOT_APPLICABLE")
+    )
+    db.expire_all()
+
+
 class TestInapplicableContext:
     def _inapplicable_context(self, db, factories, user, *, title):
         proposal = _proposal(factories)
         unit_id = _unit_id(db, "M2")
         family = _active_family(db, title=f"Семья {title}", unit_name="M2", actor_id=user.id)
         context_id = _simple_context(db, factories, proposal, unit_id=unit_id, title=title)
-        # Назначение семьи делает контекст неприменимым (спека §2.7:
-        # `work_family_id IS NULL` — предикат применимости).
-        assign_family(db, context_id=context_id, family_id=family.id, actor_id=user.id)
+        # Контекст неприменим: `NOT_APPLICABLE` (привязка семьи применимость не
+        # отменяет, спека вариантов §2.5).
+        _mark_not_applicable(db, context_id)
+        assert family.id is not None
         return context_id
 
     @pytest.mark.parametrize(
@@ -1299,7 +1310,7 @@ class TestOverCapSideEffects:
             db_session, factories, user, family_title="Семья сверх потолка",
             titles=["Сверх A", "Сверх B", "Сверх C", "Сверх D", "Сверх E"],
         )
-        assign_family(db_session, context_id=e, family_id=family.id, actor_id=user.id)
+        _mark_not_applicable(db_session, e)
         renders = {cid: _rendered_for(db_session, cid)[1] for cid in (a, b, c, d)}
         revivable = _make_job(db_session, context_id=b, request_hash=renders[b].request_hash,
                               status=SemanticJobStatus.cancelled.value,

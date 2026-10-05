@@ -1749,14 +1749,13 @@ class TestConcurrentWrites:
 
 
 class TestRecordResultAgainstDecision:
-    def test_assigning_a_family_does_not_wait_for_a_running_job_being_recorded(
+    def test_assigning_a_family_waits_for_the_context_of_a_recording_and_both_finish(
         self, committing_session_factory, committing_db, committing_factories, monkeypatch
     ):
-        """`record_result` держит своё `running`-задание и затем берёт ключевой замок
-        на контекст; назначение семьи держит контекст. Если бы сверка внутри
-        назначения ждала то же задание, пара замкнулась бы в цикл. Задание
-        выполняющегося вызова сверка не меняет, поэтому назначение заканчивается,
-        пока запись результата стоит с захваченным заданием."""
+        """`record_result` берёт ключевой замок на контекст ДО замка задания
+        (порядок «домен -> задание»); назначение семьи держит контекст. Пока
+        запись стоит с контекстом и заданием, назначение ждёт контекст, а не
+        задание; цикла нет, и после возобновления записи заканчиваются обе."""
         scene = _scene(committing_db, committing_factories)
         committing_db.commit()
         context_id, family_id, user_id = scene.context_ids[0], scene.family.id, scene.user.id
@@ -1787,10 +1786,13 @@ class TestRecordResultAgainstDecision:
             finally:
                 db.close()
 
+        decider_pid: list[int] = []
+
         def _decide() -> None:
             db = committing_session_factory()
             try:
                 db.execute(sa.text("SET LOCAL lock_timeout = '20s'"))
+                decider_pid.append(db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one())
                 assign_family(db, context_id=context_id, family_id=family_id, actor_id=user_id)
                 db.commit()
                 outcome["decision"] = "ok"
@@ -1806,13 +1808,22 @@ class TestRecordResultAgainstDecision:
             recorder.start()
             assert locked.wait(timeout=15), "запись результата не дошла до замка задания"
             decider.start()
-            decider.join(timeout=10)
-            finished_while_recording_is_paused = not decider.is_alive()
+            decider.join(timeout=3)
+            waited_while_recording_is_paused = decider.is_alive()
+            # Где именно ждёт назначение: на замке контекста, а не задания
+            # (ревью задачи 8, круг 1 — докстрока это утверждает).
+            from tests.integration.test_work_families import _wait_until_backend_blocks
+
+            waits_on_the_context = bool(decider_pid) and _wait_until_backend_blocks(
+                committing_session_factory, pid=decider_pid[0], contains="FROM catalog_contexts",
+                timeout=5,
+            )
         finally:
             resume.set()
             recorder.join(timeout=_JOIN_TIMEOUT)
             decider.join(timeout=_JOIN_TIMEOUT)
 
         assert not recorder.is_alive() and not decider.is_alive(), "поток завис за таймаут"
-        assert finished_while_recording_is_paused, "назначение ждало задание записи результата"
+        assert waited_while_recording_is_paused, "запись не держала контекст до замка задания"
+        assert waits_on_the_context, "назначение ждало не контекст"
         assert outcome == {"decision": "ok", "record": "ok"}

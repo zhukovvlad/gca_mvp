@@ -1413,22 +1413,26 @@ class TestStatus:
 
         assert (payload["stale_units"], payload["config_stale"]) == ([], None)
 
-    def test_not_applicable_context_without_job_is_not_stale(
+    def test_bound_context_with_its_own_current_jobs_is_not_stale(
         self, admin_client, db_session, factories
     ):
-        """Контекст с назначенной семьёй неприменим: заданий у него нет и не
-        будет, и пометки «список семей изменён» он не даёт."""
+        """Контекст с назначенной семьёй применим (спека вариантов §2.5): у него
+        есть собственные задания по текущему отпечатку, и пометки «список семей
+        изменён» он не даёт."""
         scene = _scene(db_session, factories, admin_client.user)
         assign_family(
             db_session, context_id=scene.context_ids[0], family_id=scene.family.id,
             actor_id=admin_client.user.id,
         )
-        # Семья со схемой даёт контексту задание значений; заданий предложений нет.
-        # Состав сверяется целиком: ровно одно задание значений этого контекста.
-        assert [
+        # Задание предложения и задание значений по схеме семьи. Состав
+        # сверяется целиком: ровно эти два задания этого контекста.
+        assert sorted(
             (job.kind, job.context_id)
             for job in db_session.execute(sa.select(SemanticJob)).scalars().all()
-        ] == [("context_values", scene.context_ids[0])]
+        ) == [
+            ("context_values", scene.context_ids[0]),
+            ("family_suggestion", scene.context_ids[0]),
+        ]
 
         payload = admin_client.get(f"{BASE}/status").json()
 

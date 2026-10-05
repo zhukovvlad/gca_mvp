@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from config import Settings
 from config import settings as default_settings
 from models import (
+    CatalogContext,
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
@@ -48,6 +49,7 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
+from services.family_change import apply_publication_rules
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
     ModelClient,
@@ -359,6 +361,25 @@ def _lock_job(db: Session, job_id: int) -> SemanticJob:
     ).scalar_one()
 
 
+def _share_domain_rows(db: Session, job_id: int, family_id: int | None) -> None:
+    """`FOR KEY SHARE` на семью ответа (если есть), затем на контекст задания.
+    Контекст задания неизменен, читается без блокировок."""
+    context_id = db.execute(
+        sa.select(SemanticJob.context_id).where(SemanticJob.id == job_id)
+    ).scalar_one()
+    if family_id is not None:
+        db.execute(
+            sa.select(WorkFamily.id)
+            .where(WorkFamily.id == family_id)
+            .with_for_update(read=True, key_share=True)
+        ).all()
+    db.execute(
+        sa.select(CatalogContext.id)
+        .where(CatalogContext.id == context_id)
+        .with_for_update(read=True, key_share=True)
+    ).all()
+
+
 def _load_attempt(db: Session, attempt_id: int) -> SemanticJobAttempt:
     # `populate_existing`: охрана `record_failure` читает `finished_at` и обязана
     # видеть закоммиченное значение, даже когда попытка уже лежит в сессии
@@ -426,28 +447,41 @@ def record_result(
     *,
     now: datetime,
     settings: Settings,
-) -> None:
+) -> int | None:
     """Условная запись ответа модели (спека §2.5 шаг 3, §2.8); коммитит сама.
     Ответ разбирается здесь же строгим `parse_model_answer`. `settings` нужны
     для повторного рендера контекста при проверке отпечатка — те же, что и у
     захвата. Задания схемы и значений пишутся своим путём
-    (`_record_variant_result`)."""
+    (`_record_variant_result`).
+
+    Возвращает `id` опубликованного предложения (его правилам публикации
+    предъявляет `process_one` отдельной транзакцией) либо `None`: ответ не
+    опубликован, разобран с ошибкой или задание не наше. Семья ответа и
+    контекст берутся `FOR KEY SHARE` до замка задания: порядок «задание ->
+    домен» не возникает, ни явно, ни неявным замком внешнего ключа."""
     if claim.synthesized:
         raise ValueError("у синтетического захвата нет ответа модели")
     if claim.kind != SemanticJobKind.family_suggestion:
         _record_variant_result(db, claim, response, now=now, settings=settings)
-        return
+        return None
     assert claim.attempt_id is not None and claim.rendered is not None
-    job = _lock_job(db, claim.job_id)
-    attempt = _load_attempt(db, claim.attempt_id)
-    owned = _owns_job(job, claim)
-
     answer = None
+    published_id: int | None = None
     schema_error: AnswerSchemaError | None = None
     try:
         answer = parse_model_answer(response.content, claim.candidates)
     except AnswerSchemaError as exc:
         schema_error = exc
+
+    # Вставка предложения неявно берёт `FOR KEY SHARE` на контекст и семью
+    # ответа (внешние ключи). Берём их явно ДО замка задания, в порядке домена
+    # «семья -> контекст»: иначе порядок «задание -> домен» замыкается в цикл с
+    # операцией, держащей контекст или семью и сверяющей это задание
+    # (потерянный захват возвращает его в `pending`).
+    _share_domain_rows(db, claim.job_id, answer.family_id if answer is not None else None)
+    job = _lock_job(db, claim.job_id)
+    attempt = _load_attempt(db, claim.attempt_id)
+    owned = _owns_job(job, claim)
 
     if not owned:
         outcome = SemanticAttemptOutcome.lost_claim
@@ -496,6 +530,8 @@ def record_result(
         )
         db.add(suggestion)
         db.flush()
+        if publish:
+            published_id = suggestion.id
         if owned:
             job.status = SemanticJobStatus.done.value
             job.claim_token = None
@@ -508,6 +544,7 @@ def record_result(
     db.flush()
     _apply_fuse(db, attempt, now=now)
     db.commit()
+    return published_id
 
 
 def _schema_parameters(db: Session, schema_id: int) -> tuple[SchemaParameterIn, ...]:
@@ -773,6 +810,22 @@ def _complete_synthesized(
             logger.exception("Задание %s осталось захваченным", claim.job_id)
 
 
+def _apply_rules_in_new_session(
+    session_factory: Callable[[], Session], suggestion_id: int, *, settings: Settings
+) -> None:
+    """Правила публикации (спека вариантов §2.5) — отдельная транзакция после
+    записи ответа. Её ошибка ответа не трогает: предложение остаётся
+    опубликованным, а исключение не выходит из цикла исполнителя."""
+    try:
+        with session_factory() as db:
+            apply_publication_rules(
+                db, suggestion_id=suggestion_id,
+                threshold=settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD,
+            )
+    except Exception:  # noqa: BLE001 — исключение правил наружу не уходит
+        logger.exception("Правила публикации предложения %s не применены", suggestion_id)
+
+
 def process_one(
     session_factory: Callable[[], Session],
     client: ModelClient,
@@ -812,9 +865,10 @@ def process_one(
             )
             return True
 
+        published_id: int | None = None
         try:
             with session_factory() as db:
-                record_result(db, claim, response, now=clock(), settings=settings)
+                published_id = record_result(db, claim, response, now=clock(), settings=settings)
         except Exception as exc:  # noqa: BLE001 — запись не удалась: попытку закрыть
             logger.exception("Запись результата задания %s не удалась", claim.job_id)
             _record_failure_in_new_session(
@@ -824,6 +878,8 @@ def process_one(
                 settings=settings,
                 clock=clock,
             )
+        if published_id is not None:
+            _apply_rules_in_new_session(session_factory, published_id, settings=settings)
     except Exception:  # noqa: BLE001 — закрыть попытку не удалось: задание вернёт восстановление
         logger.exception("Попытка задания %s осталась открытой", claim.job_id)
     return True

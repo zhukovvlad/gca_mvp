@@ -60,6 +60,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -647,14 +648,57 @@ def _lock_contexts(db: Session, context_ids: list[int]) -> None:
     db.execute(_lock_contexts_statement(context_ids)).all()
 
 
+def check_family_assignable(db: Session, context: CatalogContext, family_id: int) -> None:
+    """Семья годится контексту: существует, `active` и её единица равна
+    единице строки каталога контекста. Вызывается под блокировкой семьи и
+    контекста, чтение свежее.
+
+    Raises:
+        WorkFamilyError: `REFUSE_FAMILY_NOT_FOUND`; `REFUSE_FAMILY_NOT_ACTIVE`
+            (называет статус); `REFUSE_UNIT_MISMATCH` (называет обе единицы)."""
+    family = db.execute(
+        sa.select(WorkFamily).where(WorkFamily.id == family_id)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if family is None:
+        raise WorkFamilyError(
+            REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
+        )
+    if family.status != FamilyStatus.active.value:
+        raise WorkFamilyError(
+            REFUSE_FAMILY_NOT_ACTIVE,
+            f"семья {family_id} не активна (статус: {family.status})",
+            family_id=family_id,
+            status=family.status,
+        )
+    bucket = db.get(ContextBucket, context.bucket_id)
+    catalog_position = db.get(CatalogPosition, bucket.catalog_position_id)
+    family_unit_id = family.unit_id
+    context_unit_id = catalog_position.unit_id
+    # Прямое сравнение, БЕЗ сентинела COALESCE(unit_id,-1): это Python,
+    # где `None == None` уже `True` (в отличие от SQL, где `NULL = NULL`
+    # даёт `NULL`, а не `TRUE`, — ровно то, ради чего сентинел нужен на
+    # уровне БД/SQL, `docs/pitfalls/db.md`, но не внутри интерпретатора).
+    if family_unit_id != context_unit_id:
+        raise WorkFamilyError(
+            REFUSE_UNIT_MISMATCH,
+            f"единица семьи {family_unit_id!r} не совпадает с единицей "
+            f"контекста {context_unit_id!r}",
+            family_unit_id=family_unit_id,
+            context_unit_id=context_unit_id,
+        )
+
+
 def assign_family(
     db: Session,
     *,
     context_id: int,
     family_id: int | None,
-    actor_id: int,
+    actor_id: int | None,
     source: FamilySource = FamilySource.manual,
     suggestion_id: int | None = None,
+    threshold: Decimal | None = None,
+    confidence: Decimal | None = None,
 ) -> CatalogContext:
     """Назначает семью контексту либо снимает её (`family_id=None`) — спека
     §2.7 «Назначение семьи контексту».
@@ -662,7 +706,12 @@ def assign_family(
     `source=suggestion` — подтверждённое предложение (спека §2.9): в контексте
     `family_source='suggestion'`, `family_by` пусто (`CK_CONTEXT_FAMILY_PROVENANCE`),
     в событии — `suggestion_id`, `actor_id` — подтвердивший.
-    Все проверки ниже общие для обоих источников.
+    `source=auto_suggestion` — автопринятие по порогу (спека вариантов §2.5):
+    `actor_id` пуст, `family_by` пусто, `suggestion_id`, `threshold` и
+    `confidence` обязательны и уходят в событие (`Decimal` — строкой);
+    у прочих источников `actor_id` обязателен, `threshold` и `confidence`
+    запрещены.
+    Все проверки ниже общие для всех источников.
 
     После записи и события в той же транзакции вызывается сверка очереди
     предложений для контекста (спека §2.7, инвариант); `commit` — за вызывающим.
@@ -678,7 +727,10 @@ def assign_family(
         ValueError: ошибка вызова, до любой блокировки и записи —
             `source=suggestion` без `suggestion_id`; `source=manual` с
             `suggestion_id`; `source=suggestion` при `family_id=None` (снятие
-            семьи предложением не бывает).
+            семьи предложением не бывает); `actor_id` пуст не при
+            `auto_suggestion` либо задан при ней; `auto_suggestion` без
+            `suggestion_id`, `threshold` или `confidence`, либо с
+            `family_id=None`; `threshold`/`confidence` при прочих источниках.
         WorkFamilyError: контекст не найден (`REFUSE_CONTEXT_NOT_FOUND`);
             контекст архивирован, ПЕРЕЧИТАННОЕ после лока
             (`REFUSE_CONTEXT_ARCHIVED` — архивный контекст выведен из
@@ -689,13 +741,20 @@ def assign_family(
             контекста, прямым сравнением `unit_id` (`REFUSE_UNIT_MISMATCH`,
             называет ОБА значения).
     """
-    if source == FamilySource.suggestion:
+    if (actor_id is None) != (source == FamilySource.auto_suggestion):
+        raise ValueError("actor_id пуст тогда и только тогда, когда source=auto_suggestion")
+    if source in (FamilySource.suggestion, FamilySource.auto_suggestion):
         if suggestion_id is None:
-            raise ValueError("source=suggestion требует suggestion_id")
+            raise ValueError(f"source={source.value} требует suggestion_id")
         if family_id is None:
-            raise ValueError("source=suggestion не снимает семью: family_id обязателен")
+            raise ValueError(f"source={source.value} не снимает семью: family_id обязателен")
     elif suggestion_id is not None:
-        raise ValueError("suggestion_id допустим только при source=suggestion")
+        raise ValueError("suggestion_id допустим только при source=suggestion и auto_suggestion")
+    if source == FamilySource.auto_suggestion:
+        if threshold is None or confidence is None:
+            raise ValueError("source=auto_suggestion требует threshold и confidence")
+    elif threshold is not None or confidence is not None:
+        raise ValueError("threshold и confidence допустимы только при source=auto_suggestion")
 
     context = db.get(CatalogContext, context_id)
     if context is None:
@@ -734,34 +793,12 @@ def assign_family(
         context.family_by = None
         context.family_at = None
     else:
-        family = db.get(WorkFamily, family_id)  # ПЕРЕЧИТАННОЕ после лока
-        if family.status != FamilyStatus.active.value:
-            raise WorkFamilyError(
-                REFUSE_FAMILY_NOT_ACTIVE,
-                f"семья {family_id} не активна (статус: {family.status})",
-                family_id=family_id,
-                status=family.status,
-            )
-        bucket = db.get(ContextBucket, context.bucket_id)
-        catalog_position = db.get(CatalogPosition, bucket.catalog_position_id)
-        family_unit_id = family.unit_id
-        context_unit_id = catalog_position.unit_id
-        # Прямое сравнение, БЕЗ сентинела COALESCE(unit_id,-1): это Python,
-        # где `None == None` уже `True` (в отличие от SQL, где `NULL = NULL`
-        # даёт `NULL`, а не `TRUE`, — ровно то, ради чего сентинел нужен на
-        # уровне БД/SQL, `docs/pitfalls/db.md`, но не внутри интерпретатора).
-        if family_unit_id != context_unit_id:
-            raise WorkFamilyError(
-                REFUSE_UNIT_MISMATCH,
-                f"единица семьи {family_unit_id!r} не совпадает с единицей "
-                f"контекста {context_unit_id!r}",
-                family_unit_id=family_unit_id,
-                context_unit_id=context_unit_id,
-            )
+        check_family_assignable(db, context, family_id)  # ПЕРЕЧИТАННОЕ после лока
         context.work_family_id = family_id
         context.family_source = source.value
-        # Подтверждённое предложение не имеет назначившего в контексте:
-        # `family_by NOT NULL` только при `manual` (`CK_CONTEXT_FAMILY_PROVENANCE`).
+        # Подтверждённое и автопринятое предложение не имеют назначившего в
+        # контексте: `family_by NOT NULL` только при `manual`
+        # (`CK_CONTEXT_FAMILY_PROVENANCE`).
         context.family_by = actor_id if source == FamilySource.manual else None
         context.family_at = now
 
@@ -773,6 +810,9 @@ def assign_family(
     }
     if suggestion_id is not None:
         payload["suggestion_id"] = suggestion_id
+    if source == FamilySource.auto_suggestion:
+        payload["threshold"] = str(threshold)
+        payload["confidence"] = str(confidence)
     record_event(
         db,
         event_type="context_family_assigned",
@@ -784,6 +824,15 @@ def assign_family(
     # этой же транзакции (настройки читаются в момент вызова).
     reconcile_semantic_jobs(db, [context_id], cap=event_cap_from(settings), source="operation")
     return context
+
+
+def _references_family(family_id: int):
+    """Живая привязка к семье: текущая или ожидаемая (спека вариантов §2.5
+    п. 6) — ожидаемая семья держит те же запреты, что текущая."""
+    return sa.or_(
+        CatalogContext.work_family_id == family_id,
+        CatalogContext.pending_family_id == family_id,
+    )
 
 
 def set_unit(db: Session, *, family_id: int, unit_name: str | None, actor_id: int) -> WorkFamily:
@@ -823,7 +872,7 @@ def set_unit(db: Session, *, family_id: int, unit_name: str | None, actor_id: in
     link_count = db.execute(
         sa.select(sa.func.count())
         .select_from(CatalogContext)
-        .where(CatalogContext.work_family_id == family_id)
+        .where(_references_family(family_id))
     ).scalar_one()
     if link_count > 0:
         raise WorkFamilyError(
@@ -922,7 +971,7 @@ def archive_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily:
     link_count = db.execute(
         sa.select(sa.func.count())
         .select_from(CatalogContext)
-        .where(CatalogContext.work_family_id == family_id)
+        .where(_references_family(family_id))
     ).scalar_one()
     if link_count > 0:
         raise WorkFamilyError(

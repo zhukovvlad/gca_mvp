@@ -27,6 +27,7 @@ import sqlalchemy as sa
 from click.testing import CliRunner
 
 import cli
+import services.family_change as family_change_module
 import services.semantic_decisions as decisions
 from config import settings as app_settings
 from models import (
@@ -378,13 +379,13 @@ class TestConfirmSuggestions:
         s_a = _published(db_session, a, family_id=second_family.id)
         # `_make_stale`-подобных правок нет: отпечатки уже учитывают обе семьи.
         order: list[tuple[int, int]] = []
-        original = decisions.assign_family
+        original = family_change_module.assign_family
 
         def _spy(db, *, context_id, family_id, **kwargs):
             order.append((family_id, context_id))
             return original(db, context_id=context_id, family_id=family_id, **kwargs)
 
-        monkeypatch.setattr(decisions, "assign_family", _spy)
+        monkeypatch.setattr(family_change_module, "assign_family", _spy)
 
         report = confirm_suggestions(
             db_session, suggestion_ids=[s_c.id, s_b.id, s_a.id], actor_id=scene.user.id
@@ -1613,7 +1614,7 @@ def _lock_statements(db, action):
 def _change_before_context_lock(monkeypatch, db, sql, params):
     """Правка строки между чтением без блокировки и блокировкой контекста —
     то, что сделала бы транзакция, закоммитившаяся в этот промежуток."""
-    original = decisions._lock_contexts
+    original = family_change_module._lock_contexts
     done: list[bool] = []
 
     def _lock(session, context_ids):
@@ -1622,7 +1623,7 @@ def _change_before_context_lock(monkeypatch, db, sql, params):
             session.execute(sa.text(sql), params)
         return original(session, context_ids)
 
-    monkeypatch.setattr(decisions, "_lock_contexts", _lock)
+    monkeypatch.setattr(family_change_module, "_lock_contexts", _lock)
     return done
 
 

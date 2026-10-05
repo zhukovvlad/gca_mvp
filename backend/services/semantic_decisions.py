@@ -10,11 +10,18 @@
 совпадений задержанного задания): его вызывающий фиксирует, а не откатывает.
 
 Порядок блокировок решений по предложению единый с фичей 1 и со сверкой:
-предложение читается без блокировки (узнать контекст и семью), затем `FOR SHARE`
-на семью (если назначается), `FOR UPDATE` на контекст, `FOR UPDATE` на
-предложение и ПЕРЕПРОВЕРКА — опубликовано, решения нет, текущий отпечаток
-контекста (материал -> рендер) равен `request_hash` предложения, контекст
-применим. Группа берёт предложения в порядке `(family_id, context_id)`.
+предложение читается без блокировки (узнать контекст и семью), затем все семьи
+решения — запрашиваемая, текущая и ожидаемая семьи контекста — `FOR SHARE` по
+возрастанию `id`, `FOR UPDATE` на контекст, `FOR UPDATE` на предложение и
+ПЕРЕПРОВЕРКА — опубликовано, решения нет, текущий отпечаток контекста
+(материал -> рендер) равен `request_hash` предложения, контекст применим.
+Захват — общий помощник `family_change.acquire_family_locks` (попытка в точке
+сохранения: текущая семья, прочитанная без блокировки, могла смениться).
+Группа берёт семьи и контексты всей группы разом, по возрастанию `id`.
+
+Смену семьи решения человека не делают сами: они идут через
+`family_change.request_family_change` — контекст с вариантом получает ожидание
+(`accepted_pending` у подтверждения), без варианта — назначение сразу.
 """
 from __future__ import annotations
 
@@ -47,6 +54,12 @@ from models import (
     SuggestionDecision,
     SuggestionUnpublishedReason,
 )
+from services.family_change import (
+    acquire_family_locks,
+    family_change_route,
+    lock_and_recheck_suggestion,
+    request_family_change,
+)
 from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_privacy import PrivacyDictionary, build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
@@ -58,16 +71,14 @@ from services.semantic_reconcile import (
     reconcile_family_schemas,
     reconcile_semantic_jobs,
 )
-from services.semantic_request import is_applicable, load_request_material, render_context_request
+from services.semantic_request import load_request_material
 from services.semantic_worker import render_job_request, serialize_privacy_matches
 from services.variant_request import load_schema_material, render_schema_request
 from services.work_families import (
     REFUSE_DUPLICATE_ACTIVE_FAMILY,
     WorkFamilyError,
-    _lock_contexts,
     _lock_families,
     activate_family,
-    assign_family,
     create_family,
 )
 
@@ -150,21 +161,7 @@ def _read_suggestion(db: Session, suggestion_id: int) -> FamilySuggestion:
 def _lock_and_recheck_suggestion(db: Session, suggestion_id: int) -> FamilySuggestion | None:
     """`FOR UPDATE` на предложение и перепроверка; `None` — не прошло. Контекст
     к этому моменту уже заблокирован вызывающим."""
-    suggestion = db.execute(
-        sa.select(FamilySuggestion)
-        .where(FamilySuggestion.id == suggestion_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
-    if suggestion is None or not suggestion.is_published or suggestion.decision is not None:
-        return None
-    material = load_request_material(db, [suggestion.context_id]).get(suggestion.context_id)
-    if material is None or not is_applicable(material):
-        return None
-    current = render_context_request(material, settings=settings)
-    if current.request_hash != suggestion.request_hash:
-        return None
-    return suggestion
+    return lock_and_recheck_suggestion(db, suggestion_id)
 
 
 def _record_decision(
@@ -178,11 +175,12 @@ def _record_decision(
 def _lock_for_decision(
     db: Session, *, context_id: int, family_id: int | None, suggestion_id: int
 ) -> FamilySuggestion | None:
-    """Семья (`FOR SHARE`) -> контекст (`FOR UPDATE`) -> предложение с
-    перепроверкой."""
-    if family_id is not None:
-        _lock_families(db, [family_id], exclusive=False)
-    _lock_contexts(db, [context_id])
+    """Семьи решения (`FOR SHARE`) -> контекст (`FOR UPDATE`) -> предложение с
+    перепроверкой. Семья контекста сменилась между чтением и блокировкой и
+    после повтора — `DecisionConflict` (`409`), блокировки попытки сняты."""
+    unstable = acquire_family_locks(db, [(context_id, family_id)], release_on_failure=True)
+    if unstable:
+        raise DecisionConflict(CODE_SUGGESTION_CHANGED)
     return _lock_and_recheck_suggestion(db, suggestion_id)
 
 
@@ -195,19 +193,34 @@ def _assign_decided(
     decision: SuggestionDecision,
     actor_id: int,
 ) -> None:
-    """Решение записывается ДО назначения: сверка внутри `assign_family` снимет
-    публикацию с причиной `context_not_applicable`, и это допустимо."""
+    """Решение записывается ДО смены семьи; смена идёт через
+    `request_family_change`. Привязанный контекст применим (спека §2.5), поэтому
+    решённое предложение остаётся опубликованным. У контекста с вариантом смена
+    — ожидание, и подтверждение (`accepted`) записывается как
+    `accepted_pending`: семья ещё не сменилась; «Другая семья» и «Завести
+    семью» сохраняют своё решение."""
     context_id = suggestion.context_id
     suggestion_id = suggestion.id
     with db.begin_nested():
-        _record_decision(suggestion, decision, actor_id)
+        context = db.execute(
+            sa.select(CatalogContext)
+            .where(CatalogContext.id == context_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one()
+        recorded = decision
+        if (
+            decision == SuggestionDecision.accepted
+            and family_change_route(context, family_id, source.value) == "pending"
+        ):
+            recorded = SuggestionDecision.accepted_pending
+        _record_decision(suggestion, recorded, actor_id)
         db.flush()
-        assign_family(
+        request_family_change(
             db,
             context_id=context_id,
             family_id=family_id,
             actor_id=actor_id,
-            source=source,
+            source=source.value,  # type: ignore[arg-type]
             suggestion_id=suggestion_id if source == FamilySource.suggestion else None,
         )
 
@@ -216,9 +229,15 @@ def confirm_suggestions(
     db: Session, *, suggestion_ids: list[int], actor_id: int
 ) -> ConfirmReport:
     """«Подтвердить» строку или отмеченные в группе: семья предложения,
-    `source = suggestion`, `decision = accepted`. Одна транзакция на группу;
+    `source = suggestion`, `decision = accepted` (`accepted_pending` у контекста
+    с вариантом — смена ждёт значений). Одна транзакция на группу;
     предложение без семьи («новая»/«СИСТЕМА»), не прошедшее перепроверку или
-    отвергнутое назначением — в `skipped`."""
+    отвергнутое назначением — в `skipped`.
+
+    Блокировки группы — один захват: семьи всей группы (запрашиваемые,
+    текущие, ожидаемые) `FOR SHARE` по возрастанию `id`, затем контексты
+    `FOR UPDATE`. Контекст, чья семья сменилась при захвате дважды, — в
+    `skipped`."""
     unique_ids = list(dict.fromkeys(suggestion_ids))
     known: dict[int, FamilySuggestion] = {
         s.id: s
@@ -229,17 +248,21 @@ def confirm_suggestions(
     confirmed: list[int] = []
     skipped: list[int] = [sid for sid in unique_ids if sid not in known]
 
-    # Порядок блокировок группы — `(family_id, context_id)`.
     plan = sorted(
         ((s.family_id, s.context_id, s.id) for s in known.values() if s.family_id is not None),
         key=lambda item: (item[0], item[1], item[2]),
     )
     skipped.extend(s.id for s in known.values() if s.family_id is None)
 
+    unstable = acquire_family_locks(
+        db, [(context_id, family_id) for family_id, context_id, _ in plan],
+        release_on_failure=False,
+    )
     for family_id, context_id, suggestion_id in plan:
-        suggestion = _lock_for_decision(
-            db, context_id=context_id, family_id=family_id, suggestion_id=suggestion_id
-        )
+        if context_id in unstable:
+            skipped.append(suggestion_id)
+            continue
+        suggestion = _lock_and_recheck_suggestion(db, suggestion_id)
         if suggestion is None or suggestion.family_id != family_id:
             skipped.append(suggestion_id)
             continue

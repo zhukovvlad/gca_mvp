@@ -2,8 +2,9 @@
 `2026-10-02-catalog-variants-design.md` §2.7).
 
 Первые две точки перечня: обработка результата `context_values`
-(`apply_values`) и заморозка схемы (`freeze_schema`). Каждая зовёт сверку в той
-же транзакции, до коммита вызывающего. Тест точки строится входом, который
+(`apply_values`) и заморозка схемы (`freeze_schema`); затем смена семьи
+(`services.family_change`: `request_family_change`, `cancel_pending_family`).
+Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки строится входом, который
 краснеет, если вызов сверки в этой точке снят: без вызова задание по
 предикату не появляется. Остальные точки перечня (`merge_parameter_values`,
 `rebuild_schema`, `mark_context_not_work` и прочие) добавляют свои тесты в этот
@@ -19,17 +20,26 @@ import datetime as dt
 import pytest
 import sqlalchemy as sa
 
+import services.family_change  # noqa: F401  # модуль под проверкой: его точки названы ниже
 import services.work_variants  # noqa: F401  # модуль под проверкой: его точки названы ниже
 from config import settings
-from models import CatalogContext, SemanticJob
+from models import CatalogContext, SemanticJob, WorkFamily
+from services.family_change import cancel_pending_family, request_family_change
 from services.variant_request import load_values_material, paths_hash_of, render_values_request
+from services.work_variants import apply_values
 from tests.integration.test_work_variants_core import (
+    _answer,
     _apply,
     _attach_variant,
     _freeze,
     _freeze_world,
     _guarded,
     _world,
+)
+from tests.integration.test_work_variants_family_change import (
+    _current_schema,
+    _two_families,
+    _with_variant,
 )
 from tests.integration.test_work_variants_material import _bind, _chain_context, _frozen_schema, _uid
 from tests.integration.test_work_variants_schema import _family, _variant
@@ -183,3 +193,149 @@ class TestFreezeSchemaReconciles:
 
         [job] = _values_jobs(db_session, context_id=waiting_id)
         assert job.schema_id == world.building.id
+
+
+# ---------------------------------------------------------------------------
+#  services.family_change: смена семьи и ожидание
+# ---------------------------------------------------------------------------
+
+class TestRequestFamilyChangeReconciles:
+    """Запрос смены семьи у контекста с вариантом ставит ожидание и зовёт
+    сверку в той же транзакции: без вызова задание значений по схеме новой
+    семьи не появляется, а задание отозванного ожидания остаётся живым."""
+
+    def test_a_pending_family_queues_a_values_job_by_the_schema_of_the_new_family(
+        self, db_session, factories
+    ):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        db_session.execute(sa.delete(SemanticJob))
+
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+
+        [job] = _values_jobs(db_session, context_id=context_id)
+        assert job.status == "pending"
+        assert job.schema_id == _current_schema(db_session, scene.family_b).id
+
+    def test_withdrawing_the_pending_family_by_the_current_one_cancels_its_job(
+        self, db_session, factories
+    ):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+        [job] = _values_jobs(db_session, context_id=context_id)
+
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family.id,
+            actor_id=scene.user.id, source="manual",
+        )
+
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, job.id).status == "cancelled"
+
+    def test_a_replaced_pending_family_cancels_the_job_of_the_old_one(
+        self, db_session, factories
+    ):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+        [old_job] = _values_jobs(db_session, context_id=context_id)
+
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_c.id,
+            actor_id=scene.user.id, source="manual",
+        )
+
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, old_job.id).status == "cancelled"
+        live = [j for j in _values_jobs(db_session, context_id=context_id) if j.status == "pending"]
+        assert [j.schema_id for j in live] == [_current_schema(db_session, scene.family_c).id]
+
+    def test_the_call_happens_before_the_callers_commit_in_the_same_session(
+        self, db_session, factories
+    ):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        db_session.execute(sa.delete(SemanticJob))
+
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+
+        assert db_session.in_transaction()
+        assert len(_values_jobs(db_session, context_id=context_id)) == 1
+
+
+class TestCancelPendingFamilyReconciles:
+    def test_the_values_job_of_the_cancelled_pending_family_is_cancelled(
+        self, db_session, factories
+    ):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+        [job] = _values_jobs(db_session, context_id=context_id)
+
+        cancel_pending_family(db_session, context_id=context_id, actor_id=scene.user.id)
+
+        db_session.expire_all()
+        job = db_session.get(SemanticJob, job.id)
+        assert (job.status, job.cancel_reason) == ("cancelled", "input_changed")
+
+    def test_cancelling_without_a_pending_family_queues_nothing(self, db_session, factories):
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        db_session.execute(sa.delete(SemanticJob))
+
+        cancel_pending_family(db_session, context_id=context_id, actor_id=scene.user.id)
+
+        assert _values_jobs(db_session) == []
+
+
+class TestPendingClearedByApplyValuesReconciles:
+    def test_a_result_of_a_family_that_stopped_fitting_cancels_the_pending_and_reconciles(
+        self, db_session, factories
+    ):
+        """Ожидаемая семья архивирована в обход запретов: обработчик снимает
+        ожидание и сверяет контекст в той же транзакции, поэтому прочие задания
+        значений по этой семье не остаются живыми."""
+        scene = _two_families(db_session, factories)
+        context_id = scene.context_ids[0]
+        _with_variant(db_session, scene, context_id, scene.family)
+        request_family_change(
+            db_session, context_id=context_id, family_id=scene.family_b.id,
+            actor_id=scene.user.id, source="manual",
+        )
+        [queued] = _values_jobs(db_session, context_id=context_id)
+        family = db_session.get(WorkFamily, scene.family_b.id)
+        family.status = "archived"
+        family.archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+
+        outcome = apply_values(
+            db_session, context_id=context_id,
+            schema_id=_current_schema(db_session, scene.family_b).id, answer=_answer(),
+            paths_hash="paths-1", guard=None, settings=settings,
+        )
+
+        assert outcome.unapplied_reason == "not_applicable"
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, queued.id).status == "cancelled"

@@ -50,7 +50,7 @@ from services.semantic_reconcile import (
     schedule_extension_wave,
     schema_ready_to_build,
 )
-from services.semantic_request import RenderedRequest
+from services.semantic_request import RenderedRequest, load_request_material, render_context_request
 from services.variant_request import (
     load_schema_material,
     load_values_material,
@@ -827,6 +827,26 @@ class TestValuesApplicability:
 #  Все три вида вместе
 # ---------------------------------------------------------------------------
 
+def _settled_suggestion(db, context_id):
+    """Выполненное задание предложения на текущий отпечаток контекста. Привязанный
+    контекст тоже получает такие задания (спека вариантов §2.5); это уже
+    выполнено, поэтому единица контекста не занята предложением, и сверка не
+    откладывает схемы её семей."""
+    material = load_request_material(db, [context_id])[context_id]
+    rendered = render_context_request(material, settings=settings)
+    job = SemanticJob(
+        kind="family_suggestion", context_id=context_id, request_hash=rendered.request_hash,
+        status="done", unit_id=material.unit_id, prompt_version="1",
+        model_requested=settings.SEMANTIC_MODEL,
+        place_dictionary_version=rendered.place_dictionary_version,
+        candidates_hash=rendered.candidates_hash, prefix_hash=rendered.prefix_hash,
+        input_hash=rendered.input_hash, response_schema_version="1", serialization_version="1",
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
 def _joint_scene(db, factories):
     """Предложение для A (единица M2), значения для B, схема для F3. Семьи F2
     и F3 без единицы, контекст B — тоже: схему F3 находит единица контекста."""
@@ -837,7 +857,8 @@ def _joint_scene(db, factories):
     f3 = _active_family(db)
     a = _context(db, factories, unit_id=m2, title="Предложение")
     b = _context(db, factories, family=f2, title="Значения")
-    return SimpleNamespace(f1=f1, f2=f2, f3=f3, a=a, b=b)
+    settled = _settled_suggestion(db, b)
+    return SimpleNamespace(f1=f1, f2=f2, f3=f3, a=a, b=b, settled=settled)
 
 
 class TestAllKindsTogether:
@@ -849,7 +870,7 @@ class TestAllKindsTogether:
         )
 
         assert report.created == 3
-        kinds = sorted(job.kind for job in _jobs(db_session))
+        kinds = sorted(job.kind for job in _jobs(db_session, status="pending"))
         assert kinds == [_VALUES, _SCHEMA, _SUGGESTION]
         [schema_job] = _jobs(db_session, kind=_SCHEMA)
         assert schema_job.family_id == world.f3.id
@@ -881,7 +902,8 @@ class TestAllKindsTogether:
             _VALUES, _SCHEMA, _SUGGESTION,
         ]
         assert batch.contexts_count == 3
-        assert _jobs(db_session) == []
+        # Ничего не поставлено: остаётся только выполненное задание сцены.
+        assert [job.id for job in _jobs(db_session)] == [world.settled.id]
         assert db_session.execute(
             sa.select(sa.func.count()).select_from(FamilyParameterSchema).where(
                 FamilyParameterSchema.family_id == world.f3.id
@@ -1274,7 +1296,10 @@ class TestZeroParameterSchemaCostsNothing:
     def _contexts(self, db, factories, params, count=5):
         family = _active_family(db)
         _frozen_schema(db, factories, family, [list(p) for p in params])
-        return [_context(db, factories, family=family) for _ in range(count)]
+        ids = [_context(db, factories, family=family) for _ in range(count)]
+        for context_id in ids:
+            _settled_suggestion(db, context_id)
+        return ids
 
     def test_many_contexts_of_a_zero_parameter_version_reserve_nothing(
         self, db_session, factories
@@ -1550,7 +1575,10 @@ class TestApproveBatchWithASchemaSubject:
 
         approve_batch(db_session, batch_id=held, preview_hash=preview.preview_hash, actor_id=actor)
 
-        jobs = {(j.kind, j.context_id, j.family_id): j.batch_id for j in _jobs(db_session)}
+        jobs = {
+            (j.kind, j.context_id, j.family_id): j.batch_id
+            for j in _jobs(db_session, status="pending")
+        }
         assert jobs == {
             (_SUGGESTION, world.a, None): held,
             (_VALUES, world.b, None): held,
@@ -1611,6 +1639,7 @@ class TestSchemaScopeOfAUnitWithACode:
         family = _active_family(db_session, unit_id=unit)
         _active_family(db_session, unit_id=other)
         context_id = _context(db_session, factories, family=family, unit_id=unit)
+        _settled_suggestion(db_session, context_id)
 
         reconcile_semantic_jobs(db_session, [context_id], cap=NO_CAP, source="operation")
 

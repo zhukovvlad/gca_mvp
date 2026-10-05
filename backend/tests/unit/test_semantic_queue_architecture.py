@@ -46,7 +46,9 @@ BACKEND = Path(__file__).resolve().parents[2]
 SCANNED_DIRS = ("services", "crud", "routers")
 HOOKS_TESTS_GLOB = "test_semantic_queue_hooks_*.py"
 
-_CONTEXT_FIELDS = frozenset({"semantic_kind", "semantic_state", "work_family_id", "archived_at"})
+_CONTEXT_FIELDS = frozenset(
+    {"semantic_kind", "semantic_state", "work_family_id", "archived_at", "pending_family_id"}
+)
 _MEMBER_MOVE_FIELDS = frozenset({"context_id", "bucket_id"})
 _MEMBER_RECEIVER = re.compile(r"member", re.IGNORECASE)
 _SESSION_NAMES = frozenset({"db", "session", "self.db", "self.session"})
@@ -362,6 +364,7 @@ _POSITIVE = {
     "context_field_state": "ctx.semantic_state = 'CONFIRMED'",
     "context_field_family": "context.work_family_id = 7",
     "context_field_archived": "context.archived_at = now",
+    "context_field_pending_family": "context.pending_family_id = 7",
     "member_context_id": "member.context_id = 5",
     "member_bucket_id": "member_row.bucket_id = 5",
     "member_created": "db.add(ContextMember(position_item_id=1, context_id=2))",
@@ -389,6 +392,7 @@ _POSITIVE = {
 
 _NEGATIVE = {
     "membership_state": "member.membership_state = 'STALE'",
+    "context_field_pending_source": "context.pending_family_source = 'manual'",
     "conflict": "member.conflict_at = None",
     "update_member_state_only": "db.execute(sa.update(ContextMember).values(membership_state='STALE'))",
     "update_context_name_role": "db.execute(update(CatalogContext).values(name_role='WORK'))",

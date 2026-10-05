@@ -1709,8 +1709,10 @@ def _batch_of(db, factories, world):
     pairs, reserve, cached = estimate_enqueue(
         db, [world.suggest_context_id, world.context_id], [world.family_2.id]
     )
+    # Привязанный контекст C1 тоже получает задание предложения (спека вариантов
+    # §2.5): у набора четыре отпечатка, два из них — предложения.
     assert sorted(f.kind.value for f in pairs) == [
-        "context_values", "family_schema", "family_suggestion",
+        "context_values", "family_schema", "family_suggestion", "family_suggestion",
     ]
     batch_id = get_or_create_held_batch(
         db, fingerprints=pairs, source="import", import_job_id=None, unit_id=None,
@@ -1732,13 +1734,13 @@ class TestBatchesOfThreeKinds:
             db_session, batch_id=batch.id, preview_hash=preview.preview_hash, actor_id=user.id
         )
 
-        # Отчёт складывает обе сверки: контексты (предложение и значения) и семьи.
-        assert report.created == 3
+        # Отчёт складывает обе сверки: контексты (два предложения и значения) и семьи.
+        assert report.created == 4
         db_session.expire_all()
         jobs = db_session.execute(sa.select(SemanticJob).order_by(SemanticJob.id)).scalars().all()
         assert sorted((j.kind, j.status) for j in jobs) == [
             ("context_values", "pending"), ("family_schema", "pending"),
-            ("family_suggestion", "pending"),
+            ("family_suggestion", "pending"), ("family_suggestion", "pending"),
         ]
         assert {j.batch_id for j in jobs} == {batch.id}
         schema_job = next(j for j in jobs if j.kind == "family_schema")
@@ -1802,7 +1804,7 @@ class TestBatchesOfThreeKinds:
 
         preview = preview_batch(db_session, batch_id=batch.id)
 
-        assert preview.context_count == 3
+        assert preview.context_count == 4
 
     def test_preview_sums_use_the_tariffs_of_each_kind(
         self, db_session, factories, monkeypatch
@@ -1826,6 +1828,10 @@ class TestBatchesOfThreeKinds:
             load_request_material(db_session, [world.suggest_context_id])[world.suggest_context_id],
             settings=app_settings,
         )
+        bound_suggestion = render_context_request(
+            load_request_material(db_session, [world.context_id])[world.context_id],
+            settings=app_settings,
+        )
         values = render_values_request(
             load_values_material(db_session, [world.context_id])[world.context_id],
             settings=app_settings,
@@ -1833,9 +1839,10 @@ class TestBatchesOfThreeKinds:
         schema = render_schema_request(
             load_schema_material(db_session, world.family_2.id, 0), settings=app_settings
         )
-        rendered = [suggestion, values, schema]
+        rendered = [suggestion, bound_suggestion, values, schema]
         expected_reserve = (
             _reserve(suggestion, SUGGESTION_TARIFFS)
+            + _reserve(bound_suggestion, SUGGESTION_TARIFFS)
             + _reserve(values, VALUES_TARIFFS)
             + _reserve(schema, SCHEMA_TARIFFS)
         )

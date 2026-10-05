@@ -62,6 +62,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.family_change import PendingState, clear_pending, record_pending_outcome
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_events import record_event
 from services.semantic_privacy import _replace_quotes_with_space
@@ -678,6 +679,22 @@ def _is_applicable(db: Session, locked: _Locked) -> bool:
     return members > 0
 
 
+def _pending_target_valid(db: Session, locked: _Locked) -> bool:
+    """Ожидаемая семья — живая привязка (спека §2.5 п. 6): под её взятой
+    блокировкой она `active`, а её единица равна единице строки каталога
+    контекста (прямое сравнение, `None == None`)."""
+    row = db.execute(
+        sa.select(WorkFamily.status, WorkFamily.unit_id).where(
+            WorkFamily.id == locked.context.pending_family_id
+        )
+    ).one_or_none()
+    return (
+        row is not None
+        and row.status == FamilyStatus.active.value
+        and row.unit_id == locked.catalog.unit_id
+    )
+
+
 def _values_verdict(
     db: Session, locked: _Locked, *, context_id: int, schema_id: int, guard: JobGuard | None,
     settings: Settings,
@@ -737,8 +754,13 @@ def _extend_with_value(
 
 
 def _switch_pending_family(db: Session, context: CatalogContext) -> int | None:
-    """Шаг (5), ядро: ожидающая семья становится текущей, ожидание очищается,
-    пишется `context_family_assigned`. Возвращает прежнюю семью."""
+    """Шаг (5): ожидающая семья становится текущей, ожидание очищается, пишутся
+    `context_family_assigned` и `context_family_pending` (`applied`), порождавшее
+    предложение получает исход (`auto_pending` -> `auto_accepted`,
+    `accepted_pending` -> `accepted`). Порог в событии — `pending_threshold`
+    на момент решения, а не текущая настройка. Возвращает прежнюю семью."""
+    pending = PendingState.of(context)
+    assert pending is not None
     previous_family_id = context.work_family_id
     payload: dict[str, object] = {
         "from_family_id": previous_family_id,
@@ -768,6 +790,7 @@ def _switch_pending_family(db: Session, context: CatalogContext) -> int | None:
         db, event_type="context_family_assigned", context_id=context.id, actor_id=actor_id,
         payload=payload,
     )
+    record_pending_outcome(db, context.id, pending, "applied", actor_id=None)
     return previous_family_id
 
 
@@ -819,6 +842,16 @@ def apply_values(
         return _unapplied_values(reason)
 
     context = locked.context
+    if context.pending_family_id is not None and not _pending_target_valid(db, locked):
+        # Ожидаемая семья архивирована в обход запретов либо сменила единицу:
+        # результат не применяется, ожидание снято, контекст живёт прежним
+        # решением; задание закрыто отменой.
+        clear_pending(db, context, outcome="cancelled", actor_id=None)
+        if locked.job is not None:
+            _close_job_unapplied(locked.job, "not_applicable")
+        db.flush()
+        reconcile_or_defer(db, [context_id])
+        return _unapplied_values("not_applicable")
     schema = locked.schema
     family_id = (
         context.pending_family_id
