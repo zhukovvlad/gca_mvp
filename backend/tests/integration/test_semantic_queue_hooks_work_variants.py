@@ -5,12 +5,19 @@
 (`apply_values`) и заморозка схемы (`freeze_schema`); затем смена семьи
 (`services.family_change`: `request_family_change`, `cancel_pending_family`) и
 «не работа» контексту (`mark_context_not_work`); жизнь схемы
-(`rebuild_schema`, `update_schema`, `merge_parameter_values`).
-Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки строится входом, который
-краснеет, если вызов сверки в этой точке снят: без вызова задание по
-предикату не появляется. Остальные точки перечня добавляют свои тесты в этот
-файл вместе со своими модулями. `cancel_schema_build` сверку не зовёт: отмена
-версии сама отменяет её задания, а запросы контекстов не меняются.
+(`rebuild_schema`, `update_schema`, `merge_parameter_values`); слияние семей
+(`merge_families`), глобальная пометка строки (`set_position_kind_global`),
+массовое автопринятие (`apply_auto_accept`) и вход путей контекста при импорте.
+Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки
+строится входом, который краснеет, если вызов сверки в этой точке снят: без
+вызова задание по предикату не появляется.
+
+Две точки правило сверки видят иначе, и их классы утверждают именно его.
+`cancel_schema_build` сверку не зовёт: отмена версии сама отменяет её задания,
+запросы контекстов не меняются, и вызов сверки пересоздал бы только что
+отменённую `building`. `merge_families` зовёт сверку только заданий значений и
+схем: правка списка семей вне инварианта предложений (спека предложений,
+решение 2), задания предложений остаются как были.
 
 Помощники цепочки «семья -> схема -> контекст» импортируются из набора ядра
 варианта.
@@ -18,6 +25,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -25,16 +33,20 @@ import sqlalchemy as sa
 import services.family_change  # noqa: F401  # модуль под проверкой: его точки названы ниже
 import services.work_variants  # noqa: F401  # модуль под проверкой: его точки названы ниже
 from config import settings
-from models import CatalogContext, SemanticJob, WorkFamily
-from services.family_change import cancel_pending_family, request_family_change
+from models import CatalogContext, ImportJobStatus, SemanticJob, WorkFamily
+from services.family_change import apply_auto_accept, cancel_pending_family, request_family_change
+from services.review import set_position_kind_global
 from services.variant_request import load_values_material, paths_hash_of, render_values_request
 from services.work_variants import (
     ParameterEdit,
     apply_values,
+    cancel_schema_build,
     mark_context_not_work,
     rebuild_schema,
     update_schema,
 )
+from tests.integration.test_semantic_queue_hooks_import import _context_of, _Env, _rows
+from tests.integration.test_work_variants_auto_accept import _deploy_scene, _hash
 from tests.integration.test_work_variants_core import (
     _answer,
     _apply,
@@ -42,12 +54,22 @@ from tests.integration.test_work_variants_core import (
     _freeze,
     _freeze_world,
     _guarded,
+    _named,
+    _schema_job,
+    _settings,
     _world,
 )
 from tests.integration.test_work_variants_family_change import (
+    THRESHOLD,
     _current_schema,
     _two_families,
     _with_variant,
+)
+from tests.integration.test_work_variants_family_merge import (
+    _merge,
+    _settled_world,
+    _suggestion_jobs,
+    _target_family,
 )
 from tests.integration.test_work_variants_material import _bind, _chain_context, _frozen_schema, _uid
 from tests.integration.test_work_variants_schema import _family, _variant
@@ -57,8 +79,10 @@ from tests.integration.test_work_variants_schema_life import (
     _jobs,
     _Merge,
     _same_edits,
+    _schemas,
     _second_context,
 )
+from tests.payloads import payload_for
 
 pytestmark = pytest.mark.integration
 
@@ -469,6 +493,239 @@ class TestMergeParameterValuesReconciles:
         jobs = {job.status: job for job in listed}
         assert jobs["cancelled"].id == old_job.id
         assert jobs["pending"].request_hash != old_job.request_hash
+
+
+# ---------------------------------------------------------------------------
+#  services.work_families: слияние семей (правило: сверка заданий значений и
+#  схем; предложения вне инварианта)
+# ---------------------------------------------------------------------------
+
+class TestMergeFamiliesReconciles:
+    def test_a_moved_context_queues_a_values_job_by_the_current_version_of_the_target(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        world = _settled_world(db_session, factories)
+        target, target_schema = _target_family(db_session, factories, with_current=True)
+        assert _values_jobs(db_session) == []
+
+        _merge(db_session, world.family, target, actor)
+
+        [job] = _values_jobs(db_session, context_id=world.context_id)
+        assert (job.schema_id, job.status) == (target_schema.id, "pending")
+
+    def test_a_target_without_any_schema_gets_the_schema_job(self, db_session, factories):
+        actor = _actor(factories)
+        source = _family(db_session, status="active", definition=f"Источник {_uid()}")
+        _second_context(db_session, factories, SimpleNamespace(family=source))
+        target, _none = _target_family(db_session, factories, with_current=False)
+        assert _jobs(db_session, "family_schema") == []
+
+        _merge(db_session, source, target, actor)
+
+        [job] = _jobs(db_session, "family_schema", family_id=target.id)
+        assert job.status == "pending"
+        assert _jobs(db_session, "family_schema", family_id=source.id) == []
+
+    def test_the_suggestion_jobs_of_the_moved_and_the_target_contexts_stay_as_they_were(
+        self, db_session, factories
+    ):
+        from tests.integration.test_semantic_queue_schema import _job
+
+        actor = _actor(factories)
+        world = _settled_world(db_session, factories)
+        target, _none = _target_family(db_session, factories, with_current=False)
+        target_context = _second_context(db_session, factories, SimpleNamespace(family=target))
+        for context_id in (world.context_id, target_context):
+            _job(
+                db_session, factories, context=db_session.get(CatalogContext, context_id),
+                status="done",
+            )
+        before = _suggestion_jobs(db_session)
+
+        _merge(db_session, world.family, target, actor)
+
+        assert _suggestion_jobs(db_session) == before
+
+
+# ---------------------------------------------------------------------------
+#  services.work_variants: отмена пересборки (правило: сама отменяет задания
+#  версии, сверку не зовёт и ничего не пересоздаёт)
+# ---------------------------------------------------------------------------
+
+class TestCancelSchemaBuildDoesNotReconcile:
+    def test_the_jobs_of_the_cancelled_version_are_cancelled_and_nothing_is_queued_in_their_place(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        world = _freeze_world(db_session, factories, with_current=False)
+        job, _guard = _schema_job(db_session, world, status="pending")
+
+        cancel_schema_build(db_session, family_id=world.family.id, actor_id=actor)
+
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, job.id).status == "cancelled"
+        assert [(j.id, j.status) for j in _jobs(db_session, "family_schema")] == [
+            (job.id, "cancelled")
+        ]
+        assert [(s.version, s.status) for s in _schemas(db_session, world.family)] == [
+            (1, "cancelled")
+        ]
+        assert _values_jobs(db_session) == []
+
+    def test_the_building_version_and_the_job_of_another_family_stay(self, db_session, factories):
+        actor = _actor(factories)
+        world = _freeze_world(db_session, factories, with_current=False)
+        _schema_job(db_session, world, status="pending")
+        other = _freeze_world(db_session, factories, with_current=False)
+        other_job, _guard = _schema_job(db_session, other, status="pending")
+
+        cancel_schema_build(db_session, family_id=world.family.id, actor_id=actor)
+
+        db_session.expire_all()
+        assert db_session.get(SemanticJob, other_job.id).status == "pending"
+        assert [s.status for s in _schemas(db_session, other.family)] == ["building"]
+
+
+# ---------------------------------------------------------------------------
+#  services.review: глобальная пометка строки
+# ---------------------------------------------------------------------------
+
+class TestSetPositionKindGlobalReconciles:
+    def test_the_jobs_of_the_marked_context_are_cancelled_in_the_same_transaction(
+        self, db_session, factories
+    ):
+        world = _world(db_session, factories)
+        assert _apply(db_session, world, paths_hash="paths-of-the-request").applied
+        before = [
+            job for kind in ("context_values", "family_suggestion")
+            for job in _jobs(db_session, kind, context_id=world.context_id)
+        ]
+        assert before and {job.status for job in before} == {"pending"}
+        user = factories.UserFactory.create()
+
+        set_position_kind_global(
+            db_session, position_id=world.catalog_id, kind="HEADER", actor_id=user.id
+        )
+
+        assert db_session.in_transaction()
+        after = [
+            job for kind in ("context_values", "family_suggestion")
+            for job in _jobs(db_session, kind, context_id=world.context_id)
+        ]
+        assert {job.status for job in after} == {"cancelled"}
+
+    def test_the_job_of_a_context_of_another_row_stays_in_the_queue(self, db_session, factories):
+        world = _world(db_session, factories)
+        other, _ = _chain_context(
+            db_session, factories, title=f"Соседняя строка {_uid()}", path_specs=[((), 1)]
+        )
+        _bind(db_session, factories, other, family=world.family)
+        assert _apply(db_session, world, paths_hash="paths-of-the-request").applied
+        assert _apply(
+            db_session, world, paths_hash="paths-of-the-request", context_id=other
+        ).applied
+        user = factories.UserFactory.create()
+
+        set_position_kind_global(
+            db_session, position_id=world.catalog_id, kind="HEADER", actor_id=user.id
+        )
+
+        [other_job] = _values_jobs(db_session, context_id=other)
+        assert other_job.status == "pending"
+
+
+# ---------------------------------------------------------------------------
+#  services.family_change: массовое автопринятие
+# ---------------------------------------------------------------------------
+
+class TestApplyAutoAcceptReconciles:
+    @pytest.fixture(autouse=True)
+    def _threshold(self, monkeypatch):
+        monkeypatch.setattr(settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
+
+    def test_assigned_and_waiting_contexts_get_values_jobs_by_the_schema_of_their_new_family(
+        self, db_session, factories
+    ):
+        scene = _deploy_scene(db_session, factories)
+        expected = [_current_schema(db_session, scene.family_b).id]
+
+        apply_auto_accept(db_session, preview_hash=_hash(db_session))
+
+        for context_id in (scene.c_assign, scene.c_pending):
+            live = [
+                job for job in _values_jobs(db_session, context_id=context_id)
+                if job.status == "pending"
+            ]
+            assert [job.schema_id for job in live] == expected, context_id
+
+    def test_a_context_with_no_outcome_gets_no_job(self, db_session, factories):
+        scene = _deploy_scene(db_session, factories)
+
+        apply_auto_accept(db_session, preview_hash=_hash(db_session))
+
+        assert _values_jobs(db_session, context_id=scene.c_none) == []
+
+
+# ---------------------------------------------------------------------------
+#  Импорт: пути контекста (точка фичи 2, сравнение `paths_hash`)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def env(committing_db, committing_factories, tmp_storage, committing_session_factory):
+    return _Env(committing_db, committing_factories, tmp_storage, committing_session_factory)
+
+
+class TestImportQueuesValuesWhenThePathsMove:
+    """Контекст с вариантом, у которого `variant_paths_hash` равен хэшу путей
+    первого импорта; замена сметы в другом разделе меняет пути контекста."""
+
+    def _settled(self, env):
+        first = env.run(
+            payload_for(env.contract, _rows("Устройство стяжки", "Раздел А")), job=env.new_job()
+        )
+        assert first.status == ImportJobStatus.done.value
+        context_id = _context_of(env.db, "Устройство стяжки")
+        family = env.db.execute(
+            sa.select(WorkFamily).where(WorkFamily.title == "Семья стяжек")
+        ).scalar_one()
+        schema = _frozen_schema(env.db, env.factories, family, [(1, "Тип", ["а", "б"])])
+        _bind(env.db, env.factories, context_id, family=family)
+        outcome = apply_values(
+            env.db, context_id=context_id, schema_id=schema.id,
+            answer=_answer(_named(1, "а")),
+            paths_hash=paths_hash_of(_current_paths(env.db, context_id)), guard=None,
+            settings=_settings(),
+        )
+        assert outcome.applied
+        env.db.commit()
+        assert _values_jobs(env.db, context_id=context_id) == []
+        return context_id, schema
+
+    def test_an_import_that_moved_the_paths_puts_a_values_job_with_the_new_paths_hash(self, env):
+        context_id, schema = self._settled(env)
+
+        second = env.run(
+            payload_for(env.contract, _rows("Устройство стяжки", "Раздел Б")),
+            job=env.new_job(), replace=True,
+        )
+
+        assert second.status == ImportJobStatus.done.value
+        assert _context_of(env.db, "Устройство стяжки") == context_id
+        [job] = _values_jobs(env.db, context_id=context_id)
+        assert (job.status, job.schema_id) == ("pending", schema.id)
+        assert job.paths_hash == paths_hash_of(_current_paths(env.db, context_id))
+
+    def test_an_import_that_left_the_paths_where_they_were_queues_nothing(self, env):
+        context_id, _schema_row = self._settled(env)
+
+        second = env.run(
+            payload_for(env.contract, _rows("Устройство стяжки", "Раздел А")),
+            job=env.new_job(), replace=True,
+        )
+
+        assert second.status == ImportJobStatus.done.value
+        assert _values_jobs(env.db, context_id=context_id) == []
 
 
 def _apply_reconcile(db, context_id) -> bool:

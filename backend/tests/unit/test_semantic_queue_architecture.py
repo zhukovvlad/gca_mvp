@@ -10,9 +10,15 @@ AST-анализ полноты не доказывает: он ловит то�
 
 - создание, удаление и смена `context_id`/`bucket_id` строк `context_members`;
 - поля `catalog_contexts.semantic_kind`, `semantic_state`, `work_family_id`,
-  `archived_at`;
+  `archived_at`, `pending_family_id`, `work_variant_id`;
 - удаление `position_items` — прямое и каскадом от родителей (смета, лот,
-  предложение, договор, тендер, раунд, участник).
+  предложение, договор, тендер, раунд, участник);
+- строки `work_variants`, `work_variant_values`, `context_parameter_values`,
+  `family_parameter_schemas`, `family_parameters`, `family_parameter_values`
+  (создание, изменение, удаление; спека вариантов §2.7);
+- `catalog_positions.kind` — присваивание и `update`; создание строки каталога
+  (`pg_insert(CatalogPosition)` при сопоставлении) смены вида не делает: у новой
+  строки ещё нет контекстов.
 
 Смена `membership_state` и `conflict_at` защищённой записью НЕ является: вход
 запроса она не меняет (спека §2.7, решение спеки 5). Приёмы поиска — эвристики
@@ -25,6 +31,18 @@ AST-анализ полноты не доказывает: он ловит то�
 `bulk_*_mappings`, `db.delete(obj)`, сырой SQL. Не видны: `setattr` с именем
 поля переменной, SQL, собранный f-строкой, ORM-удаление родителя по имени без
 `member`/`position_item` (`db.delete(contract)`).
+
+Приёмы для таблиц вариантов и `kind` строки каталога так же узкие: модели
+из `_VARIANT_MODELS` — конструктор, `insert`/`pg_insert`/`update`/`delete` Core,
+`bulk_*_mappings`, `db.query(Model)….update()/.delete()`, сырой SQL;
+присваивание атрибута — когда получатель называется `variant`/`schema`
+(`target_variant`, `schema`), а для `kind` — `catalog`/`row`; `db.delete(obj)` —
+когда имя аргумента содержит `variant`/`schema`. Не видны: `setattr` вариантов,
+присваивание через переменную с другим именем.
+
+Сама сверка (`services.semantic_reconcile`) в `RECONCILE_ALLOWLIST` не входит, но
+вправе создавать версию схемы `building` вместе с её заданием — это единственная
+запись, которую тест ей разрешает.
 
 Сканируются `services`, `crud`, `routers` — не тесты, не миграции, не скрипты.
 Структурный тест требует, чтобы у каждого модуля списка был тест точки в
@@ -47,8 +65,31 @@ SCANNED_DIRS = ("services", "crud", "routers")
 HOOKS_TESTS_GLOB = "test_semantic_queue_hooks_*.py"
 
 _CONTEXT_FIELDS = frozenset(
-    {"semantic_kind", "semantic_state", "work_family_id", "archived_at", "pending_family_id"}
+    {
+        "semantic_kind",
+        "semantic_state",
+        "work_family_id",
+        "archived_at",
+        "pending_family_id",
+        "work_variant_id",
+    }
 )
+#: Таблицы вариантов и схем: любая запись в них меняет вход или предмет заданий.
+_VARIANT_MODELS = frozenset(
+    {
+        "WorkVariant",
+        "WorkVariantValue",
+        "ContextParameterValue",
+        "FamilyParameterSchema",
+        "FamilyParameter",
+        "FamilyParameterValue",
+    }
+)
+_VARIANT_TABLE_PATTERN = re.compile(r"^(work_variants?|work_variant_values|context_parameter_values|family_parameter\w*)$")
+_VARIANT_RECEIVER = re.compile(r"variant|schema", re.IGNORECASE)
+_CATALOG_KIND_RECEIVER = re.compile(r"catalog|row", re.IGNORECASE)
+#: Модуль самой сверки: единственная запись — версия схемы `building` с заданием.
+RECONCILER_MODULE = "services.semantic_reconcile"
 _MEMBER_MOVE_FIELDS = frozenset({"context_id", "bucket_id"})
 _MEMBER_RECEIVER = re.compile(r"member", re.IGNORECASE)
 _SESSION_NAMES = frozenset({"db", "session", "self.db", "self.session"})
@@ -72,7 +113,11 @@ _DELETE_REMOVES_POSITIONS = frozenset(
 )
 _RAW_SQL = re.compile(
     r"\b(delete\s+from|insert\s+into|update)\s+(position_items|context_members)\b"
-    r"|\bupdate\s+catalog_contexts\s+set\b[^;]*\b(semantic_kind|semantic_state|work_family_id|archived_at)\b",
+    r"|\bupdate\s+catalog_contexts\s+set\b[^;]*\b"
+    r"(semantic_kind|semantic_state|work_family_id|archived_at|pending_family_id|work_variant_id)\b"
+    r"|\b(delete\s+from|insert\s+into|update)\s+"
+    r"(work_variants|work_variant_values|context_parameter_values|family_parameter\w*)\b"
+    r"|\bupdate\s+catalog_positions\s+set\b[^;]*\bkind\b",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -201,6 +246,12 @@ def find_protected_writes(source: str) -> list[Finding]:
                     findings.append(Finding(node.lineno, f"запись поля контекста {target.attr}"))
                 elif target.attr in _MEMBER_MOVE_FIELDS and _MEMBER_RECEIVER.search(receiver):
                     findings.append(Finding(node.lineno, f"смена {target.attr} членства"))
+                elif target.attr == "kind" and _CATALOG_KIND_RECEIVER.search(receiver):
+                    findings.append(Finding(node.lineno, "запись catalog_positions.kind"))
+                elif _VARIANT_RECEIVER.search(receiver):
+                    findings.append(
+                        Finding(node.lineno, f"запись {target.attr} варианта или версии схемы")
+                    )
         elif isinstance(node, ast.Call):
             callee = _callee_name(node.func)
             first = node.args[0] if node.args else None
@@ -211,6 +262,20 @@ def find_protected_writes(source: str) -> list[Finding]:
                 keyword.arg in _CONTEXT_FIELDS for keyword in node.keywords
             ):
                 findings.append(Finding(node.lineno, "создание контекста с защищённым полем"))
+            elif callee in _VARIANT_MODELS:
+                findings.append(Finding(node.lineno, f"создание строки {callee}"))
+            elif callee in ("insert", "pg_insert") and model in _VARIANT_MODELS:
+                findings.append(Finding(node.lineno, f"вставка в {model}"))
+            elif (
+                callee in ("update", "delete")
+                and _is_core_call(node.func)
+                and model in _VARIANT_MODELS
+            ):
+                findings.append(Finding(node.lineno, f"{callee}({model})"))
+            elif callee == "update" and _is_core_call(node.func) and model == "CatalogPosition":
+                keys, unknown = _values_keys(node, parents)
+                if unknown or "kind" in keys:
+                    findings.append(Finding(node.lineno, "update(CatalogPosition) поля kind"))
             elif callee in ("insert", "pg_insert") and model == "ContextMember":
                 findings.append(Finding(node.lineno, "вставка в context_members"))
             elif callee == "delete" and _is_core_call(node.func) and model in _DELETE_REMOVES_POSITIONS:
@@ -223,6 +288,14 @@ def find_protected_writes(source: str) -> list[Finding]:
                 and _MEMBER_OBJECT_NAME.search(ast.unparse(first))
             ):
                 findings.append(Finding(node.lineno, "ORM-удаление позиции или членства"))
+            elif (
+                callee == "delete"
+                and isinstance(node.func, ast.Attribute)
+                and ast.unparse(node.func.value) in _SESSION_NAMES
+                and isinstance(first, ast.Name | ast.Attribute)
+                and _VARIANT_RECEIVER.search(ast.unparse(first))
+            ):
+                findings.append(Finding(node.lineno, "ORM-удаление варианта или версии схемы"))
             elif callee == "update" and model in ("ContextMember", "CatalogContext"):
                 keys, unknown = _values_keys(node, parents)
                 protected = _MEMBER_MOVE_FIELDS if model == "ContextMember" else _CONTEXT_FIELDS
@@ -238,18 +311,27 @@ def find_protected_writes(source: str) -> list[Finding]:
                         node.args[1].value in _MEMBER_MOVE_FIELDS
                         and _MEMBER_RECEIVER.search(ast.unparse(node.args[0]))
                     )
+                    or (
+                        node.args[1].value == "kind"
+                        and _CATALOG_KIND_RECEIVER.search(ast.unparse(node.args[0]))
+                    )
                 )
             ):
                 findings.append(Finding(node.lineno, f"setattr поля {node.args[1].value}"))
-            elif callee in ("bulk_update_mappings", "bulk_insert_mappings") and model in (
-                "ContextMember",
-                "CatalogContext",
+            elif callee in ("bulk_update_mappings", "bulk_insert_mappings") and (
+                model in ("ContextMember", "CatalogContext") or model in _VARIANT_MODELS
             ):
                 findings.append(Finding(node.lineno, f"{callee}({model})"))
             elif callee in ("delete", "update") and isinstance(node.func, ast.Attribute):
                 queried = _query_model(node.func.value)
                 if callee == "delete" and queried in _DELETE_REMOVES_POSITIONS:
                     findings.append(Finding(node.lineno, f"query({queried}).delete()"))
+                elif queried in _VARIANT_MODELS:
+                    findings.append(Finding(node.lineno, f"query({queried}).{callee}()"))
+                elif callee == "update" and queried == "CatalogPosition":
+                    keys, unknown = _dict_keys(first)
+                    if unknown or "kind" in keys:
+                        findings.append(Finding(node.lineno, "query(CatalogPosition).update() поля kind"))
                 elif callee == "update" and queried in ("ContextMember", "CatalogContext"):
                     keys, unknown = _dict_keys(first)
                     protected = _MEMBER_MOVE_FIELDS if queried == "ContextMember" else _CONTEXT_FIELDS
@@ -315,12 +397,34 @@ def _hooks_texts() -> list[str]:
 
 class TestProtectedWritesLiveOnlyInTheAllowlist:
     def test_no_module_outside_the_allowlist_writes_protected_data(self):
-        problems = violations(scan_tree(), RECONCILE_ALLOWLIST)
+        problems = violations(scan_tree(), RECONCILE_ALLOWLIST | {RECONCILER_MODULE})
 
         assert problems == [], (
             "запись в защищённые данные контекстов вне RECONCILE_ALLOWLIST — вызовите "
             "reconcile_semantic_jobs в этой точке и внесите модуль в список:\n" + "\n".join(problems)
         )
+
+    def test_the_reconciler_writes_nothing_but_the_building_version(self):
+        findings = scan_tree().get(RECONCILER_MODULE, [])
+
+        assert findings, "сверка перестала создавать версию building: исключение лишнее"
+        assert all("FamilyParameterSchema" in finding.what for finding in findings), findings
+
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "services.work_variants",
+            "services.family_change",
+            "services.work_families",
+            "services.review",
+        ],
+    )
+    def test_taking_a_writer_out_of_the_allowlist_makes_the_check_red(self, module):
+        assert module in scan_tree(), module
+
+        problems = violations(scan_tree(), (RECONCILE_ALLOWLIST - {module}) | {RECONCILER_MODULE})
+
+        assert any(problem.startswith(f"{module}:") for problem in problems)
 
     def test_every_allowlisted_module_really_writes_protected_data(self):
         found = scan_tree()
@@ -341,8 +445,45 @@ class TestProtectedWritesLiveOnlyInTheAllowlist:
             "services.round_import",
             "crud.contracts",
             "crud.tenders",
+            "services.work_variants",
+            "services.family_change",
         ):
             assert module in found, module
+
+    def test_the_scan_finds_every_protected_field_of_the_variant_feature(self):
+        """Каждое поле и таблица спеки вариантов §2.7 найдены хотя бы в одном
+        модуле дерева: сканер не пропускает целый класс записей."""
+        what = " ".join(finding.what for findings in scan_tree().values() for finding in findings)
+
+        for needle in (
+            "work_variant_id",
+            "pending_family_id",
+            "WorkVariant",
+            "WorkVariantValue",
+            "ContextParameterValue",
+            "FamilyParameter",
+            "FamilyParameterValue",
+            "FamilyParameterSchema",
+            "catalog_positions.kind",
+        ):
+            assert needle in what, needle
+
+    def test_the_protected_models_are_exactly_the_variant_tables_of_the_schema(self):
+        from models import Base
+
+        tables = {
+            table.name
+            for table in Base.metadata.tables.values()
+            if _VARIANT_TABLE_PATTERN.match(table.name)
+        }
+        mapped = {
+            mapper.class_.__name__: mapper.local_table.name
+            for mapper in Base.registry.mappers
+            if mapper.class_.__name__ in _VARIANT_MODELS
+        }
+
+        assert set(mapped) == set(_VARIANT_MODELS)
+        assert set(mapped.values()) == tables
 
 
 class TestEveryAllowlistedModuleHasAHooksTest:
@@ -353,6 +494,17 @@ class TestEveryAllowlistedModuleHasAHooksTest:
         missing = modules_without_hooks_test(RECONCILE_ALLOWLIST, texts)
 
         assert missing == [], f"у модулей списка нет теста точки в {HOOKS_TESTS_GLOB}: {missing}"
+
+    def test_the_matrix_of_the_variant_feature_is_one_of_the_hooks_files(self):
+        """Матрица точек вариантов — в выборке структурного теста, а модуль
+        `work_variants` назван именно в ней: в файлах остальных точек его нет."""
+        matrix = BACKEND / "tests" / "integration" / "test_semantic_queue_hooks_work_variants.py"
+        files = sorted((BACKEND / "tests" / "integration").glob(HOOKS_TESTS_GLOB))
+        assert matrix in files
+        others = [path.read_text(encoding="utf-8") for path in files if path != matrix]
+
+        assert modules_without_hooks_test({"services.work_variants"}, [matrix.read_text(encoding="utf-8")]) == []
+        assert modules_without_hooks_test({"services.work_variants"}, others) == ["services.work_variants"]
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +537,41 @@ _POSITIVE = {
     "setattr_member_context_id": "setattr(member, 'context_id', 5)",
     "bulk_update_members": "db.bulk_update_mappings(ContextMember, rows)",
     "bulk_insert_members": "db.bulk_insert_mappings(ContextMember, rows)",
+    "context_field_work_variant": "ctx.work_variant_id = 4",
+    "context_created_with_variant": "CatalogContext(bucket_id=1, work_variant_id=2)",
+    "update_context_variant": "db.execute(update(CatalogContext).where(x).values(work_variant_id=None))",
+    "raw_update_context_variant": "db.execute(text('UPDATE catalog_contexts SET work_variant_id = NULL'))",
+    "raw_update_context_pending": "db.execute(text('UPDATE catalog_contexts SET pending_family_id = NULL'))",
+    "variant_created": "db.add(WorkVariant(family_id=1, schema_id=2, values_key='k'))",
+    "variant_value_inserted": "db.execute(sa.insert(WorkVariantValue), rows)",
+    "variant_pg_insert": "db.execute(pg_insert(WorkVariant).values(rows))",
+    "variant_updated": "db.execute(sa.update(WorkVariant).where(x).values(status='archived'))",
+    "variant_value_updated": "db.execute(sa.update(WorkVariantValue).values(value_id=1))",
+    "context_values_deleted": "db.execute(sa.delete(ContextParameterValue).where(x))",
+    "context_values_inserted": "db.execute(sa.insert(ContextParameterValue), rows)",
+    "family_parameter_created": "db.add(FamilyParameter(schema_id=1, ordinal=1, name='x'))",
+    "family_parameter_value_created": "FamilyParameterValue(parameter_id=1, value='a')",
+    "family_value_pg_insert": "db.execute(pg_insert(FamilyParameterValue).values(rows))",
+    "schema_created": "FamilyParameterSchema(family_id=1, version=1, status='building')",
+    "schema_pg_insert": "db.execute(pg_insert(FamilyParameterSchema).values(family_id=1))",
+    "variant_status_assigned": "variant.status = 'archived'",
+    "target_variant_assigned": "target_variant.merged_into_id = 3",
+    "schema_attribute_assigned": "schema.version = 3",
+    "orm_delete_variant": "db.delete(variant)",
+    "orm_delete_schema": "db.delete(old_schema)",
+    "query_update_variant": "db.query(WorkVariant).filter(x).update({'status': 'archived'})",
+    "query_delete_context_values": "db.query(ContextParameterValue).filter(x).delete()",
+    "bulk_insert_variant_values": "db.bulk_insert_mappings(WorkVariantValue, rows)",
+    "raw_update_variants": "db.execute(text('UPDATE work_variants SET status = 1'))",
+    "raw_delete_context_values": "db.execute(text('DELETE FROM context_parameter_values WHERE context_id = 1'))",
+    "raw_insert_family_parameters": "db.execute(text('INSERT INTO family_parameter_values (value) VALUES (1)'))",
+    "catalog_kind_assigned": "row.kind = 'HEADER'",
+    "catalog_kind_assigned_via_attribute": "locked.catalog.kind = 'POSITION'",
+    "catalog_kind_updated": "db.execute(sa.update(CatalogPosition).where(x).values(kind='HEADER'))",
+    "catalog_update_unknown_values": "db.execute(sa.update(CatalogPosition).values(**changes))",
+    "catalog_kind_setattr": "setattr(row, 'kind', 'HEADER')",
+    "query_update_catalog_kind": "db.query(CatalogPosition).filter(x).update({CatalogPosition.kind: 'HEADER'})",
+    "raw_update_catalog_kind": "db.execute(text('UPDATE catalog_positions SET kind = 1'))",
     "query_delete_positions": "db.query(PositionItem).filter(x).delete()",
     "query_update_context_field": "db.query(CatalogContext).filter(x).update({CatalogContext.archived_at: now})",
     "query_update_member_unknown": "db.query(ContextMember).filter(x).update(changes)",
@@ -411,6 +598,22 @@ _NEGATIVE = {
     "bulk_update_jobs": "db.bulk_update_mappings(SemanticJob, rows)",
     "query_delete_other": "db.query(RefreshToken).filter(x).delete()",
     "query_update_context_name_role": "db.query(CatalogContext).filter(x).update({'name_role': 'WORK'})",
+    "context_variant_hint": "context.variant_split_hint = None",
+    "context_variant_paths_hash": "context.variant_paths_hash = 'h'",
+    "reading_the_variant_field": "variant_id = ctx.work_variant_id",
+    "variant_selected": "db.execute(sa.select(WorkVariant).where(x))",
+    "variant_value_selected": "db.execute(sa.select(ContextParameterValue).where(x))",
+    "job_kind_assigned": "job.kind = 'family_schema'",
+    "catalog_other_attribute_assigned": "row.standard_job_title = 'x'",
+    "other_receiver_status": "family.status = 'active'",
+    "catalog_other_field_updated": "db.execute(sa.update(CatalogPosition).values(status='ok'))",
+    "catalog_position_inserted": "db.execute(pg_insert(CatalogPosition).on_conflict_do_nothing())",
+    "query_update_catalog_other_field": "db.query(CatalogPosition).filter(x).update({'status': 'ok'})",
+    "raw_select_variants": "db.execute(text('SELECT * FROM work_variants'))",
+    "raw_update_other_table_with_kind": "db.execute(text('UPDATE semantic_jobs SET kind = 1'))",
+    "setattr_job_kind": "setattr(job, 'kind', 'x')",
+    "orm_delete_event": "db.delete(event)",
+    "variant_model_selected_by_query": "db.query(WorkVariant).filter(x).all()",
 }
 
 

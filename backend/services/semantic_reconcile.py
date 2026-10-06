@@ -1102,11 +1102,40 @@ def _insert_new_jobs(
     return _insert_job_rows(db, rows)
 
 
+def _free_parents(db: Session, model, ids) -> set[int]:
+    """Родительские строки внешних ключей вставок сверки, которые можно взять
+    `FOR KEY SHARE` без ожидания (`SKIP LOCKED`), одним запросом по `id`.
+
+    Вставка строки задания неявно берёт `FOR KEY SHARE` на родителей (семью,
+    версию схемы, контекст). Родителя, которого не держит сверка, может держать
+    `FOR UPDATE` другая операция, ждущая замок задания, уже взятый сверкой, —
+    ожидание на вставке замкнуло бы цикл. Для занятого родителя вставку
+    пропускаем; пропущенный ряд не гарантированно заведёт сверка держателя
+    замка, его восстановит одна из следующих сверок единицы. Родитель, которого
+    держит сама транзакция вызывающего, возвращается обычно."""
+    wanted = sorted({parent_id for parent_id in ids if parent_id is not None})
+    if not wanted:
+        return set()
+    return set(
+        db.execute(
+            sa.select(model.id)
+            .where(model.id.in_(wanted))
+            .order_by(model.id)
+            .with_for_update(read=True, key_share=True, skip_locked=True)
+        )
+        .scalars()
+        .all()
+    )
+
+
 def _ensure_building_version(db: Session, family_id: int) -> int | None:
     """Версия схемы `building` для семьи: `version = max + 1` (отменённые тоже
     считаются). Вставка `ON CONFLICT DO NOTHING` без цели — две параллельные
     сверки одной семьи не падают на уникальности ни по `(семья, версия)`, ни по
-    единственной `building`; проигравшая перечитывает версию победившей."""
+    единственной `building`; проигравшая перечитывает версию победившей.
+
+    Семью вызывающий держит сам (пересборка, слияние) либо уже проверил как
+    свободную (`_create_jobs` пропускает занятые семьи через `_free_parents`)."""
     next_version = db.execute(
         sa.select(sa.func.coalesce(sa.func.max(FamilyParameterSchema.version), 0) + 1).where(
             FamilyParameterSchema.family_id == family_id
@@ -1134,17 +1163,47 @@ def _ensure_building_version(db: Session, family_id: int) -> int | None:
 
 
 def _create_jobs(db: Session, full: _FullPlan) -> int:
+    # Родители внешних ключей берутся в порядке домена «семья -> версия схемы ->
+    # контекст» и без ожидания: занятого другой операцией родителя пропускаем.
+    schema_creates = sorted(
+        full.schemas.creates, key=lambda n: _fingerprint_sort_key(n.fingerprint)
+    )
+    free_families = _free_parents(db, WorkFamily, [new.fingerprint.family_id for new in schema_creates])
+    free_schemas = _free_parents(
+        db, FamilyParameterSchema, [new.fingerprint.schema_id for new in full.values.creates]
+    )
+    free_contexts = _free_parents(
+        db,
+        CatalogContext,
+        [new.fingerprint.context_id for new in full.suggestions.creates]
+        + [new.fingerprint.context_id for new in full.values.creates],
+    )
     created = 0
-    if full.suggestions.creates:
+    suggestion_contexts = [
+        new.fingerprint.context_id
+        for new in full.suggestions.creates
+        if new.fingerprint.context_id in free_contexts
+    ]
+    if suggestion_contexts:
         created += _insert_new_jobs(
             db,
-            [new.fingerprint.context_id for new in full.suggestions.creates],
+            suggestion_contexts,
             full.prepared.applicable_render,
             full.prepared.material_by_context,
         )
-    created += _insert_job_rows(db, [new.row for new in full.values.creates])
+    created += _insert_job_rows(
+        db,
+        [
+            new.row
+            for new in full.values.creates
+            if new.fingerprint.context_id in free_contexts
+            and new.fingerprint.schema_id in free_schemas
+        ],
+    )
     schema_rows: list[dict] = []
-    for new in sorted(full.schemas.creates, key=lambda n: _fingerprint_sort_key(n.fingerprint)):
+    for new in schema_creates:
+        if new.fingerprint.family_id not in free_families:
+            continue
         schema_id = new.fingerprint.schema_id
         if schema_id is None:
             schema_id = _ensure_building_version(db, new.fingerprint.family_id)
