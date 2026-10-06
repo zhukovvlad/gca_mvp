@@ -61,6 +61,8 @@ from models import (
     MatchingCache,
     MatchSource,
     PositionItem,
+    RateClass,
+    RateStandard,
     RoutedBy,
     SemanticState,
     WorkFamily,
@@ -72,7 +74,8 @@ from services.matching import NORM_VERSION, cache_key
 from services.semantic_events import record_event
 from services.semantic_reconcile import contexts_of_positions, reconcile_or_defer
 from services.unit_resolution import UnitResolver
-from services.work_variants import clear_variant
+from services.work_families import REFUSE_INVALID_KIND, WorkFamilyError
+from services.work_variants import clear_variant, take_context_off_work
 
 log = logging.getLogger(__name__)
 
@@ -866,3 +869,127 @@ def set_kind(
 
     log.info("Review: строке %d поставлен kind=%s", to_review_id, kind)
     return row
+
+
+#: Отказы `set_position_kind_global` (доменная ошибка `WorkFamilyError`);
+#: HTTP-коды назначает слой маршрутов.
+REFUSE_POSITION_NOT_FOUND = "position_not_found"
+REFUSE_POSITION_NOT_POSITION = "position_not_position"
+REFUSE_POSITION_HAS_STANDARDS = "position_has_standards"
+
+
+def _standards_of_position(db: Session, catalog_position_id: int) -> list[dict]:
+    """Нормативы строки каталога для перечня в отказе: `id`, класс, период."""
+    rows = db.execute(
+        sa.select(
+            RateStandard.id,
+            RateStandard.rate_class_id,
+            RateClass.title,
+            RateStandard.valid_from,
+            RateStandard.valid_to,
+        )
+        .join(RateClass, RateClass.id == RateStandard.rate_class_id)
+        .where(RateStandard.catalog_position_id == catalog_position_id)
+        .order_by(RateStandard.id)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "rate_class_id": row.rate_class_id,
+            "rate_class_title": row.title,
+            "valid_from": row.valid_from,
+            "valid_to": row.valid_to,
+        }
+        for row in rows
+    ]
+
+
+def set_position_kind_global(
+    db: Session, *, position_id: int, kind: str, actor_id: int
+) -> None:
+    """Глобальная пометка строки `POSITION` как `HEADER`/`TRASH` (спека
+    вариантов §2.11): любая строка `POSITION`, откуда бы она ни взялась.
+
+    Блокировки — порядок фичи «строка каталога -> семья -> вариант -> контекст»:
+    строка `FOR UPDATE`, затем семьи её контекстов (текущие и ожидаемые)
+    `FOR UPDATE` по `id`, варианты `FOR UPDATE` по `id`, контексты `FOR UPDATE`
+    по `id` (`acquire_family_locks`). Семьи и варианты читаются без блокировок
+    и перепроверяются под замком семей; разошлись — повтор, затем
+    `FamilyLockMismatch`. Задания очереди берёт сверка последней.
+
+    Нормативы проверяются сразу под замком строки: их создание берёт ту же
+    строку `FOR SHARE` (`crud.rate_standards._require_refs`), и после нашего
+    замка новый норматив на строке появиться не может. Отказ до любой записи и до
+    замков ниже строки.
+
+    Контексты строки уходят в «не работа» тем же ядром, что
+    `mark_context_not_work` (`reason='position_kind'`). Контекст, уже
+    `NOT_APPLICABLE`, обрабатывается так же: `assign_family` такому контексту не
+    отказывает, поэтому семья или вариант у него могут быть; чистый контекст
+    события не получает (см. `take_context_off_work`). Ручная запись
+    кэша — как в `set_kind`; строка была `POSITION`, поэтому кэш не указывает на
+    `TO_REVIEW`. Сверка очереди — до `commit` вызывающего. Отдельная операция от
+    `set_kind`: тот работает с `TO_REVIEW`.
+
+    Raises:
+        WorkFamilyError: `REFUSE_INVALID_KIND` (вид не `HEADER`/`TRASH`);
+            `REFUSE_POSITION_NOT_FOUND`; `REFUSE_POSITION_NOT_POSITION` (строка не
+            `POSITION`); `REFUSE_POSITION_HAS_STANDARDS` (атрибут `standards` —
+            перечень нормативов).
+        FamilyLockMismatch: семья контекста сменилась при захвате дважды.
+    """
+    if kind not in _NOT_APPLICABLE_MANUAL_KINDS:
+        allowed = ", ".join(sorted(_NOT_APPLICABLE_MANUAL_KINDS))
+        raise WorkFamilyError(
+            REFUSE_INVALID_KIND, f"Недопустимый kind «{kind}»; глобально можно поставить: {allowed}."
+        )
+    row = _lock_rows(db, [position_id]).get(position_id)
+    if row is None:
+        raise WorkFamilyError(
+            REFUSE_POSITION_NOT_FOUND, f"Каталожная строка {position_id} не найдена.",
+            position_id=position_id,
+        )
+    if row.kind != CatalogKind.POSITION.value:
+        raise WorkFamilyError(
+            REFUSE_POSITION_NOT_POSITION,
+            f"Каталожная строка {position_id} имеет kind={row.kind}, а глобально "
+            "помечается только POSITION.",
+            position_id=position_id,
+        )
+    standards = _standards_of_position(db, position_id)
+    if standards:
+        raise WorkFamilyError(
+            REFUSE_POSITION_HAS_STANDARDS,
+            f"У каталожной строки {position_id} есть нормативы расценок "
+            f"({len(standards)}): переносить их некуда, а молча архивировать нельзя.",
+            position_id=position_id,
+            standards=standards,
+        )
+
+    context_ids = sorted(_contexts_of_catalog_position(db, position_id))
+    unstable = acquire_family_locks(
+        db, [(context_id, None) for context_id in context_ids],
+        release_on_failure=True, lock_variants=True, exclusive_families=True,
+    )
+    if unstable:
+        raise FamilyLockMismatch(sorted(unstable))
+
+    row.kind = kind
+    db.flush()
+    contexts = (
+        db.execute(
+            sa.select(CatalogContext)
+            .where(CatalogContext.id.in_(context_ids))
+            .order_by(CatalogContext.id)
+            .execution_options(populate_existing=True)
+        )
+        .scalars()
+        .all()
+    )
+    for context in contexts:
+        take_context_off_work(db, context, actor_id=actor_id, reason="position_kind")
+
+    _write_manual_cache(db, row, row.id, UnitResolver(db))
+    reconcile_or_defer(db, set(context_ids))
+
+    log.info("Review: строке %d глобально поставлен kind=%s", position_id, kind)

@@ -1098,27 +1098,49 @@ def mark_context_not_work(db: Session, *, context_id: int, actor_id: int) -> Non
             context_id=context_id,
         )
 
+    take_context_off_work(db, context, actor_id=actor_id, reason="manual")
+    reconcile_or_defer(db, [context_id])
+
+
+def take_context_off_work(
+    db: Session, context: CatalogContext, *, actor_id: int, reason: str
+) -> None:
+    """Переход контекста в «не работа» под уже взятыми блокировками вызывающего
+    (семьи, вариант, контекст — порядок фичи): ожидание снято, вариант и значения
+    сняты (опустевший вариант архивирован), семья снята, `semantic_state :=
+    NOT_APPLICABLE`, событие `context_not_work` с `reason`. Сверку очереди
+    вызывает вызывающий: он знает весь набор затронутых контекстов.
+
+    Контекст, уже `NOT_APPLICABLE` и ничего не несущий (ни семьи, ни ожидания;
+    вариант без семьи невозможен — `ck_catalog_contexts_variant_needs_family`),
+    остаётся как есть и события не получает."""
+    was_clean = (
+        context.semantic_state == SemanticState.NOT_APPLICABLE.value
+        and context.work_family_id is None
+        and context.pending_family_id is None
+    )
     cleared_family_id = context.work_family_id
     clear_pending(db, context, outcome="cancelled", actor_id=actor_id)
-    cleared_variant_id = clear_variant(db, context_id=context_id)
+    cleared_variant_id = clear_variant(db, context_id=context.id)
     context.work_family_id = None
     context.family_source = None
     context.family_by = None
     context.family_at = None
     context.semantic_state = SemanticState.NOT_APPLICABLE.value
     db.flush()
+    if was_clean:
+        return
     record_event(
         db,
         event_type="context_not_work",
-        context_id=context_id,
+        context_id=context.id,
         actor_id=actor_id,
         payload={
-            "reason": "manual",
+            "reason": reason,
             "cleared_family_id": cleared_family_id,
             "cleared_variant_id": cleared_variant_id,
         },
     )
-    reconcile_or_defer(db, [context_id])
 
 
 #: Коды отказов жизни схемы (доменная ошибка `WorkFamilyError`); HTTP-коды
@@ -1706,6 +1728,7 @@ __all__: Sequence[str] = (
     "merge_parameter_values",
     "normalize_value",
     "rebuild_schema",
+    "take_context_off_work",
     "update_schema",
     "values_key_of",
 )

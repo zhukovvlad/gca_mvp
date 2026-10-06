@@ -166,6 +166,7 @@ def acquire_family_locks(
     *,
     release_on_failure: bool,
     lock_variants: bool = False,
+    exclusive_families: bool = False,
     extra_context_ids: Collection[int] = (),
 ) -> set[int]:
     """Захват семей и контекстов решения (или группы решений): `items` — пары
@@ -174,6 +175,7 @@ def acquire_family_locks(
     (1) без блокировок читаются текущая и ожидаемая семьи контекстов;
     (2) открывается точка сохранения ДО первой блокировки попытки;
     (3) ВСЕ семьи — запрашиваемые, текущие, ожидаемые — берутся `FOR SHARE`
+    (`FOR UPDATE` при `exclusive_families`)
     одним запросом по возрастанию `id`; при `lock_variants` затем читаются
     варианты контекстов (уже под блокировкой семей: менять вариант контекста
     можно только под `FOR UPDATE` его семьи, поэтому он устойчив, а параллельное
@@ -190,6 +192,8 @@ def acquire_family_locks(
 
     `lock_variants` нужен путям, снимающим вариант с контекста: порядок
     «семья -> вариант -> контекст» тот же, что у обработчика значений.
+    `exclusive_families` берёт семьи `FOR UPDATE` вместо `FOR SHARE` — для
+    путей, меняющих семью, её схему или варианты (глобальная пометка строки).
 
     Возвращает контексты, чья пара семей так и не устоялась (пусто — захват
     удался)."""
@@ -204,7 +208,7 @@ def acquire_family_locks(
             requested
             | {family for pair in seen.values() for family in pair if family is not None}
         )
-        _lock_families(db, family_ids, exclusive=False)
+        _lock_families(db, family_ids, exclusive=exclusive_families)
         variants: dict[int, int | None] = {}
         if lock_variants:
             variants = _read_variants(db, context_ids)
