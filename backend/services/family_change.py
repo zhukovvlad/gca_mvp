@@ -92,7 +92,7 @@ __all__ = [
 ]
 
 FamilyChangeSource = Literal["manual", "suggestion", "auto_suggestion"]
-PendingOutcome = Literal["superseded", "cancelled", "applied"]
+PendingOutcome = Literal["superseded", "cancelled", "applied", "redirected"]
 
 #: Колонки контекста, составляющие ожидающее назначение (CHECK
 #: `ck_catalog_contexts_pending`: все пусты либо заполнены согласованно).
@@ -307,8 +307,10 @@ def _settle_suggestion(
     автором. Снято или вытеснено без человека: `auto_pending` ->
     `auto_superseded` без автора (схема не допускает отклонения без автора),
     `accepted_pending` -> `rejected` с прежним автором. Прочие решения
-    (`other_family`, `family_created`) не трогаются."""
-    if state.suggestion_id is None:
+    (`other_family`, `family_created`) не трогаются. Перенаправление ожидания
+    слиянием семей решения не меняет: семья, которую предлагало предложение, теперь
+    и есть цель."""
+    if state.suggestion_id is None or outcome == "redirected":
         return
     suggestion = db.execute(
         sa.select(FamilySuggestion)

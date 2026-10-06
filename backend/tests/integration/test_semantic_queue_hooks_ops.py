@@ -49,6 +49,7 @@ from models import (
     ReconcileBatchStatus,
     SemanticCancelReason,
     SemanticJob,
+    SemanticJobKind,
     SemanticJobStatus,
     SemanticReconcileBatch,
     WorkCategory,
@@ -157,6 +158,15 @@ def _current_hash(db, context_id) -> str:
 def _job_count(db) -> int:
     db.expire_all()
     return db.execute(sa.select(sa.func.count()).select_from(SemanticJob)).scalar_one()
+
+
+def _suggestion_job_count(db) -> int:
+    db.expire_all()
+    return db.execute(
+        sa.select(sa.func.count())
+        .select_from(SemanticJob)
+        .where(SemanticJob.kind == SemanticJobKind.family_suggestion.value)
+    ).scalar_one()
 
 
 def _assert_pending_with_current_hash(db, context_id) -> SemanticJob:
@@ -634,10 +644,11 @@ class TestFamilyEditsQueueNothing:
     """Правки списка семей под инвариант не попадают (спека §2.7, решение 2):
     отпечаток меняется, задания нет — ручной перезапрос единицы."""
 
-    def _edit_and_check(self, db, scene, edit, *, changes_the_input):
+    def _edit_and_check(self, db, scene, edit, *, changes_the_input, only_suggestion_jobs=False):
+        count = _suggestion_job_count if only_suggestion_jobs else _job_count
         before = _snapshot(db, scene.context_id)
         hash_before = _current_hash(db, scene.context_id)
-        jobs_before = _job_count(db)
+        jobs_before = count(db)
 
         edit()
         db.expire_all()
@@ -645,7 +656,7 @@ class TestFamilyEditsQueueNothing:
         if changes_the_input:
             assert _current_hash(db, scene.context_id) != hash_before
         assert _snapshot(db, scene.context_id) == before
-        assert _job_count(db) == jobs_before
+        assert count(db) == jobs_before
 
     def _settled(self, db, factories):
         scene = _scene(db, factories, [("Пол", 1)])
@@ -708,6 +719,7 @@ class TestFamilyEditsQueueNothing:
         scene = self._settled(db_session, factories)
         spare = _active_family(db_session, title=f"Запасная {_uid()}", unit_name="M2", actor_id=scene.user.id)
         _settle(db_session, scene.context_id)
+        all_before = {job.id for job in db_session.execute(sa.select(SemanticJob)).scalars()}
         self._edit_and_check(
             db_session,
             scene,
@@ -716,7 +728,18 @@ class TestFamilyEditsQueueNothing:
                 actor_id=scene.user.id,
             ),
             changes_the_input=True,
+            # Слияние двух семей без схем по спеке вариантов §2.9 ставит цели
+            # задание `family_schema`; контексту сцены, не переехавшему и не
+            # ожидавшему источник, запросов предложений оно не ставит.
+            only_suggestion_jobs=True,
         )
+        # Сверх запросов предложений — ровно одно новое задание: схема цели.
+        new_jobs = [
+            (job.kind, job.family_id)
+            for job in db_session.execute(sa.select(SemanticJob)).scalars()
+            if job.id not in all_before
+        ]
+        assert new_jobs == [(SemanticJobKind.family_schema.value, scene.family.id)]
 
 
 # ---------------------------------------------------------------------------

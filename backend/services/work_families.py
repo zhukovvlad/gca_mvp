@@ -62,27 +62,38 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Final
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import services.context_routing as context_routing_module
+from config import settings as app_settings
 from models import (
     CatalogContext,
     CatalogPosition,
     ContextBucket,
     DecisionSource,
+    FamilyParameterSchema,
     FamilySource,
     FamilyStatus,
+    FamilySuggestion,
     NameRole,
+    SchemaStatus,
     SemanticKind,
     SemanticState,
     WorkFamily,
     WorkVariant,
 )
+from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
-from services.semantic_reconcile import reconcile_or_defer
+from services.semantic_reconcile import (
+    _ensure_building_version,
+    reconcile_context_values,
+    reconcile_family_schemas,
+    reconcile_or_defer,
+)
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind
 from services.unit_resolution import NO_UNIT_NORM, UnitResolver
 
@@ -164,6 +175,9 @@ REFUSE_CONTEXT_ARCHIVED = "context_archived"
 #: не пересекается ни с одним из шести кодов плана.
 REFUSE_CONTEXT_NOT_APPLICABLE = "context_not_applicable"
 REFUSE_MERGE_SAME_FAMILY = "merge_same_family"
+#: Слияние семей с версией схемы `building` у источника или цели (спека вариантов
+#: §2.9): версии нечем заполнить `frozen_at`, а ждать внутри слияния нельзя.
+REFUSE_MERGE_SCHEMA_BUILDING: Final = "merge_schema_building"
 #: `confirm_kind(kind=...)` с переопределением вне `SemanticKind` — первая
 #: линия защиты в Python, до `CHECK` (та же дисциплина, что и остальные
 #: домены модуля).
@@ -1037,6 +1051,58 @@ def archive_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily:
     return family
 
 
+#: Два отложенных составных FK фичи вариантов: контекст -> вариант и вариант ->
+#: версия схемы.
+_DEFERRED_FOREIGN_KEYS = "fk_catalog_contexts_work_variant_family, fk_work_variants_schema_family"
+
+
+def _lock_schemas(db: Session, family_ids: list[int]) -> list[FamilyParameterSchema]:
+    """Версии схем семей `FOR UPDATE`, после семей. Статус читается под замком
+    семьи: версию `building` заводит только тот, кто держит семью, поэтому
+    порядок строк внутри запроса не важен."""
+    return list(
+        db.execute(
+            sa.select(FamilyParameterSchema)
+            .where(FamilyParameterSchema.family_id.in_(family_ids))
+            .with_for_update()
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _move_schema_versions(
+    schemas: list[FamilyParameterSchema],
+    *,
+    source_family_id: int,
+    target_family_id: int,
+    target_has_current: bool,
+) -> bool:
+    """Версии источника переезжают к цели с номерами `max(version цели) + k` в
+    порядке их номеров (спека вариантов §2.9). Текущая версия источника при
+    текущей у цели становится прошлой (`superseded`); при отсутствии текущей у
+    цели остаётся текущей. Отменённые и прошлые сохраняют статус. Возвращает,
+    стала ли версия источника текущей версией цели."""
+    last_version = max(
+        (schema.version for schema in schemas if schema.family_id == target_family_id), default=0
+    )
+    moving = sorted(
+        (schema for schema in schemas if schema.family_id == source_family_id),
+        key=lambda schema: schema.version,
+    )
+    became_current = False
+    for offset, schema in enumerate(moving, start=1):
+        if schema.status == SchemaStatus.frozen.value:
+            if target_has_current:
+                schema.status = SchemaStatus.superseded.value
+                schema.superseded_at = _now()
+            else:
+                became_current = True
+        schema.family_id = target_family_id
+        schema.version = last_version + offset
+    return became_current
+
+
 def merge_families(
     db: Session, *, source_family_id: int, target_family_id: int, actor_id: int
 ) -> int:
@@ -1061,8 +1127,11 @@ def merge_families(
             (`REFUSE_MERGE_UNIT_MISMATCH`, называет ОБЕ единицы); цель не
             `active` либо источник не `active`, перечитанное
             (`REFUSE_MERGE_INACTIVE`, называет `role` — `source`/`target` — и
-            статус).
+            статус); у источника или цели есть версия схемы `building`
+            (`REFUSE_MERGE_SCHEMA_BUILDING`, называет `role`).
     """
+    from services.family_change import PendingState, clear_pending, record_pending_outcome
+
     if source_family_id == target_family_id:
         raise WorkFamilyError(
             REFUSE_MERGE_SAME_FAMILY,
@@ -1121,17 +1190,64 @@ def merge_families(
             status=source.status,
         )
 
+    # Порядок блокировок: семьи, версии схем, варианты, контексты, предложения.
+    schemas = _lock_schemas(db, ordered_ids)
+    for family_id, role in ((source_family_id, "source"), (target_family_id, "target")):
+        if any(
+            schema.family_id == family_id and schema.status == SchemaStatus.building.value
+            for schema in schemas
+        ):
+            raise WorkFamilyError(
+                REFUSE_MERGE_SCHEMA_BUILDING,
+                f"у семьи {family_id} идёт пересборка схемы: дождитесь её или отмените",
+                family_id=family_id,
+                role=role,
+            )
+    target_has_current = any(
+        schema.family_id == target_family_id and schema.status == SchemaStatus.frozen.value
+        for schema in schemas
+    )
+    became_current = _move_schema_versions(
+        schemas,
+        source_family_id=source_family_id,
+        target_family_id=target_family_id,
+        target_has_current=target_has_current,
+    )
+    db.flush()
+
+    variant_ids = [
+        row.id
+        for row in db.execute(
+            sa.select(WorkVariant.id)
+            .where(WorkVariant.family_id == source_family_id)
+            .order_by(WorkVariant.id)
+        )
+    ]
+    _lock_variants(db, variant_ids)
+    if variant_ids:
+        db.execute(
+            sa.update(WorkVariant)
+            .where(WorkVariant.id.in_(variant_ids))
+            .values(family_id=target_family_id)
+        )
+
     # Кандидаты — списком id ДО лока контекстов (список нужен, чтобы знать,
-    # что блокировать); membership по `work_family_id == source_family_id`
-    # ПЕРЕЧИТЫВАЕТСЯ ЕЩЁ РАЗ уже под локом контекстов — контекст мог уйти у
-    # источника МЕЖДУ листингом и локом (например, `assign_family` успела
-    # его переназначить в третью семью, взяв `FOR UPDATE` на тот же контекст
-    # раньше), и такой контекст не должен попасть в перенос.
+    # что блокировать); membership по `work_family_id == source_family_id` и
+    # `pending_family_id == source_family_id` ПЕРЕЧИТЫВАЕТСЯ ЕЩЁ РАЗ уже под
+    # локом контекстов, в разбиении ниже — контекст мог уйти у источника МЕЖДУ
+    # листингом и локом (например, `assign_family` успела его переназначить в
+    # третью семью, взяв `FOR UPDATE` на тот же контекст раньше), и такой
+    # контекст не должен попасть в перенос.
     candidate_ids = [
         row.id
         for row in db.execute(
             sa.select(CatalogContext.id)
-            .where(CatalogContext.work_family_id == source_family_id)
+            .where(
+                sa.or_(
+                    CatalogContext.work_family_id == source_family_id,
+                    CatalogContext.pending_family_id == source_family_id,
+                )
+            )
             .order_by(CatalogContext.id)
         )
     ]
@@ -1141,19 +1257,49 @@ def merge_families(
         db.expire_all()
         contexts = (
             db.execute(
-                sa.select(CatalogContext).where(
-                    CatalogContext.id.in_(candidate_ids),
-                    CatalogContext.work_family_id == source_family_id,
-                )
+                sa.select(CatalogContext)
+                .where(CatalogContext.id.in_(candidate_ids))
+                .order_by(CatalogContext.id)
             )
             .scalars()
             .all()
         )
 
-    for ctx in contexts:
+    moved = [ctx for ctx in contexts if ctx.work_family_id == source_family_id]
+    redirected = [
+        (ctx, PendingState.of(ctx))
+        for ctx in contexts
+        if ctx.pending_family_id == source_family_id
+    ]
+    for ctx in moved:
         ctx.work_family_id = target_family_id
+    for ctx, _state in redirected:
+        ctx.pending_family_id = target_family_id
     db.flush()
-    moved_count = len(contexts)
+    moved_count = len(moved)
+
+    suggestion_ids = [
+        row.id
+        for row in db.execute(
+            sa.select(FamilySuggestion.id)
+            .where(FamilySuggestion.family_id == source_family_id)
+            .order_by(FamilySuggestion.id)
+            .with_for_update()
+        )
+    ]
+    if suggestion_ids:
+        db.execute(
+            sa.update(FamilySuggestion)
+            .where(FamilySuggestion.id.in_(suggestion_ids))
+            .values(family_id=target_family_id)
+        )
+    db.flush()
+    # Составные FK контекста и варианта отложены до `commit`: нарушение
+    # всплывает здесь, внутри операции, а не на чужом `commit`. Режим
+    # возвращается, чтобы следующая операция той же транзакции не оказалась
+    # под немедленными проверками.
+    db.execute(sa.text(f"SET CONSTRAINTS {_DEFERRED_FOREIGN_KEYS} IMMEDIATE"))
+    db.execute(sa.text(f"SET CONSTRAINTS {_DEFERRED_FOREIGN_KEYS} DEFERRED"))
 
     source_title = source.title
     source.status = FamilyStatus.archived.value
@@ -1178,6 +1324,49 @@ def merge_families(
         actor_id=actor_id,
         payload={"reason": "merged"},
     )
+    for ctx, state in redirected:
+        record_pending_outcome(db, ctx.id, state, "redirected", actor_id=actor_id)
+    # Ожидание, которое слияние сделало равным текущей семье (контекст цели,
+    # ждавший источник, и контекст источника, ждавший цель), исполнено.
+    for ctx in sorted({*moved, *(ctx for ctx, _state in redirected)}, key=lambda c: c.id):
+        if ctx.pending_family_id is not None and ctx.pending_family_id == ctx.work_family_id:
+            clear_pending(db, ctx, outcome="applied", actor_id=actor_id)
+
+    has_current = target_has_current or became_current
+    # Правка списка семей не перезапрашивает платные предложения (спека
+    # предложений, решение 2): сверяются только задания значений.
+    reconcile_ids = {ctx.id for ctx in moved} | {ctx.id for ctx, _state in redirected}
+    if became_current:
+        # Контексты цели получают задания по версии источника как по новой.
+        reconcile_ids.update(
+            db.execute(
+                sa.select(CatalogContext.id).where(
+                    CatalogContext.work_family_id == target_family_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # Контексты других семей, ожидающие переезда в цель: у цели появилась
+    # схема, и их задания значений ставятся по ней.
+    reconcile_ids.update(
+        db.execute(
+            sa.select(CatalogContext.id).where(
+                CatalogContext.pending_family_id == target_family_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not has_current:
+        # Схемы нет ни у одной семьи: версия `building` и задание `family_schema`
+        # тем же путём, что у пересборки.
+        _ensure_building_version(db, target_family_id)
+    cap = event_cap_from(app_settings)
+    if reconcile_ids:
+        reconcile_context_values(db, reconcile_ids, cap=cap, source="operation")
+    if not has_current:
+        reconcile_family_schemas(db, [target_family_id], cap=cap, source="operation")
     return moved_count
 
 
