@@ -82,6 +82,7 @@ from services.work_families import (
     activate_family,
     create_family,
 )
+from services.work_variants import cancel_building_version
 
 __all__ = [
     "ConfirmReport",
@@ -558,40 +559,10 @@ def _cancel_unrepresented_versions(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).scalars()
-    now = _now()
     for schema in building:
         if _represented_elsewhere(db, schema, except_batch_id=except_batch_id):
             continue
-        schema.status = SchemaStatus.cancelled.value
-        schema.cancelled_at = now
-        open_jobs = [
-            job_id
-            for (job_id,) in db.execute(
-                sa.select(SemanticJob.id)
-                .where(
-                    SemanticJob.kind == SemanticJobKind.family_schema.value,
-                    SemanticJob.schema_id == schema.id,
-                    SemanticJob.status.in_(
-                        (
-                            SemanticJobStatus.pending.value,
-                            SemanticJobStatus.privacy_hold.value,
-                            SemanticJobStatus.error.value,
-                        )
-                    ),
-                )
-                .order_by(SemanticJob.id)
-                .with_for_update()
-            )
-        ]
-        if open_jobs:
-            db.execute(
-                sa.update(SemanticJob)
-                .where(SemanticJob.id.in_(open_jobs))
-                .values(
-                    status=SemanticJobStatus.cancelled.value,
-                    cancel_reason=SemanticCancelReason.not_applicable.value,
-                )
-            )
+        cancel_building_version(db, schema)
     db.flush()
 
 

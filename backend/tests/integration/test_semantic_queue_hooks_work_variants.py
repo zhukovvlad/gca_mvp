@@ -4,12 +4,13 @@
 Первые две точки перечня: обработка результата `context_values`
 (`apply_values`) и заморозка схемы (`freeze_schema`); затем смена семьи
 (`services.family_change`: `request_family_change`, `cancel_pending_family`) и
-«не работа» контексту (`mark_context_not_work`).
+«не работа» контексту (`mark_context_not_work`); жизнь схемы
+(`rebuild_schema`, `update_schema`, `merge_parameter_values`).
 Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки строится входом, который
 краснеет, если вызов сверки в этой точке снят: без вызова задание по
-предикату не появляется. Остальные точки перечня (`merge_parameter_values`,
-`rebuild_schema` и прочие) добавляют свои тесты в этот
-файл вместе со своими модулями.
+предикату не появляется. Остальные точки перечня добавляют свои тесты в этот
+файл вместе со своими модулями. `cancel_schema_build` сверку не зовёт: отмена
+версии сама отменяет её задания, а запросы контекстов не меняются.
 
 Помощники цепочки «семья -> схема -> контекст» импортируются из набора ядра
 варианта.
@@ -27,7 +28,13 @@ from config import settings
 from models import CatalogContext, SemanticJob, WorkFamily
 from services.family_change import cancel_pending_family, request_family_change
 from services.variant_request import load_values_material, paths_hash_of, render_values_request
-from services.work_variants import apply_values, mark_context_not_work
+from services.work_variants import (
+    ParameterEdit,
+    apply_values,
+    mark_context_not_work,
+    rebuild_schema,
+    update_schema,
+)
 from tests.integration.test_work_variants_core import (
     _answer,
     _apply,
@@ -44,6 +51,14 @@ from tests.integration.test_work_variants_family_change import (
 )
 from tests.integration.test_work_variants_material import _bind, _chain_context, _frozen_schema, _uid
 from tests.integration.test_work_variants_schema import _family, _variant
+from tests.integration.test_work_variants_schema_life import (
+    _active_world,
+    _actor,
+    _jobs,
+    _Merge,
+    _same_edits,
+    _second_context,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -374,3 +389,90 @@ class TestMarkContextNotWorkReconciles:
 
         [other_job] = _values_jobs(db_session, context_id=other)
         assert other_job.status == "pending"
+
+
+# ---------------------------------------------------------------------------
+#  services.work_variants: жизнь схемы
+# ---------------------------------------------------------------------------
+
+class TestRebuildSchemaReconciles:
+    def test_the_new_building_version_gets_the_schema_job_in_the_same_transaction(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        world = _active_world(db_session, factories)
+
+        schema = rebuild_schema(db_session, family_id=world.family.id, actor_id=actor)
+
+        assert db_session.in_transaction()
+        [job] = _jobs(db_session, "family_schema")
+        assert (job.schema_id, job.status) == (schema.id, "pending")
+
+    def test_a_family_without_contexts_gets_the_schema_job(self, db_session, factories):
+        actor = _actor(factories)
+        family = _family(db_session, status="active", definition="Пустая семья")
+        _frozen_schema(db_session, factories, family, [(1, "Тип", ["а"])])
+
+        schema = rebuild_schema(db_session, family_id=family.id, actor_id=actor)
+
+        [job] = _jobs(db_session, "family_schema")
+        assert (job.schema_id, job.status) == (schema.id, "pending")
+
+
+class TestUpdateSchemaReconciles:
+    def test_a_new_version_queues_values_jobs_for_the_contexts_of_the_family(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        world = _active_world(db_session, factories)
+        second = _second_context(db_session, factories, world)
+        edits = _same_edits() + [ParameterEdit(3, "Армирование", ("сетка",))]
+
+        schema = update_schema(
+            db_session, family_id=world.family.id, parameters=edits, actor_id=actor
+        )
+
+        jobs = _values_jobs(db_session)
+        assert sorted(job.context_id for job in jobs) == sorted([world.context_id, second])
+        assert {job.schema_id for job in jobs} == {schema.id}
+
+    def test_a_cosmetic_edit_replaces_a_pending_job_built_on_the_old_text(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        world = _active_world(db_session, factories)
+        assert _apply_reconcile(db_session, world.context_id)
+        [old_job] = _values_jobs(db_session, context_id=world.context_id)
+        edits = _same_edits()
+        edits[0] = ParameterEdit(1, "ТОЛЩИНА", edits[0].values)
+
+        update_schema(db_session, family_id=world.family.id, parameters=edits, actor_id=actor)
+
+        jobs = _values_jobs(db_session)
+        assert {job.id: job.status for job in jobs}[old_job.id] == "cancelled"
+        live = [job for job in jobs if job.status == "pending"]
+        assert len(live) == 1 and live[0].request_hash != old_job.request_hash
+
+
+class TestMergeParameterValuesReconciles:
+    def test_a_job_built_on_the_old_value_list_is_replaced_by_one_on_the_new_list(
+        self, db_session, factories
+    ):
+        scene = _Merge(db_session, factories)
+        assert _apply_reconcile(db_session, scene.world.context_id)
+        [old_job] = _values_jobs(db_session, context_id=scene.world.context_id)
+
+        scene.merge()
+
+        listed = _values_jobs(db_session, context_id=scene.world.context_id)
+        assert sorted(job.status for job in listed) == ["cancelled", "pending"]  # живое — одно
+        jobs = {job.status: job for job in listed}
+        assert jobs["cancelled"].id == old_job.id
+        assert jobs["pending"].request_hash != old_job.request_hash
+
+
+def _apply_reconcile(db, context_id) -> bool:
+    from services.semantic_reconcile import reconcile_or_defer
+
+    reconcile_or_defer(db, [context_id])
+    return bool(_values_jobs(db, context_id=context_id))

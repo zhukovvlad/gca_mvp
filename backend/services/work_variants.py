@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from config import Settings
+from config import settings as app_settings
 from models import (
     CatalogContext,
     CatalogKind,
@@ -48,6 +49,7 @@ from models import (
     FamilyParameterValue,
     FamilyStatus,
     FamilySuggestion,
+    SchemaOrigin,
     SchemaStatus,
     SemanticCancelReason,
     SemanticJob,
@@ -70,15 +72,28 @@ from services.family_change import (
     record_pending_outcome,
 )
 from services.semantic_answer import AnswerSchemaError
+from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
 from services.semantic_privacy import _replace_quotes_with_space
-from services.semantic_reconcile import reconcile_or_defer, schedule_extension_wave
+from services.semantic_reconcile import (
+    _ensure_building_version,
+    reconcile_family_schemas,
+    reconcile_or_defer,
+    schedule_extension_wave,
+)
 from services.variant_answer import SchemaAnswer, ValuesAnswer
-from services.variant_request import SubjectNotRenderable, paths_hash_of, render_request_for
+from services.variant_request import (
+    SchemaParameterIn,
+    SubjectNotRenderable,
+    paths_hash_of,
+    render_request_for,
+)
 from services.work_families import (
     REFUSE_CONTEXT_ARCHIVED,
     REFUSE_CONTEXT_NOT_APPLICABLE,
     REFUSE_CONTEXT_NOT_FOUND,
+    REFUSE_FAMILY_NOT_ACTIVE,
+    REFUSE_FAMILY_NOT_FOUND,
     WorkFamilyError,
     _lock_families,
 )
@@ -454,12 +469,17 @@ def _check_schema_answer(answer: SchemaAnswer) -> None:
 def _write_frozen_schema(
     db: Session, *, schema: FamilyParameterSchema, current: FamilyParameterSchema | None,
     answer: SchemaAnswer, job_id: int | None,
-) -> None:
-    """Общая часть заморозки: параметры и значения с `origin='schema'`, версия
-    `building` -> `frozen`, прежняя текущая -> `superseded` (заморозка
-    сохраняется), событие. Вызывающий уже взял блокировки и вынес вердикт."""
+    origins: Mapping[tuple[int, str], str] | None = None,
+    default_value_origin: str = ValueOrigin.schema.value,
+) -> dict[tuple[int, str], tuple[int, int, str]]:
+    """Общая часть заморозки: параметры и значения (`origin` по `(ordinal,
+    норма)` из `origins`, иначе `default_value_origin`), версия `building` ->
+    `frozen`, прежняя текущая -> `superseded` (заморозка сохраняется), событие.
+    Вызывающий уже взял блокировки и вынес вердикт. Возвращает записанные
+    значения: `(ordinal, норма) -> (parameter_id, value_id, текст)`."""
     now = _now()
     described: list[dict[str, object]] = []
+    written: dict[tuple[int, str], tuple[int, FamilyParameterValue, str]] = {}
     for parameter in answer.parameters:
         row = FamilyParameter(
             schema_id=schema.id, ordinal=parameter.ordinal, name=parameter.name.strip(),
@@ -473,12 +493,12 @@ def _write_frozen_schema(
             if norm in seen:
                 continue  # дубль в ответе схлопывается: первое по порядку
             seen.add(norm)
-            db.add(
-                FamilyParameterValue(
-                    parameter_id=row.id, value=text.strip(), value_norm=norm,
-                    origin=ValueOrigin.schema.value,
-                )
+            value_row = FamilyParameterValue(
+                parameter_id=row.id, value=text.strip(), value_norm=norm,
+                origin=(origins or {}).get((parameter.ordinal, norm), default_value_origin),
             )
+            db.add(value_row)
+            written[(parameter.ordinal, norm)] = (row.id, value_row, text.strip())
         described.append({"name": row.name, "values": len(seen)})
     db.flush()
 
@@ -500,6 +520,10 @@ def _write_frozen_schema(
             "parameters": described, "job_id": job_id,
         },
     )
+    return {
+        key: (parameter_id, value_row.id, text)
+        for key, (parameter_id, value_row, text) in written.items()
+    }
 
 
 def _acquire_schema_locks(
@@ -537,8 +561,9 @@ def freeze_schema(
 
     Вердикт под блокировками: семья `active`, версия `building`, захват ещё
     наш, отпечаток текущий. Повторная заморозка уже `frozen`-версии —
-    `not_applicable`. `guard=None` — вызов без задания (ручные версии), тогда
-    вердикт — только состояние семьи и версии.
+    `not_applicable`. `guard=None` — вызов без задания, тогда вердикт — только
+    состояние семьи и версии. Ручные версии (`update_schema`) через неё не
+    идут: они пишутся общей `_write_frozen_schema`.
 
     Raises:
         AnswerSchemaError: имя или значение пусто после нормализации — до любой
@@ -1096,19 +1121,591 @@ def mark_context_not_work(db: Session, *, context_id: int, actor_id: int) -> Non
     reconcile_or_defer(db, [context_id])
 
 
+#: Коды отказов жизни схемы (доменная ошибка `WorkFamilyError`); HTTP-коды
+#: назначает слой маршрутов.
+REFUSE_SCHEMA_NO_BUILDING = "schema_no_building"
+REFUSE_SCHEMA_BUILDING = "schema_building"
+REFUSE_SCHEMA_NO_CURRENT = "schema_no_current"
+REFUSE_SCHEMA_PARAMETER_RENAMED = "schema_parameter_renamed"
+REFUSE_SCHEMA_VALUE_REMOVED = "schema_value_removed"
+REFUSE_SCHEMA_BLANK = "schema_blank"
+REFUSE_SCHEMA_BAD_ORDINALS = "schema_bad_ordinals"
+REFUSE_PARAMETER_NOT_FOUND = "parameter_not_found"
+REFUSE_VALUE_NOT_FOUND = "value_not_found"
+REFUSE_MERGE_OTHER_PARAMETER = "merge_values_other_parameter"
+REFUSE_MERGE_SOURCE_MERGED = "merge_source_merged"
+REFUSE_MERGE_CYCLE = "merge_value_cycle"
+
+_MAX_PARAMETERS = 3
+
+
+def _lock_family_for_schema_life(
+    db: Session, family_id: int, *, require_active: bool
+) -> None:
+    """Семья `FOR UPDATE` первой в каждой операции жизни схемы."""
+    _lock_families(db, [family_id], exclusive=True)
+    status = db.execute(
+        sa.select(WorkFamily.status).where(WorkFamily.id == family_id)
+    ).scalar_one_or_none()
+    if status is None:
+        raise WorkFamilyError(
+            REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
+        )
+    if require_active and status != FamilyStatus.active.value:
+        raise WorkFamilyError(
+            REFUSE_FAMILY_NOT_ACTIVE, f"семья {family_id} не активна", family_id=family_id
+        )
+
+
+def _lock_building_schema_statement(family_id: int):
+    return (
+        sa.select(FamilyParameterSchema)
+        .where(
+            FamilyParameterSchema.family_id == family_id,
+            FamilyParameterSchema.status == SchemaStatus.building.value,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def cancel_building_version(db: Session, schema: FamilyParameterSchema) -> None:
+    """Единственный переход версии `building` -> `cancelled`: незавершённые
+    задания версии (`pending`, `privacy_hold`, `error`) отменяются как
+    `not_applicable` в той же транзакции; `running` не трогается — его результат
+    заморозка отвергнет, потому что версия уже не `building`.
+
+    Вызывающий держит семью и версию `FOR UPDATE`; задания блокируются здесь,
+    после доменных строк."""
+    schema.status = SchemaStatus.cancelled.value
+    schema.cancelled_at = _now()
+    open_jobs = [
+        job_id
+        for (job_id,) in db.execute(
+            sa.select(SemanticJob.id)
+            .where(
+                SemanticJob.kind == SemanticJobKind.family_schema.value,
+                SemanticJob.schema_id == schema.id,
+                SemanticJob.status.in_(
+                    (
+                        SemanticJobStatus.pending.value,
+                        SemanticJobStatus.privacy_hold.value,
+                        SemanticJobStatus.error.value,
+                    )
+                ),
+            )
+            .order_by(SemanticJob.id)
+            .with_for_update()
+        )
+    ]
+    if open_jobs:
+        db.execute(
+            sa.update(SemanticJob)
+            .where(SemanticJob.id.in_(open_jobs))
+            .values(
+                status=SemanticJobStatus.cancelled.value,
+                cancel_reason=SemanticCancelReason.not_applicable.value,
+            )
+        )
+
+
+def rebuild_schema(db: Session, *, family_id: int, actor_id: int) -> FamilyParameterSchema:
+    """Пересборка схемы семьи (спека §2.8): версия `building` и задание
+    `family_schema`. Версия `building` уже есть — возвращается она же
+    (идемпотентно); версию заводит та же функция, что сверку (параллельные
+    вызовы одной семьи сериализует замок семьи, а частичный UNIQUE стережёт
+    версию), задание ставит сверка семьи в этой же транзакции.
+
+    `actor_id` в записи не участвует: версия `building` создаётся как у сверки
+    (`origin='model'`), кто её заморозит — решает заморозка."""
+    del actor_id
+    _lock_family_for_schema_life(db, family_id, require_active=True)
+    schema_id = _ensure_building_version(db, family_id)
+    assert schema_id is not None  # вставка либо перечитывание победившей версии
+    schema = db.execute(_lock_schema_statement(schema_id, share=False)).scalar_one()
+    # Сверка по семье, а не по контекстам: у семьи без контекстов задание
+    # схемы иначе не появилось бы, и версия `building` висела бы без работы.
+    reconcile_family_schemas(
+        db, [family_id], cap=event_cap_from(app_settings), source="operation"
+    )
+    return schema
+
+
+def cancel_schema_build(db: Session, *, family_id: int, actor_id: int) -> None:
+    """Отмена пересборки (спека §2.8): версия `building` -> `cancelled` и
+    отмена её заданий одним переходом. Сверка не вызывается: переход ничего
+    не меняет в запросах контекстов.
+
+    Raises:
+        WorkFamilyError: семьи нет; у семьи нет версии `building`."""
+    del actor_id
+    _lock_family_for_schema_life(db, family_id, require_active=False)
+    schema = db.execute(_lock_building_schema_statement(family_id)).scalar_one_or_none()
+    if schema is None:
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_NO_BUILDING, f"у семьи {family_id} нет пересборки схемы",
+            family_id=family_id,
+        )
+    cancel_building_version(db, schema)
+    db.flush()
+
+
+@dataclass(frozen=True)
+class ParameterEdit:
+    """Параметр в ручной правке схемы: `ordinal` — его идентичность в версии."""
+
+    ordinal: int
+    name: str
+    values: tuple[str, ...]
+
+
+def _checked_edits(parameters: Sequence[ParameterEdit]) -> dict[int, ParameterEdit]:
+    ordinals = [parameter.ordinal for parameter in parameters]
+    if len(set(ordinals)) != len(ordinals) or any(
+        not 1 <= ordinal <= _MAX_PARAMETERS for ordinal in ordinals
+    ):
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_BAD_ORDINALS,
+            f"ordinal параметров {sorted(ordinals)}: нужны различные числа от 1 до "
+            f"{_MAX_PARAMETERS}",
+        )
+    for parameter in parameters:
+        if not normalize_value(parameter.name):
+            raise WorkFamilyError(
+                REFUSE_SCHEMA_BLANK, f"имя параметра {parameter.ordinal} пусто"
+            )
+        if any(not normalize_value(value) for value in parameter.values):
+            raise WorkFamilyError(
+                REFUSE_SCHEMA_BLANK, f"значение параметра {parameter.ordinal} пусто"
+            )
+    return {parameter.ordinal: parameter for parameter in parameters}
+
+
+@dataclass
+class _EditPlan:
+    structural: bool
+    #: Косметика на месте: строки и их новый показываемый текст.
+    renames: list[tuple[FamilyParameter | FamilyParameterValue, str]]
+    #: `(ordinal, норма)` значений, которых нет в текущей версии, и происхождение
+    #: перенесённых.
+    added: set[tuple[int, str]]
+    origins: dict[tuple[int, str], str]
+
+
+def _plan_edit(
+    db: Session, current: FamilyParameterSchema, edits: Mapping[int, ParameterEdit]
+) -> _EditPlan:
+    """Сравнивает правку с текущей версией по `ordinal` и нормализованной форме;
+    слитые значения в сравнение не входят. Смысловое переименование параметра
+    и удаление значения — отказ."""
+    parameters = {
+        parameter.ordinal: parameter
+        for parameter in db.execute(
+            sa.select(FamilyParameter).where(FamilyParameter.schema_id == current.id)
+        ).scalars()
+    }
+    values_of: dict[int, list[FamilyParameterValue]] = {p.id: [] for p in parameters.values()}
+    for value in db.execute(
+        sa.select(FamilyParameterValue)
+        .where(
+            FamilyParameterValue.parameter_id.in_([p.id for p in parameters.values()]),
+            FamilyParameterValue.merged_into_id.is_(None),
+        )
+        .order_by(FamilyParameterValue.id)
+    ).scalars():
+        values_of[value.parameter_id].append(value)
+
+    plan = _EditPlan(
+        structural=set(edits) != set(parameters), renames=[], added=set(), origins={}
+    )
+    for ordinal in sorted(edits):
+        edit = edits[ordinal]
+        parameter = parameters.get(ordinal)
+        if parameter is None:
+            for text in edit.values:
+                plan.added.add((ordinal, normalize_value(text)))
+            continue
+        if normalize_value(edit.name) != parameter.name_norm:
+            raise WorkFamilyError(
+                REFUSE_SCHEMA_PARAMETER_RENAMED,
+                f"параметр {ordinal}: смысловое переименование — новый параметр, "
+                "а не правка имени",
+                ordinal=ordinal,
+            )
+        if parameter.name != edit.name.strip():
+            plan.renames.append((parameter, edit.name.strip()))
+        current_by_norm = {value.value_norm: value for value in values_of[parameter.id]}
+        text_by_norm: dict[str, str] = {}
+        for text in edit.values:
+            text_by_norm.setdefault(normalize_value(text), text.strip())
+        removed = set(current_by_norm) - set(text_by_norm)
+        if removed:
+            raise WorkFamilyError(
+                REFUSE_SCHEMA_VALUE_REMOVED,
+                f"параметр {ordinal}: значение удалить нельзя — только слить с другим",
+                ordinal=ordinal,
+            )
+        for norm, text in text_by_norm.items():
+            existing = current_by_norm.get(norm)
+            if existing is None:
+                plan.added.add((ordinal, norm))
+                continue
+            plan.origins[(ordinal, norm)] = existing.origin
+            if existing.value != text:
+                plan.renames.append((existing, text))
+    if plan.added:
+        plan.structural = True
+    return plan
+
+
+def update_schema(
+    db: Session, *, family_id: int, parameters: Sequence[ParameterEdit], actor_id: int
+) -> FamilyParameterSchema:
+    """Ручная правка схемы (спека §2.8). Косметика (та же нормализованная
+    форма) правит имена на месте: версия и задания не меняются. Добавление или
+    удаление параметра и добавление значения — новая версия `manual`,
+    замороженная сразу тем же путём записи, что у заморозки модели; контексты
+    семьи получают задания значений по ней. Возвращает текущую версию после
+    правки.
+
+    Raises:
+        WorkFamilyError: семьи нет или она не активна; у семьи есть пересборка
+            (`building`) или нет текущей версии; ordinal повторяются или вне
+            1..3; имя или значение пусто; смысловое переименование параметра;
+            удаление значения.
+    """
+    edits = _checked_edits(parameters)
+    _lock_family_for_schema_life(db, family_id, require_active=True)
+    building = db.execute(
+        sa.select(FamilyParameterSchema.id)
+        .where(
+            FamilyParameterSchema.family_id == family_id,
+            FamilyParameterSchema.status == SchemaStatus.building.value,
+        )
+        .limit(1)
+    ).first()
+    if building is not None:
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_BUILDING,
+            f"у семьи {family_id} идёт пересборка схемы: сначала отмените её",
+            family_id=family_id,
+        )
+    current = db.execute(_lock_current_schema_statement(family_id)).scalar_one_or_none()
+    if current is None:
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_NO_CURRENT, f"у семьи {family_id} нет текущей схемы",
+            family_id=family_id,
+        )
+    plan = _plan_edit(db, current, edits)
+    if not plan.structural:
+        for row, text in plan.renames:
+            if isinstance(row, FamilyParameter):
+                row.name = text
+            else:
+                row.value = text
+        db.flush()
+        if plan.renames:
+            # Показываемый текст входит в запрос значений: задания со старым
+            # отпечатком заменяет сверка.
+            reconcile_or_defer(db, _family_context_ids(db, family_id))
+        return current
+
+    next_version = db.execute(
+        sa.select(sa.func.coalesce(sa.func.max(FamilyParameterSchema.version), 0) + 1).where(
+            FamilyParameterSchema.family_id == family_id
+        )
+    ).scalar_one()
+    schema = FamilyParameterSchema(
+        family_id=family_id, version=next_version, status=SchemaStatus.building.value,
+        origin=SchemaOrigin.manual.value, frozen_by=actor_id,
+    )
+    db.add(schema)
+    db.flush()
+    answer = SchemaAnswer(
+        parameters=tuple(
+            SchemaParameterIn(
+                ordinal=ordinal, name=edits[ordinal].name, values=tuple(edits[ordinal].values)
+            )
+            for ordinal in sorted(edits)
+        )
+    )
+    written = _write_frozen_schema(
+        db, schema=schema, current=current, answer=answer, job_id=None,
+        origins=plan.origins, default_value_origin=ValueOrigin.manual.value,
+    )
+    for key in sorted(plan.added):
+        parameter_id, value_id, text = written[key]
+        record_event(
+            db,
+            event_type="family_schema_value_added",
+            family_id=family_id,
+            actor_id=actor_id,
+            payload={
+                "parameter_id": parameter_id, "value_id": value_id, "value": text,
+                "origin": ValueOrigin.manual.value, "context_id": None,
+            },
+        )
+    reconcile_or_defer(db, _family_context_ids(db, family_id))
+    return schema
+
+
+def _lock_values_statement(value_ids: Sequence[int]):
+    return (
+        sa.select(FamilyParameterValue)
+        .where(FamilyParameterValue.id.in_(list(value_ids)))
+        .order_by(FamilyParameterValue.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def _lock_variants_statement(variant_ids: Sequence[int]):
+    return (
+        sa.select(WorkVariant)
+        .where(WorkVariant.id.in_(list(variant_ids)))
+        .order_by(WorkVariant.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def _lock_contexts_statement(context_ids: Sequence[int]):
+    return (
+        sa.select(CatalogContext.id)
+        .where(CatalogContext.id.in_(list(context_ids)))
+        .order_by(CatalogContext.id)
+        .with_for_update()
+    )
+
+
+def merge_parameter_values(
+    db: Session, *, parameter_id: int, source_value_id: int, target_value_id: int,
+    actor_id: int,
+) -> Mapping[int, int]:
+    """Слияние синонимов значений одного параметра (спека §2.8): источник
+    становится синонимом цели. Возвращает отображение «вариант-источник ->
+    вариант-цель» по слитым вариантам.
+
+    Порядок блокировок: семья, версия схемы, значения, варианты по `id`,
+    контексты по `id`. Цель канонизируется по цепочке слияния; цель, ставшая
+    источником, — отказ (цикл). Вариант с источником, набор которого с целью
+    уже есть, сливается с ним: контексты переводятся, источник архивируется
+    с `merged_into_id`, его ключ и построчные значения остаются историей;
+    архивный вариант-цель с пришедшими контекстами возвращается в `active`.
+    Без такого набора ключ и строки варианта переписываются, он остаётся тем
+    же. Варианты, уже слитые раньше, — история и не трогаются.
+
+    Raises:
+        WorkFamilyError: параметра или значения нет; значения разных
+            параметров; источник уже слит; каноническая цель — сам источник
+            или его предок.
+    """
+    located = db.execute(
+        sa.select(FamilyParameter.schema_id, FamilyParameterSchema.family_id)
+        .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
+        .where(FamilyParameter.id == parameter_id)
+    ).one_or_none()
+    if located is None:
+        raise WorkFamilyError(
+            REFUSE_PARAMETER_NOT_FOUND, f"параметр {parameter_id} не найден",
+            parameter_id=parameter_id,
+        )
+    schema_id, family_id = located
+    _lock_families(db, [family_id], exclusive=True)
+    db.execute(_lock_schema_statement(schema_id, share=True)).scalar_one()
+
+    found = {
+        row.id: row
+        for row in db.execute(
+            sa.select(
+                FamilyParameterValue.id, FamilyParameterValue.parameter_id,
+                FamilyParameterValue.merged_into_id,
+            ).where(FamilyParameterValue.id.in_([source_value_id, target_value_id]))
+        ).all()
+    }
+    for value_id in (source_value_id, target_value_id):
+        if value_id not in found:
+            raise WorkFamilyError(
+                REFUSE_VALUE_NOT_FOUND, f"значение {value_id} не найдено", value_id=value_id
+            )
+        if found[value_id].parameter_id != parameter_id:
+            raise WorkFamilyError(
+                REFUSE_MERGE_OTHER_PARAMETER,
+                f"значение {value_id} не из параметра {parameter_id}", value_id=value_id,
+            )
+    if found[source_value_id].merged_into_id is not None:
+        raise WorkFamilyError(
+            REFUSE_MERGE_SOURCE_MERGED, f"значение {source_value_id} уже слито",
+            value_id=source_value_id,
+        )
+    canonical_id = canonical_value_id(db, target_value_id)
+    if canonical_id == source_value_id:
+        raise WorkFamilyError(
+            REFUSE_MERGE_CYCLE,
+            f"цель {target_value_id} совпадает с источником {source_value_id} или слита в него",
+            value_id=target_value_id,
+        )
+    locked_values = {
+        value.id: value
+        for value in db.execute(_lock_values_statement({source_value_id, canonical_id})).scalars()
+    }
+    source_value = locked_values[source_value_id]
+
+    # Варианты с источником и существующие варианты с набором «с целью».
+    ordinal_of = {
+        row.id: row.ordinal
+        for row in db.execute(
+            sa.select(FamilyParameter.id, FamilyParameter.ordinal).where(
+                FamilyParameter.schema_id == schema_id
+            )
+        ).all()
+    }
+    source_variant_ids = sorted(
+        db.execute(
+            sa.select(WorkVariantValue.variant_id)
+            .join(WorkVariant, WorkVariant.id == WorkVariantValue.variant_id)
+            .where(
+                WorkVariantValue.schema_id == schema_id,
+                WorkVariantValue.value_id == source_value_id,
+                WorkVariant.merged_into_id.is_(None),
+            )
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+    new_key_of: dict[int, str] = {}
+    for variant_id in source_variant_ids:
+        sets: dict[int, int | None] = {}
+        for row in db.execute(
+            sa.select(WorkVariantValue.parameter_id, WorkVariantValue.value_id).where(
+                WorkVariantValue.variant_id == variant_id
+            )
+        ).all():
+            sets[ordinal_of[row.parameter_id]] = (
+                canonical_id if row.value_id == source_value_id else row.value_id
+            )
+        new_key_of[variant_id] = values_key_of(sets)
+    existing_by_key = (
+        {
+            row.values_key: row.id
+            for row in db.execute(
+                sa.select(WorkVariant.id, WorkVariant.values_key).where(
+                    WorkVariant.schema_id == schema_id,
+                    WorkVariant.values_key.in_(list(new_key_of.values())),
+                )
+            ).all()
+        }
+        if new_key_of
+        else {}
+    )
+    lock_ids = sorted(set(source_variant_ids) | set(existing_by_key.values()))
+    variants = (
+        {v.id: v for v in db.execute(_lock_variants_statement(lock_ids)).scalars()}
+        if lock_ids
+        else {}
+    )
+
+    context_ids = set(
+        db.execute(
+            sa.select(CatalogContext.id).where(
+                CatalogContext.work_variant_id.in_(source_variant_ids)
+            )
+        )
+        .scalars()
+        .all()
+    ) | set(
+        db.execute(
+            sa.select(ContextParameterValue.context_id).where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.value_id == source_value_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if context_ids:
+        db.execute(_lock_contexts_statement(sorted(context_ids))).all()
+
+    merged: dict[int, int] = {}
+    for variant_id in source_variant_ids:
+        variant = variants[variant_id]
+        existing_id = existing_by_key.get(new_key_of[variant_id])
+        if existing_id is None:
+            db.execute(
+                sa.update(WorkVariantValue)
+                .where(
+                    WorkVariantValue.variant_id == variant_id,
+                    WorkVariantValue.parameter_id == parameter_id,
+                    WorkVariantValue.value_id == source_value_id,
+                )
+                .values(value_id=canonical_id)
+            )
+            variant.values_key = new_key_of[variant_id]
+            db.flush()
+            continue
+        target_variant = variants[existing_id]
+        moved = db.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.work_variant_id == variant_id)
+            .values(work_variant_id=target_variant.id)
+        ).rowcount
+        if moved and target_variant.status == VariantStatus.archived.value:
+            target_variant.status = VariantStatus.active.value
+            target_variant.archived_at = None
+        if variant.status != VariantStatus.archived.value:
+            variant.status = VariantStatus.archived.value
+            variant.archived_at = _now()
+        variant.merged_into_id = target_variant.id
+        db.flush()
+        merged[variant_id] = target_variant.id
+
+    db.execute(
+        sa.update(ContextParameterValue)
+        .where(
+            ContextParameterValue.parameter_id == parameter_id,
+            ContextParameterValue.value_id == source_value_id,
+        )
+        .values(value_id=canonical_id)
+    )
+    source_value.merged_into_id = canonical_id
+    db.flush()
+    record_event(
+        db,
+        event_type="family_variants_merged",
+        family_id=family_id,
+        actor_id=actor_id,
+        payload={
+            "parameter_id": parameter_id, "source_value_id": source_value_id,
+            "target_value_id": canonical_id,
+            "merged_variants": [[source, target] for source, target in sorted(merged.items())],
+        },
+    )
+    # Список значений в запросе контекстов семьи изменился: задания со старым
+    # отпечатком заменяет сверка.
+    reconcile_or_defer(db, _family_context_ids(db, family_id))
+    return merged
+
+
 __all__: Sequence[str] = (
     "ApplyValuesOutcome",
     "FreezeOutcome",
     "JobGuard",
     "UnappliedReason",
+    "ParameterEdit",
     "apply_values",
     "archive_variant_if_empty",
+    "cancel_building_version",
+    "cancel_schema_build",
     "canonical_value_id",
     "clear_variant",
     "freeze_schema",
     "get_or_create_value",
     "get_or_create_variant",
     "mark_context_not_work",
+    "merge_parameter_values",
     "normalize_value",
+    "rebuild_schema",
+    "update_schema",
     "values_key_of",
 )
