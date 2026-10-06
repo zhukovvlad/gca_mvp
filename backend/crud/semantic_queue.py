@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, aliased
 from config import settings
 from models import (
     CatalogContext,
+    CatalogKind,
     CatalogPosition,
     ContextBucket,
     ContextMember,
@@ -37,6 +38,7 @@ from models import (
     PositionItem,
     Proposal,
     ReconcileBatchStatus,
+    SchemaStatus,
     SemanticCancelReason,
     SemanticJob,
     SemanticJobAttempt,
@@ -50,6 +52,7 @@ from models import (
     UnitOfMeasure,
     WorkFamily,
 )
+from services.family_change import RULE_NONE, _fitting_families, rule_outcome
 from services.semantic_answer import is_system_name
 from services.semantic_cost import spent_last_24h
 from services.semantic_request import (
@@ -124,9 +127,23 @@ class NewRow(TypedDict):
     multi_owner: bool
 
 
+class ChangeGroup(TypedDict):
+    """Группа очереди «Смена семьи»: семья контекста сейчас, семья предложения и
+    полоса уверенности; у каждой группы ровно одна полоса."""
+
+    from_family_id: int
+    from_family_title: str
+    family_id: int
+    family_title: str
+    unit_code: str | None
+    band: Band
+    rows: list[SuggestionRow]
+    total: int
+
+
 class SuggestionQueue(TypedDict):
-    queue: Literal["list", "new"]
-    groups: list[SuggestionGroup]
+    queue: Literal["list", "new", "change"]
+    groups: list[SuggestionGroup] | list[ChangeGroup]
     items: list[NewRow]
 
 
@@ -165,6 +182,11 @@ class QueueStatus(TypedDict):
     held_batches: list[HeldBatchInfo]
     stale_units: list[StaleUnitInfo]
     config_stale: ConfigStaleInfo | None
+    catalog_to_review: int
+    catalog_position: int
+    contexts_with_variant: int
+    contexts_pending: int
+    families_without_schema: int
 
 
 class JobRow(TypedDict):
@@ -329,6 +351,33 @@ def _rejected_marks(
     return {(c, f): at for c, f, at in rows}
 
 
+def _suggestion_row(
+    r, material: ContextRequestMaterial, *, family_id: int, family_title: str,
+    decided_at: dt.datetime | None,
+) -> SuggestionRow:
+    """Строка очередей `list` и `change`: одна форма на обе очереди."""
+    return SuggestionRow(
+        suggestion_id=r.id,
+        context_id=r.context_id,
+        title=material.title,
+        unit_code=material.unit_code,
+        article=material.article,
+        path=_path_list(material),
+        confidence=str(r.confidence),
+        reason=r.reason,
+        multi_owner=bool(r.multi_owner),
+        previously_rejected=(
+            RejectedMark(
+                family_id=family_id,
+                family_title=family_title,
+                decided_at=decided_at.isoformat(),
+            )
+            if decided_at is not None
+            else None
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 #  Очередь «Семья из списка»
 # ---------------------------------------------------------------------------
@@ -358,13 +407,16 @@ def _list_queue(
             FamilySuggestion.decision.is_(None),
         )
     )
+    # Очередь контекстов БЕЗ семьи: предложение привязанному контексту живёт в
+    # очереди «Смена семьи».
+    stmt = (
+        stmt.join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
+        .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+        .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
+        .where(CatalogContext.work_family_id.is_(None))
+    )
     if unit_id is not None:
-        stmt = (
-            stmt.join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
-            .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
-            .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
-            .where(_unit_clause(unit_id))
-        )
+        stmt = stmt.where(_unit_clause(unit_id))
     if band == "high":
         stmt = stmt.where(FamilySuggestion.confidence >= BAND_HIGH_MIN)
     elif band == "mid":
@@ -404,25 +456,9 @@ def _list_queue(
             material = materials[r.context_id]
             decided_at = rejected.get((r.context_id, family_id))
             built.append(
-                SuggestionRow(
-                    suggestion_id=r.id,
-                    context_id=r.context_id,
-                    title=material.title,
-                    unit_code=material.unit_code,
-                    article=material.article,
-                    path=_path_list(material),
-                    confidence=str(r.confidence),
-                    reason=r.reason,
-                    multi_owner=bool(r.multi_owner),
-                    previously_rejected=(
-                        RejectedMark(
-                            family_id=family_id,
-                            family_title=r.family_title,
-                            decided_at=decided_at.isoformat(),
-                        )
-                        if decided_at is not None
-                        else None
-                    ),
+                _suggestion_row(
+                    r, material, family_id=family_id, family_title=r.family_title,
+                    decided_at=decided_at,
                 )
             )
         groups.append(
@@ -438,6 +474,147 @@ def _list_queue(
     band_order = {"high": 0, "mid": 1, "low": 2}
     groups.sort(
         key=lambda g: (g["family_title"].casefold(), g["family_id"], band_order[g["band"]])
+    )
+    return groups
+
+
+# ---------------------------------------------------------------------------
+#  Очередь «Смена семьи»
+# ---------------------------------------------------------------------------
+
+def _rule_leaves_it(row, threshold: Decimal | None) -> bool:
+    """Правило публикации предложение не применило: тот же `rule_outcome`, что
+    у самого правила (семья предложения уже признана годной). Порог не задан —
+    таблица публикации вырождается в строки «опубликовано» (спека §2.5): правило
+    не применило ничего, и человеку идут все."""
+    if threshold is None:
+        return True
+    return (
+        rule_outcome(
+            family_id=row.family_id, confidence=row.confidence, context=row,
+            threshold=threshold, family_fits=True,
+        )
+        == RULE_NONE
+    )
+
+
+def _change_queue(
+    db: Session, *, unit_id: UnitFilter, band: Band | None, multi_owner_only: bool
+) -> list[ChangeGroup]:
+    """Опубликованные предложения другой семьи контексту С семьёй на текущем
+    отпечатке, которые правило публикации не применило (спека вариантов §2.5,
+    таблица и п. 4; §2.12): исход правила — тот же `rule_outcome`, что у самого
+    правила, — `none`. Это ручные и подтверждённые человеком привязки любой
+    уверенности, автопривязки ниже порога и автопривязки, которым правило
+    уступает ожидание человека. Предложение семьи, которая контексту не годится
+    (не `active` или другая единица), не показывается: подтвердить его нельзя.
+    Порог не задан: правило ничего не применяет, и в очереди все такие предложения."""
+    threshold = settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD
+    current = aliased(WorkFamily)
+    family = aliased(WorkFamily)
+    family_unit = aliased(UnitOfMeasure)
+    owners = _owner_count(FamilySuggestion.context_id)
+    stmt = (
+        sa.select(
+            FamilySuggestion.id,
+            FamilySuggestion.context_id,
+            FamilySuggestion.family_id,
+            FamilySuggestion.confidence,
+            FamilySuggestion.reason,
+            FamilySuggestion.request_hash,
+            CatalogContext.work_family_id,
+            CatalogContext.family_source,
+            CatalogContext.work_variant_id,
+            CatalogContext.pending_family_id,
+            CatalogContext.pending_family_source,
+            CatalogPosition.unit_id.label("context_unit_id"),
+            current.title.label("from_family_title"),
+            family.title.label("family_title"),
+            family_unit.code.label("family_unit_code"),
+            (owners >= 2).label("multi_owner"),
+        )
+        .join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
+        .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+        .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
+        .join(current, current.id == CatalogContext.work_family_id)
+        .join(family, family.id == FamilySuggestion.family_id)
+        .outerjoin(family_unit, family_unit.id == family.unit_id)
+        .where(
+            FamilySuggestion.is_published.is_(True),
+            FamilySuggestion.decision.is_(None),
+            FamilySuggestion.family_id != CatalogContext.work_family_id,
+        )
+    )
+    if unit_id is not None:
+        stmt = stmt.where(_unit_clause(unit_id))
+    if band == "high":
+        stmt = stmt.where(FamilySuggestion.confidence >= BAND_HIGH_MIN)
+    elif band == "mid":
+        stmt = stmt.where(
+            FamilySuggestion.confidence >= BAND_MID_MIN, FamilySuggestion.confidence < BAND_HIGH_MIN
+        )
+    elif band == "low":
+        stmt = stmt.where(FamilySuggestion.confidence < BAND_MID_MIN)
+    if multi_owner_only:
+        stmt = stmt.where(owners >= 2)
+    found = db.execute(stmt).all()
+    if not found:
+        return []
+
+    # Предложение на прежний отпечаток решить нельзя (см. `_list_queue`).
+    materials = load_request_material(db, {row.context_id for row in found})
+    fingerprints = _UnitFingerprints()
+    found = [
+        row for row in found
+        if fingerprints.is_current(materials[row.context_id], row.request_hash)
+    ]
+    if not found:
+        return []
+
+    fitting = _fitting_families(db, {(row.family_id, row.context_unit_id) for row in found})
+    found = [
+        row for row in found
+        if (row.family_id, row.context_unit_id) in fitting
+        and _rule_leaves_it(row, threshold)
+    ]
+    if not found:
+        return []
+    rejected = _rejected_marks(db, {(row.context_id, row.family_id) for row in found})
+
+    by_group: dict[tuple[int, int, Band], list] = {}
+    for row in found:
+        by_group.setdefault(
+            (row.work_family_id, row.family_id, band_of(row.confidence)), []
+        ).append(row)
+
+    groups: list[ChangeGroup] = []
+    for (from_family_id, family_id, group_band), rows in by_group.items():
+        rows.sort(key=lambda r: (-r.confidence, r.context_id))
+        groups.append(
+            ChangeGroup(
+                from_family_id=from_family_id,
+                from_family_title=rows[0].from_family_title,
+                family_id=family_id,
+                family_title=rows[0].family_title,
+                unit_code=rows[0].family_unit_code,
+                band=group_band,
+                rows=[
+                    _suggestion_row(
+                        r, materials[r.context_id], family_id=family_id,
+                        family_title=r.family_title,
+                        decided_at=rejected.get((r.context_id, family_id)),
+                    )
+                    for r in rows
+                ],
+                total=len(rows),
+            )
+        )
+    band_order = {"high": 0, "mid": 1, "low": 2}
+    groups.sort(
+        key=lambda g: (
+            g["from_family_title"].casefold(), g["from_family_id"],
+            g["family_title"].casefold(), g["family_id"], band_order[g["band"]],
+        )
     )
     return groups
 
@@ -465,13 +642,14 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
         )
         .order_by(FamilySuggestion.confidence.desc(), FamilySuggestion.context_id)
     )
+    suggestions_stmt = (
+        suggestions_stmt.join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
+        .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+        .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
+        .where(CatalogContext.work_family_id.is_(None))
+    )
     if unit_id is not None:
-        suggestions_stmt = (
-            suggestions_stmt.join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
-            .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
-            .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
-            .where(_unit_clause(unit_id))
-        )
+        suggestions_stmt = suggestions_stmt.where(_unit_clause(unit_id))
     if multi_owner_only:
         suggestions_stmt = suggestions_stmt.where(owners_of_suggestion >= 2)
     suggestion_rows = db.execute(suggestions_stmt).all()
@@ -570,17 +748,25 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
 def list_suggestions(
     db: Session,
     *,
-    queue: Literal["list", "new"],
+    queue: Literal["list", "new", "change"],
     unit_id: UnitFilter = None,
     band: Band | None = None,
     multi_owner_only: bool = False,
 ) -> SuggestionQueue:
-    """Очередь предложений экрана. `band` относится только к очереди `list`
+    """Очередь предложений экрана. `band` относится к очередям `list` и `change`
     (у строк «новая» и «без семей» полосы нет)."""
     if queue == "list":
         return SuggestionQueue(
             queue="list",
             groups=_list_queue(db, unit_id=unit_id, band=band, multi_owner_only=multi_owner_only),
+            items=[],
+        )
+    if queue == "change":
+        return SuggestionQueue(
+            queue="change",
+            groups=_change_queue(
+                db, unit_id=unit_id, band=band, multi_owner_only=multi_owner_only
+            ),
             items=[],
         )
     return SuggestionQueue(
@@ -897,6 +1083,7 @@ def queue_status(db: Session) -> QueueStatus:
         for b in batches
     ]
     stale_units, config_stale = _stale_scan(db)
+    promotion = _promotion_counters(db)
     return QueueStatus(
         spent_24h_usd=money_str(spent_last_24h(db, now=now)),
         daily_budget_usd=money_str(settings.SEMANTIC_DAILY_BUDGET_USD),
@@ -904,4 +1091,49 @@ def queue_status(db: Session) -> QueueStatus:
         held_batches=held,
         stale_units=stale_units,
         config_stale=config_stale,
+        **promotion,
     )
+
+
+def _promotion_counters(db: Session) -> dict[str, int]:
+    """Счётчики промоушена и ожиданий (спека вариантов §2.12): строки каталога
+    `TO_REVIEW` и `POSITION`; живые контексты с вариантом и с ожидающим
+    назначением; активные семьи без текущей версии схемы."""
+    kinds = dict(
+        db.execute(
+            sa.select(CatalogPosition.kind, sa.func.count())
+            .where(
+                CatalogPosition.kind.in_(
+                    (CatalogKind.TO_REVIEW.value, CatalogKind.POSITION.value)
+                )
+            )
+            .group_by(CatalogPosition.kind)
+        ).all()
+    )
+    with_variant, pending = db.execute(
+        sa.select(
+            sa.func.count().filter(CatalogContext.work_variant_id.is_not(None)),
+            sa.func.count().filter(CatalogContext.pending_family_id.is_not(None)),
+        ).where(CatalogContext.archived_at.is_(None))
+    ).one()
+    has_current = (
+        sa.select(sa.literal(1))
+        .select_from(FamilyParameterSchema)
+        .where(
+            FamilyParameterSchema.family_id == WorkFamily.id,
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+        )
+        .exists()
+    )
+    without_schema = db.execute(
+        sa.select(sa.func.count(WorkFamily.id)).where(
+            WorkFamily.status == FamilyStatus.active.value, ~has_current
+        )
+    ).scalar_one()
+    return {
+        "catalog_to_review": kinds.get(CatalogKind.TO_REVIEW.value, 0),
+        "catalog_position": kinds.get(CatalogKind.POSITION.value, 0),
+        "contexts_with_variant": with_variant,
+        "contexts_pending": pending,
+        "families_without_schema": without_schema,
+    }

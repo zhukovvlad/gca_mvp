@@ -1302,6 +1302,11 @@ class TestStatus:
             "held_batches": [],
             "stale_units": [],
             "config_stale": None,
+            "catalog_to_review": 0,
+            "catalog_position": 0,
+            "contexts_with_variant": 0,
+            "contexts_pending": 0,
+            "families_without_schema": 0,
         }
 
     def test_exponent_budget_is_served_in_fixed_notation(self, admin_client, monkeypatch):

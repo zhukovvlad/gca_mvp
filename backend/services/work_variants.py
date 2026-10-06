@@ -72,7 +72,7 @@ from services.family_change import (
     record_pending_outcome,
 )
 from services.semantic_answer import AnswerSchemaError
-from services.semantic_cost import event_cap_from
+from services.semantic_cost import EventCap, event_cap_from
 from services.semantic_events import record_event
 from services.semantic_privacy import _replace_quotes_with_space
 from services.semantic_reconcile import (
@@ -1231,12 +1231,18 @@ def cancel_building_version(db: Session, schema: FamilyParameterSchema) -> None:
         )
 
 
-def rebuild_schema(db: Session, *, family_id: int, actor_id: int) -> FamilyParameterSchema:
+def rebuild_schema(
+    db: Session, *, family_id: int, actor_id: int, cap: EventCap | object | None = None
+) -> FamilyParameterSchema:
     """Пересборка схемы семьи (спека §2.8): версия `building` и задание
     `family_schema`. Версия `building` уже есть — возвращается она же
     (идемпотентно); версию заводит та же функция, что сверку (параллельные
     вызовы одной семьи сериализует замок семьи, а частичный UNIQUE стережёт
     версию), задание ставит сверка семьи в этой же транзакции.
+
+    `cap` — потолок события сверки: по умолчанию (`None`) из настроек;
+    `NO_CAP` — задание не удерживается потолком (человек подтвердил его
+    стоимость в preview).
 
     `actor_id` в записи не участвует: версия `building` создаётся как у сверки
     (`origin='model'`), кто её заморозит — решает заморозка."""
@@ -1248,7 +1254,8 @@ def rebuild_schema(db: Session, *, family_id: int, actor_id: int) -> FamilyParam
     # Сверка по семье, а не по контекстам: у семьи без контекстов задание
     # схемы иначе не появилось бы, и версия `building` висела бы без работы.
     reconcile_family_schemas(
-        db, [family_id], cap=event_cap_from(app_settings), source="operation"
+        db, [family_id], cap=event_cap_from(app_settings) if cap is None else cap,
+        source="operation",
     )
     return schema
 

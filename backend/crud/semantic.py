@@ -35,6 +35,7 @@ from typing import Literal, TypedDict
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
+from crud.work_variants import context_variant_out
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -120,7 +121,10 @@ class ContextFilters:
     """Фильтры очереди контекстов (план, задача 12, `crud/semantic.py`).
 
     Все поля — `None` значит «фильтр не применён». Три булевых
-    фильтра-признака — независимые оси (см. докстринг модуля).
+    фильтра-признака — независимые оси (см. докстринг модуля). Фильтры
+    `variant_state`, `pending`, `split_hint` — тоже независимые оси: у контекста
+    есть вариант (`with`) или нет (`without`), у него есть ожидающее назначение
+    семьи, у него стоит пометка «к делению».
     """
 
     catalog_query: str | None = None
@@ -131,6 +135,9 @@ class ContextFilters:
     has_stale_members: bool | None = None
     has_conflicting_members: bool | None = None
     has_no_members: bool | None = None
+    variant_state: Literal["with", "without"] | None = None
+    pending: bool | None = None
+    split_hint: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +596,21 @@ def _context_query(filters: ContextFilters):
     elif filters.has_no_members is False:
         stmt = stmt.where(_members_exist())
 
+    # Оси варианта — предикаты на колонки самого контекста, поэтому они входят и
+    # в счётчик `total`, и в страницу: «всего» считается по тем же условиям.
+    if filters.variant_state == "with":
+        stmt = stmt.where(CatalogContext.work_variant_id.is_not(None))
+    elif filters.variant_state == "without":
+        stmt = stmt.where(CatalogContext.work_variant_id.is_(None))
+    if filters.pending is True:
+        stmt = stmt.where(CatalogContext.pending_family_id.is_not(None))
+    elif filters.pending is False:
+        stmt = stmt.where(CatalogContext.pending_family_id.is_(None))
+    if filters.split_hint is True:
+        stmt = stmt.where(CatalogContext.variant_split_hint.is_not(None))
+    elif filters.split_hint is False:
+        stmt = stmt.where(CatalogContext.variant_split_hint.is_(None))
+
     return stmt
 
 
@@ -846,6 +868,7 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "family_source": context.family_source,
         "family_by": context.family_by,
         "family_at": context.family_at,
+        "variant": context_variant_out(db, context),
         "member_count": member_count,
         "work_category_path": work_category_path,
         "representative_work_title": representative_work_title,
