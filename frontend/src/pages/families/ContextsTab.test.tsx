@@ -123,7 +123,10 @@ describe("ContextsTab", () => {
     await renderTab();
 
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "нет-такого-текста-в-каталоге");
-    expect(await screen.findByText("Контекстов нет")).toBeInTheDocument();
+    // После печати — задержка поиска (300 мс), запрос и отрисовка: под нагрузкой
+    // машины они не укладываются в секунду `findByText` по умолчанию — тест
+    // падал в полном наборе при параллельном pytest, проходя в одиночку.
+    expect(await screen.findByText("Контекстов нет", {}, { timeout: 8000 })).toBeInTheDocument();
   });
 
   it("подписи причины сравнимости различаются ТЕКСТОМ, а не наличием узла", async () => {
