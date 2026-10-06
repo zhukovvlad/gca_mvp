@@ -110,6 +110,12 @@ function lastRequest(requests: URLSearchParams[]): URLSearchParams {
   return requests[requests.length - 1];
 }
 
+// После ввода в поле с задержкой (поиск и статья — 300 мс) идут запрос и
+// отрисовка: под нагрузкой машины (`just ci` гонит бэкенд `-n 8` рядом с
+// фронтендом) они не укладываются в секунду ожидания по умолчанию — тесты
+// падали в полном наборе, проходя в одиночку.
+const AFTER_DEBOUNCE = { timeout: 8000 };
+
 describe("ContextsTab", () => {
   // Размер страницы — `usePersistedPageSize` (`gca.families.contexts.pageSize`);
   // без сброса выбор одного теста пережил бы следующий (`pageSizeShared.test.tsx`
@@ -123,10 +129,7 @@ describe("ContextsTab", () => {
     await renderTab();
 
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "нет-такого-текста-в-каталоге");
-    // После печати — задержка поиска (300 мс), запрос и отрисовка: под нагрузкой
-    // машины они не укладываются в секунду `findByText` по умолчанию — тест
-    // падал в полном наборе при параллельном pytest, проходя в одиночку.
-    expect(await screen.findByText("Контекстов нет", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(await screen.findByText("Контекстов нет", {}, AFTER_DEBOUNCE)).toBeInTheDocument();
   });
 
   it("подписи причины сравнимости различаются ТЕКСТОМ, а не наличием узла", async () => {
@@ -218,7 +221,7 @@ describe("ContextsTab", () => {
       expect(
         screen.queryByText("Штукатурка стен цементно-песчаным раствором")
       ).not.toBeInTheDocument();
-    });
+    }, AFTER_DEBOUNCE);
   });
 
   // ---------------------------------------------------------------------
@@ -473,14 +476,16 @@ describe("ContextsTab", () => {
     expect(screen.queryByText("Контекст не выбран")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "линолеум");
-    await waitFor(() =>
-      expect(
-        screen.getByText("Устройство покрытий полов из линолеума")
-      ).toBeInTheDocument()
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText("Устройство покрытий полов из линолеума")
+        ).toBeInTheDocument(),
+      AFTER_DEBOUNCE
     );
     // Снятие выбора — правка состояния во время рендера новой выдачи;
     // ждём и её, а не проверяем синхронно вслед за предыдущим `waitFor`.
-    await waitFor(() => expect(screen.getByText("Контекст не выбран")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Контекст не выбран")).toBeInTheDocument(), AFTER_DEBOUNCE);
   });
 
   it("смена фильтра НЕ снимает выбор, если выбранный контекст остаётся в выдаче", async () => {
@@ -497,7 +502,7 @@ describe("ContextsTab", () => {
     // проверка выбора прошла бы в состоянии загрузки, где сверки ещё не
     // было — тест не увидел бы снятия выбора на любой новой выдаче.
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "штукатурка");
-    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument(), AFTER_DEBOUNCE);
     expect(
       screen.queryByText("Устройство покрытий полов из линолеума")
     ).not.toBeInTheDocument();
