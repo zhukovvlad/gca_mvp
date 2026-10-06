@@ -93,9 +93,11 @@ jobs:
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
         # pgvector image makes CREATE EXTENSION vector succeed.
         #
-        # -n 12 согласован с локальным рецептом test-backend-parallel (DoD спеки
-        # pytest-parallel-workers: локально и в CI один прогон). Каждый xdist-воркёр
-        # создаёт себе базу gca_gw<N>_test и мигрирует её сам — сервису достаточно
-        # заранее существующей gca_test для db-test-check.
+        # -n 12 подобран под раннер ubuntu-latest и НЕ совпадает с локальным
+        # дефолтом test-backend-parallel (8) — расхождение и план его снять:
+        # docs/TECH_DEBT.md, запись 2. Раздача — --dist worksteal из addopts
+        # (backend/pyproject.toml). Каждый xdist-воркёр пересоздаёт себе базу
+        # gca_gw<N>_test и мигрирует её сам — сервису достаточно заранее
+        # существующей gca_test для db-test-check.
         run: uv run --locked pytest -n 12
         working-directory: backend
