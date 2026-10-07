@@ -51,7 +51,11 @@ from services.semantic_request import (
     render_context_request,
 )
 from services.semantic_rules import PLACE_DICTIONARY_VERSION
-from services.variant_answer import SCHEMA_RESPONSE_FORMAT, VALUES_RESPONSE_FORMAT
+from services.variant_answer import (
+    SCHEMA_RESPONSE_FORMAT,
+    VALUES_RESPONSE_FORMAT,
+    values_response_format_for,
+)
 
 #: Версии текстов промптов — столбец аудита задания, в хэши не входят (как
 #: `semantic_request.PROMPT_VERSION`); смена текста промпта сопровождается
@@ -432,7 +436,9 @@ def render_values_request(
         model=settings.SEMANTIC_VALUES_MODEL,
         max_tokens=settings.SEMANTIC_VALUES_MAX_TOKENS,
         reasoning_effort=settings.SEMANTIC_VARIANTS_REASONING_EFFORT,
-        response_format=VALUES_RESPONSE_FORMAT,
+        response_format=values_response_format_for(
+            [p.ordinal for p in parameters], VALUES_RESPONSE_FORMAT
+        ),
         system_blocks=[
             {"type": "text", "text": VALUES_PROMPT},
             {

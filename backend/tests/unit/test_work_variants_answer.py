@@ -16,6 +16,7 @@ from services.variant_answer import (
     ValuesAnswer,
     parse_schema_answer,
     parse_values_answer,
+    values_response_format_for,
 )
 from services.variant_request import SchemaParameterIn
 
@@ -97,7 +98,17 @@ class TestResponseFormats:
         assert SCHEMA_RESPONSE_FORMAT["json_schema"]["strict"] is True
         assert VALUES_RESPONSE_FORMAT["json_schema"]["strict"] is True
 
-    @pytest.mark.parametrize("fmt", [SCHEMA_RESPONSE_FORMAT, VALUES_RESPONSE_FORMAT])
+    @pytest.mark.parametrize(
+        "fmt",
+        [
+            SCHEMA_RESPONSE_FORMAT,
+            VALUES_RESPONSE_FORMAT,
+            values_response_format_for([1, 2]),
+            values_response_format_for([1, 3]),
+            values_response_format_for([1, 2, 3]),
+        ],
+        ids=["schema", "values_base", "values_1_2", "values_1_3", "values_1_2_3"],
+    )
     def test_no_enum_next_to_a_list_valued_type(self, fmt):
         """Провайдер в строгом режиме отвергает запрос с HTTP 400: `output_config.
         format.schema: Invalid schema: Enum value 'name' does not match declared
@@ -133,6 +144,17 @@ class TestResponseFormats:
         assert not _conforms(schema, {"parameters": [], "x": 1})
         assert not _conforms(schema, {"parameters": [_param(4, "a", ["b"])]})
         assert not _conforms(schema, {"parameters": "a"})
+
+    def test_per_schema_format_rejects_ordinal_outside_the_schema(self):
+        # Нарушение, ради которого формат строится по схеме: объект для
+        # параметра, которого в схеме нет.
+        ok = {"ordinal": 1, "kind": "none", "value": None, "source": None}
+        two = _schema_of(values_response_format_for([1, 2]))
+        gap = _schema_of(values_response_format_for([1, 3]))
+        assert _conforms(two, {"values": [ok]})
+        assert not _conforms(two, {"values": [{**ok, "ordinal": 3}]})
+        assert _conforms(gap, {"values": [{**ok, "ordinal": 3}]})
+        assert not _conforms(gap, {"values": [{**ok, "ordinal": 2}]})
 
     def test_checker_rejects_values_format_violations(self):
         # Предусловие для формата значений: перечисления `kind`/`source`,

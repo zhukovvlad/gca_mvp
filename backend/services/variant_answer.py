@@ -8,7 +8,8 @@
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import copy
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -96,6 +97,18 @@ VALUES_RESPONSE_FORMAT: Final = {
         },
     },
 }
+
+
+def values_response_format_for(ordinals: Iterable[int], base: dict | None = None) -> dict:
+    """Формат ответа `context_values` для схемы с данными порядковыми номерами:
+    копия `base` (по умолчанию `VALUES_RESPONSE_FORMAT`), у которой перечисление
+    `ordinal` — ровно номера этой схемы по возрастанию (допустимы пропуски:
+    `[1, 3]` после удаления параметра). Модель не может вернуть объект для
+    параметра, которого в схеме нет."""
+    fmt = copy.deepcopy(VALUES_RESPONSE_FORMAT if base is None else base)
+    item = fmt["json_schema"]["schema"]["properties"]["values"]["items"]
+    item["properties"]["ordinal"]["enum"] = sorted(ordinals)
+    return fmt
 
 # ---------------------------------------------------------------------------
 #  Строгий разбор ответов

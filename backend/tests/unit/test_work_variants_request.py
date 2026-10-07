@@ -30,7 +30,11 @@ from services.semantic_request import (
     RenderedRequest,
     render_context_request,
 )
-from services.variant_answer import SCHEMA_RESPONSE_FORMAT, VALUES_RESPONSE_FORMAT
+from services.variant_answer import (
+    SCHEMA_RESPONSE_FORMAT,
+    VALUES_RESPONSE_FORMAT,
+    values_response_format_for,
+)
 from services.variant_request import (
     MAX_PATHS,
     SCHEMA_PROMPT,
@@ -373,6 +377,61 @@ class TestSchemaBodyLayout:
         )
 
 
+def _values_ordinal_enum(body: dict) -> list:
+    return body["response_format"]["json_schema"]["schema"]["properties"]["values"]["items"][
+        "properties"
+    ]["ordinal"]["enum"]
+
+
+class TestValuesResponseFormatPerSchema:
+    @pytest.mark.parametrize("ordinals", [(1, 2), (1, 3), (1, 2, 3), (2,), (1,)])
+    def test_rendered_enum_is_exactly_the_schema_ordinals(self, ordinals):
+        parameters = tuple(
+            SchemaParameterIn(ordinal=o, name=f"П{o}", values=("а", "б")) for o in ordinals
+        )
+        material = _values_material(parameters=parameters)
+        body = render_values_request(material, settings=_settings()).body
+        assert _values_ordinal_enum(body) == list(ordinals)
+
+    def test_enum_is_sorted_whatever_the_material_order(self):
+        parameters = (
+            SchemaParameterIn(ordinal=3, name="Класс", values=("B15",)),
+            SchemaParameterIn(ordinal=1, name="Толщина", values=("50 мм",)),
+        )
+        body = render_values_request(
+            _values_material(parameters=parameters), settings=_settings()
+        ).body
+        assert _values_ordinal_enum(body) == [1, 3]
+
+    def test_only_the_ordinal_enum_differs_from_the_base_format(self):
+        body = render_values_request(_values_material(), settings=_settings()).body
+        expected = copy.deepcopy(VALUES_RESPONSE_FORMAT)
+        expected["json_schema"]["schema"]["properties"]["values"]["items"]["properties"][
+            "ordinal"
+        ]["enum"] = [1, 2]
+        assert body["response_format"] == expected
+
+    def test_helper_does_not_touch_the_base_constant(self):
+        pristine = copy.deepcopy(VALUES_RESPONSE_FORMAT)
+        built = values_response_format_for([1, 3])
+        built["json_schema"]["schema"]["required"].append("mutated")
+        assert pristine == VALUES_RESPONSE_FORMAT
+
+    def test_different_ordinal_sets_give_different_request_hashes(self):
+        two = _values_material()
+        gap = dataclasses.replace(
+            two,
+            parameters=(
+                two.parameters[0],
+                SchemaParameterIn(ordinal=3, name="Материал", values=("бетон",)),
+            ),
+        )
+        assert (
+            render_values_request(two, settings=_settings()).request_hash
+            != render_values_request(gap, settings=_settings()).request_hash
+        )
+
+
 class TestValuesBodyLayout:
     def test_keys_and_profile(self):
         settings = _settings(
@@ -389,7 +448,12 @@ class TestValuesBodyLayout:
         assert body["max_tokens"] == 777
         assert body["reasoning"] == {"effort": "high"}
         assert body["usage"] == {"include": True}
-        assert body["response_format"] == VALUES_RESPONSE_FORMAT
+        # Материал — параметры 1 и 2: формат значений несёт ровно их порядковые.
+        expected = copy.deepcopy(VALUES_RESPONSE_FORMAT)
+        expected["json_schema"]["schema"]["properties"]["values"]["items"]["properties"][
+            "ordinal"
+        ]["enum"] = [1, 2]
+        assert body["response_format"] == expected
 
     def test_system_has_prompt_and_schema_blocks_cache_on_schema(self):
         body = render_values_request(_values_material(), settings=_settings()).body

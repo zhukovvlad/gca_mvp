@@ -384,3 +384,60 @@ describe("SuggestionsTab — страницы групп", () => {
     await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(10));
   });
 });
+
+describe("SuggestionsTab — счётчики вкладок", () => {
+  const TABS = [/Семья из списка/, /Смена семьи/, /Новая/, /Ошибки/];
+
+  function counterOf(name: RegExp): string {
+    return screen.getByRole("tab", { name }).querySelector("span")?.textContent ?? "";
+  }
+
+  it("пока очередь грузится, счётчик — заполнитель, а не 0; после ответа — число", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/v1/semantic/suggestions", async ({ request }) => {
+        await gate;
+        const queue = new URL(request.url).searchParams.get("queue");
+        if (queue === "new") return HttpResponse.json({ queue, groups: [], items: [{}, {}] });
+        if (queue === "change") return HttpResponse.json({ queue, groups: manyGroups(3), items: [] });
+        return HttpResponse.json({ queue: "list", groups: manyGroups(5), items: [] });
+      }),
+      http.get("/api/v1/semantic/jobs", async ({ request }) => {
+        await gate;
+        const status = new URL(request.url).searchParams.get("status");
+        return HttpResponse.json({ items: status === "error" ? [{}] : [] });
+      })
+    );
+    renderWithProviders(<SuggestionsTab />);
+
+    for (const name of TABS) {
+      expect(await screen.findByRole("tab", { name })).toBeInTheDocument();
+      expect(counterOf(name)).toBe("…");
+      expect(screen.getByRole("tab", { name })).not.toHaveTextContent(/\b0\b/);
+    }
+
+    release();
+    await waitFor(() => expect(counterOf(TABS[0])).toBe("5"), { timeout: 8000 });
+    await waitFor(() => expect(counterOf(TABS[1])).toBe("3"), { timeout: 8000 });
+    await waitFor(() => expect(counterOf(TABS[2])).toBe("2"), { timeout: 8000 });
+    await waitFor(() => expect(counterOf(TABS[3])).toBe("1"), { timeout: 8000 });
+  });
+
+  it("загруженная пустая очередь показывает 0", async () => {
+    server.use(
+      http.get("/api/v1/semantic/suggestions", ({ request }) => {
+        const queue = new URL(request.url).searchParams.get("queue") ?? "list";
+        return HttpResponse.json({ queue, groups: [], items: [] });
+      }),
+      http.get("/api/v1/semantic/jobs", () => HttpResponse.json({ items: [] }))
+    );
+    renderWithProviders(<SuggestionsTab />);
+
+    for (const name of TABS) {
+      await waitFor(() => expect(counterOf(name)).toBe("0"), { timeout: 8000 });
+    }
+  });
+});
