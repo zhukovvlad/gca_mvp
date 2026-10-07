@@ -57,14 +57,18 @@ from services.semantic_client import (
     PermanentModelError,
     TransientModelError,
 )
-from services.semantic_cost import reserve_for, spent_last_24h, tariffs_from
+from services.semantic_cost import event_cap_from, reserve_for, spent_last_24h, tariffs_from
 from services.semantic_privacy import (
     PrivacyDictionary,
     PrivacyMatch,
     build_privacy_dictionary,
     find_privacy_matches,
 )
-from services.semantic_reconcile import _load_values_columns, _values_applicable
+from services.semantic_reconcile import (
+    _load_values_columns,
+    _values_applicable,
+    reconcile_family_schemas,
+)
 from services.semantic_request import (
     CandidateFamily,
     RenderedRequest,
@@ -258,9 +262,23 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
     raise ValueError(f"неизвестный вид задания: {kind!r}")
 
 
-def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | None:
+def _note_closed(closed_units: list[int | None] | None, job: SemanticJob) -> None:
+    if closed_units is not None and job.kind == SemanticJobKind.family_suggestion.value:
+        closed_units.append(job.unit_id)
+
+
+def claim_next(
+    db: Session,
+    *,
+    settings: Settings,
+    now: datetime,
+    closed_units: list[int | None] | None = None,
+) -> Claim | None:
     """Захват одного задания — шаги спеки §2.5 строго по порядку; коммитит сама.
-    `None` — захвата нет: остановка, нет готовых заданий или не хватает бюджета."""
+    `None` — захвата нет: остановка, нет готовых заданий или не хватает бюджета.
+    В `closed_units` (если передан) попадают единицы заданий предложений, которые
+    захват отменил или задержал: открытых заданий в такой единице могло не
+    остаться, и схемы её семей ждут сверки."""
     state = _lock_worker_state(db)
     if state.claim_paused:
         db.commit()
@@ -276,11 +294,13 @@ def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | Non
         current = render_job_request(db, job, settings=settings)
         if current.cancel_reason is not None:
             _cancel(db, job, current.cancel_reason)
+            _note_closed(closed_units, job)
             continue
         rendered = current.rendered
         assert rendered is not None  # причины отмены нет — запрос отрендерен
         if rendered.request_hash != job.request_hash:
             _cancel(db, job, SemanticCancelReason.input_changed)
+            _note_closed(closed_units, job)
             continue
         kind = SemanticJobKind(job.kind)
 
@@ -310,6 +330,7 @@ def claim_next(db: Session, *, settings: Settings, now: datetime) -> Claim | Non
             job.status = SemanticJobStatus.privacy_hold.value
             job.privacy_matches = matches
             db.flush()
+            _note_closed(closed_units, job)
             continue
 
         reserve = reserve_for(
@@ -826,6 +847,45 @@ def _apply_rules_in_new_session(
         logger.exception("Правила публикации предложения %s не применены", suggestion_id)
 
 
+def _reconcile_schemas_of_unit(
+    session_factory: Callable[[], Session], unit_id: int | None, *, settings: Settings
+) -> None:
+    """Сверка схем единицы после завершения задания предложения (спека §2.6,
+    §2.7): когда последнее задание единицы закончилось любым исходом, семьи без
+    текущей версии получают задание схемы. Готовность единицы проверяет сама
+    сверка (в единице ещё открытое задание или удержанная пачка — ничего не
+    ставится). Отдельная транзакция после записи ответа и правил: её ошибка
+    записанного не трогает, исключение не выходит из цикла исполнителя."""
+    try:
+        with session_factory() as db:
+            unit_filter = (
+                WorkFamily.unit_id.is_(None) if unit_id is None else WorkFamily.unit_id == unit_id
+            )
+            family_ids = (
+                db.execute(
+                    sa.select(WorkFamily.id).where(
+                        WorkFamily.status == FamilyStatus.active.value, unit_filter
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if family_ids:
+                reconcile_family_schemas(
+                    db, family_ids, cap=event_cap_from(settings), source="operation"
+                )
+            db.commit()
+    except Exception:  # noqa: BLE001 — исключение сверки наружу не уходит
+        logger.exception("Сверка схем единицы %s не удалась", unit_id)
+
+
+def _unit_of_job(session_factory: Callable[[], Session], job_id: int) -> int | None:
+    with session_factory() as db:
+        return db.execute(
+            sa.select(SemanticJob.unit_id).where(SemanticJob.id == job_id)
+        ).scalar_one_or_none()
+
+
 def process_one(
     session_factory: Callable[[], Session],
     client: ModelClient,
@@ -835,14 +895,40 @@ def process_one(
 ) -> bool:
     """Захват, вызов, запись — по сессии на шаг, вызов модели вне транзакции.
     `False` — захватывать нечего. Иначе `True`, и исключение задания наружу не
-    уходит: попытка закрывается ошибкой, цикл продолжается (спека §2.5, п. 4)."""
-    with session_factory() as db:
-        claim = claim_next(db, settings=settings, now=clock())
-    if claim is None:
-        return False
+    уходит: попытка закрывается ошибкой, цикл продолжается (спека §2.5, п. 4).
+    После задания предложения (любой исход) — сверка схем его единицы."""
+    closed_units: list[int | None] = []
+    try:
+        with session_factory() as db:
+            claim = claim_next(db, settings=settings, now=clock(), closed_units=closed_units)
+        if claim is None:
+            return False
+        try:
+            _run_claim(session_factory, client, claim, settings=settings, clock=clock)
+        finally:
+            if claim.kind == SemanticJobKind.family_suggestion:
+                try:
+                    closed_units.append(_unit_of_job(session_factory, claim.job_id))
+                except Exception:  # noqa: BLE001 — исключение хука наружу не уходит
+                    logger.exception("Единица задания %s не прочитана", claim.job_id)
+        return True
+    finally:
+        for unit_id in dict.fromkeys(closed_units):
+            _reconcile_schemas_of_unit(session_factory, unit_id, settings=settings)
+
+
+def _run_claim(
+    session_factory: Callable[[], Session],
+    client: ModelClient,
+    claim: Claim,
+    *,
+    settings: Settings,
+    clock: Callable[[], datetime],
+) -> None:
+    """Вызов модели и запись результата захваченного задания."""
     if claim.synthesized:
         _complete_synthesized(session_factory, claim, settings=settings, clock=clock)
-        return True
+        return
     assert claim.rendered is not None
 
     try:
@@ -854,7 +940,7 @@ def process_one(
             _record_failure_in_new_session(
                 session_factory, claim, exc, settings=settings, clock=clock
             )
-            return True
+            return
         except Exception as exc:  # noqa: BLE001 — любое исключение клиента временное
             _record_failure_in_new_session(
                 session_factory,
@@ -863,7 +949,7 @@ def process_one(
                 settings=settings,
                 clock=clock,
             )
-            return True
+            return
 
         published_id: int | None = None
         try:
@@ -882,4 +968,3 @@ def process_one(
             _apply_rules_in_new_session(session_factory, published_id, settings=settings)
     except Exception:  # noqa: BLE001 — закрыть попытку не удалось: задание вернёт восстановление
         logger.exception("Попытка задания %s осталась открытой", claim.job_id)
-    return True

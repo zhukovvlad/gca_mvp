@@ -52,7 +52,7 @@ from models import (
     UnitOfMeasure,
     WorkFamily,
 )
-from services.family_change import RULE_NONE, _fitting_families, rule_outcome
+from services.family_change import _fitting_families
 from services.semantic_answer import is_system_name
 from services.semantic_cost import spent_last_24h
 from services.semantic_request import (
@@ -482,34 +482,19 @@ def _list_queue(
 #  Очередь «Смена семьи»
 # ---------------------------------------------------------------------------
 
-def _rule_leaves_it(row, threshold: Decimal | None) -> bool:
-    """Правило публикации предложение не применило: тот же `rule_outcome`, что
-    у самого правила (семья предложения уже признана годной). Порог не задан —
-    таблица публикации вырождается в строки «опубликовано» (спека §2.5): правило
-    не применило ничего, и человеку идут все."""
-    if threshold is None:
-        return True
-    return (
-        rule_outcome(
-            family_id=row.family_id, confidence=row.confidence, context=row,
-            threshold=threshold, family_fits=True,
-        )
-        == RULE_NONE
-    )
-
-
 def _change_queue(
     db: Session, *, unit_id: UnitFilter, band: Band | None, multi_owner_only: bool
 ) -> list[ChangeGroup]:
     """Опубликованные предложения другой семьи контексту С семьёй на текущем
-    отпечатке, которые правило публикации не применило (спека вариантов §2.5,
-    таблица и п. 4; §2.12): исход правила — тот же `rule_outcome`, что у самого
-    правила, — `none`. Это ручные и подтверждённые человеком привязки любой
-    уверенности, автопривязки ниже порога и автопривязки, которым правило
-    уступает ожидание человека. Предложение семьи, которая контексту не годится
-    (не `active` или другая единица), не показывается: подтвердить его нельзя.
-    Порог не задан: правило ничего не применяет, и в очереди все такие предложения."""
-    threshold = settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD
+    отпечатке, по которым ещё нет решения (`decision IS NULL`; спека вариантов
+    §2.5, таблица и п. 4; §2.12). Отбор идёт по фактически записанному решению,
+    а не по исходу правила: предложение, которое правило принять должно было, но
+    его транзакция не состоялась, остаётся у человека. Обычно же правило своё
+    решение проставляет, и очередь содержит то, чего оно не применило: ручные и
+    подтверждённые человеком привязки любой уверенности, автопривязки ниже порога
+    и автопривязки, которым правило уступает ожидание человека. Предложение
+    семьи, которая контексту не годится (не `active` или другая единица), не
+    показывается: подтвердить его нельзя."""
     current = aliased(WorkFamily)
     family = aliased(WorkFamily)
     family_unit = aliased(UnitOfMeasure)
@@ -575,7 +560,6 @@ def _change_queue(
     found = [
         row for row in found
         if (row.family_id, row.context_unit_id) in fitting
-        and _rule_leaves_it(row, threshold)
     ]
     if not found:
         return []

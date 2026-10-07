@@ -1815,6 +1815,7 @@ function emptySchema(familyId: number): FamilySchema {
     version: null,
     ready_to_build: true,
     building: false,
+    values_jobs_live: 0,
     parameters: [],
   };
 }
@@ -1827,6 +1828,7 @@ function initialFamilySchemas(): Record<number, FamilySchema> {
       version: 2,
       ready_to_build: true,
       building: false,
+      values_jobs_live: 0,
       parameters: [
         {
           id: 101,

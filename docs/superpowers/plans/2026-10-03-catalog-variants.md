@@ -999,6 +999,7 @@ def set_position_kind_global(db: Session, *, position_id: int, kind: str, actor_
 ```python
 class SchemaOut(TypedDict):
     family_id: int; status: str | None; version: int | None; ready_to_build: bool
+    values_jobs_live: int  # заданий значений pending/running по текущей версии схемы
     parameters: list["ParameterOut"]
 class ParameterOut(TypedDict):
     ordinal: int; name: str; values: list["ValueOut"]

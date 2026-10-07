@@ -124,6 +124,31 @@ def _building(db, family):
     return schema
 
 
+def _values_job(db, context_id, schema_id, status, *, kind="context_values") -> SemanticJob:
+    """Задание значений контекста по версии схемы (или иного вида) в нужном
+    статусе, с полями, которых требуют CHECK статуса."""
+    import uuid
+
+    extra = {}
+    if status == "running":
+        extra["claim_token"] = uuid.uuid4()
+    if status == "privacy_hold":
+        extra["privacy_matches"] = [{"text": "x", "kind": "name", "where": "context"}]
+    if status == "cancelled":
+        extra["cancel_reason"] = "input_changed"
+    job = SemanticJob(
+        kind=kind, context_id=context_id, schema_id=schema_id,
+        request_hash=f"hash-{kind}-{status}-{uuid.uuid4().hex}", status=status,
+        next_attempt_at=dt.datetime.now(dt.UTC), prompt_version="1",
+        model_requested=app_settings.SEMANTIC_MODEL, place_dictionary_version=1,
+        candidates_hash="c", prefix_hash="p", input_hash="i", response_schema_version="1",
+        serialization_version="1", **extra,
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
 def _detail(response) -> dict:
     body = response.json()
     assert isinstance(body["detail"], dict), body
@@ -372,7 +397,8 @@ class TestSchemaRead:
         assert response.status_code == 200, response.text
         body = response.json()
         assert set(body) == {
-            "family_id", "status", "version", "ready_to_build", "building", "parameters"
+            "family_id", "status", "version", "ready_to_build", "building",
+            "values_jobs_live", "parameters",
         }
         assert body["family_id"] == scene.family.id
         assert (body["status"], body["version"], body["building"]) == ("frozen", 1, False)
@@ -456,6 +482,56 @@ class TestSchemaRead:
         )
 
         assert admin_client.get(path).json()["ready_to_build"] is False
+
+    def test_values_jobs_live_counts_open_values_jobs_of_the_current_schema(
+        self, admin_client, db_session, factories
+    ):
+        scene = _family_with_params(db_session, factories)
+        path = f"{BASE}/families/{scene.family.id}/schema"
+        assert admin_client.get(path).json()["values_jobs_live"] == 0
+
+        _values_job(db_session, scene.context_ids[0], scene.schema.id, "pending")
+        _values_job(db_session, scene.context_ids[1], scene.schema.id, "running")
+
+        assert admin_client.get(path).json()["values_jobs_live"] == 2
+
+    @pytest.mark.parametrize("status", ["done", "cancelled", "error", "privacy_hold"])
+    def test_values_jobs_live_ignores_jobs_that_are_not_pending_or_running(
+        self, admin_client, db_session, factories, status
+    ):
+        scene = _family_with_params(db_session, factories)
+        _values_job(db_session, scene.context_ids[0], scene.schema.id, "pending")
+        _values_job(db_session, scene.context_ids[1], scene.schema.id, status)
+
+        body = admin_client.get(f"{BASE}/families/{scene.family.id}/schema").json()
+
+        assert body["values_jobs_live"] == 1
+
+    def test_values_jobs_live_ignores_other_families_and_other_kinds(
+        self, admin_client, db_session, factories
+    ):
+        scene = _family_with_params(db_session, factories)
+        other = _active_family(
+            db_session, title="Другая семья", unit_name="M2", actor_id=scene.user.id
+        )
+        _values_job(db_session, scene.context_ids[0], scene.schema.id, "pending")
+        _values_job(
+            db_session, scene.context_ids[1], _current_schema(db_session, other).id, "pending"
+        )
+        _values_job(db_session, scene.context_ids[1], None, "pending", kind="family_suggestion")
+
+        body = admin_client.get(f"{BASE}/families/{scene.family.id}/schema").json()
+
+        assert body["values_jobs_live"] == 1
+
+    def test_values_jobs_live_is_zero_without_a_current_version(
+        self, admin_client, db_session, factories
+    ):
+        family = _schemaless_family(db_session)
+
+        body = admin_client.get(f"{BASE}/families/{family.id}/schema").json()
+
+        assert body["values_jobs_live"] == 0
 
     def test_unknown_family_is_404_with_the_code(self, admin_client):
         response = admin_client.get(f"{BASE}/families/999999999/schema")
@@ -1648,15 +1724,30 @@ class TestAutoAccept:
 #  Очередь «Смена семьи»
 # ---------------------------------------------------------------------------
 
+def _decide_like_the_rule(db, scene, *context_ids):
+    """Предложения, которые правило публикации УЖЕ приняло (`decision` проставлен
+    его транзакцией): в очереди «Смена семьи» человеку они не нужны."""
+    for context_id, decision in (
+        (scene.c_pending, "auto_pending"), (scene.c_auto, "auto_accepted"),
+    ):
+        if context_id in context_ids:
+            suggestion = scene.suggestions[context_id]
+            suggestion.decision = decision
+            suggestion.decided_at = dt.datetime.now(dt.UTC)
+    db.flush()
+
+
 class TestChangeQueue:
     def test_manual_binding_gets_any_confidence_and_auto_binding_below_the_threshold_only(
         self, admin_client, db_session, factories, monkeypatch
     ):
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
 
         # Автопривязки (с вариантом и без) с уверенностью 0.9 при пороге 0.80
-        # правило применяет, а человека — нет: в очереди только ручная привязка.
+        # правило применило (решение проставлено), а человека — нет: в очереди
+        # только ручная привязка.
         assert _change_context_ids(admin_client) == {scene.c_none}
 
     def test_binding_confirmed_by_a_person_gets_any_confidence(
@@ -1667,22 +1758,29 @@ class TestChangeQueue:
         порога, предложение другой семьи — в очереди."""
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending)
         _bind_source(db_session, scene, scene.c_auto, scene.family, "suggestion")
 
         assert _change_context_ids(admin_client) == {scene.c_none, scene.c_auto}
 
-    def test_raising_the_threshold_brings_the_auto_bindings_in(
+    def test_a_suggestion_the_rule_did_not_decide_stays_with_the_human(
         self, admin_client, db_session, factories, monkeypatch
     ):
-        monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", Decimal("0.95"))
+        """Правило применило бы предложения `c_pending` и `c_auto` (уверенность
+        0.9 при пороге 0.80), но его транзакция не состоялась (`decision IS
+        NULL`): человек видит их в очереди (спека §2.5)."""
+        monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
 
         assert _change_context_ids(admin_client) == {scene.c_pending, scene.c_none, scene.c_auto}
 
-    def test_threshold_boundary_the_rule_applies_at_the_threshold(
+    def test_the_queue_follows_the_recorded_decision_not_the_threshold(
         self, admin_client, db_session, factories, monkeypatch
     ):
+        """Решённое правилом предложение остаётся решённым при любом пороге
+        (порог читает правило, а не очередь)."""
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
 
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", Decimal("0.90"))
         at_threshold = _change_context_ids(admin_client)
@@ -1690,7 +1788,7 @@ class TestChangeQueue:
         above_confidence = _change_context_ids(admin_client)
 
         assert at_threshold == {scene.c_none}
-        assert above_confidence == {scene.c_pending, scene.c_none, scene.c_auto}
+        assert above_confidence == {scene.c_none}
 
     def test_without_a_threshold_every_bound_context_with_another_family_is_in_the_queue(
         self, admin_client, db_session, factories, monkeypatch
@@ -1707,6 +1805,7 @@ class TestChangeQueue:
     ):
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
         suggestion = scene.suggestions[scene.c_none]
 
         _unpublish(db_session, suggestion)
@@ -1782,6 +1881,7 @@ class TestChangeQueue:
 
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
         estimates = [
             factories.EstimateFactory.create(contract=factories.ContractFactory.create())
             for _ in range(2)
@@ -1805,6 +1905,7 @@ class TestChangeQueue:
         помечает строку очереди «Смена семьи», как в очереди `list`."""
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
         old = scene.suggestions[scene.c_none]
         decided_at = dt.datetime(2026, 9, 1, 12, 0, tzinfo=dt.UTC)
         _unpublish(db_session, old)
@@ -1827,6 +1928,7 @@ class TestChangeQueue:
     ):
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _deploy_scene(db_session, factories)
+        _decide_like_the_rule(db_session, scene, scene.c_pending, scene.c_auto)
         assert _change_context_ids(admin_client) == {scene.c_none}
 
         _make_stale(db_session, scene)
@@ -1896,16 +1998,32 @@ class TestChangeQueue:
 
         assert _change_context_ids(admin_client) == {context_id}
 
-    def test_auto_binding_without_a_pending_is_left_to_the_rule(
+    def test_auto_binding_without_a_pending_is_left_to_the_rule_once_it_decided(
         self, admin_client, db_session, factories, monkeypatch
     ):
         monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
         scene = _two_families(db_session, factories, titles=("Пол 1",))
         context_id = scene.context_ids[0]
         _bind_source(db_session, scene, context_id, scene.family, "auto_suggestion")
-        _publish(db_session, context_id, family_id=scene.family_b.id)
+        _publish(
+            db_session, context_id, family_id=scene.family_b.id, decision="auto_accepted",
+        )
 
         assert _change_context_ids(admin_client) == set()
+
+    def test_auto_binding_whose_auto_accept_did_not_happen_is_in_the_queue(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        """Тот же вход без решения (транзакция правила не состоялась): высокая
+        уверенность другой семьи не прячет предложение от человека."""
+        monkeypatch.setattr(app_settings, "SEMANTIC_AUTO_ACCEPT_THRESHOLD", THRESHOLD)
+        scene = _two_families(db_session, factories, titles=("Пол 1",))
+        context_id = scene.context_ids[0]
+        _bind_source(db_session, scene, context_id, scene.family, "auto_suggestion")
+        suggestion = _publish(db_session, context_id, family_id=scene.family_b.id)
+        assert (suggestion.confidence >= THRESHOLD, suggestion.decision) == (True, None)
+
+        assert _change_context_ids(admin_client) == {context_id}
 
     @pytest.mark.parametrize("break_family", ["archived", "other_unit"])
     def test_suggested_family_that_does_not_fit_is_not_shown(

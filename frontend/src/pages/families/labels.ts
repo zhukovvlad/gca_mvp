@@ -138,6 +138,11 @@ export const VARIANT_STATUS_LABEL: Record<FamilyVariantStatus, string> = {
 /** Значение параметра, которого у варианта нет (значение «не уточнено»). */
 export const VARIANT_VALUE_UNSPECIFIED = "не уточнено";
 
+/** Пометка блока схемы, пока идут задания значений: счётчики таблицы вариантов ещё меняются. */
+export function valuesRecountLabel(live: number): string {
+  return `значения пересчитываются: ${live}`;
+}
+
 const SCHEMA_REFUSAL_FALLBACK = "Не удалось выполнить действие. Обновите экран и повторите.";
 
 /**

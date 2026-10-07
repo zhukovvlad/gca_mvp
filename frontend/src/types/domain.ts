@@ -2772,6 +2772,8 @@ export interface FamilySchema {
   version: number | null;
   ready_to_build: boolean;
   building: boolean;
+  /** Заданий значений в `pending`/`running` по текущей версии: пока не ноль, счётчики вариантов меняются. */
+  values_jobs_live: number;
   parameters: FamilySchemaParameter[];
 }
 

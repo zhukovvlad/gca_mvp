@@ -76,13 +76,16 @@ class SchemaOut(TypedDict):
     """Текущая (замороженная) версия схемы семьи. `status`/`version` — у неё;
     `None` — текущей версии нет. `building` — идёт пересборка (версия
     `building`) и показанная версия остаётся прежней. `ready_to_build` — схему
-    можно строить сейчас (перезапрос единицы окончен)."""
+    можно строить сейчас (перезапрос единицы окончен). `values_jobs_live` — число
+    заданий значений в `pending`/`running` по текущей версии схемы семьи: пока оно
+    не ноль, количества контекстов в вариантах ещё меняются."""
 
     family_id: int
     status: str | None
     version: int | None
     ready_to_build: bool
     building: bool
+    values_jobs_live: int
     parameters: list[ParameterOut]
 
 
@@ -160,8 +163,21 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
         version=frozen.version if frozen is not None else None,
         ready_to_build=schema_ready_to_build(db, family_id),
         building=building,
+        values_jobs_live=_values_jobs_live(db, frozen.id) if frozen is not None else 0,
         parameters=parameters,
     )
+
+
+def _values_jobs_live(db: Session, schema_id: int) -> int:
+    return db.execute(
+        sa.select(sa.func.count(SemanticJob.id)).where(
+            SemanticJob.kind == SemanticJobKind.context_values.value,
+            SemanticJob.schema_id == schema_id,
+            SemanticJob.status.in_(
+                (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
+            ),
+        )
+    ).scalar_one()
 
 
 def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:

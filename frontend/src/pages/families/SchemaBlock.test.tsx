@@ -151,6 +151,130 @@ describe("SchemaBlock: чтение", () => {
     }
   });
 
+  it("после фоновой пересборки таблица вариантов показывает новые количества контекстов, а не прежние", async () => {
+    handlerState.familySchemas[SCHEMA_FAMILY_ID].building = true;
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      renderBlock();
+      await shown();
+      const before = await screen.findByRole("table", { name: "Варианты семьи" }, LATER);
+      expect(within(before).getByText("3")).toBeInTheDocument();
+
+      // Исполнитель закончил: версия 3, у контекстов другие варианты и счётчики.
+      handlerState.familySchemas[SCHEMA_FAMILY_ID] = {
+        ...handlerState.familySchemas[SCHEMA_FAMILY_ID],
+        building: false,
+        version: 3,
+      };
+      handlerState.familyVariants[SCHEMA_FAMILY_ID] = [
+        { id: 4, values: ["профнастил", "0,5 мм"], contexts: 5, status: "active" },
+        { id: 2, values: ["металлочерепица", null], contexts: 1, status: "active" },
+      ];
+      await vi.advanceTimersByTimeAsync(5_500);
+
+      expect(await screen.findByText("Версия схемы 3", {}, LATER)).toBeInTheDocument();
+      const table = screen.getByRole("table", { name: "Варианты семьи" });
+      await waitFor(() => expect(within(table).getByText("5")).toBeInTheDocument(), LATER);
+      expect(within(table).queryByText("3")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("пока идут задания значений, блок опрашивает и схему, и варианты и показывает пометку со счётчиком", async () => {
+    handlerState.familySchemas[SCHEMA_FAMILY_ID].values_jobs_live = 2;
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      renderBlock();
+      await shown();
+      expect(screen.getByText("значения пересчитываются: 2")).toBeInTheDocument();
+      const before = await screen.findByRole("table", { name: "Варианты семьи" }, LATER);
+      expect(within(before).getByText("3")).toBeInTheDocument();
+
+      handlerState.familySchemas[SCHEMA_FAMILY_ID] = {
+        ...handlerState.familySchemas[SCHEMA_FAMILY_ID],
+        values_jobs_live: 1,
+      };
+      handlerState.familyVariants[SCHEMA_FAMILY_ID][0].contexts = 4;
+      await vi.advanceTimersByTimeAsync(5_500);
+
+      expect(await screen.findByText("значения пересчитываются: 1", {}, LATER)).toBeInTheDocument();
+      await waitFor(
+        () => expect(within(screen.getByRole("table", { name: "Варианты семьи" })).getByText("4")).toBeInTheDocument(),
+        LATER
+      );
+
+      handlerState.familySchemas[SCHEMA_FAMILY_ID] = {
+        ...handlerState.familySchemas[SCHEMA_FAMILY_ID],
+        values_jobs_live: 0,
+      };
+      handlerState.familyVariants[SCHEMA_FAMILY_ID][0].contexts = 6;
+      await vi.advanceTimersByTimeAsync(5_500);
+
+      await waitFor(() => expect(screen.queryByText(/значения пересчитываются/)).not.toBeInTheDocument(), LATER);
+      await waitFor(
+        () => expect(within(screen.getByRole("table", { name: "Варианты семьи" })).getByText("6")).toBeInTheDocument(),
+        LATER
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("когда счётчик заданий значений падает до нуля, варианты перечитываются ещё раз", async () => {
+    const queryClient = createTestQueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const variantsKey = JSON.stringify(qk.workFamilies.variants(SCHEMA_FAMILY_ID));
+    const variantsInvalidations = () =>
+      invalidate.mock.calls.filter(([filters]) => JSON.stringify(filters?.queryKey) === variantsKey).length;
+    handlerState.familySchemas[SCHEMA_FAMILY_ID].values_jobs_live = 2;
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      renderWithProviders(<SchemaBlock family={family(SCHEMA_FAMILY_ID)} />, { queryClient });
+      await shown();
+      expect(variantsInvalidations()).toBe(0);
+
+      handlerState.familySchemas[SCHEMA_FAMILY_ID] = {
+        ...handlerState.familySchemas[SCHEMA_FAMILY_ID],
+        values_jobs_live: 0,
+      };
+      await vi.advanceTimersByTimeAsync(5_500);
+
+      await waitFor(() => expect(variantsInvalidations()).toBe(1), LATER);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("схема в покое: ни схема, ни варианты не опрашиваются, пометки пересчёта нет", async () => {
+    let schemaReads = 0;
+    let variantsReads = 0;
+    server.use(
+      http.get("/api/v1/semantic/families/:id/schema", () => {
+        schemaReads += 1;
+        return HttpResponse.json(handlerState.familySchemas[SCHEMA_FAMILY_ID]);
+      }),
+      http.get("/api/v1/semantic/families/:id/variants", () => {
+        variantsReads += 1;
+        return HttpResponse.json(handlerState.familyVariants[SCHEMA_FAMILY_ID]);
+      })
+    );
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      renderBlock();
+      await shown();
+      await screen.findByRole("table", { name: "Варианты семьи" }, LATER);
+      expect([schemaReads, variantsReads]).toEqual([1, 1]);
+
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect([schemaReads, variantsReads]).toEqual([1, 1]);
+      expect(screen.queryByText(/значения пересчитываются/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("при пересборке «Править схему…» отключена с пояснением (сервер отказал бы), «Слить значения…» доступна", async () => {
     handlerState.familySchemas[SCHEMA_FAMILY_ID].building = true;
     renderBlock();

@@ -40,6 +40,7 @@ from services.family_change import (
     cancel_pending_family,
     request_family_change,
 )
+from services.semantic_client import PermanentModelError
 from services.semantic_decisions import (
     confirm_suggestions,
     confirm_unit_reask,
@@ -63,6 +64,7 @@ from services.work_variants import apply_values
 from tests.integration.test_semantic_queue_decisions import (
     _active_family,
     _fresh,
+    _make_inapplicable,
     _published,
     _rendered,
     _scene,
@@ -1578,6 +1580,138 @@ class TestRulesRunAfterTheResultIsRecorded:
         process_one(committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock)
 
         assert calls == []
+
+
+def _schema_jobs(db, family_id):
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(SemanticJob).where(
+                SemanticJob.kind == "family_schema", SemanticJob.family_id == family_id
+            )
+        ).scalars()
+    )
+
+
+def _drop_schemas(db, family_id):
+    """Семья сцены очереди заведена уже со схемой; для проверки сверки схем
+    её убирают: активная семья без текущей версии ждёт конца перезапроса."""
+    db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    db.commit()
+
+
+class TestSchemaIsReconciledWhenTheUnitReaskEnds:
+    """Схема семьи строится, когда в её единице нет заданий предложений в
+    `pending`/`running` (спека §2.6, §2.7). Последнее задание единицы может
+    кончиться так, что правила публикации ничего не меняют, — сверка схем
+    обязана пройти и тогда."""
+
+    @pytest.mark.parametrize(
+        "case", ["confirm_current_family", "low_confidence_rule_none", "permanent_error"]
+    )
+    def test_the_last_suggestion_job_of_the_unit_lets_the_schema_be_built(
+        self, committing_session_factory, committing_db, committing_factories, case
+    ):
+        scene = _committed_scene(committing_db, committing_factories)
+        _drop_schemas(committing_db, scene.family.id)
+        if case == "confirm_current_family":
+            _bind_source(committing_db, scene, scene.context_ids[0], scene.family)
+            committing_db.commit()
+        if case == "permanent_error":
+            client = _FakeClient(PermanentModelError("HTTP 400", error_class="http_400"))
+        else:
+            confidence = "0.9" if case == "confirm_current_family" else "0.1"
+            client = _FakeClient(_response(_model_answer(scene.family.id, confidence)))
+        assert _schema_jobs(committing_db, scene.family.id) == []
+
+        process_one(committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock)
+
+        (job,) = _schema_jobs(committing_db, scene.family.id)
+        assert job.status == "pending"
+        assert committing_db.get(SemanticJob, scene.jobs[0].id).status in ("done", "error")
+
+    def test_the_last_suggestion_job_cancelled_during_the_claim_lets_the_schema_be_built(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        scene = _committed_scene(committing_db, committing_factories)
+        _drop_schemas(committing_db, scene.family.id)
+        # Новая семья единицы меняет кандидатов: отпечаток задания устарел, и
+        # захват отменяет его, ничего не вызывая у модели.
+        _active_family(committing_db, title="Новая семья", unit_name="M2", actor_id=scene.user.id)
+        committing_db.commit()
+        client = _FakeClient()
+
+        assert process_one(
+            committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock
+        ) is False
+
+        assert client.calls == []
+        assert committing_db.get(SemanticJob, scene.jobs[0].id).status == "cancelled"
+        (job,) = _schema_jobs(committing_db, scene.family.id)
+        assert job.status == "pending"
+
+    def test_a_job_cancelled_during_the_claim_beside_a_live_one_keeps_the_schema_waiting(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        scene = _committed_scene(
+            committing_db, committing_factories, titles=("Устройство пола", "Стяжка пола")
+        )
+        _drop_schemas(committing_db, scene.family.id)
+        # Первый контекст перестал быть применимым — захват отменяет его задание;
+        # второе задание ждёт своего часа и остаётся живым: схему строить рано.
+        _make_inapplicable(committing_db, scene.context_ids[0])
+        committing_db.execute(
+            sa.update(SemanticJob)
+            .where(SemanticJob.id == scene.jobs[1].id)
+            .values(next_attempt_at=NOW + dt.timedelta(hours=1))
+        )
+        committing_db.commit()
+        client = _FakeClient()
+
+        assert process_one(
+            committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock
+        ) is False
+
+        assert committing_db.get(SemanticJob, scene.jobs[0].id).status == "cancelled"
+        assert committing_db.get(SemanticJob, scene.jobs[1].id).status == "pending"
+        assert _schema_jobs(committing_db, scene.family.id) == []
+
+    @pytest.mark.parametrize("failing", ["_unit_of_job", "reconcile_family_schemas"])
+    def test_a_failure_of_the_schema_step_does_not_escape_and_keeps_the_result(
+        self, committing_session_factory, committing_db, committing_factories, monkeypatch,
+        failing,
+    ):
+        scene = _committed_scene(committing_db, committing_factories)
+        client = _FakeClient(_response(_model_answer(scene.family.id, "0.1")))
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("schema step failed")
+
+        monkeypatch.setattr(worker_module, failing, _boom)
+
+        assert process_one(
+            committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock
+        ) is True
+
+        committing_db.expire_all()
+        assert committing_db.get(SemanticJob, scene.jobs[0].id).status == "done"
+        (suggestion,) = _suggestions(committing_db, scene.context_ids[0])
+        assert suggestion.is_published is True
+
+    def test_a_unit_with_another_open_suggestion_job_keeps_the_schema_waiting(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        scene = _committed_scene(
+            committing_db, committing_factories, titles=("Устройство пола", "Стяжка пола")
+        )
+        _drop_schemas(committing_db, scene.family.id)
+        client = _FakeClient(_response(_model_answer(scene.family.id, "0.1")))
+
+        process_one(committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock)
+
+        statuses = sorted(committing_db.get(SemanticJob, job.id).status for job in scene.jobs)
+        assert statuses == ["done", "pending"]
+        assert _schema_jobs(committing_db, scene.family.id) == []
 
 
 # ---------------------------------------------------------------------------

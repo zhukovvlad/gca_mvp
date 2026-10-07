@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import type { AxiosError } from "axios";
 
@@ -39,6 +40,7 @@ import type {
   ContractInput,
   ContractorInput,
   Decimal,
+  FamilySchema,
   ManualKind,
   MoveMembersInput,
   CreateFamilyFromSuggestionInput,
@@ -1906,19 +1908,50 @@ export function useReaskConfirm() {
 /** Пересборка идёт заданием очереди: пока она строится, схема перечитывается сама. */
 const SCHEMA_BUILD_POLL_MS = 5_000;
 
+/**
+ * Схема перестраивается или пересчитываются значения контекстов: версия и счётчики вариантов
+ * ещё меняются на сервере, и опрос нужен и схеме, и вариантам.
+ */
+function schemaIsBusy(schema: FamilySchema | undefined): boolean {
+  return schema !== undefined && (schema.building || schema.values_jobs_live > 0);
+}
+
 export function useFamilySchema(familyId: number) {
-  return useQuery({
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: qk.workFamilies.schema(familyId),
     queryFn: () => semanticApi.getFamilySchema(familyId),
-    refetchInterval: (query) => (query.state.data?.building ? SCHEMA_BUILD_POLL_MS : false),
+    refetchInterval: (q) => (schemaIsBusy(q.state.data) ? SCHEMA_BUILD_POLL_MS : false),
     refetchIntervalInBackground: false,
   });
+
+  // Работа закончилась: варианты перечитываются ещё раз, чтобы не остаться на снимке,
+  // снятом до последнего задания значений.
+  const busy = schemaIsBusy(query.data);
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (busy) {
+      wasBusy.current = true;
+    } else if (wasBusy.current) {
+      wasBusy.current = false;
+      qc.invalidateQueries({ queryKey: qk.workFamilies.variants(familyId) });
+    }
+  }, [busy, familyId, qc]);
+
+  return query;
 }
 
 export function useFamilyVariants(familyId: number) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: qk.workFamilies.variants(familyId),
     queryFn: () => semanticApi.familyVariants(familyId),
+    // Пока схема занята, варианты опрашиваются тем же шагом, что и она.
+    refetchInterval: () =>
+      schemaIsBusy(qc.getQueryData<FamilySchema>(qk.workFamilies.schema(familyId)))
+        ? SCHEMA_BUILD_POLL_MS
+        : false,
+    refetchIntervalInBackground: false,
   });
 }
 

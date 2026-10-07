@@ -9,7 +9,7 @@ import type { FamilySchema, FamilySchemaParameter, PreviewTarget, WorkFamily } f
 import { MergeValuesDialog } from "./MergeValuesDialog";
 import { PreviewDialog } from "./PreviewDialog";
 import { SchemaEditDialog } from "./SchemaEditDialog";
-import { SCHEMA_VALUE_ORIGIN_LABEL } from "./labels";
+import { SCHEMA_VALUE_ORIGIN_LABEL, valuesRecountLabel } from "./labels";
 import { VariantsTable } from "./VariantsTable";
 
 const MARK_TINT = "border-warning-border bg-warning-soft text-warning-text";
@@ -90,6 +90,11 @@ export function SchemaBlock({ family }: { family: WorkFamily }) {
             {schema.building && (
               <Badge variant="outline" className={MARK_TINT}>
                 схема строится
+              </Badge>
+            )}
+            {schema.values_jobs_live > 0 && (
+              <Badge variant="outline" className={MARK_TINT}>
+                {valuesRecountLabel(schema.values_jobs_live)}
               </Badge>
             )}
             {!schema.ready_to_build && (
