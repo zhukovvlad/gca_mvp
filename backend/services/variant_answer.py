@@ -58,7 +58,8 @@ SCHEMA_RESPONSE_FORMAT: Final = {
 
 #: `{"values": [{"ordinal", "kind", "value", "source"}]}` — тегированный
 #: объект: `kind` ∈ `value|new|conflict|none`; `value` — строка или `null`;
-#: `source` — `name`, `path` или `null`.
+#: `source` — `name`, `path` или `null` (через `anyOf`: строгий режим провайдера
+#: отвергает `enum` рядом с `type`-списком).
 VALUES_RESPONSE_FORMAT: Final = {
     "type": "json_schema",
     "json_schema": {
@@ -78,7 +79,12 @@ VALUES_RESPONSE_FORMAT: Final = {
                                 "enum": ["value", "new", "conflict", "none"],
                             },
                             "value": {"type": ["string", "null"]},
-                            "source": {"type": ["string", "null"], "enum": ["name", "path", None]},
+                            "source": {
+                                "anyOf": [
+                                    {"type": "string", "enum": ["name", "path"]},
+                                    {"type": "null"},
+                                ],
+                            },
                         },
                         "required": ["ordinal", "kind", "value", "source"],
                         "additionalProperties": False,

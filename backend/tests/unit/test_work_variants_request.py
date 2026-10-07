@@ -176,7 +176,12 @@ def test_values_response_format_is_the_documented_literal():
                                     "enum": ["value", "new", "conflict", "none"],
                                 },
                                 "value": {"type": ["string", "null"]},
-                                "source": {"type": ["string", "null"], "enum": ["name", "path", None]},
+                                "source": {
+                                    "anyOf": [
+                                        {"type": "string", "enum": ["name", "path"]},
+                                        {"type": "null"},
+                                    ],
+                                },
                             },
                             "required": ["ordinal", "kind", "value", "source"],
                             "additionalProperties": False,

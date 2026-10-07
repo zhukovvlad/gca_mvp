@@ -91,6 +91,7 @@ VALUES_TARIFFS = (Decimal("5"), Decimal("6"), Decimal("0.5"), Decimal("30"))
 
 S = app_settings.model_copy(
     update={
+        "SEMANTIC_AUTO_ACCEPT_THRESHOLD": None,
         "SEMANTIC_DAILY_BUDGET_USD": Decimal("30"),
         "SEMANTIC_PRICE_INPUT_PER_M": SUGGESTION_TARIFFS[0],
         "SEMANTIC_PRICE_CACHE_WRITE_PER_M": SUGGESTION_TARIFFS[1],

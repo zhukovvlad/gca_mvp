@@ -67,6 +67,7 @@ _JOIN_TIMEOUT = 30.0
 #: литералами, а не тем, что лежит в окружении.
 S = app_settings.model_copy(
     update={
+        "SEMANTIC_AUTO_ACCEPT_THRESHOLD": None,
         "SEMANTIC_MAX_TOKENS": 600,
         "SEMANTIC_MAX_ATTEMPTS": 3,
         "SEMANTIC_CALL_TIMEOUT_S": 120,

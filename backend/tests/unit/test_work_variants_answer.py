@@ -42,7 +42,9 @@ def _expect(code: str, fn, *args) -> AnswerSchemaError:
 def _conforms(node: dict, value: object) -> bool:
     """Минимальная проверка по подмножеству JSON Schema, которое используют
     константы формата: type, enum, properties, required, additionalProperties,
-    items."""
+    items, anyOf."""
+    if "anyOf" in node:
+        return any(_conforms(branch, value) for branch in node["anyOf"])
     kind = node.get("type")
     kinds = kind if isinstance(kind, list) else [kind]
 
@@ -79,10 +81,51 @@ def _schema_of(fmt: dict) -> dict:
     return fmt["json_schema"]["schema"]
 
 
+def _schema_nodes(node: object):
+    """Все словари-узлы схемы, включая вложенные в properties, items, anyOf."""
+    if isinstance(node, dict):
+        yield node
+        for child in node.values():
+            yield from _schema_nodes(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _schema_nodes(child)
+
+
 class TestResponseFormats:
     def test_both_formats_are_strict(self):
         assert SCHEMA_RESPONSE_FORMAT["json_schema"]["strict"] is True
         assert VALUES_RESPONSE_FORMAT["json_schema"]["strict"] is True
+
+    @pytest.mark.parametrize("fmt", [SCHEMA_RESPONSE_FORMAT, VALUES_RESPONSE_FORMAT])
+    def test_no_enum_next_to_a_list_valued_type(self, fmt):
+        """Провайдер в строгом режиме отвергает запрос с HTTP 400: `output_config.
+        format.schema: Invalid schema: Enum value 'name' does not match declared
+        type '['string', 'null']'`. Узел схемы с `enum` обязан иметь одиночный
+        `type` (строкой), и каждое значение `enum` обязано этому типу соответствовать
+        (`None` в перечислении строк — та же ошибка провайдера); допускающее `null`
+        перечисление пишется через `anyOf`."""
+
+        def offends(node: dict) -> bool:
+            kind = node.get("type")
+            if not isinstance(kind, str):
+                return True
+            return not all(_conforms({"type": kind}, value) for value in node["enum"])
+
+        offenders = [
+            node for node in _schema_nodes(_schema_of(fmt)) if "enum" in node and offends(node)
+        ]
+        assert offenders == []
+
+    def test_nullable_enum_is_expressed_through_any_of(self):
+        # Обратная сторона правила: `source` по-прежнему допускает `null`, но
+        # через `anyOf`, а не списком типов рядом с `enum`.
+        source = _schema_of(VALUES_RESPONSE_FORMAT)["properties"]["values"]["items"][
+            "properties"
+        ]["source"]
+        assert source == {
+            "anyOf": [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}]
+        }
 
     def test_checker_rejects_extra_key_and_wrong_type(self):
         # Предусловие: сам проверяльщик способен отвергнуть нарушение формата.
