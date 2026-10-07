@@ -28,6 +28,7 @@ from config import settings as app_settings
 from models import (
     CatalogContext,
     ContextMember,
+    FamilyParameterSchema,
     FamilySuggestion,
     SemanticJob,
     SemanticJobAttempt,
@@ -93,7 +94,17 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
     fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
-    return activate_family(db, family_id=fam.id, actor_id=actor_id)
+    family = activate_family(db, family_id=fam.id, actor_id=actor_id)
+    # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
+    # активная семья без схемы получала бы ещё и задание схемы.
+    db.add(
+        FamilyParameterSchema(
+            family_id=family.id, version=1, status="frozen", origin="model",
+            frozen_at=dt.datetime.now(dt.UTC),
+        )
+    )
+    db.flush()
+    return family
 
 
 def _simple_context(db, factories, proposal, *, unit_id, title) -> int:
@@ -1291,6 +1302,11 @@ class TestStatus:
             "held_batches": [],
             "stale_units": [],
             "config_stale": None,
+            "catalog_to_review": 0,
+            "catalog_position": 0,
+            "contexts_with_variant": 0,
+            "contexts_pending": 0,
+            "families_without_schema": 0,
         }
 
     def test_exponent_budget_is_served_in_fixed_notation(self, admin_client, monkeypatch):
@@ -1402,17 +1418,26 @@ class TestStatus:
 
         assert (payload["stale_units"], payload["config_stale"]) == ([], None)
 
-    def test_not_applicable_context_without_job_is_not_stale(
+    def test_bound_context_with_its_own_current_jobs_is_not_stale(
         self, admin_client, db_session, factories
     ):
-        """Контекст с назначенной семьёй неприменим: заданий у него нет и не
-        будет, и пометки «список семей изменён» он не даёт."""
+        """Контекст с назначенной семьёй применим (спека вариантов §2.5): у него
+        есть собственные задания по текущему отпечатку, и пометки «список семей
+        изменён» он не даёт."""
         scene = _scene(db_session, factories, admin_client.user)
         assign_family(
             db_session, context_id=scene.context_ids[0], family_id=scene.family.id,
             actor_id=admin_client.user.id,
         )
-        assert db_session.scalar(sa.select(sa.func.count()).select_from(SemanticJob)) == 0
+        # Задание предложения и задание значений по схеме семьи. Состав
+        # сверяется целиком: ровно эти два задания этого контекста.
+        assert sorted(
+            (job.kind, job.context_id)
+            for job in db_session.execute(sa.select(SemanticJob)).scalars().all()
+        ) == [
+            ("context_values", scene.context_ids[0]),
+            ("family_suggestion", scene.context_ids[0]),
+        ]
 
         payload = admin_client.get(f"{BASE}/status").json()
 

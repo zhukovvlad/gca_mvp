@@ -7,6 +7,11 @@ HTTP-слой над готовым `services/review.py` — сервис фаз
 **Права: `member` тоже вправе** — §3 относит ручной матчинг к его правам прямо.
 Поэтому `require_admin` здесь нет, только аутентификация (навешена в main.py).
 
+**Смена семьи при захвате.** `FamilyLockMismatch` (семья контекста сменилась
+между чтением и блокировкой и после повтора) всплывает из слияния и из
+HEADER/TRASH: состояние изменилось, повторить операцию — `409`, а не `500`.
+Пакет `batch-kind` при таком отказе откатывается целиком.
+
 **Трансляция `ReviewError`.** Сервис не различает «строки нет» и «строка уже
 разобрана» — обе ситуации у него один `ReviewError`. Роутер поэтому проверяет
 существование сам и отдаёт 404 на заведомо отсутствующую строку, а `ReviewError`
@@ -40,6 +45,7 @@ from models import CatalogPosition
 #: мимо, и «слияние проиграло гонку» перестало бы воспроизводиться. Сама
 #: функция — `merge_into_position_outcome` (с полем `warnings`); имя на
 #: вызывающей стороне не переименовано, только импорт.
+from services.family_change import FamilyLockMismatch
 from services.review import ReviewError, set_kind
 from services.review import merge_into_position_outcome as merge_into_position
 from services.semantic_reconcile import deferred_reconcile
@@ -172,7 +178,7 @@ def merge(
             db, to_review_id=to_review_id, target_id=body.target_id
         )
         db.commit()
-    except ReviewError as exc:
+    except (ReviewError, FamilyLockMismatch) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except Exception:
@@ -209,7 +215,7 @@ def set_review_kind(
     try:
         set_kind(db, to_review_id=to_review_id, kind=body.kind)
         db.commit()
-    except ReviewError as exc:
+    except (ReviewError, FamilyLockMismatch) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except Exception:
@@ -263,6 +269,9 @@ def batch_set_kind(
                     continue
                 applied.append(catalog_id)
         db.commit()
+    except FamilyLockMismatch as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except Exception:
         db.rollback()
         raise

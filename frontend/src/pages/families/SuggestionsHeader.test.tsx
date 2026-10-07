@@ -22,6 +22,11 @@ function status(overrides: Partial<QueueStatus> = {}): QueueStatus {
     held_batches: [],
     stale_units: [],
     config_stale: null,
+    catalog_to_review: 0,
+    catalog_position: 0,
+    contexts_with_variant: 0,
+    contexts_pending: 0,
+    families_without_schema: 0,
     ...overrides,
   };
 }
@@ -230,5 +235,58 @@ describe("SuggestionsHeader — плашки, каждая при своём у�
       />
     );
     expect(shownBanners()).toEqual([...BANNER_IDS]);
+  });
+});
+
+describe("SuggestionsHeader — счётчики промоушена", () => {
+  const COUNTERS = {
+    catalog_to_review: 1384,
+    catalog_position: 210,
+    contexts_with_variant: 37,
+    contexts_pending: 5,
+    families_without_schema: 12,
+  };
+
+  it("печатает строки каталога на разборе и признанные работами, контексты с вариантом, ожидания и семьи без схемы", () => {
+    renderWithProviders(<SuggestionsHeader status={status(COUNTERS)} onPreview={vi.fn()} />);
+
+    expect(screen.getByTestId("counter-to-review")).toHaveTextContent(/Строк на разборе.*1\s?384/);
+    expect(screen.getByTestId("counter-position")).toHaveTextContent(/Строк-работ.*210/);
+    expect(screen.getByTestId("counter-with-variant")).toHaveTextContent(/Контекстов с вариантом.*37/);
+    expect(screen.getByTestId("counter-pending")).toHaveTextContent(/Ожидают семьи.*5/);
+    expect(screen.getByTestId("counter-without-schema")).toHaveTextContent(/Семей без схемы.*12/);
+  });
+
+  it("нуль — тоже факт: счётчики с нулём печатаются, а не пропадают", () => {
+    renderWithProviders(
+      <SuggestionsHeader
+        status={status({
+          catalog_to_review: 0,
+          catalog_position: 0,
+          contexts_with_variant: 0,
+          contexts_pending: 0,
+          families_without_schema: 0,
+        })}
+        onPreview={vi.fn()}
+      />
+    );
+
+    for (const id of [
+      "counter-to-review",
+      "counter-position",
+      "counter-with-variant",
+      "counter-pending",
+      "counter-without-schema",
+    ]) {
+      expect(screen.getByTestId(id)).toHaveTextContent(/0$/);
+    }
+  });
+
+  it("имена полей ответа на экран не выходят", () => {
+    renderWithProviders(<SuggestionsHeader status={status(COUNTERS)} onPreview={vi.fn()} />);
+
+    expect(document.body.textContent).not.toMatch(
+      /catalog_to_review|catalog_position|contexts_with_variant|contexts_pending|families_without_schema/
+    );
   });
 });

@@ -20,7 +20,16 @@ import type {
   ContextsParams,
   ConfirmSuggestionsResult,
   CreateFamilyFromSuggestionInput,
+  FamilyChangeResult,
+  FamilySchema,
+  FamilyVariant,
   JobsResponse,
+  MergeValuesInput,
+  MergeValuesResult,
+  PositionKindResult,
+  PositionMarkKind,
+  RebuildSchemaResult,
+  SchemaEditParameter,
   JobsStatus,
   PrivacyMatch,
   QueueStatus,
@@ -404,8 +413,21 @@ export const semanticApi = {
       .post<ContextCardData>(`/v1/semantic/contexts/${contextId}/name-role`, input)
       .then((r) => r.data),
 
-  assignFamily: (contextId: number, input: AssignFamilyInput): Promise<ContextCardData> =>
-    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/family`, input).then((r) => r.data),
+  /** Единая точка смены семьи: исход `assigned` / `pending` / `unchanged` (спека вариантов §2.5, §2.12). */
+  assignFamily: (contextId: number, input: AssignFamilyInput): Promise<FamilyChangeResult> =>
+    api.post<FamilyChangeResult>(`/v1/semantic/contexts/${contextId}/family`, input).then((r) => r.data),
+
+  cancelPendingFamily: (contextId: number): Promise<ContextCardData> =>
+    api.delete<ContextCardData>(`/v1/semantic/contexts/${contextId}/pending-family`).then((r) => r.data),
+
+  markNotWork: (contextId: number): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/not-work`).then((r) => r.data),
+
+  /** Глобальная пометка строки каталога: касается всех её будущих вхождений (спека вариантов §2.11). */
+  setPositionKind: (positionId: number, kind: PositionMarkKind): Promise<PositionKindResult> =>
+    api
+      .post<PositionKindResult>(`/v1/semantic/positions/${positionId}/kind`, { kind })
+      .then((r) => r.data),
 
   splitContext: (contextId: number, input: SplitContextInput): Promise<SplitContextResult> =>
     api.post<SplitContextResult>(`/v1/semantic/contexts/${contextId}/split`, input).then((r) => r.data),
@@ -629,6 +651,37 @@ export const semanticApi = {
   discardBatch: (batchId: number): Promise<{ batch_id: number; status: string }> =>
     api
       .post<{ batch_id: number; status: string }>(`/v1/semantic/batches/${batchId}/discard`)
+      .then((r) => r.data),
+
+  getFamilySchema: (familyId: number): Promise<FamilySchema> =>
+    api.get<FamilySchema>(`/v1/semantic/families/${familyId}/schema`).then((r) => r.data),
+
+  familyVariants: (familyId: number): Promise<FamilyVariant[]> =>
+    api.get<FamilyVariant[]>(`/v1/semantic/families/${familyId}/variants`).then((r) => r.data),
+
+  rebuildSchemaPreview: (familyId: number): Promise<ReaskPreview> =>
+    api
+      .post<ReaskPreview>(`/v1/semantic/families/${familyId}/schema/rebuild/preview`)
+      .then((r) => r.data),
+
+  rebuildSchema: (familyId: number, previewHash: string): Promise<RebuildSchemaResult> =>
+    api
+      .post<RebuildSchemaResult>(`/v1/semantic/families/${familyId}/schema/rebuild`, {
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  updateSchema: (familyId: number, parameters: SchemaEditParameter[]): Promise<FamilySchema> =>
+    api
+      .patch<FamilySchema>(`/v1/semantic/families/${familyId}/schema`, { parameters })
+      .then((r) => r.data),
+
+  cancelSchemaBuild: (familyId: number): Promise<FamilySchema> =>
+    api.post<FamilySchema>(`/v1/semantic/families/${familyId}/schema/cancel`).then((r) => r.data),
+
+  mergeSchemaValues: (familyId: number, input: MergeValuesInput): Promise<MergeValuesResult> =>
+    api
+      .post<MergeValuesResult>(`/v1/semantic/families/${familyId}/schema/values/merge`, input)
       .then((r) => r.data),
 
   resumeWorker: (): Promise<{ claim_paused: boolean }> =>

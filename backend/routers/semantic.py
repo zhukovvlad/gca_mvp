@@ -30,6 +30,14 @@ HTTP-слой поверх готовых сервисов задач 4, 6-10 (`
 (`DomainError.code=None`), тем же путём, каким `raise_domain_error` уже
 обрабатывает отказы без кода (`code is None` → `detail` строкой).
 
+**Варианты и промоушен** (спека `2026-10-02-catalog-variants-design.md` §2.12):
+схема семьи и её жизнь, варианты, смена семьи через `request_family_change`,
+«не работа», глобальная пометка строки, массовое автопринятие, очередь «Смена
+семьи». Отказы новых сервисов (`WorkFamilyError` с кодами схемы и пометки,
+`FamilyLockMismatch`, `AutoAcceptError`) переводятся теми же `_STATUS_*`:
+состояние мешает — `409`, неверный ввод — `422`, объекта нет — `404`; ни один
+код отказа не уходит `500`.
+
 **Транзакция.** `_mutating(db)` — контекстный менеджер одной транзакции на
 маршрут: успешный выход коммитит, любое из трёх исключений сервисов
 откатывает и транслирует в `HTTPException`, любое другое исключение
@@ -41,23 +49,35 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import datetime as dt
 from typing import Literal
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 import crud.semantic as crud_semantic
 import crud.semantic_queue as crud_semantic_queue
+import crud.work_variants as crud_work_variants
 from auth import require_admin
 from crud.common import DomainError
 from database import get_db
-from models import NameRole, SemanticKind, SemanticState, User
+from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
 from routers.domain_errors import raise_domain_error
-from services import context_operations, semantic_decisions, work_families
+from services import (
+    context_operations,
+    family_change,
+    semantic_decisions,
+    work_families,
+    work_variants,
+)
+from services import review as review_service
 from services.context_operations import ContextOperationError
 from services.context_routing import RoutingError
-from services.semantic_decisions import DecisionConflict
+from services.family_change import AutoAcceptError, FamilyLockMismatch
+from services.semantic_decisions import CODE_PREVIEW_CHANGED, DecisionConflict
+from services.semantic_reconcile import NO_CAP
 from services.work_families import WorkFamilyError
 
 router = APIRouter(prefix="/api/v1/semantic", tags=["semantic"])
@@ -80,6 +100,9 @@ _STATUS_NOT_FOUND = frozenset(
         work_families.REFUSE_FAMILY_NOT_FOUND,
         work_families.REFUSE_CONTEXT_NOT_FOUND,
         context_operations.REFUSE_CONTEXT_NOT_FOUND,
+        work_variants.REFUSE_PARAMETER_NOT_FOUND,
+        work_variants.REFUSE_VALUE_NOT_FOUND,
+        review_service.REFUSE_POSITION_NOT_FOUND,
     }
 )
 
@@ -97,6 +120,13 @@ _STATUS_CONFLICT = frozenset(
         work_families.REFUSE_MERGE_UNIT_MISMATCH,
         work_families.REFUSE_MERGE_INACTIVE,
         work_families.REFUSE_CONTEXT_NOT_APPLICABLE,
+        work_families.REFUSE_MERGE_SCHEMA_BUILDING,
+        work_variants.REFUSE_SCHEMA_NO_BUILDING,
+        work_variants.REFUSE_SCHEMA_BUILDING,
+        work_variants.REFUSE_SCHEMA_NO_CURRENT,
+        work_variants.REFUSE_MERGE_SOURCE_MERGED,
+        review_service.REFUSE_POSITION_NOT_POSITION,
+        review_service.REFUSE_POSITION_HAS_STANDARDS,
         context_operations.REFUSE_CONTEXT_NOT_EMPTY,
         context_operations.REFUSE_INCOMING_RULES,
         context_operations.REFUSE_DEFAULT_WITHOUT_SUCCESSOR,
@@ -117,6 +147,12 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_families.REFUSE_INVALID_NAME_ROLE,
         work_families.REFUSE_MERGE_SAME_FAMILY,
         work_families.REFUSE_BLANK_TITLE,
+        work_variants.REFUSE_SCHEMA_PARAMETER_RENAMED,
+        work_variants.REFUSE_SCHEMA_VALUE_REMOVED,
+        work_variants.REFUSE_SCHEMA_BLANK,
+        work_variants.REFUSE_SCHEMA_BAD_ORDINALS,
+        work_variants.REFUSE_MERGE_OTHER_PARAMETER,
+        work_variants.REFUSE_MERGE_CYCLE,
         context_operations.REFUSE_DIFFERENT_BUCKET,
         context_operations.REFUSE_INVALID_MEMBERSHIP,
         context_operations.REFUSE_INVALID_NEW_DEFAULT,
@@ -157,6 +193,9 @@ def _json_safe(value: object) -> object:
         return [_json_safe(item) for item in value]
     if isinstance(value, dict):
         return {key: _json_safe(item) for key, item in value.items()}
+    # Перечень нормативов в отказе глобальной пометки несёт даты периодов.
+    if isinstance(value, dt.date):
+        return value.isoformat()
     return value
 
 
@@ -171,6 +210,11 @@ def _domain_error(exc: WorkFamilyError | ContextOperationError) -> DomainError:
         key: _json_safe(value) for key, value in vars(exc).items() if key != "code"
     }
     return DomainError(_status_for_code(exc.code), str(exc), code=exc.code, context=context)
+
+
+#: Код `409`: семья контекста сменилась между чтением и блокировкой и после
+#: повтора (`FamilyLockMismatch`) — состояние изменилось, повторить операцию.
+CODE_FAMILY_LOCK_MISMATCH = "family_lock_mismatch"
 
 
 @contextlib.contextmanager
@@ -199,6 +243,19 @@ def _mutating(db: Session):
         else:
             db.rollback()
         raise
+    except FamilyLockMismatch as exc:
+        db.rollback()
+        raise_domain_error(
+            DomainError(
+                status.HTTP_409_CONFLICT, str(exc), code=CODE_FAMILY_LOCK_MISMATCH,
+                context={"context_ids": list(exc.context_ids)},
+            )
+        )
+    except AutoAcceptError as exc:
+        # Порог не задан и «состояние изменилось после показа» — состояние
+        # сервера, а не ввод: оба `409`.
+        db.rollback()
+        raise_domain_error(DomainError(status.HTTP_409_CONFLICT, str(exc), code=exc.code))
     except Exception:
         db.rollback()
         raise
@@ -321,6 +378,32 @@ class SetNameRoleRequest(BaseModel):
 
 class AssignFamilyRequest(BaseModel):
     family_id: int | None = None
+
+
+class SchemaParameterEdit(BaseModel):
+    ordinal: int
+    name: str
+    values: list[str]
+
+
+class UpdateSchemaRequest(BaseModel):
+    """Ручная правка схемы: параметры по `ordinal` с полными списками значений;
+    правила сравнения с текущей версией — у сервиса (`update_schema`)."""
+
+    parameters: list[SchemaParameterEdit]
+
+
+class MergeValuesRequest(BaseModel):
+    parameter_id: int
+    source_value_id: int
+    target_value_id: int
+
+
+class SetPositionKindRequest(BaseModel):
+    """`kind` проверяет сервис (`invalid_kind`, `422` с кодом): допустимы только
+    `HEADER` и `TRASH`."""
+
+    kind: str
 
 
 class SplitRulePredicate(BaseModel):
@@ -489,6 +572,9 @@ def list_contexts_route(
     has_stale_members: bool | None = Query(default=None),
     has_conflicting_members: bool | None = Query(default=None),
     has_no_members: bool | None = Query(default=None),
+    variant_state: Literal["with", "without"] | None = Query(default=None),
+    pending: bool | None = Query(default=None),
+    split_hint: bool | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     offset: int = Query(default=0, ge=0),
     _admin: User = Depends(require_admin),
@@ -503,6 +589,9 @@ def list_contexts_route(
         has_stale_members=has_stale_members,
         has_conflicting_members=has_conflicting_members,
         has_no_members=has_no_members,
+        variant_state=variant_state,
+        pending=pending,
+        split_hint=split_hint,
     )
     return crud_semantic.list_contexts(db, filters=filters, limit=limit, offset=offset)
 
@@ -634,12 +723,41 @@ def assign_family_route(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # Единая точка смены семьи: контекст без варианта получает семью сразу
+    # (`assigned`), с вариантом — ожидающее назначение (`pending`), та же семья —
+    # `unchanged`; `family_id: null` снимает семью вместе с вариантом и ожиданием.
     with _mutating(db):
-        work_families.assign_family(
-            db, context_id=context_id, family_id=body.family_id, actor_id=admin.id
+        outcome = family_change.request_family_change(
+            db, context_id=context_id, family_id=body.family_id, actor_id=admin.id,
+            source="manual",
         )
-    # Та же дисциплина, что у `confirm_kind_route`: мутация уже закоммичена,
-    # отказ ниже — только о чтении карточки, не о назначении семьи.
+    return {
+        "outcome": outcome.kind,
+        "context_id": outcome.context_id,
+        "family_id": outcome.family_id,
+        "superseded_suggestion_id": outcome.superseded_suggestion_id,
+    }
+
+
+@router.delete("/contexts/{context_id}/pending-family")
+def cancel_pending_family_route(
+    context_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        family_change.cancel_pending_family(db, context_id=context_id, actor_id=admin.id)
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
+
+
+@router.post("/contexts/{context_id}/not-work")
+def mark_not_work_route(
+    context_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        work_variants.mark_context_not_work(db, context_id=context_id, actor_id=admin.id)
     return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
@@ -871,7 +989,7 @@ def _serialize_reconcile(report) -> dict:
 
 @router.get("/suggestions")
 def list_suggestions_route(
-    queue: Literal["list", "new"] = Query(default="list"),
+    queue: Literal["list", "new", "change"] = Query(default="list"),
     unit: str | None = Query(default=None),
     band: Literal["high", "mid", "low"] | None = Query(default=None),
     multi_owner: bool = Query(default=False),
@@ -1123,3 +1241,213 @@ def worker_resume_route(
     with _deciding(db):
         semantic_decisions.resume_worker(db, actor_id=admin.id)
     return {"claim_paused": False}
+
+
+# ---------------------------------------------------------------------------
+#  Схема семьи и варианты
+# ---------------------------------------------------------------------------
+
+def _family_not_found(family_id: int):
+    raise_domain_error(
+        _domain_error(
+            WorkFamilyError(
+                work_families.REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена",
+                family_id=family_id,
+            )
+        )
+    )
+
+
+def _schema_response(db: Session, family_id: int) -> dict:
+    schema = crud_work_variants.schema_out(db, family_id)
+    if schema is None:
+        _family_not_found(family_id)
+    return schema
+
+
+def _lock_family(db: Session, family_id: int) -> None:
+    """Семья `FOR UPDATE` первой: подтверждение пересборки перепроверяет оценку
+    под замком, и состав контекстов семьи не меняется до коммита."""
+    found = db.execute(
+        sa.select(WorkFamily.id).where(WorkFamily.id == family_id).with_for_update()
+    ).scalar_one_or_none()
+    if found is None:
+        raise WorkFamilyError(
+            work_families.REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена",
+            family_id=family_id,
+        )
+
+
+@router.get("/families/{family_id}/schema")
+def get_schema_route(
+    family_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _schema_response(db, family_id)
+
+
+@router.post("/families/{family_id}/schema/rebuild/preview")
+def rebuild_preview_route(
+    family_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    preview = crud_work_variants.rebuild_preview(db, family_id)
+    if preview is None:
+        _family_not_found(family_id)
+    return {
+        "family_id": preview.family_id,
+        "context_count": preview.context_count,
+        "reserve_usd": crud_semantic_queue.money_str(preview.reserve_usd),
+        "expected_cached_usd": crud_semantic_queue.money_str(preview.expected_cached_usd),
+        "preview_hash": preview.preview_hash,
+        "values_included": preview.values_included,
+    }
+
+
+@router.post("/families/{family_id}/schema/rebuild")
+def rebuild_schema_route(
+    family_id: int,
+    body: PreviewHashRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Человек подтвердил стоимость в preview, поэтому задание пересборки не
+    удерживается потолком события (`NO_CAP`); подтверждение перепроверяет
+    оценку под замком семьи — `preview_changed`, если вход изменился."""
+    with _deciding(db):
+        _lock_family(db, family_id)
+        current = crud_work_variants.rebuild_preview(db, family_id)
+        if current is None or current.preview_hash != body.preview_hash:
+            raise DecisionConflict(CODE_PREVIEW_CHANGED)
+        schema = work_variants.rebuild_schema(
+            db, family_id=family_id, actor_id=admin.id, cap=NO_CAP
+        )
+    return {
+        "family_id": family_id,
+        "schema_id": schema.id,
+        "version": schema.version,
+        "status": schema.status,
+    }
+
+
+@router.patch("/families/{family_id}/schema")
+def update_schema_route(
+    family_id: int,
+    body: UpdateSchemaRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        work_variants.update_schema(
+            db,
+            family_id=family_id,
+            parameters=[
+                work_variants.ParameterEdit(
+                    ordinal=parameter.ordinal, name=parameter.name,
+                    values=tuple(parameter.values),
+                )
+                for parameter in body.parameters
+            ],
+            actor_id=admin.id,
+        )
+    return _schema_response(db, family_id)
+
+
+@router.post("/families/{family_id}/schema/cancel")
+def cancel_schema_build_route(
+    family_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        work_variants.cancel_schema_build(db, family_id=family_id, actor_id=admin.id)
+    return _schema_response(db, family_id)
+
+
+@router.post("/families/{family_id}/schema/values/merge")
+def merge_values_route(
+    family_id: int,
+    body: MergeValuesRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Слияние синонимов одного параметра семьи; параметр чужой семьи — `404`."""
+    with _mutating(db):
+        if crud_work_variants.parameter_family_id(db, body.parameter_id) != family_id:
+            raise WorkFamilyError(
+                work_variants.REFUSE_PARAMETER_NOT_FOUND,
+                f"параметр {body.parameter_id} не найден у семьи {family_id}",
+                parameter_id=body.parameter_id,
+            )
+        merged = work_variants.merge_parameter_values(
+            db, parameter_id=body.parameter_id, source_value_id=body.source_value_id,
+            target_value_id=body.target_value_id, actor_id=admin.id,
+        )
+    return {
+        "merged_variants": [
+            {"source_variant_id": source, "target_variant_id": target}
+            for source, target in sorted(merged.items())
+        ]
+    }
+
+
+@router.get("/families/{family_id}/variants")
+def list_variants_route(
+    family_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    variants = crud_work_variants.variants_out(db, family_id)
+    if variants is None:
+        _family_not_found(family_id)
+    return variants
+
+
+# ---------------------------------------------------------------------------
+#  Глобальная пометка строки каталога
+# ---------------------------------------------------------------------------
+
+@router.post("/positions/{position_id}/kind")
+def set_position_kind_route(
+    position_id: int,
+    body: SetPositionKindRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        review_service.set_position_kind_global(
+            db, position_id=position_id, kind=body.kind, actor_id=admin.id
+        )
+    return {"position_id": position_id, "kind": body.kind}
+
+
+# ---------------------------------------------------------------------------
+#  Массовое автопринятие
+# ---------------------------------------------------------------------------
+
+@router.post("/auto-accept/preview")
+def auto_accept_preview_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        preview = family_change.preview_auto_accept(db)
+    return {
+        "by_outcome": dict(preview.by_outcome),
+        "total": preview.total,
+        "preview_hash": preview.preview_hash,
+        "threshold": format(preview.threshold, "f"),
+    }
+
+
+@router.post("/auto-accept")
+def auto_accept_route(
+    body: PreviewHashRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        applied = family_change.apply_auto_accept(db, preview_hash=body.preview_hash)
+    return {"applied": dict(applied)}

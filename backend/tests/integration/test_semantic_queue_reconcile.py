@@ -42,6 +42,8 @@ import sqlalchemy as sa
 
 from config import settings
 from models import (
+    CatalogContext,
+    FamilyParameterSchema,
     FamilySuggestion,
     SemanticCancelReason,
     SemanticJob,
@@ -54,6 +56,7 @@ from services.context_routing import route_position
 from services.semantic_cost import EventCap
 from services.semantic_reconcile import (
     NO_CAP,
+    Fingerprint,
     ReconcileReport,
     fingerprints_hash,
     get_or_create_held_batch,
@@ -86,7 +89,17 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
     fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
-    return activate_family(db, family_id=fam.id, actor_id=actor_id)
+    family = activate_family(db, family_id=fam.id, actor_id=actor_id)
+    # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
+    # активная семья без схемы получала бы ещё и задание схемы.
+    db.add(
+        FamilyParameterSchema(
+            family_id=family.id, version=1, status="frozen", origin="model",
+            frozen_at=dt.datetime.now(dt.UTC),
+        )
+    )
+    db.flush()
+    return family
 
 
 def _simple_context(db, factories, proposal, *, unit_id, title) -> int:
@@ -224,6 +237,23 @@ def _done_job_with_suggestion(db, *, context_id, request_hash, decision=None, is
 _ZERO_REPORT = ReconcileReport(
     created=0, revived=0, cancelled=0, republished=0, unpublished=0, held_batch_id=None
 )
+
+
+
+def _fp(context_id, request_hash):
+    """Отпечаток предложения — единственный вид в сценах этого файла."""
+    return Fingerprint("family_suggestion", context_id, None, None, request_hash)
+
+
+def _held_pairs(batch):
+    # Пары берутся только у отпечатков предложений: элемент другого вида в
+    # пачке сцены этого файла — уже ошибка, а не пара с пустыми полями.
+    assert all(
+        (e["kind"], e["family_id"], e["schema_id"]) == ("family_suggestion", None, None)
+        for e in batch.held_fingerprints
+    ), batch.held_fingerprints
+    return [(e["context_id"], e["request_hash"]) for e in batch.held_fingerprints]
+
 
 _SNAPSHOT_TABLES = ("semantic_jobs", "family_suggestions", "semantic_reconcile_batches")
 
@@ -528,15 +558,25 @@ class TestStaleFingerprintTransitions:
 #  Неприменимый контекст (спека §2.7)
 # ---------------------------------------------------------------------------
 
+def _mark_not_applicable(db, context_id):
+    db.execute(
+        sa.update(CatalogContext)
+        .where(CatalogContext.id == context_id)
+        .values(semantic_state="NOT_APPLICABLE")
+    )
+    db.expire_all()
+
+
 class TestInapplicableContext:
     def _inapplicable_context(self, db, factories, user, *, title):
         proposal = _proposal(factories)
         unit_id = _unit_id(db, "M2")
         family = _active_family(db, title=f"Семья {title}", unit_name="M2", actor_id=user.id)
         context_id = _simple_context(db, factories, proposal, unit_id=unit_id, title=title)
-        # Назначение семьи делает контекст неприменимым (спека §2.7:
-        # `work_family_id IS NULL` — предикат применимости).
-        assign_family(db, context_id=context_id, family_id=family.id, actor_id=user.id)
+        # Контекст неприменим: `NOT_APPLICABLE` (привязка семьи применимость не
+        # отменяет, спека вариантов §2.5).
+        _mark_not_applicable(db, context_id)
+        assert family.id is not None
         return context_id
 
     @pytest.mark.parametrize(
@@ -610,7 +650,9 @@ class TestEventCap:
         assert batch.contexts_count == 2
         assert batch.unit_id is None
         assert batch.source == "mass"
-        assert sorted(tuple(pair) for pair in batch.held_fingerprints) == held_fingerprints(db_session, [a, b])
+        assert [Fingerprint.from_dict(e) for e in batch.held_fingerprints] == held_fingerprints(
+            db_session, [a, b]
+        )
 
     def test_exactly_at_contexts_cap_creates_jobs(self, db_session, factories):
         user = factories.UserFactory.create()
@@ -715,7 +757,7 @@ class TestHeldBatchDeduplication:
         assert second.status == "held"
 
     def test_fingerprints_hash_is_independent_of_input_order(self):
-        pairs = [(3, "c"), (1, "a"), (2, "b")]
+        pairs = [_fp(3, "c"), _fp(1, "a"), _fp(2, "b")]
         reversed_pairs = list(reversed(pairs))
 
         assert fingerprints_hash(pairs) == fingerprints_hash(reversed_pairs)
@@ -729,7 +771,7 @@ class TestHeldBatchDeduplication:
         report = reconcile_semantic_jobs(db_session, [a, b], cap=cap, source="mass")
 
         batch = db_session.get(SemanticReconcileBatch, report.held_batch_id)
-        assert sorted(tuple(pair) for pair in batch.held_fingerprints) == preview
+        assert [Fingerprint.from_dict(e) for e in batch.held_fingerprints] == preview
 
 
 # ---------------------------------------------------------------------------
@@ -1156,9 +1198,10 @@ class TestConditionalTransitions:
         # Другая сверка уже вставила задание контекста `a` и закоммитила.
         shifted = _after_jobs_read(
             monkeypatch, db_session,
-            "INSERT INTO semantic_jobs (context_id, request_hash, status, prompt_version, model_requested, "
-            "place_dictionary_version, candidates_hash, prefix_hash, input_hash, response_schema_version, "
-            "serialization_version) VALUES (:cid, :h, 'pending', '1', 'm', 1, 'c', 'p', 'i', '1', '1')",
+            "INSERT INTO semantic_jobs (kind, context_id, request_hash, status, prompt_version, "
+            "model_requested, place_dictionary_version, candidates_hash, prefix_hash, input_hash, "
+            "response_schema_version, serialization_version) "
+            "VALUES ('family_suggestion', :cid, :h, 'pending', '1', 'm', 1, 'c', 'p', 'i', '1', '1')",
             {"cid": a, "h": rendered_a.request_hash},
         )
 
@@ -1235,8 +1278,8 @@ class TestCapCountsOnlyPostanovka:
         assert report.created == 0 and report.held_batch_id is not None
         batch = db_session.get(SemanticReconcileBatch, report.held_batch_id)
         assert batch.contexts_count == 2
-        assert batch.held_fingerprints == [
-            [a, renders[a].request_hash], [b, renders[b].request_hash]
+        assert _held_pairs(batch) == [
+            (a, renders[a].request_hash), (b, renders[b].request_hash)
         ]
         assert batch.reserve_estimate_usd == reserve
         assert batch.cached_estimate_usd == cached
@@ -1267,7 +1310,7 @@ class TestOverCapSideEffects:
             db_session, factories, user, family_title="Семья сверх потолка",
             titles=["Сверх A", "Сверх B", "Сверх C", "Сверх D", "Сверх E"],
         )
-        assign_family(db_session, context_id=e, family_id=family.id, actor_id=user.id)
+        _mark_not_applicable(db_session, e)
         renders = {cid: _rendered_for(db_session, cid)[1] for cid in (a, b, c, d)}
         revivable = _make_job(db_session, context_id=b, request_hash=renders[b].request_hash,
                               status=SemanticJobStatus.cancelled.value,
@@ -1300,8 +1343,8 @@ class TestOverCapSideEffects:
         assert _jobs_of(db_session, a) == []
         assert [j.id for j in _jobs_of(db_session, c)] == [old_pending.id]
         batch = db_session.get(SemanticReconcileBatch, report.held_batch_id)
-        assert batch.held_fingerprints == sorted(
-            [[a, renders[a].request_hash], [b, renders[b].request_hash], [c, renders[c].request_hash]]
+        assert _held_pairs(batch) == sorted(
+            [(a, renders[a].request_hash), (b, renders[b].request_hash), (c, renders[c].request_hash)]
         )
         assert batch.contexts_count == 3
 
@@ -1329,7 +1372,7 @@ class TestHeldBatchShape:
     def test_get_or_create_rejects_unknown_source_before_write(self, db_session):
         with pytest.raises(ValueError):
             get_or_create_held_batch(
-                db_session, fingerprints=[(1, "a")], source="not-a-real-source", import_job_id=None,
+                db_session, fingerprints=[_fp(1, "a")], source="not-a-real-source", import_job_id=None,
                 unit_id=None, reserve_estimate_usd=Decimal("1"), cached_estimate_usd=Decimal("1"),
             )
         count = db_session.execute(
@@ -1339,19 +1382,19 @@ class TestHeldBatchShape:
 
     def test_stored_fingerprints_are_canonically_sorted(self, db_session):
         batch_id = get_or_create_held_batch(
-            db_session, fingerprints=[(2, "b"), (1, "z"), (1, "a")], source="mass", import_job_id=None,
+            db_session, fingerprints=[_fp(2, "b"), _fp(1, "z"), _fp(1, "a")], source="mass", import_job_id=None,
             unit_id=None, reserve_estimate_usd=Decimal("1"), cached_estimate_usd=Decimal("1"),
         )
 
         batch = db_session.get(SemanticReconcileBatch, batch_id)
-        assert batch.held_fingerprints == [[1, "a"], [1, "z"], [2, "b"]]
-        assert batch.fingerprints_hash == fingerprints_hash([(1, "a"), (1, "z"), (2, "b")])
+        assert _held_pairs(batch) == [(1, "a"), (1, "z"), (2, "b")]
+        assert batch.fingerprints_hash == fingerprints_hash([_fp(1, "a"), _fp(1, "z"), _fp(2, "b")])
 
     def test_fingerprints_hash_depends_on_request_hash_and_context(self):
-        base = fingerprints_hash([(1, "a"), (2, "b")])
+        base = fingerprints_hash([_fp(1, "a"), _fp(2, "b")])
 
-        assert fingerprints_hash([(1, "a"), (2, "c")]) != base
-        assert fingerprints_hash([(1, "a"), (3, "b")]) != base
+        assert fingerprints_hash([_fp(1, "a"), _fp(2, "c")]) != base
+        assert fingerprints_hash([_fp(1, "a"), _fp(3, "b")]) != base
 
     def test_held_fingerprints_sorted_regardless_of_load_order(self, db_session, factories, monkeypatch):
         import services.semantic_reconcile as reconcile_module
@@ -1368,11 +1411,11 @@ class TestHeldBatchShape:
 
         pairs = held_fingerprints(db_session, [c, b, a])
 
-        assert [cid for cid, _h in pairs] == sorted([a, b, c])
+        assert [fp.context_id for fp in pairs] == sorted([a, b, c])
 
     def test_held_batch_is_found_among_approved_and_discarded_with_same_hash(self, db_session, factories):
         user = factories.UserFactory.create()
-        fingerprints = [(1, "a"), (2, "b")]
+        fingerprints = [_fp(1, "a"), _fp(2, "b")]
 
         def call():
             return get_or_create_held_batch(
@@ -1402,7 +1445,7 @@ class TestHeldBatchShape:
         и по ветке вставки, и по ветке конфликта."""
         def call(n):
             return get_or_create_held_batch(
-                db_session, fingerprints=[(n, "h")], source="mass", import_job_id=None, unit_id=None,
+                db_session, fingerprints=[_fp(n, "h")], source="mass", import_job_id=None, unit_id=None,
                 reserve_estimate_usd=Decimal("1"), cached_estimate_usd=Decimal("1"),
             )
 
@@ -1451,7 +1494,9 @@ class TestHeldBatchShape:
 
         pairs = held_fingerprints(db_session, ids)
 
-        assert pairs == sorted((by_name[n], renders[by_name[n]].request_hash) for n in in_e)
+        assert [(fp.context_id, fp.request_hash) for fp in pairs] == sorted(
+            (by_name[n], renders[by_name[n]].request_hash) for n in in_e
+        )
 
 
 # ---------------------------------------------------------------------------

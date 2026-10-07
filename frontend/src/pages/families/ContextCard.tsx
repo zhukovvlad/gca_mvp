@@ -55,12 +55,14 @@ import {
   useConfirmKind,
   useContextCard,
   useContextGroupMembers,
+  useMarkNotWork,
   useMergeContexts,
   useMoveMembers,
   useSetNameRole,
   useSplitContext,
   useTransferStaleGroup,
   useWorkFamilies,
+  apiErrorCode,
   toastApiError,
 } from "@/services/queries";
 import type {
@@ -75,7 +77,10 @@ import type {
 
 import {
   CATEGORY_SOURCE_LABEL,
+  contextRefusalLabel,
   DECISION_SOURCE_LABEL,
+  FAMILY_CHANGE_OUTCOME_LABEL,
+  FAMILY_REMOVED_LABEL,
   FAMILY_SOURCE_LABEL,
   NAME_ROLE_LABEL,
   pluralRu,
@@ -86,6 +91,9 @@ import {
   comparabilityLabel,
   eventLabel,
 } from "./labels";
+import { ContextVariant } from "./ContextVariant";
+import { MarkPositionDialog } from "./MarkPositionDialog";
+import { PendingFamilyBlock } from "./PendingFamilyBlock";
 import { SourceChip } from "./SourceChip";
 
 const KIND_OPTIONS: SemanticKind[] = ["WORK", "SYSTEM", "UNKNOWN"];
@@ -192,6 +200,14 @@ export function ContextCard({ contextId }: ContextCardProps) {
   const acceptStaleTransfer = useAcceptStaleTransfer();
   const acceptTargetDecision = useAcceptTargetDecision();
   const transferStaleGroup = useTransferStaleGroup();
+  const markNotWork = useMarkNotWork();
+
+  const [tab, setTab] = useState("decisions");
+  const [notWorkOpen, setNotWorkOpen] = useState(false);
+  const [markPositionOpen, setMarkPositionOpen] = useState(false);
+  // Исход и отказ смены семьи показывает само окно: тоста у этой мутации нет.
+  const [familyOutcome, setFamilyOutcome] = useState<string | null>(null);
+  const [familyRefusal, setFamilyRefusal] = useState<string | null>(null);
 
   const [kindChoice, setKindChoice] = useState<SemanticKind>("WORK");
   const [roleChoice, setRoleChoice] = useState<NameRole>("WORK");
@@ -289,6 +305,27 @@ export function ContextCard({ contextId }: ContextCardProps) {
     familyCaption = "семья не назначена, потому что состав не описан";
   } else {
     familyCaption = "нет семьи";
+  }
+
+  function resetFamilyDialog() {
+    setFamilyOutcome(null);
+    setFamilyRefusal(null);
+  }
+
+  function changeFamily(familyId: number | null) {
+    resetFamilyDialog();
+    assignFamily.mutate(
+      { contextId: contextId as number, input: { family_id: familyId } },
+      {
+        onSuccess: (result) =>
+          setFamilyOutcome(
+            result.outcome === "assigned" && result.family_id === null
+              ? FAMILY_REMOVED_LABEL
+              : FAMILY_CHANGE_OUTCOME_LABEL[result.outcome]
+          ),
+        onError: (error) => setFamilyRefusal(contextRefusalLabel(apiErrorCode(error))),
+      }
+    );
   }
 
   function toggleSelected(id: number, checked: boolean) {
@@ -427,6 +464,14 @@ export function ContextCard({ contextId }: ContextCardProps) {
             {card.work_category_source === "manual" && (
               <p className="text-xs text-fg-tertiary">{CATEGORY_SOURCE_LABEL.manual}</p>
             )}
+            <Button
+              size="xs"
+              variant="link"
+              className="mt-1 h-auto p-0"
+              onClick={() => setMarkPositionOpen(true)}
+            >
+              Пометить написание целиком…
+            </Button>
           </div>
           <Badge variant={card.archived_at ? "outline" : "secondary"}>
             {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
@@ -582,6 +627,10 @@ export function ContextCard({ contextId }: ContextCardProps) {
           </Surface>
         )}
 
+        {card.variant.pending !== null && (
+          <PendingFamilyBlock contextId={card.id} pending={card.variant.pending} />
+        )}
+
         {card.member_count === 0 && (
           <Surface className="min-w-0 border-warning/40 bg-warning/5">
             <p className="text-sm text-fg">Позиций нет: смета заменена. Архивирует оператор.</p>
@@ -589,7 +638,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
         )}
       </div>
 
-      <Tabs defaultValue="decisions" className="min-w-0">
+      <Tabs value={tab} onValueChange={(value) => setTab(String(value))} className="min-w-0">
         {/* Вкладки карточки — подчёркиванием (сверка с макетом 27.09.2026,
             `.ptabs`), не сегментным переключателем: тот занят вкладками
             ВЕРХНЕГО уровня «Семьи»/«Контексты» (`FamiliesPage.tsx`). */}
@@ -649,6 +698,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
               </div>
             </div>
 
+            <ContextVariant
+              variant={card.variant}
+              onOpenMemberships={() => setTab("memberships")}
+            />
+
             {/* Три кнопки, каждая открывает диалог с прежней формой (сверка с
                 макетом 27.09.2026, `mock-card-decisions.png`) — тела запросов
                 и поведение не меняются, меняется только путь до формы. */}
@@ -657,10 +711,17 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 Подтвердить вид
               </Button>
               <Button variant="outline" onClick={() => setFamilyDialogOpen(true)}>
-                Назначить семью…
+                {card.work_family_id === null ? "Назначить семью…" : "Другая семья…"}
               </Button>
               <Button variant="outline" onClick={() => setRoleDialogOpen(true)}>
                 Изменить «что называет»…
+              </Button>
+              <Button
+                variant="outline"
+                disabled={card.archived_at !== null || card.semantic_state === "NOT_APPLICABLE"}
+                onClick={() => setNotWorkOpen(true)}
+              >
+                Не работа
               </Button>
             </div>
           </div>
@@ -1006,10 +1067,16 @@ export function ContextCard({ contextId }: ContextCardProps) {
 
       {/* Диалог «Назначить семью…» (сверка с макетом 27.09.2026) — прежняя
           инлайн-форма семьи (спека §2.5): назначение и снятие рядом. */}
-      <Dialog open={familyDialogOpen} onOpenChange={setFamilyDialogOpen}>
+      <Dialog
+        open={familyDialogOpen}
+        onOpenChange={(open) => {
+          setFamilyDialogOpen(open);
+          if (!open) resetFamilyDialog();
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Назначить семью</DialogTitle>
+            <DialogTitle>{card.work_family_id === null ? "Назначить семью" : "Другая семья"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-2 py-2">
             <Label htmlFor="context-family-select">Семья</Label>
@@ -1021,34 +1088,83 @@ export function ContextCard({ contextId }: ContextCardProps) {
               getLabel={(f) => f.title}
               placeholder="Выбрать семью"
             />
+            {familyOutcome && (
+              <p role="status" className="text-sm text-fg">
+                {familyOutcome}
+              </p>
+            )}
+            {familyRefusal && (
+              <p role="alert" className="text-sm text-danger-text">
+                {familyRefusal}
+              </p>
+            )}
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={assignFamily.isPending || card.work_family_id === null}
-              onClick={() =>
-                assignFamily.mutate(
-                  { contextId, input: { family_id: null } },
-                  { onSuccess: () => setFamilyDialogOpen(false) }
-                )
-              }
-            >
-              Снять семью
-            </Button>
-            <Button
-              disabled={assignFamily.isPending || familyChoice === null}
-              onClick={() =>
-                assignFamily.mutate(
-                  { contextId, input: { family_id: familyChoice } },
-                  { onSuccess: () => setFamilyDialogOpen(false) }
-                )
-              }
-            >
-              Назначить семью
-            </Button>
+            {familyOutcome ? (
+              <Button
+                onClick={() => {
+                  setFamilyDialogOpen(false);
+                  resetFamilyDialog();
+                }}
+              >
+                Закрыть
+              </Button>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={assignFamily.isPending || card.work_family_id === null}
+                  onClick={() => changeFamily(null)}
+                >
+                  Снять семью
+                </Button>
+                <Button
+                  disabled={assignFamily.isPending || familyChoice === null}
+                  onClick={() => changeFamily(familyChoice)}
+                >
+                  Назначить семью
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={notWorkOpen} onOpenChange={setNotWorkOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Отметить контекст как не работу?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Контекст перестанет считаться работой: семья, вариант и значения контекста будут сняты.
+              Остальные контексты этого написания не меняются.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
+            <AlertDialogAction
+              render={
+                <Button
+                  variant="destructive"
+                  disabled={markNotWork.isPending}
+                  onClick={() => {
+                    markNotWork.mutate(contextId);
+                    setNotWorkOpen(false);
+                  }}
+                >
+                  Отметить как не работу
+                </Button>
+              }
+            />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <MarkPositionDialog
+        positionId={card.catalog_position_id}
+        title={card.standard_job_title}
+        open={markPositionOpen}
+        onOpenChange={setMarkPositionOpen}
+      />
 
       <AlertDialog open={archiveOpen} onOpenChange={setArchiveOpen}>
         <AlertDialogContent>

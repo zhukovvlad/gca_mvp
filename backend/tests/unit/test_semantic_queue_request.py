@@ -121,8 +121,13 @@ class TestIsApplicable:
     def test_false_when_system_kind(self):
         assert is_applicable(_material(semantic_kind="SYSTEM")) is False
 
-    def test_false_when_has_family(self):
-        assert is_applicable(_material(work_family_id=42)) is False
+    def test_true_when_has_family(self):
+        """Привязка к семье применимость не отменяет (спека вариантов §2.5):
+        привязанный контекст тоже получает задание."""
+        assert is_applicable(_material(work_family_id=42)) is True
+
+    def test_false_when_has_family_but_archived(self):
+        assert is_applicable(_material(work_family_id=42, archived=True)) is False
 
     def test_false_when_no_active_candidates(self):
         assert is_applicable(_material(candidates=())) is False

@@ -110,6 +110,12 @@ function lastRequest(requests: URLSearchParams[]): URLSearchParams {
   return requests[requests.length - 1];
 }
 
+// После ввода в поле с задержкой (поиск и статья — 300 мс) идут запрос и
+// отрисовка: под нагрузкой машины (`just ci` гонит бэкенд `-n 8` рядом с
+// фронтендом) они не укладываются в секунду ожидания по умолчанию — тесты
+// падали в полном наборе, проходя в одиночку.
+const AFTER_DEBOUNCE = { timeout: 8000 };
+
 describe("ContextsTab", () => {
   // Размер страницы — `usePersistedPageSize` (`gca.families.contexts.pageSize`);
   // без сброса выбор одного теста пережил бы следующий (`pageSizeShared.test.tsx`
@@ -123,7 +129,7 @@ describe("ContextsTab", () => {
     await renderTab();
 
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "нет-такого-текста-в-каталоге");
-    expect(await screen.findByText("Контекстов нет")).toBeInTheDocument();
+    expect(await screen.findByText("Контекстов нет", {}, AFTER_DEBOUNCE)).toBeInTheDocument();
   });
 
   it("подписи причины сравнимости различаются ТЕКСТОМ, а не наличием узла", async () => {
@@ -215,7 +221,7 @@ describe("ContextsTab", () => {
       expect(
         screen.queryByText("Штукатурка стен цементно-песчаным раствором")
       ).not.toBeInTheDocument();
-    });
+    }, AFTER_DEBOUNCE);
   });
 
   // ---------------------------------------------------------------------
@@ -470,14 +476,16 @@ describe("ContextsTab", () => {
     expect(screen.queryByText("Контекст не выбран")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "линолеум");
-    await waitFor(() =>
-      expect(
-        screen.getByText("Устройство покрытий полов из линолеума")
-      ).toBeInTheDocument()
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText("Устройство покрытий полов из линолеума")
+        ).toBeInTheDocument(),
+      AFTER_DEBOUNCE
     );
     // Снятие выбора — правка состояния во время рендера новой выдачи;
     // ждём и её, а не проверяем синхронно вслед за предыдущим `waitFor`.
-    await waitFor(() => expect(screen.getByText("Контекст не выбран")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Контекст не выбран")).toBeInTheDocument(), AFTER_DEBOUNCE);
   });
 
   it("смена фильтра НЕ снимает выбор, если выбранный контекст остаётся в выдаче", async () => {
@@ -494,7 +502,7 @@ describe("ContextsTab", () => {
     // проверка выбора прошла бы в состоянии загрузки, где сверки ещё не
     // было — тест не увидел бы снятия выбора на любой новой выдаче.
     await user.type(screen.getByLabelText("Поиск по написанию каталога"), "штукатурка");
-    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument(), AFTER_DEBOUNCE);
     expect(
       screen.queryByText("Устройство покрытий полов из линолеума")
     ).not.toBeInTheDocument();
@@ -1088,5 +1096,125 @@ describe("ContextsTab", () => {
     );
 
     expect(document.body.textContent).not.toMatch(CODES);
+  });
+});
+
+describe("ContextsTab — фильтры вариантов", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  const FIRST = "Синтетическая работа №1";
+
+  function useManyRendered(rowsCount = 25) {
+    const requests = useManyContextRows(manyContextRows(rowsCount));
+    renderWithProviders(<ContextsTab />);
+    return requests;
+  }
+
+  async function pickVariantState(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(screen.getByLabelText("Вариант"));
+    await user.click(await screen.findByRole("option", { name }));
+  }
+
+  it("«С вариантом» уходит в запрос параметром variant_state=with", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "С вариантом");
+
+    await waitFor(() => expect(lastRequest(requests).get("variant_state")).toBe("with"), AFTER_DEBOUNCE);
+  });
+
+  it("«Без варианта» — variant_state=without, «Любой вариант» параметр снимает", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "Без варианта");
+    await waitFor(() => expect(lastRequest(requests).get("variant_state")).toBe("without"), AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "Любой вариант");
+    await waitFor(() => expect(lastRequest(requests).has("variant_state")).toBe(false), AFTER_DEBOUNCE);
+  });
+
+  it("«ожидает семьи» уходит параметром pending=true, снятая галочка параметр убирает", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+    await waitFor(() => expect(lastRequest(requests).get("pending")).toBe("true"), AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+    await waitFor(() => expect(lastRequest(requests).has("pending")).toBe(false), AFTER_DEBOUNCE);
+  });
+
+  it("«к делению» уходит параметром split_hint=true", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "к делению" }));
+
+    await waitFor(() => expect(lastRequest(requests).get("split_hint")).toBe("true"), AFTER_DEBOUNCE);
+  });
+
+  it("экран показывает то, что вернул сервер: загруженную страницу сам не фильтрует", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "к делению" }));
+    await waitFor(() => expect(lastRequest(requests).get("split_hint")).toBe("true"), AFTER_DEBOUNCE);
+
+    // Строки не несут признаков варианта, поэтому любая клиентская фильтрация скрыла бы их все.
+    expect(screen.getByText(FIRST)).toBeInTheDocument();
+    expect(screen.getByText("1–20 из 25")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["С вариантом", "select"],
+    ["ожидает семьи", "checkbox"],
+    ["к делению", "checkbox"],
+  ])("смена фильтра «%s» возвращает на первую страницу", async (name, kind) => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    await waitFor(() => expect(lastRequest(requests).get("offset")).toBe("20"), AFTER_DEBOUNCE);
+
+    if (kind === "checkbox") await user.click(screen.getByRole("checkbox", { name }));
+    else await pickVariantState(user, name);
+
+    await waitFor(() => expect(lastRequest(requests).get("offset")).toBe("0"), AFTER_DEBOUNCE);
+  });
+
+  it("серверный фильтр сужает выдачу: «ожидает семьи» оставляет контекст с ожиданием", async () => {
+    contextFixture(601).variant = {
+      variant_id: 7,
+      values: [],
+      split_hint: false,
+      values_job_status: null,
+      pending: {
+        family_id: 43,
+        family_title: "Кровельные работы",
+        source: "manual",
+        by: 1,
+        at: "2026-10-05T09:30:00+00:00",
+        threshold: null,
+        suggestion_id: null,
+      },
+    };
+    const user = userEvent.setup();
+    renderWithProviders(<ContextsTab />);
+    await screen.findByText("Штукатурка стен цементно-песчаным раствором", {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+
+    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument(), AFTER_DEBOUNCE);
+    expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument();
+    expect(screen.queryByText("Устройство покрытий полов из линолеума")).not.toBeInTheDocument();
   });
 });

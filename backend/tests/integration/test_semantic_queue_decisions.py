@@ -27,10 +27,12 @@ import sqlalchemy as sa
 from click.testing import CliRunner
 
 import cli
+import services.family_change as family_change_module
 import services.semantic_decisions as decisions
 from config import settings as app_settings
 from models import (
     CatalogContext,
+    FamilyParameterSchema,
     FamilySuggestion,
     SemanticJob,
     SemanticJobAttempt,
@@ -64,6 +66,7 @@ from services.semantic_decisions import (
 from services.semantic_privacy import build_privacy_dictionary, find_privacy_matches
 from services.semantic_reconcile import (
     NO_CAP,
+    Fingerprint,
     estimate_enqueue,
     held_fingerprints,
     reconcile_semantic_jobs,
@@ -97,7 +100,17 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
     fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
-    return activate_family(db, family_id=fam.id, actor_id=actor_id)
+    family = activate_family(db, family_id=fam.id, actor_id=actor_id)
+    # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
+    # активная семья без схемы получала бы ещё и задание схемы.
+    db.add(
+        FamilyParameterSchema(
+            family_id=family.id, version=1, status="frozen", origin="model",
+            frozen_at=dt.datetime.now(dt.UTC),
+        )
+    )
+    db.flush()
+    return family
 
 
 def _simple_context(db, factories, proposal, *, unit_id, title) -> int:
@@ -366,13 +379,13 @@ class TestConfirmSuggestions:
         s_a = _published(db_session, a, family_id=second_family.id)
         # `_make_stale`-подобных правок нет: отпечатки уже учитывают обе семьи.
         order: list[tuple[int, int]] = []
-        original = decisions.assign_family
+        original = family_change_module.assign_family
 
         def _spy(db, *, context_id, family_id, **kwargs):
             order.append((family_id, context_id))
             return original(db, context_id=context_id, family_id=family_id, **kwargs)
 
-        monkeypatch.setattr(decisions, "assign_family", _spy)
+        monkeypatch.setattr(family_change_module, "assign_family", _spy)
 
         report = confirm_suggestions(
             db_session, suggestion_ids=[s_c.id, s_b.id, s_a.id], actor_id=scene.user.id
@@ -1066,9 +1079,9 @@ class TestPreview:
 
         after = preview_unit_reask(db_session, unit_id=scene.unit_id)
 
-        assert estimate_enqueue(db_session, scene.context_ids)[0] == [
-            (scene.context_ids[0], rendered.request_hash)
-        ]
+        assert [
+            (fp.context_id, fp.request_hash) for fp in estimate_enqueue(db_session, scene.context_ids)[0]
+        ] == [(scene.context_ids[0], rendered.request_hash)]
         assert after.context_count == before.context_count
         assert getattr(after, moved) != getattr(before, moved)
         assert getattr(after, still) == getattr(before, still)
@@ -1430,6 +1443,83 @@ class TestBatches:
         assert claim_next(db_session, settings=app_settings, now=dt.datetime.now(dt.UTC)) is None
 
 
+def _without_schema(db, family_id):
+    """Семья сцены заведена уже со схемой; для проверки сверки схем её убирают:
+    активная семья без текущей версии ждёт конца перезапроса единицы."""
+    db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    db.flush()
+
+
+def _schema_jobs_of(db, family_id):
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(SemanticJob).where(
+                SemanticJob.kind == "family_schema", SemanticJob.family_id == family_id
+            )
+        ).scalars()
+    )
+
+
+class TestDiscardReconcilesSchemas:
+    """Удержанная пачка предложений не даёт строить схемы единицы (спека §2.6);
+    после отбрасывания блокировка исчезает, и семьи без схемы получают задание
+    схемы, а не ждут чужого события."""
+
+    def test_discard_of_the_blocking_batch_sets_the_schema_job(self, db_session, factories):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        _without_schema(db_session, scene.family.id)
+        batch_id = _held_batch(db_session, scene, source="operation")
+        assert _schema_jobs_of(db_session, scene.family.id) == [], "вход: пачка блокирует схему"
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        (job,) = _schema_jobs_of(db_session, scene.family.id)
+        assert job.status == "pending"
+
+    def test_another_live_suggestion_job_in_the_unit_keeps_the_schema_waiting(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
+        _without_schema(db_session, scene.family.id)
+        _make_job(db_session, scene.context_ids[2], unit_id=scene.unit_id)
+        scene.context_ids = scene.context_ids[:2]
+        batch_id = _held_batch(db_session, scene, source="operation")
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert _schema_jobs_of(db_session, scene.family.id) == []
+
+    def test_a_family_of_another_unit_is_left_alone_by_a_non_mass_batch(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
+        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, other.family.id)
+        batch_id = _held_batch(db_session, scene, source="operation")
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert len(_schema_jobs_of(db_session, scene.family.id)) == 1
+        assert _schema_jobs_of(db_session, other.family.id) == []
+
+    def test_discard_of_a_mass_batch_reconciles_the_families_of_all_units(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
+        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, other.family.id)
+        batch_id = _held_batch(db_session, scene, source="mass")
+        assert _schema_jobs_of(db_session, other.family.id) == [], "вход: mass держит все единицы"
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert len(_schema_jobs_of(db_session, scene.family.id)) == 1
+        assert len(_schema_jobs_of(db_session, other.family.id)) == 1
+
+
 # ---------------------------------------------------------------------------
 #  Остановка захвата
 # ---------------------------------------------------------------------------
@@ -1482,7 +1572,7 @@ class TestEnqueueAll:
 
         batch = _fresh(db_session, SemanticReconcileBatch, batch_id)
         assert (batch.source, batch.status, batch.contexts_count) == ("mass", "held", 2)
-        assert sorted(tuple(p) for p in batch.held_fingerprints) == held_fingerprints(
+        assert [Fingerprint.from_dict(e) for e in batch.held_fingerprints] == held_fingerprints(
             db_session, scene.context_ids
         )
         _pairs, reserve, cached = estimate_enqueue(db_session, scene.context_ids)
@@ -1601,7 +1691,7 @@ def _lock_statements(db, action):
 def _change_before_context_lock(monkeypatch, db, sql, params):
     """Правка строки между чтением без блокировки и блокировкой контекста —
     то, что сделала бы транзакция, закоммитившаяся в этот промежуток."""
-    original = decisions._lock_contexts
+    original = family_change_module._lock_contexts
     done: list[bool] = []
 
     def _lock(session, context_ids):
@@ -1610,7 +1700,7 @@ def _change_before_context_lock(monkeypatch, db, sql, params):
             session.execute(sa.text(sql), params)
         return original(session, context_ids)
 
-    monkeypatch.setattr(decisions, "_lock_contexts", _lock)
+    monkeypatch.setattr(family_change_module, "_lock_contexts", _lock)
     return done
 
 

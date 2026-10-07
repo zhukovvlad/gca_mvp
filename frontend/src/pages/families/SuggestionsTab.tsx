@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useJobs, useQueueStatus, useSuggestions, useUnits } from "@/services/queries";
+import { useChangeQueue, useJobs, useQueueStatus, useSuggestions, useUnits } from "@/services/queries";
 import type {
   PreviewTarget,
   SuggestionBand,
@@ -21,6 +21,7 @@ import type {
   SuggestionUnitFilter,
 } from "@/types/domain";
 
+import { ChangeQueue } from "./ChangeQueue";
 import { ErrorsQueue } from "./ErrorsQueue";
 import { BAND_LABEL } from "./labels";
 import { NewQueue } from "./NewQueue";
@@ -33,7 +34,10 @@ const ANY = "any";
 const NO_UNIT = "none";
 const DEFAULT_PAGE_SIZE = 10;
 const BAND_OPTIONS: SuggestionBand[] = ["high", "mid", "low"];
-type QueueTab = "list" | "new" | "err";
+type QueueTab = "list" | "change" | "new" | "err";
+/** Счётчик вкладки очереди, которая ещё не загрузилась. */
+const COUNTER_PLACEHOLDER = "…";
+
 const EMPTY_ROWS: never[] = [];
 
 const TAB_CLASS =
@@ -46,10 +50,11 @@ interface SuggestionsTabProps {
 
 /**
  * Вкладка «Предложения» (спека semantic-suggestions §2.12): шапка со сводкой
- * очереди заданий и три очереди — «Семья из списка» (группы «семья + полоса
- * уверенности», фильтры единицы и полосы, «только многовладельческие»), «Новая»
+ * очереди заданий и четыре очереди — «Семья из списка» (группы «семья + полоса
+ * уверенности», фильтры единицы и полосы, «только многовладельческие»), «Смена
+ * семьи» (те же фильтры; контексты уже с семьёй, спека вариантов §2.12), «Новая»
  * и «Ошибки». Фильтры и подтверждения выполняет сервер; страницы — по группам.
- * Единица фильтрует «Семью из списка» и «Новую»; у «Ошибок» её нет.
+ * Единица фильтрует «Семью из списка», «Смену семьи» и «Новую»; у «Ошибок» её нет.
  */
 export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
   const [queue, setQueue] = useState<QueueTab>("list");
@@ -76,7 +81,12 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
   };
   const queueQ = useSuggestions(params, { poll: queue === "list" });
   // Счётчики вкладок берутся из тех же запросов, что и их содержимое, поэтому
-  // обе очереди читаются, пока открыта другая.
+  // все очереди читаются, пока открыта другая.
+  const changeQ = useChangeQueue(
+    { unit: unitParam, band: params.band, multi_owner: multiOwner },
+    { poll: queue === "change" }
+  );
+  const changeRows = changeQ.groups.reduce((sum, g) => sum + g.total, 0);
   const newQ = useSuggestions({ queue: "new", unit: unitParam }, { poll: queue === "new" });
   const errorsQ = useJobs("error", { poll: queue === "err" });
   const holdQ = useJobs("privacy_hold", { poll: queue === "err" });
@@ -93,6 +103,9 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
   const newRows = newQ.data?.items ?? EMPTY_ROWS;
   const errorRows = errorsQ.data?.items ?? EMPTY_ROWS;
   const errorsTotal = errorRows.length + (holdQ.data?.items.length ?? 0);
+  // Пока у очереди нет данных (первая загрузка), счётчик — заполнитель: ноль
+  // означал бы «очередь пуста», а её просто ещё не получили.
+  const counter = (loaded: boolean, value: number) => (loaded ? value : COUNTER_PLACEHOLDER);
   const pageGroups = groups.slice((page - 1) * pageSize, page * pageSize);
 
   function unitLabel(code: string | null): string {
@@ -105,6 +118,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
   function switchQueue(next: QueueTab) {
     setQueue(next);
     if (next === "list") void queueQ.refetch();
+    else if (next === "change") void changeQ.refetch();
     else if (next === "new") void newQ.refetch();
     else {
       void errorsQ.refetch();
@@ -133,15 +147,19 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
           <TabsList className="h-auto rounded-lg border border-border bg-surface p-0">
             <TabsTrigger value="list" className={TAB_CLASS}>
               Семья из списка
-              <span className="ml-1 opacity-60">{rowsTotal}</span>
+              <span className="ml-1 opacity-60">{counter(queueQ.data !== undefined, rowsTotal)}</span>
+            </TabsTrigger>
+            <TabsTrigger value="change" className={TAB_CLASS}>
+              Смена семьи
+              <span className="ml-1 opacity-60">{counter(changeQ.data !== undefined, changeRows)}</span>
             </TabsTrigger>
             <TabsTrigger value="new" className={TAB_CLASS}>
               Новая
-              <span className="ml-1 opacity-60">{newRows.length}</span>
+              <span className="ml-1 opacity-60">{counter(newQ.data !== undefined, newRows.length)}</span>
             </TabsTrigger>
             <TabsTrigger value="err" className={TAB_CLASS}>
               Ошибки
-              <span className="ml-1 opacity-60">{errorsTotal}</span>
+              <span className="ml-1 opacity-60">{counter(errorsQ.data !== undefined && holdQ.data !== undefined, errorsTotal)}</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -183,7 +201,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
             </div>
           )}
 
-          {queue === "list" && (
+          {(queue === "list" || queue === "change") && (
             <>
             <div className="flex items-center gap-2">
               <Label htmlFor="suggestions-band-filter" className="text-sm font-normal">
@@ -261,6 +279,12 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
           />
         </>
       )}
+
+      {queue === "change" && changeQ.isPending && <Skeleton className="h-40 w-full" />}
+      {queue === "change" && changeQ.isError && (
+        <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Смена семьи»." />
+      )}
+      {queue === "change" && changeQ.data && <ChangeQueue groups={changeQ.groups} unitLabel={unitLabel} />}
 
       {queue === "new" && newQ.isPending && <Skeleton className="h-40 w-full" />}
       {queue === "new" && newQ.isError && (

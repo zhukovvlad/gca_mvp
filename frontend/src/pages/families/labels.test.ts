@@ -14,6 +14,8 @@ import {
   CATEGORY_SOURCE_LABEL,
   CATEGORY_SOURCE_VALUES,
   comparabilityLabel,
+  CONTEXT_REFUSAL_LABEL,
+  contextRefusalLabel,
   DECISION_SOURCE_LABEL,
   eventLabel,
   EVENT_LABEL,
@@ -25,7 +27,12 @@ import {
   NAME_ROLE_LABEL,
   pluralRu,
   SEMANTIC_KIND_LABEL,
+  SCHEMA_REFUSAL_LABEL,
+  SCHEMA_VALUE_ORIGIN_LABEL,
+  schemaRefusalLabel,
   SEMANTIC_STATE_LABEL,
+  VARIANT_STATUS_LABEL,
+  VARIANT_VALUE_SOURCE_LABEL,
 } from "./labels";
 
 /**
@@ -98,6 +105,7 @@ describe("labels: словарь подписей §2.2", () => {
   it("family_source — точные подписи таблицы спеки", () => {
     expect(FAMILY_SOURCE_LABEL.manual).toBe("оператор");
     expect(FAMILY_SOURCE_LABEL.suggestion).toBe("из предложения");
+    expect(FAMILY_SOURCE_LABEL.auto_suggestion).toBe("принято автоматически");
   });
 
   it.each(CATEGORY_SOURCE_VALUES)("work_category_source %s имеет непустую подпись, не равную коду", (value) => {
@@ -179,13 +187,13 @@ describe("labels: журнал событий (закрытый список ф�
     expect(label).not.toBe(value);
   });
 
-  it("EVENT_TYPE_VALUES несёт ровно 15 значений закрытого списка", () => {
-    expect(EVENT_TYPE_VALUES).toHaveLength(15);
+  it("EVENT_TYPE_VALUES несёт ровно 21 значение закрытого списка", () => {
+    expect(EVENT_TYPE_VALUES).toHaveLength(21);
   });
 
   // `EVENT_TYPE_VALUES` типизирован `readonly SemanticEventType[]`, а не выведен
   // в тип (`as const`), поэтому `tsc` не держит его полноту: подмена одного
-  // значения повтором другого сохраняет длину 15 и молча выводит событие из
+  // значения повтором другого сохраняет длину 21 и молча выводит событие из
   // перебора выше. Ключи `EVENT_LABEL` держит `Record<SemanticEventType, …>`
   // (и тест бэкенда против `SEMANTIC_EVENT_TYPES`) — с ними и сверяемся.
   it("EVENT_TYPE_VALUES — без повторов и ровно те же коды, что ключи EVENT_LABEL", () => {
@@ -238,5 +246,52 @@ describe("labels: место совпадения и класс ошибки з�
     expect(jobErrorClassLabel("ConnectionResetError")).toBe("ConnectionResetError");
     expect(jobErrorClassLabel("http_4290")).toBe("http_4290");
     expect(jobErrorClassLabel(null)).toBe("не указан");
+  });
+});
+
+describe("подписи схемы и вариантов", () => {
+  it("происхождение значения и статус варианта печатаются словом", () => {
+    expect(SCHEMA_VALUE_ORIGIN_LABEL).toEqual({
+      schema: "из схемы",
+      extension: "добавлено при разборе",
+      manual: "вручную",
+    });
+    expect(VARIANT_STATUS_LABEL).toEqual({ active: "активен", archived: "в архиве" });
+  });
+
+  it("известный код отказа превращается в подпись, не содержащую кода", () => {
+    for (const [code, label] of Object.entries(SCHEMA_REFUSAL_LABEL)) {
+      expect(schemaRefusalLabel(code)).toBe(label);
+      expect(label).not.toContain(code);
+      expect(label).not.toMatch(/[a-z]_[a-z]/);
+    }
+  });
+
+  it("неизвестный или отсутствующий код — общая подпись, не сам код", () => {
+    const fallback = "Не удалось выполнить действие. Обновите экран и повторите.";
+    expect(schemaRefusalLabel("some_future_code")).toBe(fallback);
+    expect(schemaRefusalLabel(undefined)).toBe(fallback);
+  });
+});
+
+describe("подписи вариантов и отказов контекста", () => {
+  it.each(["name", "path", "manual", "path_conflict", "none"] as const)(
+    "источник значения %s имеет непустую подпись, не равную коду",
+    (source) => {
+      const label = VARIANT_VALUE_SOURCE_LABEL[source];
+      expect(label).toBeTruthy();
+      expect(label).not.toBe(source);
+    }
+  );
+
+  it.each(Object.keys(CONTEXT_REFUSAL_LABEL))("код отказа %s — подпись без самого кода", (code) => {
+    const label = contextRefusalLabel(code);
+    expect(label.length).toBeGreaterThan(10);
+    expect(label).not.toContain(code);
+  });
+
+  it("неизвестный и пустой код — общая подпись", () => {
+    expect(contextRefusalLabel("some_future_code")).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
+    expect(contextRefusalLabel(undefined)).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
   });
 });

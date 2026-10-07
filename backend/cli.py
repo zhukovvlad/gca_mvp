@@ -11,7 +11,8 @@ from db_guard import ensure_mutation_allowed
 from models import SemanticReconcileBatch, User, UserRole
 from security import hash_password
 from services.catalog_backfill import etc_category_share, run_backfill
-from services.semantic_decisions import enqueue_all
+from services.family_change import AutoAcceptError, apply_auto_accept, preview_auto_accept
+from services.semantic_decisions import backfill_family_schemas, enqueue_all
 from services.work_families import load_seed
 
 
@@ -133,6 +134,60 @@ def semantic_enqueue_all() -> None:
             f"Удержана пачка №{batch_id}: контекстов={batch.contexts_count}, "
             f"резерв=${batch.reserve_estimate_usd:.4f}"
         )
+    finally:
+        db.close()
+
+
+@cli.command("semantic-auto-accept")
+@click.option("--yes", is_flag=True, help="Не спрашивать подтверждения (развёртывание без терминала)")
+def semantic_auto_accept(yes: bool) -> None:
+    """Массовое автопринятие опубликованных предложений по порогу
+    `SEMANTIC_AUTO_ACCEPT_THRESHOLD` (`services/family_change.apply_auto_accept`,
+    спека §2.12): показ числа решений по исходам таблицы публикации,
+    подтверждение, применение с хэшем показа одной транзакцией. Состояние
+    изменилось между показом и применением - ничего не применено."""
+    _guard("semantic-auto-accept")
+    db = SessionLocal()
+    try:
+        try:
+            preview = preview_auto_accept(db)
+        except AutoAcceptError as exc:
+            click.echo(f"Отказ: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        db.rollback()
+        click.echo(f"Порог: {preview.threshold}")
+        for outcome, count in preview.by_outcome.items():
+            click.echo(f"  {outcome}: {count}")
+        click.echo(f"Кандидатов всего: {preview.total}")
+        if not any(count for outcome, count in preview.by_outcome.items() if outcome != "none"):
+            click.echo("Применять нечего")
+            return
+        if not yes:
+            click.confirm("Применить?", abort=True)
+        try:
+            applied = apply_auto_accept(db, preview_hash=preview.preview_hash)
+            db.commit()
+        except AutoAcceptError as exc:
+            click.echo(f"Отказ: {exc}", err=True)
+            raise click.exceptions.Exit(1) from exc
+        click.echo("Применено: " + ", ".join(f"{k}={v}" for k, v in applied.items()))
+    finally:
+        db.close()
+
+
+@cli.command("semantic-schemas-backfill")
+def semantic_schemas_backfill() -> None:
+    """Постановка схем всем активным семьям без текущей версии одной пачкой
+    `mass` (`services/semantic_decisions.backfill_family_schemas`); сверх
+    потолка события пачка удерживается и ставится с экрана `admin`."""
+    _guard("semantic-schemas-backfill")
+    db = SessionLocal()
+    try:
+        report = backfill_family_schemas(db)
+        db.commit()
+        if report.held_batch_id is not None:
+            click.echo(f"Удержана пачка №{report.held_batch_id}")
+        click.echo(f"Заданий схем поставлено={report.created}, возвращено={report.revived}")
     finally:
         db.close()
 

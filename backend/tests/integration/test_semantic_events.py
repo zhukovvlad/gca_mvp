@@ -175,6 +175,30 @@ _SAMPLE_BUILDERS: dict[str, Callable[[int, int], dict[str, object]]] = {
     "family_merged": lambda ctx_id, fam_id: {
         "into_family_id": fam_id, "moved_contexts": 2, "source_title": "Старая семья",
     },
+    "context_variant_assigned": lambda ctx_id, fam_id: {
+        "from_variant_id": None, "to_variant_id": 7, "schema_version": 1,
+        "values": {"1": {"value_id": 5, "source": "name"}}, "promoted": False,
+        "reactivated_variant": False,
+    },
+    "context_family_pending": lambda ctx_id, fam_id: {
+        "pending_family_id": fam_id, "source": "manual", "suggestion_id": None,
+        "outcome": "set",
+    },
+    "context_not_work": lambda ctx_id, fam_id: {
+        "reason": "manual", "cleared_family_id": fam_id, "cleared_variant_id": None,
+    },
+    "family_schema_frozen": lambda ctx_id, fam_id: {
+        "schema_id": 3, "version": 1, "origin": "model",
+        "parameters": [{"name": "Толщина", "values": 2}], "job_id": None,
+    },
+    "family_schema_value_added": lambda ctx_id, fam_id: {
+        "parameter_id": 4, "value_id": 9, "value": "100 мм", "origin": "extension",
+        "context_id": ctx_id,
+    },
+    "family_variants_merged": lambda ctx_id, fam_id: {
+        "parameter_id": 4, "source_value_id": 9, "target_value_id": 10,
+        "merged_variants": [[11, 12]],
+    },
 }
 
 
@@ -215,6 +239,21 @@ _EXPECTED_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "family_activated": frozenset({"title", "unit"}),
     "family_archived": frozenset({"reason"}),
     "family_merged": frozenset({"into_family_id", "moved_contexts", "source_title"}),
+    "context_variant_assigned": frozenset(
+        {
+            "from_variant_id", "to_variant_id", "schema_version", "values", "promoted",
+            "reactivated_variant",
+        }
+    ),
+    "context_family_pending": frozenset({"pending_family_id", "source", "suggestion_id", "outcome"}),
+    "context_not_work": frozenset({"reason", "cleared_family_id", "cleared_variant_id"}),
+    "family_schema_frozen": frozenset({"schema_id", "version", "origin", "parameters", "job_id"}),
+    "family_schema_value_added": frozenset(
+        {"parameter_id", "value_id", "value", "origin", "context_id"}
+    ),
+    "family_variants_merged": frozenset(
+        {"parameter_id", "source_value_id", "target_value_id", "merged_variants"}
+    ),
 }
 
 _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
@@ -228,23 +267,32 @@ _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("members_marked_stale", "trigger"): frozenset({"category_override"}),
     ("kind_set", "source"): frozenset({"rule", "manual"}),
     ("name_role_set", "source"): frozenset({"rule", "manual"}),
-    ("context_family_assigned", "source"): frozenset({"manual", "suggestion"}),
+    ("context_family_assigned", "source"): frozenset({"manual", "suggestion", "auto_suggestion"}),
     ("routing_rules_dropped", "reason"): frozenset({"review_merge"}),
+    ("context_family_pending", "source"): frozenset({"manual", "suggestion", "auto_suggestion"}),
+    ("context_family_pending", "outcome"): frozenset(
+        {"set", "superseded", "cancelled", "applied", "redirected"}
+    ),
+    ("context_not_work", "reason"): frozenset({"manual", "position_kind"}),
+    ("family_schema_frozen", "origin"): frozenset({"model", "manual"}),
+    ("family_schema_value_added", "origin"): frozenset({"schema", "extension", "manual"}),
 }
 
 
-class TestExactlyFifteenTypes:
-    def test_event_required_keys_has_exactly_fifteen_types(self):
+class TestExactlyTwentyOneTypes:
+    def test_event_required_keys_has_exactly_twenty_one_types(self):
         expected_types = {
             "context_created", "context_split", "context_merged", "members_moved",
             "members_marked_stale", "kind_set", "name_role_set",
             "context_family_assigned", "context_archived", "routing_rules_dropped",
             "family_created", "family_updated", "family_activated",
             "family_archived", "family_merged",
+            "context_variant_assigned", "context_family_pending", "context_not_work",
+            "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
         }
-        assert len(expected_types) == 15
+        assert len(expected_types) == 21
         assert set(EVENT_REQUIRED_KEYS) == expected_types
-        assert len(EVENT_REQUIRED_KEYS) == 15
+        assert len(EVENT_REQUIRED_KEYS) == 21
 
 
 class TestRequiredKeysMatchIndependentLiteral:
@@ -256,7 +304,7 @@ class TestRequiredKeysMatchIndependentLiteral:
     равенство словарей."""
 
     def test_event_required_keys_equals_independent_literal(self):
-        assert len(_EXPECTED_REQUIRED_KEYS) == 15
+        assert len(_EXPECTED_REQUIRED_KEYS) == 21
         assert EVENT_REQUIRED_KEYS == _EXPECTED_REQUIRED_KEYS
 
 
@@ -270,7 +318,7 @@ class TestEnumValuesMatchIndependentLiteral:
     (то, что реально требуется)."""
 
     def test_event_enum_values_equals_independent_literal(self):
-        assert len(_EXPECTED_ENUM_VALUES) == 10
+        assert len(_EXPECTED_ENUM_VALUES) == 15
         assert EVENT_ENUM_VALUES == _EXPECTED_ENUM_VALUES
 
 
@@ -297,6 +345,12 @@ class TestEnumValuesAcceptedAndRejected:
         if (event_type, key, value) == ("context_family_assigned", "source", "suggestion"):
             # Для этого источника ключ `suggestion_id` обязателен условно (спека §2.14).
             payload["suggestion_id"] = 1
+        if (event_type, key, value) == ("context_family_assigned", "source", "auto_suggestion"):
+            # Автопринятие несёт предложение, порог и уверенность (спека вариантов §2.13).
+            payload.update(suggestion_id=1, threshold="0.95", confidence="0.97")
+        if (event_type, key, value) == ("context_family_pending", "source", "auto_suggestion"):
+            # Порог обязателен условно (спека вариантов §2.13).
+            payload["threshold"] = "0.95"
         kwargs = _call_kwargs(event_type, ctx.id, fam.id)
         event = record_event(db_session, event_type=event_type, payload=payload, **kwargs)
         assert event.id is not None
@@ -623,7 +677,7 @@ class TestExternalCrossCheckWithSchema:
         match = re.search(r"event_type IN \(([^)]*)\)", CK_EVENT_SUBJECT_BY_TYPE)
         assert match is not None
         parsed = {piece.strip().strip("'") for piece in match.group(1).split(",")}
-        assert len(parsed) == 5
+        assert len(parsed) == 8
         assert parsed == set(FAMILY_EVENT_TYPES)
 
     def test_union_equals_check_event_type_values(self):
@@ -634,7 +688,7 @@ class TestExternalCrossCheckWithSchema:
         parsed = {
             piece.strip().strip("'") for piece in SEMANTIC_EVENT_TYPES_SQL.split(",")
         }
-        assert len(parsed) == 15
+        assert len(parsed) == 21
         assert parsed == (FAMILY_EVENT_TYPES | CONTEXT_EVENT_TYPES)
 
     def test_family_and_context_types_are_disjoint(self):
@@ -697,11 +751,10 @@ class TestEachRequiredKeyIsEnforced:
         kwargs = _call_kwargs(event_type, ctx.id, fam.id)
         error = _rejected(db_session, event_type, payload, **kwargs)
         message = str(error)
-        assert key in message
-        for other_key in _EXPECTED_REQUIRED_KEYS[event_type]:
-            if other_key == key:
-                continue
-            assert other_key not in message, (
-                f"сообщение об отсутствующем ключе {key!r} назвало ещё и "
-                f"присутствующий ключ {other_key!r}: {message!r}"
-            )
+        # Сравниваем только перечень после двоеточия: имя типа события в начале
+        # сообщения может содержать имя ключа как подстроку (`family_schema_value_added`
+        # и ключ `value`), а ключи — как подстроки друг друга (`value`, `value_id`).
+        named = {name.strip() for name in message.split("payload: ", 1)[1].split(",")}
+        assert named == {key}, (
+            f"сообщение об отсутствующем ключе {key!r} назвало {sorted(named)}: {message!r}"
+        )

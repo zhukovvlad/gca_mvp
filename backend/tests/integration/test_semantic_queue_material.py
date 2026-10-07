@@ -469,7 +469,10 @@ class TestIsApplicableEndToEnd:
         assert material[archived].archived is True and material[control].archived is False
         assert material[system].semantic_kind == "SYSTEM" and material[control].semantic_kind != "SYSTEM"
         assert material[with_family].work_family_id == family.id and material[control].work_family_id is None
-        assert [is_applicable(material[c]) for c in (archived, system, with_family)] == [False, False, False]
+        # Привязка к семье применимость не отменяет (спека вариантов §2.5).
+        assert [is_applicable(material[c]) for c in (archived, system, with_family)] == [
+            False, False, True,
+        ]
 
 
 # ---------------------------------------------------------------------------

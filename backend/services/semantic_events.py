@@ -3,7 +3,8 @@
 спека `2026-09-22-catalog-families-design.md` §2.14).
 
 Таблица §2.14 — единственный источник истины для ``EVENT_REQUIRED_KEYS``:
-пятнадцать типов событий, каждому — свой набор обязательных ключей payload.
+пятнадцать типов событий, каждому — свой набор обязательных ключей payload;
+шесть типов миграции 0019 (спека вариантов §2.13) добавлены в те же реестры.
 Схема (миграция 0017, задача 1) держит закрытый список ``event_type`` и
 равносильность «тип ↔ предмет» (``CK_EVENT_SUBJECT_BY_TYPE``); состав ключей
 payload схемой не выражается — его держит валидатор здесь, ДО того, как
@@ -38,6 +39,7 @@ payload схемой не выражается — его держит вали�
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
@@ -50,8 +52,9 @@ class SemanticEventError(Exception):
     закрытого множества. Кидается ДО того, как что-либо достигает базы."""
 
 
-#: Ровно пять типов, предмет которых — семья (спека §2.14, равно множеству
-#: `CK_EVENT_SUBJECT_BY_TYPE` задачи 1 — сверка внешняя, тестом).
+#: Ровно восемь типов, предмет которых — семья: пять из спеки §2.14 и три из
+#: спеки вариантов §2.13 (равно множеству `CK_EVENT_SUBJECT_BY_TYPE` — сверка
+#: внешняя, тестом).
 FAMILY_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "family_created",
@@ -59,12 +62,19 @@ FAMILY_EVENT_TYPES: frozenset[str] = frozenset(
         "family_activated",
         "family_archived",
         "family_merged",
+        "family_schema_frozen",
+        "family_schema_value_added",
+        "family_variants_merged",
     }
 )
 
-#: Остальные десять типов — предмет контекст (спека §2.14).
+#: Остальные тринадцать типов — предмет контекст: десять из спеки §2.14 и три
+#: из спеки вариантов §2.13.
 CONTEXT_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        "context_variant_assigned",
+        "context_family_pending",
+        "context_not_work",
         "context_created",
         "context_split",
         "context_merged",
@@ -99,6 +109,28 @@ EVENT_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "family_activated": frozenset({"title", "unit"}),
     "family_archived": frozenset({"reason"}),
     "family_merged": frozenset({"into_family_id", "moved_contexts", "source_title"}),
+    # Спека вариантов §2.13. `context_family_pending.threshold` в этот набор не
+    # входит: он обязателен условно (источник `auto_suggestion`), как
+    # `context_family_assigned.suggestion_id` — см. `_validate_pending_threshold`.
+    "context_variant_assigned": frozenset(
+        {
+            "from_variant_id", "to_variant_id", "schema_version", "values", "promoted",
+            "reactivated_variant",
+        }
+    ),
+    "context_family_pending": frozenset(
+        {"pending_family_id", "source", "suggestion_id", "outcome"}
+    ),
+    "context_not_work": frozenset({"reason", "cleared_family_id", "cleared_variant_id"}),
+    "family_schema_frozen": frozenset(
+        {"schema_id", "version", "origin", "parameters", "job_id"}
+    ),
+    "family_schema_value_added": frozenset(
+        {"parameter_id", "value_id", "value", "origin", "context_id"}
+    ),
+    "family_variants_merged": frozenset(
+        {"parameter_id", "source_value_id", "target_value_id", "merged_variants"}
+    ),
 }
 
 #: (тип события, ключ payload) → допустимые значения перечислимого ключа
@@ -116,6 +148,13 @@ EVENT_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("name_role_set", "source"): frozenset(member.value for member in DecisionSource),
     ("context_family_assigned", "source"): frozenset(member.value for member in FamilySource),
     ("routing_rules_dropped", "reason"): frozenset({"review_merge"}),
+    ("context_family_pending", "source"): frozenset(member.value for member in FamilySource),
+    ("context_family_pending", "outcome"): frozenset(
+        {"set", "superseded", "cancelled", "applied", "redirected"}
+    ),
+    ("context_not_work", "reason"): frozenset({"manual", "position_kind"}),
+    ("family_schema_frozen", "origin"): frozenset({"model", "manual"}),
+    ("family_schema_value_added", "origin"): frozenset({"schema", "extension", "manual"}),
 }
 
 
@@ -176,28 +215,81 @@ def _validate_family_updated_changed(payload: Mapping[str, object]) -> None:
                 )
 
 
+def _require_suggestion_id(payload: Mapping[str, object], source: str) -> None:
+    if "suggestion_id" not in payload:
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': источник {source!r} требует ключ "
+            "'suggestion_id'"
+        )
+    value = payload["suggestion_id"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SemanticEventError(
+            "событие 'context_family_assigned': ключ 'suggestion_id' при источнике "
+            f"{source!r} обязан быть целым числом, получено {value!r}"
+        )
+
+
+def _require_unit_interval_decimal(payload: Mapping[str, object], key: str) -> None:
+    """Ключ — строка десятичного числа в `(0, 1]` (`AGENTS.md` §3: `Decimal`
+    в JSON — строка, не число)."""
+    if key not in payload:
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': источник 'auto_suggestion' требует ключ {key!r}"
+        )
+    value = payload[key]
+    try:
+        number = Decimal(value) if isinstance(value, str) else None
+    except InvalidOperation:
+        number = None
+    if number is None or not number.is_finite() or not Decimal(0) < number <= Decimal(1):
+        raise SemanticEventError(
+            f"событие 'context_family_assigned': ключ {key!r} обязан быть строкой "
+            f"десятичного числа в (0, 1], получено {value!r}"
+        )
+
+
 def _validate_family_assigned_suggestion_id(payload: Mapping[str, object]) -> None:
-    """`context_family_assigned.suggestion_id` обязателен условно: источник
-    `suggestion` требует ключ с целым значением (`bool` — не целое), источник
-    `manual` ключ запрещает. `EVENT_REQUIRED_KEYS` для типа остаётся прежним —
-    множество ключей не выражает условной обязательности."""
+    """Условная обязательность ключей `context_family_assigned`: источник
+    `suggestion` требует `suggestion_id` (целое, `bool` — не целое); источник
+    `auto_suggestion` требует ещё `threshold` и `confidence` — строки
+    десятичного числа в `(0, 1]`; источник `manual` не допускает ни одного из
+    трёх, `suggestion` — `threshold` и `confidence`. `EVENT_REQUIRED_KEYS` для
+    типа остаётся прежним — множество ключей не выражает условной
+    обязательности."""
     source = payload["source"]
-    if source == "suggestion":
-        if "suggestion_id" not in payload:
-            raise SemanticEventError(
-                "событие 'context_family_assigned': источник 'suggestion' требует ключ "
-                "'suggestion_id'"
-            )
-        value = payload["suggestion_id"]
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise SemanticEventError(
-                "событие 'context_family_assigned': ключ 'suggestion_id' при источнике "
-                f"'suggestion' обязан быть целым числом, получено {value!r}"
-            )
+    if source in ("suggestion", "auto_suggestion"):
+        _require_suggestion_id(payload, source)
     elif "suggestion_id" in payload:
         raise SemanticEventError(
             "событие 'context_family_assigned': источник 'manual' не допускает ключ "
             "'suggestion_id'"
+        )
+    if source == "auto_suggestion":
+        _require_unit_interval_decimal(payload, "threshold")
+        _require_unit_interval_decimal(payload, "confidence")
+    else:
+        for key in ("threshold", "confidence"):
+            if key in payload:
+                raise SemanticEventError(
+                    f"событие 'context_family_assigned': ключ {key!r} допустим только при "
+                    f"источнике 'auto_suggestion', получен источник {source!r}"
+                )
+
+
+def _validate_pending_threshold(payload: Mapping[str, object]) -> None:
+    """`context_family_pending.threshold` обязателен условно (спека вариантов
+    §2.13: «при `auto_suggestion`»): источник `auto_suggestion` требует ключ,
+    прочие источники его запрещают."""
+    if payload["source"] == "auto_suggestion":
+        if "threshold" not in payload:
+            raise SemanticEventError(
+                "событие 'context_family_pending': источник 'auto_suggestion' требует ключ "
+                "'threshold'"
+            )
+    elif "threshold" in payload:
+        raise SemanticEventError(
+            "событие 'context_family_pending': ключ 'threshold' допустим только при "
+            f"источнике 'auto_suggestion', получен источник {payload['source']!r}"
         )
 
 
@@ -249,6 +341,8 @@ def _validate_payload(event_type: str, payload: object) -> None:
         _validate_family_updated_changed(payload)
     if event_type == "context_family_assigned":
         _validate_family_assigned_suggestion_id(payload)
+    if event_type == "context_family_pending":
+        _validate_pending_threshold(payload)
 
 
 def record_event(

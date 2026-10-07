@@ -307,16 +307,17 @@ def _capturing_sql(session):
 #: Число SQL-запросов `GET /contexts/{id}` (всё, что `_capturing_sql` видит за
 #: время запроса) на контексте с членствами под одним разделом, после удаления
 #: членств поштучно из карточки (спека `2026-09-25-families-screen-design.md`
-#: §2.8 п. 5). Замер по `statements_small` — восемь: загрузка корзины и строки
+#: §2.8 п. 5). Замер по `statements_small` — девять: загрузка корзины и строки
 #: каталога (сам контекст уже лежит в identity map сессии), представительное
 #: членство, счётчик членств, сводки групп членств (`GROUP BY` раздела), пути
-#: групп одним рекурсивным CTE, соседи по корзине, журнал. Статьи у корзины
+#: групп одним рекурсивным CTE, соседи по корзине, журнал, состояние задания значений (блок `variant`;
+#: ни варианта, ни ожидания у контекста нет). Статьи у корзины
 #: этого теста нет (`_bucket` без `work_category_id`), поэтому ни загрузки
 #: статьи, ни запроса её пути классификатора (`_work_category_path`) в числе
-#: нет — у корзины со статьёй их до двух сверх восьми, и тоже константой. Держит утверждение «число запросов карточки не растёт ни с числом членств,
+#: нет — у корзины со статьёй их до двух сверх девяти, и тоже константой. Держит утверждение «число запросов карточки не растёт ни с числом членств,
 #: ни с числом уникальных путей, ни с их глубиной» (спека §2.8) в абсолютной
 #: форме — см. `test_card_members_query_count_independent_of_member_count`.
-_CARD_QUERY_COUNT = 8
+_CARD_QUERY_COUNT = 9
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +410,30 @@ SEMANTIC_QUEUE_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(SEMANTIC_QUEUE_ROUTE_TEMPLATES) == 19
 
+#: Маршруты схемы семьи, вариантов, ожидания, «не работа», глобальной пометки
+#: строки и автопринятия (спека `2026-10-02-catalog-variants-design.md` §2.12) —
+#: ШАБЛОНАМИ пути, независимо от `app.routes`. `POST /contexts/{id}/family`,
+#: `GET /suggestions?queue=change` и `GET /status` — прежние маршруты с новым
+#: смыслом и в литерал не входят. Права на них перебирает
+#: `test_work_variants_api.py`.
+WORK_VARIANT_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/families/{{family_id}}/schema"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/rebuild/preview"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/rebuild"),
+        ("PATCH", f"{BASE}/families/{{family_id}}/schema"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/cancel"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/values/merge"),
+        ("GET", f"{BASE}/families/{{family_id}}/variants"),
+        ("DELETE", f"{BASE}/contexts/{{context_id}}/pending-family"),
+        ("POST", f"{BASE}/contexts/{{context_id}}/not-work"),
+        ("POST", f"{BASE}/positions/{{position_id}}/kind"),
+        ("POST", f"{BASE}/auto-accept/preview"),
+        ("POST", f"{BASE}/auto-accept"),
+    }
+)
+assert len(WORK_VARIANT_ROUTE_TEMPLATES) == 12
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -418,10 +443,15 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
     §2.8 п. 3-4) и литерала маршрутов экрана «Предложения» — роутер общий, и
     добавленные им маршруты не должны красить проверку прежнего набора. Литералы
     не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
-    в наборе нет."""
+    в наборе нет. Третий литерал — маршруты вариантов и промоушена."""
     assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
+    assert not WORK_VARIANT_ROUTE_TEMPLATES & (
+        TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
+    )
     collected = _collect_semantic_routes()
-    assert collected == TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
+    assert collected == (
+        TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES | WORK_VARIANT_ROUTE_TEMPLATES
+    )
     assert not any(path.endswith("/restore") for _method, path in collected)
 
 
@@ -2524,12 +2554,13 @@ class TestContextCard:
         card = admin_client.get(f"{BASE}/contexts/{ctx.id}")
         assert card.status_code == 422
 
-    @pytest.mark.parametrize("route", ["kind", "name-role", "family"])
+    @pytest.mark.parametrize("route", ["kind", "name-role"])
     def test_mutation_route_commits_even_when_card_read_gives_422(
         self, admin_client, db_session, factories, route
     ):
         """Каждая мутация, отдающая карточку в ответе (`POST .../kind`,
-        `.../name-role`, `.../family`), обязана ЗАКОММИТИТЬСЯ, даже если
+        `.../name-role`; `POST .../family` карточки больше не отдаёт — его
+        ответ несёт исход смены семьи), обязана ЗАКОММИТИТЬСЯ, даже если
         чтение карточки для ОТВЕТА отказывает доменной ошибкой — цикл
         разделов ВЫШЕ ближайшего раздела членства, тот же приём, что
         `test_card_of_context_with_cycle_above_its_chapter_gives_422`. Ответ
@@ -2546,16 +2577,14 @@ class TestContextCard:
         bucket = _bucket(db_session, catalog_position=cp)
         # Исходное состояние отличается от того, что пишет каждая мутация:
         # вид SYSTEM (мутация — WORK), роль WORK от правила (мутация —
-        # LOCATION_ONLY вручную), семьи нет (мутация — назначает).
+        # LOCATION_ONLY вручную).
         ctx = _context(
             db_session, bucket,
             semantic_kind=SemanticKind.SYSTEM.value if route == "kind" else SemanticKind.WORK.value,
         )
-        family = _family(db_session, admin_client.user, title="Семья под циклом", unit_name="M2")
         body = {
             "kind": {"kind": "WORK"},
             "name-role": {"role": NameRole.LOCATION_ONLY.value},
-            "family": {"family_id": family.id},
         }[route]
 
         chapter_a = _chapter(factories, proposal, title="Циклический А")
@@ -2579,17 +2608,14 @@ class TestContextCard:
                 CatalogContext.semantic_kind_source,
                 CatalogContext.name_role,
                 CatalogContext.name_role_source,
-                CatalogContext.work_family_id,
             ).where(CatalogContext.id == ctx.id)
         ).one()
         if route == "kind":
             assert row.semantic_kind == SemanticKind.WORK.value
             assert row.semantic_kind_source == DecisionSource.manual.value
-        elif route == "name-role":
+        else:
             assert row.name_role == NameRole.LOCATION_ONLY.value
             assert row.name_role_source == DecisionSource.manual.value
-        else:
-            assert row.work_family_id == family.id
 
     def test_card_member_paths_equal_counts_ordered_by_path(
         self, admin_client, db_session, factories
@@ -3283,12 +3309,15 @@ class TestContextOperations:
 
         assign = admin_client.post(f"{BASE}/contexts/{ctx.id}/family", json={"family_id": family.id})
         assert assign.status_code == 200
-        assert assign.json()["work_family_id"] == family.id
+        assert assign.json()["outcome"] == "assigned"
+        assert admin_client.get(f"{BASE}/contexts/{ctx.id}").json()["work_family_id"] == family.id
 
         unassign = admin_client.post(f"{BASE}/contexts/{ctx.id}/family", json={"family_id": None})
         assert unassign.status_code == 200
-        assert unassign.json()["work_family_id"] is None
-        assert unassign.json()["family_source"] is None
+        assert unassign.json()["outcome"] == "assigned"
+        card = admin_client.get(f"{BASE}/contexts/{ctx.id}").json()
+        assert card["work_family_id"] is None
+        assert card["family_source"] is None
 
     def test_split_context_without_rule_moves_selected_members(self, admin_client, db_session, factories):
         proposal = _proposal(factories)

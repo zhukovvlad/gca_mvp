@@ -29,10 +29,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/lib/useDebounce";
 import { useSemanticContexts } from "@/services/queries";
-import type { ContextRow, NameRole, SemanticKind, SemanticState } from "@/types/domain";
+import type { ContextRow, NameRole, SemanticKind, SemanticState, VariantState } from "@/types/domain";
 
 import { ContextCard } from "./ContextCard";
-import { NAME_ROLE_LABEL, SEMANTIC_KIND_LABEL, SEMANTIC_STATE_LABEL } from "./labels";
+import { NAME_ROLE_LABEL, SEMANTIC_KIND_LABEL, SEMANTIC_STATE_LABEL, VARIANT_STATE_LABEL } from "./labels";
 import { SourceChip } from "./SourceChip";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -41,6 +41,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const KIND_OPTIONS: SemanticKind[] = ["WORK", "SYSTEM", "UNKNOWN"];
 const ROLE_OPTIONS: NameRole[] = ["WORK", "LOCATION_ONLY", "GENERIC_WORK"];
 const STATE_OPTIONS: SemanticState[] = ["SUGGESTED", "CONFIRMED", "NOT_APPLICABLE"];
+const VARIANT_OPTIONS: VariantState[] = ["with", "without"];
 
 /**
  * Причины точки внимания строки (спека §2.4, §2.6) — «пустой» вытесняет
@@ -116,6 +117,9 @@ export function ContextsTab() {
   const [hasStale, setHasStale] = useState(false);
   const [hasConflicting, setHasConflicting] = useState(false);
   const [hasNoMembers, setHasNoMembers] = useState(false);
+  const [variantState, setVariantState] = useState<string>(ANY);
+  const [pending, setPending] = useState(false);
+  const [splitHint, setSplitHint] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePersistedPageSize(
     "gca.families.contexts.pageSize",
@@ -135,6 +139,10 @@ export function ContextsTab() {
     has_stale_members: hasStale || undefined,
     has_conflicting_members: hasConflicting || undefined,
     has_no_members: hasNoMembers || undefined,
+    // Фильтры вариантов считает сервер до пагинации: строки списка признаков варианта не несут.
+    variant_state: variantState === ANY ? undefined : (variantState as VariantState),
+    pending: pending || undefined,
+    split_hint: splitHint || undefined,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
@@ -277,6 +285,28 @@ export function ContextsTab() {
             </SelectContent>
           </Select>
 
+          <Select
+            value={variantState}
+            onValueChange={(v) => {
+              setVariantState(v ?? ANY);
+              resetToFirstPage();
+            }}
+          >
+            <SelectTrigger id="filter-variant" aria-label="Вариант" className="w-40">
+              <SelectValue>
+                {(raw) =>
+                  !raw || raw === ANY ? "Любой вариант" : VARIANT_STATE_LABEL[raw as VariantState]
+                }
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ANY}>Любой вариант</SelectItem>
+              {VARIANT_OPTIONS.map((v) => (
+                <SelectItem key={v} value={v}>{VARIANT_STATE_LABEL[v]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-stale"
@@ -302,6 +332,24 @@ export function ContextsTab() {
               onCheckedChange={(checked) => { setHasNoMembers(checked === true); resetToFirstPage(); }}
             />
             <Label htmlFor="filter-no-members" className="text-sm font-normal">пустые</Label>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <Checkbox
+              id="filter-pending"
+              checked={pending}
+              onCheckedChange={(checked) => { setPending(checked === true); resetToFirstPage(); }}
+            />
+            <Label htmlFor="filter-pending" className="text-sm font-normal">ожидает семьи</Label>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <Checkbox
+              id="filter-split-hint"
+              checked={splitHint}
+              onCheckedChange={(checked) => { setSplitHint(checked === true); resetToFirstPage(); }}
+            />
+            <Label htmlFor="filter-split-hint" className="text-sm font-normal">к делению</Label>
           </div>
         </div>
 

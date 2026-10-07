@@ -18,7 +18,6 @@ import sqlalchemy as sa
 
 from models import (
     CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR,
-    CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR,
     CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON,
     CK_RECONCILE_BATCHES_HELD_NO_DECIDED_AT,
     CK_RECONCILE_BATCHES_HELD_NO_DECIDED_BY,
@@ -35,7 +34,6 @@ from models import (
     SEMANTIC_ATTEMPT_OUTCOMES,
     SEMANTIC_CANCEL_REASONS,
     SEMANTIC_JOB_STATUSES,
-    SUGGESTION_DECISIONS,
     SUGGESTION_UNPUBLISHED_REASONS,
     CatalogContext,
     ContextBucket,
@@ -303,7 +301,7 @@ class TestSemanticJobsEquivalences:
     def test_duplicate_context_and_request_hash_rejected(self, db_session, factories):
         ctx = _context(db_session, factories)
         _job(db_session, factories, context=ctx, request_hash="dup-hash")
-        with rejected(db_session, contains='"uq_semantic_jobs_context_request_hash"'):
+        with rejected(db_session, contains='"uq_semantic_jobs_subject_request_hash"'):
             _job(db_session, factories, context=ctx, request_hash="dup-hash")
 
     def test_same_request_hash_different_context_passes(self, db_session, factories):
@@ -690,7 +688,9 @@ class TestParityWithMigration:
          {"ok", "transient_error", "permanent_error", "schema_error", "lost_claim"}),
         (SUGGESTION_UNPUBLISHED_REASONS, "SUGGESTION_UNPUBLISHED_REASONS",
          {"stale_fingerprint", "lost_claim", "context_not_applicable", "rejected"}),
-        (SUGGESTION_DECISIONS, "SUGGESTION_DECISIONS",
+        # Расширено миграцией 0019: здесь замороженная редакция 0018 против её
+        # прежнего литерала; `models.py` против 0019 — test_work_variants_schema.py.
+        ("'accepted', 'rejected', 'other_family', 'family_created'", "SUGGESTION_DECISIONS",
          {"accepted", "rejected", "other_family", "family_created"}),
         (RECONCILE_BATCH_SOURCES, "RECONCILE_BATCH_SOURCES",
          {"import", "operation", "mass", "unit_reask", "config_reask"}),
@@ -716,7 +716,11 @@ class TestParityWithMigration:
             CK_SEMANTIC_JOBS_PRIVACY_HOLD_REQUIRES_MATCHES,
             "CK_SEMANTIC_JOBS_PRIVACY_HOLD_REQUIRES_MATCHES",
         ),
-        (CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR, "CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR"),
+        # Расширено миграцией 0019: замороженная редакция 0018 против прежнего литерала.
+        (
+            "(decision IS NULL) = (decided_by IS NULL)",
+            "CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR",
+        ),
         (CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR, "CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR"),
         (
             CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON,
@@ -1049,11 +1053,12 @@ class TestDowngradeFifthInputReal:
                         conn.execute(
                             sa.text(
                                 "INSERT INTO semantic_jobs "
-                                "(context_id, request_hash, status, prompt_version, model_requested, "
-                                " place_dictionary_version, candidates_hash, prefix_hash, input_hash, "
-                                " response_schema_version, serialization_version) "
-                                "VALUES (:context_id, 'scratch-hash', 'pending', 'v1', 'gpt-test', 1, "
-                                " 'c', 'p', 'i', 'v1', 'v1')"
+                                "(kind, context_id, request_hash, status, prompt_version, "
+                                " model_requested, place_dictionary_version, candidates_hash, "
+                                " prefix_hash, input_hash, response_schema_version, "
+                                " serialization_version) "
+                                "VALUES ('family_suggestion', :context_id, 'scratch-hash', "
+                                " 'pending', 'v1', 'gpt-test', 1, 'c', 'p', 'i', 'v1', 'v1')"
                             ),
                             {"context_id": context_id},
                         )

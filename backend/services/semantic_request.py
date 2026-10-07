@@ -205,8 +205,10 @@ def top_path(path_counts: Sequence[tuple[str, int]]) -> str:
 def is_applicable(material: ContextRequestMaterial) -> bool:
     """Контекст получает задания, только если ОДНОВРЕМЕННО (спека §2.7): не
     архивирован и имеет хотя бы одно членство; `semantic_state <>
-    'NOT_APPLICABLE'`; `semantic_kind <> 'SYSTEM'`; `work_family_id IS NULL`;
-    у единицы контекста есть хотя бы одна активная семья. В базу не ходит —
+    'NOT_APPLICABLE'`; `semantic_kind <> 'SYSTEM'`; у единицы контекста есть
+    хотя бы одна активная семья. Привязка к семье применимость не отменяет:
+    привязанный контекст тоже получает задание (пересмотр привязок, спека
+    вариантов §2.5). В базу не ходит —
     решает по уже загруженному `material` (кандидаты — его часть)."""
     if material.archived:
         return False
@@ -215,8 +217,6 @@ def is_applicable(material: ContextRequestMaterial) -> bool:
     if material.semantic_state == SemanticState.NOT_APPLICABLE.value:
         return False
     if material.semantic_kind == SemanticKind.SYSTEM.value:
-        return False
-    if material.work_family_id is not None:
         return False
     if material.path_broken:
         return False

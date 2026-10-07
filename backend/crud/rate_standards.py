@@ -147,6 +147,22 @@ def get_rate_standard_dict(db: Session, standard_id: int) -> dict:
     return _standard_dict(*row)
 
 
+def _read_position(
+    db: Session, catalog_position_id: int, *, lock_shared: bool
+) -> CatalogPosition | None:
+    """Строка каталога для проверок норматива. При создании она берётся
+    `FOR SHARE` (`with_for_update(read=True)`) ДО проверки вида и держится до
+    конца транзакции: глобальная пометка строки (`set_position_kind_global`)
+    берёт её `FOR UPDATE` и проверяет нормативы под этим замком, поэтому из двух
+    операций успешна ровно одна — проигравшая видит итог победителя (норматив
+    либо новый вид). `populate_existing`: копия строки в сессии вызывающего
+    не должна подменять прочитанное под замком."""
+    statement = sa.select(CatalogPosition).where(CatalogPosition.id == catalog_position_id)
+    if lock_shared:
+        statement = statement.with_for_update(read=True).execution_options(populate_existing=True)
+    return db.execute(statement).scalar_one_or_none()
+
+
 def _require_refs(
     db: Session, catalog_position_id: int, rate_class_id: int, *, require_position_kind: bool = False
 ) -> tuple[str, str]:
@@ -158,7 +174,7 @@ def _require_refs(
             (работа, класс) в правке не меняется, а `kind` строки правкой
             норматива не управляется.
     """
-    position = db.get(CatalogPosition, catalog_position_id)
+    position = _read_position(db, catalog_position_id, lock_shared=require_position_kind)
     if position is None:
         raise DomainError(404, f"Каталожная строка {catalog_position_id} не найдена.")
     if require_position_kind and position.kind != CatalogKind.POSITION.value:

@@ -14,12 +14,11 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-import services.work_families as work_families_module
+import services.semantic_reconcile as reconcile_module
 from config import settings
 from models import (
     CatalogContext,
     FamilySource,
-    SemanticCancelReason,
     SemanticEvent,
     SemanticJob,
     SemanticJobStatus,
@@ -295,9 +294,14 @@ class TestRecordEventSuggestionId:
 # ---------------------------------------------------------------------------
 
 class TestReconcileOnAssignAndUnassign:
-    def test_unassign_creates_pending_for_applicable_context(self, db_session, factories):
-        user, family, context_id = _setup(db_session, factories, title="Снятие создаёт задание")
+    def test_unassign_reconciles_the_still_applicable_context(self, db_session, factories):
+        """Снятие семьи зовёт сверку: у контекста без заданий она ставит
+        задание (заявление прежнего `test_unassign_creates_pending...`; после
+        правила применимости вариантов привязанный контекст тоже применим,
+        поэтому вход — контекст, чьи задания убраны перед снятием)."""
+        user, family, context_id = _setup(db_session, factories, title="Снятие сверяет очередь")
         assign_family(db_session, context_id=context_id, family_id=family.id, actor_id=user.id)
+        db_session.execute(sa.delete(SemanticJob).where(SemanticJob.context_id == context_id))
         assert _jobs(db_session, context_id) == []
 
         assign_family(db_session, context_id=context_id, family_id=None, actor_id=user.id)
@@ -305,8 +309,19 @@ class TestReconcileOnAssignAndUnassign:
         (job,) = _jobs(db_session, context_id)
         assert job.status == SemanticJobStatus.pending.value
 
-    def test_assign_cancels_open_pending_as_not_applicable(self, db_session, factories):
-        user, family, context_id = _setup(db_session, factories, title="Назначение отменяет задание")
+    def test_unassign_keeps_one_pending_job_for_applicable_context(self, db_session, factories):
+        user, family, context_id = _setup(db_session, factories, title="Снятие создаёт задание")
+        assign_family(db_session, context_id=context_id, family_id=family.id, actor_id=user.id)
+        (bound_job,) = _jobs(db_session, context_id)
+        assert bound_job.status == SemanticJobStatus.pending.value
+
+        assign_family(db_session, context_id=context_id, family_id=None, actor_id=user.id)
+
+        (job,) = _jobs(db_session, context_id)
+        assert (job.id, job.status) == (bound_job.id, SemanticJobStatus.pending.value)
+
+    def test_assign_keeps_the_open_pending_job_of_a_now_bound_context(self, db_session, factories):
+        user, family, context_id = _setup(db_session, factories, title="Назначение не отменяет задание")
         reconcile_semantic_jobs(db_session, [context_id], cap=NO_CAP, source="operation")
         (job,) = _jobs(db_session, context_id)
         assert job.status == SemanticJobStatus.pending.value
@@ -315,13 +330,11 @@ class TestReconcileOnAssignAndUnassign:
 
         db_session.expire_all()
         job = db_session.get(SemanticJob, job.id)
-        assert job.status == SemanticJobStatus.cancelled.value
-        assert job.cancel_reason == SemanticCancelReason.not_applicable.value
+        assert (job.status, job.cancel_reason) == (SemanticJobStatus.pending.value, None)
 
     def test_assign_by_suggestion_also_reconciles(self, db_session, factories):
-        user, family, context_id = _setup(db_session, factories, title="Предложение отменяет задание")
-        reconcile_semantic_jobs(db_session, [context_id], cap=NO_CAP, source="operation")
-        (job,) = _jobs(db_session, context_id)
+        user, family, context_id = _setup(db_session, factories, title="Предложение ставит задание")
+        assert _jobs(db_session, context_id) == []
 
         assign_family(
             db_session,
@@ -332,12 +345,13 @@ class TestReconcileOnAssignAndUnassign:
             suggestion_id=11,
         )
 
-        db_session.expire_all()
-        assert db_session.get(SemanticJob, job.id).status == SemanticJobStatus.cancelled.value
+        (job,) = _jobs(db_session, context_id)
+        assert job.status == SemanticJobStatus.pending.value
 
     def test_event_cap_is_read_from_settings_at_call_time(self, db_session, factories, monkeypatch):
         user, family, context_id = _setup(db_session, factories, title="Потолок из настроек")
         assign_family(db_session, context_id=context_id, family_id=family.id, actor_id=user.id)
+        db_session.execute(sa.delete(SemanticJob))
         monkeypatch.setattr(settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 0)
         monkeypatch.setattr(settings, "SEMANTIC_EVENT_MAX_RESERVE_USD", Decimal("1000000"))
 
@@ -345,7 +359,7 @@ class TestReconcileOnAssignAndUnassign:
 
         assert _jobs(db_session, context_id) == []
         held = db_session.execute(sa.select(SemanticReconcileBatch)).scalars().all()
-        assert [batch.status for batch in held] == ["held"]
+        assert [(batch.status, batch.source) for batch in held] == [("held", "operation")]
 
     def test_reconcile_failure_propagates_and_rolls_back_assignment(
         self, db_session, factories, monkeypatch
@@ -355,7 +369,7 @@ class TestReconcileOnAssignAndUnassign:
         def _failing_reconcile(*args, **kwargs):
             raise RuntimeError("сверка упала")
 
-        monkeypatch.setattr(work_families_module, "reconcile_semantic_jobs", _failing_reconcile)
+        monkeypatch.setattr(reconcile_module, "reconcile_semantic_jobs", _failing_reconcile)
         savepoint = db_session.begin_nested()
 
         with pytest.raises(RuntimeError, match="сверка упала"):

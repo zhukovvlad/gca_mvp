@@ -28,7 +28,11 @@ _INT_AT_LEAST_1 = [
     "SEMANTIC_CALL_TIMEOUT_S",
     "SEMANTIC_MAX_ATTEMPTS",
 ]
-_INT_AT_LEAST_0 = ["SEMANTIC_SHUTDOWN_WAIT_S", "SEMANTIC_EVENT_MAX_CONTEXTS"]
+_INT_AT_LEAST_0 = [
+    "SEMANTIC_SHUTDOWN_WAIT_S",
+    "SEMANTIC_EVENT_MAX_CONTEXTS",
+    "SEMANTIC_SWEEP_INTERVAL_S",
+]
 _DECIMAL_AT_LEAST_0 = [
     "SEMANTIC_PRICE_INPUT_PER_M",
     "SEMANTIC_PRICE_CACHE_WRITE_PER_M",
@@ -82,3 +86,7 @@ def test_semantic_queue_settings_concurrency_zero_from_environment(monkeypatch):
     with pytest.raises(ValidationError) as excinfo:
         Settings(_env_file=None, SECRET_KEY=_KEY)
     _assert_rejected_only("SEMANTIC_CONCURRENCY", excinfo)
+
+
+def test_semantic_queue_settings_sweep_interval_defaults_to_five_minutes():
+    assert _load().SEMANTIC_SWEEP_INTERVAL_S == 300
