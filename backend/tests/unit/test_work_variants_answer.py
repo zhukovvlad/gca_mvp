@@ -150,12 +150,12 @@ class TestResponseFormats:
             assert not _conforms(schema, {"values": [bad]}), bad
 
     def test_schema_answer_valid_by_format_but_rule_violating_is_rejected(self):
-        # Имя из пробелов, 9 значений, дубль ordinal, 4 параметра: формат всё
+        # Имя из пробелов, 17 значений, дубль ordinal, 4 параметра: формат всё
         # это пропускает, разбор отвергает.
         schema = _schema_of(SCHEMA_RESPONSE_FORMAT)
         cases = {
             "empty_value": {"parameters": [_param(1, "   ", ["a"])]},
-            "bad_count": {"parameters": [_param(1, "n", [str(i) for i in range(9)])]},
+            "bad_count": {"parameters": [_param(1, "n", [str(i) for i in range(17)])]},
             "bad_ordinal": {"parameters": [_param(1, "a", ["x"]), _param(1, "b", ["y"])]},
         }
         for code, payload in cases.items():
@@ -193,13 +193,13 @@ class TestParseSchemaAnswer:
     def test_three_parameters_and_value_bounds(self):
         raw = _schema_raw([
             _param(1, "Материал", ["бетон"]),
-            _param(2, "Толщина", [str(i) for i in range(8)]),
+            _param(2, "Толщина", [str(i) for i in range(16)]),
             _param(3, "Класс", ["B15", "B25"]),
         ])
         answer = parse_schema_answer(raw)
         assert [p.ordinal for p in answer.parameters] == [1, 2, 3]
         assert answer.parameters[0] == SchemaParameterIn(1, "Материал", ("бетон",))
-        assert len(answer.parameters[1].values) == 8
+        assert len(answer.parameters[1].values) == 16
         assert isinstance(answer.parameters, tuple)
         assert isinstance(answer.parameters[0].values, tuple)
 
@@ -214,8 +214,10 @@ class TestParseSchemaAnswer:
     def test_zero_values_is_bad_count(self):
         _expect("bad_count", parse_schema_answer, _schema_raw([_param(1, "a", [])]))
 
-    def test_nine_values_is_bad_count(self):
-        raw = _schema_raw([_param(1, "a", [str(i) for i in range(9)])])
+    def test_sixteen_values_accepted_and_seventeen_is_bad_count(self):
+        ok = parse_schema_answer(_schema_raw([_param(1, "a", [str(i) for i in range(16)])]))
+        assert len(ok.parameters[0].values) == 16
+        raw = _schema_raw([_param(1, "a", [str(i) for i in range(17)])])
         _expect("bad_count", parse_schema_answer, raw)
 
     def test_blank_name_is_empty_value(self):

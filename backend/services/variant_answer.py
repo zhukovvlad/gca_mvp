@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 _ORDINALS: Final = [1, 2, 3]
 
 #: `{"parameters": [{"ordinal", "name", "values": [...]}]}`; число параметров
-#: (0–3), число значений (1–8) и непустота проверяются при разборе ответа, а не
+#: (0–3), число значений (1–16) и непустота проверяются при разборе ответа, а не
 #: схемой: строгий режим поддерживает не все ограничения размера.
 SCHEMA_RESPONSE_FORMAT: Final = {
     "type": "json_schema",
@@ -112,7 +112,7 @@ VariantErrorCode = Literal[
 ]
 
 MAX_PARAMETERS: Final = 3
-MAX_VALUES_PER_PARAMETER: Final = 8
+MAX_VALUES_PER_PARAMETER: Final = 16
 
 ValueKind = Literal["value", "new", "conflict", "none"]
 _KINDS: Final = ("value", "new", "conflict", "none")
@@ -200,7 +200,7 @@ def parse_schema_answer(raw: str) -> SchemaAnswer:
 
     Обрамление, единственный объект и повтор ключа — как у фичи 2. Затем:
     ключи верхнего уровня, число параметров (0-3), на каждый параметр — ключи,
-    `ordinal`, имя, значения (1-8, каждое непустое); в конце `ordinal` обязаны
+    `ordinal`, имя, значения (1-16, каждое непустое); в конце `ordinal` обязаны
     образовать `1..N` без дублей и пропусков. Строки не нормализуются: имя и
     значения возвращаются как пришли (нормализация — при записи в базу)."""
     from services.variant_request import SchemaParameterIn

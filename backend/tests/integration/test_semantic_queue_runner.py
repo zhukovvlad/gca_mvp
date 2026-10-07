@@ -40,6 +40,7 @@ _WAIT_S = 30.0
 def _settings(**over):
     return app_settings.model_copy(
         update={
+            "SEMANTIC_AUTO_ACCEPT_THRESHOLD": None,
             "SEMANTIC_CONCURRENCY": 2,
             "SEMANTIC_CALL_TIMEOUT_S": 5,
             "SEMANTIC_DAILY_BUDGET_USD": Decimal("1000"),

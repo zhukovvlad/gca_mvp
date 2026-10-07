@@ -201,9 +201,13 @@ def test_values_response_format_is_the_documented_literal():
 
 
 class TestPrompts:
-    def test_versions_are_one(self):
-        assert SCHEMA_PROMPT_VERSION == 1
+    def test_prompt_versions(self):
+        assert SCHEMA_PROMPT_VERSION == 2
         assert VALUES_PROMPT_VERSION == 1
+
+    def test_schema_prompt_states_sixteen_value_limit(self):
+        assert "от 1 до 16" in SCHEMA_PROMPT
+        assert "от 1 до 8" not in SCHEMA_PROMPT
 
     def test_schema_prompt_asks_for_parameters_only(self):
         assert '"parameters"' in SCHEMA_PROMPT
