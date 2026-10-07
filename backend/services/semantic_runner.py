@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from config import Settings
 from models import SemanticJob, SemanticJobAttempt
 from services.semantic_client import ModelClient
-from services.semantic_worker import process_one
+from services.semantic_worker import process_one, sweep_semantic_queue
 from utils import utcnow_aware
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,9 @@ class SemanticRunner:
         self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
         self._started = False
+        self._sweep_lock = threading.Lock()
+        self._next_sweep_at: datetime | None = None
+        self._sweep_cursor = 0
 
     def start(self) -> None:
         if self._started:
@@ -99,8 +102,32 @@ class SemanticRunner:
         if any(t.is_alive() for t in self._threads):
             logger.warning("SemanticRunner: часть потоков не завершилась за %s с", timeout_s)
 
+    def _sweep_if_due(self) -> None:
+        """Проход очереди «по кругу» раз в `SEMANTIC_SWEEP_INTERVAL_S` (0 —
+        выключен). Первый вызов только назначает срок; проход делает ровно один
+        поток, остальные идут дальше. Исключение прохода из цикла не выходит."""
+        interval = self._settings.SEMANTIC_SWEEP_INTERVAL_S
+        if interval <= 0:
+            return
+        now = self._clock()
+        with self._sweep_lock:
+            due = self._next_sweep_at
+            if due is None or now < due:
+                if due is None:
+                    self._next_sweep_at = now + timedelta(seconds=interval)
+                return
+            self._next_sweep_at = now + timedelta(seconds=interval)
+            cursor = self._sweep_cursor
+        try:
+            self._sweep_cursor = sweep_semantic_queue(
+                self._session_factory, settings=self._settings, after_context_id=cursor
+            )
+        except Exception:  # noqa: BLE001 — упавший проход не должен убить поток
+            logger.exception("Опросчик семантической очереди: проход очереди не удался")
+
     def _loop(self) -> None:
         while not self._stop_event.is_set():
+            self._sweep_if_due()
             try:
                 worked = process_one(
                     self._session_factory,

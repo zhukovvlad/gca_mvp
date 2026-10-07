@@ -67,7 +67,11 @@ from services.semantic_privacy import (
 from services.semantic_reconcile import (
     _load_values_columns,
     _values_applicable,
+    families_awaiting_schema,
+    reconcile_context_values,
     reconcile_family_schemas,
+    without_discarded_schemas,
+    without_discarded_values,
 )
 from services.semantic_request import (
     CandidateFamily,
@@ -877,6 +881,89 @@ def _reconcile_schemas_of_unit(
             db.commit()
     except Exception:  # noqa: BLE001 — исключение сверки наружу не уходит
         logger.exception("Сверка схем единицы %s не удалась", unit_id)
+
+
+#: Сколько контекстов проход берёт на проверку нужности значений; остальные
+#: достаются следующим проходам по курсору.
+SWEEP_CONTEXT_LIMIT = 500
+
+
+def _sweep_family_schemas(session_factory: Callable[[], Session], *, settings: Settings) -> None:
+    with session_factory() as db:
+        family_ids = without_discarded_schemas(db, families_awaiting_schema(db))
+        if family_ids:
+            reconcile_family_schemas(
+                db, family_ids, cap=event_cap_from(settings), source="operation"
+            )
+        db.commit()
+
+
+def _sweep_context_values(
+    session_factory: Callable[[], Session], *, settings: Settings, after_context_id: int
+) -> int:
+    """Окно контекстов с семьёй (целевой или ожидаемой), без заданий значений в
+    работе, по возрастанию `id` после курсора; нужность решает сама сверка.
+    Возвращает новый курсор: `id` последнего контекста окна, а когда окно
+    короче лимита, — `0`: круг пройден."""
+    live_job = sa.exists().where(
+        SemanticJob.context_id == CatalogContext.id,
+        SemanticJob.kind == SemanticJobKind.context_values.value,
+        SemanticJob.status.in_(
+            (
+                SemanticJobStatus.pending.value,
+                SemanticJobStatus.running.value,
+                SemanticJobStatus.privacy_hold.value,
+            )
+        ),
+    )
+    with session_factory() as db:
+        context_ids = (
+            db.execute(
+                sa.select(CatalogContext.id)
+                .where(
+                    CatalogContext.id > after_context_id,
+                    CatalogContext.archived_at.is_(None),
+                    sa.func.coalesce(
+                        CatalogContext.pending_family_id, CatalogContext.work_family_id
+                    ).is_not(None),
+                    ~live_job,
+                )
+                .order_by(CatalogContext.id)
+                .limit(SWEEP_CONTEXT_LIMIT)
+            )
+            .scalars()
+            .all()
+        )
+        eligible = without_discarded_values(db, context_ids)
+        if eligible:
+            reconcile_context_values(
+                db, eligible, cap=event_cap_from(settings), source="operation"
+            )
+        db.commit()
+    return context_ids[-1] if len(context_ids) >= SWEEP_CONTEXT_LIMIT else 0
+
+
+def sweep_semantic_queue(
+    session_factory: Callable[[], Session], *, settings: Settings, after_context_id: int = 0
+) -> int:
+    """Проход «по кругу» (спека вариантов §2.7): гарантированный повтор для
+    предметов, которые сверка операции пропустила под замком (`SKIP LOCKED`) или
+    не успела вызвать после записи. Две части, каждая в своей транзакции и со
+    своим перехватом: схемы активных семей без текущей и строящейся версии и
+    значения контекстов без задания в работе. Потолок события — из настроек
+    (сверх него — удержанная пачка, как всегда). Возвращает курсор следующего
+    прохода по значениям; исключение наружу не уходит."""
+    try:
+        _sweep_family_schemas(session_factory, settings=settings)
+    except Exception:  # noqa: BLE001 — исключение прохода наружу не уходит
+        logger.exception("Проход очереди: сверка схем семей не удалась")
+    try:
+        return _sweep_context_values(
+            session_factory, settings=settings, after_context_id=after_context_id
+        )
+    except Exception:  # noqa: BLE001 — исключение прохода наружу не уходит
+        logger.exception("Проход очереди: сверка значений контекстов не удалась")
+        return after_context_id
 
 
 def _unit_of_job(session_factory: Callable[[], Session], job_id: int) -> int | None:

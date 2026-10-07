@@ -705,6 +705,98 @@ def schema_ready_to_build(db: Session, family_id: int) -> bool:
     return not mass and unit.unit_id not in units
 
 
+def families_awaiting_schema(
+    db: Session, *, unit_ids: Collection[int | None] | None = None
+) -> list[int]:
+    """Активные семьи без текущей и без строящейся версии схемы (кандидаты на
+    сверку схем); `unit_ids` ограничивает единицами (`None` в наборе — семьи без
+    единицы), без него — все единицы. Готовность единицы здесь не проверяется:
+    её решает сама сверка."""
+    has_version = sa.exists().where(
+        FamilyParameterSchema.family_id == WorkFamily.id,
+        FamilyParameterSchema.status.in_(
+            (SchemaStatus.frozen.value, SchemaStatus.building.value)
+        ),
+    )
+    query = sa.select(WorkFamily.id).where(
+        WorkFamily.status == FamilyStatus.active.value, ~has_version
+    )
+    if unit_ids is not None:
+        non_null = [unit for unit in unit_ids if unit is not None]
+        conditions = []
+        if non_null:
+            conditions.append(WorkFamily.unit_id.in_(non_null))
+        if None in unit_ids:
+            conditions.append(WorkFamily.unit_id.is_(None))
+        if not conditions:
+            return []
+        query = query.where(sa.or_(*conditions))
+    return list(db.execute(query.order_by(WorkFamily.id)).scalars().all())
+
+
+def _discarded_fingerprints(db: Session, kind: SemanticJobKind) -> set[tuple]:
+    """Отпечатки вида `kind` из отброшенных пачек: `(context_id, family_id,
+    schema_id, request_hash)`."""
+    rows = db.execute(
+        sa.select(SemanticReconcileBatch.held_fingerprints).where(
+            SemanticReconcileBatch.status == ReconcileBatchStatus.discarded.value
+        )
+    ).scalars()
+    return {
+        (
+            element["context_id"], element["family_id"], element["schema_id"],
+            element["request_hash"],
+        )
+        for held in rows
+        for element in held
+        if isinstance(element, dict) and element.get("kind") == kind.value
+    }
+
+
+def without_discarded_values(db: Session, context_ids: Collection[int]) -> list[int]:
+    """Контексты, чей ТЕКУЩИЙ отпечаток значений (версия схемы и хэш запроса) не
+    значится в отброшенной пачке: проход не возвращает отброшенное, пока вход не
+    изменился. Контекст без материала значений остаётся — его вопрос решает
+    сверка."""
+    ids = list(context_ids)
+    discarded = _discarded_fingerprints(db, SemanticJobKind.context_values)
+    if not discarded or not ids:
+        return ids
+    material = load_values_material(db, ids)
+    kept = []
+    for context_id in ids:
+        values = material.get(context_id)
+        if values is not None:
+            key = (
+                context_id, None, values.schema_id,
+                render_values_request(values, settings=settings).request_hash,
+            )
+            if key in discarded:
+                continue
+        kept.append(context_id)
+    return kept
+
+
+def without_discarded_schemas(db: Session, family_ids: Collection[int]) -> list[int]:
+    """Семьи без версии схемы, чей ТЕКУЩИЙ отпечаток (версии ещё нет, хэш
+    запроса) не значится в отброшенной пачке."""
+    ids = list(family_ids)
+    discarded = _discarded_fingerprints(db, SemanticJobKind.family_schema)
+    if not discarded or not ids:
+        return ids
+    return [
+        family_id
+        for family_id in ids
+        if (
+            None, family_id, None,
+            render_schema_request(
+                load_schema_material(db, family_id, _UNBUILT_SCHEMA_ID), settings=settings
+            ).request_hash,
+        )
+        not in discarded
+    ]
+
+
 def _plan_family_schemas(
     db: Session,
     family_ids: Collection[int],

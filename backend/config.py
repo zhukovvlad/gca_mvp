@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # Сколько ждать текущие вызовы при остановке приложения: короче таймаута вызова,
     # чтобы перезапуск (и каждый `--reload`) не висел до 120 с на зависшем запросе.
     SEMANTIC_SHUTDOWN_WAIT_S: int = Field(15, ge=0)
+    # Период сверки очереди «по кругу», секунды: чинит предметы, которые сверка
+    # операции пропустила под замком, и записи, у которых не дошёл хук. 0 — выключено.
+    SEMANTIC_SWEEP_INTERVAL_S: int = Field(300, ge=0)
     SEMANTIC_MAX_ATTEMPTS: int = Field(3, ge=1)
     SEMANTIC_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)
     SEMANTIC_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)

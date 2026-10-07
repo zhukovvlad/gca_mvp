@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ContextCard } from "@/pages/families/ContextCard";
 import {
@@ -2054,6 +2054,89 @@ describe("ContextCard — вариант, ожидание, смена семь�
       await screen.findByText("Материал", {}, LATER);
 
       expect(screen.queryByText(/Ожидает семьи/)).not.toBeInTheDocument();
+    });
+
+    // Интервал опроса подменяется ДО монтирования (заводится при подписке); прочие таймеры и
+    // ожидания RTL остаются настоящими — тест не ждёт 5 с реального времени.
+    it("пока ожидание висит, карточка перечитывается сама: сервер сменил семью и вариант — кнопки отмены нет", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, pending: PENDING };
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        await openOrdinary();
+        expect(screen.getByRole("button", { name: "Отменить ожидание семьи" })).toBeInTheDocument();
+
+        contextFixture(ORDINARY_CONTEXT_ID).variant = {
+          ...WITH_VARIANT,
+          variant_id: 9,
+          values: [
+            { parameter_id: 21, ordinal: 1, name: "Покрытие", value_id: 201, value: "оцинковка", source: "name" as const },
+          ],
+          pending: null,
+        };
+        await vi.advanceTimersByTimeAsync(5_500);
+
+        expect(await screen.findByText("оцинковка", {}, LATER)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Отменить ожидание семьи" })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Ожидает семьи/)).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("пока идёт расчёт значений контекста, карточка опрашивается; когда он кончился — один добор и тишина", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, values_job_status: "running" };
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        await openOrdinary();
+        const afterOpen = handlerState.contextCardRequests;
+
+        await vi.advanceTimersByTimeAsync(5_500);
+        expect(handlerState.contextCardRequests).toBeGreaterThan(afterOpen);
+        const whileRunning = handlerState.contextCardRequests;
+
+        contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, values_job_status: null };
+        await vi.advanceTimersByTimeAsync(5_500);
+        // Опрос принёс «задание кончилось», и сразу за ним — ровно один добор. Ждём настоящим
+        // таймером: у RTL `waitFor` опрашивает через подменённый `setInterval`.
+        for (let i = 0; i < 100 && handlerState.contextCardRequests < whileRunning + 2; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(handlerState.contextCardRequests).toBe(whileRunning + 2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("карточку без ожидания и без задания значений не опрашивают", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = WITH_VARIANT;
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        await openOrdinary();
+        const afterOpen = handlerState.contextCardRequests;
+
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        expect(handlerState.contextCardRequests).toBe(afterOpen);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("задание значений в ошибке или на удержании карточку не опрашивает", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, values_job_status: "error" };
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      try {
+        await openOrdinary();
+        const afterOpen = handlerState.contextCardRequests;
+
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        expect(handlerState.contextCardRequests).toBe(afterOpen);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

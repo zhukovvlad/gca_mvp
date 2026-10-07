@@ -1443,6 +1443,83 @@ class TestBatches:
         assert claim_next(db_session, settings=app_settings, now=dt.datetime.now(dt.UTC)) is None
 
 
+def _without_schema(db, family_id):
+    """Семья сцены заведена уже со схемой; для проверки сверки схем её убирают:
+    активная семья без текущей версии ждёт конца перезапроса единицы."""
+    db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    db.flush()
+
+
+def _schema_jobs_of(db, family_id):
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(SemanticJob).where(
+                SemanticJob.kind == "family_schema", SemanticJob.family_id == family_id
+            )
+        ).scalars()
+    )
+
+
+class TestDiscardReconcilesSchemas:
+    """Удержанная пачка предложений не даёт строить схемы единицы (спека §2.6);
+    после отбрасывания блокировка исчезает, и семьи без схемы получают задание
+    схемы, а не ждут чужого события."""
+
+    def test_discard_of_the_blocking_batch_sets_the_schema_job(self, db_session, factories):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        _without_schema(db_session, scene.family.id)
+        batch_id = _held_batch(db_session, scene, source="operation")
+        assert _schema_jobs_of(db_session, scene.family.id) == [], "вход: пачка блокирует схему"
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        (job,) = _schema_jobs_of(db_session, scene.family.id)
+        assert job.status == "pending"
+
+    def test_another_live_suggestion_job_in_the_unit_keeps_the_schema_waiting(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
+        _without_schema(db_session, scene.family.id)
+        _make_job(db_session, scene.context_ids[2], unit_id=scene.unit_id)
+        scene.context_ids = scene.context_ids[:2]
+        batch_id = _held_batch(db_session, scene, source="operation")
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert _schema_jobs_of(db_session, scene.family.id) == []
+
+    def test_a_family_of_another_unit_is_left_alone_by_a_non_mass_batch(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
+        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, other.family.id)
+        batch_id = _held_batch(db_session, scene, source="operation")
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert len(_schema_jobs_of(db_session, scene.family.id)) == 1
+        assert _schema_jobs_of(db_session, other.family.id) == []
+
+    def test_discard_of_a_mass_batch_reconciles_the_families_of_all_units(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
+        other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
+        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, other.family.id)
+        batch_id = _held_batch(db_session, scene, source="mass")
+        assert _schema_jobs_of(db_session, other.family.id) == [], "вход: mass держит все единицы"
+
+        discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
+
+        assert len(_schema_jobs_of(db_session, scene.family.id)) == 1
+        assert len(_schema_jobs_of(db_session, other.family.id)) == 1
+
+
 # ---------------------------------------------------------------------------
 #  Остановка захвата
 # ---------------------------------------------------------------------------

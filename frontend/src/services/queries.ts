@@ -29,6 +29,7 @@ import type {
   AssignFamilyInput,
   ChangeGroup,
   ConfirmKindInput,
+  ContextCardData,
   ContextsParams,
   GroupSelector,
   GroupState,
@@ -1443,12 +1444,49 @@ export function useSemanticContexts(params?: ContextsParams) {
   });
 }
 
+/** Пока в карточке висит ожидание семьи или считаются значения, она перечитывается сама. */
+const CONTEXT_CARD_POLL_MS = 5_000;
+
+/**
+ * Карточка ещё меняется на сервере: контекст ждёт смены семьи или задание значений в очереди
+ * (`pending`/`running`). Задание в ошибке или на удержании само не закончится — не опрашивается.
+ */
+function contextCardIsBusy(card: ContextCardData | undefined): boolean {
+  const variant = card?.variant;
+  if (variant === undefined) return false;
+  return (
+    variant.pending !== null ||
+    variant.values_job_status === "pending" ||
+    variant.values_job_status === "running"
+  );
+}
+
 export function useContextCard(contextId: number | null) {
-  return useQuery({
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: qk.semanticContexts.card(contextId ?? -1),
     queryFn: () => semanticApi.contextCard(contextId as number),
     enabled: contextId !== null,
+    refetchInterval: (q) => (contextCardIsBusy(q.state.data) ? CONTEXT_CARD_POLL_MS : false),
+    refetchIntervalInBackground: false,
   });
+
+  // Работа закончилась: карточка и очередь перечитываются ещё раз, чтобы не остаться на
+  // снимке, снятом до последнего шага (семья, вариант и значения меняются разными записями).
+  const busy = contextCardIsBusy(query.data);
+  const busyFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (contextId === null) return;
+    if (busy) {
+      busyFor.current = contextId;
+    } else if (busyFor.current === contextId) {
+      busyFor.current = null;
+      // Один вызов на весь префикс (карточка и очередь): два подряд отменяли бы друг друга.
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+    }
+  }, [busy, contextId, qc]);
+
+  return query;
 }
 
 /** Инвалидация после мутации контекста: очередь целиком и карточка. */

@@ -43,6 +43,7 @@ from models import (
     FamilyParameterSchema,
     FamilySource,
     FamilySuggestion,
+    ReconcileBatchSource,
     ReconcileBatchStatus,
     SchemaStatus,
     SemanticCancelReason,
@@ -68,6 +69,7 @@ from services.semantic_reconcile import (
     Fingerprint,
     ReconcileReport,
     estimate_enqueue,
+    families_awaiting_schema,
     get_or_create_held_batch,
     reconcile_family_schemas,
     reconcile_semantic_jobs,
@@ -893,6 +895,40 @@ def discard_batch(db: Session, *, batch_id: int, actor_id: int) -> None:
     batch.decided_at = _now()
     db.flush()
     _cancel_unrepresented_versions(db, _batch_schema_ids(batch), except_batch_id=batch.id)
+    _reconcile_schemas_after_discard(db, batch)
+
+
+def _reconcile_schemas_after_discard(db: Session, batch: SemanticReconcileBatch) -> None:
+    """Удержанная пачка предложений не давала строить схемы своих единиц (`mass`
+    — всех, спека §2.6); после отбрасывания блокировки нет, а задания
+    предложений из пачки не создавались и сверку схем не вызовут. Семьи без
+    схемы затронутых единиц сверяются здесь."""
+    contexts = {
+        int(element["context_id"])
+        for element in batch.held_fingerprints
+        if element["kind"] == SemanticJobKind.family_suggestion.value
+    }
+    if not contexts:
+        return
+    units: set[int | None] | None = None
+    if batch.source != ReconcileBatchSource.mass.value:
+        units = set(
+            db.execute(
+                sa.select(CatalogPosition.unit_id)
+                .select_from(CatalogContext)
+                .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+                .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
+                .where(CatalogContext.id.in_(contexts))
+                .distinct()
+            )
+            .scalars()
+            .all()
+        )
+    family_ids = families_awaiting_schema(db, unit_ids=units)
+    if family_ids:
+        reconcile_family_schemas(
+            db, family_ids, cap=event_cap_from(settings), source="operation"
+        )
 
 
 # ---------------------------------------------------------------------------
