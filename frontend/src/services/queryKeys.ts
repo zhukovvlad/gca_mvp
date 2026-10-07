@@ -186,6 +186,9 @@ export const qk = {
     all: ["work-families"] as const,
     list: (status?: WorkFamilyStatus, unitId?: number) =>
       ["work-families", "list", status ?? "any", unitId ?? null] as const,
+    /** Схема и варианты семьи (спека 2026-10-02-catalog-variants-design.md §2.12). */
+    schema: (familyId: number) => ["work-families", "schema", familyId] as const,
+    variants: (familyId: number) => ["work-families", "variants", familyId] as const,
   },
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */

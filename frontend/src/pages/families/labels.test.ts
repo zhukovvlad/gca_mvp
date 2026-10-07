@@ -25,7 +25,11 @@ import {
   NAME_ROLE_LABEL,
   pluralRu,
   SEMANTIC_KIND_LABEL,
+  SCHEMA_REFUSAL_LABEL,
+  SCHEMA_VALUE_ORIGIN_LABEL,
+  schemaRefusalLabel,
   SEMANTIC_STATE_LABEL,
+  VARIANT_STATUS_LABEL,
 } from "./labels";
 
 /**
@@ -238,5 +242,30 @@ describe("labels: место совпадения и класс ошибки з�
     expect(jobErrorClassLabel("ConnectionResetError")).toBe("ConnectionResetError");
     expect(jobErrorClassLabel("http_4290")).toBe("http_4290");
     expect(jobErrorClassLabel(null)).toBe("не указан");
+  });
+});
+
+describe("подписи схемы и вариантов", () => {
+  it("происхождение значения и статус варианта печатаются словом", () => {
+    expect(SCHEMA_VALUE_ORIGIN_LABEL).toEqual({
+      schema: "из схемы",
+      extension: "добавлено при разборе",
+      manual: "вручную",
+    });
+    expect(VARIANT_STATUS_LABEL).toEqual({ active: "активен", archived: "в архиве" });
+  });
+
+  it("известный код отказа превращается в подпись, не содержащую кода", () => {
+    for (const [code, label] of Object.entries(SCHEMA_REFUSAL_LABEL)) {
+      expect(schemaRefusalLabel(code)).toBe(label);
+      expect(label).not.toContain(code);
+      expect(label).not.toMatch(/[a-z]_[a-z]/);
+    }
+  });
+
+  it("неизвестный или отсутствующий код — общая подпись, не сам код", () => {
+    const fallback = "Не удалось выполнить действие. Обновите экран и повторите.";
+    expect(schemaRefusalLabel("some_future_code")).toBe(fallback);
+    expect(schemaRefusalLabel(undefined)).toBe(fallback);
   });
 });

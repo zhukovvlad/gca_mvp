@@ -20,7 +20,13 @@ import type {
   ContextsParams,
   ConfirmSuggestionsResult,
   CreateFamilyFromSuggestionInput,
+  FamilySchema,
+  FamilyVariant,
   JobsResponse,
+  MergeValuesInput,
+  MergeValuesResult,
+  RebuildSchemaResult,
+  SchemaEditParameter,
   JobsStatus,
   PrivacyMatch,
   QueueStatus,
@@ -629,6 +635,37 @@ export const semanticApi = {
   discardBatch: (batchId: number): Promise<{ batch_id: number; status: string }> =>
     api
       .post<{ batch_id: number; status: string }>(`/v1/semantic/batches/${batchId}/discard`)
+      .then((r) => r.data),
+
+  getFamilySchema: (familyId: number): Promise<FamilySchema> =>
+    api.get<FamilySchema>(`/v1/semantic/families/${familyId}/schema`).then((r) => r.data),
+
+  familyVariants: (familyId: number): Promise<FamilyVariant[]> =>
+    api.get<FamilyVariant[]>(`/v1/semantic/families/${familyId}/variants`).then((r) => r.data),
+
+  rebuildSchemaPreview: (familyId: number): Promise<ReaskPreview> =>
+    api
+      .post<ReaskPreview>(`/v1/semantic/families/${familyId}/schema/rebuild/preview`)
+      .then((r) => r.data),
+
+  rebuildSchema: (familyId: number, previewHash: string): Promise<RebuildSchemaResult> =>
+    api
+      .post<RebuildSchemaResult>(`/v1/semantic/families/${familyId}/schema/rebuild`, {
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  updateSchema: (familyId: number, parameters: SchemaEditParameter[]): Promise<FamilySchema> =>
+    api
+      .patch<FamilySchema>(`/v1/semantic/families/${familyId}/schema`, { parameters })
+      .then((r) => r.data),
+
+  cancelSchemaBuild: (familyId: number): Promise<FamilySchema> =>
+    api.post<FamilySchema>(`/v1/semantic/families/${familyId}/schema/cancel`).then((r) => r.data),
+
+  mergeSchemaValues: (familyId: number, input: MergeValuesInput): Promise<MergeValuesResult> =>
+    api
+      .post<MergeValuesResult>(`/v1/semantic/families/${familyId}/schema/values/merge`, input)
       .then((r) => r.data),
 
   resumeWorker: (): Promise<{ claim_paused: boolean }> =>

@@ -16,7 +16,7 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
-import { pluralRu } from "@/pages/families/labels";
+import { pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
 import { jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -42,7 +42,9 @@ import type {
   MoveMembersInput,
   CreateFamilyFromSuggestionInput,
   JobsStatus,
+  MergeValuesInput,
   PreviewTarget,
+  SchemaEditParameter,
   PrivacyMatch,
   StaleGroupTransferInput,
   SuggestionsParams,
@@ -1754,7 +1756,7 @@ export function useOtherFamily() {
   });
 }
 
-/** Preview трёх действий, ставящих задания: перезапрос единицы, по конфигурации, удержанная пачка. */
+/** Preview четырёх действий, ставящих задания: перезапрос единицы, по конфигурации, удержанная пачка, пересборка схемы. */
 export function useReaskPreview() {
   return useMutation({
     mutationFn: (target: PreviewTarget) => {
@@ -1765,6 +1767,8 @@ export function useReaskPreview() {
           return semanticApi.reaskAllPreview();
         case "batch":
           return semanticApi.batchPreview(target.batchId);
+        case "schema":
+          return semanticApi.rebuildSchemaPreview(target.familyId);
       }
     },
   });
@@ -1785,6 +1789,9 @@ export function useReaskConfirm() {
           return semanticApi.reaskAll(previewHash);
         case "batch":
           return semanticApi.approveBatch(target.batchId, previewHash);
+        case "schema":
+          // Пересборку подтверждает `useRebuildSchema`; диалог до сюда не доходит.
+          throw new Error("schema target is confirmed by useRebuildSchema");
       }
     },
     onSuccess: (_, { target }) => {
@@ -1797,6 +1804,97 @@ export function useReaskConfirm() {
       if (apiErrorCode(error) === "preview_changed") return;
       invalidateQueueAndStatus(qc);
       toastApiError(error);
+    },
+  });
+}
+
+// ---- Схема и варианты семьи (спека 2026-10-02-catalog-variants-design.md §2.8, §2.12) ----
+
+/** Пересборка идёт заданием очереди: пока она строится, схема перечитывается сама. */
+const SCHEMA_BUILD_POLL_MS = 5_000;
+
+export function useFamilySchema(familyId: number) {
+  return useQuery({
+    queryKey: qk.workFamilies.schema(familyId),
+    queryFn: () => semanticApi.getFamilySchema(familyId),
+    refetchInterval: (query) => (query.state.data?.building ? SCHEMA_BUILD_POLL_MS : false),
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useFamilyVariants(familyId: number) {
+  return useQuery({
+    queryKey: qk.workFamilies.variants(familyId),
+    queryFn: () => semanticApi.familyVariants(familyId),
+  });
+}
+
+/** Схема, варианты и всё, что от них зависит на экране: значения контекстов, шапка очереди. */
+function invalidateSchema(qc: ReturnType<typeof useQueryClient>, familyId: number) {
+  qc.invalidateQueries({ queryKey: qk.workFamilies.schema(familyId) });
+  qc.invalidateQueries({ queryKey: qk.workFamilies.variants(familyId) });
+  qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+  invalidateQueueAndStatus(qc);
+}
+
+/**
+ * Подтверждение пересборки по `preview_hash` из показанного preview. `409 preview_changed`
+ * разбирает диалог; прочие отказы — подписью по коду, не текстом сервера и не кодом.
+ */
+export function useRebuildSchema() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ familyId, previewHash }: { familyId: number; previewHash: string }) =>
+      semanticApi.rebuildSchema(familyId, previewHash),
+    onSuccess: (_, { familyId }) => {
+      invalidateSchema(qc, familyId);
+      toast.success("Пересборка схемы поставлена в очередь.");
+    },
+    onError: (error, { familyId }) => {
+      const code = apiErrorCode(error);
+      if (code === "preview_changed") return;
+      invalidateSchema(qc, familyId);
+      toast.error(schemaRefusalLabel(code));
+    },
+  });
+}
+
+export function useCancelSchemaBuild() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (familyId: number) => semanticApi.cancelSchemaBuild(familyId),
+    onSuccess: (_, familyId) => {
+      invalidateSchema(qc, familyId);
+      toast.success("Пересборка схемы отменена.");
+    },
+    onError: (error, familyId) => {
+      invalidateSchema(qc, familyId);
+      toast.error(schemaRefusalLabel(apiErrorCode(error)));
+    },
+  });
+}
+
+/** Отказы правки и слияния показывает диалог подписью по коду — тоста у этих двух хуков нет. */
+export function useUpdateSchema() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ familyId, parameters }: { familyId: number; parameters: SchemaEditParameter[] }) =>
+      semanticApi.updateSchema(familyId, parameters),
+    onSuccess: (_, { familyId }) => {
+      invalidateSchema(qc, familyId);
+      toast.success("Схема сохранена.");
+    },
+  });
+}
+
+export function useMergeValues() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ familyId, input }: { familyId: number; input: MergeValuesInput }) =>
+      semanticApi.mergeSchemaValues(familyId, input),
+    onSuccess: (_, { familyId }) => {
+      invalidateSchema(qc, familyId);
+      toast.success("Значения слиты.");
     },
   });
 }

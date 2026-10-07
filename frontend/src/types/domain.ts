@@ -2642,6 +2642,79 @@ export interface ReaskPreview {
   reserve_usd: string;
   expected_cached_usd: string;
   preview_hash: string;
+  /**
+   * Только у пересборки схемы: оценка включает задания значений. `false` — у семьи
+   * нет текущей схемы, оценка неполна (только задание схемы).
+   */
+  values_included?: boolean;
+}
+
+/** Происхождение значения параметра схемы (`family_parameter_values.origin`). */
+export type SchemaValueOrigin = "schema" | "extension" | "manual";
+
+/** Статус варианта семьи (`work_variants.status`). */
+export type FamilyVariantStatus = "active" | "archived";
+
+/** Значение параметра схемы; слитое несёт `merged_into_id` цели (экран показывает его синонимом). */
+export interface FamilySchemaValue {
+  id: number;
+  value: string;
+  origin: SchemaValueOrigin;
+  merged_into_id: number | null;
+}
+
+export interface FamilySchemaParameter {
+  id: number;
+  ordinal: number;
+  name: string;
+  values: FamilySchemaValue[];
+}
+
+/**
+ * `GET /families/:id/schema`. `status`/`version` — у текущей (замороженной) версии,
+ * `null` — текущей нет. `building` — идёт пересборка, показанная версия остаётся прежней;
+ * `ready_to_build` — схему можно строить сейчас (перезапрос единицы окончен).
+ */
+export interface FamilySchema {
+  family_id: number;
+  status: string | null;
+  version: number | null;
+  ready_to_build: boolean;
+  building: boolean;
+  parameters: FamilySchemaParameter[];
+}
+
+/** Строка `GET /families/:id/variants`: `values` по порядку параметров, `null` — «не уточнено». */
+export interface FamilyVariant {
+  id: number;
+  values: Array<string | null>;
+  contexts: number;
+  status: FamilyVariantStatus;
+}
+
+/** Параметр в теле `PATCH /families/:id/schema`: полный список значений, без слитых. */
+export interface SchemaEditParameter {
+  ordinal: number;
+  name: string;
+  values: string[];
+}
+
+export interface MergeValuesInput {
+  parameter_id: number;
+  source_value_id: number;
+  target_value_id: number;
+}
+
+export interface MergeValuesResult {
+  merged_variants: Array<{ source_variant_id: number; target_variant_id: number }>;
+}
+
+/** Ответ `POST /families/:id/schema/rebuild`. */
+export interface RebuildSchemaResult {
+  family_id: number;
+  schema_id: number;
+  version: number;
+  status: string;
 }
 
 /** Отчёт сверки заданий (`dataclasses.asdict(ReconcileReport)`) — экран показывает только успех. */
@@ -2651,7 +2724,8 @@ export type ReconcileResult = Record<string, unknown>;
 export type PreviewTarget =
   | { kind: "unit"; unitId: number | null; unitCode: string | null }
   | { kind: "config" }
-  | { kind: "batch"; batchId: number; source: BatchSource };
+  | { kind: "batch"; batchId: number; source: BatchSource }
+  | { kind: "schema"; familyId: number };
 
 /** Тело `POST /suggestions/:id/create-family`; единицу сервер берёт у контекста предложения. */
 export interface CreateFamilyFromSuggestionInput {

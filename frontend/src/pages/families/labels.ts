@@ -3,7 +3,9 @@ import type {
   ComparabilityReason,
   DecisionSource,
   FamilySource,
+  FamilyVariantStatus,
   NameRole,
+  SchemaValueOrigin,
   SemanticKind,
   SemanticState,
   SuggestionBand,
@@ -64,6 +66,52 @@ export const FAMILY_STATUS_LABEL: Record<WorkFamilyStatus, string> = {
   active: "активна",
   archived: "в архиве",
 };
+
+/** Происхождение значения параметра схемы (`family_parameter_values.origin`). */
+export const SCHEMA_VALUE_ORIGIN_LABEL: Record<SchemaValueOrigin, string> = {
+  schema: "из схемы",
+  extension: "добавлено при разборе",
+  manual: "вручную",
+};
+
+/** Статус варианта семьи (`work_variants.status`): печатается словом, не кодом. */
+export const VARIANT_STATUS_LABEL: Record<FamilyVariantStatus, string> = {
+  active: "активен",
+  archived: "в архиве",
+};
+
+/** Значение параметра, которого у варианта нет (значение «не уточнено»). */
+export const VARIANT_VALUE_UNSPECIFIED = "не уточнено";
+
+const SCHEMA_REFUSAL_FALLBACK = "Не удалось выполнить действие. Обновите экран и повторите.";
+
+/**
+ * Отказы схемы, вариантов и пересборки (`services/work_variants.py`,
+ * `routers/semantic.py`): код ответа превращается в подпись, сам код и текст
+ * сервера на экран не выходят. Неизвестный код — общая подпись.
+ */
+export const SCHEMA_REFUSAL_LABEL: Record<string, string> = {
+  schema_parameter_renamed:
+    "Параметр нельзя переименовать по смыслу: это новый параметр. Допустима только правка написания.",
+  schema_value_removed: "Значение нельзя удалить — только слить с другим.",
+  schema_blank: "Имя параметра и его значения не должны быть пустыми.",
+  schema_bad_ordinals: "Параметров может быть от одного до трёх, номера не повторяются.",
+  schema_building: "У семьи идёт пересборка схемы: сначала отмените её.",
+  schema_no_building: "Пересборка уже не идёт: отменять нечего.",
+  schema_no_current: "У семьи ещё нет схемы.",
+  merge_values_other_parameter: "Источник и цель должны быть значениями одного параметра.",
+  merge_source_merged: "Источник уже слит с другим значением.",
+  merge_value_cycle: "Это слияние замкнуло бы цепочку синонимов: выберите другую цель.",
+  parameter_not_found: "Параметр не найден: обновите экран.",
+  value_not_found: "Значение не найдено: обновите экран.",
+  family_not_found: "Семья не найдена: обновите экран.",
+  family_not_active: "Семья не активна: схему можно менять только у активной семьи.",
+  preview_changed: "Состояние изменилось, откройте предпросмотр заново.",
+};
+
+export function schemaRefusalLabel(code: string | undefined): string {
+  return (code !== undefined && SCHEMA_REFUSAL_LABEL[code]) || SCHEMA_REFUSAL_FALLBACK;
+}
 
 /**
  * `work_category_source` не заведён отдельным типом в `types/domain.ts`

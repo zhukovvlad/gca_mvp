@@ -57,6 +57,7 @@ import {
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
 import { FAMILY_STATUS_LABEL } from "./labels";
+import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
 /**
@@ -495,6 +496,7 @@ function FamilyPanel({
       {family.status === "draft" && !hasDefinition && (
         <p className="text-xs text-fg-tertiary">Активировать можно только с определением.</p>
       )}
+      <SchemaBlock family={family} />
     </Surface>
   );
 }

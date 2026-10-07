@@ -640,4 +640,17 @@ describe("FamiliesTab", () => {
     await waitFor(() => expect(screen.getByText("31–40 из 40")).toBeInTheDocument());
     expect(dataRows()).toHaveLength(10);
   });
+  it("панель семьи несёт блок «Схема и варианты» выбранной семьи", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    await user.click(await screen.findByRole("option", { name: "активна" }));
+    // Смена фильтра статуса перечитывает список — ожидание с запасом под нагрузку `just ci`.
+    await user.click(await screen.findByText("Кровельные работы", {}, { timeout: 8000 }));
+
+    expect(await screen.findByRole("heading", { name: "Схема и варианты" })).toBeInTheDocument();
+    expect(await screen.findByText("Версия схемы 2", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(await screen.findByRole("table", { name: "Варианты семьи" }, { timeout: 8000 })).toBeInTheDocument();
+  });
 });
