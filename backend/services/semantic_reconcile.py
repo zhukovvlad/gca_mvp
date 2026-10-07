@@ -778,17 +778,24 @@ def without_discarded_values(db: Session, context_ids: Collection[int]) -> list[
 
 
 def without_discarded_schemas(db: Session, family_ids: Collection[int]) -> list[int]:
-    """Семьи без версии схемы, чей ТЕКУЩИЙ отпечаток (версии ещё нет, хэш
-    запроса) не значится в отброшенной пачке."""
+    """Семьи без версии схемы, чей ТЕКУЩИЙ вход (семья и хэш запроса) не значится
+    в отброшенной пачке. Номер версии в сравнении не участвует: тело запроса схемы
+    его не содержит, а отброшенная версия `building` отменена, и у семьи, чью версию
+    отменило отбрасывание, в отпечатке остался прежний номер."""
     ids = list(family_ids)
-    discarded = _discarded_fingerprints(db, SemanticJobKind.family_schema)
+    discarded = {
+        (family_id, request_hash)
+        for _context_id, family_id, _schema_id, request_hash in _discarded_fingerprints(
+            db, SemanticJobKind.family_schema
+        )
+    }
     if not discarded or not ids:
         return ids
     return [
         family_id
         for family_id in ids
         if (
-            None, family_id, None,
+            family_id,
             render_schema_request(
                 load_schema_material(db, family_id, _UNBUILT_SCHEMA_ID), settings=settings
             ).request_hash,

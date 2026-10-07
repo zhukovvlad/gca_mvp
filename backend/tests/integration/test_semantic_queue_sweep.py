@@ -334,6 +334,82 @@ class TestSweepAfterDiscard:
         assert _jobs(committing_db, "family_schema") == []
         assert [b.status for b in self._batches(committing_db)] == ["discarded"]
 
+    def _discarded_batch_with_a_building_version(self, db, factories, factory):
+        """Семья без замороженной схемы, у которой версия `building` уже заведена
+        сверкой, и вторая семья без версии: пачка из двух отпечатков схем удержана
+        (в одном из них номер версии не пуст), отбрасывание отменяет версию."""
+        from models import FamilyParameterSchema
+        from services.semantic_cost import event_cap_from
+        from services.semantic_reconcile import _ensure_building_version, reconcile_family_schemas
+
+        built = _schemaless_ready_family(db, factories)
+        other = _scene(db, factories, titles=("Труба А",), unit="M3")
+        _without_schema(db, other.family.id)
+        schema_id = _ensure_building_version(db, built.family.id)
+        db.commit()
+        report = reconcile_family_schemas(
+            db, [built.family.id, other.family.id], cap=event_cap_from(self._CAP_ONE),
+            source="operation",
+        )
+        db.commit()
+        assert report.held_batch_id is not None, "entry: the pair is held"
+        (batch,) = self._batches(db)
+        held = {
+            element["family_id"]: element["schema_id"]
+            for element in batch.held_fingerprints
+            if element["kind"] == "family_schema"
+        }
+        assert (batch.status, held) == (
+            "held", {built.family.id: schema_id, other.family.id: None}
+        ), "вход: пачка удержана, у построенной семьи номер версии в отпечатке не пуст"
+        assert _jobs(db, "family_schema") == [], "вход: заданий схем нет"
+        self._discard(db, factories, batch)
+        db.expire_all()
+        assert (
+            db.execute(
+                sa.select(sa.func.count()).select_from(FamilyParameterSchema).where(
+                    FamilyParameterSchema.family_id == built.family.id,
+                    FamilyParameterSchema.status == "building",
+                )
+            ).scalar_one()
+            == 0
+        ), "вход: отбрасывание отменило версию, семья снова кандидат прохода"
+        return built, other
+
+    def test_a_discarded_schema_with_a_cancelled_building_version_is_not_brought_back(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        self._discarded_batch_with_a_building_version(
+            committing_db, committing_factories, committing_session_factory
+        )
+
+        sweep_semantic_queue(committing_session_factory, settings=self._CAP_ONE)
+
+        assert _jobs(committing_db, "family_schema") == []
+        assert [b.status for b in self._batches(committing_db)] == ["discarded"]
+
+    def test_the_sweep_proceeds_when_the_family_input_changed_after_the_discard(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        from models import WorkFamily
+
+        built, _other = self._discarded_batch_with_a_building_version(
+            committing_db, committing_factories, committing_session_factory
+        )
+        committing_db.execute(
+            sa.update(WorkFamily)
+            .where(WorkFamily.id == built.family.id)
+            .values(definition="другое определение семьи")
+        )
+        committing_db.commit()
+
+        sweep_semantic_queue(committing_session_factory, settings=self._CAP_ONE)
+
+        # Другая семья осталась отброшенной: из двух семей проход ставит одну, в пределах лимита.
+        (job,) = _jobs(committing_db, "family_schema")
+        assert (job.family_id, job.status) == (built.family.id, "pending")
+        assert [b.status for b in self._batches(committing_db)] == ["discarded"]
+
 
 class _Clock:
     def __init__(self):
