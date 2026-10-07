@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
@@ -23,7 +24,8 @@ import {
   handlerState,
 } from "@/test/handlers";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders } from "@/test/utils";
+import type { ContextVariantData } from "@/types/domain";
 
 /**
  * Карточка контекста и операции над ним (спека
@@ -606,7 +608,13 @@ describe("ContextCard", () => {
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim() ?? "");
     expect(decisionButtons.sort()).toEqual(
-      ["Подтвердить вид", "Назначить семью…", "Изменить «что называет»…"].sort()
+      [
+        "Подтвердить вид",
+        "Назначить семью…",
+        "Изменить «что называет»…",
+        "Не работа",
+        "Пометить написание целиком…",
+      ].sort()
     );
 
     const user = userEvent.setup();
@@ -618,7 +626,13 @@ describe("ContextCard", () => {
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim() ?? "");
     expect(membershipButtons.sort()).toEqual(
-      ["Разделить выбранные", "Перенести выбранные", "Слить контексты", "Архивировать"].sort()
+      [
+        "Разделить выбранные",
+        "Перенести выбранные",
+        "Слить контексты",
+        "Архивировать",
+        "Пометить написание целиком…",
+      ].sort()
     );
   });
 
@@ -698,7 +712,7 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
     );
-    await user.click(screen.getByRole("button", { name: "Назначить семью…" }));
+    await user.click(screen.getByRole("button", { name: "Другая семья…" }));
     const familyDialog = await screen.findByRole("dialog");
     await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
     // id 43 — единственная активная семья фикстуры.
@@ -718,7 +732,7 @@ describe("ContextCard", () => {
     await waitFor(() =>
       expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
     );
-    await user.click(screen.getByRole("button", { name: "Назначить семью…" }));
+    await user.click(screen.getByRole("button", { name: "Другая семья…" }));
     const familyDialog = await screen.findByRole("dialog");
     // Семья выбрана в селекте — «Снять» обязан слать null, а не выбранную
     // (на пустом селекте подмена тела неотличима).
@@ -1894,5 +1908,427 @@ describe("ContextCard", () => {
       await screen.findByText(/Не удалось получить список конфликтных позиций/)
     ).toBeInTheDocument();
     expect(handlerState.lastAcceptTargetDecisionRequest).toBeNull();
+  });
+});
+
+/**
+ * Вариант, ожидание и смена семьи на карточке контекста (спека
+ * `2026-10-02-catalog-variants-design.md` §2.12). Каждый тест меняет фикстуру контекста так, как
+ * её менял бы сервер, и проверяет экран ПОСЛЕ перечитывания карточки.
+ */
+describe("ContextCard — вариант, ожидание, смена семьи", () => {
+  const LATER = { timeout: 8000 };
+  const ORDINARY_TITLE = "Штукатурка стен цементно-песчаным раствором";
+
+  const WITH_VARIANT: ContextVariantData = {
+    variant_id: 7,
+    values: [
+      { parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "профнастил", source: "name" as const },
+      { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: 104, value: "0,5 мм", source: "path" as const },
+    ],
+    split_hint: false,
+    pending: null,
+    values_job_status: null,
+  };
+
+  async function openOrdinary(extra?: { queryClient?: QueryClient }) {
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />, extra);
+    await screen.findByText(ORDINARY_TITLE, {}, LATER);
+  }
+
+  async function chooseFamily(user: ReturnType<typeof userEvent.setup>, title: string) {
+    await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
+    await user.click(await screen.findByRole("option", { name: title }));
+    return dialog;
+  }
+
+  describe("вариант", () => {
+    it("строка «Вариант» несёт значения контекста с источником", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = WITH_VARIANT;
+      await openOrdinary();
+
+      const material = await screen.findByText("Материал", {}, LATER);
+      expect(material.closest("li")).toHaveTextContent("профнастил");
+      expect(material.closest("li")).toHaveTextContent("по наименованию");
+      expect(screen.getByText("Толщина").closest("li")).toHaveTextContent("по разделам");
+    });
+
+    it("«к делению: разделы расходятся» ведёт на вкладку «Членства»", async () => {
+      const user = userEvent.setup();
+      contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, split_hint: true };
+      await openOrdinary();
+
+      expect(await screen.findByText("к делению: разделы расходятся", {}, LATER)).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Решения" })).toHaveAttribute("aria-selected", "true");
+      await user.click(screen.getByRole("button", { name: "Показать членства" }));
+
+      expect(screen.getByRole("tab", { name: /^Членства/ })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Решения" })).toHaveAttribute("aria-selected", "false");
+    });
+
+    it.each(["pending", "running"] as const)(
+      "задание значений в статусе %s: карточка помечена «вариант пересчитывается»",
+      async (status) => {
+        contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, variant_id: null, values: [], values_job_status: status };
+        await openOrdinary();
+
+        expect(await screen.findByText("вариант пересчитывается", {}, LATER)).toBeInTheDocument();
+      }
+    );
+
+    it.each(["privacy_hold", "error"] as const)(
+      "задание значений в статусе %s пометки не даёт",
+      async (status) => {
+        const queryClient = createTestQueryClient();
+        contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, variant_id: null, values: [], values_job_status: status };
+        await openOrdinary({ queryClient });
+        await waitFor(() => expect(queryClient.isFetching()).toBe(0), LATER);
+
+        expect(screen.queryByText("вариант пересчитывается")).not.toBeInTheDocument();
+      }
+    );
+
+    it("у семьи с текущей схемой, но без задания значений, пометки нет", async () => {
+      const queryClient = createTestQueryClient();
+      const context = contextFixture(ORDINARY_CONTEXT_ID);
+      context.work_family_id = 43;
+      context.family_title = "Кровельные работы";
+      await openOrdinary({ queryClient });
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0), LATER);
+
+      expect(screen.queryByText("вариант пересчитывается")).not.toBeInTheDocument();
+    });
+
+    it("карточка не читает схему семьи ради этой пометки", async () => {
+      const context = contextFixture(ORDINARY_CONTEXT_ID);
+      context.work_family_id = 43;
+      context.family_title = "Кровельные работы";
+      const schemaReads: string[] = [];
+      server.use(
+        http.get("/api/v1/semantic/families/:id/schema", ({ request }) => {
+          schemaReads.push(request.url);
+          return HttpResponse.json({ detail: "x" }, { status: 500 });
+        })
+      );
+      const queryClient = createTestQueryClient();
+      await openOrdinary({ queryClient });
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0), LATER);
+
+      expect(schemaReads).toEqual([]);
+    });
+  });
+
+  describe("ожидание семьи", () => {
+    const PENDING = {
+      family_id: 43,
+      family_title: "Кровельные работы",
+      source: "manual" as const,
+      by: 1,
+      at: "2026-10-05T09:30:00+00:00",
+      threshold: null,
+      suggestion_id: null,
+    };
+
+    it("«Ожидает семьи» несёт семью, кто и когда; «Отменить» снимает блок после перечитывания", async () => {
+      const user = userEvent.setup();
+      contextFixture(ORDINARY_CONTEXT_ID).variant = { ...WITH_VARIANT, pending: PENDING };
+      await openOrdinary();
+
+      expect(await screen.findByText("Ожидает семьи: «Кровельные работы»", {}, LATER)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Отменить ожидание семьи" }));
+
+      await waitFor(
+        () => expect(screen.queryByText("Ожидает семьи: «Кровельные работы»")).not.toBeInTheDocument(),
+        LATER
+      );
+      expect(handlerState.cancelPendingRequests).toEqual([ORDINARY_CONTEXT_ID]);
+      // Вариант остался: отмена ожидания его не трогает.
+      expect(screen.getByText("Материал")).toBeInTheDocument();
+    });
+
+    it("у контекста без ожидания блока нет", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = WITH_VARIANT;
+      await openOrdinary();
+      await screen.findByText("Материал", {}, LATER);
+
+      expect(screen.queryByText(/Ожидает семьи/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("«Не работа»", () => {
+    it("после подтверждения контекст получает состояние «не применяется», семья снята", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Не работа" }));
+      const confirm = await screen.findByRole("alertdialog");
+      expect(confirm).toHaveTextContent("семья, вариант и значения контекста будут сняты");
+      await user.click(within(confirm).getByRole("button", { name: "Отметить как не работу" }));
+
+      await waitFor(() => expect(handlerState.notWorkRequests).toEqual([ORDINARY_CONTEXT_ID]), LATER);
+      expect(await screen.findByText("не применяется", {}, LATER)).toBeInTheDocument();
+      expect(screen.getByText("нет семьи")).toBeInTheDocument();
+    });
+
+    it("без подтверждения запрос не уходит", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Не работа" }));
+      const confirm = await screen.findByRole("alertdialog");
+      await user.click(within(confirm).getByRole("button", { name: "Отмена" }));
+
+      expect(handlerState.notWorkRequests).toEqual([]);
+    });
+
+    it("отказ сервера выходит подписью, код и текст сервера на экран не выходят", async () => {
+      handlerState.contextRefusal = { action: "not-work", code: "context_not_applicable", status: 409 };
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Не работа" }));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Отметить как не работу" })
+      );
+
+      expect(await screen.findByText("Контекст уже отмечен как не работа.", {}, LATER)).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("context_not_applicable");
+    });
+
+    it("архивному контексту кнопка недоступна", async () => {
+      renderWithProviders(<ContextCard contextId={ARCHIVED_CONTEXT_ID} />);
+      await screen.findByText("Гидроизоляция фундамента (снят)", {}, LATER);
+      expect(screen.getByRole("button", { name: "Не работа" })).toBeDisabled();
+    });
+
+    it("неприменимому контексту кнопка недоступна", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).semantic_state = "NOT_APPLICABLE";
+      await openOrdinary();
+
+      expect(screen.getByRole("button", { name: "Не работа" })).toBeDisabled();
+    });
+  });
+
+  describe("«Другая семья…»", () => {
+    it("контекст без семьи открывает то же окно под именем «Назначить семью…»", async () => {
+      renderWithProviders(<ContextCard contextId={INSUFFICIENT_DESCRIPTION_CONTEXT_ID} />);
+      await screen.findByText("Светильники", {}, LATER);
+
+      expect(screen.getByRole("button", { name: "Назначить семью…" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Другая семья…" })).not.toBeInTheDocument();
+    });
+
+    it("у контекста без варианта исход «семья назначена», карточка показывает новую семью", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(await within(dialog).findByText("Семья назначена.", {}, LATER)).toBeInTheDocument();
+      expect(handlerState.lastAssignFamilyRequest).toEqual({
+        contextId: ORDINARY_CONTEXT_ID,
+        body: { family_id: 43 },
+      });
+      await user.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+      expect(await screen.findByText("Кровельные работы", {}, LATER)).toBeInTheDocument();
+    });
+
+    it("у контекста с вариантом исход «ожидает значений по схеме новой семьи», блок ожидания появился", async () => {
+      const user = userEvent.setup();
+      contextFixture(ORDINARY_CONTEXT_ID).variant = WITH_VARIANT;
+      await openOrdinary();
+      await screen.findByText("Материал", {}, LATER);
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(
+        await within(dialog).findByText("Семья будет назначена после значений по схеме новой семьи.", {}, LATER)
+      ).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+      expect(await screen.findByText("Ожидает семьи: «Кровельные работы»", {}, LATER)).toBeInTheDocument();
+      // Семья контекста ещё прежняя: исход «ожидает» её не меняет.
+      expect(screen.getByText("Семья работ №1")).toBeInTheDocument();
+    });
+
+    it("та же семья — исход «семья та же»", async () => {
+      const user = userEvent.setup();
+      const context = contextFixture(ORDINARY_CONTEXT_ID);
+      context.work_family_id = 43;
+      context.family_title = "Кровельные работы";
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(await within(dialog).findByText("Семья та же.", {}, LATER)).toBeInTheDocument();
+    });
+
+    it("«Снять семью» сообщает, что семья снята", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+      const dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Снять семью" }));
+
+      expect(await within(dialog).findByText("Семья снята.", {}, LATER)).toBeInTheDocument();
+      expect(handlerState.lastAssignFamilyRequest!.body).toEqual({ family_id: null });
+    });
+
+    it("отказ показывает подпись в окне, окно остаётся открытым, кода и текста сервера на экране нет", async () => {
+      handlerState.contextRefusal = { action: "family", code: "unit_mismatch", status: 409 };
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(
+        await within(dialog).findByText("Единица семьи не совпадает с единицей контекста.", {}, LATER)
+      ).toBeInTheDocument();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("unit_mismatch");
+      expect(within(dialog).queryByText("Семья назначена.")).not.toBeInTheDocument();
+    });
+
+    it("после отказа повторная попытка в том же окне снимает прежнюю подпись отказа", async () => {
+      handlerState.contextRefusal = { action: "family", code: "unit_mismatch", status: 409 };
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+      await within(dialog).findByText("Единица семьи не совпадает с единицей контекста.", {}, LATER);
+      // Отказ срабатывает один раз: вторая попытка проходит.
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(await within(dialog).findByText("Семья назначена.", {}, LATER)).toBeInTheDocument();
+      expect(within(dialog).queryByText("Единица семьи не совпадает с единицей контекста.")).not.toBeInTheDocument();
+    });
+
+    it("неизвестный код отказа — общая подпись", async () => {
+      handlerState.contextRefusal = { action: "family", code: "some_future_code", status: 409 };
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+      expect(
+        await within(dialog).findByText("Не удалось выполнить действие. Обновите экран и повторите.", {}, LATER)
+      ).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("some_future_code");
+    });
+
+    it("повторное открытие окна не несёт прежнего исхода", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+      await within(dialog).findByText("Семья назначена.", {}, LATER);
+      await user.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), LATER);
+
+      await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+      const reopened = await screen.findByRole("dialog");
+      expect(within(reopened).queryByText("Семья назначена.")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("закрытие окна смены семьи без кнопки", () => {
+    it("Escape тоже сбрасывает прежний исход", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+      await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+      await within(dialog).findByText("Семья назначена.", {}, LATER);
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), LATER);
+
+      await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+      const reopened = await screen.findByRole("dialog");
+      expect(within(reopened).queryByText("Семья назначена.")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("источник семьи", () => {
+    it("автоматически принятая семья помечена «принято автоматически»", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).family_source = "auto_suggestion";
+      await openOrdinary();
+
+      expect(screen.getByText(/принято автоматически/)).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("auto_suggestion");
+    });
+
+    it("семья, назначенная человеком, этой пометки не несёт", async () => {
+      await openOrdinary();
+
+      expect(screen.queryByText(/принято автоматически/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("«Пометить написание целиком…»", () => {
+    it("открывает диалог с предупреждением; пометка снимает контексты строки каталога", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Пометить написание целиком…" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("всем будущим вхождениям этого написания");
+      await user.click(within(dialog).getByRole("button", { name: "Пометить заголовком" }));
+
+      await waitFor(
+        () => expect(handlerState.positionKindRequests).toEqual([{ positionId: 8001, kind: "HEADER" }]),
+        LATER
+      );
+      expect(await screen.findByText("не применяется", {}, LATER)).toBeInTheDocument();
+    });
+
+    it("отказ с нормативами остаётся в диалоге, карточка не меняется", async () => {
+      handlerState.positionStandards[8001] = [
+        { id: 71, rate_class_id: 3, rate_class_title: "Класс Б3", valid_from: "2026-03-01", valid_to: null },
+      ];
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Пометить написание целиком…" }));
+      const dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Пометить мусором" }));
+
+      expect(await within(dialog).findByText(/Класс Б3/, {}, LATER)).toBeInTheDocument();
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.queryByText("не применяется")).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("position_has_standards");
+    });
+  });
+});
+
+describe("ContextCard — заголовок окна семьи", () => {
+  it("у контекста с семьёй окно называется «Другая семья», как открывшая его кнопка", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await screen.findByText("Штукатурка стен цементно-песчаным раствором", {}, { timeout: 8000 });
+
+    await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByRole("heading", { name: "Другая семья" })).toBeInTheDocument();
+  });
+
+  it("у контекста без семьи окно называется «Назначить семью»", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={INSUFFICIENT_DESCRIPTION_CONTEXT_ID} />);
+    await screen.findByText("Светильники", {}, { timeout: 8000 });
+
+    await user.click(screen.getByRole("button", { name: "Назначить семью…" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByRole("heading", { name: "Назначить семью" })).toBeInTheDocument();
   });
 });

@@ -2149,7 +2149,7 @@ export type SemanticState = (typeof SEMANTIC_STATE_VALUES)[number];
 export const COMPARABILITY_REASON_VALUES = ["insufficient_description"] as const;
 export type ComparabilityReason = (typeof COMPARABILITY_REASON_VALUES)[number];
 
-export const FAMILY_SOURCE_VALUES = ["manual", "suggestion"] as const;
+export const FAMILY_SOURCE_VALUES = ["manual", "suggestion", "auto_suggestion"] as const;
 export type FamilySource = (typeof FAMILY_SOURCE_VALUES)[number];
 
 /**
@@ -2222,8 +2222,81 @@ export interface ContextsParams {
   has_stale_members?: boolean;
   has_conflicting_members?: boolean;
   has_no_members?: boolean;
+  /** Контексты с вариантом / без него: фильтр уходит в запрос, страницу не режет экран. */
+  variant_state?: VariantState;
+  /** Контексты с ожидающим назначением семьи. */
+  pending?: boolean;
+  /** Контексты с пометкой «к делению: разделы расходятся». */
+  split_hint?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export type VariantState = "with" | "without";
+
+/** По чему поставлено значение контекста по параметру схемы (`context_parameter_values.source`). */
+export type ContextValueSource = "name" | "path" | "manual" | "path_conflict" | "none";
+
+/** Значение параметра в варианте контекста; `value: null` — «не уточнено» или расхождение путей. */
+export interface ContextValue {
+  parameter_id: number;
+  ordinal: number;
+  name: string;
+  value_id: number | null;
+  value: string | null;
+  source: ContextValueSource;
+}
+
+/** Ожидающее назначение семьи: контекст с вариантом меняет семью только после значений по схеме цели. */
+export interface PendingFamily {
+  family_id: number;
+  family_title: string;
+  source: FamilySource;
+  /** Кто поставил (`null` — автоматическое принятие). */
+  by: number | null;
+  at: string;
+  /** Порог автопринятия, строкой; только у `auto_suggestion`. */
+  threshold: string | null;
+  suggestion_id: number | null;
+}
+
+/** Блок `variant` карточки контекста (`crud/work_variants.py::ContextVariantOut`). */
+export interface ContextVariantData {
+  variant_id: number | null;
+  values: ContextValue[];
+  split_hint: boolean;
+  pending: PendingFamily | null;
+  /** Статус живого задания значений контекста (`pending`/`running`/`privacy_hold`/`error`); `null` — задания нет. */
+  values_job_status: ValuesJobStatus | null;
+}
+
+export type ValuesJobStatus = "pending" | "running" | "privacy_hold" | "error";
+
+/** Исход `POST /contexts/:id/family` (`family_change.request_family_change`). */
+export type FamilyChangeKind = "assigned" | "pending" | "unchanged";
+
+export interface FamilyChangeResult {
+  outcome: FamilyChangeKind;
+  context_id: number;
+  family_id: number | null;
+  superseded_suggestion_id: number | null;
+}
+
+/** Допустимые значения глобальной пометки строки каталога (`POST /positions/:id/kind`). */
+export type PositionMarkKind = "HEADER" | "TRASH";
+
+/** Норматив строки каталога из отказа `409 position_has_standards`. */
+export interface PositionStandard {
+  id: number;
+  rate_class_id: number;
+  rate_class_title: string;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+export interface PositionKindResult {
+  position_id: number;
+  kind: PositionMarkKind;
 }
 
 export interface SemanticEventEntry {
@@ -2303,6 +2376,8 @@ export interface ContextCardData {
   family_source: FamilySource | null;
   family_by: number | null;
   family_at: string | null;
+  /** Вариант контекста, ожидание и пометка «к делению» (спека вариантов §2.12). */
+  variant: ContextVariantData;
   member_count: number;
   /**
    * Путь классификатора статьи контекста — родители СВЕРХУ ВНИЗ, без самой
@@ -2555,6 +2630,15 @@ export interface SuggestionGroup {
   band: SuggestionBand;
   rows: SuggestionRow[];
   total: number;
+  /** Только у очереди «Смена семьи»: семья контекстов сейчас (`family_id` — предложенная). */
+  from_family_id?: number;
+  from_family_title?: string;
+}
+
+/** Группа очереди «Смена семьи»: «семья сейчас → предложенная семья + полоса». */
+export interface ChangeGroup extends SuggestionGroup {
+  from_family_id: number;
+  from_family_title: string;
 }
 
 /**
@@ -2576,7 +2660,7 @@ export interface NewRow {
 }
 
 export interface SuggestionQueue {
-  queue: "list" | "new";
+  queue: "list" | "new" | "change";
   groups: SuggestionGroup[];
   items: NewRow[];
 }
@@ -2585,7 +2669,7 @@ export interface SuggestionQueue {
 export type SuggestionUnitFilter = number | "none";
 
 export interface SuggestionsParams {
-  queue: "list" | "new";
+  queue: "list" | "new" | "change";
   unit?: SuggestionUnitFilter;
   band?: SuggestionBand;
   multi_owner?: boolean;
@@ -2629,6 +2713,13 @@ export interface QueueStatus {
   held_batches: HeldBatchInfo[];
   stale_units: StaleUnitInfo[];
   config_stale: ConfigStaleInfo | null;
+  /** Строки каталога `TO_REVIEW` (ждут решения). */
+  catalog_to_review: number;
+  /** Строки каталога `POSITION` (признанные работами). */
+  catalog_position: number;
+  contexts_with_variant: number;
+  contexts_pending: number;
+  families_without_schema: number;
 }
 
 export interface ConfirmSuggestionsResult {

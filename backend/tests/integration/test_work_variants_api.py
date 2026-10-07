@@ -2164,6 +2164,7 @@ class TestContextCard:
 
         assert card["variant"] == {
             "variant_id": None, "values": [], "split_hint": False, "pending": None,
+            "values_job_status": None,
         }
 
     def test_values_carry_their_source(self, admin_client, db_session, factories):
@@ -2242,6 +2243,86 @@ class TestContextCard:
 
         assert variant["variant_id"] is None and variant["values"] == []
         assert variant["pending"]["family_id"] == other.id
+
+
+class TestContextCardValuesJob:
+    """`variant.values_job_status` — статус живого задания значений контекста (спека
+    вариантов §2.12): `pending`, `running`, `privacy_hold`, `error`; без такого задания
+    — `None`. Закрытые задания (`done`, `cancelled`) и задания других видов и контекстов
+    не считаются."""
+
+    def _job(self, db, world, *, status, kind="context_values", context_id=None, hash_suffix=""):
+        import uuid
+
+        extra = {}
+        if status == "running":
+            extra["claim_token"] = uuid.uuid4()
+        if status == "privacy_hold":
+            extra["privacy_matches"] = [{"text": "x", "kind": "name", "where": "context"}]
+        if status == "cancelled":
+            extra["cancel_reason"] = "input_changed"
+        job = SemanticJob(
+            kind=kind,
+            context_id=context_id or world.context_id,
+            schema_id=world.schema.id if kind != "family_suggestion" else None,
+            request_hash=f"hash-{kind}-{status}-{hash_suffix}-{uuid.uuid4().hex}",
+            status=status,
+            next_attempt_at=dt.datetime.now(dt.UTC),
+            prompt_version="1",
+            model_requested=app_settings.SEMANTIC_MODEL,
+            place_dictionary_version=1,
+            candidates_hash="c",
+            prefix_hash="p",
+            input_hash="i",
+            response_schema_version="1",
+            serialization_version="1",
+            **extra,
+        )
+        db.add(job)
+        db.flush()
+        return job
+
+    def _status(self, client, context_id):
+        return client.get(f"{BASE}/contexts/{context_id}").json()["variant"]["values_job_status"]
+
+    def test_none_without_a_job(self, admin_client, db_session, factories):
+        world = _world(db_session, factories)
+
+        assert self._status(admin_client, world.context_id) is None
+
+    @pytest.mark.parametrize("status", ["pending", "running", "privacy_hold", "error"])
+    def test_each_live_status_comes_through(self, admin_client, db_session, factories, status):
+        world = _world(db_session, factories)
+        self._job(db_session, world, status=status)
+
+        assert self._status(admin_client, world.context_id) == status
+
+    @pytest.mark.parametrize("status", ["done", "cancelled"])
+    def test_closed_jobs_give_none(self, admin_client, db_session, factories, status):
+        world = _world(db_session, factories)
+        self._job(db_session, world, status=status)
+
+        assert self._status(admin_client, world.context_id) is None
+
+    def test_a_job_of_another_kind_is_ignored(self, admin_client, db_session, factories):
+        world = _world(db_session, factories)
+        self._job(db_session, world, status="pending", kind="family_suggestion")
+
+        assert self._status(admin_client, world.context_id) is None
+
+    def test_a_job_of_another_context_is_ignored(self, admin_client, db_session, factories):
+        world = _world(db_session, factories)
+        scene = _two_families(db_session, factories)
+        self._job(db_session, world, status="pending", context_id=scene.context_ids[0])
+
+        assert self._status(admin_client, world.context_id) is None
+
+    def test_the_newest_of_two_live_jobs_wins(self, admin_client, db_session, factories):
+        world = _world(db_session, factories)
+        self._job(db_session, world, status="error")
+        self._job(db_session, world, status="pending")
+
+        assert self._status(admin_client, world.context_id) == "pending"
 
 
 def _active_other_family(db, factories):

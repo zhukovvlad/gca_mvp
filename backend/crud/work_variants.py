@@ -29,7 +29,9 @@ from models import (
     FamilyParameterSchema,
     FamilyParameterValue,
     SchemaStatus,
+    SemanticJob,
     SemanticJobKind,
+    SemanticJobStatus,
     WorkFamily,
     WorkVariant,
     WorkVariantValue,
@@ -115,6 +117,7 @@ class ContextVariantOut(TypedDict):
     values: list[ContextValueOut]
     split_hint: bool
     pending: PendingOut | None
+    values_job_status: str | None
 
 
 def family_exists(db: Session, family_id: int) -> bool:
@@ -261,9 +264,9 @@ def variants_out(db: Session, family_id: int) -> list[VariantOut] | None:
 
 def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantOut:
     """Вариант контекста для карточки: значения с источником каждого, пометка
-    «к делению», ожидание. Контекст без варианта и без ожидания не читает базу
-    вовсе; с вариантом — один запрос значений, с ожиданием — ещё один (имя
-    ожидаемой семьи)."""
+    «к делению», ожидание, состояние задания значений. Задание значений читается
+    всегда — один запрос на любую карточку; сверх него с вариантом добавляется один
+    запрос значений, с ожиданием — ещё один (имя ожидаемой семьи)."""
     values: list[ContextValueOut] = []
     if context.work_variant_id is not None:
         values = [
@@ -317,7 +320,32 @@ def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantO
         values=values,
         split_hint=context.variant_split_hint is not None,
         pending=pending,
+        values_job_status=_values_job_status(db, context.id),
     )
+
+
+#: Статусы задания значений, которые экран считает «живыми»: у закрытых (`done`,
+#: `cancelled`) значений ждать нечего.
+_LIVE_VALUES_JOB_STATUSES = (
+    SemanticJobStatus.pending.value,
+    SemanticJobStatus.running.value,
+    SemanticJobStatus.privacy_hold.value,
+    SemanticJobStatus.error.value,
+)
+
+
+def _values_job_status(db: Session, context_id: int) -> str | None:
+    """Статус живого задания значений контекста (самого нового по `id`); `None`, если его нет."""
+    return db.execute(
+        sa.select(SemanticJob.status)
+        .where(
+            SemanticJob.context_id == context_id,
+            SemanticJob.kind == SemanticJobKind.context_values.value,
+            SemanticJob.status.in_(_LIVE_VALUES_JOB_STATUSES),
+        )
+        .order_by(SemanticJob.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------

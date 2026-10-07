@@ -40,6 +40,15 @@ function Banner({
   );
 }
 
+/** Счётчик шапки: подпись и число; нуль тоже печатается — это факт, а не отсутствие данных. */
+function Counter({ testId, label, value }: { testId: string; label: string; value: number }) {
+  return (
+    <span data-testid={testId}>
+      {label}: <b className="font-semibold text-fg tabular-nums">{value.toLocaleString("ru-RU")}</b>
+    </span>
+  );
+}
+
 interface SuggestionsHeaderProps {
   status: QueueStatus;
   /** Открыть диалог preview для перезапроса или удержанной пачки. */
@@ -79,6 +88,14 @@ export function SuggestionsHeader({ status, onPreview }: SuggestionsHeaderProps)
           <b className="font-semibold text-fg tabular-nums">{formatUsd(status.spent_24h_usd)}</b>
           <span>из {budget}</span>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-fg-secondary">
+        <Counter testId="counter-to-review" label="Строк на разборе" value={status.catalog_to_review} />
+        <Counter testId="counter-position" label="Строк-работ" value={status.catalog_position} />
+        <Counter testId="counter-with-variant" label="Контекстов с вариантом" value={status.contexts_with_variant} />
+        <Counter testId="counter-pending" label="Ожидают семьи" value={status.contexts_pending} />
+        <Counter testId="counter-without-schema" label="Семей без схемы" value={status.families_without_schema} />
       </div>
 
       {status.claim_paused && (

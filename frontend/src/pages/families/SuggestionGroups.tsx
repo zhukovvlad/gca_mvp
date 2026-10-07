@@ -30,9 +30,15 @@ import { SourceChip } from "./SourceChip";
 /** Сколько строк группа печатает сразу; остальные — «… и ещё K, отмечены», раскрываются кнопкой. */
 const VISIBLE_ROWS = 20;
 
-/** Ключ группы: пара «семья + полоса» (одна семья даёт до трёх групп). */
+/** Очередь, которой принадлежат группы: «Семья из списка» или «Смена семьи» (контекст уже с семьёй). */
+export type GroupsMode = "list" | "change";
+
+/**
+ * Ключ группы: пара «семья + полоса» (одна семья даёт до трёх групп); у очереди «Смена семьи»
+ * ещё и прежняя семья — одна предложенная семья в одной полосе приходит из нескольких.
+ */
 function groupKey(group: SuggestionGroup): string {
-  return `${group.family_id}:${group.band}`;
+  return `${group.from_family_id ?? ""}:${group.family_id}:${group.band}`;
 }
 
 const BAND_TINT: Record<SuggestionBand, string> = {
@@ -56,21 +62,26 @@ interface OtherFamilyDialogProps {
   group: SuggestionGroup;
   unitLabel: string;
   row: SuggestionRow | null;
+  /** Очередь, из которой открыто окно: «Смена семьи» не утверждает, что семья назначена. */
+  change: boolean;
   onClose: () => void;
 }
 
 /**
  * «Другая семья…»: семья выбирается из активных семей ТОЙ ЖЕ единицы, кроме
- * предложенной. Назначение идёт тем же путём, что ручное (`source = manual`,
- * спека semantic-suggestions §2.9) — сервер сверит единицу и активность.
+ * предложенной, а в очереди «Смена семьи» — и кроме текущей семьи контекста.
+ * Назначение идёт тем же путём, что ручное (`source = manual`, спека
+ * semantic-suggestions §2.9) — сервер сверит единицу и активность. Ответ
+ * исхода не несёт: контексту с вариантом сервер ставит ожидание, поэтому в
+ * очереди «Смена семьи» тост не утверждает, что семья назначена.
  */
-function OtherFamilyDialog({ group, unitLabel, row, onClose }: OtherFamilyDialogProps) {
+function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFamilyDialogProps) {
   const familiesQ = useWorkFamilies("active");
   const otherFamily = useOtherFamily();
   const [choice, setChoice] = useState<number | null>(null);
 
   const candidates = (familiesQ.data ?? []).filter(
-    (f) => f.unit_code === group.unit_code && f.id !== group.family_id
+    (f) => f.unit_code === group.unit_code && f.id !== group.family_id && f.id !== group.from_family_id
   );
 
   function handleClose() {
@@ -119,6 +130,7 @@ function OtherFamilyDialog({ group, unitLabel, row, onClose }: OtherFamilyDialog
                       suggestionId: row.suggestion_id,
                       familyId: choice,
                       familyTitle: candidates.find((f) => f.id === choice)?.title ?? "",
+                      change,
                     },
                     { onSuccess: handleClose }
                   )
@@ -138,6 +150,7 @@ interface GroupCardProps {
   group: SuggestionGroup;
   unitLabel: string;
   defaultOpen: boolean;
+  mode: GroupsMode;
 }
 
 /**
@@ -146,7 +159,7 @@ interface GroupCardProps {
  * группы (снятые id); подтверждение шлёт ровно отмеченные, в том числе строки,
  * не выведенные за пределом {@link VISIBLE_ROWS} (они отмечены по умолчанию).
  */
-function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
+function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [showAll, setShowAll] = useState(false);
   const [unchecked, setUnchecked] = useState<ReadonlySet<number>>(new Set());
@@ -154,6 +167,9 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
   const confirm = useConfirmSuggestions();
   const reject = useRejectSuggestion();
 
+  const change = mode === "change";
+  // «Смена семьи»: прежняя семья контекстов → предложенная.
+  const groupTitle = change ? `${group.from_family_title} → ${group.family_title}` : group.family_title;
   const checkedIds = group.rows.map((r) => r.suggestion_id).filter((id) => !unchecked.has(id));
   const visibleRows = showAll ? group.rows : group.rows.slice(0, VISIBLE_ROWS);
   const hidden = group.rows.length - visibleRows.length;
@@ -182,8 +198,8 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
         >
           <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
         </Button>
-        <span className="min-w-0 truncate text-[15px] font-semibold text-fg" title={group.family_title}>
-          {group.family_title}
+        <span className="min-w-0 truncate text-[15px] font-semibold text-fg" title={groupTitle}>
+          {groupTitle}
         </span>
         <span className="text-[13px] text-fg-tertiary">
           {unitLabel} · {group.total}
@@ -199,6 +215,7 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
               ids: checkedIds,
               familyTitle: group.family_title,
               leftCount: group.rows.length - checkedIds.length,
+              change,
             })
           }
         >
@@ -267,7 +284,9 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
                     variant="outline"
                     size="sm"
                     disabled={reject.isPending}
-                    onClick={() => reject.mutate(row.suggestion_id)}
+                    onClick={() =>
+                      reject.mutate(change ? { suggestionId: row.suggestion_id, change } : row.suggestion_id)
+                    }
                   >
                     Отклонить
                   </Button>
@@ -290,6 +309,7 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
         group={group}
         unitLabel={unitLabel}
         row={otherRow}
+        change={change}
         onClose={() => setOtherRow(null)}
       />
     </div>
@@ -298,12 +318,18 @@ function GroupCard({ group, unitLabel, defaultOpen }: GroupCardProps) {
 
 interface SuggestionGroupsProps {
   groups: SuggestionGroup[];
+  /** Очередь «Смена семьи» печатает «прежняя → предложенная» и свои тексты исходов; по умолчанию — «Семья из списка». */
+  mode?: GroupsMode;
   /** Код единицы (`M2`) → символ (`м²`); неизвестный код печатается как есть. */
   unitLabel: (code: string | null) => string;
 }
 
-/** Список групп очереди «Семья из списка»; первая группа раскрыта, как в макете. */
-export function SuggestionGroups({ groups, unitLabel }: SuggestionGroupsProps) {
+/**
+ * Список групп очереди: «Семья из списка» (`mode="list"`, по умолчанию) или «Смена семьи»
+ * (`mode="change"`: заголовок «прежняя → предложенная», свои тексты исходов). Первая группа
+ * раскрыта, как в макете.
+ */
+export function SuggestionGroups({ groups, unitLabel, mode = "list" }: SuggestionGroupsProps) {
   return (
     <div className="flex flex-col gap-3">
       {groups.map((group, index) => (
@@ -312,6 +338,7 @@ export function SuggestionGroups({ groups, unitLabel }: SuggestionGroupsProps) {
           group={group}
           unitLabel={unitLabel(group.unit_code)}
           defaultOpen={index === 0}
+          mode={mode}
         />
       ))}
     </div>

@@ -14,6 +14,8 @@ import {
   CATEGORY_SOURCE_LABEL,
   CATEGORY_SOURCE_VALUES,
   comparabilityLabel,
+  CONTEXT_REFUSAL_LABEL,
+  contextRefusalLabel,
   DECISION_SOURCE_LABEL,
   eventLabel,
   EVENT_LABEL,
@@ -30,6 +32,7 @@ import {
   schemaRefusalLabel,
   SEMANTIC_STATE_LABEL,
   VARIANT_STATUS_LABEL,
+  VARIANT_VALUE_SOURCE_LABEL,
 } from "./labels";
 
 /**
@@ -102,6 +105,7 @@ describe("labels: словарь подписей §2.2", () => {
   it("family_source — точные подписи таблицы спеки", () => {
     expect(FAMILY_SOURCE_LABEL.manual).toBe("оператор");
     expect(FAMILY_SOURCE_LABEL.suggestion).toBe("из предложения");
+    expect(FAMILY_SOURCE_LABEL.auto_suggestion).toBe("принято автоматически");
   });
 
   it.each(CATEGORY_SOURCE_VALUES)("work_category_source %s имеет непустую подпись, не равную коду", (value) => {
@@ -267,5 +271,27 @@ describe("подписи схемы и вариантов", () => {
     const fallback = "Не удалось выполнить действие. Обновите экран и повторите.";
     expect(schemaRefusalLabel("some_future_code")).toBe(fallback);
     expect(schemaRefusalLabel(undefined)).toBe(fallback);
+  });
+});
+
+describe("подписи вариантов и отказов контекста", () => {
+  it.each(["name", "path", "manual", "path_conflict", "none"] as const)(
+    "источник значения %s имеет непустую подпись, не равную коду",
+    (source) => {
+      const label = VARIANT_VALUE_SOURCE_LABEL[source];
+      expect(label).toBeTruthy();
+      expect(label).not.toBe(source);
+    }
+  );
+
+  it.each(Object.keys(CONTEXT_REFUSAL_LABEL))("код отказа %s — подпись без самого кода", (code) => {
+    const label = contextRefusalLabel(code);
+    expect(label.length).toBeGreaterThan(10);
+    expect(label).not.toContain(code);
+  });
+
+  it("неизвестный и пустой код — общая подпись", () => {
+    expect(contextRefusalLabel("some_future_code")).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
+    expect(contextRefusalLabel(undefined)).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
   });
 });

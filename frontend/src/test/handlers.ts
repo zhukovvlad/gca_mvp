@@ -59,6 +59,9 @@ import type {
   JobRow,
   NewRow,
   PrivacyMatch,
+  ChangeGroup,
+  ContextVariantData,
+  PositionStandard,
   SuggestionGroup,
   UnitHoldGroup,
   TenderCard,
@@ -83,7 +86,9 @@ import type {
  * перед сериализацией (`toContextRow`/`toContextCard`): наружу уходит ровно
  * форма ответа бэкенда, не более.
  */
-interface SemanticContextFixture extends ContextCardData {
+interface SemanticContextFixture extends Omit<ContextCardData, "variant"> {
+  /** Вариант, ожидание и пометка «к делению»; без поля — контекст без варианта (как у сервера без значений). */
+  variant?: ContextVariantData;
   hasStaleMembers: boolean;
   hasConflictingMembers: boolean;
   hasNoMembers: boolean;
@@ -435,6 +440,17 @@ interface HandlerState {
   lastConfirmKindRequest: { contextId: number; body: Record<string, unknown> } | null;
   lastSetNameRoleRequest: { contextId: number; body: Record<string, unknown> } | null;
   lastAssignFamilyRequest: { contextId: number; body: Record<string, unknown> } | null;
+  /** Отказать следующему действию над контекстом ответом с кодом; срабатывает один раз и сбрасывается. */
+  contextRefusal: { action: ContextAction; code: string; status: number } | null;
+  /** Запросы `DELETE …/pending-family` и `POST …/not-work` по порядку: id контекста. */
+  cancelPendingRequests: number[];
+  notWorkRequests: number[];
+  /** Запросы глобальной пометки: строка каталога и вид. */
+  positionKindRequests: Array<{ positionId: number; kind: string }>;
+  /** Нормативы строк каталога (по id строки): при непустом списке пометка отказывает `409 position_has_standards`. */
+  positionStandards: Record<number, PositionStandard[]>;
+  /** Очередь «Смена семьи» (`queue=change`) — мутируемая, как `suggestionGroups`. */
+  changeGroups: ChangeGroup[];
   lastSplitContextRequest: { contextId: number; body: Record<string, unknown> } | null;
   lastMergeContextRequest: { contextId: number; targetContextId: number } | null;
   lastArchiveContextRequest: { contextId: number; body: Record<string, unknown> } | null;
@@ -526,6 +542,7 @@ interface HandlerState {
 }
 
 type SchemaAction = "rebuild" | "update" | "cancel" | "merge";
+type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind";
 
 // ---------------------------------------------------------------------------
 //  Семьи и контексты — фикстуры (спека 2026-09-22-catalog-families-design.md
@@ -676,6 +693,40 @@ function initialSuggestionGroups(): SuggestionGroup[] {
   ];
 }
 
+/**
+ * Очередь «Смена семьи» (`crud/semantic_queue.py::ChangeGroup`): контексты уже с
+ * семьёй, которым предложена другая. Две группы: «Кровельные работы → Геотекстиль» (полоса
+ * `high`, две строки) и «Геотекстиль → Кровельные работы» (полоса `low`, одна). `suggestion_id` —
+ * с 21, чтобы не пересекаться с очередью «Семья из списка».
+ */
+function initialChangeGroups(): ChangeGroup[] {
+  return [
+    {
+      from_family_id: 43,
+      from_family_title: "Кровельные работы",
+      family_id: 501,
+      family_title: "Геотекстиль",
+      unit_code: "M2",
+      band: "high",
+      total: 2,
+      rows: [
+        suggestionRowFixture(21, "Геотекстиль «Дорнит-300»", "0.96", "Нетканое полотно в м², семья «Геотекстиль» подходит лучше."),
+        suggestionRowFixture(22, "Геотекстиль «Тайпар»", "0.93", "Геотекстиль для дренажа, семья «Геотекстиль»."),
+      ],
+    },
+    {
+      from_family_id: 501,
+      from_family_title: "Геотекстиль",
+      family_id: 43,
+      family_title: "Кровельные работы",
+      unit_code: "M2",
+      band: "low",
+      total: 1,
+      rows: [suggestionRowFixture(23, "Плёнка кровельная", "0.52", "Кровельная плёнка, возможно, относится к кровельным работам.")],
+    },
+  ];
+}
+
 function newRowFixture(id: number, title: string, extra: Partial<NewRow> = {}): NewRow {
   return {
     suggestion_id: id,
@@ -819,6 +870,11 @@ function initialQueueStatus(): QueueStatus {
     held_batches: [],
     stale_units: [],
     config_stale: null,
+    catalog_to_review: 1384,
+    catalog_position: 210,
+    contexts_with_variant: 37,
+    contexts_pending: 5,
+    families_without_schema: 12,
   };
 }
 
@@ -1645,6 +1701,7 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
     family_source: fixture.family_source,
     family_by: fixture.family_by,
     family_at: fixture.family_at,
+    variant: fixture.variant ?? { variant_id: null, values: [], split_hint: false, pending: null, values_job_status: null },
     member_count: fixture.member_count,
     work_category_path: fixture.work_category_path,
     representative_work_title: fixture.representative_work_title,
@@ -1698,6 +1755,12 @@ export const handlerState: HandlerState = {
   lastConfirmKindRequest: null,
   lastSetNameRoleRequest: null,
   lastAssignFamilyRequest: null,
+  contextRefusal: null,
+  cancelPendingRequests: [],
+  notWorkRequests: [],
+  positionKindRequests: [],
+  positionStandards: {},
+  changeGroups: initialChangeGroups(),
   lastSplitContextRequest: null,
   lastMergeContextRequest: null,
   lastArchiveContextRequest: null,
@@ -1873,6 +1936,28 @@ function jobChangedResponse() {
   );
 }
 
+/** Отказ следующему действию над контекстом, если тест его задал (один раз). */
+function takeContextRefusal(action: ContextAction) {
+  const refusal = handlerState.contextRefusal;
+  if (!refusal || refusal.action !== action) return null;
+  handlerState.contextRefusal = null;
+  return HttpResponse.json(
+    { detail: { code: refusal.code, message: refusal.code } },
+    { status: refusal.status }
+  );
+}
+
+/** «Не работа»: семья, вариант и ожидание сняты, состояние — «не применяется» (как `mark_context_not_work`). */
+function markNotWork(context: SemanticContextFixture) {
+  context.semantic_state = "NOT_APPLICABLE";
+  context.work_family_id = null;
+  context.family_title = null;
+  context.family_source = null;
+  context.family_by = null;
+  context.family_at = null;
+  context.variant = { variant_id: null, values: [], split_hint: false, pending: null, values_job_status: null };
+}
+
 /** Убирает строки очереди по предикату; опустевшая группа исчезает — как на сервере. */
 function removeSuggestionRows(shouldRemove: (suggestionId: number) => boolean) {
   for (const g of handlerState.suggestionGroups) {
@@ -1880,6 +1965,11 @@ function removeSuggestionRows(shouldRemove: (suggestionId: number) => boolean) {
     g.total = g.rows.length;
   }
   handlerState.suggestionGroups = handlerState.suggestionGroups.filter((g) => g.rows.length > 0);
+  for (const g of handlerState.changeGroups) {
+    g.rows = g.rows.filter((r) => !shouldRemove(r.suggestion_id));
+    g.total = g.rows.length;
+  }
+  handlerState.changeGroups = handlerState.changeGroups.filter((g) => g.rows.length > 0);
 }
 
 export function resetHandlerState() {
@@ -1917,6 +2007,12 @@ export function resetHandlerState() {
   handlerState.lastConfirmKindRequest = null;
   handlerState.lastSetNameRoleRequest = null;
   handlerState.lastAssignFamilyRequest = null;
+  handlerState.contextRefusal = null;
+  handlerState.cancelPendingRequests = [];
+  handlerState.notWorkRequests = [];
+  handlerState.positionKindRequests = [];
+  handlerState.positionStandards = {};
+  handlerState.changeGroups = initialChangeGroups();
   handlerState.lastSplitContextRequest = null;
   handlerState.lastMergeContextRequest = null;
   handlerState.lastArchiveContextRequest = null;
@@ -3533,6 +3629,9 @@ export const handlers = [
     const hasStale = params.get("has_stale_members");
     const hasConflicting = params.get("has_conflicting_members");
     const hasNoMembers = params.get("has_no_members");
+    const variantState = params.get("variant_state");
+    const pending = params.get("pending");
+    const splitHint = params.get("split_hint");
     const limit = Number(params.get("limit") ?? 50);
     const offset = Number(params.get("offset") ?? 0);
 
@@ -3545,6 +3644,12 @@ export const handlers = [
       if (hasStale !== null && c.hasStaleMembers !== (hasStale === "true")) return false;
       if (hasConflicting !== null && c.hasConflictingMembers !== (hasConflicting === "true")) return false;
       if (hasNoMembers !== null && c.hasNoMembers !== (hasNoMembers === "true")) return false;
+      // Предикаты вариантов, как их считает сервер (`crud/semantic.py::list_contexts`).
+      const variant = c.variant ?? { variant_id: null, values: [], split_hint: false, pending: null, values_job_status: null };
+      if (variantState === "with" && variant.variant_id === null) return false;
+      if (variantState === "without" && variant.variant_id !== null) return false;
+      if (pending !== null && (variant.pending !== null) !== (pending === "true")) return false;
+      if (splitHint !== null && variant.split_hint !== (splitHint === "true")) return false;
       return true;
     });
 
@@ -3608,27 +3713,107 @@ export const handlers = [
     handlerState.lastAssignFamilyRequest = { contextId, body };
     const context = handlerState.semanticContexts.find((c) => c.id === contextId);
     if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    const refused = takeContextRefusal("family");
+    if (refused) return refused;
+    // Исход, как у `family_change.request_family_change`: снятие и назначение контексту без
+    // варианта — `assigned`, с вариантом — `pending` (ожидание), та же семья — `unchanged`.
+    const variant = context.variant ?? { variant_id: null, values: [], split_hint: false, pending: null, values_job_status: null };
     if (body.family_id === null) {
       context.work_family_id = null;
       context.family_title = null;
       context.family_source = null;
       context.family_by = null;
       context.family_at = null;
-    } else {
-      const family = handlerState.workFamilies.find((f) => f.id === body.family_id);
-      if (!family) {
-        return HttpResponse.json(
-          { detail: { code: "family_not_found", message: `семья ${body.family_id} не найдена`, family_id: body.family_id } },
-          { status: 404 }
-        );
-      }
-      context.work_family_id = family.id;
-      context.family_title = family.title;
-      context.family_source = "manual";
-      context.family_by = 1;
-      context.family_at = isoNow();
+      context.variant = { variant_id: null, values: [], split_hint: false, pending: null, values_job_status: null };
+      return HttpResponse.json({ outcome: "assigned", context_id: contextId, family_id: null, superseded_suggestion_id: null });
     }
+    const family = handlerState.workFamilies.find((f) => f.id === body.family_id);
+    if (!family) {
+      return HttpResponse.json(
+        { detail: { code: "family_not_found", message: `семья ${body.family_id} не найдена`, family_id: body.family_id } },
+        { status: 404 }
+      );
+    }
+    if (context.work_family_id === family.id) {
+      // Та же семья вытесняет ожидание другой семьи (`request_family_change`, путь `unchanged`).
+      if (variant.pending !== null) context.variant = { ...variant, pending: null };
+      return HttpResponse.json({ outcome: "unchanged", context_id: contextId, family_id: family.id, superseded_suggestion_id: null });
+    }
+    if (variant.variant_id !== null) {
+      context.variant = {
+        ...variant,
+        pending: {
+          family_id: family.id,
+          family_title: family.title,
+          source: "manual",
+          by: 1,
+          at: isoNow(),
+          threshold: null,
+          suggestion_id: null,
+        },
+      };
+      return HttpResponse.json({ outcome: "pending", context_id: contextId, family_id: family.id, superseded_suggestion_id: null });
+    }
+    context.work_family_id = family.id;
+    context.family_title = family.title;
+    context.family_source = "manual";
+    context.family_by = 1;
+    context.family_at = isoNow();
+    return HttpResponse.json({ outcome: "assigned", context_id: contextId, family_id: family.id, superseded_suggestion_id: null });
+  }),
+
+  http.delete("/api/v1/semantic/contexts/:id/pending-family", ({ params }) => {
+    const contextId = Number(params.id);
+    handlerState.cancelPendingRequests.push(contextId);
+    const refused = takeContextRefusal("cancel-pending");
+    if (refused) return refused;
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.variant) context.variant = { ...context.variant, pending: null };
     return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/not-work", ({ params }) => {
+    const contextId = Number(params.id);
+    handlerState.notWorkRequests.push(contextId);
+    const refused = takeContextRefusal("not-work");
+    if (refused) return refused;
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.archived_at !== null) {
+      return HttpResponse.json(
+        { detail: { code: "context_archived", message: "контекст архивирован", context_id: contextId } },
+        { status: 409 }
+      );
+    }
+    if (context.semantic_state === "NOT_APPLICABLE") {
+      return HttpResponse.json(
+        { detail: { code: "context_not_applicable", message: "контекст уже помечен как не работа", context_id: contextId } },
+        { status: 409 }
+      );
+    }
+    markNotWork(context);
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/positions/:id/kind", async ({ params, request }) => {
+    const positionId = Number(params.id);
+    const body = (await request.json()) as { kind: string };
+    handlerState.positionKindRequests.push({ positionId, kind: body.kind });
+    const refused = takeContextRefusal("position-kind");
+    if (refused) return refused;
+    const standards = handlerState.positionStandards[positionId] ?? [];
+    if (standards.length > 0) {
+      // Форма отказа сервера: ключи контекста лежат рядом с `code` и `message`.
+      return HttpResponse.json(
+        { detail: { code: "position_has_standards", message: "у строки есть нормативы", position_id: positionId, standards } },
+        { status: 409 }
+      );
+    }
+    for (const context of handlerState.semanticContexts) {
+      if (context.catalog_position_id === positionId) markNotWork(context);
+    }
+    return HttpResponse.json({ position_id: positionId, kind: body.kind });
   }),
 
   http.post("/api/v1/semantic/contexts/:id/split", async ({ params, request }) => {
@@ -3864,6 +4049,22 @@ export const handlers = [
         return true;
       });
       return HttpResponse.json({ queue: "new", groups: [], items });
+    }
+    if (url.searchParams.get("queue") === "change") {
+      const changeGroups = handlerState.changeGroups
+        .filter((g) => {
+          if (unit === "none") return g.unit_code === null;
+          if (unit) return g.unit_code === codeById[unit];
+          return true;
+        })
+        .filter((g) => !band || g.band === band)
+        // `multi_owner` сервер применяет и к этой очереди (`_change_queue`, `multi_owner_only`).
+        .map((g) => {
+          const rows = multiOwner ? g.rows.filter((r) => r.multi_owner) : g.rows;
+          return { ...g, rows, total: rows.length };
+        })
+        .filter((g) => g.rows.length > 0);
+      return HttpResponse.json({ queue: "change", groups: changeGroups, items: [] });
     }
     return HttpResponse.json({ queue: url.searchParams.get("queue") ?? "list", groups, items: [] });
   }),

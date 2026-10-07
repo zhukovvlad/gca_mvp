@@ -285,6 +285,7 @@ describe("SuggestionsTab — опрос", () => {
       await vi.waitFor(() => expect(screen.getAllByTestId("suggestion-group").length).toBeGreaterThan(0));
       await vi.waitFor(() => expect(probe.counts.status).toBe(1));
       await vi.waitFor(() => expect(probe.counts.jobserror).toBe(1));
+      await vi.waitFor(() => expect(probe.counts.suggestionschange).toBe(1));
       const before = { ...probe.counts };
 
       await vi.advanceTimersByTimeAsync(61_000);
@@ -292,6 +293,7 @@ describe("SuggestionsTab — опрос", () => {
       await vi.waitFor(() => expect(probe.counts.status).toBe(before.status + 1));
       await vi.waitFor(() => expect(probe.counts.suggestionslist).toBe(before.suggestionslist + 1));
       expect(probe.counts.suggestionsnew).toBe(before.suggestionsnew);
+      expect(probe.counts.suggestionschange).toBe(before.suggestionschange);
       expect(probe.counts.jobserror).toBe(before.jobserror);
       expect(probe.counts.jobsprivacy_hold).toBe(before.jobsprivacy_hold);
 
@@ -306,6 +308,8 @@ describe("SuggestionsTab — опрос", () => {
       // Каждая скрытая очередь перечитывается своим переключением.
       await openQueue(user, /Новая/);
       await vi.waitFor(() => expect(probe.counts.suggestionsnew).toBe(before.suggestionsnew + 1));
+      await openQueue(user, /Смена семьи/);
+      await vi.waitFor(() => expect(probe.counts.suggestionschange).toBe(before.suggestionschange + 1));
       const listBefore = probe.counts.suggestionslist;
       await openQueue(user, /Семья из списка/);
       await vi.waitFor(() => expect(probe.counts.suggestionslist).toBe(listBefore + 1));
@@ -313,5 +317,123 @@ describe("SuggestionsTab — опрос", () => {
       probe.stop();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("SuggestionsTab — очередь «Смена семьи»", () => {
+  // Ожидание после действия, за которым следует запрос, — с запасом под нагрузку `just ci`.
+  const LATER = { timeout: 8000 };
+
+  it("единица уходит в запрос очереди смены", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+    await openQueue(user, /Смена семьи/);
+    await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(2), LATER);
+
+    await user.click(screen.getByLabelText("Единица"));
+    await user.click(await screen.findByRole("option", { name: "м²" }));
+
+    await waitFor(() => {
+      const changeRequests = handlerState.suggestionsRequests.filter((q) => q.includes("queue=change"));
+      expect(new URLSearchParams(changeRequests.at(-1)).get("unit")).toBe("5");
+    }, LATER);
+  });
+
+  it("«только многовладельческие» уходит в запрос очереди смены", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+    await openQueue(user, /Смена семьи/);
+    await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(2), LATER);
+
+    await user.click(screen.getByRole("checkbox", { name: "только многовладельческие" }));
+
+    await waitFor(() => {
+      const changeRequests = handlerState.suggestionsRequests.filter((q) => q.includes("queue=change"));
+      expect(new URLSearchParams(changeRequests.at(-1)).get("multi_owner")).toBe("true");
+    }, LATER);
+    // Многовладельческих строк в очереди смены фикстуры нет: сервер вернул пустую очередь.
+    expect(await screen.findByText("Смен семьи нет", {}, LATER)).toBeInTheDocument();
+  });
+
+  it("очередь смены не загрузилась — сообщение об ошибке вместо групп", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/semantic/suggestions", ({ request }) =>
+        new URL(request.url).searchParams.get("queue") === "change"
+          ? HttpResponse.json({ detail: "boom" }, { status: 500 })
+          : undefined
+      )
+    );
+    await renderTab();
+    await openQueue(user, /Смена семьи/);
+
+    expect(await screen.findByText("Не удалось получить очередь «Смена семьи».", {}, LATER)).toBeInTheDocument();
+    expect(screen.queryAllByTestId("suggestion-group")).toHaveLength(0);
+  });
+
+  it("четвёртая очередь со счётчиком: три предложения смены в двух группах", async () => {
+    await renderTab();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Смена семьи/ })).toHaveTextContent("3"), LATER);
+  });
+
+  it("открывает группы «семья → семья + полоса», запрос идёт с queue=change", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await openQueue(user, /Смена семьи/);
+
+    await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(2), LATER);
+    const groups = screen.getAllByTestId("suggestion-group");
+    expect(groups[0]).toHaveTextContent("Кровельные работы → Геотекстиль");
+    expect(handlerState.suggestionsRequests.some((q) => q.includes("queue=change"))).toBe(true);
+  });
+
+  it("у очереди есть фильтры единицы и полосы, как у «Семьи из списка»", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await openQueue(user, /Смена семьи/);
+    await screen.findAllByTestId("suggestion-group");
+
+    expect(screen.getByLabelText("Единица")).toBeInTheDocument();
+    expect(screen.getByLabelText("Уверенность")).toBeInTheDocument();
+  });
+
+  it("полоса уходит в запрос очереди смены и сужает её", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+    await openQueue(user, /Смена семьи/);
+    await screen.findAllByTestId("suggestion-group");
+
+    await user.click(screen.getByLabelText("Уверенность"));
+    await user.click(await screen.findByRole("option", { name: "< 0,7" }));
+
+    await waitFor(() => {
+      const changeRequests = handlerState.suggestionsRequests.filter((q) => q.includes("queue=change"));
+      expect(new URLSearchParams(changeRequests.at(-1)).get("band")).toBe("low");
+    }, LATER);
+    await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(1), LATER);
+  });
+
+  it("подтверждённая группа уходит из очереди, счётчик убывает", async () => {
+    const user = userEvent.setup();
+    const { invalidate } = await renderTab();
+    await openQueue(user, /Смена семьи/);
+    const groups = await screen.findAllByTestId("suggestion-group");
+
+    await user.click(within(groups[0]).getByRole("button", { name: "Подтвердить отмеченные 2" }));
+
+    await waitFor(() => expect(screen.getAllByTestId("suggestion-group")).toHaveLength(1), LATER);
+    await waitFor(() => expect(screen.getByRole("tab", { name: /Смена семьи/ })).toHaveTextContent("1"), LATER);
+    expect(handlerState.confirmSuggestionsRequests).toEqual([[21, 22]]);
+    expect(invalidatedKeys(invalidate)).toContain(JSON.stringify(["semantic-queue", "suggestions"]));
+  });
+
+  it("очередь «Семья из списка» после появления четвёртой не изменилась: три группы, шесть строк", async () => {
+    await renderTab();
+
+    expect(screen.getAllByTestId("suggestion-group")).toHaveLength(3);
+    expect(screen.getByRole("tab", { name: /Семья из списка/ })).toHaveTextContent("6");
   });
 });

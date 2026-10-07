@@ -1098,3 +1098,123 @@ describe("ContextsTab", () => {
     expect(document.body.textContent).not.toMatch(CODES);
   });
 });
+
+describe("ContextsTab — фильтры вариантов", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  const FIRST = "Синтетическая работа №1";
+
+  function useManyRendered(rowsCount = 25) {
+    const requests = useManyContextRows(manyContextRows(rowsCount));
+    renderWithProviders(<ContextsTab />);
+    return requests;
+  }
+
+  async function pickVariantState(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(screen.getByLabelText("Вариант"));
+    await user.click(await screen.findByRole("option", { name }));
+  }
+
+  it("«С вариантом» уходит в запрос параметром variant_state=with", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "С вариантом");
+
+    await waitFor(() => expect(lastRequest(requests).get("variant_state")).toBe("with"), AFTER_DEBOUNCE);
+  });
+
+  it("«Без варианта» — variant_state=without, «Любой вариант» параметр снимает", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "Без варианта");
+    await waitFor(() => expect(lastRequest(requests).get("variant_state")).toBe("without"), AFTER_DEBOUNCE);
+
+    await pickVariantState(user, "Любой вариант");
+    await waitFor(() => expect(lastRequest(requests).has("variant_state")).toBe(false), AFTER_DEBOUNCE);
+  });
+
+  it("«ожидает семьи» уходит параметром pending=true, снятая галочка параметр убирает", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+    await waitFor(() => expect(lastRequest(requests).get("pending")).toBe("true"), AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+    await waitFor(() => expect(lastRequest(requests).has("pending")).toBe(false), AFTER_DEBOUNCE);
+  });
+
+  it("«к делению» уходит параметром split_hint=true", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "к делению" }));
+
+    await waitFor(() => expect(lastRequest(requests).get("split_hint")).toBe("true"), AFTER_DEBOUNCE);
+  });
+
+  it("экран показывает то, что вернул сервер: загруженную страницу сам не фильтрует", async () => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "к делению" }));
+    await waitFor(() => expect(lastRequest(requests).get("split_hint")).toBe("true"), AFTER_DEBOUNCE);
+
+    // Строки не несут признаков варианта, поэтому любая клиентская фильтрация скрыла бы их все.
+    expect(screen.getByText(FIRST)).toBeInTheDocument();
+    expect(screen.getByText("1–20 из 25")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["С вариантом", "select"],
+    ["ожидает семьи", "checkbox"],
+    ["к делению", "checkbox"],
+  ])("смена фильтра «%s» возвращает на первую страницу", async (name, kind) => {
+    const user = userEvent.setup();
+    const requests = useManyRendered();
+    await screen.findByText(FIRST, {}, AFTER_DEBOUNCE);
+    await user.click(screen.getByRole("button", { name: "Следующая страница" }));
+    await waitFor(() => expect(lastRequest(requests).get("offset")).toBe("20"), AFTER_DEBOUNCE);
+
+    if (kind === "checkbox") await user.click(screen.getByRole("checkbox", { name }));
+    else await pickVariantState(user, name);
+
+    await waitFor(() => expect(lastRequest(requests).get("offset")).toBe("0"), AFTER_DEBOUNCE);
+  });
+
+  it("серверный фильтр сужает выдачу: «ожидает семьи» оставляет контекст с ожиданием", async () => {
+    contextFixture(601).variant = {
+      variant_id: 7,
+      values: [],
+      split_hint: false,
+      values_job_status: null,
+      pending: {
+        family_id: 43,
+        family_title: "Кровельные работы",
+        source: "manual",
+        by: 1,
+        at: "2026-10-05T09:30:00+00:00",
+        threshold: null,
+        suggestion_id: null,
+      },
+    };
+    const user = userEvent.setup();
+    renderWithProviders(<ContextsTab />);
+    await screen.findByText("Штукатурка стен цементно-песчаным раствором", {}, AFTER_DEBOUNCE);
+
+    await user.click(screen.getByRole("checkbox", { name: "ожидает семьи" }));
+
+    await waitFor(() => expect(screen.getByText("1–1 из 1")).toBeInTheDocument(), AFTER_DEBOUNCE);
+    expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument();
+    expect(screen.queryByText("Устройство покрытий полов из линолеума")).not.toBeInTheDocument();
+  });
+});

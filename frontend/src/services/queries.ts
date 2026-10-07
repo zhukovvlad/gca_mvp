@@ -16,7 +16,7 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
-import { pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
+import { contextRefusalLabel, pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
 import { jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -26,6 +26,7 @@ import type {
   AcceptTargetDecisionInput,
   ArchiveContextInput,
   AssignFamilyInput,
+  ChangeGroup,
   ConfirmKindInput,
   ContextsParams,
   GroupSelector,
@@ -43,6 +44,7 @@ import type {
   CreateFamilyFromSuggestionInput,
   JobsStatus,
   MergeValuesInput,
+  PositionMarkKind,
   PreviewTarget,
   SchemaEditParameter,
   PrivacyMatch,
@@ -1479,6 +1481,10 @@ export function useSetNameRole() {
   });
 }
 
+/**
+ * Смена семьи контексту: исход (`assigned` / `pending` / `unchanged`) и отказ показывает окно,
+ * из которого действие вызвано, — тоста у этой мутации нет.
+ */
 export function useAssignFamily() {
   const qc = useQueryClient();
   return useMutation({
@@ -1486,10 +1492,65 @@ export function useAssignFamily() {
       semanticApi.assignFamily(contextId, input),
     onSuccess: (_, { contextId }) => {
       invalidateContext(qc, contextId);
-      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
-      toast.success("Семья контекста обновлена");
+      invalidateAfterContextChange(qc);
     },
-    onError: toastApiError,
+  });
+}
+
+/** Что меняется на экране после смены семьи, варианта или состояния контекста: семьи, очереди, счётчики шапки. */
+function invalidateAfterContextChange(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+  invalidateQueueAndStatus(qc);
+}
+
+/** «Отменить» ожидание семьи: карточка перечитывается, отказ — подписью по коду. */
+export function useCancelPendingFamily() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contextId: number) => semanticApi.cancelPendingFamily(contextId),
+    onSuccess: (_, contextId) => {
+      invalidateContext(qc, contextId);
+      invalidateAfterContextChange(qc);
+      toast.success("Ожидание семьи отменено.");
+    },
+    onError: (error, contextId) => {
+      invalidateContext(qc, contextId);
+      toast.error(contextRefusalLabel(apiErrorCode(error)));
+    },
+  });
+}
+
+/** «Не работа»: семья, вариант и значения контекста снимаются; отказ — подписью по коду. */
+export function useMarkNotWork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contextId: number) => semanticApi.markNotWork(contextId),
+    onSuccess: (_, contextId) => {
+      invalidateContext(qc, contextId);
+      invalidateAfterContextChange(qc);
+      toast.success("Контекст отмечен как не работа.");
+    },
+    onError: (error, contextId) => {
+      invalidateContext(qc, contextId);
+      toast.error(contextRefusalLabel(apiErrorCode(error)));
+    },
+  });
+}
+
+/**
+ * Глобальная пометка строки каталога. Отказ (в том числе `409` с перечнем нормативов) разбирает
+ * диалог, из которого она вызвана, — тоста у этой мутации нет.
+ */
+export function useMarkPositionKind() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ positionId, kind }: { positionId: number; kind: PositionMarkKind }) =>
+      semanticApi.setPositionKind(positionId, kind),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      invalidateAfterContextChange(qc);
+      toast.success("Написание помечено целиком.");
+    },
   });
 }
 
@@ -1648,6 +1709,15 @@ export function useSuggestions(params: SuggestionsParams, { poll = true }: { pol
   });
 }
 
+/** Очередь «Смена семьи»: группы «семья → семья + полоса» (спека вариантов §2.12). */
+export function useChangeQueue(
+  params: Omit<SuggestionsParams, "queue"> = {},
+  { poll = true }: { poll?: boolean } = {}
+) {
+  const query = useSuggestions({ ...params, queue: "change" }, { poll });
+  return { ...query, groups: (query.data?.groups ?? []) as ChangeGroup[] };
+}
+
 export function useQueueStatus() {
   return useQuery({
     queryKey: qk.semanticQueue.status,
@@ -1699,21 +1769,30 @@ function onQueueDecisionError(
 export function useConfirmSuggestions() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ids }: { ids: number[]; familyTitle: string; leftCount: number }) =>
+    mutationFn: ({ ids }: { ids: number[]; familyTitle: string; leftCount: number; change?: boolean }) =>
       semanticApi.confirmSuggestions(ids),
-    onSuccess: (result, { familyTitle, leftCount }) => {
+    onSuccess: (result, { familyTitle, leftCount, change }) => {
       invalidateAfterAssignment(qc);
       if (result.confirmed.length > 0) {
         const n = result.confirmed.length;
-        toast.success(
-          `${n} ${pluralRu(n, "контекст", "контекста", "контекстов")} ${pluralRu(n, "получил", "получили", "получили")} семью «${familyTitle}».`,
-          {
-            description:
-              leftCount > 0
-                ? `Снятые (${leftCount}) остались в очереди: назначьте им другую семью или отклоните.`
-                : undefined,
-          }
-        );
+        const leftover =
+          leftCount > 0
+            ? `Снятые (${leftCount}) остались в очереди: назначьте им другую семью или отклоните.`
+            : undefined;
+        if (change) {
+          // Сервер не сообщает исход по каждому предложению: у контекста с вариантом семья
+          // сменится только после значений по схеме новой семьи, у контекста без варианта — сразу.
+          toast.success(`Смена семьи принята: ${n}. Новая семья — «${familyTitle}».`, {
+            description: ["Контексты с вариантом получат её после значений по схеме новой семьи.", leftover]
+              .filter(Boolean)
+              .join(" "),
+          });
+        } else {
+          toast.success(
+            `${n} ${pluralRu(n, "контекст", "контекста", "контекстов")} ${pluralRu(n, "получил", "получили", "получили")} семью «${familyTitle}».`,
+            { description: leftover }
+          );
+        }
       }
       if (result.skipped.length > 0) {
         toast.warning(
@@ -1725,13 +1804,19 @@ export function useConfirmSuggestions() {
   });
 }
 
+/** Отклонение предложения: число — как в «Семье из списка», объект с `change` — в очереди «Смена семьи». */
 export function useRejectSuggestion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (suggestionId: number) => semanticApi.rejectSuggestion(suggestionId),
-    onSuccess: () => {
+    mutationFn: (arg: number | { suggestionId: number; change: boolean }) =>
+      semanticApi.rejectSuggestion(typeof arg === "number" ? arg : arg.suggestionId),
+    onSuccess: (_, arg) => {
       invalidateQueue(qc);
-      toast.success("Предложение отклонено. Контекст остаётся без семьи.");
+      toast.success(
+        typeof arg !== "number" && arg.change
+          ? "Предложение отклонено. Семья контекста остаётся прежней."
+          : "Предложение отклонено. Контекст остаётся без семьи."
+      );
     },
     onError: onQueueDecisionError(qc),
   });
@@ -1747,10 +1832,18 @@ export function useOtherFamily() {
       suggestionId: number;
       familyId: number;
       familyTitle: string;
+      change?: boolean;
     }) => semanticApi.otherFamily(suggestionId, familyId),
-    onSuccess: (_, { familyTitle }) => {
+    onSuccess: (_, { familyTitle, change }) => {
       invalidateAfterAssignment(qc);
-      toast.success(`Назначена семья «${familyTitle}».`);
+      // Ответ сервера исхода не несёт. В «Семье из списка» у контекста семьи нет — назначение
+      // сразу; в «Смене семьи» у контекста с вариантом семья сменится только после значений
+      // по схеме новой семьи, и экран этого не знает.
+      toast.success(
+        change
+          ? `Новая семья — «${familyTitle}»: контекст без варианта получит её сразу, с вариантом — после значений по схеме новой семьи.`
+          : `Назначена семья «${familyTitle}».`
+      );
     },
     onError: onQueueDecisionError(qc),
   });

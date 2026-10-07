@@ -1,7 +1,9 @@
 import type {
   BatchSource,
   ComparabilityReason,
+  ContextValueSource,
   DecisionSource,
+  FamilyChangeKind,
   FamilySource,
   FamilyVariantStatus,
   NameRole,
@@ -9,6 +11,7 @@ import type {
   SemanticKind,
   SemanticState,
   SuggestionBand,
+  VariantState,
   WorkFamilyStatus,
 } from "@/types/domain";
 
@@ -53,7 +56,59 @@ export const DECISION_SOURCE_LABEL: Record<DecisionSource, string> = {
 export const FAMILY_SOURCE_LABEL: Record<FamilySource, string> = {
   manual: "оператор",
   suggestion: "из предложения",
+  auto_suggestion: "принято автоматически",
 };
+
+/**
+ * Источник значения параметра у варианта контекста (`context_parameter_values.source`).
+ * `none` и `path_conflict` значения не несут — экран печатает «не уточнено», а `path_conflict`
+ * дополнительно называет причину.
+ */
+export const VARIANT_VALUE_SOURCE_LABEL: Record<ContextValueSource, string> = {
+  name: "по наименованию",
+  path: "по разделам",
+  manual: "вручную",
+  path_conflict: "разделы расходятся",
+  none: "не уточнено",
+};
+
+/** Фильтр очереди контекстов по наличию варианта. */
+export const VARIANT_STATE_LABEL: Record<VariantState, string> = {
+  with: "С вариантом",
+  without: "Без варианта",
+};
+
+/** Исход смены семьи контексту, `family_id = null` у `assigned` значит снятие семьи. */
+export const FAMILY_CHANGE_OUTCOME_LABEL: Record<FamilyChangeKind, string> = {
+  assigned: "Семья назначена.",
+  pending: "Семья будет назначена после значений по схеме новой семьи.",
+  unchanged: "Семья та же.",
+};
+
+export const FAMILY_REMOVED_LABEL = "Семья снята.";
+
+/**
+ * Отказы действий над контекстом и строкой каталога (`services/work_families.py`,
+ * `services/family_change.py`, `services/review.py`): код ответа превращается в подпись, сам код
+ * и текст сервера на экран не выходят. Неизвестный код — общая подпись.
+ */
+export const CONTEXT_REFUSAL_LABEL: Record<string, string> = {
+  context_not_found: "Контекст не найден: обновите экран.",
+  context_archived: "Контекст в архиве: менять его нельзя.",
+  context_not_applicable: "Контекст уже отмечен как не работа.",
+  family_not_found: "Семья не найдена: обновите экран.",
+  family_not_active: "Семья не активна: назначать можно только активную семью.",
+  unit_mismatch: "Единица семьи не совпадает с единицей контекста.",
+  family_lock_mismatch: "Состояние изменилось, пока шло действие. Обновите экран и повторите.",
+  position_not_found: "Строка каталога не найдена: обновите экран.",
+  position_not_position: "Строка уже не ждёт решения: обновите экран.",
+  position_has_standards: "У строки есть нормативы: пометить её нельзя, пока они действуют.",
+  invalid_kind: "Такую пометку поставить нельзя.",
+};
+
+export function contextRefusalLabel(code: string | undefined): string {
+  return (code !== undefined && CONTEXT_REFUSAL_LABEL[code]) || SCHEMA_REFUSAL_FALLBACK;
+}
 
 /**
  * Статус семьи (`WorkFamily.status`, сверка с макетом 27.09.2026, спека §2.8):

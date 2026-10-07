@@ -1009,6 +1009,7 @@ class VariantOut(TypedDict):
 class ContextVariantOut(TypedDict):
     variant_id: int | None; values: list["ContextValueOut"]; split_hint: bool
     pending: "PendingOut | None"
+    values_job_status: str | None  # живое задание context_values (Task 17)
 class FamilyChangeOut(TypedDict):
     outcome: Literal["assigned", "pending", "unchanged"]
 

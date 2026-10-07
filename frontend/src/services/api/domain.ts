@@ -20,11 +20,14 @@ import type {
   ContextsParams,
   ConfirmSuggestionsResult,
   CreateFamilyFromSuggestionInput,
+  FamilyChangeResult,
   FamilySchema,
   FamilyVariant,
   JobsResponse,
   MergeValuesInput,
   MergeValuesResult,
+  PositionKindResult,
+  PositionMarkKind,
   RebuildSchemaResult,
   SchemaEditParameter,
   JobsStatus,
@@ -410,8 +413,21 @@ export const semanticApi = {
       .post<ContextCardData>(`/v1/semantic/contexts/${contextId}/name-role`, input)
       .then((r) => r.data),
 
-  assignFamily: (contextId: number, input: AssignFamilyInput): Promise<ContextCardData> =>
-    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/family`, input).then((r) => r.data),
+  /** Единая точка смены семьи: исход `assigned` / `pending` / `unchanged` (спека вариантов §2.5, §2.12). */
+  assignFamily: (contextId: number, input: AssignFamilyInput): Promise<FamilyChangeResult> =>
+    api.post<FamilyChangeResult>(`/v1/semantic/contexts/${contextId}/family`, input).then((r) => r.data),
+
+  cancelPendingFamily: (contextId: number): Promise<ContextCardData> =>
+    api.delete<ContextCardData>(`/v1/semantic/contexts/${contextId}/pending-family`).then((r) => r.data),
+
+  markNotWork: (contextId: number): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/not-work`).then((r) => r.data),
+
+  /** Глобальная пометка строки каталога: касается всех её будущих вхождений (спека вариантов §2.11). */
+  setPositionKind: (positionId: number, kind: PositionMarkKind): Promise<PositionKindResult> =>
+    api
+      .post<PositionKindResult>(`/v1/semantic/positions/${positionId}/kind`, { kind })
+      .then((r) => r.data),
 
   splitContext: (contextId: number, input: SplitContextInput): Promise<SplitContextResult> =>
     api.post<SplitContextResult>(`/v1/semantic/contexts/${contextId}/split`, input).then((r) => r.data),
