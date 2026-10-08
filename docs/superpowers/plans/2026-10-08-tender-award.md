@@ -2,6 +2,7 @@
 
 **Спека:** `docs/superpowers/specs/2026-10-08-tender-award-design.md` (гейт 2 закрыт 08.10.2026, два круга Codex, редакция `7f66a6d`)
 **Ветка:** `feat/tender-award`, черновой PR #65
+**Макет плана:** [`2026-10-08-tender-award/mockup.html`](2026-10-08-tender-award/mockup.html) — макет гейта 1, уточнённый спекой; правки против гейта 1 перечислены в его начале и обведены. Экраны фронта (Task 8, 9) и сверка на стенде (Task 11) идут по нему.
 
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`) и ревью задачи
@@ -104,6 +105,7 @@ docs/proposals/2026-10-07-variant-rate-spread-check.md правка: догов�
 AGENTS.md, docs/AGENTS-revisions.md правка: §3, §5, преамбула; архив действующей врезки (Task 10)
 docs/product-roadmap.md             правка: Б2 закрыт (Task 11)
 docs/devlog/2026-10-08-tender-award.md   создаётся (Task 11)
+docs/superpowers/plans/2026-10-08-tender-award/mockup.html   макет плана (создан с планом)
 ```
 
 ## Решения плана, которых нет в спеке
@@ -556,7 +558,7 @@ class ContractFromAward(_MoneyMixin, _PercentMixin): ...   # поля ContractFr
 - Test: `*.test.tsx` рядом с каждым созданным компонентом, `OfferGrid.test.tsx`, `TenderCardPage.test.tsx`
 
 **Interfaces**
-- Потребляет: `TenderCard`, `useTender`, `queryKeys.tenders`, `queryKeys.contracts`, `ContractFormDialog` (режим — Task 9), shadcn `dropdown-menu`, `dialog`, `alert-dialog`, `badge`, `tooltip`, `textarea`, `input` (существуют).
+- Потребляет: макет плана (экраны 1–6, запреты), `TenderCard`, `useTender`, `queryKeys.tenders`, `queryKeys.contracts`, `ContractFormDialog` (режим — Task 9), shadcn `dropdown-menu`, `dialog`, `alert-dialog`, `badge`, `tooltip`, `textarea`, `input` (существуют).
 - Производит:
 
 ```ts
@@ -611,7 +613,7 @@ function useLinkContract(tenderId: number)
 - Test: `*.test.tsx` рядом с созданными компонентами, `ContractFormDialog.test.tsx`, `ContractCardPage.test.tsx`
 
 **Interfaces**
-- Потребляет: `ContractCard`, `useContract`, `useUpdateContract`, `ContractFormDialog` (существуют), `TenderAward` (Task 8).
+- Потребляет: макет плана (экраны 5, 7), `ContractCard`, `useContract`, `useUpdateContract`, `ContractFormDialog` (существуют), `TenderAward` (Task 8).
 - Производит:
 
 ```ts
@@ -691,7 +693,8 @@ function useUnlinkTenderAward()
   разрушающие шаги (пп. 6, 9) — на копии `gca_dev_b2`, после приёмки копия
   удалена; итог стенда — тендеры 2, 3, 4 с отметками и договорами 4, 5, 6,
   тендер 6 с отметкой и договором из КП;
-- снимки экранов 1–7 макета на стенде сверены рядом с макетом (браузер,
+- снимки экранов 1–7 на стенде сверены рядом с макетом плана
+  (`docs/superpowers/plans/2026-10-08-tender-award/mockup.html`; браузер,
   `playwright-core`, `channel: "chrome"`);
 - devlog: что сделано, отступления от плана, замеры приёмки, тронутые области
   и прочитанные файлы граблей (БД, бэкенд, фронтенд, процесс), число
