@@ -166,6 +166,25 @@ def split_round_payload(data: dict[str, Any]) -> tuple[list[RoundProjection], Ba
     return projections, baseline
 
 
+def kp_inn_of(raw_data: dict[str, Any]) -> str | None:
+    """ИНН участника, снятый с разбора его КП (`estimate_raw_data.raw_data`).
+
+    Разбор КП — проекция одного участника: в каждом лоте ровно его блок. ИНН
+    берётся из блоков предложений ВСЕХ лотов в канонической форме
+    (`canonicalize_inn`); ровно одно различное непустое значение — оно, иначе
+    `None` (ИНН нет вовсе либо их несколько: КП не опознаётся). Карточка
+    подрядчика здесь не участвует: её ИНН правится справочником, а файл этапа
+    остаётся прежним (спека Б2 §1.7).
+    """
+    found: set[str] = set()
+    for lot in (raw_data.get(JSON_KEY_LOTS) or {}).values():
+        for block in (lot.get(JSON_KEY_PROPOSALS) or {}).values():
+            inn = canonicalize_inn(block.get(JSON_KEY_CONTRACTOR_INN))
+            if inn:
+                found.add(inn)
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def get_or_create_contractor(
     db: Session, *, inn: str, title: str | None, address: str | None,
     accreditation: str | None, warnings: list[str],

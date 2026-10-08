@@ -188,6 +188,9 @@ def get_tender_card(db: Session, tender_id: int) -> dict:
                 "total_including_vat": _dec(estimate_total_including_vat(db, estimate_id)) if estimate_id else None,
             })
 
+    # Локальный импорт: `crud.tender_awards` сам зависит от этого модуля.
+    from crud.tender_awards import award_card_fragment
+
     return {
         "id": tender.id, "tender_number": tender.tender_number, "title": tender.title, "notes": tender.notes,
         "object_id": tender.object_id, "object_title": tender.object.title, "object_address": tender.object.address,
@@ -198,6 +201,7 @@ def get_tender_card(db: Session, tender_id: int) -> dict:
             {"package_id": p.id, "contractor_id": c.id, "title": c.title, "inn": c.inn} for p, c in packages
         ],
         "cells": cells,
+        **award_card_fragment(db, tender_id),
     }
 
 
@@ -268,9 +272,14 @@ def update_tender(db: Session, tender_id: int, *, title=UNSET, notes=UNSET) -> d
 
 
 def create_round(db: Session, tender_id: int, *, stage_no: int, label: str | None, held_on) -> dict:
-    get_tender(db, tender_id)
+    # Тендер FOR UPDATE до проверки отметки: без замка проверка и вставка
+    # разошлись бы с параллельной отметкой победителя (спека Б2 §2.4).
+    from crud.tender_awards import refuse_if_active_award
+
+    _lock_tender(db, tender_id, exclusive=True)
     if stage_no <= 0:
         raise DomainError(422, "Номер этапа нумеруется с 1.")
+    refuse_if_active_award(db, tender_id)
     rnd = TenderRound(tender_id=tender_id, stage_no=stage_no, label=label or None, held_on=held_on)
     db.add(rnd)
     with translating_integrity(db, {"uq_tender_rounds_tender_stage": "Этап с таким номером в этом тендере уже есть."}):
