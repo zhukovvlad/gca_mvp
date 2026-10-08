@@ -4,6 +4,15 @@
 **Ветка:** `feat/tender-award`, черновой PR #65
 **Макет плана:** [`2026-10-08-tender-award/mockup.html`](2026-10-08-tender-award/mockup.html) — макет гейта 1, уточнённый спекой; правки против гейта 1 перечислены в его начале и обведены. Экраны фронта (Task 8, 9) и сверка на стенде (Task 11) идут по нему.
 
+> **Круг 1 гейта 3 (08.10)**: 3 замечания Codex, все подтверждены по коду:
+> Task 8 потреблял режим формы из Task 9 — фронт договора и тендера
+> переставлены (решение плана 7); форма показывала бы класс тендера, а
+> команда берёт текущий класс объекта (`get_tender_card` отдаёт снимок
+> тендера, текущий — `get_object_dict`/`useObject`) — решение плана 6, Task 6
+> и Task 8; копию после 202 никто не опрашивал (`useImportJob` подключён
+> только панелями загрузки, `EstimateUploadPanel.tsx:87`,
+> `RoundUploadPanel.tsx:53`) — решение плана 8, Task 8.
+>
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`) и ревью задачи
 > (`docs/process/implementation.md`) до следующей. Адреса `§N` без уточнения —
@@ -132,12 +141,22 @@ docs/superpowers/plans/2026-10-08-tender-award/mockup.html   макет план
 6. **`ContractFormDialog` получает режим «из отметки»** вместо нового окна: те
    же поля и та же проверка ввода; объект, подрядчик и класс в режиме только
    показаны. Запертые стороны у связанного договора — тот же механизм
-   (`lockedParties`), что и в режиме «из отметки».
+   (`lockedParties`), что и в режиме «из отметки». **Класс в режиме — текущий
+   класс объекта из существующего `useObject`** (`get_object_dict`), а не
+   `rate_class_*` карточки тендера: тот — снимок класса тендера, а команда
+   §2.5 берёт текущий класс объекта. Новый ключ ответа для этого не нужен.
 7. **Порядок задач**: схема (1) → переводчик (2) → команды отметки (3) →
    удаления и замена этапа (4) → сторона договора (5) → договор из КП (6) →
-   API (7) → фронт тендера (8) → фронт договора (9) → документация и ревизия
+   API (7) → фронт договора (8) → фронт тендера (9) → документация и ревизия
    (10) → стенд и финал (11). API после всех команд — маршруты одним
-   набором и один прогон сторожа прав.
+   набором и один прогон сторожа прав. Фронт договора раньше фронта тендера:
+   плашка тендера открывает форму договора в режиме «из отметки», и каждая
+   задача сдаёт работающие сценарии без зависимости от следующей.
+8. **Копию после 202 опрашивает карточка договора, а не форма**:
+   `useActiveContractImport` находит активное задание в истории загрузок
+   договора и подключает существующий `useImportJob`, который на терминальном
+   статусе перезапрашивает карточку и историю. Опрос, привязанный к форме,
+   пропал бы при перезагрузке страницы и при открытии карточки из списка.
 
 ## Задачи
 
@@ -463,7 +482,8 @@ def contract_estimate_owner(contract: Contract, amendment_no: int | None, *,
 
 **Утверждения**
 - `create_contract_from_award` при действующей отметке без договора создаёт
-  договор (объект, подрядчик — отметки; класс — текущий класс объекта;
+  договор (объект, подрядчик — отметки; класс — текущий класс объекта, и при
+  классе тендера A и текущем классе объекта B у договора B;
   `tender_award_id` — отметка) и задание (`contract_id`, `amendment_no NULL`,
   `filename` и `file_sha256` задания КП, новый `file_key`, `source_award_id`,
   `pending`); в хранилище — новый файл, побайтно равный файлу этапа; старый не
@@ -550,18 +570,19 @@ class ContractFromAward(_MoneyMixin, _PercentMixin): ...   # поля ContractFr
 - `cd backend && uv run pytest tests/test_auth_coverage.py -q` — зелёный.
 - `just test-int-local-k "tenders_api or contracts_api"` — ДО 79, ПОСЛЕ ≥ 79.
 
-### Task 8: фронт — карточка тендера
+### Task 8: фронт — типы, карточка и форма договора, опрос копии
 
 **Files**
-- Create: `frontend/src/components/tenders/WinnerBanner.tsx`, `NotConcludedDialog.tsx`, `RemoveAwardDialog.tsx`, `LinkContractDialog.tsx`, `frontend/src/components/ui/radio-group.tsx` (`npx shadcn add radio-group`)
-- Edit: `frontend/src/components/tenders/OfferGrid.tsx`, `frontend/src/pages/tenders/TenderCardPage.tsx`, `frontend/src/types/domain.ts`, `frontend/src/services/api/domain.ts`, `frontend/src/services/queries.ts`, `frontend/src/test/handlers.ts`
-- Test: `*.test.tsx` рядом с каждым созданным компонентом, `OfferGrid.test.tsx`, `TenderCardPage.test.tsx`
+- Create: `frontend/src/components/contracts/TenderBasisRow.tsx`, `UnlinkTenderDialog.tsx`
+- Edit: `frontend/src/components/contracts/ContractFormDialog.tsx`, `frontend/src/pages/contracts/ContractCardPage.tsx`, `frontend/src/types/domain.ts`, `frontend/src/services/api/domain.ts`, `frontend/src/services/queries.ts`, `frontend/src/test/handlers.ts`
+- Test: `*.test.tsx` рядом с созданными компонентами, `ContractFormDialog.test.tsx`, `ContractCardPage.test.tsx`
 
 **Interfaces**
-- Потребляет: макет плана (экраны 1–6, запреты), `TenderCard`, `useTender`, `queryKeys.tenders`, `queryKeys.contracts`, `ContractFormDialog` (режим — Task 9), shadcn `dropdown-menu`, `dialog`, `alert-dialog`, `badge`, `tooltip`, `textarea`, `input` (существуют).
+- Потребляет: макет плана (экраны 5, 7), `ContractCard`, `useContract`, `useUpdateContract`, `useContractImportJobs`, `useImportJob`, `useObject`, `ContractFormDialog` (существуют).
 - Производит:
 
 ```ts
+// типы ответа §2.6 — все здесь, Task 9 их только потребляет
 interface TenderAward { id; offer_id; package_id; contractor_id; contractor_title; contractor_inn;
   round_id; stage_no; estimate_id; total_including_vat: string | null; awarded_at: string;
   awarded_by_email: string; contract: { id; contract_number; signed_date } | null }
@@ -569,7 +590,74 @@ interface TenderAwardEvent { award_id; kind: "awarded" | "not_concluded"; packag
   awarded_at: string | null; not_concluded_on: string | null; note: string | null; by_email; is_active }
 interface ContractCandidate { id; contract_number; signed_date; object_title; contractor_title;
   base_total_including_vat: string | null }
+type EstimateOrigin = "from_offer" | "uploaded_separately" | "no_estimate"
+interface TenderBasis { award_id; tender_id; tender_number; tender_title; round_id; stage_no; offer_id }
 // TenderCard += award: TenderAward | null; award_history: TenderAwardEvent[]
+// ContractCard += tender_basis: TenderBasis | null; estimate_origin: EstimateOrigin | null
+
+// ContractFormDialogProps +=
+//   fromAward?: { tenderId: number; tenderNumber: string; award: TenderAward; objectId: number; objectTitle: string }
+//   lockedParties?: { hint: string }
+function useCreateContractFromAward(tenderId: number)   // 202 → { contract, job }
+function useUnlinkTenderAward()
+function useActiveContractImport(contractId: number | undefined)
+    // активное (не done/error) задание договора из useContractImportJobs; при наличии —
+    // опрос useImportJob(job.id, { contractId }), который на терминальном статусе
+    // перезапрашивает карточку договора и историю загрузок (существующая ветка useImportJob)
+```
+
+**Утверждения**
+- строка «Основание» — ссылка на тендер, «этап N · финал» и пометка из трёх
+  текстов дизайна §2.4; без основания строки нет;
+- «Отвязать от тендера» — при `uploaded_separately` и `no_estimate`, если у
+  договора нет активного задания импорта; при активном задании кнопка
+  недоступна с подсказкой «идёт импорт сметы»; при `from_offer` вместо кнопки —
+  подсказка экрана 7;
+- **опрос копии**: карточка договора с активным заданием опрашивает его без
+  перезагрузки страницы. Переход `pending → done` (обработчик сначала отдаёт
+  `pending`, затем `done`, карточка после этого — `from_offer`): пометка
+  становится «получена из КП», кнопка отвязки исчезает, подсказка
+  появляется. Переход `pending → error`: пометка остаётся «сметы пока нет»,
+  отвязка становится доступной, в истории загрузок виден текст ошибки. Опрос
+  заводится и тогда, когда карточку открыли заново (задание найдено в истории
+  загрузок, а не передано переходом); снятие подключения опроса оставляет
+  «сметы пока нет» после `done` — тест краснеет;
+- **форма «из отметки»**: объект и подрядчик — из отметки; класс — **текущий
+  класс объекта** из `useObject(objectId)`, а не снимок класса тендера: при
+  классе тендера A и текущем классе объекта B форма показывает B (тест
+  краснеет, если форма берёт класс из карточки тендера); у объекта без класса
+  форма показывает «у объекта не задан класс — договор создать нельзя, задайте
+  класс объекту» и не отправляется, тот же смысл, что у отказа 422 сервера;
+  объект, подрядчик и класс не редактируются и в запрос не уходят; отправка —
+  в `useCreateContractFromAward`; после 202 — переход в карточку договора,
+  где опрос подхватывает задание копии;
+- правка связанного договора: объект и подрядчик недоступны с подсказкой
+  «берутся из тендера» и дополнением по пометке (экран 7 макета плана);
+  прочие поля правятся; без основания форма как раньше;
+- после отвязки перезапрашиваются карточка договора и карточка тендера
+  основания.
+
+**Имена**
+- Заводятся: типы, хуки и компоненты выше, пропсы `fromAward`, `lockedParties`.
+- Существуют, проверено `grep`-ом: `ContractCard` (`types/domain.ts:138`), `TenderCard` (`types/domain.ts:282`), `useContract` (`services/queries.ts:361`), `useContractImportJobs` (`:369`), `useUpdateContract` (`:397`), `useObject` (`:280`), `useImportJob` (`:547`, ветка `ownerRef.contractId` перезапрашивает `contracts.card` и `contracts.importJobs`), `ContractFormDialogProps` (`components/contracts/ContractFormDialog.tsx:37`).
+
+**Проверка**
+- `cd frontend && npx vitest run src/components/contracts` — ДО 39, ПОСЛЕ ≥ 49.
+- `cd frontend && npx vitest run src/pages/contracts` — ДО 50, ПОСЛЕ ≥ 58.
+- `cd frontend && npx tsc --noEmit` и `npx eslint src` — зелёные.
+
+### Task 9: фронт — карточка тендера
+
+**Files**
+- Create: `frontend/src/components/tenders/WinnerBanner.tsx`, `NotConcludedDialog.tsx`, `RemoveAwardDialog.tsx`, `LinkContractDialog.tsx`, `frontend/src/components/ui/radio-group.tsx` (`npx shadcn add radio-group`)
+- Edit: `frontend/src/components/tenders/OfferGrid.tsx`, `frontend/src/pages/tenders/TenderCardPage.tsx`, `frontend/src/services/api/domain.ts`, `frontend/src/services/queries.ts`, `frontend/src/test/handlers.ts`
+- Test: `*.test.tsx` рядом с каждым созданным компонентом, `OfferGrid.test.tsx`, `TenderCardPage.test.tsx`
+
+**Interfaces**
+- Потребляет: макет плана (экраны 1–6, запреты), типы и `ContractFormDialog` с `fromAward` (Task 8), `useTender`, `queryKeys.tenders`, `queryKeys.contracts`, shadcn `dropdown-menu`, `dialog`, `alert-dialog`, `badge`, `tooltip`, `textarea`, `input` (существуют).
+- Производит:
+
+```ts
 function useAwardWinner(tenderId: number)
 function useRemoveAward(tenderId: number)
 function useMarkNotConcluded(tenderId: number)
@@ -585,69 +673,29 @@ function useLinkContract(tenderId: number)
   четыре действия; отмечен с договором — «Открыть договор», без «Снять» и «Не
   заключён»; история — только если в ней есть «не заключён», «· действующий»
   у действующей строки;
-- сумма плашки — «… млн с НДС»; `null` — «итог недоступен»;
+- сумма плашки — «… млн с НДС»; `null` — «итог недоступен»; то же у
+  кандидатов в окне привязки;
 - «Новый этап» недоступен при действующей отметке, с подсказкой; при отметке
   «не заключён» — доступен;
 - «Договор не заключён» не отправляется без даты; комментарий пустой уходит
   `null`; «Снять отметку?» — текст экрана 3;
+- «Создать договор» открывает `ContractFormDialog` с `fromAward`: `objectId` —
+  `object_id` карточки тендера, а не её `rate_class_*` (класс форма берёт сама,
+  Task 8); сценарий доводится до перехода в карточку договора;
 - окно привязки: список кандидатов, выбор одного, «Привязать»; пустой список
   — текст «Нет подходящих договоров»;
 - отказ сервера показывается его `detail`;
-- после каждой мутации карточка тендера перезапрашивается; после привязки —
-  ещё и карточка договора.
+- после каждой мутации карточка тендера перезапрашивается; после привязки и
+  создания договора — ещё и карточка договора.
 
 **Имена**
-- Заводятся: типы, хуки и компоненты выше.
-- Существуют, проверено `grep`-ом: `useTender` (`services/queries.ts:1125`), `TenderCard` (`types/domain.ts:282`), `queryKeys.contracts.card` (`services/queryKeys.ts:50`), «Новый этап» (`pages/tenders/TenderCardPage.tsx:264`).
+- Заводятся: хуки и компоненты выше.
+- Существуют, проверено `grep`-ом: `useTender` (`services/queries.ts:1125`), `queryKeys.contracts.card` (`services/queryKeys.ts:50`), «Новый этап» (`pages/tenders/TenderCardPage.tsx:264`).
 
 **Проверка**
 - `cd frontend && npx vitest run src/components/tenders` — ДО 45, ПОСЛЕ ≥ 62.
-- `cd frontend && npx vitest run src/pages/tenders` — ДО 176, ПОСЛЕ ≥ 180.
-- `cd frontend && npx tsc --noEmit` и `npx eslint src` — зелёные.
-
-### Task 9: фронт — карточка и форма договора
-
-**Files**
-- Create: `frontend/src/components/contracts/TenderBasisRow.tsx`, `UnlinkTenderDialog.tsx`
-- Edit: `frontend/src/components/contracts/ContractFormDialog.tsx`, `frontend/src/pages/contracts/ContractCardPage.tsx`, `frontend/src/pages/tenders/TenderCardPage.tsx`, `frontend/src/types/domain.ts`, `frontend/src/services/api/domain.ts`, `frontend/src/services/queries.ts`, `frontend/src/test/handlers.ts`
-- Test: `*.test.tsx` рядом с созданными компонентами, `ContractFormDialog.test.tsx`, `ContractCardPage.test.tsx`
-
-**Interfaces**
-- Потребляет: макет плана (экраны 5, 7), `ContractCard`, `useContract`, `useUpdateContract`, `ContractFormDialog` (существуют), `TenderAward` (Task 8).
-- Производит:
-
-```ts
-type EstimateOrigin = "from_offer" | "uploaded_separately" | "no_estimate"
-interface TenderBasis { award_id; tender_id; tender_number; tender_title; round_id; stage_no; offer_id }
-// ContractCard += tender_basis: TenderBasis | null; estimate_origin: EstimateOrigin | null
-// ContractFormDialogProps += award?: TenderAward & { tender_id: number; object_title; rate_class_title };
-//                            lockedParties?: { hint: string }
-function useCreateContractFromAward(tenderId: number)
-function useUnlinkTenderAward()
-```
-
-**Утверждения**
-- строка «Основание» — ссылка на тендер, «этап N · финал» и пометка из трёх
-  текстов дизайна §2.4; без основания строки нет;
-- «Отвязать от тендера» — при `uploaded_separately` и `no_estimate`; при
-  `from_offer` вместо кнопки — подсказка экрана 7;
-- форма в режиме «из отметки»: объект, подрядчик и класс показаны и не
-  редактируются, в запрос не уходят; отправка — в команду договора из КП;
-  после успеха — переход в карточку договора;
-- правка связанного договора: объект и подрядчик недоступны с подсказкой
-  «берутся из тендера» и дополнением по пометке (экран 7); прочие поля
-  правятся; без основания форма как раньше;
-- после отвязки и создания договора перезапрашиваются карточки договора и
-  тендера.
-
-**Имена**
-- Заводятся: типы, хуки и компоненты выше, пропсы `award`, `lockedParties`.
-- Существуют, проверено `grep`-ом: `ContractCard` (`types/domain.ts:138`), `useContract` (`services/queries.ts:361`), `useUpdateContract` (`:397`), `ContractFormDialogProps` (`components/contracts/ContractFormDialog.tsx:37`).
-
-**Проверка**
-- `cd frontend && npx vitest run src/components/contracts` — ДО 39, ПОСЛЕ ≥ 47.
-- `cd frontend && npx vitest run src/pages/contracts` — ДО 50, ПОСЛЕ ≥ 56.
-- `cd frontend && npx vitest run src/pages/tenders src/components/tenders` — зелёный.
+- `cd frontend && npx vitest run src/pages/tenders` — ДО 176, ПОСЛЕ ≥ 181.
+- `cd frontend && npx vitest run src/pages/contracts src/components/contracts` — зелёный.
 - `cd frontend && npx tsc --noEmit` и `npx eslint src` — зелёные.
 
 ### Task 10: ревизия `AGENTS.md`, справочник, рамка, предложение
