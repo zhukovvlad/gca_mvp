@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Literal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -158,6 +159,66 @@ def refuse_if_active_award(db: Session, tender_id: int) -> None:
             "договор не заключён.",
             code="round_blocked_by_award",
         )
+
+
+def stage_has_award_refusal(action: Literal["replace", "delete"], stage_no: int | None = None) -> tuple[str, str]:
+    """Отказ `stage_has_award`: замена и удаление этапа — разные тексты (§2.7).
+    Без номера этапа — текст ключа-страховки."""
+    stage = f" {stage_no}" if stage_no is not None else ""
+    if action == "replace":
+        return "stage_has_award", (
+            f"Нельзя заменить файл этапа{stage}: по его КП в тендере записан победитель, решение "
+            "принималось по этому файлу. Для переторжки добавьте новый этап."
+        )
+    return "stage_has_award", (
+        f"Нельзя удалить этап{stage}: на его КП есть отметка победителя — действующая или в истории "
+        "тендера. Действующую можно снять; этап с историей победы удаляется только вместе с тендером."
+    )
+
+
+def participant_has_award_refusal(title: str | None = None) -> tuple[str, str]:
+    who = f" «{title}»" if title is not None else ""
+    return "participant_has_award", (
+        f"Нельзя удалить участника{who}: на его КП есть отметка победителя — действующая или в истории "
+        "тендера. Действующую можно снять; участник с историей победы удаляется только вместе с тендером."
+    )
+
+
+def tender_has_contract_refusal(number: str | None = None) -> tuple[str, str]:
+    where = f" № {number}" if number is not None else ""
+    return "tender_has_contract", (
+        f"Нельзя удалить тендер: по отметке победителя заключён договор{where}. Сначала удалите договор "
+        "или отвяжите его от тендера."
+    )
+
+
+def refuse_if_round_has_award(
+    db: Session, round_id: int, *, stage_no: int, action: Literal["replace", "delete"],
+) -> None:
+    """На оферте этапа есть отметка — действующая или «не заключён» (`stage_has_award`)."""
+    has = db.execute(
+        sa.select(TenderAward.id).join(Offer, Offer.id == TenderAward.offer_id)
+        .where(Offer.round_id == round_id).limit(1)
+    ).first()
+    if has is not None:
+        raise _refusal(stage_has_award_refusal(action, stage_no))
+
+
+def refuse_if_package_has_award(db: Session, package_id: int, *, title: str) -> None:
+    """На оферте участника есть отметка любой разновидности (`participant_has_award`)."""
+    has = db.execute(
+        sa.select(TenderAward.id).where(TenderAward.package_id == package_id).limit(1)
+    ).first()
+    if has is not None:
+        raise _refusal(participant_has_award_refusal(title))
+
+
+def awards_have_contract(db: Session, tender_id: int) -> str | None:
+    """Номер договора по любой отметке тендера либо `None`."""
+    return db.execute(
+        sa.select(Contract.contract_number).join(TenderAward, TenderAward.id == Contract.tender_award_id)
+        .where(TenderAward.tender_id == tender_id).order_by(TenderAward.id).limit(1)
+    ).scalar_one_or_none()
 
 
 def _refuse_if_award_exists(db: Session, tender_id: int) -> None:

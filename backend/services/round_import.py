@@ -300,6 +300,18 @@ def import_round(
     ).scalar_one()
 
     if replace:
+        # Отметку могли поставить между проверкой роутера и этой транзакцией:
+        # правило держит эта проверка, а не роутер (спека Б2 §2.4). Без неё замену
+        # остановил бы ключ, но пайплайн показал бы его как «непредвиденную ошибку».
+        # Локальный импорт: `crud.tender_awards` сам зависит от этого модуля.
+        from crud import tender_awards
+        from crud.common import DomainError
+        try:
+            tender_awards.refuse_if_round_has_award(
+                db, tender_round.id, stage_no=tender_round.stage_no, action="replace",
+            )
+        except DomainError as exc:
+            raise EstimateImportError(exc.detail) from exc
         outcome.replaced_context_ids = frozenset(
             contexts_of_estimates(db, _round_estimate_ids(db, tender_round.id))
         )

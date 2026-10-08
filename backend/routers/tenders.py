@@ -22,6 +22,7 @@ from crud import changes_export as crud_changes_export
 from crud import position_drilldown as crud_position_drilldown
 from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
+from crud import tender_awards as crud_tender_awards
 from crud import tenders as crud_tenders
 from crud.common import DomainError
 from database import get_db, get_session_factory
@@ -407,6 +408,13 @@ def upload_round(
             "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
             code="replace_required",
         ))
+
+    # До сохранения файла и до задания: отказ не оставляет следов. Правило
+    # держит проверка `import_round` — отметку могут поставить после этой.
+    try:
+        crud_tender_awards.refuse_if_round_has_award(db, rnd.id, stage_no=rnd.stage_no, action="replace")
+    except DomainError as e:
+        raise_domain_error(e)
 
     file_key = storage.save(payload)
     try:
