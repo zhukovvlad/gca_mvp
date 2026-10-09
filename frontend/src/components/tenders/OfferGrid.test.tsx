@@ -207,3 +207,29 @@ describe("OfferGrid: строка победителя", () => {
     expect(document.querySelector("[data-winner]")).toBeNull();
   });
 });
+
+describe("OfferGrid: выравнивание колонок этапов", () => {
+  // Шапка этапа и все три вида ячеек этапа стоят у одного — правого — края
+  // колонки; иначе широкая колонка финала (значок «победитель») оставляет
+  // шапку и прочерки слева, а суммы справа. jsdom раскладку не считает, поэтому
+  // проверяется контракт классов, а замер правых краёв — в браузере.
+  it("шапка этапа и ячейки «сумма», «—», «нет сметы» выровнены вправо, колонка участника — нет", () => {
+    // sampleTenderCard: этап 1 — сумма и «—»; этап 2 — «—» и «нет сметы».
+    renderGrid(sampleTenderCard);
+
+    expect(screen.getByRole("button", { name: /Этап 1/ }).parentElement).toHaveClass("items-end");
+    expect(screen.getByRole("button", { name: /Этап 2/ }).parentElement).toHaveClass("items-end");
+    expect(screen.getByRole("columnheader", { name: "Участник" })).not.toHaveClass("text-right");
+
+    const alphaCells = within(screen.getByText("ООО Альфа").closest("tr") as HTMLElement).getAllByRole("cell");
+    const betaCells = within(screen.getByText("ООО Бета").closest("tr") as HTMLElement).getAllByRole("cell");
+    expect(within(alphaCells[1]).getByRole("button", { pressed: false })).toBeInTheDocument(); // сумма
+    expect(alphaCells[1]).toHaveClass("text-right");
+    expect(within(betaCells[1]).getByText("—")).toBeInTheDocument();
+    expect(betaCells[1]).toHaveClass("text-right");
+    expect(within(betaCells[2]).getByText("нет сметы")).toBeInTheDocument();
+    expect(betaCells[2]).toHaveClass("text-right");
+    // Колонка участника выравнивание не получает.
+    expect(alphaCells[0]).not.toHaveClass("text-right");
+  });
+});
