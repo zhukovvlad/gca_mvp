@@ -34,6 +34,7 @@ from models import (
     Proposal,
     RateClass,
     Tender,
+    TenderAward,
     TenderRound,
 )
 from services.semantic_cost import event_cap_from
@@ -188,6 +189,9 @@ def get_tender_card(db: Session, tender_id: int) -> dict:
                 "total_including_vat": _dec(estimate_total_including_vat(db, estimate_id)) if estimate_id else None,
             })
 
+    # Локальный импорт: `crud.tender_awards` сам зависит от этого модуля.
+    from crud.tender_awards import award_card_fragment
+
     return {
         "id": tender.id, "tender_number": tender.tender_number, "title": tender.title, "notes": tender.notes,
         "object_id": tender.object_id, "object_title": tender.object.title, "object_address": tender.object.address,
@@ -198,6 +202,7 @@ def get_tender_card(db: Session, tender_id: int) -> dict:
             {"package_id": p.id, "contractor_id": c.id, "title": c.title, "inn": c.inn} for p, c in packages
         ],
         "cells": cells,
+        **award_card_fragment(db, tender_id),
     }
 
 
@@ -268,9 +273,14 @@ def update_tender(db: Session, tender_id: int, *, title=UNSET, notes=UNSET) -> d
 
 
 def create_round(db: Session, tender_id: int, *, stage_no: int, label: str | None, held_on) -> dict:
-    get_tender(db, tender_id)
+    # Тендер FOR UPDATE до проверки отметки: без замка проверка и вставка
+    # разошлись бы с параллельной отметкой победителя (спека Б2 §2.4).
+    from crud.tender_awards import refuse_if_active_award
+
+    _lock_tender(db, tender_id, exclusive=True)
     if stage_no <= 0:
         raise DomainError(422, "Номер этапа нумеруется с 1.")
+    refuse_if_active_award(db, tender_id)
     rnd = TenderRound(tender_id=tender_id, stage_no=stage_no, label=label or None, held_on=held_on)
     db.add(rnd)
     with translating_integrity(db, {"uq_tender_rounds_tender_stage": "Этап с таким номером в этом тендере уже есть."}):
@@ -349,31 +359,51 @@ def delete_round(db: Session, tender_id: int, round_id: int) -> list[str]:
     if rnd is None:
         raise DomainError(404, f"Раунд {round_id} тендера {tender_id} не найден.")
     _refuse_if_active(db, [round_id])
+    # Локальный импорт: `crud.tender_awards` сам зависит от этого модуля.
+    from crud import tender_awards
+    tender_awards.refuse_if_round_has_award(db, round_id, stage_no=rnd.stage_no, action="delete")
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id == round_id).order_by(ImportJob.id)).scalars())
     affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, [round_id]))
-    db.execute(sa.delete(TenderRound).where(TenderRound.id == round_id))
-    _reconcile_after_delete(db, affected_contexts)
-    db.commit()
+    # Ключ — страховка: отметка, поставленная мимо проверки, роняет каскад на офертах.
+    with translating_integrity(db, {"fk_tender_awards_offer": tender_awards.stage_has_award_refusal("delete")}):
+        db.execute(sa.delete(TenderRound).where(TenderRound.id == round_id))
+        _reconcile_after_delete(db, affected_contexts)
+        db.commit()
     log.info("tender_round_deleted tender=%s round=%s jobs=%d", tender_id, round_id, len(file_keys))
     return file_keys
 
 
 def delete_tender(db: Session, tender_id: int) -> list[str]:
-    """tender FOR UPDATE → все раунды по id → явный DELETE offers → тендер (каскад)."""
+    """tender FOR UPDATE → все раунды по id → проверка договора по отметкам
+    (`tender_has_contract`) → явный DELETE tender_awards → явный DELETE offers →
+    тендер (каскад). Отметки удаляются ДО оферт — порядок несущий."""
     _lock_tender(db, tender_id, exclusive=True)
     round_ids = _lock_rounds(db, tender_id)
     _refuse_if_active(db, round_ids)
+    from crud import tender_awards
+    number = tender_awards.awards_have_contract(db, tender_id)
+    if number is not None:
+        code, text = tender_awards.tender_has_contract_refusal(number)
+        raise DomainError(409, text, code=code)
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id.in_(round_ids)).order_by(ImportJob.id)).scalars()) if round_ids else []
-    # НЕ load-bearing для fk_offers_package: ветка tender_rounds уносит все
-    # offers каскадом (fk_offers_round ON DELETE CASCADE) раньше, чем ветка
-    # offer_packages вообще может дойти до RESTRICT — без этой строки ни один
-    # тест не краснеет. Она здесь, чтобы удаление тендера не зависело от того,
-    # в каком порядке Postgres пойдёт по двум веткам каскада одного DELETE.
     affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, round_ids))
-    db.execute(sa.delete(Offer).where(Offer.tender_id == tender_id))
-    db.execute(sa.delete(Tender).where(Tender.id == tender_id))
-    _reconcile_after_delete(db, affected_contexts)
-    db.commit()
+    # Порядок НЕСУЩИЙ: `DELETE tender_awards` идёт ДО `DELETE offers`.
+    # `fk_tender_awards_offer` — RESTRICT, и без явного удаления отметок
+    # явный `DELETE offers` ниже падает на тендере с историей отметок (сам
+    # плоский каскад тендера проходит: отметки уходят вместе с ним). Договоров по отметкам здесь уже нет (проверка выше), так что
+    # `fk_contracts_tender_award` не мешает. Ключ договора — страховка гонки.
+    #
+    # `DELETE offers` — НЕ load-bearing для fk_offers_package: ветка tender_rounds
+    # уносит все offers каскадом (fk_offers_round ON DELETE CASCADE) раньше, чем
+    # ветка offer_packages вообще может дойти до RESTRICT — без этой строки ни
+    # один тест не краснеет. Она здесь, чтобы удаление тендера не зависело от
+    # того, в каком порядке Postgres пойдёт по двум веткам каскада одного DELETE.
+    with translating_integrity(db, {"fk_contracts_tender_award": tender_awards.tender_has_contract_refusal()}):
+        db.execute(sa.delete(TenderAward).where(TenderAward.tender_id == tender_id))
+        db.execute(sa.delete(Offer).where(Offer.tender_id == tender_id))
+        db.execute(sa.delete(Tender).where(Tender.id == tender_id))
+        _reconcile_after_delete(db, affected_contexts)
+        db.commit()
     log.info("tender_deleted id=%s jobs=%d", tender_id, len(file_keys))
     return file_keys
 
@@ -401,11 +431,18 @@ def _participant_composition(db: Session, package_id: int) -> dict:
     }
 
 
+def _refuse_if_package_has_award(db: Session, package: OfferPackage) -> None:
+    from crud import tender_awards
+    title = db.execute(sa.select(Contractor.title).where(Contractor.id == package.contractor_id)).scalar_one()
+    tender_awards.refuse_if_package_has_award(db, package.id, title=title)
+
+
 def participant_deletion_preview(db: Session, tender_id: int, package_id: int) -> dict:
     get_tender(db, tender_id)
     package = db.execute(sa.select(OfferPackage).where(OfferPackage.id == package_id, OfferPackage.tender_id == tender_id)).scalar_one_or_none()
     if package is None:
         raise DomainError(404, f"Участник {package_id} тендера {tender_id} не найден.")
+    _refuse_if_package_has_award(db, package)
     return _participant_composition(db, package_id)
 
 
@@ -425,6 +462,7 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
     if package is None:
         raise DomainError(404, f"Участник {package_id} тендера {tender_id} не найден.")
     _refuse_if_active(db, round_ids)
+    _refuse_if_package_has_award(db, package)
     composition = _participant_composition(db, package_id)
     if confirmation_token != composition["confirmation_token"]:
         # Ничего не менялось выше этой строки — только SELECT/FOR UPDATE, писать
@@ -443,9 +481,12 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
         sa.select(Estimate.id).where(Estimate.offer_id.in_(sa.select(Offer.id).where(Offer.package_id == package_id)))
     ).scalars())
     affected_contexts = contexts_of_estimates(db, package_estimate_ids)
-    db.execute(sa.delete(Offer).where(Offer.package_id == package_id))
-    db.execute(sa.delete(OfferPackage).where(OfferPackage.id == package_id))
-    _reconcile_after_delete(db, affected_contexts)
-    db.commit()
+    from crud import tender_awards
+    # Ключ — страховка: отметка, поставленная мимо проверки, роняет удаление оферт.
+    with translating_integrity(db, {"fk_tender_awards_offer": tender_awards.participant_has_award_refusal()}):
+        db.execute(sa.delete(Offer).where(Offer.package_id == package_id))
+        db.execute(sa.delete(OfferPackage).where(OfferPackage.id == package_id))
+        _reconcile_after_delete(db, affected_contexts)
+        db.commit()
     log.info("tender_participant_deleted tender=%s package=%s estimates=%d",
              tender_id, package_id, composition["estimates_count"])

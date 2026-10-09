@@ -166,6 +166,38 @@ def split_round_payload(data: dict[str, Any]) -> tuple[list[RoundProjection], Ba
     return projections, baseline
 
 
+def projection_for_inn(data: dict[str, Any], inn: str) -> RoundProjection | None:
+    """Проекция участника с ИНН `inn` из разбора всего файла этапа либо `None`.
+
+    Опознание то же, что при загрузке этапа: ключ — канонический ИНН блока из
+    файла (спека Б2 §1.7, §2.5).
+
+    Raises:
+        EstimateImportError: разрез файла этапа отказывает (`split_round_payload`).
+    """
+    projections, _baseline = split_round_payload(data)
+    return next((p for p in projections if p.inn == inn), None)
+
+
+def kp_inn_of(raw_data: dict[str, Any]) -> str | None:
+    """ИНН участника, снятый с разбора его КП (`estimate_raw_data.raw_data`).
+
+    Разбор КП — проекция одного участника: в каждом лоте ровно его блок. ИНН
+    берётся из блоков предложений ВСЕХ лотов в канонической форме
+    (`canonicalize_inn`); ровно одно различное непустое значение — оно, иначе
+    `None` (ИНН нет вовсе либо их несколько: КП не опознаётся). Карточка
+    подрядчика здесь не участвует: её ИНН правится справочником, а файл этапа
+    остаётся прежним (спека Б2 §1.7).
+    """
+    found: set[str] = set()
+    for lot in (raw_data.get(JSON_KEY_LOTS) or {}).values():
+        for block in (lot.get(JSON_KEY_PROPOSALS) or {}).values():
+            inn = canonicalize_inn(block.get(JSON_KEY_CONTRACTOR_INN))
+            if inn:
+                found.add(inn)
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def get_or_create_contractor(
     db: Session, *, inn: str, title: str | None, address: str | None,
     accreditation: str | None, warnings: list[str],
@@ -281,6 +313,18 @@ def import_round(
     ).scalar_one()
 
     if replace:
+        # Отметку могли поставить между проверкой роутера и этой транзакцией:
+        # правило держит эта проверка, а не роутер (спека Б2 §2.4). Без неё замену
+        # остановил бы ключ, но пайплайн показал бы его как «непредвиденную ошибку».
+        # Локальный импорт: `crud.tender_awards` сам зависит от этого модуля.
+        from crud import tender_awards
+        from crud.common import DomainError
+        try:
+            tender_awards.refuse_if_round_has_award(
+                db, tender_round.id, stage_no=tender_round.stage_no, action="replace",
+            )
+        except DomainError as exc:
+            raise EstimateImportError(exc.detail) from exc
         outcome.replaced_context_ids = frozenset(
             contexts_of_estimates(db, _round_estimate_ids(db, tender_round.id))
         )

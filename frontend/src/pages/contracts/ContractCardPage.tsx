@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, Download, Pencil, Ruler, Trash2 } from "lucide-react";
+import { AlertTriangle, Download, Link2Off, Pencil, Ruler, Trash2 } from "lucide-react";
 
 import { ContractDeleteDialog } from "@/components/contracts/ContractDeleteDialog";
 import { ContractFormDialog } from "@/components/contracts/ContractFormDialog";
 import { EstimateUploadPanel } from "@/components/contracts/EstimateUploadPanel";
+import { TenderBasisRow } from "@/components/contracts/TenderBasisRow";
+import {
+  COPY_ESTIMATE_HINT,
+  IMPORT_RUNNING_HINT,
+  lockedPartiesHint,
+} from "@/components/contracts/tenderBasisText";
+import { UnlinkTenderDialog } from "@/components/contracts/UnlinkTenderDialog";
 import { ObjectFormDialog } from "@/components/objects/ObjectFormDialog";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
@@ -27,6 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
 import {
+  useActiveContractImport,
   useContract,
   useContractImportJobs,
   useDownloadJobFile,
@@ -51,6 +59,7 @@ export default function ContractCardPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [objectEditOpen, setObjectEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [unlinkOpen, setUnlinkOpen] = useState(false);
 
   const contractQ = useContract(id);
   const jobsQ = useContractImportJobs(id);
@@ -67,6 +76,13 @@ export default function ContractCardPage() {
    * ошибочный запрос при каждом открытии карточки.
    */
   const objectQ = useObject(contract?.object_id);
+  /**
+   * Копию КП после `202` ждёт карточка, а не форма (спека Б2 §2.8): задание
+   * находится в истории загрузок, и опрос переживает перезагрузку страницы.
+   * Заводится только у договора с основанием — копия бывает лишь у него, а
+   * загрузку обычного договора ведёт панель загрузки.
+   */
+  const activeImport = useActiveContractImport(contract?.tender_basis ? id : undefined);
 
   if (contractQ.isPending) {
     return (
@@ -158,6 +174,7 @@ export default function ContractCardPage() {
           <Field label="Сумма договора">
             <MoneyCell value={contract.total_amount} />
           </Field>
+          <TenderBasisRow basis={contract.tender_basis} origin={contract.estimate_origin} />
           {contract.title && <Field label="Название">{contract.title}</Field>}
           {contract.notes && <Field label="Примечания">{contract.notes}</Field>}
 
@@ -213,6 +230,30 @@ export default function ContractCardPage() {
             </Field>
           )}
         </dl>
+        {contract.tender_basis && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border-subtle pt-4">
+            {contract.estimate_origin === "from_offer" ? (
+              <p data-testid="unlink-hint" className="text-xs text-fg-secondary">
+                {COPY_ESTIMATE_HINT}
+              </p>
+            ) : (
+              isAdmin && (
+                <>
+                  <Button
+                    variant="outline"
+                    disabled={activeImport !== undefined}
+                    onClick={() => setUnlinkOpen(true)}
+                  >
+                    <Link2Off className="size-4" /> Отвязать от тендера
+                  </Button>
+                  {activeImport !== undefined && (
+                    <p className="text-xs text-fg-secondary">{IMPORT_RUNNING_HINT}</p>
+                  )}
+                </>
+              )
+            )}
+          </div>
+        )}
       </Surface>
 
       {/*
@@ -302,7 +343,20 @@ export default function ContractCardPage() {
         </TabsContent>
       </Tabs>
 
-      <ContractFormDialog open={editOpen} onOpenChange={setEditOpen} contract={contract} />
+      <ContractFormDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        contract={contract}
+        lockedParties={
+          contract.tender_basis
+            ? { hint: lockedPartiesHint(contract.estimate_origin) }
+            : undefined
+        }
+      />
+      <UnlinkTenderDialog
+        contract={unlinkOpen ? contract : null}
+        onOpenChange={() => setUnlinkOpen(false)}
+      />
       <ObjectFormDialog
         open={objectEditOpen}
         onOpenChange={setObjectEditOpen}

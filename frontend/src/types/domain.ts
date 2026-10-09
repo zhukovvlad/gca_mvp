@@ -144,6 +144,22 @@ export interface ContractCard extends ContractRow {
   bank_guarantee_note: string | null;
   retention_pct: Decimal | null;
   retention_note: string | null;
+  /** Основание «по тендеру» (спека Б2 §2.6); `null` — договор без основания. */
+  tender_basis: TenderBasis | null;
+  /** Происхождение основной сметы; `null` у договора без основания. */
+  estimate_origin: EstimateOrigin | null;
+}
+
+/** Поля карточки договора без объекта, подрядчика и класса: их берёт отметка (спека Б2 §2.5). */
+export type ContractFromAwardInput = Omit<
+  ContractInput,
+  "object_id" | "contractor_id" | "rate_class_id"
+>;
+
+/** Ответ `POST /tenders/{tid}/awards/{aid}/contract` (202). */
+export interface ContractFromAwardResult {
+  contract: ContractCard;
+  job: ImportJob;
 }
 
 export interface ContractInput {
@@ -285,6 +301,66 @@ export interface TenderCard extends Omit<TenderRow, "rounds_count" | "participan
   rounds: TenderRoundRow[];
   participants: TenderParticipant[];
   cells: TenderCell[];
+  /** Действующая отметка победителя; `null` — не отмечен (спека Б2 §2.6). */
+  award: TenderAward | null;
+  award_history: TenderAwardEvent[];
+}
+
+// ---------------------------------------------------------------------------
+//  Победитель тендера и договор из КП (спека 2026-10-08-tender-award-design.md §2.6)
+// ---------------------------------------------------------------------------
+
+export interface TenderAward {
+  id: number;
+  offer_id: number;
+  package_id: number;
+  contractor_id: number;
+  contractor_title: string;
+  contractor_inn: string;
+  round_id: number;
+  stage_no: number;
+  estimate_id: number;
+  /** `null` — итог «с НДС» в файле не определён. */
+  total_including_vat: Decimal | null;
+  awarded_at: string;
+  awarded_by_email: string;
+  contract: { id: number; contract_number: string; signed_date: string } | null;
+}
+
+export interface TenderAwardEvent {
+  award_id: number;
+  kind: "awarded" | "not_concluded";
+  package_id: number;
+  contractor_title: string;
+  awarded_at: string | null;
+  not_concluded_on: string | null;
+  note: string | null;
+  by_email: string;
+  is_active: boolean;
+}
+
+/** Кандидат на привязку: договор того же объекта и подрядчика без основания. */
+export interface ContractCandidate {
+  id: number;
+  contract_number: string;
+  signed_date: string;
+  object_title: string;
+  contractor_title: string;
+  /** `null` — сметы нет либо итог «с НДС» в файле не определён. */
+  base_total_including_vat: Decimal | null;
+}
+
+/** Происхождение основной сметы связанного договора (дизайн Б2 §2.4). */
+export type EstimateOrigin = "from_offer" | "uploaded_separately" | "no_estimate";
+
+export interface TenderBasis {
+  award_id: number;
+  tender_id: number;
+  tender_number: string;
+  tender_title: string;
+  round_id: number;
+  stage_no: number;
+  offer_id: number;
 }
 
 export interface TenderInput {

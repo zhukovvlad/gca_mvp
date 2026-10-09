@@ -1,16 +1,26 @@
 import { useState } from "react";
-import { Check, Trash2 } from "lucide-react";
+import { Check, MoreHorizontal, Trash2 } from "lucide-react";
 
 import { ParticipantDeleteDialog } from "@/components/tenders/ParticipantDeleteDialog";
 import { triggerLabel } from "@/components/unallocated/roundUnallocatedCopy";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Surface } from "@/components/ui-domain/Surface";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Toggle } from "@/components/ui/toggle";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useAwardWinner } from "@/services/queries";
 import type { TenderCard, TenderParticipant } from "@/types/domain";
 
 interface OfferGridProps {
@@ -58,6 +68,12 @@ export function OfferGrid({
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
   const [toDelete, setToDelete] = useState<TenderParticipant | null>(null);
+
+  // Отметка победителя ставится только на КП ФИНАЛЬНОГО этапа (наибольший
+  // `stage_no`, не последний в списке) и только пока действующей отметки нет
+  // (спека Б2 §2.8): команда доступна `admin`, правило держит сервер.
+  const finalStageNo = card.rounds.reduce((max, r) => Math.max(max, r.stage_no), 0);
+  const canAward = isAdmin && card.award === null;
 
   // Участник, чьи сметы уже выбраны — по факту принадлежности выбранных
   // offer_id, а не отдельным полем состояния: так выбор не может
@@ -113,7 +129,11 @@ export function OfferGrid({
           </TableHeader>
           <TableBody>
             {card.participants.map((participant) => (
-              <TableRow key={participant.package_id}>
+              <TableRow
+                key={participant.package_id}
+                data-winner={card.award?.package_id === participant.package_id ? "true" : undefined}
+                className={cn(card.award?.package_id === participant.package_id && "bg-accent-soft hover:bg-accent-soft")}
+              >
                 <TableCell>
                   <button
                     type="button"
@@ -165,6 +185,12 @@ export function OfferGrid({
                   const foreignReason = "Свод строится по одному участнику";
                   return (
                     <TableCell key={round.id} className="text-right">
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                      {card.award?.round_id === round.id && card.award.package_id === participant.package_id && (
+                        <Badge variant="outline" className="border-accent-border bg-accent-soft text-accent-text">
+                          победитель
+                        </Badge>
+                      )}
                       <Toggle
                         variant="outline"
                         size="sm"
@@ -200,6 +226,15 @@ export function OfferGrid({
                           />
                         )}
                       </Toggle>
+                      {canAward && round.stage_no === finalStageNo && (
+                        <AwardCellMenu
+                          tenderId={card.id}
+                          offerId={offerId}
+                          participantTitle={participant.title}
+                          stageNo={round.stage_no}
+                        />
+                      )}
+                      </div>
                       {foreign && (
                         <span id={foreignReasonId} className="sr-only">
                           {foreignReason}
@@ -229,5 +264,45 @@ export function OfferGrid({
 
       <ParticipantDeleteDialog tenderId={card.id} participant={toDelete} onOpenChange={() => setToDelete(null)} />
     </>
+  );
+}
+
+/**
+ * Меню «⋯» ячейки финального этапа с КП (макет, экран 1): единственный пункт —
+ * «Отметить победителем». Подпись меню называет КП и этап, чтобы выбор был
+ * осознанным.
+ */
+function AwardCellMenu({
+  tenderId,
+  offerId,
+  participantTitle,
+  stageNo,
+}: {
+  tenderId: number;
+  offerId: number;
+  participantTitle: string;
+  stageNo: number;
+}) {
+  const award = useAwardWinner(tenderId);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        type="button"
+        aria-label={`Действия с КП участника «${participantTitle}»`}
+        className="inline-flex size-7 items-center justify-center rounded-md text-fg-tertiary hover:bg-surface-hover hover:text-fg"
+      >
+        <MoreHorizontal className="size-4" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-auto min-w-56">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>
+            КП {participantTitle} · этап {stageNo}
+          </DropdownMenuLabel>
+          <DropdownMenuItem disabled={award.isPending} onClick={() => award.mutate(offerId)}>
+            Отметить победителем
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

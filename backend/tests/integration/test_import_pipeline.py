@@ -825,6 +825,9 @@ class TestFiveCountersStayTheSame:
             "parsed_data",
             "parser_version",
             "estimates_created",
+            # Миграция 0020 (фича Б2, отметка победителя): задание — копия КП.
+            # Колонку заводит схема отметки, а не маршрутизация этой задачи.
+            "source_award_id",
             "created_at",
             "started_at",
             "finished_at",

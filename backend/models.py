@@ -325,6 +325,27 @@ class ObjectModel(Base):
 #: Дублирует миграцию 0015; расхождение ловит test_tenders_schema.py.
 CONTRACTOR_INN_CANONICAL = "inn ~ '^[0-9]+$'"
 
+#: Отметка победителя тендера (миграция 0020, спека Б2 §2.2). Выражения
+#: продублированы в миграции своими литералами; расхождение ловит
+#: test_tender_award_schema.py. Обе ветви `TENDER_AWARD_NOT_CONCLUDED` тотальны:
+#: сравнивают только `IS [NOT] NULL`, `NULL` в предикат не попадает.
+TENDER_AWARD_NOT_CONCLUDED = (
+    "(not_concluded_on IS NULL AND not_concluded_by IS NULL "
+    "AND not_concluded_at IS NULL AND not_concluded_note IS NULL) "
+    "OR (not_concluded_on IS NOT NULL AND not_concluded_by IS NOT NULL "
+    "AND not_concluded_at IS NOT NULL)"
+)
+TENDER_AWARD_NOTE_NOT_BLANK = "not_concluded_note IS NULL OR btrim(not_concluded_note) <> ''"
+TENDER_AWARD_KP_INN_CANONICAL = "kp_inn ~ '^[0-9]+$'"
+#: Копия КП — только у исходной сметы договора: без договора составной ключ
+#: `MATCH SIMPLE` не проверяется, поэтому CHECK требует `contract_id IS NOT NULL`.
+ESTIMATE_SOURCE_AWARD_ORIGINAL = (
+    "source_award_id IS NULL OR (contract_id IS NOT NULL AND amendment_no IS NULL)"
+)
+IMPORT_JOB_SOURCE_AWARD_ORIGINAL = (
+    "source_award_id IS NULL OR (contract_id IS NOT NULL AND amendment_no IS NULL)"
+)
+
 
 class Contractor(Base):
     """Подрядчик. Перенос из tenders-go без изменений."""
@@ -381,6 +402,11 @@ class Contract(Base):
     bank_guarantee_note = Column(Text, nullable=True)
     retention_pct = Column(Numeric, nullable=True)
     retention_note = Column(Text, nullable=True)
+    # Основание «по тендеру» (спека Б2 §2.2): отметка победителя, из которой
+    # договор создан или к которой привязан. Одиночного FK нет — составной ключ
+    # (id, object_id, contractor_id) держит объект и подрядчика договора равными
+    # отметке; при NULL он не проверяется (MATCH SIMPLE), и это задумано.
+    tender_award_id = Column(BigInteger, nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
@@ -390,6 +416,16 @@ class Contract(Base):
 
     __table_args__ = (
         UniqueConstraint("contract_number", name="uq_contracts_contract_number"),
+        UniqueConstraint("tender_award_id", name="uq_contracts_tender_award"),
+        UniqueConstraint("id", "tender_award_id", name="uq_contracts_id_tender_award"),
+        # use_alter: два цикла метаданных — contracts → tender_awards → estimates →
+        # contracts и estimates → import_jobs → tender_awards → estimates; второй
+        # разорван use_alter у fk_import_jobs_source_award.
+        ForeignKeyConstraint(
+            ["tender_award_id", "object_id", "contractor_id"],
+            ["tender_awards.id", "tender_awards.object_id", "tender_awards.contractor_id"],
+            name="fk_contracts_tender_award", use_alter=True,
+        ),
         CheckConstraint(
             "total_amount IS NULL OR total_amount >= 0",
             name="ck_contracts_total_amount_non_negative",
@@ -458,6 +494,8 @@ class Tender(Base):
 
     __table_args__ = (
         UniqueConstraint("tender_number", name="uq_tenders_tender_number"),
+        # Цель составного FK отметки победителя (спека Б2 §2.2).
+        UniqueConstraint("id", "object_id", name="uq_tenders_id_object"),
         CheckConstraint(TENDER_TITLE_NOT_BLANK, name="ck_tenders_title_not_blank"),
         CheckConstraint(TENDER_NUMBER_NOT_BLANK, name="ck_tenders_number_not_blank"),
         Index("ix_tenders_object_id", "object_id"),
@@ -509,6 +547,8 @@ class OfferPackage(Base):
     __table_args__ = (
         UniqueConstraint("tender_id", "contractor_id", name="uq_offer_packages_tender_contractor"),
         UniqueConstraint("id", "tender_id", name="uq_offer_packages_id_tender"),
+        # Цель составного FK отметки победителя (спека Б2 §2.2).
+        UniqueConstraint("id", "contractor_id", name="uq_offer_packages_id_contractor"),
         Index("ix_offer_packages_contractor_id", "contractor_id"),
     )
 
@@ -541,7 +581,81 @@ class Offer(Base):
             ondelete="RESTRICT", name="fk_offers_package",
         ),
         UniqueConstraint("round_id", "package_id", name="uq_offers_round_package"),
+        # Цель составного FK отметки победителя (спека Б2 §2.2).
+        UniqueConstraint("id", "tender_id", "package_id", name="uq_offers_id_tender_package"),
         Index("ix_offers_package_id", "package_id"),
+    )
+
+
+class TenderAward(Base):
+    """Отметка победителя тендера (спека Б2 §2.2). История не удаляется:
+    «договор не заключён» закрывает отметку, а не стирает её; действующая
+    отметка тендера — не более одной (`uq_tender_awards_active`).
+
+    Все ключи составные и без одиночных колонок-посредников: оферта, участник,
+    КП и подрядчик обязаны принадлежать одной отметке структурно. Все колонки
+    ключей NOT NULL — иначе `MATCH SIMPLE` отключил бы проверку."""
+    __tablename__ = "tender_awards"
+
+    id = Column(BigInteger, primary_key=True)
+    tender_id = Column(BigInteger, nullable=False)
+    object_id = Column(BigInteger, nullable=False)
+    offer_id = Column(BigInteger, nullable=False)
+    package_id = Column(BigInteger, nullable=False)
+    contractor_id = Column(BigInteger, nullable=False)
+    # КП, по которому принято решение (оферта победителя финального этапа).
+    estimate_id = Column(BigInteger, nullable=False)
+    # ИНН блока КП в файле этапа, снят с разбора КП при отметке.
+    kp_inn = Column(Text, nullable=False)
+    awarded_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+    awarded_by = Column(Integer, nullable=False)
+    # «Договор не заключён»: дата вводится человеком.
+    not_concluded_on = Column(Date, nullable=True)
+    not_concluded_note = Column(Text, nullable=True)
+    not_concluded_by = Column(Integer, nullable=True)
+    not_concluded_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tender_id", "object_id"], ["tenders.id", "tenders.object_id"],
+            ondelete="CASCADE", name="fk_tender_awards_tender",
+        ),
+        ForeignKeyConstraint(
+            ["offer_id", "tender_id", "package_id"],
+            ["offers.id", "offers.tender_id", "offers.package_id"],
+            name="fk_tender_awards_offer",
+        ),
+        ForeignKeyConstraint(
+            ["package_id", "contractor_id"],
+            ["offer_packages.id", "offer_packages.contractor_id"],
+            name="fk_tender_awards_package",
+        ),
+        ForeignKeyConstraint(
+            ["estimate_id", "offer_id"], ["estimates.id", "estimates.offer_id"],
+            name="fk_tender_awards_kp_estimate",
+        ),
+        ForeignKeyConstraint(
+            ["awarded_by"], ["users.id"], ondelete="RESTRICT", name="fk_tender_awards_awarded_by"
+        ),
+        ForeignKeyConstraint(
+            ["not_concluded_by"], ["users.id"], ondelete="RESTRICT",
+            name="fk_tender_awards_not_concluded_by",
+        ),
+        CheckConstraint(TENDER_AWARD_KP_INN_CANONICAL, name="ck_tender_awards_kp_inn_canonical"),
+        CheckConstraint(TENDER_AWARD_NOT_CONCLUDED, name="ck_tender_awards_not_concluded"),
+        CheckConstraint(TENDER_AWARD_NOTE_NOT_BLANK, name="ck_tender_awards_note_not_blank"),
+        UniqueConstraint(
+            "id", "object_id", "contractor_id", name="uq_tender_awards_id_object_contractor"
+        ),
+        # Не более одной действующей отметки на тендер.
+        Index(
+            "uq_tender_awards_active", "tender_id", unique=True,
+            postgresql_where=sa_text("not_concluded_on IS NULL"),
+        ),
+        Index("ix_tender_awards_tender_id", "tender_id"),
+        Index("ix_tender_awards_offer_id", "offer_id"),
+        Index("ix_tender_awards_package_id", "package_id"),
+        Index("ix_tender_awards_estimate_id", "estimate_id"),
     )
 
 
@@ -582,6 +696,16 @@ class ImportJob(Base):
     # Сколько смет создал успешный job: 1 у договора, N(+1) у раунда. Нужен
     # правилу «текущий job раунда» (спека §2.12); у старых jobs NULL.
     estimates_created = Column(Integer, nullable=True)
+    # Задание — копия КП отметки победителя (спека Б2 §2.5); только у исходной
+    # сметы договора. Удаление отметки обнуляет ссылку, а не отказывает.
+    source_award_id = Column(
+        BigInteger,
+        ForeignKey(
+            "tender_awards.id", ondelete="SET NULL", name="fk_import_jobs_source_award",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
 
     created_at = _created_at()
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -604,6 +728,7 @@ class ImportJob(Base):
         CheckConstraint(IMPORT_JOB_AMENDMENT_ONLY_WITH_CONTRACT, name="ck_import_jobs_amendment_owner"),
         CheckConstraint(IMPORT_JOB_PARSED_PAIR, name="ck_import_jobs_parsed_pair"),
         CheckConstraint(IMPORT_JOB_ESTIMATES_CREATED_POSITIVE, name="ck_import_jobs_estimates_created"),
+        CheckConstraint(IMPORT_JOB_SOURCE_AWARD_ORIGINAL, name="ck_import_jobs_source_award"),
         Index("ix_import_jobs_contract_id", "contract_id", "amendment_no"),
         Index("ix_import_jobs_round_id", "round_id"),
         # Очередь startup-recovery (§5): все незавершённые задания.
@@ -649,10 +774,16 @@ class Estimate(Base):
         Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
     )
     vat_rate_updated_at = Column(DateTime(timezone=True), nullable=True)
+    # Смета — копия КП отметки основания договора (спека Б2 §2.2); только у
+    # исходной сметы договора. Составной ключ (contract_id, source_award_id)
+    # держит «копия ссылается на отметку-основание своего договора».
+    source_award_id = Column(BigInteger, nullable=True)
     created_at = _created_at()
     updated_at = _updated_at()
 
-    contract = relationship("Contract")
+    # `foreign_keys` обязателен: у смет и договоров теперь два ключа
+    # (`contract_id` и составной `(contract_id, source_award_id)`).
+    contract = relationship("Contract", foreign_keys=[contract_id])
     offer = relationship("Offer")
     round = relationship("TenderRound")
     import_job = relationship("ImportJob")
@@ -676,6 +807,14 @@ class Estimate(Base):
         ),
         CheckConstraint(ESTIMATE_OWNER_EXACTLY_ONE, name="ck_estimates_owner"),
         CheckConstraint(ESTIMATE_AMENDMENT_ONLY_WITH_CONTRACT, name="ck_estimates_amendment_owner"),
+        CheckConstraint(ESTIMATE_SOURCE_AWARD_ORIGINAL, name="ck_estimates_source_award"),
+        # Цель составного FK отметки победителя (спека Б2 §2.2).
+        UniqueConstraint("id", "offer_id", name="uq_estimates_id_offer"),
+        ForeignKeyConstraint(
+            ["contract_id", "source_award_id"],
+            ["contracts.id", "contracts.tender_award_id"],
+            name="fk_estimates_source_award",
+        ),
         # Отдельного индекса по contract_id нет намеренно: выборки по договору
         # обслуживает uq_estimates_contract_amendment — полный уникальный индекс
         # с ведущей колонкой contract_id (создаётся raw SQL в миграции 0002).

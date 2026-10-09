@@ -138,6 +138,8 @@ export const qk = {
     list: (params?: { q?: string; page?: number; page_size?: number }) =>
       ["tenders", "list", params ?? {}] as const,
     card: (id: number) => ["tenders", "card", id] as const,
+    /** Префикс всех карточек тендеров: список и сводки этапов он не задевает. */
+    cards: ["tenders", "card"] as const,
     roundJobs: (tenderId: number, roundId: number) =>
       ["tenders", "round-jobs", tenderId, roundId] as const,
     /** Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16). */
@@ -179,6 +181,9 @@ export const qk = {
     stagePositionsForTender: (tenderId: number) => ["tenders", "stage-positions", tenderId] as const,
     /** Нераспределённое раунда (спека этапного разноса §2.3). */
     roundUnallocated: (tenderId: number, roundId: number) => ["tenders", "round-unallocated", tenderId, roundId] as const,
+    /** Кандидаты на привязку к отметке победителя (спека Б2 §2.6). */
+    contractCandidates: (tenderId: number, awardId: number) =>
+      ["tenders", "contract-candidates", tenderId, awardId] as const,
   },
 
   /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */

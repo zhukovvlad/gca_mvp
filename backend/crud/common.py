@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime
 
@@ -118,8 +118,12 @@ def rollback_on_domain_error(db: Session) -> Iterator[None]:
         raise
 
 
+#: Значение словаря переводчика: текст или пара (машинный код, текст).
+IntegrityMessage = str | tuple[str, str]
+
+
 @contextmanager
-def translating_integrity(db: Session, messages: dict[str, str]) -> Iterator[None]:
+def translating_integrity(db: Session, messages: Mapping[str, IntegrityMessage]) -> Iterator[None]:
     """Переводит нарушение известного констрейнта в `DomainError`, чужое — пропускает.
 
     Проверка «уже занято» перед вставкой остаётся (её текст точнее), но одна она
@@ -130,7 +134,9 @@ def translating_integrity(db: Session, messages: dict[str, str]) -> Iterator[Non
 
     Args:
         db: сессия; при нарушении откатывается — продолжать в ней нельзя.
-        messages: имя констрейнта → текст для человека.
+        messages: имя констрейнта → текст для человека (строка) либо пара
+            (машинный код, текст): с парой отказ несёт `code`, и гонка через ключ
+            отвечает тем же кодом, что синхронная проверка.
     """
     try:
         yield
@@ -139,6 +145,9 @@ def translating_integrity(db: Session, messages: dict[str, str]) -> Iterator[Non
         text = str(exc.orig)
         for name, message in messages.items():
             if name in text:
+                if isinstance(message, tuple):
+                    code, detail = message
+                    raise DomainError(409, detail, code=code) from exc
                 raise DomainError(409, message) from exc
         raise
 

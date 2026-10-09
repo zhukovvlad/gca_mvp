@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Макет гейта 1 фичи «Победитель тендера и договор из КП» (Б2 дорожной карты).
+  Стиль взят из макета свода по этапам (2026-08-27-stage-summary-mockup.html),
+  чтобы экран говорил на языке существующих страниц; все элементы — shadcn/ui
+  (Button, Badge, DropdownMenu, Dialog, AlertDialog, RadioGroup, Input, Textarea).
+-->
+<title>Победитель тендера: макет гейта 1</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;600;700&display=swap">
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7; --sechead:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82; --fg4:#B5B2A8;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#6B3915;
+  --neutral-soft:#EFEEE6; --neutral-bd:#D8D4C8; --neutral-text:#5F5E5A;
+  --info:#4A7290; --info-soft:#E5EEF4; --info-bd:#C5D7E2;
+  --font-sans:"Inter","Geist","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) {
+    --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+    --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+    --bd-subtle:#2D323D; --bd:#3A4148;
+    --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+    --action:#B8C4BB; --action-text:#1A1D24;
+    --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+    --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+    --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35; --sechead:#1C1F26;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82; --fg4:#6E6B65;
+  --bd-subtle:#2D323D; --bd:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-bd:#3A4A3D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --warn:#D08A50; --warn-soft:#33261A; --warn-bd:#4A3826; --warn-text:#E8C8A8;
+  --neutral-soft:#262B35; --neutral-bd:#3A4148; --neutral-text:#B5B2A8;
+  --info:#7BA3C0; --info-soft:#1E2A33; --info-bd:#33454F;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1320px; margin:0 auto; padding:28px 20px 72px; }
+.mockbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px;
+  color:var(--fg2); background:var(--neutral-soft); border:1px solid var(--neutral-bd);
+  border-radius:9px; padding:9px 13px; margin-bottom:26px; }
+.mockbar strong { color:var(--fg); font-weight:600; }
+.mockbar b { color:var(--fg); }
+.mockbar .sp { flex:1; }
+.mockbar button { font:inherit; font-size:12px; border:1px solid var(--bd); background:var(--surface);
+  color:var(--fg); border-radius:7px; padding:3px 9px; cursor:pointer; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; line-height:1.15;
+  margin:0 0 8px; letter-spacing:-.01em; text-wrap:balance; }
+.sub { color:var(--fg2); margin:0 0 30px; max-width:70ch; }
+.sub b { color:var(--fg); }
+section { margin-bottom:38px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:22px; margin:0 0 5px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:78ch; }
+.secsub b { color:var(--fg); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; }
+.pass-head { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:12px;
+  padding:16px 18px; margin-bottom:22px; }
+.pass-head h3 { font-family:var(--font-serif); font-weight:600; font-size:26px; margin:0; }
+.pass-head .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.tep { display:flex; flex-wrap:wrap; gap:22px; margin-top:13px; padding-top:13px;
+  border-top:1px solid var(--bd-subtle); }
+.tep div { display:flex; flex-direction:column; gap:1px; }
+.tep .k { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.tep .v { font-size:14px; font-variant-numeric:tabular-nums; }
+.axis { margin-top:13px; padding:9px 12px; border-radius:8px; background:var(--info-soft);
+  border:1px solid var(--info-bd); font-size:12px; color:var(--fg2); }
+.axis b { color:var(--fg); }
+.track { display:flex; gap:14px; align-items:flex-end; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:18px 20px 14px; }
+.bar { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; }
+.bwrap { width:100%; max-width:130px; height:150px; display:flex; align-items:flex-end;
+  background:var(--sunken); border-radius:7px 7px 0 0; }
+.bfill { width:100%; background:var(--accent); border-radius:7px 7px 0 0; }
+.bv { font-variant-numeric:tabular-nums; font-weight:600; font-size:14px; }
+.bl { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.bd { font-size:12px; font-variant-numeric:tabular-nums; min-height:18px; }
+.scroller { overflow-x:auto; border:1px solid var(--bd-subtle); border-radius:12px; background:var(--surface); }
+table.pass { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.pass th, table.pass td { border-bottom:1px solid var(--bd-subtle); padding:6px 11px;
+  text-align:left; vertical-align:baseline; }
+table.pass thead th { background:var(--sechead); font-weight:600; vertical-align:bottom;
+  font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+table.pass th.art, table.pass td.t { position:sticky; left:0; z-index:2;
+  min-width:250px; max-width:420px; background:var(--surface); box-shadow:1px 0 0 0 var(--bd); }
+table.pass thead th.art { z-index:3; background:var(--sechead); }
+table.pass tr.lvl2 td.t { background:var(--sunken); }
+table.pass tr.total td.t { background:var(--sunken); }
+table.pass tr.art:hover td.t { background:var(--hover); }
+table.pass td.num, table.pass th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.pass thead th.num { white-space:normal; }
+th.sep, td.sep { border-left:1px solid var(--bd); }
+.dp { display:block; font-size:11px; font-variant-numeric:tabular-nums; font-weight:400; }
+.ov { display:block; font-size:9.5px; letter-spacing:0; text-transform:none; color:var(--fg4);
+  font-weight:400; margin-top:2px; }
+.up { color:var(--accent-text); }
+.down { color:var(--warn-text); }
+.flat { color:var(--fg4); }
+tr.lvl1 > td { font-weight:600; }
+tr.lvl2 > td { background:var(--sunken); font-weight:400; }
+tr.lvl2 .t { padding-left:32px; color:var(--fg2); }
+tr.art:hover > td { background:var(--hover); }
+tr.unalloc > td { font-weight:400; color:var(--fg2); }
+.tw { border:0; background:transparent; color:var(--fg3); cursor:pointer; font-size:11px;
+  padding:0 6px 0 0; font-family:inherit; }
+.code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px;
+  color:var(--fg3); margin-right:6px; }
+.pill { display:inline-block; font-size:10px; border-radius:5px; padding:0 5px;
+  border:1px solid var(--neutral-bd); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.pill.warn { border-color:var(--warn-bd); background:var(--warn-soft); color:var(--warn-text); }
+.inc { color:var(--warn); font-size:11px; margin-left:4px; cursor:help; }
+.conv { display:block; font-size:9.5px; font-weight:400; }
+.conv.ok { color:var(--fg4); }
+.conv.bad { color:var(--warn-text); }
+tr.total td { border-top:2px solid var(--fg); background:var(--sunken); font-weight:600; }
+.warnbox { font-size:12.5px; margin:16px 0 0; padding:11px 15px; border-radius:9px;
+  background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+ul.notes { margin:0; padding-left:19px; color:var(--fg2); font-size:13px; }
+ul.notes li { margin-bottom:9px; }
+ul.notes li:last-child { margin-bottom:0; }
+ul.notes b { color:var(--fg); }
+ul.notes code, .axis code, .secsub code, .state code { background:var(--sunken); border:1px solid var(--bd-subtle);
+  border-radius:5px; padding:1px 5px; }
+.bound { border-left:3px solid var(--info); background:var(--info-soft);
+  border-radius:0 8px 8px 0; padding:12px 16px; }
+.tag { display:inline-block; font-size:10.5px; border-radius:5px; padding:1px 7px;
+  border:1px solid var(--info-bd); background:var(--info-soft); color:var(--info); }
+.flow { display:flex; flex-wrap:wrap; align-items:center; gap:9px; background:var(--surface);
+  border:1px solid var(--bd-subtle); border-radius:12px; padding:15px 18px; font-size:13px; }
+.flow .node { border:1px solid var(--bd); border-radius:8px; padding:5px 11px; background:var(--sunken); white-space:nowrap; }
+.flow .node.nav { border-color:var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.flow .node.new { border-style:dashed; }
+.flow .arrow { color:var(--fg3); }
+.flow .note { color:var(--fg3); font-size:12px; width:100%; margin-top:4px; }
+.screen { border:1px solid var(--bd); border-radius:12px; overflow:hidden; background:var(--surface); }
+.screen .chrome { display:flex; align-items:center; gap:9px; padding:8px 13px;
+  background:var(--sechead); border-bottom:1px solid var(--bd-subtle); font-size:12px; color:var(--fg3); }
+.screen .chrome code { color:var(--fg2); }
+.screen .pane { padding:16px 18px; }
+.crumbs { font-size:12px; color:var(--fg3); margin-bottom:8px; }
+.crumbs a { color:var(--info); text-decoration:none; }
+.rowhead { display:flex; flex-wrap:wrap; align-items:flex-start; gap:12px; justify-content:space-between; }
+.rowhead h3 { font-family:var(--font-serif); font-weight:600; font-size:24px; margin:0; }
+.rowhead .meta { color:var(--fg2); font-size:12.5px; margin-top:3px; }
+.btn { display:inline-block; font-size:12.5px; border-radius:8px; padding:6px 13px;
+  border:1px solid var(--bd); background:var(--surface); color:var(--fg); white-space:nowrap; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+.btn.disabled { opacity:.5; }
+.btns { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.hint { font-size:12px; color:var(--fg3); }
+table.grid { border-collapse:separate; border-spacing:0; width:100%; font-size:13px; }
+table.grid th, table.grid td { padding:8px 11px; border-bottom:1px solid var(--bd-subtle); text-align:left; vertical-align:middle; }
+table.grid thead th { background:var(--sechead); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+table.grid thead th.on { color:var(--accent-text); }
+table.grid td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+table.grid .name { font-weight:600; }
+table.grid .inn { font-size:11px; color:var(--fg3); }
+table.grid tr.dim td { color:var(--fg4); }
+table.grid tr.dim .name { color:var(--fg3); }
+table.grid th.num { text-align:right; }
+table.grid td.num { padding:6px 8px; }
+table.grid .pname { border:0; background:transparent; font:inherit; font-weight:600; color:var(--fg);
+  cursor:pointer; padding:0; text-align:left; }
+table.grid .pname:hover { text-decoration:underline; }
+/* Плитка предложения — кнопка с aria-pressed (shadcn Toggle): выбранная получает
+   акцентную рамку и галочку в правом верхнем углу, как карточка товара. */
+.tile { position:relative; display:inline-block; min-width:104px; padding:7px 12px 7px 12px;
+  border:1px solid var(--bd-subtle); border-radius:9px; background:var(--surface);
+  font-variant-numeric:tabular-nums; text-align:right; color:var(--fg); cursor:pointer; }
+.tile:hover { border-color:var(--bd); background:var(--hover); }
+.tile.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.tile.on .chk { position:absolute; top:-7px; right:-7px; width:16px; height:16px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--surface); }
+.tile.on .chk::after { content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid var(--action-text); border-width:0 2px 2px 0; transform:rotate(45deg); }
+.tile.off { opacity:.4; cursor:not-allowed; }
+.tile.plain { border-color:transparent; background:transparent; cursor:default; }
+.state { font-size:12.5px; padding:9px 13px; border-radius:9px; margin-top:13px; }
+.state.warn { background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+.state.info { background:var(--info-soft); border:1px solid var(--info-bd); color:var(--fg2); }
+.state b { font-weight:600; }
+.empty { text-align:center; padding:34px 20px; color:var(--fg2); }
+.empty b { display:block; color:var(--fg); font-size:15px; margin-bottom:4px; }
+.legend { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px; }
+.legend div { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; padding:10px 13px; font-size:12.5px; color:var(--fg2); }
+.legend div b { color:var(--fg); display:block; margin-bottom:3px; }
+.legend .ex { display:block; margin-bottom:5px; font-size:13px; color:var(--fg); font-variant-numeric:tabular-nums; }
+/* --- добавлено для макета победителя --- */
+.pill.win { border-color:var(--accent-bd); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+tr.winrow td { background:var(--accent-soft); }
+tr.winrow .name { color:var(--accent-text); }
+.cellwrap { position:relative; display:inline-flex; align-items:center; gap:6px; }
+.dots { border:1px solid transparent; background:transparent; color:var(--fg3); border-radius:6px;
+  font-size:14px; line-height:1; padding:2px 5px; cursor:pointer; font-family:inherit; }
+.dots.open { border-color:var(--bd); background:var(--surface); color:var(--fg); }
+.menu { position:absolute; right:0; top:calc(100% + 6px); z-index:5; min-width:230px; text-align:left;
+  background:var(--surface); border:1px solid var(--bd); border-radius:9px; padding:5px;
+  box-shadow:0 8px 24px rgba(0,0,0,.12); font-weight:400; }
+.menu .it { display:block; padding:6px 9px; border-radius:6px; font-size:13px; color:var(--fg); white-space:nowrap; }
+.menu .it.hl { background:var(--hover); }
+.menu .sep { display:block; height:1px; background:var(--bd-subtle); margin:4px 2px; }
+.menu .lab { display:block; padding:4px 9px 2px; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+.winbox { display:flex; flex-wrap:wrap; gap:14px; align-items:center; justify-content:space-between;
+  margin-top:14px; padding:13px 16px; border-radius:12px; border:1px solid var(--accent-bd); background:var(--accent-soft); }
+.winbox .who { font-size:15px; font-weight:600; color:var(--accent-text); }
+.winbox .det { font-size:12.5px; color:var(--fg2); margin-top:2px; }
+.nowin { margin-top:14px; padding:11px 16px; border-radius:12px; border:1px dashed var(--bd); color:var(--fg2); font-size:13px; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--fg2); }
+.btn.warnb { border-color:var(--warn-bd); color:var(--warn-text); background:var(--surface); }
+.dialogs { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:18px; align-items:start; }
+.dlg { background:var(--surface); border:1px solid var(--bd); border-radius:14px; padding:18px 20px;
+  box-shadow:0 10px 30px rgba(0,0,0,.10); }
+.dlg h4 { font-family:var(--font-serif); font-weight:600; font-size:21px; margin:0 0 4px; }
+.dlg .desc { color:var(--fg2); font-size:12.5px; margin:0 0 14px; }
+.fld { margin-bottom:11px; }
+.fld label { display:block; font-size:12px; color:var(--fg2); margin-bottom:4px; }
+.fld label .req { color:var(--warn); }
+.inp { border:1px solid var(--bd); border-radius:8px; padding:6px 10px; font-size:13px; background:var(--surface); min-height:32px; }
+.inp.ro { background:var(--sunken); color:var(--fg2); }
+.inp.area { min-height:58px; }
+.ph { color:var(--fg4); }
+.two { display:grid; grid-template-columns:110px 1fr; gap:8px; }
+.dlgfoot { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.radio { display:flex; gap:10px; align-items:flex-start; padding:9px 11px; border:1px solid var(--bd-subtle); border-radius:9px; margin-bottom:7px; }
+.radio.on { border-color:var(--accent); background:var(--accent-soft); }
+.radio .dot { width:14px; height:14px; border-radius:50%; border:1.5px solid var(--bd); margin-top:3px; flex:none; }
+.radio.on .dot { border:4px solid var(--accent); }
+.radio .t { font-weight:600; font-size:13px; }
+.radio .s { font-size:12px; color:var(--fg2); }
+.hist { margin-top:12px; border-top:1px solid var(--accent-bd); padding-top:10px; font-size:12.5px; }
+.hist .hrow { display:flex; gap:10px; align-items:baseline; padding:3px 0; color:var(--fg2); }
+.hist .hrow b { color:var(--fg); }
+.hist .when { font-variant-numeric:tabular-nums; color:var(--fg3); min-width:86px; }
+.refusals { display:grid; gap:10px; }
+.refusals .r { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; padding:10px 14px; font-size:13px; }
+.refusals .r .act { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg3); font-weight:600; }
+.refusals .r .msg { margin-top:4px; padding:7px 11px; border-radius:8px; background:var(--warn-soft); border:1px solid var(--warn-bd); color:var(--warn-text); }
+.kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-top:14px;
+  padding:14px 16px; border:1px solid var(--bd-subtle); border-radius:12px; background:var(--surface); }
+.kv .k { font-size:11.5px; color:var(--fg3); }
+.kv .v { font-size:13.5px; margin-top:1px; }
+.kv .v a { color:var(--info); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="mockbar">
+    <strong>Макет гейта 1 — «Победитель тендера и договор из КП» (Б2).</strong>
+    <span>Суммы — итого с НДС, млн, как в решётке карточки тендера. Участники и номера обезличены.</span>
+    <span class="tag">дизайн одобряется в PR</span>
+    <span class="sp"></span>
+    <button id="theme" type="button">тема</button>
+  </div>
+
+  <h1>Победитель тендера: отметка, договор из КП</h1>
+  <p class="sub">Экран отвечает на два вопроса: <b>кто выиграл тендер</b> и <b>откуда у договора его цены</b>.
+  Отметка победителя — отдельное действие в тот день, когда решение принято, а не при загрузке и не при
+  подписании. Договор появляется позже — из отметки, копией КП победителя, или привязкой уже заведённого договора.</p>
+
+  <section>
+    <h2>Путь</h2>
+    <div class="flow">
+      <span class="node">Финальный этап загружен</span><span class="arrow">→</span>
+      <span class="node new">Отметить победителем</span><span class="arrow">→</span>
+      <span class="node">…недели и месяцы…</span><span class="arrow">→</span>
+      <span class="node new">Создать договор из КП</span><span class="arrow">или</span>
+      <span class="node new">Привязать существующий договор</span>
+      <p class="note">Если договор с победителем так и не заключили, по любой причине, — «Договор не заключён»: запись
+      уходит в историю, и можно отметить следующего. Ошибочную отметку снимают без следа, пока договора нет.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 1. Карточка тендера — финальный этап, победитель ещё не отмечен</h2>
+    <p class="secsub">Существующая решётка «участники × этапы». Новое — меню у ячеек <b>финального</b> этапа,
+    в нём «Отметить победителем». У ячеек прежних этапов этого пункта нет: отметка ставится только на КП финала.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/4</code> · карточка тендера</div>
+      <div class="pane">
+        <div class="crumbs"><a>Тендеры</a> → Тендер № ****</div>
+        <div class="rowhead">
+          <div><h3>Тендер № ****</h3><div class="meta">Генподряд · Объект А</div></div>
+          <div class="btns"><span class="btn">Правка</span><span class="btn">Новый этап</span><span class="btn">Удалить</span></div>
+        </div>
+        <div class="nowin">Победитель не отмечен. Отметка ставится в финальном этапе, когда решение принято.</div>
+        <div class="scroller" style="margin-top:14px; overflow:visible; padding-bottom:70px">
+          <table class="grid">
+            <thead><tr><th>Участник</th><th class="num">Этап 1</th><th class="num">Этап 2</th><th class="num">Этап 3 · финал</th></tr></thead>
+            <tbody>
+              <tr><td><span class="name">Участник А</span><div class="inn">ИНН 7700000001</div></td>
+                <td class="num"><span class="tile">10 000</span></td><td class="num"><span class="tile">9 562</span></td>
+                <td class="num"><span class="cellwrap"><span class="tile">9 120</span><button class="dots open" type="button" aria-label="Действия">⋯</button>
+                  <span class="menu"><span class="lab">КП Участника А · этап 3</span>
+                    <span class="it hl">Отметить победителем</span></span></span></td></tr>
+              <tr><td><span class="name">Участник Б</span><div class="inn">ИНН 7700000002</div></td>
+                <td class="num"><span class="tile">10 640</span></td><td class="num"><span class="tile">10 210</span></td>
+                <td class="num"><span class="cellwrap"><span class="tile">9 720</span><button class="dots" type="button" aria-label="Действия">⋯</button></span></td></tr>
+              <tr><td><span class="name">Участник В</span><div class="inn">ИНН 7700000003</div></td>
+                <td class="num"><span class="tile">11 120</span></td><td class="num"><span class="tile">10 870</span></td>
+                <td class="num"><span class="tile plain flat" title="Не участвовал">—</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin:8px 0 0">Участник В в финале КП не подавал — отметить его нельзя, у пустой ячейки меню нет.
+        Выбор плиток для свода по этапам работает как раньше.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 2. Победитель отмечен, договора ещё нет</h2>
+    <p class="secsub">Над решёткой — плашка победителя с четырьмя действиями, строка победителя подсвечена.
+    «Новый этап» недоступен: новый этап сделал бы отметку не финальной.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/4</code> · карточка тендера</div>
+      <div class="pane">
+        <div class="crumbs"><a>Тендеры</a> → Тендер № ****</div>
+        <div class="rowhead">
+          <div><h3>Тендер № ****</h3><div class="meta">Генподряд · Объект А</div></div>
+          <div class="btns"><span class="btn">Правка</span><span class="btn disabled" title="В тендере отмечен победитель — снимите отметку или отметьте, что договор не заключён">Новый этап</span><span class="btn">Удалить</span></div>
+        </div>
+        <div class="winbox">
+          <div><div class="who">Победитель — Участник А</div>
+            <div class="det">КП этапа 3 · 9 120 млн · отмечен 22.12.2025 · договора пока нет</div></div>
+          <div class="btns">
+            <span class="btn primary">Создать договор</span>
+            <span class="btn">Привязать существующий договор</span>
+            <span class="btn warnb">Договор не заключён</span>
+            <span class="btn ghost">Снять отметку</span>
+          </div>
+        </div>
+        <div class="scroller" style="margin-top:14px">
+          <table class="grid">
+            <thead><tr><th>Участник</th><th class="num">Этап 1</th><th class="num">Этап 2</th><th class="num">Этап 3 · финал</th></tr></thead>
+            <tbody>
+              <tr class="winrow"><td><span class="name">Участник А</span><div class="inn">ИНН 7700000001</div></td>
+                <td class="num"><span class="tile">10 000</span></td><td class="num"><span class="tile">9 562</span></td>
+                <td class="num"><span class="cellwrap"><span class="pill win">победитель</span><span class="tile">9 120</span></span></td></tr>
+              <tr><td><span class="name">Участник Б</span><div class="inn">ИНН 7700000002</div></td>
+                <td class="num"><span class="tile">10 640</span></td><td class="num"><span class="tile">10 210</span></td><td class="num"><span class="tile">9 720</span></td></tr>
+              <tr><td><span class="name">Участник В</span><div class="inn">ИНН 7700000003</div></td>
+                <td class="num"><span class="tile">11 120</span></td><td class="num"><span class="tile">10 870</span></td><td class="num"><span class="tile plain flat">—</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 3. «Договор не заключён» и снятие ошибочной отметки</h2>
+    <p class="secsub">Два разных действия, потому что это два разных события. «Договор не заключён» — факт: победа
+    была, договора не случилось, и это остаётся в истории. Кто и почему от чего отказался, система не утверждает —
+    причины бывают разные, при желании их пишут в комментарий. Снятие — исправление ошибки и следа не оставляет:
+    ошибочная отметка не должна выглядеть как несостоявшийся договор.</p>
+    <div class="dialogs">
+      <div class="dlg">
+        <h4>Договор не заключён</h4>
+        <p class="desc">Участник А перестаёт быть победителем. Запись останется в истории тендера, после чего можно
+        отметить другого участника.</p>
+        <div class="fld"><label>Дата <span class="req">*</span></label><div class="inp">15.01.2026</div></div>
+        <div class="fld"><label>Комментарий</label><div class="inp area"><span class="ph">необязательно</span></div></div>
+        <div class="dlgfoot"><span class="btn">Отмена</span><span class="btn primary">Записать</span></div>
+      </div>
+      <div class="dlg">
+        <h4>Снять отметку?</h4>
+        <p class="desc">Отметка удаляется без следа — это для исправления ошибки. Если договор с победителем не
+        заключили, закройте окно и выберите «Договор не заключён», чтобы это осталось в истории.</p>
+        <div class="dlgfoot"><span class="btn">Отмена</span><span class="btn primary">Снять отметку</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 4. Договор не заключён, отмечен следующий — плашка с историей</h2>
+    <p class="secsub">История видна в плашке победителя, по времени. Действующая отметка одна; прежние победители,
+    с которыми договор не заключили, остаются строками истории.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/4</code> · плашка победителя</div>
+      <div class="pane">
+        <div class="winbox" style="margin-top:0; display:block">
+          <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center; justify-content:space-between">
+            <div><div class="who">Победитель — Участник Б</div>
+              <div class="det">КП этапа 3 · 9 720 млн · отмечен 20.01.2026 · договора пока нет</div></div>
+            <div class="btns"><span class="btn primary">Создать договор</span><span class="btn">Привязать существующий договор</span>
+              <span class="btn warnb">Договор не заключён</span><span class="btn ghost">Снять отметку</span></div>
+          </div>
+          <div class="hist">
+            <div class="hrow"><span class="when">22.12.2025</span><span>отмечен <b>Участник А</b></span></div>
+            <div class="hrow"><span class="when">15.01.2026</span><span>с <b>Участником А</b> договор не заключён — «Не согласовали размер аванса»</span></div>
+            <div class="hrow"><span class="when">20.01.2026</span><span>отмечен <b>Участник Б</b> · действующий</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 5. Договор: создать из КП или привязать существующий</h2>
+    <p class="secsub">Слева — форма карточки договора: объект, подрядчик и основание уже заполнены из тендера и не
+    меняются; реквизиты, которых в КП нет, вводятся здесь. Справа — привязка договора, заведённого раньше.</p>
+    <div class="dialogs">
+      <div class="dlg">
+        <h4>Новый договор по тендеру</h4>
+        <p class="desc">Тендер № **** · победитель Участник Б · КП этапа 3, 9 720 млн</p>
+        <div class="fld"><label>Объект</label><div class="inp ro">Объект А</div></div>
+        <div class="fld"><label>Подрядчик</label><div class="inp ro">Участник Б · ИНН 7700000002</div></div>
+        <div class="fld"><label>Класс объектов</label><div class="inp ro">Жилые — бизнес <span class="ph">· класс объекта на дату создания договора</span></div></div>
+        <div class="fld"><label>Номер договора <span class="req">*</span></label><div class="inp">45/2026-ГП</div></div>
+        <div class="fld"><label>Дата подписания <span class="req">*</span></label><div class="inp">26.06.2026</div></div>
+        <div class="fld"><label>Подписант</label><div class="inp"><span class="ph">необязательно</span></div></div>
+        <div class="fld"><label>Аванс, % и комментарий</label><div class="two"><div class="inp">15</div><div class="inp"><span class="ph">комментарий</span></div></div></div>
+        <div class="fld"><label>Банковская гарантия, % и комментарий</label><div class="two"><div class="inp">5</div><div class="inp"><span class="ph">комментарий</span></div></div></div>
+        <div class="fld"><label>Гарантийное удержание, % и комментарий</label><div class="two"><div class="inp">5</div><div class="inp"><span class="ph">комментарий</span></div></div></div>
+        <div class="state info" style="margin-top:4px">Смета договора появится копией КП Участника Б: файл этапа 3 разбирается
+        заново, и в договор попадает только его КП. Если подписанная смета отличается от КП, её потом загружают в
+        договор обычной заменой — история тендера при этом не меняется.</div>
+        <div class="dlgfoot"><span class="btn">Отмена</span><span class="btn primary">Создать договор</span></div>
+      </div>
+      <div class="dlg">
+        <h4>Привязать существующий договор</h4>
+        <p class="desc">Только договоры <b>того же объекта</b> с <b>тем же подрядчиком</b>. Смета договора не меняется —
+        договор просто получает основание «по тендеру».</p>
+        <div class="radio on"><span class="dot"></span><div><div class="t">№ 45/2026-ГП от 26.06.2026</div><div class="s">Объект А · Участник Б · 9 701 млн</div></div></div>
+        <div class="radio"><span class="dot"></span><div><div class="t">№ 12/2024 от 03.04.2024</div><div class="s">Объект А · Участник Б · 1 240 млн</div></div></div>
+        <div class="dlgfoot"><span class="btn">Отмена</span><span class="btn primary">Привязать</span></div>
+        <div class="empty" style="padding:18px 10px 4px; border-top:1px solid var(--bd-subtle); margin-top:14px">
+          <b>Нет подходящих договоров</b>Так выглядит окно, если у подрядчика нет договоров на этом объекте:
+          договор можно создать из КП.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 6. Победитель с договором</h2>
+    <p class="secsub">Когда договор есть, снять отметку или записать «Договор не заключён» нельзя: договор подписан. Кнопки
+    уступают место ссылке на договор.</p>
+    <div class="screen">
+      <div class="chrome"><code>/tenders/4</code> · плашка победителя</div>
+      <div class="pane">
+        <div class="winbox" style="margin-top:0">
+          <div><div class="who">Победитель — Участник Б</div>
+            <div class="det">КП этапа 3 · 9 720 млн · отмечен 20.01.2026 · договор № 45/2026-ГП от 26.06.2026</div></div>
+          <div class="btns"><span class="btn">Открыть договор</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Экран 7. Карточка договора — откуда он</h2>
+    <p class="secsub">В реквизитах договора появляется поле «Основание». Пометка рядом называет только
+    происхождение основной сметы договора — не её сравнение с КП: сравнения содержимого в фиче нет. У связанного
+    договора объект и подрядчик закрыты для правки. Договор на экране создан из КП, поэтому «Отвязать от тендера» у него
+    нет: если победитель не тот, договор удаляют вместе со сметой. Отвязка доступна договору со сметой, загруженной
+    отдельно, — она снимает основание, договор и смета остаются.</p>
+    <div class="screen">
+      <div class="chrome"><code>/contracts/8</code> · карточка договора</div>
+      <div class="pane">
+        <div class="crumbs"><a>Договоры</a> → № 45/2026-ГП</div>
+        <div class="rowhead"><div><h3>№ 45/2026-ГП</h3><div class="meta">Объект А · Участник Б · подписан 26.06.2026</div></div>
+          <div class="btns"><span class="btn">Правка</span><span class="btn">Удалить</span></div></div>
+        <div class="state info" style="margin-top:12px">Договор создан из КП победителя, поэтому отвязать его от тендера нельзя —
+        если победитель не тот, удалите договор. У договора со сметой, загруженной отдельно, здесь стоит кнопка
+        <b>«Отвязать от тендера»</b>.</div>
+        <div class="kv">
+          <div><div class="k">Основание</div><div class="v"><a>Тендер № ****</a>, этап 3 · финал</div></div>
+          <div><div class="k">Смета договора</div><div class="v"><span class="pill win" title="Основная смета договора — копия КП победителя">получена из КП</span></div></div>
+          <div><div class="k">…если смету заменили или договор привязан со своей</div><div class="v"><span class="pill" title="Смета есть, но копией КП не является; отличается ли она от КП, пометка не утверждает">загружена отдельно</span></div></div>
+          <div><div class="k">…если импорт идёт, упал или смету не загружали</div><div class="v"><span class="pill warn" title="Договорной цены нет; КП победителя остаётся в справочном слое">сметы пока нет</span></div></div>
+          <div><div class="k">Договор без тендера</div><div class="v" style="color:var(--fg3)">поле «Основание» не показывается</div></div>
+        </div>
+        <p class="hint" style="margin:10px 0 0">В окне «Правка» у связанного договора поля «Объект» и «Подрядчик» недоступны с подсказкой
+        «берутся из тендера». У этого договора к ней добавлено «если победитель не тот — удалите договор», у договора со
+        сметой, загруженной отдельно, — «чтобы изменить, отвяжите договор».</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Запреты — человеческим языком</h2>
+    <p class="secsub">Правила держит система, а не внимательность человека. Каждый запрет называет причину и выход.</p>
+    <div class="refusals">
+      <div class="r"><div class="act">Новый этап, когда победитель отмечен</div>
+        <div class="msg">Нельзя добавить этап: в тендере отмечен победитель. Снимите отметку или отметьте, что договор не заключён.</div></div>
+      <div class="r"><div class="act">Замена файла этапа, на КП которого стоит отметка — действующая или в истории</div>
+        <div class="msg">Нельзя заменить файл этапа 3: по его КП в тендере записан победитель, решение принималось по этому файлу. Для переторжки добавьте новый этап.</div></div>
+      <div class="r"><div class="act">Снять отметку или записать «Договор не заключён», когда есть договор</div>
+        <div class="msg">Нельзя: по этой отметке заключён договор № 45/2026-ГП. Сначала удалите договор или отвяжите его от тендера.</div></div>
+      <div class="r"><div class="act">Удалить этап или участника, на КП которых стоит отметка</div>
+        <div class="msg">Нельзя удалить этап 3: на его КП есть отметка победителя — действующая или в истории тендера. Действующую можно снять; этап с историей победы удаляется только вместе с тендером.</div></div>
+      <div class="r"><div class="act">Отвязать договор, чья смета — копия КП</div>
+        <div class="msg">Нельзя: смета договора — копия КП победителя этого тендера. Если победитель не тот, удалите договор вместе со сметой; если загрузили подписанную смету вместо копии, отвязка станет доступна.</div></div>
+      <div class="r"><div class="act">Сменить объект или подрядчика у договора с основанием «по тендеру»</div>
+        <div class="msg">Нельзя: договор заключён по тендеру № ****, объект и подрядчик берутся из тендера. Чтобы их изменить, сначала отвяжите договор от тендера (договор, созданный из КП, не отвязывается — если победитель не тот, его удаляют).</div></div>
+      <div class="r"><div class="act">Второй победитель</div>
+        <div class="msg">В тендере уже отмечен победитель — Участник Б. Чтобы отметить другого, снимите отметку или отметьте, что договор не заключён.</div></div>
+      <div class="r"><div class="act">Привязка договора с другого объекта</div>
+        <div class="msg">Договор № 12/2024 заключён на другом объекте — привязать его к этому тендеру нельзя.</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Границы макета</h2>
+    <div class="bound">
+      <ul class="notes">
+        <li><b>Цены каталога не показаны.</b> Правило «договорная цена основная, тендерная справочная» записывается в
+        <code>AGENTS.md</code> этой фичей, а его вид на экранах каталога — фича 4.</li>
+        <li><b>Поштучного сравнения «договор против КП» нет</b> — только пометка о происхождении сметы: «получена из КП / загружена отдельно / сметы пока нет».</li>
+        <li><b>Раздела тендера между подрядчиками нет</b> — такой случай решается обычной загрузкой договоров без отметки.</li>
+        <li><b>Список тендеров не меняется.</b> Колонку «Победитель» в нём решит спека, если она понадобится.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+<script>
+var tb = document.getElementById('theme');
+tb.addEventListener('click', function(){
+  var r = document.documentElement;
+  var dark = r.getAttribute('data-theme') === 'dark' || (!r.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme', dark ? 'light' : 'dark');
+});
+</script>
+</body>
+</html>

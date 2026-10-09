@@ -4,9 +4,16 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { ContractFormDialog } from "./ContractFormDialog";
-import { sampleContractCard } from "@/test/fixtures";
+import {
+  linkedContractCard,
+  sampleContractCard,
+  sampleObjects,
+  sampleTenderAward,
+} from "@/test/fixtures";
+import { qk } from "@/services/queryKeys";
+import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
-import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 /**
  * Поиск в комбобоксе объекта/подрядчика (разбор внешнего ревью).
@@ -843,5 +850,316 @@ describe("Комбобокс: подсказки", () => {
     const northern = (await screen.findByText("ЖК Северный")).closest("[data-slot]") ??
       (await screen.findByText("ЖК Северный")).parentElement;
     expect(within(northern as HTMLElement).getByText("Жилые дома")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Режим «из отметки» (спека Б2 §2.5, §2.8): объект и подрядчика берёт отметка,
+ * класс — ТЕКУЩИЙ класс объекта (`useObject`), а не снимок класса тендера.
+ */
+describe("Форма договора: из отметки победителя (спека Б2 §2.8)", () => {
+  // Объект 11 — «ЖК Южный», текущий класс «Промышленные»; снимок класса тендера
+  // 300 — «Жилые дома» (объект 10): форма обязана показать класс объекта.
+  const fromAward = {
+    tenderId: 300,
+    tenderNumber: "Т-2026-001",
+    award: sampleTenderAward,
+    objectId: 11,
+    objectTitle: "ЖК Южный",
+  };
+
+  async function fillNumberAndDate(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(screen.getByLabelText("Номер договора"), "45/2026-ГП");
+    await user.type(screen.getByLabelText("Дата подписания"), "2026-06-26");
+  }
+
+  it("показывает объект и подрядчика из отметки без выбора", async () => {
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+
+    expect(await screen.findByText("Новый договор по тендеру")).toBeInTheDocument();
+    expect(screen.getByTestId("locked-object")).toHaveTextContent("ЖК Южный");
+    expect(screen.getByTestId("locked-contractor")).toHaveTextContent(
+      "ТОО Монолит · ИНН 987654321098"
+    );
+    expect(
+      screen.getByText(/Т-2026-001 · победитель ТОО Монолит · КП этапа 2, 9\s720 млн с НДС/)
+    ).toBeInTheDocument();
+    // Тексты экрана 5 макета: пояснение к классу и откуда возьмётся смета.
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent(
+        "· класс объекта на дату создания договора"
+      )
+    );
+    expect(
+      screen.getByText(/Смета договора появится копией КП ТОО Монолит: файл этапа\s+2 разбирается заново/)
+    ).toBeInTheDocument();
+    // Не редактируются: выбора объекта, подрядчика и класса в форме нет.
+    expect(screen.queryByRole("combobox", { name: /Объект/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Подрядчик/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /Класс объектов/ })).not.toBeInTheDocument();
+  });
+
+  it("класс — текущий класс объекта, а не снимок класса тендера", async () => {
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+    expect(screen.getByTestId("locked-class")).not.toHaveTextContent("Жилые дома");
+  });
+
+  it("у объекта без класса договор создать нельзя и форма говорит об этом", async () => {
+    server.use(
+      http.get("/api/v1/objects/:id", () =>
+        HttpResponse.json({ ...sampleObjects[1], rate_class_id: null, rate_class_title: null })
+      )
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+    await waitForDialogFocus();
+    await fillNumberAndDate(user);
+
+    expect(
+      await screen.findByText(
+        "у объекта не задан класс — договор создать нельзя, задайте класс объекту"
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Создать договор" })).toBeDisabled();
+  });
+
+  it("пока класс объекта не пришёл, отправка недоступна", async () => {
+    // Ответ удерживается до конца проверки: на ввод номера и даты уходит больше
+    // времени, чем любая фиксированная задержка.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/v1/objects/:id", async () => {
+        await gate;
+        return HttpResponse.json(sampleObjects[1]);
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+    await waitForDialogFocus();
+    await fillNumberAndDate(user);
+
+    expect(screen.getByRole("button", { name: "Создать договор" })).toBeDisabled();
+    expect(screen.getByTestId("locked-class")).toHaveTextContent("Загрузка…");
+    release();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Создать договор" })).toBeEnabled()
+    );
+  });
+
+  it("без номера и даты отправка недоступна, с ними — доступна", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+    await waitForDialogFocus();
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+
+    const submit = screen.getByRole("button", { name: "Создать договор" });
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText("Номер договора"), "45/2026-ГП");
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByLabelText("Дата подписания"), "2026-06-26");
+    expect(submit).toBeEnabled();
+  });
+
+  it("отправка идёт в команду отметки без объекта, подрядчика и класса; затем onCreated", async () => {
+    const user = userEvent.setup();
+    const created: number[] = [];
+    const opened: boolean[] = [];
+    renderWithProviders(
+      <ContractFormDialog
+        open
+        onOpenChange={(value) => opened.push(value)}
+        onCreated={(contract) => created.push(contract.id)}
+        fromAward={fromAward}
+      />
+    );
+    await waitForDialogFocus();
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+    await fillNumberAndDate(user);
+    await user.type(screen.getByLabelText("Подписант"), "Иванов И.И.");
+    await user.click(screen.getByRole("button", { name: "Создать договор" }));
+
+    await waitFor(() => expect(handlerState.lastAwardContract).not.toBeNull());
+    expect(handlerState.lastAwardContract?.tenderId).toBe(300);
+    expect(handlerState.lastAwardContract?.awardId).toBe(7);
+    const body = handlerState.lastAwardContract?.body ?? {};
+    expect(body.contract_number).toBe("45/2026-ГП");
+    expect(body.signed_date).toBe("2026-06-26");
+    expect(body.signer).toBe("Иванов И.И.");
+    expect(Object.keys(body)).not.toContain("object_id");
+    expect(Object.keys(body)).not.toContain("contractor_id");
+    expect(Object.keys(body)).not.toContain("rate_class_id");
+    await waitFor(() => expect(created).toEqual([102]));
+    expect(opened).toContain(false);
+  });
+
+  it("класс объекта не загрузился: форма называет это и не отправляется", async () => {
+    server.use(
+      http.get("/api/v1/objects/:id", () =>
+        HttpResponse.json({ detail: "Сбой." }, { status: 500 })
+      )
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+    await waitForDialogFocus();
+    await fillNumberAndDate(user);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent(
+        "Не удалось загрузить класс объекта"
+      )
+    );
+    expect(screen.getByRole("button", { name: "Создать договор" })).toBeDisabled();
+  });
+
+  it("пока команда отметки не ответила, повторная отправка недоступна", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let posts = 0;
+    server.use(
+      http.post("/api/v1/tenders/:id/awards/:aid/contract", async () => {
+        posts += 1;
+        await gate;
+        return HttpResponse.json({ detail: "Номер договора занят." }, { status: 409 });
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />);
+    await waitForDialogFocus();
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+    await fillNumberAndDate(user);
+    const submit = screen.getByRole("button", { name: "Создать договор" });
+    await user.click(submit);
+
+    await waitFor(() => expect(posts).toBe(1));
+    expect(submit).toBeDisabled();
+    release();
+    await waitFor(() => expect(submit).toBeEnabled());
+  });
+
+  it("после 202 устаревают договоры и карточка тендера отметки", async () => {
+    const queryClient = createTestQueryClient();
+    // `gcTime: 0` тестового клиента убрал бы записи без наблюдателей.
+    queryClient.setQueryDefaults(qk.contracts.card(100), { gcTime: 60_000 });
+    queryClient.setQueryDefaults(qk.tenders.card(300), { gcTime: 60_000 });
+    queryClient.setQueryData(qk.contracts.card(100), sampleContractCard);
+    queryClient.setQueryData(qk.tenders.card(300), { id: 300 });
+    const user = userEvent.setup();
+    renderWithProviders(<ContractFormDialog open onOpenChange={() => {}} fromAward={fromAward} />, {
+      queryClient,
+    });
+    await waitForDialogFocus();
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+    await fillNumberAndDate(user);
+    await user.click(screen.getByRole("button", { name: "Создать договор" }));
+
+    await waitFor(() =>
+      expect(queryClient.getQueryState(qk.tenders.card(300))?.isInvalidated).toBe(true)
+    );
+    expect(queryClient.getQueryState(qk.contracts.card(100))?.isInvalidated).toBe(true);
+  });
+
+  it("отказ сервера оставляет окно открытым и не зовёт onCreated", async () => {
+    server.use(
+      http.post("/api/v1/tenders/:id/awards/:aid/contract", () =>
+        HttpResponse.json({ detail: "Номер договора занят." }, { status: 409 })
+      )
+    );
+    const user = userEvent.setup();
+    const created: number[] = [];
+    const opened: boolean[] = [];
+    renderWithProviders(
+      <ContractFormDialog
+        open
+        onOpenChange={(value) => opened.push(value)}
+        onCreated={(contract) => created.push(contract.id)}
+        fromAward={fromAward}
+      />
+    );
+    await waitForDialogFocus();
+    await waitFor(() =>
+      expect(screen.getByTestId("locked-class")).toHaveTextContent("Промышленные")
+    );
+    await fillNumberAndDate(user);
+    await user.click(screen.getByRole("button", { name: "Создать договор" }));
+
+    expect(await screen.findByText("Номер договора занят.")).toBeInTheDocument();
+    expect(created).toEqual([]);
+    expect(opened).not.toContain(false);
+  });
+});
+
+describe("Форма договора: запертые стороны связанного договора (спека Б2 §2.8)", () => {
+  const hint = "Объект и подрядчик берутся из тендера. Чтобы изменить, отвяжите договор.";
+
+  it("объект и подрядчик недоступны с подсказкой, прочие поля правятся", async () => {
+    renderWithProviders(
+      <ContractFormDialog
+        open
+        onOpenChange={() => {}}
+        contract={linkedContractCard("uploaded_separately")}
+        lockedParties={{ hint }}
+      />
+    );
+
+    expect(await screen.findByRole("combobox", { name: /Объект/ })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: /Подрядчик/ })).toBeDisabled();
+    expect(screen.getByText(hint)).toBeInTheDocument();
+    expect(screen.getByLabelText("Номер договора")).toBeEnabled();
+    expect(screen.getByLabelText("Подписант")).toBeEnabled();
+  });
+
+  it("правка уходит с прежними объектом и подрядчиком", async () => {
+    let body: Record<string, unknown> | undefined;
+    server.use(
+      http.patch("/api/v1/contracts/:id", async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(linkedContractCard("uploaded_separately"));
+      })
+    );
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ContractFormDialog
+        open
+        onOpenChange={() => {}}
+        contract={linkedContractCard("uploaded_separately")}
+        lockedParties={{ hint }}
+      />
+    );
+    await waitForDialogFocus();
+    await user.clear(screen.getByLabelText("Подписант"));
+    await user.type(screen.getByLabelText("Подписант"), "Петров П.П.");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => expect(body).toBeDefined());
+    expect(body!.signer).toBe("Петров П.П.");
+    expect(body!.object_id).toBe(sampleContractCard.object_id);
+    expect(body!.contractor_id).toBe(sampleContractCard.contractor_id);
+  });
+
+  it("без lockedParties форма правки прежняя: стороны доступны, подсказки нет", async () => {
+    renderWithProviders(
+      <ContractFormDialog open onOpenChange={() => {}} contract={sampleContractCard} />
+    );
+
+    expect(await screen.findByRole("combobox", { name: /Объект/ })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: /Подрядчик/ })).toBeEnabled();
+    expect(screen.queryByText(/берутся из тендера/)).not.toBeInTheDocument();
   });
 });

@@ -18,6 +18,10 @@ contracts                    # договор ГП
   # signed_date обязателен: это фолбэк даты сравнения с нормативом (AGENTS.md §4), обе даты
   # не могут быть NULL одновременно
   UNIQUE (contract_number)
+  tender_award_id bigint NULL          # с 0020: основание «по тендеру» (спека Б2 §2.2)
+  UNIQUE (tender_award_id), UNIQUE (id, tender_award_id)
+  FK (tender_award_id, object_id, contractor_id)
+    → tender_awards(id, object_id, contractor_id)   # fk_contracts_tender_award; NO ACTION
 
 estimates                    # смета (бывш. tenders); 1 договор : N смет
   id, contract_id NULL → contracts   # с 0015 (тендерный контур) — один из трёх
@@ -26,6 +30,11 @@ estimates                    # смета (бывш. tenders); 1 договор 
   title, data_prepared_on_date date
   import_job_id → import_jobs
   UNIQUE NULLS NOT DISTINCT (contract_id, amendment_no)   # PG16
+  source_award_id bigint NULL          # с 0020: смета — копия КП отметки основания договора
+  UNIQUE (id, offer_id)                # цель ключа отметки на КП
+  CHECK ck_estimates_source_award: source_award_id IS NULL
+    OR (contract_id IS NOT NULL AND amendment_no IS NULL)
+  FK (contract_id, source_award_id) → contracts(id, tender_award_id)   # fk_estimates_source_award
 
 tenders / tender_rounds / offer_packages / offers    # тендерный контур (спека 2026-08-26)
   # offers — ячейка решётки «раунд × участник»; составные FK с продублированным
@@ -37,6 +46,24 @@ position_items.deviation_from_baseline_cost: у смет договора NULL; 
 estimate_raw_data — ПРОЕКЦИЯ разобранного JSON под смету; точный результат разбора файла —
   import_jobs.parsed_data + parser_version (три факта об одном файле, спека §2.3).
 contractors.inn — канон, только ASCII-цифры (CHECK); одна canonicalize_inn().
+
+tender_awards                # с 0020: отметки победителя; история не удаляется (спека Б2 §2.2)
+  id bigint PK
+  tender_id, object_id NOT NULL → tenders(id, object_id) ON DELETE CASCADE   # fk_tender_awards_tender
+  offer_id, package_id NOT NULL → offers(id, tender_id, package_id)          # fk_tender_awards_offer
+  contractor_id NOT NULL → offer_packages(id, contractor_id)    # fk_tender_awards_package
+  estimate_id NOT NULL → estimates(id, offer_id)                # fk_tender_awards_kp_estimate: КП решения
+  kp_inn text NOT NULL       # ИНН блока КП в файле этапа; CHECK kp_inn ~ '^[0-9]+$'
+  awarded_at timestamptz NOT NULL DEFAULT now(), awarded_by integer NOT NULL → users RESTRICT
+  not_concluded_on date, not_concluded_note text, not_concluded_by → users RESTRICT,
+    not_concluded_at timestamptz      # «договор не заключён»: все NULL либо on/by/at заданы
+                                      #   (ck_tender_awards_not_concluded); note — без пустой строки
+  UNIQUE (id, object_id, contractor_id)
+  UNIQUE INDEX uq_tender_awards_active (tender_id) WHERE not_concluded_on IS NULL
+  # Ключи без явного ON DELETE — NO ACTION. uq_tenders_id_object (id, object_id),
+  # uq_offer_packages_id_contractor (id, contractor_id), uq_offers_id_tender_package
+  # (id, tender_id, package_id) — цели этих ключей. MATCH SIMPLE: при NULL в части
+  # ключа он не проверяется, поэтому у source_award_id есть CHECK на contract_id.
 
 estimate_raw_data
   estimate_id PK → estimates ON DELETE CASCADE
@@ -216,6 +243,8 @@ import_jobs
   parsed_data jsonb NULL, parser_version text NULL   # пара — вместе NULL либо вместе заданы (CHECK)
   estimates_created int NULL   # только у round_id; NULL либо > 0 (CHECK); число offer-смет
                                 # этого job (AGENTS.md §5, «Для раунда тендера»)
+  source_award_id bigint NULL → tender_awards ON DELETE SET NULL   # с 0020: задание — копия КП;
+                                # CHECK: NULL либо contract_id NOT NULL и amendment_no NULL
   created_at, started_at, finished_at
   # Локи — два частичных уникальных индекса:
   #   uq_import_jobs_active_pair: UNIQUE (contract_id, COALESCE(amendment_no,-1))

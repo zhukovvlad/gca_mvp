@@ -469,6 +469,9 @@ _DOMAIN_TABLES = (
     "family_parameter_values",
     "family_parameters",
     "family_parameter_schemas",
+    # Отметки победителя тендера (миграция 0020): ЯВНО, а не в расчёте на
+    # каскад от tenders. Порядок в списке значения не имеет.
+    "tender_awards",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

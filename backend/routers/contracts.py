@@ -23,6 +23,7 @@ from crud.common import DomainError
 from database import get_db
 from models import User
 from responses import decimal_json
+from routers.domain_errors import raise_domain_error
 from services.maintenance import purge_files_best_effort
 from storage import Storage, get_storage
 
@@ -30,7 +31,9 @@ router = APIRouter(prefix="/api/v1/contracts", tags=["contracts"])
 
 
 def _raise(err: DomainError):
-    raise HTTPException(err.status_code, err.detail)
+    """Доменный отказ → HTTP: `code` отказа доезжает до клиента (`contract_parties_locked`
+    и др.); отказ без кода отвечает строкой `detail`, как прежде."""
+    raise_domain_error(err)
 
 
 class _MoneyMixin(BaseModel):
@@ -262,6 +265,15 @@ def update_contract(
     except DomainError as e:
         _raise(e)
     return decimal_json(updated)
+
+
+@router.delete("/{contract_id}/tender-award")
+def unlink_tender_award(contract_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Отвязать договор от отметки победителя тендера (спека Б2 §2.6); отдаёт карточку."""
+    try:
+        return decimal_json(crud_contracts.unlink_tender_award(db, contract_id))
+    except DomainError as e:
+        _raise(e)
 
 
 @router.delete("/{contract_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -18,7 +18,7 @@ import {
   type ContractListParams,
 } from "./api/domain";
 import { contextRefusalLabel, pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
-import { jobRefetchInterval } from "./jobPolling";
+import { isTerminal, jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
 import type { ID } from "@/types/common";
@@ -38,6 +38,7 @@ import type {
   BankComparisonParams,
   ClearCategoryOverrideInput,
   ComparisonParams,
+  ContractFromAwardInput,
   ContractInput,
   ContractorInput,
   Decimal,
@@ -407,6 +408,8 @@ export function useUpdateContract() {
       // не доезжала бы до уже открытого паспорта целую минуту, и он был бы
       // «свежим» по мнению React Query и устаревшим по факту.
       qc.invalidateQueries({ queryKey: qk.passport.all });
+      // Плашка победителя берёт номер и дату договора из карточки тендера.
+      qc.invalidateQueries({ queryKey: qk.tenders.cards });
       toast.success(`Договор ${contract.contract_number} обновлён`);
     },
     onError: toastApiError,
@@ -438,7 +441,54 @@ export function useDeleteContract() {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.contractors.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Плашка победителя берёт наличие договора из карточки тендера.
+      qc.invalidateQueries({ queryKey: qk.tenders.cards });
       toast.success("Договор удалён");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Договор из КП победителя (спека Б2 §2.5, §2.6): `202 {contract, job}`. Смета
+ * появится позже, когда фоновое задание завершится, — её ждёт карточка договора
+ * ({@link useActiveContractImport}), а не форма.
+ *
+ * Инвалидируется то же, что у `useCreateContract`, плюс карточка тендера: у
+ * отметки появился договор, и плашка победителя должна это показать.
+ */
+export function useCreateContractFromAward(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, input }: { awardId: number; input: ContractFromAwardInput }) =>
+      tendersApi.createContractFromAward(tenderId, awardId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+      qc.invalidateQueries({ queryKey: qk.objects.all });
+      qc.invalidateQueries({ queryKey: qk.contractors.all });
+      qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      qc.invalidateQueries({ queryKey: qk.passport.all });
+      toast.success("Договор создан, смета копируется из КП");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * «Отвязать от тендера» (спека Б2 §2.6): договор и смета остаются, пропадает
+ * основание. Перечитываются карточка договора и карточка тендера основания —
+ * у отметки снова нет договора, поэтому `tenderId` приходит вместе с запросом.
+ */
+export function useUnlinkTenderAward() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contractId }: { contractId: number; tenderId: number }) =>
+      contractsApi.unlinkTenderAward(contractId),
+    onSuccess: (contract, { tenderId }) => {
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+      toast.success(`Договор ${contract.contract_number} отвязан от тендера`);
     },
     onError: toastApiError,
   });
@@ -599,6 +649,23 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
     enabled: jobId !== undefined,
     refetchInterval: (query) => jobRefetchInterval(query.state.data),
   });
+}
+
+/**
+ * Активное задание импорта договора — то, что ещё не `done`/`error` — и его
+ * опрос (спека Б2 §2.8, решение 8). Копию КП после `202` ждёт карточка договора,
+ * а не форма: опрос, привязанный к форме, пропал бы при перезагрузке страницы и
+ * при открытии карточки из списка. Задание находится в истории загрузок, а на
+ * терминальном статусе `useImportJob` перезапрашивает карточку и историю — в
+ * ней активного задания уже нет, и опрос гаснет сам.
+ *
+ * Возвращает активное задание из истории (`undefined` — активного нет).
+ */
+export function useActiveContractImport(contractId: number | undefined) {
+  const jobsQ = useContractImportJobs(contractId);
+  const active = jobsQ.data?.find((job) => !isTerminal(job));
+  useImportJob(active?.id, contractId === undefined ? undefined : { contractId });
+  return active;
 }
 
 // ========== Ручной матчинг (§7.2) ==========
@@ -1283,6 +1350,73 @@ export function useDeleteTender() {
       qc.invalidateQueries({ queryKey: qk.review.all });
       qc.invalidateQueries({ queryKey: qk.contractors.all });
       toast.success("Тендер удалён");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * Отметка победителя (спека Б2 §2.6): команды отвечают карточкой тендера, но
+ * экран перечитывает её запросом — единый путь для всех команд.
+ */
+export function useAwardWinner(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (offerId: number) => tendersApi.awardWinner(tenderId, offerId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Победитель отмечен");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useRemoveAward(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (awardId: number) => tendersApi.removeAward(tenderId, awardId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Отметка снята");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useMarkNotConcluded(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, notConcludedOn, note }: { awardId: number; notConcludedOn: string; note: string | null }) =>
+      tendersApi.markNotConcluded(tenderId, awardId, { not_concluded_on: notConcludedOn, note }),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Записано: договор не заключён");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Кандидаты на привязку; без id отметки запроса нет (окно закрыто). */
+export function useContractCandidates(tenderId: number, awardId: number | undefined) {
+  return useQuery({
+    queryKey: qk.tenders.contractCandidates(tenderId, awardId ?? 0),
+    queryFn: () => tendersApi.contractCandidates(tenderId, awardId as number),
+    enabled: awardId !== undefined,
+    // Список меняется вне экрана (договоры заводят и привязывают в других местах).
+    refetchOnMount: "always",
+  });
+}
+
+/** Привязка меняет и договор (появилось основание), поэтому перечитывается его карточка. */
+export function useLinkContract(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, contractId }: { awardId: number; contractId: number }) =>
+      tendersApi.linkContract(tenderId, awardId, contractId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      toast.success("Договор привязан к тендеру");
     },
     onError: toastApiError,
   });

@@ -35,7 +35,16 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from config import settings
-from models import Contract, ImportJob, ImportJobStatus, TenderRound
+from models import (
+    Contract,
+    Contractor,
+    ImportJob,
+    ImportJobStatus,
+    Offer,
+    Tender,
+    TenderAward,
+    TenderRound,
+)
 from parser import EstimateParseError, parse_estimate
 from parser.sanitize_text import NormalizationUnavailableError
 from services.category_resolution import CategoryResolver
@@ -43,7 +52,7 @@ from services.context_routing import RoutingError, route_positions
 from services.estimate_import import EstimateImportError, import_estimate
 from services.import_owners import contract_estimate_owner
 from services.matching import MatchCounters, match_positions
-from services.round_import import import_round
+from services.round_import import import_round, projection_for_inn
 from services.semantic_cost import event_cap_from
 from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
 from services.unit_resolution import UnitResolver
@@ -71,6 +80,8 @@ class JobContext:
     round_id: int | None
     file_key: str
     filename: str
+    #: Отметка победителя, по КП которой создано задание-копия (спека Б2 §2.5).
+    source_award_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +217,48 @@ def load_job_context(db: Session, job_id: int) -> JobContext:
             ImportJob.round_id,
             ImportJob.file_key,
             ImportJob.filename,
+            ImportJob.source_award_id,
         ).where(ImportJob.id == job_id)
     ).one_or_none()
     if row is None:
         raise LookupError(f"Задание импорта {job_id} не найдено")
     return JobContext(*row)
+
+
+def _award_copy_data(
+    db: Session, contract: Contract, context: JobContext, parsed: dict,
+) -> tuple[dict, str]:
+    """Данные сметы-копии КП победителя и доменное предупреждение (спека Б2 §2.5).
+
+    Отметка, её оферта, этап и подрядчик читаются заново в сессии B. КП участника
+    опознаётся по ИНН блока файла, записанному в отметку (`kp_inn`, спека Б2
+    §1.7), а не по ИНН карточки подрядчика: карточку правят, файл — нет.
+    Baseline разреза отбрасывается.
+
+    Raises:
+        EstimateImportError: отметки нет, основание договора — не она, в файле
+            нет КП с этим ИНН либо разрез файла отказывает.
+    """
+    award = db.get(TenderAward, context.source_award_id)
+    if award is None or contract.tender_award_id != context.source_award_id:
+        raise EstimateImportError(
+            "Договор не опирается на отметку победителя, по которой создано задание, — смета-копия не "
+            "создана. Загрузите смету в договор обычной формой."
+        )
+    title = db.execute(sa.select(Contractor.title).where(Contractor.id == award.contractor_id)).scalar_one()
+    stage_no = db.execute(
+        sa.select(TenderRound.stage_no).join(Offer, Offer.round_id == TenderRound.id)
+        .where(Offer.id == award.offer_id)
+    ).scalar_one()
+    tender_number = db.execute(sa.select(Tender.tender_number).where(Tender.id == award.tender_id)).scalar_one()
+    projection = projection_for_inn(parsed, award.kp_inn)
+    if projection is None:
+        raise EstimateImportError(f"В файле этапа {stage_no} нет КП участника «{title}» (ИНН {award.kp_inn})")
+    warning = (
+        f"Смета — копия КП участника «{title}» этапа {stage_no} тендера № {tender_number} "
+        f"(файл «{context.filename}»)"
+    )
+    return projection.data, warning
 
 
 def run_import_job(
@@ -269,13 +317,20 @@ def run_import_job(
                     raise EstimateImportError(
                         f"Договор {context.contract_id} не найден — импортировать смету не к чему."
                     )
-                owner = contract_estimate_owner(contract, context.amendment_no)
+                data = parse_result.data
+                copy_warnings: list[str] = []
+                if context.source_award_id is not None:
+                    data, copy_warning = _award_copy_data(db, contract, context, parse_result.data)
+                    copy_warnings.append(copy_warning)
+                owner = contract_estimate_owner(
+                    contract, context.amendment_no, source_award_id=context.source_award_id,
+                )
                 resolver = UnitResolver(db)
                 category_resolver = CategoryResolver.from_db(db)
                 outcome = import_estimate(
                     db,
                     owner=owner,
-                    data=parse_result.data,
+                    data=data,
                     parser_version=parse_result.parser_version,
                     import_job_id=job_id,
                     replace=replace,
@@ -283,7 +338,7 @@ def run_import_job(
                     category_resolver=category_resolver,
                 )
                 positions_to_match = outcome.positions_to_match
-                domain_warnings = outcome.warnings
+                domain_warnings = copy_warnings + outcome.warnings
                 estimates_created = 1
                 estimate_ids = [outcome.estimate_id]
                 replaced_context_ids = set(outcome.replaced_context_ids)

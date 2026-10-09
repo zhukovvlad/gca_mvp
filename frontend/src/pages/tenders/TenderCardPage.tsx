@@ -8,6 +8,7 @@ import { BaselineStatus } from "@/components/tenders/BaselineStatus";
 import { OfferGrid } from "@/components/tenders/OfferGrid";
 import { TenderFormDialog } from "@/components/tenders/TenderFormDialog";
 import { UnallocatedSheet } from "@/components/tenders/UnallocatedSheet";
+import { WinnerBanner } from "@/components/tenders/WinnerBanner";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
@@ -37,6 +38,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
 import {
@@ -260,9 +262,36 @@ export default function TenderCardPage() {
                 <Button variant="outline" onClick={() => setEditOpen(true)}>
                   <Pencil className="size-4" /> Правка
                 </Button>
-                <Button variant="outline" onClick={() => setRoundFormOpen(true)}>
-                  <Plus className="size-4" /> Новый этап
-                </Button>
+                {card.award === null ? (
+                  <Button variant="outline" onClick={() => setRoundFormOpen(true)}>
+                    <Plus className="size-4" /> Новый этап
+                  </Button>
+                ) : (
+                  // Недоступность — `aria-disabled`, а не `disabled`: у нативно
+                  // отключённой кнопки нет наведения, и подсказка не показалась бы.
+                  // Причина — ещё и скрытым для глаза текстом: до `TooltipContent`
+                  // клавиатура и скринридер не добираются.
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            variant="outline"
+                            aria-disabled="true"
+                            aria-describedby="new-round-blocked-reason"
+                            className="opacity-50"
+                          >
+                            <Plus className="size-4" /> Новый этап
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>{NEW_ROUND_BLOCKED_REASON}</TooltipContent>
+                    </Tooltip>
+                    <span id="new-round-blocked-reason" className="sr-only">
+                      {NEW_ROUND_BLOCKED_REASON}
+                    </span>
+                  </>
+                )}
                 <Button variant="outline" onClick={() => setDeleteOpen(true)}>
                   <Trash2 className="size-4" /> Удалить
                 </Button>
@@ -272,7 +301,11 @@ export default function TenderCardPage() {
         />
       </div>
 
-      <Surface className="mt-6">
+      <div className="mt-6">
+        <WinnerBanner card={card} />
+      </div>
+
+      <Surface className="mt-4">
         <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Класс объектов">
             <Badge variant="secondary">{card.rate_class_title}</Badge>
@@ -370,6 +403,10 @@ export default function TenderCardPage() {
     </div>
   );
 }
+
+/** Причина, по которой при действующей отметке нельзя добавить этап (спека Б2 §2.8). */
+const NEW_ROUND_BLOCKED_REASON =
+  "В тендере отмечен победитель — снимите отметку или отметьте, что договор не заключён";
 
 /**
  * Русское склонение слова «смета» по числу выбранных предложений (подпись

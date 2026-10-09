@@ -46,11 +46,17 @@ class EstimateOwner:
     proposal_contractor_id: int | None
     is_baseline: bool
     truth: HeaderTruth
+    #: Отметка победителя, по КП которой создана смета договора (спека Б2 §2.5);
+    #: `None` у всякой другой сметы.
+    source_award_id: int | None = None
 
     def estimate_columns(self) -> dict[str, Any]:
         """Колонки владельца для `Estimate(...)`."""
         if self.kind == "contract":
-            return {"contract_id": self.contract_id, "amendment_no": self.amendment_no}
+            columns: dict[str, Any] = {"contract_id": self.contract_id, "amendment_no": self.amendment_no}
+            if self.source_award_id is not None:
+                columns["source_award_id"] = self.source_award_id
+            return columns
         if self.kind == "offer":
             return {"offer_id": self.offer_id}
         return {"round_id": self.round_id}
@@ -82,10 +88,15 @@ class EstimateOwner:
         return self.kind == "contract"
 
 
-def contract_estimate_owner(contract: Contract, amendment_no: int | None) -> EstimateOwner:
+def contract_estimate_owner(
+    contract: Contract, amendment_no: int | None, *, source_award_id: int | None = None,
+) -> EstimateOwner:
     """Договор: истина — карточка договора, но у подрядчика ТОЛЬКО название и
     ИНН (спека §2.4, ревизия гейта 3): договорная сверка адрес и аккредитацию не
-    проверяла и не начинает — иначе изменилось бы поведение договорного импорта."""
+    проверяла и не начинает — иначе изменилось бы поведение договорного импорта.
+
+    `source_award_id` — только у копии КП победителя (спека Б2 §2.5): владелец
+    кладёт его в колонки сметы."""
     return EstimateOwner(
         kind="contract",
         contract_id=contract.id, amendment_no=amendment_no, offer_id=None, round_id=None,
@@ -99,6 +110,7 @@ def contract_estimate_owner(contract: Contract, amendment_no: int | None) -> Est
             contractor_address=None,
             contractor_accreditation=None,
         ),
+        source_award_id=source_award_id,
     )
 
 
