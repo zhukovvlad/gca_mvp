@@ -7,6 +7,9 @@
 стали частями: 1–2 → Task 1, 3–5 → Task 2, 7–10 → Task 3, 11, 12, 6 → Task 4,
 14 → Task 5, 15 → Task 6, 16–17 → Task 7; отдельной задачи API нет — маршруты
 в задачах своих команд (решение плана 3).
+**Редакция 3, 10.10.2026** — ревью гейта 3 на `9f64a2b` (структура из семи
+задач принята): за Task 4 явно закреплены потребители снимка DoD 7 после
+`commit` обработки и гонка «обработка ответа ↔ активация» (часть Г).
 **Макет:** [`docs/superpowers/design/2026-10-09-catalog-discovery/mockup.html`](../design/2026-10-09-catalog-discovery/mockup.html) — экраны 1–3, 3б, 4, К1–К3; фронт (Task 5, 6) и сверка на стенде (Task 7) идут по нему.
 
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
@@ -969,6 +972,27 @@ POST   /api/v1/semantic/contexts/{id}/reopen
   `HEADER`);
 - карточка контекста несёт `reopenable` и `catalog_kind`.
 
+*Часть Г — DoD 7: потребители снимка и гонка с активацией* (ревью гейта 3)
+
+- сценарии снимка Task 3 доводятся здесь до потребителей — на тех же входах,
+  изменение после `commit` обработки, до чтения и активации черновиков:
+  член, получивший семью, и член, ушедший штатным архивированием
+  (`move_members` → `archive_context`), — `discovery_drafts` их не считает,
+  активация «не работы» их пропускает и называет в `not_work_skipped`; новая
+  активная семья с именем черновика — активация отказывает
+  `duplicate_active_family`; архивированная семья `similar` — «Слить с
+  активной семьёй» отказывает `family_not_active`; семья предложения
+  категории, получившая категорию или архивированная, — пропущена в
+  `categories_skipped`; новый контекст охвата из импорта в черновики не
+  попадает и активацией не трогается (по входу на сценарий, DoD 7);
+- гонка «обработка ответа ↔ активация» одной единицы: активация черновиков
+  последнего открытия, пока обрабатывается ответ следующего, — без deadlock,
+  исход один из двух допустимых: активация прошла раньше, и её черновики
+  `activated`, а прочие открытые вытеснены `superseded`; либо обработка
+  прошла раньше, и активация отказывает `discovery_run_superseded`, не создав
+  ни одной семьи; проверено снятием `FOR UPDATE` черновиков в
+  `activate_discovery` (активация пишет в вытесненные черновики).
+
 *Маршруты*
 
 - каждый маршрут части — `admin`, `member` получает `403`; сторож прав зелёный;
@@ -997,7 +1021,7 @@ POST   /api/v1/semantic/contexts/{id}/reopen
 - Существуют, проверено `grep`-ом: `mark_context_not_work` (`services/work_variants.py:1057`), `take_context_off_work` (`:1105`), `acquire_family_locks` (`services/family_change.py:163`), `_lock_rows` (`services/review.py:90`), `_NOT_APPLICABLE_CATALOG_KINDS` (`services/context_routing.py:458`), `reconcile_or_defer` (`services/semantic_reconcile.py:1547`), `context_card` (`crud/semantic.py:682`), `set_position_kind_global` (`services/review.py:907`).
 
 **Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 190, ПОСЛЕ ≥ 250.
+- `just test-int-local-k catalog_discovery` — ДО ≥ 190, ПОСЛЕ ≥ 260.
 - `uv run pytest tests -k auth_coverage` — ДО ≥ 154, ПОСЛЕ ≥ 161.
 
 ### Task 5: фронт — категории, «Вернуть в разбор», метка «система», строки открытия в очередях
