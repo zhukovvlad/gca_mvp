@@ -7,7 +7,10 @@ on:
 
 jobs:
   backend-tests:
-    runs-on: ubuntu-latest
+    # Образ раннера закреплён, а не ubuntu-latest: Postgres берётся из образа
+    # (шаг «Start PostgreSQL» ниже), и его версия и имя пакета pgvector
+    # не должны меняться вместе с переездом ubuntu-latest на новую систему.
+    runs-on: ubuntu-24.04
     # Прогон занимает ~3 минуты. Ограничение нужно потому, что в наборе есть тесты,
     # берущие настоящие блокировки (`FOR UPDATE` в ручном матчинге, пакетная
     # разметка в одной транзакции) и тесты с настоящей конкуренцией потоков:
@@ -16,29 +19,14 @@ jobs:
     timeout-minutes: 20
 
     # Postgres + pgvector on the runner itself → localhost queries (~0.1ms) instead
-    # of remote Neon round-trips. The official pgvector image ships the `vector`
-    # extension, which the migration chain (enable_pgvector_extension) requires.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        # Вход в Docker Hub: анонимное скачивание образа упирается в лимит Docker Hub
-        # на общий адрес раннеров GitHub (`toomanyrequests` — job падал до тестов,
-        # 10.10.2026). Токен — Personal Access Token Docker Hub с правом Public Repo
-        # Read-only в секретах репозитория DOCKERHUB_USERNAME / DOCKERHUB_TOKEN.
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: gca_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    # of remote Neon round-trips. The migration chain (enable_pgvector_extension,
+    # HNSW index) needs pgvector >= 0.5.
+    #
+    # Postgres — тот, что предустановлен в образе раннера, а не сервис-контейнер
+    # pgvector/pgvector из Docker Hub: анонимное скачивание образа упиралось в
+    # лимит Docker Hub на общий адрес раннеров (`toomanyrequests`, job падал до
+    # тестов три раза подряд 10.10.2026), а вход в Docker Hub привязал бы рабочий
+    # репозиторий к личному аккаунту. Здесь нет ни реестра, ни секретов.
 
     env:
       # The app constructs its engine from DATABASE_URL at import time, so it must be set.
@@ -51,6 +39,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start PostgreSQL 16 with pgvector (runner image)
+        # Postgres 16 предустановлен в ubuntu-24.04, служба выключена; pgvector —
+        # пакет postgresql-16-pgvector из apt (0.6+ — HNSW есть). Пароль и база
+        # gca_test — те же, что задавал прежний сервис-контейнер, поэтому
+        # DATABASE_URL / TEST_DATABASE_URL ниже не меняются.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-16-pgvector
+          dpkg-query -W postgresql-16 postgresql-16-pgvector
+          sudo systemctl start postgresql.service
+          until pg_isready -h localhost -p 5432; do sleep 1; done
+          sudo -u postgres psql -v ON_ERROR_STOP=1 \
+            -c "ALTER USER postgres PASSWORD 'postgres';" \
+            -c "CREATE DATABASE gca_test;"
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
@@ -98,13 +101,13 @@ jobs:
 
       - name: Run backend tests (unit + integration)
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
-        # pgvector image makes CREATE EXTENSION vector succeed.
+        # the pgvector package makes CREATE EXTENSION vector succeed.
         #
         # -n 12 подобран под раннер ubuntu-latest и НЕ совпадает с локальным
         # дефолтом test-backend-parallel (8) — расхождение и план его снять:
         # docs/TECH_DEBT.md, запись 2. Раздача — --dist worksteal из addopts
         # (backend/pyproject.toml). Каждый xdist-воркёр пересоздаёт себе базу
-        # gca_gw<N>_test и мигрирует её сам — сервису достаточно заранее
+        # gca_gw<N>_test и мигрирует её сам — Postgres достаточно заранее
         # существующей gca_test для db-test-check.
         run: uv run --locked pytest -n 12
         working-directory: backend
