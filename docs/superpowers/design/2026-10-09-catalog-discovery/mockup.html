@@ -195,7 +195,7 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
 <h2>Экран 3. Черновики семей: твой просмотр</h2>
 <p class="secsub">Появляется в той же очереди «Новая», когда модель ответила: вместо полосы «компл» — список черновиков этой
 единицы. Это главная ручная работа фичи: прочитать черновики, поправить, отметить нужные, нажать одну кнопку. Имена, которые модель
-не считает работой (уборка, ограждение площадки, гарантия), приходят отдельной группой «Не работа».</p>
+считает строками без собственного предмета (примечания, оговорки, заголовки), приходят отдельной группой «Не работа». Гарантии, уборка, охрана — не «не работа»: это обычные черновики категории «Затраты и услуги» (раздел «Категории» внизу).</p>
 <div class="screen">
   <div class="qrow">
     <span class="qtabs"><span>Семья из списка<span class="n">2538</span></span><span>Смена семьи<span class="n">0</span></span><span class="on">Новая<span class="n">710</span></span><span>Ошибки<span class="n">61</span></span></span>
@@ -239,12 +239,12 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
     <div class="draft" style="background:var(--warn-soft);flex-wrap:wrap">
       <span class="cb on">✓</span>
       <div class="main"><div class="name">Не работа <span class="band mid">особая группа</span></div>
-        <div class="def">Имена, которые модель не считает работой: услуги, гарантии, временные сооружения, ошибочно размеченные позиции. Группа раскрывается построчно: «не работа» получат только отмеченные строки, снятые останутся без семьи и уйдут в перезапрос обычным порядком.</div></div>
+        <div class="def">Строки без собственного предмета: примечания и оговорки, попавшие в смету отдельной позицией, заголовки. Группа раскрывается построчно: «не работа» получат только отмеченные строки, снятые останутся без семьи и уйдут в перезапрос обычным порядком.</div></div>
       <div class="nums"><b>11</b> из 12 отмечены</div>
       <div style="flex-basis:100%"></div>
       <div style="flex-basis:100%;background:var(--surface);border:1px solid var(--bd-subtle);border-radius:8px;margin-left:30px">
-        <div class="srow" style="border-top:0"><span class="cb on">✓</span><div>Окончательная уборка объекта, включая фасады и окна, помещения, прилегающей территории</div></div>
-        <div class="srow"><span class="cb on">✓</span><div>Ограждение строительной площадки в соответствии с требованиями заказчика</div></div>
+        <div class="srow" style="border-top:0"><span class="cb on">✓</span><div>Проектирование систем кондиционирования выполнять в соответствии с Российскими нормами. В обязательном порядке… <div class="meta">абзац требований к проектированию, не позиция</div></div></div>
+        <div class="srow"><span class="cb on">✓</span><div>-над дверным проёмом; -угловая часть комнат; -рабочие/спальные места жильцов. <div class="meta">обрывок перечня из примечания</div></div></div>
         <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><div>Колонны В80 <div class="meta">галочка снята — это работа, пусть уйдёт в перезапрос</div></div></div>
         <div class="srow" style="color:var(--fg3)"><span style="width:16px"></span><div>… и ещё 9, отмечены · Показать все</div></div>
       </div>
@@ -321,6 +321,69 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
       </tbody>
     </table>
   </div>
+</div>
+</section>
+
+<!-- ===================== Категории ===================== -->
+<section>
+<h2>Категории семей — к вопросу «а если найдём ещё вид»</h2>
+<p class="secsub"><b>Вид строки</b> (работа / система) остаётся как есть: его ставит правило по единице — «компл» значит цена за
+комплект целиком, иначе за единицу. Это ось цены, а не природа. <b>Природу</b> несёт новое поле у <b>семьи</b> — категория — из
+справочника, который <b>admin</b> пополняет сам, без программиста. Семей пара сотен, поэтому переразметить их при новой категории —
+один проход, а не тысячи строк.</p>
+
+<h2 style="font-size:19px;margin-top:18px">К1. Вкладка «Семьи»: колонка и фильтр</h2>
+<div class="screen">
+  <div class="hdr"><div><h3>Семьи и контексты</h3></div>
+    <div class="seg"><span class="on">Семьи</span><span>Контексты</span><span>Предложения</span></div></div>
+  <div class="qrow">
+    <span class="lbl">Единица</span><span class="sel">все <span>▾</span></span>
+    <span class="lbl">Категория</span><span class="sel new">все <span>▾</span></span>
+    <span class="btn new">Категории…</span><span class="newtag">новое</span>
+    <span class="btn primary ml">Завести семью</span>
+  </div>
+  <div class="tbl">
+    <div class="tr h" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div>Название</div><div>Единица</div><div>Статус</div><div class="new">Категория <span class="newtag">новое</span></div><div>Определение</div><div style="text-align:right">Контекстов</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Облицовка стен декоративными панелями</div><div>м²</div><div><span class="band hi">активна</span></div><div>Работа</div><div style="color:var(--fg2)">Облицовка стен панелями МДФ, HPL и подобными…</div><div style="text-align:right">41</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Вентиляция общеобменная</div><div>компл</div><div><span class="band hi">активна</span></div><div>Инженерная система</div><div style="color:var(--fg2)">Система общеобменной вентиляции здания целиком…</div><div style="text-align:right">66</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Банковская гарантия</div><div>компл</div><div><span class="band hi">активна</span></div><div>Затраты и услуги</div><div style="color:var(--fg2)">Банковская гарантия по договору генподряда: на аванс, на исполнение, на гарантийный период.</div><div style="text-align:right">4</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Коммунальные и эксплуатационные расходы</div><div>мес</div><div><span class="band hi">активна</span></div><div>Затраты и услуги</div><div style="color:var(--fg2)">Оплата отопления, электроэнергии, воды по счётчикам в период работ.</div><div style="text-align:right">5</div></div>
+  </div>
+</div>
+
+<h2 style="font-size:19px;margin-top:22px">К2. Окно «Категории» — сам справочник</h2>
+<p class="secsub">Три категории на старт. Новая — кнопкой «Добавить»: имя и определение (определение видит модель, когда предлагает
+категорию черновику). Переименовать можно всегда, удалить — только категорию без семей. Код при этом не меняется. Числа семей — для примера.</p>
+<div class="screen">
+  <div class="dialog new" style="max-width:720px">
+    <h4>Категории семей <span class="newtag">новое</span></h4>
+    <div class="tbl" style="margin:8px 0 12px">
+      <div class="tr h" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div>Категория</div><div>Определение (видит модель)</div><div style="text-align:right">Семей</div><div></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Работа</div><div style="color:var(--fg2)">Строительно-монтажная работа или материал с объёмом в своей единице.</div><div style="text-align:right">168</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Инженерная система</div><div style="color:var(--fg2)">Инженерная система здания или её часть, оцениваемая комплектом.</div><div style="text-align:right">36</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Затраты и услуги</div><div style="color:var(--fg2)">Не работа на объекте, а обеспечение и сопровождение: гарантии, страхование, коммунальные расходы, охрана, уборка, временные здания, документация.</div><div style="text-align:right">11</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px;color:var(--fg3)"><div>+ Добавить категорию</div><div>например, «Проектирование» — если понадобится отделить его от прочих услуг</div><div></div><div></div></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end"><span class="btn">Закрыть</span></div>
+  </div>
+</div>
+
+<h2 style="font-size:19px;margin-top:22px">К3. Где категория появляется в работе</h2>
+<div class="screen">
+  <div class="card new" style="margin-bottom:12px">
+    <div class="draft" style="border-top:0">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Банковская гарантия <span class="newtag">новое</span></div>
+        <div class="def">Банковская гарантия по договору генподряда: на аванс, на исполнение, на гарантийный период.</div>
+        <div class="ex"><span>Банковская гарантия на авансовые платежи</span><span>Банковская гарантия на исполнение контракта</span></div>
+        <div style="margin-top:8px;font-size:13px">Категория: <span class="sel" style="min-width:180px">Затраты и услуги <span>▾</span></span> <span class="lbl">— предложила модель, можно сменить</span></div></div>
+      <div class="nums"><b>4</b> строки</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+  </div>
+  <p class="lbl" style="margin:0 2px">В черновике (экран 3) модель сразу предлагает категорию; на карточке семьи — то же поле с выбором. Нынешние
+    176 семей получают категорию одним проходом модели с твоим просмотром — так же, как черновики. Читать категорию начнёт фича 4:
+    для «Затрат и услуг» ось сравнения — доля от договора или за месяц, а не цена за единицу объёма.</p>
 </div>
 </section>
 
