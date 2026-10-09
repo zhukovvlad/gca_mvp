@@ -23,6 +23,7 @@ import datetime as dt
 import logging
 from collections.abc import Sequence
 from decimal import Decimal
+from typing import Literal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -46,9 +47,13 @@ from models import (
     ImportJob,
     Lot,
     ObjectModel,
+    Offer,
     PositionItem,
     Proposal,
     RateClass,
+    Tender,
+    TenderAward,
+    TenderRound,
 )
 from services.semantic_cost import event_cap_from
 from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
@@ -58,6 +63,23 @@ log = logging.getLogger(__name__)
 _UNIQUE_MESSAGES = {
     "uq_contracts_contract_number": "Договор с таким номером уже есть.",
 }
+
+#: Происхождение основной сметы связанного договора (спека Б2 §2.6): отсутствие
+#: основания и «сметы пока нет» — разные состояния, одним значением не сливаются.
+EstimateOrigin = Literal["from_offer", "uploaded_separately", "no_estimate"]
+
+#: Тексты ключей-страховок связанного договора — без подстановок (спека Б2 §2.7).
+_PARTIES_LOCKED_CODE = "contract_parties_locked"
+_PARTIES_LOCKED_KEY_TEXT = (
+    "Нельзя: договор заключён по тендеру, объект и подрядчик берутся из тендера. Чтобы их изменить, "
+    "сначала отвяжите договор от тендера (договор, созданный из КП, не отвязывается — если победитель "
+    "не тот, его удаляют)."
+)
+_ESTIMATE_IS_COPY_CODE = "contract_estimate_is_copy"
+_ESTIMATE_IS_COPY_TEXT = (
+    "Нельзя: смета договора — копия КП победителя этого тендера. Если победитель не тот, удалите "
+    "договор вместе со сметой; если загрузили подписанную смету вместо копии, отвязка станет доступна."
+)
 
 UNSET = object()
 
@@ -324,6 +346,39 @@ def _estimates_of(db: Session, contract_id: int) -> list[dict]:
     ]
 
 
+def tender_basis_of(db: Session, contract: Contract) -> dict | None:
+    """Основание договора — отметка победителя тендера (спека Б2 §2.6); `None`
+    у договора без основания."""
+    if contract.tender_award_id is None:
+        return None
+    row = db.execute(
+        sa.select(
+            TenderAward.id, Tender.id, Tender.tender_number, Tender.title, TenderRound.id,
+            TenderRound.stage_no, TenderAward.offer_id,
+        )
+        .join(Tender, Tender.id == TenderAward.tender_id)
+        .join(Offer, Offer.id == TenderAward.offer_id)
+        .join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(TenderAward.id == contract.tender_award_id)
+    ).one()
+    keys = ("award_id", "tender_id", "tender_number", "tender_title", "round_id", "stage_no", "offer_id")
+    return dict(zip(keys, row, strict=True))
+
+
+def estimate_origin_of(db: Session, contract: Contract) -> EstimateOrigin | None:
+    """Происхождение ОСНОВНОЙ сметы (`amendment_no IS NULL`) связанного договора;
+    допсоглашения на пометку не влияют. `None` — у договора без основания."""
+    if contract.tender_award_id is None:
+        return None
+    row = db.execute(
+        sa.select(Estimate.source_award_id)
+        .where(Estimate.contract_id == contract.id, Estimate.amendment_no.is_(None))
+    ).first()
+    if row is None:
+        return "no_estimate"
+    return "uploaded_separately" if row[0] is None else "from_offer"
+
+
 def get_contract_dict(db: Session, contract_id: int) -> dict:
     """Карточка договора: реквизиты, класс, текущие сметы (§7.1)."""
     row = db.execute(_contracts_select().where(Contract.id == contract_id)).first()
@@ -341,6 +396,8 @@ def get_contract_dict(db: Session, contract_id: int) -> dict:
     body["retention_pct"] = row[0].retention_pct
     body["retention_note"] = row[0].retention_note
     body["estimates"] = _estimates_of(db, contract_id)
+    body["tender_basis"] = tender_basis_of(db, row[0])
+    body["estimate_origin"] = estimate_origin_of(db, row[0])
     return body
 
 
@@ -469,6 +526,35 @@ def create_contract(
     return get_contract_dict(db, contract.id)
 
 
+def _contract_update_messages() -> dict:
+    """Ответы переводчика правки: прежние строки `_UNIQUE_MESSAGES` без изменений
+    и ключ связанного договора парой (код, текст)."""
+    return {**_UNIQUE_MESSAGES, "fk_contracts_tender_award": (_PARTIES_LOCKED_CODE, _PARTIES_LOCKED_KEY_TEXT)}
+
+
+def _refuse_if_parties_locked(db: Session, contract: Contract, *, object_id, contractor_id) -> None:
+    """У связанного договора объект и подрядчик берутся из тендера: отказ только
+    на СМЕНУ значения, те же значения в теле проходят (спека Б2 §1.5, §2.4)."""
+    if contract.tender_award_id is None:
+        return
+    changes_object = object_id is not UNSET and object_id != contract.object_id
+    changes_contractor = contractor_id is not UNSET and contractor_id != contract.contractor_id
+    if not (changes_object or changes_contractor):
+        return
+    tender_number = db.execute(
+        sa.select(Tender.tender_number).select_from(TenderAward)
+        .join(Tender, Tender.id == TenderAward.tender_id)
+        .where(TenderAward.id == contract.tender_award_id)
+    ).scalar_one()
+    raise DomainError(
+        409,
+        f"Нельзя: договор заключён по тендеру № {tender_number}, объект и подрядчик берутся из тендера. "
+        "Чтобы их изменить, сначала отвяжите договор от тендера (договор, созданный из КП, не "
+        "отвязывается — если победитель не тот, его удаляют).",
+        code=_PARTIES_LOCKED_CODE,
+    )
+
+
 def update_contract(
     db: Session,
     contract_id: int,
@@ -500,6 +586,7 @@ def update_contract(
     # например пустой номер договора после уже присвоенного объекта. Без откага
     # отвергнутая правка оставалась бы видимой в этой сессии.
     with rollback_on_domain_error(db):
+        _refuse_if_parties_locked(db, contract, object_id=object_id, contractor_id=contractor_id)
         if object_id is not UNSET:
             if db.get(ObjectModel, object_id) is None:
                 raise DomainError(404, f"Объект {object_id} не найден.")
@@ -540,9 +627,71 @@ def update_contract(
         if retention_note is not UNSET:
             contract.retention_note = (retention_note or "").strip() or None
 
-    with translating_integrity(db, _UNIQUE_MESSAGES):
+    # Гонку «правка против привязки» держит ключ, а не замок: правка, прочитавшая
+    # договор без основания, после коммита привязки упирается в
+    # `fk_contracts_tender_award` (спека Б2 §2.4).
+    with translating_integrity(db, _contract_update_messages()):
         db.commit()
     log.info("contract_updated id=%s", contract_id)
+    return get_contract_dict(db, contract_id)
+
+
+def _refuse_if_estimate_is_copy(db: Session, contract: Contract) -> None:
+    """Основная смета — копия КП победителя: отвязать нельзя (`contract_estimate_is_copy`)."""
+    copy_id = db.execute(
+        sa.select(Estimate.id).where(
+            Estimate.contract_id == contract.id,
+            Estimate.source_award_id.is_not(None),
+        )
+    ).scalar_one_or_none()
+    if copy_id is not None:
+        raise DomainError(409, _ESTIMATE_IS_COPY_TEXT, code=_ESTIMATE_IS_COPY_CODE)
+
+
+def unlink_tender_award(db: Session, contract_id: int) -> dict:
+    """Отвязать договор от отметки победителя (спека Б2 §2.4); отдаёт карточку.
+
+    Договор берётся `FOR UPDATE`, тендер не блокируется. Порядок проверок несущий:
+    основание → активное задание импорта (любого допсоглашения: активное задание
+    может оказаться копией КП и родить её у договора без основания) → смета-копия.
+    Договор без сметы отвязывается: копии нет, чужих цен в нём нет. Ключ
+    `fk_estimates_source_award` держит последнюю проверку и на путях мимо команды.
+    """
+    contract = db.execute(
+        sa.select(Contract)
+        .where(Contract.id == contract_id)
+        .with_for_update()
+        # identity map отдал бы объект, загруженный ДО блокировки.
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if contract is None:
+        raise DomainError(404, f"Договор {contract_id} не найден.")
+    with rollback_on_domain_error(db):
+        if contract.tender_award_id is None:
+            raise DomainError(409, "Договор не привязан к тендеру.", code="contract_not_linked")
+        active_job_id = db.execute(
+            sa.select(ImportJob.id)
+            .where(
+                ImportJob.contract_id == contract_id,
+                ImportJob.status.notin_([s.value for s in TERMINAL_IMPORT_JOB_STATUSES]),
+            )
+            .order_by(ImportJob.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_job_id is not None:
+            raise DomainError(
+                409,
+                f"Импорт сметы этого договора выполняется (задание {active_job_id}). Дождитесь "
+                "завершения и повторите.",
+                code="contract_import_active",
+            )
+        _refuse_if_estimate_is_copy(db, contract)
+    contract.tender_award_id = None
+    with translating_integrity(
+        db, {"fk_estimates_source_award": (_ESTIMATE_IS_COPY_CODE, _ESTIMATE_IS_COPY_TEXT)}
+    ):
+        db.commit()
+    log.info("contract_unlinked_from_tender_award id=%s", contract_id)
     return get_contract_dict(db, contract_id)
 
 
