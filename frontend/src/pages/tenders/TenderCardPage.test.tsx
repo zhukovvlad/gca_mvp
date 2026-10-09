@@ -7,7 +7,12 @@ import { describe, expect, it } from "vitest";
 import TenderCardPage from "./TenderCardPage";
 import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
-import { sampleRoundUnallocated, sampleTenderCard } from "@/test/fixtures";
+import {
+  sampleAwardHistoryWithNotConcluded,
+  sampleRoundUnallocated,
+  sampleTenderAward,
+  sampleTenderCard,
+} from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders, spyOnDownload, waitForDialogFocus } from "@/test/utils";
 
@@ -614,5 +619,185 @@ describe("Триггер разноса и ?unallocated= (§2.7)", () => {
 
     await waitFor(() => expect(currentSearch()).toBe(""));
     expect(screen.queryByRole("heading", { name: /Разнос статей/ })).toBeNull();
+  });
+});
+
+/**
+ * Отметка победителя на карточке тендера (спека Б2 §2.8): плашка и решётка
+ * перерисовываются после каждой команды — обработчики MSW меняют «серверное»
+ * состояние, как менял бы сервер, а экран проверяется ПОСЛЕ перечитывания.
+ */
+describe("Победитель тендера на карточке (Б2)", () => {
+  const FINAL_STATE = "both-loaded-with-beta" as const;
+  const betaMenu = () => screen.findByRole("button", { name: "Действия с КП участника «ООО Бета»" });
+  const NEW_ROUND_BLOCKED =
+    "В тендере отмечен победитель — снимите отметку или отметьте, что договор не заключён";
+
+  function awarded() {
+    handlerState.tenderRoundState = FINAL_STATE;
+    handlerState.tenderAwardState = { award: sampleTenderAward, history: [sampleAwardHistoryWithNotConcluded[2]] };
+  }
+
+  it("победитель не отмечен: подсказка и меню у КП финала", async () => {
+    handlerState.tenderRoundState = FINAL_STATE;
+    renderCard();
+
+    expect(await screen.findByText(/Победитель не отмечен/)).toBeInTheDocument();
+    expect(await betaMenu()).toBeInTheDocument();
+  });
+
+  it("отметка через меню: плашка появляется, меню исчезает, «Новый этап» блокируется", async () => {
+    handlerState.tenderRoundState = FINAL_STATE;
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await betaMenu());
+    await user.click(await screen.findByRole("menuitem", { name: "Отметить победителем" }));
+
+    expect(await screen.findByText("Победитель — ООО Бета")).toBeInTheDocument();
+    expect(screen.getByText(/договора пока нет/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Действия с КП/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Новый этап" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("«Новый этап» при отметке недоступен: диалог не открывается, причина названа", async () => {
+    awarded();
+    const user = userEvent.setup();
+    renderCard();
+
+    const button = await screen.findByRole("button", { name: "Новый этап" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await user.click(button);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(button).toHaveAccessibleDescription(NEW_ROUND_BLOCKED);
+  });
+
+  // Ревью задачи 9: спека требует подсказку (`tooltip`), а скрытый текст
+  // `aria-describedby` её не заменяет — наведение показывает всплывающую.
+  it("наведение на недоступный «Новый этап» показывает подсказку с причиной", async () => {
+    awarded();
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.hover(await screen.findByRole("button", { name: "Новый этап" }));
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent(NEW_ROUND_BLOCKED)
+    );
+  });
+
+  it("«Новый этап» без отметки и при закрытой «не заключён» доступен", async () => {
+    handlerState.tenderRoundState = FINAL_STATE;
+    handlerState.tenderAwardState = { award: null, history: sampleAwardHistoryWithNotConcluded.slice(0, 2) };
+    const user = userEvent.setup();
+    renderCard();
+
+    const button = await screen.findByRole("button", { name: "Новый этап" });
+    expect(button).not.toHaveAttribute("aria-disabled");
+    await user.click(button);
+
+    expect(await screen.findByRole("dialog", { name: "Новый этап" })).toBeInTheDocument();
+  });
+
+  it("«Договор не заключён»: после записи плашка «не отмечен», в истории строка, «Новый этап» доступен", async () => {
+    awarded();
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: "Договор не заключён" }));
+    const dialog = await screen.findByRole("dialog", { name: "Договор не заключён" });
+    await waitForDialogFocus();
+    await user.type(within(dialog).getByLabelText("Дата"), "2026-01-15");
+    await user.type(within(dialog).getByLabelText("Комментарий"), "Не согласовали размер аванса");
+    await user.click(within(dialog).getByRole("button", { name: "Записать" }));
+
+    expect(await screen.findByText(/Победитель не отмечен/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Договор не заключён" })).toBeNull());
+    const rows = screen.getAllByTestId("award-history-row");
+    expect(rows[rows.length - 1]).toHaveTextContent("«Не согласовали размер аванса»");
+    expect(screen.getByRole("button", { name: "Новый этап" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("«Снять отметку»: после подтверждения плашка «не отмечен», следа в истории нет", async () => {
+    awarded();
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: "Снять отметку" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Снять отметку?" });
+    await waitForDialogFocus("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Снять отметку" }));
+
+    expect(await screen.findByText(/Победитель не отмечен/)).toBeInTheDocument();
+    expect(screen.queryByTestId("award-history-row")).toBeNull();
+    expect(await betaMenu()).toBeInTheDocument();
+  });
+
+  it("привязка договора: плашка показывает договор, карточка договора перезапрашивается", async () => {
+    awarded();
+    const user = userEvent.setup();
+    const qc = createTestQueryClient();
+    // Без наблюдателя запись с gcTime 0 исчезает сразу, и признак устаревания не прочесть.
+    qc.setQueryDefaults(qk.contracts.card(202), { gcTime: Infinity });
+    qc.setQueryData(qk.contracts.card(202), { id: 202 });
+    renderCard({ queryClient: qc });
+
+    await user.click(await screen.findByRole("button", { name: "Привязать существующий договор" }));
+    await user.click(await screen.findByRole("radio", { name: /№ 12\/2024/ }));
+    await user.click(screen.getByRole("button", { name: "Привязать" }));
+
+    expect(await screen.findByText(/договор № 12\/2024 от 03\.04\.2024/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть договор" })).toHaveAttribute("href", "/contracts/202");
+    expect(screen.queryByRole("button", { name: "Снять отметку" })).toBeNull();
+    expect(qc.getQueryState(qk.contracts.card(202))?.isInvalidated).toBe(true);
+  });
+
+  it("«Создать договор» доводит до перехода в карточку договора", async () => {
+    awarded();
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
+          <Route path="/contracts/:id" element={<div>карточка договора</div>} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { initialRoute: "/tenders/300" }
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Создать договор" }));
+    await waitForDialogFocus();
+    await waitFor(() => expect(screen.getByTestId("locked-class")).toHaveTextContent("Жилые дома"));
+    await user.type(screen.getByLabelText("Номер договора"), "45/2026-ГП");
+    await user.type(screen.getByLabelText("Дата подписания"), "2026-06-26");
+    await user.click(screen.getByRole("button", { name: "Создать договор" }));
+
+    expect(await screen.findByText("карточка договора")).toBeInTheDocument();
+    expect(handlerState.lastAwardContract).toMatchObject({ tenderId: 300, awardId: 7 });
+  });
+
+  it("отказ сервера при «Договор не заключён» показан его текстом", async () => {
+    awarded();
+    server.use(
+      http.post("/api/v1/tenders/:id/awards/:aid/not-concluded", () =>
+        HttpResponse.json(
+          { detail: "Нельзя: по этой отметке заключён договор № 45/2026-ГП. Сначала удалите договор или отвяжите его от тендера." },
+          { status: 409 }
+        )
+      )
+    );
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: "Договор не заключён" }));
+    const dialog = await screen.findByRole("dialog", { name: "Договор не заключён" });
+    await waitForDialogFocus();
+    await user.type(within(dialog).getByLabelText("Дата"), "2026-01-15");
+    await user.click(within(dialog).getByRole("button", { name: "Записать" }));
+
+    expect(await screen.findByText(/по этой отметке заключён договор № 45\/2026-ГП/)).toBeInTheDocument();
+    expect(screen.getByText("Победитель — ТОО Монолит")).toBeInTheDocument();
   });
 });

@@ -45,6 +45,7 @@ import type {
   CatalogPositionRow,
   CategoryOverrideChangeSummary,
   ClearRoundCategoryOverrideInput,
+  ContractCandidate,
   ContractCard,
   ContractFromAwardInput,
   ContractFromAwardResult,
@@ -330,6 +331,31 @@ export const tendersApi = {
   ): Promise<ContractFromAwardResult> =>
     api
       .post<ContractFromAwardResult>(`/v1/tenders/${tenderId}/awards/${awardId}/contract`, input)
+      .then((r) => r.data),
+  /** Отметить победителем по КП финального этапа (спека Б2 §2.6); ответ — карточка тендера. */
+  awardWinner: (tenderId: number, offerId: number): Promise<TenderCard> =>
+    api.post<TenderCard>(`/v1/tenders/${tenderId}/awards`, { offer_id: offerId }).then((r) => r.data),
+  /** Снять действующую отметку: в истории она не остаётся. */
+  removeAward: (tenderId: number, awardId: number): Promise<TenderCard> =>
+    api.delete<TenderCard>(`/v1/tenders/${tenderId}/awards/${awardId}`).then((r) => r.data),
+  /** «Договор не заключён»: отметка закрывается и остаётся в истории; комментарий пустой — `null`. */
+  markNotConcluded: (
+    tenderId: number,
+    awardId: number,
+    input: { not_concluded_on: string; note: string | null }
+  ): Promise<TenderCard> =>
+    api
+      .post<TenderCard>(`/v1/tenders/${tenderId}/awards/${awardId}/not-concluded`, input)
+      .then((r) => r.data),
+  /** Договоры того же объекта и подрядчика без основания. */
+  contractCandidates: (tenderId: number, awardId: number): Promise<ContractCandidate[]> =>
+    api
+      .get<ContractCandidate[]>(`/v1/tenders/${tenderId}/awards/${awardId}/contract-candidates`)
+      .then((r) => r.data),
+  /** Привязать существующий договор к действующей отметке. */
+  linkContract: (tenderId: number, awardId: number, contractId: number): Promise<TenderCard> =>
+    api
+      .post<TenderCard>(`/v1/tenders/${tenderId}/awards/${awardId}/link`, { contract_id: contractId })
       .then((r) => r.data),
   createRound: (tenderId: number, input: RoundInput): Promise<TenderCard> =>
     api.post<TenderCard>(`/v1/tenders/${tenderId}/rounds`, input).then((r) => r.data),

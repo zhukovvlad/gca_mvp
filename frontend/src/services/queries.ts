@@ -1351,6 +1351,73 @@ export function useDeleteTender() {
   });
 }
 
+/**
+ * Отметка победителя (спека Б2 §2.6): команды отвечают карточкой тендера, но
+ * экран перечитывает её запросом — единый путь для всех команд.
+ */
+export function useAwardWinner(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (offerId: number) => tendersApi.awardWinner(tenderId, offerId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Победитель отмечен");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useRemoveAward(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (awardId: number) => tendersApi.removeAward(tenderId, awardId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Отметка снята");
+    },
+    onError: toastApiError,
+  });
+}
+
+export function useMarkNotConcluded(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, notConcludedOn, note }: { awardId: number; notConcludedOn: string; note: string | null }) =>
+      tendersApi.markNotConcluded(tenderId, awardId, { not_concluded_on: notConcludedOn, note }),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      toast.success("Записано: договор не заключён");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Кандидаты на привязку; без id отметки запроса нет (окно закрыто). */
+export function useContractCandidates(tenderId: number, awardId: number | undefined) {
+  return useQuery({
+    queryKey: qk.tenders.contractCandidates(tenderId, awardId ?? 0),
+    queryFn: () => tendersApi.contractCandidates(tenderId, awardId as number),
+    enabled: awardId !== undefined,
+    // Список меняется вне экрана (договоры заводят и привязывают в других местах).
+    refetchOnMount: "always",
+  });
+}
+
+/** Привязка меняет и договор (появилось основание), поэтому перечитывается его карточка. */
+export function useLinkContract(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, contractId }: { awardId: number; contractId: number }) =>
+      tendersApi.linkContract(tenderId, awardId, contractId),
+    onSuccess: () => {
+      invalidateTender(qc, tenderId);
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      toast.success("Договор привязан к тендеру");
+    },
+    onError: toastApiError,
+  });
+}
+
 export function useCreateRound() {
   const qc = useQueryClient();
   return useMutation({

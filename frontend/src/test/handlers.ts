@@ -30,11 +30,16 @@ import {
   stageSummaryAllUnknown,
   stageSummaryNet,
   stageSummaryWithUnknownSecondColumn,
+  sampleContractCandidates,
+  sampleTenderAward,
   sampleTenderBasis,
   sampleTenderCard,
   sampleTenders,
 } from "./fixtures";
 import type {
+  ContractCandidate,
+  TenderAward,
+  TenderAwardEvent,
   Comparison,
   ComparisonBucketCell,
   ComparisonMedian,
@@ -340,6 +345,22 @@ interface HandlerState {
   lastAwardContract: { tenderId: number; awardId: number; body: Record<string, unknown> } | null;
   /** Договор, у которого последним снимали основание (`DELETE /contracts/:id/tender-award`). */
   lastUnlinkedContractId: number | null;
+  /**
+   * Отметка победителя и история карточки тендера 300 — состояние «сервера»:
+   * команды отметки меняют его, и перечитанная карточка показывает уже новое
+   * (обработчик, не меняющий состояние, прятал бы всё, что зависит от
+   * перечитывания).
+   */
+  tenderAwardState: { award: TenderAward | null; history: TenderAwardEvent[] };
+  /** Последняя команда отметки: вид, адрес и тело (`null` — команд не было). */
+  lastAwardCommand: {
+    kind: "award" | "remove" | "not_concluded" | "link";
+    tenderId: number;
+    awardId: number | null;
+    body: Record<string, unknown> | null;
+  } | null;
+  /** Ответ `GET /tenders/:id/awards/:aid/contract-candidates`. */
+  awardCandidates: ContractCandidate[];
   /**
    * Сколько раз запрашивали диагностики второго таба.
    *
@@ -1736,6 +1757,9 @@ export const handlerState: HandlerState = {
   contractCardEstimatesOverride: null,
   lastAwardContract: null,
   lastUnlinkedContractId: null,
+  tenderAwardState: { award: null, history: [] },
+  lastAwardCommand: null,
+  awardCandidates: sampleContractCandidates,
   contractCardFails: false,
   attentionRequests: 0,
   attentionOutcome: "issues",
@@ -1998,6 +2022,9 @@ export function resetHandlerState() {
   handlerState.contractCardFails = false;
   handlerState.lastAwardContract = null;
   handlerState.lastUnlinkedContractId = null;
+  handlerState.tenderAwardState = { award: null, history: [] };
+  handlerState.lastAwardCommand = null;
+  handlerState.awardCandidates = sampleContractCandidates;
   handlerState.attentionRequests = 0;
   handlerState.attentionOutcome = "issues";
   handlerState.tenderRoundState = "loaded";
@@ -2216,6 +2243,12 @@ export function jobPayload(status: ImportJobStatus) {
     estimate_id: status === "done" ? 500 : null,
     error_text: status === "error" ? "Не удалось разобрать файл." : null,
   };
+}
+
+/** Карточка тендера с текущей «серверной» отметкой победителя и историей (спека Б2 §2.6). */
+function tenderCardWithAward(): TenderCard {
+  const { award, history } = handlerState.tenderAwardState;
+  return { ...tenderCardFor(handlerState.tenderRoundState), award, award_history: history };
 }
 
 /**
@@ -3200,7 +3233,120 @@ export const handlers = [
     if (Number(params.id) !== sampleTenderCard.id) {
       return HttpResponse.json({ detail: "Тендер не найден." }, { status: 404 });
     }
-    return HttpResponse.json(tenderCardFor(handlerState.tenderRoundState));
+    return HttpResponse.json(tenderCardWithAward());
+  }),
+  // Команды отметки победителя (спека Б2 §2.6): отвечают карточкой тендера и
+  // меняют состояние «сервера», как менял бы он сам.
+  http.post("/api/v1/tenders/:id/awards", async ({ params, request }) => {
+    const body = (await request.json()) as { offer_id: number };
+    handlerState.lastAwardCommand = { kind: "award", tenderId: Number(params.id), awardId: null, body };
+    const base = tenderCardFor(handlerState.tenderRoundState);
+    const cell = base.cells.find((c) => c.offer_id === body.offer_id);
+    const round = base.rounds.find((r) => r.id === cell?.round_id);
+    const participant = base.participants.find((p) => p.package_id === cell?.package_id);
+    if (!cell || !round || !participant) {
+      return HttpResponse.json({ detail: "У участника нет КП в этом этапе." }, { status: 422 });
+    }
+    const award: TenderAward = {
+      ...sampleTenderAward,
+      offer_id: body.offer_id,
+      package_id: participant.package_id,
+      contractor_id: participant.contractor_id,
+      contractor_title: participant.title,
+      contractor_inn: participant.inn,
+      round_id: round.id,
+      stage_no: round.stage_no,
+      estimate_id: cell.estimate_id as number,
+      total_including_vat: cell.total_including_vat,
+      contract: null,
+    };
+    const event: TenderAwardEvent = {
+      award_id: award.id,
+      kind: "awarded",
+      package_id: award.package_id,
+      contractor_title: award.contractor_title,
+      awarded_at: award.awarded_at,
+      not_concluded_on: null,
+      note: null,
+      by_email: award.awarded_by_email,
+      is_active: true,
+    };
+    handlerState.tenderAwardState = {
+      award,
+      history: [...handlerState.tenderAwardState.history, event],
+    };
+    return HttpResponse.json(tenderCardWithAward(), { status: 201 });
+  }),
+  http.delete("/api/v1/tenders/:id/awards/:aid", ({ params }) => {
+    handlerState.lastAwardCommand = {
+      kind: "remove",
+      tenderId: Number(params.id),
+      awardId: Number(params.aid),
+      body: null,
+    };
+    // Снятая отметка следа не оставляет.
+    const { history } = handlerState.tenderAwardState;
+    handlerState.tenderAwardState = {
+      award: null,
+      history: history.filter((e) => e.award_id !== Number(params.aid)),
+    };
+    return HttpResponse.json(tenderCardWithAward());
+  }),
+  http.post("/api/v1/tenders/:id/awards/:aid/not-concluded", async ({ params, request }) => {
+    const body = (await request.json()) as { not_concluded_on: string; note: string | null };
+    handlerState.lastAwardCommand = {
+      kind: "not_concluded",
+      tenderId: Number(params.id),
+      awardId: Number(params.aid),
+      body,
+    };
+    const { award, history } = handlerState.tenderAwardState;
+    handlerState.tenderAwardState = {
+      award: null,
+      history: [
+        ...history.map((e) => ({ ...e, is_active: false })),
+        {
+          award_id: Number(params.aid),
+          kind: "not_concluded",
+          package_id: award?.package_id ?? 0,
+          contractor_title: award?.contractor_title ?? "",
+          awarded_at: null,
+          not_concluded_on: body.not_concluded_on,
+          note: body.note,
+          by_email: "admin@example.com",
+          is_active: false,
+        },
+      ],
+    };
+    return HttpResponse.json(tenderCardWithAward());
+  }),
+  http.get("/api/v1/tenders/:id/awards/:aid/contract-candidates", () =>
+    HttpResponse.json(handlerState.awardCandidates)
+  ),
+  http.post("/api/v1/tenders/:id/awards/:aid/link", async ({ params, request }) => {
+    const body = (await request.json()) as { contract_id: number };
+    handlerState.lastAwardCommand = {
+      kind: "link",
+      tenderId: Number(params.id),
+      awardId: Number(params.aid),
+      body,
+    };
+    const candidate = handlerState.awardCandidates.find((c) => c.id === body.contract_id);
+    const { award, history } = handlerState.tenderAwardState;
+    handlerState.tenderAwardState = {
+      award: award
+        ? {
+            ...award,
+            contract: {
+              id: body.contract_id,
+              contract_number: candidate?.contract_number ?? "",
+              signed_date: candidate?.signed_date ?? "",
+            },
+          }
+        : null,
+      history,
+    };
+    return HttpResponse.json(tenderCardWithAward());
   }),
   // 202: договор создан, копия КП ещё импортируется (спека Б2 §2.5, §2.6).
   http.post("/api/v1/tenders/:id/awards/:aid/contract", async ({ params, request }) => {

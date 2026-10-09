@@ -179,6 +179,9 @@ export const qk = {
     stagePositionsForTender: (tenderId: number) => ["tenders", "stage-positions", tenderId] as const,
     /** Нераспределённое раунда (спека этапного разноса §2.3). */
     roundUnallocated: (tenderId: number, roundId: number) => ["tenders", "round-unallocated", tenderId, roundId] as const,
+    /** Кандидаты на привязку к отметке победителя (спека Б2 §2.6). */
+    contractCandidates: (tenderId: number, awardId: number) =>
+      ["tenders", "contract-candidates", tenderId, awardId] as const,
   },
 
   /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */

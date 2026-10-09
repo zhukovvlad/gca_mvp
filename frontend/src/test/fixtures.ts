@@ -10,7 +10,9 @@ import type {
   ComparisonRow,
   ContractCard,
   EstimateOrigin,
+  ContractCandidate,
   TenderAward,
+  TenderAwardEvent,
   TenderBasis,
   Dashboard,
   DashboardAttention,
@@ -1838,6 +1840,69 @@ export const sampleTenderAward: TenderAward = {
   awarded_by_email: "a.petrov@example.com",
   contract: null,
 };
+
+/** Кандидаты на привязку к отметке: второй — без итога «с НДС». */
+export const sampleContractCandidates: ContractCandidate[] = [
+  {
+    id: 201,
+    contract_number: "45/2026-ГП",
+    signed_date: "2026-06-26",
+    object_title: "ЖК Южный",
+    contractor_title: "ТОО Монолит",
+    base_total_including_vat: "9701000000.00",
+  },
+  {
+    id: 202,
+    contract_number: "12/2024",
+    signed_date: "2024-04-03",
+    object_title: "ЖК Южный",
+    contractor_title: "ТОО Монолит",
+    base_total_including_vat: null,
+  },
+];
+
+/** Отметка победителя с заключённым договором. */
+export const sampleTenderAwardWithContract: TenderAward = {
+  ...sampleTenderAward,
+  contract: { id: 100, contract_number: "45/2026-ГП", signed_date: "2026-06-26" },
+};
+
+/** История: Альфа отмечена и закрыта «договор не заключён», затем отмечена Бета. */
+export const sampleAwardHistoryWithNotConcluded: TenderAwardEvent[] = [
+  {
+    award_id: 6,
+    kind: "awarded",
+    package_id: 501,
+    contractor_title: "ООО Альфа",
+    awarded_at: "2025-12-22T10:00:00Z",
+    not_concluded_on: null,
+    note: null,
+    by_email: "a.petrov@example.com",
+    is_active: false,
+  },
+  {
+    award_id: 6,
+    kind: "not_concluded",
+    package_id: 501,
+    contractor_title: "ООО Альфа",
+    awarded_at: null,
+    not_concluded_on: "2026-01-15",
+    note: "Не согласовали размер аванса",
+    by_email: "a.petrov@example.com",
+    is_active: false,
+  },
+  {
+    award_id: 7,
+    kind: "awarded",
+    package_id: 502,
+    contractor_title: "ТОО Монолит",
+    awarded_at: "2026-01-20T10:00:00Z",
+    not_concluded_on: null,
+    note: null,
+    by_email: "a.petrov@example.com",
+    is_active: true,
+  },
+];
 
 /** Карточка договора 100, связанного с тендером, в одном из трёх состояний сметы. */
 export function linkedContractCard(estimateOrigin: EstimateOrigin): ContractCard {
