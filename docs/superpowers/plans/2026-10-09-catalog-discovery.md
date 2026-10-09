@@ -2,7 +2,12 @@
 
 **Спека:** `docs/superpowers/specs/2026-10-09-catalog-discovery-design.md` (гейт 2 одобрен 10.10.2026, три круга Codex, редакция 4 `5826f49`)
 **Ветка:** `feat/catalog-discovery`, черновой PR #68
-**Макет:** [`docs/superpowers/design/2026-10-09-catalog-discovery/mockup.html`](../design/2026-10-09-catalog-discovery/mockup.html) — экраны 1–3, 3б, 4, К1–К3; фронт (Task 14, 15) и сверка на стенде (Task 17) идут по нему.
+**Редакция 2, 10.10.2026** — 17 задач сведены в 7 по решению пользователя
+(решение плана 6): содержание утверждений не менялось, задачи 1–17 редакции 1
+стали частями: 1–2 → Task 1, 3–5 → Task 2, 7–10 → Task 3, 11, 12, 6 → Task 4,
+14 → Task 5, 15 → Task 6, 16–17 → Task 7; отдельной задачи API нет — маршруты
+в задачах своих команд (решение плана 3).
+**Макет:** [`docs/superpowers/design/2026-10-09-catalog-discovery/mockup.html`](../design/2026-10-09-catalog-discovery/mockup.html) — экраны 1–3, 3б, 4, К1–К3; фронт (Task 5, 6) и сверка на стенде (Task 7) идут по нему.
 
 > Исполнителю: задачи идут снизу вверх и по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`) и ревью задачи
@@ -48,11 +53,11 @@
 - **Фронтенд** — только shadcn/ui; все нужные примитивы уже в
   `frontend/src/components/ui/` (checkbox, collapsible, dialog, select, table,
   alert-dialog, badge, tooltip).
-- **Номер ревизии `AGENTS.md`** называется только в коммите ревизии (Task 16):
+- **Номер ревизии `AGENTS.md`** называется только в коммите ревизии (Task 7):
   страж (проверка 5) краснеет на необъявленную версию.
 - **Стенд**: записи в учётки `gca_dev` готовит скрипт, запускает пользователь
   (классификатор разрешений не пускает сессию); опросчик на стенде включает
-  пользователь (Task 17).
+  пользователь (Task 7).
 
 ## Review Focus
 
@@ -61,22 +66,22 @@
 
 1. **Единица «без единицы»** (`unit_id IS NULL`) — открытие, частичный UNIQUE
    живого открытия (`COALESCE(unit_id,-1)`), блок, preview и черновики
-   работают с `NULL` как с обычной единицей (Task 1, 7, 10, 11).
+   работают с `NULL` как с обычной единицей (Task 1, 3, 4).
 2. **Одно наименование в двух статьях** — одна строка тела, оба контекста —
-   члены одной группы; «не работа» по строке группы получают оба (Task 7, 9,
-   12).
+   члены одной группы; «не работа» по строке группы получают оба (Task 3,
+   4).
 3. **Ответ модели «СИСТЕМА» на систему после снятия запрета** — разбирается
    как сегодня, предложение уходит в «Новую» и в охват следующего открытия
-   (Task 3, 7).
+   (Task 2, 3).
 4. **Член черновика ушёл из охвата до активации** — экран его не считает,
-   «не работа» пропускает и называет, активация не падает (Task 11, 12).
+   «не работа» пропускает и называет, активация не падает (Task 4).
 5. **Категория удалена, пока черновик с ней открыт** — черновик без
    категории, активация отказывает `draft_without_category`, правка на
-   удалённую — `category_not_found` (Task 2, 11, 12).
+   удалённую — `category_not_found` (Task 1, 4).
 6. **Контекст `NOT_APPLICABLE` по строке `LOT_HEADER`** — «Вернуть в разбор»
-   отказывает так же, как для `HEADER`/`TRASH` (Task 6).
+   отказывает так же, как для `HEADER`/`TRASH` (Task 4).
 7. **Вид контекста сменили между ответом модели и правилом публикации** —
-   порог берётся по виду под блокировкой (Task 4).
+   порог берётся по виду под блокировкой (Task 2).
 
 ## Структура файлов
 
@@ -123,10 +128,10 @@ frontend/src/
     DraftCard.tsx, NotWorkGroup.tsx, CategoryProposals.tsx   создаются (экраны 1–3)
   *.test.tsx рядом с компонентами   создаются/правятся
 docs/reference/schema.md            правка: блок «Открытие семей и категории» (Task 1)
-docs/reference/screens.md           правка: `## 9.` — четыре абзаца §2.13 (Task 16)
-AGENTS.md, docs/AGENTS-revisions.md правка: §3 три места, преамбула; архив действующей врезки (Task 16)
-docs/product-roadmap.md             правка: А1 закрыт (Task 17)
-docs/devlog/2026-10-09-catalog-discovery.md   создаётся (Task 17)
+docs/reference/screens.md           правка: `## 9.` — четыре абзаца §2.13 (Task 7)
+AGENTS.md, docs/AGENTS-revisions.md правка: §3 три места, преамбула; архив действующей врезки (Task 7)
+docs/product-roadmap.md             правка: А1 закрыт (Task 7)
+docs/devlog/2026-10-09-catalog-discovery.md   создаётся (Task 7)
 ```
 
 ## Решения плана, которых нет в спеке
@@ -142,11 +147,11 @@ docs/devlog/2026-10-09-catalog-discovery.md   создаётся (Task 17)
    `-k catalog_discovery` выбирает их все (ДО — 0 и в `tests/unit`, и в
    `tests/integration`). Тесты, закреплявшие исключение `SYSTEM`, и вызовы
    `activate_family` правятся на месте — их выбор называет задача-владелец.
-3. **Маршруты — одной задачей (Task 13)** после всех команд: один прогон
-   сторожа прав и одна карта кодов. Исключение — **существующие** маршруты,
-   чья сервисная подпись меняется (`create-family` с категорией — Task 2):
-   они правятся в той же задаче, иначе существующие тесты API краснеют между
-   задачами.
+3. **Маршруты — в задаче своих команд**, а не отдельной задачей API: Task 1
+   заводит маршруты справочника и правит существующие маршруты семей, Task 3 —
+   маршруты блока, preview и запуска, Task 4 — черновиков, активации и
+   возврата. Сторож прав и карта кодов проверяются в каждой из трёх задач;
+   ревьюер видит команду и её маршрут одним диффом.
 4. **`family_categories` входит в `_DOMAIN_TABLES`, три строки
    пересеваются той же транзакцией очистки** — тот же приём, что у
    `semantic_worker_state` (`tests/conftest.py:423`): тесты заводят свои
@@ -157,14 +162,15 @@ docs/devlog/2026-10-09-catalog-discovery.md   создаётся (Task 17)
    одного `threshold`** — `threshold_for` выбирает под блокировкой; ответ
    массового автопринятия сохраняет ключ `threshold` (порог работ) и получает
    `system_threshold`.
-6. **Порядок задач**: схема (1) → категории (2) → системы (3) → порог (4) →
-   кривая (5) → возврат (6) → охват и тело (7) → разбор (8) → исполнение (9)
-   → запуск и блок (10) → черновики (11) → активация (12) → API (13) → фронт
-   категорий, возврата и меток (14) → фронт открытия (15) → документация и
-   ревизия (16) → стенд и финал (17). Системы и порог раньше открытия:
-   каждая задача сдаёт работающее поведение без зависимости от следующей, а
-   открытие опирается на снятые исключения (охват читает «СИСТЕМА» и
-   «голые» системы).
+6. **Семь задач, а не по задаче на слой** (решение пользователя 10.10.2026:
+   ревью после каждой задачи — главная цена реализации, граница задачи
+   проходит там, где ревьюер может отклонить одно, приняв соседнее). Порядок:
+   схема и категории (1) → системы, порог и кривая (2) → задание открытия (3)
+   → черновики, активация и возврат (4) → фронт категорий, возврата и меток (5)
+   → фронт открытия (6) → ревизия, стенд, devlog (7). Внутри задачи части
+   (А, Б, В, Г) — порядок работы исполнителя, а не границы ревью. Системы и
+   порог раньше открытия: охват открытия опирается на снятые исключения
+   («СИСТЕМА», «голые» системы).
 7. **Скрипт кривой тестируется импортом его функций** на тестовой базе
    (`backend/scripts/__init__.py` есть): сам скрипт приложение не
    импортирует (условие проверочного инструментария, `AGENTS.md` §9.1), а
@@ -172,14 +178,19 @@ docs/devlog/2026-10-09-catalog-discovery.md   создаётся (Task 17)
 
 ## Задачи
 
-### Task 1: схема — миграция `0021`, модели, справочник
+### Task 1: схема `0021` и справочник категорий
 
 **Files**
-- Create: `backend/alembic/versions/2026_10_10_0021-catalog_discovery.py`
-- Edit: `backend/models.py`, `backend/alembic/env.py`, `backend/tests/conftest.py`, `docs/reference/schema.md`
-- Test: `backend/tests/integration/test_catalog_discovery_schema.py`
+- Create: `backend/alembic/versions/2026_10_10_0021-catalog_discovery.py`, `backend/services/family_categories.py`
+- Edit: `backend/models.py`, `backend/alembic/env.py`, `backend/tests/conftest.py`, `docs/reference/schema.md`,
+  `backend/services/work_families.py`, `backend/services/semantic_decisions.py`, `backend/services/semantic_events.py`,
+  `backend/crud/semantic.py`, `backend/routers/semantic.py`, тесты с `activate_family(` (14 файлов, 33 вызова)
+- Test: `backend/tests/integration/test_catalog_discovery_schema.py`, `test_catalog_discovery_categories.py`
 
 **Interfaces**
+
+*Часть А — схема*
+
 - Потребляет: `Base`, `WorkFamily`, `SemanticJob`, `SemanticJobKind`, `CatalogContext`, `UnitOfMeasure`, `User`, `SEMANTIC_EVENT_TYPES`, `CK_SEMANTIC_JOBS_CONTEXT_SUBJECT`, `CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND`, `_sql_str_list`, `RAW_SQL_INDEXES`, `_DOMAIN_TABLES` (существуют).
 - Производит:
 
@@ -203,7 +214,55 @@ class FamilyCategoryProposal(Base): ... # "family_category_proposals", §2.2
 # WorkFamily.family_category_id; SEMANTIC_EVENT_TYPES += "context_reopened"
 ```
 
+*Часть Б — справочник и категория у семьи*
+
+- Потребляет: `FamilyCategory`, `WorkFamily`, `WorkFamilyError`, `UNSET`, `_lock_families`, `record_event`, фикстура `work_category_id` (часть А; существуют).
+- Производит:
+
+```python
+# services/family_categories.py
+REFUSE_CATEGORY_NOT_FOUND = "category_not_found"
+REFUSE_CATEGORY_IN_USE = "category_in_use"
+REFUSE_CATEGORY_BLANK_TITLE = "category_blank_title"
+REFUSE_CATEGORY_BLANK_DEFINITION = "category_blank_definition"
+REFUSE_CATEGORY_DUPLICATE = "category_duplicate"
+
+def lock_categories(db: Session, category_ids: list[int] | None, *, exclusive: bool) -> None  # None — все, по id
+def create_category(db: Session, *, title: str, definition: str, actor_id: int) -> FamilyCategory
+def update_category(db: Session, *, category_id: int, title: str | object = UNSET,
+                    definition: str | object = UNSET, actor_id: int) -> FamilyCategory
+def delete_category(db: Session, *, category_id: int, actor_id: int) -> None
+
+# services/work_families.py
+REFUSE_ACTIVATE_WITHOUT_CATEGORY = "activate_without_category"
+REFUSE_CLEAR_CATEGORY_ACTIVE = "clear_category_active"
+def create_family(db, *, title, unit_name, definition=None, actor_id,
+                  family_category_id: int | None = None,
+                  origin: Literal["operator", "discovery"] = "operator") -> WorkFamily
+def update_family(db, *, family_id, title=UNSET, definition=UNSET, actor_id,
+                  family_category_id: int | None | object = UNSET) -> WorkFamily
+# services/semantic_decisions.py
+def create_family_from_suggestion(db, *, suggestion_id, title, definition, family_category_id: int, actor_id) -> ...
+# crud/semantic.py: строка семьи += family_category_id, family_category_title;
+# list_families(..., family_category_id: int | Literal["none"] | None = None)
+```
+
+*Маршруты*
+
+```text
+GET    /api/v1/semantic/family-categories          (с числом семей)
+POST   /api/v1/semantic/family-categories
+PATCH  /api/v1/semantic/family-categories/{id}
+DELETE /api/v1/semantic/family-categories/{id}
+POST   /api/v1/semantic/families, PATCH /families/{id}, POST /families/{id}/activate   (+ family_category_id)
+POST   /api/v1/semantic/suggestions/{id}/create-family                               (+ обязательное family_category_id)
+GET    /api/v1/semantic/families?family_category_id=<id>|none
+```
+
 **Утверждения**
+
+*Часть А — схема*
+
 - `alembic upgrade head` и `downgrade -1` проходят на пустой базе; `upgrade`
   на базе с заданиями всех трёх видов не меняет ни одной строки
   `semantic_jobs` (сравнение до/после); после `upgrade` ровно три строки
@@ -239,55 +298,8 @@ class FamilyCategoryProposal(Base): ... # "family_category_proposals", §2.2
 - блок «Открытие семей и категории» в `docs/reference/schema.md` в форме
   соседних блоков; `work_families` — колонка категории.
 
-**Имена**
-- Заводятся: три перечисления, `FAMILY_CATEGORY_SEED_KEYS`, `CK_DRAFT_SHAPE`, `CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT`, четыре модели, `uq_family_categories_title`, `uq_semantic_jobs_discovery_live`, фикстура `work_category_id`, миграция `0021`.
-- Существуют, проверено `grep`-ом: `SemanticJobKind` (`models.py:1584`), `CK_SEMANTIC_JOBS_CONTEXT_SUBJECT` (`:2075`), `CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND` (`:2076`), `SEMANTIC_EVENT_TYPES` (`:1460`), `RAW_SQL_INDEXES` (`alembic/env.py:60`), `_DOMAIN_TABLES` (`tests/conftest.py:423`), фикстура `factories` (`tests/conftest.py:605`).
+*Часть Б — справочник и категория у семьи*
 
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО 0, ПОСЛЕ ≥ 45.
-- `just test-int-local-k "work_variants_schema or semantic_schema or semantic_queue_schema"` — ДО 549, ПОСЛЕ ≥ 549 (паритет списков видов и событий правится на месте).
-- `just check-agents-index` — 18 из 18.
-
-### Task 2: справочник категорий и категория у семьи
-
-**Files**
-- Create: `backend/services/family_categories.py`
-- Edit: `backend/services/work_families.py`, `backend/services/semantic_decisions.py`, `backend/services/semantic_events.py`, `backend/crud/semantic.py`, `backend/routers/semantic.py` (только существующие `POST /families`, `PATCH /families/{id}`, `POST /families/{id}/activate`, `POST /suggestions/{id}/create-family`, `GET /families`), тесты с `activate_family(` (14 файлов, 33 вызова)
-- Test: `backend/tests/integration/test_catalog_discovery_categories.py`
-
-**Interfaces**
-- Потребляет: `FamilyCategory`, `WorkFamily`, `WorkFamilyError`, `UNSET`, `_lock_families`, `record_event`, фикстура `work_category_id` (Task 1; существуют).
-- Производит:
-
-```python
-# services/family_categories.py
-REFUSE_CATEGORY_NOT_FOUND = "category_not_found"
-REFUSE_CATEGORY_IN_USE = "category_in_use"
-REFUSE_CATEGORY_BLANK_TITLE = "category_blank_title"
-REFUSE_CATEGORY_BLANK_DEFINITION = "category_blank_definition"
-REFUSE_CATEGORY_DUPLICATE = "category_duplicate"
-
-def lock_categories(db: Session, category_ids: list[int] | None, *, exclusive: bool) -> None  # None — все, по id
-def create_category(db: Session, *, title: str, definition: str, actor_id: int) -> FamilyCategory
-def update_category(db: Session, *, category_id: int, title: str | object = UNSET,
-                    definition: str | object = UNSET, actor_id: int) -> FamilyCategory
-def delete_category(db: Session, *, category_id: int, actor_id: int) -> None
-
-# services/work_families.py
-REFUSE_ACTIVATE_WITHOUT_CATEGORY = "activate_without_category"
-REFUSE_CLEAR_CATEGORY_ACTIVE = "clear_category_active"
-def create_family(db, *, title, unit_name, definition=None, actor_id,
-                  family_category_id: int | None = None,
-                  origin: Literal["operator", "discovery"] = "operator") -> WorkFamily
-def update_family(db, *, family_id, title=UNSET, definition=UNSET, actor_id,
-                  family_category_id: int | None | object = UNSET) -> WorkFamily
-# services/semantic_decisions.py
-def create_family_from_suggestion(db, *, suggestion_id, title, definition, family_category_id: int, actor_id) -> ...
-# crud/semantic.py: строка семьи += family_category_id, family_category_title;
-# list_families(..., family_category_id: int | Literal["none"] | None = None)
-```
-
-**Утверждения**
 - `create_category` и `update_category`: пустое и пробельное имя —
   `category_blank_title`, определение — `category_blank_definition`; дубль
   без учёта регистра и крайних пробелов — `category_duplicate` (и синхронно,
@@ -318,23 +330,52 @@ def create_family_from_suggestion(db, *, suggestion_id, title, definition, famil
 - 33 вызова `activate_family(` в 14 файлах получают категорию (фикстура
   `work_category_id`), их тесты зелёные без иных правок.
 
+*Маршруты*
+
+- каждый маршрут части — `admin`, `member` получает `403`; сторож прав зелёный;
+- каждый новый код отказа части отвечает статусом таблицы §2.12 (`404`/`409`/`422`)
+  с `{code, message}` — по входу на код; ни один код не падает в `AssertionError`
+  карты `routers/semantic.py:98-174`;
+- категории — с числом семей; удаление с семьями — `409 category_in_use`.
+
 **Имена**
+
+*Часть А — схема*
+
+- Заводятся: три перечисления, `FAMILY_CATEGORY_SEED_KEYS`, `CK_DRAFT_SHAPE`, `CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT`, четыре модели, `uq_family_categories_title`, `uq_semantic_jobs_discovery_live`, фикстура `work_category_id`, миграция `0021`.
+- Существуют, проверено `grep`-ом: `SemanticJobKind` (`models.py:1584`), `CK_SEMANTIC_JOBS_CONTEXT_SUBJECT` (`:2075`), `CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND` (`:2076`), `SEMANTIC_EVENT_TYPES` (`:1460`), `RAW_SQL_INDEXES` (`alembic/env.py:60`), `_DOMAIN_TABLES` (`tests/conftest.py:423`), фикстура `factories` (`tests/conftest.py:605`).
+
+*Часть Б — справочник и категория у семьи*
+
 - Заводятся: модуль `services/family_categories.py` и пять кодов, `lock_categories`, `create_category`, `update_category`, `delete_category`, `REFUSE_ACTIVATE_WITHOUT_CATEGORY`, `REFUSE_CLEAR_CATEGORY_ACTIVE`, параметры `family_category_id`/`origin`.
 - Существуют, проверено `grep`-ом: `create_family` (`services/work_families.py:249`), `update_family` (`:304`), `activate_family` (`:443`), `_lock_families` (`:637`), `UNSET` (`:110`), `create_family_from_suggestion` (`services/semantic_decisions.py:326`), `record_event` (`services/semantic_events.py:348`), `EVENT_ENUM_VALUES` (`:138`), `_domain_error` (`routers/semantic.py:202`).
 
 **Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 45, ПОСЛЕ ≥ 75.
+- `just test-int-local-k catalog_discovery` — ДО 0, ПОСЛЕ ≥ 80.
+- `just test-int-local-k "work_variants_schema or semantic_schema or semantic_queue_schema"` — ДО 549, ПОСЛЕ ≥ 549.
 - `just test-int-local-k work_families` — ДО 136, ПОСЛЕ ≥ 136.
 - `just test-int-local-k "semantic_decisions or semantic_queue_api or semantic_api"` — ДО 382, ПОСЛЕ ≥ 382.
+- `uv run pytest tests -k auth_coverage` — ДО 147, ПОСЛЕ ≥ 151.
 - `just test-backend-local` — зелёный (33 вызова активации в разных файлах).
+- `just check-agents-index` — 18 из 18.
 
-### Task 3: системы на пути фич 2 и 3а — свой промпт, четыре исключения сняты
+### Task 2: системы на всём пути — свой промпт, исключения сняты, свой порог, кривая
 
 **Files**
-- Edit: `backend/services/semantic_request.py`, `backend/services/semantic_reconcile.py`, `backend/services/work_variants.py`, `backend/crud/semantic_queue.py`, тесты §1.3 спеки (`tests/unit/test_semantic_queue_request.py`, `tests/integration/test_work_variants_core.py`, `test_work_variants_reconcile.py`, `test_semantic_queue_hooks_ops.py`, `test_semantic_queue_material.py`, `test_context_membership.py`)
-- Test: `backend/tests/integration/test_catalog_discovery_systems.py`, `backend/tests/unit/test_catalog_discovery_prompt.py`
+- Create: `backend/scripts/measure_system_threshold.py`
+- Edit: `backend/services/semantic_request.py`, `backend/services/semantic_reconcile.py`, `backend/services/work_variants.py`,
+  `backend/crud/semantic_queue.py`, `backend/config.py`, `backend/.env.example`, `backend/services/family_change.py`,
+  `backend/services/semantic_worker.py`, `backend/routers/semantic.py` (существующие `/auto-accept/preview`, `/auto-accept`),
+  `backend/cli.py` (`semantic-auto-accept`), тесты §1.3 спеки (`tests/unit/test_semantic_queue_request.py`,
+  `tests/integration/test_work_variants_core.py`, `test_work_variants_reconcile.py`, `test_semantic_queue_hooks_ops.py`,
+  `test_semantic_queue_material.py`, `test_context_membership.py`)
+- Test: `backend/tests/integration/test_catalog_discovery_systems.py`, `test_catalog_discovery_threshold.py`,
+  `test_catalog_discovery_curve.py`; `backend/tests/unit/test_catalog_discovery_prompt.py`
 
 **Interfaces**
+
+*Часть А — промпт и применимость*
+
 - Потребляет: `is_applicable`, `_values_applicable`, `_is_applicable` (work_variants), `_build_body`, `render_context_request`, `RequestHasher`, `_UnitFingerprints`, `_new_queue`, `_list_queue`, `SuggestionGroup`, `SEMANTIC_PROMPT`, `PROMPT_VERSION` (существуют).
 - Производит:
 
@@ -345,49 +386,8 @@ def prompt_for(semantic_kind: str) -> tuple[str, str]   # (текст промп
 # SuggestionGroup.system_count: int; строка группы += semantic_kind: str
 ```
 
-**Утверждения**
-- `is_applicable`, `_values_applicable` и `work_variants._is_applicable` не
-  читают `SYSTEM`: система при прочих равных применима ровно там, где
-  применима работа (по входу на каждую функцию);
-- сквозной вход: система в единице с активной семьёй получает задание
-  `family_suggestion`, её ответ публикуется; подтверждение даёт семью;
-  сверка ставит `context_values`; результат значений даёт вариант и
-  промоушен строки `TO_REVIEW → POSITION` (DoD 4);
-- тело для системы строит `SYSTEM_SEMANTIC_PROMPT`, для работы — прежний
-  `SEMANTIC_PROMPT`; `prompt_version` задания — `system:1` и прежнее;
-  **`request_hash` работы на фикстуре фичи 2 равен снимку до фичи** —
-  литерал хэша в тесте (DoD 5); у системы и работы с одинаковыми полями
-  `prefix_hash` различны;
-- `SYSTEM_SEMANTIC_PROMPT` не содержит правила «СИСТЕМА» (нет подстроки
-  `"СИСТЕМА"`); ответ модели `"СИСТЕМА"` на систему разбирается как
-  сегодня (`is_system=True`) и попадает в «Новую»;
-- `RequestHasher` и `_UnitFingerprints` считают префикс по виду контекста:
-  после фичи опубликованные предложения работ остаются текущими в «Семье из
-  списка» (вход: очередь до и после — тот же состав), а системы без заданий
-  делают единицу «изменённой» в `_stale_scan`;
-- «голая» система (единица без активных семей) — строка «Новой»;
-- `SuggestionGroup.system_count` = числу строк группы с видом `SYSTEM`; у
-  строки — `semantic_kind`;
-- тесты, закреплявшие исключение (§1.3 спеки), переписаны на применимость
-  системы, а не удалены — их число в выборе не убывает.
+*Часть Б — свой порог*
 
-**Имена**
-- Заводятся: `SYSTEM_SEMANTIC_PROMPT`, `SYSTEM_PROMPT_VERSION`, `prompt_for`, `SuggestionGroup.system_count`.
-- Существуют, проверено `grep`-ом: `is_applicable` (`services/semantic_request.py:205`), `_build_body` (`:402`), `RequestHasher` (`:474`), `render_context_request` (`:426`), `_values_applicable` (`services/semantic_reconcile.py:557`), `_is_applicable` (`services/work_variants.py:716`), `_new_queue` (`crud/semantic_queue.py:610`), `_list_queue` (`:385`), `SuggestionGroup` (`:104`), `_UnitFingerprints` (`:267`), `is_system_name` (`services/semantic_answer.py:45`).
-
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 75, ПОСЛЕ ≥ 90.
-- `just test-unit-k catalog_discovery` — ДО 0, ПОСЛЕ ≥ 5.
-- `just test-int-local-k "semantic_queue_hooks_ops or semantic_queue_material or work_variants_core or work_variants_reconcile or context_membership"` — ДО 398, ПОСЛЕ ≥ 398.
-- `just test-unit-k "semantic_queue_request or semantic_rules"` — ДО 331, ПОСЛЕ ≥ 331.
-
-### Task 4: свой порог автопринятия систем
-
-**Files**
-- Edit: `backend/config.py`, `backend/.env.example`, `backend/services/family_change.py`, `backend/services/semantic_worker.py`, `backend/routers/semantic.py` (существующие `/auto-accept/preview`, `/auto-accept`), `backend/cli.py` (`semantic-auto-accept`)
-- Test: `backend/tests/integration/test_catalog_discovery_threshold.py`
-
-**Interfaces**
 - Потребляет: `apply_publication_rules`, `_apply_publication_rules`, `rule_outcome`, `_load_candidates`, `_preview_hash`, `AutoAcceptPreview`, `preview_auto_accept`, `apply_auto_accept` (существуют).
 - Производит:
 
@@ -405,37 +405,8 @@ def apply_publication_rules(db: Session, *, suggestion_id: int, thresholds: Thre
 # AutoAcceptPreview += system_threshold: Decimal | None (threshold остаётся — порог работ)
 ```
 
-**Утверждения**
-- при пустом пороге систем и заданном пороге работ ни одна система не
-  принята автоматически — по входу на каждую строку таблицы публикации 3а
-  для системы, **включая «та же семья»** (решение 14); работа — как до
-  фичи;
-- при заданном пороге систем: уверенность ровно на пороге — принято, на
-  наименьший шаг ниже — нет; система идёт по порогу систем, работа — по
-  порогу работ (два разных числа на входе);
-- вид читается под блокировкой: смена вида контекста между ответом модели и
-  правилом публикации меняет применённый порог (вход);
-- массовое автопринятие: кандидаты несут вид, исход считается по
-  `threshold_for`; `preview_hash` меняется при смене только порога систем;
-  ответ preview несёт `threshold` и `system_threshold`;
-- `semantic-auto-accept` CLI работает с обоими порогами.
+*Часть В — скрипт кривой*
 
-**Имена**
-- Заводятся: `SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD`, `Thresholds`, `thresholds_from`, `threshold_for`, `AutoAcceptPreview.system_threshold`.
-- Существуют, проверено `grep`-ом: `apply_publication_rules` (`services/family_change.py:753`), `_apply_publication_rules` (`:781`), `rule_outcome` (`:651`), `_load_candidates` (`:860`), `_preview_hash` (`:920`), `AutoAcceptPreview` (`:826`), `preview_auto_accept` (`:944`), `apply_auto_accept` (`:968`), `SEMANTIC_AUTO_ACCEPT_THRESHOLD` (`config.py:110`).
-
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 90, ПОСЛЕ ≥ 105.
-- `just test-int-local-k "family_change or auto_accept"` — ДО 230, ПОСЛЕ ≥ 230.
-- `just test-int-local-k "semantic_worker or semantic_queue_worker"` — ДО 74, ПОСЛЕ ≥ 74.
-
-### Task 5: скрипт кривой порога систем
-
-**Files**
-- Create: `backend/scripts/measure_system_threshold.py`
-- Test: `backend/tests/integration/test_catalog_discovery_curve.py`
-
-**Interfaces**
 - Потребляет: схема `family_suggestions`, `catalog_contexts`, `semantic_events` (существуют).
 - Производит:
 
@@ -466,6 +437,52 @@ def main(argv: list[str] | None = None) -> int              # DATABASE_URL, пе
 ```
 
 **Утверждения**
+
+*Часть А — промпт и применимость*
+
+- `is_applicable`, `_values_applicable` и `work_variants._is_applicable` не
+  читают `SYSTEM`: система при прочих равных применима ровно там, где
+  применима работа (по входу на каждую функцию);
+- сквозной вход: система в единице с активной семьёй получает задание
+  `family_suggestion`, её ответ публикуется; подтверждение даёт семью;
+  сверка ставит `context_values`; результат значений даёт вариант и
+  промоушен строки `TO_REVIEW → POSITION` (DoD 4);
+- тело для системы строит `SYSTEM_SEMANTIC_PROMPT`, для работы — прежний
+  `SEMANTIC_PROMPT`; `prompt_version` задания — `system:1` и прежнее;
+  **`request_hash` работы на фикстуре фичи 2 равен снимку до фичи** —
+  литерал хэша в тесте (DoD 5); у системы и работы с одинаковыми полями
+  `prefix_hash` различны;
+- `SYSTEM_SEMANTIC_PROMPT` не содержит правила «СИСТЕМА» (нет подстроки
+  `"СИСТЕМА"`); ответ модели `"СИСТЕМА"` на систему разбирается как
+  сегодня (`is_system=True`) и попадает в «Новую»;
+- `RequestHasher` и `_UnitFingerprints` считают префикс по виду контекста:
+  после фичи опубликованные предложения работ остаются текущими в «Семье из
+  списка» (вход: очередь до и после — тот же состав), а системы без заданий
+  делают единицу «изменённой» в `_stale_scan`;
+- «голая» система (единица без активных семей) — строка «Новой»;
+- `SuggestionGroup.system_count` = числу строк группы с видом `SYSTEM`; у
+  строки — `semantic_kind`;
+- тесты, закреплявшие исключение (§1.3 спеки), переписаны на применимость
+  системы, а не удалены — их число в выборе не убывает.
+
+*Часть Б — свой порог*
+
+- при пустом пороге систем и заданном пороге работ ни одна система не
+  принята автоматически — по входу на каждую строку таблицы публикации 3а
+  для системы, **включая «та же семья»** (решение 14); работа — как до
+  фичи;
+- при заданном пороге систем: уверенность ровно на пороге — принято, на
+  наименьший шаг ниже — нет; система идёт по порогу систем, работа — по
+  порогу работ (два разных числа на входе);
+- вид читается под блокировкой: смена вида контекста между ответом модели и
+  правилом публикации меняет применённый порог (вход);
+- массовое автопринятие: кандидаты несут вид, исход считается по
+  `threshold_for`; `preview_hash` меняется при смене только порога систем;
+  ответ preview несёт `threshold` и `system_threshold`;
+- `semantic-auto-accept` CLI работает с обоими порогами.
+
+*Часть В — скрипт кривой*
+
 - метки (решение 15): `accepted`, `accepted_pending` → `correct=True`;
   `rejected`, `other_family` → `False`; `rejected`, чей `id` назван
   `suggestion_id` в событии `context_family_pending` с `outcome ∈
@@ -482,66 +499,46 @@ def main(argv: list[str] | None = None) -> int              # DATABASE_URL, пе
 - `main` печатает таблицу, флаг достаточности и число исключённых.
 
 **Имена**
+
+*Часть А — промпт и применимость*
+
+- Заводятся: `SYSTEM_SEMANTIC_PROMPT`, `SYSTEM_PROMPT_VERSION`, `prompt_for`, `SuggestionGroup.system_count`.
+- Существуют, проверено `grep`-ом: `is_applicable` (`services/semantic_request.py:205`), `_build_body` (`:402`), `RequestHasher` (`:474`), `render_context_request` (`:426`), `_values_applicable` (`services/semantic_reconcile.py:557`), `_is_applicable` (`services/work_variants.py:716`), `_new_queue` (`crud/semantic_queue.py:610`), `_list_queue` (`:385`), `SuggestionGroup` (`:104`), `_UnitFingerprints` (`:267`), `is_system_name` (`services/semantic_answer.py:45`).
+
+*Часть Б — свой порог*
+
+- Заводятся: `SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD`, `Thresholds`, `thresholds_from`, `threshold_for`, `AutoAcceptPreview.system_threshold`.
+- Существуют, проверено `grep`-ом: `apply_publication_rules` (`services/family_change.py:753`), `_apply_publication_rules` (`:781`), `rule_outcome` (`:651`), `_load_candidates` (`:860`), `_preview_hash` (`:920`), `AutoAcceptPreview` (`:826`), `preview_auto_accept` (`:944`), `apply_auto_accept` (`:968`), `SEMANTIC_AUTO_ACCEPT_THRESHOLD` (`config.py:110`).
+
+*Часть В — скрипт кривой*
+
 - Заводятся: модуль и все имена выше.
 - Существуют, проверено `grep`-ом: `backend/scripts/__init__.py`, соседние скрипты-образцы `measure_vat_aggregation.py`, `count_plan_edits.py`.
 
 **Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 105, ПОСЛЕ ≥ 115.
+- `just test-int-local-k catalog_discovery` — ДО ≥ 80, ПОСЛЕ ≥ 120.
+- `just test-unit-k catalog_discovery` — ДО 0, ПОСЛЕ ≥ 5.
+- `just test-int-local-k "semantic_queue_hooks_ops or semantic_queue_material or work_variants_core or work_variants_reconcile or context_membership"` — ДО 398, ПОСЛЕ ≥ 398.
+- `just test-unit-k "semantic_queue_request or semantic_rules"` — ДО 331, ПОСЛЕ ≥ 331.
+- `just test-int-local-k "family_change or auto_accept"` — ДО 230, ПОСЛЕ ≥ 230.
+- `just test-int-local-k "semantic_worker or semantic_queue_worker"` — ДО 74, ПОСЛЕ ≥ 74.
 
-### Task 6: «Вернуть в разбор»
-
-**Files**
-- Edit: `backend/services/work_variants.py`, `backend/services/semantic_events.py`, `backend/crud/semantic.py`
-- Test: `backend/tests/integration/test_catalog_discovery_reopen.py`
-
-**Interfaces**
-- Потребляет: `acquire_family_locks`, `_lock_rows` (review), `_NOT_APPLICABLE_CATALOG_KINDS`, `reconcile_or_defer`, `record_event`, `context_card`, `mark_context_not_work` (существуют).
-- Производит:
-
-```python
-REFUSE_CONTEXT_NOT_REOPENABLE_STATE = "context_not_reopenable_state"
-REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION = "context_not_applicable_by_position"
-def is_reopenable(*, semantic_state: str, catalog_kind: str, archived: bool) -> bool
-def reopen_context(db: Session, *, context_id: int, actor_id: int) -> CatalogContext
-# context_card += reopenable: bool, catalog_kind: str
-# EVENT_REQUIRED_KEYS["context_reopened"] = {"from_state", "to_state"}
-```
-
-**Утверждения**
-- «не работа» человека → возврат: `semantic_kind_source = manual` даёт
-  `CONFIRMED`, `rule` — `SUGGESTED` (два входа, решение 13); семья, вариант
-  и значения пусты; событие `context_reopened` с автором и `{from_state,
-  to_state}`; задание `family_suggestion` поставлено той же транзакцией
-  (контекст применим — в единице есть активная семья);
-- отказ `context_not_applicable_by_position` на строке `HEADER`,
-  `LOT_HEADER`, `TRASH` (три входа) и на «не работе» человека, чью строку
-  потом пометили `set_position_kind_global`; отказ
-  `context_not_reopenable_state` на `SUGGESTED`; `context_archived` на
-  архивном;
-- `is_reopenable` и `reopen_context` дают одно решение на всех входах выше
-  (один предикат; тест — таблица входов против обоих);
-- параллельные возврат и глобальная пометка той же строки — без deadlock,
-  исход один из двух допустимых; проверено снятием `FOR SHARE` строки в
-  `reopen_context` (воспроизводится возврат контекста, чья строка уже
-  `HEADER`);
-- карточка контекста несёт `reopenable` и `catalog_kind`.
-
-**Имена**
-- Заводятся: два кода, `is_reopenable`, `reopen_context`, событие `context_reopened` в реестрах `semantic_events.py`.
-- Существуют, проверено `grep`-ом: `mark_context_not_work` (`services/work_variants.py:1057`), `take_context_off_work` (`:1105`), `acquire_family_locks` (`services/family_change.py:163`), `_lock_rows` (`services/review.py:90`), `_NOT_APPLICABLE_CATALOG_KINDS` (`services/context_routing.py:458`), `reconcile_or_defer` (`services/semantic_reconcile.py:1547`), `context_card` (`crud/semantic.py:682`), `set_position_kind_global` (`services/review.py:907`).
-
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 115, ПОСЛЕ ≥ 128.
-
-### Task 7: охват и тело открытия
+### Task 3: задание открытия — охват, тело, разбор, исполнение, запуск
 
 **Files**
-- Create: `backend/services/family_discovery.py`
-- Edit: `backend/config.py`, `backend/.env.example`, `backend/services/semantic_cost.py`, `backend/services/variant_answer.py` (только `DISCOVERY_RESPONSE_FORMAT`)
-- Test: `backend/tests/integration/test_catalog_discovery_scope.py`, `backend/tests/unit/test_catalog_discovery_request.py`
+- Create: `backend/services/family_discovery.py`, `backend/services/discovery_result.py`, `backend/crud/discovery.py`
+- Edit: `backend/config.py`, `backend/.env.example`, `backend/services/semantic_cost.py`, `backend/services/variant_answer.py`,
+  `backend/services/semantic_worker.py`, `backend/services/semantic_reconcile.py`, `backend/services/semantic_decisions.py`,
+  `backend/crud/semantic_queue.py`, `backend/routers/semantic.py`
+- Test: `backend/tests/integration/test_catalog_discovery_scope.py`, `test_catalog_discovery_worker.py`,
+  `test_catalog_discovery_races.py`, `test_catalog_discovery_launch.py`;
+  `backend/tests/unit/test_catalog_discovery_request.py`, `test_catalog_discovery_answer.py`
 
 **Interfaces**
-- Потребляет: `RenderedRequest`, `family_line`, `top_path`, `FAMILY_BLOCK_HEADER`, `_canonical_bytes`/`_sha256_hex`, `SERIALIZATION_VERSION`, `tariffs_from`, `FamilyCategory`, `lock_categories` (Task 2; существуют).
+
+*Часть А — охват и тело*
+
+- Потребляет: `RenderedRequest`, `family_line`, `top_path`, `FAMILY_BLOCK_HEADER`, `_canonical_bytes`/`_sha256_hex`, `SERIALIZATION_VERSION`, `tariffs_from`, `FamilyCategory`, `lock_categories` (Task 1; существуют).
 - Производит:
 
 ```python
@@ -586,7 +583,94 @@ def render_discovery_request(scope: DiscoveryScope, db: Session, *, settings: Se
 # tariffs_from(settings, SemanticJobKind.family_discovery) -> SEMANTIC_DISCOVERY_PRICE_*
 ```
 
+*Часть Б — разбор ответа*
+
+- Потребляет: `AnswerSchemaError`, `_check_keys`, `DiscoveryScope` (часть А; существуют).
+- Производит:
+
+```python
+@dataclass(frozen=True)
+class DiscoverySent:              # что ушло модели — для проверки ссылок ответа
+    names_count: int
+    active_family_ids: frozenset[int]
+    uncategorized_family_ids: frozenset[int]
+    category_ids: frozenset[int]
+@dataclass(frozen=True)
+class DiscoveryGroup:
+    family_id: int | None
+    title: str | None
+    definition: str | None
+    category_id: int | None
+    similar_family_id: int | None
+    names: tuple[int, ...]
+@dataclass(frozen=True)
+class DiscoveryAnswer:
+    groups: tuple[DiscoveryGroup, ...]
+    not_work: tuple[int, ...]
+    family_categories: tuple[tuple[int, int], ...]   # (family_id, category_id)
+    unassigned: tuple[int, ...]                      # пропущенные номера
+def parse_discovery_answer(raw: str, sent: DiscoverySent) -> DiscoveryAnswer
+```
+
+*Часть В — исполнение*
+
+- Потребляет: `render_discovery_request`, `discovery_scope`, `parse_discovery_answer`, `DiscoverySent`, `lock_categories` (Task 1; части А и Б); `render_job_request`, `record_result`, `claim_next`, `_note_closed`, `_split_jobs`, `_open_suggestion_state`, `list_jobs`, `_schema_job_rows`, `_hold_verdict`, `retry_job`, `recover_semantic_jobs` (существуют).
+- Производит:
+
+```python
+# services/discovery_result.py
+@dataclass(frozen=True)
+class DiscoveryOutcome:
+    applied: bool
+    unapplied_reason: Literal["lost_claim", "stale_fingerprint"] | None
+    drafts_created: int
+    superseded_drafts: int
+    unassigned: int
+def apply_discovery(db: Session, *, job_id: int, claim_token: UUID,
+                    answer: DiscoveryAnswer, settings: Settings) -> DiscoveryOutcome
+# render_job_request / record_result — ветвь SemanticJobKind.family_discovery
+# JobRow += kind: str, unit_code: str | None, names_count: int | None; context_id: int | None
+```
+
+*Часть Г — запуск и блок «Открыть семьи»*
+
+- Потребляет: `discovery_scope`, `render_discovery_request`, `reserve_for_known_prefix`, `expected_cached_cost`, `known_prefix_tokens`, `RESERVE_FORMULA_VERSION`, `_open_suggestion_state` (существуют).
+- Производит:
+
+```python
+REFUSE_DISCOVERY_IN_PROGRESS = "discovery_in_progress"
+REFUSE_DISCOVERY_UNIT_BUSY = "discovery_unit_busy"
+REFUSE_DISCOVERY_NOTHING_TO_DO = "discovery_nothing_to_do"
+REFUSE_DISCOVERY_TOO_MANY_NAMES = "discovery_too_many_names"
+REFUSE_DISCOVERY_INPUT_UNCHANGED = "discovery_input_unchanged"
+REFUSE_PREVIEW_CHANGED = "preview_changed"          # существующий код протокола preview
+@dataclass(frozen=True)
+class DiscoveryPreview:
+    unit_id: int | None
+    counts: ScopeCounts
+    active_families: int
+    reserve_usd: Decimal
+    expected_cached_usd: Decimal
+    preview_hash: str
+def preview_discovery(db: Session, *, unit_id: int | None, settings: Settings) -> DiscoveryPreview
+def launch_discovery(db: Session, *, unit_id: int | None, preview_hash: str,
+                     actor_id: int, settings: Settings) -> SemanticJob
+# crud/discovery.py
+def discovery_units(db: Session, *, settings: Settings) -> list[dict]   # строка на единицу: counts, оценка, последнее открытие
+```
+
+*Маршруты*
+
+```text
+GET    /api/v1/semantic/discovery/units
+POST   /api/v1/semantic/discovery/preview     {unit_id: int | null}
+POST   /api/v1/semantic/discovery             {unit_id: int | null, preview_hash: str}
+```
+
 **Утверждения**
+
+*Часть А — охват и тело*
+
 - охват — каждое условие предиката §2.3 отдельным входом (DoD 3): архив; без
   членств; `NOT_APPLICABLE`; семья; ожидание; строка `HEADER`; ждущее
   предложение существующей семьи — вне; система; ждущая «новая семья»;
@@ -614,50 +698,8 @@ def render_discovery_request(scope: DiscoveryScope, db: Session, *, settings: Se
 - `tariffs_from(..., family_discovery)` отдаёт тарифы открытия;
   `reasoning = {"effort": …}`, не `enabled: false`.
 
-**Имена**
-- Заводятся: настройки `SEMANTIC_DISCOVERY_*`, `DISCOVERY_RESPONSE_FORMAT`, `DISCOVERY_RESPONSE_SCHEMA_VERSION`, модуль `services/family_discovery.py` и имена выше.
-- Существуют, проверено `grep`-ом: `RenderedRequest` (`services/semantic_request.py:147`), `family_line` (`:160`), `top_path` (`:193`), `FAMILY_BLOCK_HEADER` (`:81`), `load_request_material` (`:230`), `tariffs_from` (`services/semantic_cost.py:61`), `find_privacy_matches` (`services/semantic_privacy.py:260`), `SCHEMA_RESPONSE_FORMAT` (`services/variant_answer.py:32`).
+*Часть Б — разбор ответа*
 
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 128, ПОСЛЕ ≥ 150.
-- `just test-unit-k catalog_discovery` — ДО ≥ 5, ПОСЛЕ ≥ 20.
-- `just test-unit-k "semantic_queue_settings or work_variants_settings"` — зелёная, число не убывает.
-
-### Task 8: разбор ответа открытия
-
-**Files**
-- Edit: `backend/services/variant_answer.py`
-- Test: `backend/tests/unit/test_catalog_discovery_answer.py`
-
-**Interfaces**
-- Потребляет: `AnswerSchemaError`, `_check_keys`, `DiscoveryScope` (Task 7; существуют).
-- Производит:
-
-```python
-@dataclass(frozen=True)
-class DiscoverySent:              # что ушло модели — для проверки ссылок ответа
-    names_count: int
-    active_family_ids: frozenset[int]
-    uncategorized_family_ids: frozenset[int]
-    category_ids: frozenset[int]
-@dataclass(frozen=True)
-class DiscoveryGroup:
-    family_id: int | None
-    title: str | None
-    definition: str | None
-    category_id: int | None
-    similar_family_id: int | None
-    names: tuple[int, ...]
-@dataclass(frozen=True)
-class DiscoveryAnswer:
-    groups: tuple[DiscoveryGroup, ...]
-    not_work: tuple[int, ...]
-    family_categories: tuple[tuple[int, int], ...]   # (family_id, category_id)
-    unassigned: tuple[int, ...]                      # пропущенные номера
-def parse_discovery_answer(raw: str, sent: DiscoverySent) -> DiscoveryAnswer
-```
-
-**Утверждения**
 - каждое правило разбора §2.3 — схемная ошибка отдельным входом (DoD 6):
   новый черновик без имени, без определения, с пробельным именем; категория
   не из справочника; похожая семья не из активных; группа активной семьи с
@@ -672,40 +714,8 @@ def parse_discovery_answer(raw: str, sent: DiscoverySent) -> DiscoveryAnswer
 - ответ в ```json-ограде и голым объектом разбирается одинаково; текст
   вокруг JSON — схемная ошибка (правило 3а).
 
-**Имена**
-- Заводятся: `DiscoverySent`, `DiscoveryGroup`, `DiscoveryAnswer`, `parse_discovery_answer`.
-- Существуют, проверено `grep`-ом: `AnswerSchemaError` (`services/semantic_answer.py:67`), `_check_keys` (`services/variant_answer.py:173`), `parse_schema_answer` (`:211`).
+*Часть В — исполнение*
 
-**Проверка**
-- `just test-unit-k catalog_discovery` — ДО ≥ 20, ПОСЛЕ ≥ 45.
-
-### Task 9: исполнение открытия — захват, обработка ответа, очереди
-
-**Files**
-- Create: `backend/services/discovery_result.py`
-- Edit: `backend/services/semantic_worker.py`, `backend/services/semantic_reconcile.py`, `backend/services/semantic_decisions.py`, `backend/crud/semantic_queue.py`
-- Test: `backend/tests/integration/test_catalog_discovery_worker.py`, `backend/tests/integration/test_catalog_discovery_races.py`
-
-**Interfaces**
-- Потребляет: `render_discovery_request`, `discovery_scope`, `parse_discovery_answer`, `DiscoverySent`, `lock_categories` (Task 2, 7, 8); `render_job_request`, `record_result`, `claim_next`, `_note_closed`, `_split_jobs`, `_open_suggestion_state`, `list_jobs`, `_schema_job_rows`, `_hold_verdict`, `retry_job`, `recover_semantic_jobs` (существуют).
-- Производит:
-
-```python
-# services/discovery_result.py
-@dataclass(frozen=True)
-class DiscoveryOutcome:
-    applied: bool
-    unapplied_reason: Literal["lost_claim", "stale_fingerprint"] | None
-    drafts_created: int
-    superseded_drafts: int
-    unassigned: int
-def apply_discovery(db: Session, *, job_id: int, claim_token: UUID,
-                    answer: DiscoveryAnswer, settings: Settings) -> DiscoveryOutcome
-# render_job_request / record_result — ветвь SemanticJobKind.family_discovery
-# JobRow += kind: str, unit_code: str | None, names_count: int | None; context_id: int | None
-```
-
-**Утверждения**
 - захват открытия: бюджет, `privacy_hold` → «Отправить» → выполнено, «Не
   отправлять» → `cancelled/privacy_declined`; `error` → «Повторить»;
   `running` при старте → `pending` (`recover_semantic_jobs`); схемная ошибка
@@ -741,49 +751,8 @@ def apply_discovery(db: Session, *, job_id: int, claim_token: UUID,
   deadlock и без потерянной записи; проверено снятием `FOR UPDATE`
   черновиков и `FOR SHARE` категорий соответственно.
 
-**Имена**
-- Заводятся: модуль `services/discovery_result.py`, `DiscoveryOutcome`, `apply_discovery`, поля `JobRow`.
-- Существуют, проверено `grep`-ом: `render_job_request` (`services/semantic_worker.py:219`), `record_result` (`:468`), `claim_next` (`:274`), `_note_closed` (`:269`), `_split_jobs` (`services/semantic_reconcile.py:918`), `_open_suggestion_state` (`:637`), `list_jobs` (`crud/semantic_queue.py:868`), `_schema_job_rows` (`:837`), `_hold_verdict` (`services/semantic_decisions.py:401`), `retry_job` (`:622`), `recover_semantic_jobs` (`services/semantic_runner.py:33`), `move_members`, `archive_context` (`services/context_operations.py:610`, `:759`), `archive_family` (`services/work_families.py:992`).
+*Часть Г — запуск и блок «Открыть семьи»*
 
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 150, ПОСЛЕ ≥ 180.
-- `just test-int-local-k "semantic_worker or semantic_queue_worker"` — ДО ≥ 74, ПОСЛЕ ≥ 74.
-- `just test-unit-k semantic_queue_architecture` — зелёная (новый модуль в списках разрешённых, если архитектурный тест его требует).
-
-### Task 10: запуск открытия и блок «Открыть семьи»
-
-**Files**
-- Edit: `backend/services/family_discovery.py`
-- Create: `backend/crud/discovery.py`
-- Test: `backend/tests/integration/test_catalog_discovery_launch.py`
-
-**Interfaces**
-- Потребляет: `discovery_scope`, `render_discovery_request`, `reserve_for_known_prefix`, `expected_cached_cost`, `known_prefix_tokens`, `RESERVE_FORMULA_VERSION`, `_open_suggestion_state` (существуют).
-- Производит:
-
-```python
-REFUSE_DISCOVERY_IN_PROGRESS = "discovery_in_progress"
-REFUSE_DISCOVERY_UNIT_BUSY = "discovery_unit_busy"
-REFUSE_DISCOVERY_NOTHING_TO_DO = "discovery_nothing_to_do"
-REFUSE_DISCOVERY_TOO_MANY_NAMES = "discovery_too_many_names"
-REFUSE_DISCOVERY_INPUT_UNCHANGED = "discovery_input_unchanged"
-REFUSE_PREVIEW_CHANGED = "preview_changed"          # существующий код протокола preview
-@dataclass(frozen=True)
-class DiscoveryPreview:
-    unit_id: int | None
-    counts: ScopeCounts
-    active_families: int
-    reserve_usd: Decimal
-    expected_cached_usd: Decimal
-    preview_hash: str
-def preview_discovery(db: Session, *, unit_id: int | None, settings: Settings) -> DiscoveryPreview
-def launch_discovery(db: Session, *, unit_id: int | None, preview_hash: str,
-                     actor_id: int, settings: Settings) -> SemanticJob
-# crud/discovery.py
-def discovery_units(db: Session, *, settings: Settings) -> list[dict]   # строка на единицу: counts, оценка, последнее открытие
-```
-
-**Утверждения**
 - каждый отказ запуска отдельным входом (DoD 8): живое открытие единицы;
   `pending`/`running` предложения в единице; удержанная пачка, касающаяся
   единицы (пачка другой единицы и пачка из одних `context_values` — не
@@ -803,22 +772,57 @@ def discovery_units(db: Session, *, settings: Settings) -> list[dict]   # стр
   единицы; последнее открытие — статус, дата, число открытых черновиков;
   единица `NULL` — своя строка.
 
+*Маршруты*
+
+- каждый маршрут части — `admin`, `member` получает `403`; сторож прав зелёный;
+- каждый новый код отказа части отвечает статусом таблицы §2.12 (`404`/`409`/`422`)
+  с `{code, message}` — по входу на код; ни один код не падает в `AssertionError`
+  карты `routers/semantic.py:98-174`;
+- `unit_id: null` проходит в блок, preview и запуск.
+
 **Имена**
+
+*Часть А — охват и тело*
+
+- Заводятся: настройки `SEMANTIC_DISCOVERY_*`, `DISCOVERY_RESPONSE_FORMAT`, `DISCOVERY_RESPONSE_SCHEMA_VERSION`, модуль `services/family_discovery.py` и имена выше.
+- Существуют, проверено `grep`-ом: `RenderedRequest` (`services/semantic_request.py:147`), `family_line` (`:160`), `top_path` (`:193`), `FAMILY_BLOCK_HEADER` (`:81`), `load_request_material` (`:230`), `tariffs_from` (`services/semantic_cost.py:61`), `find_privacy_matches` (`services/semantic_privacy.py:260`), `SCHEMA_RESPONSE_FORMAT` (`services/variant_answer.py:32`).
+
+*Часть Б — разбор ответа*
+
+- Заводятся: `DiscoverySent`, `DiscoveryGroup`, `DiscoveryAnswer`, `parse_discovery_answer`.
+- Существуют, проверено `grep`-ом: `AnswerSchemaError` (`services/semantic_answer.py:67`), `_check_keys` (`services/variant_answer.py:173`), `parse_schema_answer` (`:211`).
+
+*Часть В — исполнение*
+
+- Заводятся: модуль `services/discovery_result.py`, `DiscoveryOutcome`, `apply_discovery`, поля `JobRow`.
+- Существуют, проверено `grep`-ом: `render_job_request` (`services/semantic_worker.py:219`), `record_result` (`:468`), `claim_next` (`:274`), `_note_closed` (`:269`), `_split_jobs` (`services/semantic_reconcile.py:918`), `_open_suggestion_state` (`:637`), `list_jobs` (`crud/semantic_queue.py:868`), `_schema_job_rows` (`:837`), `_hold_verdict` (`services/semantic_decisions.py:401`), `retry_job` (`:622`), `recover_semantic_jobs` (`services/semantic_runner.py:33`), `move_members`, `archive_context` (`services/context_operations.py:610`, `:759`), `archive_family` (`services/work_families.py:992`).
+
+*Часть Г — запуск и блок «Открыть семьи»*
+
 - Заводятся: пять кодов, `DiscoveryPreview`, `preview_discovery`, `launch_discovery`, модуль `crud/discovery.py`, `discovery_units`.
 - Существуют, проверено `grep`-ом: `reserve_for_known_prefix` (`services/semantic_cost.py:127`), `expected_cached_cost` (`:156`), `known_prefix_tokens` (`:102`), `RESERVE_FORMULA_VERSION` (`:35`), `_confirm` (`services/semantic_decisions.py:713`), `preview_unit_reask` (`:724`), `_open_suggestion_state` (`services/semantic_reconcile.py:637`).
 
 **Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 180, ПОСЛЕ ≥ 200.
+- `just test-int-local-k catalog_discovery` — ДО ≥ 120, ПОСЛЕ ≥ 190.
+- `just test-unit-k catalog_discovery` — ДО ≥ 5, ПОСЛЕ ≥ 45.
+- `just test-int-local-k "semantic_worker or semantic_queue_worker"` — ДО ≥ 74, ПОСЛЕ ≥ 74.
+- `just test-unit-k "semantic_queue_settings or work_variants_settings or semantic_queue_architecture"` — зелёная, число не убывает.
+- `uv run pytest tests -k auth_coverage` — ДО ≥ 151, ПОСЛЕ ≥ 154.
 
-### Task 11: черновики — вид и действия
+### Task 4: черновики, активация, «Вернуть в разбор»
 
 **Files**
 - Create: `backend/services/discovery_drafts.py`
-- Edit: `backend/crud/discovery.py`
-- Test: `backend/tests/integration/test_catalog_discovery_drafts.py`
+- Edit: `backend/crud/discovery.py`, `backend/services/work_variants.py`, `backend/services/semantic_events.py`,
+  `backend/crud/semantic.py`, `backend/routers/semantic.py`
+- Test: `backend/tests/integration/test_catalog_discovery_drafts.py`, `test_catalog_discovery_activate.py`,
+  `test_catalog_discovery_reopen.py`, `test_catalog_discovery_api.py`
 
 **Interfaces**
-- Потребляет: `FamilyDraft`, `FamilyDraftMember`, `FamilyCategoryProposal`, `lock_categories`, `is_in_scope`, `REFUSE_FAMILY_NOT_ACTIVE`, `REFUSE_CATEGORY_NOT_FOUND` (Task 1, 2, 7; существуют).
+
+*Часть А — черновики*
+
+- Потребляет: `FamilyDraft`, `FamilyDraftMember`, `FamilyCategoryProposal`, `lock_categories`, `is_in_scope`, `REFUSE_FAMILY_NOT_ACTIVE`, `REFUSE_CATEGORY_NOT_FOUND` (Task 1, 3; существуют).
 - Производит:
 
 ```python
@@ -839,7 +843,59 @@ def discovery_drafts(db: Session, *, unit_id: int | None) -> dict | None
 #   «не работа» построчно по наименованиям, «в активные семьи», остаток, предложения категорий
 ```
 
+*Часть Б — активация*
+
+- Потребляет: `create_family`, `activate_family`, `update_family`, `acquire_family_locks`, `take_context_off_work`, `reconcile_or_defer`, `lock_categories`, `is_in_scope`, `latest_discovery_job_id` (Task 1, 3; часть А; существуют).
+- Производит:
+
+```python
+REFUSE_DRAFT_WITHOUT_CATEGORY = "draft_without_category"
+REFUSE_CONTEXT_NOT_IN_GROUP = "context_not_in_group"
+REFUSE_CATEGORY_NOT_PROPOSED = "category_not_proposed"
+@dataclass(frozen=True)
+class ActivationOutcome:
+    created_family_ids: tuple[int, ...]
+    categories_applied: tuple[int, ...]
+    categories_skipped: tuple[int, ...]
+    not_work_applied: tuple[int, ...]
+    not_work_skipped: tuple[int, ...]
+    reask_unit_id: int | None
+def activate_discovery(db: Session, *, job_id: int, draft_ids: list[int],
+                       not_work_context_ids: list[int],
+                       family_categories: list[tuple[int, int]],
+                       actor_id: int) -> ActivationOutcome
+```
+
+*Часть В — «Вернуть в разбор»*
+
+- Потребляет: `acquire_family_locks`, `_lock_rows` (review), `_NOT_APPLICABLE_CATALOG_KINDS`, `reconcile_or_defer`, `record_event`, `context_card`, `mark_context_not_work` (существуют).
+- Производит:
+
+```python
+REFUSE_CONTEXT_NOT_REOPENABLE_STATE = "context_not_reopenable_state"
+REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION = "context_not_applicable_by_position"
+def is_reopenable(*, semantic_state: str, catalog_kind: str, archived: bool) -> bool
+def reopen_context(db: Session, *, context_id: int, actor_id: int) -> CatalogContext
+# context_card += reopenable: bool, catalog_kind: str
+# EVENT_REQUIRED_KEYS["context_reopened"] = {"from_state", "to_state"}
+```
+
+*Маршруты*
+
+```text
+GET    /api/v1/semantic/discovery/drafts?unit_id=
+PATCH  /api/v1/semantic/discovery/drafts/{id}
+POST   /api/v1/semantic/discovery/drafts/{id}/merge    {target_draft_id} | {target_family_id}
+POST   /api/v1/semantic/discovery/drafts/{id}/discard
+POST   /api/v1/semantic/discovery/drafts/{id}/restore
+POST   /api/v1/semantic/discovery/{job_id}/activate    {draft_ids, not_work_context_ids, family_categories: [{family_id, family_category_id}]}
+POST   /api/v1/semantic/contexts/{id}/reopen
+```
+
 **Утверждения**
+
+*Часть А — черновики*
+
 - «Править»: имя, определение, категория; `edited_by/at`; пустое имя или
   определение — отказ формы `CK_DRAFT_SHAPE` переведён в `422`; правка на
   удалённую категорию — `category_not_found`;
@@ -865,44 +921,10 @@ def discovery_drafts(db: Session, *, unit_id: int | None) -> dict | None
   deadlock (порядок решения 20), исход — `category_not_found` или черновик
   с `NULL`; проверено снятием `FOR SHARE` категории в `edit_draft`.
 
-**Имена**
-- Заводятся: модуль `services/discovery_drafts.py` и имена выше, `discovery_drafts`.
-- Существуют, проверено `grep`-ом: `REFUSE_FAMILY_NOT_ACTIVE` (`services/work_families.py:153`), `UNSET` (`:110`).
+*Часть Б — активация*
 
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 200, ПОСЛЕ ≥ 225.
-
-### Task 12: «Активировать отмеченные»
-
-**Files**
-- Edit: `backend/services/discovery_drafts.py`
-- Test: `backend/tests/integration/test_catalog_discovery_activate.py`
-
-**Interfaces**
-- Потребляет: `create_family`, `activate_family`, `update_family`, `acquire_family_locks`, `take_context_off_work`, `reconcile_or_defer`, `lock_categories`, `is_in_scope`, `latest_discovery_job_id` (Task 2, 7, 11; существуют).
-- Производит:
-
-```python
-REFUSE_DRAFT_WITHOUT_CATEGORY = "draft_without_category"
-REFUSE_CONTEXT_NOT_IN_GROUP = "context_not_in_group"
-REFUSE_CATEGORY_NOT_PROPOSED = "category_not_proposed"
-@dataclass(frozen=True)
-class ActivationOutcome:
-    created_family_ids: tuple[int, ...]
-    categories_applied: tuple[int, ...]
-    categories_skipped: tuple[int, ...]
-    not_work_applied: tuple[int, ...]
-    not_work_skipped: tuple[int, ...]
-    reask_unit_id: int | None
-def activate_discovery(db: Session, *, job_id: int, draft_ids: list[int],
-                       not_work_context_ids: list[int],
-                       family_categories: list[tuple[int, int]],
-                       actor_id: int) -> ActivationOutcome
-```
-
-**Утверждения**
 - шаги §2.5 0–5 одной транзакцией, порядок блокировок решения 20 (сторож
-  потока данных, как в Task 9);
+  потока данных, как в Task 3);
 - отмеченные черновики → активные семьи единицы с категориями; события
   `family_created` (`origin = "discovery"`) и `family_activated`; черновик
   → `activated` с `activated_family_id` (DoD 10);
@@ -927,67 +949,65 @@ def activate_discovery(db: Session, *, job_id: int, draft_ids: list[int],
   deadlock воспроизводится (DoD 14, круг 1);
 - `reask_unit_id` — единица открытия.
 
+*Часть В — «Вернуть в разбор»*
+
+- «не работа» человека → возврат: `semantic_kind_source = manual` даёт
+  `CONFIRMED`, `rule` — `SUGGESTED` (два входа, решение 13); семья, вариант
+  и значения пусты; событие `context_reopened` с автором и `{from_state,
+  to_state}`; задание `family_suggestion` поставлено той же транзакцией
+  (контекст применим — в единице есть активная семья);
+- отказ `context_not_applicable_by_position` на строке `HEADER`,
+  `LOT_HEADER`, `TRASH` (три входа) и на «не работе» человека, чью строку
+  потом пометили `set_position_kind_global`; отказ
+  `context_not_reopenable_state` на `SUGGESTED`; `context_archived` на
+  архивном;
+- `is_reopenable` и `reopen_context` дают одно решение на всех входах выше
+  (один предикат; тест — таблица входов против обоих);
+- параллельные возврат и глобальная пометка той же строки — без deadlock,
+  исход один из двух допустимых; проверено снятием `FOR SHARE` строки в
+  `reopen_context` (воспроизводится возврат контекста, чья строка уже
+  `HEADER`);
+- карточка контекста несёт `reopenable` и `catalog_kind`.
+
+*Маршруты*
+
+- каждый маршрут части — `admin`, `member` получает `403`; сторож прав зелёный;
+- каждый новый код отказа части отвечает статусом таблицы §2.12 (`404`/`409`/`422`)
+  с `{code, message}` — по входу на код; ни один код не падает в `AssertionError`
+  карты `routers/semantic.py:98-174`;
+- черновики — группы, члены, остаток, предложения категорий; активация —
+  `ActivationOutcome` с `reask_unit_id`; ошибка сервиса активации не оставляет
+  записей (одна транзакция маршрута); `unit_id: null` проходит в черновики.
+
 **Имена**
+
+*Часть А — черновики*
+
+- Заводятся: модуль `services/discovery_drafts.py` и имена выше, `discovery_drafts`.
+- Существуют, проверено `grep`-ом: `REFUSE_FAMILY_NOT_ACTIVE` (`services/work_families.py:153`), `UNSET` (`:110`).
+
+*Часть Б — активация*
+
 - Заводятся: три кода, `ActivationOutcome`, `activate_discovery`.
 - Существуют, проверено `grep`-ом: `acquire_family_locks` (`services/family_change.py:163`), `take_context_off_work` (`services/work_variants.py:1105`), `reconcile_or_defer` (`services/semantic_reconcile.py:1547`), `REFUSE_DUPLICATE_ACTIVE_FAMILY` (`services/work_families.py:142`).
 
-**Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 225, ПОСЛЕ ≥ 245.
+*Часть В — «Вернуть в разбор»*
 
-### Task 13: API
-
-**Files**
-- Edit: `backend/routers/semantic.py`
-- Test: `backend/tests/integration/test_catalog_discovery_api.py`
-
-**Interfaces**
-- Потребляет: все сервисы Task 2, 6, 10, 11, 12; `_mutating`, `_domain_error`, `require_admin` (существуют).
-- Производит: маршруты таблицы §2.12 спеки:
-
-```text
-GET    /api/v1/semantic/discovery/units
-POST   /api/v1/semantic/discovery/preview            {unit_id: int | null}
-POST   /api/v1/semantic/discovery                    {unit_id: int | null, preview_hash: str}
-GET    /api/v1/semantic/discovery/drafts?unit_id=
-PATCH  /api/v1/semantic/discovery/drafts/{id}
-POST   /api/v1/semantic/discovery/drafts/{id}/merge  {target_draft_id} | {target_family_id}
-POST   /api/v1/semantic/discovery/drafts/{id}/discard
-POST   /api/v1/semantic/discovery/drafts/{id}/restore
-POST   /api/v1/semantic/discovery/{job_id}/activate  {draft_ids, not_work_context_ids, family_categories: [{family_id, family_category_id}]}
-POST   /api/v1/semantic/contexts/{id}/reopen
-GET    /api/v1/semantic/family-categories
-POST   /api/v1/semantic/family-categories
-PATCH  /api/v1/semantic/family-categories/{id}
-DELETE /api/v1/semantic/family-categories/{id}
-```
-
-**Утверждения**
-- каждый маршрут — `admin`, `member` получает `403`; сторож прав зелёный;
-- каждый новый код отказа отвечает статусом таблицы §2.12 (`404`/`409`/`422`)
-  с `{code, message}` — по входу на код; ни один код не падает в
-  `AssertionError` карты;
-- `unit_id: null` проходит в preview, запуск, черновики и блок;
-- форма ответов: блок — список единиц с числами и последним открытием;
-  черновики — группы, члены, остаток, предложения; активация —
-  `ActivationOutcome` с `reask_unit_id`; категории — с числом семей;
-- активация — одна транзакция: ошибка сервиса не оставляет записей.
-
-**Имена**
-- Заводятся: обработчики маршрутов и модели тел запросов.
-- Существуют, проверено `grep`-ом: `_domain_error` (`routers/semantic.py:202`), `_STATUS_NOT_FOUND` (`:98`), `_STATUS_CONFLICT` (`:109`), `_STATUS_UNPROCESSABLE` (`:143`), `mark_not_work_route` (`:754`).
+- Заводятся: два кода, `is_reopenable`, `reopen_context`, событие `context_reopened` в реестрах `semantic_events.py`.
+- Существуют, проверено `grep`-ом: `mark_context_not_work` (`services/work_variants.py:1057`), `take_context_off_work` (`:1105`), `acquire_family_locks` (`services/family_change.py:163`), `_lock_rows` (`services/review.py:90`), `_NOT_APPLICABLE_CATALOG_KINDS` (`services/context_routing.py:458`), `reconcile_or_defer` (`services/semantic_reconcile.py:1547`), `context_card` (`crud/semantic.py:682`), `set_position_kind_global` (`services/review.py:907`).
 
 **Проверка**
-- `just test-int-local-k catalog_discovery` — ДО ≥ 245, ПОСЛЕ ≥ 275.
-- `uv run pytest tests -k auth_coverage` — ДО 147, ПОСЛЕ ≥ 161.
+- `just test-int-local-k catalog_discovery` — ДО ≥ 190, ПОСЛЕ ≥ 250.
+- `uv run pytest tests -k auth_coverage` — ДО ≥ 154, ПОСЛЕ ≥ 161.
 
-### Task 14: фронт — категории, «Вернуть в разбор», метка «система», строки открытия в очередях
+### Task 5: фронт — категории, «Вернуть в разбор», метка «система», строки открытия в очередях
 
 **Files**
 - Create: `frontend/src/pages/families/FamilyCategoriesDialog.tsx` (+ `.test.tsx`)
 - Edit: `frontend/src/types/domain.ts`, `services/api/domain.ts`, `services/queries.ts`, `services/queryKeys.ts`, `test/handlers.ts`, `pages/families/FamiliesTab.tsx`, `CreateFamilyDialog.tsx`, `ContextCard.tsx`, `SuggestionGroups.tsx`, `ErrorsQueue.tsx`, `PrivacyHoldBlock.tsx`, `labels.ts` (+ их тесты)
 
 **Interfaces**
-- Потребляет: API Task 13; `useWorkFamilies`, `useUpdateWorkFamily`, `useActivateWorkFamily`, `useCreateFamilyFromSuggestion`, `useMarkNotWork`, `SEMANTIC_KIND_LABEL`, типы `WorkFamily`, `ContextCardData`, `SuggestionGroup`, `JobRow` (существуют).
+- Потребляет: маршруты Task 1, 3, 4; `useWorkFamilies`, `useUpdateWorkFamily`, `useActivateWorkFamily`, `useCreateFamilyFromSuggestion`, `useMarkNotWork`, `SEMANTIC_KIND_LABEL`, типы `WorkFamily`, `ContextCardData`, `SuggestionGroup`, `JobRow` (существуют).
 - Производит:
 
 ```ts
@@ -1034,14 +1054,14 @@ export function useReopenContext()
 - `npx vitest run src/pages/families` — ДО 672, ПОСЛЕ ≥ 700.
 - `just lint-frontend` и `just typecheck-frontend` — зелёные.
 
-### Task 15: фронт — блок «Открыть семьи», окно запуска, черновики
+### Task 6: фронт — блок «Открыть семьи», окно запуска, черновики
 
 **Files**
 - Create: `frontend/src/pages/families/discovery/DiscoveryBlock.tsx`, `DiscoveryLaunchDialog.tsx`, `DiscoveryDrafts.tsx`, `DraftCard.tsx`, `NotWorkGroup.tsx`, `CategoryProposals.tsx` (+ `.test.tsx` у каждого)
 - Edit: `frontend/src/pages/families/NewQueue.tsx`, `SuggestionsTab.tsx`, `types/domain.ts`, `services/api/domain.ts`, `services/queries.ts`, `services/queryKeys.ts`, `test/handlers.ts`
 
 **Interfaces**
-- Потребляет: API Task 13; `PreviewDialog`, `PreviewTarget`, `useReaskPreview`, `useFamilyCategories` (Task 14; существуют).
+- Потребляет: маршруты Task 1, 3, 4; `PreviewDialog`, `PreviewTarget`, `useReaskPreview`, `useFamilyCategories` (Task 5; существуют).
 - Производит:
 
 ```ts
@@ -1084,16 +1104,27 @@ export function useDiscoveryUnits(), useDiscoveryPreview(), useLaunchDiscovery()
 - `npx vitest run src/pages/families` — ДО ≥ 700, ПОСЛЕ ≥ 740.
 - `just lint-frontend` и `just typecheck-frontend` — зелёные.
 
-### Task 16: документация и ревизия `AGENTS.md`
+### Task 7: ревизия `AGENTS.md`, стенд, devlog
 
 **Files**
-- Edit: `AGENTS.md`, `docs/AGENTS-revisions.md`, `docs/reference/screens.md`, `docs/reference/schema.md` (сверка с кодом после Task 1–12)
+- Create: `docs/devlog/2026-10-09-catalog-discovery.md`
+- Edit: `AGENTS.md`, `docs/AGENTS-revisions.md`, `docs/reference/screens.md`, `docs/reference/schema.md`, `docs/product-roadmap.md`
 
 **Interfaces**
-- Потребляет: всё сделанное Task 1–15.
+
+*Часть А — документация и ревизия*
+
+- Потребляет: всё сделанное Task 1–6.
 - Производит: ревизия `AGENTS.md` (номер — в коммите ревизии).
 
+*Часть Б — стенд и финал*
+
+- Потребляет: всё сделанное; стенд `gca_dev` на `0020`.
+
 **Утверждения**
+
+*Часть А — документация и ревизия*
+
 - `AGENTS.md` §3 «Без брокеров» — «исполняет четыре вида заданий»; §3 «Что
   уходит наружу» — «…и семьи (имена, определения, категории — имена и
   определения справочника категорий — и ценовые параметры …)», запреты
@@ -1103,26 +1134,12 @@ export function useDiscoveryUnits(), useDiscoveryPreview(), useLaunchDiscovery()
   `docs/AGENTS-revisions.md` целиком;
 - `screens.md` `## 9.` — абзацы «Открыть семьи», «Черновики семей»,
   «Категории семей», «Вернуть в разбор»; якорь не изменился;
-- `schema.md` совпадает с моделями после Task 1–12 (каждая таблица и
+- `schema.md` совпадает с моделями после Task 1–4 (каждая таблица и
   колонка §2.2 названа);
 - ничего, кроме перечисленного, в `AGENTS.md` не изменилось (дифф).
 
-**Имена**
-- Существуют, проверено `grep`-ом: `«Без брокеров»`, `«Что уходит наружу»`, `Single-tenant` (`AGENTS.md` §3).
+*Часть Б — стенд и финал*
 
-**Проверка**
-- `just check-agents-index` — 18 из 18.
-
-### Task 17: стенд и финал
-
-**Files**
-- Create: `docs/devlog/2026-10-09-catalog-discovery.md`
-- Edit: `docs/product-roadmap.md`
-
-**Interfaces**
-- Потребляет: всё сделанное; стенд `gca_dev` на `0020`.
-
-**Утверждения**
 - порядок §2.13 спеки: миграция `0021` на `gca_dev`; опросчик включает
   пользователь; открытие «компл», просмотр, активация с категориями двух
   семей «компл»; перезапрос «компл»; то же для шести единиц работ; системы в
@@ -1145,11 +1162,17 @@ export function useDiscoveryUnits(), useDiscoveryPreview(), useLaunchDiscovery()
   кривой;
 - `just ci` зелёный перед пушем.
 
+**Имена**
+
+*Часть А — документация и ревизия*
+
+- Существуют, проверено `grep`-ом: `«Без брокеров»`, `«Что уходит наружу»`, `Single-tenant` (`AGENTS.md` §3).
+
 **Проверка**
-- `just ci` — зелёный.
 - `just check-agents-index` — 18 из 18.
+- `just ci` — зелёный перед пушем.
 
 ## Команды проверки
 
 - По задаче: указаны в самой задаче.
-- По фиче целиком: `just ci` (§9.3), плюс прогон на стенде (Task 17).
+- По фиче целиком: `just ci` (§9.3), плюс прогон на стенде (Task 7).
