@@ -21,6 +21,13 @@ jobs:
     services:
       postgres:
         image: pgvector/pgvector:pg16
+        # Вход в Docker Hub: анонимное скачивание образа упирается в лимит Docker Hub
+        # на общий адрес раннеров GitHub (`toomanyrequests` — job падал до тестов,
+        # 10.10.2026). Токен — Personal Access Token Docker Hub с правом Public Repo
+        # Read-only в секретах репозитория DOCKERHUB_USERNAME / DOCKERHUB_TOKEN.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
