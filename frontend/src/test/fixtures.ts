@@ -9,6 +9,9 @@ import type {
   ComparisonIncompleteReason,
   ComparisonRow,
   ContractCard,
+  EstimateOrigin,
+  TenderAward,
+  TenderBasis,
   Dashboard,
   DashboardAttention,
   ContractImportJob,
@@ -180,6 +183,8 @@ export const sampleContractCard: ContractCard = {
   bank_guarantee_note: "траншами по графику поставки",
   retention_pct: "5",
   retention_note: null,
+  tender_basis: null,
+  estimate_origin: null,
   estimates: [
     {
       id: 500,
@@ -1802,7 +1807,47 @@ export const sampleTenderCard: TenderCard = {
     { round_id: 3002, package_id: 501, offer_id: null, estimate_id: null, total_including_vat: null },
     { round_id: 3002, package_id: 502, offer_id: 7002, estimate_id: null, total_including_vat: null },
   ],
+  award: null,
+  award_history: [],
 };
+
+/** Основание договора 100: отметка 7 тендера 300, финальный этап 2 (спека Б2 §2.6). */
+export const sampleTenderBasis: TenderBasis = {
+  award_id: 7,
+  tender_id: 300,
+  tender_number: "Т-2026-001",
+  tender_title: "Генподряд на строительство",
+  round_id: 3002,
+  stage_no: 2,
+  offer_id: 7002,
+};
+
+/** Действующая отметка победителя без договора: КП этапа 2, ООО Бета. */
+export const sampleTenderAward: TenderAward = {
+  id: 7,
+  offer_id: 7002,
+  package_id: 502,
+  contractor_id: 21,
+  contractor_title: "ТОО Монолит",
+  contractor_inn: "987654321098",
+  round_id: 3002,
+  stage_no: 2,
+  estimate_id: 8002,
+  total_including_vat: "9720000000.00",
+  awarded_at: "2026-01-20T10:00:00Z",
+  awarded_by_email: "a.petrov@example.com",
+  contract: null,
+};
+
+/** Карточка договора 100, связанного с тендером, в одном из трёх состояний сметы. */
+export function linkedContractCard(estimateOrigin: EstimateOrigin): ContractCard {
+  return {
+    ...sampleContractCard,
+    tender_basis: sampleTenderBasis,
+    estimate_origin: estimateOrigin,
+    estimates: estimateOrigin === "no_estimate" ? [] : sampleContractCard.estimates,
+  };
+}
 
 // ---------------------------------------------------------------------------
 //  Свод по этапам (спека 2026-08-27-stage-summary-design.md §2.16).

@@ -30,6 +30,7 @@ import {
   stageSummaryAllUnknown,
   stageSummaryNet,
   stageSummaryWithUnknownSecondColumn,
+  sampleTenderBasis,
   sampleTenderCard,
   sampleTenders,
 } from "./fixtures";
@@ -335,6 +336,10 @@ interface HandlerState {
    * успешный ответ.
    */
   contractCardFails: boolean;
+  /** Последний `POST /tenders/:id/awards/:aid/contract` (спека Б2 §2.6): тело и адрес. */
+  lastAwardContract: { tenderId: number; awardId: number; body: Record<string, unknown> } | null;
+  /** Договор, у которого последним снимали основание (`DELETE /contracts/:id/tender-award`). */
+  lastUnlinkedContractId: number | null;
   /**
    * Сколько раз запрашивали диагностики второго таба.
    *
@@ -1729,6 +1734,8 @@ export const handlerState: HandlerState = {
   positionsPendingReview: 0,
   lastReportRequest: null,
   contractCardEstimatesOverride: null,
+  lastAwardContract: null,
+  lastUnlinkedContractId: null,
   contractCardFails: false,
   attentionRequests: 0,
   attentionOutcome: "issues",
@@ -1989,6 +1996,8 @@ export function resetHandlerState() {
   handlerState.lastReportRequest = null;
   handlerState.contractCardEstimatesOverride = null;
   handlerState.contractCardFails = false;
+  handlerState.lastAwardContract = null;
+  handlerState.lastUnlinkedContractId = null;
   handlerState.attentionRequests = 0;
   handlerState.attentionOutcome = "issues";
   handlerState.tenderRoundState = "loaded";
@@ -2716,6 +2725,10 @@ export const handlers = [
     return HttpResponse.json({ ...sampleContractCard, ...body });
   }),
   http.delete("/api/v1/contracts/:id", () => new HttpResponse(null, { status: 204 })),
+  http.delete("/api/v1/contracts/:id/tender-award", ({ params }) => {
+    handlerState.lastUnlinkedContractId = Number(params.id);
+    return HttpResponse.json({ ...sampleContractCard, tender_basis: null, estimate_origin: null });
+  }),
 
   // --- Загрузка сметы и поллинг ---
   http.post("/api/v1/estimates/upload", async ({ request }) => {
@@ -3188,6 +3201,29 @@ export const handlers = [
       return HttpResponse.json({ detail: "Тендер не найден." }, { status: 404 });
     }
     return HttpResponse.json(tenderCardFor(handlerState.tenderRoundState));
+  }),
+  // 202: договор создан, копия КП ещё импортируется (спека Б2 §2.5, §2.6).
+  http.post("/api/v1/tenders/:id/awards/:aid/contract", async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.lastAwardContract = {
+      tenderId: Number(params.id),
+      awardId: Number(params.aid),
+      body,
+    };
+    return HttpResponse.json(
+      {
+        contract: {
+          ...sampleContractCard,
+          id: 102,
+          contract_number: body.contract_number,
+          tender_basis: { ...sampleTenderBasis, award_id: Number(params.aid) },
+          estimate_origin: "no_estimate",
+          estimates: [],
+        },
+        job: { ...jobPayload("pending"), id: 512, contract_id: 102 },
+      },
+      { status: 202 }
+    );
   }),
   http.post("/api/v1/tenders", async ({ request }) => {
     const body = (await request.json()) as Record<string, unknown>;

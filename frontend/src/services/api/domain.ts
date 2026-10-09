@@ -46,6 +46,8 @@ import type {
   CategoryOverrideChangeSummary,
   ClearRoundCategoryOverrideInput,
   ContractCard,
+  ContractFromAwardInput,
+  ContractFromAwardResult,
   ContractImportJob,
   ContractInput,
   ContractRow,
@@ -170,6 +172,10 @@ export const contractsApi = {
 
   remove: (id: number): Promise<void> =>
     api.delete(`/v1/contracts/${id}`).then(() => undefined),
+
+  /** Снять основание «по тендеру»: договор и смета остаются (спека Б2 §2.6). */
+  unlinkTenderAward: (id: number): Promise<ContractCard> =>
+    api.delete<ContractCard>(`/v1/contracts/${id}/tender-award`).then((r) => r.data),
 };
 
 // ---------------------------------------------------------------------------
@@ -316,6 +322,15 @@ export const tendersApi = {
   update: (id: number, input: Partial<Pick<TenderInput, "title" | "notes">>): Promise<TenderCard> =>
     api.patch<TenderCard>(`/v1/tenders/${id}`, input).then((r) => r.data),
   remove: (id: number): Promise<void> => api.delete(`/v1/tenders/${id}`).then(() => undefined),
+  /** 202: договор создан, копия КП импортируется фоном (спека Б2 §2.5, §2.6). */
+  createContractFromAward: (
+    tenderId: number,
+    awardId: number,
+    input: ContractFromAwardInput
+  ): Promise<ContractFromAwardResult> =>
+    api
+      .post<ContractFromAwardResult>(`/v1/tenders/${tenderId}/awards/${awardId}/contract`, input)
+      .then((r) => r.data),
   createRound: (tenderId: number, input: RoundInput): Promise<TenderCard> =>
     api.post<TenderCard>(`/v1/tenders/${tenderId}/rounds`, input).then((r) => r.data),
   updateRound: (tenderId: number, roundId: number, input: Partial<Omit<RoundInput, "stage_no">>): Promise<TenderCard> =>

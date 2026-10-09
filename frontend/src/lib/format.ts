@@ -63,6 +63,20 @@ export function formatDecimalMoney(
 }
 
 /**
+ * Итог в миллионах: «9 720 млн с НДС»; `null` — «итог недоступен» (у отметки
+ * победителя и кандидата на привязку итог «с НДС» бывает не определён).
+ * Строка не переводится в число: целое от миллиона считается на BigInt,
+ * округление — по половине вверх.
+ */
+export function formatMillionsVat(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "итог недоступен";
+  const parsed = /^(\d+)(?:\.\d+)?$/.exec(String(value).trim());
+  if (!parsed) return `${value}${NBSP}₽ с НДС`;
+  const millions = (BigInt(parsed[1]) + 500000n) / 1000000n;
+  return `${millions.toString().replace(/\B(?=(\d{3})+(?!\d))/g, NBSP)} млн с НДС`;
+}
+
+/**
  * Доллары США из десятичной строки: «$4,20». Знак валюты стоит ПЕРЕД суммой
  * (так на экране «Предложения»: расход, резерв, ожидаемая цена), а не после,
  * как у рублёвого {@link formatDecimalMoney}. Число не строится: округление до

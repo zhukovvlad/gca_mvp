@@ -18,7 +18,7 @@ import {
   type ContractListParams,
 } from "./api/domain";
 import { contextRefusalLabel, pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
-import { jobRefetchInterval } from "./jobPolling";
+import { isTerminal, jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
 import type { ID } from "@/types/common";
@@ -38,6 +38,7 @@ import type {
   BankComparisonParams,
   ClearCategoryOverrideInput,
   ComparisonParams,
+  ContractFromAwardInput,
   ContractInput,
   ContractorInput,
   Decimal,
@@ -444,6 +445,51 @@ export function useDeleteContract() {
   });
 }
 
+/**
+ * Договор из КП победителя (спека Б2 §2.5, §2.6): `202 {contract, job}`. Смета
+ * появится позже, когда фоновое задание завершится, — её ждёт карточка договора
+ * ({@link useActiveContractImport}), а не форма.
+ *
+ * Инвалидируется то же, что у `useCreateContract`, плюс карточка тендера: у
+ * отметки появился договор, и плашка победителя должна это показать.
+ */
+export function useCreateContractFromAward(tenderId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ awardId, input }: { awardId: number; input: ContractFromAwardInput }) =>
+      tendersApi.createContractFromAward(tenderId, awardId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+      qc.invalidateQueries({ queryKey: qk.objects.all });
+      qc.invalidateQueries({ queryKey: qk.contractors.all });
+      qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      qc.invalidateQueries({ queryKey: qk.passport.all });
+      toast.success("Договор создан, смета копируется из КП");
+    },
+    onError: toastApiError,
+  });
+}
+
+/**
+ * «Отвязать от тендера» (спека Б2 §2.6): договор и смета остаются, пропадает
+ * основание. Перечитываются карточка договора и карточка тендера основания —
+ * у отметки снова нет договора, поэтому `tenderId` приходит вместе с запросом.
+ */
+export function useUnlinkTenderAward() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contractId }: { contractId: number; tenderId: number }) =>
+      contractsApi.unlinkTenderAward(contractId),
+    onSuccess: (contract, { tenderId }) => {
+      qc.invalidateQueries({ queryKey: qk.contracts.all });
+      qc.invalidateQueries({ queryKey: qk.tenders.card(tenderId) });
+      toast.success(`Договор ${contract.contract_number} отвязан от тендера`);
+    },
+    onError: toastApiError,
+  });
+}
+
 // ========== Загрузка сметы и поллинг задания (§7.1) ==========
 
 /**
@@ -599,6 +645,23 @@ export function useImportJob(jobId: number | undefined, ownerRef?: ImportJobOwne
     enabled: jobId !== undefined,
     refetchInterval: (query) => jobRefetchInterval(query.state.data),
   });
+}
+
+/**
+ * Активное задание импорта договора — то, что ещё не `done`/`error` — и его
+ * опрос (спека Б2 §2.8, решение 8). Копию КП после `202` ждёт карточка договора,
+ * а не форма: опрос, привязанный к форме, пропал бы при перезагрузке страницы и
+ * при открытии карточки из списка. Задание находится в истории загрузок, а на
+ * терминальном статусе `useImportJob` перезапрашивает карточку и историю — в
+ * ней активного задания уже нет, и опрос гаснет сам.
+ *
+ * Возвращает активное задание из истории (`undefined` — активного нет).
+ */
+export function useActiveContractImport(contractId: number | undefined) {
+  const jobsQ = useContractImportJobs(contractId);
+  const active = jobsQ.data?.find((job) => !isTerminal(job));
+  useImportJob(active?.id, contractId === undefined ? undefined : { contractId });
+  return active;
 }
 
 // ========== Ручной матчинг (§7.2) ==========

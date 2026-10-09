@@ -23,16 +23,19 @@ import { useCurrentUser } from "@/hooks/useAuth";
 import {
   useContractors,
   useCreateContract,
+  useCreateContractFromAward,
   useCreateContractor,
   useCreateObject,
   useCreateRateClass,
+  useObject,
   useObjects,
   useRateClasses,
   useUpdateContract,
 } from "@/services/queries";
 import { normalizeDecimalInput } from "@/lib/decimal";
+import { formatMillionsVat } from "@/lib/format";
 import { useDebounce } from "@/lib/useDebounce";
-import type { ContractCard, ContractInput } from "@/types/domain";
+import type { ContractCard, ContractInput, TenderAward } from "@/types/domain";
 
 interface ContractFormDialogProps {
   open: boolean;
@@ -40,7 +43,27 @@ interface ContractFormDialogProps {
   /** Задан — правка карточки, иначе создание. */
   contract?: ContractCard;
   onCreated?: (contract: ContractCard) => void;
+  /**
+   * Режим «из отметки» (спека Б2 §2.8): объект и подрядчик берёт отметка победителя,
+   * класс — текущий класс объекта; всё это только показано. Отправка идёт в команду
+   * отметки, а не в `POST /contracts`.
+   */
+  fromAward?: {
+    tenderId: number;
+    tenderNumber: string;
+    award: TenderAward;
+    objectId: number;
+    objectTitle: string;
+  };
+  /**
+   * Объект и подрядчик недоступны для правки; `hint` называет причину и выход.
+   * Тот же механизм, что у запертых сторон в режиме «из отметки»: связанный с
+   * тендером договор не меняет ни объект, ни подрядчика (спека Б2 §2.3).
+   */
+  lockedParties?: { hint: string };
 }
+
+type FromAward = NonNullable<ContractFormDialogProps["fromAward"]>;
 
 interface FormState {
   object_id: number | null;
@@ -126,6 +149,8 @@ export function ContractFormDialog({
   onOpenChange,
   contract,
   onCreated,
+  fromAward,
+  lockedParties,
 }: ContractFormDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -142,6 +167,8 @@ export function ContractFormDialog({
             contract={contract}
             onOpenChange={onOpenChange}
             onCreated={onCreated}
+            fromAward={fromAward}
+            lockedParties={lockedParties}
           />
         )}
       </DialogContent>
@@ -149,14 +176,41 @@ export function ContractFormDialog({
   );
 }
 
+/** Значение, взятое из отметки победителя: показано, но не редактируется. */
+function LockedField({
+  testId,
+  label,
+  children,
+}: {
+  testId: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label>{label}</Label>
+      <div
+        data-testid={testId}
+        className="rounded-md border border-border-subtle bg-neutral-soft px-3 py-2 text-sm text-fg"
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function ContractForm({
   contract,
   onOpenChange,
   onCreated,
+  fromAward,
+  lockedParties,
 }: {
   contract?: ContractCard;
   onOpenChange: (open: boolean) => void;
   onCreated?: (contract: ContractCard) => void;
+  fromAward?: FromAward;
+  lockedParties?: { hint: string };
 }) {
   const isEdit = contract !== undefined;
   const [form, setForm] = useState<FormState>(contract ? fromContract(contract) : EMPTY);
@@ -237,6 +291,17 @@ function ContractForm({
   const createRateClass = useCreateRateClass();
   const createContract = useCreateContract();
   const updateContract = useUpdateContract();
+  const createFromAward = useCreateContractFromAward(fromAward?.tenderId ?? 0);
+  /**
+   * Класс режима «из отметки» — ТЕКУЩИЙ класс объекта (`useObject`), а не снимок
+   * класса тендера: команда §2.5 берёт текущий класс объекта, и форма показывает
+   * то же, что получит договор. Без `fromAward` запрос не уходит.
+   */
+  const awardObjectQ = useObject(fromAward?.objectId);
+  const awardClassTitle = awardObjectQ.data?.rate_class_title ?? null;
+  const awardClassKnown =
+    awardObjectQ.isSuccess && awardObjectQ.data.rate_class_id !== null;
+  const awardClassMissing = awardObjectQ.isSuccess && !awardClassKnown;
 
   function patch(fields: Partial<FormState>) {
     setForm((prev) => ({ ...prev, ...fields }));
@@ -321,23 +386,22 @@ function ContractForm({
    */
   const classResolved = form.rate_class_id !== null || objectClass !== null;
 
-  const canSubmit =
-    form.object_id !== null &&
-    form.contractor_id !== null &&
-    form.contract_number.trim().length > 0 &&
-    form.signed_date.length > 0 &&
-    classResolved;
+  const requisitesFilled =
+    form.contract_number.trim().length > 0 && form.signed_date.length > 0;
+  const canSubmit = fromAward
+    ? requisitesFilled && awardClassKnown
+    : form.object_id !== null &&
+      form.contractor_id !== null &&
+      requisitesFilled &&
+      classResolved;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!canSubmit) return;
 
-    const payload: ContractInput = {
-      object_id: form.object_id as number,
-      contractor_id: form.contractor_id as number,
+    const requisites = {
       contract_number: form.contract_number.trim(),
       signed_date: form.signed_date,
-      rate_class_id: form.rate_class_id,
       title: form.title.trim() || null,
       signer: form.signer.trim() || null,
       total_amount: normalizeDecimalInput(form.total_amount) || null,
@@ -352,9 +416,22 @@ function ContractForm({
       retention_pct: normalizeDecimalInput(form.retention_pct) || null,
       retention_note: form.retention_note.trim() || null,
     };
+    const payload: ContractInput = {
+      object_id: form.object_id as number,
+      contractor_id: form.contractor_id as number,
+      rate_class_id: form.rate_class_id,
+      ...requisites,
+    };
 
     try {
-      if (isEdit) {
+      if (fromAward) {
+        // Объект, подрядчик и класс берёт отметка: в запрос они не уходят.
+        const { contract: created } = await createFromAward.mutateAsync({
+          awardId: fromAward.award.id,
+          input: requisites,
+        });
+        onCreated?.(created);
+      } else if (isEdit) {
         await updateContract.mutateAsync({ id: contract.id, input: payload });
       } else {
         const created = await createContract.mutateAsync(payload);
@@ -367,19 +444,34 @@ function ContractForm({
     }
   }
 
-  const pending = createContract.isPending || updateContract.isPending;
+  const pending =
+    createContract.isPending || updateContract.isPending || createFromAward.isPending;
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{isEdit ? "Правка договора" : "Новый договор"}</DialogTitle>
+        <DialogTitle>
+          {fromAward ? "Новый договор по тендеру" : isEdit ? "Правка договора" : "Новый договор"}
+        </DialogTitle>
         <DialogDescription>
-          Карточка договора — источник истины при импорте: объект, подрядчик и
-          реквизиты берутся отсюда, а не из файла сметы.
+          {fromAward
+            ? `Тендер № ${fromAward.tenderNumber} · победитель ${fromAward.award.contractor_title} · КП этапа ${fromAward.award.stage_no}, ${formatMillionsVat(fromAward.award.total_including_vat)}`
+            : "Карточка договора — источник истины при импорте: объект, подрядчик и реквизиты берутся отсюда, а не из файла сметы."}
         </DialogDescription>
       </DialogHeader>
 
       <form onSubmit={handleSubmit} className="grid gap-4">
+        {fromAward ? (
+          <>
+            <LockedField testId="locked-object" label="Объект">
+              {fromAward.objectTitle}
+            </LockedField>
+            <LockedField testId="locked-contractor" label="Подрядчик">
+              {fromAward.award.contractor_title} · ИНН {fromAward.award.contractor_inn}
+            </LockedField>
+          </>
+        ) : (
+          <>
         <div className="grid gap-2">
           <Label htmlFor="contract-object">Объект</Label>
           <EntityCombobox
@@ -405,7 +497,7 @@ function ContractForm({
             loading={objectsQ.isFetching}
             onCreateRequest={(query) => setObjectDraft({ title: query.trim(), address: "" })}
             createLabel="Создать объект"
-            disabled={createObject.isPending}
+            disabled={createObject.isPending || lockedParties !== undefined}
           />
           {objectDraft && (
             <div className="grid gap-2 rounded-md border border-border-subtle p-3">
@@ -487,7 +579,7 @@ function ContractForm({
               setContractorDraft({ title: query.trim(), inn: "" })
             }
             createLabel="Создать подрядчика"
-            disabled={createContractor.isPending}
+            disabled={createContractor.isPending || lockedParties !== undefined}
           />
           {contractorDraft && (
             <div className="grid gap-2 rounded-md border border-border-subtle p-3">
@@ -536,6 +628,11 @@ function ContractForm({
             </div>
           )}
         </div>
+        {lockedParties && (
+          <p className="-mt-2 text-xs text-fg-tertiary">{lockedParties.hint}</p>
+        )}
+          </>
+        )}
 
         <div className="grid gap-2 sm:grid-cols-2 sm:gap-4">
           <div className="grid gap-2">
@@ -559,6 +656,23 @@ function ContractForm({
           </div>
         </div>
 
+        {fromAward ? (
+          <LockedField testId="locked-class" label="Класс объектов">
+            {awardObjectQ.isPending && "Загрузка…"}
+            {awardObjectQ.isError && "Не удалось загрузить класс объекта"}
+            {awardClassKnown && (
+              <>
+                {awardClassTitle}{" "}
+                <span className="text-fg-tertiary">· класс объекта на дату создания договора</span>
+              </>
+            )}
+            {awardClassMissing && (
+              <span role="alert" className="text-danger-text">
+                у объекта не задан класс — договор создать нельзя, задайте класс объекту
+              </span>
+            )}
+          </LockedField>
+        ) : (
         <div className="grid gap-2">
           <Label htmlFor="contract-rate-class">Класс объектов</Label>
           <EntityCombobox
@@ -672,6 +786,7 @@ function ContractForm({
             позже переклассификация объекта не изменит отклонения этой сметы.
           </p>
         </div>
+        )}
 
         <div className="grid gap-2 sm:grid-cols-2 sm:gap-4">
           <div className="grid gap-2">
@@ -803,6 +918,15 @@ function ContractForm({
             </div>
           </CollapsibleContent>
         </Collapsible>
+
+        {fromAward && (
+          <p className="text-xs text-fg-secondary">
+            Смета договора появится копией КП {fromAward.award.contractor_title}: файл этапа{" "}
+            {fromAward.award.stage_no} разбирается заново, и в договор попадает только его КП.
+            Если подписанная смета отличается от КП, её потом загружают в договор обычной
+            заменой — история тендера при этом не меняется.
+          </p>
+        )}
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

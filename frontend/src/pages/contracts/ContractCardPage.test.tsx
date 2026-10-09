@@ -6,11 +6,21 @@ import { describe, expect, it } from "vitest";
 
 import ContractCardPage from "./ContractCardPage";
 import { JOB_POLL_INTERVAL_MS } from "@/services/jobPolling";
-import { sampleContractCard, sampleObjects } from "@/test/fixtures";
+import {
+  linkedContractCard,
+  sampleContractCard,
+  sampleFailedJob,
+  sampleObjects,
+} from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
 import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
-import type { ContractCard } from "@/types/domain";
+import type {
+  ContractCard,
+  ContractImportJob,
+  EstimateOrigin,
+  ImportJobStatus,
+} from "@/types/domain";
 
 /**
  * `renderCard` — единственный хелпер файла, настраивающий MSW-ответ карточки,
@@ -527,5 +537,257 @@ describe("Скачивание исходника: 404 и 410 различимы
       expect(screen.queryByText(/удалён при очистке/)).not.toBeInTheDocument();
     });
     expect(screen.queryByText("Задание импорта не найдено.")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Договор с основанием «по тендеру» (спека Б2 §2.6, §2.8, дизайн §2.4).
+ *
+ * Карточка, история загрузок и опрос задания — три разных ответа сервера, и они
+ * обязаны меняться ВМЕСТЕ, как их менял бы сервер: тест, у которого обработчик
+ * карточки не знает о завершении задания, не отличил бы опрос от его отсутствия.
+ */
+describe("Карточка договора с основанием «по тендеру» (спека Б2 §2.8)", () => {
+  const COPY_JOB_ID = 512;
+
+  function copyJob(status: ImportJobStatus): ContractImportJob {
+    return {
+      ...sampleFailedJob,
+      id: COPY_JOB_ID,
+      filename: "кп-этап-2.xlsx",
+      status,
+      error_text: status === "error" ? "Не удалось разобрать файл КП." : null,
+      is_current: status === "done",
+      finished_at: status === "done" || status === "error" ? "2026-03-04T08:00:03Z" : null,
+    };
+  }
+
+  /**
+   * Поведение сервера для договора 100, связанного с тендером. `polls` — что
+   * отдаёт `GET /import-jobs/512` на каждом опросе (последнее значение держится);
+   * карточка и история сменяются тогда, когда задание дошло до терминального
+   * статуса: `done` даёт смету-копию, `error` оставляет «сметы пока нет».
+   */
+  function serveLinkedContract(options: {
+    jobs: ContractImportJob[];
+    polls?: ImportJobStatus[];
+    origin?: EstimateOrigin;
+  }) {
+    const state = {
+      jobPolls: 0,
+      unlinked: false,
+      // Меняется только опросом: «задание завершилось» знает лишь он.
+      phase: undefined as ImportJobStatus | undefined,
+    };
+    const polls = options.polls ?? [];
+    server.use(
+      http.get("/api/v1/contracts/:id", () =>
+        HttpResponse.json(
+          state.unlinked
+            ? sampleContractCard
+            : linkedContractCard(
+                state.phase === "done" ? "from_offer" : (options.origin ?? "no_estimate")
+              )
+        )
+      ),
+      http.get("/api/v1/contracts/:id/import-jobs", () =>
+        HttpResponse.json(
+          polls.length > 0 ? [copyJob(state.phase ?? options.jobs[0].status)] : options.jobs
+        )
+      ),
+      http.get("/api/v1/import-jobs/:id", () => {
+        const status = polls[Math.min(state.jobPolls, polls.length - 1)];
+        state.jobPolls += 1;
+        if (status === "done" || status === "error") state.phase = status;
+        return HttpResponse.json(copyJob(status));
+      }),
+      http.delete("/api/v1/contracts/:id/tender-award", () => {
+        state.unlinked = true;
+        return HttpResponse.json(sampleContractCard);
+      })
+    );
+    return state;
+  }
+
+  it("договор без основания: строки «Основание» и кнопки отвязки нет", async () => {
+    renderCard();
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+
+    expect(screen.queryByText("Основание")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отвязать от тендера" })).not.toBeInTheDocument();
+  });
+
+  it("договор без основания не опрашивает задания: их ведёт панель загрузки", async () => {
+    renderCard();
+    await screen.findByRole("heading", { name: "ГП-2026-001" });
+    // В истории фикстуры есть незавершённое задание; без основания опрос не заводится.
+    await screen.findByRole("tab", { name: /История загрузок \(4\)/ });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(handlerState.jobPolls).toBe(0);
+  });
+
+  it("загружена отдельно: основание, пометка и доступная отвязка", async () => {
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "uploaded_separately" });
+    renderCard();
+
+    expect(await screen.findByText("Основание")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Т-2026-001/ })).toHaveAttribute("href", "/tenders/300");
+    expect(screen.getByText(/этап 2 · финал/)).toBeInTheDocument();
+    expect(screen.getByText("загружена отдельно")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Отвязать от тендера" })).toBeEnabled();
+  });
+
+  it("договор без сметы и без активного задания: «сметы пока нет» и доступная отвязка", async () => {
+    serveLinkedContract({ jobs: [copyJob("error")], origin: "no_estimate" });
+    renderCard();
+
+    expect(await screen.findByText("сметы пока нет")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Отвязать от тендера" })).toBeEnabled();
+  });
+
+  it("копия КП: кнопки нет, на её месте подсказка «удалите договор»", async () => {
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "from_offer" });
+    renderCard();
+
+    expect(await screen.findByText("получена из КП")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отвязать от тендера" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/договор создан из КП победителя, поэтому отвязать его от тендера нельзя — если победитель не тот, удалите договор/i)
+    ).toBeInTheDocument();
+  });
+
+  it("member видит основание, но кнопки отвязки у него нет", async () => {
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "uploaded_separately" });
+    renderCard({ role: "member" });
+
+    expect(await screen.findByText("загружена отдельно")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отвязать от тендера" })).not.toBeInTheDocument();
+  });
+
+  it("пока импорт идёт, отвязка недоступна с подсказкой «идёт импорт сметы»", async () => {
+    // Опрос не заводим: список заданий с активным заданием, а `GET /import-jobs`
+    // отдаёт вечный `pending`.
+    serveLinkedContract({ jobs: [copyJob("pending")], polls: ["pending"] });
+    renderCard();
+
+    const button = await screen.findByRole("button", { name: "Отвязать от тендера" });
+    expect(button).toBeDisabled();
+    expect(screen.getByText(/идёт импорт сметы/i)).toBeInTheDocument();
+    expect(screen.getByText("сметы пока нет")).toBeInTheDocument();
+  });
+
+  it("активное задание — любое не done/error, а не только pending: отвязка недоступна, опрос идёт", async () => {
+    // Задание копии уже разбирается (`importing`): оно так же активно, как
+    // `pending`, и сервер отказал бы в отвязке тем же. Предикат «активное»
+    // сравнивается с терминальными статусами, а не с одним `pending`.
+    const state = serveLinkedContract({ jobs: [copyJob("importing")], polls: ["importing"] });
+    renderCard();
+
+    const button = await screen.findByRole("button", { name: "Отвязать от тендера" });
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(screen.getByText(/идёт импорт сметы/i)).toBeInTheDocument();
+    await waitFor(() => expect(state.jobPolls).toBeGreaterThan(0));
+  });
+
+  it("правка договора без основания: объект и подрядчик доступны, подсказки «из тендера» нет", async () => {
+    const user = userEvent.setup();
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: /Правка/ }));
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+
+    expect(within(dialog).getByRole("combobox", { name: /Объект/ })).toBeEnabled();
+    expect(within(dialog).getByRole("combobox", { name: /Подрядчик/ })).toBeEnabled();
+    expect(within(dialog).queryByText(/берутся из тендера/)).not.toBeInTheDocument();
+  });
+
+  it(
+    "опрос копии: pending → done без перезагрузки — «получена из КП», кнопка исчезла, подсказка появилась",
+    async () => {
+      serveLinkedContract({ jobs: [copyJob("pending")], polls: ["pending", "done"] });
+      renderCard();
+
+      expect(await screen.findByText("сметы пока нет")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Отвязать от тендера" })).toBeDisabled();
+
+      expect(await screen.findByText("получена из КП", {}, { timeout: 10_000 })).toBeInTheDocument();
+      expect(screen.queryByText("сметы пока нет")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Отвязать от тендера" })).not.toBeInTheDocument();
+      expect(screen.getByText(/договор создан из КП победителя/i)).toBeInTheDocument();
+    },
+    30_000
+  );
+
+  it(
+    "опрос копии: pending → error — «сметы пока нет» остаётся, отвязка доступна, в истории текст ошибки",
+    async () => {
+      const user = userEvent.setup();
+      serveLinkedContract({ jobs: [copyJob("pending")], polls: ["pending", "error"] });
+      renderCard();
+
+      expect(await screen.findByText("сметы пока нет")).toBeInTheDocument();
+      await waitFor(
+        () => expect(screen.getByRole("button", { name: "Отвязать от тендера" })).toBeEnabled(),
+        { timeout: 10_000 }
+      );
+      expect(screen.getByText("сметы пока нет")).toBeInTheDocument();
+      expect(screen.queryByText("получена из КП")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("tab", { name: /История загрузок/ }));
+      expect(await screen.findByText("Не удалось разобрать файл КП.")).toBeInTheDocument();
+    },
+    30_000
+  );
+
+  it("опрос заводится и когда карточку открыли заново: задание найдено в истории", async () => {
+    const state = serveLinkedContract({ jobs: [copyJob("pending")], polls: ["pending", "pending"] });
+    renderCard();
+
+    await screen.findByText("сметы пока нет");
+    await waitFor(() => expect(state.jobPolls).toBeGreaterThan(0));
+  });
+
+  it("отвязка: подтверждение снимает основание, строка и кнопка пропадают", async () => {
+    const user = userEvent.setup();
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "uploaded_separately" });
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: "Отвязать от тендера" }));
+    await waitForDialogFocus("alertdialog");
+    await user.click(screen.getByRole("button", { name: "Отвязать" }));
+
+    await waitFor(() => expect(screen.queryByText("Основание")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Отвязать от тендера" })).not.toBeInTheDocument();
+  });
+
+  it("правка связанного договора: стороны заперты, подсказка зависит от пометки", async () => {
+    const user = userEvent.setup();
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "uploaded_separately" });
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: /Правка/ }));
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+
+    expect(within(dialog).getByRole("combobox", { name: /Объект/ })).toBeDisabled();
+    expect(within(dialog).getByRole("combobox", { name: /Подрядчик/ })).toBeDisabled();
+    expect(within(dialog).getByText(/берутся из тендера/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/отвяжите договор/)).toBeInTheDocument();
+  });
+
+  it("правка договора-копии: подсказка называет «удалите договор»", async () => {
+    const user = userEvent.setup();
+    serveLinkedContract({ jobs: [copyJob("done")], origin: "from_offer" });
+    renderCard();
+
+    await user.click(await screen.findByRole("button", { name: /Правка/ }));
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+
+    expect(within(dialog).getByRole("combobox", { name: /Объект/ })).toBeDisabled();
+    expect(within(dialog).getByText(/берутся из тендера/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/удалите договор/)).toBeInTheDocument();
   });
 });
