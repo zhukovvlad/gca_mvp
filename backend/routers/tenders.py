@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
@@ -28,6 +29,7 @@ from crud.common import DomainError
 from database import get_db, get_session_factory
 from models import ImportJob, ImportJobStatus, Tender, User, UserRole
 from responses import decimal_json, safe_filename_part, xlsx_response
+from routers.contracts import _MoneyMixin, _PercentMixin
 from routers.domain_errors import raise_domain_error
 from routers.estimates import _read_within_limit, _validate_xlsx, job_response
 from services import changes_export as changes_export_sheet
@@ -65,6 +67,36 @@ class RoundCreate(BaseModel):
 class RoundUpdate(BaseModel):
     label: str | None = None
     held_on: dt.date | None = None
+
+
+class AwardCreate(BaseModel):
+    offer_id: int
+
+
+class AwardNotConcluded(BaseModel):
+    not_concluded_on: dt.date
+    note: str | None = None
+
+
+class AwardLink(BaseModel):
+    contract_id: int
+
+
+class ContractFromAward(_MoneyMixin, _PercentMixin):
+    """Поля карточки договора без объекта, подрядчика и класса: их берёт отметка."""
+
+    contract_number: str
+    signed_date: dt.date
+    title: str | None = None
+    signer: str | None = None
+    total_amount: Decimal | None = None
+    notes: str | None = None
+    advance_pct: Decimal | None = None
+    advance_note: str | None = None
+    bank_guarantee_pct: Decimal | None = None
+    bank_guarantee_note: str | None = None
+    retention_pct: Decimal | None = None
+    retention_note: str | None = None
 
 
 @router.get("")
@@ -195,6 +227,80 @@ def delete_tender(tender_id: int, db: Session = Depends(get_db), storage: Storag
         raise_domain_error(e)
     purge_files_best_effort(storage, file_keys, context=f"Удаление тендера {tender_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{tender_id}/awards", status_code=status.HTTP_201_CREATED)
+def award_winner(tender_id: int, body: AwardCreate, db: Session = Depends(get_db),
+                 current_user: User = Depends(require_admin)):
+    """Отметить победителем участника по КП финального этапа (спека Б2 §2.4, §2.6)."""
+    try:
+        card = crud_tender_awards.award_winner(db, tender_id, offer_id=body.offer_id, user_id=current_user.id)
+    except DomainError as e:
+        raise_domain_error(e)
+    return decimal_json(card, status.HTTP_201_CREATED)
+
+
+@router.delete("/{tender_id}/awards/{award_id}")
+def remove_award(tender_id: int, award_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Снять действующую отметку (спека Б2 §2.6): в истории тендера она не остаётся."""
+    try:
+        return decimal_json(crud_tender_awards.remove_award(db, tender_id, award_id))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.post("/{tender_id}/awards/{award_id}/not-concluded")
+def mark_award_not_concluded(tender_id: int, award_id: int, body: AwardNotConcluded,
+                             db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """«Договор не заключён»: отметка закрывается и остаётся в истории (спека Б2 §2.6)."""
+    try:
+        card = crud_tender_awards.mark_not_concluded(
+            db, tender_id, award_id, not_concluded_on=body.not_concluded_on, note=body.note,
+            user_id=current_user.id,
+        )
+    except DomainError as e:
+        raise_domain_error(e)
+    return decimal_json(card)
+
+
+@router.get("/{tender_id}/awards/{award_id}/contract-candidates")
+def award_contract_candidates(tender_id: int, award_id: int, db: Session = Depends(get_db)):
+    """Договоры того же объекта и подрядчика без основания. Права — аутентификация
+    роутера: чтение доступно `member`."""
+    try:
+        return decimal_json(crud_tender_awards.contract_candidates(db, tender_id, award_id))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.post("/{tender_id}/awards/{award_id}/link")
+def link_award_contract(tender_id: int, award_id: int, body: AwardLink, db: Session = Depends(get_db),
+                        _: User = Depends(require_admin)):
+    """Привязать существующий договор к действующей отметке (спека Б2 §2.6)."""
+    try:
+        card = crud_tender_awards.link_contract(db, tender_id, award_id, contract_id=body.contract_id)
+    except DomainError as e:
+        raise_domain_error(e)
+    return decimal_json(card)
+
+
+@router.post("/{tender_id}/awards/{award_id}/contract", status_code=status.HTTP_202_ACCEPTED)
+def create_award_contract(
+    tender_id: int, award_id: int, body: ContractFromAward, background: BackgroundTasks,
+    db: Session = Depends(get_db), storage: Storage = Depends(get_storage),
+    session_factory=Depends(get_session_factory), _: User = Depends(require_admin),
+):
+    """Договор из КП победителя: договор и задание импорта копии создаются одной
+    транзакцией, импорт идёт фоном (спека Б2 §2.5, §2.6)."""
+    fields = crud_tender_awards.ContractFromAwardFields(**body.model_dump())
+    try:
+        contract, job = crud_tender_awards.create_contract_from_award(
+            db, storage, tender_id, award_id, fields=fields,
+        )
+    except DomainError as e:
+        raise_domain_error(e)
+    background.add_task(run_import_job, job.id, session_factory=session_factory, storage=storage, replace=False)
+    return decimal_json({"contract": contract, "job": job_response(db, job)}, status.HTTP_202_ACCEPTED)
 
 
 @router.post("/{tender_id}/rounds", status_code=status.HTTP_201_CREATED)
