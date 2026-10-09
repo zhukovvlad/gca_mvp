@@ -93,7 +93,7 @@ export function OfferGrid({
                 <TableHead key={round.id}>
                   {/* Триггер разноса (§2.7) — ОТДЕЛЬНЫЙ элемент под кнопкой этапа,
                       ячейки-`Toggle` решётки он не трогает. */}
-                  <div className="flex flex-col items-start gap-1">
+                  <div className="flex flex-col items-end gap-1">
                     <button
                       type="button"
                       onClick={() => onSelectRound(round.id)}
@@ -151,7 +151,7 @@ export function OfferGrid({
                   );
                   if (!cell || cell.offer_id === null) {
                     return (
-                      <TableCell key={round.id}>
+                      <TableCell key={round.id} className="text-right">
                         <span title="Не участвовал" className="text-fg-tertiary">
                           —
                         </span>
@@ -160,7 +160,7 @@ export function OfferGrid({
                   }
                   if (cell.estimate_id === null) {
                     return (
-                      <TableCell key={round.id}>
+                      <TableCell key={round.id} className="text-right">
                         <StatusPill tone="warning" label="нет сметы" />
                       </TableCell>
                     );
