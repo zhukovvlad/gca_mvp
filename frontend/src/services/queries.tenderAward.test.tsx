@@ -6,11 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   useAwardWinner,
   useContractCandidates,
+  useDeleteContract,
   useLinkContract,
   useMarkNotConcluded,
   useRemoveAward,
+  useTender,
+  useUpdateContract,
 } from "./queries";
 import { qk } from "./queryKeys";
+import { sampleTenderAward, sampleTenderAwardWithContract } from "@/test/fixtures";
 import { handlerState } from "@/test/handlers";
 import { server } from "@/test/server";
 import { createTestQueryClient } from "@/test/utils";
@@ -152,5 +156,93 @@ describe("команды отметки победителя", () => {
 
     expect(result.current.isError).toBe(true);
     expect(invalidatedKeys(spy)).not.toContain(JSON.stringify(qk.tenders.card(300)));
+  });
+});
+
+/**
+ * Правка и удаление договора и карточка тендера: плашка победителя берёт номер,
+ * дату и наличие договора из ответа карточки тендера. В приложении staleTime
+ * 60 с, поэтому проверка при staleTime 0 прятала бы дефект: кэш тут свежий.
+ */
+describe("договор меняется, карточка тендера свежа в кэше", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function freshClientWithCards() {
+    const qc = createTestQueryClient();
+    qc.setDefaultOptions({ queries: { retry: false, staleTime: 60_000, gcTime: Infinity } });
+    qc.setQueryData(qk.tenders.card(300), { id: 300 });
+    qc.setQueryData(qk.tenders.card(301), { id: 301 });
+    qc.setQueryData(qk.tenders.list(), []);
+    return qc;
+  }
+
+  function expectCardsInvalidated(qc: ReturnType<typeof createTestQueryClient>) {
+    expect(qc.getQueryState(qk.tenders.card(300))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(qk.tenders.card(301))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(qk.tenders.list())?.isInvalidated).toBe(false);
+  }
+
+  it("useDeleteContract: все карточки тендеров устарели, список тендеров нет", async () => {
+    const qc = freshClientWithCards();
+    expect(qc.getQueryState(qk.tenders.card(300))?.isInvalidated).toBe(false);
+    const { result } = renderHook(() => useDeleteContract(), { wrapper: wrapperFor(qc) });
+    await act(() => result.current.mutateAsync(201));
+    expectCardsInvalidated(qc);
+  });
+
+  it("useUpdateContract: все карточки тендеров устарели, список тендеров нет", async () => {
+    const qc = freshClientWithCards();
+    expect(qc.getQueryState(qk.tenders.card(300))?.isInvalidated).toBe(false);
+    const { result } = renderHook(() => useUpdateContract(), { wrapper: wrapperFor(qc) });
+    await act(() => result.current.mutateAsync({ id: 201, input: { contract_number: "99" } }));
+    expectCardsInvalidated(qc);
+  });
+
+  // Ревью правки: сценарий замечания целиком, через настоящий наблюдатель
+  // карточки. Тендер открыт (useTender), пользователь ушёл в договор
+  // (наблюдатель снят), изменил его и вернулся, пока кэш свежий. Признак
+  // isInvalidated доказывает пометку; здесь — что вернувшийся useTender
+  // действительно перезапрашивает и отдаёт плашке новый award.contract.
+  async function openTenderThenLeave() {
+    const qc = createTestQueryClient();
+    qc.setDefaultOptions({ queries: { retry: false, staleTime: 60_000, gcTime: Infinity } });
+    handlerState.tenderAwardState = { award: sampleTenderAwardWithContract, history: [] };
+    const first = renderHook(() => useTender(300), { wrapper: wrapperFor(qc) });
+    await waitFor(() => expect(first.result.current.data?.award?.contract?.id).toBe(100));
+    first.unmount();
+    return qc;
+  }
+
+  it("useDeleteContract: вернувшийся на тендер useTender видит отметку без договора", async () => {
+    const qc = await openTenderThenLeave();
+
+    // Сервер удалил договор: отметка осталась, договора у неё нет.
+    handlerState.tenderAwardState = { award: sampleTenderAward, history: [] };
+    const del = renderHook(() => useDeleteContract(), { wrapper: wrapperFor(qc) });
+    await act(() => del.result.current.mutateAsync(100));
+
+    const back = renderHook(() => useTender(300), { wrapper: wrapperFor(qc) });
+    await waitFor(() => expect(back.result.current.data?.award?.contract).toBeNull());
+    expect(back.result.current.data?.award?.id).toBe(sampleTenderAward.id);
+  });
+
+  it("useUpdateContract: вернувшийся на тендер useTender видит новые номер и дату", async () => {
+    const qc = await openTenderThenLeave();
+
+    const edited = { id: 100, contract_number: "46/2026-ГП", signed_date: "2026-07-01" };
+    handlerState.tenderAwardState = {
+      award: { ...sampleTenderAwardWithContract, contract: edited },
+      history: [],
+    };
+    const upd = renderHook(() => useUpdateContract(), { wrapper: wrapperFor(qc) });
+    await act(() =>
+      upd.result.current.mutateAsync({
+        id: 100,
+        input: { contract_number: edited.contract_number, signed_date: edited.signed_date },
+      })
+    );
+
+    const back = renderHook(() => useTender(300), { wrapper: wrapperFor(qc) });
+    await waitFor(() => expect(back.result.current.data?.award?.contract).toEqual(edited));
   });
 });

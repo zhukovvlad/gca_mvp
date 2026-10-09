@@ -138,6 +138,8 @@ export const qk = {
     list: (params?: { q?: string; page?: number; page_size?: number }) =>
       ["tenders", "list", params ?? {}] as const,
     card: (id: number) => ["tenders", "card", id] as const,
+    /** Префикс всех карточек тендеров: список и сводки этапов он не задевает. */
+    cards: ["tenders", "card"] as const,
     roundJobs: (tenderId: number, roundId: number) =>
       ["tenders", "round-jobs", tenderId, roundId] as const,
     /** Свод по этапам одного участника (спека 2026-08-27-stage-summary-design.md §2.16). */

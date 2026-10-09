@@ -408,6 +408,8 @@ export function useUpdateContract() {
       // не доезжала бы до уже открытого паспорта целую минуту, и он был бы
       // «свежим» по мнению React Query и устаревшим по факту.
       qc.invalidateQueries({ queryKey: qk.passport.all });
+      // Плашка победителя берёт номер и дату договора из карточки тендера.
+      qc.invalidateQueries({ queryKey: qk.tenders.cards });
       toast.success(`Договор ${contract.contract_number} обновлён`);
     },
     onError: toastApiError,
@@ -439,6 +441,8 @@ export function useDeleteContract() {
       qc.invalidateQueries({ queryKey: qk.objects.all });
       qc.invalidateQueries({ queryKey: qk.contractors.all });
       qc.invalidateQueries({ queryKey: qk.rateClasses.all });
+      // Плашка победителя берёт наличие договора из карточки тендера.
+      qc.invalidateQueries({ queryKey: qk.tenders.cards });
       toast.success("Договор удалён");
     },
     onError: toastApiError,
