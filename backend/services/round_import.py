@@ -166,6 +166,19 @@ def split_round_payload(data: dict[str, Any]) -> tuple[list[RoundProjection], Ba
     return projections, baseline
 
 
+def projection_for_inn(data: dict[str, Any], inn: str) -> RoundProjection | None:
+    """Проекция участника с ИНН `inn` из разбора всего файла этапа либо `None`.
+
+    Опознание то же, что при загрузке этапа: ключ — канонический ИНН блока из
+    файла (спека Б2 §1.7, §2.5).
+
+    Raises:
+        EstimateImportError: разрез файла этапа отказывает (`split_round_payload`).
+    """
+    projections, _baseline = split_round_payload(data)
+    return next((p for p in projections if p.inn == inn), None)
+
+
 def kp_inn_of(raw_data: dict[str, Any]) -> str | None:
     """ИНН участника, снятый с разбора его КП (`estimate_raw_data.raw_data`).
 

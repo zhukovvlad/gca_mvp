@@ -16,20 +16,26 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from crud import contracts as crud_contracts
 from crud import tenders as crud_tenders
-from crud.common import DomainError, iso, translating_integrity
+from crud.common import DomainError, iso, require_text, translating_integrity
 from crud.estimate_totals import estimate_total_including_vat, estimate_totals_including_vat
 from models import (
     Contract,
     Contractor,
     Estimate,
     EstimateRawData,
+    ImportJob,
+    ImportJobStatus,
     ObjectModel,
     Offer,
     OfferPackage,
@@ -39,6 +45,7 @@ from models import (
     User,
 )
 from services.round_import import kp_inn_of
+from storage import Storage, StorageFileNotFound, StorageKeyError
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +103,13 @@ def _contractor_mismatch_refusal(number: str | None = None) -> tuple[str, str]:
     where = f" № {number}" if number is not None else ""
     return "contract_contractor_mismatch", (
         f"Договор{where} заключён с другим подрядчиком — привязать его к этому тендеру нельзя."
+    )
+
+
+def _stage_file_missing_refusal(stage_no: int) -> tuple[str, str]:
+    return "stage_file_missing", (
+        f"Файл этапа {stage_no} недоступен в хранилище — договор из КП создать нельзя. Заведите договор "
+        "обычной формой и загрузите смету."
     )
 
 
@@ -413,6 +427,111 @@ def link_contract(db: Session, tender_id: int, award_id: int, *, contract_id: in
         db.commit()
     log.info("tender_award_linked tender=%s award=%s contract=%s", tender_id, award_id, contract_id)
     return crud_tenders.get_tender_card(db, tender_id)
+
+
+# ---------------------------------------------------------------------------
+#  Договор из КП (спека Б2 §2.5)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ContractFromAwardFields:
+    """Поля карточки договора без объекта, подрядчика и класса: их берёт отметка."""
+
+    contract_number: str
+    signed_date: dt.date
+    title: str | None
+    signer: str | None
+    total_amount: Decimal | None
+    notes: str | None
+    advance_pct: Decimal | None
+    advance_note: str | None
+    bank_guarantee_pct: Decimal | None
+    bank_guarantee_note: str | None
+    retention_pct: Decimal | None
+    retention_note: str | None
+
+
+def _refuse_if_number_taken(db: Session, number: str) -> None:
+    if db.execute(sa.select(Contract.id).where(Contract.contract_number == number).limit(1)).first() is not None:
+        raise DomainError(409, crud_contracts._UNIQUE_MESSAGES["uq_contracts_contract_number"])
+
+
+def _stage_file(db: Session, storage: Storage, award: TenderAward) -> tuple[ImportJob, bytes]:
+    """Задание, создавшее КП победителя (`estimates.import_job_id`), и байты его файла.
+
+    «Текущее задание этапа» не годится: после удаления другого участника оно у
+    этапа пропадает, а файл КП остаётся (решение 5). Нет задания, оно не `done`
+    либо файла нет в хранилище — `stage_file_missing`, ничего не создаётся
+    (решение 6)."""
+    stage_no = db.execute(
+        sa.select(TenderRound.stage_no).join(Offer, Offer.round_id == TenderRound.id)
+        .where(Offer.id == award.offer_id)
+    ).scalar_one()
+    job = db.execute(
+        sa.select(ImportJob).join(Estimate, Estimate.import_job_id == ImportJob.id)
+        .where(Estimate.id == award.estimate_id)
+    ).scalar_one_or_none()
+    if job is None or job.status != ImportJobStatus.done.value:
+        raise _refusal(_stage_file_missing_refusal(stage_no))
+    try:
+        with storage.get(job.file_key) as handle:
+            return job, handle.read()
+    except (StorageFileNotFound, StorageKeyError) as exc:
+        raise _refusal(_stage_file_missing_refusal(stage_no)) from exc
+
+
+def _clean(value: str | None) -> str | None:
+    return (value or "").strip() or None
+
+
+def create_contract_from_award(
+    db: Session, storage: Storage, tender_id: int, award_id: int, *, fields: ContractFromAwardFields,
+) -> tuple[dict, ImportJob]:
+    """Договор по действующей отметке и задание импорта копии КП победителя.
+
+    Договор и задание создаются одной транзакцией; файл этапа копируется под
+    новым ключом, и любая ошибка до коммита удаляет этот ключ (`AGENTS.md` §5,
+    шаг 1). Фоновую задачу импорта ставит вызывающий роутер: команда её не
+    запускает. Возвращает карточку договора и созданное задание."""
+    award = _lock_open_award(db, tender_id, award_id)
+    obj = db.get(ObjectModel, award.object_id)
+    rate_class_id = crud_contracts._resolve_snapshot_rate_class(db, obj=obj, rate_class_id=None)
+    number = require_text(fields.contract_number, "Номер договора")
+    _refuse_if_number_taken(db, number)
+    stage_job, content = _stage_file(db, storage, award)
+
+    new_key = storage.save(content)
+    try:
+        contract = Contract(
+            object_id=award.object_id, contractor_id=award.contractor_id, rate_class_id=rate_class_id,
+            tender_award_id=award.id, contract_number=number, signed_date=fields.signed_date,
+            title=_clean(fields.title), signer=_clean(fields.signer), total_amount=fields.total_amount,
+            notes=_clean(fields.notes), advance_pct=fields.advance_pct, advance_note=_clean(fields.advance_note),
+            bank_guarantee_pct=fields.bank_guarantee_pct, bank_guarantee_note=_clean(fields.bank_guarantee_note),
+            retention_pct=fields.retention_pct, retention_note=_clean(fields.retention_note),
+        )
+        db.add(contract)
+        with translating_integrity(db, {
+            "uq_contracts_contract_number": crud_contracts._UNIQUE_MESSAGES["uq_contracts_contract_number"],
+            "uq_contracts_tender_award": _has_contract_refusal(),
+            "fk_contracts_tender_award": _not_active_refusal(),
+        }):
+            db.flush()
+            job = ImportJob(
+                contract_id=contract.id, amendment_no=None, filename=stage_job.filename, file_key=new_key,
+                file_sha256=hashlib.sha256(content).hexdigest(), status=ImportJobStatus.pending.value,
+                source_award_id=award.id,
+            )
+            db.add(job)
+            db.commit()
+    except BaseException:
+        # До коммита: задания нет, значит и копия файла никому не нужна.
+        db.rollback()
+        storage.delete(new_key)
+        raise
+    db.refresh(job)
+    log.info("contract_from_award tender=%s award=%s contract=%s job=%s", tender_id, award_id, contract.id, job.id)
+    return crud_contracts.get_contract_dict(db, contract.id), job
 
 
 # ---------------------------------------------------------------------------
