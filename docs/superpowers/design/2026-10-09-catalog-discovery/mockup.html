@@ -203,13 +203,13 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
   </div>
   <div class="card new" style="margin-bottom:0">
     <div class="grp" style="border-bottom:1px solid var(--bd-subtle)"><span class="t">Черновики семей · компл</span><span class="newtag">новое</span>
-      <span class="u">41 черновик · 1 382 системы · открыто 09.10.2026</span><span class="lbl ml">по деньгам ▾</span></div>
+      <span class="u">41 черновик · 1 382 системы · открыто 09.10.2026</span><span class="lbl ml">по числу строк ▾</span></div>
     <div class="draft">
       <span class="cb on">✓</span>
       <div class="main"><div class="name">Вентиляция общеобменная</div>
         <div class="def">Система общеобменной вентиляции здания или его части целиком: приточно-вытяжные установки, вентиляторы, воздуховоды, автоматика.</div>
         <div class="ex"><span>Вентиляция Общеобменная — Надземная часть / Струйный вентилятор</span><span>Вентиляция Общеобменная — Подземная часть / Приточно-вытяжные установки AHU</span><span>+ 64</span></div></div>
-      <div class="nums"><b>66</b> строк<br><span style="color:var(--fg3)">≈ 31,4 млрд ₽</span></div>
+      <div class="nums"><b>66</b> строк</div>
       <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
     </div>
     <div class="draft">
@@ -217,7 +217,7 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
       <div class="main"><div class="name">Кондиционирование</div>
         <div class="def">Система холодоснабжения и кондиционирования: гидромодули, теплообменники, наружные и внутренние блоки, VRF.</div>
         <div class="ex"><span>Кондиционирование / Гидромодуль 4, AGM-10W3…</span><span>Кондиционирование / Наружные блоки сплит / мультисплит / мини VRF</span><span>+ 41</span></div></div>
-      <div class="nums"><b>43</b> строки<br><span style="color:var(--fg3)">≈ 18,9 млрд ₽</span></div>
+      <div class="nums"><b>43</b> строки</div>
       <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
     </div>
     <div class="draft">
@@ -225,7 +225,7 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
       <div class="main"><div class="name">Внутреннее водоотведение</div>
         <div class="def">Система внутренней канализации и водостоков здания: трубопроводы, насосы, жироуловители, отвод стоков пожаротушения.</div>
         <div class="ex"><span>Система внутреннего водоотведения / Насосы</span><span>Система внутреннего водоотведения / жироуловитель</span><span>+ 37</span></div></div>
-      <div class="nums"><b>39</b> строк<br><span style="color:var(--fg3)">≈ 9,2 млрд ₽</span></div>
+      <div class="nums"><b>39</b> строк</div>
       <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
     </div>
     <div class="draft">
@@ -233,24 +233,45 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
       <div class="main"><div class="name">Кабельные линии <span class="band mid">похоже на активную «Прокладка кабельных линий»</span></div>
         <div class="def">Прокладка кабельных линий слаботочных и силовых систем.</div>
         <div class="ex"><span>СЭС / Кабельные линии</span><span>СУП / Кабельные линии</span><span>+ 19</span></div></div>
-      <div class="nums"><b>21</b> строка<br><span style="color:var(--fg3)">≈ 2,7 млрд ₽</span></div>
+      <div class="nums"><b>21</b> строка</div>
       <div class="acts"><span class="btn sm">Править…</span><span class="btn sm primary">Слить с «Прокладка кабельных линий»</span><span class="btn sm ghost">Отбросить</span></div>
     </div>
-    <div class="draft" style="background:var(--warn-soft)">
-      <span class="cb">&nbsp;</span>
+    <div class="draft" style="background:var(--warn-soft);flex-wrap:wrap">
+      <span class="cb on">✓</span>
       <div class="main"><div class="name">Не работа <span class="band mid">особая группа</span></div>
-        <div class="def">Имена, которые модель не считает работой: услуги, гарантии, временные сооружения, ошибочно размеченные позиции. Отметка ставит этим контекстам «не работа» — как одноимённая кнопка на карточке контекста сегодня.</div>
-        <div class="ex"><span>Окончательная уборка объекта, включая фасады и окна</span><span>Ограждение строительной площадки…</span><span>Колонны В80</span><span>+ 9</span></div></div>
-      <div class="nums"><b>12</b> строк<br><span style="color:var(--fg3)">≈ 0,8 млрд ₽</span></div>
-      <div class="acts"><span class="btn sm">Посмотреть все</span></div>
+        <div class="def">Имена, которые модель не считает работой: услуги, гарантии, временные сооружения, ошибочно размеченные позиции. Группа раскрывается построчно: «не работа» получат только отмеченные строки, снятые останутся без семьи и уйдут в перезапрос обычным порядком.</div></div>
+      <div class="nums"><b>11</b> из 12 отмечены</div>
+      <div style="flex-basis:100%"></div>
+      <div style="flex-basis:100%;background:var(--surface);border:1px solid var(--bd-subtle);border-radius:8px;margin-left:30px">
+        <div class="srow" style="border-top:0"><span class="cb on">✓</span><div>Окончательная уборка объекта, включая фасады и окна, помещения, прилегающей территории</div></div>
+        <div class="srow"><span class="cb on">✓</span><div>Ограждение строительной площадки в соответствии с требованиями заказчика</div></div>
+        <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><div>Колонны В80 <div class="meta">галочка снята — это работа, пусть уйдёт в перезапрос</div></div></div>
+        <div class="srow" style="color:var(--fg3)"><span style="width:16px"></span><div>… и ещё 9, отмечены · Показать все</div></div>
+      </div>
     </div>
     <div class="foot">Отмечено <b style="color:var(--fg)">&nbsp;36&nbsp;</b> черновиков · 1 291 строка · неотмеченные остаются черновиками
       <span class="btn primary ml">Активировать отмеченные и перезапросить «компл»…</span></div>
   </div>
   <div class="note"><b>Что делает «Активировать отмеченные».</b> Одним действием: отмеченные черновики становятся активными
-    семьями единицы, отмеченная группа «Не работа» ставит своим контекстам «не работа», и открывается обычное окно «Перезапросить
-    единицу» с оценкой. После перезапроса каждая строка единицы получает предложение семьи — уже по новому списку — и приходит в
+    семьями единицы, отмеченные строки группы «Не работа» получают «не работа», и открывается обычное окно «Перезапросить
+    единицу» с оценкой. Ошибочно отмеченное возвращается действием «Вернуть в разбор» на карточке контекста (экран 3б). После перезапроса каждая строка единицы получает предложение семьи — уже по новому списку — и приходит в
     «Семья из списка» (экран 4).</div>
+</div>
+</section>
+
+<!-- ===================== Экран 3б ===================== -->
+<section>
+<h2>Экран 3б. Карточка контекста «не работа»: «Вернуть в разбор»</h2>
+<p class="secsub">Сегодня «не работа» необратима: подтверждение вида контексту «не работа» отказывает, обратной кнопки нет. Новое —
+«Вернуть в разбор» у контекста, которому «не работа» поставил человек (с карточки или из группы экрана 3). Контекст снова без семьи
+и приходит в ближайший перезапрос своей единицы. Контексты, неприменимые из-за разметки строки в Review (раздел, мусор), этой
+кнопки не получают — их вид решает Review.</p>
+<div class="screen">
+  <div class="card new" style="padding:14px 16px;margin:0;max-width:640px">
+    <div style="display:flex;align-items:center;gap:10px"><b>Колонны В80</b><span class="band mid">не работа</span><span class="newtag">новое</span>
+      <span class="btn sm ml">Вернуть в разбор</span></div>
+    <div class="meta" style="margin-top:6px">компл · отмечено «не работа» admin 09.10.2026 из черновиков семей · <span class="chip cls">статья СМР</span> 3.1 Монолитные работы</div>
+  </div>
 </div>
 </section>
 
@@ -272,7 +293,7 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
   <div class="card new">
     <div class="grp"><span>⌄</span><span class="t">Вентиляция общеобменная</span><span class="u">компл · 64</span><span class="band hi">≥ 0,9</span><span class="sys">система</span><span class="newtag">новое</span><span class="btn primary ml">Подтвердить отмеченные 63</span></div>
     <div class="srow"><span class="cb on">✓</span><span class="conf">0,96</span><div>Вентиляция Общеобменная — Надземная часть / Струйный вентилятор.<div class="meta"><span class="chip cls">статья СМР</span> 10.3 Вентиляция и кондиционирование · <span class="chip est">в смете</span> ОВиК</div><div class="ai">Пояснение ИИ: общеобменная вентиляция надземной части — система целиком.</div></div><span class="ml" style="display:flex;gap:6px"><span class="btn sm">Другая семья…</span><span class="btn sm">Отклонить</span></span></div>
-    <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><span class="conf">0,91</span><div>Устройство зонтов над вентшахтами<div class="meta">снята галочка — это не система вентиляции</div></div><span class="ml" style="display:flex;gap:6px"><span class="btn sm">Другая семья…</span><span class="btn sm">Отклонить</span></span></div>
+    <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><span class="conf">0,91</span><div>Устройство зонтов над вентшахтами<div class="meta">галочка снята — строка остаётся в очереди, это отсрочка, а не метка для порога; ошибку модели записывают «Отклонить» или «Другая семья…»</div></div><span class="ml" style="display:flex;gap:6px"><span class="btn sm">Другая семья…</span><span class="btn sm">Отклонить</span></span></div>
   </div>
   <div class="card">
     <div class="grp"><span>›</span><span class="t">Облицовка стен декоративными панелями</span><span class="u">м² · 12</span><span class="band lo">&lt; 0,7</span><span class="btn primary ml">Подтвердить отмеченные 12</span></div>
@@ -283,8 +304,8 @@ table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
 <!-- ===================== Экран 5 ===================== -->
 <section>
 <h2>Экран 5. Свой порог систем — из твоих решений на экране 4</h2>
-<p class="secsub">Отдельной слепой разметки нет. Каждое «Подтвердить отмеченные» и каждая снятая галочка — размеченная строка: модель
-сказала «эта семья с уверенностью X», ты согласился или нет. Когда систем разобрано достаточно, считается кривая, и порог выбираешь
+<p class="secsub">Отдельной слепой разметки нет. Метки — сохранённые решения на экране 4: подтверждённая строка — «модель права»,
+«Отклонить» и «Другая семья…» — «модель ошиблась». Снятая галочка меткой не считается: это отсрочка, сервер её не видит. Когда систем разобрано достаточно, считается кривая, и порог выбираешь
 ты. Оговорка: метки не слепые — ты видел ответ модели. Экрана для кривой в 3б нет: это замер в devlog, а порог задаётся настройкой,
 как порог работ сегодня (менять его в интерфейсе — пункт А8).</p>
 <div class="screen">
