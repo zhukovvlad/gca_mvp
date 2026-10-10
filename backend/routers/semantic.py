@@ -54,7 +54,7 @@ from typing import Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 import crud.discovery as crud_discovery
@@ -69,6 +69,7 @@ from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
 from routers.domain_errors import raise_domain_error
 from services import (
     context_operations,
+    discovery_drafts,
     family_categories,
     family_change,
     family_discovery,
@@ -137,6 +138,12 @@ _STATUS_CONFLICT = frozenset(
         family_discovery.REFUSE_DISCOVERY_TOO_MANY_NAMES,
         family_discovery.REFUSE_DISCOVERY_INPUT_UNCHANGED,
         family_discovery.REFUSE_PREVIEW_CHANGED,
+        # Черновики и возврат в разбор (спека 3б §2.12).
+        discovery_drafts.REFUSE_DRAFT_NOT_OPEN,
+        discovery_drafts.REFUSE_DRAFT_NOT_RESTORABLE,
+        discovery_drafts.REFUSE_DISCOVERY_RUN_SUPERSEDED,
+        work_variants.REFUSE_CONTEXT_NOT_REOPENABLE_STATE,
+        work_variants.REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION,
         work_variants.REFUSE_SCHEMA_NO_BUILDING,
         work_variants.REFUSE_SCHEMA_BUILDING,
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
@@ -167,6 +174,11 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_families.REFUSE_CLEAR_CATEGORY_ACTIVE,
         family_categories.REFUSE_CATEGORY_BLANK_TITLE,
         family_categories.REFUSE_CATEGORY_BLANK_DEFINITION,
+        discovery_drafts.REFUSE_DRAFT_BLANK_TITLE,
+        discovery_drafts.REFUSE_DRAFT_BLANK_DEFINITION,
+        discovery_drafts.REFUSE_DRAFT_WITHOUT_CATEGORY,
+        discovery_drafts.REFUSE_CONTEXT_NOT_IN_GROUP,
+        discovery_drafts.REFUSE_CATEGORY_NOT_PROPOSED,
         work_variants.REFUSE_SCHEMA_PARAMETER_RENAMED,
         work_variants.REFUSE_SCHEMA_VALUE_REMOVED,
         work_variants.REFUSE_SCHEMA_BLANK,
@@ -890,6 +902,18 @@ def mark_not_work_route(
     return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
+@router.post("/contexts/{context_id}/reopen")
+def reopen_context_route(
+    context_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Вернуть в разбор» контекста «не работа» человека (спека 3б §2.8)."""
+    with _mutating(db):
+        work_variants.reopen_context(db, context_id=context_id, actor_id=admin.id)
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
+
+
 @router.post("/contexts/{context_id}/split")
 def split_context_route(
     context_id: int,
@@ -1106,6 +1130,43 @@ class DiscoveryLaunchRequest(BaseModel):
 
 class PreviewHashRequest(BaseModel):
     preview_hash: str
+
+
+class DraftEditRequest(BaseModel):
+    """Правка черновика: переданные поля меняются, непереданные нет."""
+    title: str | None = None
+    definition: str | None = None
+    family_category_id: int | None = None
+
+    @field_validator("family_category_id")
+    @classmethod
+    def _category_not_null(cls, value: int | None) -> int | None:
+        if value is None:
+            raise ValueError("категорию можно сменить, но не снять")
+        return value
+
+
+class CategoryPairIn(BaseModel):
+    family_id: int
+    family_category_id: int
+
+
+class ActivateRequest(BaseModel):
+    """Отмеченное на экране черновиков: сервер получает списки (спека 3б §2.5)."""
+    draft_ids: list[int] = Field(default_factory=list)
+    not_work_context_ids: list[int] = Field(default_factory=list)
+    family_categories: list[CategoryPairIn] = Field(default_factory=list)
+
+
+class DraftMergeRequest(BaseModel):
+    target_draft_id: int | None = None
+    target_family_id: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> DraftMergeRequest:
+        if (self.target_draft_id is None) == (self.target_family_id is None):
+            raise ValueError("нужна ровно одна цель: target_draft_id или target_family_id")
+        return self
 
 
 def _shown(matches: list[PrivacyMatchIn]) -> list[dict]:
@@ -1361,6 +1422,119 @@ def discovery_launch_route(
             settings=app_settings,
         )
         result = {"job_id": job.id, "status": job.status, "unit_id": job.unit_id}
+    return result
+
+
+def _serialize_draft(draft) -> dict:
+    return {
+        "id": draft.id,
+        "job_id": draft.job_id,
+        "unit_id": draft.unit_id,
+        "grp": draft.grp,
+        "status": draft.status,
+        "title": draft.title,
+        "definition": draft.definition,
+        "family_category_id": draft.family_category_id,
+        "merged_into_draft_id": draft.merged_into_draft_id,
+        "merged_into_family_id": draft.merged_into_family_id,
+    }
+
+
+@router.get("/discovery/drafts")
+def discovery_drafts_route(
+    unit_id: int | None = Query(default=None),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Черновики последнего выполненного открытия единицы (`unit_id` не передан —
+    единица «без единицы»); `drafts: null`, если выполненных открытий нет."""
+    return {"unit_id": unit_id, "drafts": crud_discovery.discovery_drafts(db, unit_id=unit_id)}
+
+
+@router.patch("/discovery/drafts/{draft_id}")
+def draft_edit_route(
+    draft_id: int,
+    body: DraftEditRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    fields = {
+        name: getattr(body, name)
+        for name in ("title", "definition", "family_category_id")
+        if name in body.model_fields_set
+    }
+    with _deciding(db):
+        draft = discovery_drafts.edit_draft(db, draft_id=draft_id, actor_id=admin.id, **fields)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/merge")
+def draft_merge_route(
+    draft_id: int,
+    body: DraftMergeRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.merge_draft(
+            db, draft_id=draft_id, target_draft_id=body.target_draft_id,
+            target_family_id=body.target_family_id, actor_id=admin.id,
+        )
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/discard")
+def draft_discard_route(
+    draft_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.discard_draft(db, draft_id=draft_id, actor_id=admin.id)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/restore")
+def draft_restore_route(
+    draft_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.restore_draft(db, draft_id=draft_id, actor_id=admin.id)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/{job_id}/activate")
+def discovery_activate_route(
+    job_id: int,
+    body: ActivateRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Активировать отмеченные» (спека 3б §2.5): одна транзакция маршрута; отказ
+    или сбой не оставляет записей."""
+    with _deciding(db):
+        outcome = discovery_drafts.activate_discovery(
+            db,
+            job_id=job_id,
+            draft_ids=body.draft_ids,
+            not_work_context_ids=body.not_work_context_ids,
+            family_categories=[(p.family_id, p.family_category_id) for p in body.family_categories],
+            actor_id=admin.id,
+        )
+        result = {
+            "created_family_ids": list(outcome.created_family_ids),
+            "categories_applied": list(outcome.categories_applied),
+            "categories_skipped": list(outcome.categories_skipped),
+            "not_work_applied": list(outcome.not_work_applied),
+            "not_work_skipped": list(outcome.not_work_skipped),
+            "reask_unit_id": outcome.reask_unit_id,
+        }
     return result
 
 

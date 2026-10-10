@@ -54,6 +54,7 @@ from models import (
 )
 from services.context_routing import chapter_paths
 from services.semantic_rules import nearest_working_chapter
+from services.work_variants import is_reopenable
 
 
 class WorkCategoryRef(TypedDict):
@@ -924,6 +925,12 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "place_dictionary_version": context.place_dictionary_version,
         "comparability_reason": context.comparability_reason,
         "semantic_state": context.semantic_state,
+        "catalog_kind": catalog_position.kind,
+        "reopenable": is_reopenable(
+            semantic_state=context.semantic_state,
+            catalog_kind=catalog_position.kind,
+            archived=context.archived_at is not None,
+        ),
         "work_family_id": context.work_family_id,
         "family_title": family.title if family is not None else None,
         "family_source": context.family_source,

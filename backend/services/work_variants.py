@@ -44,6 +44,7 @@ from models import (
     ContextBucket,
     ContextMember,
     ContextParameterValue,
+    DecisionSource,
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
@@ -63,6 +64,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.context_routing import _NOT_APPLICABLE_CATALOG_KINDS
 from services.family_change import (
     FamilyLockMismatch,
     PendingState,
@@ -1138,6 +1140,113 @@ def take_context_off_work(
             "cleared_variant_id": cleared_variant_id,
         },
     )
+
+
+REFUSE_CONTEXT_NOT_REOPENABLE_STATE = "context_not_reopenable_state"
+REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION = "context_not_applicable_by_position"
+
+
+def is_reopenable(*, semantic_state: str, catalog_kind: str, archived: bool) -> bool:
+    """Можно ли вернуть контекст в разбор (спека 3б §2.8, решение 12): он не
+    архивирован, `NOT_APPLICABLE`, а его строка каталога вне `HEADER`,
+    `LOT_HEADER`, `TRASH`. Для `NOT_APPLICABLE` контекста вне этого множества
+    строк это равносильно «неприменим по решению человека» (спека §1.5): вид
+    строки выходит из множества нигде, поэтому строка в нём — решение Review.
+
+    Чистая функция: её зовут `reopen_context` под блокировками и карточка
+    контекста по прочитанному, и решение у них одно."""
+    return (
+        not archived
+        and semantic_state == SemanticState.NOT_APPLICABLE.value
+        and catalog_kind not in _NOT_APPLICABLE_CATALOG_KINDS
+    )
+
+
+def reopen_context(db: Session, *, context_id: int, actor_id: int) -> CatalogContext:
+    """«Вернуть в разбор» (спека 3б §2.8): контекст «не работа» человека снова в
+    разборе — `semantic_state := CONFIRMED`, если вид поставил человек
+    (`semantic_kind_source = manual`), иначе `SUGGESTED`; семья, вариант и значения
+    остаются пустыми; событие `context_reopened`; сверка очереди той же
+    транзакцией ставит задание предложения применимому контексту.
+
+    Блокировки — порядок фичи «строка -> семья -> вариант -> контекст»: строка
+    каталога `FOR SHARE` (глобальная пометка берёт её `FOR UPDATE`, поэтому вид
+    не меняется под нами), затем `acquire_family_locks` контекста. Проверки — после
+    блокировок, по перечитанному: до блокировки читается только то, какую
+    строку блокировать.
+
+    Raises:
+        WorkFamilyError: контекст не найден (`context_not_found`); архивирован
+            (`context_archived`); не `NOT_APPLICABLE`
+            (`context_not_reopenable_state`); строка размечена в Review
+            (`context_not_applicable_by_position`).
+        FamilyLockMismatch: семья контекста сменилась при захвате дважды.
+    """
+    position_id = db.execute(
+        sa.select(ContextBucket.catalog_position_id)
+        .join(CatalogContext, CatalogContext.bucket_id == ContextBucket.id)
+        .where(CatalogContext.id == context_id)
+    ).scalar_one_or_none()
+    if position_id is None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_FOUND, f"контекст {context_id} не найден", context_id=context_id
+        )
+    catalog_kind = db.execute(
+        sa.select(CatalogPosition.kind)
+        .where(CatalogPosition.id == position_id)
+        .with_for_update(read=True)
+    ).scalar_one()
+
+    unstable = acquire_family_locks(
+        db, [(context_id, None)], release_on_failure=True, lock_variants=True
+    )
+    if unstable:
+        raise FamilyLockMismatch(sorted(unstable))
+    context = db.execute(
+        sa.select(CatalogContext)
+        .where(CatalogContext.id == context_id)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if context is None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_FOUND, f"контекст {context_id} не найден", context_id=context_id
+        )
+    if context.archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_ARCHIVED, f"контекст {context_id} архивирован", context_id=context_id
+        )
+    if context.semantic_state != SemanticState.NOT_APPLICABLE.value:
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_REOPENABLE_STATE,
+            "Контекст не отмечен «не работа» — возвращать нечего.",
+            context_id=context_id,
+        )
+    if not is_reopenable(
+        semantic_state=context.semantic_state, catalog_kind=catalog_kind, archived=False
+    ):
+        raise WorkFamilyError(
+            REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION,
+            f"Строка каталога размечена в Review как «{catalog_kind}» — её вид решается там.",
+            context_id=context_id,
+            catalog_kind=catalog_kind,
+        )
+
+    to_state = (
+        SemanticState.CONFIRMED.value
+        if context.semantic_kind_source == DecisionSource.manual.value
+        else SemanticState.SUGGESTED.value
+    )
+    context.semantic_state = to_state
+    db.flush()
+    record_event(
+        db,
+        event_type="context_reopened",
+        context_id=context_id,
+        actor_id=actor_id,
+        payload={"from_state": SemanticState.NOT_APPLICABLE.value, "to_state": to_state},
+    )
+    reconcile_or_defer(db, [context_id])
+    return context
 
 
 #: Коды отказов жизни схемы (доменная ошибка `WorkFamilyError`); HTTP-коды

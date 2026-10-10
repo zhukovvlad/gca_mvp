@@ -502,7 +502,9 @@ def update_family(
     return family
 
 
-def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily:
+def activate_family(
+    db: Session, *, family_id: int, actor_id: int, rollback_on_conflict: bool = True
+) -> WorkFamily:
     """Переводит семью `draft -> active`, заполняя пару
     `activated_by`/`activated_at` целиком (план, задача 7).
 
@@ -518,6 +520,10 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
     `CHECK` схемы (`CK_FAMILY_ACTIVE_NEEDS_DEFINITION`) — ВТОРАЯ линия,
     независимая от этой функции (прямой `UPDATE` в обход неё по-прежнему
     получает `IntegrityError`, `test_work_families.py`).
+
+    `rollback_on_conflict=False` — вторая линия дубля не откатывает сессию:
+    вызывающий держит активацию в точке сохранения и откатывает её сам (откат
+    всей сессии внутри `begin_nested()` ломает менеджер контекста).
 
     Raises:
         WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья
@@ -586,7 +592,8 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
         # докстроку `REFUSE_DUPLICATE_ACTIVE_FAMILY`). Чужой `IntegrityError`
         # пробрасывается дальше НЕПЕРЕВЕДЁННЫМ — эта линия ловит ИМЕННО
         # нарушение `uq_work_families_active_name_unit`, не любой отказ базы.
-        db.rollback()
+        if rollback_on_conflict:
+            db.rollback()
         if "uq_work_families_active_name_unit" not in str(exc.orig):
             raise
         raise WorkFamilyError(

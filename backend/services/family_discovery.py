@@ -9,7 +9,10 @@
 запроса и вердикт результата берут контексты из него, а не из своих копий
 (`docs/insights/same-model-for-measurement-and-screen.md`). `discovery_scope`
 считает охват единицы, `is_in_scope` — охват произвольного набора контекстов;
-оба строят один и тот же запрос и различаются только отбором.
+оба строят один и тот же запрос и различаются только отбором. Потребители
+снимка черновиков (экран, активация «не работы») зовут `is_in_scope` с
+`why_in_scope=False`: без условия «почему в охвате», которое меняется от самой
+активации (она заводит активные семьи единицы).
 
 Тело строит чистая `build_discovery_request` на заранее собранном материале;
 `render_discovery_request` загружает материал по охвату и зовёт её. Наружу
@@ -183,7 +186,7 @@ def _open_suggestion(*, existing_family: bool):
     )
 
 
-def _scope_query(*columns):
+def _scope_query(*columns, why_in_scope: bool = True):
     """Запрос, возвращающий `columns` контекстов охвата. Предикат (спека 3б
     §2.3) записан здесь и только здесь:
 
@@ -191,41 +194,57 @@ def _scope_query(*columns):
     без ожидающей семьи, строка каталога — `TO_REVIEW` или `POSITION`; нет
     опубликованного предложения без решения на существующую семью; и при этом
     он система, либо у него предложение «новая семья», либо в единице его
-    строки нет активной семьи. `path_broken` охват не меняет."""
+    строки нет активной семьи. `path_broken` охват не меняет.
+
+    `why_in_scope=False` отбрасывает последнее условие («почему в охвате»):
+    остаются условия, которые делают контекст кандидатом на решение человека, а
+    не причина попасть в охват. Нужен потребителям снимка черновиков — экрану и
+    активации «не работы»: активация сама заводит активные семьи единицы, и по
+    полному предикату контексты единицы без семей вышли бы из охвата от одной
+    этой активации."""
     has_member = sa.exists().where(ContextMember.context_id == CatalogContext.id)
     unit_has_active_family = sa.exists().where(
         WorkFamily.status == FamilyStatus.active.value,
         WorkFamily.unit_id.is_not_distinct_from(CatalogPosition.unit_id),
     )
+    conditions = [
+        CatalogContext.archived_at.is_(None),
+        has_member,
+        CatalogContext.semantic_state != SemanticState.NOT_APPLICABLE.value,
+        CatalogContext.work_family_id.is_(None),
+        CatalogContext.pending_family_id.is_(None),
+        CatalogPosition.kind.in_(_SCOPE_CATALOG_KINDS),
+        ~_open_suggestion(existing_family=True),
+    ]
+    if why_in_scope:
+        conditions.append(
+            sa.or_(
+                CatalogContext.semantic_kind == SemanticKind.SYSTEM.value,
+                _open_suggestion(existing_family=False),
+                ~unit_has_active_family,
+            )
+        )
     return (
         sa.select(*columns)
         .select_from(CatalogContext)
         .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
         .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
-        .where(
-            CatalogContext.archived_at.is_(None),
-            has_member,
-            CatalogContext.semantic_state != SemanticState.NOT_APPLICABLE.value,
-            CatalogContext.work_family_id.is_(None),
-            CatalogContext.pending_family_id.is_(None),
-            CatalogPosition.kind.in_(_SCOPE_CATALOG_KINDS),
-            ~_open_suggestion(existing_family=True),
-            sa.or_(
-                CatalogContext.semantic_kind == SemanticKind.SYSTEM.value,
-                _open_suggestion(existing_family=False),
-                ~unit_has_active_family,
-            ),
-        )
+        .where(*conditions)
     )
 
 
-def is_in_scope(db: Session, context_ids: Iterable[int]) -> frozenset[int]:
+def is_in_scope(
+    db: Session, context_ids: Iterable[int], *, why_in_scope: bool = True
+) -> frozenset[int]:
     """Какие из `context_ids` в охвате своей единицы сейчас — тот же предикат,
-    что у `discovery_scope`, для потребителей снимка черновиков."""
+    что у `discovery_scope`, для потребителей снимка черновиков.
+    `why_in_scope=False` — без условия «почему в охвате» (см. `_scope_query`)."""
     ids = list(dict.fromkeys(context_ids))
     if not ids:
         return frozenset()
-    rows = db.execute(_scope_query(CatalogContext.id).where(CatalogContext.id.in_(ids))).scalars()
+    rows = db.execute(
+        _scope_query(CatalogContext.id, why_in_scope=why_in_scope).where(CatalogContext.id.in_(ids))
+    ).scalars()
     return frozenset(rows)
 
 

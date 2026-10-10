@@ -449,16 +449,23 @@ FAMILY_CATEGORY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(FAMILY_CATEGORY_ROUTE_TEMPLATES) == 4
 
-#: Маршруты открытия семей (спека 3б §2.12): блок, preview и запуск. Права на них
+#: Маршруты открытия семей (спека 3б §2.12): блок, preview, запуск, черновики и возврат в разбор. Права на них
 #: перебирает `test_catalog_discovery_launch.py`.
 DISCOVERY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", f"{BASE}/discovery/units"),
         ("POST", f"{BASE}/discovery/preview"),
         ("POST", f"{BASE}/discovery"),
+        ("GET", f"{BASE}/discovery/drafts"),
+        ("PATCH", f"{BASE}/discovery/drafts/{{draft_id}}"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/merge"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/discard"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/restore"),
+        ("POST", f"{BASE}/contexts/{{context_id}}/reopen"),
+        ("POST", f"{BASE}/discovery/{{job_id}}/activate"),
     }
 )
-assert len(DISCOVERY_ROUTE_TEMPLATES) == 3
+assert len(DISCOVERY_ROUTE_TEMPLATES) == 10
 
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
@@ -486,7 +493,11 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | FAMILY_CATEGORY_ROUTE_TEMPLATES
         | DISCOVERY_ROUTE_TEMPLATES
     )
-    assert not any(path.endswith("/restore") for _method, path in collected)
+    # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
+    assert not any(
+        path.endswith("/restore") and "/discovery/drafts/" not in path
+        for _method, path in collected
+    )
 
 
 # ---------------------------------------------------------------------------

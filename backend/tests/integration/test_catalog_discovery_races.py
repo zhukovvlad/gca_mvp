@@ -33,6 +33,7 @@ from models import (
     WorkFamily,
 )
 from services.context_operations import archive_context, move_members, split_context
+from services.discovery_drafts import edit_draft, merge_draft
 from services.discovery_result import apply_discovery
 from services.family_categories import create_category, delete_category, update_category
 from services.family_discovery import (
@@ -43,7 +44,6 @@ from services.family_discovery import (
 )
 from services.variant_answer import parse_discovery_answer
 from services.work_families import (
-    _lock_families,
     activate_family,
     archive_family,
     assign_family,
@@ -555,6 +555,25 @@ def _wait_blocked_or_done(factory, pid, thread, *, timeout=6.0) -> bool:
     return False
 
 
+def _waits_for_lock(factory, pid, thread, *, timeout=8.0) -> bool:
+    """Backend `pid` ждёт чужую блокировку — строго: закончивший поток ждавшим НЕ
+    считается (в отличие от `_wait_blocked_or_done`, где «закончил» тоже даёт
+    `True`, и проверка «ждёт» проходила бы и у стороны, прошедшей мимо замка).
+    Опрос `pg_stat_activity`, не `sleep` как синхронизация."""
+    pause = threading.Event()
+    waited = 0.0
+    while waited < timeout and thread.is_alive():
+        with factory() as db:
+            state = db.execute(
+                sa.text("SELECT wait_event_type FROM pg_stat_activity WHERE pid = :p"), {"p": pid}
+            ).scalar_one_or_none()
+        if state == "Lock":
+            return True
+        pause.wait(0.05)
+        waited += 0.05
+    return False
+
+
 def _old_open_draft(scene, *, category_id) -> int:
     """Открытый черновик прежнего открытия той же единицы."""
     with scene.factory() as db:
@@ -579,48 +598,68 @@ def _old_open_draft(scene, *, category_id) -> int:
 
 
 class TestRaces:
-    def test_answer_vs_draft_edit_finishes_without_deadlock_and_loses_no_write(self, scene):
-        """Правка черновика держит категории `FOR SHARE`, черновик `FOR UPDATE`, затем
-        хочет семью `FOR UPDATE` (порядок активации). Обработка без `FOR UPDATE`
-        черновиков (шаг 2) успела бы взять семью `FOR KEY SHARE` раньше и замкнула
-        бы цикл."""
+    @pytest.mark.parametrize("action", ["edit", "merge_into_family"])
+    def test_answer_vs_draft_action_finishes_without_deadlock_and_loses_no_write(
+        self, scene, action
+    ):
+        """Действие над черновиком (`edit_draft`, `merge_draft`) держит черновик `FOR
+        UPDATE`; обработка ждёт его и вытесняет черновик уже после коммита человека:
+        правка остаётся на вытесненном черновике, слитый черновик остаётся слитым.
+
+        Шаг 2 обработки (`FOR UPDATE` открытых черновиков) этот тест НЕ стережёт:
+        действия берут семью не выше `FOR SHARE`, цикла с `FOR KEY SHARE` обработки
+        нет, и без шага 2 обработка ждала бы тот же замок черновика на шаге 6.
+        Шаг 2 стерегут сторож порядка блокировок и гонки «обработка ↔ активация»
+        (`test_catalog_discovery_activate.py::TestActivationRaces`) — ревью задачи 4."""
         draft_id = _old_open_draft(scene, category_id=scene.work)
         editor_locked = threading.Event()
         editor_go = threading.Event()
         editor: dict[str, object] = {"pid": None, "error": None}
 
-        def edit():
+        def act():
             try:
                 with scene.factory() as db:
                     editor["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    db.execute(
-                        sa.select(FamilyCategory.id).order_by(FamilyCategory.id).with_for_update(read=True)
-                    ).all()
-                    db.execute(
-                        sa.select(FamilyDraft.id).where(FamilyDraft.id == draft_id).with_for_update()
-                    ).all()
-                    editor_locked.set()
-                    if not editor_go.wait(_T):
-                        raise TimeoutError("go не пришёл")
-                    _lock_families(db, [scene.f1.id], exclusive=True)
-                    db.execute(
-                        sa.update(FamilyDraft).where(FamilyDraft.id == draft_id).values(
-                            title="Правка человека"
-                        )
-                    )
-                    db.commit()
+                    connection = db.connection()
+
+                    def _hook(conn, cursor, statement, parameters, context, executemany):
+                        # Замок черновика взят: действие встаёт, пока придёт `go`.
+                        if (
+                            "family_drafts" in statement
+                            and " FOR UPDATE" in statement.upper()
+                            and not editor_locked.is_set()
+                        ):
+                            editor_locked.set()
+                            if not editor_go.wait(_T):
+                                raise TimeoutError("go не пришёл")
+
+                    event.listen(connection, "after_cursor_execute", _hook)
+                    try:
+                        if action == "edit":
+                            edit_draft(
+                                db, draft_id=draft_id, title="Правка человека",
+                                actor_id=scene.admin.id,
+                            )
+                        else:
+                            merge_draft(
+                                db, draft_id=draft_id, target_family_id=scene.f1.id,
+                                actor_id=scene.admin.id,
+                            )
+                        db.commit()
+                    finally:
+                        event.remove(connection, "after_cursor_execute", _hook)
             except Exception as exc:  # noqa: BLE001
                 editor["error"] = f"{type(exc).__name__}: {exc}"
             finally:
                 editor_locked.set()
 
-        te = threading.Thread(target=edit, name="editor", daemon=True)
+        te = threading.Thread(target=act, name="editor", daemon=True)
         apply = _Apply(scene, barrier=False)
         te.start()
         try:
-            assert editor_locked.wait(_T), "правка не взяла замки"
+            assert editor_locked.wait(_T), "действие не взяло замок черновика"
             apply.start()
-            blocked = _wait_blocked_or_done(scene.factory, apply.pid, apply.thread)
+            blocked = _waits_for_lock(scene.factory, apply.pid, apply.thread)
             editor_go.set()
         finally:
             editor_go.set()
@@ -630,14 +669,199 @@ class TestRaces:
                 _terminate(scene.factory, editor["pid"])
                 te.join(timeout=5)
 
-        assert blocked, "обработка должна ждать правку, а не обгонять её"
+        assert blocked, "обработка должна ждать действие человека, а не обгонять его"
         assert apply.error is None, apply.error
         assert editor["error"] is None, editor["error"]
         assert not te.is_alive()
+        assert apply.outcome.applied
         with scene.factory() as db:
             old = db.get(FamilyDraft, draft_id)
-            assert (old.title, old.status) == ("Правка человека", "superseded")
-        assert apply.outcome.applied and apply.outcome.superseded_drafts == 1
+            if action == "edit":
+                assert (old.title, old.status) == ("Правка человека", "superseded")
+                assert apply.outcome.superseded_drafts == 1
+            else:
+                assert (old.status, old.merged_into_family_id) == ("merged", scene.f1.id)
+                assert apply.outcome.superseded_drafts == 0
+
+    @pytest.mark.parametrize("already_on_it", [False, True])
+    def test_category_edit_vs_category_delete_finishes_without_deadlock(
+        self, committing_db, committing_factories, committing_session_factory, already_on_it
+    ):
+        """Правка категории черновика держит категорию `FOR SHARE`, затем черновик
+        `FOR UPDATE`; удаление берёт категорию `FOR UPDATE` и затем ждёт черновики с
+        этой категорией. Без `FOR SHARE` категории удаление проскакивало бы мимо
+        черновика, у которого ссылки ещё нет, а правка падала бы сырым
+        `IntegrityError` внешнего ключа. Вход `already_on_it` — черновик уже на этой
+        категории, а правка шлёт её снова (форма сохраняет все поля): при замке
+        категории ПОСЛЕ замка черновика правка и удаление замыкают цикл. Допустимый
+        исход здесь один: правка успела раньше и удаление обнулило категорию
+        черновика (удаление раньше даёт `category_not_found` без гонки)."""
+        cdb, cf = committing_db, committing_factories
+        admin = cf.UserFactory.create()
+        unit = _unit_id(cdb, "M3")
+        extra = create_category(cdb, title="Временная", definition="Для гонки", actor_id=admin.id)
+        cdb.commit()
+        scene = Scene()
+        scene.factory, scene.unit = committing_session_factory, unit
+        draft_id = _old_open_draft(scene, category_id=extra.id if already_on_it else None)
+
+        editor_paused = threading.Event()
+        editor_go = threading.Event()
+        editor: dict[str, object] = {"pid": None, "error": None}
+        deleter: dict[str, object] = {"pid": None, "error": None}
+
+        def edit():
+            try:
+                with scene.factory() as db:
+                    editor["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    connection = db.connection()
+
+                    def _hook(conn, cursor, statement, parameters, context, executemany):
+                        if (
+                            "family_drafts" in statement
+                            and " FOR UPDATE" in statement.upper()
+                            and not editor_paused.is_set()
+                        ):
+                            editor_paused.set()
+                            if not editor_go.wait(_T):
+                                raise TimeoutError("go не пришёл")
+
+                    event.listen(connection, "after_cursor_execute", _hook)
+                    try:
+                        edit_draft(
+                            db, draft_id=draft_id, family_category_id=extra.id, actor_id=admin.id
+                        )
+                        db.commit()
+                    finally:
+                        event.remove(connection, "after_cursor_execute", _hook)
+            except Exception as exc:  # noqa: BLE001
+                editor["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                editor_paused.set()
+
+        def delete():
+            try:
+                with scene.factory() as db:
+                    deleter["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    delete_category(db, category_id=extra.id, actor_id=admin.id)
+                    db.commit()
+            except Exception as exc:  # noqa: BLE001
+                deleter["error"] = f"{type(exc).__name__}: {exc}"
+
+        te = threading.Thread(target=edit, name="editor", daemon=True)
+        td = threading.Thread(target=delete, name="deleter", daemon=True)
+        te.start()
+        try:
+            assert editor_paused.wait(_T), "правка не дошла до замка черновика"
+            td.start()
+            deadline = threading.Event()
+            for _ in range(int(_T / 0.02)):
+                if deleter["pid"] is not None or not td.is_alive():
+                    break
+                deadline.wait(0.02)
+            assert deleter["pid"] is not None, f"удаление не стартовало: {deleter['error']}"
+            blocked = _waits_for_lock(scene.factory, deleter["pid"], td)
+            editor_go.set()
+        finally:
+            editor_go.set()
+            for thread, state in ((te, editor), (td, deleter)):
+                thread.join(timeout=_T)
+                if thread.is_alive():
+                    _terminate(scene.factory, state["pid"])
+                    thread.join(timeout=5)
+
+        assert not te.is_alive() and not td.is_alive(), "поток завис"
+        assert editor["error"] is None, editor["error"]
+        assert deleter["error"] is None, deleter["error"]
+        assert blocked, "удаление должно ждать правку, а не идти мимо неё"
+        with scene.factory() as db:
+            draft = db.get(FamilyDraft, draft_id)
+            assert draft.edited_by == admin.id, "правка человека потеряна"
+            assert draft.family_category_id is None
+            assert db.get(FamilyCategory, extra.id) is None
+
+    def test_merge_into_a_family_vs_archiving_it_waits_for_the_merge(self, scene):
+        """«Слить с активной семьёй» берёт семью `FOR SHARE` и только затем читает её
+        статус; архивирование берёт семью `FOR UPDATE` и ждёт конца слияния. Без замка
+        архивирование проходило бы между чтением статуса и `commit` слияния, и
+        черновик оказывался слит с семьёй, которая к моменту слияния уже не активна.
+        Допустимый исход здесь один: слияние раньше, архивирование после него."""
+        draft_id = _old_open_draft(scene, category_id=scene.work)
+        paused = threading.Event()
+        go = threading.Event()
+        merger: dict[str, object] = {"pid": None, "error": None}
+        archiver: dict[str, object] = {"pid": None, "error": None}
+
+        def merge():
+            try:
+                with scene.factory() as db:
+                    merger["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    connection = db.connection()
+
+                    def _hook(conn, cursor, statement, parameters, context, executemany):
+                        # Статус семьи прочитан (запрос без блокировки) — слияние встаёт.
+                        if (
+                            "FROM work_families" in statement
+                            and " FOR " not in statement.upper()
+                            and not paused.is_set()
+                        ):
+                            paused.set()
+                            if not go.wait(_T):
+                                raise TimeoutError("go не пришёл")
+
+                    event.listen(connection, "after_cursor_execute", _hook)
+                    try:
+                        merge_draft(
+                            db, draft_id=draft_id, target_family_id=scene.f1.id,
+                            actor_id=scene.admin.id,
+                        )
+                        db.commit()
+                    finally:
+                        event.remove(connection, "after_cursor_execute", _hook)
+            except Exception as exc:  # noqa: BLE001 — исход фиксируется
+                merger["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                paused.set()
+
+        def archive():
+            try:
+                with scene.factory() as db:
+                    archiver["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                    archive_family(db, family_id=scene.f1.id, actor_id=scene.admin.id)
+                    db.commit()
+            except Exception as exc:  # noqa: BLE001
+                archiver["error"] = f"{type(exc).__name__}: {exc}"
+
+        tm = threading.Thread(target=merge, name="merger", daemon=True)
+        ta = threading.Thread(target=archive, name="archiver", daemon=True)
+        tm.start()
+        blocked = False
+        try:
+            assert paused.wait(_T), "слияние не дошло до чтения статуса семьи"
+            ta.start()
+            pause = threading.Event()
+            for _ in range(int(_T / 0.02)):
+                if archiver["pid"] is not None or not ta.is_alive():
+                    break
+                pause.wait(0.02)
+            assert archiver["pid"] is not None, f"архивирование не стартовало: {archiver['error']}"
+            blocked = _waits_for_lock(scene.factory, archiver["pid"], ta)
+        finally:
+            go.set()
+            for thread, state in ((tm, merger), (ta, archiver)):
+                thread.join(timeout=_T)
+                if thread.is_alive():
+                    _terminate(scene.factory, state["pid"])
+                    thread.join(timeout=5)
+
+        assert not tm.is_alive() and not ta.is_alive(), "поток завис"
+        assert merger["error"] is None, merger["error"]
+        assert archiver["error"] is None, archiver["error"]
+        assert blocked, "архивирование должно ждать слияние, а не идти мимо него"
+        with scene.factory() as db:
+            draft = db.get(FamilyDraft, draft_id)
+            assert (draft.status, draft.merged_into_family_id) == ("merged", scene.f1.id)
+            assert db.get(WorkFamily, scene.f1.id).status == "archived"
 
     def test_answer_vs_category_delete_finishes_without_deadlock_and_loses_no_write(
         self, committing_db, committing_factories, committing_session_factory
