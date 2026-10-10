@@ -108,8 +108,13 @@ class Settings(BaseSettings):
     # ниже порога предложенная семья принимается автоматически; None - автопринятия нет.
     # Пустая строка в окружении (`SEMANTIC_AUTO_ACCEPT_THRESHOLD=`) - тоже None.
     SEMANTIC_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
+    # Тот же порог для контекстов-систем (спека 3б §2.7); None - для систем автопринятия
+    # нет, в том числе строки «та же семья». Пустая строка в окружении - тоже None.
+    SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
 
-    @field_validator("SEMANTIC_AUTO_ACCEPT_THRESHOLD", mode="before")
+    @field_validator(
+        "SEMANTIC_AUTO_ACCEPT_THRESHOLD", "SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD", mode="before"
+    )
     @classmethod
     def _empty_threshold_is_none(cls, value):
         if isinstance(value, str) and value.strip() == "":

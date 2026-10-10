@@ -49,7 +49,7 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
-from services.family_change import apply_publication_rules
+from services.family_change import apply_publication_rules, thresholds_from
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
     ModelClient,
@@ -844,8 +844,7 @@ def _apply_rules_in_new_session(
     try:
         with session_factory() as db:
             apply_publication_rules(
-                db, suggestion_id=suggestion_id,
-                threshold=settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD,
+                db, suggestion_id=suggestion_id, thresholds=thresholds_from(settings),
             )
     except Exception:  # noqa: BLE001 — исключение правил наружу не уходит
         logger.exception("Правила публикации предложения %s не применены", suggestion_id)

@@ -780,7 +780,7 @@ class TestValuesNeeded:
 class TestValuesApplicability:
     @pytest.mark.parametrize(
         "spoil",
-        ["archived", "not_applicable", "system", "header", "trash", "no_members"],
+        ["archived", "not_applicable", "header", "trash", "no_members"],
     )
     def test_each_inapplicable_condition_blocks_creation_alone(
         self, db_session, factories, spoil
@@ -793,8 +793,6 @@ class TestValuesApplicability:
             context.archived_at = _now()
         elif spoil == "not_applicable":
             context.semantic_state = "NOT_APPLICABLE"
-        elif spoil == "system":
-            context.semantic_kind = "SYSTEM"
         elif spoil in ("header", "trash"):
             catalog_id = db_session.execute(
                 sa.select(ContextBucket.catalog_position_id).where(
@@ -811,6 +809,17 @@ class TestValuesApplicability:
         report = reconcile_context_values(db_session, [context_id], cap=NO_CAP, source="operation")
 
         assert report == _ZERO
+
+    def test_system_kind_does_not_block_creation(self, db_session, factories):
+        family = _active_family(db_session)
+        _frozen_schema(db_session, factories, family, [(1, "Толщина", ["50 мм"])])
+        context_id = _context(db_session, factories, family=family)
+        db_session.get(CatalogContext, context_id).semantic_kind = "SYSTEM"
+        db_session.flush()
+
+        report = reconcile_context_values(db_session, [context_id], cap=NO_CAP, source="operation")
+
+        assert report.created == 1
 
     @pytest.mark.parametrize("kind", ["TO_REVIEW", "POSITION"])
     def test_review_and_position_rows_are_applicable(self, db_session, factories, kind):

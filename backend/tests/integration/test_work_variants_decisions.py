@@ -733,7 +733,7 @@ class TestRulesAgainstAFamilyChangedTwice:
         """Правила публикации на том же помощнике захвата: семья контекста
         сменилась и после повтора — правило ничего не пишет и не падает
         (`None`), предложение остаётся опубликованным человеку."""
-        from services.family_change import apply_publication_rules
+        from services.family_change import Thresholds, apply_publication_rules
 
         db, factories = committing_db, committing_factories
         scene = _two_families(db, factories)
@@ -746,7 +746,7 @@ class TestRulesAgainstAFamilyChangedTwice:
         run = _DecisionRun(
             committing_session_factory, gates,
             lambda session: apply_publication_rules(
-                session, suggestion_id=suggestion_id, threshold=Decimal("0.80")
+                session, suggestion_id=suggestion_id, thresholds=Thresholds(Decimal("0.80"), None)
             ),
             name="rules",
         )

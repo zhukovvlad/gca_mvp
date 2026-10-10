@@ -118,8 +118,10 @@ class TestIsApplicable:
     def test_false_when_not_applicable_state(self):
         assert is_applicable(_material(semantic_state="NOT_APPLICABLE")) is False
 
-    def test_false_when_system_kind(self):
-        assert is_applicable(_material(semantic_kind="SYSTEM")) is False
+    def test_true_when_system_kind(self):
+        """Система применима там же, где работа: вид контекста применимость
+        не определяет (спека 3б §2.6)."""
+        assert is_applicable(_material(semantic_kind="SYSTEM")) is True
 
     def test_true_when_has_family(self):
         """Привязка к семье применимость не отменяет (спека вариантов §2.5):

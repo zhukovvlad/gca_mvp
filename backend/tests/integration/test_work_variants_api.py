@@ -1684,7 +1684,10 @@ class TestAutoAccept:
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert set(body) == {"by_outcome", "total", "preview_hash", "threshold"}
+        assert set(body) == {
+            "by_outcome", "total", "preview_hash", "threshold", "system_threshold",
+        }
+        assert body["system_threshold"] is None
         assert body["by_outcome"] == {"confirm": 1, "assign": 2, "pending": 1, "none": 1}
         assert body["total"] == 5
         assert body["threshold"] == "0.80"

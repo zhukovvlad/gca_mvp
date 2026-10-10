@@ -1544,6 +1544,10 @@ def set_position_kind_route(
 #  Массовое автопринятие
 # ---------------------------------------------------------------------------
 
+def _threshold_text(threshold) -> str | None:
+    return None if threshold is None else format(threshold, "f")
+
+
 @router.post("/auto-accept/preview")
 def auto_accept_preview_route(
     _admin: User = Depends(require_admin),
@@ -1555,7 +1559,8 @@ def auto_accept_preview_route(
         "by_outcome": dict(preview.by_outcome),
         "total": preview.total,
         "preview_hash": preview.preview_hash,
-        "threshold": format(preview.threshold, "f"),
+        "threshold": _threshold_text(preview.threshold),
+        "system_threshold": _threshold_text(preview.system_threshold),
     }
 
 

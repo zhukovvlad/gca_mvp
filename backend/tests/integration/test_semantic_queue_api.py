@@ -345,7 +345,9 @@ class TestListQueue:
             "reason": "проверочная причина",
             "multi_owner": False,
             "previously_rejected": None,
+            "semantic_kind": "WORK",
         }
+        assert first["system_count"] == 0
 
     @pytest.mark.parametrize("case", ["unpublished", "decided_but_published"])
     def test_unpublished_and_decided_suggestions_are_not_shown(
@@ -994,9 +996,9 @@ class TestNewQueue:
         assert {i["context_id"] for i in only_multi["items"]} == {shared, bare_shared}
 
     @pytest.mark.parametrize(
-        "case", ["archived", "assigned", "not_applicable", "system", "no_members"]
+        "case", ["archived", "assigned", "not_applicable", "no_members"]
     )
-    def test_row_without_families_requires_a_live_unassigned_work_context(
+    def test_row_without_families_requires_a_live_unassigned_context(
         self, admin_client, db_session, factories, case
     ):
         """Строка «в единице нет активных семей» — только у контекста, который
@@ -1010,10 +1012,6 @@ class TestNewQueue:
         values = {
             "archived": {"archived_at": now},
             "not_applicable": {"semantic_state": "NOT_APPLICABLE"},
-            "system": {
-                "semantic_kind": "SYSTEM", "semantic_kind_source": "manual",
-                "semantic_kind_by": admin.id, "semantic_kind_at": now,
-            },
         }
         if case == "assigned":
             draft = create_family(
@@ -1035,6 +1033,30 @@ class TestNewQueue:
         payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
 
         assert [i["context_id"] for i in payload["items"]] == [kept]
+
+    def test_system_without_families_in_the_unit_is_a_bare_row_like_work(
+        self, admin_client, db_session, factories
+    ):
+        admin = admin_client.user
+        scene = _scene(db_session, factories, admin, titles=())
+        pcs = _unit_id(db_session, "PCS")
+        work = _simple_context(db_session, factories, scene.proposal, unit_id=pcs, title="Работа")
+        system = _simple_context(db_session, factories, scene.proposal, unit_id=pcs, title="Систем")
+        db_session.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id == system)
+            .values(
+                semantic_kind="SYSTEM", semantic_kind_source="manual",
+                semantic_kind_by=admin.id, semantic_kind_at=dt.datetime.now(dt.UTC),
+            )
+        )
+        db_session.expire_all()
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert sorted(i["context_id"] for i in payload["items"]) == sorted([work, system])
+        bare_system = next(i for i in payload["items"] if i["context_id"] == system)
+        assert (bare_system["suggestion_id"], bare_system["is_system"]) == (None, False)
 
     def test_context_without_unit_is_not_bare_when_a_family_without_unit_is_active(
         self, admin_client, db_session, factories

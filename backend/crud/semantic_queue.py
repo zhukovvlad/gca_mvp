@@ -99,6 +99,7 @@ class SuggestionRow(TypedDict):
     reason: str
     multi_owner: bool
     previously_rejected: RejectedMark | None
+    semantic_kind: str
 
 
 class SuggestionGroup(TypedDict):
@@ -108,6 +109,7 @@ class SuggestionGroup(TypedDict):
     band: Band
     rows: list[SuggestionRow]
     total: int
+    system_count: int
 
 
 class NewRow(TypedDict):
@@ -375,6 +377,7 @@ def _suggestion_row(
             if decided_at is not None
             else None
         ),
+        semantic_kind=material.semantic_kind,
     )
 
 
@@ -469,6 +472,9 @@ def _list_queue(
                 band=group_band,
                 rows=built,
                 total=len(built),
+                system_count=sum(
+                    1 for row in built if row["semantic_kind"] == SemanticKind.SYSTEM.value
+                ),
             )
         )
     band_order = {"high": 0, "mid": 1, "low": 2}
@@ -666,7 +672,6 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
             CatalogContext.archived_at.is_(None),
             CatalogContext.work_family_id.is_(None),
             CatalogContext.semantic_state != SemanticState.NOT_APPLICABLE.value,
-            CatalogContext.semantic_kind != SemanticKind.SYSTEM.value,
             has_member,
             ~active_family,
         )

@@ -55,7 +55,6 @@ from models import (
     SemanticJob,
     SemanticJobKind,
     SemanticJobStatus,
-    SemanticKind,
     SemanticState,
     ValueOrigin,
     ValueSource,
@@ -715,15 +714,13 @@ def _acquire_domain_locks(
 
 def _is_applicable(db: Session, locked: _Locked) -> bool:
     """Применимость под блокировками: контекст не архивирован, есть членства,
-    не `NOT_APPLICABLE`, не `SYSTEM`, строка каталога `TO_REVIEW` или
+    не `NOT_APPLICABLE`, строка каталога `TO_REVIEW` или
     `POSITION`, у контекста есть семья или ожидание, а `schema_id` — текущая
     версия этой семьи."""
     context = locked.context
     if context.archived_at is not None:
         return False
     if context.semantic_state == SemanticState.NOT_APPLICABLE.value:
-        return False
-    if context.semantic_kind == SemanticKind.SYSTEM.value:
         return False
     if locked.catalog.kind not in _APPLICABLE_CATALOG_KINDS:
         return False
