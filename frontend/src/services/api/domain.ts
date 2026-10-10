@@ -20,6 +20,9 @@ import type {
   ContextsParams,
   ConfirmSuggestionsResult,
   CreateFamilyFromSuggestionInput,
+  FamilyCategory,
+  FamilyCategoryFilter,
+  FamilyCategoryInput,
   FamilyChangeResult,
   FamilySchema,
   FamilyVariant,
@@ -418,10 +421,29 @@ export const tendersApi = {
 // ---------------------------------------------------------------------------
 
 export const semanticApi = {
-  listFamilies: (params?: { status?: WorkFamily["status"]; unit_id?: number }): Promise<WorkFamily[]> =>
+  listFamilies: (params?: {
+    status?: WorkFamily["status"];
+    unit_id?: number;
+    family_category_id?: FamilyCategoryFilter;
+  }): Promise<WorkFamily[]> =>
     api
       .get<{ items: WorkFamily[] }>("/v1/semantic/families", { params })
       .then((r) => r.data.items),
+
+  /** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
+  listFamilyCategories: (): Promise<FamilyCategory[]> =>
+    api
+      .get<{ items: FamilyCategory[] }>("/v1/semantic/family-categories")
+      .then((r) => r.data.items),
+
+  createFamilyCategory: (input: FamilyCategoryInput): Promise<FamilyCategory> =>
+    api.post<FamilyCategory>("/v1/semantic/family-categories", input).then((r) => r.data),
+
+  updateFamilyCategory: (id: number, input: Partial<FamilyCategoryInput>): Promise<FamilyCategory> =>
+    api.patch<FamilyCategory>(`/v1/semantic/family-categories/${id}`, input).then((r) => r.data),
+
+  deleteFamilyCategory: (id: number): Promise<void> =>
+    api.delete(`/v1/semantic/family-categories/${id}`).then(() => undefined),
 
   createFamily: (input: WorkFamilyInput): Promise<WorkFamily> =>
     api.post<WorkFamily>("/v1/semantic/families", input).then((r) => r.data),
@@ -463,6 +485,10 @@ export const semanticApi = {
 
   markNotWork: (contextId: number): Promise<ContextCardData> =>
     api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/not-work`).then((r) => r.data),
+
+  /** «Вернуть в разбор» контекста «не работа», поставленной человеком (спека 3б §2.8). */
+  reopenContext: (contextId: number): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/reopen`).then((r) => r.data),
 
   /** Глобальная пометка строки каталога: касается всех её будущих вхождений (спека вариантов §2.11). */
   setPositionKind: (positionId: number, kind: PositionMarkKind): Promise<PositionKindResult> =>

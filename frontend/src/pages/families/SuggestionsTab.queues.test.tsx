@@ -114,6 +114,8 @@ describe("SuggestionsTab — решения в очередях «Новая» �
     await user.click(within(row).getByRole("button", { name: "Завести семью…" }));
     await waitForDialogFocus();
     await user.type(screen.getByLabelText(/Определение/), "Входит: шпонки. Не входит: мастики.");
+    await user.click(screen.getByRole("combobox", { name: "Категория" }));
+    await user.click(await screen.findByRole("option", { name: "Работа" }));
     await user.click(screen.getByRole("button", { name: "Сохранить и активировать" }));
 
     await waitFor(() => expect(screen.getAllByTestId("new-row")).toHaveLength(3));
@@ -145,6 +147,8 @@ describe("SuggestionsTab — решения в очередях «Новая» �
     await user.click(within(row).getByRole("button", { name: "Завести семью…" }));
     await waitForDialogFocus();
     await user.type(screen.getByLabelText(/Определение/), "Входит: шпонки.");
+    await user.click(screen.getByRole("combobox", { name: "Категория" }));
+    await user.click(await screen.findByRole("option", { name: "Работа" }));
     await user.click(screen.getByRole("button", { name: "Сохранить и активировать" }));
 
     const exists = await screen.findByTestId("family-exists");

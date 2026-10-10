@@ -2178,12 +2178,36 @@ export interface WorkFamily {
   archived_at: string | null;
   /** Число привязанных контекстов — держит отказы правки единицы/архивирования. */
   context_count: number;
+  /** Категория семьи из справочника (спека 3б §2.9); `null` у семьи, ещё не размеченной. */
+  family_category_id: number | null;
+  family_category_title: string | null;
 }
+
+/** Строка справочника категорий семей (`GET /v1/semantic/family-categories`, спека 3б §2.9). */
+export interface FamilyCategory {
+  id: number;
+  title: string;
+  /** Определение видит модель, когда предлагает категорию черновику. */
+  definition: string;
+  /** Ключ стартовой категории; у заведённой человеком — `null`. */
+  seed_key: string | null;
+  /** Число семей с этой категорией — удалить можно только пустую. */
+  family_count: number;
+}
+
+export interface FamilyCategoryInput {
+  title: string;
+  definition: string;
+}
+
+/** Фильтр семей по категории: id категории или `"none"` — семьи без категории. */
+export type FamilyCategoryFilter = number | "none";
 
 export interface WorkFamilyInput {
   title: string;
   unit_name?: string | null;
   definition?: string | null;
+  family_category_id?: number | null;
 }
 
 /**
@@ -2196,6 +2220,8 @@ export interface WorkFamilyPatch {
   title?: string;
   definition?: string | null;
   unit_name?: string | null;
+  /** Категорию можно сменить, но у активной семьи не снять (`clear_category_active`). */
+  family_category_id?: number | null;
 }
 
 /**
@@ -2447,6 +2473,10 @@ export interface ContextCardData {
   place_dictionary_version: number;
   comparability_reason: ComparabilityReason | null;
   semantic_state: SemanticState;
+  /** Вид строки каталога контекста (`POSITION`, `HEADER`, `LOT_HEADER`, `TRASH`): неприменимость по разметке в Review. */
+  catalog_kind: string;
+  /** «Вернуть в разбор» применимо: не в архиве, `NOT_APPLICABLE` и строка не размечена в Review (спека 3б §2.8). */
+  reopenable: boolean;
   work_family_id: number | null;
   family_title: string | null;
   family_source: FamilySource | null;
@@ -2696,6 +2726,8 @@ export interface SuggestionRow {
   reason: string;
   multi_owner: boolean;
   previously_rejected: RejectedMark | null;
+  /** Вид контекста строки: у системы экран ставит метку «система» (спека 3б §2.6). */
+  semantic_kind: SemanticKind;
 }
 
 /** Группа очереди «Семья из списка»: пара «семья + полоса», у группы ровно одна полоса. */
@@ -2706,6 +2738,8 @@ export interface SuggestionGroup {
   band: SuggestionBand;
   rows: SuggestionRow[];
   total: number;
+  /** Число строк группы с видом `SYSTEM`; у очереди «Смена семьи» ключа нет. */
+  system_count?: number;
   /** Только у очереди «Смена семьи»: семья контекстов сейчас (`family_id` — предложенная). */
   from_family_id?: number;
   from_family_title?: string;
@@ -2900,6 +2934,8 @@ export type PreviewTarget =
 export interface CreateFamilyFromSuggestionInput {
   title: string;
   definition: string;
+  /** Категория обязательна: без неё сервер отвечает `422` (спека 3б §2.9). */
+  family_category_id: number;
 }
 
 /** Тело `409 family_exists`: `family_id` существующей семьи, может быть `null`. */
@@ -2919,10 +2955,26 @@ export interface PrivacyMatch {
   where: string;
 }
 
-/** Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`). */
+/** Вид задания очереди (`models.py::SemanticJobKind`). */
+export const SEMANTIC_JOB_KIND_VALUES = [
+  "family_suggestion",
+  "family_schema",
+  "context_values",
+  "family_discovery",
+] as const;
+export type SemanticJobKind = (typeof SEMANTIC_JOB_KIND_VALUES)[number];
+
+/**
+ * Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`).
+ * У задания открытия семей (`family_discovery`) предмет — единица: `context_id`
+ * пуст, `title` — подпись задания, `names_count` — число различных имён в
+ * отправленном теле (`null`, когда охват единицы уже изменился).
+ */
 export interface JobRow {
   job_id: number;
-  context_id: number;
+  kind: SemanticJobKind;
+  context_id: number | null;
+  names_count: number | null;
   title: string;
   unit_id: number | null;
   unit_code: string | null;

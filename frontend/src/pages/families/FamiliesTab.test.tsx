@@ -245,7 +245,7 @@ describe("FamiliesTab", () => {
     expect(screen.queryByText(/Единица недоступна/)).not.toBeInTheDocument();
   });
 
-  it("путь «дописать определение → активировать» проходит на экране через панель", async () => {
+  it("путь «дописать определение, выбрать категорию → активировать» проходит на экране через панель", async () => {
     const user = userEvent.setup();
     await renderTab();
 
@@ -263,6 +263,10 @@ describe("FamiliesTab", () => {
         body: { definition: "Устройство покрытий полов из линолеума." },
       })
     );
+    // Определение есть, категории нет (спека 3б §2.9): «Активировать» ждёт и её.
+    expect(screen.getByRole("button", { name: activateName })).toBeDisabled();
+    await user.click(screen.getByRole("combobox", { name: "Категория" }));
+    await user.click(await screen.findByRole("option", { name: "Работа" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: activateName })).not.toBeDisabled()
     );

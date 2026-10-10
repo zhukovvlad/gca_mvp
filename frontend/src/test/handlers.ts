@@ -66,6 +66,7 @@ import type {
   NewRow,
   PrivacyMatch,
   ChangeGroup,
+  FamilyCategory,
   ContextVariantData,
   PositionStandard,
   SuggestionGroup,
@@ -92,7 +93,10 @@ import type {
  * перед сериализацией (`toContextRow`/`toContextCard`): наружу уходит ровно
  * форма ответа бэкенда, не более.
  */
-interface SemanticContextFixture extends Omit<ContextCardData, "variant"> {
+interface SemanticContextFixture
+  extends Omit<ContextCardData, "variant" | "catalog_kind" | "reopenable"> {
+  /** Вид строки каталога; без поля — `POSITION`. `reopenable` считается так же, как у сервера. */
+  catalog_kind?: string;
   /** Вариант, ожидание и пометка «к делению»; без поля — контекст без варианта (как у сервера без значений). */
   variant?: ContextVariantData;
   hasStaleMembers: boolean;
@@ -457,6 +461,15 @@ interface HandlerState {
    */
   workFamilies: WorkFamily[];
   nextWorkFamilyId: number;
+  /** Справочник категорий семей (без `family_count`: его считает обработчик по семьям); мутируемый. */
+  familyCategories: Array<Omit<FamilyCategory, "family_count">>;
+  nextFamilyCategoryId: number;
+  /** Query-строки `GET /families` по порядку — какой фильтр реально ушёл на сервер. */
+  familiesRequests: string[];
+  /** Запросы справочника: `POST`/`PATCH`/`DELETE` по порядку. */
+  categoryRequests: Array<{ method: string; id: number | null; body: Record<string, unknown> | null }>;
+  /** Запросы `POST …/reopen` по порядку: id контекста. */
+  reopenRequests: number[];
   lastCreateFamilyRequest: Record<string, unknown> | null;
   lastUpdateFamilyRequest: { id: number; body: Record<string, unknown> } | null;
   lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
@@ -520,7 +533,10 @@ interface HandlerState {
   errorJobs: JobRow[];
   holdJobs: JobRow[];
   unitHoldGroups: UnitHoldGroup[];
-  createFamilyRequests: Array<{ suggestionId: number; body: { title: string; definition: string } }>;
+  createFamilyRequests: Array<{
+    suggestionId: number;
+    body: { title: string; definition: string; family_category_id?: number };
+  }>;
   /** Отказ «Завести семью…»: `exists` — `409 family_exists` со ссылкой, `exists_null` — без `family_id`. */
   createFamilyOutcome: "ok" | "exists" | "exists_null";
   retryJobRequests: number[];
@@ -568,7 +584,7 @@ interface HandlerState {
 }
 
 type SchemaAction = "rebuild" | "update" | "cancel" | "merge";
-type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind";
+type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind" | "reopen";
 
 // ---------------------------------------------------------------------------
 //  Семьи и контексты — фикстуры (спека 2026-09-22-catalog-families-design.md
@@ -677,6 +693,7 @@ function suggestionRowFixture(
     reason,
     multi_owner: false,
     previously_rejected: null,
+    semantic_kind: "WORK",
     ...extra,
   };
 }
@@ -806,7 +823,9 @@ function initialNewRows(): NewRow[] {
 function jobFixture(id: number, title: string, extra: Partial<JobRow> = {}): JobRow {
   return {
     job_id: id,
+    kind: "family_suggestion",
     context_id: 6000 + id,
+    names_count: null,
     title,
     unit_id: 5,
     unit_code: "M2",
@@ -930,6 +949,9 @@ function initialWorkFamilies(): WorkFamily[] {
       activated_at: null,
       archived_at: null,
       context_count: linked ? 2 : 0,
+      // Семья 1 размечена: путь «дописать определение → активировать» проходит на ней.
+      family_category_id: linked ? WORK_CATEGORY_ID : null,
+      family_category_title: linked ? "Работа" : null,
     };
   });
   const active: WorkFamily = {
@@ -950,6 +972,8 @@ function initialWorkFamilies(): WorkFamily[] {
     activated_at: isoNow(),
     archived_at: null,
     context_count: 0,
+    family_category_id: WORK_CATEGORY_ID,
+    family_category_title: "Работа",
   };
   const archived: WorkFamily = {
     id: 44,
@@ -967,8 +991,50 @@ function initialWorkFamilies(): WorkFamily[] {
     activated_at: isoNow(),
     archived_at: isoNow(),
     context_count: 0,
+    family_category_id: null,
+    family_category_title: null,
   };
   return [...drafts, active, archived];
+}
+
+/** Id стартовой категории «Работа» справочника. */
+const WORK_CATEGORY_ID = 1;
+
+/** Справочник категорий: три стартовых и одна заведённая человеком; `family_count` считает обработчик по семьям. */
+function initialFamilyCategories(): Array<Omit<FamilyCategory, "family_count">> {
+  return [
+    {
+      id: WORK_CATEGORY_ID,
+      title: "Работа",
+      definition: "Строительно-монтажная работа или материал с объёмом в своей единице.",
+      seed_key: "work",
+    },
+    {
+      id: 2,
+      title: "Инженерная система",
+      definition: "Инженерная система здания или её часть, оцениваемая комплектом.",
+      seed_key: "engineering_system",
+    },
+    {
+      id: 3,
+      title: "Затраты и услуги",
+      definition: "Не работа на объекте, а обеспечение и сопровождение: гарантии, страхование, коммунальные расходы.",
+      seed_key: "costs_services",
+    },
+    {
+      id: 4,
+      title: "Проектирование",
+      definition: "Проектные и изыскательские работы.",
+      seed_key: null,
+    },
+  ];
+}
+
+function familyCategoryRows(): FamilyCategory[] {
+  return handlerState.familyCategories.map((category) => ({
+    ...category,
+    family_count: handlerState.workFamilies.filter((f) => f.family_category_id === category.id).length,
+  }));
 }
 
 /**
@@ -1722,6 +1788,11 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
     place_dictionary_version: fixture.place_dictionary_version,
     comparability_reason: fixture.comparability_reason,
     semantic_state: fixture.semantic_state,
+    catalog_kind: fixture.catalog_kind ?? "POSITION",
+    reopenable:
+      fixture.archived_at === null &&
+      fixture.semantic_state === "NOT_APPLICABLE" &&
+      !["HEADER", "LOT_HEADER", "TRASH"].includes(fixture.catalog_kind ?? "POSITION"),
     work_family_id: fixture.work_family_id,
     family_title: fixture.family_title,
     family_source: fixture.family_source,
@@ -1779,6 +1850,11 @@ export const handlerState: HandlerState = {
   lastChangesExportTenderId: null,
   workFamilies: initialWorkFamilies(),
   nextWorkFamilyId: 1000,
+  familyCategories: initialFamilyCategories(),
+  nextFamilyCategoryId: 100,
+  familiesRequests: [],
+  categoryRequests: [],
+  reopenRequests: [],
   lastCreateFamilyRequest: null,
   lastUpdateFamilyRequest: null,
   lastMergeFamiliesRequest: null,
@@ -2038,6 +2114,11 @@ export function resetHandlerState() {
   handlerState.lastChangesExportTenderId = null;
   handlerState.workFamilies = initialWorkFamilies();
   handlerState.nextWorkFamilyId = 1000;
+  handlerState.familyCategories = initialFamilyCategories();
+  handlerState.nextFamilyCategoryId = 100;
+  handlerState.familiesRequests = [];
+  handlerState.categoryRequests = [];
+  handlerState.reopenRequests = [];
   handlerState.lastCreateFamilyRequest = null;
   handlerState.lastUpdateFamilyRequest = null;
   handlerState.lastMergeFamiliesRequest = null;
@@ -3671,19 +3752,109 @@ export const handlers = [
 
   http.get("/api/v1/semantic/families", ({ request }) => {
     const url = new URL(request.url);
+    handlerState.familiesRequests.push(url.search);
     const status = url.searchParams.get("status");
     const unitId = url.searchParams.get("unit_id");
+    const categoryId = url.searchParams.get("family_category_id");
     const items = handlerState.workFamilies.filter((family) => {
       if (status && family.status !== status) return false;
       if (unitId && String(family.unit_id) !== unitId) return false;
+      // `none` — семьи без категории, как у сервера.
+      if (categoryId === "none" && family.family_category_id !== null) return false;
+      if (categoryId && categoryId !== "none" && String(family.family_category_id) !== categoryId) return false;
       return true;
     });
     return HttpResponse.json({ items });
   }),
 
+  // Справочник категорий семей (спека 3б §2.9, §2.12).
+  http.get("/api/v1/semantic/family-categories", () =>
+    HttpResponse.json({ items: familyCategoryRows() })
+  ),
+
+  http.post("/api/v1/semantic/family-categories", async ({ request }) => {
+    const body = (await request.json()) as { title: string; definition: string };
+    handlerState.categoryRequests.push({ method: "POST", id: null, body });
+    if (handlerState.familyCategories.some((c) => c.title.toLowerCase() === body.title.trim().toLowerCase())) {
+      return HttpResponse.json(
+        { detail: { code: "category_duplicate", message: `Категория «${body.title}» уже есть.`, title: body.title } },
+        { status: 409 }
+      );
+    }
+    const category = {
+      id: handlerState.nextFamilyCategoryId++,
+      title: body.title.trim(),
+      definition: body.definition.trim(),
+      seed_key: null,
+    };
+    handlerState.familyCategories.push(category);
+    return HttpResponse.json({ ...category, family_count: 0 }, { status: 201 });
+  }),
+
+  http.patch("/api/v1/semantic/family-categories/:id", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { title?: string; definition?: string };
+    handlerState.categoryRequests.push({ method: "PATCH", id, body });
+    const category = handlerState.familyCategories.find((c) => c.id === id);
+    if (!category) {
+      return HttpResponse.json(
+        { detail: { code: "category_not_found", message: `Категории «№ ${id}» больше нет — её удалили. Выберите другую.`, category_id: id } },
+        { status: 409 }
+      );
+    }
+    if (body.title !== undefined && !body.title.trim()) {
+      return HttpResponse.json(
+        { detail: { code: "category_blank_title", message: "У категории должно быть имя — по определению модель выбирает категорию." } },
+        { status: 422 }
+      );
+    }
+    if (body.title !== undefined) {
+      category.title = body.title.trim();
+      // Имя категории денормализовано в строку семьи.
+      for (const family of handlerState.workFamilies) {
+        if (family.family_category_id === id) family.family_category_title = category.title;
+      }
+    }
+    if (body.definition !== undefined) category.definition = body.definition.trim();
+    return HttpResponse.json(familyCategoryRows().find((c) => c.id === id));
+  }),
+
+  http.delete("/api/v1/semantic/family-categories/:id", ({ params }) => {
+    const id = Number(params.id);
+    handlerState.categoryRequests.push({ method: "DELETE", id, body: null });
+    const category = familyCategoryRows().find((c) => c.id === id);
+    if (!category) {
+      return HttpResponse.json(
+        { detail: { code: "category_not_found", message: `Категории «№ ${id}» больше нет — её удалили. Выберите другую.`, category_id: id } },
+        { status: 409 }
+      );
+    }
+    if (category.family_count > 0) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "category_in_use",
+            message: `Категорию «${category.title}» носят ${category.family_count} семей — удалить можно только пустую.`,
+            category_id: id,
+            family_count: category.family_count,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    handlerState.familyCategories = handlerState.familyCategories.filter((c) => c.id !== id);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   http.post("/api/v1/semantic/families", async ({ request }) => {
-    const body = (await request.json()) as { title: string; unit_name?: string | null; definition?: string | null };
+    const body = (await request.json()) as {
+      title: string;
+      unit_name?: string | null;
+      definition?: string | null;
+      family_category_id?: number | null;
+    };
     handlerState.lastCreateFamilyRequest = body;
+    const category = handlerState.familyCategories.find((c) => c.id === body.family_category_id);
     const id = handlerState.nextWorkFamilyId++;
     const family: WorkFamily = {
       id,
@@ -3701,6 +3872,8 @@ export const handlers = [
       activated_at: null,
       archived_at: null,
       context_count: 0,
+      family_category_id: category?.id ?? null,
+      family_category_title: category?.title ?? null,
     };
     handlerState.workFamilies.push(family);
     return HttpResponse.json(family, { status: 201 });
@@ -3729,6 +3902,23 @@ export const handlers = [
     }
     if (typeof body.title === "string") family.title = body.title;
     if ("definition" in body) family.definition = (body.definition as string | null) ?? null;
+    if ("family_category_id" in body) {
+      if (body.family_category_id === null && family.status === "active") {
+        return HttpResponse.json(
+          { detail: { code: "clear_category_active", message: "У активной семьи категорию можно сменить, но не снять.", family_id: id } },
+          { status: 422 }
+        );
+      }
+      const category = handlerState.familyCategories.find((c) => c.id === body.family_category_id);
+      if (body.family_category_id !== null && !category) {
+        return HttpResponse.json(
+          { detail: { code: "category_not_found", message: `Категории «№ ${String(body.family_category_id)}» больше нет — её удалили. Выберите другую.`, category_id: body.family_category_id } },
+          { status: 409 }
+        );
+      }
+      family.family_category_id = category?.id ?? null;
+      family.family_category_title = category?.title ?? null;
+    }
     if ("unit_name" in body) {
       const unitName = body.unit_name as string | null;
       family.unit_code = unitName;
@@ -3755,6 +3945,12 @@ export const handlers = [
           },
         },
         { status: 409 }
+      );
+    }
+    if (family.family_category_id === null) {
+      return HttpResponse.json(
+        { detail: { code: "activate_without_category", message: "Сначала выберите категорию семьи.", family_id: id } },
+        { status: 422 }
       );
     }
     family.status = "active";
@@ -3977,6 +4173,24 @@ export const handlers = [
       );
     }
     markNotWork(context);
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/reopen", ({ params }) => {
+    const contextId = Number(params.id);
+    handlerState.reopenRequests.push(contextId);
+    const refused = takeContextRefusal("reopen");
+    if (refused) return refused;
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.semantic_state !== "NOT_APPLICABLE") {
+      return HttpResponse.json(
+        { detail: { code: "context_not_reopenable_state", message: "Контекст не отмечен «не работа» — возвращать нечего.", context_id: contextId } },
+        { status: 409 }
+      );
+    }
+    // Как `reopen_context`: состояние по источнику вида; семья, вариант и значения остаются пустыми.
+    context.semantic_state = context.semantic_kind_source === "manual" ? "CONFIRMED" : "SUGGESTED";
     return HttpResponse.json(toContextCard(context));
   }),
 
@@ -4267,7 +4481,11 @@ export const handlers = [
 
   http.post("/api/v1/semantic/suggestions/:id/create-family", async ({ params, request }) => {
     const id = Number(params.id);
-    const body = (await request.json()) as { title: string; definition: string };
+    const body = (await request.json()) as {
+      title: string;
+      definition: string;
+      family_category_id?: number;
+    };
     handlerState.createFamilyRequests.push({ suggestionId: id, body });
     if (handlerState.createFamilyOutcome !== "ok") {
       return HttpResponse.json(

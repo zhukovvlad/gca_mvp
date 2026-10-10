@@ -11,7 +11,7 @@ import {
 import type { JobRow, PrivacyMatch, UnitHoldGroup } from "@/types/domain";
 
 import { HighlightedText } from "./HighlightedText";
-import { matchPlaceLabel, pluralRu } from "./labels";
+import { discoveryNamesLabel, matchPlaceLabel, pluralRu } from "./labels";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
 const DEFAULT_PAGE_SIZE = 10;
@@ -118,6 +118,10 @@ function HeldJobRow({
         <div className="text-fg">
           <HighlightedText text={job.title} needles={contextNeedles} />
         </div>
+        {/* Задание открытия семей: тело — имена единицы, а не строка контекста. */}
+        {job.kind === "family_discovery" && (
+          <div className="text-xs text-fg-tertiary">{discoveryNamesLabel(job.names_count)}</div>
+        )}
         <ul className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-fg-secondary">
           {shown.map((match, index) => (
             <li key={index} data-testid="held-match">

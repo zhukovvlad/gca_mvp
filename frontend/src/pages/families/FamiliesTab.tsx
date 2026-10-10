@@ -49,6 +49,7 @@ import {
   useActivateWorkFamily,
   useArchiveWorkFamily,
   useCreateWorkFamily,
+  useFamilyCategories,
   useMergeWorkFamilies,
   useUnits,
   useUpdateWorkFamily,
@@ -56,7 +57,8 @@ import {
 } from "@/services/queries";
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
-import { FAMILY_STATUS_LABEL } from "./labels";
+import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
+import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -75,6 +77,7 @@ const FAMILY_STATUS_TINT: Record<WorkFamilyStatus, string> = {
 };
 
 const ANY = "any";
+const NO_CATEGORY = "none";
 const DEFAULT_PAGE_SIZE = 20;
 const STATUS_OPTIONS: WorkFamilyStatus[] = ["draft", "active", "archived"];
 
@@ -100,7 +103,10 @@ interface FamiliesTabProps {
 export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabProps = {}) {
   const [statusFilter, setStatusFilter] = useState<string>("draft");
   const [unitFilter, setUnitFilter] = useState<string>(ANY);
+  // Фильтр категории: `ANY`, `NO_CATEGORY` («без категории») или id категории строкой.
+  const [categoryFilter, setCategoryFilter] = useState<string>(ANY);
   const [createOpen, setCreateOpen] = useState(false);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [merging, setMerging] = useState<WorkFamily | null>(null);
   const [archiving, setArchiving] = useState<WorkFamily | null>(null);
@@ -116,6 +122,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
     setShownFocusId(focusFamilyId);
     setStatusFilter(ANY);
     setUnitFilter(ANY);
+    setCategoryFilter(ANY);
     setPage(1);
     setSelectedId(focusFamilyId);
   }
@@ -124,9 +131,15 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
   }, [focusFamilyId, onFocusShown]);
 
   const unitsQ = useUnits();
+  const categoriesQ = useFamilyCategories();
   const familiesQ = useWorkFamilies(
     statusFilter === ANY ? undefined : (statusFilter as WorkFamilyStatus),
-    unitFilter === ANY ? undefined : Number(unitFilter)
+    unitFilter === ANY ? undefined : Number(unitFilter),
+    categoryFilter === ANY
+      ? undefined
+      : categoryFilter === NO_CATEGORY
+        ? "none"
+        : Number(categoryFilter)
   );
   // Сводка над списком (сверка с макетом 27.09.2026, `mock-families.png`:
   // «активных N · черновиков M · в архиве K») — считается по ВСЕМУ списку
@@ -181,17 +194,17 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
       <div className="grid gap-4">
+        {/* Сводка — отдельной строкой над фильтрами: три фильтра и две кнопки в одну строку с
+            ней не помещаются в колонку списка (замер на снимке рядом с макетом К1). */}
+        {statusCounts && (
+          <p className="text-sm text-fg-tertiary tabular-nums">
+            активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
+            {statusCounts.archived}
+          </p>
+        )}
+        {allFamiliesQ.isError && <p className="text-sm text-fg-tertiary">сводка недоступна</p>}
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-3">
-            {statusCounts && (
-              <p className="self-end text-sm text-fg-tertiary tabular-nums">
-                активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
-                {statusCounts.archived}
-              </p>
-            )}
-            {allFamiliesQ.isError && (
-              <p className="self-end text-sm text-fg-tertiary">сводка недоступна</p>
-            )}
             <div className="grid gap-1">
               <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
               <Select
@@ -236,6 +249,35 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid gap-1">
+              <Label htmlFor="family-category-filter" className="text-xs text-fg-tertiary">Категория (фильтр)</Label>
+              <Select
+                value={categoryFilter}
+                onValueChange={(v) => { setCategoryFilter(v ?? ANY); resetToFirstPage(); }}
+              >
+                <SelectTrigger id="family-category-filter" className="w-48">
+                  <SelectValue>
+                    {(raw) =>
+                      !raw || raw === ANY
+                        ? "Любая категория"
+                        : raw === NO_CATEGORY
+                          ? "Без категории"
+                          : (categoriesQ.data?.find((c) => String(c.id) === raw)?.title ?? "Любая категория")
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Любая категория</SelectItem>
+                  {(categoriesQ.data ?? []).map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.title}</SelectItem>
+                  ))}
+                  <SelectItem value={NO_CATEGORY}>Без категории</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button variant="outline" onClick={() => setCategoriesOpen(true)}>
+              Категории…
+            </Button>
           </div>
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="size-4" /> Новая семья
@@ -261,6 +303,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                     <TableHead className="text-xs font-normal text-fg-tertiary">Название</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Единица</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Статус</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Категория</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Определение</TableHead>
                     <TableHead className="text-right text-xs font-normal text-fg-tertiary">Контекстов</TableHead>
                   </TableRow>
@@ -293,6 +336,9 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                         <Badge variant="outline" className={FAMILY_STATUS_TINT[family.status]}>
                           {FAMILY_STATUS_LABEL[family.status]}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-fg-secondary">
+                        {family.family_category_title ?? "—"}
                       </TableCell>
                       <TableCell className="max-w-xs">
                         {family.definition && family.definition.trim() ? (
@@ -346,6 +392,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
       </div>
 
       <CreateFamilyDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <FamilyCategoriesDialog open={categoriesOpen} onOpenChange={setCategoriesOpen} />
       <MergeFamilyDialog family={merging} onOpenChange={(open) => !open && setMerging(null)} />
 
       <AlertDialog open={archiving !== null} onOpenChange={(open) => !open && setArchiving(null)}>
@@ -402,9 +449,11 @@ function FamilyPanel({
   const [definition, setDefinition] = useState(family.definition ?? "");
   const update = useUpdateWorkFamily();
   const activate = useActivateWorkFamily();
+  const categoriesQ = useFamilyCategories();
 
   const unitLocked = family.context_count > 0;
   const hasDefinition = Boolean(family.definition && family.definition.trim());
+  const hasCategory = family.family_category_id !== null;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -456,6 +505,25 @@ function FamilyPanel({
           <Label htmlFor="edit-family-definition">Определение</Label>
           <Textarea id="edit-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
         </div>
+        <div className="grid gap-2">
+          <Label htmlFor="edit-family-category">Категория</Label>
+          {/* Выбор сохраняется сразу, а не кнопкой «Сохранить»: от категории зависит
+              «Активировать», и несохранённый выбор оставил бы её недоступной. Снять
+              категорию нельзя — только сменить (спека 3б §2.9, `clear_category_active`). */}
+          <EntitySelect
+            id="edit-family-category"
+            items={categoriesQ.data}
+            value={family.family_category_id}
+            onChange={(id) => {
+              if (id !== null && id !== family.family_category_id) {
+                update.mutate({ id: family.id, input: { family_category_id: id } });
+              }
+            }}
+            getLabel={(c) => c.title}
+            placeholder="Выбрать категорию"
+            disabled={update.isPending}
+          />
+        </div>
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
           <Button type="submit" disabled={!title.trim() || update.isPending}>
@@ -465,7 +533,7 @@ function FamilyPanel({
             <Button
               variant="outline"
               aria-label={`Активировать семью ${family.title}`}
-              disabled={!hasDefinition || activate.isPending}
+              disabled={!hasDefinition || !hasCategory || activate.isPending}
               onClick={() => activate.mutate(family.id)}
             >
               Активировать
@@ -496,6 +564,9 @@ function FamilyPanel({
       {family.status === "draft" && !hasDefinition && (
         <p className="text-xs text-fg-tertiary">Активировать можно только с определением.</p>
       )}
+      {family.status === "draft" && !hasCategory && (
+        <p className="text-xs text-fg-tertiary">{discoveryRefusalLabel("activate_without_category")}</p>
+      )}
       <SchemaBlock family={family} />
     </Surface>
   );
@@ -505,6 +576,8 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   const [title, setTitle] = useState("");
   const [unitName, setUnitName] = useState("");
   const [definition, setDefinition] = useState("");
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const categoriesQ = useFamilyCategories();
   const create = useCreateWorkFamily();
 
   async function handleSubmit(e: React.FormEvent) {
@@ -515,10 +588,13 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
         title: title.trim(),
         unit_name: unitName.trim() || null,
         definition: definition.trim() || null,
+        // Категория при создании необязательна (спека 3б §2.9); активация потребует её.
+        ...(categoryId !== null ? { family_category_id: categoryId } : {}),
       });
       setTitle("");
       setUnitName("");
       setDefinition("");
+      setCategoryId(null);
       onOpenChange(false);
     } catch {
       // Причина в тосте.
@@ -547,6 +623,17 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             <div className="grid gap-2">
               <Label htmlFor="new-family-definition">Определение</Label>
               <Textarea id="new-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="new-family-category">Категория</Label>
+              <EntitySelect
+                id="new-family-category"
+                items={categoriesQ.data}
+                value={categoryId}
+                onChange={setCategoryId}
+                getLabel={(c) => c.title}
+                placeholder="Не выбрана"
+              />
             </div>
           </div>
           <DialogFooter>

@@ -17,7 +17,14 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
-import { contextRefusalLabel, pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
+import {
+  CATALOG_REVIEW_KIND_LABEL,
+  contextRefusalLabel,
+  DISCOVERY_REFUSAL_TEMPLATE,
+  discoveryRefusalLabel,
+  pluralRu,
+  schemaRefusalLabel,
+} from "@/pages/families/labels";
 import { isTerminal, jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -42,6 +49,8 @@ import type {
   ContractInput,
   ContractorInput,
   Decimal,
+  FamilyCategoryFilter,
+  FamilyCategoryInput,
   FamilySchema,
   ManualKind,
   MoveMembersInput,
@@ -1495,10 +1504,90 @@ export function useDeleteParticipant() {
 
 // ========== Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10) ==========
 
-export function useWorkFamilies(status?: WorkFamilyStatus, unitId?: number) {
+export function useWorkFamilies(
+  status?: WorkFamilyStatus,
+  unitId?: number,
+  categoryId?: FamilyCategoryFilter
+) {
   return useQuery({
-    queryKey: qk.workFamilies.list(status, unitId),
-    queryFn: () => semanticApi.listFamilies({ status, unit_id: unitId }),
+    queryKey: qk.workFamilies.list(status, unitId, categoryId),
+    queryFn: () =>
+      semanticApi.listFamilies({ status, unit_id: unitId, family_category_id: categoryId }),
+  });
+}
+
+/** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
+export function useFamilyCategories() {
+  return useQuery({
+    queryKey: qk.familyCategories.list(),
+    queryFn: () => semanticApi.listFamilyCategories(),
+  });
+}
+
+/**
+ * Отказ с кодом из таблицы §2.12 печатается подписью по коду (имя и число — из контекста отказа,
+ * иначе текст сервера); любой другой отказ — как раньше, общим тостом.
+ */
+function toastCodedRefusal(error: unknown) {
+  const code = apiErrorCode(error);
+  if (code === undefined || !(code in DISCOVERY_REFUSAL_TEMPLATE)) {
+    toastApiError(error);
+    return;
+  }
+  const context = apiErrorContext<{ title?: string; family_count?: number; catalog_kind?: string }>(
+    error
+  );
+  // Отказ «Вернуть в разбор» на строке, размеченной в Review, называет вид строки: на экран он
+  // выходит словом («мусор»), а не кодом вида.
+  const name =
+    code === "context_not_applicable_by_position" && context?.catalog_kind !== undefined
+      ? CATALOG_REVIEW_KIND_LABEL[context.catalog_kind]
+      : context?.title;
+  toast.error(
+    discoveryRefusalLabel(code, { name, count: context?.family_count }, apiErrorDetail(error))
+  );
+}
+
+export function useCreateFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: FamilyCategoryInput) => semanticApi.createFamilyCategory(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toast.success("Категория добавлена");
+    },
+    onError: toastCodedRefusal,
+  });
+}
+
+export function useUpdateFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: Partial<FamilyCategoryInput> }) =>
+      semanticApi.updateFamilyCategory(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      // Имя категории денормализовано в строку семьи (`family_category_title`).
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      toast.success("Категория обновлена");
+    },
+    onError: toastCodedRefusal,
+  });
+}
+
+export function useDeleteFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => semanticApi.deleteFamilyCategory(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toast.success("Категория удалена");
+    },
+    onError: (error) => {
+      // Отказ мог прийти из-за семьи, успевшей сослаться на категорию: счётчик перечитывается.
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toastApiError(error);
+    },
   });
 }
 
@@ -1508,6 +1597,7 @@ export function useCreateWorkFamily() {
     mutationFn: (input: WorkFamilyInput) => semanticApi.createFamily(input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       toast.success("Семья создана");
     },
     onError: toastApiError,
@@ -1521,6 +1611,8 @@ export function useUpdateWorkFamily() {
       semanticApi.updateFamily(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Смена категории семьи двигает «Семей» в справочнике.
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       // Имя семьи денормализовано в карточку контекста (`family_title`).
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья обновлена");
@@ -1539,7 +1631,7 @@ export function useActivateWorkFamily() {
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья активирована");
     },
-    onError: toastApiError,
+    onError: toastCodedRefusal,
   });
 }
 
@@ -1707,6 +1799,26 @@ export function useMarkNotWork() {
     onError: (error, contextId) => {
       invalidateContext(qc, contextId);
       toast.error(contextRefusalLabel(apiErrorCode(error)));
+    },
+  });
+}
+
+/**
+ * «Вернуть в разбор»: контекст «не работа» человека снова в разборе, семья и вариант остаются
+ * пустыми. Отказ — подписью по коду (`context_not_reopenable_state`, `context_not_applicable_by_position`).
+ */
+export function useReopenContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contextId: number) => semanticApi.reopenContext(contextId),
+    onSuccess: (_, contextId) => {
+      invalidateContext(qc, contextId);
+      invalidateAfterContextChange(qc);
+      toast.success("Контекст возвращён в разбор.");
+    },
+    onError: (error, contextId) => {
+      invalidateContext(qc, contextId);
+      toastCodedRefusal(error);
     },
   });
 }
@@ -2249,6 +2361,7 @@ export function useCreateFamilyFromSuggestion() {
     }) => semanticApi.createFamilyFromSuggestion(suggestionId, input),
     onSuccess: (_, { input }) => {
       invalidateAfterAssignment(qc);
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
       toast.success(`Семья «${input.title}» активна и видна на вкладке «Семьи».`, {
         description:

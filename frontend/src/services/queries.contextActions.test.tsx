@@ -13,6 +13,7 @@ import {
   useChangeQueue,
   useMarkNotWork,
   useMarkPositionKind,
+  useReopenContext,
 } from "./queries";
 
 /**
@@ -51,6 +52,11 @@ describe("действия над контекстом: какие запрос�
     ["смена семьи", () => invalidatedBy(useAssignFamily, { contextId: 601, input: { family_id: 43 } })],
     ["отмена ожидания", () => invalidatedBy(useCancelPendingFamily, 601)],
     ["«не работа»", () => invalidatedBy(useMarkNotWork, 601)],
+    // Ревью задачи 5: «Вернуть в разбор» меняет состояние контекста так же, как «не работа».
+    ["«вернуть в разбор»", () => {
+      handlerState.semanticContexts.find((c) => c.id === 601)!.semantic_state = "NOT_APPLICABLE";
+      return invalidatedBy(useReopenContext, 601);
+    }],
   ])("%s: карточка, очередь контекстов, семьи, очереди и сводка", async (_name, run) => {
     const keys = await run();
 
@@ -87,6 +93,19 @@ describe("отказ действия над контекстом", () => {
     const queryClient = createTestQueryClient();
     const spy = vi.spyOn(queryClient, "invalidateQueries");
     const { result } = renderHook(() => useCancelPendingFamily(), { wrapper: wrapperFor(queryClient) });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync(601)).rejects.toBeTruthy();
+    });
+
+    expect(spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey))).toContain(CARD);
+  });
+
+  it("«вернуть в разбор» с отказом всё равно перечитывает карточку: экран мог устареть", async () => {
+    handlerState.contextRefusal = { action: "reopen", code: "context_not_reopenable_state", status: 409 };
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    const { result } = renderHook(() => useReopenContext(), { wrapper: wrapperFor(queryClient) });
 
     await act(async () => {
       await expect(result.current.mutateAsync(601)).rejects.toBeTruthy();

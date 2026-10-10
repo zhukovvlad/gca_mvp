@@ -177,12 +177,12 @@ def edit_draft(
     """
     if title is not UNSET and _blank(title):
         raise WorkFamilyError(
-            REFUSE_DRAFT_BLANK_TITLE, "У черновика должно быть имя / определение.",
+            REFUSE_DRAFT_BLANK_TITLE, "У черновика должно быть имя.",
             draft_id=draft_id,
         )
     if definition is not UNSET and _blank(definition):
         raise WorkFamilyError(
-            REFUSE_DRAFT_BLANK_DEFINITION, "У черновика должно быть имя / определение.",
+            REFUSE_DRAFT_BLANK_DEFINITION, "У черновика должно быть определение.",
             draft_id=draft_id,
         )
     if family_category_id is not UNSET:

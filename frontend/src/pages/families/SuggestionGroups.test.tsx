@@ -39,6 +39,7 @@ function bigGroup(rowCount: number): SuggestionGroup {
     reason: `Причина ${i + 1}`,
     multi_owner: false,
     previously_rejected: null,
+    semantic_kind: "WORK",
   }));
   return { family_id: 900, family_title: "Большая семья", unit_code: "M2", band: "high", rows, total: rowCount };
 }
@@ -77,6 +78,62 @@ describe("SuggestionGroups — группы", () => {
 
     await user.click(within(groups[1]).getByRole("button", { name: "Раскрыть группу" }));
     expect(within(groups[1]).getAllByTestId("suggestion-row")).toHaveLength(1);
+  });
+});
+
+describe("SuggestionGroups — метка «система»", () => {
+  /** Первая группа смешанная (одна строка-система из трёх), вторая — свёрнутая, целиком из систем. */
+  function groupsWithSystems(): SuggestionGroup[] {
+    const groups = fixtureGroups();
+    groups[0].rows[1].semantic_kind = "SYSTEM";
+    groups[0].system_count = 1;
+    groups[1].rows[0].semantic_kind = "SYSTEM";
+    groups[1].system_count = 1;
+    groups[2].system_count = 0;
+    return groups;
+  }
+
+  it("заголовок группы несёт метку при system_count > 0 и не несёт при нуле, даже у свёрнутой группы", () => {
+    renderGroups(groupsWithSystems());
+
+    const groups = screen.getAllByTestId("suggestion-group");
+    expect(within(groups[0]).getByTestId("group-system-label")).toHaveTextContent("система");
+    // Вторая группа свёрнута — метка видна без раскрытия.
+    expect(within(groups[1]).queryAllByTestId("suggestion-row")).toHaveLength(0);
+    expect(within(groups[1]).getByTestId("group-system-label")).toHaveTextContent("система");
+    expect(within(groups[2]).queryByTestId("group-system-label")).not.toBeInTheDocument();
+  });
+
+  it("строка несёт метку только у системы: в смешанной группе помечена одна из трёх", () => {
+    renderGroups(groupsWithSystems());
+
+    const rows = within(firstGroup()).getAllByTestId("suggestion-row");
+    expect(within(rows[0]).queryByTestId("row-system-label")).not.toBeInTheDocument();
+    expect(within(rows[1]).getByTestId("row-system-label")).toHaveTextContent("система");
+    expect(within(rows[2]).queryByTestId("row-system-label")).not.toBeInTheDocument();
+  });
+
+  it("очередь без систем и очередь без ключа system_count не получают ни одной метки", () => {
+    const groups = fixtureGroups();
+    delete groups[1].system_count;
+    renderGroups(groups);
+
+    expect(screen.queryAllByTestId("group-system-label")).toHaveLength(0);
+    expect(screen.queryAllByTestId("row-system-label")).toHaveLength(0);
+  });
+
+  it("ключ группы не меняется: смена system_count не сворачивает раскрытую группу", async () => {
+    const user = userEvent.setup();
+    const groups = fixtureGroups();
+    const { rerender } = renderGroups(groups);
+    await user.click(within(screen.getAllByTestId("suggestion-group")[1]).getByRole("button", { name: "Раскрыть группу" }));
+    expect(within(screen.getAllByTestId("suggestion-group")[1]).getAllByTestId("suggestion-row")).toHaveLength(1);
+
+    rerender(<SuggestionGroups groups={groupsWithSystems()} unitLabel={unitLabel} />);
+
+    const second = screen.getAllByTestId("suggestion-group")[1];
+    expect(within(second).getByTestId("group-system-label")).toBeInTheDocument();
+    expect(within(second).getAllByTestId("suggestion-row")).toHaveLength(1);
   });
 });
 

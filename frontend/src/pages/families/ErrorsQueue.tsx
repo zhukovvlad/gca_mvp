@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useRetryJob } from "@/services/queries";
 import type { JobRow, JobsResponse } from "@/types/domain";
 
-import { jobErrorClassLabel } from "./labels";
+import { discoveryNamesLabel, jobErrorClassLabel } from "./labels";
 import { PrivacyHoldBlock } from "./PrivacyHoldBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -34,8 +34,14 @@ function ErrorRow({
   const retry = useRetryJob();
   return (
     <div data-testid="error-job" className={`${GRID} border-b border-border-subtle last:border-b-0`}>
-      <div className="min-w-0 text-fg">
-        {job.title} · {unitLabel(job.unit_code)}
+      <div className="flex min-w-0 flex-col gap-0.5 text-fg">
+        <span>
+          {job.title} · {unitLabel(job.unit_code)}
+        </span>
+        {/* Задание открытия семей: предмет — единица, названия работы и ссылки на контекст нет. */}
+        {job.kind === "family_discovery" && (
+          <span className="text-xs text-fg-tertiary">{discoveryNamesLabel(job.names_count)}</span>
+        )}
       </div>
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-fg">{jobErrorClassLabel(job.last_error_class)}</span>

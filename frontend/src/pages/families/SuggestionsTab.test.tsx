@@ -57,6 +57,7 @@ function manyGroups(n: number): SuggestionGroup[] {
         reason: "Причина",
         multi_owner: false,
         previously_rejected: null,
+        semantic_kind: "WORK" as const,
       },
     ],
   }));

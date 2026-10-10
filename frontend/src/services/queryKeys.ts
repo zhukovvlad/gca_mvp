@@ -1,6 +1,7 @@
 import type { ContractListParams } from "./api/domain";
 import type {
   ComparisonParams,
+  FamilyCategoryFilter,
   ContextsParams,
   GroupSelector,
   GroupState,
@@ -189,11 +190,17 @@ export const qk = {
   /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */
   workFamilies: {
     all: ["work-families"] as const,
-    list: (status?: WorkFamilyStatus, unitId?: number) =>
-      ["work-families", "list", status ?? "any", unitId ?? null] as const,
+    list: (status?: WorkFamilyStatus, unitId?: number, categoryId?: FamilyCategoryFilter) =>
+      ["work-families", "list", status ?? "any", unitId ?? null, categoryId ?? null] as const,
     /** Схема и варианты семьи (спека 2026-10-02-catalog-variants-design.md §2.12). */
     schema: (familyId: number) => ["work-families", "schema", familyId] as const,
     variants: (familyId: number) => ["work-families", "variants", familyId] as const,
+  },
+
+  /** Справочник категорий семей (спека 3б §2.9). */
+  familyCategories: {
+    all: ["family-categories"] as const,
+    list: () => ["family-categories", "list"] as const,
   },
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */

@@ -74,7 +74,7 @@ describe("решения экрана «Предложения»: какие з�
     ["постановка пачки", () => invalidatedBy(useReaskConfirm, { target: { kind: "batch" as const, batchId: 7, source: "mass" as const }, previewHash: "h" })],
     ["отброс пачки", () => invalidatedBy(useDiscardBatch, 7)],
     ["снятие остановки", () => invalidatedBy(useResumeWorker, undefined)],
-    ["новая семья", () => invalidatedBy(useCreateFamilyFromSuggestion, { suggestionId: 1, input: { title: "Ф", definition: "Д" } })],
+    ["новая семья", () => invalidatedBy(useCreateFamilyFromSuggestion, { suggestionId: 1, input: { title: "Ф", definition: "Д", family_category_id: 1 } })],
     ["отправка задержанного", () => invalidatedBy(usePrivacyRelease, { jobId: 1, shown: [] })],
     ["отказ от отправки задержанного", () => invalidatedBy(usePrivacyDecline, { jobId: 1, shown: [] })],
     ["отправка всех задержанных единицы", () => invalidatedBy(useUnitPrivacyRelease, { unitId: 3, shown: [] })],
@@ -129,7 +129,7 @@ describe("отказ решения экрана «Предложения»: к�
   it.each([
     ["отброс пачки", () => invalidatedByFailure(useDiscardBatch, 7)],
     ["снятие остановки", () => invalidatedByFailure(useResumeWorker, undefined)],
-    ["новая семья", () => invalidatedByFailure(useCreateFamilyFromSuggestion, { suggestionId: 1, input: { title: "Ф", definition: "Д" } })],
+    ["новая семья", () => invalidatedByFailure(useCreateFamilyFromSuggestion, { suggestionId: 1, input: { title: "Ф", definition: "Д", family_category_id: 1 } })],
     ["перезапрос единицы", () => invalidatedByFailure(useReaskConfirm, { target: { kind: "unit" as const, unitId: 3, unitCode: "M2" }, previewHash: "h" })],
     ["повтор задания", () => invalidatedByFailure(useRetryJob, 5)],
   ])("%s: очереди, задания и сводка", async (_name, run) => {
