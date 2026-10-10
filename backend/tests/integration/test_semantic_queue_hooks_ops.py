@@ -88,6 +88,7 @@ from services.work_families import (
     unconfirm_kind,
     update_family,
 )
+from tests.factories import seed_category_id
 from tests.payloads import payload_for, position
 
 pytestmark = pytest.mark.integration
@@ -108,7 +109,8 @@ def _uid() -> str:
 
 def _active_family(db, *, title, unit_name, actor_id):
     fam = create_family(
-        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id
+        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id,
+        family_category_id=seed_category_id(db),
     )
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
@@ -684,6 +686,7 @@ class TestFamilyEditsQueueNothing:
         draft = create_family(
             db_session, title=f"Черновик {_uid()}", unit_name="M2", definition="Определение",
             actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
         self._edit_and_check(
             db_session,

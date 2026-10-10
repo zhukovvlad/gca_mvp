@@ -108,6 +108,24 @@ def _migration_0017():
     return _load_migration("*0017-semantic_contour.py", "_migration_0017")
 
 
+def _migration_0021():
+    return _load_migration("*0021-catalog_discovery.py", "_migration_0021")
+
+
+#: Литералы, которые миграция 0021 переписала: их текущее значение живёт в ней, а
+#: не в 0019 (0019 хранит прежнее — для возврата `downgrade`).
+_REWRITTEN_BY_0021 = frozenset(
+    {
+        "SEMANTIC_JOB_KINDS", "SEMANTIC_EVENT_TYPES_SQL",
+        "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT", "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
+    }
+)
+
+
+def _current_migration_for(name: str):
+    return _migration_0021() if name in _REWRITTEN_BY_0021 else _migration_0019()
+
+
 # ---------------------------------------------------------------------------
 #  Помощники: цепочка семья → версия схемы → параметр → значение → вариант
 # ---------------------------------------------------------------------------
@@ -1027,9 +1045,10 @@ class TestSemanticJobKinds:
             _job(db_session, factories, kind="family_suggestion", context_id=None)
 
     def test_unknown_kind_rejected(self, db_session, factories):
-        schema = _schema(db_session, factories)
+        """Чужой вид не входит ни в одно из множеств равносильностей предмета —
+        без контекста и без версии схемы нарушено ровно одно ограничение, список видов."""
         with rejected(db_session, contains='"ck_semantic_jobs_kind"'):
-            _job(db_session, factories, kind="bogus", schema_id=schema.id)
+            _job(db_session, factories, kind="bogus", context_id=None)
 
     def test_kind_defaults_to_family_suggestion_in_the_orm(self, db_session, factories):
         context = _context(db_session, factories)
@@ -1260,7 +1279,7 @@ class TestJournalNewTypes:
         with rejected(db_session, contains='"ck_semantic_events_event_type"'):
             _event(db_session, "context_bogus", context_id=context.id)
 
-    def test_event_types_cover_all_six_of_the_spec_and_nothing_more_than_21(self):
+    def test_event_types_cover_the_spec_and_nothing_more_than_22(self):
         independent = {
             "context_created", "context_split", "context_merged", "members_moved",
             "members_marked_stale", "kind_set", "name_role_set", "context_family_assigned",
@@ -1268,10 +1287,11 @@ class TestJournalNewTypes:
             "family_activated", "family_archived", "family_merged",
             "context_variant_assigned", "context_family_pending", "context_not_work",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
+            "context_reopened",
         }
-        assert len(independent) == 21
+        assert len(independent) == 22
         assert set(SEMANTIC_EVENT_TYPES) == independent
-        assert len(SEMANTIC_EVENT_TYPES) == 21
+        assert len(SEMANTIC_EVENT_TYPES) == 22
 
     def test_old_event_types_keep_their_subjects(self, db_session, factories):
         family = _family(db_session)
@@ -1609,7 +1629,7 @@ class TestParityWithMigration:
         (VARIANT_SPLIT_HINTS, "VARIANT_SPLIT_HINTS", {"path_conflict"}),
         (
             SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
-            {"family_suggestion", "family_schema", "context_values"},
+            {"family_suggestion", "family_schema", "context_values", "family_discovery"},
         ),
         (FAMILY_SOURCES, "FAMILY_SOURCES", {"manual", "suggestion", "auto_suggestion"}),
         (
@@ -1628,6 +1648,7 @@ class TestParityWithMigration:
                 "family_activated", "family_archived", "family_merged",
                 "context_variant_assigned", "context_family_pending", "context_not_work",
                 "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
+                "context_reopened",
             },
         ),
     ]
@@ -1638,7 +1659,7 @@ class TestParityWithMigration:
     def test_in_list_matches_migration_and_independent_literal(
         self, model_expr, name, independent
     ):
-        assert model_expr == getattr(_migration_0019(), name)
+        assert model_expr == getattr(_current_migration_for(name), name)
         parsed = {piece.strip().strip("'") for piece in model_expr.split(",")}
         assert parsed == independent
 
@@ -1685,9 +1706,9 @@ class TestParityWithMigration:
         (CK_SEMANTIC_JOBS_SCHEMA_SUBJECT, "CK_SEMANTIC_JOBS_SCHEMA_SUBJECT",
          "(kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT",
-         "(kind <> 'family_schema') = (context_id IS NOT NULL)"),
+         "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
-         "(kind <> 'family_suggestion') = (schema_id IS NOT NULL)"),
+         "(kind IN ('family_schema', 'context_values')) = (schema_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND, "CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND",
          "result_suggestion_id IS NULL OR kind = 'family_suggestion'"),
         (
@@ -1710,7 +1731,7 @@ class TestParityWithMigration:
     def test_check_expression_matches_migration_and_independent_literal(
         self, model_expr, name, independent
     ):
-        assert model_expr == getattr(_migration_0019(), name)
+        assert model_expr == getattr(_current_migration_for(name), name)
         assert model_expr == independent
 
     def test_family_provenance_text_is_unchanged_by_the_migration(self):

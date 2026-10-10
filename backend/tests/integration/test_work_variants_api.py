@@ -282,7 +282,7 @@ _MISMATCH_ROUTES = (
     ),
     pytest.param(
         decisions_module, "create_family_from_suggestion", "POST",
-        "/suggestions/1/create-family", {"title": "Т", "definition": "О"},
+        "/suggestions/1/create-family", {"title": "Т", "definition": "О", "family_category_id": 1},
         id="suggestion-create-family",
     ),
     pytest.param(

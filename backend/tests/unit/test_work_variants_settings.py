@@ -186,7 +186,8 @@ def test_work_variants_tariffs_each_kind_takes_its_own_four_fields():
 
 def test_work_variants_tariffs_three_kinds_pairwise_distinct():
     s = _distinct_prices()
-    got = [tariffs_from(s, k) for k in SemanticJobKind]
+    # Тариф открытия семей — отдельное поле настроек, не часть этой тройки.
+    got = [tariffs_from(s, k) for k in SemanticJobKind if k != SemanticJobKind.family_discovery]
     assert len(got) == 3
     assert len(set(got)) == 3
 

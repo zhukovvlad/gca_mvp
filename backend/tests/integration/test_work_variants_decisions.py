@@ -33,6 +33,7 @@ from services.semantic_decisions import (
 )
 from services.work_families import assign_family
 from services.work_variants import apply_values
+from tests.factories import seed_category_id
 from tests.integration.test_semantic_queue_decisions import _active_family, _fresh
 from tests.integration.test_work_families import (
     _RELEASE_TIMEOUT,
@@ -243,6 +244,7 @@ class TestCreateFamilyRoute:
         new_id = create_family_from_suggestion(
             db_session, suggestion_id=suggestion.id, title="Новая семья пола",
             definition="Определение новой семьи", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         context = _ctx(db_session, context_id)
@@ -261,6 +263,7 @@ class TestCreateFamilyRoute:
         new_id = create_family_from_suggestion(
             db_session, suggestion_id=suggestion.id, title="Новая семья пола",
             definition="Определение новой семьи", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         context = _ctx(db_session, context_id)
@@ -279,6 +282,7 @@ class TestCreateFamilyRoute:
             create_family_from_suggestion(
                 db_session, suggestion_id=suggestion.id, title="Новая семья пола",
                 definition="Определение новой семьи", actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert spy.call_count == 1

@@ -74,6 +74,7 @@ from services.semantic_reconcile import (
 from services.semantic_request import load_request_material, render_context_request
 from services.semantic_worker import claim_next
 from services.work_families import WorkFamilyError, activate_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -99,7 +100,7 @@ def _unit_id(db, code):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     family = activate_family(db, family_id=fam.id, actor_id=actor_id)
     # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
     # активная семья без схемы получала бы ещё и задание схемы.
@@ -516,6 +517,7 @@ class TestCreateFamilyFromSuggestion:
         family_id = create_family_from_suggestion(
             db_session, suggestion_id=sug.id, title="Новая семья пола",
             definition="Что входит и что не входит", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         family = _fresh(db_session, WorkFamily, family_id)
@@ -537,6 +539,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Имя", definition=definition,
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert db_session.execute(sa.select(sa.func.count()).select_from(WorkFamily)).scalar_one() == families_before
@@ -551,6 +554,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="  ", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert db_session.execute(sa.select(sa.func.count()).select_from(WorkFamily)).scalar_one() == families_before
@@ -564,6 +568,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title=" семья ПОЛА ", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "family_exists"
@@ -579,6 +584,7 @@ class TestCreateFamilyFromSuggestion:
         family_id = create_family_from_suggestion(
             db_session, suggestion_id=sug.id, title="  Новая семья пола \t",
             definition="\n Что входит и что не входит  ", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         family = _fresh(db_session, WorkFamily, family_id)
@@ -600,6 +606,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Новая", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "activate_not_draft"
@@ -616,6 +623,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Новая", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "suggestion_changed"

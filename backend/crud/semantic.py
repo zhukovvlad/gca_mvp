@@ -41,6 +41,7 @@ from models import (
     CatalogPosition,
     ContextBucket,
     ContextMember,
+    FamilyCategory,
     Lot,
     MembershipState,
     NameRole,
@@ -169,11 +170,18 @@ def _family_row_select():
             WorkFamily.activated_by,
             WorkFamily.activated_at,
             WorkFamily.archived_at,
+            # Категория семьи (спека 3б §2.9): id и имя — то же внешнее
+            # соединение, что единица, третьего запроса нет.
+            WorkFamily.family_category_id,
+            FamilyCategory.title.label("family_category_title"),
             sa.func.count(CatalogContext.id).label("context_count"),
         )
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == WorkFamily.unit_id)
+        .outerjoin(FamilyCategory, FamilyCategory.id == WorkFamily.family_category_id)
         .outerjoin(CatalogContext, CatalogContext.work_family_id == WorkFamily.id)
-        .group_by(WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol)
+        .group_by(
+            WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol, FamilyCategory.title
+        )
     )
 
 
@@ -193,21 +201,34 @@ def _family_row_to_dict(row) -> dict:
         "activated_by": row.activated_by,
         "activated_at": row.activated_at,
         "archived_at": row.archived_at,
+        "family_category_id": row.family_category_id,
+        "family_category_title": row.family_category_title,
         "context_count": row.context_count,
     }
 
 
-def list_families(db: Session, *, status: str | None, unit_id: int | None) -> list[dict]:
-    """Список семей с фильтром по статусу/единице и числом привязанных
+def list_families(
+    db: Session,
+    *,
+    status: str | None,
+    unit_id: int | None,
+    family_category_id: int | Literal["none"] | None = None,
+) -> list[dict]:
+    """Список семей с фильтром по статусу/единице/категории и числом привязанных
     контекстов у КАЖДОЙ (спека §2.10; план, задача 12, «Утверждения») — то
     самое число, на которое ссылаются отказы правки единицы и
     архивирования (`REFUSE_UNIT_CHANGE_WITH_LINKS`/`REFUSE_ARCHIVE_WITH_LINKS`,
-    `services/work_families.py`)."""
+    `services/work_families.py`). `family_category_id`: id — только семьи с этой
+    категорией, `"none"` — только без категории, `None` — фильтра нет."""
     stmt = _family_row_select().order_by(WorkFamily.id)
     if status is not None:
         stmt = stmt.where(WorkFamily.status == status)
     if unit_id is not None:
         stmt = stmt.where(WorkFamily.unit_id == unit_id)
+    if family_category_id == "none":
+        stmt = stmt.where(WorkFamily.family_category_id.is_(None))
+    elif family_category_id is not None:
+        stmt = stmt.where(WorkFamily.family_category_id == family_category_id)
 
     rows = db.execute(stmt).all()
     return [_family_row_to_dict(row) for row in rows]
@@ -223,6 +244,46 @@ def get_family_row(db: Session, *, family_id: int) -> dict | None:
     if row is None:
         return None
     return _family_row_to_dict(row)
+
+
+def _family_category_row_select():
+    """Строка справочника категорий с числом семей (спека 3б §2.12): число —
+    то самое, на которое ссылается отказ `category_in_use`."""
+    return (
+        sa.select(
+            FamilyCategory.id,
+            FamilyCategory.title,
+            FamilyCategory.definition,
+            FamilyCategory.seed_key,
+            sa.func.count(WorkFamily.id).label("family_count"),
+        )
+        .outerjoin(WorkFamily, WorkFamily.family_category_id == FamilyCategory.id)
+        .group_by(FamilyCategory.id)
+    )
+
+
+def _family_category_row_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "title": row.title,
+        "definition": row.definition,
+        "seed_key": row.seed_key,
+        "family_count": row.family_count,
+    }
+
+
+def list_family_categories(db: Session) -> list[dict]:
+    """Справочник категорий семей с числом семей у каждой, по `id`."""
+    rows = db.execute(_family_category_row_select().order_by(FamilyCategory.id)).all()
+    return [_family_category_row_to_dict(row) for row in rows]
+
+
+def get_family_category_row(db: Session, *, category_id: int) -> dict | None:
+    """Строка одной категории той же формы, что строка списка — ответ мутаций."""
+    row = db.execute(
+        _family_category_row_select().where(FamilyCategory.id == category_id)
+    ).first()
+    return None if row is None else _family_category_row_to_dict(row)
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ from services.context_routing import route_position
 from services.semantic_request import load_request_material, render_context_request, top_path
 from services.unit_resolution import UnitResolver
 from services.work_families import activate_family, archive_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -73,7 +74,7 @@ def _leaf_category_ids(session, n=1) -> list[int]:
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
 

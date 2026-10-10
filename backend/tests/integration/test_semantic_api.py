@@ -52,6 +52,7 @@ from services.context_routing import (
     chapter_paths,
 )
 from services.unit_resolution import UnitResolver
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -229,7 +230,8 @@ def _rule(db, bucket, *, context, admin, ordinal=1, predicate=None) -> ContextRo
 
 def _family(db, admin, *, title="Семья", unit_name=None, definition="Определение", active=True):
     fam = work_families.create_family(
-        db, title=title, unit_name=unit_name, definition=definition, actor_id=admin.id
+        db, title=title, unit_name=unit_name, definition=definition, actor_id=admin.id,
+        family_category_id=seed_category_id(db),
     )
     if active:
         work_families.activate_family(db, family_id=fam.id, actor_id=admin.id)
@@ -434,6 +436,19 @@ WORK_VARIANT_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(WORK_VARIANT_ROUTE_TEMPLATES) == 12
 
+#: Маршруты справочника категорий семей (спека `2026-10-09-catalog-discovery-design.md`
+#: §2.12) — ШАБЛОНАМИ пути, независимо от `app.routes`. Права на них перебирает
+#: `test_catalog_discovery_categories.py`.
+FAMILY_CATEGORY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/family-categories"),
+        ("POST", f"{BASE}/family-categories"),
+        ("PATCH", f"{BASE}/family-categories/{{category_id}}"),
+        ("DELETE", f"{BASE}/family-categories/{{category_id}}"),
+    }
+)
+assert len(FAMILY_CATEGORY_ROUTE_TEMPLATES) == 4
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -443,14 +458,21 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
     §2.8 п. 3-4) и литерала маршрутов экрана «Предложения» — роутер общий, и
     добавленные им маршруты не должны красить проверку прежнего набора. Литералы
     не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
-    в наборе нет. Третий литерал — маршруты вариантов и промоушена."""
+    в наборе нет. Третий литерал — маршруты вариантов и промоушена, четвёртый —
+    справочник категорий семей."""
     assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
     assert not WORK_VARIANT_ROUTE_TEMPLATES & (
         TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
     )
+    assert not FAMILY_CATEGORY_ROUTE_TEMPLATES & (
+        TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES | WORK_VARIANT_ROUTE_TEMPLATES
+    )
     collected = _collect_semantic_routes()
     assert collected == (
-        TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES | WORK_VARIANT_ROUTE_TEMPLATES
+        TWENTY_ONE_ROUTE_TEMPLATES
+        | SEMANTIC_QUEUE_ROUTE_TEMPLATES
+        | WORK_VARIANT_ROUTE_TEMPLATES
+        | FAMILY_CATEGORY_ROUTE_TEMPLATES
     )
     assert not any(path.endswith("/restore") for _method, path in collected)
 
@@ -494,7 +516,11 @@ class TestFamilies:
         assert body["family_id"] == family_id
 
         patched = admin_client.patch(
-            f"{BASE}/families/{family_id}", json={"definition": "Снятие и устройство стяжки"}
+            f"{BASE}/families/{family_id}",
+            json={
+                "definition": "Снятие и устройство стяжки",
+                "family_category_id": seed_category_id(db_session),
+            },
         )
         assert patched.status_code == 200
         activated = admin_client.post(f"{BASE}/families/{family_id}/activate")
@@ -617,11 +643,11 @@ class TestFamilies:
         title = "Штукатурка стен API-дубль"
         first = work_families.create_family(
             db_session, title=title, unit_name="M2", definition="Определение А",
-            actor_id=admin_client.user.id,
+            actor_id=admin_client.user.id, family_category_id=seed_category_id(db_session),
         )
         second = work_families.create_family(
             db_session, title=title, unit_name="M2", definition="Определение Б",
-            actor_id=admin_client.user.id,
+            actor_id=admin_client.user.id, family_category_id=seed_category_id(db_session),
         )
         db_session.commit()
 
@@ -803,12 +829,16 @@ class TestFamilies:
             "id", "title", "unit_id", "unit_code", "unit_symbol", "definition", "status",
             "seed_key", "created_by", "created_at", "updated_at",
             "activated_by", "activated_at", "archived_at", "context_count",
+            "family_category_id", "family_category_title",
         })
         m2 = "M2"
 
         created = admin_client.post(
             f"{BASE}/families",
-            json={"title": "Форма ответа мутации", "unit_name": m2, "definition": "Определение"},
+            json={
+                "title": "Форма ответа мутации", "unit_name": m2, "definition": "Определение",
+                "family_category_id": seed_category_id(db_session),
+            },
         )
         assert created.status_code == 201
         assert set(created.json().keys()) == family_row_keys
@@ -3644,7 +3674,9 @@ class TestMembers:
         переживёт ответ `4xx` и найдётся в ОТДЕЛЬНОЙ сессии."""
         probe_title = f"RollbackProbe-{uuid.uuid4().hex[:8]}"
 
-        def _fake_create_family_then_fail(db, *, title, unit_name, definition, actor_id):
+        def _fake_create_family_then_fail(
+            db, *, title, unit_name, definition, actor_id, family_category_id=None
+        ):
             # `created_by=None` + `seed_key=probe_title` — нарочно: подмена
             # не должна зависеть от того, существует ли пользователь
             # `actor_id` в НАСТОЯЩЕЙ базе (`committing_client` подставляет

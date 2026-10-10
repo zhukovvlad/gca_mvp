@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Text,
@@ -1481,6 +1482,8 @@ SEMANTIC_EVENT_TYPES = (
     "family_schema_frozen",
     "family_schema_value_added",
     "family_variants_merged",
+    # Открытие семей (миграция 0021, спека 3б §2.8, §2.14): предмет — контекст.
+    "context_reopened",
 )
 
 #: Десять списков значений `IN (...)` — тоже продублированы в миграции 0017
@@ -1586,6 +1589,8 @@ class SemanticJobKind(str, enum.Enum):
     family_suggestion = "family_suggestion"
     family_schema = "family_schema"
     context_values = "context_values"
+    # Открытие семей единицы (миграция 0021): предмета-контекста и предмета-семьи нет.
+    family_discovery = "family_discovery"
 
 
 SCHEMA_STATUSES = _sql_str_list(SchemaStatus)
@@ -1659,6 +1664,11 @@ class WorkFamily(Base):
     activated_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     activated_at = Column(DateTime(timezone=True), nullable=True)
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    # Категория семьи (миграция 0021, спека 3б §2.9). CHECK-а «активна ⟹ категория»
+    # нет намеренно: у ранее активных семей поле пусто до прохода разметки.
+    family_category_id = Column(
+        BigInteger, ForeignKey("family_categories.id", ondelete="RESTRICT"), nullable=True
+    )
 
     unit = relationship("UnitOfMeasure")
 
@@ -1674,6 +1684,235 @@ class WorkFamily(Base):
         # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status = 'active' —
         # частичный уникальный индекс по выражению, raw SQL в миграции 0017
         # (alembic/env.py RAW_SQL_INDEXES: uq_work_families_active_name_unit).
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Открытие семей и категории семей (миграция 0021, спека 3б §2.2)
+# ---------------------------------------------------------------------------
+#
+# Справочник категорий, черновики групп ответа открытия, члены групп и
+# предложения категории активной семье. Перечисления и CHECK продублированы
+# литералами в миграции 0021 (та же дисциплина, что у 0017–0019); parity —
+# `test_catalog_discovery_schema.py`.
+
+class DraftGroup(str, enum.Enum):
+    """Вид группы ответа открытия: новый черновик, «в активную семью», «не работа»."""
+    new = "new"
+    existing = "existing"
+    not_work = "not_work"
+
+
+class DraftStatus(str, enum.Enum):
+    """Состояние черновика группы: открыт, активирован, слит, отброшен, вытеснен."""
+    open = "open"
+    activated = "activated"
+    merged = "merged"
+    discarded = "discarded"
+    superseded = "superseded"
+
+
+class CategoryProposalStatus(str, enum.Enum):
+    """Состояние предложения категории активной семье."""
+    open = "open"
+    applied = "applied"
+    superseded = "superseded"
+
+
+#: Ключи трёх строк справочника, заведённых миграцией (`family_categories.seed_key`).
+FAMILY_CATEGORY_SEED_KEYS = ("work", "engineering_system", "costs_services")
+
+DRAFT_GROUPS = _sql_str_list(DraftGroup)
+DRAFT_STATUSES = _sql_str_list(DraftStatus)
+CATEGORY_PROPOSAL_STATUSES = _sql_str_list(CategoryProposalStatus)
+
+CK_FAMILY_CATEGORY_TITLE_NOT_BLANK = "btrim(title) <> ''"
+CK_FAMILY_CATEGORY_DEFINITION_NOT_BLANK = "btrim(definition) <> ''"
+
+#: Форма группы — ОДИН тотальный предикат из трёх полных ветвей, а не набор
+#: импликаций: `IS NOT NULL` в ветви `new` обязательны, иначе `btrim(NULL) <> ''`
+#: давало бы `NULL`, а `CHECK` отвергает только `FALSE` (`docs/pitfalls/db.md`).
+CK_DRAFT_SHAPE = (
+    "(grp = 'new' AND title IS NOT NULL AND definition IS NOT NULL "
+    "AND btrim(title) <> '' AND btrim(definition) <> '' "
+    "AND existing_family_id IS NULL) "
+    "OR (grp = 'existing' AND existing_family_id IS NOT NULL AND title IS NULL "
+    "AND definition IS NULL AND family_category_id IS NULL AND similar_family_id IS NULL) "
+    "OR (grp = 'not_work' AND title IS NULL AND definition IS NULL "
+    "AND family_category_id IS NULL AND existing_family_id IS NULL "
+    "AND similar_family_id IS NULL)"
+)
+CK_DRAFT_ACTIVATED_PAIR = "(status = 'activated') = (activated_family_id IS NOT NULL)"
+CK_DRAFT_MERGED_PAIR = (
+    "(status = 'merged') = (num_nonnulls(merged_into_draft_id, merged_into_family_id) = 1)"
+)
+CK_DRAFT_MERGE_TARGET_AT_MOST_ONE = "num_nonnulls(merged_into_draft_id, merged_into_family_id) <= 1"
+CK_DRAFT_NOT_SELF_MERGED = "merged_into_draft_id IS NULL OR merged_into_draft_id <> id"
+#: Решения ставятся только новым черновикам; группы «в активную семью» и «не
+#: работа» живут `open` до вытеснения.
+CK_DRAFT_DECISION_ONLY_NEW = "grp = 'new' OR status IN ('open', 'superseded')"
+CK_DRAFT_DECIDED_BY_PAIR = (
+    "(status IN ('activated', 'merged', 'discarded')) = (decided_by IS NOT NULL)"
+)
+CK_DRAFT_DECIDED_AT_PAIR = "(decided_by IS NULL) = (decided_at IS NULL)"
+CK_DRAFT_EDITED_PAIR = "(edited_by IS NULL) = (edited_at IS NULL)"
+
+CK_PROPOSAL_APPLIED_PAIR = "(status = 'applied') = (decided_by IS NOT NULL)"
+CK_PROPOSAL_DECIDED_AT_PAIR = "(decided_by IS NULL) = (decided_at IS NULL)"
+
+
+class FamilyCategory(Base):
+    """Справочник категорий семей. Три строки заводит миграция (`seed_key` не
+    пуст, автора нет), остальные — оператор. Имя уникально без учёта регистра и
+    крайних пробелов (raw SQL индекс `uq_family_categories_title`); определение
+    видит модель, когда предлагает категорию черновику (спека 3б §2.9)."""
+    __tablename__ = "family_categories"
+
+    id = Column(BigInteger, primary_key=True)
+    seed_key = Column(Text, nullable=True)
+    title = Column(Text, nullable=False)
+    definition = Column(Text, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    created_at = _created_at()
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        UniqueConstraint("seed_key", name="uq_family_categories_seed_key"),
+        CheckConstraint(
+            CK_FAMILY_CATEGORY_TITLE_NOT_BLANK, name="ck_family_categories_title_not_blank"
+        ),
+        CheckConstraint(
+            CK_FAMILY_CATEGORY_DEFINITION_NOT_BLANK,
+            name="ck_family_categories_definition_not_blank",
+        ),
+        CheckConstraint(
+            CK_FAMILY_AUTHOR_IFF_NOT_SEED, name="ck_family_categories_author_iff_not_seed"
+        ),
+        # UNIQUE (lower(btrim(title))) — выражение, raw SQL в миграции 0021
+        # (alembic/env.py RAW_SQL_INDEXES: uq_family_categories_title).
+    )
+
+
+class FamilyDraft(Base):
+    """Группа ответа открытия единицы (спека 3б §2.2): новый черновик семьи,
+    группа имён «в активную семью» либо группа «не работа». Форму по виду держит
+    `CK_DRAFT_SHAPE`; слияние — только внутри открытия (составной FK на
+    `(id, job_id)`), одна группа «не работа» на открытие — частичный уникальный
+    индекс `uq_family_drafts_not_work_per_job` (raw SQL, `RAW_SQL_INDEXES`)."""
+    __tablename__ = "family_drafts"
+
+    id = Column(BigInteger, primary_key=True)
+    job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="RESTRICT"), nullable=False)
+    unit_id = Column(
+        Integer, ForeignKey("units_of_measure.id", ondelete="RESTRICT"), nullable=True
+    )
+    ordinal = Column(Integer, nullable=False)
+    grp = Column(Text, nullable=False)
+    title = Column(Text, nullable=True)
+    definition = Column(Text, nullable=True)
+    family_category_id = Column(
+        BigInteger, ForeignKey("family_categories.id", ondelete="SET NULL"), nullable=True
+    )
+    existing_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    similar_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    status = Column(Text, nullable=False)
+    activated_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    # Слияние в другой черновик — составным FK `(merged_into_draft_id, job_id)`
+    # ниже; одиночного ключа нет: он не удержал бы «только внутри открытия».
+    merged_into_draft_id = Column(BigInteger, nullable=True)
+    merged_into_family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=True
+    )
+    edited_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    edited_at = Column(DateTime(timezone=True), nullable=True)
+    decided_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "ordinal", name="uq_family_drafts_job_ordinal"),
+        # Цель составных FK: слияние внутри открытия и члены группы.
+        UniqueConstraint("id", "job_id", name="uq_family_drafts_id_job"),
+        ForeignKeyConstraint(
+            ["merged_into_draft_id", "job_id"],
+            ["family_drafts.id", "family_drafts.job_id"],
+            ondelete="RESTRICT",
+            name="fk_family_drafts_merged_into_job",
+        ),
+        CheckConstraint(f"grp IN ({DRAFT_GROUPS})", name="ck_family_drafts_grp"),
+        CheckConstraint(f"status IN ({DRAFT_STATUSES})", name="ck_family_drafts_status"),
+        CheckConstraint(CK_DRAFT_SHAPE, name="ck_family_drafts_shape"),
+        CheckConstraint(CK_DRAFT_ACTIVATED_PAIR, name="ck_family_drafts_activated_pair"),
+        CheckConstraint(CK_DRAFT_MERGED_PAIR, name="ck_family_drafts_merged_pair"),
+        CheckConstraint(
+            CK_DRAFT_MERGE_TARGET_AT_MOST_ONE, name="ck_family_drafts_merge_target_at_most_one"
+        ),
+        CheckConstraint(CK_DRAFT_NOT_SELF_MERGED, name="ck_family_drafts_not_self_merged"),
+        CheckConstraint(CK_DRAFT_DECISION_ONLY_NEW, name="ck_family_drafts_decision_only_new"),
+        CheckConstraint(CK_DRAFT_DECIDED_BY_PAIR, name="ck_family_drafts_decided_by_pair"),
+        CheckConstraint(CK_DRAFT_DECIDED_AT_PAIR, name="ck_family_drafts_decided_at_pair"),
+        CheckConstraint(CK_DRAFT_EDITED_PAIR, name="ck_family_drafts_edited_pair"),
+        # UNIQUE (job_id) WHERE grp = 'not_work' — частичный, raw SQL в миграции 0021
+        # (RAW_SQL_INDEXES: uq_family_drafts_not_work_per_job).
+    )
+
+
+class FamilyDraftMember(Base):
+    """Контекст за группой открытия. Пишется один раз обработкой ответа и больше
+    не переносится; контекст — в одной группе открытия (`UNIQUE(job_id,
+    context_id)`), группа — своего открытия (составной FK `(draft_id, job_id)`)."""
+    __tablename__ = "family_draft_members"
+
+    draft_id = Column(BigInteger, nullable=False)
+    job_id = Column(BigInteger, nullable=False)
+    context_id = Column(
+        BigInteger, ForeignKey("catalog_contexts.id", ondelete="RESTRICT"), nullable=False
+    )
+    name_index = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("draft_id", "context_id", name="pk_family_draft_members"),
+        ForeignKeyConstraint(
+            ["draft_id", "job_id"],
+            ["family_drafts.id", "family_drafts.job_id"],
+            ondelete="CASCADE",
+            name="fk_family_draft_members_draft_job",
+        ),
+        UniqueConstraint("job_id", "context_id", name="uq_family_draft_members_job_context"),
+    )
+
+
+class FamilyCategoryProposal(Base):
+    """Предложение категории активной семье (спека 3б §2.10): временное —
+    удаляется вместе с категорией; применяется шагом активации."""
+    __tablename__ = "family_category_proposals"
+
+    job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="RESTRICT"), nullable=False)
+    family_id = Column(
+        BigInteger, ForeignKey("work_families.id", ondelete="RESTRICT"), nullable=False
+    )
+    family_category_id = Column(
+        BigInteger, ForeignKey("family_categories.id", ondelete="CASCADE"), nullable=False
+    )
+    status = Column(Text, nullable=False)
+    decided_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("job_id", "family_id", name="pk_family_category_proposals"),
+        CheckConstraint(
+            f"status IN ({CATEGORY_PROPOSAL_STATUSES})", name="ck_family_category_proposals_status"
+        ),
+        CheckConstraint(CK_PROPOSAL_APPLIED_PAIR, name="ck_family_category_proposals_applied_pair"),
+        CheckConstraint(
+            CK_PROPOSAL_DECIDED_AT_PAIR, name="ck_family_category_proposals_decided_at_pair"
+        ),
     )
 
 
@@ -2072,8 +2311,19 @@ CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR = (
 CK_SEMANTIC_JOBS_SCHEMA_SUBJECT = (
     "(kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)"
 )
-CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = "(kind <> 'family_schema') = (context_id IS NOT NULL)"
-CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND = "(kind <> 'family_suggestion') = (schema_id IS NOT NULL)"
+#: Миграция 0021 переписала обе равносильности под четвёртый вид: предмет-контекст
+#: у `family_suggestion` и `context_values`, версия схемы — у `family_schema` и
+#: `context_values`; у `family_discovery` нет ни того, ни другого.
+CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = (
+    "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"
+)
+CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND = (
+    "(kind IN ('family_schema', 'context_values')) = (schema_id IS NOT NULL)"
+)
+#: У открытия единицы нет ни контекста, ни семьи (предмет — единица, `unit_id`).
+CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT = (
+    "kind <> 'family_discovery' OR (context_id IS NULL AND family_id IS NULL)"
+)
 CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND = (
     "result_suggestion_id IS NULL OR kind = 'family_suggestion'"
 )
@@ -2224,8 +2474,14 @@ class SemanticJob(Base):
         CheckConstraint(CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, name="ck_semantic_jobs_context_subject"),
         CheckConstraint(CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, name="ck_semantic_jobs_schema_id_by_kind"),
         CheckConstraint(
+            CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT, name="ck_semantic_jobs_discovery_subject"
+        ),
+        CheckConstraint(
             CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND, name="ck_semantic_jobs_result_suggestion_kind"
         ),
+        # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN
+        # ('pending','running','privacy_hold') — raw SQL в миграции 0021
+        # (RAW_SQL_INDEXES: uq_semantic_jobs_discovery_live): одно живое открытие на единицу.
         CheckConstraint(f"status IN ({SEMANTIC_JOB_STATUSES})", name="ck_semantic_jobs_status"),
         CheckConstraint(
             f"cancel_reason IS NULL OR cancel_reason IN ({SEMANTIC_CANCEL_REASONS})",

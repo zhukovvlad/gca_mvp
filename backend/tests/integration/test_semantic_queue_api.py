@@ -41,6 +41,7 @@ from services.context_routing import route_position
 from services.semantic_privacy import build_privacy_dictionary, find_privacy_matches
 from services.semantic_request import load_request_material, render_context_request
 from services.work_families import activate_family, assign_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -93,7 +94,7 @@ def _unit_id(db, code):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     family = activate_family(db, family_id=fam.id, actor_id=actor_id)
     # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
     # активная семья без схемы получала бы ещё и задание схемы.
@@ -1852,7 +1853,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Кладка стен", "definition": "Что входит и что не входит"},
+            json={"title": "Кладка стен", "definition": "Что входит и что не входит", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 200
@@ -1877,7 +1878,7 @@ class TestSuggestionActions:
         s = _published(db_session, scene.context_ids[0], family_id=None)
         db_session.commit()
 
-        response = admin_client.post(f"{BASE}/suggestions/{s.id}/create-family", json=body)
+        response = admin_client.post(f"{BASE}/suggestions/{s.id}/create-family", json={**body, "family_category_id": seed_category_id(db_session)})
 
         assert response.status_code == 422
         db_session.expire_all()
@@ -1894,7 +1895,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": scene.family.title, "definition": "иное определение"},
+            json={"title": scene.family.title, "definition": "иное определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409
@@ -1918,7 +1919,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Гонка", "definition": "определение"},
+            json={"title": "Гонка", "definition": "определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409
@@ -1935,7 +1936,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Другая", "definition": "определение"},
+            json={"title": "Другая", "definition": "определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409

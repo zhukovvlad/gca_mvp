@@ -56,6 +56,7 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
+from services.family_categories import require_category
 from services.family_change import (
     acquire_family_locks,
     family_change_route,
@@ -324,14 +325,23 @@ def assign_other_family(
 
 
 def create_family_from_suggestion(
-    db: Session, *, suggestion_id: int, title: str, definition: str, actor_id: int
+    db: Session,
+    *,
+    suggestion_id: int,
+    title: str,
+    definition: str,
+    family_category_id: int,
+    actor_id: int,
 ) -> int:
     """«Завести семью…»: одной транзакцией `create_family` -> `activate_family`
     -> `assign_family(source = suggestion)`, предложение `family_created`.
-    Возвращает id новой семьи.
+    Категория обязательна (спека 3б §2.9, решение 10) и берётся `FOR SHARE` ДО
+    строк контекста и семьи — первой в общем порядке блокировок. Возвращает id
+    новой семьи.
 
     Raises:
         ValueError: пустое имя или определение — до любой записи.
+        WorkFamilyError: `category_not_found` — категорию удалили.
         DecisionConflict: `suggestion_changed`; `family_exists` (с `family_id`
             существующей активной семьи с тем же именем и единицей) — записано
             ничего, точка сохранения откатывается."""
@@ -341,6 +351,8 @@ def create_family_from_suggestion(
         raise ValueError("имя семьи обязательно")
     if not clean_definition:
         raise ValueError("определение семьи обязательно")
+
+    require_category(db, family_category_id, exclusive=False)
 
     suggestion = _read_suggestion(db, suggestion_id)
     suggestion = _lock_for_decision(
@@ -355,7 +367,7 @@ def create_family_from_suggestion(
         try:
             family = create_family(
                 db, title=clean_title, unit_name=unit_name, definition=clean_definition,
-                actor_id=actor_id,
+                actor_id=actor_id, family_category_id=family_category_id,
             )
             family_id = family.id
             activate_family(db, family_id=family_id, actor_id=actor_id)

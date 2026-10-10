@@ -65,6 +65,7 @@ from services.semantic_reconcile import (
 )
 from services.semantic_request import load_request_material, render_context_request
 from services.work_families import activate_family, assign_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -88,7 +89,7 @@ def _unit_id(db, code):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     family = activate_family(db, family_id=fam.id, actor_id=actor_id)
     # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
     # активная семья без схемы получала бы ещё и задание схемы.

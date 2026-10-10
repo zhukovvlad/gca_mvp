@@ -67,6 +67,7 @@ from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
 from routers.domain_errors import raise_domain_error
 from services import (
     context_operations,
+    family_categories,
     family_change,
     semantic_decisions,
     work_families,
@@ -121,6 +122,11 @@ _STATUS_CONFLICT = frozenset(
         work_families.REFUSE_MERGE_INACTIVE,
         work_families.REFUSE_CONTEXT_NOT_APPLICABLE,
         work_families.REFUSE_MERGE_SCHEMA_BUILDING,
+        # Справочник категорий (спека 3б §2.12): «категории нет» — `409`, а не `404`:
+        # ссылающийся на удалённую категорию получает состояние, которое надо перечитать.
+        family_categories.REFUSE_CATEGORY_NOT_FOUND,
+        family_categories.REFUSE_CATEGORY_IN_USE,
+        family_categories.REFUSE_CATEGORY_DUPLICATE,
         work_variants.REFUSE_SCHEMA_NO_BUILDING,
         work_variants.REFUSE_SCHEMA_BUILDING,
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
@@ -147,6 +153,10 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_families.REFUSE_INVALID_NAME_ROLE,
         work_families.REFUSE_MERGE_SAME_FAMILY,
         work_families.REFUSE_BLANK_TITLE,
+        work_families.REFUSE_ACTIVATE_WITHOUT_CATEGORY,
+        work_families.REFUSE_CLEAR_CATEGORY_ACTIVE,
+        family_categories.REFUSE_CATEGORY_BLANK_TITLE,
+        family_categories.REFUSE_CATEGORY_BLANK_DEFINITION,
         work_variants.REFUSE_SCHEMA_PARAMETER_RENAMED,
         work_variants.REFUSE_SCHEMA_VALUE_REMOVED,
         work_variants.REFUSE_SCHEMA_BLANK,
@@ -341,6 +351,7 @@ class CreateFamilyRequest(BaseModel):
     title: str = Field(min_length=1)
     unit_name: str | None = None
     definition: str | None = None
+    family_category_id: int | None = None
 
 
 class UpdateFamilyRequest(BaseModel):
@@ -357,6 +368,25 @@ class UpdateFamilyRequest(BaseModel):
     title: str | None = None
     definition: str | None = None
     unit_name: str | None = None
+    #: Как `definition` и `unit_name`: отсутствие поля и явный `null` РАЗЛИЧИМЫ
+    #: (`model_fields_set`) — «не трогать» против «снять категорию» (у активной
+    #: семьи снять нельзя, `clear_category_active`).
+    family_category_id: int | None = None
+
+
+class CreateCategoryRequest(BaseModel):
+    """Пустоту и пробельность имени и определения проверяет сервис
+    (`category_blank_title`/`category_blank_definition`, `422` с кодом)."""
+
+    title: str
+    definition: str
+
+
+class UpdateCategoryRequest(BaseModel):
+    """Отсутствующее поле — «не трогать»; пустое значение — отказ сервиса."""
+
+    title: str | None = None
+    definition: str | None = None
 
 
 class MergeFamilyRequest(BaseModel):
@@ -470,14 +500,36 @@ class StaleGroupTransferRequest(BaseModel):
 #  Семьи
 # ---------------------------------------------------------------------------
 
+def _category_filter(value: str | None) -> int | Literal["none"] | None:
+    """Фильтр `family_category_id`: число — id категории, `none` — семьи без
+    категории; остальное — `422` некодированным текстом."""
+    if value is None or value == "none":
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "family_category_id: ожидается id категории или «none».",
+        ) from None
+
+
 @router.get("/families")
 def list_families_route(
     status_: Literal["draft", "active", "archived"] | None = Query(default=None, alias="status"),
     unit_id: int | None = Query(default=None),
+    family_category_id: str | None = Query(default=None),
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return {"items": crud_semantic.list_families(db, status=status_, unit_id=unit_id)}
+    return {
+        "items": crud_semantic.list_families(
+            db,
+            status=status_,
+            unit_id=unit_id,
+            family_category_id=_category_filter(family_category_id),
+        )
+    }
 
 
 @router.post("/families", status_code=status.HTTP_201_CREATED)
@@ -489,7 +541,7 @@ def create_family_route(
     with _mutating(db):
         family = work_families.create_family(
             db, title=body.title, unit_name=body.unit_name, definition=body.definition,
-            actor_id=admin.id,
+            actor_id=admin.id, family_category_id=body.family_category_id,
         )
     return _serialize_family(db, family.id)
 
@@ -509,6 +561,8 @@ def update_family_route(
         definition_kwargs: dict[str, object] = {}
         if "definition" in body.model_fields_set:
             definition_kwargs["definition"] = body.definition
+        if "family_category_id" in body.model_fields_set:
+            definition_kwargs["family_category_id"] = body.family_category_id
         family = work_families.update_family(
             db, family_id=family_id, title=body.title, actor_id=admin.id, **definition_kwargs,
         )
@@ -556,6 +610,66 @@ def merge_families_route(
     # Ответ — строка ЦЕЛЕВОЙ (пережившей) семьи, той же формы, что список:
     # источник ушёл в архив, дальнейшая работа продолжается с целью.
     return _serialize_family(db, body.target_family_id)
+
+
+# ---------------------------------------------------------------------------
+#  Справочник категорий семей (спека 3б §2.9, §2.12)
+# ---------------------------------------------------------------------------
+
+def _serialize_category(db: Session, category_id: int) -> dict:
+    row = crud_semantic.get_family_category_row(db, category_id=category_id)
+    assert row is not None, f"категория {category_id} исчезла между мутацией и сериализацией"
+    return row
+
+
+@router.get("/family-categories")
+def list_family_categories_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return {"items": crud_semantic.list_family_categories(db)}
+
+
+@router.post("/family-categories", status_code=status.HTTP_201_CREATED)
+def create_family_category_route(
+    body: CreateCategoryRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        category = family_categories.create_category(
+            db, title=body.title, definition=body.definition, actor_id=admin.id
+        )
+    return _serialize_category(db, category.id)
+
+
+@router.patch("/family-categories/{category_id}")
+def update_family_category_route(
+    category_id: int,
+    body: UpdateCategoryRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        fields: dict[str, object] = {}
+        if "title" in body.model_fields_set:
+            fields["title"] = body.title
+        if "definition" in body.model_fields_set:
+            fields["definition"] = body.definition
+        family_categories.update_category(
+            db, category_id=category_id, actor_id=admin.id, **fields
+        )
+    return _serialize_category(db, category_id)
+
+
+@router.delete("/family-categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_family_category_route(
+    category_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        family_categories.delete_category(db, category_id=category_id, actor_id=admin.id)
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +1042,8 @@ class OtherFamilyRequest(BaseModel):
 class CreateFamilyFromSuggestionRequest(BaseModel):
     title: str
     definition: str
+    #: Категория обязательна (спека 3б §2.9, решение 10): без неё — `422`.
+    family_category_id: int
 
 
 class PrivacyMatchIn(BaseModel):
@@ -1085,7 +1201,8 @@ def create_family_from_suggestion_route(
         try:
             family_id = semantic_decisions.create_family_from_suggestion(
                 db, suggestion_id=suggestion_id, title=body.title,
-                definition=body.definition, actor_id=admin.id,
+                definition=body.definition, family_category_id=body.family_category_id,
+                actor_id=admin.id,
             )
         except ValueError as exc:
             raise_domain_error(DomainError(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)))
