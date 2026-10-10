@@ -862,6 +862,9 @@ def _mark_batch_jobs(db: Session, batch_id: int, pairs: Sequence[Fingerprint]) -
     schema_unbuilt: list[tuple[int, str]] = []
     for fingerprint in pairs:
         kind = SemanticJobKind(fingerprint.kind)
+        if kind == SemanticJobKind.family_discovery:
+            # Открытие создаёт только запуск оператора; в пачки сверки оно не входит.
+            continue
         if kind == SemanticJobKind.family_suggestion:
             suggestion.append((fingerprint.context_id, fingerprint.request_hash))
         elif kind == SemanticJobKind.context_values:

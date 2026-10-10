@@ -449,6 +449,17 @@ FAMILY_CATEGORY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(FAMILY_CATEGORY_ROUTE_TEMPLATES) == 4
 
+#: Маршруты открытия семей (спека 3б §2.12): блок, preview и запуск. Права на них
+#: перебирает `test_catalog_discovery_launch.py`.
+DISCOVERY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/discovery/units"),
+        ("POST", f"{BASE}/discovery/preview"),
+        ("POST", f"{BASE}/discovery"),
+    }
+)
+assert len(DISCOVERY_ROUTE_TEMPLATES) == 3
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -473,6 +484,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | SEMANTIC_QUEUE_ROUTE_TEMPLATES
         | WORK_VARIANT_ROUTE_TEMPLATES
         | FAMILY_CATEGORY_ROUTE_TEMPLATES
+        | DISCOVERY_ROUTE_TEMPLATES
     )
     assert not any(path.endswith("/restore") for _method, path in collected)
 

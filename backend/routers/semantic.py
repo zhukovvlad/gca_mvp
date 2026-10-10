@@ -57,10 +57,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+import crud.discovery as crud_discovery
 import crud.semantic as crud_semantic
 import crud.semantic_queue as crud_semantic_queue
 import crud.work_variants as crud_work_variants
 from auth import require_admin
+from config import settings as app_settings
 from crud.common import DomainError
 from database import get_db
 from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
@@ -69,6 +71,7 @@ from services import (
     context_operations,
     family_categories,
     family_change,
+    family_discovery,
     semantic_decisions,
     work_families,
     work_variants,
@@ -127,6 +130,13 @@ _STATUS_CONFLICT = frozenset(
         family_categories.REFUSE_CATEGORY_NOT_FOUND,
         family_categories.REFUSE_CATEGORY_IN_USE,
         family_categories.REFUSE_CATEGORY_DUPLICATE,
+        # Открытие семей (спека 3б §2.12): отказы запуска — состояние, которое надо перечитать.
+        family_discovery.REFUSE_DISCOVERY_IN_PROGRESS,
+        family_discovery.REFUSE_DISCOVERY_UNIT_BUSY,
+        family_discovery.REFUSE_DISCOVERY_NOTHING_TO_DO,
+        family_discovery.REFUSE_DISCOVERY_TOO_MANY_NAMES,
+        family_discovery.REFUSE_DISCOVERY_INPUT_UNCHANGED,
+        family_discovery.REFUSE_PREVIEW_CHANGED,
         work_variants.REFUSE_SCHEMA_NO_BUILDING,
         work_variants.REFUSE_SCHEMA_BUILDING,
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
@@ -260,6 +270,11 @@ def _mutating(db: Session):
                 status.HTTP_409_CONFLICT, str(exc), code=CODE_FAMILY_LOCK_MISMATCH,
                 context={"context_ids": list(exc.context_ids)},
             )
+        )
+    except family_discovery.DiscoveryError as exc:
+        db.rollback()
+        raise_domain_error(
+            DomainError(_status_for_code(exc.code), str(exc), code=exc.code)
         )
     except AutoAcceptError as exc:
         # Порог не задан и «состояние изменилось после показа» — состояние
@@ -1078,6 +1093,17 @@ class UnitReaskRequest(BaseModel):
     preview_hash: str
 
 
+class DiscoveryPreviewRequest(BaseModel):
+    """`unit_id` обязателен и допускает `null` («без единицы»), как у перезапроса."""
+
+    unit_id: int | None
+
+
+class DiscoveryLaunchRequest(BaseModel):
+    unit_id: int | None
+    preview_hash: str
+
+
 class PreviewHashRequest(BaseModel):
     preview_hash: str
 
@@ -1289,6 +1315,53 @@ def unit_reask_route(
             db, unit_id=body.unit_id, preview_hash=body.preview_hash, actor_id=admin.id
         )
     return _serialize_reconcile(report)
+
+
+# ---------------------------------------------------------------------------
+#  Открытие семей: блок, preview, запуск
+# ---------------------------------------------------------------------------
+
+@router.get("/discovery/units")
+def discovery_units_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Блок «Открыть семьи»: строка на единицу с охватом или семьями без категории."""
+    return {"units": crud_discovery.discovery_units(db, settings=app_settings)}
+
+
+@router.post("/discovery/preview")
+def discovery_preview_route(
+    body: DiscoveryPreviewRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    preview = family_discovery.preview_discovery(
+        db, unit_id=body.unit_id, settings=app_settings
+    )
+    return {
+        "unit_id": preview.unit_id,
+        "counts": dataclasses.asdict(preview.counts),
+        "active_families": preview.active_families,
+        "reserve_usd": crud_semantic_queue.money_str(preview.reserve_usd),
+        "expected_cached_usd": crud_semantic_queue.money_str(preview.expected_cached_usd),
+        "preview_hash": preview.preview_hash,
+    }
+
+
+@router.post("/discovery")
+def discovery_launch_route(
+    body: DiscoveryLaunchRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        job = family_discovery.launch_discovery(
+            db, unit_id=body.unit_id, preview_hash=body.preview_hash, actor_id=admin.id,
+            settings=app_settings,
+        )
+        result = {"job_id": job.id, "status": job.status, "unit_id": job.unit_id}
+    return result
 
 
 @router.post("/reask-all/preview")

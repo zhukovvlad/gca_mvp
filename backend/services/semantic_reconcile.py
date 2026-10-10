@@ -638,7 +638,8 @@ def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
     предложений в pending/running или с удержанной пачкой, касающейся их
     отпечатками предложений)`. Пачка не-`mass` касается единицы контекстов своих
     отпечатков: `unit_id` самой пачки у автоматических пуст. Отпечатки других
-    видов единицу не держат."""
+    видов единицу не держат; задание открытия семей (`family_discovery`) в
+    `pending`/`running` её не занимает."""
     units: set[int | None] = set(
         db.execute(
             sa.select(SemanticJob.unit_id)
@@ -916,6 +917,9 @@ def _schema_scope(
 def _split_jobs(
     jobs: Collection[SemanticJob],
 ) -> tuple[list[SemanticJob], list[SemanticJob]]:
+    """Задания предложений и значений. Открытие семей (`family_discovery`)
+    сверка не планирует и не отменяет: его создаёт только запуск оператора, и
+    ни в одну из двух долей оно не попадает."""
     suggestions = [job for job in jobs if job.kind == SemanticJobKind.family_suggestion.value]
     values = [job for job in jobs if job.kind == SemanticJobKind.context_values.value]
     return suggestions, values

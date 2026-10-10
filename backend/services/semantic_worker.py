@@ -49,7 +49,9 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
+from services.discovery_result import apply_discovery
 from services.family_change import apply_publication_rules, thresholds_from
+from services.family_discovery import discovery_scope, render_discovery_request, sent_of
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
     ModelClient,
@@ -80,7 +82,13 @@ from services.semantic_request import (
     load_request_material,
     render_context_request,
 )
-from services.variant_answer import ValuesAnswer, parse_schema_answer, parse_values_answer
+from services.variant_answer import (
+    DiscoverySent,
+    ValuesAnswer,
+    parse_discovery_answer,
+    parse_schema_answer,
+    parse_values_answer,
+)
 from services.variant_request import (
     SchemaParameterIn,
     load_values_material,
@@ -130,6 +138,8 @@ class Claim:
     candidates: tuple[CandidateFamily, ...]
     kind: SemanticJobKind
     synthesized: bool
+    #: Что ушло модели (только у открытия семей): по нему проверяются ссылки ответа.
+    sent: DiscoverySent | None = None
 
 
 def serialize_privacy_matches(matches: Sequence[PrivacyMatch]) -> list[dict]:
@@ -210,6 +220,7 @@ class JobRender:
     cancel_reason: SemanticCancelReason | None = None
     candidates: tuple[CandidateFamily, ...] = ()
     parameterless: bool = False
+    sent: DiscoverySent | None = None
 
 
 def _not_renderable(reason: SemanticCancelReason) -> JobRender:
@@ -263,10 +274,21 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
             rendered=render_values_request(values_material, settings=settings),
             parameterless=not values_material.parameters,
         )
+    if kind == SemanticJobKind.family_discovery.value:
+        # Предмет — единица. Охват пуст и семей без категории нет — открывать
+        # нечего: задание неприменимо.
+        scope = discovery_scope(db, job.unit_id)
+        if not scope.names and not scope.uncategorized_family_ids:
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        return JobRender(
+            rendered=render_discovery_request(scope, db, settings=settings), sent=sent_of(scope)
+        )
     raise ValueError(f"неизвестный вид задания: {kind!r}")
 
 
 def _note_closed(closed_units: list[int | None] | None, job: SemanticJob) -> None:
+    """Единица закрытого задания предложения — для сверки схем её семей. Задания
+    других видов, в том числе открытие семей, единицу не отмечают."""
     if closed_units is not None and job.kind == SemanticJobKind.family_suggestion.value:
         closed_units.append(job.unit_id)
 
@@ -368,6 +390,7 @@ def claim_next(
             candidates=current.candidates,
             kind=kind,
             synthesized=False,
+            sent=current.sent,
         )
         db.commit()
         return claim
@@ -486,6 +509,9 @@ def record_result(
     домен» не возникает, ни явно, ни неявным замком внешнего ключа."""
     if claim.synthesized:
         raise ValueError("у синтетического захвата нет ответа модели")
+    if claim.kind == SemanticJobKind.family_discovery:
+        _record_discovery_result(db, claim, response, now=now, settings=settings)
+        return None
     if claim.kind != SemanticJobKind.family_suggestion:
         _record_variant_result(db, claim, response, now=now, settings=settings)
         return None
@@ -674,6 +700,21 @@ def _record_variant_result(
             return
 
     assert schema_error is not None
+    _record_schema_error(db, claim, response, schema_error, now=now)
+
+
+def _record_schema_error(
+    db: Session,
+    claim: Claim,
+    response: ModelResponse,
+    schema_error: AnswerSchemaError,
+    *,
+    now: datetime,
+) -> None:
+    """Схемная ошибка разбора: задание блокируется само (доменных блокировок
+    разбор не берёт), попытка закрывается `schema_error` (или `lost_claim`, если
+    задание уже не наше), задание — `error` без автоповтора; коммитит сама."""
+    assert claim.attempt_id is not None
     job = _lock_job(db, claim.job_id)
     attempt = _load_attempt(db, claim.attempt_id)
     owned = _owns_job(job, claim)
@@ -690,6 +731,45 @@ def _record_variant_result(
         job.status = SemanticJobStatus.error.value
         job.claim_token = None
         job.last_error_class = "schema_error"
+    db.flush()
+    _apply_fuse(db, attempt, now=now)
+    db.commit()
+
+
+def _record_discovery_result(
+    db: Session,
+    claim: Claim,
+    response: ModelResponse,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> None:
+    """Запись результата открытия семей: ответ разбирается по тому, что ушло
+    модели (`claim.sent`), затем `apply_discovery` — одна транзакция в общем
+    порядке блокировок (домен, затем задание). Схемная ошибка доменных блокировок
+    не берёт. Попытка закрывается после обработки: `lost_claim` — задание не наше,
+    иначе `ok` (в том числе когда охват успел измениться и задание отменено);
+    предохранитель «факт выше резерва» — как у остальных видов."""
+    assert claim.attempt_id is not None and claim.sent is not None
+    try:
+        answer = parse_discovery_answer(response.content, claim.sent)
+    except AnswerSchemaError as exc:
+        _record_schema_error(db, claim, response, exc, now=now)
+        return
+    outcome = apply_discovery(
+        db, job_id=claim.job_id, claim_token=claim.claim_token, answer=answer, settings=settings
+    )
+    attempt = _load_attempt(db, claim.attempt_id)
+    _close_with_response(
+        attempt,
+        response,
+        outcome=(
+            SemanticAttemptOutcome.lost_claim
+            if outcome.unapplied_reason == "lost_claim"
+            else SemanticAttemptOutcome.ok
+        ),
+        now=now,
+    )
     db.flush()
     _apply_fuse(db, attempt, now=now)
     db.commit()
