@@ -1012,12 +1012,12 @@ class _Activation:
         self.error: str | None = None
         self.code: str | None = None
         self.outcome = None
+        self._db = None
         self.thread = threading.Thread(target=self._run, name="activation", daemon=True)
 
     def _run(self):
         try:
-            with self.scene.factory() as db:
-                self.pid = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+            with self._db as db:
                 self.started.set()
                 connection = db.connection()
 
@@ -1047,6 +1047,14 @@ class _Activation:
             self.paused.set()
 
     def start(self):
+        # Сессия открыта и pid прочитан до старта потока: получение соединения из
+        # пула не входит в окно с таймаутом.
+        self._db = self.scene.factory()
+        try:
+            self.pid = self._db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+        except BaseException:
+            self._db.close()
+            raise
         self.thread.start()
         assert self.started.wait(_T), "поток активации не стартовал"
 
@@ -1079,35 +1087,42 @@ class TestActivationRaces:
         activation = _Activation(scene, job_id=job_id, draft_ids=[selected], pause=True)
         deleter: dict[str, object] = {"pid": None, "error": None, "code": None}
 
+        # Сессия удаления открыта и её pid прочитан ДО гонки: получение соединения
+        # из пула не входит в окно с таймаутом.
+        deleter_db = scene.factory()
+        deleter["pid"] = deleter_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def delete():
             try:
-                with scene.factory() as db:
-                    deleter["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    delete_category(db, category_id=extra.id, actor_id=admin.id)
-                    db.commit()
+                delete_category(deleter_db, category_id=extra.id, actor_id=admin.id)
+                deleter_db.commit()
             except WorkFamilyError as exc:
                 deleter["code"] = exc.code
             except Exception as exc:  # noqa: BLE001
                 deleter["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                deleter_db.close()
 
         td = threading.Thread(target=delete, name="deleter", daemon=True)
-        activation.start()
+        try:
+            activation.start()
+        except BaseException:
+            deleter_db.close()
+            raise
         try:
             assert activation.paused.wait(_T), "активация не дошла до чтения черновиков"
             td.start()
-            for _ in range(int(_T / 0.02)):
-                if deleter["pid"] is not None or not td.is_alive():
-                    break
-                threading.Event().wait(0.02)
-            assert deleter["pid"] is not None, f"удаление не стартовало: {deleter['error']}"
             blocked = _waits_for_lock(scene.factory, deleter["pid"], td)
             activation.go.set()
         finally:
             activation.finish()
-            td.join(timeout=_T)
-            if td.is_alive():
-                _terminate(scene.factory, deleter["pid"])
-                td.join(timeout=5)
+            if td.ident is None:
+                deleter_db.close()
+            else:
+                td.join(timeout=_T)
+                if td.is_alive():
+                    _terminate(scene.factory, deleter["pid"])
+                    td.join(timeout=5)
 
         assert not td.is_alive(), "поток удаления завис"
         assert activation.error is None, activation.error
@@ -1138,36 +1153,42 @@ class TestActivationRaces:
         )
         human: dict[str, object] = {"pid": None, "error": None}
 
+        # Сессия человека открыта и её pid прочитан ДО гонки (см. тест удаления категории).
+        human_db = scene.factory()
+        human["pid"] = human_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def change():
             try:
-                with scene.factory() as db:
-                    human["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    update_family(
-                        db, family_id=scene.f3.id, family_category_id=other,
-                        actor_id=scene.admin.id,
-                    )
-                    db.commit()
+                update_family(
+                    human_db, family_id=scene.f3.id, family_category_id=other,
+                    actor_id=scene.admin.id,
+                )
+                human_db.commit()
             except Exception as exc:  # noqa: BLE001
                 human["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                human_db.close()
 
         th = threading.Thread(target=change, name="human", daemon=True)
-        activation.start()
+        try:
+            activation.start()
+        except BaseException:
+            human_db.close()
+            raise
         blocked = False
         try:
             assert activation.paused.wait(_T), "активация не дошла до семьи пары"
             th.start()
-            for _ in range(int(_T / 0.02)):
-                if human["pid"] is not None or not th.is_alive():
-                    break
-                threading.Event().wait(0.02)
-            assert human["pid"] is not None, f"смена категории не стартовала: {human['error']}"
             blocked = _waits_for_lock(scene.factory, human["pid"], th)
         finally:
             activation.finish()
-            th.join(timeout=_T)
-            if th.is_alive():
-                _terminate(scene.factory, human["pid"])
-                th.join(timeout=5)
+            if th.ident is None:
+                human_db.close()
+            else:
+                th.join(timeout=_T)
+                if th.is_alive():
+                    _terminate(scene.factory, human["pid"])
+                    th.join(timeout=5)
 
         assert not th.is_alive(), "поток смены категории завис"
         assert activation.error is None and activation.code is None, (

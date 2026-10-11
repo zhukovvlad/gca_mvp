@@ -400,17 +400,22 @@ class TestRaceWithGlobalMark:
             finally:
                 read_row.set()
 
+        # Сессия пометки открыта и её pid прочитан ДО гонки: получение соединения
+        # из пула не входит в окно с таймаутом.
+        marker_db = factory()
+        marker["pid"] = marker_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def mark():
             try:
-                with factory() as db:
-                    marker["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    db.execute(sa.text("SET LOCAL lock_timeout = '15000ms'"))
-                    set_position_kind_global(
-                        db, position_id=position_id, kind="HEADER", actor_id=admin.id
-                    )
-                    db.commit()
+                marker_db.execute(sa.text("SET LOCAL lock_timeout = '15000ms'"))
+                set_position_kind_global(
+                    marker_db, position_id=position_id, kind="HEADER", actor_id=admin.id
+                )
+                marker_db.commit()
             except Exception as exc:  # noqa: BLE001
                 marker["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                marker_db.close()
 
         t_reopen = threading.Thread(target=reopen, name="reopen", daemon=True)
         t_mark = threading.Thread(target=mark, name="mark", daemon=True)
@@ -419,16 +424,14 @@ class TestRaceWithGlobalMark:
         try:
             assert read_row.wait(_T), "возврат не дошёл до чтения строки каталога"
             t_mark.start()
-            pause = threading.Event()
-            for _ in range(int(_T / 0.02)):
-                if marker["pid"] is not None or not t_mark.is_alive():
-                    break
-                pause.wait(0.02)
-            assert marker["pid"] is not None, f"поток пометки не стартовал: {marker['error']}"
             blocked = _waits_for_a_lock(factory, marker["pid"], t_mark)
         finally:
             go.set()
+            if t_mark.ident is None:
+                marker_db.close()
             for thread, state in ((t_reopen, reopener), (t_mark, marker)):
+                if thread.ident is None:
+                    continue
                 thread.join(timeout=_T)
                 if thread.is_alive():
                     _terminate(factory, state["pid"])
@@ -503,18 +506,23 @@ class TestRaceOfTwoReopens:
             finally:
                 read_state.set()
 
+        # Сессия второго возврата открыта и её pid прочитан ДО гонки: получение
+        # соединения из пула не входит в окно с таймаутом.
+        second_db = factory()
+        second["pid"] = second_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def reopen_second():
             try:
-                with factory() as db:
-                    second["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    try:
-                        reopen_context(db, context_id=context_id, actor_id=admin.id)
-                        db.commit()
-                    except WorkFamilyError as exc:
-                        db.rollback()
-                        second["code"] = exc.code
+                try:
+                    reopen_context(second_db, context_id=context_id, actor_id=admin.id)
+                    second_db.commit()
+                except WorkFamilyError as exc:
+                    second_db.rollback()
+                    second["code"] = exc.code
             except Exception as exc:  # noqa: BLE001
                 second["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                second_db.close()
 
         t_first = threading.Thread(target=reopen_first, name="reopen-1", daemon=True)
         t_second = threading.Thread(target=reopen_second, name="reopen-2", daemon=True)
@@ -523,16 +531,14 @@ class TestRaceOfTwoReopens:
         try:
             assert read_state.wait(_T), "первый возврат не дошёл до чтения состояния"
             t_second.start()
-            pause = threading.Event()
-            for _ in range(int(_T / 0.02)):
-                if second["pid"] is not None or not t_second.is_alive():
-                    break
-                pause.wait(0.02)
-            assert second["pid"] is not None, f"второй возврат не стартовал: {second['error']}"
             blocked = _waits_for_a_lock(factory, second["pid"], t_second)
         finally:
             go.set()
+            if t_second.ident is None:
+                second_db.close()
             for thread, state in ((t_first, first), (t_second, second)):
+                if thread.ident is None:
+                    continue
                 thread.join(timeout=_T)
                 if thread.is_alive():
                     _terminate(factory, state["pid"])

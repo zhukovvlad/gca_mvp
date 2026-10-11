@@ -253,6 +253,7 @@ class _Apply:
         self.error: str | None = None
         self.pid: int | None = None
         self._fired = False
+        self._db = None
         self.thread = threading.Thread(target=self._run, name="apply", daemon=True)
 
     def _hook(self, conn, cursor, statement, parameters, context, executemany):
@@ -268,8 +269,7 @@ class _Apply:
 
     def _run(self):
         try:
-            with self.scene.factory() as db:
-                self.pid = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+            with self._db as db:
                 self.started.set()
                 connection = db.connection()
                 event.listen(connection, "after_cursor_execute", self._hook)
@@ -287,6 +287,14 @@ class _Apply:
             self.started.set()
 
     def start(self):
+        # Сессия открыта и pid прочитан до старта потока: получение соединения из
+        # пула не входит в окно с таймаутом.
+        self._db = self.scene.factory()
+        try:
+            self.pid = self._db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+        except BaseException:
+            self._db.close()
+            raise
         self.thread.start()
         assert self.started.wait(_T), "поток обработки не стартовал"
 
@@ -739,14 +747,19 @@ class TestRaces:
             finally:
                 editor_paused.set()
 
+        # Сессия удаления открыта и её pid прочитан ДО гонки: получение соединения
+        # из пула не входит в окно с таймаутом.
+        deleter_db = scene.factory()
+        deleter["pid"] = deleter_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def delete():
             try:
-                with scene.factory() as db:
-                    deleter["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    delete_category(db, category_id=extra.id, actor_id=admin.id)
-                    db.commit()
+                delete_category(deleter_db, category_id=extra.id, actor_id=admin.id)
+                deleter_db.commit()
             except Exception as exc:  # noqa: BLE001
                 deleter["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                deleter_db.close()
 
         te = threading.Thread(target=edit, name="editor", daemon=True)
         td = threading.Thread(target=delete, name="deleter", daemon=True)
@@ -754,17 +767,15 @@ class TestRaces:
         try:
             assert editor_paused.wait(_T), "правка не дошла до замка черновика"
             td.start()
-            deadline = threading.Event()
-            for _ in range(int(_T / 0.02)):
-                if deleter["pid"] is not None or not td.is_alive():
-                    break
-                deadline.wait(0.02)
-            assert deleter["pid"] is not None, f"удаление не стартовало: {deleter['error']}"
             blocked = _waits_for_lock(scene.factory, deleter["pid"], td)
             editor_go.set()
         finally:
             editor_go.set()
+            if td.ident is None:
+                deleter_db.close()
             for thread, state in ((te, editor), (td, deleter)):
+                if thread.ident is None:
+                    continue
                 thread.join(timeout=_T)
                 if thread.is_alive():
                     _terminate(scene.factory, state["pid"])
@@ -823,14 +834,19 @@ class TestRaces:
             finally:
                 paused.set()
 
+        # Сессия архивирования открыта и её pid прочитан ДО гонки: получение
+        # соединения из пула не входит в окно с таймаутом.
+        archiver_db = scene.factory()
+        archiver["pid"] = archiver_db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+
         def archive():
             try:
-                with scene.factory() as db:
-                    archiver["pid"] = db.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
-                    archive_family(db, family_id=scene.f1.id, actor_id=scene.admin.id)
-                    db.commit()
+                archive_family(archiver_db, family_id=scene.f1.id, actor_id=scene.admin.id)
+                archiver_db.commit()
             except Exception as exc:  # noqa: BLE001
                 archiver["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                archiver_db.close()
 
         tm = threading.Thread(target=merge, name="merger", daemon=True)
         ta = threading.Thread(target=archive, name="archiver", daemon=True)
@@ -839,16 +855,14 @@ class TestRaces:
         try:
             assert paused.wait(_T), "слияние не дошло до чтения статуса семьи"
             ta.start()
-            pause = threading.Event()
-            for _ in range(int(_T / 0.02)):
-                if archiver["pid"] is not None or not ta.is_alive():
-                    break
-                pause.wait(0.02)
-            assert archiver["pid"] is not None, f"архивирование не стартовало: {archiver['error']}"
             blocked = _waits_for_lock(scene.factory, archiver["pid"], ta)
         finally:
             go.set()
+            if ta.ident is None:
+                archiver_db.close()
             for thread, state in ((tm, merger), (ta, archiver)):
+                if thread.ident is None:
+                    continue
                 thread.join(timeout=_T)
                 if thread.is_alive():
                     _terminate(scene.factory, state["pid"])
