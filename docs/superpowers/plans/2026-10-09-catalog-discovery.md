@@ -1207,6 +1207,87 @@ export function useDiscoveryUnits(), useDiscoveryPreview(), useLaunchDiscovery()
 - `just check-agents-index` — 18 из 18.
 - `just ci` — зелёный перед пушем.
 
+### Task 8: открытие порциями (редакция 5 спеки, приёмка стенда 11.10.2026)
+
+Первое открытие «компл» на стенде разложило 18 имён из 1 048 (спека §2.3.1).
+Задача меняет только отправку и разбор: охват, канонический запрос,
+`request_hash`, обработка ответа `apply_discovery`, черновики, активация и
+экран — без изменений.
+
+**Files**
+- Edit: `backend/config.py`, `backend/.env.example`, `backend/services/family_discovery.py`,
+  `backend/services/variant_answer.py`, `backend/services/semantic_worker.py`,
+  `backend/services/semantic_cost.py` (если резерв считается там)
+- Test: `backend/tests/unit/test_catalog_discovery_chunks.py`,
+  `backend/tests/integration/test_catalog_discovery_chunks.py`; правка
+  `tests/unit/test_catalog_discovery_answer.py`, `test_catalog_discovery_request.py`,
+  `tests/integration/test_catalog_discovery_worker.py`, `test_catalog_discovery_launch.py`
+  (правила содержания — из схемных ошибок в остаток; оценка — сумма порций)
+
+**Interfaces**
+
+```python
+# config.py
+SEMANTIC_DISCOVERY_CHUNK_NAMES: int = 100       # >= 1
+SEMANTIC_DISCOVERY_MAX_TOKENS: int = 8000       # предел одного вызова (было 32 000 на всё)
+
+# services/family_discovery.py
+DISCOVERY_PROMPT_VERSION = 2                    # prompt_version задания "discovery:2"
+@dataclass(frozen=True)
+class DraftRef:                                 # черновик, заведённый предыдущими порциями
+    number: int; title: str; definition: str; category_id: int
+def chunk_bounds(names_count: int, chunk: int) -> list[tuple[int, int]]   # [(a, b)], 1-based, включительно; N=0 -> [(1, 0)]
+def render_discovery_chunk(scope: DiscoveryScope, db: Session, *, settings: Settings,
+                           bounds: tuple[int, int], drafts: Sequence[DraftRef],
+                           first: bool) -> dict                            # тело вызова
+
+# services/variant_answer.py
+@dataclass(frozen=True)
+class ChunkSent:
+    bounds: tuple[int, int]
+    draft_numbers: frozenset[int]
+    active_family_ids: frozenset[int]
+    uncategorized_family_ids: frozenset[int]    # пусто вне порции 1
+    category_ids: frozenset[int]
+def parse_discovery_chunk(raw: str, sent: ChunkSent) -> ChunkAnswer        # форма строго, содержание — в остаток
+def merge_chunks(chunks: Sequence[ChunkAnswer], names_count: int) -> DiscoveryAnswer
+```
+
+**Утверждения**
+- `chunk_bounds`: N = 0, 1, 100, 101, 1 048 — по входу (две границы порции);
+  вызовов `⌈N/100⌉`, «только категории» — один;
+- тело порции: `system` побайтно одинаково во всех порциях одного задания
+  (кэш); перечень семей без категории — только в порции 1; блок черновиков —
+  ровно новые группы предыдущих порций в порядке номеров; имена порции с
+  глобальными номерами; тело не несёт цен, объёмов, подрядчиков, договоров,
+  объектов (как Task 3);
+- канонический `render_discovery_request` и `request_hash` прежние, кроме
+  текста промпта v2 (литерал хэша на фикстуре обновлён и назван);
+- разбор порции: схемная ошибка — по входу на каждую ошибку формы (не JSON,
+  текст вокруг, нет ключа, лишний ключ, не тот тип); правило содержания —
+  по входу на каждое (семья не из отправленных, черновик не из блока,
+  категория не из справочника, `family_id` и `draft_ref` разом, пустое имя или
+  определение новой группы, номер вне порции, номер дважды в порции) — его
+  имена в остатке, прочие группы порции целы;
+- сборка: `draft_ref` дописывает в свой черновик; группы одной активной семьи
+  из разных порций — одна группа `existing`; номера черновиков сквозные;
+  итог проходит прежний `apply_discovery` без правок;
+- исполнение: вызовы подряд внутри одного захвата; попытка одна — токены и
+  стоимость суммой, `raw_response` — массив ответов; временная ошибка порции
+  k > 1 — временная ошибка задания, черновики не пишутся; схемная ошибка
+  формы — `error`; приватность — по каноническому телу при захвате, как было;
+- оценка: резерв и ожидаемая цена — сумма по порциям, префикс кэширован со
+  второй; `preview_hash` меняется от размера порции;
+- сквозной вход: охват 250 имён, клиент-подмена отвечает тремя порциями со
+  ссылками на черновики предыдущих — один черновик собирает имена из трёх
+  порций, остаток — только имена с неверными ссылками.
+
+**Проверка**
+- `just test-unit-k catalog_discovery`, `just test-int-local-k catalog_discovery` — зелёные, число не убывает;
+- `-k "semantic_worker or semantic_queue_worker"` — зелёные;
+- на стенде (часть Б Task 7): открытие «компл» — не меньше 95 % имён в группах
+  или «не работе».
+
 ## Команды проверки
 
 - По задаче: указаны в самой задаче.
