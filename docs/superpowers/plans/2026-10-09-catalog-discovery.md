@@ -1317,6 +1317,77 @@ def merge_chunks(chunks: Sequence[ChunkAnswer], names_count: int) -> DiscoveryAn
 - на стенде (часть Б Task 7): открытие «компл» — не меньше 95 % имён в группах
   или «не работе».
 
+### Task 9: дочистка остатка (редакция 6 спеки, приёмка стенда 11.10.2026)
+
+Открытие «компл» порциями разложило 93,0 % имён: 73 строки модель молча
+пропустила (спека §2.3.2). Задача добавляет после порций один вызов дочистки;
+разбор, нормализация, сборка, `apply_discovery`, черновики и экран — без
+изменений, кроме обобщения «номер вне порции» до «номер не из отправленных».
+
+**Files**
+- Edit: `backend/config.py`, `backend/.env.example`, `backend/services/family_discovery.py`,
+  `backend/services/variant_answer.py`, `backend/services/semantic_worker.py`
+- Test: `tests/unit/test_catalog_discovery_chunks.py`,
+  `tests/integration/test_catalog_discovery_chunks.py`,
+  `tests/integration/test_catalog_discovery_worker.py`,
+  `tests/integration/test_catalog_discovery_launch.py` (резерв и хэш)
+
+**Interfaces**
+
+```python
+# config.py
+SEMANTIC_DISCOVERY_CLEANUP_NAMES: int = 100     # >= 0; 0 — дочистки нет
+
+# services/family_discovery.py
+CHUNK_PROTOCOL = 2                              # отпечаток: + cleanup_names
+def render_discovery_cleanup(canonical: RenderedRequest, scope: DiscoveryScope, *,
+                             settings: Settings, numbers: Sequence[int],
+                             drafts: Sequence[DraftRef]) -> dict      # тело дочистки
+def cleanup_numbers(remainder: Iterable[int], *, settings: Settings) -> list[int]
+                                                # первые по номеру CLEANUP_NAMES
+# reserve_of / expected_of — плюс один вызов дочистки при N >= 1 и CLEANUP_NAMES >= 1
+
+# services/variant_answer.py
+class ChunkSent: ...                            # отрезок bounds -> множество отправленных номеров
+                                                # (у порции — её отрезок, у дочистки — её номера)
+```
+
+**Утверждения**
+- дочистка: остаток после порций пуст — вызова нет (вызовов `K`); непуст —
+  ровно один вызов (вызовов `K + 1`) с первыми по номеру
+  `min(|остаток|, CLEANUP_NAMES)` именами; остаток больше предела — имена
+  сверх предела в остатке; `CLEANUP_NAMES = 0` — вызова нет; `N = 0` — вызова
+  нет;
+- тело дочистки: `system` побайтно равен `system` канонического тела; блок
+  черновиков — все черновики порций в порядке номеров; строка-указание и
+  заголовок `ИМЕНА БЕЗ ГРУППЫ ({m} ИЗ {N}):` дословно по спеке; имена с
+  глобальными номерами; перечня семей без категории нет; тело не несёт
+  цен, объёмов, подрядчиков, договоров, объектов;
+- разбор дочистки: номер не из отправленных — в остаток (вход: номер из
+  отрезка порций, но не из остатка; номер вне `1..N`); `draft_ref` на
+  черновик порции продолжает его; новая группа — следующий номер в пределах
+  `MAX_DRAFTS`; непустой `family_categories` игнорируется;
+- попытка: `raw_response` — `K + 1` ответов, дочистка последней; токены
+  суммой; `cost_usd` — только при выполненной дочистке; сбой дочистки —
+  `transient_error` задания с ответами порций в `raw_response`, черновики
+  не пишутся; схемная ошибка формы дочистки — `error`;
+- резерв: граница дочистки по `CLEANUP_NAMES` самым длинным именам охвата —
+  вход, где остаток состоит из самых длинных имён, и фактические байты тела
+  дочистки не больше учтённых; блок черновиков `min(MAX_DRAFTS, N) × L`;
+  резерв preview = резерв захвата; `CLEANUP_NAMES = 0` — резерв равен резерву
+  без дочистки;
+- отпечаток: `chunk_protocol = 2`, смена `cleanup_names` меняет `request_hash`
+  (вход на ось; литерал состава хэша обновлён);
+- сквозной вход: охват 250 имён, клиент-подмена в порциях пропускает часть
+  имён — дочистка раскладывает их в черновики порций по `draft_ref` и в
+  новую группу; итог проходит `apply_discovery`.
+
+**Проверка**
+- `just test-unit-k catalog_discovery`, `just test-int-local-k catalog_discovery` — зелёные, число не убывает;
+- `-k "semantic_worker or semantic_queue_worker"` — зелёные;
+- на стенде: открытие «компл» заново — не меньше 95 % имён в группах или
+  «не работе»; доля до дочистки и после — в devlog.
+
 ## Команды проверки
 
 - По задаче: указаны в самой задаче.
