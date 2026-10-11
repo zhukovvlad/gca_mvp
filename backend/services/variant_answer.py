@@ -442,12 +442,13 @@ _CHUNK_GROUP_KEYS: Final = (
 
 @dataclass(frozen=True)
 class ChunkSent:
-    """Что ушло модели в одной порции: по этому набору проверяются ссылки её
-    ответа. `bounds` — номера имён порции `(a, b)` включительно (`(1, 0)` — порция
-    без имён); `draft_numbers` — номера черновиков из блока; перечень семей без
+    """Что ушло модели в одном вызове (порции или дочистки): по этому набору
+    проверяются ссылки её ответа. `numbers` — номера имён, отправленных в этот
+    вызов (у порции — её отрезок, у дочистки — номера остатка; пусто — вызов без
+    имён); `draft_numbers` — номера черновиков из блока; перечень семей без
     категории непуст только в порции 1."""
 
-    bounds: tuple[int, int]
+    numbers: frozenset[int]
     draft_numbers: frozenset[int]
     active_family_ids: frozenset[int]
     uncategorized_family_ids: frozenset[int]
@@ -511,8 +512,10 @@ def parse_discovery_chunk(raw: str, sent: ChunkSent) -> ChunkAnswer:
     остаток (их не будет ни в одной группе и не в `not_work`): ссылка группы на
     семью не из отправленных (`family_id`, `similar_family_id`), на черновик не из
     блока, на категорию не из справочника; группа с `family_id` и `draft_ref`
-    разом; новая группа без имени или определения после `strip`; номер вне
-    порции; номер, встреченный в порции больше одного раза — все его вхождения.
+    разом; новая группа без имени или определения после `strip`; номер не из
+    отправленных в этот вызов (`sent.numbers`: отрезок порции или номера
+    дочистки); номер, встреченный в ответе больше одного раза — все его
+    вхождения.
     Остальные группы порции целы. У группы с `draft_ref` и у группы активной
     семьи прочие поля игнорируются. Пара `family_categories` пропускается, если
     семья не из перечня «без категории», категория не из справочника или семья
@@ -550,7 +553,6 @@ def parse_discovery_chunk(raw: str, sent: ChunkSent) -> ChunkAnswer:
             )
         )
 
-    first, last = sent.bounds
     occurrences: dict[int, int] = {}
     for entry in items:
         for number in entry[6]:
@@ -559,7 +561,7 @@ def parse_discovery_chunk(raw: str, sent: ChunkSent) -> ChunkAnswer:
         occurrences[number] = occurrences.get(number, 0) + 1
 
     def kept(numbers: Sequence[int]) -> tuple[int, ...]:
-        return tuple(sorted(n for n in numbers if first <= n <= last and occurrences[n] == 1))
+        return tuple(sorted(n for n in numbers if n in sent.numbers and occurrences[n] == 1))
 
     groups: list[ChunkGroup] = []
     for family_id, draft_ref, title, definition, category_id, similar, numbers in items:

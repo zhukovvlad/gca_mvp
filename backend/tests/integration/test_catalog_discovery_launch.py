@@ -131,6 +131,8 @@ class TestPreview:
                 "SEMANTIC_DISCOVERY_PRICE_CACHE_WRITE_PER_M": Decimal("4.2"),
                 "SEMANTIC_DISCOVERY_PRICE_CACHE_READ_PER_M": Decimal("4.3"),
                 "SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M": Decimal("4.4"),
+                # Дочистки в этом расчёте нет: резерв и цена порций отдельно.
+                "SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0,
             }
         )
         assert tariffs_from(distinct, "family_discovery") != tariffs_from(
@@ -159,6 +161,78 @@ class TestPreview:
 
         assert preview.reserve_usd == expected_reserve
         assert preview.expected_cached_usd == expected_cached
+
+    def test_estimate_adds_one_cleanup_call_by_the_discovery_tariffs(self, world):
+        _ctx_bare_unit(world, "Голая")
+        scope = discovery_scope(world.db, world.bare_unit)
+        rendered = render_discovery_request(scope, world.db, settings=S)
+        # Тарифы разведены: префикс резерва — по записи (5.2), префикс ожидаемой
+        # цены дочистки — по чтению (0.4), вход 3.1, выход 4.4.
+        priced = S.model_copy(
+            update={
+                "SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M": Decimal("3.1"),
+                "SEMANTIC_DISCOVERY_PRICE_CACHE_WRITE_PER_M": Decimal("5.2"),
+                "SEMANTIC_DISCOVERY_PRICE_CACHE_READ_PER_M": Decimal("0.4"),
+                "SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M": Decimal("4.4"),
+            }
+        )
+        chunk_lines = fd.render_discovery_chunk(
+            rendered, scope, settings=priced, bounds=(1, 1), drafts=(), first=True
+        )["messages"][1]["content"].split("\n")
+        chunk_user = len("\n".join(chunk_lines).encode("utf-8"))
+        # `user` дочистки одного имени: единица, указание, заголовок, строка имени.
+        cleanup_user = len(
+            (
+                chunk_lines[0]
+                + "\nЭТИ ИМЕНА ПРОПУЩЕНЫ В ПРОШЛЫХ ПОРЦИЯХ. РАЗЛОЖИ КАЖДОЕ: ПРОДОЛЖИ ЧЕРНОВИК "
+                "(draft_ref), ОТНЕСИ К АКТИВНОЙ СЕМЬЕ, ЗАВЕДИ НОВУЮ ГРУППУ ИЛИ ОТНЕСИ К not_work."
+                "\nИМЕНА БЕЗ ГРУППЫ (1 ИЗ 1):\n" + chunk_lines[-1]
+            ).encode("utf-8")
+        )
+        # Блок черновиков: заголовок и `min(150, 1)` строка наибольшей длины: «Ч», номер
+        # 150, «. », имя 100 знаков по 4 байта, « — », определение 300 по 4, «
+        # [категория », номер категории, «]», перевод строки.
+        line = 2 + 3 + 2 + 400 + 5 + 1200 + 21 + len(str(max(scope.category_ids))) + 1 + 1
+        block = len("ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ:\n".encode()) + line
+        million = Decimal(1_000_000)
+        prefix = Decimal(rendered.prefix_bytes)
+        chunk_part = (Decimal(chunk_user) * Decimal("3.1") + Decimal(8000) * Decimal("4.4"))
+        expected_reserve = (
+            prefix * Decimal("5.2") + chunk_part
+            + prefix * Decimal("5.2")
+            + Decimal(cleanup_user + block) * Decimal("3.1") + Decimal(8000) * Decimal("4.4")
+        ) / million
+        expected_cached = (
+            prefix * Decimal("5.2") + chunk_part
+            + prefix * Decimal("0.4")
+            + (Decimal(cleanup_user) + Decimal(block) / 2) * Decimal("3.1")
+            + Decimal(8000) * Decimal("4.4")
+        ) / million
+
+        preview = _preview(world, world.bare_unit, settings=priced)
+
+        assert preview.reserve_usd == expected_reserve
+        assert preview.expected_cached_usd == expected_cached
+
+    def test_estimate_without_cleanup_equals_the_chunk_estimate(self, world):
+        _ctx_bare_unit(world, "Голая")
+        off = S.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0})
+        scope = discovery_scope(world.db, world.bare_unit)
+        rendered = render_discovery_request(scope, world.db, settings=off)
+        tariffs = tariffs_from(off, "family_discovery")
+        chunk_user = len(
+            fd.render_discovery_chunk(
+                rendered, scope, settings=off, bounds=(1, 1), drafts=(), first=True
+            )["messages"][1]["content"].encode("utf-8")
+        )
+        only_chunk = (
+            Decimal(rendered.prefix_bytes)
+            * max(tariffs.input_per_m, tariffs.cache_write_per_m, tariffs.cache_read_per_m)
+            + Decimal(chunk_user) * tariffs.input_per_m
+            + Decimal(8000) * tariffs.output_per_m
+        ) / Decimal(1_000_000)
+
+        assert _preview(world, world.bare_unit, settings=off).reserve_usd == only_chunk
 
     def test_estimate_does_not_use_an_observed_prefix(self, world):
         _ctx_bare_unit(world, "Голая")
@@ -238,7 +312,7 @@ class TestPreview:
                         }
                     },
                     "reserve_formula_version": 1,
-                    "discovery_reserve_version": 1,
+                    "discovery_reserve_version": 2,
                 },
                 ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
@@ -269,7 +343,7 @@ class TestPreview:
     def test_hash_changes_with_the_discovery_reserve_formula_version(self, world, monkeypatch):
         _ctx_bare_unit(world, "Голая")
         before = _preview(world, world.bare_unit).preview_hash
-        monkeypatch.setattr(fd, "DISCOVERY_RESERVE_FORMULA_VERSION", 2)
+        monkeypatch.setattr(fd, "DISCOVERY_RESERVE_FORMULA_VERSION", 3)
 
         assert _preview(world, world.bare_unit).preview_hash != before
 
@@ -277,6 +351,7 @@ class TestPreview:
         "name,value",
         [
             ("SEMANTIC_DISCOVERY_CHUNK_NAMES", 99),
+            ("SEMANTIC_DISCOVERY_CLEANUP_NAMES", 99),
             ("SEMANTIC_DISCOVERY_MAX_DRAFTS", 149),
             ("SEMANTIC_DISCOVERY_MAX_TOKENS", 7999),
         ],
@@ -535,6 +610,7 @@ class TestRefusals:
         "name,value",
         [
             ("SEMANTIC_DISCOVERY_CHUNK_NAMES", 99),
+            ("SEMANTIC_DISCOVERY_CLEANUP_NAMES", 99),
             ("SEMANTIC_DISCOVERY_MAX_DRAFTS", 149),
             ("SEMANTIC_DISCOVERY_MAX_TOKENS", 7999),
         ],

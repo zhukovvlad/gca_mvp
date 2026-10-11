@@ -24,11 +24,14 @@ from services.family_discovery import (
     build_discovery_request,
     chunk_bounds,
     chunk_sent_of,
+    cleanup_numbers,
+    cleanup_sent_of,
     draft_line_max_bytes,
     draft_refs_of,
     estimate_of,
     expected_of,
     render_discovery_chunk,
+    render_discovery_cleanup,
     reserve_of,
 )
 from services.semantic_answer import AnswerSchemaError
@@ -324,12 +327,12 @@ class TestChunkSentOfAScope:
         later = chunk_sent_of(scope, bounds=(101, 200), drafts=drafts, first=False)
 
         assert first == ChunkSent(
-            bounds=(1, 100), draft_numbers=frozenset(),
+            numbers=frozenset(range(1, 101)), draft_numbers=frozenset(),
             active_family_ids=frozenset({10, 11}),
             uncategorized_family_ids=frozenset({11}), category_ids=frozenset({1, 2}),
         )
         assert later == ChunkSent(
-            bounds=(101, 200), draft_numbers=frozenset({1, 2}),
+            numbers=frozenset(range(101, 201)), draft_numbers=frozenset({1, 2}),
             active_family_ids=frozenset({10, 11}),
             uncategorized_family_ids=frozenset(), category_ids=frozenset({1, 2}),
         )
@@ -342,13 +345,13 @@ class TestChunkSentOfAScope:
 #: Порция 1: имена 1–5, активные семьи 10, 11, 12 (11, 12 без категории),
 #: справочник 1 и 2, черновиков нет.
 SENT1 = ChunkSent(
-    bounds=(1, 5), draft_numbers=frozenset(),
+    numbers=frozenset({1, 2, 3, 4, 5}), draft_numbers=frozenset(),
     active_family_ids=frozenset({10, 11, 12}),
     uncategorized_family_ids=frozenset({11, 12}), category_ids=frozenset({1, 2}),
 )
 #: Порция 2: имена 6–10, в блоке черновики 1 и 2, перечня «без категории» нет.
 SENT2 = ChunkSent(
-    bounds=(6, 10), draft_numbers=frozenset({1, 2}),
+    numbers=frozenset({6, 7, 8, 9, 10}), draft_numbers=frozenset({1, 2}),
     active_family_ids=frozenset({10, 11, 12}),
     uncategorized_family_ids=frozenset(), category_ids=frozenset({1, 2}),
 )
@@ -698,7 +701,7 @@ class TestChunkContentErrorsGoToTheRest:
 
     def test_zero_name_chunk_drops_every_number(self):
         sent = ChunkSent(
-            bounds=(1, 0), draft_numbers=frozenset(), active_family_ids=frozenset({10}),
+            numbers=frozenset(), draft_numbers=frozenset(), active_family_ids=frozenset({10}),
             uncategorized_family_ids=frozenset({10}), category_ids=frozenset({1}),
         )
 
@@ -1123,7 +1126,7 @@ class TestParseThenMerge:
     def test_an_emptied_group_takes_no_draft_number_and_is_not_in_the_next_block(self):
         first = _parse(_raw([_new([9, 10], title="Пустая"), _new([1], title="Живая")]))
         second_sent = ChunkSent(
-            bounds=(6, 10), draft_numbers=frozenset({1}),
+            numbers=frozenset({6, 7, 8, 9, 10}), draft_numbers=frozenset({1}),
             active_family_ids=frozenset({10, 11, 12}), uncategorized_family_ids=frozenset(),
             category_ids=frozenset({1, 2}),
         )
@@ -1159,6 +1162,8 @@ def _prices(**kw) -> Settings:
         SEMANTIC_DISCOVERY_MAX_TOKENS=100,
         SEMANTIC_DISCOVERY_CHUNK_NAMES=2,
         SEMANTIC_DISCOVERY_MAX_DRAFTS=2,
+        # Резерв порций проверяется без дочистки; её граница — в `TestCleanupReserve`.
+        SEMANTIC_DISCOVERY_CLEANUP_NAMES=0,
     )
     base.update(kw)
     return _settings(**base)
@@ -1234,7 +1239,7 @@ class TestReserve:
         assert reserve_of(scope, rendered, s) == expected
 
     def test_the_last_chunk_draft_block_is_at_the_limit_for_a_big_unit(self):
-        s = _settings(SEMANTIC_DISCOVERY_CHUNK_NAMES=100)
+        s = _settings(SEMANTIC_DISCOVERY_CHUNK_NAMES=100, SEMANTIC_DISCOVERY_CLEANUP_NAMES=0)
         scope = _scope(400)
         rendered = _canonical(scope, s)
         line, header = 1636, 48
@@ -1255,8 +1260,12 @@ class TestReserve:
         # режет) — 600 строк; номер 1000 — на знак длиннее номера 500.
         scope = _scope(400)
         rendered = _canonical(scope)
-        three_digits = _settings(SEMANTIC_DISCOVERY_MAX_DRAFTS=500)
-        four_digits = _settings(SEMANTIC_DISCOVERY_MAX_DRAFTS=1000)
+        three_digits = _settings(
+            SEMANTIC_DISCOVERY_MAX_DRAFTS=500, SEMANTIC_DISCOVERY_CLEANUP_NAMES=0
+        )
+        four_digits = _settings(
+            SEMANTIC_DISCOVERY_MAX_DRAFTS=1000, SEMANTIC_DISCOVERY_CLEANUP_NAMES=0
+        )
 
         difference = reserve_of(scope, rendered, four_digits) - reserve_of(
             scope, rendered, three_digits
@@ -1269,8 +1278,11 @@ class TestReserve:
         scope = _scope(400)
         big = dataclasses.replace(scope, category_ids=(1, 12345))
         rendered = _canonical(scope)
+        no_cleanup = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=0)
 
-        difference = reserve_of(big, rendered, S) - reserve_of(scope, rendered, S)
+        difference = reserve_of(big, rendered, no_cleanup) - reserve_of(
+            scope, rendered, no_cleanup
+        )
 
         assert difference == Decimal(400) * 4 * Decimal(2) / _PER_M
 
@@ -1373,3 +1385,451 @@ class TestExpected:
         assert estimate_of(scope, rendered, S) == (
             reserve_of(scope, rendered, S), expected_of(scope, rendered, S)
         )
+
+
+# ---------------------------------------------------------------------------
+#  Дочистка остатка (спека 3б §2.3.2)
+# ---------------------------------------------------------------------------
+
+#: Указание дочистки — литерал спеки, независимо от константы кода.
+_CLEANUP_NOTE = (
+    "ЭТИ ИМЕНА ПРОПУЩЕНЫ В ПРОШЛЫХ ПОРЦИЯХ. РАЗЛОЖИ КАЖДОЕ: ПРОДОЛЖИ ЧЕРНОВИК "
+    "(draft_ref), ОТНЕСИ К АКТИВНОЙ СЕМЬЕ, ЗАВЕДИ НОВУЮ ГРУППУ ИЛИ ОТНЕСИ К not_work."
+)
+
+
+def _name_row(index: int, title: str) -> str:
+    return f"{index}. {title} | статьи: 01.01 Стены | разделы: Раздел"
+
+
+def _cleanup_body(scope, numbers, drafts=(), settings=S):
+    return render_discovery_cleanup(
+        _canonical(scope, settings), scope, settings=settings, numbers=numbers, drafts=drafts
+    )
+
+
+class TestCleanupNumbers:
+    def test_first_numbers_of_the_remainder_by_ascending_order(self):
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=3)
+
+        assert cleanup_numbers([9, 3, 7, 1, 5], settings=s) == [1, 3, 5]
+
+    def test_remainder_shorter_than_the_limit_is_taken_whole(self):
+        assert cleanup_numbers([4, 2], settings=S) == [2, 4]
+
+    def test_remainder_equal_to_the_limit_is_taken_whole(self):
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=3)
+
+        assert cleanup_numbers([6, 5, 4], settings=s) == [4, 5, 6]
+
+    def test_one_over_the_limit_leaves_the_last_number_out(self):
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=3)
+
+        assert cleanup_numbers([6, 5, 4, 7], settings=s) == [4, 5, 6]
+
+    def test_limit_zero_means_no_cleanup(self):
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=0)
+
+        assert cleanup_numbers([1, 2, 3], settings=s) == []
+
+    def test_empty_remainder_means_no_cleanup(self):
+        assert cleanup_numbers([], settings=S) == []
+
+    def test_repeated_numbers_count_once(self):
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=2)
+
+        assert cleanup_numbers([3, 3, 1, 1, 2], settings=s) == [1, 2]
+
+    def test_a_scope_without_names_has_an_empty_remainder_so_no_cleanup(self):
+        answer = _merge([_chunk()], n=0)
+
+        assert cleanup_numbers(answer.unassigned, settings=S) == []
+
+
+class TestCleanupBody:
+    def test_user_is_unit_drafts_note_header_and_the_named_rows_in_that_order(self):
+        scope = _scope(5)
+        drafts = (DraftRef(2, "Окраска", "Покраска стен", 2), DraftRef(1, "Кладка", "Стены", 1))
+
+        body = _cleanup_body(scope, [2, 4], drafts)
+
+        assert _user(body) == (
+            "ЕДИНИЦА: м2\n"
+            "ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ:\n"
+            "Ч1. Кладка — Стены [категория 1]\n"
+            "Ч2. Окраска — Покраска стен [категория 2]\n"
+            + _CLEANUP_NOTE + "\n"
+            "ИМЕНА БЕЗ ГРУППЫ (2 ИЗ 5):\n"
+            + _name_row(2, "Имя 2") + "\n"
+            + _name_row(4, "Имя 4")
+        )
+
+    def test_no_drafts_means_no_block(self):
+        body = _cleanup_body(_scope(3), [1])
+
+        assert _user(body) == (
+            "ЕДИНИЦА: м2\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (1 ИЗ 3):\n" + _name_row(1, "Имя 1")
+        )
+
+    def test_header_counts_the_sent_names_out_of_the_whole_scope(self):
+        text = _user(_cleanup_body(_scope(250), [7, 120, 249]))
+
+        assert "ИМЕНА БЕЗ ГРУППЫ (3 ИЗ 250):\n" in text
+        assert text.endswith(_name_row(249, "Имя 249"))
+
+    def test_only_the_listed_names_are_sent_with_their_global_numbers(self):
+        text = _user(_cleanup_body(_scope(10), [3, 8]))
+
+        rows = [line for line in text.splitlines() if "| статьи:" in line]
+        assert rows == [_name_row(3, "Имя 3"), _name_row(8, "Имя 8")]
+
+    def test_there_is_no_list_of_uncategorized_families(self):
+        scope = _scope(3, uncategorized=(10, 11))
+
+        text = _user(_cleanup_body(scope, [1, 2]))
+
+        assert "СЕМЬИ БЕЗ КАТЕГОРИИ" not in text
+
+    def test_system_is_byte_identical_to_the_canonical_body(self):
+        scope = _scope(5)
+        canonical = _canonical(scope)
+
+        body = _cleanup_body(scope, [1])
+
+        assert json.dumps(body["messages"][0], ensure_ascii=False) == json.dumps(
+            canonical.body["messages"][0], ensure_ascii=False
+        )
+        assert body["messages"][0]["content"][2]["cache_control"] == {"type": "ephemeral"}
+
+    def test_profile_and_format_come_from_the_canonical_body(self):
+        scope = _scope(3)
+        s = _settings(SEMANTIC_DISCOVERY_REASONING_EFFORT="medium", SEMANTIC_DISCOVERY_MAX_TOKENS=1234)
+        canonical = _canonical(scope, s)
+
+        body = render_discovery_cleanup(
+            canonical, scope, settings=s, numbers=[1], drafts=()
+        )
+
+        assert set(body) == {
+            "model", "temperature", "max_tokens", "reasoning", "usage", "response_format",
+            "messages",
+        }
+        assert body["model"] == "anthropic/claude-sonnet-5.5"
+        assert body["temperature"] == 0
+        assert body["max_tokens"] == 1234
+        assert body["reasoning"] == {"effort": "medium"}
+        assert body["usage"] == {"include": True}
+        assert body["response_format"] == canonical.body["response_format"]
+
+    def test_body_shares_no_mutable_state_with_the_canonical_body(self):
+        scope = _scope(3)
+        canonical = _canonical(scope)
+        before = copy.deepcopy(canonical.body)
+
+        body = render_discovery_cleanup(canonical, scope, settings=S, numbers=[1], drafts=())
+        body["messages"][0]["content"][0]["text"] = "изменено"
+        body["response_format"]["json_schema"]["strict"] = False
+
+        assert canonical.body == before
+
+    def test_body_carries_no_prices_volumes_contractors_or_objects(self):
+        drafts = (DraftRef(1, "Кладка", "Стены", 1),)
+
+        text = _user(_cleanup_body(_scope(3), [1, 3], drafts))
+
+        for line in text.splitlines():
+            assert line.startswith(
+                ("ЕДИНИЦА:", "ЧЕРНОВИКИ ", "Ч1. ", "ЭТИ ИМЕНА ", "ИМЕНА БЕЗ ГРУППЫ ", "1. ", "3. ")
+            )
+
+    def test_the_rendering_is_deterministic(self):
+        scope = _scope(5)
+        drafts = (DraftRef(1, "Кладка", "Стены", 1),)
+
+        assert _cleanup_body(scope, [2, 5], drafts) == _cleanup_body(scope, [2, 5], drafts)
+
+
+class TestCleanupSentOf:
+    def test_sent_numbers_are_the_cleanup_numbers_not_a_segment(self):
+        scope = _scope(250)
+        drafts = (DraftRef(1, "А", "Б", 1), DraftRef(2, "В", "Г", 2))
+
+        sent = cleanup_sent_of(scope, numbers=[3, 120, 249], drafts=drafts)
+
+        assert sent == ChunkSent(
+            numbers=frozenset({3, 120, 249}), draft_numbers=frozenset({1, 2}),
+            active_family_ids=frozenset({10, 11}),
+            uncategorized_family_ids=frozenset(), category_ids=frozenset({1, 2}),
+        )
+
+
+#: Дочистка: отправлены 2 и 4, в блоке черновики 1 и 2, перечня «без категории» нет.
+SENT_CLEANUP = ChunkSent(
+    numbers=frozenset({2, 4}), draft_numbers=frozenset({1, 2}),
+    active_family_ids=frozenset({10, 11, 12}),
+    uncategorized_family_ids=frozenset(), category_ids=frozenset({1, 2}),
+)
+
+
+class TestCleanupAnswerParsing:
+    def test_a_number_of_the_chunks_segment_but_not_of_the_remainder_goes_to_the_rest(self):
+        # 3 был в отрезке порции, но дочисткой не отправлен.
+        answer = _parse(_raw([_new([2, 3])]), SENT_CLEANUP)
+
+        assert _placed(answer) == [2]
+
+    def test_a_number_outside_the_scope_goes_to_the_rest(self):
+        answer = _parse(_raw([_new([4, 99, 0, -1])], not_work=[2]), SENT_CLEANUP)
+
+        assert _placed(answer) == [2, 4]
+
+    def test_not_work_is_checked_by_the_same_set(self):
+        answer = _parse(_raw([], not_work=[2, 3, 100]), SENT_CLEANUP)
+
+        assert answer.not_work == (2,)
+
+    def test_draft_ref_continues_a_draft_of_the_chunks(self):
+        answer = _parse(_raw([_ref(2, [2, 4])]), SENT_CLEANUP)
+
+        assert answer.groups == (_group_of(draft_ref=2, names=(2, 4)),)
+
+    def test_draft_ref_not_from_the_block_sends_its_names_to_the_rest(self):
+        answer = _parse(_raw([_ref(3, [2]), _ref(1, [4])]), SENT_CLEANUP)
+
+        assert answer.groups == (_group_of(draft_ref=1, names=(4,)),)
+
+    def test_a_new_group_is_accepted(self):
+        answer = _parse(_raw([_new([2], title="Свая", category_id=2)]), SENT_CLEANUP)
+
+        assert answer.groups == (
+            _group_of(title="Свая", definition="Определение", category_id=2, names=(2,)),
+        )
+
+    def test_a_non_empty_family_categories_is_ignored_without_an_error(self):
+        # Семья 11 без категории в порции 1, но у дочистки перечня нет.
+        answer = _parse(
+            _raw([_existing(10, [2])], family_categories=[(11, 2), (12, 1)]), SENT_CLEANUP
+        )
+
+        assert answer.family_categories == ()
+        assert answer.groups == (_group_of(family_id=10, names=(2,)),)
+
+    def test_the_form_of_family_categories_is_still_strict(self):
+        raw = json.dumps(
+            {"groups": [], "not_work": [], "family_categories": [{"family_id": 11}]}
+        )
+
+        _expect("missing_field", raw, SENT_CLEANUP)
+
+    def test_a_number_met_twice_in_the_answer_goes_to_the_rest_everywhere(self):
+        answer = _parse(_raw([_new([2, 4]), _existing(10, [4])]), SENT_CLEANUP)
+
+        assert _placed(answer) == [2]
+
+
+class TestCleanupMerge:
+    def test_cleanup_answer_continues_chunk_drafts_and_starts_a_new_one(self):
+        chunk1 = _chunk([_newg([1, 2], title="Кладка")])
+        chunk2 = _chunk([_newg([3], title="Окраска")])
+        cleanup = _chunk(
+            [
+                _group_of(draft_ref=1, names=(4,)),
+                _group_of(draft_ref=2, names=(5,)),
+                _group_of(title="Свая", definition="Забивка", category_id=2, names=(6,)),
+            ]
+        )
+
+        answer = _merge([chunk1, chunk2, cleanup], n=6)
+
+        assert [(g.title, g.names) for g in answer.groups] == [
+            ("Кладка", (1, 2, 4)), ("Окраска", (3, 5)), ("Свая", (6,)),
+        ]
+        assert answer.unassigned == ()
+
+    def test_names_the_cleanup_skipped_stay_in_the_rest(self):
+        chunk1 = _chunk([_newg([1])])
+        cleanup = _chunk([_group_of(draft_ref=1, names=(4,))])
+
+        answer = _merge([chunk1, cleanup], n=6)
+
+        assert answer.unassigned == (2, 3, 5, 6)
+
+    def test_a_new_cleanup_group_over_the_draft_limit_sends_its_names_to_the_rest(self):
+        chunk1 = _chunk([_newg([1], title="А"), _newg([2], title="Б")])
+        cleanup = _chunk([_group_of(title="В", definition="Опр", category_id=1, names=(3,))])
+
+        answer = _merge([chunk1, cleanup], n=3, max_drafts=2)
+
+        assert [g.title for g in answer.groups] == ["А", "Б"]
+        assert answer.unassigned == (3,)
+
+    def test_a_cleanup_group_of_an_active_family_merges_into_the_chunks_group(self):
+        chunk1 = _chunk([_group_of(family_id=10, names=(1,))])
+        cleanup = _chunk([_group_of(family_id=10, names=(2,))])
+
+        answer = _merge([chunk1, cleanup], n=2)
+
+        assert answer.groups == (DiscoveryGroup(10, None, None, None, None, (1, 2)),)
+
+    def test_cleanup_name_equal_to_a_draft_name_is_appended_to_that_draft(self):
+        chunk1 = _chunk([_newg([1], title="Кладка")])
+        cleanup = _chunk([_group_of(title=" кладка ", definition="Иное", category_id=2, names=(2,))])
+
+        answer = _merge([chunk1, cleanup], n=2)
+
+        assert [(g.title, g.names) for g in answer.groups] == [("Кладка", (1, 2))]
+
+    def test_parse_then_merge_chain_with_cleanup_numbers_taken_from_the_remainder(self):
+        scope = _scope(6)
+        first = _parse(_raw([_new([1, 2], title="Кладка")]), SENT1)
+        so_far = _merge([first], n=6)
+        # Остаток после порции: 3–6; дочистке уходят первые два по предельной настройке.
+        s = _settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=2)
+        numbers = cleanup_numbers(so_far.unassigned, settings=s)
+        sent = cleanup_sent_of(scope, numbers=numbers, drafts=draft_refs_of(so_far))
+
+        second = _parse(_raw([_ref(1, [3]), _new([4], title="Свая"), _ref(1, [5])]), sent)
+        answer = _merge([first, second], n=6)
+
+        assert numbers == [3, 4]
+        assert [(g.title, g.names) for g in answer.groups] == [("Кладка", (1, 2, 3)), ("Свая", (4,))]
+        assert answer.unassigned == (5, 6)
+
+
+def _cleanup_scope(titles) -> DiscoveryScope:
+    base = _scope(len(titles))
+    names = tuple(
+        dataclasses.replace(name, title=title) for name, title in zip(base.names, titles, strict=True)
+    )
+    return dataclasses.replace(base, names=names)
+
+
+class TestCleanupReserve:
+    def test_reserve_adds_one_cleanup_call_for_the_longest_names_of_the_scope(self):
+        s = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=2)
+        base = _prices()
+        long_a, long_b = "Д" * 200, "Е" * 150
+        scope = _cleanup_scope(["Имя 1", "Имя 2", long_a, "Имя 4", long_b])
+        rendered = _canonical(scope, s)
+        # Два самых длинных имени — 3 и 5; заголовок «2 ИЗ 5».
+        user = len(
+            (
+                "ЕДИНИЦА: м2\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (2 ИЗ 5):\n"
+                + _name_row(3, long_a) + "\n" + _name_row(5, long_b)
+            ).encode("utf-8")
+        )
+        block = 48 + 2 * 1634
+        prefix = Decimal(rendered.prefix_bytes)
+
+        difference = reserve_of(scope, rendered, s) - reserve_of(scope, rendered, base)
+
+        assert difference == (prefix * 3 + Decimal(user + block) * 1 + Decimal(100) * 10) / _PER_M
+
+    def test_the_real_body_of_a_remainder_of_the_longest_names_fits_the_counted_bytes(self):
+        s = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=2)
+        scope = _cleanup_scope(["Имя 1", "Имя 2", "Д" * 200, "Имя 4", "Е" * 150])
+        rendered = _canonical(scope, s)
+        base = _prices()
+        block = 48 + 2 * 1634
+        counted = (
+            reserve_of(scope, rendered, s) - reserve_of(scope, rendered, base)
+        ) * _PER_M - Decimal(rendered.prefix_bytes) * 3 - Decimal(100) * 10
+
+        worst = len(_user(_cleanup_body(scope, [3, 5], settings=s)).encode("utf-8")) + block
+        other = len(_user(_cleanup_body(scope, [1, 2], settings=s)).encode("utf-8")) + block
+
+        assert counted == worst
+        assert other < worst
+
+    def test_the_cleanup_limit_is_capped_by_the_number_of_names(self):
+        s = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=100)
+        scope = _scope(2)
+        rendered = _canonical(scope, s)
+        user = len(
+            (
+                "ЕДИНИЦА: м2\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (2 ИЗ 2):\n"
+                + _name_row(1, "Имя 1") + "\n" + _name_row(2, "Имя 2")
+            ).encode("utf-8")
+        )
+        block = 48 + 2 * 1634
+
+        difference = reserve_of(scope, rendered, s) - reserve_of(
+            scope, rendered, _prices()
+        )
+
+        assert difference == (
+            Decimal(rendered.prefix_bytes) * 3 + Decimal(user + block) + Decimal(1000)
+        ) / _PER_M
+
+    def test_the_draft_block_is_min_of_the_draft_limit_and_the_names(self):
+        s = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=1)
+        scope = _scope(1)
+        rendered = _canonical(scope, s)
+        user = len(
+            (
+                "ЕДИНИЦА: м2\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (1 ИЗ 1):\n"
+                + _name_row(1, "Имя 1")
+            ).encode("utf-8")
+        )
+        block = 48 + 1 * 1634
+
+        difference = reserve_of(scope, rendered, s) - reserve_of(scope, rendered, _prices())
+
+        assert difference == (
+            Decimal(rendered.prefix_bytes) * 3 + Decimal(user + block) + Decimal(1000)
+        ) / _PER_M
+
+    def test_limit_zero_gives_the_reserve_without_cleanup(self):
+        scope = _scope(5)
+        with_zero = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=0)
+        rendered = _canonical(scope, with_zero)
+        prefix = rendered.prefix_bytes
+        block = 48 + 2 * 1634
+        users = [
+            _user_bytes(scope, with_zero, (1, 2), True),
+            _user_bytes(scope, with_zero, (3, 4), False) + block,
+            _user_bytes(scope, with_zero, (5, 5), False) + block,
+        ]
+        chunks_only = sum(Decimal(prefix) * 3 + Decimal(u) + Decimal(1000) for u in users) / _PER_M
+
+        assert reserve_of(scope, rendered, with_zero) == chunks_only
+        assert reserve_of(scope, rendered, _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=1)) > chunks_only
+
+    def test_a_scope_without_names_has_no_cleanup_in_the_reserve(self):
+        scope = _scope(0, uncategorized=(10, 11))
+        rendered = _canonical(scope, _prices())
+
+        assert reserve_of(scope, rendered, _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=100)) == (
+            reserve_of(scope, rendered, _prices())
+        )
+        assert expected_of(scope, rendered, _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=100)) == (
+            expected_of(scope, rendered, _prices())
+        )
+
+    def test_the_expected_cost_reads_the_cached_prefix_and_halves_the_draft_block(self):
+        s = _prices(SEMANTIC_DISCOVERY_CLEANUP_NAMES=2)
+        scope = _scope(5)
+        rendered = _canonical(scope, s)
+        user = len(
+            (
+                "ЕДИНИЦА: м2\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (2 ИЗ 5):\n"
+                + _name_row(1, "Имя 1") + "\n" + _name_row(2, "Имя 2")
+            ).encode("utf-8")
+        )
+        block = 48 + 2 * 1634
+
+        difference = expected_of(scope, rendered, s) - expected_of(scope, rendered, _prices())
+
+        assert difference == (
+            Decimal(rendered.prefix_bytes) * Decimal("0.5")
+            + (Decimal(user) + Decimal(block) / 2) * 1
+            + Decimal(1000)
+        ) / _PER_M
+
+    def test_reserve_stays_above_the_expected_cost_with_cleanup(self):
+        scope = _scope(250)
+        rendered = _canonical(scope)
+
+        reserve, expected = estimate_of(scope, rendered, S)
+
+        assert reserve > expected > 0

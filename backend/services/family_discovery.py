@@ -19,7 +19,8 @@
 КАНОНИЧЕСКОЕ тело со всеми именами: по нему (и по отпечатку исполнения) считается
 `request_hash`, проверяется приватность и охват. Модели имена уходят порциями
 (спека 3б §2.3.1): `render_discovery_chunk` строит тело порции из канонического
-тела и охвата, `chunk_bounds` режет номера имён; резерв и ожидаемая цена
+тела и охвата, `chunk_bounds` режет номера имён; `render_discovery_cleanup` строит
+тело дочистки пропущенных имён (спека 3б §2.3.2); резерв и ожидаемая цена
 считаются по охвату и настройкам (`discovery_reserve`, `discovery_expected`). Наружу
 уходят только наименования, статьи, пути разделов, единица, активные семьи
 (имя, определение) и справочник категорий: цены, объёмы, подрядчики, договоры и
@@ -379,17 +380,18 @@ def _user_text(
 
 #: Версия протокола порций; растёт при смене самого способа отправки (формата
 #: тела порции, правил сборки), а не настроек.
-CHUNK_PROTOCOL = 1
+CHUNK_PROTOCOL = 2
 
 
 def execution_fingerprint(settings: Settings) -> dict[str, int]:
-    """Отпечаток исполнения открытия (спека 3б §2.3.1): то, от чего зависит, как
-    модель получит охват, помимо самого канонического тела. Входит в
-    `request_hash`: смена размера порции или пределов меняет идентичность
-    задания."""
+    """Отпечаток исполнения открытия (спека 3б §2.3.1, §2.3.2): то, от чего
+    зависит, как модель получит охват, помимо самого канонического тела. Входит в
+    `request_hash`: смена размера порции, предела дочистки или пределов меняет
+    идентичность задания."""
     return {
         "chunk_protocol": CHUNK_PROTOCOL,
         "chunk_names": settings.SEMANTIC_DISCOVERY_CHUNK_NAMES,
+        "cleanup_names": settings.SEMANTIC_DISCOVERY_CLEANUP_NAMES,
         "max_tokens_per_call": settings.SEMANTIC_DISCOVERY_MAX_TOKENS,
         "max_drafts": settings.SEMANTIC_DISCOVERY_MAX_DRAFTS,
     }
@@ -562,7 +564,7 @@ def chunk_sent_of(
     """Что уходит модели в порции: множества, по которым разбор её ответа
     проверяет ссылки. Перечень семей без категории — только в порции 1."""
     return ChunkSent(
-        bounds=bounds,
+        numbers=frozenset(range(bounds[0], bounds[1] + 1)),
         draft_numbers=frozenset(d.number for d in drafts),
         active_family_ids=frozenset(scope.active_family_ids),
         uncategorized_family_ids=(
@@ -570,6 +572,29 @@ def chunk_sent_of(
         ),
         category_ids=frozenset(scope.category_ids),
     )
+
+
+def cleanup_sent_of(
+    scope: DiscoveryScope, *, numbers: Iterable[int], drafts: Sequence[DraftRef]
+) -> ChunkSent:
+    """Что уходит модели в дочистке (спека 3б §2.3.2): отправленные номера — номера
+    остатка, а не отрезок; перечня семей без категории в дочистке нет, поэтому её
+    `family_categories` разбор не принимает."""
+    return ChunkSent(
+        numbers=frozenset(numbers),
+        draft_numbers=frozenset(d.number for d in drafts),
+        active_family_ids=frozenset(scope.active_family_ids),
+        uncategorized_family_ids=frozenset(),
+        category_ids=frozenset(scope.category_ids),
+    )
+
+
+def cleanup_numbers(remainder: Iterable[int], *, settings: Settings) -> list[int]:
+    """Номера имён дочистки (спека 3б §2.3.2): первые по возрастанию
+    `SEMANTIC_DISCOVERY_CLEANUP_NAMES` номеров остатка; остаток сверх предела
+    остаётся остатком. Пусто — дочистки нет: остаток пуст или предел `0`. Охват без
+    имён даёт пустой остаток, поэтому «только категории» дочистки не имеет."""
+    return sorted(set(remainder))[: settings.SEMANTIC_DISCOVERY_CLEANUP_NAMES]
 
 
 def _draft_line(draft: DraftRef) -> str:
@@ -631,6 +656,11 @@ def render_discovery_chunk(
         first=first,
         max_chars=settings.SEMANTIC_DISCOVERY_NAME_MAX_CHARS,
     )
+    return _body_with_user(canonical, user_text)
+
+
+def _body_with_user(canonical: RenderedRequest, user_text: str) -> dict:
+    """Тело вызова: всё, кроме `user`, — копия канонического тела."""
     body = {
         key: copy.deepcopy(canonical.body[key])
         for key in (
@@ -644,13 +674,74 @@ def render_discovery_chunk(
     return body
 
 
+#: Строка-указание дочистки в `user` (спека 3б §2.3.2).
+CLEANUP_INSTRUCTION = (
+    "ЭТИ ИМЕНА ПРОПУЩЕНЫ В ПРОШЛЫХ ПОРЦИЯХ. РАЗЛОЖИ КАЖДОЕ: ПРОДОЛЖИ ЧЕРНОВИК "
+    "(draft_ref), ОТНЕСИ К АКТИВНОЙ СЕМЬЕ, ЗАВЕДИ НОВУЮ ГРУППУ ИЛИ ОТНЕСИ К not_work."
+)
+
+
+def _cleanup_header(shown: int, total: int) -> str:
+    return f"ИМЕНА БЕЗ ГРУППЫ ({shown} ИЗ {total}):"
+
+
+def _cleanup_user_text(
+    unit_code: str | None,
+    names: Sequence[DiscoveryName],
+    *,
+    total: int,
+    drafts: Sequence[DraftRef],
+    max_chars: int,
+) -> str:
+    """`user` дочистки: единица; блок черновиков (если они есть); указание;
+    заголовок и строки имён с глобальными номерами. Функция
+    хранит порядок, в котором получила `names`: тело дочистки передаёт их по
+    номеру, граница резерва — по убыванию длины в байтах (порядок число байт не
+    меняет)."""
+    unit_display = unit_code if unit_code is not None else _NO_UNIT_DISPLAY
+    parts = [f"ЕДИНИЦА: {unit_display}"]
+    if drafts:
+        lines = "\n".join(_draft_line(d) for d in sorted(drafts, key=lambda d: d.number))
+        parts.append(DRAFT_BLOCK_HEADER + lines)
+    parts.append(CLEANUP_INSTRUCTION)
+    listing = "\n".join(_name_line(n, max_chars=max_chars) for n in names)
+    parts.append(f"{_cleanup_header(len(names), total)}\n{listing}")
+    return "\n".join(parts)
+
+
+def render_discovery_cleanup(
+    canonical: RenderedRequest,
+    scope: DiscoveryScope,
+    *,
+    settings: Settings,
+    numbers: Sequence[int],
+    drafts: Sequence[DraftRef],
+) -> dict:
+    """Тело вызова дочистки (спека 3б §2.3.2): чистая функция от канонического
+    тела и охвата, без базы, как `render_discovery_chunk`. Всё, кроме `user`, — из
+    канонического тела (`system` побайтно тот же). `user` — единица; блок
+    черновиков, собранных порциями (все, по номеру); указание; заголовок и строки
+    имён `numbers` с глобальными номерами в прежнем формате. Перечня семей без
+    категории нет. Цен, объёмов, подрядчиков, договоров и объектов тело не несёт."""
+    wanted = set(numbers)
+    names = [n for n in scope.names if n.index in wanted]
+    user_text = _cleanup_user_text(
+        scope.unit_code,
+        names,
+        total=len(scope.names),
+        drafts=drafts,
+        max_chars=settings.SEMANTIC_DISCOVERY_NAME_MAX_CHARS,
+    )
+    return _body_with_user(canonical, user_text)
+
+
 # ---------------------------------------------------------------------------
 #  Резерв и ожидаемая цена открытия
 # ---------------------------------------------------------------------------
 
 #: Версия формулы резерва и ожидаемой цены открытия порциями; входит в
 #: `preview_hash`. Общая `RESERVE_FORMULA_VERSION` относится к остальным видам.
-DISCOVERY_RESERVE_FORMULA_VERSION = 1
+DISCOVERY_RESERVE_FORMULA_VERSION = 2
 
 _PER_MILLION = Decimal(1_000_000)
 
@@ -698,6 +789,35 @@ def _chunk_sizes(scope: DiscoveryScope, settings: Settings) -> list[tuple[int, i
     return sizes
 
 
+def _cleanup_size(scope: DiscoveryScope, settings: Settings) -> tuple[int, int] | None:
+    """Байты `user` дочистки без блока черновиков и верхняя граница блока (спека 3б
+    §2.3.2); `None` — дочистки в резерве нет (`N = 0` или предел `0`). Дочистке
+    достанется любое подмножество остатка из не более `m = min(CLEANUP_NAMES, N)`
+    имён, поэтому `user` считается по `m` самым длинным в байтах строкам имён
+    охвата с заголовком наибольшего вида (`m` из `N`); блок — `min(MAX_DRAFTS, N)`
+    черновиков (черновиков не больше имён, их число ограничено пределом)."""
+    names_count = len(scope.names)
+    limit = settings.SEMANTIC_DISCOVERY_CLEANUP_NAMES
+    if names_count < 1 or limit < 1:
+        return None
+    max_chars = settings.SEMANTIC_DISCOVERY_NAME_MAX_CHARS
+    longest = sorted(
+        scope.names,
+        key=lambda n: len(_name_line(n, max_chars=max_chars).encode("utf-8")),
+        reverse=True,
+    )[:limit]
+    user = len(
+        _cleanup_user_text(
+            scope.unit_code, longest, total=names_count, drafts=(), max_chars=max_chars
+        ).encode("utf-8")
+    )
+    line = draft_line_max_bytes(
+        settings.SEMANTIC_DISCOVERY_MAX_DRAFTS, max(scope.category_ids, default=0)
+    )
+    possible = min(settings.SEMANTIC_DISCOVERY_MAX_DRAFTS, names_count)
+    return user, len(DRAFT_BLOCK_HEADER.encode("utf-8")) + possible * line
+
+
 def reserve_of(scope: DiscoveryScope, rendered: RenderedRequest, settings: Settings) -> Decimal:
     """Резерв всего задания открытия — верхняя граница до первого вызова (спека
     3б §2.3.1): сумма по порциям. Префикс `system` порции — по наибольшему из
@@ -706,12 +826,19 @@ def reserve_of(scope: DiscoveryScope, rendered: RenderedRequest, settings: Setti
     кэш и наблюдавшиеся токены префикса не предполагаются); плюс байты `user`
     порции без блока черновиков; плюс наибольший блок черновиков; плюс
     `max_tokens` ответа по тарифу выхода. Байты считаются токенами (верхняя
-    граница). Детерминирован: от охвата, канонического тела и настроек."""
+    граница). Плюс один вызов дочистки (спека 3б §2.3.2), если `N >= 1` и
+    `CLEANUP_NAMES >= 1`: тот же префикс, `user` по самым длинным именам охвата,
+    блок черновиков `min(MAX_DRAFTS, N) × L`. Детерминирован: от охвата,
+    канонического тела и настроек."""
     tariffs = tariffs_from(settings, SemanticJobKind.family_discovery)
     prefix_rate = max(tariffs.input_per_m, tariffs.cache_write_per_m, tariffs.cache_read_per_m)
     max_tokens = rendered.body["max_tokens"]
+    sizes = _chunk_sizes(scope, settings)
+    cleanup = _cleanup_size(scope, settings)
+    if cleanup is not None:
+        sizes.append(cleanup)
     total = Decimal(0)
-    for user, drafts_max in _chunk_sizes(scope, settings):
+    for user, drafts_max in sizes:
         total += (
             Decimal(rendered.prefix_bytes) * prefix_rate
             + Decimal(user + drafts_max) * tariffs.input_per_m
@@ -724,11 +851,16 @@ def expected_of(scope: DiscoveryScope, rendered: RenderedRequest, settings: Sett
     """Ожидаемая цена задания (только для показа, в бюджете не участвует): первая
     порция пишет префикс в кэш (тариф записи), со второй он читается (тариф
     чтения); блок черновиков — половина верхней границы (фактическое число групп
-    заранее неизвестно); ответ — `max_tokens`, как у единичных видов."""
+    заранее неизвестно); ответ — `max_tokens`, как у единичных видов. Дочистка (если
+    она есть в резерве) — как порция со второй: префикс читается из кэша."""
     tariffs = tariffs_from(settings, SemanticJobKind.family_discovery)
     max_tokens = rendered.body["max_tokens"]
+    sizes = _chunk_sizes(scope, settings)
+    cleanup = _cleanup_size(scope, settings)
+    if cleanup is not None:
+        sizes.append(cleanup)
     total = Decimal(0)
-    for position, (user, drafts_max) in enumerate(_chunk_sizes(scope, settings)):
+    for position, (user, drafts_max) in enumerate(sizes):
         prefix_rate = tariffs.cache_write_per_m if position == 0 else tariffs.cache_read_per_m
         total += (
             Decimal(rendered.prefix_bytes) * prefix_rate

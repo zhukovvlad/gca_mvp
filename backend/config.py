@@ -112,8 +112,10 @@ class Settings(BaseSettings):
     SEMANTIC_DISCOVERY_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
     # Имена уходят модели порциями (спека 3б §2.3.1): размер порции, предел
     # черновиков одного открытия и предел ответа ОДНОГО вызова. Все три входят в
-    # отпечаток исполнения в `request_hash`.
+    # отпечаток исполнения в `request_hash`. Дочистка остатка (спека 3б §2.3.2):
+    # сколько пропущенных имён получает один вызов после порций; 0 — дочистки нет.
     SEMANTIC_DISCOVERY_CHUNK_NAMES: int = Field(100, ge=1)
+    SEMANTIC_DISCOVERY_CLEANUP_NAMES: int = Field(100, ge=0)
     SEMANTIC_DISCOVERY_MAX_DRAFTS: int = Field(150, ge=1)
     SEMANTIC_DISCOVERY_MAX_TOKENS: int = Field(8000, ge=1)
     SEMANTIC_DISCOVERY_MAX_NAMES: int = Field(1500, ge=1)

@@ -57,9 +57,12 @@ from services.family_discovery import (
     DiscoveryScope,
     chunk_bounds,
     chunk_sent_of,
+    cleanup_numbers,
+    cleanup_sent_of,
     discovery_scope,
     draft_refs_of,
     render_discovery_chunk,
+    render_discovery_cleanup,
     render_discovery_request,
     reserve_of,
 )
@@ -805,24 +808,48 @@ def _record_schema_error(
 def _parse_discovery_chunks(
     claim: Claim, responses: Sequence[ModelResponse], *, settings: Settings
 ) -> tuple[list, AnswerSchemaError | None]:
-    """Ответы порций по порядку, каждый — по тому, что ушло модели в его порции
-    (блок черновиков — собранный ответ предыдущих). Первая схемная ошибка формы
-    останавливает разбор; её `detail` несёт номер порции."""
+    """Ответы по порядку, каждый — по тому, что ушло модели в его вызове (блок
+    черновиков — собранный ответ предыдущих). Ответ после последней порции — ответ
+    дочистки: его отправленные номера — первые по номеру номера остатка собранных
+    порций (спека 3б §2.3.2). Первая схемная ошибка формы останавливает разбор; её
+    `detail` несёт номер порции или слово «дочистка»."""
     assert claim.scope is not None
     scope = claim.scope
     names = len(scope.names)
     bounds = chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES)
     chunks: list = []
     for index, response in enumerate(responses):
-        drafts = draft_refs_of(
-            merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
-        )
-        sent = chunk_sent_of(scope, bounds=bounds[index], drafts=drafts, first=index == 0)
+        if index > len(bounds):
+            raise ValueError(f"ответов {len(responses)}, а вызовов не больше {len(bounds) + 1}")
+        merged = merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
+        drafts = draft_refs_of(merged)
+        if index < len(bounds):
+            sent = chunk_sent_of(scope, bounds=bounds[index], drafts=drafts, first=index == 0)
+            where = f"порция {index + 1}"
+        else:
+            numbers = cleanup_numbers(merged.unassigned, settings=settings)
+            sent = cleanup_sent_of(scope, numbers=numbers, drafts=drafts)
+            where = "дочистка"
         try:
             chunks.append(parse_discovery_chunk(response.content, sent))
         except AnswerSchemaError as exc:
-            return chunks, AnswerSchemaError(exc.code, f"порция {index + 1}: {exc.detail}")
+            return chunks, AnswerSchemaError(exc.code, f"{where}: {exc.detail}")
     return chunks, None
+
+
+def _needed_calls(
+    chunks: Sequence, scope: DiscoveryScope, *, settings: Settings
+) -> int:
+    """Сколько вызовов задание должно сделать по ответам порций `chunks` (первые
+    `K` элементов; дочистка, если она есть, отбрасывается): `K`, если дочистка не
+    нужна, и `K + 1`, если нужна — у собранных порций есть остаток, `N >= 1` и
+    `CLEANUP_NAMES >= 1` (спека 3б §2.3.2)."""
+    names = len(scope.names)
+    portions = len(chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES))
+    merged = merge_chunks(
+        chunks[:portions], names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS
+    )
+    return portions + (1 if cleanup_numbers(merged.unassigned, settings=settings) else 0)
 
 
 def _record_discovery_result(
@@ -843,15 +870,19 @@ def _record_discovery_result(
     суммы по порциям; предохранитель «факт выше резерва» — как у остальных видов."""
     assert claim.attempt_id is not None and claim.scope is not None
     scope = claim.scope
-    total = len(chunk_bounds(len(scope.names), settings.SEMANTIC_DISCOVERY_CHUNK_NAMES))
+    portions = len(chunk_bounds(len(scope.names), settings.SEMANTIC_DISCOVERY_CHUNK_NAMES))
     chunks, error = _parse_discovery_chunks(claim, responses, settings=settings)
     if error is not None:
+        # Нужность дочистки при ошибке формы неизвестна: считаются порции, а ошибка
+        # самой дочистки — вызов сверх них.
         _record_schema_error(
-            db, claim, responses[-1], error, now=now, responses=responses, calls_total=total
+            db, claim, responses[-1], error, now=now, responses=responses,
+            calls_total=max(portions, len(responses)),
         )
         return
+    total = _needed_calls(chunks, scope, settings=settings)
     if len(responses) != total:
-        raise ValueError(f"ответов {len(responses)}, а порций {total}")
+        raise ValueError(f"ответов {len(responses)}, а нужных вызовов {total}")
     answer = merge_chunks(
         chunks, len(scope.names), max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS
     )
@@ -1259,21 +1290,33 @@ def _run_discovery_claim(
     черновиков — из собранного ответа предыдущих порций; база между порциями не
     читается. Сбой вызова порции — запись неудачи с ответами выполненных; схемная
     ошибка формы ответа порции останавливает цикл, и запись результата фиксирует
-    её; после последней порции ответы записываются одной попыткой."""
+    её; после последней порции — один вызов дочистки пропущенных имён, если у
+    собранного ответа порций есть остаток (спека 3б §2.3.2); ответ дочистки в цикле
+    не разбирается — после него вызовов нет, его разбирает запись результата;
+    ответы записываются одной попыткой."""
     assert claim.rendered is not None and claim.scope is not None
     scope = claim.scope
     names = len(scope.names)
+    portions = chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES)
     responses: list[ModelResponse] = []
     chunks: list = []
     try:
-        for index, bounds in enumerate(chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES)):
-            drafts = draft_refs_of(
-                merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
-            )
-            body = render_discovery_chunk(
-                claim.rendered, scope, settings=settings, bounds=bounds, drafts=drafts,
-                first=index == 0,
-            )
+        for index in range(len(portions) + 1):
+            merged = merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
+            drafts = draft_refs_of(merged)
+            if index < len(portions):
+                body = render_discovery_chunk(
+                    claim.rendered, scope, settings=settings, bounds=portions[index],
+                    drafts=drafts, first=index == 0,
+                )
+                sent = chunk_sent_of(scope, bounds=portions[index], drafts=drafts, first=index == 0)
+            else:
+                numbers = cleanup_numbers(merged.unassigned, settings=settings)
+                if not numbers:
+                    break  # дочистка не нужна
+                body = render_discovery_cleanup(
+                    claim.rendered, scope, settings=settings, numbers=numbers, drafts=drafts
+                )
             try:
                 response = client.complete(body, timeout_s=settings.SEMANTIC_CALL_TIMEOUT_S)
             except (TransientModelError, PermanentModelError) as exc:
@@ -1293,7 +1336,8 @@ def _run_discovery_claim(
                 )
                 return
             responses.append(response)
-            sent = chunk_sent_of(scope, bounds=bounds, drafts=drafts, first=index == 0)
+            if index == len(portions):
+                break  # ответ дочистки последний: разбирает его запись результата
             try:
                 chunks.append(parse_discovery_chunk(response.content, sent))
             except AnswerSchemaError:

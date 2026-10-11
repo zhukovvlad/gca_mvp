@@ -77,6 +77,11 @@ S = app_settings.model_copy(
     }
 )
 
+#: Те же настройки без дочистки: тесты, где один ответ намеренно оставляет остаток
+#: и записывается напрямую, иначе потребовали бы второй вызов. Запуск, захват и
+#: запись берут одни настройки — отпечаток задания несёт предел дочистки.
+S0 = S.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0})
+
 
 # ---------------------------------------------------------------------------
 #  Помощники
@@ -403,14 +408,14 @@ class TestFailuresAndRecovery:
     def test_reference_violation_in_the_answer_is_not_a_schema_error(self, world):
         # Ошибка содержания не роняет задание: имена неверной группы — в остаток.
         _bare_world(world)
-        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
-        claim = _claim(world.db)
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S0)
+        claim = _claim(world.db, settings=S0)
         category = seed_category_id(world.db)
 
         worker.record_result(
             world.db, claim,
             _response(_answer([_group([99], category_id=category), _group([1], category_id=category)])),
-            now=NOW, settings=S,
+            now=NOW, settings=S0,
         )
 
         assert _job(world.db, job.id).status == "done"
@@ -600,14 +605,14 @@ class TestApply:
 
     def test_record_result_on_a_stale_scope_closes_the_attempt_ok_and_cancels(self, world):
         _bare_world(world)
-        _launch(world.db, world.bare_unit, admin_id=world.admin.id)
-        claim = _claim(world.db)
+        _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S0)
+        claim = _claim(world.db, settings=S0)
         _ctx_bare_unit(world, "Имя Г — пришло после захвата")
 
         worker.record_result(
             world.db, claim,
             _response(_answer([_group([1], category_id=seed_category_id(world.db))])),
-            now=NOW, settings=S,
+            now=NOW, settings=S0,
         )
 
         job = _job(world.db, claim.job_id)
@@ -634,14 +639,14 @@ class TestApply:
 
     def test_record_result_of_a_lost_claim_closes_the_attempt_as_lost_claim(self, world):
         _bare_world(world)
-        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
-        claim = _claim(world.db)
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S0)
+        claim = _claim(world.db, settings=S0)
         recover_semantic_jobs(world.db, now=NOW)
 
         worker.record_result(
             world.db, claim,
             _response(_answer([_group([1], category_id=seed_category_id(world.db))])),
-            now=NOW, settings=S,
+            now=NOW, settings=S0,
         )
 
         assert _job(world.db, job.id).status == "pending"
@@ -651,10 +656,10 @@ class TestApply:
 
 class TestSupersede:
     def _run(self, w, answer_groups, *, unit):
-        job = _launch(w.db, unit, admin_id=w.admin.id)
-        claim = _claim(w.db)
+        job = _launch(w.db, unit, admin_id=w.admin.id, settings=S0)
+        claim = _claim(w.db, settings=S0)
         worker.record_result(
-            w.db, claim, _response(_answer(answer_groups)), now=NOW, settings=S
+            w.db, claim, _response(_answer(answer_groups)), now=NOW, settings=S0
         )
         return job.id
 
@@ -903,6 +908,8 @@ class TestQueueRows:
 
 #: Порция в два имени: пять имён — три порции (1–2, 3–4, 5).
 S2 = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 2})
+#: Порция в два имени, без дочистки (см. `S0`).
+S20 = S0.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 2})
 
 
 class _SameSession:
@@ -1110,7 +1117,7 @@ class TestChunkedExecution:
         first, _second, _third = _chunk_answers(category)
         second = _response(_answer([_group([3], draft_ref=7), _group([4], draft_ref=1)]))
         third = _response(_answer([_group([5], draft_ref=1)]))
-        job, _claim_, _client, _ = _chunked(world, [first, second, third])
+        job, _claim_, _client, _ = _chunked(world, [first, second, third], settings=S20)
 
         assert _job(world.db, job.id).status == "done"
         kladka, trash = _drafts(world.db, job.id)
@@ -1189,7 +1196,7 @@ class TestChunkedExecution:
         # Черновик сверх `MAX_DRAFTS` не попадает в итог — и в блок следующих
         # порций тоже: номера блока равны номерам итогового ответа.
         category = seed_category_id(world.db)
-        one_draft = S2.model_copy(update={"SEMANTIC_DISCOVERY_MAX_DRAFTS": 1})
+        one_draft = S20.model_copy(update={"SEMANTIC_DISCOVERY_MAX_DRAFTS": 1})
         script = [
             _response(_answer([_group([1], category_id=category, title="Кладка"),
                                _group([2], category_id=category, title="Окраска")])),
@@ -1203,3 +1210,321 @@ class TestChunkedExecution:
         assert "Ч2." not in users[2] and "Окраска" not in users[2]
         (kladka,) = _drafts(world.db, job.id)
         assert kladka.title == "Кладка" and len(_members(world.db, kladka.id)) == 3
+
+
+# ---------------------------------------------------------------------------
+#  Дочистка остатка (спека 3б §2.3.2)
+# ---------------------------------------------------------------------------
+
+#: Указание дочистки — литерал спеки, независимо от константы кода.
+_CLEANUP_NOTE = (
+    "ЭТИ ИМЕНА ПРОПУЩЕНЫ В ПРОШЛЫХ ПОРЦИЯХ. РАЗЛОЖИ КАЖДОЕ: ПРОДОЛЖИ ЧЕРНОВИК "
+    "(draft_ref), ОТНЕСИ К АКТИВНОЙ СЕМЬЕ, ЗАВЕДИ НОВУЮ ГРУППУ ИЛИ ОТНЕСИ К not_work."
+)
+
+
+def _gappy_answers(category):
+    """Три порции из пяти имён (1–2, 3–4, 5): имена 3 и 5 модель пропустила."""
+    return [
+        _response(_answer([_group([1], category_id=category, title="Кладка")], not_work=[2])),
+        _response(_answer([_group([4], category_id=category, title="Окраска")])),
+        _response(_answer([])),
+    ]
+
+
+def _cleanup_answer(category, **kw):
+    return _response(
+        _answer(
+            [_group([3], draft_ref=1), _group([5], category_id=category, title="Сваи")], **kw
+        )
+    )
+
+
+def _context_of(claim, number):
+    return claim.scope.names[number - 1].context_ids[0]
+
+
+class TestCleanupCall:
+    def test_empty_remainder_means_no_cleanup_call(self, world):
+        category = seed_category_id(world.db)
+        _job_row, claim, client, _ = _chunked(world, _chunk_answers(category), settings=S2)
+
+        assert len(client.bodies) == 3
+        attempt = _attempt(world.db, claim.job_id)
+        assert len(json.loads(attempt.raw_response)) == 3
+        assert attempt.cost_usd == Decimal("0.03") and attempt.outcome == "ok"
+        assert _job(world.db, claim.job_id).status == "done"
+
+    def test_a_remainder_gives_exactly_one_more_call_with_the_missed_names(self, world):
+        category = seed_category_id(world.db)
+        script = [*_gappy_answers(category), _cleanup_answer(category)]
+        _job_row, claim, client, _ = _chunked(world, script, settings=S2)
+
+        assert len(client.bodies) == 4
+        cleanup = client.bodies[3]
+        user = cleanup["messages"][1]["content"]
+        assert user.startswith("ЕДИНИЦА: ")
+        assert "ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ:\nЧ1. Кладка — Определение [категория " in user
+        assert "\nЧ2. Окраска — Определение [категория " in user
+        assert "\n" + _CLEANUP_NOTE + "\nИМЕНА БЕЗ ГРУППЫ (2 ИЗ 5):\n" in user
+        rows = [line for line in user.splitlines() if "| статьи:" in line]
+        assert [row.split(".", 1)[0] for row in rows] == ["3", "5"]
+        assert "СЕМЬИ БЕЗ КАТЕГОРИИ" not in user and "ИМЕНА 3" not in user
+        systems = {json.dumps(b["messages"][0], ensure_ascii=False) for b in client.bodies}
+        assert systems == {json.dumps(claim.rendered.body["messages"][0], ensure_ascii=False)}
+
+    def test_cleanup_answers_continue_a_chunk_draft_and_open_a_new_one(self, world):
+        category = seed_category_id(world.db)
+        script = [*_gappy_answers(category), _cleanup_answer(category)]
+        _job_row, claim, _client, _ = _chunked(world, script, settings=S2)
+
+        assert _job(world.db, claim.job_id).status == "done"
+        kladka, okraska, svai, trash = _drafts(world.db, claim.job_id)
+        assert [d.title for d in (kladka, okraska, svai)] == ["Кладка", "Окраска", "Сваи"]
+        assert trash.grp == "not_work"
+        assert _members(world.db, kladka.id) == sorted(
+            [_context_of(claim, 1), _context_of(claim, 3)]
+        )
+        assert _members(world.db, okraska.id) == [_context_of(claim, 4)]
+        assert _members(world.db, svai.id) == [_context_of(claim, 5)]
+        assert _members(world.db, trash.id) == [_context_of(claim, 2)]
+
+    def test_the_attempt_sums_four_calls_and_the_cleanup_answer_is_the_last_element(self, world):
+        category = seed_category_id(world.db)
+        answers = [*_gappy_answers(category), _cleanup_answer(category)]
+        _job_row, claim, _client, _ = _chunked(world, answers, settings=S2)
+
+        attempt = _attempt(world.db, claim.job_id)
+        assert json.loads(attempt.raw_response) == [a.content for a in answers]
+        assert (attempt.prompt_tokens, attempt.completion_tokens) == (4 * 8274, 4 * 156)
+        assert attempt.cost_usd == Decimal("0.04") and attempt.outcome == "ok"
+
+    def test_the_remainder_over_the_limit_stays_in_the_rest(self, world):
+        category = seed_category_id(world.db)
+        one = S2.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 1})
+        # Дочистка называет и имя 5 — оно в остатке, но сверх предела ей не
+        # отправлено: разбор берёт отправленные номера, а не весь остаток.
+        cleanup = _response(_answer(
+            [_group([3], draft_ref=1), _group([5], category_id=category, title="Сваи")]
+        ))
+        _job_row, claim, client, _ = _chunked(
+            world, [*_gappy_answers(category), cleanup], settings=one
+        )
+
+        user = client.bodies[3]["messages"][1]["content"]
+        assert "ИМЕНА БЕЗ ГРУППЫ (1 ИЗ 5):\n" in user
+        rows = [line for line in user.splitlines() if "| статьи:" in line]
+        assert [row.split(".", 1)[0] for row in rows] == ["3"]
+        assert len(client.bodies) == 4
+        drafts = _drafts(world.db, claim.job_id)
+        placed = {c for d in drafts for c in _members(world.db, d.id)}
+        assert _context_of(claim, 5) not in placed and _context_of(claim, 3) in placed
+        assert "Сваи" not in [d.title for d in drafts]
+
+    def test_limit_zero_means_no_cleanup_call_with_a_remainder(self, world):
+        category = seed_category_id(world.db)
+        off = S2.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0})
+        _job_row, claim, client, _ = _chunked(world, _gappy_answers(category), settings=off)
+
+        assert len(client.bodies) == 3
+        attempt = _attempt(world.db, claim.job_id)
+        assert len(json.loads(attempt.raw_response)) == 3
+        assert attempt.cost_usd == Decimal("0.03") and attempt.outcome == "ok"
+        assert _job(world.db, claim.job_id).status == "done"
+
+    def test_categories_only_unit_is_one_call_with_a_known_cost(self, world):
+        _uncategorize(world.db, world.family.id)
+        category = seed_category_id(world.db)
+        job = _launch(world.db, world.family_unit, admin_id=world.admin.id, settings=S)
+        claim = _claim(world.db, settings=S)
+        client = _ScriptedClient(
+            _response(_answer([], family_categories=[(world.family.id, category)]))
+        )
+
+        worker._run_claim(_SameSession(world.db), client, claim, settings=S, clock=lambda: NOW)
+
+        assert len(client.bodies) == 1
+        attempt = _attempt(world.db, job.id)
+        assert len(json.loads(attempt.raw_response)) == 1
+        assert attempt.cost_usd == Decimal("0.01") and attempt.outcome == "ok"
+        assert _job(world.db, job.id).status == "done"
+
+    def test_a_cleanup_with_an_unknown_cost_makes_the_attempt_cost_unknown(self, world):
+        category = seed_category_id(world.db)
+        cleanup = dataclasses.replace(_cleanup_answer(category), cost_usd=None)
+        _job_row, claim, _client, _ = _chunked(
+            world, [*_gappy_answers(category), cleanup], settings=S2
+        )
+
+        attempt = _attempt(world.db, claim.job_id)
+        assert attempt.cost_usd is None and attempt.outcome == "ok"
+        assert _job(world.db, claim.job_id).status == "done"
+
+    def test_an_unknown_cost_of_a_chunk_makes_the_cost_unknown_with_a_cleanup_too(self, world):
+        category = seed_category_id(world.db)
+        answers = _gappy_answers(category)
+        answers[1] = dataclasses.replace(answers[1], cost_usd=None)
+        _job_row, claim, _client, _ = _chunked(
+            world, [*answers, _cleanup_answer(category)], settings=S2
+        )
+
+        assert _attempt(world.db, claim.job_id).cost_usd is None
+
+    def test_a_transient_failure_of_the_cleanup_keeps_the_chunk_answers_and_the_cost_unknown(
+        self, world
+    ):
+        category = seed_category_id(world.db)
+        answers = _gappy_answers(category)
+        job, _claim_, client, _ = _chunked(
+            world, [*answers, TransientModelError("сеть", error_class="timeout")], settings=S2
+        )
+
+        job = _job(world.db, job.id)
+        assert job.status == "pending" and job.last_error_class == "timeout"
+        assert _drafts(world.db, job.id) == []
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "transient_error"
+        assert json.loads(attempt.raw_response) == [a.content for a in answers]
+        assert attempt.prompt_tokens == 3 * 8274 and attempt.cost_usd is None
+        assert spent_last_24h(world.db, now=NOW) >= attempt.reserve_usd
+        assert len(client.bodies) == 4
+
+    def test_a_permanent_failure_of_the_cleanup_is_an_error(self, world):
+        category = seed_category_id(world.db)
+        job, _claim_, _client, _ = _chunked(
+            world,
+            [*_gappy_answers(category), PermanentModelError("отказ", error_class="refused")],
+            settings=S2,
+        )
+
+        assert _job(world.db, job.id).status == "error"
+        attempt = _attempt(world.db, job.id)
+        assert (attempt.outcome, attempt.cost_usd) == ("permanent_error", None)
+        assert _drafts(world.db, job.id) == []
+
+    def test_a_form_error_of_the_cleanup_is_an_error_naming_it_with_the_known_cost(self, world):
+        category = seed_category_id(world.db)
+        answers = _gappy_answers(category)
+        bad = _response("это не json")
+        job, _claim_, client, _ = _chunked(world, [*answers, bad], settings=S2)
+
+        assert len(client.bodies) == 4
+        job = _job(world.db, job.id)
+        assert (job.status, job.last_error_class) == ("error", "schema_error")
+        assert _drafts(world.db, job.id) == []
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "schema_error"
+        assert attempt.validation_error.startswith("дочистка: ")
+        assert json.loads(attempt.raw_response) == [a.content for a in answers] + [bad.content]
+        assert attempt.cost_usd == Decimal("0.04")
+        assert worker.claim_next(world.db, settings=S2, now=NOW) is None
+
+    def test_a_form_error_of_a_chunk_stops_before_the_cleanup(self, world):
+        category = seed_category_id(world.db)
+        first, _second, _third = _gappy_answers(category)
+        job, _claim_, client, _ = _chunked(
+            world, [first, _response("это не json")], settings=S2
+        )
+
+        assert len(client.bodies) == 2
+        assert _attempt(world.db, job.id).validation_error.startswith("порция 2: ")
+
+    def test_names_outside_what_the_cleanup_was_sent_stay_in_the_rest(self, world):
+        category = seed_category_id(world.db)
+        # Дочистка отвечает про имя 4 (оно разложено порцией, но не отправлено ей), про
+        # имя 99 и ссылкой на несуществующий черновик 9; верно размещает только имя 3.
+        cleanup = _response(
+            _answer([_group([3], draft_ref=1), _group([4, 99], draft_ref=1),
+                     _group([5], draft_ref=9)])
+        )
+        _job_row, claim, _client, _ = _chunked(
+            world, [*_gappy_answers(category), cleanup], settings=S2
+        )
+
+        assert _job(world.db, claim.job_id).status == "done"
+        kladka, okraska, trash = _drafts(world.db, claim.job_id)
+        assert _members(world.db, kladka.id) == sorted(
+            [_context_of(claim, 1), _context_of(claim, 3)]
+        )
+        assert _members(world.db, okraska.id) == [_context_of(claim, 4)]
+        placed = {c for d in (kladka, okraska, trash) for c in _members(world.db, d.id)}
+        assert _context_of(claim, 5) not in placed
+
+    def test_family_categories_of_the_cleanup_are_ignored(self, world):
+        category = seed_category_id(world.db)
+        _uncategorize(world.db, world.family.id)
+        # Единица семьи: имена — системы, чтобы они были в охвате.
+        for n in range(1, 6):
+            context_id, _ = _make(world.db, world.factories, world.proposal, world.family_unit, f"Имя {n}")
+            _make_system(world.db, context_id, world.admin.id)
+        job = _launch(world.db, world.family_unit, admin_id=world.admin.id, settings=S2)
+        claim = _claim(world.db, settings=S2)
+        client = _ScriptedClient(
+            *_gappy_answers(category),
+            _cleanup_answer(category, family_categories=[(world.family.id, category)]),
+        )
+
+        worker._run_claim(_SameSession(world.db), client, claim, settings=S2, clock=lambda: NOW)
+
+        assert len(client.bodies) == 4
+        assert _job(world.db, job.id).status == "done"
+        assert world.db.execute(sa.select(FamilyCategoryProposal)).scalars().all() == []
+
+    def test_the_reserve_at_the_claim_equals_the_reserve_of_the_preview_with_a_cleanup(self, world):
+        category = seed_category_id(world.db)
+        script = [*_gappy_answers(category), _cleanup_answer(category)]
+        _job_row, claim, _client, preview = _chunked(world, script, settings=S2)
+
+        assert _attempt(world.db, claim.job_id).reserve_usd == preview.reserve_usd
+        without = preview_discovery(
+            world.db, unit_id=world.bare_unit,
+            settings=S2.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0}),
+        )
+        assert preview.reserve_usd > without.reserve_usd
+
+    def test_answers_without_the_needed_cleanup_are_not_applied(self, world):
+        category = seed_category_id(world.db)
+        _bare_world(world, titles=tuple(f"Имя {n}" for n in range(1, 6)))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S2)
+        claim = _claim(world.db, settings=S2)
+
+        with pytest.raises(ValueError):
+            worker.record_result(
+                world.db, claim, _gappy_answers(category), now=NOW, settings=S2
+            )
+
+        assert _drafts(world.db, job.id) == []
+        assert _job(world.db, job.id).status == "running"
+
+    def test_a_cleanup_answer_when_none_was_needed_is_not_applied(self, world):
+        category = seed_category_id(world.db)
+        _bare_world(world, titles=tuple(f"Имя {n}" for n in range(1, 6)))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S2)
+        claim = _claim(world.db, settings=S2)
+
+        with pytest.raises(ValueError):
+            worker.record_result(
+                world.db, claim, [*_chunk_answers(category), _cleanup_answer(category)],
+                now=NOW, settings=S2,
+            )
+
+        assert _drafts(world.db, job.id) == []
+        assert _job(world.db, job.id).status == "running"
+
+    def test_answers_beyond_the_cleanup_are_not_applied_even_if_unreadable(self, world):
+        # Вызовов не больше `K + 1`: лишний ответ после дочистки — отказ записи, а не
+        # схемная ошибка задания, даже когда этот лишний ответ нечитаем.
+        category = seed_category_id(world.db)
+        _bare_world(world, titles=tuple(f"Имя {n}" for n in range(1, 6)))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S2)
+        claim = _claim(world.db, settings=S2)
+
+        with pytest.raises(ValueError):
+            worker.record_result(
+                world.db, claim,
+                [*_gappy_answers(category), _cleanup_answer(category), _response("это не json")],
+                now=NOW, settings=S2,
+            )
+
+        assert _drafts(world.db, job.id) == []
+        assert _job(world.db, job.id).status == "running"

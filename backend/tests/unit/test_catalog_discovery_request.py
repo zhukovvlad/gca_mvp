@@ -91,6 +91,7 @@ class TestProfileSettings:
         assert s.SEMANTIC_DISCOVERY_REASONING_EFFORT == "low"
         assert s.SEMANTIC_DISCOVERY_MAX_TOKENS == 8000
         assert s.SEMANTIC_DISCOVERY_CHUNK_NAMES == 100
+        assert s.SEMANTIC_DISCOVERY_CLEANUP_NAMES == 100
         assert s.SEMANTIC_DISCOVERY_MAX_DRAFTS == 150
         assert s.SEMANTIC_DISCOVERY_MAX_NAMES == 1500
         assert s.SEMANTIC_DISCOVERY_NAME_MAX_CHARS == 300
@@ -116,6 +117,14 @@ class TestProfileSettings:
             with pytest.raises(ValidationError) as excinfo:
                 _settings(**{name: bad})
             assert [err["loc"] for err in excinfo.value.errors()] == [(name,)]
+        assert getattr(_settings(**{name: 1}), name) == 1
+
+    def test_cleanup_names_negative_rejected_zero_and_one_accepted(self):
+        name = "SEMANTIC_DISCOVERY_CLEANUP_NAMES"
+        with pytest.raises(ValidationError) as excinfo:
+            _settings(**{name: -1})
+        assert [err["loc"] for err in excinfo.value.errors()] == [(name,)]
+        assert getattr(_settings(**{name: 0}), name) == 0
         assert getattr(_settings(**{name: 1}), name) == 1
 
     @pytest.mark.parametrize("suffix", ["INPUT", "CACHE_WRITE", "CACHE_READ", "OUTPUT"])
@@ -321,8 +330,9 @@ class TestHashes:
                 "serialization_version": SERIALIZATION_VERSION,
                 "body": rendered.body,
                 "execution": {
-                    "chunk_protocol": 1,
+                    "chunk_protocol": 2,
                     "chunk_names": 100,
+                    "cleanup_names": 100,
                     "max_tokens_per_call": 8000,
                     "max_drafts": 150,
                 },
@@ -408,6 +418,8 @@ def _axis_cases():
         "model": dict(settings=_settings(SEMANTIC_DISCOVERY_MODEL="vendor/other")),
         "max_tokens": dict(settings=_settings(SEMANTIC_DISCOVERY_MAX_TOKENS=7999)),
         "chunk_names": dict(settings=_settings(SEMANTIC_DISCOVERY_CHUNK_NAMES=99)),
+        "cleanup_names": dict(settings=_settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=99)),
+        "cleanup_names_off": dict(settings=_settings(SEMANTIC_DISCOVERY_CLEANUP_NAMES=0)),
         "max_drafts": dict(settings=_settings(SEMANTIC_DISCOVERY_MAX_DRAFTS=149)),
         "reasoning_effort": dict(
             settings=_settings(SEMANTIC_DISCOVERY_REASONING_EFFORT="medium")

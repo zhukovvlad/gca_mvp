@@ -64,8 +64,13 @@ S = app_settings.model_copy(
 )
 
 
-#: Размер порции по умолчанию (100): 250 имён — три порции.
-W_S = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 100})
+#: Размер порции по умолчанию (100): 250 имён — три порции; без дочистки.
+W_S = S.model_copy(
+    update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 100, "SEMANTIC_DISCOVERY_CLEANUP_NAMES": 0}
+)
+
+#: То же с дочисткой по умолчанию (100 имён).
+W_C = W_S.model_copy(update={"SEMANTIC_DISCOVERY_CLEANUP_NAMES": 100})
 
 
 def _new(names, *, title, category_id, definition="Определение"):
@@ -336,3 +341,70 @@ class TestCollidingLongTitlesPassApplyDiscovery:
             ("Первое", "Щ" * 99 + "…"), ("Второе", "Щ" * 99 + "…"), ("Эхо", "Третье"),
         ]
         assert [_members(world.db, d.id) for d in drafts] == [[contexts[0]], [contexts[1]], [contexts[2]]]
+
+
+class TestEndToEndCleanup:
+    def test_250_names_the_cleanup_places_the_missed_into_chunk_drafts_and_a_new_group(
+        self, world
+    ):
+        category = seed_category_id(world.db)
+        contexts = _bare_world(world, titles=tuple(f"Имя {n:03d}" for n in range(1, 251)))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=W_C)
+        claim = _claim(world.db, settings=W_C)
+        client = _ScriptedClient(
+            # порция 1 (1–100): черновик 1 и «не работа»; имена 81–90 модель пропустила
+            _response(_answer(
+                [_group(list(range(1, 81)), category_id=category, title="Кладка")],
+                not_work=list(range(91, 101)),
+            )),
+            # порция 2 (101–200): продолжение черновика 1, новый черновик 2; 191–200 пропущены
+            _response(_answer(
+                [_group(list(range(101, 181)), draft_ref=1),
+                 _group(list(range(181, 191)), category_id=category, title="Сваи")],
+            )),
+            # порция 3 (201–250): продолжение черновика 1; 241–250 пропущены
+            _response(_answer([_group(list(range(201, 241)), draft_ref=1)])),
+            # дочистка: 30 пропущенных имён — в черновики порций (1 и 2), в новую группу,
+            # в «не работу»; имена 246–250 пропускает и она
+            _response(_answer(
+                [_group(list(range(81, 91)), draft_ref=1),
+                 _group(list(range(191, 196)), draft_ref=2),
+                 _group(list(range(196, 201)), category_id=category, title="Земляные работы")],
+                not_work=list(range(241, 246)),
+            )),
+        )
+
+        worker._run_claim(_SameSession(world.db), client, claim, settings=W_C, clock=lambda: NOW)
+
+        assert len(client.bodies) == 4
+        cleanup_user = client.bodies[3]["messages"][1]["content"]
+        assert "ИМЕНА БЕЗ ГРУППЫ (30 ИЗ 250):\n" in cleanup_user
+        assert "Ч1. Кладка" in cleanup_user and "Ч2. Сваи" in cleanup_user
+        rows = [line for line in cleanup_user.splitlines() if "| статьи:" in line]
+        assert [int(row.split(".", 1)[0]) for row in rows] == (
+            list(range(81, 91)) + list(range(191, 201)) + list(range(241, 251))
+        )
+        stored = world.db.get(SemanticJob, job.id)
+        world.db.refresh(stored)
+        assert stored.status == "done"
+        kladka, svai, earth, trash = _drafts(world.db, job.id)
+        assert [d.title for d in (kladka, svai, earth)] == ["Кладка", "Сваи", "Земляные работы"]
+        assert trash.grp == "not_work"
+
+        def members(numbers):
+            return sorted(contexts[n - 1] for n in numbers)
+
+        assert _members(world.db, kladka.id) == members(
+            list(range(1, 91)) + list(range(101, 181)) + list(range(201, 241))
+        )
+        assert _members(world.db, svai.id) == members(range(181, 196))
+        assert _members(world.db, earth.id) == members(range(196, 201))
+        assert _members(world.db, trash.id) == members(
+            list(range(91, 101)) + list(range(241, 246))
+        )
+        placed = {c for d in (kladka, svai, earth, trash) for c in _members(world.db, d.id)}
+        # Остаток — только то, что пропустила и дочистка.
+        assert set(contexts) - placed == set(members(range(246, 251)))
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "ok" and attempt.cost_usd == Decimal("0.04")
+        assert len(json.loads(attempt.raw_response)) == 4
