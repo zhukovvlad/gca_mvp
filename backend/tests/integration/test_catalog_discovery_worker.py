@@ -7,6 +7,7 @@
 # ruff: noqa: F811 — `world` — фикстура, импортированная из соседнего набора
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 from decimal import Decimal
@@ -29,12 +30,14 @@ from models import (
 )
 from services.discovery_result import DiscoveryOutcome, apply_discovery
 from services.family_discovery import (
+    DiscoveryScope,
+    chunk_sent_of,
     discovery_scope,
     launch_discovery,
     preview_discovery,
-    sent_of,
 )
 from services.semantic_client import ModelResponse, PermanentModelError, TransientModelError
+from services.semantic_cost import spent_last_24h
 from services.semantic_decisions import (
     DecisionConflict,
     decline_privacy_hold,
@@ -49,7 +52,7 @@ from services.semantic_reconcile import (
     reconcile_semantic_jobs,
 )
 from services.semantic_runner import recover_semantic_jobs
-from services.variant_answer import parse_discovery_answer
+from services.variant_answer import DiscoveryAnswer, merge_chunks, parse_discovery_chunk
 from tests.factories import seed_category_id
 from tests.integration.test_catalog_discovery_scope import (
     _ctx_bare_unit,
@@ -88,12 +91,13 @@ def _response(content: str, *, cost: str | None = "0.01") -> ModelResponse:
 
 
 def _group(names, *, family_id=None, title="Новая семья", definition="Определение",
-           category_id=None, similar=None):
+           category_id=None, similar=None, draft_ref=None):
     if family_id is not None:
         title = definition = None
     return {
-        "family_id": family_id, "title": title, "definition": definition,
-        "category_id": category_id, "similar_family_id": similar, "names": names,
+        "family_id": family_id, "draft_ref": draft_ref, "title": title,
+        "definition": definition, "category_id": category_id, "similar_family_id": similar,
+        "names": names,
     }
 
 
@@ -108,6 +112,13 @@ def _answer(groups, not_work=(), family_categories=()):
         },
         ensure_ascii=False,
     )
+
+
+def _answer_of(raw: str, scope: DiscoveryScope) -> DiscoveryAnswer:
+    """Ответ модели на всё имена охвата одной порцией — как его собирает опросчик."""
+    count = len(scope.names)
+    sent = chunk_sent_of(scope, bounds=(1, count), drafts=(), first=True)
+    return merge_chunks([parse_discovery_chunk(raw, sent)], count, max_drafts=150)
 
 
 def _launch(db, unit_id, *, admin_id, settings=S) -> SemanticJob:
@@ -174,7 +185,7 @@ class TestClaim:
         assert claim.kind.value == "family_discovery"
         assert claim.job_id == job.id and not claim.synthesized
         assert claim.rendered.request_hash == job.request_hash
-        assert claim.sent == sent_of(discovery_scope(world.db, world.bare_unit))
+        assert claim.scope == discovery_scope(world.db, world.bare_unit)
         assert claim.candidates == ()
         job = _job(world.db, job.id)
         assert job.status == "running" and job.claim_token == claim.claim_token
@@ -216,8 +227,8 @@ class TestClaim:
         claim = _claim(world.db)
 
         assert claim.job_id == job.id
-        assert claim.sent.names_count == 0
-        assert claim.sent.uncategorized_family_ids == frozenset({world.family.id})
+        assert len(claim.scope.names) == 0
+        assert claim.scope.uncategorized_family_ids == (world.family.id,)
 
     def test_budget_below_the_reserve_leaves_the_job_pending(self, world):
         _bare_world(world)
@@ -243,8 +254,8 @@ class TestClaim:
 
         assert claim is not None
         reserve = _attempt(world.db, claim.job_id).reserve_usd
-        # 32000 токенов ответа по 1000 $/млн — 32 $ одним ответом.
-        assert reserve > Decimal("32")
+        # 8000 токенов ответа по 1000 $/млн — 8 $ одним ответом.
+        assert reserve > Decimal("8")
 
 
 # ---------------------------------------------------------------------------
@@ -372,20 +383,39 @@ class TestFailuresAndRecovery:
         assert worker.claim_next(world.db, settings=S, now=NOW) is None
         assert _drafts(world.db, job.id) == []
 
-    def test_reference_violation_in_the_answer_is_a_schema_error(self, world):
+    def test_missing_key_of_a_group_is_a_schema_error_naming_the_chunk(self, world):
         _bare_world(world)
         _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim = _claim(world.db)
+        group = _group([1], category_id=seed_category_id(world.db))
+        del group["draft_ref"]
+
+        worker.record_result(
+            world.db, claim, _response(_answer([group])), now=NOW, settings=S,
+        )
+
+        job = _job(world.db, claim.job_id)
+        assert (job.status, job.last_error_class) == ("error", "schema_error")
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "schema_error"
+        assert attempt.validation_error.startswith("порция 1: ")
+
+    def test_reference_violation_in_the_answer_is_not_a_schema_error(self, world):
+        # Ошибка содержания не роняет задание: имена неверной группы — в остаток.
+        _bare_world(world)
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
         claim = _claim(world.db)
         category = seed_category_id(world.db)
 
         worker.record_result(
             world.db, claim,
-            _response(_answer([_group([99], category_id=category)])), now=NOW, settings=S,
+            _response(_answer([_group([99], category_id=category), _group([1], category_id=category)])),
+            now=NOW, settings=S,
         )
 
-        job = _job(world.db, claim.job_id)
-        assert (job.status, job.last_error_class) == ("error", "schema_error")
-        assert _attempt(world.db, job.id).outcome == "schema_error"
+        assert _job(world.db, job.id).status == "done"
+        assert _attempt(world.db, job.id).outcome == "ok"
+        assert len(_drafts(world.db, job.id)) == 1
 
     def test_fuse_pauses_the_claim_when_the_cost_exceeds_the_reserve(self, world):
         _bare_world(world)
@@ -419,7 +449,8 @@ class TestApply:
 
         worker.record_result(
             world.db, claim,
-            _response(_answer([_group([1], category_id=category), _group([2], category_id=category)],
+            _response(_answer([_group([1], category_id=category, title="Первая"),
+                               _group([2], category_id=category, title="Вторая")],
                               not_work=[3])),
             now=NOW, settings=S,
         )
@@ -432,7 +463,7 @@ class TestApply:
             ("new", "open", 1), ("new", "open", 2), ("not_work", "open", 3),
         ]
         assert (first.title, first.definition, first.family_category_id) == (
-            "Новая семья", "Определение", category,
+            "Первая", "Определение", category,
         )
         assert first.unit_id == world.bare_unit
         assert _members(world.db, first.id) == [a]
@@ -534,8 +565,8 @@ class TestApply:
         _bare_world(world, titles=("Имя А", "Имя Б", "Имя В"))
         job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
         claim = _claim(world.db)
-        answer = parse_discovery_answer(
-            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.sent
+        answer = _answer_of(
+            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.scope
         )
 
         outcome = apply_discovery(
@@ -552,8 +583,8 @@ class TestApply:
         job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
         claim = _claim(world.db)
         _ctx_bare_unit(world, "Имя Г — пришло после захвата")
-        answer = parse_discovery_answer(
-            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.sent
+        answer = _answer_of(
+            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.scope
         )
 
         outcome = apply_discovery(
@@ -589,8 +620,8 @@ class TestApply:
         job = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
         claim = _claim(world.db)
         recover_semantic_jobs(world.db, now=NOW)
-        answer = parse_discovery_answer(
-            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.sent
+        answer = _answer_of(
+            _answer([_group([1], category_id=seed_category_id(world.db))]), claim.scope
         )
 
         outcome = apply_discovery(
@@ -709,7 +740,8 @@ class TestSupersede:
         category = seed_category_id(world.db)
         _bare_world(world, titles=("Имя А", "Имя Б"))
         first = self._run(
-            world, [_group([1], category_id=category), _group([2], category_id=category)],
+            world, [_group([1], category_id=category, title="Первая"),
+                    _group([2], category_id=category, title="Вторая")],
             unit=world.bare_unit,
         )
         kept, gone = _drafts(world.db, first)
@@ -863,3 +895,311 @@ class TestQueueRows:
         (row,) = list_jobs(world.db, status="error")["items"]
 
         assert row["job_id"] == job.id and row["names_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+#  Исполнение порциями (спека 3б §2.3.1)
+# ---------------------------------------------------------------------------
+
+#: Порция в два имени: пять имён — три порции (1–2, 3–4, 5).
+S2 = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 2})
+
+
+class _SameSession:
+    """Фабрика сессий, отдающая сессию теста: опросчик открывает по сессии на шаг,
+    а тестовая откатывается целиком."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self.db
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _ScriptedClient:
+    """Отвечает по очереди: ответ — вернуть, исключение — бросить; тела вызовов
+    запоминает."""
+
+    def __init__(self, *script):
+        self.script = list(script)
+        self.bodies: list[dict] = []
+
+    def complete(self, body, *, timeout_s):
+        self.bodies.append(body)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _chunked(world, script, *, settings=S2, names=5):
+    """Открытие единицы из `names` имён: запуск, захват, один проход опросчика по
+    сценарию ответов. Возвращает (job, claim, client, preview)."""
+    _bare_world(world, titles=tuple(f"Имя {n}" for n in range(1, names + 1)))
+    preview = preview_discovery(world.db, unit_id=world.bare_unit, settings=settings)
+    job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=settings)
+    claim = _claim(world.db, settings=settings)
+    client = _ScriptedClient(*script)
+    worker._run_claim(_SameSession(world.db), client, claim, settings=settings, clock=lambda: NOW)
+    return job, claim, client, preview
+
+
+def _chunk_answers(category):
+    return [
+        _response(_answer([_group([1], category_id=category, title="Кладка")], not_work=[2])),
+        _response(_answer([_group([3], draft_ref=1),
+                           _group([4], category_id=category, title="Окраска")])),
+        _response(_answer([_group([5], draft_ref=2)])),
+    ]
+
+
+class TestChunkedExecution:
+    def test_one_call_per_chunk_with_one_system_and_a_growing_draft_block(self, world):
+        category = seed_category_id(world.db)
+        _job_row, claim, client, _ = _chunked(world, _chunk_answers(category))
+
+        assert len(client.bodies) == 3
+        systems = {json.dumps(b["messages"][0], ensure_ascii=False) for b in client.bodies}
+        assert systems == {json.dumps(claim.rendered.body["messages"][0], ensure_ascii=False)}
+        users = [b["messages"][1]["content"] for b in client.bodies]
+        assert "ИМЕНА 1–2 ИЗ 5:" in users[0] and "ЧЕРНОВИКИ" not in users[0]
+        assert "СЕМЬИ БЕЗ КАТЕГОРИИ" in users[0]
+        assert "ИМЕНА 3–4 ИЗ 5:" in users[1] and "Ч1. Кладка — Определение" in users[1]
+        assert "СЕМЬИ БЕЗ КАТЕГОРИИ" not in users[1]
+        assert "ИМЕНА 5–5 ИЗ 5:" in users[2]
+        assert "Ч1. Кладка" in users[2] and "Ч2. Окраска" in users[2]
+
+    def test_answers_of_all_chunks_become_the_drafts_of_one_job(self, world):
+        category = seed_category_id(world.db)
+        job, _claim_, _client, _ = _chunked(world, _chunk_answers(category))
+
+        job = _job(world.db, job.id)
+        assert job.status == "done"
+        kladka, okraska, trash = _drafts(world.db, job.id)
+        assert (kladka.title, okraska.title, trash.grp) == ("Кладка", "Окраска", "not_work")
+        assert len(_members(world.db, kladka.id)) == 2
+        assert len(_members(world.db, okraska.id)) == 2
+        assert len(_members(world.db, trash.id)) == 1
+
+    def test_the_attempt_is_one_with_sums_and_an_array_of_raw_answers(self, world):
+        category = seed_category_id(world.db)
+        answers = _chunk_answers(category)
+        _job_row, _claim_, _client, _ = _chunked(world, answers)
+
+        attempts = world.db.execute(sa.select(SemanticJobAttempt)).scalars().all()
+        assert len(attempts) == 1
+        attempt = attempts[0]
+        assert attempt.outcome == "ok"
+        assert json.loads(attempt.raw_response) == [a.content for a in answers]
+        assert (attempt.prompt_tokens, attempt.completion_tokens) == (3 * 8274, 3 * 156)
+        assert (attempt.cache_write_tokens, attempt.cached_tokens) == (3 * 8058, 0)
+        assert attempt.cost_usd == Decimal("0.03")
+        assert attempt.actual_model == "anthropic/claude-test" and attempt.provider == "P1"
+
+    def test_an_unknown_cost_of_any_chunk_makes_the_attempt_cost_unknown(self, world):
+        category = seed_category_id(world.db)
+        answers = _chunk_answers(category)
+        answers[1] = dataclasses.replace(answers[1], cost_usd=None)
+        _job_row, claim, _client, _ = _chunked(world, answers)
+
+        attempt = _attempt(world.db, claim.job_id)
+        assert attempt.cost_usd is None and attempt.outcome == "ok"
+        assert _job(world.db, claim.job_id).status == "done"
+
+    def test_an_unknown_token_field_of_one_chunk_sums_the_known_ones(self, world):
+        category = seed_category_id(world.db)
+        answers = _chunk_answers(category)
+        answers[1] = dataclasses.replace(answers[1], prompt_tokens=None, cached_tokens=None)
+        _job_row, claim, _client, _ = _chunked(world, answers)
+
+        attempt = _attempt(world.db, claim.job_id)
+        assert attempt.prompt_tokens == 2 * 8274
+        assert attempt.cached_tokens == 0 and attempt.completion_tokens == 3 * 156
+
+    def test_an_unknown_token_field_of_every_chunk_stays_unknown(self, world):
+        category = seed_category_id(world.db)
+        answers = [dataclasses.replace(a, cache_write_tokens=None) for a in _chunk_answers(category)]
+        _job_row, claim, _client, _ = _chunked(world, answers)
+
+        assert _attempt(world.db, claim.job_id).cache_write_tokens is None
+
+    def test_the_reserve_at_the_claim_equals_the_reserve_of_the_preview(self, world):
+        category = seed_category_id(world.db)
+        _job_row, claim, _client, preview = _chunked(world, _chunk_answers(category))
+
+        assert _attempt(world.db, claim.job_id).reserve_usd == preview.reserve_usd
+        assert claim.scope is not None and len(claim.scope.names) == 5
+
+    def test_a_transient_failure_of_a_later_chunk_keeps_the_answers_done_and_reserves_all(
+        self, world
+    ):
+        category = seed_category_id(world.db)
+        first, second, _third = _chunk_answers(category)
+        job, _claim_, client, _ = _chunked(
+            world, [first, second, TransientModelError("сеть", error_class="timeout")]
+        )
+
+        job = _job(world.db, job.id)
+        assert job.status == "pending" and job.last_error_class == "timeout"
+        assert _drafts(world.db, job.id) == []
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "transient_error"
+        assert json.loads(attempt.raw_response) == [first.content, second.content]
+        assert attempt.prompt_tokens == 2 * 8274 and attempt.completion_tokens == 2 * 156
+        assert attempt.cost_usd is None
+        assert spent_last_24h(world.db, now=NOW) >= attempt.reserve_usd
+        assert len(client.bodies) == 3
+
+    def test_a_permanent_failure_of_a_later_chunk_is_an_error_with_the_answers_done(self, world):
+        category = seed_category_id(world.db)
+        first, _second, _third = _chunk_answers(category)
+        job, _claim_, _client, _ = _chunked(
+            world, [first, PermanentModelError("отказ", error_class="refused")]
+        )
+
+        assert _job(world.db, job.id).status == "error"
+        attempt = _attempt(world.db, job.id)
+        assert (attempt.outcome, attempt.cost_usd) == ("permanent_error", None)
+        assert json.loads(attempt.raw_response) == [first.content]
+
+    def test_a_failure_of_the_first_chunk_records_what_a_single_call_recorded(self, world):
+        job, _claim_, _client, _ = _chunked(
+            world, [TransientModelError("сеть", error_class="timeout")]
+        )
+
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "transient_error"
+        assert attempt.raw_response is None and attempt.cost_usd is None
+        assert attempt.prompt_tokens is None and attempt.actual_model is None
+
+    def test_a_form_error_of_a_later_chunk_stops_the_calls_and_is_an_error(self, world):
+        category = seed_category_id(world.db)
+        first, _second, _third = _chunk_answers(category)
+        bad = _response("это не json")
+        job, _claim_, client, _ = _chunked(world, [first, bad])
+
+        assert len(client.bodies) == 2
+        job = _job(world.db, job.id)
+        assert (job.status, job.last_error_class) == ("error", "schema_error")
+        assert _drafts(world.db, job.id) == []
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "schema_error"
+        assert attempt.validation_error.startswith("порция 2: ")
+        assert json.loads(attempt.raw_response) == [first.content, bad.content]
+        assert attempt.cost_usd is None
+        assert worker.claim_next(world.db, settings=S2, now=NOW) is None
+
+    def test_a_form_error_of_the_last_chunk_keeps_the_known_cost(self, world):
+        category = seed_category_id(world.db)
+        first, second, _third = _chunk_answers(category)
+        bad = _response("это не json")
+        job, _claim_, _client, _ = _chunked(world, [first, second, bad])
+
+        attempt = _attempt(world.db, job.id)
+        assert attempt.validation_error.startswith("порция 3: ")
+        assert attempt.cost_usd == Decimal("0.03")
+
+    def test_a_wrong_reference_in_a_chunk_costs_only_its_names(self, world):
+        category = seed_category_id(world.db)
+        first, _second, _third = _chunk_answers(category)
+        second = _response(_answer([_group([3], draft_ref=7), _group([4], draft_ref=1)]))
+        third = _response(_answer([_group([5], draft_ref=1)]))
+        job, _claim_, _client, _ = _chunked(world, [first, second, third])
+
+        assert _job(world.db, job.id).status == "done"
+        kladka, trash = _drafts(world.db, job.id)
+        assert len(_members(world.db, kladka.id)) == 3  # имена 1, 4, 5; имя 3 — в остатке
+        assert len(_members(world.db, trash.id)) == 1
+
+    def test_a_single_chunk_unit_is_one_call_and_a_one_element_array(self, world):
+        category = seed_category_id(world.db)
+        raw = _answer([_group([1, 2, 3], category_id=category)])
+        job, _claim_, client, _ = _chunked(world, [_response(raw)], settings=S, names=3)
+
+        assert len(client.bodies) == 1
+        assert "ИМЕНА 1–3 ИЗ 3:" in client.bodies[0]["messages"][1]["content"]
+        assert json.loads(_attempt(world.db, job.id).raw_response) == [raw]
+
+    # --- Ревью задачи 8: входы, которых не было у исполнителя ----------------
+
+    def test_model_and_provider_are_those_of_the_last_chunk(self, world):
+        # У `_response` модель и провайдер одни на все порции: «первая» и
+        # «последняя» были неразличимы.
+        category = seed_category_id(world.db)
+        answers = _chunk_answers(category)
+        answers[0] = dataclasses.replace(answers[0], actual_model="m/first", provider="P0")
+        answers[2] = dataclasses.replace(answers[2], actual_model="m/last", provider="P9")
+        _job_row, claim, _client, _ = _chunked(world, answers)
+
+        attempt = _attempt(world.db, claim.job_id)
+        assert (attempt.actual_model, attempt.provider) == ("m/last", "P9")
+
+    def test_any_other_client_exception_of_a_later_chunk_keeps_the_answers_done(self, world):
+        category = seed_category_id(world.db)
+        first, _second, _third = _chunk_answers(category)
+        job, _claim_, _client, _ = _chunked(world, [first, RuntimeError("обрыв")])
+
+        job = _job(world.db, job.id)
+        assert job.status == "pending" and job.last_error_class == "RuntimeError"
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "transient_error"
+        assert json.loads(attempt.raw_response) == [first.content]
+        assert attempt.cost_usd is None
+        assert _drafts(world.db, job.id) == []
+
+    def test_a_failure_while_recording_keeps_the_answers_done(self, world, monkeypatch):
+        category = seed_category_id(world.db)
+        answers = _chunk_answers(category)
+
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("запись")
+
+        monkeypatch.setattr(worker, "apply_discovery", broken)
+        job, _claim_, client, _ = _chunked(world, answers)
+
+        assert len(client.bodies) == 3
+        job = _job(world.db, job.id)
+        assert job.status == "pending" and job.last_error_class == "RuntimeError"
+        attempt = _attempt(world.db, job.id)
+        assert attempt.outcome == "transient_error"
+        assert json.loads(attempt.raw_response) == [a.content for a in answers]
+        assert attempt.cost_usd is None
+        assert _drafts(world.db, job.id) == []
+
+    def test_answers_of_fewer_chunks_than_the_job_has_are_not_applied(self, world):
+        category = seed_category_id(world.db)
+        _bare_world(world, titles=tuple(f"Имя {n}" for n in range(1, 6)))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=S2)
+        claim = _claim(world.db, settings=S2)
+        first, _second, _third = _chunk_answers(category)
+
+        with pytest.raises(ValueError):
+            worker.record_result(world.db, claim, [first], now=NOW, settings=S2)
+
+        assert _drafts(world.db, job.id) == []
+        assert _job(world.db, job.id).status == "running"
+
+    def test_the_draft_block_holds_no_draft_over_the_limit(self, world):
+        # Черновик сверх `MAX_DRAFTS` не попадает в итог — и в блок следующих
+        # порций тоже: номера блока равны номерам итогового ответа.
+        category = seed_category_id(world.db)
+        one_draft = S2.model_copy(update={"SEMANTIC_DISCOVERY_MAX_DRAFTS": 1})
+        script = [
+            _response(_answer([_group([1], category_id=category, title="Кладка"),
+                               _group([2], category_id=category, title="Окраска")])),
+            _response(_answer([_group([3], draft_ref=1)])),
+            _response(_answer([_group([5], draft_ref=1)])),
+        ]
+        job, _claim_, client, _ = _chunked(world, script, settings=one_draft)
+
+        users = [b["messages"][1]["content"] for b in client.bodies]
+        assert "Ч1. Кладка" in users[1] and "Ч2." not in users[1] and "Окраска" not in users[1]
+        assert "Ч2." not in users[2] and "Окраска" not in users[2]
+        (kladka,) = _drafts(world.db, job.id)
+        assert kladka.title == "Кладка" and len(_members(world.db, kladka.id)) == 3

@@ -89,7 +89,9 @@ class TestProfileSettings:
         s = _settings()
         assert s.SEMANTIC_DISCOVERY_MODEL == "anthropic/claude-sonnet-5.5"
         assert s.SEMANTIC_DISCOVERY_REASONING_EFFORT == "low"
-        assert s.SEMANTIC_DISCOVERY_MAX_TOKENS == 32000
+        assert s.SEMANTIC_DISCOVERY_MAX_TOKENS == 8000
+        assert s.SEMANTIC_DISCOVERY_CHUNK_NAMES == 100
+        assert s.SEMANTIC_DISCOVERY_MAX_DRAFTS == 150
         assert s.SEMANTIC_DISCOVERY_MAX_NAMES == 1500
         assert s.SEMANTIC_DISCOVERY_NAME_MAX_CHARS == 300
         prices = [
@@ -105,6 +107,8 @@ class TestProfileSettings:
             "SEMANTIC_DISCOVERY_MAX_TOKENS",
             "SEMANTIC_DISCOVERY_MAX_NAMES",
             "SEMANTIC_DISCOVERY_NAME_MAX_CHARS",
+            "SEMANTIC_DISCOVERY_CHUNK_NAMES",
+            "SEMANTIC_DISCOVERY_MAX_DRAFTS",
         ],
     )
     def test_integer_settings_below_one_rejected_and_one_accepted(self, name):
@@ -185,7 +189,7 @@ class TestBodyShape:
         }
         assert body["model"] == "anthropic/claude-sonnet-5.5"
         assert body["temperature"] == 0
-        assert body["max_tokens"] == 32000
+        assert body["max_tokens"] == 8000
         assert body["usage"] == {"include": True}
         assert body["response_format"] == DISCOVERY_RESPONSE_FORMAT
 
@@ -309,11 +313,20 @@ class TestHashes:
     def test_same_state_same_hashes(self):
         assert _build() == _build()
 
-    def test_request_hash_is_sha256_of_version_and_body(self):
+    def test_request_hash_is_sha256_of_version_body_and_execution_fingerprint(self):
         rendered = _build()
 
         assert rendered.request_hash == _sha256_hex(
-            {"serialization_version": SERIALIZATION_VERSION, "body": rendered.body}
+            {
+                "serialization_version": SERIALIZATION_VERSION,
+                "body": rendered.body,
+                "execution": {
+                    "chunk_protocol": 1,
+                    "chunk_names": 100,
+                    "max_tokens_per_call": 8000,
+                    "max_drafts": 150,
+                },
+            }
         )
 
     def test_prefix_hash_is_model_and_system_only(self):
@@ -393,7 +406,9 @@ def _axis_cases():
         "unit": dict(unit_code="м3"),
         "unit_none": dict(unit_code=None),
         "model": dict(settings=_settings(SEMANTIC_DISCOVERY_MODEL="vendor/other")),
-        "max_tokens": dict(settings=_settings(SEMANTIC_DISCOVERY_MAX_TOKENS=31999)),
+        "max_tokens": dict(settings=_settings(SEMANTIC_DISCOVERY_MAX_TOKENS=7999)),
+        "chunk_names": dict(settings=_settings(SEMANTIC_DISCOVERY_CHUNK_NAMES=99)),
+        "max_drafts": dict(settings=_settings(SEMANTIC_DISCOVERY_MAX_DRAFTS=149)),
         "reasoning_effort": dict(
             settings=_settings(SEMANTIC_DISCOVERY_REASONING_EFFORT="medium")
         ),
@@ -471,14 +486,15 @@ class TestResponseFormatLiteral:
         assert schema["required"] == ["groups", "not_work", "family_categories"]
         assert schema["additionalProperties"] is False
         assert group["required"] == [
-            "family_id", "title", "definition", "category_id", "similar_family_id", "names",
+            "family_id", "draft_ref", "title", "definition", "category_id",
+            "similar_family_id", "names",
         ]
         assert set(group["properties"]) == set(group["required"])
         assert group["additionalProperties"] is False
         assert group["properties"]["names"] == {
             "type": "array", "items": {"type": "integer"}, "minItems": 1,
         }
-        for nullable in ("family_id", "category_id", "similar_family_id"):
+        for nullable in ("family_id", "draft_ref", "category_id", "similar_family_id"):
             assert group["properties"][nullable] == {"type": ["integer", "null"]}
         for nullable in ("title", "definition"):
             assert group["properties"][nullable] == {"type": ["string", "null"]}
@@ -490,6 +506,9 @@ class TestResponseFormatLiteral:
         assert isinstance(DISCOVERY_RESPONSE_SCHEMA_VERSION, str)
         assert DISCOVERY_RESPONSE_SCHEMA_VERSION.strip()
         assert DISCOVERY_RESPONSE_SCHEMA_VERSION != "1"
+
+    def test_schema_version_is_discovery_two_after_draft_ref(self):
+        assert DISCOVERY_RESPONSE_SCHEMA_VERSION == "discovery:2"
 
     def test_schema_serializes_to_json(self):
         assert json.loads(json.dumps(DISCOVERY_RESPONSE_FORMAT)) == DISCOVERY_RESPONSE_FORMAT
@@ -507,8 +526,9 @@ class TestTopArticles:
 
 
 class TestPromptContent:
-    def test_prompt_version_is_one(self):
-        assert DISCOVERY_PROMPT_VERSION == 1
+    def test_prompt_version_is_two_and_the_label_follows_it(self):
+        assert DISCOVERY_PROMPT_VERSION == 2
+        assert fd.DISCOVERY_PROMPT_LABEL == "discovery:2"
 
     def test_prompt_states_the_rules_of_the_specification(self):
         text = DISCOVERY_PROMPT
@@ -517,6 +537,17 @@ class TestPromptContent:
         assert "категори" in text
         assert "не работа" in text.lower()
         assert "дубл" in text
+
+    def test_prompt_v2_asks_for_every_name_systems_by_type_and_draft_ref(self):
+        text = DISCOVERY_PROMPT
+
+        assert "КАЖДОЕ наименование порции" in text
+        assert "по типу системы" in text
+        assert "draft_ref" in text
+        # Ревью задачи 8: `draft_ref` упомянут и в правилах «прочие поля — null»;
+        # само правило продолжения черновика — своим входом.
+        assert "продолжает черновик" in text
+        assert "укажи его номер в draft_ref" in text
 
 
 # ---------------------------------------------------------------------------

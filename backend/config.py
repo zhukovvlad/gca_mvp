@@ -110,7 +110,12 @@ class Settings(BaseSettings):
     # обязательно (выключить нельзя), поэтому задаётся уровень, а не флаг.
     SEMANTIC_DISCOVERY_MODEL: str = "anthropic/claude-sonnet-5.5"
     SEMANTIC_DISCOVERY_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
-    SEMANTIC_DISCOVERY_MAX_TOKENS: int = Field(32000, ge=1)
+    # Имена уходят модели порциями (спека 3б §2.3.1): размер порции, предел
+    # черновиков одного открытия и предел ответа ОДНОГО вызова. Все три входят в
+    # отпечаток исполнения в `request_hash`.
+    SEMANTIC_DISCOVERY_CHUNK_NAMES: int = Field(100, ge=1)
+    SEMANTIC_DISCOVERY_MAX_DRAFTS: int = Field(150, ge=1)
+    SEMANTIC_DISCOVERY_MAX_TOKENS: int = Field(8000, ge=1)
     SEMANTIC_DISCOVERY_MAX_NAMES: int = Field(1500, ge=1)
     SEMANTIC_DISCOVERY_NAME_MAX_CHARS: int = Field(300, ge=1)
     SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)

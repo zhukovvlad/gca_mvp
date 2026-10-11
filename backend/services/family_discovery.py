@@ -15,7 +15,12 @@
 активации (она заводит активные семьи единицы).
 
 Тело строит чистая `build_discovery_request` на заранее собранном материале;
-`render_discovery_request` загружает материал по охвату и зовёт её. Наружу
+`render_discovery_request` загружает материал по охвату и зовёт её. Это
+КАНОНИЧЕСКОЕ тело со всеми именами: по нему (и по отпечатку исполнения) считается
+`request_hash`, проверяется приватность и охват. Модели имена уходят порциями
+(спека 3б §2.3.1): `render_discovery_chunk` строит тело порции из канонического
+тела и охвата, `chunk_bounds` режет номера имён; резерв и ожидаемая цена
+считаются по охвату и настройкам (`discovery_reserve`, `discovery_expected`). Наружу
 уходят только наименования, статьи, пути разделов, единица, активные семьи
 (имя, определение) и справочник категорий: цены, объёмы, подрядчики, договоры и
 объекты в тело не входят (`AGENTS.md` §3).
@@ -54,13 +59,7 @@ from models import (
     UnitOfMeasure,
     WorkFamily,
 )
-from services.semantic_cost import (
-    RESERVE_FORMULA_VERSION,
-    expected_cached_cost_known_prefix,
-    known_prefix_tokens,
-    reserve_for_known_prefix,
-    tariffs_from,
-)
+from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_reconcile import _open_suggestion_state
 from services.semantic_request import (
     FAMILY_BLOCK_HEADER,
@@ -77,29 +76,36 @@ from services.semantic_rules import PLACE_DICTIONARY_VERSION
 from services.variant_answer import (
     DISCOVERY_RESPONSE_FORMAT,
     DISCOVERY_RESPONSE_SCHEMA_VERSION,
-    DiscoverySent,
+    DRAFT_DEFINITION_MAX_CHARS,
+    DRAFT_TITLE_MAX_CHARS,
+    ChunkSent,
+    DiscoveryAnswer,
 )
 
 #: Версия текста промпта открытия; метка на задании — `discovery:<версия>`.
-DISCOVERY_PROMPT_VERSION = 1
+DISCOVERY_PROMPT_VERSION = 2
 
-#: Текст промпта открытия (спека 3б §2.3): определение семьи то же, что у
-#: предложений; правила — свести имена в черновики, не заводить дубль активной
-#: семьи, затраты с предметом и ценой отнести к семьям категории, «не работа» —
+#: Текст промпта открытия (спека 3б §2.3, §2.3.1): определение семьи то же, что у
+#: предложений; правила — разложить каждое имя порции, свести имена в черновики,
+#: не заводить дубль активной семьи и черновика (`draft_ref`), системы свести по
+#: типу, затраты с предметом и ценой отнести к семьям категории, «не работа» —
 #: только строки без собственного предмета, предложить категорию семьям без неё.
 #: Смена текста обязана сопровождаться инкрементом `DISCOVERY_PROMPT_VERSION`.
 DISCOVERY_PROMPT = """Ты сметчик-каталогизатор строительной компании-заказчика. У компании есть каталог СЕМЕЙ работ: семья — это тип работы без параметров, бренда и места (например «Устройство пола», «Посадка растений», «Двери»). Внутри семьи строки различаются параметрами (класс бетона, размер, вид растения) — это не мешает им быть одной семьёй. У каждой семьи есть категория из справочника КАТЕГОРИЙ СЕМЕЙ.
 
-Тебе дают единицу измерения, справочник категорий, список активных семей этой единицы, перечень активных семей без категории и пронумерованные наименования строк ведомости (с статьями и разделами). Ответь строгим JSON по заданной схеме, без пояснений.
+Тебе дают единицу измерения, справочник категорий, список активных семей этой единицы, перечень активных семей без категории (только в первой порции), блок «ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ» (если он есть) и порцию пронумерованных наименований строк ведомости (со статьями и разделами). Ответь строгим JSON по заданной схеме, без пояснений.
 
 Правила:
-- Своди наименования в группы: одна группа — одна семья. Новая семья (family_id = null): дай имя — тип работы без параметров, бренда и места, определение в одно-два предложения и category_id из справочника категорий.
-- Наименования, которые уже описывает активная семья списка, относи к ней: family_id — её номер, остальные поля группы (title, definition, category_id, similar_family_id) — null. Не заводи дубль активной семьи. Одна активная семья — не больше одной группы.
+- Разложи КАЖДОЕ наименование порции: в группу (новую, активной семьи или продолжающую черновик) либо в not_work. Пропусти номер только тогда, когда не понимаешь, что это за строка. Ответ, в котором разобрана малая часть порции, — неверный ответ.
+- Своди наименования в группы: одна группа — одна семья. Новая семья (family_id = null, draft_ref = null): дай имя — тип работы без параметров, бренда и места, определение в одно-два предложения и category_id из справочника категорий.
+- Наименования, которые уже описывает активная семья списка, относи к ней: family_id — её номер, остальные поля группы (draft_ref, title, definition, category_id, similar_family_id) — null. Не заводи дубль активной семьи. Одна активная семья — не больше одной группы.
+- Если наименование продолжает черновик из блока «ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ», укажи его номер в draft_ref (номер после «Ч»), остальные поля группы (family_id, title, definition, category_id, similar_family_id) — null. Не заводи дубль черновика. Во всех прочих группах draft_ref = null.
+- Строки-системы и комплекты своди по типу системы (например вентиляция, кондиционирование, отопление, водоснабжение, пожаротушение, слаботочные системы, электроснабжение): одна группа на тип системы, а не одна общая группа. Номер системы, корпус, этаж, бренд и мощность в имя семьи не входят.
 - Если новая семья похожа на активную, но не совпадает с ней, укажи номер активной семьи в similar_family_id; иначе null.
 - Затраты с собственным предметом и ценой (материалы, перевозка, услуги, комплекты) — семьи той категории, чьё определение им подходит по справочнику, а не «не работа».
 - «Не работа» (not_work) — только строки без собственного предмета: примечания, оговорки, заголовки.
-- Каждое наименование — не больше чем в одном месте: в одной группе либо в not_work. Используй только номера наименований из перечня.
-- Для каждой активной семьи из перечня «СЕМЬИ БЕЗ КАТЕГОРИИ» предложи категорию из справочника в family_categories."""
+- Каждое наименование — не больше чем в одном месте: в одной группе либо в not_work. Используй только номера наименований порции.
+- Для каждой активной семьи из перечня «СЕМЬИ БЕЗ КАТЕГОРИИ» предложи категорию из справочника в family_categories; если перечня нет или он «нет», family_categories — пустой список."""
 
 #: Блок справочника категорий в `system` (спека 3б §2.3).
 CATEGORY_BLOCK_HEADER = "КАТЕГОРИИ СЕМЕЙ:\n"
@@ -371,6 +377,24 @@ def _user_text(
     )
 
 
+#: Версия протокола порций; растёт при смене самого способа отправки (формата
+#: тела порции, правил сборки), а не настроек.
+CHUNK_PROTOCOL = 1
+
+
+def execution_fingerprint(settings: Settings) -> dict[str, int]:
+    """Отпечаток исполнения открытия (спека 3б §2.3.1): то, от чего зависит, как
+    модель получит охват, помимо самого канонического тела. Входит в
+    `request_hash`: смена размера порции или пределов меняет идентичность
+    задания."""
+    return {
+        "chunk_protocol": CHUNK_PROTOCOL,
+        "chunk_names": settings.SEMANTIC_DISCOVERY_CHUNK_NAMES,
+        "max_tokens_per_call": settings.SEMANTIC_DISCOVERY_MAX_TOKENS,
+        "max_drafts": settings.SEMANTIC_DISCOVERY_MAX_DRAFTS,
+    }
+
+
 def build_discovery_request(
     *,
     unit_code: str | None,
@@ -430,7 +454,13 @@ def build_discovery_request(
     }
     return RenderedRequest(
         body=body,
-        request_hash=_sha256_hex({"serialization_version": SERIALIZATION_VERSION, "body": body}),
+        request_hash=_sha256_hex(
+            {
+                "serialization_version": SERIALIZATION_VERSION,
+                "body": body,
+                "execution": execution_fingerprint(settings),
+            }
+        ),
         prefix_hash=_sha256_hex(
             {
                 "serialization_version": SERIALIZATION_VERSION,
@@ -479,15 +509,244 @@ def render_discovery_request(
     )
 
 
-def sent_of(scope: DiscoveryScope) -> DiscoverySent:
-    """Что уходит модели по этому охвату — множества, по которым разбор ответа
-    проверяет ссылки."""
-    return DiscoverySent(
-        names_count=len(scope.names),
+# ---------------------------------------------------------------------------
+#  Порции (спека 3б §2.3.1)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DraftRef:
+    """Черновик, заведённый предыдущими порциями этого открытия: строка блока
+    «ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ» в теле следующей порции. `number` — номер среди
+    новых групп собранного ответа, по нему порция ссылается через `draft_ref`."""
+
+    number: int
+    title: str
+    definition: str
+    category_id: int
+
+
+#: Заголовок блока черновиков в `user` порции.
+DRAFT_BLOCK_HEADER = "ЧЕРНОВИКИ ЭТОГО ОТКРЫТИЯ:\n"
+
+
+def chunk_bounds(names_count: int, chunk: int) -> list[tuple[int, int]]:
+    """Номера имён порций `(a, b)`: с 1, включительно, подряд, по `chunk` имён.
+    Порций `⌈N/chunk⌉`; охват без имён («только категории») — одна порция
+    `(1, 0)`."""
+    if names_count <= 0:
+        return [(1, 0)]
+    return [(a, min(a + chunk - 1, names_count)) for a in range(1, names_count + 1, chunk)]
+
+
+def draft_refs_of(answer: DiscoveryAnswer) -> tuple[DraftRef, ...]:
+    """Черновики собранного ответа — его новые группы по порядку, с номерами
+    `1, 2, …`; блок следующей порции строится из ответа предыдущих."""
+    refs: list[DraftRef] = []
+    for group in answer.groups:
+        if group.family_id is None:
+            assert group.title is not None and group.definition is not None
+            assert group.category_id is not None
+            refs.append(
+                DraftRef(len(refs) + 1, group.title, group.definition, group.category_id)
+            )
+    return tuple(refs)
+
+
+def chunk_sent_of(
+    scope: DiscoveryScope,
+    *,
+    bounds: tuple[int, int],
+    drafts: Sequence[DraftRef],
+    first: bool,
+) -> ChunkSent:
+    """Что уходит модели в порции: множества, по которым разбор её ответа
+    проверяет ссылки. Перечень семей без категории — только в порции 1."""
+    return ChunkSent(
+        bounds=bounds,
+        draft_numbers=frozenset(d.number for d in drafts),
         active_family_ids=frozenset(scope.active_family_ids),
-        uncategorized_family_ids=frozenset(scope.uncategorized_family_ids),
+        uncategorized_family_ids=(
+            frozenset(scope.uncategorized_family_ids) if first else frozenset()
+        ),
         category_ids=frozenset(scope.category_ids),
     )
+
+
+def _draft_line(draft: DraftRef) -> str:
+    title = _collapse_whitespace(draft.title)
+    definition = _collapse_whitespace(draft.definition)
+    return f"Ч{draft.number}. {title} — {definition} [категория {draft.category_id}]"
+
+
+def _chunk_user_text(
+    scope: DiscoveryScope,
+    *,
+    bounds: tuple[int, int],
+    drafts: Sequence[DraftRef],
+    first: bool,
+    max_chars: int,
+) -> str:
+    a, b = bounds
+    unit_display = scope.unit_code if scope.unit_code is not None else _NO_UNIT_DISPLAY
+    parts = [f"ЕДИНИЦА: {unit_display}"]
+    if first:
+        uncategorized = (
+            ", ".join(str(i) for i in sorted(scope.uncategorized_family_ids)) or _NO_UNCATEGORIZED
+        )
+        parts.append(f"СЕМЬИ БЕЗ КАТЕГОРИИ: {uncategorized}")
+    if drafts:
+        lines = "\n".join(_draft_line(d) for d in sorted(drafts, key=lambda d: d.number))
+        parts.append(DRAFT_BLOCK_HEADER + lines)
+    names = sorted((n for n in scope.names if a <= n.index <= b), key=lambda n: n.index)
+    header = f"ИМЕНА {a}–{b} ИЗ {len(scope.names)}:" if scope.names else "ИМЕНА:"
+    listing = "\n".join(_name_line(n, max_chars=max_chars) for n in names)
+    parts.append(f"{header}\n{listing}")
+    return "\n".join(parts)
+
+
+def render_discovery_chunk(
+    canonical: RenderedRequest,
+    scope: DiscoveryScope,
+    *,
+    settings: Settings,
+    bounds: tuple[int, int],
+    drafts: Sequence[DraftRef],
+    first: bool,
+) -> dict:
+    """Тело вызова одной порции. Чистая функция от канонического тела и охвата, без
+    базы: тело, прошедшее проверку приватности при захвате, и тела порций не
+    могут разойтись.
+
+    Всё, кроме `user`, — из канонического тела: `system` (те же три блока
+    побайтно, поэтому префикс кэшируется со второй порции), модель, температура,
+    рассуждение, `usage`, формат ответа и `max_tokens`. `user` — единица;
+    перечень семей без категории (только в порции 1); блок черновиков предыдущих
+    порций (если они есть); имена порции с глобальными номерами в формате
+    канонического тела. Цен, объёмов, подрядчиков, договоров и объектов тело не
+    несёт, как и каноническое (`AGENTS.md` §3)."""
+    user_text = _chunk_user_text(
+        scope,
+        bounds=bounds,
+        drafts=drafts,
+        first=first,
+        max_chars=settings.SEMANTIC_DISCOVERY_NAME_MAX_CHARS,
+    )
+    body = {
+        key: copy.deepcopy(canonical.body[key])
+        for key in (
+            "model", "temperature", "max_tokens", "reasoning", "usage", "response_format",
+        )
+    }
+    body["messages"] = [
+        copy.deepcopy(canonical.body["messages"][0]),
+        {"role": "user", "content": user_text},
+    ]
+    return body
+
+
+# ---------------------------------------------------------------------------
+#  Резерв и ожидаемая цена открытия
+# ---------------------------------------------------------------------------
+
+#: Версия формулы резерва и ожидаемой цены открытия порциями; входит в
+#: `preview_hash`. Общая `RESERVE_FORMULA_VERSION` относится к остальным видам.
+DISCOVERY_RESERVE_FORMULA_VERSION = 1
+
+_PER_MILLION = Decimal(1_000_000)
+
+
+def draft_line_max_bytes(max_drafts: int, max_category_id: int) -> int:
+    """`L` — верхняя граница байтов строки блока черновиков вместе с переводом
+    строки для ЛЮБОГО допустимого текста. Имя режется по знакам до 100, определение
+    до 300 (знак «…» входит в этот предел), знак UTF-8 — не более 4 байт, поэтому
+    имя — не больше 400 байт, определение — не больше 1 200; остальное в строке
+    считается по настоящим байтам формата `_draft_line`: «Ч», номер (наибольший —
+    `max_drafts`), «. », « — » (3 байта тире), « [категория » (кириллица по 2
+    байта), номер категории (наибольший в охвате), «]», перевод строки. Строка
+    берётся из того же формата, по которому строится блок: имя и определение —
+    знаки в 4 байта нужной длины."""
+    worst = DraftRef(
+        number=max_drafts,
+        title="\U0001F600" * DRAFT_TITLE_MAX_CHARS,
+        definition="\U0001F600" * DRAFT_DEFINITION_MAX_CHARS,
+        category_id=max_category_id,
+    )
+    return len((_draft_line(worst) + "\n").encode("utf-8"))
+
+
+def _chunk_sizes(scope: DiscoveryScope, settings: Settings) -> list[tuple[int, int]]:
+    """На каждую порцию: байты `user` без блока черновиков и верхняя граница
+    блока — `min(MAX_DRAFTS, имён в порциях до неё) × L` и заголовок. Блока у
+    порции 1 нет."""
+    line = draft_line_max_bytes(
+        settings.SEMANTIC_DISCOVERY_MAX_DRAFTS, max(scope.category_ids, default=0)
+    )
+    header = len(DRAFT_BLOCK_HEADER.encode("utf-8"))
+    sizes: list[tuple[int, int]] = []
+    for a, b in chunk_bounds(len(scope.names), settings.SEMANTIC_DISCOVERY_CHUNK_NAMES):
+        user = len(
+            _chunk_user_text(
+                scope,
+                bounds=(a, b),
+                drafts=(),
+                first=(a == 1),
+                max_chars=settings.SEMANTIC_DISCOVERY_NAME_MAX_CHARS,
+            ).encode("utf-8")
+        )
+        possible = min(settings.SEMANTIC_DISCOVERY_MAX_DRAFTS, a - 1)
+        sizes.append((user, header + possible * line if possible else 0))
+    return sizes
+
+
+def reserve_of(scope: DiscoveryScope, rendered: RenderedRequest, settings: Settings) -> Decimal:
+    """Резерв всего задания открытия — верхняя граница до первого вызова (спека
+    3б §2.3.1): сумма по порциям. Префикс `system` порции — по наибольшему из
+    тарифов входа, записи и чтения кэша (вызов несёт `cache_control`, и префикс
+    любой порции может быть записан заново, а тарифы настраиваются независимо;
+    кэш и наблюдавшиеся токены префикса не предполагаются); плюс байты `user`
+    порции без блока черновиков; плюс наибольший блок черновиков; плюс
+    `max_tokens` ответа по тарифу выхода. Байты считаются токенами (верхняя
+    граница). Детерминирован: от охвата, канонического тела и настроек."""
+    tariffs = tariffs_from(settings, SemanticJobKind.family_discovery)
+    prefix_rate = max(tariffs.input_per_m, tariffs.cache_write_per_m, tariffs.cache_read_per_m)
+    max_tokens = rendered.body["max_tokens"]
+    total = Decimal(0)
+    for user, drafts_max in _chunk_sizes(scope, settings):
+        total += (
+            Decimal(rendered.prefix_bytes) * prefix_rate
+            + Decimal(user + drafts_max) * tariffs.input_per_m
+            + Decimal(max_tokens) * tariffs.output_per_m
+        )
+    return total / _PER_MILLION
+
+
+def expected_of(scope: DiscoveryScope, rendered: RenderedRequest, settings: Settings) -> Decimal:
+    """Ожидаемая цена задания (только для показа, в бюджете не участвует): первая
+    порция пишет префикс в кэш (тариф записи), со второй он читается (тариф
+    чтения); блок черновиков — половина верхней границы (фактическое число групп
+    заранее неизвестно); ответ — `max_tokens`, как у единичных видов."""
+    tariffs = tariffs_from(settings, SemanticJobKind.family_discovery)
+    max_tokens = rendered.body["max_tokens"]
+    total = Decimal(0)
+    for position, (user, drafts_max) in enumerate(_chunk_sizes(scope, settings)):
+        prefix_rate = tariffs.cache_write_per_m if position == 0 else tariffs.cache_read_per_m
+        total += (
+            Decimal(rendered.prefix_bytes) * prefix_rate
+            + (Decimal(user) + Decimal(drafts_max) / 2) * tariffs.input_per_m
+            + Decimal(max_tokens) * tariffs.output_per_m
+        )
+    return total / _PER_MILLION
+
+
+def discovery_reserve(scope: DiscoveryScope, db: Session, *, settings: Settings) -> Decimal:
+    """Резерв задания открытия по охвату и настройкам: тело читается из базы, как
+    при preview и захвате, поэтому оба считают одно число (`reserve_of`)."""
+    return reserve_of(scope, render_discovery_request(scope, db, settings=settings), settings)
+
+
+def discovery_expected(scope: DiscoveryScope, db: Session, *, settings: Settings) -> Decimal:
+    """Ожидаемая цена задания открытия по охвату и настройкам (`expected_of`)."""
+    return expected_of(scope, render_discovery_request(scope, db, settings=settings), settings)
 
 
 # ---------------------------------------------------------------------------
@@ -548,18 +807,11 @@ def _tariffs_payload(settings: Settings) -> dict[str, str]:
 
 
 def estimate_of(
-    db: Session, rendered: RenderedRequest, settings: Settings
+    scope: DiscoveryScope, rendered: RenderedRequest, settings: Settings
 ) -> tuple[Decimal, Decimal]:
-    """Резерв и ожидаемая цена при попадании в кэш — формула резерва предложений
-    с тарифами открытия; у наблюдавшегося префикса — его токены, иначе байты."""
-    tariffs = tariffs_from(settings, SemanticJobKind.family_discovery)
-    known = known_prefix_tokens(db, rendered.prefix_hash)
-    prefix_tokens = known if known is not None else rendered.prefix_bytes
-    reserve = reserve_for_known_prefix(
-        prefix_tokens, rendered, tariffs, rendered.body["max_tokens"]
-    )
-    cached = expected_cached_cost_known_prefix(prefix_tokens, rendered, tariffs)
-    return reserve, cached
+    """Резерв всего задания и ожидаемая цена — суммы по порциям (`reserve_of`,
+    `expected_of`); в базу не ходит."""
+    return reserve_of(scope, rendered, settings), expected_of(scope, rendered, settings)
 
 
 def _preview_hash(
@@ -572,6 +824,7 @@ def _preview_hash(
             "cached_usd": str(cached),
             "tariffs": {SemanticJobKind.family_discovery.value: _tariffs_payload(settings)},
             "reserve_formula_version": RESERVE_FORMULA_VERSION,
+            "discovery_reserve_version": DISCOVERY_RESERVE_FORMULA_VERSION,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -584,7 +837,7 @@ def _preview_of(
     db: Session, scope: DiscoveryScope, settings: Settings
 ) -> tuple[DiscoveryPreview, RenderedRequest]:
     rendered = render_discovery_request(scope, db, settings=settings)
-    reserve, cached = estimate_of(db, rendered, settings)
+    reserve, cached = estimate_of(scope, rendered, settings)
     preview = DiscoveryPreview(
         unit_id=scope.unit_id,
         counts=scope.counts,
@@ -600,7 +853,8 @@ def preview_discovery(
     db: Session, *, unit_id: int | None, settings: Settings
 ) -> DiscoveryPreview:
     """Оценка открытия единицы и `preview_hash`: sha256 `{request_hash, резерв,
-    ожидаемая цена, тарифы вида, версия формулы резерва}`. Отказов не бросает:
+    ожидаемая цена, тарифы вида, версии формул резерва}`; резерв и цена — суммы
+    по порциям. Отказов не бросает:
     их решает запуск по состоянию на свой момент."""
     return _preview_of(db, discovery_scope(db, unit_id), settings)[0]
 

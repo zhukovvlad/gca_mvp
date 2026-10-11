@@ -42,7 +42,6 @@ from services.family_discovery import (
     launch_discovery,
     preview_discovery,
 )
-from services.variant_answer import parse_discovery_answer
 from services.work_families import (
     activate_family,
     archive_family,
@@ -62,6 +61,7 @@ from tests.integration.test_catalog_discovery_worker import (
     NOW,
     S,
     _answer,
+    _answer_of,
     _claim,
     _group,
     _launch,
@@ -109,8 +109,8 @@ class TestLockOrderSentinel:
             _make_system(w.db, context_id, w.admin.id)
         _launch(w.db, w.bare_unit, admin_id=w.admin.id)
         claim = _claim(w.db)
-        answer = parse_discovery_answer(
-            _answer([_group([1, 2], category_id=seed_category_id(w.db))]), claim.sent
+        answer = _answer_of(
+            _answer([_group([1, 2], category_id=seed_category_id(w.db))]), claim.scope
         )
         statements: list[str] = []
 
@@ -225,7 +225,7 @@ def scene(committing_db, committing_factories, committing_session_factory):
     claim = worker.claim_next(cdb, settings=S, now=NOW)
     assert claim is not None and claim.job_id == job.id
     s.claim = claim
-    s.answer = parse_discovery_answer(
+    s.answer = _answer_of(
         _answer(
             [
                 _group([1], category_id=s.work, similar=s.f1.id),
@@ -234,7 +234,7 @@ def scene(committing_db, committing_factories, committing_session_factory):
             not_work=[3],
             family_categories=[(s.f3.id, s.work)],
         ),
-        claim.sent,
+        claim.scope,
     )
     return s
 
@@ -904,8 +904,8 @@ class TestRaces:
         scene.job_id = job.id
         scene.claim = worker.claim_next(cdb, settings=S, now=NOW)
         assert scene.claim is not None
-        scene.answer = parse_discovery_answer(
-            _answer([_group([1], category_id=extra.id)]), scene.claim.sent
+        scene.answer = _answer_of(
+            _answer([_group([1], category_id=extra.id)]), scene.claim.scope
         )
         draft_id = _old_open_draft(scene, category_id=extra.id)
 

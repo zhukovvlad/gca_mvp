@@ -464,7 +464,7 @@ settings)` в `services/family_discovery.py`, хэши — как у фичи 2
 и `system`):
 
 - `system[0]` — `DISCOVERY_PROMPT` (константа, версия
-  `DISCOVERY_PROMPT_VERSION = 1`): семья — тип работы без параметров, бренда
+  `DISCOVERY_PROMPT_VERSION = 1`, в редакции 5 — `2`, §2.3.1): семья — тип работы без параметров, бренда
   и места (то же определение, что у фичи 2); сводить имена единицы в
   черновики с именем, определением и категорией из справочника; имена,
   которые описывает активная семья, относить к ней, а не заводить дубль;
@@ -491,14 +491,16 @@ settings)` в `services/family_discovery.py`, хэши — как у фичи 2
   без рассуждения отвечает 400); `temperature 0`, `max_tokens`.
 
 Вне тела, но на задании: `candidates_hash` — sha256 списка активных семей и
-категорий; `input_hash` — sha256 `user`; `prompt_version` — `discovery:1`;
-`response_schema_version` — `DISCOVERY_RESPONSE_SCHEMA_VERSION` (а не версия
+категорий; `input_hash` — sha256 `user`; `prompt_version` — `discovery:1`
+(редакция 5 — `discovery:2`);
+`response_schema_version` — `DISCOVERY_RESPONSE_SCHEMA_VERSION` (редакция 5 —
+`discovery:2`: схема получила `draft_ref`; это версия ответа открытия, а не версия
 ответа предложения, `_job_row` им не пользуется: задание пишет своя функция).
 
 **Профиль** — настройки рядом с профилями 3а (`config.py:89-106`):
 `SEMANTIC_DISCOVERY_MODEL` (`anthropic/claude-sonnet-5.5`),
 `SEMANTIC_DISCOVERY_REASONING_EFFORT` (`low`), `SEMANTIC_DISCOVERY_MAX_TOKENS`
-(32 000), `SEMANTIC_DISCOVERY_MAX_NAMES` (1 500),
+(32 000; редакция 5 — 8 000 на один вызов порции, §2.3.1), `SEMANTIC_DISCOVERY_MAX_NAMES` (1 500),
 `SEMANTIC_DISCOVERY_NAME_MAX_CHARS` (300) и тарифы
 `SEMANTIC_DISCOVERY_PRICE_{INPUT,CACHE_WRITE,CACHE_READ,OUTPUT}_PER_M` (2 /
 2,5 / 0,2 / 10); `tariffs_from` получает ветвь вида. Предел имён покрывает
@@ -536,6 +538,13 @@ settings)` в `services/family_discovery.py`, хэши — как у фичи 2
 множестве `VariantErrorCode` (`variant_answer.py`): `unknown_category`, `bad_index`,
 `duplicate_index`, `duplicate_family`, `unexpected_value` (реализация,
 задача 3).
+
+**Редакция 5 (§2.3.1, реализация):** правила этого списка — правила
+содержания; они больше не схемные ошибки, а уводят имена в остаток.
+`parse_discovery_answer` заменён разбором порции `parse_discovery_chunk` и
+сборкой `merge_chunks`. Пять кодов выше удалены из `VariantErrorCode`: их
+больше никто не производит. Схемная ошибка формы называет порцию
+(`порция k: …`). Захват несёт охват (`Claim.scope`), а не `DiscoverySent`.
 
 **Пропущенные номера — не ошибка**: такие имена — остаток «без группы»
 (`unassigned_count` на экране), они без семьи и идут в перезапрос единицы
@@ -624,6 +633,13 @@ claim_token, answer)`, одна транзакция в общем порядк�
 RESERVE_FORMULA_VERSION}`; запуск пересчитывает и отвечает `409
 preview_changed` при несовпадении — протокол `_confirm`
 (`semantic_decisions.py:713-720`).
+
+**Редакция 5:** формула выше заменена резервом и ожидаемой ценой по порциям
+(§2.3.1, `reserve_of`/`expected_of` в `family_discovery.py`): префикс — байты
+`system` без наблюдавшихся токенов, резерв preview равен резерву захвата.
+`preview_hash` открытия дополнительно несёт метку
+`discovery_reserve_version` (`DISCOVERY_RESERVE_FORMULA_VERSION`); общая
+`RESERVE_FORMULA_VERSION` других видов не менялась.
 
 **Очереди «Ошибки» и «Задержанные»** — строка открытия по единице: единица,
 число имён, текст ошибки или совпадения; `list_jobs` получает ветвь вида

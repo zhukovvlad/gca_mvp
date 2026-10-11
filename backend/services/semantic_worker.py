@@ -18,12 +18,14 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -51,7 +53,16 @@ from models import (
 )
 from services.discovery_result import apply_discovery
 from services.family_change import apply_publication_rules, thresholds_from
-from services.family_discovery import discovery_scope, render_discovery_request, sent_of
+from services.family_discovery import (
+    DiscoveryScope,
+    chunk_bounds,
+    chunk_sent_of,
+    discovery_scope,
+    draft_refs_of,
+    render_discovery_chunk,
+    render_discovery_request,
+    reserve_of,
+)
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
     ModelClient,
@@ -83,9 +94,9 @@ from services.semantic_request import (
     render_context_request,
 )
 from services.variant_answer import (
-    DiscoverySent,
     ValuesAnswer,
-    parse_discovery_answer,
+    merge_chunks,
+    parse_discovery_chunk,
     parse_schema_answer,
     parse_values_answer,
 )
@@ -138,8 +149,9 @@ class Claim:
     candidates: tuple[CandidateFamily, ...]
     kind: SemanticJobKind
     synthesized: bool
-    #: Что ушло модели (только у открытия семей): по нему проверяются ссылки ответа.
-    sent: DiscoverySent | None = None
+    #: Охват открытия (только у открытия семей): из него строятся тела порций и
+    #: проверяются ссылки их ответов; между порциями базу опросчик не читает.
+    scope: DiscoveryScope | None = None
 
 
 def serialize_privacy_matches(matches: Sequence[PrivacyMatch]) -> list[dict]:
@@ -220,7 +232,7 @@ class JobRender:
     cancel_reason: SemanticCancelReason | None = None
     candidates: tuple[CandidateFamily, ...] = ()
     parameterless: bool = False
-    sent: DiscoverySent | None = None
+    scope: DiscoveryScope | None = None
 
 
 def _not_renderable(reason: SemanticCancelReason) -> JobRender:
@@ -281,7 +293,7 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
         if not scope.names and not scope.uncategorized_family_ids:
             return _not_renderable(SemanticCancelReason.not_applicable)
         return JobRender(
-            rendered=render_discovery_request(scope, db, settings=settings), sent=sent_of(scope)
+            rendered=render_discovery_request(scope, db, settings=settings), scope=scope
         )
     raise ValueError(f"неизвестный вид задания: {kind!r}")
 
@@ -359,9 +371,15 @@ def claim_next(
             _note_closed(closed_units, job)
             continue
 
-        reserve = reserve_for(
-            db, rendered, tariffs_from(settings, kind), rendered.body["max_tokens"]
-        )
+        if kind == SemanticJobKind.family_discovery:
+            # Резерв всего задания открытия (все порции): детерминирован от охвата
+            # и настроек, наблюдавшиеся токены префикса не используются.
+            assert current.scope is not None
+            reserve = reserve_of(current.scope, rendered, settings)
+        else:
+            reserve = reserve_for(
+                db, rendered, tariffs_from(settings, kind), rendered.body["max_tokens"]
+            )
         if spent_last_24h(db, now=now) + reserve > settings.SEMANTIC_DAILY_BUDGET_USD:
             db.commit()
             return None
@@ -390,7 +408,7 @@ def claim_next(
             candidates=current.candidates,
             kind=kind,
             synthesized=False,
-            sent=current.sent,
+            scope=current.scope,
         )
         db.commit()
         return claim
@@ -464,6 +482,46 @@ def _close_with_response(
     attempt.cost_usd = response.cost_usd
 
 
+def _sum_known(values: Sequence):
+    """Сумма известных значений; все `None` — `None`."""
+    known = [v for v in values if v is not None]
+    return sum(known) if known else None
+
+
+def _fill_from_responses(
+    attempt: SemanticJobAttempt, responses: Sequence[ModelResponse], *, calls_total: int
+) -> None:
+    """Поля попытки задания открытия по ответам выполненных порций: `raw_response`
+    — JSON-массив сырых строк, токены — суммы известных (поле `None` у всех порций —
+    `None`), модель и провайдер — у последней порции, стоимость — сумма, только
+    если выполнены все `calls_total` вызовов и у каждого она известна."""
+    last = responses[-1]
+    attempt.raw_response = json.dumps([r.content for r in responses], ensure_ascii=False)
+    attempt.actual_model = last.actual_model
+    attempt.provider = last.provider
+    attempt.prompt_tokens = _sum_known([r.prompt_tokens for r in responses])
+    attempt.completion_tokens = _sum_known([r.completion_tokens for r in responses])
+    attempt.cache_write_tokens = _sum_known([r.cache_write_tokens for r in responses])
+    attempt.cached_tokens = _sum_known([r.cached_tokens for r in responses])
+    costs = [r.cost_usd for r in responses]
+    attempt.cost_usd = (
+        sum(costs, Decimal(0)) if len(responses) == calls_total and None not in costs else None
+    )
+
+
+def _close_with_responses(
+    attempt: SemanticJobAttempt,
+    responses: Sequence[ModelResponse],
+    *,
+    outcome: SemanticAttemptOutcome,
+    now: datetime,
+    calls_total: int,
+) -> None:
+    attempt.finished_at = now
+    attempt.outcome = outcome.value
+    _fill_from_responses(attempt, responses, calls_total=calls_total)
+
+
 def _candidates_snapshot(candidates: Sequence[CandidateFamily]) -> list[dict]:
     return [
         {"id": c.id, "title": c.title, "unit_code": c.unit_code, "definition": c.definition}
@@ -491,13 +549,14 @@ def _publication_verdict(
 def record_result(
     db: Session,
     claim: Claim,
-    response: ModelResponse,
+    response: ModelResponse | Sequence[ModelResponse],
     *,
     now: datetime,
     settings: Settings,
 ) -> int | None:
     """Условная запись ответа модели (спека §2.5 шаг 3, §2.8); коммитит сама.
-    Ответ разбирается здесь же строгим `parse_model_answer`. `settings` нужны
+    Ответ разбирается здесь же строгим `parse_model_answer`. У открытия семей
+    `response` — ответы всех порций по порядку (один ответ — открытие из одной порции). `settings` нужны
     для повторного рендера контекста при проверке отпечатка — те же, что и у
     захвата. Задания схемы и значений пишутся своим путём
     (`_record_variant_result`).
@@ -510,8 +569,10 @@ def record_result(
     if claim.synthesized:
         raise ValueError("у синтетического захвата нет ответа модели")
     if claim.kind == SemanticJobKind.family_discovery:
-        _record_discovery_result(db, claim, response, now=now, settings=settings)
+        responses = [response] if isinstance(response, ModelResponse) else list(response)
+        _record_discovery_result(db, claim, responses, now=now, settings=settings)
         return None
+    assert isinstance(response, ModelResponse)  # несколько ответов — только у открытия
     if claim.kind != SemanticJobKind.family_suggestion:
         _record_variant_result(db, claim, response, now=now, settings=settings)
         return None
@@ -710,22 +771,27 @@ def _record_schema_error(
     schema_error: AnswerSchemaError,
     *,
     now: datetime,
+    responses: Sequence[ModelResponse] | None = None,
+    calls_total: int = 1,
 ) -> None:
     """Схемная ошибка разбора: задание блокируется само (доменных блокировок
     разбор не берёт), попытка закрывается `schema_error` (или `lost_claim`, если
-    задание уже не наше), задание — `error` без автоповтора; коммитит сама."""
+    задание уже не наше), задание — `error` без автоповтора; коммитит сама.
+    `responses` — ответы всех выполненных порций открытия, включая ошибочный
+    (`raw_response` попытки — массив); без них — единственный `response`."""
     assert claim.attempt_id is not None
     job = _lock_job(db, claim.job_id)
     attempt = _load_attempt(db, claim.attempt_id)
     owned = _owns_job(job, claim)
-    _close_with_response(
-        attempt,
-        response,
-        outcome=(
-            SemanticAttemptOutcome.schema_error if owned else SemanticAttemptOutcome.lost_claim
-        ),
-        now=now,
+    outcome = (
+        SemanticAttemptOutcome.schema_error if owned else SemanticAttemptOutcome.lost_claim
     )
+    if responses is None:
+        _close_with_response(attempt, response, outcome=outcome, now=now)
+    else:
+        _close_with_responses(
+            attempt, responses, outcome=outcome, now=now, calls_total=calls_total
+        )
     attempt.validation_error = schema_error.detail
     if owned:
         job.status = SemanticJobStatus.error.value
@@ -736,39 +802,73 @@ def _record_schema_error(
     db.commit()
 
 
+def _parse_discovery_chunks(
+    claim: Claim, responses: Sequence[ModelResponse], *, settings: Settings
+) -> tuple[list, AnswerSchemaError | None]:
+    """Ответы порций по порядку, каждый — по тому, что ушло модели в его порции
+    (блок черновиков — собранный ответ предыдущих). Первая схемная ошибка формы
+    останавливает разбор; её `detail` несёт номер порции."""
+    assert claim.scope is not None
+    scope = claim.scope
+    names = len(scope.names)
+    bounds = chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES)
+    chunks: list = []
+    for index, response in enumerate(responses):
+        drafts = draft_refs_of(
+            merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
+        )
+        sent = chunk_sent_of(scope, bounds=bounds[index], drafts=drafts, first=index == 0)
+        try:
+            chunks.append(parse_discovery_chunk(response.content, sent))
+        except AnswerSchemaError as exc:
+            return chunks, AnswerSchemaError(exc.code, f"порция {index + 1}: {exc.detail}")
+    return chunks, None
+
+
 def _record_discovery_result(
     db: Session,
     claim: Claim,
-    response: ModelResponse,
+    responses: Sequence[ModelResponse],
     *,
     now: datetime,
     settings: Settings,
 ) -> None:
-    """Запись результата открытия семей: ответ разбирается по тому, что ушло
-    модели (`claim.sent`), затем `apply_discovery` — одна транзакция в общем
-    порядке блокировок (домен, затем задание). Схемная ошибка доменных блокировок
-    не берёт. Попытка закрывается после обработки: `lost_claim` — задание не наше,
-    иначе `ok` (в том числе когда охват успел измениться и задание отменено);
-    предохранитель «факт выше резерва» — как у остальных видов."""
-    assert claim.attempt_id is not None and claim.sent is not None
-    try:
-        answer = parse_discovery_answer(response.content, claim.sent)
-    except AnswerSchemaError as exc:
-        _record_schema_error(db, claim, response, exc, now=now)
+    """Запись результата открытия семей: ответы порций разбираются по тому, что
+    ушло модели в каждой, собираются в один ответ, затем `apply_discovery` — одна
+    транзакция в общем порядке блокировок (домен, затем задание). Схемная ошибка
+    формы любой порции доменных блокировок не берёт: задание `error`, черновиков
+    нет. Попытка одна на задание и закрывается после обработки: `lost_claim` —
+    задание не наше, иначе `ok` (в том числе когда охват успел измениться и
+    задание отменено); `raw_response` — массив ответов, токены и стоимость —
+    суммы по порциям; предохранитель «факт выше резерва» — как у остальных видов."""
+    assert claim.attempt_id is not None and claim.scope is not None
+    scope = claim.scope
+    total = len(chunk_bounds(len(scope.names), settings.SEMANTIC_DISCOVERY_CHUNK_NAMES))
+    chunks, error = _parse_discovery_chunks(claim, responses, settings=settings)
+    if error is not None:
+        _record_schema_error(
+            db, claim, responses[-1], error, now=now, responses=responses, calls_total=total
+        )
         return
+    if len(responses) != total:
+        raise ValueError(f"ответов {len(responses)}, а порций {total}")
+    answer = merge_chunks(
+        chunks, len(scope.names), max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS
+    )
     outcome = apply_discovery(
         db, job_id=claim.job_id, claim_token=claim.claim_token, answer=answer, settings=settings
     )
     attempt = _load_attempt(db, claim.attempt_id)
-    _close_with_response(
+    _close_with_responses(
         attempt,
-        response,
+        responses,
         outcome=(
             SemanticAttemptOutcome.lost_claim
             if outcome.unapplied_reason == "lost_claim"
             else SemanticAttemptOutcome.ok
         ),
         now=now,
+        calls_total=total,
     )
     db.flush()
     _apply_fuse(db, attempt, now=now)
@@ -829,9 +929,13 @@ def record_failure(
     now: datetime,
     settings: Settings,
     rng: Callable[[], float] = random.random,
+    completed: Sequence[ModelResponse] = (),
 ) -> None:
     """Запись неудачи вызова (ответа нет, стоимость неизвестна — попытка
-    остаётся с резервом); коммитит сама. Закрытую попытку не переписывает:
+    остаётся с резервом); коммитит сама. `completed` — ответы уже выполненных
+    порций открытия: их сырые строки (массив) и суммы токенов остаются на
+    попытке для аудита, стоимость `NULL` — суточный расход берёт резерв всего
+    задания. Остальные виды `completed` не передают, их запись не меняется. Закрытую попытку не переписывает:
     ответ мог быть записан, а падение случилось уже после подтверждения.
     Временная ошибка — повтор с отсрочкой,
     пока попыток поколения меньше `SEMANTIC_MAX_ATTEMPTS`; постоянная и
@@ -848,6 +952,8 @@ def record_failure(
     error_class = getattr(error, "error_class", None) or type(error).__name__
 
     attempt.finished_at = now
+    if completed:
+        _fill_from_responses(attempt, completed, calls_total=len(completed) + 1)
     attempt.error_class = error_class
     attempt.error_text = str(error)[:_ERROR_TEXT_LIMIT]
     if not owned:
@@ -879,9 +985,10 @@ def _record_failure_in_new_session(
     *,
     settings: Settings,
     clock: Callable[[], datetime],
+    completed: Sequence[ModelResponse] = (),
 ) -> None:
     with session_factory() as db:
-        record_failure(db, claim, error, now=clock(), settings=settings)
+        record_failure(db, claim, error, now=clock(), settings=settings, completed=completed)
 
 
 def _park_in_error(db: Session, claim: Claim, exc: Exception) -> None:
@@ -1096,6 +1203,9 @@ def _run_claim(
         _complete_synthesized(session_factory, claim, settings=settings, clock=clock)
         return
     assert claim.rendered is not None
+    if claim.kind == SemanticJobKind.family_discovery:
+        _run_discovery_claim(session_factory, client, claim, settings=settings, clock=clock)
+        return
 
     try:
         try:
@@ -1132,5 +1242,74 @@ def _run_claim(
             )
         if published_id is not None:
             _apply_rules_in_new_session(session_factory, published_id, settings=settings)
+    except Exception:  # noqa: BLE001 — закрыть попытку не удалось: задание вернёт восстановление
+        logger.exception("Попытка задания %s осталась открытой", claim.job_id)
+
+
+def _run_discovery_claim(
+    session_factory: Callable[[], Session],
+    client: ModelClient,
+    claim: Claim,
+    *,
+    settings: Settings,
+    clock: Callable[[], datetime],
+) -> None:
+    """Открытие семей: вызовы по порциям подряд внутри одного захвата (спека 3б
+    §2.3.1). Тело порции строится из канонического тела и охвата захвата, блок
+    черновиков — из собранного ответа предыдущих порций; база между порциями не
+    читается. Сбой вызова порции — запись неудачи с ответами выполненных; схемная
+    ошибка формы ответа порции останавливает цикл, и запись результата фиксирует
+    её; после последней порции ответы записываются одной попыткой."""
+    assert claim.rendered is not None and claim.scope is not None
+    scope = claim.scope
+    names = len(scope.names)
+    responses: list[ModelResponse] = []
+    chunks: list = []
+    try:
+        for index, bounds in enumerate(chunk_bounds(names, settings.SEMANTIC_DISCOVERY_CHUNK_NAMES)):
+            drafts = draft_refs_of(
+                merge_chunks(chunks, names, max_drafts=settings.SEMANTIC_DISCOVERY_MAX_DRAFTS)
+            )
+            body = render_discovery_chunk(
+                claim.rendered, scope, settings=settings, bounds=bounds, drafts=drafts,
+                first=index == 0,
+            )
+            try:
+                response = client.complete(body, timeout_s=settings.SEMANTIC_CALL_TIMEOUT_S)
+            except (TransientModelError, PermanentModelError) as exc:
+                _record_failure_in_new_session(
+                    session_factory, claim, exc, settings=settings, clock=clock,
+                    completed=responses,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 — любое исключение клиента временное
+                _record_failure_in_new_session(
+                    session_factory,
+                    claim,
+                    TransientModelError(str(exc), error_class=type(exc).__name__),
+                    settings=settings,
+                    clock=clock,
+                    completed=responses,
+                )
+                return
+            responses.append(response)
+            sent = chunk_sent_of(scope, bounds=bounds, drafts=drafts, first=index == 0)
+            try:
+                chunks.append(parse_discovery_chunk(response.content, sent))
+            except AnswerSchemaError:
+                break  # ошибку формы фиксирует запись результата
+        try:
+            with session_factory() as db:
+                record_result(db, claim, responses, now=clock(), settings=settings)
+        except Exception as exc:  # noqa: BLE001 — запись не удалась: попытку закрыть
+            logger.exception("Запись результата задания %s не удалась", claim.job_id)
+            _record_failure_in_new_session(
+                session_factory,
+                claim,
+                TransientModelError(str(exc), error_class=type(exc).__name__),
+                settings=settings,
+                clock=clock,
+                completed=responses,
+            )
     except Exception:  # noqa: BLE001 — закрыть попытку не удалось: задание вернёт восстановление
         logger.exception("Попытка задания %s осталась открытой", claim.job_id)

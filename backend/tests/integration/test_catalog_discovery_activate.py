@@ -38,7 +38,6 @@ from services.discovery_drafts import (
 )
 from services.discovery_result import apply_discovery
 from services.family_categories import create_category, delete_category
-from services.variant_answer import parse_discovery_answer
 from services.work_families import (
     WorkFamilyError,
     activate_family,
@@ -69,7 +68,7 @@ from tests.integration.test_catalog_discovery_races import (
     _waits_for_lock,
     scene,  # noqa: F401 — фикстура
 )
-from tests.integration.test_catalog_discovery_worker import S, _answer, _group
+from tests.integration.test_catalog_discovery_worker import S, _answer, _answer_of, _group
 from tests.integration.test_semantic_queue_api import (
     _active_family,
     _make_job,
@@ -736,8 +735,8 @@ class TestLockOrder:
 # ---------------------------------------------------------------------------
 
 def _answer_with(scene, *, groups, not_work=(), categories=()):
-    return parse_discovery_answer(
-        _answer(groups, not_work=not_work, family_categories=categories), scene.claim.sent
+    return _answer_of(
+        _answer(groups, not_work=not_work, family_categories=categories), scene.claim.scope
     )
 
 

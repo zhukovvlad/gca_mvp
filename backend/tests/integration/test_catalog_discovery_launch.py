@@ -32,6 +32,7 @@ from services.family_discovery import (
     render_discovery_request,
 )
 from services.semantic_cost import tariffs_from
+from services.semantic_worker import claim_next
 from services.variant_answer import DISCOVERY_RESPONSE_SCHEMA_VERSION
 from tests.integration.test_catalog_discovery_scope import (
     _ctx_bare_unit,
@@ -107,7 +108,9 @@ class TestPreview:
         assert preview.unit_id == world.bare_unit
         assert preview.counts == discovery_scope(world.db, world.bare_unit).counts
         assert preview.counts.names == 2 and preview.active_families == 0
-        assert preview.reserve_usd > preview.expected_cached_usd > 0
+        # Одна порция: префикс пишется в кэш, а не читается, и верхняя граница
+        # совпадает с ожидаемой ценой; порций больше — резерв строго больше.
+        assert preview.reserve_usd >= preview.expected_cached_usd > 0
         assert len(preview.preview_hash) == 64
 
     def test_active_families_are_counted(self, world):
@@ -116,11 +119,10 @@ class TestPreview:
 
         assert _preview(world, world.family_unit).active_families == 1
 
-    def test_estimate_without_an_observed_prefix_uses_prefix_bytes(self, world):
+    def test_estimate_is_the_chunk_sums_by_the_discovery_tariffs(self, world):
         _ctx_bare_unit(world, "Голая")
-        rendered = render_discovery_request(
-            discovery_scope(world.db, world.bare_unit), world.db, settings=S
-        )
+        scope = discovery_scope(world.db, world.bare_unit)
+        rendered = render_discovery_request(scope, world.db, settings=S)
         # Ревью задачи 3: тарифы открытия отличны от тарифов предложений — по
         # умолчанию они совпадают, и оценка по чужому виду проходила бы.
         distinct = S.model_copy(
@@ -134,18 +136,23 @@ class TestPreview:
         assert tariffs_from(distinct, "family_discovery") != tariffs_from(
             distinct, "family_suggestion"
         )
-        tariffs = tariffs_from(distinct, "family_discovery")
-        # Независимый расчёт: байты префикса по тарифу записи кэша, байты строки
-        # по тарифу входа, лимит ответа по тарифу выхода, всё на миллион.
+        # Одно имя — одна порция. Независимый расчёт: байты префикса по
+        # наибольшему из трёх тарифов (4.3), байты `user` порции по тарифу входа,
+        # предел ответа одного вызова (8000) по тарифу выхода, всё на миллион;
+        # ожидаемая — префикс по тарифу записи (первая порция его пишет).
+        chunk_user = fd.render_discovery_chunk(
+            rendered, scope, settings=distinct, bounds=(1, 1), drafts=(), first=True
+        )["messages"][1]["content"]
+        user_bytes = len(chunk_user.encode("utf-8"))
         expected_reserve = (
-            Decimal(rendered.prefix_bytes) * tariffs.cache_write_per_m
-            + Decimal(rendered.user_bytes) * tariffs.input_per_m
-            + Decimal(32000) * tariffs.output_per_m
+            Decimal(rendered.prefix_bytes) * Decimal("4.3")
+            + Decimal(user_bytes) * Decimal("4.1")
+            + Decimal(8000) * Decimal("4.4")
         ) / Decimal(1_000_000)
         expected_cached = (
-            Decimal(rendered.prefix_bytes) * tariffs.cache_read_per_m
-            + Decimal(rendered.user_bytes) * tariffs.input_per_m
-            + Decimal(32000) * tariffs.output_per_m
+            Decimal(rendered.prefix_bytes) * Decimal("4.2")
+            + Decimal(user_bytes) * Decimal("4.1")
+            + Decimal(8000) * Decimal("4.4")
         ) / Decimal(1_000_000)
 
         preview = _preview(world, world.bare_unit, settings=distinct)
@@ -153,37 +160,61 @@ class TestPreview:
         assert preview.reserve_usd == expected_reserve
         assert preview.expected_cached_usd == expected_cached
 
-    def test_estimate_with_an_observed_prefix_uses_its_tokens(self, world):
+    def test_estimate_does_not_use_an_observed_prefix(self, world):
         _ctx_bare_unit(world, "Голая")
         rendered = render_discovery_request(
             discovery_scope(world.db, world.bare_unit), world.db, settings=S
         )
         job = _make_job(world.db, _ctx_bare_unit(world, "Для попытки"))
+        scope = discovery_scope(world.db, world.bare_unit)
+        before = _preview(world, world.bare_unit)
         world.db.add(
             SemanticJobAttempt(
                 job_id=job.id, claim_token=uuid.uuid4(), retry_generation=0,
                 started_at=dt.datetime.now(dt.UTC), reserve_usd=Decimal("0.01"),
                 prefix_hash=rendered.prefix_hash, privacy_dictionary_hash="d",
-                cache_write_tokens=4321, cached_tokens=0,
+                cache_write_tokens=4321, cached_tokens=9999,
             )
         )
         world.db.flush()
-        # Контекст добавлен после рендера эталона, но префикс (`system`) от
-        # состава имён не зависит.
-        tariffs = tariffs_from(S, "family_discovery")
-        current = render_discovery_request(
-            discovery_scope(world.db, world.bare_unit), world.db, settings=S
+
+        after = _preview(world, world.bare_unit)
+
+        # Префикс (`system`) от состава имён не зависит, а наблюдавшиеся токены
+        # префикса резерв открытия не используют: оценка не сдвинулась.
+        assert after == before
+        assert after.reserve_usd == fd.discovery_reserve(scope, world.db, settings=S)
+
+    def test_preview_and_the_reserve_of_the_scope_are_one_number(self, world):
+        for n in range(3):
+            _ctx_bare_unit(world, f"Имя {n}")
+        scope = discovery_scope(world.db, world.bare_unit)
+        # Ревью задачи 8: при одной порции резерв и ожидаемая цена совпадают
+        # (префикс по тарифу записи), и подмена одной функции другой проходила;
+        # три порции их разводят.
+        chunked = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 1})
+
+        preview = _preview(world, world.bare_unit, settings=chunked)
+
+        assert preview.reserve_usd > preview.expected_cached_usd
+        assert preview.reserve_usd == fd.discovery_reserve(scope, world.db, settings=chunked)
+        assert preview.expected_cached_usd == fd.discovery_expected(
+            scope, world.db, settings=chunked
         )
-        assert current.prefix_hash == rendered.prefix_hash
 
-        preview = _preview(world, world.bare_unit)
+    def test_reserve_covers_one_call_per_chunk(self, world):
+        for n in range(5):
+            _ctx_bare_unit(world, f"Имя {n}")
+        small = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 2})
+        scope = discovery_scope(world.db, world.bare_unit)
 
-        expected = (
-            Decimal(4321) * tariffs.cache_write_per_m
-            + Decimal(current.user_bytes) * tariffs.input_per_m
-            + Decimal(32000) * tariffs.output_per_m
-        ) / Decimal(1_000_000)
-        assert preview.reserve_usd == expected
+        one_chunk = fd.discovery_reserve(scope, world.db, settings=S)
+        three_chunks = fd.discovery_reserve(scope, world.db, settings=small)
+
+        # Три вызова вместо одного: добавлены два предела ответа.
+        tariffs = tariffs_from(S, "family_discovery")
+        answer = Decimal(8000) * tariffs.output_per_m / Decimal(1_000_000)
+        assert three_chunks - one_chunk >= 2 * answer
 
     def test_hash_is_sha256_of_request_reserve_cached_tariffs_and_formula_version(self, world):
         _ctx_bare_unit(world, "Голая")
@@ -207,6 +238,7 @@ class TestPreview:
                         }
                     },
                     "reserve_formula_version": 1,
+                    "discovery_reserve_version": 1,
                 },
                 ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ).encode("utf-8")
@@ -233,6 +265,29 @@ class TestPreview:
         monkeypatch.setattr(fd, "RESERVE_FORMULA_VERSION", 2)
 
         assert _preview(world, world.bare_unit).preview_hash != before
+
+    def test_hash_changes_with_the_discovery_reserve_formula_version(self, world, monkeypatch):
+        _ctx_bare_unit(world, "Голая")
+        before = _preview(world, world.bare_unit).preview_hash
+        monkeypatch.setattr(fd, "DISCOVERY_RESERVE_FORMULA_VERSION", 2)
+
+        assert _preview(world, world.bare_unit).preview_hash != before
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("SEMANTIC_DISCOVERY_CHUNK_NAMES", 99),
+            ("SEMANTIC_DISCOVERY_MAX_DRAFTS", 149),
+            ("SEMANTIC_DISCOVERY_MAX_TOKENS", 7999),
+        ],
+    )
+    def test_hash_changes_with_every_execution_setting(self, world, name, value):
+        _ctx_bare_unit(world, "Голая")
+        before = _preview(world, world.bare_unit).preview_hash
+
+        changed = S.model_copy(update={name: value})
+
+        assert _preview(world, world.bare_unit, settings=changed).preview_hash != before
 
     def test_hash_is_stable_for_one_state(self, world):
         _ctx_bare_unit(world, "Голая")
@@ -271,8 +326,8 @@ class TestLaunch:
         assert job.prefix_hash == rendered.prefix_hash
         assert job.input_hash == rendered.input_hash
         assert job.candidates_hash == rendered.candidates_hash
-        assert job.prompt_version == "discovery:1" == DISCOVERY_PROMPT_LABEL
-        assert job.response_schema_version == DISCOVERY_RESPONSE_SCHEMA_VERSION
+        assert job.prompt_version == "discovery:2" == DISCOVERY_PROMPT_LABEL
+        assert job.response_schema_version == DISCOVERY_RESPONSE_SCHEMA_VERSION == "discovery:2"
         assert job.model_requested == S.SEMANTIC_DISCOVERY_MODEL
         assert job.serialization_version == "1"
 
@@ -475,6 +530,49 @@ class TestRefusals:
         pricey = S.model_copy(update={"SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M": Decimal("11")})
 
         assert _refusal(world, world.bare_unit, preview_hash=stale, settings=pricey) == "preview_changed"
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("SEMANTIC_DISCOVERY_CHUNK_NAMES", 99),
+            ("SEMANTIC_DISCOVERY_MAX_DRAFTS", 149),
+            ("SEMANTIC_DISCOVERY_MAX_TOKENS", 7999),
+        ],
+    )
+    def test_execution_setting_changed_between_preview_and_launch_is_preview_changed(
+        self, world, name, value
+    ):
+        _ctx_bare_unit(world, "Голая")
+        stale = _preview(world, world.bare_unit).preview_hash
+        changed = S.model_copy(update={name: value})
+
+        assert _refusal(world, world.bare_unit, preview_hash=stale, settings=changed) == (
+            "preview_changed"
+        )
+
+    def test_chunk_size_changed_after_a_done_job_launches_not_input_unchanged(self, world):
+        _ctx_bare_unit(world, "Голая")
+        job = _launch(world, world.bare_unit)
+        world.db.execute(sa.update(SemanticJob).where(SemanticJob.id == job.id).values(status="done"))
+        world.db.expire_all()
+        assert _refusal(world, world.bare_unit) == "discovery_input_unchanged"
+        smaller = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 99})
+
+        second = _launch(world, world.bare_unit, settings=smaller)
+
+        assert second.id != job.id and second.request_hash != job.request_hash
+
+    def test_chunk_size_changed_between_launch_and_claim_cancels_the_job(self, world):
+        _ctx_bare_unit(world, "Голая")
+        job = _launch(world, world.bare_unit)
+        changed = S.model_copy(update={"SEMANTIC_DISCOVERY_CHUNK_NAMES": 99})
+
+        claim = claim_next(world.db, settings=changed, now=dt.datetime(2099, 1, 1, tzinfo=dt.UTC))
+
+        assert claim is None
+        world.db.expire_all()
+        job = world.db.get(SemanticJob, job.id)
+        assert (job.status, job.cancel_reason) == ("cancelled", "input_changed")
 
     def test_garbage_preview_hash_is_preview_changed(self, world):
         _ctx_bare_unit(world, "Голая")
