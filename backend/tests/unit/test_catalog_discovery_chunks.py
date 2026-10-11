@@ -902,6 +902,101 @@ class TestMergeChunks:
 
         assert len(answer.groups) == 1 and answer.groups[0].names == (1, 101)
 
+    def test_two_long_titles_with_a_common_prefix_are_two_drafts_in_one_chunk(self):
+        first = "Щ" * 110 + "А"
+        second = "Щ" * 110 + "Б"
+
+        answer = _merge([_chunk([
+            _newg([1], title=first, definition="Первое", category_id=1),
+            _newg([2], title=second, definition="Второе", category_id=2, similar=10),
+        ])], n=2)
+
+        assert [(g.title, g.definition, g.category_id, g.similar_family_id, g.names)
+                for g in answer.groups] == [
+            ("Щ" * 99 + "…", "Первое", 1, None, (1,)),
+            ("Щ" * 99 + "…", "Второе", 2, 10, (2,)),
+        ]
+
+    def test_two_long_titles_with_a_common_prefix_are_two_drafts_across_chunks(self):
+        first = "Щ" * 110 + "А"
+        second = "Щ" * 110 + "Б"
+
+        answer = _merge([
+            _chunk([_newg([1], title=first, definition="Первое", category_id=1)]),
+            _chunk([_newg([101], title=second, definition="Второе", category_id=2)]),
+        ], n=101)
+
+        assert [(g.definition, g.category_id, g.names) for g in answer.groups] == [
+            ("Первое", 1, (1,)), ("Второе", 2, (101,)),
+        ]
+
+    def test_the_same_long_title_twice_is_one_draft(self):
+        long_title = "Щ" * 110 + "А"
+
+        answer = _merge([
+            _chunk([_newg([1], title=long_title)]),
+            _chunk([_newg([101], title="  " + long_title.lower() + " ")]),
+        ], n=101)
+
+        assert len(answer.groups) == 1 and answer.groups[0].names == (1, 101)
+
+    def test_an_echo_of_the_cut_form_of_exactly_one_draft_is_appended_to_it(self):
+        answer = _merge([
+            _chunk([_newg([1], title="Щ" * 110 + "А"), _newg([2], title="Другое")]),
+            _chunk([_newg([101], title="Щ" * 99 + "…", definition="Эхо", category_id=2)]),
+        ], n=101)
+
+        assert [(g.title, g.names) for g in answer.groups] == [
+            ("Щ" * 99 + "…", (1, 101)), ("Другое", (2,)),
+        ]
+
+    def test_an_echo_of_a_cut_form_shared_by_two_drafts_goes_to_the_rest(self):
+        answer = _merge([
+            _chunk([_newg([1], title="Щ" * 110 + "А"), _newg([2], title="Щ" * 110 + "Б")]),
+            _chunk([_newg([101], title="Щ" * 99 + "…")]),
+        ], n=101)
+
+        assert [g.names for g in answer.groups] == [(1,), (2,)]
+        assert 101 in answer.unassigned
+
+    def test_a_long_title_whose_cut_form_equals_a_short_drafts_title_is_a_new_draft(self):
+        short = "Щ" * 99 + "…"
+
+        answer = _merge([_chunk([
+            _newg([1], title=short, definition="Короткое"),
+            _newg([2], title="Щ" * 110 + "А", definition="Длинное"),
+        ])], n=2)
+
+        assert [(g.title, g.definition, g.names) for g in answer.groups] == [
+            (short, "Короткое", (1,)), (short, "Длинное", (2,)),
+        ]
+
+    def test_a_full_title_match_wins_over_an_ambiguous_cut_form(self):
+        # Ревью круга Codex: имя, равное ПОЛНОМУ имени короткого черновика, идёт в
+        # него, хотя та же строка — обрезанная форма двух черновиков (правило (а)
+        # раньше (б)).
+        short = "Щ" * 99 + "…"
+
+        answer = _merge([
+            _chunk([_newg([1], title=short, definition="Короткое"),
+                    _newg([2], title="Щ" * 110 + "А", definition="Длинное")]),
+            _chunk([_newg([101], title=short, definition="Третье")]),
+        ], n=101)
+
+        assert [(g.definition, g.names) for g in answer.groups] == [
+            ("Короткое", (1, 101)), ("Длинное", (2,)),
+        ]
+
+    def test_an_echo_of_the_cut_form_ignores_case_and_whitespace(self):
+        # Обрезанная форма — «Щ»×49, пробел, «Щ»×49, «…»; повтор — другим регистром
+        # первой половины и тремя пробелами внутри.
+        answer = _merge([
+            _chunk([_newg([1], title="Щ" * 49 + " " + "Щ" * 60 + "А")]),
+            _chunk([_newg([101], title="щ" * 49 + "   " + "Щ" * 49 + "…")]),
+        ], n=101)
+
+        assert len(answer.groups) == 1 and answer.groups[0].names == (1, 101)
+
     def test_new_groups_over_the_draft_limit_send_their_names_to_the_rest(self):
         answer = _merge([_chunk([_newg([1], title="А"), _newg([2], title="Б"), _newg([3], title="В")])],
                         n=3, max_drafts=2)

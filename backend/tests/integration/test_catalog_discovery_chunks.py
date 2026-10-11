@@ -308,3 +308,31 @@ class TestEndToEndThreeChunks:
         }
         attempt = _attempt(world.db, job.id)
         assert attempt.outcome == "ok" and attempt.cost_usd == Decimal("0.03")
+
+
+class TestCollidingLongTitlesPassApplyDiscovery:
+    def test_two_long_titles_with_a_common_prefix_are_written_as_two_drafts(self, world):
+        category = seed_category_id(world.db)
+        contexts = _bare_world(world, titles=("Имя 1", "Имя 2", "Имя 3"))
+        job = _launch(world.db, world.bare_unit, admin_id=world.admin.id, settings=W_S)
+        claim = _claim(world.db, settings=W_S)
+        scope = claim.scope
+        first, second = "Щ" * 110 + "А", "Щ" * 110 + "Б"
+        raw = _raw([
+            _new([1], title=first, category_id=category, definition="Первое"),
+            _new([2], title=second, category_id=category, definition="Второе"),
+            _new([3], title="Третье", category_id=category, definition="Эхо"),
+        ])
+        sent = chunk_sent_of(scope, bounds=(1, 3), drafts=(), first=True)
+        answer = merge_chunks([parse_discovery_chunk(raw, sent)], 3, max_drafts=150)
+
+        outcome = apply_discovery(
+            world.db, job_id=job.id, claim_token=claim.claim_token, answer=answer, settings=W_S
+        )
+
+        assert outcome.applied and outcome.drafts_created == 3
+        drafts = _drafts(world.db, job.id)
+        assert [(d.definition, d.title) for d in drafts] == [
+            ("Первое", "Щ" * 99 + "…"), ("Второе", "Щ" * 99 + "…"), ("Эхо", "Третье"),
+        ]
+        assert [_members(world.db, d.id) for d in drafts] == [[contexts[0]], [contexts[1]], [contexts[2]]]

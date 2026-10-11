@@ -621,9 +621,16 @@ def merge_chunks(
     Группы идут в порядке порций и появления; новые группы нумеруются
     черновиками `1, 2, …` в порядке создания (по ним порция ссылается через
     `draft_ref`). Группа с `draft_ref` дописывает имена в свой черновик, а её поля
-    игнорируются; новая группа с именем уже заведённого черновика (без учёта
-    регистра и пробелов, после обрезки) дописывается в него; имя режется до
-    `DRAFT_TITLE_MAX_CHARS`, определение — до `DRAFT_DEFINITION_MAX_CHARS`;
+    игнорируются; новая группа (без `draft_ref`) сопоставляется с черновиком этого
+    открытия в таком порядке (без учёта регистра и пробелов): (а) её полное имя
+    равно полному имени черновика — дописывается в него; (б) иначе оно равно
+    ОБРЕЗАННОМУ имени ровно одного черновика (модель повторила укороченную форму из
+    блока) — дописывается в него, а равное обрезанному имени двух и более
+    черновиков неоднозначно — имена группы в остаток; (в) иначе — новый черновик,
+    даже если его обрезанное имя совпало с чужим. Ключ полного имени берётся ДО
+    обрезки, поэтому два длинных имени с общим началом остаются разными черновиками;
+    имя режется до `DRAFT_TITLE_MAX_CHARS`, определение — до
+    `DRAFT_DEFINITION_MAX_CHARS`;
     новая группа сверх `max_drafts` черновиков уводит имена в остаток; группы
     одной активной семьи — из одной порции и из разных — сливаются в одну группу
     `existing`. Пары `family_categories` семьи, встреченной больше одного раза,
@@ -633,7 +640,8 @@ def merge_chunks(
     # либо ["existing", [family_id, имена]]: порядок появления.
     order: list[tuple[str, int]] = []
     drafts: list[list] = []
-    by_key: dict[str, int] = {}
+    full_keys: dict[str, int] = {}
+    cut_keys: dict[str, list[int]] = {}
     existing: dict[int, list[int]] = {}
     not_work: set[int] = set()
     pair_count: dict[int, int] = {}
@@ -653,11 +661,17 @@ def merge_chunks(
                 assert group.title is not None and group.definition is not None
                 title = _cut_text(group.title.strip(), DRAFT_TITLE_MAX_CHARS)
                 definition = _cut_text(group.definition.strip(), DRAFT_DEFINITION_MAX_CHARS)
-                key = draft_key(title)
-                if key in by_key:
-                    drafts[by_key[key]][5].extend(group.names)
+                full_key = draft_key(group.title)
+                echoed = cut_keys.get(full_key, [])
+                if full_key in full_keys:
+                    drafts[full_keys[full_key]][5].extend(group.names)
+                elif len(echoed) == 1:
+                    drafts[echoed[0]][5].extend(group.names)
+                elif len(echoed) > 1:
+                    pass  # неоднозначное повторение укороченного имени: имена в остаток
                 elif len(drafts) < max_drafts:
-                    by_key[key] = len(drafts)
+                    full_keys[full_key] = len(drafts)
+                    cut_keys.setdefault(draft_key(title), []).append(len(drafts))
                     drafts.append(
                         [len(drafts) + 1, title, definition, group.category_id,
                          group.similar_family_id, list(group.names)]
