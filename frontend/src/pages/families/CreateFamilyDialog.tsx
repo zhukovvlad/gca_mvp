@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { EntitySelect } from "@/components/ui-domain/EntitySelect";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +14,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { apiErrorContext, apiErrorCode, useCreateFamilyFromSuggestion } from "@/services/queries";
+import {
+  apiErrorContext,
+  apiErrorCode,
+  useCreateFamilyFromSuggestion,
+  useFamilyCategories,
+} from "@/services/queries";
 import type { FamilyExistsContext, NewRow } from "@/types/domain";
 
 interface CreateFamilyFormProps {
@@ -25,6 +31,8 @@ interface CreateFamilyFormProps {
 
 function CreateFamilyForm({ row, unitLabel, onClose, onOpenFamily }: CreateFamilyFormProps) {
   const create = useCreateFamilyFromSuggestion();
+  const categoriesQ = useFamilyCategories();
+  const [categoryId, setCategoryId] = useState<number | null>(null);
   const [title, setTitle] = useState(
     // Ответ «СИСТЕМА» — не имя семьи: имя вводит admin.
     row.is_system ? "" : (row.new_family_name ?? "")
@@ -32,14 +40,21 @@ function CreateFamilyForm({ row, unitLabel, onClose, onOpenFamily }: CreateFamil
   const [definition, setDefinition] = useState("");
   const [existing, setExisting] = useState<FamilyExistsContext | null>(null);
 
-  const canSave = title.trim() !== "" && definition.trim() !== "" && !create.isPending;
+  // Категория обязательна (спека 3б §2.9): без неё сервер отказал бы `422`.
+  const canSave =
+    title.trim() !== "" && definition.trim() !== "" && categoryId !== null && !create.isPending;
 
   function submit() {
+    if (categoryId === null) return;
     setExisting(null);
     create.mutate(
       {
         suggestionId: row.suggestion_id,
-        input: { title: title.trim(), definition: definition.trim() },
+        input: {
+          title: title.trim(),
+          definition: definition.trim(),
+          family_category_id: categoryId,
+        },
       },
       {
         onSuccess: onClose,
@@ -90,6 +105,20 @@ function CreateFamilyForm({ row, unitLabel, onClose, onOpenFamily }: CreateFamil
             Что входит и что НЕ входит: по определению модель отличает семью от соседних.
           </p>
         </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="create-family-category">Категория</Label>
+          <EntitySelect
+            id="create-family-category"
+            items={categoriesQ.data}
+            value={categoryId}
+            onChange={setCategoryId}
+            getLabel={(c) => c.title}
+            placeholder="Выбрать категорию"
+          />
+          <p className="text-xs text-fg-tertiary">
+            Обязательна: природа семьи — работа, инженерная система или затраты и услуги.
+          </p>
+        </div>
         {existing && (
           <Alert
             data-testid="family-exists"
@@ -136,7 +165,7 @@ interface CreateFamilyDialogProps {
 
 /**
  * «Завести семью…» (спека semantic-suggestions §2.9): имя подставлено из ответа
- * модели и редактируется, единица — единица контекста, определение обязательно.
+ * модели и редактируется, единица — единица контекста, определение и категория обязательны.
  * Одним действием сервер заводит семью, активирует её и назначает контексту.
  */
 export function CreateFamilyDialog({ row, unitLabel, onClose, onOpenFamily }: CreateFamilyDialogProps) {

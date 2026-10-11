@@ -57,6 +57,7 @@ from services.semantic_worker import (
     serialize_privacy_matches,
 )
 from services.work_families import activate_family, assign_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -98,7 +99,8 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id):
     fam = create_family(
-        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id
+        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id,
+        family_category_id=seed_category_id(db),
     )
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 

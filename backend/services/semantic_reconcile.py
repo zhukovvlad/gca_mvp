@@ -61,7 +61,6 @@ from models import (
     SemanticJob,
     SemanticJobKind,
     SemanticJobStatus,
-    SemanticKind,
     SemanticReconcileBatch,
     SemanticState,
     SuggestionUnpublishedReason,
@@ -81,12 +80,12 @@ from services.semantic_cost import (
     tariffs_from,
 )
 from services.semantic_request import (
-    PROMPT_VERSION,
     SERIALIZATION_VERSION,
     ContextRequestMaterial,
     RenderedRequest,
     is_applicable,
     load_request_material,
+    prompt_for,
     render_context_request,
 )
 from services.variant_request import (
@@ -389,7 +388,7 @@ def _job_row(
     rendered: RenderedRequest,
     *,
     unit_id: int | None,
-    prompt_version: int,
+    prompt_version: int | str,
     paths_hash: str | None = None,
 ) -> dict:
     """Столбцы нового задания: предмет, отпечаток и оси запроса для журнала.
@@ -556,14 +555,13 @@ _VALUES_CATALOG_KINDS = (CatalogKind.TO_REVIEW.value, CatalogKind.POSITION.value
 
 def _values_applicable(material: ContextRequestMaterial, columns: _ValuesColumns) -> bool:
     """Применимость `context_values` (спека §2.6): предикат §2.5 без условия
-    кандидатов — не архивирован, есть членства, не `NOT_APPLICABLE`, не `SYSTEM`,
-    строка каталога `TO_REVIEW` или `POSITION`. Путь вычислим и схема есть —
+    кандидатов — не архивирован, есть членства, не `NOT_APPLICABLE`, строка
+    каталога `TO_REVIEW` или `POSITION`. Путь вычислим и схема есть —
     это уже наличие материала значений."""
     return (
         not material.archived
         and material.member_count > 0
         and material.semantic_state != SemanticState.NOT_APPLICABLE.value
-        and material.semantic_kind != SemanticKind.SYSTEM.value
         and columns.catalog_kind in _VALUES_CATALOG_KINDS
     )
 
@@ -640,7 +638,8 @@ def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
     предложений в pending/running или с удержанной пачкой, касающейся их
     отпечатками предложений)`. Пачка не-`mass` касается единицы контекстов своих
     отпечатков: `unit_id` самой пачки у автоматических пуст. Отпечатки других
-    видов единицу не держат."""
+    видов единицу не держат; задание открытия семей (`family_discovery`) в
+    `pending`/`running` её не занимает."""
     units: set[int | None] = set(
         db.execute(
             sa.select(SemanticJob.unit_id)
@@ -918,6 +917,9 @@ def _schema_scope(
 def _split_jobs(
     jobs: Collection[SemanticJob],
 ) -> tuple[list[SemanticJob], list[SemanticJob]]:
+    """Задания предложений и значений. Открытие семей (`family_discovery`)
+    сверка не планирует и не отменяет: его создаёт только запуск оператора, и
+    ни в одну из двух долей оно не попадает."""
     suggestions = [job for job in jobs if job.kind == SemanticJobKind.family_suggestion.value]
     values = [job for job in jobs if job.kind == SemanticJobKind.context_values.value]
     return suggestions, values
@@ -1195,7 +1197,7 @@ def _insert_new_jobs(
         rows.append(
             _job_row(
                 fingerprint, rendered, unit_id=material_by_context[context_id].unit_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_for(material_by_context[context_id].semantic_kind)[1],
             )
         )
     return _insert_job_rows(db, rows)

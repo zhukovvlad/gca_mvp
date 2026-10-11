@@ -54,20 +54,25 @@ from typing import Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+import crud.discovery as crud_discovery
 import crud.semantic as crud_semantic
 import crud.semantic_queue as crud_semantic_queue
 import crud.work_variants as crud_work_variants
 from auth import require_admin
+from config import settings as app_settings
 from crud.common import DomainError
 from database import get_db
 from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
 from routers.domain_errors import raise_domain_error
 from services import (
     context_operations,
+    discovery_drafts,
+    family_categories,
     family_change,
+    family_discovery,
     semantic_decisions,
     work_families,
     work_variants,
@@ -121,6 +126,24 @@ _STATUS_CONFLICT = frozenset(
         work_families.REFUSE_MERGE_INACTIVE,
         work_families.REFUSE_CONTEXT_NOT_APPLICABLE,
         work_families.REFUSE_MERGE_SCHEMA_BUILDING,
+        # Справочник категорий (спека 3б §2.12): «категории нет» — `409`, а не `404`:
+        # ссылающийся на удалённую категорию получает состояние, которое надо перечитать.
+        family_categories.REFUSE_CATEGORY_NOT_FOUND,
+        family_categories.REFUSE_CATEGORY_IN_USE,
+        family_categories.REFUSE_CATEGORY_DUPLICATE,
+        # Открытие семей (спека 3б §2.12): отказы запуска — состояние, которое надо перечитать.
+        family_discovery.REFUSE_DISCOVERY_IN_PROGRESS,
+        family_discovery.REFUSE_DISCOVERY_UNIT_BUSY,
+        family_discovery.REFUSE_DISCOVERY_NOTHING_TO_DO,
+        family_discovery.REFUSE_DISCOVERY_TOO_MANY_NAMES,
+        family_discovery.REFUSE_DISCOVERY_INPUT_UNCHANGED,
+        family_discovery.REFUSE_PREVIEW_CHANGED,
+        # Черновики и возврат в разбор (спека 3б §2.12).
+        discovery_drafts.REFUSE_DRAFT_NOT_OPEN,
+        discovery_drafts.REFUSE_DRAFT_NOT_RESTORABLE,
+        discovery_drafts.REFUSE_DISCOVERY_RUN_SUPERSEDED,
+        work_variants.REFUSE_CONTEXT_NOT_REOPENABLE_STATE,
+        work_variants.REFUSE_CONTEXT_NOT_APPLICABLE_BY_POSITION,
         work_variants.REFUSE_SCHEMA_NO_BUILDING,
         work_variants.REFUSE_SCHEMA_BUILDING,
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
@@ -147,6 +170,15 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_families.REFUSE_INVALID_NAME_ROLE,
         work_families.REFUSE_MERGE_SAME_FAMILY,
         work_families.REFUSE_BLANK_TITLE,
+        work_families.REFUSE_ACTIVATE_WITHOUT_CATEGORY,
+        work_families.REFUSE_CLEAR_CATEGORY_ACTIVE,
+        family_categories.REFUSE_CATEGORY_BLANK_TITLE,
+        family_categories.REFUSE_CATEGORY_BLANK_DEFINITION,
+        discovery_drafts.REFUSE_DRAFT_BLANK_TITLE,
+        discovery_drafts.REFUSE_DRAFT_BLANK_DEFINITION,
+        discovery_drafts.REFUSE_DRAFT_WITHOUT_CATEGORY,
+        discovery_drafts.REFUSE_CONTEXT_NOT_IN_GROUP,
+        discovery_drafts.REFUSE_CATEGORY_NOT_PROPOSED,
         work_variants.REFUSE_SCHEMA_PARAMETER_RENAMED,
         work_variants.REFUSE_SCHEMA_VALUE_REMOVED,
         work_variants.REFUSE_SCHEMA_BLANK,
@@ -251,6 +283,11 @@ def _mutating(db: Session):
                 context={"context_ids": list(exc.context_ids)},
             )
         )
+    except family_discovery.DiscoveryError as exc:
+        db.rollback()
+        raise_domain_error(
+            DomainError(_status_for_code(exc.code), str(exc), code=exc.code)
+        )
     except AutoAcceptError as exc:
         # Порог не задан и «состояние изменилось после показа» — состояние
         # сервера, а не ввод: оба `409`.
@@ -341,6 +378,7 @@ class CreateFamilyRequest(BaseModel):
     title: str = Field(min_length=1)
     unit_name: str | None = None
     definition: str | None = None
+    family_category_id: int | None = None
 
 
 class UpdateFamilyRequest(BaseModel):
@@ -357,6 +395,25 @@ class UpdateFamilyRequest(BaseModel):
     title: str | None = None
     definition: str | None = None
     unit_name: str | None = None
+    #: Как `definition` и `unit_name`: отсутствие поля и явный `null` РАЗЛИЧИМЫ
+    #: (`model_fields_set`) — «не трогать» против «снять категорию» (у активной
+    #: семьи снять нельзя, `clear_category_active`).
+    family_category_id: int | None = None
+
+
+class CreateCategoryRequest(BaseModel):
+    """Пустоту и пробельность имени и определения проверяет сервис
+    (`category_blank_title`/`category_blank_definition`, `422` с кодом)."""
+
+    title: str
+    definition: str
+
+
+class UpdateCategoryRequest(BaseModel):
+    """Отсутствующее поле — «не трогать»; пустое значение — отказ сервиса."""
+
+    title: str | None = None
+    definition: str | None = None
 
 
 class MergeFamilyRequest(BaseModel):
@@ -470,14 +527,36 @@ class StaleGroupTransferRequest(BaseModel):
 #  Семьи
 # ---------------------------------------------------------------------------
 
+def _category_filter(value: str | None) -> int | Literal["none"] | None:
+    """Фильтр `family_category_id`: число — id категории, `none` — семьи без
+    категории; остальное — `422` некодированным текстом."""
+    if value is None or value == "none":
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "family_category_id: ожидается id категории или «none».",
+        ) from None
+
+
 @router.get("/families")
 def list_families_route(
     status_: Literal["draft", "active", "archived"] | None = Query(default=None, alias="status"),
     unit_id: int | None = Query(default=None),
+    family_category_id: str | None = Query(default=None),
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return {"items": crud_semantic.list_families(db, status=status_, unit_id=unit_id)}
+    return {
+        "items": crud_semantic.list_families(
+            db,
+            status=status_,
+            unit_id=unit_id,
+            family_category_id=_category_filter(family_category_id),
+        )
+    }
 
 
 @router.post("/families", status_code=status.HTTP_201_CREATED)
@@ -489,7 +568,7 @@ def create_family_route(
     with _mutating(db):
         family = work_families.create_family(
             db, title=body.title, unit_name=body.unit_name, definition=body.definition,
-            actor_id=admin.id,
+            actor_id=admin.id, family_category_id=body.family_category_id,
         )
     return _serialize_family(db, family.id)
 
@@ -509,6 +588,8 @@ def update_family_route(
         definition_kwargs: dict[str, object] = {}
         if "definition" in body.model_fields_set:
             definition_kwargs["definition"] = body.definition
+        if "family_category_id" in body.model_fields_set:
+            definition_kwargs["family_category_id"] = body.family_category_id
         family = work_families.update_family(
             db, family_id=family_id, title=body.title, actor_id=admin.id, **definition_kwargs,
         )
@@ -556,6 +637,66 @@ def merge_families_route(
     # Ответ — строка ЦЕЛЕВОЙ (пережившей) семьи, той же формы, что список:
     # источник ушёл в архив, дальнейшая работа продолжается с целью.
     return _serialize_family(db, body.target_family_id)
+
+
+# ---------------------------------------------------------------------------
+#  Справочник категорий семей (спека 3б §2.9, §2.12)
+# ---------------------------------------------------------------------------
+
+def _serialize_category(db: Session, category_id: int) -> dict:
+    row = crud_semantic.get_family_category_row(db, category_id=category_id)
+    assert row is not None, f"категория {category_id} исчезла между мутацией и сериализацией"
+    return row
+
+
+@router.get("/family-categories")
+def list_family_categories_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return {"items": crud_semantic.list_family_categories(db)}
+
+
+@router.post("/family-categories", status_code=status.HTTP_201_CREATED)
+def create_family_category_route(
+    body: CreateCategoryRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        category = family_categories.create_category(
+            db, title=body.title, definition=body.definition, actor_id=admin.id
+        )
+    return _serialize_category(db, category.id)
+
+
+@router.patch("/family-categories/{category_id}")
+def update_family_category_route(
+    category_id: int,
+    body: UpdateCategoryRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        fields: dict[str, object] = {}
+        if "title" in body.model_fields_set:
+            fields["title"] = body.title
+        if "definition" in body.model_fields_set:
+            fields["definition"] = body.definition
+        family_categories.update_category(
+            db, category_id=category_id, actor_id=admin.id, **fields
+        )
+    return _serialize_category(db, category_id)
+
+
+@router.delete("/family-categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_family_category_route(
+    category_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        family_categories.delete_category(db, category_id=category_id, actor_id=admin.id)
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +902,18 @@ def mark_not_work_route(
     return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
 
 
+@router.post("/contexts/{context_id}/reopen")
+def reopen_context_route(
+    context_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Вернуть в разбор» контекста «не работа» человека (спека 3б §2.8)."""
+    with _mutating(db):
+        work_variants.reopen_context(db, context_id=context_id, actor_id=admin.id)
+    return _read_domain_errors(crud_semantic.context_card, db, context_id=context_id)
+
+
 @router.post("/contexts/{context_id}/split")
 def split_context_route(
     context_id: int,
@@ -928,6 +1081,8 @@ class OtherFamilyRequest(BaseModel):
 class CreateFamilyFromSuggestionRequest(BaseModel):
     title: str
     definition: str
+    #: Категория обязательна (спека 3б §2.9, решение 10): без неё — `422`.
+    family_category_id: int
 
 
 class PrivacyMatchIn(BaseModel):
@@ -962,8 +1117,56 @@ class UnitReaskRequest(BaseModel):
     preview_hash: str
 
 
+class DiscoveryPreviewRequest(BaseModel):
+    """`unit_id` обязателен и допускает `null` («без единицы»), как у перезапроса."""
+
+    unit_id: int | None
+
+
+class DiscoveryLaunchRequest(BaseModel):
+    unit_id: int | None
+    preview_hash: str
+
+
 class PreviewHashRequest(BaseModel):
     preview_hash: str
+
+
+class DraftEditRequest(BaseModel):
+    """Правка черновика: переданные поля меняются, непереданные нет."""
+    title: str | None = None
+    definition: str | None = None
+    family_category_id: int | None = None
+
+    @field_validator("family_category_id")
+    @classmethod
+    def _category_not_null(cls, value: int | None) -> int | None:
+        if value is None:
+            raise ValueError("категорию можно сменить, но не снять")
+        return value
+
+
+class CategoryPairIn(BaseModel):
+    family_id: int
+    family_category_id: int
+
+
+class ActivateRequest(BaseModel):
+    """Отмеченное на экране черновиков: сервер получает списки (спека 3б §2.5)."""
+    draft_ids: list[int] = Field(default_factory=list)
+    not_work_context_ids: list[int] = Field(default_factory=list)
+    family_categories: list[CategoryPairIn] = Field(default_factory=list)
+
+
+class DraftMergeRequest(BaseModel):
+    target_draft_id: int | None = None
+    target_family_id: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> DraftMergeRequest:
+        if (self.target_draft_id is None) == (self.target_family_id is None):
+            raise ValueError("нужна ровно одна цель: target_draft_id или target_family_id")
+        return self
 
 
 def _shown(matches: list[PrivacyMatchIn]) -> list[dict]:
@@ -1085,7 +1288,8 @@ def create_family_from_suggestion_route(
         try:
             family_id = semantic_decisions.create_family_from_suggestion(
                 db, suggestion_id=suggestion_id, title=body.title,
-                definition=body.definition, actor_id=admin.id,
+                definition=body.definition, family_category_id=body.family_category_id,
+                actor_id=admin.id,
             )
         except ValueError as exc:
             raise_domain_error(DomainError(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)))
@@ -1172,6 +1376,166 @@ def unit_reask_route(
             db, unit_id=body.unit_id, preview_hash=body.preview_hash, actor_id=admin.id
         )
     return _serialize_reconcile(report)
+
+
+# ---------------------------------------------------------------------------
+#  Открытие семей: блок, preview, запуск
+# ---------------------------------------------------------------------------
+
+@router.get("/discovery/units")
+def discovery_units_route(
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Блок «Открыть семьи»: строка на единицу с охватом или семьями без категории."""
+    return {"units": crud_discovery.discovery_units(db, settings=app_settings)}
+
+
+@router.post("/discovery/preview")
+def discovery_preview_route(
+    body: DiscoveryPreviewRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    preview = family_discovery.preview_discovery(
+        db, unit_id=body.unit_id, settings=app_settings
+    )
+    return {
+        "unit_id": preview.unit_id,
+        "counts": dataclasses.asdict(preview.counts),
+        "active_families": preview.active_families,
+        "reserve_usd": crud_semantic_queue.money_str(preview.reserve_usd),
+        "expected_cached_usd": crud_semantic_queue.money_str(preview.expected_cached_usd),
+        "preview_hash": preview.preview_hash,
+    }
+
+
+@router.post("/discovery")
+def discovery_launch_route(
+    body: DiscoveryLaunchRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        job = family_discovery.launch_discovery(
+            db, unit_id=body.unit_id, preview_hash=body.preview_hash, actor_id=admin.id,
+            settings=app_settings,
+        )
+        result = {"job_id": job.id, "status": job.status, "unit_id": job.unit_id}
+    return result
+
+
+def _serialize_draft(draft) -> dict:
+    return {
+        "id": draft.id,
+        "job_id": draft.job_id,
+        "unit_id": draft.unit_id,
+        "grp": draft.grp,
+        "status": draft.status,
+        "title": draft.title,
+        "definition": draft.definition,
+        "family_category_id": draft.family_category_id,
+        "merged_into_draft_id": draft.merged_into_draft_id,
+        "merged_into_family_id": draft.merged_into_family_id,
+    }
+
+
+@router.get("/discovery/drafts")
+def discovery_drafts_route(
+    unit_id: int | None = Query(default=None),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Черновики последнего выполненного открытия единицы (`unit_id` не передан —
+    единица «без единицы»); `drafts: null`, если выполненных открытий нет."""
+    return {"unit_id": unit_id, "drafts": crud_discovery.discovery_drafts(db, unit_id=unit_id)}
+
+
+@router.patch("/discovery/drafts/{draft_id}")
+def draft_edit_route(
+    draft_id: int,
+    body: DraftEditRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    fields = {
+        name: getattr(body, name)
+        for name in ("title", "definition", "family_category_id")
+        if name in body.model_fields_set
+    }
+    with _deciding(db):
+        draft = discovery_drafts.edit_draft(db, draft_id=draft_id, actor_id=admin.id, **fields)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/merge")
+def draft_merge_route(
+    draft_id: int,
+    body: DraftMergeRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.merge_draft(
+            db, draft_id=draft_id, target_draft_id=body.target_draft_id,
+            target_family_id=body.target_family_id, actor_id=admin.id,
+        )
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/discard")
+def draft_discard_route(
+    draft_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.discard_draft(db, draft_id=draft_id, actor_id=admin.id)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/drafts/{draft_id}/restore")
+def draft_restore_route(
+    draft_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _deciding(db):
+        draft = discovery_drafts.restore_draft(db, draft_id=draft_id, actor_id=admin.id)
+        result = _serialize_draft(draft)
+    return result
+
+
+@router.post("/discovery/{job_id}/activate")
+def discovery_activate_route(
+    job_id: int,
+    body: ActivateRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Активировать отмеченные» (спека 3б §2.5): одна транзакция маршрута; отказ
+    или сбой не оставляет записей."""
+    with _deciding(db):
+        outcome = discovery_drafts.activate_discovery(
+            db,
+            job_id=job_id,
+            draft_ids=body.draft_ids,
+            not_work_context_ids=body.not_work_context_ids,
+            family_categories=[(p.family_id, p.family_category_id) for p in body.family_categories],
+            actor_id=admin.id,
+        )
+        result = {
+            "created_family_ids": list(outcome.created_family_ids),
+            "categories_applied": list(outcome.categories_applied),
+            "categories_skipped": list(outcome.categories_skipped),
+            "not_work_applied": list(outcome.not_work_applied),
+            "not_work_skipped": list(outcome.not_work_skipped),
+            "reask_unit_id": outcome.reask_unit_id,
+        }
+    return result
 
 
 @router.post("/reask-all/preview")
@@ -1427,6 +1791,10 @@ def set_position_kind_route(
 #  Массовое автопринятие
 # ---------------------------------------------------------------------------
 
+def _threshold_text(threshold) -> str | None:
+    return None if threshold is None else format(threshold, "f")
+
+
 @router.post("/auto-accept/preview")
 def auto_accept_preview_route(
     _admin: User = Depends(require_admin),
@@ -1438,7 +1806,8 @@ def auto_accept_preview_route(
         "by_outcome": dict(preview.by_outcome),
         "total": preview.total,
         "preview_hash": preview.preview_hash,
-        "threshold": format(preview.threshold, "f"),
+        "threshold": _threshold_text(preview.threshold),
+        "system_threshold": _threshold_text(preview.system_threshold),
     }
 
 

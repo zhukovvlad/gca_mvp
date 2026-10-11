@@ -2178,12 +2178,36 @@ export interface WorkFamily {
   archived_at: string | null;
   /** Число привязанных контекстов — держит отказы правки единицы/архивирования. */
   context_count: number;
+  /** Категория семьи из справочника (спека 3б §2.9); `null` у семьи, ещё не размеченной. */
+  family_category_id: number | null;
+  family_category_title: string | null;
 }
+
+/** Строка справочника категорий семей (`GET /v1/semantic/family-categories`, спека 3б §2.9). */
+export interface FamilyCategory {
+  id: number;
+  title: string;
+  /** Определение видит модель, когда предлагает категорию черновику. */
+  definition: string;
+  /** Ключ стартовой категории; у заведённой человеком — `null`. */
+  seed_key: string | null;
+  /** Число семей с этой категорией — удалить можно только пустую. */
+  family_count: number;
+}
+
+export interface FamilyCategoryInput {
+  title: string;
+  definition: string;
+}
+
+/** Фильтр семей по категории: id категории или `"none"` — семьи без категории. */
+export type FamilyCategoryFilter = number | "none";
 
 export interface WorkFamilyInput {
   title: string;
   unit_name?: string | null;
   definition?: string | null;
+  family_category_id?: number | null;
 }
 
 /**
@@ -2196,6 +2220,8 @@ export interface WorkFamilyPatch {
   title?: string;
   definition?: string | null;
   unit_name?: string | null;
+  /** Категорию можно сменить, но у активной семьи не снять (`clear_category_active`). */
+  family_category_id?: number | null;
 }
 
 /**
@@ -2447,6 +2473,10 @@ export interface ContextCardData {
   place_dictionary_version: number;
   comparability_reason: ComparabilityReason | null;
   semantic_state: SemanticState;
+  /** Вид строки каталога контекста (`POSITION`, `HEADER`, `LOT_HEADER`, `TRASH`): неприменимость по разметке в Review. */
+  catalog_kind: string;
+  /** «Вернуть в разбор» применимо: не в архиве, `NOT_APPLICABLE` и строка не размечена в Review (спека 3б §2.8). */
+  reopenable: boolean;
   work_family_id: number | null;
   family_title: string | null;
   family_source: FamilySource | null;
@@ -2696,6 +2726,8 @@ export interface SuggestionRow {
   reason: string;
   multi_owner: boolean;
   previously_rejected: RejectedMark | null;
+  /** Вид контекста строки: у системы экран ставит метку «система» (спека 3б §2.6). */
+  semantic_kind: SemanticKind;
 }
 
 /** Группа очереди «Семья из списка»: пара «семья + полоса», у группы ровно одна полоса. */
@@ -2706,6 +2738,8 @@ export interface SuggestionGroup {
   band: SuggestionBand;
   rows: SuggestionRow[];
   total: number;
+  /** Число строк группы с видом `SYSTEM`; у очереди «Смена семьи» ключа нет. */
+  system_count?: number;
   /** Только у очереди «Смена семьи»: семья контекстов сейчас (`family_id` — предложенная). */
   from_family_id?: number;
   from_family_title?: string;
@@ -2896,10 +2930,172 @@ export type PreviewTarget =
   | { kind: "batch"; batchId: number; source: BatchSource }
   | { kind: "schema"; familyId: number };
 
+// ---- Открытие семей и черновики (спека 3б §2.3–§2.5, §2.12; `crud/discovery.py`) ----
+
+/** Состав охвата единицы по контекстам (`ScopeCounts`): системы, «новая семья», «голые», имена, семьи без категории. */
+export interface DiscoveryScopeCounts {
+  systems: number;
+  new_family: number;
+  bare: number;
+  names: number;
+  uncategorized_families: number;
+}
+
+/** Последнее открытие единицы: статус задания и число открытых черновиков новых семей. */
+export interface DiscoveryRunInfo {
+  job_id: number;
+  status: string;
+  at: string;
+  open_drafts: number;
+  /** На экране черновиков ещё есть что решать (черновик, возврат, категории, «Не работа») — экран показывается. */
+  actionable: boolean;
+}
+
+/** Строка блока «Открыть семьи» (`GET /discovery/units`): числа плоско, как у сервера. */
+export interface DiscoveryUnitRow extends DiscoveryScopeCounts {
+  unit_id: number | null;
+  unit_code: string | null;
+  active_families: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  last_discovery: DiscoveryRunInfo | null;
+}
+
+/** `POST /discovery/preview`: числа окна запуска и `preview_hash` для запуска. */
+export interface DiscoveryPreview {
+  unit_id: number | null;
+  counts: DiscoveryScopeCounts;
+  active_families: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  preview_hash: string;
+}
+
+/** Статус семьи в ссылках черновика: на экране ссылка показывает его, если семья уже не активна. */
+export type DraftFamilyStatus = WorkFamilyStatus | null;
+
+/** Открытый, слитый, отброшенный или активированный черновик новой семьи. */
+export interface DraftView {
+  id: number;
+  ordinal: number;
+  status: "open" | "activated" | "merged" | "discarded" | "superseded";
+  title: string;
+  definition: string;
+  family_category_id: number | null;
+  family_category_title: string | null;
+  similar_family_id: number | null;
+  similar_family_title: string | null;
+  similar_family_status: DraftFamilyStatus;
+  merged_into_draft_id: number | null;
+  merged_into_family_id: number | null;
+  merged_into_family_title: string | null;
+  merged_into_family_status: DraftFamilyStatus;
+  activated_family_id: number | null;
+  rows: number;
+  examples: string[];
+  edited_at: string | null;
+}
+
+/** Группа «в активную семью»: строки придут предложениями при перезапросе. */
+export interface ExistingGroupView {
+  id: number;
+  family_id: number | null;
+  family_title: string | null;
+  family_status: DraftFamilyStatus;
+  rows: number;
+}
+
+/** Наименование группы «Не работа»: число контекстов и их id (все контексты наименования уходят в активацию). */
+export interface NotWorkRow {
+  title: string;
+  contexts: number;
+  context_ids: number[];
+}
+
+export interface NotWorkView {
+  id: number;
+  names: NotWorkRow[];
+}
+
+/** Предложение категории активной семье открытия. */
+export interface CategoryProposalView {
+  family_id: number;
+  family_title: string;
+  family_category_id: number;
+  family_category_title: string | null;
+  /** Определение семьи: по нему человек проверяет предложенную категорию. */
+  family_definition: string | null;
+}
+
+/** Черновики последнего выполненного открытия единицы. */
+export interface DiscoveryDraftsView {
+  job_id: number;
+  unit_id: number | null;
+  opened_at: string;
+  drafts: DraftView[];
+  folded: DraftView[];
+  activated: DraftView[];
+  existing: ExistingGroupView[];
+  not_work: NotWorkView | null;
+  rest: number;
+  category_proposals: CategoryProposalView[];
+  /** Тот же признак, что у строки блока: есть что решать. */
+  actionable: boolean;
+}
+
+/** Ответ действия над черновиком (`_serialize_draft`): без строк, примеров и подписей — экран перечитывает вид. */
+export interface DraftActionResult {
+  id: number;
+  job_id: number;
+  unit_id: number | null;
+  grp: "new";
+  status: DraftView["status"];
+  title: string;
+  definition: string;
+  family_category_id: number | null;
+  merged_into_draft_id: number | null;
+  merged_into_family_id: number | null;
+}
+
+/** `GET /discovery/drafts`: `drafts: null` — выполненных открытий у единицы нет. */
+export interface DiscoveryDraftsResponse {
+  unit_id: number | null;
+  drafts: DiscoveryDraftsView | null;
+}
+
+/** Правка черновика: переданные поля меняются, непереданные нет. */
+export interface DraftEditInput {
+  title?: string;
+  definition?: string;
+  family_category_id?: number;
+}
+
+/** Цель слияния: черновик того же открытия или активная семья той же единицы — ровно одна. */
+export type DraftMergeTarget = { target_draft_id: number } | { target_family_id: number };
+
+/** Тело `POST /discovery/:job_id/activate`: то, что отмечено на экране. */
+export interface ActivateDiscoveryInput {
+  draft_ids: number[];
+  not_work_context_ids: number[];
+  family_categories: Array<{ family_id: number; family_category_id: number }>;
+}
+
+/** Ответ активации (`ActivationOutcome`): пропущенное названо ключами `*_skipped`. */
+export interface ActivationOutcome {
+  created_family_ids: number[];
+  categories_applied: number[];
+  categories_skipped: number[];
+  not_work_applied: number[];
+  not_work_skipped: number[];
+  reask_unit_id: number | null;
+}
+
 /** Тело `POST /suggestions/:id/create-family`; единицу сервер берёт у контекста предложения. */
 export interface CreateFamilyFromSuggestionInput {
   title: string;
   definition: string;
+  /** Категория обязательна: без неё сервер отвечает `422` (спека 3б §2.9). */
+  family_category_id: number;
 }
 
 /** Тело `409 family_exists`: `family_id` существующей семьи, может быть `null`. */
@@ -2919,10 +3115,26 @@ export interface PrivacyMatch {
   where: string;
 }
 
-/** Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`). */
+/** Вид задания очереди (`models.py::SemanticJobKind`). */
+export const SEMANTIC_JOB_KIND_VALUES = [
+  "family_suggestion",
+  "family_schema",
+  "context_values",
+  "family_discovery",
+] as const;
+export type SemanticJobKind = (typeof SEMANTIC_JOB_KIND_VALUES)[number];
+
+/**
+ * Задание очереди в `error` или `privacy_hold` (`crud/semantic_queue.py::JobRow`).
+ * У задания открытия семей (`family_discovery`) предмет — единица: `context_id`
+ * пуст, `title` — подпись задания, `names_count` — число различных имён в
+ * отправленном теле (`null`, когда охват единицы уже изменился).
+ */
 export interface JobRow {
   job_id: number;
-  context_id: number;
+  kind: SemanticJobKind;
+  context_id: number | null;
+  names_count: number | null;
   title: string;
   unit_id: number | null;
   unit_code: string | null;

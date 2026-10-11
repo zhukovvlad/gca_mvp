@@ -11,12 +11,16 @@ import {
 } from "@/types/domain";
 
 import {
+  CATALOG_REVIEW_KIND_LABEL,
   CATEGORY_SOURCE_LABEL,
   CATEGORY_SOURCE_VALUES,
   comparabilityLabel,
   CONTEXT_REFUSAL_LABEL,
   contextRefusalLabel,
   DECISION_SOURCE_LABEL,
+  DISCOVERY_REFUSAL_TEMPLATE,
+  discoveryNamesLabel,
+  discoveryRefusalLabel,
   eventLabel,
   EVENT_LABEL,
   EVENT_TYPE_VALUES,
@@ -187,13 +191,13 @@ describe("labels: журнал событий (закрытый список ф�
     expect(label).not.toBe(value);
   });
 
-  it("EVENT_TYPE_VALUES несёт ровно 21 значение закрытого списка", () => {
-    expect(EVENT_TYPE_VALUES).toHaveLength(21);
+  it("EVENT_TYPE_VALUES несёт ровно 22 значения закрытого списка", () => {
+    expect(EVENT_TYPE_VALUES).toHaveLength(22);
   });
 
   // `EVENT_TYPE_VALUES` типизирован `readonly SemanticEventType[]`, а не выведен
   // в тип (`as const`), поэтому `tsc` не держит его полноту: подмена одного
-  // значения повтором другого сохраняет длину 21 и молча выводит событие из
+  // значения повтором другого сохраняет длину 22 и молча выводит событие из
   // перебора выше. Ключи `EVENT_LABEL` держит `Record<SemanticEventType, …>`
   // (и тест бэкенда против `SEMANTIC_EVENT_TYPES`) — с ними и сверяемся.
   it("EVENT_TYPE_VALUES — без повторов и ровно те же коды, что ключи EVENT_LABEL", () => {
@@ -293,5 +297,96 @@ describe("подписи вариантов и отказов контекста
   it("неизвестный и пустой код — общая подпись", () => {
     expect(contextRefusalLabel("some_future_code")).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
     expect(contextRefusalLabel(undefined)).toBe("Не удалось выполнить действие. Обновите экран и повторите.");
+  });
+});
+
+/**
+ * Тексты отказов фичи 3б (спека 3б §2.12). Литерал ниже переписан из таблицы спеки отдельно от
+ * `labels.ts`: проверка сверяет подписи с ним, а не с самой собой. Каждая строка — код, значения
+ * подстановки («…», «N», «M» таблицы) и полный текст, который увидит человек.
+ */
+const REFUSAL_TABLE: Array<[string, Record<string, string | number>, string]> = [
+  ["discovery_in_progress", { unit: "м²" }, "Открытие семей для единицы «м²» уже идёт — дождитесь результата или разберите задержанное."],
+  ["discovery_unit_busy", { unit: "м²", count: 7 }, "В единице «м²» идёт перезапрос: 7 заданий предложений ещё не выполнены. Откройте семьи, когда он закончится, — иначе черновики устареют до прихода."],
+  ["discovery_nothing_to_do", { unit: "м²" }, "В единице «м²» нет строк без семьи и семей без категории — открывать нечего."],
+  ["discovery_too_many_names", { unit: "м²", count: 912, limit: 400 }, "В единице «м²» 912 различных наименований без семьи — больше предела 400 одного открытия."],
+  ["discovery_input_unchanged", { unit: "м²" }, "С прошлого открытия единицы «м²» ничего не изменилось — его черновики и есть ответ. Правьте, сливайте или отбрасывайте их."],
+  ["discovery_run_superseded", {}, "Эти черновики устарели: единица открыта заново. Обновите экран."],
+  ["draft_not_open", { name: "Банковская гарантия" }, "Черновик «Банковская гарантия» уже активирован, слит, отброшен или устарел. Слитый и отброшенный можно вернуть."],
+  ["draft_not_restorable", { name: "Банковская гарантия" }, "Черновик «Банковская гарантия» вернуть нельзя: он уже стал семьёй (её архивируют на вкладке «Семьи») или единица открыта заново."],
+  ["category_not_found", { name: "№ 4" }, "Категории «№ 4» больше нет — её удалили. Выберите другую."],
+  ["family_not_active", { name: "Геотекстиль" }, "Семья «Геотекстиль» больше не активна — слить с ней черновик нельзя."],
+  ["draft_without_category", { name: "Банковская гарантия" }, "У черновика «Банковская гарантия» не выбрана категория."],
+  ["context_not_in_group", {}, "Строка не входит в группу «Не работа» этого открытия."],
+  ["category_not_proposed", { name: "Геотекстиль" }, "Семье «Геотекстиль» категорию в этом открытии не предлагали — смените её на карточке семьи."],
+  ["duplicate_active_family", { name: "Геотекстиль", unit: "м²" }, "Активная семья «Геотекстиль» в единице «м²» уже есть — переименуйте черновик или слейте его с ней."],
+  ["activate_without_category", {}, "Сначала выберите категорию семьи."],
+  ["clear_category_active", {}, "У активной семьи категорию можно сменить, но не снять."],
+  ["category_in_use", { name: "Работа", count: 168 }, "Категорию «Работа» носят 168 семей — удалить можно только пустую."],
+  ["category_blank_title", {}, "У категории должно быть имя — по определению модель выбирает категорию."],
+  ["category_blank_definition", {}, "У категории должно быть определение — по определению модель выбирает категорию."],
+  ["category_duplicate", { name: "Работа" }, "Категория «Работа» уже есть."],
+  ["draft_blank_title", {}, "У черновика должно быть имя."],
+  ["draft_blank_definition", {}, "У черновика должно быть определение."],
+  ["context_not_reopenable_state", {}, "Контекст не отмечен «не работа» — возвращать нечего."],
+  ["context_not_applicable_by_position", { name: "заголовок" }, "Строка каталога размечена в Review как «заголовок» — её вид решается там."],
+];
+
+describe("подписи отказов открытия, категорий и «Вернуть в разбор» (спека 3б §2.12)", () => {
+  it("каждый код таблицы §2.12 имеет непустую подпись, лишних кодов в словаре нет", () => {
+    const expected = REFUSAL_TABLE.map(([code]) => code).sort();
+    expect(Object.keys(DISCOVERY_REFUSAL_TEMPLATE).sort()).toEqual(expected);
+    for (const code of expected) {
+      expect(DISCOVERY_REFUSAL_TEMPLATE[code].trim().length).toBeGreaterThan(10);
+    }
+  });
+
+  it.each(REFUSAL_TABLE)("%s — текст таблицы с подстановкой значений экрана", (code, values, text) => {
+    expect(discoveryRefusalLabel(code, values)).toBe(text);
+  });
+
+  it("нет значения для подстановки — текст сервера, а не «undefined»", () => {
+    expect(discoveryRefusalLabel("category_in_use", {}, "Категорию «Охрана» носят 2 семей — удалить можно только пустую.")).toBe(
+      "Категорию «Охрана» носят 2 семей — удалить можно только пустую."
+    );
+  });
+
+  it("значение null (ключ контекста отказа пуст) считается отсутствующим — текст сервера", () => {
+    // Ревью задачи 5: `null` — отдельная ветвь предиката «нет значения», у неё свой вход.
+    expect(discoveryRefusalLabel("draft_not_open", { name: null }, "текст сервера")).toBe("текст сервера");
+  });
+
+  it("нет значения и нет текста сервера — «…» на месте пропущенного", () => {
+    expect(discoveryRefusalLabel("draft_not_open")).toBe(
+      "Черновик «…» уже активирован, слит, отброшен или устарел. Слитый и отброшенный можно вернуть."
+    );
+  });
+
+  it("код без подстановок не требует значений и не берёт текст сервера", () => {
+    expect(discoveryRefusalLabel("activate_without_category", {}, "сырой текст")).toBe("Сначала выберите категорию семьи.");
+  });
+
+  it("неизвестный и пустой код — общая подпись", () => {
+    const fallback = "Не удалось выполнить действие. Обновите экран и повторите.";
+    expect(discoveryRefusalLabel("some_future_code")).toBe(fallback);
+    expect(discoveryRefusalLabel(undefined)).toBe(fallback);
+  });
+
+  it("подпись отказа context_not_applicable нейтральна: размеченные в Review строки получают тот же код", () => {
+    expect(contextRefusalLabel("context_not_applicable")).toBe("Вид неприменим: контекст не работа.");
+  });
+
+  it("виды строк, которые размечает Review, — ровно три, у каждого своя подпись", () => {
+    expect(CATALOG_REVIEW_KIND_LABEL).toEqual({
+      HEADER: "заголовок",
+      LOT_HEADER: "заголовок лота",
+      TRASH: "мусор",
+    });
+  });
+
+  it("число имён строки открытия: прочерк у неизвестного, ноль остаётся нулём", () => {
+    expect(discoveryNamesLabel(120)).toBe("имён: 120");
+    expect(discoveryNamesLabel(0)).toBe("имён: 0");
+    expect(discoveryNamesLabel(null)).toBe("имён: —");
   });
 });

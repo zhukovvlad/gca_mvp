@@ -24,7 +24,7 @@ import {
 } from "@/services/queries";
 import type { SuggestionBand, SuggestionGroup, SuggestionRow } from "@/types/domain";
 
-import { BAND_LABEL } from "./labels";
+import { BAND_LABEL, SEMANTIC_KIND_LABEL } from "./labels";
 import { SourceChip } from "./SourceChip";
 
 /** Сколько строк группа печатает сразу; остальные — «… и ещё K, отмечены», раскрываются кнопкой. */
@@ -46,6 +46,9 @@ const BAND_TINT: Record<SuggestionBand, string> = {
   mid: "border-warning-border bg-warning-soft text-warning-text",
   low: "border-danger-border bg-danger-soft text-danger-text",
 };
+
+/** Метка «система» (спека 3б §2.6): нейтральная — это вид строки, а не оценка. */
+const SYSTEM_TINT = "border-neutral-border bg-neutral-soft text-neutral-text";
 
 const CONFIDENCE_TEXT: Record<SuggestionBand, string> = {
   high: "text-accent-text",
@@ -207,6 +210,11 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
         <Badge variant="outline" className={BAND_TINT[group.band]}>
           {BAND_LABEL[group.band]}
         </Badge>
+        {(group.system_count ?? 0) > 0 && (
+          <Badge variant="outline" className={SYSTEM_TINT} data-testid="group-system-label">
+            {SEMANTIC_KIND_LABEL.SYSTEM}
+          </Badge>
+        )}
         <Button
           className="ml-auto"
           disabled={checkedIds.length === 0 || confirm.isPending}
@@ -251,7 +259,14 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   {formatConfidence(row.confidence)}
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <div className="text-fg">{row.title}</div>
+                  <div className="flex min-w-0 items-center gap-2 text-fg">
+                    <span>{row.title}</span>
+                    {row.semantic_kind === "SYSTEM" && (
+                      <Badge variant="outline" className={SYSTEM_TINT} data-testid="row-system-label">
+                        {SEMANTIC_KIND_LABEL.SYSTEM}
+                      </Badge>
+                    )}
+                  </div>
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg-tertiary">
                     {row.article && (
                       <>

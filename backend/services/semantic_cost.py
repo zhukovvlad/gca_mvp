@@ -87,6 +87,13 @@ def tariffs_from(
             cache_read_per_m=settings.SEMANTIC_VALUES_PRICE_CACHE_READ_PER_M,
             output_per_m=settings.SEMANTIC_VALUES_PRICE_OUTPUT_PER_M,
         )
+    if kind == SemanticJobKind.family_discovery:
+        return Tariffs(
+            input_per_m=settings.SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M,
+            cache_write_per_m=settings.SEMANTIC_DISCOVERY_PRICE_CACHE_WRITE_PER_M,
+            cache_read_per_m=settings.SEMANTIC_DISCOVERY_PRICE_CACHE_READ_PER_M,
+            output_per_m=settings.SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M,
+        )
     raise ValueError(f"unknown semantic job kind: {kind!r}")
 
 

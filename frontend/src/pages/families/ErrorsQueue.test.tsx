@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { server } from "@/test/server";
 import { handlerState } from "@/test/handlers";
 import { renderWithProviders } from "@/test/utils";
-import type { JobsResponse, UnitHoldGroup } from "@/types/domain";
+import type { JobRow, JobsResponse, UnitHoldGroup } from "@/types/domain";
 
 import { ErrorsQueue } from "./ErrorsQueue";
 
@@ -473,5 +473,139 @@ describe("ErrorsQueue — совпадение в списке семей одн
   it("нет ни строк, ни групп — блока нет вовсе", () => {
     renderQueue({ hold: fixtureHold({ items: [], unit_groups: [] }) });
     expect(screen.queryByTestId("privacy-hold")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Задание открытия семей (спека 3б §2.13): предмет — единица, а не контекст, поэтому у строки нет
+ * ни названия работы, ни ссылки на карточку контекста (`context_id = null`): единица, число
+ * имён и текст ошибки либо совпадение.
+ */
+function discoveryJob(id: number, extra: Partial<JobRow> = {}): JobRow {
+  return {
+    job_id: id,
+    kind: "family_discovery",
+    context_id: null,
+    names_count: 120,
+    title: "Открытие семей",
+    unit_id: 5,
+    unit_code: "M2",
+    article: null,
+    path: [],
+    status: "error",
+    last_error_class: "schema_error",
+    error_text: "Номер группы встречается дважды",
+    retry_generation: 0,
+    attempts_in_generation: 2,
+    matches: null,
+    updated_at: "2026-10-10T10:00:00+00:00",
+    ...extra,
+  };
+}
+
+describe("ErrorsQueue — задание открытия семей", () => {
+  it("строка: подпись и единица, число имён, класс и текст ошибки; ссылки на контекст нет", () => {
+    renderWithProviders(
+      <ErrorsQueue errors={[discoveryJob(41)]} hold={fixtureHold({ items: [], unit_groups: [] })} unitLabel={unitLabel} />
+    );
+
+    const row = screen.getByTestId("error-job");
+    expect(within(row).getByText("Открытие семей · м²")).toBeInTheDocument();
+    expect(within(row).getByText("имён: 120")).toBeInTheDocument();
+    expect(within(row).getByText("ответ не по схеме")).toBeInTheDocument();
+    expect(within(row).getByText("Номер группы встречается дважды")).toBeInTheDocument();
+    expect(within(row).queryByRole("link")).not.toBeInTheDocument();
+    // Единственное действие строки — «Повторить».
+    expect(within(row).getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("единица «без единицы» и неизвестное число имён (охват изменился) — прочерк, а не ноль", () => {
+    renderWithProviders(
+      <ErrorsQueue
+        errors={[discoveryJob(42, { unit_id: null, unit_code: null, names_count: null })]}
+        hold={fixtureHold({ items: [], unit_groups: [] })}
+        unitLabel={unitLabel}
+      />
+    );
+
+    const row = screen.getByTestId("error-job");
+    expect(within(row).getByText("Открытие семей · без единицы")).toBeInTheDocument();
+    expect(within(row).getByText("имён: —")).toBeInTheDocument();
+    expect(row).not.toHaveTextContent("имён: 0");
+  });
+
+  it("у обычного задания предложения строки «имён» нет", () => {
+    renderQueue();
+    for (const row of screen.getAllByTestId("error-job")) {
+      expect(row).not.toHaveTextContent("имён:");
+    }
+    // Ревью задачи 5: то же для задержанных — условие по виду задания стоит в обоих местах.
+    const held = screen.getAllByTestId("held-job");
+    expect(held.length).toBeGreaterThan(0);
+    for (const row of held) {
+      expect(row).not.toHaveTextContent("имён:");
+    }
+  });
+
+  it("«Повторить» шлёт повтор именно этого задания открытия", async () => {
+    const user = userEvent.setup();
+    handlerState.errorJobs = [...handlerState.errorJobs, discoveryJob(41)];
+    renderWithProviders(
+      <ErrorsQueue
+        errors={structuredClone(handlerState.errorJobs)}
+        hold={fixtureHold({ items: [], unit_groups: [] })}
+        unitLabel={unitLabel}
+      />
+    );
+
+    const row = screen.getAllByTestId("error-job").find((r) => /Открытие семей/.test(r.textContent ?? ""))!;
+    await user.click(within(row).getByRole("button", { name: "Повторить" }));
+
+    await waitFor(() => expect(handlerState.retryJobRequests).toEqual([41]));
+  });
+
+  describe("задержанное проверкой", () => {
+    const matches = [{ text: "жк северный", kind: "object", where: "context" }];
+
+    function renderHeld(job: JobRow) {
+      renderWithProviders(
+        <ErrorsQueue
+          errors={[]}
+          hold={fixtureHold({ items: [job], unit_groups: [] })}
+          unitLabel={unitLabel}
+        />
+      );
+      return screen.getByTestId("held-job");
+    }
+
+    it("строка: единица, подпись, число имён и совпадение с местом; ссылки на контекст нет", () => {
+      const row = renderHeld(discoveryJob(51, { status: "privacy_hold", matches, last_error_class: null, error_text: null }));
+
+      expect(row).toHaveTextContent("м²");
+      expect(within(row).getByText("Открытие семей")).toBeInTheDocument();
+      expect(within(row).getByText("имён: 120")).toBeInTheDocument();
+      expect(within(row).getByText("«жк северный» — в строке")).toBeInTheDocument();
+      expect(within(row).queryByRole("link")).not.toBeInTheDocument();
+    });
+
+    it("«без единицы» и неизвестное число имён — подписано, не пусто", () => {
+      const row = renderHeld(
+        discoveryJob(52, { status: "privacy_hold", matches, unit_id: null, unit_code: null, names_count: null })
+      );
+
+      expect(row).toHaveTextContent("без единицы");
+      expect(within(row).getByText("имён: —")).toBeInTheDocument();
+    });
+
+    it("«Отправить» и «Не отправлять» шлют показанный набор по заданию открытия", async () => {
+      const user = userEvent.setup();
+      const row = renderHeld(discoveryJob(53, { status: "privacy_hold", matches }));
+
+      await user.click(within(row).getByRole("button", { name: "Отправить" }));
+      await waitFor(() => expect(handlerState.privacyReleaseRequests).toEqual([{ jobId: 53, matches }]));
+
+      await user.click(within(row).getByRole("button", { name: "Не отправлять" }));
+      await waitFor(() => expect(handlerState.privacyDeclineRequests).toEqual([{ jobId: 53, matches }]));
+    });
   });
 });

@@ -53,6 +53,7 @@ from models import (
     WorkFamily,
 )
 from services.family_change import _fitting_families
+from services.family_discovery import discovery_scope, render_discovery_request
 from services.semantic_answer import is_system_name
 from services.semantic_cost import spent_last_24h
 from services.semantic_request import (
@@ -99,6 +100,7 @@ class SuggestionRow(TypedDict):
     reason: str
     multi_owner: bool
     previously_rejected: RejectedMark | None
+    semantic_kind: str
 
 
 class SuggestionGroup(TypedDict):
@@ -108,6 +110,7 @@ class SuggestionGroup(TypedDict):
     band: Band
     rows: list[SuggestionRow]
     total: int
+    system_count: int
 
 
 class NewRow(TypedDict):
@@ -375,6 +378,7 @@ def _suggestion_row(
             if decided_at is not None
             else None
         ),
+        semantic_kind=material.semantic_kind,
     )
 
 
@@ -469,6 +473,9 @@ def _list_queue(
                 band=group_band,
                 rows=built,
                 total=len(built),
+                system_count=sum(
+                    1 for row in built if row["semantic_kind"] == SemanticKind.SYSTEM.value
+                ),
             )
         )
     band_order = {"high": 0, "mid": 1, "low": 2}
@@ -666,7 +673,6 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
             CatalogContext.archived_at.is_(None),
             CatalogContext.work_family_id.is_(None),
             CatalogContext.semantic_state != SemanticState.NOT_APPLICABLE.value,
-            CatalogContext.semantic_kind != SemanticKind.SYSTEM.value,
             has_member,
             ~active_family,
         )
@@ -865,6 +871,30 @@ def _schema_job_rows(db: Session, jobs: list) -> dict[int, dict]:
     }
 
 
+#: Подпись строки открытия семей в очередях: предмет — единица, а не контекст и не
+#: семья, поэтому названия у задания нет.
+DISCOVERY_JOB_TITLE = "Открытие семей"
+
+
+def _discovery_job_rows(db: Session, jobs: list) -> dict[int, dict]:
+    """Строки заданий `family_discovery` — по единице. Число различных имён
+    показывается только тогда, когда оно описывает то, что отправлено: текущий
+    `request_hash` охвата единицы (тот же рендер, что у запуска и обработки)
+    равен `request_hash` задания; иначе охват уже изменился и число было бы
+    неправдой — `None` (тело в задании не хранится)."""
+    rows: dict[int, dict] = {}
+    for job in jobs:
+        scope = discovery_scope(db, job.unit_id)
+        current = render_discovery_request(scope, db, settings=settings)
+        rows[job.id] = {
+            "title": DISCOVERY_JOB_TITLE,
+            "names_count": (
+                scope.counts.names if current.request_hash == job.request_hash else None
+            ),
+        }
+    return rows
+
+
 def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsResponse:
     """Задания в `error` или `privacy_hold`. Для `error` — последнее сообщение
     попытки (текст ошибки, а у схемной ошибки, где его нет, — причина из
@@ -901,10 +931,16 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
             ).all()
         )
 
+    discovery_rows = _discovery_job_rows(
+        db, [job for job, _ in jobs if job.kind == SemanticJobKind.family_discovery.value]
+    )
     items: list[JobRow] = []
     for job, error_text in jobs:
         family = schema_rows.get(job.id)
-        material = None if family is not None else materials[job.context_id]
+        discovery = discovery_rows.get(job.id)
+        material = (
+            None if family is not None or discovery is not None else materials[job.context_id]
+        )
         items.append(
             JobRow(
                 job_id=job.id,
@@ -913,8 +949,16 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
                 family_id=job.family_id,
                 schema_id=job.schema_id,
                 schema_version=family["version"] if family is not None else None,
-                names_count=family["names_count"] if family is not None else None,
-                title=family["title"] if family is not None else material.title,
+                names_count=(
+                    family["names_count"]
+                    if family is not None
+                    else discovery["names_count"] if discovery is not None else None
+                ),
+                title=(
+                    family["title"]
+                    if family is not None
+                    else discovery["title"] if discovery is not None else material.title
+                ),
                 unit_id=job.unit_id,
                 unit_code=unit_codes.get(job.unit_id),
                 article=material.article if material is not None else None,

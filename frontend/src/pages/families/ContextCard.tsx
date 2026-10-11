@@ -56,6 +56,7 @@ import {
   useContextCard,
   useContextGroupMembers,
   useMarkNotWork,
+  useReopenContext,
   useMergeContexts,
   useMoveMembers,
   useSetNameRole,
@@ -76,6 +77,7 @@ import type {
 } from "@/types/domain";
 
 import {
+  CATALOG_REVIEW_KIND_LABEL,
   CATEGORY_SOURCE_LABEL,
   contextRefusalLabel,
   DECISION_SOURCE_LABEL,
@@ -201,9 +203,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
   const acceptTargetDecision = useAcceptTargetDecision();
   const transferStaleGroup = useTransferStaleGroup();
   const markNotWork = useMarkNotWork();
+  const reopenContext = useReopenContext();
 
   const [tab, setTab] = useState("decisions");
   const [notWorkOpen, setNotWorkOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
   const [markPositionOpen, setMarkPositionOpen] = useState(false);
   // Исход и отказ смены семьи показывает само окно: тоста у этой мутации нет.
   const [familyOutcome, setFamilyOutcome] = useState<string | null>(null);
@@ -396,6 +400,13 @@ export function ContextCard({ contextId }: ContextCardProps) {
 
   const selectedIdList = Array.from(selectedIds);
 
+  // Контекст неприменим из-за разметки строки в Review (раздел, мусор): «не работу» ему
+  // поставил не человек, и вернуть его в разбор нельзя.
+  const reviewKindLabel =
+    card.archived_at === null && card.semantic_state === "NOT_APPLICABLE"
+      ? (CATALOG_REVIEW_KIND_LABEL[card.catalog_kind] ?? null)
+      : null;
+
   // Живые соседи по корзине, кроме текущего контекста — цель слияния/переноса
   // выбирается из НИХ (решение оркестратора П6, план задачи 13), а не
   // вводится id вручную: архивный сосед в выбор не попадает — переносить/
@@ -472,10 +483,24 @@ export function ContextCard({ contextId }: ContextCardProps) {
             >
               Пометить написание целиком…
             </Button>
+            {reviewKindLabel !== null && (
+              <p className="mt-1 text-xs text-fg-tertiary">
+                Размечено в Review как «{reviewKindLabel}» — вид строки решает Review.
+              </p>
+            )}
           </div>
-          <Badge variant={card.archived_at ? "outline" : "secondary"}>
-            {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
-          </Badge>
+          <div className="flex flex-none flex-col items-end gap-2">
+            <Badge variant={card.archived_at ? "outline" : "secondary"}>
+              {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
+            </Badge>
+            {/* «Не работа», которую поставил человек, обратима (спека 3б §2.8); строка,
+                размеченная в Review, кнопки не получает — её вид решает Review. */}
+            {card.reopenable && (
+              <Button size="sm" variant="outline" onClick={() => setReopenOpen(true)}>
+                Вернуть в разбор
+              </Button>
+            )}
+          </div>
         </div>
 
       {/* Строки внимания (спека §2.6) — МЕЖДУ шапкой и вкладками, видны
@@ -1152,6 +1177,34 @@ export function ContextCard({ contextId }: ContextCardProps) {
                   }}
                 >
                   Отметить как не работу
+                </Button>
+              }
+            />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={reopenOpen} onOpenChange={setReopenOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Вернуть контекст в разбор?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Контекст перестанет считаться «не работа» и снова попадёт в разбор: модель предложит
+              ему семью. Прежние семья, вариант и значения не возвращаются.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
+            <AlertDialogAction
+              render={
+                <Button
+                  disabled={reopenContext.isPending}
+                  onClick={() => {
+                    reopenContext.mutate(contextId);
+                    setReopenOpen(false);
+                  }}
+                >
+                  Вернуть
                 </Button>
               }
             />

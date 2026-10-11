@@ -99,6 +99,71 @@ VALUES_RESPONSE_FORMAT: Final = {
 }
 
 
+#: Версия формы ответа открытия семей (спека 3б §2.3): пишется на задании как
+#: `response_schema_version`; растёт вместе со сменой `DISCOVERY_RESPONSE_FORMAT`.
+DISCOVERY_RESPONSE_SCHEMA_VERSION: Final = "discovery:1"
+
+#: `{"groups": [...], "not_work": [...], "family_categories": [...]}`: строгий
+#: режим, все ключи обязательны, пустое значение — явный `null`. Непустота
+#: `names` задана схемой и повторно проверяется при разборе; связи с
+#: отправленным материалом (номера, семьи, справочник) схема выразить не может и
+#: их проверяет `parse_discovery_answer`.
+DISCOVERY_RESPONSE_FORMAT: Final = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "family_discovery",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "family_id": {"type": ["integer", "null"]},
+                            "title": {"type": ["string", "null"]},
+                            "definition": {"type": ["string", "null"]},
+                            "category_id": {"type": ["integer", "null"]},
+                            "similar_family_id": {"type": ["integer", "null"]},
+                            "names": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "minItems": 1,
+                            },
+                        },
+                        "required": [
+                            "family_id",
+                            "title",
+                            "definition",
+                            "category_id",
+                            "similar_family_id",
+                            "names",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+                "not_work": {"type": "array", "items": {"type": "integer"}},
+                "family_categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "family_id": {"type": "integer"},
+                            "category_id": {"type": "integer"},
+                        },
+                        "required": ["family_id", "category_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["groups", "not_work", "family_categories"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 def values_response_format_for(ordinals: Iterable[int], base: dict | None = None) -> dict:
     """Формат ответа `context_values` для схемы с данными порядковыми номерами:
     копия `base` (по умолчанию `VALUES_RESPONSE_FORMAT`), у которой перечисление
@@ -122,6 +187,13 @@ VariantErrorCode = Literal[
     "bad_count",
     "bad_kind",
     "value_not_in_list",
+    # Разбор ответа открытия семей (спека 3б §2.3); `unknown_family` — из кодов
+    # разбора предложений.
+    "unknown_category",
+    "bad_index",
+    "duplicate_index",
+    "duplicate_family",
+    "unexpected_value",
 ]
 
 MAX_PARAMETERS: Final = 3
@@ -313,3 +385,181 @@ def parse_values_answer(raw: str, parameters: Sequence[SchemaParameterIn]) -> Va
                 f"ordinal {item.ordinal}: значение не из списка параметра",
             )
     return ValuesAnswer(items=tuple(sorted(items, key=lambda i: i.ordinal)))
+
+
+# ---------------------------------------------------------------------------
+#  Ответ открытия семей (спека 3б §2.3)
+# ---------------------------------------------------------------------------
+
+_DISCOVERY_KEYS: Final = ("groups", "not_work", "family_categories")
+_DISCOVERY_GROUP_KEYS: Final = (
+    "family_id",
+    "title",
+    "definition",
+    "category_id",
+    "similar_family_id",
+    "names",
+)
+_DISCOVERY_CATEGORY_KEYS: Final = ("family_id", "category_id")
+
+
+@dataclass(frozen=True)
+class DiscoverySent:
+    """Что ушло модели: по этому множеству проверяются ссылки ответа. Номера
+    имён — `1..names_count`; семьи — активные семьи единицы, из них отдельно
+    «без категории»; категории — справочник целиком."""
+
+    names_count: int
+    active_family_ids: frozenset[int]
+    uncategorized_family_ids: frozenset[int]
+    category_ids: frozenset[int]
+
+
+@dataclass(frozen=True)
+class DiscoveryGroup:
+    """Группа ответа. `family_id IS NULL` — новый черновик (имя, определение и
+    категория заданы, `similar_family_id` — активная семья, на которую группа
+    похожа, или `None`); иначе — имена, отнесённые к активной семье, остальные
+    четыре поля `None`. `names` — номера имён по возрастанию."""
+
+    family_id: int | None
+    title: str | None
+    definition: str | None
+    category_id: int | None
+    similar_family_id: int | None
+    names: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class DiscoveryAnswer:
+    """Разобранный ответ открытия. `not_work` и номера групп — по возрастанию;
+    `unassigned` — пропущенные номера имён, не ошибка."""
+
+    groups: tuple[DiscoveryGroup, ...]
+    not_work: tuple[int, ...]
+    family_categories: tuple[tuple[int, int], ...]
+    unassigned: tuple[int, ...]
+
+
+def _optional_int(value: object, where: str) -> int | None:
+    return None if value is None else _int_field(value, where)
+
+
+def _required_text(value: object, where: str) -> str:
+    """Новый черновик: имя и определение — строка, непустая после `strip`;
+    `null` и пробельная строка — `empty_value`, не строка — `bad_type`."""
+    if value is None:
+        raise _fail("empty_value", f"{where}: обязательно для новой семьи")
+    return _nonblank(value, where)
+
+
+def _claim_names(
+    values: object, where: str, names_count: int, seen: set[int], *, nonempty: bool
+) -> tuple[int, ...]:
+    """Номера имён одного места ответа: целые, в `1..N`, каждый номер ответа —
+    только в одном месте (две группы, группа и «не работа», повтор внутри
+    одного места)."""
+    items = _list_field(values, where)
+    if nonempty and not items:
+        raise _fail("bad_count", f"{where}: пустой список номеров")
+    numbers: list[int] = []
+    for position, value in enumerate(items):
+        number = _int_field(value, f"{where}[{position}]")
+        if not 1 <= number <= names_count:
+            raise _fail("bad_index", f"{where}[{position}]: номер {number} вне 1..{names_count}")
+        if number in seen:
+            raise _fail("duplicate_index", f"{where}[{position}]: номер {number} уже занят")
+        seen.add(number)
+        numbers.append(number)
+    return tuple(sorted(numbers))
+
+
+def _parse_discovery_group(
+    item: object,
+    position: int,
+    sent: DiscoverySent,
+    seen_names: set[int],
+    seen_families: set[int],
+) -> DiscoveryGroup:
+    where = f"groups[{position}]"
+    group = _dict_item(item, where)
+    _check_keys(group, _DISCOVERY_GROUP_KEYS, where)
+    family_id = _optional_int(group["family_id"], f"{where}.family_id")
+    category_id = _optional_int(group["category_id"], f"{where}.category_id")
+    similar = _optional_int(group["similar_family_id"], f"{where}.similar_family_id")
+
+    if family_id is None:
+        title = _required_text(group["title"], f"{where}.title")
+        definition = _required_text(group["definition"], f"{where}.definition")
+        if category_id not in sent.category_ids:
+            raise _fail("unknown_category", f"{where}.category_id: не из справочника")
+        if similar is not None and similar not in sent.active_family_ids:
+            raise _fail("unknown_family", f"{where}.similar_family_id: не из активных семей")
+    else:
+        if family_id not in sent.active_family_ids:
+            raise _fail("unknown_family", f"{where}.family_id: не из активных семей")
+        if family_id in seen_families:
+            raise _fail("duplicate_family", f"{where}.family_id: семья уже в другой группе")
+        seen_families.add(family_id)
+        for field in ("title", "definition", "category_id", "similar_family_id"):
+            if group[field] is not None:
+                raise _fail("unexpected_value", f"{where}.{field}: у группы активной семьи null")
+        title = definition = None
+
+    names = _claim_names(group["names"], f"{where}.names", sent.names_count, seen_names, nonempty=True)
+    return DiscoveryGroup(
+        family_id=family_id,
+        title=title,
+        definition=definition,
+        category_id=category_id,
+        similar_family_id=similar,
+        names=names,
+    )
+
+
+def parse_discovery_answer(raw: str, sent: DiscoverySent) -> DiscoveryAnswer:
+    """Строгий разбор ответа открытия семей (спека 3б §2.3, «Разбор»).
+
+    Обрамление, единственный объект и повтор ключа — как у разборов 3а; лишний
+    ключ — `bad_type`. Дальше — связи с отправленным: новый черновик без имени
+    или определения, категория не из справочника, похожая и названная семья не
+    из активных, поля группы активной семьи не `null`, семья в двух группах,
+    номер вне `1..N` или в двух местах, `family_categories` с семьёй не «без
+    категории», с повтором или с категорией не из справочника — схемная ошибка.
+    Пропущенные номера имён и пропущенная семья в `family_categories` ошибкой не
+    являются: первые идут в `unassigned`."""
+    obj = _object_of(raw)
+    _check_keys(obj, _DISCOVERY_KEYS, "ответ")
+
+    seen_names: set[int] = set()
+    seen_families: set[int] = set()
+    groups = tuple(
+        _parse_discovery_group(item, position, sent, seen_names, seen_families)
+        for position, item in enumerate(_list_field(obj["groups"], "groups"))
+    )
+    not_work = _claim_names(obj["not_work"], "not_work", sent.names_count, seen_names, nonempty=False)
+
+    categorized: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for position, item in enumerate(_list_field(obj["family_categories"], "family_categories")):
+        where = f"family_categories[{position}]"
+        pair = _dict_item(item, where)
+        _check_keys(pair, _DISCOVERY_CATEGORY_KEYS, where)
+        family_id = _int_field(pair["family_id"], f"{where}.family_id")
+        category_id = _int_field(pair["category_id"], f"{where}.category_id")
+        if family_id in categorized:
+            raise _fail("duplicate_family", f"{where}.family_id: семья повторена")
+        if family_id not in sent.uncategorized_family_ids:
+            raise _fail("unknown_family", f"{where}.family_id: не из перечня «без категории»")
+        if category_id not in sent.category_ids:
+            raise _fail("unknown_category", f"{where}.category_id: не из справочника")
+        categorized.add(family_id)
+        pairs.append((family_id, category_id))
+
+    unassigned = tuple(n for n in range(1, sent.names_count + 1) if n not in seen_names)
+    return DiscoveryAnswer(
+        groups=groups,
+        not_work=not_work,
+        family_categories=tuple(pairs),
+        unassigned=unassigned,
+    )

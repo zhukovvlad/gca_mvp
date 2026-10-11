@@ -78,6 +78,7 @@ from services.work_families import (
     set_unit,
     update_family,
 )
+from tests.factories import seed_category_id
 from tests.integration.test_schema_constraints import rejected
 
 pytestmark = pytest.mark.integration
@@ -507,6 +508,7 @@ def test_update_family_allowed_when_active(db_session, factories):
     fam = create_family(
         db_session, title="Актив", unit_name=None, definition="Определение",
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     activate_family(db_session, family_id=fam.id, actor_id=user.id)
     updated = update_family(
@@ -527,6 +529,7 @@ def test_update_family_clearing_definition_of_active_family_is_a_domain_refusal(
     fam = create_family(
         db_session, title="Актив с определением", unit_name=None, definition="Определение",
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     activate_family(db_session, family_id=fam.id, actor_id=user.id)
     with pytest.raises(WorkFamilyError) as exc:
@@ -636,6 +639,7 @@ def test_activate_with_whitespace_only_definition_refuses(db_session, factories)
     fam = create_family(
         db_session, title="Пробелы", unit_name=None, definition="   ",
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     assert fam.definition is None  # уже свёрнуто create_family
     with pytest.raises(WorkFamilyError) as exc:
@@ -653,6 +657,7 @@ def test_activate_blank_definition_set_by_direct_update_refuses(db_session, fact
     fam = create_family(
         db_session, title="Пробелы прямой правкой", unit_name=None, definition=None,
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     db_session.execute(
         sa.update(WorkFamily).where(WorkFamily.id == fam.id).values(definition="   ")
@@ -670,6 +675,7 @@ def test_activate_after_adding_definition_succeeds_and_fills_pair(db_session, fa
     fam = create_family(
         db_session, title="Будет активирована", unit_name="M2", definition=None,
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     with pytest.raises(WorkFamilyError):
         activate_family(db_session, family_id=fam.id, actor_id=user.id)
@@ -693,6 +699,7 @@ def test_activate_not_draft_refuses_from_active_and_archived(db_session, factori
     fam_active = create_family(
         db_session, title=f"Уже активна {_uid()}", unit_name=None,
         definition="Определение", actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     activate_family(db_session, family_id=fam_active.id, actor_id=user.id)
     with pytest.raises(WorkFamilyError) as exc_active:
@@ -702,6 +709,7 @@ def test_activate_not_draft_refuses_from_active_and_archived(db_session, factori
     fam_archived = create_family(
         db_session, title=f"Уже архивна {_uid()}", unit_name=None,
         definition="Определение", actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     fam_archived.status = FamilyStatus.archived.value
     db_session.flush()
@@ -772,10 +780,12 @@ def test_activate_duplicate_active_name_and_unit_is_a_domain_refusal(db_session,
     f1 = create_family(
         db_session, title=title, unit_name="M2", definition="Определение А",
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     f2 = create_family(
         db_session, title=title, unit_name="M2", definition="Определение Б",
         actor_id=user.id,
+        family_category_id=seed_category_id(db_session),
     )
     activate_family(db_session, family_id=f1.id, actor_id=user.id)
     with pytest.raises(WorkFamilyError) as exc:
@@ -936,7 +946,7 @@ def _context_events(db, context_id, event_type=None):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
 
@@ -1684,6 +1694,7 @@ class TestFamilyLockCompilation:
         family = create_family(
             db_session, title=f"Лок активации {_uid()}", unit_name=None,
             definition="Определение", actor_id=user.id,
+            family_category_id=seed_category_id(db_session),
         )
         db_session.expire(family)  # см. комментарий в test_set_unit_for_update_with_reread
         with _capturing_sql(db_session) as statements:
@@ -1897,6 +1908,7 @@ class TestFamilyRereadAfterLock:
         family = create_family(
             committing_db, title=f"Перечит. правки {_uid()}", unit_name=None,
             definition="Определение", actor_id=user.id,
+            family_category_id=seed_category_id(committing_db),
         )
         activate_family(committing_db, family_id=family.id, actor_id=user.id)
         committing_db.commit()

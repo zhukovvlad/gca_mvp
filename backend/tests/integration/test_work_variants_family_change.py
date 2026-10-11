@@ -36,6 +36,7 @@ from models import (
 )
 from services.family_change import (
     FamilyChangeOutcome,
+    Thresholds,
     apply_publication_rules,
     cancel_pending_family,
     request_family_change,
@@ -1110,7 +1111,7 @@ class TestTerminalOutcomesStayTerminal:
         db_session.flush()
 
         rules = apply_publication_rules(
-            db_session, suggestion_id=suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
         report = confirm_suggestions(
             db_session, suggestion_ids=[suggestion.id], actor_id=scene.user.id
@@ -1140,7 +1141,7 @@ def _rules_scene(db, factories, *, confidence="0.9", suggested="b"):
 
 
 def _rules(db, scene, threshold=THRESHOLD):
-    return apply_publication_rules(db, suggestion_id=scene.suggestion.id, threshold=threshold)
+    return apply_publication_rules(db, suggestion_id=scene.suggestion.id, thresholds=Thresholds(threshold, None))
 
 
 class TestRowOneAndTwoNoFamilyNoVariant:
@@ -1212,7 +1213,7 @@ class TestRowOneAndTwoNoFamilyNoVariant:
         db_session.flush()
 
         assert apply_publication_rules(
-            db_session, suggestion_id=suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         ) is None
         assert _decision(db_session, suggestion.id) == (None, None)
 
@@ -1478,7 +1479,7 @@ class TestRulesRecheck:
         assert _decision(db_session, scene.suggestion.id) == (None, None)
 
     def test_a_missing_suggestion_is_ignored(self, db_session, factories):
-        assert apply_publication_rules(db_session, suggestion_id=987654, threshold=THRESHOLD) is None
+        assert apply_publication_rules(db_session, suggestion_id=987654, thresholds=Thresholds(THRESHOLD, None)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1748,7 +1749,7 @@ class TestRulesAgainstAHumanDecisionMeanwhile:
         )
 
         def work(db):
-            return apply_publication_rules(db, suggestion_id=suggestion_id, threshold=THRESHOLD)
+            return apply_publication_rules(db, suggestion_id=suggestion_id, thresholds=Thresholds(THRESHOLD, None))
 
         try:
             runner.spawn("rules", work, pause_on=_is_first_read)
@@ -1790,7 +1791,7 @@ class TestRecordResultAndTheRules:
         job_id = scene.jobs[0].id
         seen: dict[str, object] = {}
 
-        def _probe(db, *, suggestion_id, threshold):
+        def _probe(db, *, suggestion_id, thresholds):
             with committing_session_factory() as other:
                 try:
                     other.execute(
@@ -2181,7 +2182,7 @@ class TestLockSetOfARequest:
         runner = self._paused(
             committing_session_factory,
             lambda session: apply_publication_rules(
-                session, suggestion_id=suggestion_id, threshold=THRESHOLD
+                session, suggestion_id=suggestion_id, thresholds=Thresholds(THRESHOLD, None)
             ),
             "rules",
         )

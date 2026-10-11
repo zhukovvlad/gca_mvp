@@ -4,7 +4,8 @@
 
 Таблица §2.14 — единственный источник истины для ``EVENT_REQUIRED_KEYS``:
 пятнадцать типов событий, каждому — свой набор обязательных ключей payload;
-шесть типов миграции 0019 (спека вариантов §2.13) добавлены в те же реестры.
+шесть типов миграции 0019 (спека вариантов §2.13) и `context_reopened` миграции
+0021 (спека 3б §2.14) добавлены в те же реестры.
 Схема (миграция 0017, задача 1) держит закрытый список ``event_type`` и
 равносильность «тип ↔ предмет» (``CK_EVENT_SUBJECT_BY_TYPE``); состав ключей
 payload схемой не выражается — его держит валидатор здесь, ДО того, как
@@ -68,8 +69,8 @@ FAMILY_EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 
-#: Остальные тринадцать типов — предмет контекст: десять из спеки §2.14 и три
-#: из спеки вариантов §2.13.
+#: Остальные четырнадцать типов — предмет контекст: десять из спеки §2.14, три
+#: из спеки вариантов §2.13 и `context_reopened` (спека 3б §2.14).
 CONTEXT_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "context_variant_assigned",
@@ -85,6 +86,7 @@ CONTEXT_EVENT_TYPES: frozenset[str] = frozenset(
         "context_family_assigned",
         "context_archived",
         "routing_rules_dropped",
+        "context_reopened",
     }
 )
 
@@ -122,6 +124,8 @@ EVENT_REQUIRED_KEYS: dict[str, frozenset[str]] = {
         {"pending_family_id", "source", "suggestion_id", "outcome"}
     ),
     "context_not_work": frozenset({"reason", "cleared_family_id", "cleared_variant_id"}),
+    # Спека 3б §2.14: «Вернуть в разбор» — состояние контекста до и после.
+    "context_reopened": frozenset({"from_state", "to_state"}),
     "family_schema_frozen": frozenset(
         {"schema_id", "version", "origin", "parameters", "job_id"}
     ),
@@ -141,7 +145,7 @@ EVENT_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ),
     ("members_moved", "reason"): frozenset({"manual", "stale_accepted", "review_merge"}),
     ("context_archived", "reason"): frozenset({"operator", "review_merge", "context_merge"}),
-    ("family_created", "origin"): frozenset({"seed", "operator"}),
+    ("family_created", "origin"): frozenset({"seed", "operator", "discovery"}),
     ("family_archived", "reason"): frozenset({"operator", "merged"}),
     ("members_marked_stale", "trigger"): frozenset({"category_override"}),
     ("kind_set", "source"): frozenset(member.value for member in DecisionSource),

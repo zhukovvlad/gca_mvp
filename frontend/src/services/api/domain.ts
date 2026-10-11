@@ -19,7 +19,18 @@ import type {
   ContextsPage,
   ContextsParams,
   ConfirmSuggestionsResult,
+  ActivateDiscoveryInput,
+  ActivationOutcome,
   CreateFamilyFromSuggestionInput,
+  DiscoveryDraftsResponse,
+  DiscoveryPreview,
+  DiscoveryUnitRow,
+  DraftEditInput,
+  DraftMergeTarget,
+  DraftActionResult,
+  FamilyCategory,
+  FamilyCategoryFilter,
+  FamilyCategoryInput,
   FamilyChangeResult,
   FamilySchema,
   FamilyVariant,
@@ -418,10 +429,29 @@ export const tendersApi = {
 // ---------------------------------------------------------------------------
 
 export const semanticApi = {
-  listFamilies: (params?: { status?: WorkFamily["status"]; unit_id?: number }): Promise<WorkFamily[]> =>
+  listFamilies: (params?: {
+    status?: WorkFamily["status"];
+    unit_id?: number;
+    family_category_id?: FamilyCategoryFilter;
+  }): Promise<WorkFamily[]> =>
     api
       .get<{ items: WorkFamily[] }>("/v1/semantic/families", { params })
       .then((r) => r.data.items),
+
+  /** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
+  listFamilyCategories: (): Promise<FamilyCategory[]> =>
+    api
+      .get<{ items: FamilyCategory[] }>("/v1/semantic/family-categories")
+      .then((r) => r.data.items),
+
+  createFamilyCategory: (input: FamilyCategoryInput): Promise<FamilyCategory> =>
+    api.post<FamilyCategory>("/v1/semantic/family-categories", input).then((r) => r.data),
+
+  updateFamilyCategory: (id: number, input: Partial<FamilyCategoryInput>): Promise<FamilyCategory> =>
+    api.patch<FamilyCategory>(`/v1/semantic/family-categories/${id}`, input).then((r) => r.data),
+
+  deleteFamilyCategory: (id: number): Promise<void> =>
+    api.delete(`/v1/semantic/family-categories/${id}`).then(() => undefined),
 
   createFamily: (input: WorkFamilyInput): Promise<WorkFamily> =>
     api.post<WorkFamily>("/v1/semantic/families", input).then((r) => r.data),
@@ -463,6 +493,10 @@ export const semanticApi = {
 
   markNotWork: (contextId: number): Promise<ContextCardData> =>
     api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/not-work`).then((r) => r.data),
+
+  /** «Вернуть в разбор» контекста «не работа», поставленной человеком (спека 3б §2.8). */
+  reopenContext: (contextId: number): Promise<ContextCardData> =>
+    api.post<ContextCardData>(`/v1/semantic/contexts/${contextId}/reopen`).then((r) => r.data),
 
   /** Глобальная пометка строки каталога: касается всех её будущих вхождений (спека вариантов §2.11). */
   setPositionKind: (positionId: number, kind: PositionMarkKind): Promise<PositionKindResult> =>
@@ -669,6 +703,55 @@ export const semanticApi = {
         unit_id: unitId,
         preview_hash: previewHash,
       })
+      .then((r) => r.data),
+
+  /** Блок «Открыть семьи»: строка на единицу с охватом или семьями без категории (спека 3б §2.12). */
+  discoveryUnits: (): Promise<DiscoveryUnitRow[]> =>
+    api
+      .get<{ units: DiscoveryUnitRow[] }>("/v1/semantic/discovery/units")
+      .then((r) => r.data.units),
+
+  discoveryPreview: (unitId: number | null): Promise<DiscoveryPreview> =>
+    api
+      .post<DiscoveryPreview>("/v1/semantic/discovery/preview", { unit_id: unitId })
+      .then((r) => r.data),
+
+  launchDiscovery: (
+    unitId: number | null,
+    previewHash: string
+  ): Promise<{ job_id: number; status: string; unit_id: number | null }> =>
+    api
+      .post<{ job_id: number; status: string; unit_id: number | null }>("/v1/semantic/discovery", {
+        unit_id: unitId,
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  /** Черновики последнего выполненного открытия единицы; `unit_id` не передан — единица «без единицы». */
+  discoveryDrafts: (unitId: number | null): Promise<DiscoveryDraftsResponse> =>
+    api
+      .get<DiscoveryDraftsResponse>("/v1/semantic/discovery/drafts", {
+        params: unitId === null ? {} : { unit_id: unitId },
+      })
+      .then((r) => r.data),
+
+  editDraft: (draftId: number, input: DraftEditInput): Promise<DraftActionResult> =>
+    api.patch<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}`, input).then((r) => r.data),
+
+  mergeDraft: (draftId: number, target: DraftMergeTarget): Promise<DraftActionResult> =>
+    api
+      .post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/merge`, target)
+      .then((r) => r.data),
+
+  discardDraft: (draftId: number): Promise<DraftActionResult> =>
+    api.post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/discard`).then((r) => r.data),
+
+  restoreDraft: (draftId: number): Promise<DraftActionResult> =>
+    api.post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/restore`).then((r) => r.data),
+
+  activateDiscovery: (jobId: number, input: ActivateDiscoveryInput): Promise<ActivationOutcome> =>
+    api
+      .post<ActivationOutcome>(`/v1/semantic/discovery/${jobId}/activate`, input)
       .then((r) => r.data),
 
   reaskAllPreview: (): Promise<ReaskPreview> =>

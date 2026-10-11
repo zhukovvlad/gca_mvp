@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Черновой макет гейта 1 фичи 3б «Системы и открытие семей» (пункт А1 дорожной карты).
+  Нарисован по живому экрану /families → «Предложения» (стенд gca_dev, 09.10.2026):
+  та же сводка, те же очереди, фильтры и полосы уверенности. Элементы — shadcn/ui.
+  Имена и количества — настоящие строки стенда; суммы и проценты — для примера.
+-->
+<title>Открытие семей: макет</title>
+<style>
+:root {
+  --page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82;
+  --bd-subtle:rgba(0,0,0,.08); --bd:rgba(0,0,0,.14);
+  --accent-soft:#E8F0EA; --accent-bd:#C9D9CD; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --warn-soft:#FAF1E1; --warn-bd:#E8C8A8; --warn-text:#8A4A1C;
+  --bad-soft:#FBEAEA; --bad-bd:#EBC2C2; --bad-text:#9B3030;
+  --info-soft:#E5EEF4; --info-bd:#C5D7E2; --info-text:#2F5470;
+  --purple-soft:#EFEAFB; --purple-bd:#D5CAF0; --purple-text:#5A3E9A;
+  --new-soft:#FFF6D6; --new-bd:#E2C65A;
+  --font-sans:"Inter","Segoe UI",Roboto,-apple-system,sans-serif;
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--fg); font-family:var(--font-sans); font-size:14px; line-height:1.5; }
+.wrap { max-width:1240px; margin:0 auto; padding:28px 20px 72px; }
+h1 { font-family:var(--font-serif); font-weight:600; font-size:34px; margin:0 0 8px; }
+.sub { color:var(--fg2); margin:0 0 22px; max-width:86ch; }
+section { margin-bottom:46px; }
+h2 { font-family:var(--font-serif); font-weight:600; font-size:23px; margin:0 0 4px; }
+.secsub { color:var(--fg2); font-size:13px; margin:0 0 14px; max-width:92ch; }
+.secsub b, .sub b { color:var(--fg); }
+.screen { background:var(--page); border:1px solid var(--bd); border-radius:14px; padding:20px 22px; }
+.hdr { display:flex; align-items:center; border:1px solid var(--bd-subtle); padding:12px 0 12px 0; margin-bottom:18px; }
+.hdr h3 { font-family:var(--font-serif); font-size:26px; margin:0; font-weight:500; }
+.hdr .d { color:var(--fg2); font-size:13px; }
+.seg { margin-left:auto; display:inline-flex; background:var(--sunken); border:1px solid var(--bd-subtle); border-radius:10px; padding:4px; }
+.seg span { padding:5px 16px; border-radius:7px; font-size:13px; color:var(--fg2); }
+.seg span.on { background:var(--surface); color:var(--fg); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.legend { font-size:13px; color:var(--fg2); display:flex; gap:10px; align-items:center; margin-bottom:22px; }
+.chip { display:inline-flex; border-radius:999px; padding:0 8px; font-size:12px; border:1px solid; }
+.chip.cls { background:var(--purple-soft); border-color:var(--purple-bd); color:var(--purple-text); }
+.chip.est { background:var(--warn-soft); border-color:var(--warn-bd); color:var(--warn-text); }
+.spend { display:flex; justify-content:flex-end; align-items:center; gap:10px; font-size:13px; color:var(--fg2); margin-bottom:6px; }
+.spend .bar { width:130px; height:4px; background:var(--bd-subtle); border-radius:2px; }
+.stats { font-size:13px; color:var(--fg2); display:flex; gap:20px; margin-bottom:12px; flex-wrap:wrap; }
+.stats b { color:var(--fg); }
+.qrow { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+.qtabs { display:inline-flex; border:1px solid var(--bd); background:var(--surface); border-radius:9px; overflow:hidden; }
+.qtabs span { padding:7px 16px; font-size:13px; color:var(--fg2); }
+.qtabs span .n { opacity:.55; margin-left:6px; }
+.qtabs span.on { background:var(--action); color:var(--action-text); font-weight:600; }
+.qtabs span.on .n { opacity:.75; }
+.sel { border:1px solid var(--bd); background:var(--surface); border-radius:8px; padding:5px 10px; font-size:13px; min-width:130px; display:inline-flex; justify-content:space-between; gap:10px; }
+.lbl { font-size:13px; color:var(--fg2); }
+.card { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; margin-bottom:12px; }
+.grp { display:flex; align-items:center; gap:12px; padding:14px 16px; }
+.grp .t { font-weight:600; font-size:15px; }
+.grp .u { font-size:13px; color:var(--fg3); }
+.band { border-radius:999px; padding:0 8px; font-size:12px; border:1px solid; }
+.band.hi { background:var(--accent-soft); border-color:var(--accent-bd); color:var(--accent-text); }
+.band.mid { background:var(--warn-soft); border-color:var(--warn-bd); color:var(--warn-text); }
+.band.lo { background:var(--bad-soft); border-color:var(--bad-bd); color:var(--bad-text); }
+.btn { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--bd); background:var(--surface); color:var(--fg);
+  border-radius:8px; padding:5px 12px; font-size:13px; font-weight:500; white-space:nowrap; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:var(--action); }
+.btn.sm { padding:3px 10px; font-size:12.5px; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--fg2); }
+.ml { margin-left:auto; }
+.srow { display:flex; gap:14px; padding:12px 16px; border-top:1px solid var(--bd-subtle); font-size:13px; align-items:flex-start; }
+.cb { width:16px; height:16px; border:1.5px solid var(--fg2); border-radius:4px; flex:none; margin-top:2px; display:inline-flex; align-items:center; justify-content:center; font-size:11px; }
+.cb.on { background:var(--action); border-color:var(--action); color:var(--action-text); }
+.conf { width:40px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; }
+.meta { font-size:12px; color:var(--fg3); margin-top:3px; }
+.ai { font-size:12px; color:var(--fg2); font-style:italic; margin-top:2px; }
+.tbl { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; overflow:hidden; }
+.tr { display:grid; grid-template-columns:70px 250px minmax(0,1fr) 70px 160px; gap:12px; padding:11px 16px; border-top:1px solid var(--bd-subtle); font-size:13px; align-items:start; }
+.tr.h { background:var(--hover); color:var(--fg3); font-size:12px; font-weight:500; border-top:0; }
+.new { outline:2px dashed var(--new-bd); outline-offset:3px; }
+.newtag { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  color:#7A5A00; background:var(--new-soft); border:1px solid var(--new-bd); border-radius:5px; padding:0 6px; margin-left:8px; vertical-align:2px; }
+.open { background:var(--surface); border:1px solid var(--bd-subtle); border-radius:10px; margin-bottom:14px; }
+.open .h { padding:12px 16px 4px; font-weight:600; }
+.open .r { display:grid; grid-template-columns:80px 1fr auto auto; gap:14px; align-items:center; padding:9px 16px; border-top:1px solid var(--bd-subtle); font-size:13px; }
+.open .r .c { color:var(--fg2); }
+.dialog { max-width:560px; margin:0 auto; background:var(--surface); border:1px solid var(--bd); border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.12); }
+.dialog h4 { font-family:var(--font-serif); font-size:22px; margin:0 0 8px; font-weight:600; }
+.dialog p { color:var(--fg2); font-size:13px; margin:0 0 10px; }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:4px 18px; font-size:13px; margin:10px 0 14px; }
+.kv .k { color:var(--fg3); }
+.draft { display:flex; gap:14px; padding:14px 16px; border-top:1px solid var(--bd-subtle); }
+.draft:first-of-type { border-top:0; }
+.draft .main { flex:1; min-width:0; }
+.draft .name { font-weight:600; font-size:15px; }
+.draft .def { color:var(--fg2); font-size:13px; margin:2px 0 6px; }
+.draft .ex { font-size:12px; color:var(--fg2); }
+.draft .ex span { display:inline-block; background:var(--sunken); border:1px solid var(--bd-subtle); border-radius:6px; padding:0 7px; margin:2px 4px 2px 0; }
+.draft .nums { text-align:right; flex:none; width:120px; font-variant-numeric:tabular-nums; font-size:13px; }
+.draft .acts { display:flex; flex-direction:column; gap:5px; flex:none; }
+.foot { display:flex; align-items:center; gap:12px; padding:13px 16px; border-top:1px solid var(--bd); background:var(--sunken); border-radius:0 0 10px 10px; font-size:13px; color:var(--fg2); }
+.note { border-left:3px solid var(--info-bd); background:var(--info-soft); padding:10px 14px; border-radius:0 8px 8px 0; font-size:13px; color:var(--fg2); margin-top:12px; }
+.note b { color:var(--fg); }
+.flow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:13px; margin:6px 0 30px; }
+.flow .st { background:var(--surface); border:1px solid var(--bd); border-radius:8px; padding:6px 11px; }
+.flow .st.n { background:var(--new-soft); border-color:var(--new-bd); }
+.flow .ar { color:var(--fg3); }
+.sys { background:var(--info-soft); border:1px solid var(--info-bd); color:var(--info-text); border-radius:999px; padding:0 8px; font-size:12px; }
+table.curve { border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+table.curve th, table.curve td { border-bottom:1px solid var(--bd-subtle); padding:5px 14px; text-align:right; }
+table.curve th { font-size:11px; color:var(--fg3); font-weight:600; }
+table.curve tr.pick td { background:var(--accent-soft); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Открытие семей и системы (фича 3б)</h1>
+<p class="sub">Черновой макет гейта 1, нарисован по живому экрану <b>/families → Предложения</b>. Жёлтым пунктиром и меткой
+<span class="newtag">новое</span> обведено то, чего сегодня нет; всё остальное — существующий экран без изменений.
+Имена и количества — со стенда, суммы и проценты — для примера.</p>
+
+<div class="flow">
+  <span class="st n">1. «Открыть семьи» единицы</span><span class="ar">→</span>
+  <span class="st n">2. Модель присылает черновики семей</span><span class="ar">→</span>
+  <span class="st n">3. Ты отмечаешь и жмёшь «Активировать»</span><span class="ar">→</span>
+  <span class="st">4. Перезапрос единицы — есть</span><span class="ar">→</span>
+  <span class="st">5. «Семья из списка» — есть, тот же экран</span><span class="ar">→</span>
+  <span class="st">6. Схема, значения, вариант, POSITION — есть (3а)</span>
+</div>
+
+<!-- ===================== Экран 1 ===================== -->
+<section>
+<h2>Экран 1. Очередь «Новая»: откуда начинается</h2>
+<p class="secsub">Сегодня «Новая» (710) — поштучная таблица: строки, которым модель предложила «новую семью», строки, которые
+модель сочла системой, и строки единиц без активных семей; у каждой — «Завести семью…». <b>Системы без семьи (1 382) в
+очереди не видны вовсе</b> — фича 2 их не размечала. Новое — блок «Открыть семьи» над таблицей: по строке на единицу, сколько
+имён без семьи и кнопка. Таблица ниже остаётся как есть.</p>
+<div class="screen">
+  <div class="hdr"><div><h3>Семьи и контексты</h3><div class="d">Семьи работ, семантика контекстов каталога и операции над ними</div></div>
+    <div class="seg"><span>Семьи</span><span>Контексты</span><span class="on">Предложения</span></div></div>
+  <div class="spend">Расход за 24 ч <span class="bar"></span> <b style="color:var(--fg)">$0,00</b> из $30</div>
+  <div class="stats"><span>Строк на разборе: <b>5 134</b></span><span>Строк-работ: <b>836</b></span><span>Контекстов с вариантом: <b>997</b></span><span>Ожидают семьи: <b>0</b></span><span>Семей без схемы: <b>0</b></span></div>
+  <div class="qrow">
+    <span class="qtabs"><span>Семья из списка<span class="n">2538</span></span><span>Смена семьи<span class="n">0</span></span><span class="on">Новая<span class="n">710</span></span><span>Ошибки<span class="n">61</span></span></span>
+    <span class="lbl">Единица</span><span class="sel">все <span>▾</span></span>
+  </div>
+
+  <div class="open new">
+    <div class="h">Открыть семьи <span class="newtag">новое</span>
+      <div style="font-weight:400;font-size:12.5px;color:var(--fg2)">Модель сведёт имена без семьи в черновики семей с определениями. Ничего не активируется само — черновики придут на просмотр.</div></div>
+    <div class="r"><b>компл</b><span class="c"><b style="color:var(--fg)">1 382 системы</b> без семьи</span><span class="c">≈ $0,60</span><span class="btn primary sm">Открыть семьи…</span></div>
+    <div class="r"><b>шт</b><span class="c"><b style="color:var(--fg)">305 строк</b> с «новой семьёй» и 1 система</span><span class="c">≈ $0,15</span><span class="btn primary sm">Открыть семьи…</span></div>
+    <div class="r"><b>м²</b><span class="c"><b style="color:var(--fg)">278 строк</b> с «новой семьёй»</span><span class="c">≈ $0,15</span><span class="btn primary sm">Открыть семьи…</span></div>
+    <div class="r"><b>м</b><span class="c"><b style="color:var(--fg)">75 строк</b> с «новой семьёй»</span><span class="c">≈ $0,05</span><span class="btn primary sm">Открыть семьи…</span></div>
+    <div class="r" style="color:var(--fg3)"><span></span><span>…и м³ (24), мес (12), т (10)</span><span></span><span></span></div>
+  </div>
+
+  <div class="tbl">
+    <div class="tr h"><div>Единица</div><div>Имя от ИИ</div><div>Наименование строки</div><div>Уверен.</div><div></div></div>
+    <div class="tr"><div style="color:var(--fg3)">шт</div><div style="font-weight:500">Урны</div><div>Урна уличная металлическая<div class="meta"><span class="chip cls">статья СМР</span> 12.4 Благоустройство · <span class="chip est">в смете</span> Благоустройство / МАФ</div></div><div class="conf" style="color:var(--fg2)">0,82</div><div><span class="btn sm">Завести семью…</span></div></div>
+    <div class="tr"><div style="color:var(--fg3)">м²</div><div style="font-weight:500">Покраска потолка</div><div>Окраска потолков водоэмульсионной краской за 2 раза<div class="meta"><span class="chip cls">статья СМР</span> 8.2 Отделка · <span class="chip est">в смете</span> Отделка МОП / Потолки</div></div><div class="conf" style="color:var(--fg2)">0,77</div><div><span class="btn sm">Завести семью…</span></div></div>
+    <div class="tr"><div style="color:var(--fg3)">шт</div><div style="color:var(--info-text);font-weight:500">ИИ считает строку системой</div><div>АБОНЕНТСКИЙ ТЕРМИНАЛ NTU-RG-5420G-WAC (ONT-терминал)</div><div class="conf" style="color:var(--fg2)">0,70</div><div><span class="btn sm">Завести семью…</span></div></div>
+  </div>
+  <p class="lbl" style="margin:8px 2px 0">…таблица «Новая» и подсказка под ней — как сегодня.</p>
+</div>
+</section>
+
+<!-- ===================== Экран 2 ===================== -->
+<section>
+<h2>Экран 2. Окно «Открыть семьи»: цена до запуска</h2>
+<p class="secsub">Тот же порядок, что у «Перезапросить единицу»: сначала цена и что уходит наружу, потом запуск. Модель получает
+имена, статьи классификатора и пути разделов — без цен и объёмов (AGENTS.md §3) — и видит уже активные семьи единицы, чтобы не
+предлагать дубли.</p>
+<div class="screen">
+  <div class="dialog new">
+    <h4>Открыть семьи · компл <span class="newtag">новое</span></h4>
+    <p>Модель сгруппирует имена без семьи в черновики семей с определениями. Ничего не активируется само: черновики придут на
+      просмотр (экран 3).</p>
+    <div class="kv">
+      <span class="k">Систем без семьи</span><span>1 382</span>
+      <span class="k">Активных семей единицы</span><span>2 — модель их видит</span>
+      <span class="k">Уходит наружу</span><span>имена, статьи, пути разделов</span>
+      <span class="k">Оценка</span><span><b>≈ $0,60</b> · 3 вызова модели</span>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><span class="btn">Отмена</span><span class="btn primary">Открыть семьи</span></div>
+  </div>
+</div>
+</section>
+
+<!-- ===================== Экран 3 ===================== -->
+<section>
+<h2>Экран 3. Черновики семей: твой просмотр</h2>
+<p class="secsub">Появляется в той же очереди «Новая», когда модель ответила: вместо полосы «компл» — список черновиков этой
+единицы. Это главная ручная работа фичи: прочитать черновики, поправить, отметить нужные, нажать одну кнопку. Имена, которые модель
+считает строками без собственного предмета (примечания, оговорки, заголовки), приходят отдельной группой «Не работа». Гарантии, уборка, охрана — не «не работа»: это обычные черновики категории «Затраты и услуги» (раздел «Категории» внизу).</p>
+<div class="screen">
+  <div class="qrow">
+    <span class="qtabs"><span>Семья из списка<span class="n">2538</span></span><span>Смена семьи<span class="n">0</span></span><span class="on">Новая<span class="n">710</span></span><span>Ошибки<span class="n">61</span></span></span>
+    <span class="lbl">Единица</span><span class="sel">компл <span>▾</span></span>
+  </div>
+  <div class="card new" style="margin-bottom:0">
+    <div class="grp" style="border-bottom:1px solid var(--bd-subtle)"><span class="t">Черновики семей · компл</span><span class="newtag">новое</span>
+      <span class="u">41 черновик · 1 382 системы · открыто 09.10.2026</span><span class="lbl ml">по числу строк ▾</span></div>
+    <div class="draft">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Вентиляция общеобменная</div>
+        <div class="def">Система общеобменной вентиляции здания или его части целиком: приточно-вытяжные установки, вентиляторы, воздуховоды, автоматика.</div>
+        <div class="ex"><span>Вентиляция Общеобменная — Надземная часть / Струйный вентилятор</span><span>Вентиляция Общеобменная — Подземная часть / Приточно-вытяжные установки AHU</span><span>+ 64</span></div></div>
+      <div class="nums"><b>66</b> строк</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+    <div class="draft">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Кондиционирование</div>
+        <div class="def">Система холодоснабжения и кондиционирования: гидромодули, теплообменники, наружные и внутренние блоки, VRF.</div>
+        <div class="ex"><span>Кондиционирование / Гидромодуль 4, AGM-10W3…</span><span>Кондиционирование / Наружные блоки сплит / мультисплит / мини VRF</span><span>+ 41</span></div></div>
+      <div class="nums"><b>43</b> строки</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+    <div class="draft">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Внутреннее водоотведение</div>
+        <div class="def">Система внутренней канализации и водостоков здания: трубопроводы, насосы, жироуловители, отвод стоков пожаротушения.</div>
+        <div class="ex"><span>Система внутреннего водоотведения / Насосы</span><span>Система внутреннего водоотведения / жироуловитель</span><span>+ 37</span></div></div>
+      <div class="nums"><b>39</b> строк</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+    <div class="draft">
+      <span class="cb">&nbsp;</span>
+      <div class="main"><div class="name">Кабельные линии <span class="band mid">похоже на активную «Прокладка кабельных линий»</span></div>
+        <div class="def">Прокладка кабельных линий слаботочных и силовых систем.</div>
+        <div class="ex"><span>СЭС / Кабельные линии</span><span>СУП / Кабельные линии</span><span>+ 19</span></div></div>
+      <div class="nums"><b>21</b> строка</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm primary">Слить с «Прокладка кабельных линий»</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+    <div class="draft" style="background:var(--warn-soft);flex-wrap:wrap">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Не работа <span class="band mid">особая группа</span></div>
+        <div class="def">Строки без собственного предмета: примечания и оговорки, попавшие в смету отдельной позицией, заголовки. Группа раскрывается построчно: «не работа» получат только отмеченные строки, снятые останутся без семьи и уйдут в перезапрос обычным порядком.</div></div>
+      <div class="nums"><b>11</b> из 12 отмечены</div>
+      <div style="flex-basis:100%"></div>
+      <div style="flex-basis:100%;background:var(--surface);border:1px solid var(--bd-subtle);border-radius:8px;margin-left:30px">
+        <div class="srow" style="border-top:0"><span class="cb on">✓</span><div>Проектирование систем кондиционирования выполнять в соответствии с Российскими нормами. В обязательном порядке… <div class="meta">абзац требований к проектированию, не позиция</div></div></div>
+        <div class="srow"><span class="cb on">✓</span><div>-над дверным проёмом; -угловая часть комнат; -рабочие/спальные места жильцов. <div class="meta">обрывок перечня из примечания</div></div></div>
+        <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><div>Колонны В80 <div class="meta">галочка снята — это работа, пусть уйдёт в перезапрос</div></div></div>
+        <div class="srow" style="color:var(--fg3)"><span style="width:16px"></span><div>… и ещё 9, отмечены · Показать все</div></div>
+      </div>
+    </div>
+    <div class="foot">Отмечено <b style="color:var(--fg)">&nbsp;36&nbsp;</b> черновиков · 1 291 строка · неотмеченные остаются черновиками
+      <span class="btn primary ml">Активировать отмеченные и перезапросить «компл»…</span></div>
+  </div>
+  <div class="note"><b>Что делает «Активировать отмеченные».</b> Одним действием: отмеченные черновики становятся активными
+    семьями единицы, отмеченные строки группы «Не работа» получают «не работа», и открывается обычное окно «Перезапросить
+    единицу» с оценкой. Ошибочно отмеченное возвращается действием «Вернуть в разбор» на карточке контекста (экран 3б). После перезапроса каждая строка единицы получает предложение семьи — уже по новому списку — и приходит в
+    «Семья из списка» (экран 4).</div>
+</div>
+</section>
+
+<!-- ===================== Экран 3б ===================== -->
+<section>
+<h2>Экран 3б. Карточка контекста «не работа»: «Вернуть в разбор»</h2>
+<p class="secsub">Сегодня «не работа» необратима: подтверждение вида контексту «не работа» отказывает, обратной кнопки нет. Новое —
+«Вернуть в разбор» у контекста, которому «не работа» поставил человек (с карточки или из группы экрана 3). Контекст снова без семьи
+и приходит в ближайший перезапрос своей единицы. Контексты, неприменимые из-за разметки строки в Review (раздел, мусор), этой
+кнопки не получают — их вид решает Review.</p>
+<div class="screen">
+  <div class="card new" style="padding:14px 16px;margin:0;max-width:640px">
+    <div style="display:flex;align-items:center;gap:10px"><b>Колонны В80</b><span class="band mid">не работа</span><span class="newtag">новое</span>
+      <span class="btn sm ml">Вернуть в разбор</span></div>
+    <div class="meta" style="margin-top:6px">компл · отмечено «не работа» admin 09.10.2026 из черновиков семей · <span class="chip cls">статья СМР</span> 3.1 Монолитные работы</div>
+  </div>
+</div>
+</section>
+
+<!-- ===================== Экран 4 ===================== -->
+<section>
+<h2>Экран 4. Очередь «Семья из списка» — тот экран, что на твоём снимке</h2>
+<p class="secsub">Не меняется. Это и есть пачечное подтверждение: группа «семья + полоса уверенности», галочки, «Подтвердить
+отмеченные N». Сегодня в ней 2 538 работ ниже порога; после экрана 3 сюда же придут системы своими группами. Единственное
+новое — метка «система» у группы. Пока у систем нет своего порога, ни одна не принимается автоматически — все приходят сюда.</p>
+<div class="screen">
+  <div class="qrow">
+    <span class="qtabs"><span class="on">Семья из списка<span class="n">3 920</span></span><span>Смена семьи<span class="n">0</span></span><span>Новая<span class="n">405</span></span><span>Ошибки<span class="n">61</span></span></span>
+    <span class="lbl">Единица</span><span class="sel">все <span>▾</span></span>
+    <span class="lbl">Уверенность</span><span class="sel">все полосы <span>▾</span></span>
+  </div>
+  <div class="card">
+    <div class="grp"><span>›</span><span class="t">Навигационные элементы</span><span class="u">шт · 3</span><span class="band hi">≥ 0,9</span><span class="btn primary ml">Подтвердить отмеченные 3</span></div>
+  </div>
+  <div class="card new">
+    <div class="grp"><span>⌄</span><span class="t">Вентиляция общеобменная</span><span class="u">компл · 64</span><span class="band hi">≥ 0,9</span><span class="sys">система</span><span class="newtag">новое</span><span class="btn primary ml">Подтвердить отмеченные 63</span></div>
+    <div class="srow"><span class="cb on">✓</span><span class="conf">0,96</span><div>Вентиляция Общеобменная — Надземная часть / Струйный вентилятор.<div class="meta"><span class="chip cls">статья СМР</span> 10.3 Вентиляция и кондиционирование · <span class="chip est">в смете</span> ОВиК</div><div class="ai">Пояснение ИИ: общеобменная вентиляция надземной части — система целиком.</div></div><span class="ml" style="display:flex;gap:6px"><span class="btn sm">Другая семья…</span><span class="btn sm">Отклонить</span></span></div>
+    <div class="srow" style="opacity:.6"><span class="cb">&nbsp;</span><span class="conf">0,91</span><div>Устройство зонтов над вентшахтами<div class="meta">галочка снята — строка остаётся в очереди, это отсрочка, а не метка для порога; ошибку модели записывают «Отклонить» или «Другая семья…»</div></div><span class="ml" style="display:flex;gap:6px"><span class="btn sm">Другая семья…</span><span class="btn sm">Отклонить</span></span></div>
+  </div>
+  <div class="card">
+    <div class="grp"><span>›</span><span class="t">Облицовка стен декоративными панелями</span><span class="u">м² · 12</span><span class="band lo">&lt; 0,7</span><span class="btn primary ml">Подтвердить отмеченные 12</span></div>
+  </div>
+</div>
+</section>
+
+<!-- ===================== Экран 5 ===================== -->
+<section>
+<h2>Экран 5. Свой порог систем — из твоих решений на экране 4</h2>
+<p class="secsub">Отдельной слепой разметки нет. Метки — сохранённые решения на экране 4: подтверждённая строка — «модель права»,
+«Отклонить» и «Другая семья…» — «модель ошиблась». Снятая галочка меткой не считается: это отсрочка, сервер её не видит. Когда систем разобрано достаточно, считается кривая, и порог выбираешь
+ты. Оговорка: метки не слепые — ты видел ответ модели. Экрана для кривой в 3б нет: это замер в devlog, а порог задаётся настройкой,
+как порог работ сегодня (менять его в интерфейсе — пункт А8).</p>
+<div class="screen">
+  <div class="card" style="padding:14px 16px;margin:0">
+    <div style="font-weight:600;margin-bottom:8px">Порог автопринятия систем — замер по 1 290 решениям (пример)</div>
+    <table class="curve">
+      <thead><tr><th>Порог</th><th>Без человека</th><th>Точность</th></tr></thead>
+      <tbody>
+        <tr><td>0,98</td><td>12 %</td><td>0,99</td></tr>
+        <tr class="pick"><td>0,95</td><td>31 %</td><td>0,96</td></tr>
+        <tr><td>0,90</td><td>52 %</td><td>0,91</td></tr>
+        <tr><td>0,85</td><td>68 %</td><td>0,86</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</section>
+
+<!-- ===================== Категории ===================== -->
+<section>
+<h2>Категории семей — к вопросу «а если найдём ещё вид»</h2>
+<p class="secsub"><b>Вид строки</b> (работа / система) остаётся как есть: его ставит правило по единице — «компл» значит цена за
+комплект целиком, иначе за единицу. Это ось цены, а не природа. <b>Природу</b> несёт новое поле у <b>семьи</b> — категория — из
+справочника, который <b>admin</b> пополняет сам, без программиста. Семей пара сотен, поэтому переразметить их при новой категории —
+один проход, а не тысячи строк.</p>
+
+<h2 style="font-size:19px;margin-top:18px">К1. Вкладка «Семьи»: колонка и фильтр</h2>
+<div class="screen">
+  <div class="hdr"><div><h3>Семьи и контексты</h3></div>
+    <div class="seg"><span class="on">Семьи</span><span>Контексты</span><span>Предложения</span></div></div>
+  <div class="qrow">
+    <span class="lbl">Единица</span><span class="sel">все <span>▾</span></span>
+    <span class="lbl">Категория</span><span class="sel new">все <span>▾</span></span>
+    <span class="btn new">Категории…</span><span class="newtag">новое</span>
+    <span class="btn primary ml">Завести семью</span>
+  </div>
+  <div class="tbl">
+    <div class="tr h" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div>Название</div><div>Единица</div><div>Статус</div><div class="new">Категория <span class="newtag">новое</span></div><div>Определение</div><div style="text-align:right">Контекстов</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Облицовка стен декоративными панелями</div><div>м²</div><div><span class="band hi">активна</span></div><div>Работа</div><div style="color:var(--fg2)">Облицовка стен панелями МДФ, HPL и подобными…</div><div style="text-align:right">41</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Вентиляция общеобменная</div><div>компл</div><div><span class="band hi">активна</span></div><div>Инженерная система</div><div style="color:var(--fg2)">Система общеобменной вентиляции здания целиком…</div><div style="text-align:right">66</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Банковская гарантия</div><div>компл</div><div><span class="band hi">активна</span></div><div>Затраты и услуги</div><div style="color:var(--fg2)">Банковская гарантия по договору генподряда: на аванс, на исполнение, на гарантийный период.</div><div style="text-align:right">4</div></div>
+    <div class="tr" style="grid-template-columns:260px 70px 90px 170px minmax(0,1fr) 90px"><div style="font-weight:600">Коммунальные и эксплуатационные расходы</div><div>мес</div><div><span class="band hi">активна</span></div><div>Затраты и услуги</div><div style="color:var(--fg2)">Оплата отопления, электроэнергии, воды по счётчикам в период работ.</div><div style="text-align:right">5</div></div>
+  </div>
+</div>
+
+<h2 style="font-size:19px;margin-top:22px">К2. Окно «Категории» — сам справочник</h2>
+<p class="secsub">Три категории на старт. Новая — кнопкой «Добавить»: имя и определение (определение видит модель, когда предлагает
+категорию черновику). Переименовать можно всегда, удалить — только категорию без семей. Код при этом не меняется. Числа семей — для примера.</p>
+<div class="screen">
+  <div class="dialog new" style="max-width:720px">
+    <h4>Категории семей <span class="newtag">новое</span></h4>
+    <div class="tbl" style="margin:8px 0 12px">
+      <div class="tr h" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div>Категория</div><div>Определение (видит модель)</div><div style="text-align:right">Семей</div><div></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Работа</div><div style="color:var(--fg2)">Строительно-монтажная работа или материал с объёмом в своей единице.</div><div style="text-align:right">168</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Инженерная система</div><div style="color:var(--fg2)">Инженерная система здания или её часть, оцениваемая комплектом.</div><div style="text-align:right">36</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px"><div style="font-weight:600">Затраты и услуги</div><div style="color:var(--fg2)">Не работа на объекте, а обеспечение и сопровождение: гарантии, страхование, коммунальные расходы, охрана, уборка, временные здания, документация.</div><div style="text-align:right">11</div><div><span class="btn sm">Править</span></div></div>
+      <div class="tr" style="grid-template-columns:190px minmax(0,1fr) 70px 110px;color:var(--fg3)"><div>+ Добавить категорию</div><div>например, «Проектирование» — если понадобится отделить его от прочих услуг</div><div></div><div></div></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end"><span class="btn">Закрыть</span></div>
+  </div>
+</div>
+
+<h2 style="font-size:19px;margin-top:22px">К3. Где категория появляется в работе</h2>
+<div class="screen">
+  <div class="card new" style="margin-bottom:12px">
+    <div class="draft" style="border-top:0">
+      <span class="cb on">✓</span>
+      <div class="main"><div class="name">Банковская гарантия <span class="newtag">новое</span></div>
+        <div class="def">Банковская гарантия по договору генподряда: на аванс, на исполнение, на гарантийный период.</div>
+        <div class="ex"><span>Банковская гарантия на авансовые платежи</span><span>Банковская гарантия на исполнение контракта</span></div>
+        <div style="margin-top:8px;font-size:13px">Категория: <span class="sel" style="min-width:180px">Затраты и услуги <span>▾</span></span> <span class="lbl">— предложила модель, можно сменить</span></div></div>
+      <div class="nums"><b>4</b> строки</div>
+      <div class="acts"><span class="btn sm">Править…</span><span class="btn sm">Слить с… ▾</span><span class="btn sm ghost">Отбросить</span></div>
+    </div>
+  </div>
+  <p class="lbl" style="margin:0 2px">В черновике (экран 3) модель сразу предлагает категорию; на карточке семьи — то же поле с выбором. Нынешние
+    176 семей получают категорию одним проходом модели с твоим просмотром — так же, как черновики. Читать категорию начнёт фича 4:
+    для «Затрат и услуг» ось сравнения — доля от договора или за месяц, а не цена за единицу объёма.</p>
+</div>
+</section>
+
+</div>
+</body>
+</html>

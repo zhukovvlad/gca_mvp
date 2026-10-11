@@ -36,6 +36,7 @@ from models import (
 from services.family_change import (
     AutoAcceptError,
     AutoAcceptPreview,
+    Thresholds,
     apply_auto_accept,
     apply_publication_rules,
     preview_auto_accept,
@@ -396,7 +397,7 @@ class TestCandidates:
         suggestion = _publish(db_session, scene.context_ids[0], family_id=other.id)
 
         outcome = apply_publication_rules(
-            db_session, suggestion_id=suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert outcome is None
@@ -464,7 +465,7 @@ class TestPreviewAgreesWithThePublicationRule:
 
         previewed = {k: v for k, v in preview_auto_accept(db_session).by_outcome.items() if v}
         result = apply_publication_rules(
-            db_session, suggestion_id=scene.suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=scene.suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert previewed == {outcome: 1}
@@ -944,7 +945,7 @@ class TestAFamilyNoLongerActive:
         scene = self._scene(db_session, factories)
 
         outcome = apply_publication_rules(
-            db_session, suggestion_id=scene.tested_suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=scene.tested_suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert outcome is None

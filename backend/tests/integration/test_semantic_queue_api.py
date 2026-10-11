@@ -41,6 +41,7 @@ from services.context_routing import route_position
 from services.semantic_privacy import build_privacy_dictionary, find_privacy_matches
 from services.semantic_request import load_request_material, render_context_request
 from services.work_families import activate_family, assign_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -93,7 +94,7 @@ def _unit_id(db, code):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     family = activate_family(db, family_id=fam.id, actor_id=actor_id)
     # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
     # активная семья без схемы получала бы ещё и задание схемы.
@@ -344,7 +345,9 @@ class TestListQueue:
             "reason": "проверочная причина",
             "multi_owner": False,
             "previously_rejected": None,
+            "semantic_kind": "WORK",
         }
+        assert first["system_count"] == 0
 
     @pytest.mark.parametrize("case", ["unpublished", "decided_but_published"])
     def test_unpublished_and_decided_suggestions_are_not_shown(
@@ -993,9 +996,9 @@ class TestNewQueue:
         assert {i["context_id"] for i in only_multi["items"]} == {shared, bare_shared}
 
     @pytest.mark.parametrize(
-        "case", ["archived", "assigned", "not_applicable", "system", "no_members"]
+        "case", ["archived", "assigned", "not_applicable", "no_members"]
     )
-    def test_row_without_families_requires_a_live_unassigned_work_context(
+    def test_row_without_families_requires_a_live_unassigned_context(
         self, admin_client, db_session, factories, case
     ):
         """Строка «в единице нет активных семей» — только у контекста, который
@@ -1009,10 +1012,6 @@ class TestNewQueue:
         values = {
             "archived": {"archived_at": now},
             "not_applicable": {"semantic_state": "NOT_APPLICABLE"},
-            "system": {
-                "semantic_kind": "SYSTEM", "semantic_kind_source": "manual",
-                "semantic_kind_by": admin.id, "semantic_kind_at": now,
-            },
         }
         if case == "assigned":
             draft = create_family(
@@ -1034,6 +1033,30 @@ class TestNewQueue:
         payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
 
         assert [i["context_id"] for i in payload["items"]] == [kept]
+
+    def test_system_without_families_in_the_unit_is_a_bare_row_like_work(
+        self, admin_client, db_session, factories
+    ):
+        admin = admin_client.user
+        scene = _scene(db_session, factories, admin, titles=())
+        pcs = _unit_id(db_session, "PCS")
+        work = _simple_context(db_session, factories, scene.proposal, unit_id=pcs, title="Работа")
+        system = _simple_context(db_session, factories, scene.proposal, unit_id=pcs, title="Систем")
+        db_session.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id == system)
+            .values(
+                semantic_kind="SYSTEM", semantic_kind_source="manual",
+                semantic_kind_by=admin.id, semantic_kind_at=dt.datetime.now(dt.UTC),
+            )
+        )
+        db_session.expire_all()
+
+        payload = admin_client.get(f"{BASE}/suggestions", params={"queue": "new"}).json()
+
+        assert sorted(i["context_id"] for i in payload["items"]) == sorted([work, system])
+        bare_system = next(i for i in payload["items"] if i["context_id"] == system)
+        assert (bare_system["suggestion_id"], bare_system["is_system"]) == (None, False)
 
     def test_context_without_unit_is_not_bare_when_a_family_without_unit_is_active(
         self, admin_client, db_session, factories
@@ -1852,7 +1875,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Кладка стен", "definition": "Что входит и что не входит"},
+            json={"title": "Кладка стен", "definition": "Что входит и что не входит", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 200
@@ -1877,7 +1900,7 @@ class TestSuggestionActions:
         s = _published(db_session, scene.context_ids[0], family_id=None)
         db_session.commit()
 
-        response = admin_client.post(f"{BASE}/suggestions/{s.id}/create-family", json=body)
+        response = admin_client.post(f"{BASE}/suggestions/{s.id}/create-family", json={**body, "family_category_id": seed_category_id(db_session)})
 
         assert response.status_code == 422
         db_session.expire_all()
@@ -1894,7 +1917,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": scene.family.title, "definition": "иное определение"},
+            json={"title": scene.family.title, "definition": "иное определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409
@@ -1918,7 +1941,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Гонка", "definition": "определение"},
+            json={"title": "Гонка", "definition": "определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409
@@ -1935,7 +1958,7 @@ class TestSuggestionActions:
 
         response = admin_client.post(
             f"{BASE}/suggestions/{s.id}/create-family",
-            json={"title": "Другая", "definition": "определение"},
+            json={"title": "Другая", "definition": "определение", "family_category_id": seed_category_id(db_session)},
         )
 
         assert response.status_code == 409

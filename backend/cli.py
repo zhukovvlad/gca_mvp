@@ -138,11 +138,16 @@ def semantic_enqueue_all() -> None:
         db.close()
 
 
+def _threshold_label(threshold) -> str:
+    return "не задан" if threshold is None else str(threshold)
+
+
 @cli.command("semantic-auto-accept")
 @click.option("--yes", is_flag=True, help="Не спрашивать подтверждения (развёртывание без терминала)")
 def semantic_auto_accept(yes: bool) -> None:
     """Массовое автопринятие опубликованных предложений по порогу
-    `SEMANTIC_AUTO_ACCEPT_THRESHOLD` (`services/family_change.apply_auto_accept`,
+    `SEMANTIC_AUTO_ACCEPT_THRESHOLD` (порог систем -
+    `SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD`; `services/family_change.apply_auto_accept`,
     спека §2.12): показ числа решений по исходам таблицы публикации,
     подтверждение, применение с хэшем показа одной транзакцией. Состояние
     изменилось между показом и применением - ничего не применено."""
@@ -155,7 +160,8 @@ def semantic_auto_accept(yes: bool) -> None:
             click.echo(f"Отказ: {exc}", err=True)
             raise click.exceptions.Exit(1) from exc
         db.rollback()
-        click.echo(f"Порог: {preview.threshold}")
+        click.echo(f"Порог работ: {_threshold_label(preview.threshold)}")
+        click.echo(f"Порог систем: {_threshold_label(preview.system_threshold)}")
         for outcome, count in preview.by_outcome.items():
             click.echo(f"  {outcome}: {count}")
         click.echo(f"Кандидатов всего: {preview.total}")

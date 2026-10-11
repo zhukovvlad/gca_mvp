@@ -95,7 +95,7 @@ export const FAMILY_REMOVED_LABEL = "Семья снята.";
 export const CONTEXT_REFUSAL_LABEL: Record<string, string> = {
   context_not_found: "Контекст не найден: обновите экран.",
   context_archived: "Контекст в архиве: менять его нельзя.",
-  context_not_applicable: "Контекст уже отмечен как не работа.",
+  context_not_applicable: "Вид неприменим: контекст не работа.",
   family_not_found: "Семья не найдена: обновите экран.",
   family_not_active: "Семья не активна: назначать можно только активную семью.",
   unit_mismatch: "Единица семьи не совпадает с единицей контекста.",
@@ -108,6 +108,79 @@ export const CONTEXT_REFUSAL_LABEL: Record<string, string> = {
 
 export function contextRefusalLabel(code: string | undefined): string {
   return (code !== undefined && CONTEXT_REFUSAL_LABEL[code]) || SCHEMA_REFUSAL_FALLBACK;
+}
+
+/**
+ * Вид строки каталога, размеченный в Review (`catalog_positions.kind`), для подписи
+ * «Размечено в Review как …». Строка «позиция» неприменимости не даёт — подписи ей нет.
+ */
+export const CATALOG_REVIEW_KIND_LABEL: Record<string, string> = {
+  HEADER: "заголовок",
+  LOT_HEADER: "заголовок лота",
+  TRASH: "мусор",
+};
+
+/**
+ * Тексты отказов открытия семей, категорий и «Вернуть в разбор» (спека 3б §2.12) —
+ * дословно, с `{name}`, `{unit}`, `{count}`, `{limit}` на месте «…», «N», «M».
+ * Код на экран не выходит: подпись берётся отсюда; когда у экрана нет значения для подстановки,
+ * вместо неё печатается текст сервера (в нём то же предложение с именем) —
+ * см. {@link discoveryRefusalLabel}.
+ */
+export const DISCOVERY_REFUSAL_TEMPLATE: Record<string, string> = {
+  discovery_in_progress:
+    "Открытие семей для единицы «{unit}» уже идёт — дождитесь результата или разберите задержанное.",
+  discovery_unit_busy:
+    "В единице «{unit}» идёт перезапрос: {count} заданий предложений ещё не выполнены. Откройте семьи, когда он закончится, — иначе черновики устареют до прихода.",
+  discovery_nothing_to_do:
+    "В единице «{unit}» нет строк без семьи и семей без категории — открывать нечего.",
+  discovery_too_many_names:
+    "В единице «{unit}» {count} различных наименований без семьи — больше предела {limit} одного открытия.",
+  discovery_input_unchanged:
+    "С прошлого открытия единицы «{unit}» ничего не изменилось — его черновики и есть ответ. Правьте, сливайте или отбрасывайте их.",
+  discovery_run_superseded: "Эти черновики устарели: единица открыта заново. Обновите экран.",
+  draft_not_open:
+    "Черновик «{name}» уже активирован, слит, отброшен или устарел. Слитый и отброшенный можно вернуть.",
+  draft_not_restorable:
+    "Черновик «{name}» вернуть нельзя: он уже стал семьёй (её архивируют на вкладке «Семьи») или единица открыта заново.",
+  category_not_found: "Категории «{name}» больше нет — её удалили. Выберите другую.",
+  family_not_active: "Семья «{name}» больше не активна — слить с ней черновик нельзя.",
+  draft_without_category: "У черновика «{name}» не выбрана категория.",
+  context_not_in_group: "Строка не входит в группу «Не работа» этого открытия.",
+  category_not_proposed:
+    "Семье «{name}» категорию в этом открытии не предлагали — смените её на карточке семьи.",
+  duplicate_active_family:
+    "Активная семья «{name}» в единице «{unit}» уже есть — переименуйте черновик или слейте его с ней.",
+  activate_without_category: "Сначала выберите категорию семьи.",
+  clear_category_active: "У активной семьи категорию можно сменить, но не снять.",
+  category_in_use: "Категорию «{name}» носят {count} семей — удалить можно только пустую.",
+  category_blank_title: "У категории должно быть имя — по определению модель выбирает категорию.",
+  category_blank_definition:
+    "У категории должно быть определение — по определению модель выбирает категорию.",
+  category_duplicate: "Категория «{name}» уже есть.",
+  draft_blank_title: "У черновика должно быть имя.",
+  draft_blank_definition: "У черновика должно быть определение.",
+  context_not_reopenable_state: "Контекст не отмечен «не работа» — возвращать нечего.",
+  context_not_applicable_by_position:
+    "Строка каталога размечена в Review как «{name}» — её вид решается там.",
+};
+
+/**
+ * Подпись отказа из {@link DISCOVERY_REFUSAL_TEMPLATE}: `{…}` подставляются из значений
+ * экрана; нет значения — текст сервера (в нём то же предложение с именем), нет и его — шаблон
+ * с «…» на месте пропущенного. Код вне таблицы — общая подпись.
+ */
+export function discoveryRefusalLabel(
+  code: string | undefined,
+  values: Record<string, string | number | null | undefined> = {},
+  serverMessage?: string
+): string {
+  const template = code === undefined ? undefined : DISCOVERY_REFUSAL_TEMPLATE[code];
+  if (template === undefined) return SCHEMA_REFUSAL_FALLBACK;
+  const placeholders = [...template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+  const missing = placeholders.some((key) => values[key] === undefined || values[key] === null);
+  if (missing && serverMessage) return serverMessage;
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? "…"));
 }
 
 /**
@@ -262,7 +335,8 @@ export type SemanticEventType =
   | "context_not_work"
   | "family_schema_frozen"
   | "family_schema_value_added"
-  | "family_variants_merged";
+  | "family_variants_merged"
+  | "context_reopened";
 
 /** Рантайм-список значений {@link SemanticEventType} — тот же порядок, для перебора тестами. */
 export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
@@ -287,6 +361,7 @@ export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
   "family_schema_frozen",
   "family_schema_value_added",
   "family_variants_merged",
+  "context_reopened",
 ];
 
 export const EVENT_LABEL: Record<SemanticEventType, string> = {
@@ -311,6 +386,7 @@ export const EVENT_LABEL: Record<SemanticEventType, string> = {
   family_schema_frozen: "схема заморожена",
   family_schema_value_added: "значение схемы добавлено",
   family_variants_merged: "значения схемы слиты",
+  context_reopened: "возвращено в разбор",
 };
 
 /** Подпись события журнала; неизвестный код (будущее событие) — сам код, не падает. */
@@ -371,6 +447,14 @@ export function matchPlaceLabel(where: string): string {
   const familyId = /^family:(\d+)$/.exec(where);
   if (familyId) return `в списке семей (семья ${familyId[1]})`;
   return "в теле запроса";
+}
+
+/**
+ * Число различных имён в теле открытия семей у строки очереди: `null` — охват единицы изменился
+ * с момента отправки, и число описывало бы уже не то, что отправлено.
+ */
+export function discoveryNamesLabel(namesCount: number | null): string {
+  return `имён: ${namesCount ?? "—"}`;
 }
 
 /**

@@ -163,6 +163,10 @@ def _distinct_prices():
         SEMANTIC_VALUES_PRICE_CACHE_WRITE_PER_M=Decimal("3.2"),
         SEMANTIC_VALUES_PRICE_CACHE_READ_PER_M=Decimal("3.3"),
         SEMANTIC_VALUES_PRICE_OUTPUT_PER_M=Decimal("3.4"),
+        SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M=Decimal("4.1"),
+        SEMANTIC_DISCOVERY_PRICE_CACHE_WRITE_PER_M=Decimal("4.2"),
+        SEMANTIC_DISCOVERY_PRICE_CACHE_READ_PER_M=Decimal("4.3"),
+        SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M=Decimal("4.4"),
     )
 
 
@@ -184,11 +188,14 @@ def test_work_variants_tariffs_each_kind_takes_its_own_four_fields():
     )
 
 
-def test_work_variants_tariffs_three_kinds_pairwise_distinct():
+def test_work_variants_tariffs_every_kind_pairwise_distinct():
     s = _distinct_prices()
     got = [tariffs_from(s, k) for k in SemanticJobKind]
-    assert len(got) == 3
-    assert len(set(got)) == 3
+    assert len(got) == 4
+    assert len(set(got)) == 4
+    assert tariffs_from(s, SemanticJobKind.family_discovery) == Tariffs(
+        Decimal("4.1"), Decimal("4.2"), Decimal("4.3"), Decimal("4.4")
+    )
 
 
 def test_work_variants_tariffs_unknown_kind_raises_value_error():

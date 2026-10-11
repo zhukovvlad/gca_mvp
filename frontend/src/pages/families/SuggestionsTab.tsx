@@ -22,6 +22,7 @@ import type {
 } from "@/types/domain";
 
 import { ChangeQueue } from "./ChangeQueue";
+import { DiscoveryBlock } from "./discovery/DiscoveryBlock";
 import { ErrorsQueue } from "./ErrorsQueue";
 import { BAND_LABEL } from "./labels";
 import { NewQueue } from "./NewQueue";
@@ -285,6 +286,8 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Смена семьи»." />
       )}
       {queue === "change" && changeQ.data && <ChangeQueue groups={changeQ.groups} unitLabel={unitLabel} />}
+
+      {queue === "new" && <DiscoveryBlock unitLabel={unitLabel} unitFilter={unitParam} />}
 
       {queue === "new" && newQ.isPending && <Skeleton className="h-40 w-full" />}
       {queue === "new" && newQ.isError && (

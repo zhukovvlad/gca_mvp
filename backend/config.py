@@ -104,12 +104,30 @@ class Settings(BaseSettings):
     SEMANTIC_VALUES_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)
     SEMANTIC_VALUES_PRICE_CACHE_READ_PER_M: Decimal = Field(Decimal("0.2"), ge=0)
     SEMANTIC_VALUES_PRICE_OUTPUT_PER_M: Decimal = Field(Decimal("10"), ge=0)
+
+    # Открытие семей (спека 3б §2.3): профиль модели задания «единица целиком»,
+    # предел имён в одном задании и тарифы вида. Рассуждение у модели
+    # обязательно (выключить нельзя), поэтому задаётся уровень, а не флаг.
+    SEMANTIC_DISCOVERY_MODEL: str = "anthropic/claude-sonnet-5.5"
+    SEMANTIC_DISCOVERY_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
+    SEMANTIC_DISCOVERY_MAX_TOKENS: int = Field(32000, ge=1)
+    SEMANTIC_DISCOVERY_MAX_NAMES: int = Field(1500, ge=1)
+    SEMANTIC_DISCOVERY_NAME_MAX_CHARS: int = Field(300, ge=1)
+    SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M: Decimal = Field(Decimal("2"), ge=0)
+    SEMANTIC_DISCOVERY_PRICE_CACHE_WRITE_PER_M: Decimal = Field(Decimal("2.5"), ge=0)
+    SEMANTIC_DISCOVERY_PRICE_CACHE_READ_PER_M: Decimal = Field(Decimal("0.2"), ge=0)
+    SEMANTIC_DISCOVERY_PRICE_OUTPUT_PER_M: Decimal = Field(Decimal("10"), ge=0)
     # Порог уверенности модели в предложении семьи (спека §2.5): при значении не
     # ниже порога предложенная семья принимается автоматически; None - автопринятия нет.
     # Пустая строка в окружении (`SEMANTIC_AUTO_ACCEPT_THRESHOLD=`) - тоже None.
     SEMANTIC_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
+    # Тот же порог для контекстов-систем (спека 3б §2.7); None - для систем автопринятия
+    # нет, в том числе строки «та же семья». Пустая строка в окружении - тоже None.
+    SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
 
-    @field_validator("SEMANTIC_AUTO_ACCEPT_THRESHOLD", mode="before")
+    @field_validator(
+        "SEMANTIC_AUTO_ACCEPT_THRESHOLD", "SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD", mode="before"
+    )
     @classmethod
     def _empty_threshold_is_none(cls, value):
         if isinstance(value, str) and value.strip() == "":

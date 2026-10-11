@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
@@ -188,6 +188,13 @@ REFUSE_INVALID_NAME_ROLE = "invalid_name_role"
 #: `CK_FAMILY_ACTIVE_NEEDS_DEFINITION` — доменный отказ ПЕРВОЙ линией, той
 #: же дисциплиной, что `REFUSE_ACTIVATE_WITHOUT_DEFINITION`.
 REFUSE_CLEAR_DEFINITION_ACTIVE = "clear_definition_active"
+#: Категория обязательна при активации любой семьи (спека 3б §2.9, решение 10):
+#: проверка первой линией, в Python; `CHECK`-а «активна ⟹ категория» нет — у ранее
+#: активных семей поле пусто до прохода разметки.
+REFUSE_ACTIVATE_WITHOUT_CATEGORY = "activate_without_category"
+#: `update_family(family_category_id=None)` у активной семьи: категорию можно
+#: сменить, но не снять (как `REFUSE_CLEAR_DEFINITION_ACTIVE`).
+REFUSE_CLEAR_CATEGORY_ACTIVE = "clear_category_active"
 
 #: Белые списки допустимых значений — сверка ПЕРЕД записью в базу, не после
 #: отказа `CHECK` (докстрока модуля, задача 7, «первая линия защиты»).
@@ -246,16 +253,36 @@ def _normalize_definition(value: str | None) -> str | None:
     return value if _has_definition(value) else None
 
 
+def _require_category_shared(db: Session, category_id: int) -> None:
+    """Берёт категорию `FOR SHARE` и проверяет, что она есть: категория — первая в
+    общем порядке блокировок фичи, ссылающийся берёт её раньше своих строк
+    (спека 3б §2.9, решение 20). Импорт внутри функции — разрыв цикла:
+    `services/family_categories.py` сам берёт `UNSET` и `WorkFamilyError` отсюда.
+
+    Raises:
+        WorkFamilyError: `category_not_found` (код модуля справочника)."""
+    from services import family_categories
+
+    family_categories.require_category(db, category_id, exclusive=False)
+
+
 def create_family(
     db: Session,
     *,
     title: str,
     unit_name: str | None,
-    definition: str | None,
+    definition: str | None = None,
     actor_id: int,
+    family_category_id: int | None = None,
+    origin: Literal["operator", "discovery"] = "operator",
 ) -> WorkFamily:
     """Заводит семью вручную: `created_by=actor_id`, `seed_key=NULL`,
-    `status='draft'`, `family_created` с `origin='operator'` (план, задача 7).
+    `status='draft'`, `family_created` с `origin` (`operator` — человек из
+    экрана, `discovery` — активация черновика открытия; прочие значения отвергает
+    `record_event`; план, задача 7).
+
+    `family_category_id` необязателен (спека 3б §2.9): категория, если названа,
+    берётся `FOR SHARE` ДО строки семьи — первой в общем порядке блокировок.
 
     Raises:
         WorkFamilyError: `title` пуст/пробелен (`REFUSE_BLANK_TITLE`,
@@ -266,6 +293,8 @@ def create_family(
             неизвестная единица молча потеряла бы идентичность (докстрока
             `services/unit_resolution.py`).
     """
+    if origin not in ("operator", "discovery"):
+        raise ValueError(f"origin семьи: ожидается 'operator' или 'discovery', получено {origin!r}")
     if not _has_title(title):
         raise WorkFamilyError(
             REFUSE_BLANK_TITLE, f"имя семьи пусто или состоит из пробелов: {title!r}", title=title
@@ -280,6 +309,9 @@ def create_family(
             unit_name=unit_name,
         )
 
+    if family_category_id is not None:
+        _require_category_shared(db, family_category_id)
+
     family = WorkFamily(
         seed_key=None,
         title=title,
@@ -287,6 +319,7 @@ def create_family(
         definition=_normalize_definition(definition),
         status=FamilyStatus.draft.value,
         created_by=actor_id,
+        family_category_id=family_category_id,
     )
     db.add(family)
     db.flush()
@@ -296,7 +329,7 @@ def create_family(
         event_type="family_created",
         family_id=family.id,
         actor_id=actor_id,
-        payload={"title": family.title, "unit": resolved.unit_norm, "origin": "operator"},
+        payload={"title": family.title, "unit": resolved.unit_norm, "origin": origin},
     )
     return family
 
@@ -305,15 +338,23 @@ def update_family(
     db: Session,
     *,
     family_id: int,
-    title: str | None,
+    title: str | None | object = None,
     definition: str | None | object = UNSET,
     actor_id: int,
+    family_category_id: int | None | object = UNSET,
 ) -> WorkFamily:
-    """Правит имя и/или определение семьи.
+    """Правит имя, определение и/или категорию семьи.
 
-    `title`: `None` значит «не трогать это поле» — вызывающий передаёт
-    только то, что реально меняется (план, задача 7: `changed` только по
+    `title`: `None` (как и `UNSET`) значит «не трогать это поле» — вызывающий
+    передаёт только то, что реально меняется (план, задача 7: `changed` только по
     реально изменившимся полям, пустой аудит запрещён спекой §2.14).
+
+    `family_category_id` (спека 3б §2.9): непереданный (`UNSET`) — «не трогать»;
+    явный `None` — снять категорию: у `draft` проходит, у `active` — доменный
+    отказ (категорию можно сменить, но не снять); id — сменить. Названная
+    категория берётся `FOR SHARE` ДО строки семьи — первой в общем порядке
+    блокировок. Смена пишет элемент `{field: "family_category_id", from, to}` в
+    `family_updated.changed`, без смены события нет.
 
     `definition`: ТРИ различимых входа, не два. Непереданный параметр
     (значение по умолчанию `UNSET`) — «не трогать», как и `title=None`.
@@ -350,11 +391,15 @@ def update_family(
             найдена (`REFUSE_FAMILY_NOT_FOUND`); семья архивирована,
             ПЕРЕЧИТАННОЕ после лока (`REFUSE_UPDATE_ARCHIVED`); явный
             `definition=None` на `active` семье, перечитанное
-            (`REFUSE_CLEAR_DEFINITION_ACTIVE`); переезд активной семьи в
+            (`REFUSE_CLEAR_DEFINITION_ACTIVE`); `family_category_id=None` на
+            `active` семье (`REFUSE_CLEAR_CATEGORY_ACTIVE`); названная
+            категория не существует (`category_not_found`); переезд активной семьи в
             имя+единицу другой активной, перечитанное первой линией либо
             гонка второй (`REFUSE_DUPLICATE_ACTIVE_FAMILY`, называет
             `duplicate_family_id`).
     """
+    if title is UNSET:
+        title = None
     if title is not None and not _has_title(title):
         raise WorkFamilyError(
             REFUSE_BLANK_TITLE, f"имя семьи пусто или состоит из пробелов: {title!r}", title=title
@@ -366,6 +411,8 @@ def update_family(
             REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
         )
 
+    if family_category_id is not UNSET and family_category_id is not None:
+        _require_category_shared(db, family_category_id)  # FOR SHARE, раньше строки семьи
     _lock_families(db, [family_id], exclusive=True)  # FOR UPDATE
     db.expire_all()
 
@@ -380,6 +427,12 @@ def update_family(
         raise WorkFamilyError(
             REFUSE_CLEAR_DEFINITION_ACTIVE,
             f"семья {family_id} активна — снять определение нельзя",
+            family_id=family_id,
+        )
+    if family_category_id is None and family.status == FamilyStatus.active.value:
+        raise WorkFamilyError(
+            REFUSE_CLEAR_CATEGORY_ACTIVE,
+            "У активной семьи категорию можно сменить, но не снять.",
             family_id=family_id,
         )
     if family.status == FamilyStatus.active.value:
@@ -405,6 +458,15 @@ def update_family(
         if normalized != family.definition:
             changed.append({"field": "definition", "from": family.definition, "to": normalized})
             family.definition = normalized
+    if family_category_id is not UNSET and family_category_id != family.family_category_id:
+        changed.append(
+            {
+                "field": "family_category_id",
+                "from": family.family_category_id,
+                "to": family_category_id,
+            }
+        )
+        family.family_category_id = family_category_id
 
     if not changed:
         # Пустой аудит запрещён спекой §2.14 — событие не пишется вовсе, а
@@ -440,7 +502,9 @@ def update_family(
     return family
 
 
-def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily:
+def activate_family(
+    db: Session, *, family_id: int, actor_id: int, rollback_on_conflict: bool = True
+) -> WorkFamily:
     """Переводит семью `draft -> active`, заполняя пару
     `activated_by`/`activated_at` целиком (план, задача 7).
 
@@ -457,12 +521,17 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
     независимая от этой функции (прямой `UPDATE` в обход неё по-прежнему
     получает `IntegrityError`, `test_work_families.py`).
 
+    `rollback_on_conflict=False` — вторая линия дубля не откатывает сессию:
+    вызывающий держит активацию в точке сохранения и откатывает её сам (откат
+    всей сессии внутри `begin_nested()` ломает менеджер контекста).
+
     Raises:
         WorkFamilyError: семья не найдена (`REFUSE_FAMILY_NOT_FOUND`); семья
             не в статусе `draft`, ПЕРЕЧИТАННОЕ после лока
             (`REFUSE_ACTIVATE_NOT_DRAFT`, покрывает и `active`, и `archived`
             — при трёх статусах всего второй код не нужен); определение
-            пусто/пробельно/`NULL` (`REFUSE_ACTIVATE_WITHOUT_DEFINITION`);
+            пусто/пробельно/`NULL` (`REFUSE_ACTIVATE_WITHOUT_DEFINITION`); у
+            семьи нет категории (`REFUSE_ACTIVATE_WITHOUT_CATEGORY`);
             уже есть активная семья с тем же нормализованным именем и
             единицей — первой линией через SELECT под локом, либо второй
             линией через перехват `IntegrityError` от
@@ -492,6 +561,12 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
             f"семья {family_id} не может быть активирована без определения",
             family_id=family_id,
         )
+    if family.family_category_id is None:
+        raise WorkFamilyError(
+            REFUSE_ACTIVATE_WITHOUT_CATEGORY,
+            "Сначала выберите категорию семьи.",
+            family_id=family_id,
+        )
     duplicate_id = _duplicate_active_family_id(
         db, family_id=family_id, title=family.title, unit_id=family.unit_id
     )
@@ -517,7 +592,8 @@ def activate_family(db: Session, *, family_id: int, actor_id: int) -> WorkFamily
         # докстроку `REFUSE_DUPLICATE_ACTIVE_FAMILY`). Чужой `IntegrityError`
         # пробрасывается дальше НЕПЕРЕВЕДЁННЫМ — эта линия ловит ИМЕННО
         # нарушение `uq_work_families_active_name_unit`, не любой отказ базы.
-        db.rollback()
+        if rollback_on_conflict:
+            db.rollback()
         if "uq_work_families_active_name_unit" not in str(exc.orig):
             raise
         raise WorkFamilyError(

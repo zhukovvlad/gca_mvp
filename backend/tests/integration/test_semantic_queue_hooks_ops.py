@@ -88,6 +88,7 @@ from services.work_families import (
     unconfirm_kind,
     update_family,
 )
+from tests.factories import seed_category_id
 from tests.payloads import payload_for, position
 
 pytestmark = pytest.mark.integration
@@ -108,7 +109,8 @@ def _uid() -> str:
 
 def _active_family(db, *, title, unit_name, actor_id):
     fam = create_family(
-        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id
+        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id,
+        family_category_id=seed_category_id(db),
     )
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
@@ -595,29 +597,35 @@ class TestRefreshMembershipStatesDoesNotChangeTheInput:
 # ---------------------------------------------------------------------------
 
 class TestKindPoints:
-    def test_confirming_system_makes_the_context_inapplicable(self, db_session, factories):
+    def test_confirming_system_keeps_the_context_applicable_and_swaps_the_job(
+        self, db_session, factories
+    ):
         scene = _scene(db_session, factories, [("Пол", 1)])
         _settle(db_session, scene.context_id)
-        assert [j.status for j in _jobs(db_session, scene.context_id)] == [_PENDING]
+        (work_job,) = _jobs(db_session, scene.context_id)
+        assert (work_job.status, work_job.prompt_version) == (_PENDING, "1")
 
         confirm_kind(db_session, context_id=scene.context_id, kind="SYSTEM", actor_id=scene.user.id)
 
-        _assert_cancelled_not_applicable(db_session, scene.context_id)
+        _assert_old_pending_cancelled_new_pending(
+            db_session, scene.context_id, work_job.request_hash
+        )
+        system_job = _assert_pending_with_current_hash(db_session, scene.context_id)
+        assert system_job.prompt_version == "system:1"
 
-    def test_removing_the_confirmation_revives_the_same_job(self, db_session, factories):
+    def test_removing_the_confirmation_revives_the_work_job(self, db_session, factories):
         scene = _scene(db_session, factories, [("Пол", 1)])
         _settle(db_session, scene.context_id)
+        (work_job,) = _jobs(db_session, scene.context_id)
+        job_id, generation = work_job.id, work_job.retry_generation
         confirm_kind(db_session, context_id=scene.context_id, kind="SYSTEM", actor_id=scene.user.id)
         _settle(db_session, scene.context_id)
-        (cancelled,) = _jobs(db_session, scene.context_id)
-        assert (cancelled.status, cancelled.cancel_reason) == (_CANCELLED, _NOT_APPLICABLE)
-        job_id, generation = cancelled.id, cancelled.retry_generation
+        assert _jobs(db_session, scene.context_id)[0].status == _CANCELLED
 
         unconfirm_kind(db_session, context_id=scene.context_id, actor_id=scene.user.id)
 
-        (revived,) = _jobs(db_session, scene.context_id)
+        revived = _assert_pending_with_current_hash(db_session, scene.context_id)
         assert revived.id == job_id
-        assert revived.status == _PENDING
         assert revived.retry_generation == generation + 1
 
 
@@ -684,6 +692,7 @@ class TestFamilyEditsQueueNothing:
         draft = create_family(
             db_session, title=f"Черновик {_uid()}", unit_name="M2", definition="Определение",
             actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
         self._edit_and_check(
             db_session,

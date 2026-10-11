@@ -2176,7 +2176,8 @@ describe("ContextCard — вариант, ожидание, смена семь�
         within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Отметить как не работу" })
       );
 
-      expect(await screen.findByText("Контекст уже отмечен как не работа.", {}, LATER)).toBeInTheDocument();
+      // Подпись нейтральна: тот же код приходит и для строк, размеченных в Review (спека 3б §2.8).
+      expect(await screen.findByText("Вид неприменим: контекст не работа.", {}, LATER)).toBeInTheDocument();
       expect(document.body.textContent).not.toContain("context_not_applicable");
     });
 
@@ -2191,6 +2192,182 @@ describe("ContextCard — вариант, ожидание, смена семь�
       await openOrdinary();
 
       expect(screen.getByRole("button", { name: "Не работа" })).toBeDisabled();
+    });
+  });
+
+  describe("«Вернуть в разбор»", () => {
+    /** Контекст «не работа», поставленной человеком: `NOT_APPLICABLE` на строке-позиции. */
+    function makeNotWork(extra: Partial<ReturnType<typeof contextFixture>> = {}) {
+      Object.assign(contextFixture(ORDINARY_CONTEXT_ID), {
+        semantic_state: "NOT_APPLICABLE",
+        work_family_id: null,
+        family_title: null,
+        ...extra,
+      });
+    }
+
+    // Наличие кнопки у «не работы» человека доказывают следующие тесты (они на неё нажимают).
+    it("у обычного (не «не работа») контекста кнопки нет", async () => {
+      await openOrdinary();
+      expect(screen.queryByRole("button", { name: "Вернуть в разбор" })).not.toBeInTheDocument();
+    });
+
+    it("подтверждение, POST …/reopen, карточка перечитана: состояние вернулось, кнопки больше нет", async () => {
+      const user = userEvent.setup();
+      makeNotWork();
+      await openOrdinary();
+      expect(await screen.findByText("не применяется", {}, LATER)).toBeInTheDocument();
+      const readsBefore = handlerState.contextCardRequests;
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      const confirm = await screen.findByRole("alertdialog");
+      expect(handlerState.reopenRequests).toEqual([]);
+      await user.click(within(confirm).getByRole("button", { name: "Вернуть" }));
+
+      await waitFor(() => expect(handlerState.reopenRequests).toEqual([ORDINARY_CONTEXT_ID]), LATER);
+      // Вид поставило правило — состояние «предложен правилом»; семья остаётся пустой.
+      expect(await screen.findByText("предложен правилом", {}, LATER)).toBeInTheDocument();
+      expect(screen.queryByText("не применяется")).not.toBeInTheDocument();
+      expect(screen.getByText("нет семьи")).toBeInTheDocument();
+      expect(handlerState.contextCardRequests).toBeGreaterThan(readsBefore);
+      expect(screen.queryByRole("button", { name: "Вернуть в разбор" })).not.toBeInTheDocument();
+    });
+
+    it("вид, поставленный человеком, возвращается подтверждённым", async () => {
+      const user = userEvent.setup();
+      makeNotWork({ semantic_kind_source: "manual" });
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" })
+      );
+
+      expect(await screen.findByText("подтверждён", {}, LATER)).toBeInTheDocument();
+    });
+
+    it("без подтверждения запрос не уходит", async () => {
+      const user = userEvent.setup();
+      makeNotWork();
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Отмена" })
+      );
+
+      expect(handlerState.reopenRequests).toEqual([]);
+      expect(screen.getByText("не применяется")).toBeInTheDocument();
+    });
+
+    it.each([
+      ["HEADER", "заголовок"],
+      ["LOT_HEADER", "заголовок лота"],
+      ["TRASH", "мусор"],
+    ])(
+      "строка, размеченная в Review как %s: подпись «Размечено в Review как «%s»», кнопки нет",
+      async (catalogKind, label) => {
+        makeNotWork({ catalog_kind: catalogKind });
+        await openOrdinary();
+
+        expect(await screen.findByText(`Размечено в Review как «${label}» — вид строки решает Review.`, {}, LATER)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Вернуть в разбор" })).not.toBeInTheDocument();
+      }
+    );
+
+    it("подпись о разметке Review не печатается у контекста, которому «не работа» не ставили", async () => {
+      Object.assign(contextFixture(ORDINARY_CONTEXT_ID), { catalog_kind: "TRASH" });
+      await openOrdinary();
+
+      expect(screen.queryByText(/Размечено в Review/)).not.toBeInTheDocument();
+    });
+
+    it("архивному контексту «не работа» кнопки и подписи нет", async () => {
+      // Ревью задачи 5: фикстура 606 была `SUGGESTED` на строке-позиции — подпись не печаталась
+      // бы и без проверки архива. Здесь — `NOT_APPLICABLE` на строке «мусор»: молчит только архив.
+      Object.assign(contextFixture(ARCHIVED_CONTEXT_ID), {
+        semantic_state: "NOT_APPLICABLE",
+        catalog_kind: "TRASH",
+      });
+      renderWithProviders(<ContextCard contextId={ARCHIVED_CONTEXT_ID} />);
+      await screen.findByText("Гидроизоляция фундамента (снят)", {}, LATER);
+      expect(screen.queryByRole("button", { name: "Вернуть в разбор" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Размечено в Review/)).not.toBeInTheDocument();
+    });
+
+    it("пока возврат в пути, повторное подтверждение недоступно", async () => {
+      const user = userEvent.setup();
+      makeNotWork();
+      let release: () => void = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      server.use(
+        http.post("/api/v1/semantic/contexts/:id/reopen", async () => {
+          await held;
+          return HttpResponse.json({ detail: { code: "context_not_reopenable_state", message: "x" } }, { status: 409 });
+        })
+      );
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" }));
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(), LATER);
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      expect(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" })).toBeDisabled();
+      release();
+    });
+
+    it("context_not_applicable_by_position: вид строки называется словом, а не кодом", async () => {
+      const user = userEvent.setup();
+      makeNotWork();
+      // Карточка открыта при `reopenable`, а строку тем временем разметили в Review как мусор.
+      server.use(
+        http.post("/api/v1/semantic/contexts/:id/reopen", () =>
+          HttpResponse.json(
+            {
+              detail: {
+                code: "context_not_applicable_by_position",
+                message: "Строка каталога размечена в Review как «TRASH» — её вид решается там.",
+                catalog_kind: "TRASH",
+              },
+            },
+            { status: 409 }
+          )
+        )
+      );
+      await openOrdinary();
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" })
+      );
+
+      expect(
+        await screen.findByText("Строка каталога размечена в Review как «мусор» — её вид решается там.", {}, LATER)
+      ).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("TRASH");
+    });
+
+    it("отказ сервера выходит подписью, код и текст сервера на экран не выходят", async () => {
+      const user = userEvent.setup();
+      makeNotWork();
+      handlerState.contextRefusal = { action: "reopen", code: "context_not_reopenable_state", status: 409 };
+      await openOrdinary();
+      const readsBefore = handlerState.contextCardRequests;
+
+      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" })
+      );
+
+      expect(
+        await screen.findByText("Контекст не отмечен «не работа» — возвращать нечего.", {}, LATER)
+      ).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("context_not_reopenable_state");
+      // Ревью задачи 5: отказ значит, что экран устарел, — карточка перечитывается и после него.
+      await waitFor(() => expect(handlerState.contextCardRequests).toBeGreaterThan(readsBefore), LATER);
     });
   });
 
