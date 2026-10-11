@@ -21,6 +21,7 @@ import type {
   DiscoveryDraftsView,
   DraftView,
   ExistingGroupView,
+  FamilyCategory,
 } from "@/types/domain";
 
 import { discoveryRefusalLabel, FAMILY_STATUS_LABEL, pluralRu } from "../labels";
@@ -148,15 +149,8 @@ export function DiscoveryDrafts({
   onRelaunch,
 }: DiscoveryDraftsProps) {
   const draftsQ = useDiscoveryDrafts(unitId, draftsJobId);
+  // Справочник грузится вместе с черновиками, а не после них.
   const categoriesQ = useFamilyCategories();
-  const activate = useActivateDiscovery();
-
-  // Переопределения отметок поверх умолчаний: перечитанные данные не сбрасывают выбор человека.
-  const [draftChecks, setDraftChecks] = useState<Readonly<Record<number, boolean>>>({});
-  const [notWorkOff, setNotWorkOff] = useState<ReadonlySet<string>>(new Set());
-  const [proposalOff, setProposalOff] = useState<ReadonlySet<number>>(new Set());
-  const [chosen, setChosen] = useState<Readonly<Record<number, number>>>({});
-  const [refusals, setRefusals] = useState<Readonly<Record<number, string>>>({});
 
   if (draftsQ.isPending) return <Skeleton className="h-40 w-full" />;
   if (draftsQ.isError) {
@@ -173,7 +167,46 @@ export function DiscoveryDrafts({
       />
     );
   }
-  const view: DiscoveryDraftsView = loaded;
+  // Локальный выбор живёт в пределах ПОКАЗАННОГО открытия: перечитывание того же открытия его
+  // сохраняет, другое открытие (его наименования и семьи могут повторяться) начинает с умолчаний.
+  return (
+    <DraftsScreen
+      key={loaded.job_id}
+      view={loaded}
+      categories={categoriesQ.data}
+      unitId={unitId}
+      unitLabel={unitLabel}
+      onActivated={onActivated}
+      onRelaunch={onRelaunch}
+    />
+  );
+}
+
+interface DraftsScreenProps {
+  view: DiscoveryDraftsView;
+  categories: FamilyCategory[] | undefined;
+  unitId: number | null;
+  unitLabel: string;
+  onActivated: (outcome: ActivationOutcome) => void;
+  onRelaunch: () => void;
+}
+
+function DraftsScreen({
+  view,
+  categories,
+  unitId,
+  unitLabel,
+  onActivated,
+  onRelaunch,
+}: DraftsScreenProps) {
+  const activate = useActivateDiscovery();
+
+  // Переопределения отметок поверх умолчаний: перечитанные данные не сбрасывают выбор человека.
+  const [draftChecks, setDraftChecks] = useState<Readonly<Record<number, boolean>>>({});
+  const [notWorkOff, setNotWorkOff] = useState<ReadonlySet<string>>(new Set());
+  const [proposalOff, setProposalOff] = useState<ReadonlySet<number>>(new Set());
+  const [chosen, setChosen] = useState<Readonly<Record<number, number>>>({});
+  const [refusals, setRefusals] = useState<Readonly<Record<number, string>>>({});
 
   const isChecked = (draft: DraftView) => draftChecks[draft.id] ?? defaultChecked(draft);
   const checkedDrafts = view.drafts.filter(isChecked);
@@ -275,7 +308,7 @@ export function DiscoveryDrafts({
           unitId={unitId}
           checked={isChecked(draft)}
           onCheckedChange={(next) => setDraftChecks((prev) => ({ ...prev, [draft.id]: next }))}
-          categories={categoriesQ.data}
+          categories={categories}
           otherDrafts={view.drafts.filter((d) => d.id !== draft.id)}
           refusal={refusals[draft.id]}
         />
@@ -321,7 +354,7 @@ export function DiscoveryDrafts({
 
       <CategoryProposals
         proposals={view.category_proposals}
-        categories={categoriesQ.data}
+        categories={categories}
         unchecked={proposalOff}
         chosen={chosen}
         onToggle={(familyId, on) =>

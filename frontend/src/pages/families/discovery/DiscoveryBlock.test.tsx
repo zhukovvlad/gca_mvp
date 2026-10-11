@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +9,7 @@ import {
   draftsViewFixture,
   handlerState,
 } from "@/test/handlers";
+import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 import type { DiscoveryRunInfo } from "@/types/domain";
 
@@ -356,7 +358,7 @@ describe("DiscoveryBlock — черновики и перезапрос", () => 
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     renderBlock();
     expect(await screen.findByText("Черновик прошлого открытия")).toBeInTheDocument();
-    const screenBefore = screen.getByTestId("discovery-drafts");
+    const blockBefore = screen.getByTestId("discovery-block");
 
     // Повторный запуск: сервер ставит задание, выполненным остаётся прежнее.
     await user.click(screen.getByRole("button", { name: "Открыть семьи заново…" }));
@@ -379,14 +381,40 @@ describe("DiscoveryBlock — черновики и перезапрос", () => 
       job_id: 501,
       drafts: [draftFixture({ id: 401, title: "Черновик нового открытия" })],
     });
+    // Ответ черновиков B задержан: пока он в пути, на экране остаётся A, а не скелетон
+    // (`keepPreviousData`); без задержки смена ключа на скелетон проходила бы незамеченной.
+    let releaseDrafts!: () => void;
+    const draftsGate = new Promise<void>((resolve) => {
+      releaseDrafts = resolve;
+    });
+    let markRequested!: () => void;
+    const draftsBRequested = new Promise<void>((resolve) => {
+      markRequested = resolve;
+    });
+    server.use(
+      http.get("/api/v1/semantic/discovery/drafts", async () => {
+        markRequested();
+        await draftsGate;
+        return HttpResponse.json({ unit_id: 3, drafts: handlerState.discovery.drafts["3"] ?? null });
+      })
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_500);
     });
+    // Не `waitFor`: при подменённом `setInterval` он перепроверяет только по изменениям DOM.
+    await act(async () => {
+      await Promise.race([
+        draftsBRequested,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("черновики B не запрошены")), 2_000)),
+      ]);
+    });
+    expect(screen.getByTestId("discovery-drafts")).toHaveTextContent("Черновик прошлого открытия");
+    releaseDrafts();
 
     expect(await screen.findByText("Черновик нового открытия")).toBeInTheDocument();
     expect(screen.queryByText("Черновик прошлого открытия")).not.toBeInTheDocument();
-    // Экран не перемонтирован, ни одно действие над черновиком не отправлялось.
-    expect(screen.getByTestId("discovery-drafts")).toBe(screenBefore);
+    // Блок не перемонтирован, ни одно действие над черновиком не отправлялось.
+    expect(screen.getByTestId("discovery-block")).toBe(blockBefore);
     expect(handlerState.discovery.draftRequests).toEqual([]);
     expect(handlerState.discovery.activateRequests).toEqual([]);
   });
