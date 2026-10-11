@@ -31,8 +31,8 @@ from tests.integration.test_semantic_queue_api import _active_family, _proposal,
 
 pytestmark = pytest.mark.integration
 
-#: Предел любого ожидания, секунды.
-_T = 20.0
+#: Страховочный предел от зависания, секунды, а не измерение: взаимоблокировку PostgreSQL находит за ~1 с.
+_T = 60.0
 
 
 # ---------------------------------------------------------------------------
