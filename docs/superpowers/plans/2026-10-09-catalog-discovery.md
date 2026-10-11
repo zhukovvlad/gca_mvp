@@ -1229,7 +1229,13 @@ export function useDiscoveryUnits(), useDiscoveryPreview(), useLaunchDiscovery()
 ```python
 # config.py
 SEMANTIC_DISCOVERY_CHUNK_NAMES: int = 100       # >= 1
+SEMANTIC_DISCOVERY_MAX_DRAFTS: int = 150        # >= 1, черновиков в одном открытии
 SEMANTIC_DISCOVERY_MAX_TOKENS: int = 8000       # предел одного вызова (было 32 000 на всё)
+# DRAFT_TITLE_MAX_CHARS = 100, DRAFT_DEFINITION_MAX_CHARS = 300 — константы модуля
+# request_hash = sha256({SERIALIZATION_VERSION, каноническое тело,
+#                        {chunk_protocol: 1, chunk_names, max_tokens_per_call, max_drafts}})
+def discovery_reserve(scope, db, *, settings) -> Decimal      # верхняя граница всего задания
+def discovery_expected(scope, db, *, settings) -> Decimal     # ожидаемая цена (кэш со 2-й порции)
 
 # services/family_discovery.py
 DISCOVERY_PROMPT_VERSION = 2                    # prompt_version задания "discovery:2"
@@ -1261,8 +1267,28 @@ def merge_chunks(chunks: Sequence[ChunkAnswer], names_count: int) -> DiscoveryAn
   ровно новые группы предыдущих порций в порядке номеров; имена порции с
   глобальными номерами; тело не несёт цен, объёмов, подрядчиков, договоров,
   объектов (как Task 3);
-- канонический `render_discovery_request` и `request_hash` прежние, кроме
-  текста промпта v2 (литерал хэша на фикстуре обновлён и назван);
+- канонический `render_discovery_request` прежний, кроме текста промпта v2;
+  `request_hash` включает отпечаток исполнения — смена `chunk_names`,
+  `max_tokens_per_call`, `max_drafts` меняет хэш (по входу на ось); смена
+  размера между preview и запуском — `preview_changed`, между запуском и
+  захватом — `cancelled/input_changed`, после выполненного открытия — запуск
+  разрешён, а не `discovery_input_unchanged` (три входа);
+- нормализация до контракта `apply_discovery` — по входу на каждый исход
+  спеки §2.3.1: поля группы с `draft_ref` игнорируются; новая группа с именем
+  существующего черновика дописывается в него; обрезка имени 100 и
+  определения 300; новые группы сверх `MAX_DRAFTS` — в остаток; несколько
+  групп одной активной семьи в порции и между порциями — одна `existing`;
+  опустевшая группа не даёт черновика и не попадает в блок следующих порций;
+  две пары `family_categories` одной семьи — обе отброшены; собранный
+  результат проходит `apply_discovery` в БД без нарушения ограничений;
+- резерв: верхняя граница до первого вызова — по входу на большое число
+  черновиков (блок у последней порции на пределе `MAX_DRAFTS × L`), на
+  промах кэша во второй порции (резерв не опирается на кэш), на сумму
+  резерва в preview и при захвате (равны); ожидаемая цена отдельно;
+- сбой на порции k > 1: попытка закрыта `transient_error`, `raw_response`
+  хранит ответы выполненных порций, токены — их сумма, `cost_usd = NULL` —
+  суточный расход учитывает резерв всего задания (вход: расход дня после
+  сбоя ≥ резерва задания);
 - разбор порции: схемная ошибка — по входу на каждую ошибку формы (не JSON,
   текст вокруг, нет ключа, лишний ключ, не тот тип); правило содержания —
   по входу на каждое (семья не из отправленных, черновик не из блока,
