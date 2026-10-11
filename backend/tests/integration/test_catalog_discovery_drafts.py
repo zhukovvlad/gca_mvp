@@ -12,7 +12,8 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
-from crud.discovery import discovery_drafts
+from config import settings as app_settings
+from crud.discovery import discovery_drafts, discovery_units
 from models import (
     FamilyCategoryProposal,
     FamilyDraft,
@@ -126,6 +127,13 @@ def _refusal(code, call):
     with pytest.raises(WorkFamilyError) as exc:
         call()
     assert exc.value.code == code, f"ожидался {code}, получен {exc.value.code}: {exc.value}"
+
+
+def _unit_row(db, unit_id) -> dict | None:
+    """Строка единицы в `discovery_units` или `None`, если единицы в блоке нет."""
+    return next(
+        (r for r in discovery_units(db, settings=app_settings) if r["unit_id"] == unit_id), None
+    )
 
 
 def _rows(view, draft_id) -> int:
@@ -662,6 +670,80 @@ class TestView:
         assert _rows(view, d2.id) == 1
         assert view["not_work"]["names"][0]["contexts"] == 1
         assert [r["examples"] for r in view["drafts"]] == [["Голое два"]]
+        # Единица остаётся в блоке: её последнее выполненное открытие ещё требует решений,
+        # хотя охват опустел (в единице появилась семья), а семей без категории нет.
+        row = _unit_row(world.db, unit)
+        assert row is not None and row["last_discovery"]["actionable"] is True
+
+    def test_unit_with_only_discarded_and_merged_drafts_stays_in_the_block(self, world):
+        """Единица вышла из охвата, семей без категории нет, а отброшенный и слитый
+        черновики ещё можно вернуть: единица в блоке."""
+        unit = world.bare_unit
+        job = _job(world.db, unit)
+        first, _ = _make(world.db, world.factories, world.proposal, unit, "Голое один")
+        second, _ = _make(world.db, world.factories, world.proposal, unit, "Голое два")
+        third, _ = _make(world.db, world.factories, world.proposal, unit, "Голое три")
+        work = seed_category_id(world.db)
+        d1 = _draft(world.db, job, 1, title="Семья один", category_id=work, members=[first])
+        d2 = _draft(world.db, job, 2, title="Семья два", category_id=work, members=[second])
+        d3 = _draft(world.db, job, 3, title="Семья три", category_id=work, members=[third])
+        activate_discovery(
+            world.db, job_id=job.id, draft_ids=[d1.id], not_work_context_ids=[],
+            family_categories=[], actor_id=world.admin.id,
+        )
+        merge_draft(world.db, draft_id=d3.id, target_draft_id=d2.id, actor_id=world.admin.id)
+        discard_draft(world.db, draft_id=d2.id, actor_id=world.admin.id)
+        world.db.expire_all()
+
+        row = _unit_row(world.db, unit)
+
+        assert row is not None
+        assert row["last_discovery"]["actionable"] is True
+
+    def test_unit_with_nothing_left_to_decide_leaves_the_block(self, world):
+        """Соседний вход: всё решено, охвата и семей без категории нет — единицы в блоке нет."""
+        unit = world.bare_unit
+        job = _job(world.db, unit)
+        first, _ = _make(world.db, world.factories, world.proposal, unit, "Голое один")
+        d1 = _draft(
+            world.db, job, 1, title="Семья один", category_id=seed_category_id(world.db),
+            members=[first],
+        )
+        activate_discovery(
+            world.db, job_id=job.id, draft_ids=[d1.id], not_work_context_ids=[],
+            family_categories=[], actor_id=world.admin.id,
+        )
+        world.db.expire_all()
+
+        assert _unit_row(world.db, unit) is None
+
+    def test_drafts_job_id_is_the_latest_done_run_only(self, world):
+        """`drafts_job_id` — id последнего выполненного открытия; новые `pending` и `error`
+        его не меняют, новое `done` — меняет."""
+        unit = world.family_unit
+        _uncategorize(world.db, world.family.id)
+        first = _job(world.db, unit)
+        assert _unit_row(world.db, unit)["last_discovery"]["drafts_job_id"] == first.id
+
+        pending = _job(world.db, unit, status="pending")
+        row = _unit_row(world.db, unit)["last_discovery"]
+        assert (row["job_id"], row["status"], row["drafts_job_id"]) == (
+            pending.id, "pending", first.id,
+        )
+
+        failed = _job(world.db, unit, status="error")
+        row = _unit_row(world.db, unit)["last_discovery"]
+        assert (row["job_id"], row["drafts_job_id"]) == (failed.id, first.id)
+
+        second = _job(world.db, unit)
+        assert _unit_row(world.db, unit)["last_discovery"]["drafts_job_id"] == second.id
+
+    def test_drafts_job_id_is_none_without_a_done_run(self, world):
+        unit = world.family_unit
+        _uncategorize(world.db, world.family.id)
+        _job(world.db, unit, status="pending")
+
+        assert _unit_row(world.db, unit)["last_discovery"]["drafts_job_id"] is None
 
     def test_rest_follows_the_full_predicate_after_the_activation_of_a_sibling(self, world):
         """Остаток — нынешний неоткрытый остаток единицы, а не снимок: после

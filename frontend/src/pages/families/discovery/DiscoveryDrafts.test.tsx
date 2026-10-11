@@ -54,7 +54,7 @@ function seed(overrides: Partial<DiscoveryDraftsView> = {}) {
       active_families: 1,
       reserve_usd: "0.1",
       expected_cached_usd: "0.05",
-      last_discovery: { job_id: 500, status: "done", at: "2026-10-09T10:00:00", open_drafts: 4, actionable: true },
+      last_discovery: { job_id: 500, status: "done", at: "2026-10-09T10:00:00", open_drafts: 4, drafts_job_id: 500, actionable: true },
     },
   ];
   handlerState.discovery.drafts["3"] = draftsViewFixture({
@@ -65,7 +65,7 @@ function seed(overrides: Partial<DiscoveryDraftsView> = {}) {
 }
 
 async function renderDrafts(onActivated = vi.fn()) {
-  renderWithProviders(<DiscoveryDrafts unitId={3} unitLabel="м³" onActivated={onActivated} onRelaunch={vi.fn()} />);
+  renderWithProviders(<DiscoveryDrafts unitId={3} draftsJobId={500} unitLabel="м³" onActivated={onActivated} onRelaunch={vi.fn()} />);
   await screen.findAllByTestId("draft-card");
   return onActivated;
 }
@@ -103,7 +103,7 @@ describe("DiscoveryDrafts — показ", () => {
 
   it("единица без выполненных открытий: «Открытий не было»", async () => {
     handlerState.discovery.drafts = {};
-    renderWithProviders(<DiscoveryDrafts unitId={3} unitLabel="м³" onActivated={vi.fn()} onRelaunch={vi.fn()} />);
+    renderWithProviders(<DiscoveryDrafts unitId={3} draftsJobId={null} unitLabel="м³" onActivated={vi.fn()} onRelaunch={vi.fn()} />);
 
     expect(await screen.findByText("Открытий не было")).toBeInTheDocument();
   });

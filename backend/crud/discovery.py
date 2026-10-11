@@ -26,6 +26,7 @@ from models import (
     FamilyStatus,
     SemanticJob,
     SemanticJobKind,
+    SemanticJobStatus,
     UnitOfMeasure,
     WorkFamily,
 )
@@ -37,8 +38,9 @@ DRAFT_EXAMPLES = 3
 
 
 def _candidate_units(db: Session) -> set[int | None]:
-    """Единицы, у которых есть что открывать: в охвате есть контекст либо есть
-    активная семья без категории."""
+    """Единицы, у которых есть что открывать или решать: в охвате есть контекст, либо есть
+    активная семья без категории, либо последнее выполненное открытие ещё `actionable`
+    (охват мог опустеть после частичной активации, а решения на экране остаться)."""
     in_scope = set(db.execute(_scope_query(CatalogPosition.unit_id).distinct()).scalars())
     uncategorized = set(
         db.execute(
@@ -50,7 +52,22 @@ def _candidate_units(db: Session) -> set[int | None]:
             .distinct()
         ).scalars()
     )
-    return in_scope | uncategorized
+    done_units = set(
+        db.execute(
+            sa.select(SemanticJob.unit_id)
+            .where(
+                SemanticJob.kind == SemanticJobKind.family_discovery.value,
+                SemanticJob.status == SemanticJobStatus.done.value,
+            )
+            .distinct()
+        ).scalars()
+    )
+    unresolved: set[int | None] = set()
+    for unit in done_units:
+        done_id = latest_discovery_job_id(db, unit)
+        if done_id is not None and _actionable(db, done_id):
+            unresolved.add(unit)
+    return in_scope | uncategorized | unresolved
 
 
 def _actionable(db: Session, job_id: int) -> bool:
@@ -120,6 +137,8 @@ def _last_discovery(db: Session, unit_id: int | None) -> dict | None:
         "status": job.status,
         "at": job.updated_at.isoformat(),
         "open_drafts": open_drafts,
+        # Id последнего ВЫПОЛНЕННОГО открытия: смена id — повод перечитать черновики на экране.
+        "drafts_job_id": done_id,
         # Экран черновиков принадлежит последнему ВЫПОЛНЕННОМУ открытию (спека 3б §2.4): новейшее
         # задание в ошибке, отменённое или идущее его не скрывает; его статус строка называет сама.
         "actionable": done_id is not None and _actionable(db, done_id),

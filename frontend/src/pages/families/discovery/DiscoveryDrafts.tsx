@@ -122,6 +122,8 @@ function ExistingGroups({ groups }: { groups: ExistingGroupView[] }) {
 
 interface DiscoveryDraftsProps {
   unitId: number | null;
+  /** Последнее выполненное открытие единицы (из строки блока): его смена перечитывает черновики. */
+  draftsJobId: number | null;
   /** Подпись единицы (`компл`) для заголовка, кнопки и подписей отказов. */
   unitLabel: string;
   /** Активация прошла: блок открывает окно перезапроса единицы `reask_unit_id`. */
@@ -138,8 +140,14 @@ interface DiscoveryDraftsProps {
  * списки отмеченного (спека 3б §2.5). Отказ активации печатается подписью у черновика и
  * отметок не сбрасывает.
  */
-export function DiscoveryDrafts({ unitId, unitLabel, onActivated, onRelaunch }: DiscoveryDraftsProps) {
-  const draftsQ = useDiscoveryDrafts(unitId);
+export function DiscoveryDrafts({
+  unitId,
+  draftsJobId,
+  unitLabel,
+  onActivated,
+  onRelaunch,
+}: DiscoveryDraftsProps) {
+  const draftsQ = useDiscoveryDrafts(unitId, draftsJobId);
   const categoriesQ = useFamilyCategories();
   const activate = useActivateDiscovery();
 

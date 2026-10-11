@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import type { AxiosError } from "axios";
@@ -2260,10 +2260,12 @@ export function useLaunchDiscovery() {
 }
 
 /** Черновики последнего выполненного открытия единицы (`null` — единица «без единицы»). */
-export function useDiscoveryDrafts(unitId: number | null) {
+export function useDiscoveryDrafts(unitId: number | null, draftsJobId: number | null) {
   return useQuery({
-    queryKey: qk.discovery.drafts(unitId),
+    queryKey: qk.discovery.drafts(unitId, draftsJobId),
     queryFn: () => semanticApi.discoveryDrafts(unitId),
+    // Новое выполненное открытие подменяет черновики на месте: прежние остаются на экране до ответа.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -2529,12 +2531,22 @@ export function useCreateFamilyFromSuggestion() {
   });
 }
 
+/**
+ * Решение по заданию (повтор, отправка, отказ) меняет и статус открытия семей в блоке «Открыть
+ * семьи»: пока задание в `privacy_hold` или `error`, блок не опрашивается и сам не узнает.
+ */
+function invalidateJobDecision(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueueAndStatus(qc);
+  qc.invalidateQueries({ queryKey: qk.discovery.all });
+}
+
 export function useRetryJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (jobId: number) => semanticApi.retryJob(jobId),
     onSuccess: () => {
       invalidateQueue(qc);
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
       toast.success("Задание возвращено в очередь, бюджет попыток сброшен.", {
         description: "История прежних попыток сохранена.",
       });
@@ -2546,7 +2558,7 @@ export function useRetryJob() {
 /** Отказ решения над заданием: `job_changed` — задание изменилось, экран перечитывается без повтора запроса. */
 function onJobDecisionError(qc: ReturnType<typeof useQueryClient>) {
   return (error: unknown) => {
-    invalidateQueueAndStatus(qc);
+    invalidateJobDecision(qc);
     if (apiErrorCode(error) === "job_changed") {
       toast.error("Задание изменилось, обновите экран.");
       return;
@@ -2561,7 +2573,7 @@ export function usePrivacyRelease() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyRelease(jobId, shown),
     onSuccess: () => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       toast.success("Запрос отправлен: задание поставлено в очередь.");
     },
     onError: onJobDecisionError(qc),
@@ -2574,7 +2586,7 @@ export function usePrivacyDecline() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyDecline(jobId, shown),
     onSuccess: () => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       toast.success("Задание отменено: запрос не отправлен.");
     },
     onError: onJobDecisionError(qc),
@@ -2587,7 +2599,7 @@ export function useUnitPrivacyRelease() {
     mutationFn: ({ unitId, shown }: { unitId: number | null; shown: PrivacyMatch[] }) =>
       semanticApi.unitPrivacyRelease(unitId, shown),
     onSuccess: (result) => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       const n = result.confirmed.length;
       toast.success(
         `${n} ${pluralRu(n, "запрос отправлен", "запроса отправлено", "запросов отправлено")}.`,

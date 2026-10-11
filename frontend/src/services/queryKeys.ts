@@ -208,7 +208,9 @@ export const qk = {
     all: ["discovery"] as const,
     units: () => ["discovery", "units"] as const,
     draftsAll: ["discovery", "drafts"] as const,
-    drafts: (unitId: number | null) => ["discovery", "drafts", unitId] as const,
+    /** Ключ несёт id последнего выполненного открытия: новое открытие — новый запрос. */
+    drafts: (unitId: number | null, draftsJobId: number | null) =>
+      ["discovery", "drafts", unitId, draftsJobId] as const,
   },
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */

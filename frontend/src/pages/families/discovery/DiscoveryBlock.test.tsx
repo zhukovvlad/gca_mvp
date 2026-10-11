@@ -27,6 +27,7 @@ const RUN = (overrides: Partial<DiscoveryRunInfo> = {}): DiscoveryRunInfo => ({
   status: "done",
   at: "2026-10-09T10:00:00",
   open_drafts: 0,
+  drafts_job_id: 500,
   actionable: false,
   ...overrides,
 });
@@ -296,6 +297,98 @@ describe("DiscoveryBlock — черновики и перезапрос", () => 
     expect(screen.queryByTestId("discovery-drafts")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Открыть семьи…" })).toBeInTheDocument();
     expect(handlerState.discovery.draftsRequests).toEqual([]);
+  });
+
+  it("охват опустел после частичной активации, а решения остались: единица в блоке и экран 3 показан", async () => {
+    // Данные как у сервера: в единице появилась семья, обычные контексты вышли из охвата,
+    // семей без категории нет — единицу держит `actionable` последнего выполненного открытия.
+    handlerState.discovery.units = [
+      discoveryUnitFixture({
+        systems: 0,
+        new_family: 0,
+        bare: 0,
+        names: 0,
+        uncategorized_families: 0,
+        last_discovery: RUN({ open_drafts: 1, actionable: true }),
+      }),
+    ];
+    handlerState.discovery.drafts["3"] = draftsViewFixture({
+      drafts: [draftFixture({ id: 302, title: "Семья два" })],
+      not_work: { id: 9, names: [{ title: "Голая заметка", contexts: 1, context_ids: [901] }] },
+    });
+    renderBlock();
+
+    expect(await screen.findByTestId("discovery-drafts")).toBeInTheDocument();
+    expect(await screen.findByText("Семья два")).toBeInTheDocument();
+    expect(screen.getByText("Голая заметка")).toBeInTheDocument();
+    expect(screen.queryByTestId("discovery-unit-row")).not.toBeInTheDocument();
+  });
+
+  it("у единицы остались только отброшенные черновики: экран показан ради «Вернуть»", async () => {
+    const user = userEvent.setup();
+    handlerState.discovery.units = [
+      discoveryUnitFixture({
+        systems: 0,
+        last_discovery: RUN({ open_drafts: 0, actionable: true }),
+      }),
+    ];
+    handlerState.discovery.drafts["3"] = draftsViewFixture({
+      folded: [draftFixture({ id: 303, status: "discarded" })],
+    });
+    renderBlock();
+
+    expect(await screen.findByTestId("discovery-drafts")).toBeInTheDocument();
+    await user.click(await screen.findByText("Слитые и отброшенные (1)"));
+    expect(await screen.findByRole("button", { name: "Вернуть" })).toBeInTheDocument();
+  });
+
+  it("повторное открытие завершилось: на том же экране показаны черновики нового открытия", async () => {
+    const user = userEvent.setup();
+    handlerState.discovery.units = [
+      discoveryUnitFixture({
+        last_discovery: RUN({ job_id: 500, drafts_job_id: 500, open_drafts: 1, actionable: true }),
+      }),
+    ];
+    handlerState.discovery.drafts["3"] = draftsViewFixture({
+      job_id: 500,
+      drafts: [draftFixture({ title: "Черновик прошлого открытия" })],
+    });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    renderBlock();
+    expect(await screen.findByText("Черновик прошлого открытия")).toBeInTheDocument();
+    const screenBefore = screen.getByTestId("discovery-drafts");
+
+    // Повторный запуск: сервер ставит задание, выполненным остаётся прежнее.
+    await user.click(screen.getByRole("button", { name: "Открыть семьи заново…" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("$0,90");
+    await user.click(within(dialog).getByRole("button", { name: "Открыть семьи" }));
+    await waitFor(() => expect(handlerState.discovery.launchRequests).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("discovery-latest-job")).toHaveTextContent(/открывается…/)
+    );
+    expect(screen.getByText("Черновик прошлого открытия")).toBeInTheDocument();
+
+    // Задание завершилось: у блока новое последнее выполненное открытие, черновики — другие.
+    handlerState.discovery.units = [
+      discoveryUnitFixture({
+        last_discovery: RUN({ job_id: 501, drafts_job_id: 501, open_drafts: 1, actionable: true }),
+      }),
+    ];
+    handlerState.discovery.drafts["3"] = draftsViewFixture({
+      job_id: 501,
+      drafts: [draftFixture({ id: 401, title: "Черновик нового открытия" })],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_500);
+    });
+
+    expect(await screen.findByText("Черновик нового открытия")).toBeInTheDocument();
+    expect(screen.queryByText("Черновик прошлого открытия")).not.toBeInTheDocument();
+    // Экран не перемонтирован, ни одно действие над черновиком не отправлялось.
+    expect(screen.getByTestId("discovery-drafts")).toBe(screenBefore);
+    expect(handlerState.discovery.draftRequests).toEqual([]);
+    expect(handlerState.discovery.activateRequests).toEqual([]);
   });
 
   it("открытие «только категории»: новых черновиков нет, экран показан ради «Категорий активных семей»", async () => {

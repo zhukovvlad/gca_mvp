@@ -216,6 +216,7 @@ export function DiscoveryBlock({ unitLabel, unitFilter }: DiscoveryBlockProps) {
               <LatestJobNote status={row.last_discovery?.status ?? null} />
               <DiscoveryDrafts
                 unitId={row.unit_id}
+                draftsJobId={row.last_discovery?.drafts_job_id ?? null}
                 unitLabel={label}
                 onActivated={(outcome) => handleActivated(row, outcome)}
                 onRelaunch={() => setLaunch({ unitId: row.unit_id, unitLabel: label })}

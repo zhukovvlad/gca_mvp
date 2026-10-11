@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -116,5 +117,73 @@ describe("SuggestionsTab — блок «Открыть семьи»", () => {
     expect(
       within(screen.getByTestId("discovery-unit-row")).getByText("м²", { selector: "b" })
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Решения по заданию открытия, принятые на вкладке «Ошибки»: блок в «Новой» должен перечитаться.
+ * Клиент — как в `App.tsx` (`staleTime: 60_000`, кэш живёт после ухода с вкладки): без
+ * инвалидации свежая закэшированная строка осталась бы прежней, а опрос при `privacy_hold` и
+ * `error` не идёт. Единица M2 (id 5); задание открытия — задержанное 31, в ошибке 21, из группы
+ * единицы 33.
+ */
+describe("SuggestionsTab — решения по заданию открытия обновляют блок", () => {
+  const productionClient = () =>
+    new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000 }, mutations: { retry: false } },
+    });
+
+  const run = (jobId: number, status: string) => ({
+    job_id: jobId,
+    status,
+    at: "2026-10-09T10:00:00",
+    open_drafts: 0,
+    drafts_job_id: null,
+    actionable: false,
+  });
+
+  it.each([
+    ["«Отправить» в «Задержанных»", "privacy_hold", 31, /^Отправить$/, "pending"],
+    ["«Не отправлять» в «Задержанных»", "privacy_hold", 31, /^Не отправлять$/, "cancelled"],
+    ["«Отправить все» в строке единицы", "privacy_hold", 33, /^Отправить все 3$/, "pending"],
+    ["«Повторить» из ошибки", "error", 21, /^Повторить$/, "pending"],
+  ])("%s", async (_name, before, jobId, button, after) => {
+    const user = userEvent.setup();
+    handlerState.discovery.units = [
+      discoveryUnitFixture({
+        unit_id: 5,
+        unit_code: "M2",
+        last_discovery: run(jobId, before),
+      }),
+    ];
+    const client = productionClient();
+    renderWithProviders(<SuggestionsTab />, { queryClient: client });
+    await screen.findAllByTestId("suggestion-group");
+    await user.click(screen.getByRole("tab", { name: /Новая/ }));
+    const staleText = before === "error" ? /закончилось ошибкой/ : /задержано проверкой приватности/;
+    expect(await screen.findByTestId("discovery-unit-row")).toHaveTextContent(staleText);
+
+    await user.click(screen.getByRole("tab", { name: /Ошибки/ }));
+    await screen.findByTestId("errors-queue");
+    const scope = before === "error" ? screen.getAllByTestId("error-job")[0] : screen.getByTestId("privacy-hold");
+    await user.click(within(scope).getAllByRole("button", { name: button })[0]);
+    await waitFor(() =>
+      expect(
+        handlerState.retryJobRequests.length +
+          handlerState.privacyReleaseRequests.length +
+          handlerState.privacyDeclineRequests.length +
+          handlerState.unitPrivacyReleaseRequests.length
+      ).toBe(1)
+    );
+    await user.click(screen.getByRole("tab", { name: /Новая/ }));
+
+    const row = await screen.findByTestId("discovery-unit-row");
+    if (after === "pending") {
+      await waitFor(() => expect(row).toHaveTextContent("открывается…"));
+    } else {
+      await waitFor(() => expect(row).not.toHaveTextContent(staleText));
+      expect(within(row).getByRole("button", { name: "Открыть семьи…" })).toBeInTheDocument();
+    }
+    client.clear();
   });
 });

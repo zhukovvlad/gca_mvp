@@ -2177,6 +2177,15 @@ function draftNotFound(draftId: number) {
 }
 
 /** Ответ действия над черновиком: ключи `_serialize_draft`. */
+/** Решение по заданию (отправить, повторить, отказаться) меняет статус открытия в строке блока — как сервер. */
+function syncDiscoveryJobStatus(jobIds: number[], status: string) {
+  for (const unit of handlerState.discovery.units) {
+    if (unit.last_discovery && jobIds.includes(unit.last_discovery.job_id)) {
+      unit.last_discovery.status = status;
+    }
+  }
+}
+
 function draftActionResponse(draft: DraftView, view: DiscoveryDraftsView) {
   return HttpResponse.json({
     id: draft.id,
@@ -4720,6 +4729,7 @@ export const handlers = [
     const id = Number(params.id);
     handlerState.retryJobRequests.push(id);
     handlerState.errorJobs = handlerState.errorJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "pending");
     return HttpResponse.json({ job_id: id, status: "pending" });
   }),
   http.post("/api/v1/semantic/jobs/:id/privacy-release", async ({ params, request }) => {
@@ -4728,6 +4738,7 @@ export const handlers = [
     const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
     handlerState.privacyReleaseRequests.push({ jobId: id, matches: body.shown_matches });
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "pending");
     return HttpResponse.json({ job_id: id, status: "pending" });
   }),
   http.post("/api/v1/semantic/jobs/:id/privacy-decline", async ({ params, request }) => {
@@ -4736,6 +4747,7 @@ export const handlers = [
     const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
     handlerState.privacyDeclineRequests.push({ jobId: id, matches: body.shown_matches });
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "cancelled");
     return HttpResponse.json({ job_id: id, status: "cancelled" });
   }),
   http.post("/api/v1/semantic/unit-privacy-release", async ({ request }) => {
@@ -4746,6 +4758,10 @@ export const handlers = [
       (j) => j.unit_id === body.unit_id && (j.matches ?? []).every((m) => m.where !== "context")
     );
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => !released.includes(j));
+    syncDiscoveryJobStatus(
+      released.map((j) => j.job_id),
+      "pending"
+    );
     handlerState.unitHoldGroups = handlerState.unitHoldGroups.filter((g) => g.unit_id !== body.unit_id);
     return HttpResponse.json({ confirmed: released.map((j) => j.job_id), skipped: [] });
   }),
@@ -4805,8 +4821,10 @@ export const handlers = [
         job_id: 500,
         status: "pending",
         at: isoNow(),
-        open_drafts: 0,
-        actionable: false,
+        // Выполненное открытие прежнее, пока новое не завершится: экран черновиков на месте.
+        open_drafts: unit.last_discovery?.open_drafts ?? 0,
+        drafts_job_id: unit.last_discovery?.drafts_job_id ?? null,
+        actionable: unit.last_discovery?.actionable ?? false,
       };
     }
     return HttpResponse.json({ job_id: 500, status: "pending", unit_id: body.unit_id });
