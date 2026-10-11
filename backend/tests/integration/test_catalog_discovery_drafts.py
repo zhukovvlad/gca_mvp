@@ -879,6 +879,8 @@ class TestView:
             (needs.id, "Нужна категория", work)
         ]
         assert proposals[0]["family_category_title"]
+        assert proposals[0]["family_definition"] == needs.definition
+        assert needs.definition
 
     def test_unit_null_is_a_unit_of_its_own(self, world):
         job = _job(world.db, None)

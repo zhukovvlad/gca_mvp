@@ -203,6 +203,14 @@ export const qk = {
     list: () => ["family-categories", "list"] as const,
   },
 
+  /** Открытие семей: блок по единицам и черновики последнего открытия (спека 3б §2.12). */
+  discovery: {
+    all: ["discovery"] as const,
+    units: () => ["discovery", "units"] as const,
+    draftsAll: ["discovery", "drafts"] as const,
+    drafts: (unitId: number | null) => ["discovery", "drafts", unitId] as const,
+  },
+
   /** Контексты каталога — очередь и карточка (спека §2.10). */
   semanticContexts: {
     all: ["semantic-contexts"] as const,

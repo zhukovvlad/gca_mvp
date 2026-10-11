@@ -53,6 +53,48 @@ def _candidate_units(db: Session) -> set[int | None]:
     return in_scope | uncategorized
 
 
+def _actionable(db: Session, job_id: int) -> bool:
+    """На экране последнего выполненного открытия ещё есть что решать (спека 3б §2.4): открытый
+    черновик новой семьи, либо слитый или отброшенный (его можно вернуть), либо предложение
+    категории семье, которой она ещё нужна (активна и без категории), либо член группы «Не
+    работа», который СЕЙЧАС в охвате (`is_in_scope` без условия «почему в охвате», как у вида
+    черновиков). Группы «в активные семьи» — справка и экран не держат. Один расчёт и для строки
+    блока, и для вида черновиков."""
+    restorable_or_open = db.execute(
+        sa.select(FamilyDraft.id)
+        .where(
+            FamilyDraft.job_id == job_id,
+            FamilyDraft.grp == DraftGroup.new.value,
+            FamilyDraft.status.in_(
+                (DraftStatus.open.value, DraftStatus.merged.value, DraftStatus.discarded.value)
+            ),
+        )
+        .limit(1)
+    ).first()
+    if restorable_or_open is not None:
+        return True
+    needs_category = db.execute(
+        sa.select(FamilyCategoryProposal.family_id)
+        .join(WorkFamily, WorkFamily.id == FamilyCategoryProposal.family_id)
+        .where(
+            FamilyCategoryProposal.job_id == job_id,
+            WorkFamily.status == FamilyStatus.active.value,
+            WorkFamily.family_category_id.is_(None),
+        )
+        .limit(1)
+    ).first()
+    if needs_category is not None:
+        return True
+    not_work_members = set(
+        db.execute(
+            sa.select(FamilyDraftMember.context_id)
+            .join(FamilyDraft, FamilyDraft.id == FamilyDraftMember.draft_id)
+            .where(FamilyDraft.job_id == job_id, FamilyDraft.grp == DraftGroup.not_work.value)
+        ).scalars()
+    )
+    return bool(is_in_scope(db, not_work_members, why_in_scope=False))
+
+
 def _last_discovery(db: Session, unit_id: int | None) -> dict | None:
     job = db.execute(
         sa.select(SemanticJob)
@@ -65,6 +107,7 @@ def _last_discovery(db: Session, unit_id: int | None) -> dict | None:
     ).scalar_one_or_none()
     if job is None:
         return None
+    done_id = latest_discovery_job_id(db, unit_id)
     open_drafts = db.execute(
         sa.select(sa.func.count(FamilyDraft.id)).where(
             FamilyDraft.job_id == job.id,
@@ -77,6 +120,9 @@ def _last_discovery(db: Session, unit_id: int | None) -> dict | None:
         "status": job.status,
         "at": job.updated_at.isoformat(),
         "open_drafts": open_drafts,
+        # Экран черновиков принадлежит последнему ВЫПОЛНЕННОМУ открытию (спека 3б §2.4): новейшее
+        # задание в ошибке, отменённое или идущее его не скрывает; его статус строка называет сама.
+        "actionable": done_id is not None and _actionable(db, done_id),
     }
 
 
@@ -237,7 +283,11 @@ def discovery_drafts(db: Session, *, unit_id: int | None) -> dict | None:
             row.id: row
             for row in db.execute(
                 sa.select(
-                    WorkFamily.id, WorkFamily.title, WorkFamily.status, WorkFamily.family_category_id
+                    WorkFamily.id,
+                    WorkFamily.title,
+                    WorkFamily.definition,
+                    WorkFamily.status,
+                    WorkFamily.family_category_id,
                 ).where(WorkFamily.id.in_(family_ids))
             ).all()
         }
@@ -320,6 +370,7 @@ def discovery_drafts(db: Session, *, unit_id: int | None) -> dict | None:
         {
             "family_id": p.family_id,
             "family_title": families[p.family_id].title,
+            "family_definition": families[p.family_id].definition,
             "family_category_id": p.family_category_id,
             "family_category_title": categories.get(p.family_category_id),
         }
@@ -343,4 +394,5 @@ def discovery_drafts(db: Session, *, unit_id: int | None) -> dict | None:
         "not_work": not_work,
         "rest": rest,
         "category_proposals": category_proposals,
+        "actionable": _actionable(db, job_id),
     }

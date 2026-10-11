@@ -2930,6 +2930,166 @@ export type PreviewTarget =
   | { kind: "batch"; batchId: number; source: BatchSource }
   | { kind: "schema"; familyId: number };
 
+// ---- Открытие семей и черновики (спека 3б §2.3–§2.5, §2.12; `crud/discovery.py`) ----
+
+/** Состав охвата единицы по контекстам (`ScopeCounts`): системы, «новая семья», «голые», имена, семьи без категории. */
+export interface DiscoveryScopeCounts {
+  systems: number;
+  new_family: number;
+  bare: number;
+  names: number;
+  uncategorized_families: number;
+}
+
+/** Последнее открытие единицы: статус задания и число открытых черновиков новых семей. */
+export interface DiscoveryRunInfo {
+  job_id: number;
+  status: string;
+  at: string;
+  open_drafts: number;
+  /** На экране черновиков ещё есть что решать (черновик, возврат, категории, «Не работа») — экран показывается. */
+  actionable: boolean;
+}
+
+/** Строка блока «Открыть семьи» (`GET /discovery/units`): числа плоско, как у сервера. */
+export interface DiscoveryUnitRow extends DiscoveryScopeCounts {
+  unit_id: number | null;
+  unit_code: string | null;
+  active_families: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  last_discovery: DiscoveryRunInfo | null;
+}
+
+/** `POST /discovery/preview`: числа окна запуска и `preview_hash` для запуска. */
+export interface DiscoveryPreview {
+  unit_id: number | null;
+  counts: DiscoveryScopeCounts;
+  active_families: number;
+  reserve_usd: string;
+  expected_cached_usd: string;
+  preview_hash: string;
+}
+
+/** Статус семьи в ссылках черновика: на экране ссылка показывает его, если семья уже не активна. */
+export type DraftFamilyStatus = WorkFamilyStatus | null;
+
+/** Открытый, слитый, отброшенный или активированный черновик новой семьи. */
+export interface DraftView {
+  id: number;
+  ordinal: number;
+  status: "open" | "activated" | "merged" | "discarded" | "superseded";
+  title: string;
+  definition: string;
+  family_category_id: number | null;
+  family_category_title: string | null;
+  similar_family_id: number | null;
+  similar_family_title: string | null;
+  similar_family_status: DraftFamilyStatus;
+  merged_into_draft_id: number | null;
+  merged_into_family_id: number | null;
+  merged_into_family_title: string | null;
+  merged_into_family_status: DraftFamilyStatus;
+  activated_family_id: number | null;
+  rows: number;
+  examples: string[];
+  edited_at: string | null;
+}
+
+/** Группа «в активную семью»: строки придут предложениями при перезапросе. */
+export interface ExistingGroupView {
+  id: number;
+  family_id: number | null;
+  family_title: string | null;
+  family_status: DraftFamilyStatus;
+  rows: number;
+}
+
+/** Наименование группы «Не работа»: число контекстов и их id (все контексты наименования уходят в активацию). */
+export interface NotWorkRow {
+  title: string;
+  contexts: number;
+  context_ids: number[];
+}
+
+export interface NotWorkView {
+  id: number;
+  names: NotWorkRow[];
+}
+
+/** Предложение категории активной семье открытия. */
+export interface CategoryProposalView {
+  family_id: number;
+  family_title: string;
+  family_category_id: number;
+  family_category_title: string | null;
+  /** Определение семьи: по нему человек проверяет предложенную категорию. */
+  family_definition: string | null;
+}
+
+/** Черновики последнего выполненного открытия единицы. */
+export interface DiscoveryDraftsView {
+  job_id: number;
+  unit_id: number | null;
+  opened_at: string;
+  drafts: DraftView[];
+  folded: DraftView[];
+  activated: DraftView[];
+  existing: ExistingGroupView[];
+  not_work: NotWorkView | null;
+  rest: number;
+  category_proposals: CategoryProposalView[];
+  /** Тот же признак, что у строки блока: есть что решать. */
+  actionable: boolean;
+}
+
+/** Ответ действия над черновиком (`_serialize_draft`): без строк, примеров и подписей — экран перечитывает вид. */
+export interface DraftActionResult {
+  id: number;
+  job_id: number;
+  unit_id: number | null;
+  grp: "new";
+  status: DraftView["status"];
+  title: string;
+  definition: string;
+  family_category_id: number | null;
+  merged_into_draft_id: number | null;
+  merged_into_family_id: number | null;
+}
+
+/** `GET /discovery/drafts`: `drafts: null` — выполненных открытий у единицы нет. */
+export interface DiscoveryDraftsResponse {
+  unit_id: number | null;
+  drafts: DiscoveryDraftsView | null;
+}
+
+/** Правка черновика: переданные поля меняются, непереданные нет. */
+export interface DraftEditInput {
+  title?: string;
+  definition?: string;
+  family_category_id?: number;
+}
+
+/** Цель слияния: черновик того же открытия или активная семья той же единицы — ровно одна. */
+export type DraftMergeTarget = { target_draft_id: number } | { target_family_id: number };
+
+/** Тело `POST /discovery/:job_id/activate`: то, что отмечено на экране. */
+export interface ActivateDiscoveryInput {
+  draft_ids: number[];
+  not_work_context_ids: number[];
+  family_categories: Array<{ family_id: number; family_category_id: number }>;
+}
+
+/** Ответ активации (`ActivationOutcome`): пропущенное названо ключами `*_skipped`. */
+export interface ActivationOutcome {
+  created_family_ids: number[];
+  categories_applied: number[];
+  categories_skipped: number[];
+  not_work_applied: number[];
+  not_work_skipped: number[];
+  reask_unit_id: number | null;
+}
+
 /** Тело `POST /suggestions/:id/create-family`; единицу сервер берёт у контекста предложения. */
 export interface CreateFamilyFromSuggestionInput {
   title: string;

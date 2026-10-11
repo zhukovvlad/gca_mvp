@@ -19,7 +19,15 @@ import type {
   ContextsPage,
   ContextsParams,
   ConfirmSuggestionsResult,
+  ActivateDiscoveryInput,
+  ActivationOutcome,
   CreateFamilyFromSuggestionInput,
+  DiscoveryDraftsResponse,
+  DiscoveryPreview,
+  DiscoveryUnitRow,
+  DraftEditInput,
+  DraftMergeTarget,
+  DraftActionResult,
   FamilyCategory,
   FamilyCategoryFilter,
   FamilyCategoryInput,
@@ -695,6 +703,55 @@ export const semanticApi = {
         unit_id: unitId,
         preview_hash: previewHash,
       })
+      .then((r) => r.data),
+
+  /** Блок «Открыть семьи»: строка на единицу с охватом или семьями без категории (спека 3б §2.12). */
+  discoveryUnits: (): Promise<DiscoveryUnitRow[]> =>
+    api
+      .get<{ units: DiscoveryUnitRow[] }>("/v1/semantic/discovery/units")
+      .then((r) => r.data.units),
+
+  discoveryPreview: (unitId: number | null): Promise<DiscoveryPreview> =>
+    api
+      .post<DiscoveryPreview>("/v1/semantic/discovery/preview", { unit_id: unitId })
+      .then((r) => r.data),
+
+  launchDiscovery: (
+    unitId: number | null,
+    previewHash: string
+  ): Promise<{ job_id: number; status: string; unit_id: number | null }> =>
+    api
+      .post<{ job_id: number; status: string; unit_id: number | null }>("/v1/semantic/discovery", {
+        unit_id: unitId,
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  /** Черновики последнего выполненного открытия единицы; `unit_id` не передан — единица «без единицы». */
+  discoveryDrafts: (unitId: number | null): Promise<DiscoveryDraftsResponse> =>
+    api
+      .get<DiscoveryDraftsResponse>("/v1/semantic/discovery/drafts", {
+        params: unitId === null ? {} : { unit_id: unitId },
+      })
+      .then((r) => r.data),
+
+  editDraft: (draftId: number, input: DraftEditInput): Promise<DraftActionResult> =>
+    api.patch<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}`, input).then((r) => r.data),
+
+  mergeDraft: (draftId: number, target: DraftMergeTarget): Promise<DraftActionResult> =>
+    api
+      .post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/merge`, target)
+      .then((r) => r.data),
+
+  discardDraft: (draftId: number): Promise<DraftActionResult> =>
+    api.post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/discard`).then((r) => r.data),
+
+  restoreDraft: (draftId: number): Promise<DraftActionResult> =>
+    api.post<DraftActionResult>(`/v1/semantic/discovery/drafts/${draftId}/restore`).then((r) => r.data),
+
+  activateDiscovery: (jobId: number, input: ActivateDiscoveryInput): Promise<ActivationOutcome> =>
+    api
+      .post<ActivationOutcome>(`/v1/semantic/discovery/${jobId}/activate`, input)
       .then((r) => r.data),
 
   reaskAllPreview: (): Promise<ReaskPreview> =>

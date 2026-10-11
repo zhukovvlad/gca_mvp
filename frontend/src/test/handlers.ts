@@ -65,7 +65,13 @@ import type {
   JobRow,
   NewRow,
   PrivacyMatch,
+  ActivateDiscoveryInput,
+  ActivationOutcome,
   ChangeGroup,
+  DiscoveryDraftsView,
+  DiscoveryPreview,
+  DiscoveryUnitRow,
+  DraftView,
   FamilyCategory,
   ContextVariantData,
   PositionStandard,
@@ -581,6 +587,123 @@ interface HandlerState {
    * оценкой, пересчитанной под замком, — здесь с последней показанной.
    */
   schemaPreviewHashes: Record<number, string>;
+
+  /** Открытие семей и черновики (спека 3б §2.12): состояние сервера и журнал запросов. */
+  discovery: DiscoveryFixtureState;
+}
+
+type DiscoveryAction = "launch" | "edit" | "merge" | "discard" | "restore" | "activate";
+
+/**
+ * Сервер открытия семей. `units` и `drafts` (по `String(unit_id)`) мутируют хендлеры — как сервер:
+ * правка, слияние, отбрасывание, возврат и активация меняют черновики, а экран это перечитывает.
+ */
+export interface DiscoveryFixtureState {
+  units: DiscoveryUnitRow[];
+  drafts: Record<string, DiscoveryDraftsView | null>;
+  unitsRequests: number;
+  draftsRequests: string[];
+  previewRequests: Array<number | null>;
+  /** `preview_hash` последнего выданного preview: запуск с другим хэшем — `409 preview_changed`. */
+  lastPreviewHash: string | null;
+  previewCounter: number;
+  launchRequests: Array<{ unit_id: number | null; preview_hash: string }>;
+  /** Сколько ближайших запусков сервер отвергает `409 preview_changed`. */
+  launchConflictsLeft: number;
+  draftRequests: Array<{
+    action: "edit" | "merge" | "discard" | "restore";
+    draftId: number;
+    body: Record<string, unknown> | null;
+  }>;
+  activateRequests: Array<{ jobId: number; body: ActivateDiscoveryInput }>;
+  /** Ответ активации вместо вычисленного (пропущенные строки и категории). */
+  activationOutcome: ActivationOutcome | null;
+  /** Отказать следующему действию кодом; срабатывает один раз. `context` — ключи рядом с `code`. */
+  refusal: {
+    action: DiscoveryAction;
+    code: string;
+    status: number;
+    context?: Record<string, unknown>;
+  } | null;
+}
+
+export function initialDiscovery(): DiscoveryFixtureState {
+  return {
+    units: [],
+    drafts: {},
+    unitsRequests: 0,
+    draftsRequests: [],
+    previewRequests: [],
+    lastPreviewHash: null,
+    previewCounter: 0,
+    launchRequests: [],
+    launchConflictsLeft: 0,
+    draftRequests: [],
+    activateRequests: [],
+    activationOutcome: null,
+    refusal: null,
+  };
+}
+
+/** Строка блока «Открыть семьи»: единица M3 (id 3, у неё активна семья «Кровельные работы»), 1 382 системы без семьи, открытий не было. */
+export function discoveryUnitFixture(overrides: Partial<DiscoveryUnitRow> = {}): DiscoveryUnitRow {
+  return {
+    unit_id: 3,
+    unit_code: "M3",
+    systems: 1382,
+    new_family: 0,
+    bare: 0,
+    names: 1100,
+    uncategorized_families: 0,
+    active_families: 2,
+    reserve_usd: "0.9",
+    expected_cached_usd: "0.6",
+    last_discovery: null,
+    ...overrides,
+  };
+}
+
+/** Открытый черновик новой семьи с категорией «Работа» (id 1) и тремя примерами. */
+export function draftFixture(overrides: Partial<DraftView> = {}): DraftView {
+  return {
+    id: 301,
+    ordinal: 1,
+    status: "open",
+    title: "Вентиляция общеобменная",
+    definition: "Система общеобменной вентиляции здания целиком.",
+    family_category_id: 1,
+    family_category_title: "Работа",
+    similar_family_id: null,
+    similar_family_title: null,
+    similar_family_status: null,
+    merged_into_draft_id: null,
+    merged_into_family_id: null,
+    merged_into_family_title: null,
+    merged_into_family_status: null,
+    activated_family_id: null,
+    rows: 66,
+    examples: ["Вентиляция — приточные установки", "Вентиляция — струйный вентилятор"],
+    edited_at: null,
+    ...overrides,
+  };
+}
+
+/** Черновики открытия `job_id`; без переопределений — пустой экран единицы 3. */
+export function draftsViewFixture(overrides: Partial<DiscoveryDraftsView> = {}): DiscoveryDraftsView {
+  return {
+    job_id: 500,
+    unit_id: 3,
+    opened_at: "2026-10-09T10:00:00",
+    drafts: [],
+    folded: [],
+    activated: [],
+    existing: [],
+    not_work: null,
+    rest: 0,
+    category_proposals: [],
+    actionable: true,
+    ...overrides,
+  };
 }
 
 type SchemaAction = "rebuild" | "update" | "cancel" | "merge";
@@ -1912,6 +2035,7 @@ export const handlerState: HandlerState = {
   schemaRefusal: null,
   schemaRequests: [],
   schemaPreviewHashes: {},
+  discovery: initialDiscovery(),
 };
 
 /** Схемы и варианты фикстуры: у активной семьи «Кровельные работы» (`SCHEMA_FAMILY_ID`) схема из двух параметров, у прочих схемы нет. */
@@ -2010,6 +2134,84 @@ function canonicalSchemaValueId(values: FamilySchemaValue[], valueId: number): n
     current = next;
   }
   return current;
+}
+
+/** Отказ следующему действию открытия, если тест его задал (один раз). */
+function takeDiscoveryRefusal(action: DiscoveryAction) {
+  const refusal = handlerState.discovery.refusal;
+  if (!refusal || refusal.action !== action) return null;
+  handlerState.discovery.refusal = null;
+  return HttpResponse.json(
+    { detail: { code: refusal.code, message: refusal.code, ...refusal.context } },
+    { status: refusal.status }
+  );
+}
+
+/** Ищет черновик по id среди всех открытий вместе с видом, которому он принадлежит. */
+function findDraft(draftId: number): { view: DiscoveryDraftsView; draft: DraftView } | null {
+  for (const view of Object.values(handlerState.discovery.drafts)) {
+    if (!view) continue;
+    const draft = [...view.drafts, ...view.folded].find((d) => d.id === draftId);
+    if (draft) return { view, draft };
+  }
+  return null;
+}
+
+/** Число открытых черновиков единицы в строке блока — как `_last_discovery`. */
+function syncOpenDrafts(view: DiscoveryDraftsView) {
+  const unit = handlerState.discovery.units.find((u) => u.unit_id === view.unit_id);
+  // Как `_actionable`: черновик (открытый или возвращаемый), предложение категорий или «Не работа».
+  view.actionable =
+    view.drafts.length > 0 ||
+    view.folded.length > 0 ||
+    view.category_proposals.length > 0 ||
+    (view.not_work?.names.length ?? 0) > 0;
+  if (unit?.last_discovery) {
+    unit.last_discovery.open_drafts = view.drafts.length;
+    unit.last_discovery.actionable = view.actionable;
+  }
+}
+
+function draftNotFound(draftId: number) {
+  return HttpResponse.json({ detail: `Черновик ${draftId} не найден.` }, { status: 404 });
+}
+
+/** Ответ действия над черновиком: ключи `_serialize_draft`. */
+function draftActionResponse(draft: DraftView, view: DiscoveryDraftsView) {
+  return HttpResponse.json({
+    id: draft.id,
+    job_id: view.job_id,
+    unit_id: view.unit_id,
+    grp: "new",
+    status: draft.status,
+    title: draft.title,
+    definition: draft.definition,
+    family_category_id: draft.family_category_id,
+    merged_into_draft_id: draft.merged_into_draft_id,
+    merged_into_family_id: draft.merged_into_family_id,
+  });
+}
+
+function nextDiscoveryPreview(unitId: number | null): DiscoveryPreview {
+  const state = handlerState.discovery;
+  state.previewCounter += 1;
+  const hash = `discovery-hash-${state.previewCounter}`;
+  state.lastPreviewHash = hash;
+  const row = state.units.find((u) => u.unit_id === unitId) ?? discoveryUnitFixture({ unit_id: unitId });
+  return {
+    unit_id: unitId,
+    counts: {
+      systems: row.systems,
+      new_family: row.new_family,
+      bare: row.bare,
+      names: row.names,
+      uncategorized_families: row.uncategorized_families,
+    },
+    active_families: row.active_families,
+    reserve_usd: row.reserve_usd,
+    expected_cached_usd: row.expected_cached_usd,
+    preview_hash: hash,
+  };
 }
 
 /** Следующий preview: `preview_hash` и резерв меняются с каждым запросом — как при движении токенных наблюдений. */
@@ -2176,6 +2378,7 @@ export function resetHandlerState() {
   handlerState.schemaRefusal = null;
   handlerState.schemaRequests = [];
   handlerState.schemaPreviewHashes = {};
+  handlerState.discovery = initialDiscovery();
 }
 
 function page<T>(items: T[]) {
@@ -4571,6 +4774,161 @@ export const handlers = [
     handlerState.otherFamilyRequests.push({ suggestionId: id, familyId: body.family_id });
     removeSuggestionRows((rowId) => rowId === id);
     return HttpResponse.json({ suggestion_id: id, decision: "other_family", family_id: body.family_id });
+  }),
+
+  // Открытие семей (`routers/semantic.py`, спека 3б §2.12): блок, preview, запуск, черновики, активация.
+  http.get("/api/v1/semantic/discovery/units", () => {
+    handlerState.discovery.unitsRequests += 1;
+    return HttpResponse.json({ units: handlerState.discovery.units });
+  }),
+  http.post("/api/v1/semantic/discovery/preview", async ({ request }) => {
+    const body = (await request.json()) as { unit_id: number | null };
+    handlerState.discovery.previewRequests.push(body.unit_id);
+    return HttpResponse.json(nextDiscoveryPreview(body.unit_id));
+  }),
+  http.post("/api/v1/semantic/discovery", async ({ request }) => {
+    const body = (await request.json()) as { unit_id: number | null; preview_hash: string };
+    const state = handlerState.discovery;
+    state.launchRequests.push(body);
+    const refused = takeDiscoveryRefusal("launch");
+    if (refused) return refused;
+    if (state.launchConflictsLeft > 0 || body.preview_hash !== state.lastPreviewHash) {
+      if (state.launchConflictsLeft > 0) state.launchConflictsLeft -= 1;
+      return HttpResponse.json(
+        { detail: { code: "preview_changed", message: "Оценка устарела: охват единицы изменился после показа." } },
+        { status: 409 }
+      );
+    }
+    const unit = state.units.find((u) => u.unit_id === body.unit_id);
+    if (unit) {
+      unit.last_discovery = {
+        job_id: 500,
+        status: "pending",
+        at: isoNow(),
+        open_drafts: 0,
+        actionable: false,
+      };
+    }
+    return HttpResponse.json({ job_id: 500, status: "pending", unit_id: body.unit_id });
+  }),
+  http.get("/api/v1/semantic/discovery/drafts", ({ request }) => {
+    const raw = new URL(request.url).searchParams.get("unit_id");
+    handlerState.discovery.draftsRequests.push(raw ?? "none");
+    const unitId = raw === null ? null : Number(raw);
+    return HttpResponse.json({
+      unit_id: unitId,
+      drafts: handlerState.discovery.drafts[String(unitId)] ?? null,
+    });
+  }),
+  http.patch("/api/v1/semantic/discovery/drafts/:id", async ({ params, request }) => {
+    const draftId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.discovery.draftRequests.push({ action: "edit", draftId, body });
+    const refused = takeDiscoveryRefusal("edit");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    if (typeof body.title === "string") draft.title = body.title;
+    if (typeof body.definition === "string") draft.definition = body.definition;
+    if (typeof body.family_category_id === "number") {
+      draft.family_category_id = body.family_category_id;
+      draft.family_category_title =
+        handlerState.familyCategories.find((c) => c.id === body.family_category_id)?.title ?? null;
+    }
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/merge", async ({ params, request }) => {
+    const draftId = Number(params.id);
+    const body = (await request.json()) as { target_draft_id?: number; target_family_id?: number };
+    handlerState.discovery.draftRequests.push({ action: "merge", draftId, body });
+    const refused = takeDiscoveryRefusal("merge");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "merged";
+    if (body.target_draft_id !== undefined) draft.merged_into_draft_id = body.target_draft_id;
+    if (body.target_family_id !== undefined) {
+      const family = handlerState.workFamilies.find((f) => f.id === body.target_family_id);
+      draft.merged_into_family_id = body.target_family_id;
+      draft.merged_into_family_title = family?.title ?? null;
+      draft.merged_into_family_status = family?.status ?? null;
+    }
+    view.drafts = view.drafts.filter((d) => d.id !== draftId);
+    view.folded.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/discard", ({ params }) => {
+    const draftId = Number(params.id);
+    handlerState.discovery.draftRequests.push({ action: "discard", draftId, body: null });
+    const refused = takeDiscoveryRefusal("discard");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "discarded";
+    view.drafts = view.drafts.filter((d) => d.id !== draftId);
+    view.folded.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/restore", ({ params }) => {
+    const draftId = Number(params.id);
+    handlerState.discovery.draftRequests.push({ action: "restore", draftId, body: null });
+    const refused = takeDiscoveryRefusal("restore");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "open";
+    draft.merged_into_draft_id = null;
+    draft.merged_into_family_id = null;
+    draft.merged_into_family_title = null;
+    draft.merged_into_family_status = null;
+    view.folded = view.folded.filter((d) => d.id !== draftId);
+    view.drafts.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/:jobId/activate", async ({ params, request }) => {
+    const jobId = Number(params.jobId);
+    const body = (await request.json()) as ActivateDiscoveryInput;
+    const state = handlerState.discovery;
+    state.activateRequests.push({ jobId, body });
+    const refused = takeDiscoveryRefusal("activate");
+    if (refused) return refused;
+    const view = Object.values(state.drafts).find((v) => v?.job_id === jobId) ?? null;
+    const outcome: ActivationOutcome = state.activationOutcome ?? {
+      created_family_ids: body.draft_ids.map((id) => 900 + id),
+      categories_applied: body.family_categories.map((p) => p.family_id),
+      categories_skipped: [],
+      not_work_applied: body.not_work_context_ids,
+      not_work_skipped: [],
+      reask_unit_id: view?.unit_id ?? null,
+    };
+    if (view) {
+      // Как сервер: активированные черновики уходят в «активированные», применённые строки и пары
+      // выходят из группы «Не работа» и из предложений категорий.
+      const activated = view.drafts.filter((d) => body.draft_ids.includes(d.id));
+      activated.forEach((d, index) => {
+        d.status = "activated";
+        d.activated_family_id = outcome.created_family_ids[index] ?? null;
+      });
+      view.activated.push(...activated);
+      view.drafts = view.drafts.filter((d) => !body.draft_ids.includes(d.id));
+      if (view.not_work) {
+        view.not_work.names = view.not_work.names.filter(
+          (n) => !n.context_ids.every((id) => outcome.not_work_applied.includes(id))
+        );
+      }
+      view.category_proposals = view.category_proposals.filter(
+        (p) => !outcome.categories_applied.includes(p.family_id)
+      );
+      syncOpenDrafts(view);
+    }
+    return HttpResponse.json(outcome);
   }),
 
   http.post("/api/v1/semantic/unit-reask/preview", async ({ request }) => {

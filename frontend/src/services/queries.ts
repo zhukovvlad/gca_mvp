@@ -32,6 +32,7 @@ import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   AcceptTargetDecisionInput,
+  ActivateDiscoveryInput,
   ArchiveContextInput,
   AssignFamilyInput,
   ChangeGroup,
@@ -49,6 +50,8 @@ import type {
   ContractInput,
   ContractorInput,
   Decimal,
+  DraftEditInput,
+  DraftMergeTarget,
   FamilyCategoryFilter,
   FamilyCategoryInput,
   FamilySchema,
@@ -2183,6 +2186,156 @@ export function useReaskConfirm() {
       if (apiErrorCode(error) === "preview_changed") return;
       invalidateQueueAndStatus(qc);
       toastApiError(error);
+    },
+  });
+}
+
+// ---- Открытие семей и черновики (спека 3б §2.3–§2.5) ----
+
+/** Пока задание открытия живо (`pending`/`running`), блок перечитывается сам. */
+const DISCOVERY_POLL_MS = 5_000;
+const DISCOVERY_LIVE_STATUSES = ["pending", "running"];
+
+/** Отказ из таблицы §2.12 — подписью по коду; иной отказ — общим тостом. */
+function toastDiscoveryRefusal(
+  error: unknown,
+  values: Record<string, string | number | null | undefined> = {}
+) {
+  const code = apiErrorCode(error);
+  if (code === undefined || !(code in DISCOVERY_REFUSAL_TEMPLATE)) {
+    toastApiError(error);
+    return;
+  }
+  toast.error(discoveryRefusalLabel(code, values, apiErrorDetail(error)));
+}
+
+export function useDiscoveryUnits() {
+  return useQuery({
+    queryKey: qk.discovery.units(),
+    queryFn: () => semanticApi.discoveryUnits(),
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some(
+        (row) =>
+          row.last_discovery !== null && DISCOVERY_LIVE_STATUSES.includes(row.last_discovery.status)
+      )
+        ? DISCOVERY_POLL_MS
+        : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** Preview окна запуска: числа охвата, оценка и `preview_hash` для запуска. */
+export function useDiscoveryPreview() {
+  return useMutation({
+    mutationFn: (unitId: number | null) => semanticApi.discoveryPreview(unitId),
+  });
+}
+
+/**
+ * Запуск открытия по `preview_hash` из показанного preview. `409 preview_changed` тостом не
+ * показывается — его разбирает окно (новая оценка на экране, без молчаливого повтора).
+ */
+export function useLaunchDiscovery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      unitId,
+      previewHash,
+    }: {
+      unitId: number | null;
+      unitLabel: string;
+      previewHash: string;
+    }) => semanticApi.launchDiscovery(unitId, previewHash),
+    onSuccess: (_, { unitLabel }) => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      invalidateQueueAndStatus(qc);
+      toast.success(`Открытие семей для единицы «${unitLabel}» запущено.`);
+    },
+    onError: (error, { unitLabel }) => {
+      if (apiErrorCode(error) === "preview_changed") return;
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error, { unit: unitLabel });
+    },
+  });
+}
+
+/** Черновики последнего выполненного открытия единицы (`null` — единица «без единицы»). */
+export function useDiscoveryDrafts(unitId: number | null) {
+  return useQuery({
+    queryKey: qk.discovery.drafts(unitId),
+    queryFn: () => semanticApi.discoveryDrafts(unitId),
+  });
+}
+
+/** Действие над черновиком: перечитывает экран и блок; отказ называет черновик по `name`. */
+function useDraftAction<TVars extends { name: string }>(
+  mutationFn: (vars: TVars) => Promise<unknown>
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+    },
+    onError: (error, { name }) => {
+      // Отказ означает, что экран устарел (черновик уже слит, открытие вытеснено): перечитать.
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error, { name });
+    },
+  });
+}
+
+export function useEditDraft() {
+  return useDraftAction(
+    ({ draftId, input }: { draftId: number; name: string; input: DraftEditInput }) =>
+      semanticApi.editDraft(draftId, input)
+  );
+}
+
+export function useMergeDraft() {
+  return useDraftAction(
+    ({ draftId, target }: { draftId: number; name: string; target: DraftMergeTarget }) =>
+      semanticApi.mergeDraft(draftId, target)
+  );
+}
+
+export function useDiscardDraft() {
+  return useDraftAction(({ draftId }: { draftId: number; name: string }) =>
+    semanticApi.discardDraft(draftId)
+  );
+}
+
+export function useRestoreDraft() {
+  return useDraftAction(({ draftId }: { draftId: number; name: string }) =>
+    semanticApi.restoreDraft(draftId)
+  );
+}
+
+/** Отказы активации, которые экран печатает подписью у черновика, а не тостом. */
+export const ACTIVATION_DRAFT_REFUSALS = ["duplicate_active_family", "draft_without_category"];
+
+/**
+ * «Активировать отмеченные» (спека 3б §2.5): одна транзакция на сервере. Успех перечитывает
+ * черновики, семьи, категории, очереди и контексты; отказ с черновиком в контексте экран
+ * печатает у черновика сам — отметки при этом остаются.
+ */
+export function useActivateDiscovery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, input }: { jobId: number; input: ActivateDiscoveryInput }) =>
+      semanticApi.activateDiscovery(jobId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      invalidateQueueAndStatus(qc);
+    },
+    onError: (error) => {
+      const code = apiErrorCode(error);
+      if (code !== undefined && ACTIVATION_DRAFT_REFUSALS.includes(code)) return;
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error);
     },
   });
 }
