@@ -525,7 +525,8 @@ family_drafts                        -- группа ответа открыти
   existing_family_id NULL, similar_family_id NULL, activated_family_id NULL → work_families ON DELETE RESTRICT
   status ('open|activated|merged|discarded|superseded')
   merged_into_draft_id NULL, merged_into_family_id NULL → work_families ON DELETE RESTRICT
-  edited_by, edited_at, decided_by, decided_at NULL, created_at
+  edited_by NULL → users ON DELETE RESTRICT, edited_at NULL
+  decided_by NULL → users ON DELETE RESTRICT, decided_at NULL, created_at
   # UNIQUE (job_id, ordinal); UNIQUE (id, job_id) — цель составных FK
   # UNIQUE (job_id) WHERE grp='not_work' — raw SQL uq_family_drafts_not_work_per_job: одна группа «не работа» на открытие
   # FK (merged_into_draft_id, job_id) → family_drafts (id, job_id) — слияние только внутри открытия
