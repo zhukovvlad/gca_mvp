@@ -215,6 +215,97 @@ describe("DraftCard", () => {
       );
     });
 
+    it("поиск по подстроке без учёта регистра сужает цели; выбор из найденного шлёт тот же запрос", async () => {
+      const user = userEvent.setup();
+      renderCard(draftFixture());
+
+      await user.click(screen.getByRole("button", { name: "Слить с…" }));
+      const dialog = await screen.findByRole("dialog");
+      await waitForDialogFocus();
+      await user.click(within(dialog).getByRole("combobox", { name: "Цель слияния" }));
+      expect(await screen.findByRole("option", { name: "Активная семья «Кровельные работы»" })).toBeInTheDocument();
+      await user.type(screen.getByPlaceholderText("Найти черновик или семью…"), "ИОНИРОВ");
+
+      expect(await screen.findByRole("option", { name: "Черновик «Кондиционирование»" })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Активная семья «Кровельные работы»" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("option", { name: "Черновик «Кондиционирование»" }));
+      await user.click(within(dialog).getByRole("button", { name: "Слить" }));
+
+      await waitFor(() =>
+        expect(handlerState.discovery.draftRequests).toEqual([
+          { action: "merge", draftId: 301, body: { target_draft_id: 302 } },
+        ])
+      );
+    });
+
+    // Источник из целей исключает экран (`DiscoveryDrafts`, `otherDrafts`) — это стережёт
+    // тест «целями предложены другие открытые черновики, но не сам источник» там; здесь
+    // запрос по имени источника — лишь вход на пустой результат.
+    it("пустой результат поиска — «Ничего не найдено»; семья чужой единицы не находится", async () => {
+      const user = userEvent.setup();
+      const roofing = handlerState.workFamilies.find((f) => f.id === 43)!;
+      handlerState.workFamilies.push({
+        ...roofing,
+        id: 77,
+        title: "Штукатурка стен",
+        unit_id: 5,
+        unit_code: "M2",
+        unit_symbol: "м²",
+      });
+      renderCard(draftFixture());
+
+      await user.click(screen.getByRole("button", { name: "Слить с…" }));
+      const dialog = await screen.findByRole("dialog");
+      await waitForDialogFocus();
+      await user.click(within(dialog).getByRole("combobox", { name: "Цель слияния" }));
+      const search = screen.getByPlaceholderText("Найти черновик или семью…");
+
+      await user.type(search, "вентиляция общеобменная");
+      expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+      await user.clear(search);
+      await user.type(search, "штукатурка");
+      expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+    });
+
+    it("варианты показаны по алфавиту подписи: семьи («Активная семья…») идут перед черновиками", async () => {
+      const user = userEvent.setup();
+      const roofing = handlerState.workFamilies.find((f) => f.id === 43)!;
+      handlerState.workFamilies.push({ ...roofing, id: 78, title: "Аэрация" });
+      renderCard(draftFixture());
+
+      await user.click(screen.getByRole("button", { name: "Слить с…" }));
+      const dialog = await screen.findByRole("dialog");
+      await waitForDialogFocus();
+      await user.click(within(dialog).getByRole("combobox", { name: "Цель слияния" }));
+      await screen.findByRole("option", { name: "Активная семья «Аэрация»" });
+
+      expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+        "Активная семья «Аэрация»",
+        "Активная семья «Кровельные работы»",
+        "Черновик «Кондиционирование»",
+      ]);
+    });
+
+    it("поиск идёт по имени, а не по приставке «Черновик»/«Активная семья»", async () => {
+      const user = userEvent.setup();
+      renderCard(draftFixture());
+
+      await user.click(screen.getByRole("button", { name: "Слить с…" }));
+      const dialog = await screen.findByRole("dialog");
+      await waitForDialogFocus();
+      await user.click(within(dialog).getByRole("combobox", { name: "Цель слияния" }));
+      const search = screen.getByPlaceholderText("Найти черновик или семью…");
+
+      await user.type(search, "черновик");
+      expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+      await user.clear(search);
+      await user.type(search, "семья");
+      expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+      await user.clear(search);
+      await user.type(search, "кондиц");
+      expect(await screen.findByRole("option", { name: "Черновик «Кондиционирование»" })).toBeInTheDocument();
+    });
+
     it("слияние с активной семьёй шлёт target_family_id", async () => {
       const user = userEvent.setup();
       renderCard(draftFixture());

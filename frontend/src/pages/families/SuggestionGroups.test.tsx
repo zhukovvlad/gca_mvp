@@ -366,6 +366,111 @@ describe("SuggestionGroups — «Другая семья…»", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("поиск сужает список по подстроке в середине названия без учёта регистра", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(901, "Монтаж перекрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    expect(await screen.findByRole("option", { name: "Окраска стен" })).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "ЙСТВО ПОК");
+
+    expect(await screen.findByRole("option", { name: "Устройство покрытий" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Окраска стен" })).not.toBeInTheDocument();
+    // «Монтаж перекрытий» тоже оканчивается на «крытий», но искомой подстроки в нём нет.
+    expect(screen.queryByRole("option", { name: "Монтаж перекрытий" })).not.toBeInTheDocument();
+
+    // Обратный регистр: строчный запрос находит заглавную букву названия — к нижнему
+    // регистру приводится и подпись, а не только запрос.
+    await user.clear(screen.getByPlaceholderText("Найти семью…"));
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "монтаж");
+    expect(await screen.findByRole("option", { name: "Монтаж перекрытий" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument();
+  });
+
+  it("поиск не переживает закрытие списка: при новом открытии — снова весь список", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    const combobox = await screen.findByRole("combobox", { name: /Активные семьи м²/ });
+    await user.click(combobox);
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "краск");
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument()
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByPlaceholderText("Найти семью…")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: /Активные семьи м²/ }));
+    expect(await screen.findByRole("option", { name: "Устройство покрытий" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Найти семью…")).toHaveValue("");
+  });
+
+  it("выбор из отфильтрованного списка уходит тем же запросом назначения", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[1];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "краск");
+    expect(await screen.findByRole("option", { name: "Окраска стен" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "Окраска стен" }));
+    await user.click(screen.getByRole("button", { name: "Назначить" }));
+
+    await waitFor(() => expect(handlerState.otherFamilyRequests).toEqual([{ suggestionId: 2, familyId: 903 }]));
+  });
+
+  it("пустой результат поиска — «Ничего не найдено»; исключённая семья не находится", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(501, "Геотекстиль", "M2");
+    activeFamily(902, "Кубатурная семья", "M3");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    const search = screen.getByPlaceholderText("Найти семью…");
+
+    // Предложенная семья («Геотекстиль») и семья другой единицы поиском не возвращаются.
+    await user.type(search, "геотекст");
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+    await user.clear(search);
+    await user.type(search, "кубатур");
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+  });
+
+  it("варианты приходят вразнобой — показаны по алфавиту", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(901, "Монтаж перекрытий", "M2");
+    activeFamily(903, "Армирование", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    await screen.findByRole("option", { name: "Армирование" });
+
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Армирование",
+      "Монтаж перекрытий",
+      "Устройство покрытий",
+    ]);
+  });
+
   it("«Назначить» недоступна, пока семья не выбрана", async () => {
     const user = userEvent.setup();
     activeFamily(900, "Устройство покрытий", "M2");

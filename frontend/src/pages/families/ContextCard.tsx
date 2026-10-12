@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import {
   AlertDialog,
@@ -1105,13 +1106,15 @@ export function ContextCard({ contextId }: ContextCardProps) {
           </DialogHeader>
           <div className="grid gap-2 py-2">
             <Label htmlFor="context-family-select">Семья</Label>
-            <EntitySelect
+            <EntityCombobox
               id="context-family-select"
-              items={activeFamilies.data}
+              items={activeFamilies.data ?? []}
               value={familyChoice}
-              onChange={(v) => setFamilyChoice(v as number | null)}
+              onChange={(f) => setFamilyChoice(f?.id ?? null)}
               getLabel={(f) => f.title}
               placeholder="Выбрать семью"
+              searchPlaceholder="Найти семью…"
+              emptyText="Ничего не найдено"
             />
             {familyOutcome && (
               <p role="status" className="text-sm text-fg">

@@ -852,7 +852,7 @@ class TestFamilies:
             "id", "title", "unit_id", "unit_code", "unit_symbol", "definition", "status",
             "seed_key", "created_by", "created_at", "updated_at",
             "activated_by", "activated_at", "archived_at", "context_count",
-            "family_category_id", "family_category_title",
+            "family_category_id", "family_category_title", "unit_busy_jobs",
         })
         m2 = "M2"
 

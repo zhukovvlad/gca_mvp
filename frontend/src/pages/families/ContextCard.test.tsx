@@ -726,6 +726,67 @@ describe("ContextCard", () => {
     );
   });
 
+  describe("поиск семьи в диалоге «Назначить семью…»", () => {
+    function activeFamily(id: number, title: string) {
+      const base = handlerState.workFamilies.find((f) => f.id === 43)!;
+      handlerState.workFamilies.push({ ...base, id, title });
+    }
+
+    async function openFamilyDialog() {
+      const user = userEvent.setup();
+      renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+      await waitFor(() =>
+        expect(screen.getByText("Штукатурка стен цементно-песчаным раствором")).toBeInTheDocument()
+      );
+      await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+      const familyDialog = await screen.findByRole("dialog");
+      await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
+      expect(await screen.findByRole("option", { name: "Кровельные работы" })).toBeInTheDocument();
+      return { user, familyDialog };
+    }
+
+    it("сужает список по подстроке в середине названия без учёта регистра; выбор шлёт тот же запрос", async () => {
+      activeFamily(61, "Устройство стяжки пола");
+      activeFamily(62, "Окраска стен");
+      const { user, familyDialog } = await openFamilyDialog();
+
+      await user.type(screen.getByPlaceholderText("Найти семью…"), "ЯЖКИ П");
+
+      expect(await screen.findByRole("option", { name: "Устройство стяжки пола" })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Окраска стен" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Кровельные работы" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("option", { name: "Устройство стяжки пола" }));
+      await user.click(within(familyDialog).getByRole("button", { name: "Назначить семью" }));
+      await waitFor(() =>
+        expect(handlerState.lastAssignFamilyRequest).toEqual({
+          contextId: ORDINARY_CONTEXT_ID,
+          body: { family_id: 61 },
+        })
+      );
+    });
+
+    it("варианты приходят вразнобой — показаны по алфавиту", async () => {
+      activeFamily(61, "Штукатурка");
+      activeFamily(62, "Армирование");
+      await openFamilyDialog();
+
+      expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+        "Армирование",
+        "Кровельные работы",
+        "Штукатурка",
+      ]);
+    });
+
+    it("пустой результат поиска — «Ничего не найдено»; архивная и черновая семьи не находятся", async () => {
+      const { user } = await openFamilyDialog();
+
+      // «Демонтажные работы (снята)» — архивная семья фикстуры, «Семья работ №2» — черновик.
+      await user.type(screen.getByPlaceholderText("Найти семью…"), "демонтаж");
+
+      expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+    });
+  });
+
   it("«Снять семью» в диалоге семьи шлёт family_id: null явно", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);

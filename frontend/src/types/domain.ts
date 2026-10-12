@@ -2181,6 +2181,11 @@ export interface WorkFamily {
   /** Категория семьи из справочника (спека 3б §2.9); `null` у семьи, ещё не размеченной. */
   family_category_id: number | null;
   family_category_title: string | null;
+  /**
+   * Сколько заданий предложений единицы семьи ещё не выполнены (`pending`/`running` и
+   * удержанная пачка) — число, по которому открытие семей отказывает `discovery_unit_busy`.
+   */
+  unit_busy_jobs: number;
 }
 
 /** Строка справочника категорий семей (`GET /v1/semantic/family-categories`, спека 3б §2.9). */

@@ -1,7 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 
-import { EntitySelect } from "@/components/ui-domain/EntitySelect";
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -103,13 +103,15 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
           {candidates.length > 0 ? (
             <div className="grid gap-2 py-2">
               <Label htmlFor="other-family-select">Активные семьи {unitLabel}</Label>
-              <EntitySelect
+              <EntityCombobox
                 id="other-family-select"
                 items={candidates}
                 value={choice}
-                onChange={(v) => setChoice(v as number | null)}
+                onChange={(f) => setChoice(f?.id ?? null)}
                 getLabel={(f) => f.title}
                 placeholder="Выбрать семью"
+                searchPlaceholder="Найти семью…"
+                emptyText="Ничего не найдено"
               />
             </div>
           ) : (

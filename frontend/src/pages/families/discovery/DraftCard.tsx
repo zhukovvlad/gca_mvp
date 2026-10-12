@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -105,6 +106,8 @@ function EditDraftDialog({ draft, categories, onClose }: EditDraftDialogProps) {
 interface MergeOption {
   id: string;
   label: string;
+  /** Имя без приставки «Черновик»/«Активная семья»: по нему идёт поиск. */
+  name: string;
 }
 
 interface MergeDraftDialogProps {
@@ -126,10 +129,10 @@ function MergeDraftDialog({ draft, unitId, otherDrafts, onClose }: MergeDraftDia
   const [choice, setChoice] = useState<string | null>(null);
 
   const options: MergeOption[] = [
-    ...otherDrafts.map((d) => ({ id: `draft:${d.id}`, label: `Черновик «${d.title}»` })),
+    ...otherDrafts.map((d) => ({ id: `draft:${d.id}`, label: `Черновик «${d.title}»`, name: d.title })),
     ...(familiesQ.data ?? [])
       .filter((f) => f.unit_id === unitId)
-      .map((f) => ({ id: `family:${f.id}`, label: `Активная семья «${f.title}»` })),
+      .map((f) => ({ id: `family:${f.id}`, label: `Активная семья «${f.title}»`, name: f.title })),
   ];
 
   function submit() {
@@ -151,13 +154,16 @@ function MergeDraftDialog({ draft, unitId, otherDrafts, onClose }: MergeDraftDia
       </DialogHeader>
       <div className="grid gap-1.5 py-1">
         <Label htmlFor="draft-merge-target">Цель слияния</Label>
-        <EntitySelect
+        <EntityCombobox
           id="draft-merge-target"
           items={options}
           value={choice}
-          onChange={setChoice}
+          onChange={(o) => setChoice(o?.id ?? null)}
           getLabel={(o) => o.label}
+          getSearchText={(o) => o.name}
           placeholder="Выбрать черновик или семью"
+          searchPlaceholder="Найти черновик или семью…"
+          emptyText="Ничего не найдено"
         />
       </div>
       <DialogFooter>

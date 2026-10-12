@@ -13,12 +13,14 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
-interface EntityComboboxProps<T extends { id: number }> {
+interface EntityComboboxProps<T extends { id: number | string }> {
   items: T[];
-  value: number | null;
+  value: T["id"] | null;
   onChange: (item: T | null) => void;
   getLabel: (item: T) => string;
   getHint?: (item: T) => string | undefined;
+  /** Текст, по которому ищет клиентский поиск; по умолчанию — подпись (`getLabel`). */
+  getSearchText?: (item: T) => string;
   placeholder: string;
   searchPlaceholder: string;
   emptyText: string;
@@ -27,8 +29,10 @@ interface EntityComboboxProps<T extends { id: number }> {
    * встроенная фильтрация `Command` отключена (`shouldFilter={false}`), потому что
    * фильтровать первую страницу выдачи бессмысленно — за её пределами записи
    * всё равно не найдутся. Родитель обязан передать запрос в API как `q`.
+   * Не задан — список целиком у клиента, и поиск идёт по подстроке подписи без
+   * учёта регистра (окна выбора семьи: список уже загружен весь).
    */
-  onQueryChange: (query: string) => void;
+  onQueryChange?: (query: string) => void;
   /**
    * Подпись выбранной записи, когда её нет в текущей выдаче. Нужна из-за
    * серверного поиска: после нового запроса выбранный объект из списка пропадает,
@@ -43,6 +47,11 @@ interface EntityComboboxProps<T extends { id: number }> {
   disabled?: boolean;
   loading?: boolean;
   id?: string;
+}
+
+/** Подпись для поиска: без учёта регистра, «ё» как «е» (в сметах встречаются оба написания). */
+function foldForSearch(text: string): string {
+  return text.toLowerCase().replace(/ё/g, "е");
 }
 
 /**
@@ -62,12 +71,13 @@ interface EntityComboboxProps<T extends { id: number }> {
  * записи за её пределами так и остались бы недостижимыми. Поэтому запрос
  * поднимается наружу (`onQueryChange`), а родитель передаёт его в API.
  */
-export function EntityCombobox<T extends { id: number }>({
+export function EntityCombobox<T extends { id: number | string }>({
   items,
   value,
   onChange,
   getLabel,
   getHint,
+  getSearchText,
   placeholder,
   searchPlaceholder,
   emptyText,
@@ -87,11 +97,31 @@ export function EntityCombobox<T extends { id: number }>({
 
   function handleQuery(next: string) {
     setQuery(next);
-    onQueryChange(next);
+    onQueryChange?.(next);
   }
 
+  // Серверный поиск (`onQueryChange` задан) список не трогает — его присылает сервер.
+  // Клиентский: сначала порядок по подписи (русская сортировка), потом поиск, порядок сохраняется.
+  const needle = foldForSearch(query.trim());
+  const ordered = onQueryChange
+    ? items
+    : [...items].sort((a, b) => getLabel(a).localeCompare(getLabel(b), "ru"));
+  const shown =
+    onQueryChange || needle === ""
+      ? ordered
+      : ordered.filter((item) =>
+          foldForSearch((getSearchText ?? getLabel)(item)).includes(needle)
+        );
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // Поиск у клиента не переживает закрытие: следующее открытие — снова весь список.
+        if (!next && !onQueryChange) setQuery("");
+      }}
+    >
       <PopoverTrigger
         render={
           <Button
@@ -120,13 +150,14 @@ export function EntityCombobox<T extends { id: number }>({
           <CommandList>
             <CommandEmpty>{loading ? "Поиск…" : emptyText}</CommandEmpty>
             <CommandGroup>
-              {items.map((item) => (
+              {shown.map((item) => (
                 <CommandItem
                   key={item.id}
                   value={String(item.id)}
                   onSelect={() => {
                     onChange(item);
                     setOpen(false);
+                    if (!onQueryChange) setQuery("");
                   }}
                 >
                   <Check

@@ -53,6 +53,7 @@ from models import (
     WorkFamily,
 )
 from services.context_routing import chapter_paths
+from services.family_discovery import _busy_count
 from services.semantic_rules import nearest_working_chapter
 from services.work_variants import is_reopenable
 
@@ -186,7 +187,14 @@ def _family_row_select():
     )
 
 
-def _family_row_to_dict(row) -> dict:
+def _family_row_to_dict(db: Session, row, busy: dict[int | None, int]) -> dict:
+    """Строка семьи. `unit_busy_jobs` — сколько заданий предложений единицы семьи ещё
+    не выполнены (то самое число, по которому запуск открытия отказывает
+    `discovery_unit_busy`): правка названия или определения, архивирование и слияние
+    семьи меняют список семей в теле запроса предложения и отменят их. Считается
+    один раз на единицу — `busy` общий для всех строк одного ответа."""
+    if row.unit_id not in busy:
+        busy[row.unit_id] = _busy_count(db, row.unit_id)
     return {
         "id": row.id,
         "title": row.title,
@@ -205,6 +213,7 @@ def _family_row_to_dict(row) -> dict:
         "family_category_id": row.family_category_id,
         "family_category_title": row.family_category_title,
         "context_count": row.context_count,
+        "unit_busy_jobs": busy[row.unit_id],
     }
 
 
@@ -232,7 +241,8 @@ def list_families(
         stmt = stmt.where(WorkFamily.family_category_id == family_category_id)
 
     rows = db.execute(stmt).all()
-    return [_family_row_to_dict(row) for row in rows]
+    busy: dict[int | None, int] = {}
+    return [_family_row_to_dict(db, row, busy) for row in rows]
 
 
 def get_family_row(db: Session, *, family_id: int) -> dict | None:
@@ -244,7 +254,7 @@ def get_family_row(db: Session, *, family_id: int) -> dict | None:
     row = db.execute(_family_row_select().where(WorkFamily.id == family_id)).first()
     if row is None:
         return None
-    return _family_row_to_dict(row)
+    return _family_row_to_dict(db, row, {})
 
 
 def _family_category_row_select():

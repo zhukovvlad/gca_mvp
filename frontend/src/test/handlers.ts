@@ -1075,6 +1075,7 @@ function initialWorkFamilies(): WorkFamily[] {
       // Семья 1 размечена: путь «дописать определение → активировать» проходит на ней.
       family_category_id: linked ? WORK_CATEGORY_ID : null,
       family_category_title: linked ? "Работа" : null,
+      unit_busy_jobs: 0,
     };
   });
   const active: WorkFamily = {
@@ -1097,6 +1098,7 @@ function initialWorkFamilies(): WorkFamily[] {
     context_count: 0,
     family_category_id: WORK_CATEGORY_ID,
     family_category_title: "Работа",
+    unit_busy_jobs: 0,
   };
   const archived: WorkFamily = {
     id: 44,
@@ -1116,6 +1118,7 @@ function initialWorkFamilies(): WorkFamily[] {
     context_count: 0,
     family_category_id: null,
     family_category_title: null,
+    unit_busy_jobs: 0,
   };
   return [...drafts, active, archived];
 }
@@ -4086,6 +4089,7 @@ export const handlers = [
       context_count: 0,
       family_category_id: category?.id ?? null,
       family_category_title: category?.title ?? null,
+      unit_busy_jobs: 0,
     };
     handlerState.workFamilies.push(family);
     return HttpResponse.json(family, { status: 201 });

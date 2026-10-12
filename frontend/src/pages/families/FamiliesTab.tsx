@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
@@ -59,6 +60,7 @@ import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
 import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
 import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
+import { RerunResetWarning } from "./RerunResetWarning";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -405,6 +407,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                 : "Архивная семья перестаёт предлагаться для назначения контексту."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {archiving && <RerunResetWarning family={archiving} />}
           <AlertDialogFooter>
             <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
             <AlertDialogAction
@@ -452,6 +455,12 @@ function FamilyPanel({
   const categoriesQ = useFamilyCategories();
 
   const unitLocked = family.context_count > 0;
+  // Название, определение и единица входят в строку семьи в теле запроса предложения;
+  // категория — нет. Единица правится, пока нет привязок.
+  const textChanged =
+    title.trim() !== family.title ||
+    definition.trim() !== (family.definition ?? "").trim() ||
+    (!unitLocked && unitName.trim() !== (family.unit_symbol ?? "").trim());
   const hasDefinition = Boolean(family.definition && family.definition.trim());
   const hasCategory = family.family_category_id !== null;
 
@@ -524,6 +533,7 @@ function FamilyPanel({
             disabled={update.isPending}
           />
         </div>
+        {textChanged && <RerunResetWarning family={family} />}
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
           <Button type="submit" disabled={!title.trim() || update.isPending}>
@@ -680,15 +690,18 @@ function MergeFamilyDialog({
             Контексты источника переезжают в целевую семью; источник архивируется.
           </DialogDescription>
         </DialogHeader>
+        {family && <RerunResetWarning family={family} />}
         <div className="grid gap-2 py-4">
           <Label htmlFor="merge-target-family">Целевая семья</Label>
-          <EntitySelect
+          <EntityCombobox
             id="merge-target-family"
             items={candidates}
             value={targetId}
-            onChange={(v) => setTargetId(v as number | null)}
+            onChange={(f) => setTargetId(f?.id ?? null)}
             getLabel={(f) => f.title}
             placeholder="Выбрать семью"
+            searchPlaceholder="Найти семью…"
+            emptyText="Ничего не найдено"
           />
         </div>
         <DialogFooter>
