@@ -7,7 +7,6 @@ import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -110,7 +109,6 @@ function classifierPathTitle(row: ContextRow): string | null {
  */
 export function ContextsTab() {
   const [searchInput, setSearchInput] = useState("");
-  const [categoryInput, setCategoryInput] = useState("");
   const [kind, setKind] = useState<string>(ANY);
   const [role, setRole] = useState<string>(ANY);
   const [state, setState] = useState<string>(ANY);
@@ -128,11 +126,9 @@ export function ContextsTab() {
   const [selectedContextId, setSelectedContextId] = useState<number | null>(null);
 
   const search = useDebounce(searchInput, 300);
-  const categoryId = useDebounce(categoryInput, 300);
 
   const contextsQ = useSemanticContexts({
     catalog_query: search || undefined,
-    work_category_id: categoryId ? Number(categoryId) : undefined,
     semantic_kind: kind === ANY ? undefined : (kind as SemanticKind),
     name_role: role === ANY ? undefined : (role as NameRole),
     semantic_state: state === ANY ? undefined : (state as SemanticState),
@@ -203,9 +199,9 @@ export function ContextsTab() {
     // автоматический минимум трека.
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-start">
       <div className="grid gap-4">
-        {/* Один ряд (сверка с макетом 27.09.2026, `mock-contexts.png`): поиск,
-            компактная статья (id) без своей строки подписи, три селекта,
-            короткие чекбоксы. */}
+        {/* Поля — один ряд (переносится, если не влезает): поиск и четыре
+            выбора с подписью сверху, как на вкладке «Семьи», по нижнему
+            краю. Флажки — отдельной строкой-группой под ними. */}
         <div className="flex flex-wrap items-end gap-3">
           {/* Ширина явная (замер на стенде 27.09.2026): в `flex flex-wrap`
               ряду `flex-1` без `min-width` схлопывает поле до содержимого
@@ -226,87 +222,92 @@ export function ContextsTab() {
             </InputGroupAddon>
           </InputGroup>
 
-          <Input
-            id="filter-category"
-            aria-label="Статья (id)"
-            placeholder="статья (id)"
-            className="w-28"
-            inputMode="numeric"
-            value={categoryInput}
-            onChange={(e) => {
-              setCategoryInput(e.target.value);
-              resetToFirstPage();
-            }}
-          />
+          <div className="grid gap-1">
+            <Label htmlFor="filter-kind" className="text-xs text-fg-tertiary">Вид</Label>
+            <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-kind" className="w-36">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любой вид</SelectItem>
+                {KIND_OPTIONS.map((k) => (
+                  <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-kind" aria-label="Вид" className="w-36">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любой вид</SelectItem>
-              {KIND_OPTIONS.map((k) => (
-                <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-role" className="text-xs text-fg-tertiary">Роль</Label>
+            <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-role" className="w-40">
+                <SelectValue>
+                  {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любая роль</SelectItem>
+                {ROLE_OPTIONS.map((r) => (
+                  <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-role" aria-label="Наименование называет" className="w-40">
-              <SelectValue>
-                {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любая роль</SelectItem>
-              {ROLE_OPTIONS.map((r) => (
-                <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-state" className="text-xs text-fg-tertiary">Состояние</Label>
+            <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-state" className="w-40">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любое состояние</SelectItem>
+                {STATE_OPTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-state" aria-label="Состояние" className="w-40">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любое состояние</SelectItem>
-              {STATE_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-variant" className="text-xs text-fg-tertiary">Вариант</Label>
+            <Select
+              value={variantState}
+              onValueChange={(v) => {
+                setVariantState(v ?? ANY);
+                resetToFirstPage();
+              }}
+            >
+              <SelectTrigger id="filter-variant" className="w-40">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любой вариант" : VARIANT_STATE_LABEL[raw as VariantState]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любой вариант</SelectItem>
+                {VARIANT_OPTIONS.map((v) => (
+                  <SelectItem key={v} value={v}>{VARIANT_STATE_LABEL[v]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
 
-          <Select
-            value={variantState}
-            onValueChange={(v) => {
-              setVariantState(v ?? ANY);
-              resetToFirstPage();
-            }}
-          >
-            <SelectTrigger id="filter-variant" aria-label="Вариант" className="w-40">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любой вариант" : VARIANT_STATE_LABEL[raw as VariantState]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любой вариант</SelectItem>
-              {VARIANT_OPTIONS.map((v) => (
-                <SelectItem key={v} value={v}>{VARIANT_STATE_LABEL[v]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
+        <div
+          role="group"
+          aria-label="Признаки"
+          className="flex flex-wrap items-center gap-x-4 gap-y-2"
+        >
           <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-stale"

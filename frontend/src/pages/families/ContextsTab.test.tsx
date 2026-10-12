@@ -209,19 +209,35 @@ describe("ContextsTab", () => {
     expect(within(row).getByText("архивный")).toBeInTheDocument();
   });
 
-  it("фильтр по статье сужает очередь (спека §2.10)", async () => {
-    const user = userEvent.setup();
+  it("поля выбора подписаны сверху и связаны с полями; поля «статья (id)» на экране нет", async () => {
     await renderTab();
 
-    // Контекст 604 («Светильники») несёт статью 88, остальные пять — 77.
-    await user.type(screen.getByLabelText("Статья (id)"), "88");
+    for (const [label, current] of [
+      ["Вид", "Любой вид"],
+      ["Роль", "Любая роль"],
+      ["Состояние", "Любое состояние"],
+      ["Вариант", "Любой вариант"],
+    ] as const) {
+      const field = screen.getByLabelText(label);
+      expect(field).toHaveTextContent(current);
+      expect(screen.getByRole("combobox", { name: label })).toBe(field);
+    }
+    expect(screen.queryByLabelText(/статья/i)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/статья/i)).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(screen.getByText("Светильники")).toBeInTheDocument();
-      expect(
-        screen.queryByText("Штукатурка стен цементно-песчаным раствором")
-      ).not.toBeInTheDocument();
-    }, AFTER_DEBOUNCE);
+  it("флажки лежат в отдельной группе «Признаки», поля выбора и поиск — вне её", async () => {
+    await renderTab();
+
+    const group = screen.getByRole("group", { name: "Признаки" });
+    const names = ["устаревшие", "конфликт", "пустые", "ожидает семьи", "к делению"];
+    for (const name of names) {
+      expect(within(group).getByRole("checkbox", { name })).toBeInTheDocument();
+    }
+    expect(within(group).getAllByRole("checkbox")).toHaveLength(names.length);
+    expect(within(group).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(within(group).queryByLabelText("Поиск по написанию каталога")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(names.length);
   });
 
   // ---------------------------------------------------------------------
@@ -393,7 +409,7 @@ describe("ContextsTab", () => {
     expect(within(kindListbox).queryByText("UNKNOWN")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
 
-    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
+    await user.click(screen.getByRole("combobox", { name: "Роль" }));
     const roleListbox = await screen.findByRole("listbox");
     expect(within(roleListbox).getByText("работу")).toBeInTheDocument();
     expect(within(roleListbox).getByText("место")).toBeInTheDocument();
@@ -898,7 +914,7 @@ describe("ContextsTab", () => {
     expect(lastRequest(requests).get("offset")).toBe("0");
   });
 
-  // Каждый фильтр сбрасывает страницу СВОИМ обработчиком — восемь независимых
+  // Каждый фильтр сбрасывает страницу СВОИМ обработчиком — семь независимых
   // мест, и забытый сброс у одного не виден по семи прочим.
   // Синтетический обработчик фильтры не применяет: выдача остаётся из 45
   // строк, и утверждение читает только параметры запроса.
@@ -915,12 +931,6 @@ describe("ContextsTab", () => {
       apply: (user) => user.type(screen.getByLabelText("Поиск по написанию каталога"), "x"),
     },
     {
-      name: "статья (id)",
-      param: "work_category_id",
-      value: "88",
-      apply: (user) => user.type(screen.getByLabelText("Статья (id)"), "88"),
-    },
-    {
       name: "вид",
       param: "semantic_kind",
       value: "SYSTEM",
@@ -934,7 +944,7 @@ describe("ContextsTab", () => {
       param: "name_role",
       value: "LOCATION_ONLY",
       apply: async (user) => {
-        await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
+        await user.click(screen.getByRole("combobox", { name: "Роль" }));
         await user.click(within(await screen.findByRole("listbox")).getByText("место"));
       },
     },
@@ -1102,9 +1112,9 @@ describe("ContextsTab", () => {
     await user.click(within(await screen.findByRole("listbox")).getByText("не определён"));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Вид" })).toHaveTextContent("не определён"));
 
-    await user.click(screen.getByRole("combobox", { name: "Наименование называет" }));
+    await user.click(screen.getByRole("combobox", { name: "Роль" }));
     await user.click(within(await screen.findByRole("listbox")).getByText("место"));
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "Наименование называет" })).toHaveTextContent("место"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Роль" })).toHaveTextContent("место"));
 
     await user.click(screen.getByRole("combobox", { name: "Состояние" }));
     await user.click(within(await screen.findByRole("listbox")).getByText("не применяется"));
