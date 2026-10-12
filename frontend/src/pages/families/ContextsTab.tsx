@@ -451,9 +451,11 @@ export function ContextsTab() {
                             <div className="mt-1 text-xs text-fg-tertiary">—</div>
                           )}
                         </TableCell>
-                        <TableCell>{row.unit_symbol ?? "—"}</TableCell>
-                        <TableCell>{familyCaption}</TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="align-top">{row.unit_symbol ?? "—"}</TableCell>
+                        <TableCell className="max-w-56 min-w-0 align-top whitespace-normal">
+                          {familyCaption}
+                        </TableCell>
+                        <TableCell className="text-right align-top">
                           <div className="flex items-center justify-end gap-2 tabular-nums">
                             <span>{row.member_count}</span>
                             <AttentionDot row={row} />

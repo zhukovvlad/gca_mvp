@@ -269,7 +269,24 @@ describe("ContextsTab", () => {
     const cells = within(name.closest("tr")!).getAllByRole("cell");
     expect(cells[0]).toHaveClass("whitespace-normal");
     expect(cells[0]).not.toHaveClass("whitespace-nowrap");
-    for (const cell of cells.slice(1)) expect(cell).toHaveClass("whitespace-nowrap");
+    // Единица и число позиций короткие и не переносятся; «Семья» — ниже.
+    for (const cell of [cells[1], cells[3]]) expect(cell).toHaveClass("whitespace-nowrap");
+  });
+
+  it("ячейка «Семья» переносит длинное название и ограничена по ширине, остальные короткие не переносятся", async () => {
+    const rows = manyContextRows(1);
+    const longFamily = "Банковская гарантия на авансовые платежи по договору подряда";
+    rows[0].work_family_id = 5;
+    rows[0].family_title = longFamily;
+    useManyContextRows(rows);
+    renderWithProviders(<ContextsTab />);
+
+    // Ширину jsdom не измеряет: что таблица влезает в контейнер при окнах
+    // 1280/1600/1920, доказывает замер стенда; здесь — классы в обе стороны
+    // (`TableCell` по умолчанию `whitespace-nowrap` и распирает таблицу).
+    const familyCell = (await screen.findByText(longFamily)).closest("td")!;
+    expect(familyCell).toHaveClass("whitespace-normal", "max-w-56", "min-w-0");
+    expect(familyCell).not.toHaveClass("whitespace-nowrap");
   });
 
   it("подсказка над строкой кода/названия статьи несёт полный путь классификатора — от корня до самой статьи", async () => {
