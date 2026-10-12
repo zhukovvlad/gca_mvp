@@ -33,7 +33,7 @@ export default function FamiliesPage() {
   }
 
   return (
-    <div className="container-page py-8">
+    <div className="container-wide py-8">
       {/* Вкладки верхнего уровня — сегментный переключатель СПРАВА от
           заголовка (сверка с макетом 27.09.2026, `.head`/`.seg`), легенда
           источника подписи — ПОД заголовком слева (спека §2.1, §2.3).

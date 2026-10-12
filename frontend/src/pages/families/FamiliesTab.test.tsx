@@ -179,7 +179,7 @@ describe("FamiliesTab", () => {
     expect(screen.getAllByText("м²").length).toBeGreaterThan(0);
   });
 
-  it("определение без текста печатает красное «нет определения», непустое — обрезается многоточием с полным текстом в title", async () => {
+  it("определение без текста печатает красное «нет определения», непустое — переносится целиком", async () => {
     await renderTab();
     // id=2 ("Устройство покрытий полов") и 39 других черновиков без
     // определения на этой странице — берём строку id=2 ИМЕННО, не первую
@@ -188,13 +188,24 @@ describe("FamiliesTab", () => {
     const empty = within(row).getByText("нет определения");
     expect(empty).toHaveClass("text-destructive");
 
-    // id=1 ("Семья работ №1") несёт определение — печатается ЦЕЛИКОМ в
-    // атрибуте `title` (полный текст доступен без раскрытия), само отображение
-    // обрезается CSS (`truncate`), а не JS-обрезкой строки.
-    const definitionText =
-      "Оштукатуривание стен и потолков цементно-песчаным раствором.";
-    const full = screen.getByTitle(definitionText);
-    expect(full).toHaveClass("truncate");
+    // id=1 ("Семья работ №1") несёт определение — печатается целиком и
+    // переносится по словам, а не обрезается. Что таблица влезает в контейнер,
+    // доказывает замер стенда (jsdom ширин не считает), тест держит классы.
+    const definition = screen.getByText("Оштукатуривание стен и потолков цементно-песчаным раствором.");
+    expect(definition).not.toHaveClass("truncate");
+    expect(definition).toHaveClass("break-words", "line-clamp-2");
+    expect(definition).toHaveAttribute("title", "Оштукатуривание стен и потолков цементно-песчаным раствором.");
+    expect(definition.closest("td")).toHaveClass("whitespace-normal");
+  });
+
+  it("название и категория в таблице переносятся, узкие колонки остаются в одну строку", async () => {
+    await renderTab();
+    const row = screen.getByText("Семья работ №1").closest("tr")!;
+    const cells = within(row).getAllByRole("cell");
+    // Название, категория — с переносом и потолком ширины; единица, статус, число — как были.
+    expect(cells[0]).toHaveClass("whitespace-normal", "max-w-64");
+    expect(cells[3]).toHaveClass("whitespace-normal", "max-w-40");
+    for (const i of [1, 2, 5]) expect(cells[i]).not.toHaveClass("whitespace-normal");
   });
 
   it("кнопка активации в панели недоступна без определения, а с определением доступна", async () => {

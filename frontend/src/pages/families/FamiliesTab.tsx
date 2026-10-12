@@ -334,19 +334,19 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                         family.id === selectedId && "bg-surface-hover"
                       )}
                     >
-                      <TableCell className="font-medium text-fg">{family.title}</TableCell>
+                      <TableCell className="max-w-64 whitespace-normal break-words font-medium text-fg">{family.title}</TableCell>
                       <TableCell>{family.unit_symbol ?? "—"}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={FAMILY_STATUS_TINT[family.status]}>
                           {FAMILY_STATUS_LABEL[family.status]}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-fg-secondary">
+                      <TableCell className="max-w-40 whitespace-normal break-words text-fg-secondary">
                         {family.family_category_title ?? "—"}
                       </TableCell>
-                      <TableCell className="max-w-xs">
+                      <TableCell className="min-w-48 max-w-md whitespace-normal">
                         {family.definition && family.definition.trim() ? (
-                          <span className="block truncate text-fg-secondary" title={family.definition}>
+                          <span className="line-clamp-2 break-words text-fg-secondary" title={family.definition}>
                             {family.definition}
                           </span>
                         ) : (

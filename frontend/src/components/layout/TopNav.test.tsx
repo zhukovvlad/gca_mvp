@@ -17,6 +17,28 @@ import { renderWithProviders } from "@/test/utils";
  * из того, что ломает счётчик-пример первого теста, — его нужно проверять
  * отдельно и явно.
  */
+describe("TopNav: ширина контейнера", () => {
+  const wrapper = (c: HTMLElement) => c.querySelector("header > div")!;
+
+  it("на /families и её подпутях — container-wide", () => {
+    for (const route of ["/families", "/families/42"]) {
+      const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
+      expect(wrapper(container)).toHaveClass("container-wide");
+      expect(wrapper(container)).not.toHaveClass("container-page");
+      unmount();
+    }
+  });
+
+  it("на других путях — container-page (в том числе на /families-x)", () => {
+    for (const route of ["/", "/contracts", "/families-x"]) {
+      const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
+      expect(wrapper(container)).toHaveClass("container-page");
+      expect(wrapper(container)).not.toHaveClass("container-wide");
+      unmount();
+    }
+  });
+});
+
 describe("TopNav", () => {
   it("в навигации нет «Матрица», «Отчёты», «Настройки»", () => {
     renderWithProviders(<TopNav />);

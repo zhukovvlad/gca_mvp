@@ -41,6 +41,22 @@ describe("FamiliesPage", () => {
     });
   });
 
+  it("страница раздела и шапка приложения стоят в одном широком контейнере", async () => {
+    const { container } = renderWithProviders(
+      <>
+        <TopNav />
+        <FamiliesRoutes />
+      </>,
+      { initialRoute: "/families", initialUser: ADMIN }
+    );
+    const title = await screen.findByText("Семьи и контексты");
+    expect(title.closest(".container-wide")).not.toBeNull();
+    expect(title.closest(".container-page")).toBeNull();
+    // Края шапки и содержимого совпадают: шапка тоже в `container-wide`.
+    expect(container.querySelector("header > .container-wide")).not.toBeNull();
+    expect(container.querySelector(".container-page")).toBeNull();
+  });
+
   it("member редиректится на главную", async () => {
     renderWithProviders(<FamiliesRoutes />, { initialRoute: "/families", initialUser: MEMBER });
     await waitFor(() => {
