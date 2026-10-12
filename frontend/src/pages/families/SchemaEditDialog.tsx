@@ -170,7 +170,7 @@ function SchemaEditForm({ schema, onDone }: { schema: FamilySchema; onDone: () =
       </div>
 
       <DialogFooter>
-        <Button type="submit" disabled={update.isPending}>
+        <Button type="submit" loading={update.isPending}>
           Сохранить схему
         </Button>
       </DialogFooter>

@@ -167,7 +167,7 @@ export function DiscoveryLaunchDialog({ target, onClose }: DiscoveryLaunchDialog
             <Button variant="outline" onClick={() => handleOpenChange(false)}>
               Отмена
             </Button>
-            <Button disabled={busy || !data} onClick={handleConfirm}>
+            <Button disabled={busy || !data} loading={launch.isPending} onClick={handleConfirm}>
               Открыть семьи
             </Button>
           </DialogFooter>

@@ -2,7 +2,6 @@ import { useState } from "react";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,6 +25,7 @@ import { DiscoveryBlock } from "./discovery/DiscoveryBlock";
 import { ErrorsQueue } from "./ErrorsQueue";
 import { BAND_LABEL } from "./labels";
 import { NewQueue } from "./NewQueue";
+import { FetchingBar, ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
 import { SuggestionGroups } from "./SuggestionGroups";
 import { SuggestionsHeader } from "./SuggestionsHeader";
@@ -107,6 +107,13 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
   // Пока у очереди нет данных (первая загрузка), счётчик — заполнитель: ноль
   // означал бы «очередь пуста», а её просто ещё не получили.
   const counter = (loaded: boolean, value: number) => (loaded ? value : COUNTER_PLACEHOLDER);
+  // Перечитывание при уже показанных данных: список остаётся на месте, сверху идёт полоса.
+  const refetching = {
+    list: queueQ.isFetching && !queueQ.isPending,
+    change: changeQ.isFetching && !changeQ.isPending,
+    new: newQ.isFetching && !newQ.isPending,
+    err: (errorsQ.isFetching && !errorsQ.isPending) || (holdQ.isFetching && !holdQ.isPending),
+  }[queue];
   const pageGroups = groups.slice((page - 1) * pageSize, page * pageSize);
 
   function unitLabel(code: string | null): string {
@@ -251,7 +258,9 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
         </div>
       </div>
 
-      {queue === "list" && queueQ.isPending && <Skeleton className="h-40 w-full" />}
+      <FetchingBar active={refetching} />
+
+      {queue === "list" && queueQ.isPending && <ListSkeleton />}
 
       {queue === "list" && queueQ.isError && (
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь предложений." />
@@ -281,7 +290,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
         </>
       )}
 
-      {queue === "change" && changeQ.isPending && <Skeleton className="h-40 w-full" />}
+      {queue === "change" && changeQ.isPending && <ListSkeleton />}
       {queue === "change" && changeQ.isError && (
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Смена семьи»." />
       )}
@@ -289,7 +298,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
 
       {queue === "new" && <DiscoveryBlock unitLabel={unitLabel} unitFilter={unitParam} />}
 
-      {queue === "new" && newQ.isPending && <Skeleton className="h-40 w-full" />}
+      {queue === "new" && newQ.isPending && <ListSkeleton />}
       {queue === "new" && newQ.isError && (
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Новая»." />
       )}
@@ -298,7 +307,7 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
       )}
 
       {queue === "err" && (errorsQ.isPending || holdQ.isPending) && (
-        <Skeleton className="h-40 w-full" />
+        <ListSkeleton />
       )}
       {queue === "err" && (errorsQ.isError || holdQ.isError) && (
         <EmptyState title="Ошибка загрузки" description="Не удалось получить задания очереди." />

@@ -3,7 +3,6 @@ import { Search } from "lucide-react";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -33,6 +32,7 @@ import type { ContextRow, NameRole, SemanticKind, SemanticState, VariantState } 
 
 import { ContextCard } from "./ContextCard";
 import { NAME_ROLE_LABEL, SEMANTIC_KIND_LABEL, SEMANTIC_STATE_LABEL, VARIANT_STATE_LABEL } from "./labels";
+import { FetchingBar, ListSkeleton } from "./pending";
 import { SourceChip } from "./SourceChip";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -353,7 +353,9 @@ export function ContextsTab() {
           </div>
         </div>
 
-        {contextsQ.isPending && <Skeleton className="h-40 w-full" />}
+        <FetchingBar active={contextsQ.isFetching && !contextsQ.isPending} />
+
+        {contextsQ.isPending && <ListSkeleton />}
 
         {contextsQ.isError && (
           <EmptyState title="Ошибка загрузки" description="Не удалось получить контексты." />

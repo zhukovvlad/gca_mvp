@@ -42,7 +42,7 @@ function CreateFamilyForm({ row, unitLabel, onClose, onOpenFamily }: CreateFamil
 
   // Категория обязательна (спека 3б §2.9): без неё сервер отказал бы `422`.
   const canSave =
-    title.trim() !== "" && definition.trim() !== "" && categoryId !== null && !create.isPending;
+    title.trim() !== "" && definition.trim() !== "" && categoryId !== null;
 
   function submit() {
     if (categoryId === null) return;
@@ -146,7 +146,7 @@ function CreateFamilyForm({ row, unitLabel, onClose, onOpenFamily }: CreateFamil
         <Button variant="outline" onClick={onClose}>
           Отмена
         </Button>
-        <Button disabled={!canSave} onClick={submit}>
+        <Button disabled={!canSave} loading={create.isPending} onClick={submit}>
           Сохранить и активировать
         </Button>
       </DialogFooter>

@@ -6,6 +6,7 @@ import { useDiscoveryUnits } from "@/services/queries";
 import type { ActivationOutcome, DiscoveryUnitRow, PreviewTarget } from "@/types/domain";
 
 import { pluralRu } from "../labels";
+import { FetchingBar, ListSkeleton } from "../pending";
 import { PreviewDialog } from "../PreviewDialog";
 import { DiscoveryDrafts } from "./DiscoveryDrafts";
 import { DiscoveryLaunchDialog, type DiscoveryTarget } from "./DiscoveryLaunchDialog";
@@ -191,10 +192,12 @@ export function DiscoveryBlock({ unitLabel, unitFilter }: DiscoveryBlockProps) {
     />
   );
 
+  if (unitsQ.isPending) return <ListSkeleton rows={2} />;
   if (rows.length === 0) return reaskDialog;
 
   return (
     <>
+      <FetchingBar active={unitsQ.isFetching} />
       <div
         data-testid="discovery-block"
         className="overflow-hidden rounded-[10px] border border-border-subtle bg-surface"

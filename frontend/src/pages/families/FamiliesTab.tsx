@@ -5,7 +5,6 @@ import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import {
   AlertDialog,
@@ -60,6 +59,7 @@ import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
 import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
 import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
+import { FetchingBar, ListSkeleton } from "./pending";
 import { RerunResetWarning } from "./RerunResetWarning";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
@@ -286,7 +286,9 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
           </Button>
         </div>
 
-        {familiesQ.isPending && <Skeleton className="h-40 w-full" />}
+        <FetchingBar active={familiesQ.isFetching && !familiesQ.isPending} />
+
+        {familiesQ.isPending && <ListSkeleton />}
 
         {familiesQ.isError && (
           <EmptyState title="Ошибка загрузки" description="Не удалось получить семьи." />
@@ -384,6 +386,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
           family={selected}
           onMerge={() => setMerging(selected)}
           onArchive={() => setArchiving(selected)}
+          archivePending={archive.isPending}
         />
       ) : (
         <EmptyState
@@ -442,10 +445,12 @@ function FamilyPanel({
   family,
   onMerge,
   onArchive,
+  archivePending,
 }: {
   family: WorkFamily;
   onMerge: () => void;
   onArchive: () => void;
+  archivePending: boolean;
 }) {
   const [title, setTitle] = useState(family.title);
   const [unitName, setUnitName] = useState(family.unit_symbol ?? "");
@@ -536,14 +541,15 @@ function FamilyPanel({
         {textChanged && <RerunResetWarning family={family} />}
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
-          <Button type="submit" disabled={!title.trim() || update.isPending}>
+          <Button type="submit" disabled={!title.trim()} loading={update.isPending}>
             Сохранить
           </Button>
           {family.status === "draft" && (
             <Button
               variant="outline"
               aria-label={`Активировать семью ${family.title}`}
-              disabled={!hasDefinition || !hasCategory || activate.isPending}
+              disabled={!hasDefinition || !hasCategory}
+              loading={activate.isPending}
               onClick={() => activate.mutate(family.id)}
             >
               Активировать
@@ -560,6 +566,7 @@ function FamilyPanel({
               // Видимый текст «В архив» — начало доступного имени (WCAG
               // 2.5.3 «метка в имени»), а не независимая от него подпись.
               aria-label={`В архив: семья ${family.title}`}
+              loading={archivePending}
               onClick={onArchive}
             >
               В архив
@@ -647,7 +654,7 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             </div>
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={!title.trim() || create.isPending}>
+            <Button type="submit" disabled={!title.trim()} loading={create.isPending}>
               Создать
             </Button>
           </DialogFooter>
@@ -705,7 +712,7 @@ function MergeFamilyDialog({
           />
         </div>
         <DialogFooter>
-          <Button disabled={targetId === null || merge.isPending} onClick={handleMerge}>
+          <Button disabled={targetId === null} loading={merge.isPending} onClick={handleMerge}>
             Слить
           </Button>
         </DialogFooter>

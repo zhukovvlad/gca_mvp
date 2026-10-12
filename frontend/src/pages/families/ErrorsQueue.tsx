@@ -56,7 +56,7 @@ function ErrorRow({
         <Button
           variant="outline"
           size="sm"
-          disabled={retry.isPending}
+          loading={retry.isPending}
           onClick={() => retry.mutate(job.job_id)}
         >
           Повторить

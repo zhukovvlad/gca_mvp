@@ -84,7 +84,7 @@ function UnitGroupRow({ group, unitLabel, onOpenFamily }: UnitGroupRowProps) {
         )}
         <Button
           size="sm"
-          disabled={release.isPending}
+          loading={release.isPending}
           onClick={() => release.mutate({ unitId: group.unit_id, shown: group.matches })}
         >
           Отправить все {group.jobs_count}
@@ -134,6 +134,7 @@ function HeldJobRow({
         <Button
           size="sm"
           disabled={pending}
+          loading={release.isPending}
           onClick={() => release.mutate({ jobId: job.job_id, shown })}
         >
           Отправить
@@ -142,6 +143,7 @@ function HeldJobRow({
           variant="outline"
           size="sm"
           disabled={pending}
+          loading={decline.isPending}
           onClick={() => decline.mutate({ jobId: job.job_id, shown })}
         >
           Не отправлять

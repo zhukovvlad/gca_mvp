@@ -2375,8 +2375,10 @@ describe("ContextCard — вариант, ожидание, смена семь�
       await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" }));
       await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(), LATER);
 
-      await user.click(screen.getByRole("button", { name: "Вернуть в разбор" }));
-      expect(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Вернуть" })).toBeDisabled();
+      // Пока запрос висит, кнопка, открывающая окно, занята: второе подтверждение недостижимо.
+      const opener = screen.getByRole("button", { name: "Вернуть в разбор" });
+      expect(opener).toBeDisabled();
+      expect(opener).toHaveAttribute("aria-busy", "true");
       release();
     });
 

@@ -56,7 +56,7 @@ function CategoryForm({ state, onDone }: CategoryFormProps) {
   );
 
   const pending = create.isPending || update.isPending;
-  const canSave = title.trim() !== "" && definition.trim() !== "" && !pending;
+  const canSave = title.trim() !== "" && definition.trim() !== "";
 
   async function submit() {
     const input = { title: title.trim(), definition: definition.trim() };
@@ -94,7 +94,7 @@ function CategoryForm({ state, onDone }: CategoryFormProps) {
         <Button variant="outline" onClick={onDone}>
           Отмена
         </Button>
-        <Button disabled={!canSave} onClick={() => void submit()}>
+        <Button disabled={!canSave} loading={pending} onClick={() => void submit()}>
           {state.mode === "edit" ? "Сохранить" : "Добавить"}
         </Button>
       </div>
@@ -174,6 +174,7 @@ export function FamilyCategoriesDialog({ open, onOpenChange }: FamilyCategoriesD
                         variant="outline"
                         size="sm"
                         disabled={category.family_count > 0 || remove.isPending}
+                        loading={remove.isPending && remove.variables === category.id}
                         title={
                           category.family_count > 0
                             ? "Удалить можно только категорию без семей"

@@ -48,8 +48,7 @@ function EditDraftDialog({ draft, categories, onClose }: EditDraftDialogProps) {
   const canSave =
     title.trim() !== "" &&
     definition.trim() !== "" &&
-    Object.keys(changes).length > 0 &&
-    !edit.isPending;
+    Object.keys(changes).length > 0;
 
   return (
     <DialogContent className="sm:max-w-lg">
@@ -91,6 +90,7 @@ function EditDraftDialog({ draft, categories, onClose }: EditDraftDialogProps) {
         </Button>
         <Button
           disabled={!canSave}
+          loading={edit.isPending}
           onClick={() =>
             edit.mutate({ draftId: draft.id, name: draft.title, input: changes }, { onSuccess: onClose })
           }
@@ -170,7 +170,7 @@ function MergeDraftDialog({ draft, unitId, otherDrafts, onClose }: MergeDraftDia
         <Button variant="outline" onClick={onClose}>
           Отмена
         </Button>
-        <Button disabled={choice === null || merge.isPending} onClick={submit}>
+        <Button disabled={choice === null} loading={merge.isPending} onClick={submit}>
           Слить
         </Button>
       </DialogFooter>
@@ -188,6 +188,8 @@ interface DraftCardProps {
   otherDrafts: DraftView[];
   /** Подпись отказа активации у этого черновика; отметки при отказе не сбрасываются. */
   refusal?: string;
+  /** Идёт запрос, применяющий отметки экрана: отметка и действия черновика заблокированы. */
+  disabled?: boolean;
 }
 
 /**
@@ -203,6 +205,7 @@ export function DraftCard({
   categories,
   otherDrafts,
   refusal,
+  disabled = false,
 }: DraftCardProps) {
   const edit = useEditDraft();
   const merge = useMergeDraft();
@@ -222,6 +225,7 @@ export function DraftCard({
         className="mt-1"
         aria-label={`Отметить черновик «${draft.title}»`}
         checked={checked}
+        disabled={disabled}
         onCheckedChange={(next) => onCheckedChange(next === true)}
       />
       <div className="min-w-0 flex-1">
@@ -256,6 +260,7 @@ export function DraftCard({
             className="w-52"
             items={categories}
             value={draft.family_category_id}
+            disabled={disabled}
             onChange={(id) =>
               id !== null &&
               edit.mutate({ draftId: draft.id, name: draft.title, input: { family_category_id: id } })
@@ -274,13 +279,14 @@ export function DraftCard({
         <b>{draft.rows}</b> {pluralRu(draft.rows, "строка", "строки", "строк")}
       </div>
       <div className="flex flex-none flex-col items-stretch gap-1.5">
-        <Button variant="outline" size="sm" onClick={() => setDialog("edit")}>
+        <Button variant="outline" size="sm" disabled={disabled} onClick={() => setDialog("edit")}>
           Править…
         </Button>
         {similarActive && (
           <Button
             size="sm"
-            disabled={merge.isPending}
+            disabled={disabled}
+            loading={merge.isPending}
             onClick={() =>
               merge.mutate({
                 draftId: draft.id,
@@ -292,13 +298,14 @@ export function DraftCard({
             Слить с «{draft.similar_family_title}»
           </Button>
         )}
-        <Button variant="outline" size="sm" onClick={() => setDialog("merge")}>
+        <Button variant="outline" size="sm" disabled={disabled} onClick={() => setDialog("merge")}>
           Слить с…
         </Button>
         <Button
           variant="ghost"
           size="sm"
-          disabled={discard.isPending}
+          disabled={disabled}
+          loading={discard.isPending}
           onClick={() => discard.mutate({ draftId: draft.id, name: draft.title })}
         >
           Отбросить

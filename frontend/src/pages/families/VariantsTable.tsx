@@ -1,4 +1,3 @@
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -12,6 +11,7 @@ import { useFamilyVariants } from "@/services/queries";
 import type { FamilyVariant } from "@/types/domain";
 
 import { VARIANT_STATUS_LABEL, VARIANT_VALUE_UNSPECIFIED } from "./labels";
+import { ListSkeleton } from "./pending";
 
 /**
  * Набор значений варианта по порядку параметров схемы. Пустое значение и вариант
@@ -27,7 +27,7 @@ function variantSetLabel(values: FamilyVariant["values"]): string {
 export function VariantsTable({ familyId }: { familyId: number }) {
   const variantsQ = useFamilyVariants(familyId);
 
-  if (variantsQ.isPending) return <Skeleton className="h-16 w-full" />;
+  if (variantsQ.isPending) return <ListSkeleton rows={2} />;
   if (variantsQ.isError) {
     return <p className="text-sm text-fg-tertiary">Не удалось получить варианты семьи.</p>;
   }

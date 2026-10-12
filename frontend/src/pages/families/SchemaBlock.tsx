@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useCancelSchemaBuild, useFamilySchema } from "@/services/queries";
 import type { FamilySchema, FamilySchemaParameter, PreviewTarget, WorkFamily } from "@/types/domain";
 
 import { MergeValuesDialog } from "./MergeValuesDialog";
+import { ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
 import { SchemaEditDialog } from "./SchemaEditDialog";
 import { SCHEMA_VALUE_ORIGIN_LABEL, valuesRecountLabel } from "./labels";
@@ -76,7 +76,7 @@ export function SchemaBlock({ family }: { family: WorkFamily }) {
         Схема и варианты
       </h4>
 
-      {schemaQ.isPending && <Skeleton className="h-20 w-full" />}
+      {schemaQ.isPending && <ListSkeleton rows={2} />}
       {schemaQ.isError && <p className="text-sm text-fg-tertiary">Не удалось получить схему семьи.</p>}
 
       {schema && (
@@ -117,7 +117,7 @@ export function SchemaBlock({ family }: { family: WorkFamily }) {
               Пересобрать…
             </Button>
             {schema.building && (
-              <Button variant="outline" disabled={cancel.isPending} onClick={() => cancel.mutate(family.id)}>
+              <Button variant="outline" loading={cancel.isPending} onClick={() => cancel.mutate(family.id)}>
                 Отменить пересборку
               </Button>
             )}

@@ -18,6 +18,8 @@ interface NotWorkGroupProps {
   onToggle: (title: string, checked: boolean) => void;
   /** Галочка группы: отметить или снять все наименования разом. */
   onToggleAll: (checked: boolean) => void;
+  /** Идёт запрос, применяющий отметки: отметки заблокированы. */
+  disabled?: boolean;
 }
 
 /**
@@ -27,7 +29,13 @@ interface NotWorkGroupProps {
  * получат только отмеченные наименования, и каждое — на ВСЕХ своих контекстах; снятые
  * остаются без семьи и уходят в перезапрос обычным порядком.
  */
-export function NotWorkGroup({ group, unchecked, onToggle, onToggleAll }: NotWorkGroupProps) {
+export function NotWorkGroup({
+  group,
+  unchecked,
+  onToggle,
+  onToggleAll,
+  disabled = false,
+}: NotWorkGroupProps) {
   const [showAll, setShowAll] = useState(false);
   const total = group.names.length;
   const checkedCount = group.names.filter((n) => !unchecked.has(n.title)).length;
@@ -45,6 +53,7 @@ export function NotWorkGroup({ group, unchecked, onToggle, onToggleAll }: NotWor
           className="mt-1"
           aria-label="Отметить все строки «Не работа»"
           checked={checkedCount === total}
+          disabled={disabled}
           indeterminate={checkedCount > 0 && checkedCount < total}
           onCheckedChange={(checked) => onToggleAll(checked === true)}
         />
@@ -82,6 +91,7 @@ export function NotWorkGroup({ group, unchecked, onToggle, onToggleAll }: NotWor
                 className="mt-0.5"
                 aria-label="Отметить строку"
                 checked={!isOff}
+                disabled={disabled}
                 onCheckedChange={(checked) => onToggle(name.title, checked === true)}
               />
               <div className="min-w-0 flex-1 text-fg">

@@ -34,7 +34,7 @@ export function PendingFamilyBlock({ contextId, pending }: PendingFamilyBlockPro
           size="xs"
           variant="outline"
           aria-label="Отменить ожидание семьи"
-          disabled={cancel.isPending}
+          loading={cancel.isPending}
           onClick={() => cancel.mutate(contextId)}
         >
           Отменить

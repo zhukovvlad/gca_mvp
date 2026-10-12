@@ -14,6 +14,8 @@ interface CategoryProposalsProps {
   chosen: Readonly<Record<number, number>>;
   onToggle: (familyId: number, checked: boolean) => void;
   onChoose: (familyId: number, categoryId: number) => void;
+  /** Идёт запрос, применяющий отметки: отметки и выбор категории заблокированы. */
+  disabled?: boolean;
 }
 
 /**
@@ -28,6 +30,7 @@ export function CategoryProposals({
   chosen,
   onToggle,
   onChoose,
+  disabled = false,
 }: CategoryProposalsProps) {
   if (proposals.length === 0) return null;
   return (
@@ -52,6 +55,7 @@ export function CategoryProposals({
               <Checkbox
                 aria-label={`Применить категорию семье «${proposal.family_title}»`}
                 checked={!isOff}
+                disabled={disabled}
                 onCheckedChange={(checked) => onToggle(proposal.family_id, checked === true)}
               />
               <span className="min-w-0 flex-1">
@@ -66,6 +70,7 @@ export function CategoryProposals({
                 className="w-56"
                 items={categories}
                 value={proposalCategoryId(proposal, chosen)}
+                disabled={disabled}
                 onChange={(id) => id !== null && onChoose(proposal.family_id, id)}
                 getLabel={(c) => c.title}
                 placeholder="Выбрать категорию"

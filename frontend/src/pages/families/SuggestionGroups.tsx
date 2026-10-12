@@ -127,7 +127,8 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
             </Button>
             {candidates.length > 0 && (
               <Button
-                disabled={choice === null || otherFamily.isPending}
+                disabled={choice === null}
+                loading={otherFamily.isPending}
                 onClick={() =>
                   choice !== null &&
                   otherFamily.mutate(
@@ -149,6 +150,11 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
       )}
     </Dialog>
   );
+}
+
+/** Id строки, которую отклоняет текущий запрос (переменные — id или `{ suggestionId, change }`). */
+function rejectingId(variables: number | { suggestionId: number } | undefined): number | undefined {
+  return typeof variables === "object" ? variables.suggestionId : variables;
 }
 
 interface GroupCardProps {
@@ -219,7 +225,8 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
         )}
         <Button
           className="ml-auto"
-          disabled={checkedIds.length === 0 || confirm.isPending}
+          disabled={checkedIds.length === 0}
+          loading={confirm.isPending}
           onClick={() =>
             confirm.mutate({
               ids: checkedIds,
@@ -250,6 +257,7 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   className="mt-1"
                   aria-label="Отметить строку"
                   checked={!isOff}
+                  disabled={confirm.isPending}
                   onCheckedChange={(checked) => toggle(row.suggestion_id, checked === true)}
                 />
                 <div
@@ -294,13 +302,19 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   )}
                 </div>
                 <div className="flex flex-none gap-1.5">
-                  <Button variant="outline" size="sm" onClick={() => setOtherRow(row)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={confirm.isPending || reject.isPending}
+                    onClick={() => setOtherRow(row)}
+                  >
                     Другая семья…
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={reject.isPending}
+                    disabled={confirm.isPending || reject.isPending}
+                    loading={reject.isPending && rejectingId(reject.variables) === row.suggestion_id}
                     onClick={() =>
                       reject.mutate(change ? { suggestionId: row.suggestion_id, change } : row.suggestion_id)
                     }

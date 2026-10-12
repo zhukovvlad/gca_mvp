@@ -3,7 +3,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { EmptyState } from "@/components/ui-domain/EmptyState";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -25,6 +24,7 @@ import type {
 } from "@/types/domain";
 
 import { discoveryRefusalLabel, FAMILY_STATUS_LABEL, pluralRu } from "../labels";
+import { FetchingBar, ListSkeleton } from "../pending";
 import { CategoryProposals } from "./CategoryProposals";
 import { proposalCategoryId } from "./proposalCategory";
 import { DraftCard } from "./DraftCard";
@@ -80,6 +80,7 @@ function FoldedDrafts({ folded, all }: { folded: DraftView[]; all: DraftView[] }
                 variant="outline"
                 size="sm"
                 disabled={restore.isPending}
+                loading={restore.isPending && restore.variables?.draftId === draft.id}
                 onClick={() => restore.mutate({ draftId: draft.id, name: draft.title })}
               >
                 Вернуть
@@ -152,7 +153,7 @@ export function DiscoveryDrafts({
   // Справочник грузится вместе с черновиками, а не после них.
   const categoriesQ = useFamilyCategories();
 
-  if (draftsQ.isPending) return <Skeleton className="h-40 w-full" />;
+  if (draftsQ.isPending) return <ListSkeleton />;
   if (draftsQ.isError) {
     return (
       <EmptyState title="Ошибка загрузки" description="Не удалось получить черновики открытия." />
@@ -170,15 +171,18 @@ export function DiscoveryDrafts({
   // Локальный выбор живёт в пределах ПОКАЗАННОГО открытия: перечитывание того же открытия его
   // сохраняет, другое открытие (его наименования и семьи могут повторяться) начинает с умолчаний.
   return (
-    <DraftsScreen
-      key={loaded.job_id}
-      view={loaded}
-      categories={categoriesQ.data}
-      unitId={unitId}
-      unitLabel={unitLabel}
-      onActivated={onActivated}
-      onRelaunch={onRelaunch}
-    />
+    <div className="grid gap-2">
+      <FetchingBar active={draftsQ.isFetching} />
+      <DraftsScreen
+        key={loaded.job_id}
+        view={loaded}
+        categories={categoriesQ.data}
+        unitId={unitId}
+        unitLabel={unitLabel}
+        onActivated={onActivated}
+        onRelaunch={onRelaunch}
+      />
+    </div>
   );
 }
 
@@ -296,7 +300,7 @@ function DraftsScreen({
           {formatDate(view.opened_at)}
         </span>
         <span className="ml-auto text-[13px] text-fg-secondary">по числу строк</span>
-        <Button variant="outline" size="sm" onClick={onRelaunch}>
+        <Button variant="outline" size="sm" disabled={activate.isPending} onClick={onRelaunch}>
           Открыть семьи заново…
         </Button>
       </div>
@@ -311,12 +315,14 @@ function DraftsScreen({
           categories={categories}
           otherDrafts={view.drafts.filter((d) => d.id !== draft.id)}
           refusal={refusals[draft.id]}
+          disabled={activate.isPending}
         />
       ))}
 
       {view.not_work !== null && notWorkNames.length > 0 && (
         <NotWorkGroup
           group={view.not_work}
+          disabled={activate.isPending}
           unchecked={notWorkOff}
           onToggle={(title, on) =>
             setNotWorkOff((prev) => {
@@ -355,6 +361,7 @@ function DraftsScreen({
       <CategoryProposals
         proposals={view.category_proposals}
         categories={categories}
+        disabled={activate.isPending}
         unchecked={proposalOff}
         chosen={chosen}
         onToggle={(familyId, on) =>
@@ -380,7 +387,7 @@ function DraftsScreen({
           {checkedPairs.length > 0 && <> · категорий семьям: {checkedPairs.length}</>}
           {" · неотмеченные остаются черновиками"}
         </span>
-        <Button className="ml-auto" disabled={nothingChecked || activate.isPending} onClick={submit}>
+        <Button className="ml-auto" disabled={nothingChecked} loading={activate.isPending} onClick={submit}>
           Активировать отмеченные и перезапросить «{unitLabel}»…
         </Button>
       </div>

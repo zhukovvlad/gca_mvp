@@ -30,6 +30,12 @@ const RUN = (overrides: Partial<DiscoveryRunInfo> = {}): DiscoveryRunInfo => ({
   ...overrides,
 });
 
+/**
+ * Цепочка «единицы → черновики» на загруженной машине (полный прогон, десятки файлов параллельно)
+ * не укладывается в 1000 мс по умолчанию; ждём по условию, но дольше.
+ */
+const LOAD_TIMEOUT = { timeout: 5_000 };
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -69,7 +75,7 @@ describe("DiscoveryBlock — выбор человека и смена откр�
       ],
     });
     renderBlock();
-    await screen.findByText("Черновик прошлого открытия");
+    await screen.findByText("Черновик прошлого открытия", undefined, LOAD_TIMEOUT);
 
     // В A: снимаем строку «Не работа» и пару семьи 44, у семьи 43 выбираем другую категорию.
     await user.click(
@@ -124,7 +130,7 @@ describe("DiscoveryBlock — выбор человека и смена откр�
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_500);
     });
-    await screen.findByText("Черновик нового открытия");
+    await screen.findByText("Черновик нового открытия", undefined, LOAD_TIMEOUT);
 
     for (const row of screen.getAllByTestId("not-work-row")) {
       expect(within(row).getByRole("checkbox", { name: "Отметить строку" })).toBeChecked();
