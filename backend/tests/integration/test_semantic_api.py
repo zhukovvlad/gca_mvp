@@ -463,9 +463,10 @@ DISCOVERY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/restore"),
         ("POST", f"{BASE}/contexts/{{context_id}}/reopen"),
         ("POST", f"{BASE}/discovery/{{job_id}}/activate"),
+        ("GET", f"{BASE}/unit-busy-jobs"),
     }
 )
-assert len(DISCOVERY_ROUTE_TEMPLATES) == 10
+assert len(DISCOVERY_ROUTE_TEMPLATES) == 11
 
 
 def test_route_set_under_prefix_equals_twenty_one_literal():

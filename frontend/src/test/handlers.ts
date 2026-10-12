@@ -479,6 +479,8 @@ interface HandlerState {
   lastCreateFamilyRequest: Record<string, unknown> | null;
   lastUpdateFamilyRequest: { id: number; body: Record<string, unknown> } | null;
   lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
+  /** Живые задания предложений по `unit_id` (ответ `GET /semantic/unit-busy-jobs`); нет ключа — ноль. */
+  unitBusyByUnitId: Record<number, number>;
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */
   semanticContexts: SemanticContextFixture[];
@@ -1984,6 +1986,7 @@ export const handlerState: HandlerState = {
   lastCreateFamilyRequest: null,
   lastUpdateFamilyRequest: null,
   lastMergeFamiliesRequest: null,
+  unitBusyByUnitId: {},
   semanticContexts: initialSemanticContexts(),
   lastConfirmKindRequest: null,
   lastSetNameRoleRequest: null,
@@ -2336,6 +2339,7 @@ export function resetHandlerState() {
   handlerState.lastCreateFamilyRequest = null;
   handlerState.lastUpdateFamilyRequest = null;
   handlerState.lastMergeFamiliesRequest = null;
+  handlerState.unitBusyByUnitId = {};
   handlerState.semanticContexts = initialSemanticContexts();
   handlerState.lastConfirmKindRequest = null;
   handlerState.lastSetNameRoleRequest = null;
@@ -4093,6 +4097,36 @@ export const handlers = [
     };
     handlerState.workFamilies.push(family);
     return HttpResponse.json(family, { status: 201 });
+  }),
+
+  // Разбор имени единицы, как `UnitResolver`: код, символ или алиас одной единицы дают один `unit_id`
+  // (M2 → 5, M3 → 3); пустое имя — «единицы нет»; прочее — не распознано.
+  http.get("/api/v1/semantic/unit-busy-jobs", ({ request }) => {
+    const name = (new URL(request.url).searchParams.get("unit_name") ?? "").trim().toLowerCase();
+    const known: Record<string, { id: number; code: string; symbol: string }> = {
+      m2: { id: 5, code: "M2", symbol: "м²" },
+      "м²": { id: 5, code: "M2", symbol: "м²" },
+      "кв.м": { id: 5, code: "M2", symbol: "м²" },
+      m3: { id: 3, code: "M3", symbol: "м³" },
+      "м³": { id: 3, code: "M3", symbol: "м³" },
+      "куб.м": { id: 3, code: "M3", symbol: "м³" },
+    };
+    if (name === "") {
+      return HttpResponse.json({
+        resolved: true, unit_id: null, unit_code: null, unit_symbol: null,
+        busy_jobs: handlerState.unitBusyByUnitId[0] ?? 0,
+      });
+    }
+    const unit = known[name];
+    if (!unit) {
+      return HttpResponse.json({
+        resolved: false, unit_id: null, unit_code: null, unit_symbol: null, busy_jobs: 0,
+      });
+    }
+    return HttpResponse.json({
+      resolved: true, unit_id: unit.id, unit_code: unit.code, unit_symbol: unit.symbol,
+      busy_jobs: handlerState.unitBusyByUnitId[unit.id] ?? 0,
+    });
   }),
 
   http.patch("/api/v1/semantic/families/:id", async ({ params, request }) => {

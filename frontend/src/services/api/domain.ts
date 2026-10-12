@@ -29,6 +29,7 @@ import type {
   DraftMergeTarget,
   DraftActionResult,
   FamilyCategory,
+  UnitBusyLookup,
   FamilyCategoryFilter,
   FamilyCategoryInput,
   FamilyChangeResult,
@@ -437,6 +438,12 @@ export const semanticApi = {
     api
       .get<{ items: WorkFamily[] }>("/v1/semantic/families", { params })
       .then((r) => r.data.items),
+
+  /** Единица по имени, как её разрешит правка семьи, и число живых заданий её предложений. */
+  unitBusyJobs: (unitName: string): Promise<UnitBusyLookup> =>
+    api
+      .get<UnitBusyLookup>("/v1/semantic/unit-busy-jobs", { params: { unit_name: unitName } })
+      .then((r) => r.data),
 
   /** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
   listFamilyCategories: (): Promise<FamilyCategory[]> =>

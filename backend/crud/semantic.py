@@ -55,6 +55,7 @@ from models import (
 from services.context_routing import chapter_paths
 from services.family_discovery import _busy_count
 from services.semantic_rules import nearest_working_chapter
+from services.unit_resolution import UnitResolver
 from services.work_variants import is_reopenable
 
 
@@ -243,6 +244,37 @@ def list_families(
     rows = db.execute(stmt).all()
     busy: dict[int | None, int] = {}
     return [_family_row_to_dict(db, row, busy) for row in rows]
+
+
+def unit_busy_lookup(db: Session, *, unit_name: str | None) -> dict:
+    """Единица, которую выставит `set_unit` по введённому имени (тот же `UnitResolver`),
+    и число её живых заданий предложений (`_busy_count`, то же, по которому отказывает
+    `discovery_unit_busy`). Нужен экрану семьи: смена единицы меняет список кандидатов
+    ЦЕЛЕВОЙ единицы, и её перезапрос тоже сбросится.
+
+    `resolved=False` — имя названо, но справочник его не знает (сохранение откажет
+    `unknown_unit`); пустое имя — «единицы нет» (`unit_id` = `NULL`), как у `set_unit`."""
+    resolved = UnitResolver(db).resolve(unit_name)
+    if resolved.is_unknown:
+        return {
+            "resolved": False,
+            "unit_id": None,
+            "unit_code": None,
+            "unit_symbol": None,
+            "busy_jobs": 0,
+        }
+    symbol = None
+    if resolved.unit_id is not None:
+        symbol = db.execute(
+            sa.select(UnitOfMeasure.symbol).where(UnitOfMeasure.id == resolved.unit_id)
+        ).scalar_one()
+    return {
+        "resolved": True,
+        "unit_id": resolved.unit_id,
+        "unit_code": resolved.unit_norm or None,
+        "unit_symbol": symbol,
+        "busy_jobs": _busy_count(db, resolved.unit_id),
+    }
 
 
 def get_family_row(db: Session, *, family_id: int) -> dict | None:

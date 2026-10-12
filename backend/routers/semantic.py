@@ -559,6 +559,17 @@ def list_families_route(
     }
 
 
+@router.get("/unit-busy-jobs")
+def unit_busy_jobs_route(
+    unit_name: str | None = Query(default=None),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Единица по введённому имени (как её разрешит правка семьи) и число живых заданий
+    предложений этой единицы — для предупреждения о сбросе перезапроса при смене единицы."""
+    return crud_semantic.unit_busy_lookup(db, unit_name=unit_name)
+
+
 @router.post("/families", status_code=status.HTTP_201_CREATED)
 def create_family_route(
     body: CreateFamilyRequest,

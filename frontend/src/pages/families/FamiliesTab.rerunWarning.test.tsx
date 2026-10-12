@@ -1,10 +1,14 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { QueryClient } from "@tanstack/react-query";
+import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FamiliesTab } from "@/pages/families/FamiliesTab";
+import { qk } from "@/services/queryKeys";
 import { handlerState } from "@/test/handlers";
-import { renderWithProviders } from "@/test/utils";
+import { server } from "@/test/server";
+import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 
 /**
  * Предупреждение «идёт перезапрос» в окнах действий над семьёй, меняющих список семей в
@@ -19,9 +23,9 @@ function setBusy(familyId: number, busy: number) {
   handlerState.workFamilies.find((f) => f.id === familyId)!.unit_busy_jobs = busy;
 }
 
-async function openActivePanel() {
+async function openActivePanel(queryClient: QueryClient = createTestQueryClient()) {
   const user = userEvent.setup();
-  renderWithProviders(<FamiliesTab />);
+  renderWithProviders(<FamiliesTab />, { queryClient });
   await waitFor(() => expect(screen.getByText("Семья работ №3")).toBeInTheDocument());
   await user.click(screen.getByRole("combobox", { name: "Статус" }));
   await user.click(await screen.findByRole("option", { name: "активна" }));
@@ -82,23 +86,160 @@ describe("FamiliesTab — предупреждение о сбросе пере�
       expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
     });
 
-    it("правка единицы активной семьи без привязок при идущем перезапросе предупреждает", async () => {
-      setBusy(43, 7);
-      const user = await openActivePanel();
-      expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+    describe("смена единицы: затронуты прежняя (м³) и новая единицы", () => {
+      const M2_UNIT_ID = 5;
+      // Разбор имени идёт после паузы в наборе (300 мс) и запроса — под нагрузкой дольше 1 с.
+      const LATER = { timeout: 8000 };
+      const M3_UNIT_ID = 3;
+      const WARNING_NEW_4 =
+        "В единице «м²» идёт перезапрос: 4 заданий предложений ещё не выполнены. Это изменение отменит их, а уже полученные, но не разобранные предложения скроются — единицу придётся перезапросить заново.";
+      const WARNING_BOTH =
+        "В единицах «м³» и «м²» идёт перезапрос: 7 и 4 заданий предложений ещё не выполнены. Это изменение отменит их, а уже полученные, но не разобранные предложения скроются — обе единицы придётся перезапросить заново.";
 
-      await user.type(screen.getByLabelText("Единица"), "2");
+      async function typeUnit(user: ReturnType<typeof userEvent.setup>, text: string) {
+        const input = screen.getByLabelText("Единица");
+        await user.clear(input);
+        await user.type(input, text);
+      }
 
-      expect(await screen.findByText(WARNING_7)).toBeInTheDocument();
-    });
+      /**
+       * Дождаться ответа разбора имени (после паузы в наборе) и его отрисовки — вместо
+       * фиксированной паузы: «предупреждения нет» обязано проверяться ПОСЛЕ ответа, иначе оно
+       * истинно уже до запроса. Наблюдатели react-query узнают об ответе через notifyManager
+       * (`setTimeout(0)`), поэтому после `success` в кэше — один такой же тик внутри `act`.
+       */
+      async function settleLookup(queryClient: QueryClient, text: string) {
+        await waitFor(() => {
+          const state = queryClient.getQueryState(qk.unitBusy(text));
+          expect(state?.status).toBe("success");
+          expect(state?.fetchStatus).toBe("idle");
+        }, LATER);
+        await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+      }
 
-    it("правка единицы без идущего перезапроса предупреждения не даёт", async () => {
-      setBusy(43, 0);
-      const user = await openActivePanel();
+      it("прежняя свободна, новая занята — предупреждение называет новую единицу и её число", async () => {
+        setBusy(43, 0);
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+        const user = await openActivePanel();
 
-      await user.type(screen.getByLabelText("Единица"), "2");
+        await typeUnit(user, "м²");
 
-      expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+        expect(await screen.findByText(WARNING_NEW_4, {}, LATER)).toBeInTheDocument();
+      });
+
+      it("прежняя занята, новая свободна — предупреждение называет прежнюю", async () => {
+        setBusy(43, 7);
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 0;
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "м²");
+        // Пока ответа нет, прежняя считается и так — проверять после ответа.
+        await settleLookup(queryClient, "м²");
+
+        expect(screen.getByText(WARNING_7)).toBeInTheDocument();
+      });
+
+      it("заняты обе — одно предупреждение с обеими единицами и обоими числами", async () => {
+        setBusy(43, 7);
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+        const user = await openActivePanel();
+
+        await typeUnit(user, "м²");
+
+        expect(await screen.findByText(WARNING_BOTH, {}, LATER)).toBeInTheDocument();
+        expect(screen.getAllByTestId("rerun-reset-warning")).toHaveLength(1);
+      });
+
+      it("другое написание той же единицы — не смена: целевой единицы нет, прежняя свободна — предупреждения нет", async () => {
+        setBusy(43, 0);
+        handlerState.unitBusyByUnitId[M3_UNIT_ID] = 0;
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "куб.м");
+        await settleLookup(queryClient, "куб.м");
+
+        expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+      });
+
+      it("другое написание той же единицы при занятой единице — после разбора предупреждение снимается", async () => {
+        setBusy(43, 7);
+        const user = await openActivePanel();
+
+        await typeUnit(user, "куб.м");
+
+        await waitFor(
+          () => expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument(),
+          LATER
+        );
+      });
+
+      it("неизвестное имя единицы — без ошибки и без предупреждения о новой единице", async () => {
+        setBusy(43, 0);
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "нет такой единицы");
+        await settleLookup(queryClient, "нет такой единицы");
+
+        expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Единица")).toBeInTheDocument();
+      });
+
+      it("неизвестное имя при занятой прежней — после разбора предупреждение снимается: сохранение откажет, смены не будет", async () => {
+        setBusy(43, 7);
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "нет такой единицы");
+        await settleLookup(queryClient, "нет такой единицы");
+
+        expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+      });
+
+      it("разбор имени не удался — прежняя занятая единица по-прежнему в предупреждении", async () => {
+        server.use(
+          http.get("/api/v1/semantic/unit-busy-jobs", () => HttpResponse.json({}, { status: 500 }))
+        );
+        setBusy(43, 7);
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "м²");
+        await waitFor(() => {
+          const state = queryClient.getQueryState(qk.unitBusy("м²"));
+          expect(state?.status).toBe("error");
+          expect(state?.fetchStatus).toBe("idle");
+        }, LATER);
+        await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+        expect(screen.getByText(WARNING_7)).toBeInTheDocument();
+      });
+
+      it("смена единицы без идущих перезапросов предупреждения не даёт", async () => {
+        setBusy(43, 0);
+        const queryClient = createTestQueryClient();
+        const user = await openActivePanel(queryClient);
+
+        await typeUnit(user, "м²");
+        await settleLookup(queryClient, "м²");
+
+        expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+      });
+
+      it("правка названия при смене единицы считает и прежнюю, и новую единицы", async () => {
+        setBusy(43, 7);
+        handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+        const user = await openActivePanel();
+
+        await user.type(screen.getByLabelText("Название"), " 2");
+        await typeUnit(user, "м²");
+
+        expect(await screen.findByText(WARNING_BOTH, {}, LATER)).toBeInTheDocument();
+      });
     });
 
     it("у черновика правка названия предупреждения не даёт: его нет в теле запроса предложения", async () => {

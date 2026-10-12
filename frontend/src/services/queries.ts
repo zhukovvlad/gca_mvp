@@ -1520,6 +1520,16 @@ export function useWorkFamilies(
 }
 
 /** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
+/** Единица по введённому имени и её живые задания; без запроса, пока имя не передано (`null`). */
+export function useUnitBusyJobs(unitName: string | null) {
+  return useQuery({
+    queryKey: qk.unitBusy(unitName ?? ""),
+    queryFn: () => semanticApi.unitBusyJobs(unitName ?? ""),
+    enabled: unitName !== null,
+    staleTime: 0,
+  });
+}
+
 export function useFamilyCategories() {
   return useQuery({
     queryKey: qk.familyCategories.list(),

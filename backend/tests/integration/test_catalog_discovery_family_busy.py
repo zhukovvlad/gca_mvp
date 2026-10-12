@@ -160,3 +160,73 @@ class TestUnitBusyJobs:
         assert response.status_code == 200
         rows = {r["id"]: r for r in response.json()["items"]}
         assert rows[world.family.id]["unit_busy_jobs"] == 1
+
+
+class TestUnitBusyLookup:
+    """`GET /unit-busy-jobs`: единица по введённому имени (как её разрешит правка семьи) и
+    число живых заданий этой единицы — то же, что у `discovery_unit_busy`."""
+
+    def _get(self, client, name):
+        params = {} if name is None else {"unit_name": name}
+        response = client.get(f"{BASE}/unit-busy-jobs", params=params)
+        assert response.status_code == 200
+        return response.json()
+
+    def test_idle_unit_is_resolved_with_zero(self, world, admin_client):
+        body = self._get(admin_client, "M2")
+
+        assert body["resolved"] is True
+        assert (body["unit_id"], body["unit_code"], body["busy_jobs"]) == (world.family_unit, "M2", 0)
+
+    @pytest.mark.parametrize("status", ["pending", "running"])
+    def test_open_job_of_the_unit_is_counted(self, world, admin_client, status):
+        _job(world, _ctx_family_unit(world, "Работа"), world.family_unit, status)
+
+        body = self._get(admin_client, "M2")
+
+        assert body["busy_jobs"] == 1
+        assert "идёт перезапрос: 1 заданий" in _refusal_text(world, world.family_unit)
+
+    def test_held_batch_is_counted(self, world, admin_client):
+        context_id = _ctx_family_unit(world, "Работа")
+        _held_batch(world.db, [_fingerprint("family_suggestion", context_id)])
+
+        assert self._get(admin_client, "M2")["busy_jobs"] == 1
+
+    def test_job_of_another_unit_is_not_counted(self, world, admin_client):
+        _job(world, _ctx_bare_unit(world, "Работа другой единицы"), world.bare_unit, "pending")
+
+        assert self._get(admin_client, "M2")["busy_jobs"] == 0
+        other = self._get(admin_client, "M3")
+        assert (other["unit_id"], other["busy_jobs"]) == (world.bare_unit, 1)
+
+    def test_another_spelling_of_the_same_unit_resolves_to_the_same_id(self, world, admin_client):
+        by_code = self._get(admin_client, "M2")
+        by_symbol = self._get(admin_client, " м² ")
+
+        assert by_symbol["unit_id"] == by_code["unit_id"] == world.family_unit
+        assert by_symbol["unit_symbol"] == by_code["unit_symbol"]
+        # `unit_code` — код распознанной единицы, а не введённый текст (запасная подпись на экране).
+        assert by_symbol["unit_code"] == by_code["unit_code"] == "M2"
+
+    def test_empty_name_is_the_null_unit(self, world, admin_client):
+        context_id, _ = _make(world.db, world.factories, world.proposal, None, "Без единицы")
+        _job(world, context_id, None, "pending")
+
+        for name in (None, "   "):
+            body = self._get(admin_client, name)
+            assert body["resolved"] is True and body["unit_id"] is None and body["busy_jobs"] == 1
+
+    def test_unknown_name_is_not_resolved_and_counts_nothing(self, world, admin_client):
+        _job(world, _ctx_family_unit(world, "Работа"), world.family_unit, "pending")
+
+        body = self._get(admin_client, "нет такой единицы")
+
+        assert body == {
+            "resolved": False, "unit_id": None, "unit_code": None, "unit_symbol": None,
+            "busy_jobs": 0,
+        }
+
+    def test_member_and_anonymous_are_rejected(self, member_client, anon_client):
+        assert member_client.get(f"{BASE}/unit-busy-jobs").status_code == 403
+        assert anon_client.get(f"{BASE}/unit-busy-jobs").status_code in (401, 403)

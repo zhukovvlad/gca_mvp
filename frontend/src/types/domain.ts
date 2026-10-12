@@ -2188,6 +2188,19 @@ export interface WorkFamily {
   unit_busy_jobs: number;
 }
 
+/**
+ * Единица по введённому имени (как её разрешит правка семьи) и число живых заданий
+ * предложений этой единицы (`GET /v1/semantic/unit-busy-jobs`). `resolved: false` — справочник
+ * имя не знает; пустое имя — «единицы нет» (`unit_id: null`).
+ */
+export interface UnitBusyLookup {
+  resolved: boolean;
+  unit_id: number | null;
+  unit_code: string | null;
+  unit_symbol: string | null;
+  busy_jobs: number;
+}
+
 /** Строка справочника категорий семей (`GET /v1/semantic/family-categories`, спека 3б §2.9). */
 export interface FamilyCategory {
   id: number;

@@ -52,6 +52,7 @@ import {
   useFamilyCategories,
   useMergeWorkFamilies,
   useUnits,
+  useUnitBusyJobs,
   useUpdateWorkFamily,
   useWorkFamilies,
 } from "@/services/queries";
@@ -463,9 +464,33 @@ function FamilyPanel({
   // Название, определение и единица входят в строку семьи в теле запроса предложения;
   // категория — нет. Единица правится, пока нет привязок.
   const textChanged =
-    title.trim() !== family.title ||
-    definition.trim() !== (family.definition ?? "").trim() ||
-    (!unitLocked && unitName.trim() !== (family.unit_symbol ?? "").trim());
+    title.trim() !== family.title || definition.trim() !== (family.definition ?? "").trim();
+  const unitText = unitName.trim();
+  const unitTextDiffers = !unitLocked && unitText !== (family.unit_symbol ?? "").trim();
+  // Новая единица — та, что выставит сервер по введённому имени (тот же разбор, что у правки
+  // семьи): другое написание той же единицы — не смена. Запрос — после паузы в наборе.
+  const [settledUnitText, setSettledUnitText] = useState(unitText);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettledUnitText(unitText), 300);
+    return () => clearTimeout(timer);
+  }, [unitText]);
+  const unitLookup = useUnitBusyJobs(
+    unitTextDiffers && settledUnitText === unitText ? unitText : null
+  );
+  const lookedUp =
+    unitTextDiffers && settledUnitText === unitText && unitLookup.isSuccess
+      ? unitLookup.data
+      : null;
+  const unitChanged = lookedUp !== null && lookedUp.resolved && lookedUp.unit_id !== family.unit_id;
+  // Пока ответа нет, прежняя единица считается затронутой; ответ «та же единица» или «неизвестное имя» снимает.
+  const fromApplies = textChanged || unitChanged || (unitTextDiffers && lookedUp === null);
+  const unitTarget =
+    unitChanged && lookedUp !== null
+      ? {
+          unit: lookedUp.unit_symbol ?? lookedUp.unit_code ?? "без единицы",
+          count: lookedUp.busy_jobs,
+        }
+      : null;
   const hasDefinition = Boolean(family.definition && family.definition.trim());
   const hasCategory = family.family_category_id !== null;
 
@@ -538,7 +563,9 @@ function FamilyPanel({
             disabled={update.isPending}
           />
         </div>
-        {textChanged && <RerunResetWarning family={family} />}
+        {(textChanged || unitTextDiffers) && (
+          <RerunResetWarning family={family} target={unitTarget} fromApplies={fromApplies} />
+        )}
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
           <Button type="submit" disabled={!title.trim()} loading={update.isPending}>

@@ -197,6 +197,9 @@ export const qk = {
     variants: (familyId: number) => ["work-families", "variants", familyId] as const,
   },
 
+  /** Единица по введённому имени и число живых заданий предложений (смена единицы семьи). */
+  unitBusy: (unitName: string) => ["unit-busy-jobs", unitName] as const,
+
   /** Справочник категорий семей (спека 3б §2.9). */
   familyCategories: {
     all: ["family-categories"] as const,
