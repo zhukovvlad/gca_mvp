@@ -29,6 +29,18 @@ describe("TopNav: ширина контейнера", () => {
     }
   });
 
+  it("на /review — container-wide, на /review-x — container-page", () => {
+    const wide = renderWithProviders(<TopNav />, { initialRoute: "/review" });
+    expect(wrapper(wide.container)).toHaveClass("container-wide");
+    expect(wrapper(wide.container)).not.toHaveClass("container-page");
+    wide.unmount();
+
+    const narrow = renderWithProviders(<TopNav />, { initialRoute: "/review-x" });
+    expect(wrapper(narrow.container)).toHaveClass("container-page");
+    expect(wrapper(narrow.container)).not.toHaveClass("container-wide");
+    narrow.unmount();
+  });
+
   it("на других путях — container-page (в том числе на /families-x)", () => {
     for (const route of ["/", "/contracts", "/families-x"]) {
       const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
