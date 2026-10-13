@@ -1,6 +1,6 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -230,6 +230,217 @@ describe("FamiliesTab — предупреждение о сбросе пере�
         expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
       });
 
+      describe("сохранение не обгоняет проверку целевой единицы", () => {
+        function hold() {
+          let release: () => void = () => {};
+          handlerState.unitBusyGate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return release;
+        }
+
+        it("кнопка: пока проверка не завершена — «Проверяю единицу…», запроса нет; после — предупреждение и сохранение", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const release = hold();
+          const user = await openActivePanel();
+
+          await typeUnit(user, "м²");
+
+          const pending = await screen.findByRole("button", { name: "Проверяю единицу…" });
+          expect(pending).toBeDisabled();
+          await user.click(pending);
+          expect(handlerState.lastUpdateFamilyRequest).toBeNull();
+
+          release();
+          expect(await screen.findByText(WARNING_NEW_4)).toBeInTheDocument();
+          await user.click(await screen.findByRole("button", { name: "Сохранить" }));
+          await waitFor(() =>
+            expect(handlerState.lastUpdateFamilyRequest).toEqual({
+              id: 43,
+              body: expect.objectContaining({ unit_name: "м²" }),
+            })
+          );
+        });
+
+        it("отправка формы в обход кнопки (программно) до конца проверки ничего не шлёт", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const release = hold();
+          const user = await openActivePanel();
+
+          await typeUnit(user, "м²");
+          await screen.findByRole("button", { name: "Проверяю единицу…" });
+          fireEvent.submit(screen.getByLabelText("Единица").closest("form")!);
+          expect(handlerState.lastUpdateFamilyRequest).toBeNull();
+
+          release();
+          expect(await screen.findByText(WARNING_NEW_4)).toBeInTheDocument();
+        });
+
+        it("Enter в поле: пока проверка не завершена — запроса нет; после — сохраняет", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const release = hold();
+          const user = await openActivePanel();
+
+          await typeUnit(user, "м²");
+          await screen.findByRole("button", { name: "Проверяю единицу…" });
+          await user.type(screen.getByLabelText("Единица"), "{Enter}");
+          expect(handlerState.lastUpdateFamilyRequest).toBeNull();
+
+          release();
+          expect(await screen.findByText(WARNING_NEW_4)).toBeInTheDocument();
+          await user.type(screen.getByLabelText("Единица"), "{Enter}");
+          await waitFor(() => expect(handlerState.lastUpdateFamilyRequest).not.toBeNull());
+        });
+
+        it("ответ по прежнему вводу не выдаётся за ответ по новому: пока новый разбор в пути — ожидание, предупреждения о прежней цели нет", async () => {
+          // Риск — показ прежних данных на время нового запроса (например, `keepPreviousData`):
+          // кнопка открылась бы, а предупреждение относилось бы к другой единице.
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const queryClient = createTestQueryClient();
+          const user = await openActivePanel(queryClient);
+          await typeUnit(user, "м²");
+          expect(await screen.findByText(WARNING_NEW_4, {}, LATER)).toBeInTheDocument();
+
+          const release = hold();
+          await typeUnit(user, "куб.м");
+          await waitFor(
+            () => expect(queryClient.getQueryState(qk.unitBusy("куб.м"))?.fetchStatus).toBe("fetching"),
+            LATER
+          );
+          await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+          expect(screen.getByRole("button", { name: "Проверяю единицу…" })).toBeDisabled();
+          expect(screen.queryByText(WARNING_NEW_4)).not.toBeInTheDocument();
+
+          release();
+          await settleLookup(queryClient, "куб.м");
+          expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+          expect(screen.getByRole("button", { name: "Сохранить" })).toBeEnabled();
+        });
+
+        it("ответ по пустому имени из кэша не подменяет разбор нового ввода в паузе набора", async () => {
+          // Без имени хук ходит по ключу пустого имени; в приложении кэш живёт минутами, и ответ
+          // «единицы нет» оттуда не должен ни открыть сохранение, ни дать предупреждение.
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[0] = 2;
+          const queryClient = new QueryClient({
+            defaultOptions: {
+              queries: { retry: false, gcTime: Infinity, staleTime: 0 },
+              mutations: { retry: false },
+            },
+          });
+          const user = await openActivePanel(queryClient);
+          const input = screen.getByLabelText("Единица");
+          await user.clear(input);
+          await settleLookup(queryClient, "");
+          expect(screen.getByText(/«без единицы»/)).toBeInTheDocument();
+
+          const release = hold();
+          await user.type(input, "м²");
+
+          expect(screen.getByRole("button", { name: "Проверяю единицу…" })).toBeDisabled();
+          expect(screen.queryByText(/«без единицы»/)).not.toBeInTheDocument();
+          release();
+          await settleLookup(queryClient, "м²");
+          expect(screen.getByRole("button", { name: "Сохранить" })).toBeEnabled();
+        });
+
+        it("отказ проверки виден сразу: у проверки свои `retry: false`, а не только у тестового клиента", async () => {
+          // Клиент с повтором через минуту: без собственного `retry: false` у проверки отказ
+          // показался бы только после повтора, а всё это время сохранение ждало бы.
+          setBusy(43, 0);
+          handlerState.unitBusyFails = true;
+          const queryClient = new QueryClient({
+            defaultOptions: {
+              queries: { retry: 1, retryDelay: 60_000, gcTime: 0, staleTime: 0 },
+              mutations: { retry: false },
+            },
+          });
+          const user = await openActivePanel(queryClient);
+
+          await typeUnit(user, "м²");
+
+          expect(await screen.findByTestId("unit-check-failed-warning", {}, LATER)).toBeInTheDocument();
+          expect(screen.getByRole("button", { name: "Сохранить" })).toBeEnabled();
+        });
+
+        it("новый ввод после завершённой проверки снова блокирует сохранение до разбора нового значения", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const user = await openActivePanel();
+          await typeUnit(user, "м²");
+          expect(await screen.findByText(WARNING_NEW_4)).toBeInTheDocument();
+          expect(await screen.findByRole("button", { name: "Сохранить" })).toBeEnabled();
+
+          const release = hold();
+          await user.type(screen.getByLabelText("Единица"), "{Backspace}");
+
+          expect(await screen.findByRole("button", { name: "Проверяю единицу…" })).toBeDisabled();
+          release();
+          expect(await screen.findByRole("button", { name: "Сохранить" })).toBeEnabled();
+        });
+
+        it("повторный ввод уже проверенной единицы: сохранение ждёт свежий ответ, а не кэш", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
+          const user = await openActivePanel();
+          await typeUnit(user, "м²");
+          expect(await screen.findByText(WARNING_NEW_4)).toBeInTheDocument();
+          await typeUnit(user, "куб.м");
+          await screen.findByRole("button", { name: "Сохранить" });
+
+          // Число за время правки выросло; ответ на повторный ввод «м²» задержан.
+          handlerState.unitBusyByUnitId[M2_UNIT_ID] = 9;
+          const release = hold();
+          const before = handlerState.unitBusyRequests;
+          await typeUnit(user, "м²");
+
+          // Задержанный запрос дошёл до сервера (пауза набора позади); кэш по «м²» уже на экране.
+          await waitFor(() => expect(handlerState.unitBusyRequests).toBe(before + 1));
+          expect(screen.getByRole("button", { name: "Проверяю единицу…" })).toBeDisabled();
+          expect(handlerState.lastUpdateFamilyRequest).toBeNull();
+          release();
+          expect(await screen.findByRole("button", { name: "Сохранить" })).toBeEnabled();
+          expect(
+            await screen.findByText(WARNING_NEW_4.replace("4 заданий", "9 заданий"))
+          ).toBeInTheDocument();
+        });
+
+        it("возврат единицы к сохранённому значению ожидания не требует", async () => {
+          setBusy(43, 0);
+          const user = await openActivePanel();
+          await typeUnit(user, "м²");
+          await typeUnit(user, "м³");
+
+          expect(screen.getByRole("button", { name: "Сохранить" })).toBeEnabled();
+        });
+
+        it("отказ проверки: видно предупреждение с введённым текстом, сохранение разрешено", async () => {
+          setBusy(43, 0);
+          handlerState.unitBusyFails = true;
+          const user = await openActivePanel();
+
+          await typeUnit(user, "м²");
+
+          expect(
+            await screen.findByText(
+              "Не удалось проверить, идёт ли перезапрос в единице «м²». Сохранение может сбросить её перезапрос."
+            )
+          ).toBeInTheDocument();
+          await user.click(await screen.findByRole("button", { name: "Сохранить" }));
+          await waitFor(() =>
+            expect(handlerState.lastUpdateFamilyRequest).toEqual({
+              id: 43,
+              body: expect.objectContaining({ unit_name: "м²" }),
+            })
+          );
+        });
+      });
+
       it("правка названия при смене единицы считает и прежнюю, и новую единицы", async () => {
         setBusy(43, 7);
         handlerState.unitBusyByUnitId[M2_UNIT_ID] = 4;
@@ -252,6 +463,23 @@ describe("FamiliesTab — предупреждение о сбросе пере�
       await user.type(screen.getByLabelText("Название"), " 2");
 
       expect(screen.queryByTestId("rerun-reset-warning")).not.toBeInTheDocument();
+    });
+
+    it("у черновика смена единицы не проверяется и сохранение не ждёт: черновика нет в теле запроса предложения", async () => {
+      const queryClient = createTestQueryClient();
+      const user = userEvent.setup();
+      renderWithProviders(<FamiliesTab />, { queryClient });
+      await user.click(await screen.findByText("Семья работ №3"));
+      await screen.findByLabelText("Определение");
+
+      const input = screen.getByLabelText("Единица");
+      await user.clear(input);
+      await user.type(input, "м³");
+
+      // Сразу после ввода — ещё в паузе набора: у активной семьи кнопка ждала бы разбора.
+      expect(screen.getByRole("button", { name: "Сохранить" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Проверяю единицу…" })).not.toBeInTheDocument();
+      expect(queryClient.getQueryState(qk.unitBusy("м³"))).toBeUndefined();
     });
   });
 

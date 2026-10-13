@@ -3,7 +3,7 @@ import { AlertTriangle } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import type { WorkFamily } from "@/types/domain";
 
-import { rerunResetWarningBothLabel, rerunResetWarningLabel } from "./labels";
+import { rerunResetWarningBothLabel, rerunResetWarningLabel, unitCheckFailedLabel } from "./labels";
 
 const WARN_TINT = "border-warning-border bg-warning-soft text-warning-text";
 
@@ -44,6 +44,16 @@ export function RerunResetWarning({
       <span className="min-w-0 flex-1 text-[13px]">
         {text}
       </span>
+    </Alert>
+  );
+}
+
+/** Проверка перезапроса введённой единицы не удалась: сохранение разрешено, но может сбросить его. */
+export function UnitCheckFailedWarning({ unit }: { unit: string }) {
+  return (
+    <Alert data-testid="unit-check-failed-warning" className={`flex items-start gap-2 px-3 py-2 ${WARN_TINT}`}>
+      <AlertTriangle className="mt-0.5 size-4 flex-none" />
+      <span className="min-w-0 flex-1 text-[13px]">{unitCheckFailedLabel(unit)}</span>
     </Alert>
   );
 }

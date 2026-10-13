@@ -192,6 +192,11 @@ export function rerunResetWarningLabel(unit: string, count: number): string {
   return `В единице «${unit}» идёт перезапрос: ${count} заданий предложений ещё не выполнены. Это изменение отменит их, а уже полученные, но не разобранные предложения скроются — единицу придётся перезапросить заново.`;
 }
 
+/** Проверка перезапроса целевой единицы не удалась — сохранение может сбросить его. */
+export function unitCheckFailedLabel(unit: string): string {
+  return `Не удалось проверить, идёт ли перезапрос в единице «${unit}». Сохранение может сбросить её перезапрос.`;
+}
+
 /** То же при смене единицы, когда перезапрос идёт в обеих: прежней и новой. */
 export function rerunResetWarningBothLabel(
   from: { unit: string; count: number },

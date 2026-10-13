@@ -481,6 +481,12 @@ interface HandlerState {
   lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
   /** Живые задания предложений по `unit_id` (ответ `GET /semantic/unit-busy-jobs`); нет ключа — ноль. */
   unitBusyByUnitId: Record<number, number>;
+  /** Пока не `null`, ответ `GET /semantic/unit-busy-jobs` ждёт этот промис (запрос «в пути»). */
+  unitBusyGate: Promise<void> | null;
+  /** Сколько запросов `GET /semantic/unit-busy-jobs` дошло до сервера (в том числе задержанных). */
+  unitBusyRequests: number;
+  /** Ответ `GET /semantic/unit-busy-jobs` — отказ сервера. */
+  unitBusyFails: boolean;
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */
   semanticContexts: SemanticContextFixture[];
@@ -1987,6 +1993,9 @@ export const handlerState: HandlerState = {
   lastUpdateFamilyRequest: null,
   lastMergeFamiliesRequest: null,
   unitBusyByUnitId: {},
+  unitBusyGate: null,
+  unitBusyRequests: 0,
+  unitBusyFails: false,
   semanticContexts: initialSemanticContexts(),
   lastConfirmKindRequest: null,
   lastSetNameRoleRequest: null,
@@ -2340,6 +2349,9 @@ export function resetHandlerState() {
   handlerState.lastUpdateFamilyRequest = null;
   handlerState.lastMergeFamiliesRequest = null;
   handlerState.unitBusyByUnitId = {};
+  handlerState.unitBusyGate = null;
+  handlerState.unitBusyRequests = 0;
+  handlerState.unitBusyFails = false;
   handlerState.semanticContexts = initialSemanticContexts();
   handlerState.lastConfirmKindRequest = null;
   handlerState.lastSetNameRoleRequest = null;
@@ -4101,7 +4113,12 @@ export const handlers = [
 
   // Разбор имени единицы, как `UnitResolver`: код, символ или алиас одной единицы дают один `unit_id`
   // (M2 → 5, M3 → 3); пустое имя — «единицы нет»; прочее — не распознано.
-  http.get("/api/v1/semantic/unit-busy-jobs", ({ request }) => {
+  http.get("/api/v1/semantic/unit-busy-jobs", async ({ request }) => {
+    handlerState.unitBusyRequests += 1;
+    if (handlerState.unitBusyGate) await handlerState.unitBusyGate;
+    if (handlerState.unitBusyFails) {
+      return HttpResponse.json({ detail: "сбой проверки" }, { status: 500 });
+    }
     const name = (new URL(request.url).searchParams.get("unit_name") ?? "").trim().toLowerCase();
     const known: Record<string, { id: number; code: string; symbol: string }> = {
       m2: { id: 5, code: "M2", symbol: "м²" },

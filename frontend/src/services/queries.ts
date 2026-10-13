@@ -1527,6 +1527,11 @@ export function useUnitBusyJobs(unitName: string | null) {
     queryFn: () => semanticApi.unitBusyJobs(unitName ?? ""),
     enabled: unitName !== null,
     staleTime: 0,
+    // Ответ по уже проверенному тексту остаётся в кэше и виден сразу, но повторный ввод всегда
+    // перезапрашивает (`staleTime: 0`), а сохранение ждёт свежий ответ.
+    gcTime: 5 * 60_000,
+    // Отказ проверки экран показывает сразу, а не после повторов.
+    retry: false,
   });
 }
 

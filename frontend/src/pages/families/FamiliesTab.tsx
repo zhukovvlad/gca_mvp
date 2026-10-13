@@ -61,7 +61,7 @@ import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
 import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
-import { RerunResetWarning } from "./RerunResetWarning";
+import { RerunResetWarning, UnitCheckFailedWarning } from "./RerunResetWarning";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -466,7 +466,9 @@ function FamilyPanel({
   const textChanged =
     title.trim() !== family.title || definition.trim() !== (family.definition ?? "").trim();
   const unitText = unitName.trim();
-  const unitTextDiffers = !unitLocked && unitText !== (family.unit_symbol ?? "").trim();
+  // Единица влияет на тело запроса предложения только у активной семьи: у черновика проверки нет.
+  const unitTextDiffers =
+    family.status === "active" && !unitLocked && unitText !== (family.unit_symbol ?? "").trim();
   // Новая единица — та, что выставит сервер по введённому имени (тот же разбор, что у правки
   // семьи): другое написание той же единицы — не смена. Запрос — после паузы в наборе.
   const [settledUnitText, setSettledUnitText] = useState(unitText);
@@ -477,6 +479,14 @@ function FamilyPanel({
   const unitLookup = useUnitBusyJobs(
     unitTextDiffers && settledUnitText === unitText ? unitText : null
   );
+  // Единица изменена, а разбор введённого текста ещё не завершён (пауза набора или запрос в пути):
+  // сохранять рано — предупреждения о целевой единице ещё нет. Отказ проверки — не ожидание.
+  const lookupFailed = unitTextDiffers && settledUnitText === unitText && unitLookup.isError;
+  // Кэшированный ответ по этому тексту показывается сразу, но сохранение ждёт СВЕЖИЙ (`isFetching`).
+  const unitChecking =
+    unitTextDiffers &&
+    !lookupFailed &&
+    !(settledUnitText === unitText && unitLookup.isSuccess && !unitLookup.isFetching);
   const lookedUp =
     unitTextDiffers && settledUnitText === unitText && unitLookup.isSuccess
       ? unitLookup.data
@@ -496,6 +506,7 @@ function FamilyPanel({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (unitChecking) return;
     try {
       await update.mutateAsync({
         id: family.id,
@@ -566,10 +577,15 @@ function FamilyPanel({
         {(textChanged || unitTextDiffers) && (
           <RerunResetWarning family={family} target={unitTarget} fromApplies={fromApplies} />
         )}
+        {lookupFailed && <UnitCheckFailedWarning unit={unitText} />}
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
-          <Button type="submit" disabled={!title.trim()} loading={update.isPending}>
-            Сохранить
+          <Button
+            type="submit"
+            disabled={!title.trim()}
+            loading={update.isPending || unitChecking}
+          >
+            {unitChecking ? "Проверяю единицу…" : "Сохранить"}
           </Button>
           {family.status === "draft" && (
             <Button
