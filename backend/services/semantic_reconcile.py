@@ -47,6 +47,7 @@ from models import (
     ContextBucket,
     ContextMember,
     ContextParameterValue,
+    FamilyParameter,
     FamilyParameterSchema,
     FamilyStatus,
     FamilySuggestion,
@@ -89,6 +90,7 @@ from services.semantic_request import (
     render_context_request,
 )
 from services.variant_request import (
+    EMPTY_NAMES_CANDIDATES_HASH,
     SCHEMA_PROMPT_VERSION,
     VALUES_PROMPT_VERSION,
     ValuesRequestMaterial,
@@ -704,21 +706,104 @@ def schema_ready_to_build(db: Session, family_id: int) -> bool:
     return not mass and unit.unit_id not in units
 
 
+def _unbuilt_frozen_exists() -> sa.ColumnElement[bool]:
+    """У семьи (`WorkFamily` внешнего запроса) текущая версия схемы «не
+    построена» (спека 3б §2.16 п. 2): `frozen`, `origin = model`, без параметров,
+    а её последнее выполненное задание схемы ушло с пустым списком наименований
+    (`candidates_hash` — хэш пустого списка). Пустая версия, построенная по
+    непустому списку, — законный ответ модели и сюда не входит."""
+    last = aliased(SemanticJob)
+    chosen = aliased(SemanticJob)
+    last_done_id = (
+        sa.select(sa.func.max(last.id))
+        .where(
+            last.kind == SemanticJobKind.family_schema.value,
+            last.schema_id == FamilyParameterSchema.id,
+            last.status == SemanticJobStatus.done.value,
+        )
+        .correlate(FamilyParameterSchema)
+        .scalar_subquery()
+    )
+    has_parameters = (
+        sa.exists()
+        .where(FamilyParameter.schema_id == FamilyParameterSchema.id)
+        .correlate(FamilyParameterSchema)
+    )
+    built_from_nothing = (
+        sa.exists()
+        .where(chosen.id == last_done_id, chosen.candidates_hash == EMPTY_NAMES_CANDIDATES_HASH)
+        .correlate(FamilyParameterSchema)
+    )
+    return (
+        sa.exists()
+        .where(
+            FamilyParameterSchema.family_id == WorkFamily.id,
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            FamilyParameterSchema.origin == SchemaOrigin.model.value,
+            ~has_parameters,
+            built_from_nothing,
+        )
+        .correlate(WorkFamily)
+    )
+
+
+def _cancelled_restoration_hashes(db: Session, family_ids: Collection[int]) -> dict[int, set[str]]:
+    """`request_hash` заданий версий `cancelled`, которые новее текущей `frozen`
+    версии семьи (спека 3б §2.16 п. 2б): входы восстановления, от которых человек
+    или иной путь отказался. Кто отменил, не различается."""
+    if not family_ids:
+        return {}
+    frozen = aliased(FamilyParameterSchema)
+    cancelled = aliased(FamilyParameterSchema)
+    rows = db.execute(
+        sa.select(cancelled.family_id, SemanticJob.request_hash)
+        .join(
+            frozen,
+            sa.and_(
+                frozen.family_id == cancelled.family_id,
+                frozen.status == SchemaStatus.frozen.value,
+                frozen.version < cancelled.version,
+            ),
+        )
+        .join(
+            SemanticJob,
+            sa.and_(
+                SemanticJob.schema_id == cancelled.id,
+                SemanticJob.kind == SemanticJobKind.family_schema.value,
+            ),
+        )
+        .where(
+            cancelled.status == SchemaStatus.cancelled.value,
+            cancelled.family_id.in_(list(family_ids)),
+        )
+    ).all()
+    hashes: dict[int, set[str]] = {}
+    for row in rows:
+        hashes.setdefault(row.family_id, set()).add(row.request_hash)
+    return hashes
+
+
 def families_awaiting_schema(
     db: Session, *, unit_ids: Collection[int | None] | None = None
 ) -> list[int]:
-    """Активные семьи без текущей и без строящейся версии схемы (кандидаты на
-    сверку схем); `unit_ids` ограничивает единицами (`None` в наборе — семьи без
-    единицы), без него — все единицы. Готовность единицы здесь не проверяется:
-    её решает сама сверка."""
-    has_version = sa.exists().where(
+    """Активные семьи без строящейся версии схемы, у которых нет текущей версии
+    или она «не построена» (задание схемы ушло с пустым списком наименований):
+    кандидаты на сверку схем. `unit_ids` ограничивает единицами (`None` в наборе —
+    семьи без единицы), без него — все единицы. Готовность единицы, наличие
+    наименований и отказ от восстановления здесь не проверяются: их решает сама
+    сверка."""
+    has_frozen = sa.exists().where(
         FamilyParameterSchema.family_id == WorkFamily.id,
-        FamilyParameterSchema.status.in_(
-            (SchemaStatus.frozen.value, SchemaStatus.building.value)
-        ),
+        FamilyParameterSchema.status == SchemaStatus.frozen.value,
+    )
+    has_building = sa.exists().where(
+        FamilyParameterSchema.family_id == WorkFamily.id,
+        FamilyParameterSchema.status == SchemaStatus.building.value,
     )
     query = sa.select(WorkFamily.id).where(
-        WorkFamily.status == FamilyStatus.active.value, ~has_version
+        WorkFamily.status == FamilyStatus.active.value,
+        ~has_building,
+        sa.or_(~has_frozen, _unbuilt_frozen_exists()),
     )
     if unit_ids is not None:
         non_null = [unit for unit in unit_ids if unit is not None]
@@ -777,7 +862,8 @@ def without_discarded_values(db: Session, context_ids: Collection[int]) -> list[
 
 
 def without_discarded_schemas(db: Session, family_ids: Collection[int]) -> list[int]:
-    """Семьи без версии схемы, чей ТЕКУЩИЙ вход (семья и хэш запроса) не значится
+    """Семьи-кандидаты на новую версию схемы (без версии или с «не построенной»),
+    чей ТЕКУЩИЙ вход (семья и хэш запроса) не значится
     в отброшенной пачке. Номер версии в сравнении не участвует: тело запроса схемы
     его не содержит, а отброшенная версия `building` отменена, и у семьи, чью версию
     отменило отбрасывание, в отпечатке остался прежний номер."""
@@ -811,10 +897,14 @@ def _plan_family_schemas(
     planned_units: Collection[int | None] = (),
 ) -> None:
     """Ветвь `family_schema` — таблица исходов по предмету «семья + версия
-    `building`». Активной семье без текущей и без `building` версии при
-    готовности единицы создаётся версия и задание; `planned_units` — единицы,
+    `building`». Активной семье без текущей (или с «не построенной» текущей, см.
+    `_unbuilt_frozen_exists`) и без `building` версии при готовности единицы и
+    наличии наименований создаётся версия и задание; `planned_units` — единицы,
     предложения которых эта же сверка ставит или удерживает (перезапрос единицы
-    ещё не окончен)."""
+    ещё не окончен). Без наименований схема не строится: версия не заводится, а
+    у версии `building` задание с пустым списком не ставится (спека 3б §2.16 п. 1,
+    2а). Вход, от которого отказались, отменив пересборку «не построенной»
+    версии, сам не повторяется (п. 2б)."""
     ids = sorted(set(family_ids))
     if not ids:
         return
@@ -845,6 +935,14 @@ def _plan_family_schemas(
         .all(),
         lambda job: job.family_id,
     )
+    unbuilt = set(
+        db.execute(
+            sa.select(WorkFamily.id).where(WorkFamily.id.in_(ids), _unbuilt_frozen_exists())
+        )
+        .scalars()
+        .all()
+    )
+    cancelled_inputs = _cancelled_restoration_hashes(db, unbuilt)
     busy: tuple[bool, set[int | None]] | None = None
     for family in families:
         jobs = jobs_by_family.get(family.id, [])
@@ -852,9 +950,11 @@ def _plan_family_schemas(
         building_id = building_of.get(family.id)
         if active and building_id is not None:
             _plan_inapplicable(plan, [job for job in jobs if job.schema_id != building_id])
-            rendered = render_schema_request(
-                load_schema_material(db, family.id, building_id), settings=settings
-            )
+            material = load_schema_material(db, family.id, building_id)
+            if not material.names:
+                _plan_inapplicable(plan, [job for job in jobs if job.schema_id == building_id])
+                continue
+            rendered = render_schema_request(material, settings=settings)
             current = _plan_applicable(
                 plan, [job for job in jobs if job.schema_id == building_id],
                 (building_id, rendered.request_hash),
@@ -868,7 +968,7 @@ def _plan_family_schemas(
             _plan_postanovka(plan, current, _NewJob(fingerprint, rendered, row))
             continue
         _plan_inapplicable(plan, jobs)
-        if not active or family.id in with_frozen:
+        if not active or (family.id in with_frozen and family.id not in unbuilt):
             continue
         if family.unit_id in planned_units:
             continue
@@ -876,9 +976,12 @@ def _plan_family_schemas(
             busy = _open_suggestion_state(db)
         if busy[0] or family.unit_id in busy[1]:
             continue
-        rendered = render_schema_request(
-            load_schema_material(db, family.id, _UNBUILT_SCHEMA_ID), settings=settings
-        )
+        material = load_schema_material(db, family.id, _UNBUILT_SCHEMA_ID)
+        if not material.names:
+            continue
+        rendered = render_schema_request(material, settings=settings)
+        if rendered.request_hash in cancelled_inputs.get(family.id, ()):
+            continue
         fingerprint = Fingerprint(
             SemanticJobKind.family_schema, None, family.id, None, rendered.request_hash
         )

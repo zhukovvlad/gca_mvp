@@ -84,6 +84,7 @@ from tests.integration.test_semantic_queue_worker import (
     _answer as _model_answer,
 )
 from tests.integration.test_work_variants_core import _answer, _attach_variant, _events
+from tests.integration.test_work_variants_material import _context as _bound_context
 from tests.integration.test_work_variants_material import _settings, _uid
 from tests.integration.test_work_variants_schema import _param, _value, _variant
 
@@ -1594,10 +1595,14 @@ def _schema_jobs(db, family_id):
     )
 
 
-def _drop_schemas(db, family_id):
+def _drop_schemas(db, factories, family_id):
     """Семья сцены очереди заведена уже со схемой; для проверки сверки схем
-    её убирают: активная семья без текущей версии ждёт конца перезапроса."""
+    её убирают: активная семья без текущей версии ждёт конца перезапроса. Схема
+    не строится из нуля наименований, поэтому семье даётся строка с
+    наименованием (отдельный контекст вне сцены очереди)."""
     db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    family = db.get(WorkFamily, family_id)
+    _bound_context(db, factories, f"Строка семьи {family_id}", work=family)
     db.commit()
 
 
@@ -1614,7 +1619,7 @@ class TestSchemaIsReconciledWhenTheUnitReaskEnds:
         self, committing_session_factory, committing_db, committing_factories, case
     ):
         scene = _committed_scene(committing_db, committing_factories)
-        _drop_schemas(committing_db, scene.family.id)
+        _drop_schemas(committing_db, committing_factories, scene.family.id)
         if case == "confirm_current_family":
             _bind_source(committing_db, scene, scene.context_ids[0], scene.family)
             committing_db.commit()
@@ -1635,7 +1640,7 @@ class TestSchemaIsReconciledWhenTheUnitReaskEnds:
         self, committing_session_factory, committing_db, committing_factories
     ):
         scene = _committed_scene(committing_db, committing_factories)
-        _drop_schemas(committing_db, scene.family.id)
+        _drop_schemas(committing_db, committing_factories, scene.family.id)
         # Новая семья единицы меняет кандидатов: отпечаток задания устарел, и
         # захват отменяет его, ничего не вызывая у модели.
         _active_family(committing_db, title="Новая семья", unit_name="M2", actor_id=scene.user.id)
@@ -1657,7 +1662,7 @@ class TestSchemaIsReconciledWhenTheUnitReaskEnds:
         scene = _committed_scene(
             committing_db, committing_factories, titles=("Устройство пола", "Стяжка пола")
         )
-        _drop_schemas(committing_db, scene.family.id)
+        _drop_schemas(committing_db, committing_factories, scene.family.id)
         # Первый контекст перестал быть применимым — захват отменяет его задание;
         # второе задание ждёт своего часа и остаётся живым: схему строить рано.
         _make_inapplicable(committing_db, scene.context_ids[0])
@@ -1705,7 +1710,7 @@ class TestSchemaIsReconciledWhenTheUnitReaskEnds:
         scene = _committed_scene(
             committing_db, committing_factories, titles=("Устройство пола", "Стяжка пола")
         )
-        _drop_schemas(committing_db, scene.family.id)
+        _drop_schemas(committing_db, committing_factories, scene.family.id)
         client = _FakeClient(_response(_model_answer(scene.family.id, "0.1")))
 
         process_one(committing_session_factory, client, settings=_SETTINGS_ON, clock=_clock)

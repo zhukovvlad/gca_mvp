@@ -54,7 +54,7 @@ def _values_needed_context(db, factories) -> int:
 
 def _schemaless_ready_family(db, factories):
     scene = _scene(db, factories, titles=("Пол А",))
-    _without_schema(db, scene.family.id)
+    _without_schema(db, factories, scene)
     db.commit()
     return scene
 
@@ -322,7 +322,7 @@ class TestSweepAfterDiscard:
     ):
         _schemaless_ready_family(committing_db, committing_factories)
         other = _scene(committing_db, committing_factories, titles=("Труба А",), unit="M3")
-        _without_schema(committing_db, other.family.id)
+        _without_schema(committing_db, committing_factories, other)
         committing_db.commit()
         sweep_semantic_queue(committing_session_factory, settings=self._CAP_ONE)
         (batch,) = self._batches(committing_db)
@@ -344,7 +344,7 @@ class TestSweepAfterDiscard:
 
         built = _schemaless_ready_family(db, factories)
         other = _scene(db, factories, titles=("Труба А",), unit="M3")
-        _without_schema(db, other.family.id)
+        _without_schema(db, factories, other)
         schema_id = _ensure_building_version(db, built.family.id)
         db.commit()
         report = reconcile_family_schemas(

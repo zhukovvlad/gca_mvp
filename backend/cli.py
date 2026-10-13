@@ -183,7 +183,8 @@ def semantic_auto_accept(yes: bool) -> None:
 
 @cli.command("semantic-schemas-backfill")
 def semantic_schemas_backfill() -> None:
-    """Постановка схем всем активным семьям без текущей версии одной пачкой
+    """Постановка схем активным семьям без текущей или с «не построенной» версии
+    (при наличии наименований) одной пачкой
     `mass` (`services/semantic_decisions.backfill_family_schemas`); сверх
     потолка события пачка удерживается и ставится с экрана `admin`."""
     _guard("semantic-schemas-backfill")

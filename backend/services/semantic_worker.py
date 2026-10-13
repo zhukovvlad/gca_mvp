@@ -104,6 +104,7 @@ from services.variant_answer import (
     parse_values_answer,
 )
 from services.variant_request import (
+    EMPTY_NAMES_CANDIDATES_HASH,
     SchemaParameterIn,
     load_values_material,
     paths_hash_of,
@@ -276,7 +277,12 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
             return _not_renderable(SemanticCancelReason.not_applicable)
         # Семья существует (статус прочитан выше), поэтому материал схемы есть
         # всегда и `SubjectNotRenderable` здесь недостижим.
-        return JobRender(rendered=render_request_for(db, job, settings=settings))
+        rendered = render_request_for(db, job, settings=settings)
+        if rendered.candidates_hash == EMPTY_NAMES_CANDIDATES_HASH:
+            # Материал опустел (спека 3б §2.16 п. 2а): схема не строится из нуля
+            # наименований; задание закрывается, версия остаётся `building`.
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        return JobRender(rendered=rendered)
     if kind == SemanticJobKind.context_values.value:
         material = load_request_material(db, [job.context_id])[job.context_id]
         columns = _load_values_columns(db, [job.context_id])[job.context_id]
@@ -1073,7 +1079,8 @@ def _reconcile_schemas_of_unit(
 ) -> None:
     """Сверка схем единицы после завершения задания предложения (спека §2.6,
     §2.7): когда последнее задание единицы закончилось любым исходом, семьи без
-    текущей версии получают задание схемы. Готовность единицы проверяет сама
+    текущей или с «не построенной» версии получают задание схемы, если у них
+    есть наименования (спека 3б §2.16). Готовность единицы проверяет сама
     сверка (в единице ещё открытое задание или удержанная пачка — ничего не
     ставится). Отдельная транзакция после записи ответа и правил: её ошибка
     записанного не трогает, исключение не выходит из цикла исполнителя."""
@@ -1166,8 +1173,9 @@ def sweep_semantic_queue(
     """Проход «по кругу» (спека вариантов §2.7): гарантированный повтор для
     предметов, которые сверка операции пропустила под замком (`SKIP LOCKED`) или
     не успела вызвать после записи. Две части, каждая в своей транзакции и со
-    своим перехватом: схемы активных семей без текущей и строящейся версии и
-    значения контекстов без задания в работе. Потолок события — из настроек
+    своим перехватом: схемы активных семей без строящейся версии, у которых нет
+    текущей или она «не построена» (спека 3б §2.16; ставятся при наличии
+    наименований) и значения контекстов без задания в работе. Потолок события — из настроек
     (сверх него — удержанная пачка, как всегда). Возвращает курсор следующего
     прохода по значениям; исключение наружу не уходит."""
     try:

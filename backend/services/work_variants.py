@@ -84,6 +84,7 @@ from services.semantic_reconcile import (
 )
 from services.variant_answer import SchemaAnswer, ValuesAnswer
 from services.variant_request import (
+    EMPTY_NAMES_CANDIDATES_HASH,
     SchemaParameterIn,
     SubjectNotRenderable,
     paths_hash_of,
@@ -606,6 +607,11 @@ def freeze_schema(
             rendered = render_request_for(db, job, settings=settings)
             if rendered.request_hash != guard.expected_request_hash:  # type: ignore[union-attr]
                 reason = "stale_fingerprint"
+            elif rendered.candidates_hash == EMPTY_NAMES_CANDIDATES_HASH:
+                # Задание ушло с пустым списком наименований: схема из нуля строк
+                # не замораживается (спека 3б §2.16 п. 2а), версия остаётся
+                # `building`.
+                reason = "not_applicable"
     if reason is not None:
         if job is not None and reason != "lost_claim":
             _close_job_unapplied(job, reason)

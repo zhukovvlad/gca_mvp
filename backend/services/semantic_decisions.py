@@ -993,8 +993,9 @@ def enqueue_all(db: Session) -> int | None:
 def backfill_family_schemas(db: Session) -> ReconcileReport:
     """Массовая постановка схем (CLI `semantic-schemas-backfill`): сверка ветви
     `family_schema` по всем семьям, источник пачки `mass`. Схему получают
-    активные семьи без текущей версии: ветвь плана пропускает семью с текущей
-    версией и неактивную. Постановка идёт под потолком события
+    активные семьи без текущей версии или с «не построенной», у которых есть
+    наименования: ветвь плана пропускает семью с построенной текущей версией,
+    семью без наименований и неактивную. Постановка идёт под потолком события
     из настроек, сверх него - ОДНА удержанная пачка `mass` в `report.held_batch_id`."""
     family_ids = db.execute(sa.select(WorkFamily.id)).scalars().all()
     return reconcile_family_schemas(

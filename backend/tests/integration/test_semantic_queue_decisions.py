@@ -1451,10 +1451,17 @@ class TestBatches:
         assert claim_next(db_session, settings=app_settings, now=dt.datetime.now(dt.UTC)) is None
 
 
-def _without_schema(db, family_id):
+def _without_schema(db, factories, scene):
     """Семья сцены заведена уже со схемой; для проверки сверки схем её убирают:
-    активная семья без текущей версии ждёт конца перезапроса единицы."""
-    db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    активная семья без текущей версии ждёт конца перезапроса единицы. Схема не
+    строится из нуля наименований, поэтому семье даётся строка с наименованием
+    (отдельный контекст, не входящий в `scene.context_ids`)."""
+    from tests.integration.test_work_variants_material import _context as bound_context
+
+    db.execute(
+        sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == scene.family.id)
+    )
+    bound_context(db, factories, f"Строка семьи {scene.family.id}", work=scene.family)
     db.flush()
 
 
@@ -1476,7 +1483,7 @@ class TestDiscardReconcilesSchemas:
 
     def test_discard_of_the_blocking_batch_sets_the_schema_job(self, db_session, factories):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
-        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, factories, scene)
         batch_id = _held_batch(db_session, scene, source="operation")
         assert _schema_jobs_of(db_session, scene.family.id) == [], "вход: пачка блокирует схему"
 
@@ -1489,7 +1496,7 @@ class TestDiscardReconcilesSchemas:
         self, db_session, factories
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
-        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, factories, scene)
         _make_job(db_session, scene.context_ids[2], unit_id=scene.unit_id)
         scene.context_ids = scene.context_ids[:2]
         batch_id = _held_batch(db_session, scene, source="operation")
@@ -1503,8 +1510,8 @@ class TestDiscardReconcilesSchemas:
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
         other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
-        _without_schema(db_session, scene.family.id)
-        _without_schema(db_session, other.family.id)
+        _without_schema(db_session, factories, scene)
+        _without_schema(db_session, factories, other)
         batch_id = _held_batch(db_session, scene, source="operation")
 
         discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
@@ -1517,8 +1524,8 @@ class TestDiscardReconcilesSchemas:
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
         other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
-        _without_schema(db_session, scene.family.id)
-        _without_schema(db_session, other.family.id)
+        _without_schema(db_session, factories, scene)
+        _without_schema(db_session, factories, other)
         batch_id = _held_batch(db_session, scene, source="mass")
         assert _schema_jobs_of(db_session, other.family.id) == [], "вход: mass держит все единицы"
 
