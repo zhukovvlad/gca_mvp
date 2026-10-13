@@ -1400,12 +1400,14 @@ class ChunkSent: ...                            # отрезок bounds -> мн�
 ### Task 10: схема семьи после открытия (редакция 7 спеки, приёмка стенда 13.10.2026)
 
 У 66 из 68 семей «компл» схема пустая: задание схемы уходило при активации
-черновика с нулём наименований (спека §2.16). Задача меняет только сверку
-схем.
+черновика с нулём наименований (спека §2.16). Задача меняет сверку схем,
+проверку при захвате и заморозку схемы (§2.16 п. 2а — все три этапа).
 
 **Files**
 - Edit: `backend/services/semantic_reconcile.py` (`_plan_family_schemas`,
-  при необходимости `families_awaiting_schema`)
+  `families_awaiting_schema`), `backend/services/semantic_worker.py`
+  (`render_job_request`, ветвь `family_schema`), `backend/services/work_variants.py`
+  (`freeze_schema` / заморозка результата схемы)
 - Test: `backend/tests/integration/test_catalog_discovery_schema_timing.py`
   (новый); прогон `-k "work_variants or semantic_reconcile or catalog_discovery"`
 
