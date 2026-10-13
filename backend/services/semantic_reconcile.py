@@ -786,10 +786,13 @@ def _cancelled_restoration_hashes(db: Session, family_ids: Collection[int]) -> d
 def families_awaiting_schema(
     db: Session, *, unit_ids: Collection[int | None] | None = None
 ) -> list[int]:
-    """Активные семьи без строящейся версии схемы, у которых нет текущей версии
-    или она «не построена» (задание схемы ушло с пустым списком наименований):
-    кандидаты на сверку схем. `unit_ids` ограничивает единицами (`None` в наборе —
-    семьи без единицы), без него — все единицы. Готовность единицы, наличие
+    """Активные семьи — кандидаты на сверку схем: без строящейся версии, у которых
+    нет текущей версии или она «не построена» (задание схемы ушло с пустым
+    списком наименований); и с версией `building` без живого задания схемы
+    (`pending`, `running`, `privacy_hold`) и без отпечатка этой версии в удержанной
+    пачке — ожидающая `building` после опустевшего материала или пропущенной
+    сверки (спека 3б §2.16 п. 2а). `unit_ids` ограничивает единицами (`None` в
+    наборе — семьи без единицы), без него — все единицы. Готовность единицы, наличие
     наименований и отказ от восстановления здесь не проверяются: их решает сама
     сверка."""
     has_frozen = sa.exists().where(
@@ -800,10 +803,23 @@ def families_awaiting_schema(
         FamilyParameterSchema.family_id == WorkFamily.id,
         FamilyParameterSchema.status == SchemaStatus.building.value,
     )
+    has_live_job = sa.exists().where(
+        SemanticJob.kind == SemanticJobKind.family_schema.value,
+        SemanticJob.family_id == WorkFamily.id,
+        SemanticJob.status.in_(
+            (
+                SemanticJobStatus.pending.value,
+                SemanticJobStatus.running.value,
+                SemanticJobStatus.privacy_hold.value,
+            )
+        ),
+    )
     query = sa.select(WorkFamily.id).where(
         WorkFamily.status == FamilyStatus.active.value,
-        ~has_building,
-        sa.or_(~has_frozen, _unbuilt_frozen_exists()),
+        sa.or_(
+            sa.and_(~has_building, sa.or_(~has_frozen, _unbuilt_frozen_exists())),
+            sa.and_(has_building, ~has_live_job),
+        ),
     )
     if unit_ids is not None:
         non_null = [unit for unit in unit_ids if unit is not None]
@@ -815,7 +831,39 @@ def families_awaiting_schema(
         if not conditions:
             return []
         query = query.where(sa.or_(*conditions))
-    return list(db.execute(query.order_by(WorkFamily.id)).scalars().all())
+    family_ids = list(db.execute(query.order_by(WorkFamily.id)).scalars().all())
+    held_building = _held_building_families(db, family_ids)
+    return [family_id for family_id in family_ids if family_id not in held_building]
+
+
+def _held_building_families(db: Session, family_ids: Collection[int]) -> set[int]:
+    """Семьи, чья версия `building` ждёт решения человека: отпечаток `family_schema`
+    с номером этой версии лежит в удержанной пачке (пачка хранит отпечатки, а не
+    задания, живого задания у такой версии нет). Проход такую семью не берёт:
+    поставить её задание значит обойти решение по пачке."""
+    if not family_ids:
+        return set()
+    held = {
+        (int(element["family_id"]), int(element["schema_id"]))
+        for batch in db.execute(
+            sa.select(SemanticReconcileBatch.held_fingerprints).where(
+                SemanticReconcileBatch.status == ReconcileBatchStatus.held.value
+            )
+        ).scalars()
+        for element in batch
+        if isinstance(element, dict)
+        and element.get("kind") == SemanticJobKind.family_schema.value
+        and element.get("schema_id") is not None
+    }
+    if not held:
+        return set()
+    building = db.execute(
+        sa.select(FamilyParameterSchema.family_id, FamilyParameterSchema.id).where(
+            FamilyParameterSchema.family_id.in_(list(family_ids)),
+            FamilyParameterSchema.status == SchemaStatus.building.value,
+        )
+    ).all()
+    return {family_id for family_id, schema_id in building if (family_id, schema_id) in held}
 
 
 def _discarded_fingerprints(db: Session, kind: SemanticJobKind) -> set[tuple]:

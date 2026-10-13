@@ -478,7 +478,11 @@ class TestWaitingListIncludesUnbuiltFamilies:
         manual = _unbuilt_family(db_session, factories, origin="manual")
         no_version = _active_family(db_session)
         rebuilding = _unbuilt_family(db_session, factories)
-        _schema(db_session, factories, rebuilding, version=2, status="building")
+        building = _schema(db_session, factories, rebuilding, version=2, status="building")
+        _job(
+            db_session, kind=_SCHEMA, request_hash="live", status="pending",
+            family_id=rebuilding.id, schema_id=building.id,
+        )
 
         waiting = set(_awaiting(db_session))
 
@@ -965,3 +969,194 @@ class TestNamesComeBackThroughProductPaths:
         assert [(j.schema_id, j.candidates_hash != _EMPTY_LIST_SHA256) for j in pending] == [
             (building_id, True)
         ]
+
+
+# ---------------------------------------------------------------------------
+#  Правило 2а: ожидающая `building` в проходе опросчика
+# ---------------------------------------------------------------------------
+
+def _building_family(db, factories, *, names=True):
+    """Активная семья с единственной версией `building` и без заданий схемы."""
+    family = _named_family(db, factories) if names else _active_family(db)
+    building = _schema(db, factories, family, version=1, status="building")
+    return family, building
+
+
+class TestWaitingBuildingVersionInTheSweep:
+    @pytest.mark.parametrize("status", ["pending", "running", "privacy_hold"])
+    def test_a_building_version_with_a_live_job_is_not_a_candidate(
+        self, db_session, factories, status
+    ):
+        family, building = _building_family(db_session, factories)
+        _job(
+            db_session, kind=_SCHEMA, request_hash="live", status=status,
+            family_id=family.id, schema_id=building.id,
+        )
+
+        assert family.id not in _awaiting(db_session)
+
+    @pytest.mark.parametrize("status", [None, "cancelled"])
+    def test_a_building_version_without_a_live_job_is_a_candidate(
+        self, db_session, factories, status
+    ):
+        family, building = _building_family(db_session, factories)
+        if status is not None:
+            _job(
+                db_session, kind=_SCHEMA, request_hash="dead", status=status,
+                family_id=family.id, schema_id=building.id, cancel_reason="not_applicable",
+            )
+
+        assert family.id in _awaiting(db_session)
+
+    def test_a_cancelled_version_is_not_a_candidate_by_itself(self, db_session, factories):
+        family = _named_family(db_session, factories)
+        _schema(db_session, factories, family, version=1, status="frozen")
+        _schema(db_session, factories, family, version=2, status="cancelled")
+
+        assert family.id not in _awaiting(db_session)
+
+    def test_a_missed_reconcile_is_made_up_by_the_sweep_on_the_same_version(
+        self, committing_session_factory, committing_db, committing_factories, monkeypatch
+    ):
+        """Имена вернулись, но сверка по событию упала (исключение проглочено
+        обработчиком): задание не поставлено. Проход опросчика
+        ставит его на ТУ ЖЕ версию `building`."""
+        db = committing_db
+        family = _active_family(db)
+        suggestion = _pub(db, committing_factories, _row(db, committing_factories, "Строка"), family)
+        _reconcile(db, family)
+        building_id = db.execute(
+            sa.select(FamilyParameterSchema.id).where(FamilyParameterSchema.family_id == family.id)
+        ).scalar_one()
+        _reject(db, committing_factories, suggestion)
+        _reconcile(db, family)
+        _restore(db, suggestion)
+        family_id = family.id
+        db.commit()
+        assert [j.status for j in _schema_jobs(db, family)] == ["cancelled"], "вход: ждёт имён"
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("schema reconcile failed")
+
+        # Сверка схем единицы после задания предложения упала; обработчик
+        # исключение проглотил (так оно и устроено), задание не поставлено.
+        with monkeypatch.context() as patch:
+            patch.setattr(worker, "reconcile_family_schemas", _boom)
+            worker._reconcile_schemas_of_unit(
+                committing_session_factory, None, settings=_SWEEP_SETTINGS
+            )
+        family = db.get(WorkFamily, family_id)
+        assert [j.status for j in _schema_jobs(db, family)] == ["cancelled"], (
+            "вход: сверка по событию упала"
+        )
+
+        sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        family = db.get(WorkFamily, family_id)
+        assert _versions(db, family) == [(1, "building")]
+        pending = [j for j in _schema_jobs(db, family) if j.status == "pending"]
+        assert [(j.schema_id, j.candidates_hash != _EMPTY_LIST_SHA256) for j in pending] == [
+            (building_id, True)
+        ]
+
+    def test_a_building_version_without_names_gets_nothing_in_any_pass(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        family, _building = _building_family(committing_db, committing_factories, names=False)
+        family_id = family.id
+        committing_db.commit()
+
+        for _ in range(3):
+            sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        family = committing_db.get(WorkFamily, family_id)
+        assert _versions(committing_db, family) == [(1, "building")]
+        assert _schema_jobs(committing_db, family) == []
+
+    def test_a_discarded_batch_with_the_same_input_is_not_brought_back(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        family, _building = _building_family(committing_db, committing_factories)
+        family_id = family.id
+        current = render_schema_request(
+            load_schema_material(committing_db, family_id, 0), settings=app_settings
+        ).request_hash
+        _discarded_batch(committing_db, committing_factories, family, current)
+        committing_db.commit()
+
+        sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        family = committing_db.get(WorkFamily, family_id)
+        assert _schema_jobs(committing_db, family) == []
+
+    def test_a_discarded_batch_with_another_input_does_not_hold_it(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        family, building = _building_family(committing_db, committing_factories)
+        family_id, building_id = family.id, building.id
+        _discarded_batch(committing_db, committing_factories, family, "прежний-вход")
+        committing_db.commit()
+
+        sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        family = committing_db.get(WorkFamily, family_id)
+        assert [(j.schema_id, j.status) for j in _schema_jobs(committing_db, family)] == [
+            (building_id, "pending")
+        ]
+        assert _versions(committing_db, family) == [(1, "building")]
+
+
+def _held_schema_batch(db, factories, family, schema_id, request_hash):
+    from tests.integration.test_semantic_queue_schema import _batch
+
+    return _batch(
+        db, factories, source="operation",
+        held_fingerprints=[
+            {
+                "kind": _SCHEMA, "context_id": None, "family_id": family.id,
+                "schema_id": schema_id, "request_hash": request_hash,
+            }
+        ],
+        fingerprints_hash=f"fp-{uuid.uuid4().hex}", contexts_count=1, status="held",
+    )
+
+
+class TestBuildingVersionHeldInABatch:
+    def _current_hash(self, db, family, building) -> str:
+        return render_schema_request(
+            load_schema_material(db, family.id, building.id), settings=app_settings
+        ).request_hash
+
+    def test_the_sweep_does_not_post_past_the_decision_on_a_held_batch(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        db = committing_db
+        family, building = _building_family(db, committing_factories)
+        family_id = family.id
+        _held_schema_batch(
+            db, committing_factories, family, building.id, self._current_hash(db, family, building)
+        )
+        db.commit()
+        assert family_id not in families_awaiting_schema(db)
+
+        sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        assert _schema_jobs(db, db.get(WorkFamily, family_id)) == []
+
+    def test_a_held_fingerprint_of_another_version_does_not_hold_this_one(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        db = committing_db
+        family, building = _building_family(db, committing_factories)
+        family_id, building_id = family.id, building.id
+        _held_schema_batch(
+            db, committing_factories, family, building_id + 1000,
+            self._current_hash(db, family, building),
+        )
+        db.commit()
+        assert family_id in families_awaiting_schema(db)
+
+        sweep_semantic_queue(committing_session_factory, settings=_SWEEP_SETTINGS)
+
+        jobs = _schema_jobs(db, db.get(WorkFamily, family_id))
+        assert [(j.schema_id, j.status) for j in jobs] == [(building_id, "pending")]
