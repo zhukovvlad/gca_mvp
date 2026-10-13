@@ -481,6 +481,19 @@ describe("SuggestionGroups — «Другая семья…»", () => {
     expect(await screen.findByRole("button", { name: "Назначить" })).toBeDisabled();
   });
 
+  // Вид (подпись не вылезает за края окна) доказывают снимки стенда при 1280 и 1920; здесь — классы ширины.
+  it("окно выбора семьи шире окна по умолчанию: sm:max-w-xl", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    renderGroups();
+
+    await user.click(within(within(firstGroup()).getAllByTestId("suggestion-row")[0]).getByRole("button", { name: "Другая семья…" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("sm:max-w-xl");
+    expect(dialog).not.toHaveClass("sm:max-w-md");
+  });
+
   it("других активных семей единицы нет — сообщение и нет кнопки назначения", async () => {
     const user = userEvent.setup();
     renderGroups();

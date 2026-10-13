@@ -1134,7 +1134,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
           if (!open) resetFamilyDialog();
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{card.work_family_id === null ? "Назначить семью" : "Другая семья"}</DialogTitle>
           </DialogHeader>

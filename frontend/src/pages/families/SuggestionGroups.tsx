@@ -95,7 +95,7 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
   return (
     <Dialog open={row !== null} onOpenChange={(open) => !open && handleClose()}>
       {row !== null && (
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Другая семья</DialogTitle>
             <DialogDescription>{row.title}</DialogDescription>

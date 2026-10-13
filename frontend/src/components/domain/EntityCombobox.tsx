@@ -131,16 +131,20 @@ export function EntityCombobox<T extends { id: number | string }>({
             role="combobox"
             aria-expanded={open}
             disabled={disabled}
-            className="w-full justify-between font-normal"
+            title={label ?? undefined}
+            className="w-full min-w-0 justify-between font-normal"
           >
-            <span className={cn("truncate", !label && "text-muted-foreground")}>
+            <span className={cn("min-w-0 flex-1 truncate text-left", !label && "text-muted-foreground")}>
               {label ?? placeholder}
             </span>
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
           </Button>
         }
       />
-      <PopoverContent className="w-[--anchor-width] min-w-72 p-0" align="start">
+      <PopoverContent
+        className="w-(--anchor-width) min-w-72 max-w-[calc(100vw-2rem)] p-0"
+        align="start"
+      >
         <Command shouldFilter={false}>
           <CommandInput
             placeholder={searchPlaceholder}
@@ -162,11 +166,11 @@ export function EntityCombobox<T extends { id: number | string }>({
                 >
                   <Check
                     className={cn(
-                      "mr-2 size-4",
+                      "mr-2 size-4 shrink-0",
                       item.id === value ? "opacity-100" : "opacity-0"
                     )}
                   />
-                  <span className="truncate">{getLabel(item)}</span>
+                  <span className="min-w-0 whitespace-normal break-words">{getLabel(item)}</span>
                   {getHint?.(item) && (
                     <span className="ml-auto truncate pl-2 text-xs text-fg-tertiary">
                       {getHint(item)}

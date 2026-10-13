@@ -144,7 +144,7 @@ function MergeDraftDialog({ draft, unitId, otherDrafts, onClose }: MergeDraftDia
   }
 
   return (
-    <DialogContent className="sm:max-w-md">
+    <DialogContent className="sm:max-w-xl">
       <DialogHeader>
         <DialogTitle>Слить «{draft.title}» с…</DialogTitle>
         <DialogDescription>

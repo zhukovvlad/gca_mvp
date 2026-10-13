@@ -2443,6 +2443,17 @@ describe("ContextCard — вариант, ожидание, смена семь�
       expect(screen.queryByRole("button", { name: "Другая семья…" })).not.toBeInTheDocument();
     });
 
+      // Вид (подпись не вылезает за края окна) доказывают снимки стенда при 1280 и 1920; здесь — классы ширины.
+    it("окно выбора семьи шире окна по умолчанию: sm:max-w-xl", async () => {
+      const user = userEvent.setup();
+      await openOrdinary();
+
+      const dialog = await chooseFamily(user, "Кровельные работы");
+
+      expect(dialog).toHaveClass("sm:max-w-xl");
+      expect(dialog).not.toHaveClass("sm:max-w-md");
+    });
+
     it("у контекста без варианта исход «семья назначена», карточка показывает новую семью", async () => {
       const user = userEvent.setup();
       await openOrdinary();

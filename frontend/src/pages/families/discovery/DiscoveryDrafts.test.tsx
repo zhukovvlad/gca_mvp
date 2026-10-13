@@ -449,6 +449,19 @@ describe("DiscoveryDrafts — действия над черновиками", (
     expect(screen.queryByRole("option", { name: "Черновик «Вентиляция общеобменная»" })).not.toBeInTheDocument();
   });
 
+  // Вид (подпись не вылезает за края окна) доказывают снимки стенда при 1280 и 1920; здесь — классы ширины.
+  it("окно «Слить с…» шире окна по умолчанию: sm:max-w-xl", async () => {
+    const user = userEvent.setup();
+    seed();
+    await renderDrafts();
+
+    await user.click(within(cardOf("Вентиляция общеобменная")).getByRole("button", { name: "Слить с…" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("sm:max-w-xl");
+    expect(dialog).not.toHaveClass("sm:max-w-md");
+  });
+
   it("«Слить с…» активной семьёй уводит черновик в слитые", async () => {
     const user = userEvent.setup();
     seed();

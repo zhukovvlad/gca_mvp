@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -141,5 +141,48 @@ describe("EntityCombobox — серверный поиск", () => {
     await open();
 
     expect(shownTitles()).toEqual(ITEMS.map((i) => i.title));
+  });
+});
+
+/**
+ * Длинная подпись: вид (многоточие в кнопке, перенос в списке, всё внутри окна) доказывают
+ * снимки стенда при 1280 и 1920; здесь фиксируются классы, которые его дают.
+ */
+describe("EntityCombobox — длинная подпись", () => {
+  const LONG = "Закладные и отделочные элементы из нержавеющей стали и люки";
+
+  it("кнопка не раздвигается: min-w-0, подпись обрезана truncate, полный текст в title", () => {
+    render(
+      <EntityCombobox
+        items={[{ id: 1, title: LONG }]}
+        value={1}
+        onChange={() => {}}
+        getLabel={(i) => i.title}
+        placeholder="Выбрать"
+        searchPlaceholder="Найти…"
+        emptyText="Ничего не найдено"
+      />
+    );
+
+    const trigger = screen.getByRole("combobox");
+    expect(trigger).toHaveClass("min-w-0");
+    expect(trigger).toHaveAttribute("title", LONG);
+    const text = screen.getByText(LONG);
+    expect(text).toHaveClass("truncate", "min-w-0");
+  });
+
+  it("без выбора title нет (плейсхолдер не дублируется подсказкой)", () => {
+    renderCombobox();
+
+    expect(screen.getByRole("combobox")).not.toHaveAttribute("title");
+  });
+
+  it("в списке длинное название переносится, а не обрезается", async () => {
+    renderCombobox([{ id: 1, title: LONG }]);
+    await open();
+
+    const text = within(screen.getByRole("option")).getByText(LONG);
+    expect(text).toHaveClass("whitespace-normal");
+    expect(text).not.toHaveClass("truncate");
   });
 });

@@ -568,6 +568,22 @@ describe("FamiliesTab", () => {
     expect(await screen.findByText("Слить семью «Кровельные работы»")).toBeInTheDocument();
   });
 
+  // Вид (подпись не вылезает за края окна) доказывают снимки стенда при 1280 и 1920; здесь — классы ширины.
+  it("окно «Слить семью…» шире окна по умолчанию: sm:max-w-xl", async () => {
+    const user = userEvent.setup();
+    await renderTab();
+
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    await user.click(await screen.findByRole("option", { name: "активна" }));
+    await user.click(await screen.findByText("Кровельные работы"));
+    await screen.findByLabelText("Определение");
+    await user.click(screen.getByRole("button", { name: "Слить" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("sm:max-w-xl");
+    expect(dialog).not.toHaveClass("sm:max-w-md");
+  });
+
   it("панель архивной семьи не предлагает ни одного действия жизненного цикла", async () => {
     const user = userEvent.setup();
     await renderTab();

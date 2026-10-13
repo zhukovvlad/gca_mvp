@@ -733,7 +733,7 @@ function MergeFamilyDialog({
 
   return (
     <Dialog open={family !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Слить семью «{family?.title}»</DialogTitle>
           <DialogDescription>
